@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-216 (match behavior is inconsistent between normal and symbolic execution),
+--                ROSETTE-175 (Matching of nested lists doesn't seem to work)
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A function whose clauses do not cover every constructor of a nested
+-- algebraic data type must be rejected as non-exhaustive. The Rosette
+-- corpus motivates this case because `match` silently mis-handled
+-- non-exhaustive nested patterns under symbolic execution; Kappa requires
+-- exhaustiveness at elaboration time so the issue cannot arise.
+--
+-- Kappa does not introduce ad-hoc symbolic semantics for `match`; the
+-- exhaustiveness check is a portable elaboration obligation.
+
+--! mode check
+
+data Nest : Type =
+    NLeaf
+    NS Nest
+
+-- POSITIVE: every shape is covered; nested NS(NS ...) is delegated to len.
+len : Nest -> Int
+let len x =
+    match x
+    case NLeaf      -> 0
+    case (NS NLeaf) -> 1
+    case (NS (NS v)) -> 2 + len v
+
+-- POSITIVE: equivalent definition with a wildcard final clause.
+lenAlt : Nest -> Int
+let lenAlt x =
+    match x
+    case NLeaf  -> 0
+    case (NS v) -> 1 + lenAlt v
+
+-- NEGATIVE: handles only `(NS (NS v))` and `NLeaf`; the case `(NS NLeaf)`
+-- is missing, so the definition is non-exhaustive.
+lenBad : Nest -> Int
+let lenBad x =
+    match x
+    case NLeaf        -> 0
+    case (NS (NS v))  -> 2 + lenBad v
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

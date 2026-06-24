@@ -1,0 +1,41 @@
+-- Source issue: Kitten #42 (fix nested closures: an inner function
+--   capturing locals from an enclosing function multiple levels up
+--   must work and must re-typecheck after scoping). Kitten #17 (vector
+--   blocks should be able to capture locals).
+-- Spec: expressions.lambdas, expressions.lambdas.closure_capture_quantities.
+--
+-- Kappa's lambdas form lexical closures over their enclosing scope; a
+-- value bound at an outer scope may be referenced from an inner lambda
+-- nested any number of levels deep.
+
+module test
+
+--! mode check
+
+-- POSITIVE: one level of capture.
+adder : Int -> Int -> Int
+let adder x = \y -> x + y
+
+useAdder : Int
+let useAdder = adder 3 4
+
+-- POSITIVE: two levels of capture; inner closure references the outer
+-- local `x` through an intermediate lambda.
+nested : Int -> Int -> Int -> Int
+let nested x = \y -> \z -> x + y + z
+
+useNested : Int
+let useNested = nested 1 2 3
+
+-- POSITIVE: three levels of capture, with the deepest lambda using two
+-- separate outer bindings.
+threeLevel : Int -> Int -> Int -> Int -> Int
+let threeLevel a = \b -> \c -> \d -> a + b + c + d
+
+useThree : Int
+let useThree = threeLevel 1 2 3 4
+
+--! assertNoErrors
+--! assertType useAdder Int
+--! assertType useNested Int
+--! assertType useThree Int

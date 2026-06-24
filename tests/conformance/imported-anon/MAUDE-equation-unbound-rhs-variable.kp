@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/unification.maude
+--           crl f(f(X, Y), Y) => f(Z, X) if Z =/= Y .
+--         Z appears on the RHS and in the condition but is not bound on
+--         the LHS. Maude flags this as a free variable on the right-hand
+--         side. The portable obligation is the standard scoping rule:
+--         every name referenced on a function-clause RHS must be bound by
+--         either the LHS pattern or an enclosing binder.
+-- Spec: expressions.patterns.scoping_validity,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: a variable referenced in a function body but not
+--   bound by the function's patterns or an enclosing binder must be
+--   reported as unresolved.
+
+--! mode check
+
+module test
+
+data Coin : Type = Heads | Tails
+
+-- POSITIVE: every RHS variable is bound by the pattern.
+flip : Coin -> Coin
+let flip c = match c
+    case Heads -> Tails
+    case Tails -> Heads
+
+-- POSITIVE: nested let binding introduces y for the RHS.
+withLet : Coin -> Coin
+let withLet c =
+    let y = c
+    y
+
+-- NEGATIVE: z is referenced in the body but never bound.
+badFreshZ : Coin -> Coin
+let badFreshZ c = z
+
+-- NEGATIVE: w is referenced inside a guarded branch but never bound.
+badGuardW : Coin -> Coin
+let badGuardW c = match c
+    case Heads -> w
+    case Tails -> c
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

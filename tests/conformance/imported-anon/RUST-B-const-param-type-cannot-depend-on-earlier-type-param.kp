@@ -1,0 +1,57 @@
+-- Source issues: rust#74152, rust#74101, rust#73491 (slice > 50000)
+-- Spec: types.universes.erasure_elaboration_time.compile_time_bindings_fields,
+--       types.quantification.implicit_declaration_universalization,
+--       types.universes.erasure_elaboration_time.static_object_positions
+--
+-- INTENTIONAL DIVERGENCE: Rust forbids `<T, const N: T>` because the const
+-- parameter's classifier references an earlier type parameter in the same
+-- telescope. Kappa does NOT inherit this restriction — Kappa is fully
+-- dependently typed and admits a compile-time parameter telescope where one
+-- parameter's classifier is an earlier parameter of intrinsic compile-time
+-- type (e.g. `Type`).
+--
+-- This fixture pins the positive direction: Kappa accepts the dependent
+-- compile-time form. The accompanying ledger entry records that the
+-- Rust-specific rejection is not a portable obligation. The portable
+-- obligation that DOES survive is checked in
+-- `RUST-B-const-param-borrow-type-rejected`: the classifier must elaborate
+-- to a compile-time type per §11.1.6.1, ruling out borrows and other
+-- non-static-object carriers.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a compile-time parameter telescope where `n`'s classifier is
+-- the earlier compile-time parameter `a : Type`. Kappa accepts this form
+-- because both parameters live in the static-object expression position
+-- (§11.1.6.2) and `Type` is an intrinsic compile-time classifier.
+data DependentConst (@0 a : Type) (@0 n : a) : Type =
+    DependentConst
+
+-- The dependent form is constructible at a closed concrete instantiation.
+let three : DependentConst Int 3 = DependentConst
+
+--! assertNoErrors
+
+-- POSITIVE: the same shape via implicit universalization (§11.3.3). Kappa's
+-- elaborator universalizes `a` and `n` in declaration order, so by the
+-- time `n` is checked, `a` has already been introduced as a compile-time
+-- binding of intrinsic type `Type`.
+shape :
+    forall (@0 a : Type) (@0 n : a).
+    Unit
+let shape = ()
+
+--! assertNoErrors
+
+-- POSITIVE: applying the dependent shape at distinct instantiations
+-- produces distinct types — but each instantiation is well-formed and
+-- type-checks.
+useInt : DependentConst Int 7
+let useInt = DependentConst
+
+useBool : DependentConst Bool True
+let useBool = DependentConst
+
+--! assertNoErrors

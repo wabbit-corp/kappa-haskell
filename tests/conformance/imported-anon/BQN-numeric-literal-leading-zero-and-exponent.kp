@@ -1,0 +1,38 @@
+-- Source issues: BQN docs/literal.md (numeric grammar permits `e`/`E`
+--   exponent with optional `¯` sign for negative exponent).
+-- Spec: literals.numeric_literals.floating_point_float,
+--       literals.numeric_literals.integers.
+-- Kappa spec lists decimal integer literals without a leading-zero
+-- prefix; octals require the `0o` prefix (§6.1.1).  Decimal float
+-- literals admit `e` / `E` exponents with optional sign (§6.1.2).
+-- This test pins the portable forms.
+
+--! mode check
+
+-- POSITIVE: ordinary integer literal.
+zero : Integer
+let zero = 0
+
+-- POSITIVE: explicit octal with the `0o` prefix.
+septOctal : Integer
+let septOctal = 0o7
+
+-- POSITIVE: ordinary floating-point literal.
+half : Double
+let half = 0.5
+
+-- POSITIVE: scientific notation, positive exponent.
+thousand : Double
+let thousand = 1.0e3
+
+-- POSITIVE: scientific notation, capital E.
+million : Double
+let million = 1.0E6
+
+-- POSITIVE: scientific notation, negative exponent.
+tiny : Double
+let tiny = 1.5e-2
+
+--! assertNoErrors
+--! assertType thousand Double
+--! assertType tiny Double

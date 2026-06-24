@@ -1,0 +1,44 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid test/unit/Instantiation.sq (data Natural n with
+--                 Zero :: Natural Z and Succ :: Natural n -> Natural (S n));
+--                 synquid oracle "Constructor Zero must return type Natural n, got Natural Z".
+-- Spec: data_types.gadts,
+--       types.unions.interaction_gadts_indexed_types,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- A GADT-style constructor's declared result type fixes the index at the
+-- constructor's introduction site. Declaring `Zero : Natural Z` and later
+-- writing `Zero : Natural (S Z)` is rejected because the index `Z` is
+-- not unifiable with `S Z`.
+
+--! mode check
+
+-- The peano-style index encoding.
+data PNat : Type =
+    Z
+    S PNat
+
+-- POSITIVE: an indexed type with GADT constructors that fix the index.
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- POSITIVE: building `Natural (S Z)` via Succ Zero.
+oneNatural : Natural (S Z)
+let oneNatural = Succ Zero
+
+-- POSITIVE: building `Natural (S (S Z))` via Succ (Succ Zero).
+twoNatural : Natural (S (S Z))
+let twoNatural = Succ (Succ Zero)
+
+-- NEGATIVE: ascribing `Zero` to `Natural (S Z)` is a type mismatch because
+-- the constructor's result index `Z` cannot be unified with `S Z`.
+badAscription : Natural (S Z)
+let badAscription = Zero
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

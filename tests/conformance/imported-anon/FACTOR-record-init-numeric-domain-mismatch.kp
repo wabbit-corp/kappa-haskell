@@ -1,0 +1,43 @@
+-- Source issue: Factor #594 (`TUPLE: foo { a fixnum } ;` silently
+--   truncates an integer that does not fit in fixnum; "this should be an
+--   error"). Related: Factor #1571 (tuple slot declarations and their
+--   coercer behavior are inconsistent across narrow integer types).
+-- Note: Factor's `fixnum` maps to Kappa's `Byte` for this test; Kappa
+--   does not define Int8/UInt16 in its portable prelude.
+-- Spec: literals.numeric_literals.typing,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_NUMERIC_LITERAL_DOMAIN_MISMATCH).
+--
+-- A numeric literal whose value does not fit the surrounding expected
+-- numeric type must be rejected with E_NUMERIC_LITERAL_DOMAIN_MISMATCH,
+-- not silently truncated to a representable value. The diagnostic must
+-- carry the literal domain and the expected witness type.
+
+module test
+
+--! mode check
+
+data SmallBox : Type =
+    SmallBox { value : Byte }
+
+-- POSITIVE: literal fits Byte (0-255).
+ok : SmallBox
+let ok = SmallBox { value = 100 }
+
+--! assertType ok SmallBox
+
+-- NEGATIVE: literal 256 does not fit Byte (0-255); must be rejected,
+-- not silently truncated.
+overflow : SmallBox
+let overflow = SmallBox { value = 256 }   --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+
+--! assertDiagnostic error E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+
+-- NEGATIVE: literal 300 also exceeds the Byte range.
+data Counter : Type =
+    Counter { count : Byte }
+
+counterOverflow : Counter
+let counterOverflow = Counter { count = 300 }  --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+
+--! assertDiagnostic error E_NUMERIC_LITERAL_DOMAIN_MISMATCH

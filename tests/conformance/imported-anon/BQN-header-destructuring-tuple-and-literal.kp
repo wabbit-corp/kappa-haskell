@@ -1,0 +1,28 @@
+-- Source issues: BQN-11 (online REPL lacks header support; CBQN accepts
+--   `Destruct ← { 𝕊 a‿1‿⟨b,2⟩: a≍b }`).
+-- Spec: expressions.patterns.forms (tuple and literal patterns),
+--       expressions.match.
+-- BQN's block-header pattern `{ 𝕊 a‿1‿⟨b,2⟩ : body }` mixes binder, literal,
+-- and nested tuple patterns. Kappa's portable analog is a `match` arm with
+-- a tuple pattern containing a literal and a nested tuple.
+
+--! mode check
+
+-- POSITIVE: destructure a triple whose second component must be `1` and whose
+-- third component is itself a pair with literal `2`.
+destruct : (Nat, Nat, (Nat, Nat)) -> (Nat, Nat)
+let destruct t =
+    match t
+      case (a, 1, (b, 2)) -> (a, b)
+      case _              -> (0, 0)
+
+-- POSITIVE: a matching input produces the expected pair.
+result : (Nat, Nat)
+let result = destruct (5, 1, (7, 2))
+
+-- POSITIVE: a non-matching input falls through to the catch-all.
+fallback : (Nat, Nat)
+let fallback = destruct (5, 9, (7, 2))
+
+--! assertNoErrors
+--! assertType destruct ((Nat, Nat, (Nat, Nat)) -> (Nat, Nat))

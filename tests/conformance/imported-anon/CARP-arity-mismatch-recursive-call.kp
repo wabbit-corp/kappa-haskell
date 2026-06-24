@@ -1,0 +1,36 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: carp-lang/Carp#348
+-- Spec: declarations.terms (mutually recursive groups),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- Carp #348: a recursive call to a 2-arg function with only 1 argument
+-- compiled successfully and segfaulted at runtime because the recursive
+-- call site was not arity-checked.  The portable Kappa obligation is that
+-- a recursive call inside a function body is subject to the same arity
+-- and label checks as any other call.
+
+--! mode check
+
+-- POSITIVE: recursion with the correct arity is accepted; the function
+-- type after elaboration matches its declared signature.
+recurseOk : Int -> Int -> Int
+let recurseOk a b =
+    let c : Int = b + 1
+    if a == 0 then c else recurseOk (a - 1) c
+
+--! assertType recurseOk Int -> Int -> Int
+
+-- NEGATIVE: the recursive call supplies one argument to a 2-arg function.
+-- The arity mismatch must be caught at the call site at elaboration time;
+-- it cannot be deferred to code emission or runtime.
+recurseBad : Int -> Int -> Int
+let recurseBad a b =
+    let c : Int = b + 1
+    let out : Int = recurseBad c
+    out + 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

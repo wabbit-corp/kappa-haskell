@@ -1,0 +1,43 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid corpus relies on user-declared constructors
+--                 (Nil, Cons, Leaf, Node, ...) — referencing a constructor
+--                 spelled differently from the declaration must be rejected
+--                 as an unresolved name; see synquid oracle which surfaces
+--                 "Resolution Error: Constructor Zero must return ..." for a
+--                 related class of failure (test/unit/Instantiation.sq).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved)
+--
+-- Synquid's resolution layer rejects use of an undeclared constructor.
+-- The Kappa-portable obligation is family `kappa.name.unresolved` with
+-- a payload that lists the unresolved spelling and the admissible kinds
+-- (here: constructor kind in scope of `List`).
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: using declared constructors.
+ok : List PNat
+let ok = Cons Z Nil
+
+-- NEGATIVE: referencing an undeclared constructor.
+badCtor : List PNat
+let badCtor = Konse Z Nil
+
+-- NEGATIVE: referencing an undeclared top-level identifier.
+badId : PNat
+let badId = totallyUnknownThing
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

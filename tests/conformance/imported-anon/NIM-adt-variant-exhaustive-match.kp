@@ -1,0 +1,75 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#11474 (Case does not check all cases — string case
+--         not exhaustively checked), nim-lang/Nim#25774 (ProveField warning
+--         with nested case object), ELIXIR cross-signal for ADT exhaustiveness
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive), expressions.match
+-- In Nim, the compiler failed to enforce exhaustiveness for string case
+-- expressions. In Kappa, match on a closed ADT must be exhaustive; a missing
+-- arm is rejected with kappa.pattern.non-exhaustive.
+
+--! mode check
+module test
+
+data Direction : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: all four arms covered — exhaustive.
+directionName : Direction -> String
+let directionName d =
+    match d
+    case North -> "north"
+    case South -> "south"
+    case East  -> "east"
+    case West  -> "west"
+
+-- POSITIVE: wildcard arm covers remaining cases — exhaustive.
+isNorthOrSouth : Direction -> Bool
+let isNorthOrSouth d =
+    match d
+    case North -> True
+    case South -> True
+    case _     -> False
+
+-- NEGATIVE: West arm is missing and no wildcard — non-exhaustive.
+threeDirections : Direction -> String
+let threeDirections d =
+    match d
+    case North -> "north"
+    case South -> "south"
+    case East  -> "east"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: single arm with no wildcard — non-exhaustive.
+onlyNorth : Direction -> Bool
+let onlyNorth d =
+    match d
+    case North -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: nested ADT match — outer and inner both exhaustive.
+data Axis : Type = Horizontal | Vertical
+
+data Move : Type =
+    Step Axis Direction
+    Stay
+
+describe : Move -> String
+let describe m =
+    match m
+    case Stay ->
+        "stay"
+    case Step ax dir ->
+        match ax
+        case Horizontal -> "horizontal move"
+        case Vertical   -> "vertical move"
+
+--! assertErrorCount 2

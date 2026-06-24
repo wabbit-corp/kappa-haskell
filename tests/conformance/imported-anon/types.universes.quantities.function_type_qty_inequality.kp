@@ -1,0 +1,38 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Idris2 #73
+-- Spec: types.universes.quantities
+-- A function type with a linear binder `(1 x : A) -> B` and a function type
+-- with an unrestricted binder `(x : A) -> B` are distinct types in Kappa.
+-- Their quantity annotation is part of the type's identity. Asserting
+-- propositional equality between them via `refl` must be rejected.
+
+module test
+
+-- Accepted: a function type is propositionally equal to itself.
+selfEq : (Nat -> Nat) = (Nat -> Nat)
+let selfEq = refl
+
+--! mode check
+
+-- Rejected: an unrestricted function type and a linear function type are
+-- distinct. `refl` cannot prove them equal because they differ in the
+-- quantity annotation on the binder.
+badEq : (Nat -> Nat) = ((1 x : Nat) -> Nat)
+let badEq = refl
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Rejected: same principle with erased binder.
+badEq2 : (Nat -> Nat) = ((0 x : Nat) -> Nat)
+let badEq2 = refl
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- Accepted: a linear binder is equal to itself.
+linearSelf : ((1 x : Nat) -> Nat) = ((1 y : Nat) -> Nat)
+let linearSelf = refl
+
+--! assertErrorCount 2

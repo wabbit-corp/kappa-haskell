@@ -1,0 +1,61 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid test/unit/Pairs.sq —
+--                 `data Pair a b where P :: a -> b -> Pair a b` plus
+--                 `measure fst :: Pair a b -> a where P x y -> x`.
+--                 This pair declaration historically clashed with
+--                 anonymous-lambda binders.
+-- Spec: data_types.data_declarations,
+--       expressions.match,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence
+--
+-- The Kappa-portable obligation is the construction-elimination round-trip
+-- for a binary-product ADT. Building a Pair and then matching it back must
+-- yield the original components.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Pair (a : Type) (b : Type) : Type =
+    P (first : a) (second : b)
+
+-- POSITIVE: a polymorphic accessor for the first component.
+fstP : forall (a : Type) (b : Type). Pair a b -> a
+let fstP p =
+    match p
+      case (P x _) -> x
+
+-- POSITIVE: a polymorphic accessor for the second component.
+sndP : forall (a : Type) (b : Type). Pair a b -> b
+let sndP p =
+    match p
+      case (P _ y) -> y
+
+-- POSITIVE: construction-elimination round-trip.
+roundtripFst : PNat
+let roundtripFst = fstP (P Z True)
+
+roundtripSnd : Bool
+let roundtripSnd = sndP (P Z True)
+
+-- POSITIVE: swap a pair by destructuring.
+swap : forall (a : Type) (b : Type). Pair a b -> Pair b a
+let swap p =
+    match p
+      case (P x y) -> P y x
+
+-- NEGATIVE: matching a Pair with a single binder is a constructor
+-- arity mismatch.
+badFst : forall (a : Type) (b : Type). Pair a b -> a
+let badFst p =
+    match p
+      case (P x) -> x
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 1

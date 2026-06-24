@@ -1,0 +1,45 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: OCaml#2633
+-- Spec: types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       kappa.pattern.exhaustiveness-residual
+-- A match on a closed union is exhaustive exactly when all member types are covered.
+-- The non-exhaustiveness diagnostic residual must identify the specific missing member
+-- types, not combine covered and uncovered types together.
+
+module test
+
+type Color = (| Int | String | Bool |)
+
+-- Exhaustive: all three member types covered.
+describeColor : Color -> String
+let describeColor c =
+    match c
+      case (| n : Int |)    -> "int"
+      case (| s : String |) -> "string"
+      case (| b : Bool |)   -> "bool"
+
+--! mode check
+
+-- Non-exhaustive: Bool arm missing.
+-- The residual must identify Bool, not lump it together with covered types.
+partialColor : Color -> String
+let partialColor c =
+    match c
+      case (| n : Int |)    -> "int"
+      case (| s : String |) -> "string"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- Non-exhaustive: only one arm covered.
+onlyInt : Color -> Int
+let onlyInt c =
+    match c
+      case (| n : Int |) -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

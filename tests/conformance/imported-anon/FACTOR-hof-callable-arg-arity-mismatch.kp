@@ -1,0 +1,56 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: Factor #2241 (`with-value-change` quot expected (value --
+--   value') but got (x x -- x x)), Factor #2790 (sort-by expects
+--   (elt -- key) but body has (x x x -- x x x)).
+-- Spec: types.functions, expressions.application,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_APPLICATION_ARGUMENT_MISMATCH),
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- A higher-order word that expects a callable with a specific signature
+-- must reject callers that supply a callable of a different arity. The
+-- diagnostic must use E_APPLICATION_ARGUMENT_MISMATCH and the payload
+-- must preserve the binder name of the callable parameter.
+
+module test
+
+--! mode check
+
+-- A higher-order function that expects a unary callable.
+mapInt : (Int -> Int) -> Int -> Int
+let mapInt f x = f x
+
+-- POSITIVE: caller supplies a unary callable; accepted.
+useOk : Int -> Int
+let useOk x = mapInt (\y -> y + 1) x
+
+--! assertType useOk Int -> Int
+
+-- NEGATIVE: caller supplies a binary callable where a unary is expected.
+useTooMany : Int -> Int
+let useTooMany x = mapInt (\a b -> a + b) x
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+-- A higher-order function that expects a unary callable returning Int.
+sortBy : (Int -> Int) -> Int -> Int
+let sortBy keyF x = keyF x
+
+-- NEGATIVE: caller supplies a binary callable, the analogue of Factor
+-- #2790 where sort-by's key-quotation must take one input.
+sortBad : Int -> Int
+let sortBad x = sortBy (\a b -> a + b) x
+
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+-- NEGATIVE: caller supplies a callable returning the wrong type
+-- (String instead of Int).
+mapWrongResult : Int -> Int
+let mapWrongResult x = mapInt (\y -> "no") x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

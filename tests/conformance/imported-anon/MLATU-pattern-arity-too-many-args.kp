@@ -1,0 +1,29 @@
+-- Source issue: MLatu docs/docs/tutorial.md ("a b = c. is a rule that
+--   matches on `a b`") combined with PR#24 ("operators always postfix").
+--   A rule defining an arity-2 pattern cannot legitimately consume a
+--   third argument at one of its call sites. The portable Kappa
+--   obligation is that applying a fully-saturated base-type expression
+--   to an extra argument is a non-callable application.
+-- Spec: types.functions, expressions.application,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (alias E_APPLICATION_NON_CALLABLE).
+
+module test
+
+--! mode check
+
+pairRule : Int -> Int -> Int
+let pairRule x y = x + y
+
+-- POSITIVE: exactly two arguments.
+ok : Int
+let ok = pairRule 1 2
+
+--! assertType ok Int
+
+-- NEGATIVE: applying a fully-saturated Int-returning expression to a
+-- third argument is non-callable application.
+extra : Int
+let extra = pairRule 1 2 3                 --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE

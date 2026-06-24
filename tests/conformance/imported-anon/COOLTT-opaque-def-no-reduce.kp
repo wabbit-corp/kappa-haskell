@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: cooltt issue #14 (add "veils" for opacity), issue #178
+--               (abstract function interfaces), PR #123 (fix premature unfolding).
+-- Spec: declarations.terms
+--
+-- An opaque (abstract) definition is one whose body is not available during
+-- conversion or normalization outside the defining scope. The type is available
+-- for type-directed elaboration; the body is not. Concretely:
+--  - An opaque definition `opaque let f : T = e` is accepted as `f : T`.
+--  - Inside the defining module, `f` may or may not reduce depending on the
+--    implementation's internal transparency rules.
+--  - Outside the module, `f e1 = f e1` holds by reflexivity, but
+--    `f e1 = <known result>` is NOT derivable from the declared type alone.
+--  - Attempting to reduce through an opaque definition is a type error if
+--    the result type depends on the reduction.
+
+--! mode check
+
+-- POSITIVE: opaque definition is well-typed at its declared type.
+opaque double : Nat -> Nat
+let double x = x + x
+
+-- POSITIVE: apply the opaque function to a value.
+result : Nat
+let result = double 3
+
+-- POSITIVE: the type of `result` is `Nat`; this is accepted.
+-- Even though we cannot compute that `result = 6`, the type is correct.
+validUse : Nat -> Nat
+let validUse n = double (double n)
+
+-- POSITIVE: reflexivity on an opaque application; both sides are syntactically
+-- the same, so they are definitionally equal by reflexivity.
+reflOpaque : double 5 = double 5
+let reflOpaque = refl
+
+-- NEGATIVE: a function that is not in scope cannot be used.
+badCall : Nat
+let badCall = unknownFn 42
+
+-- POSITIVE: opaque function passed as a first-class argument.
+applyFun : (Nat -> Nat) -> Nat -> Nat
+let applyFun f x = f x
+
+useOpaque : Nat
+let useOpaque = applyFun double 7
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

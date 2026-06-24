@@ -1,0 +1,66 @@
+-- Source: Coalton issue #408 (let bindings interfere with polymorphism of
+--   subclasses), #273 (failed to reduce context in class definition),
+--   general typeclass constraint propagation.
+-- Spec: traits.headers.supertraits (§14.1.4),
+--   traits.instances.resolution_algorithm (§14.3.1),
+--   declarations.terms (§9).
+--
+-- When a function has a subclass constraint, all methods of the superclass
+-- must also be available without requiring an additional superclass constraint
+-- in the function signature. A correct implementation must propagate
+-- superclass evidence from the subclass constraint automatically.
+
+--! mode check
+
+-- A minimal numeric hierarchy.
+trait AddGroup (a : Type) =
+    zero  : a
+    plus  : a -> a -> a
+    negate : a -> a
+
+trait AddGroup a => Ring (a : Type) =
+    one   : a
+    times : a -> a -> a
+
+trait Ring a => Field (a : Type) =
+    recip : a -> a
+
+-- POSITIVE: a function with a Field constraint can use Ring and AddGroup methods.
+-- The superclass chain Field => Ring => AddGroup means all methods are available.
+fieldComputation : forall (a : Type). (@_ : Field a) -> a -> a -> a
+let fieldComputation x y =
+    plus (times x y) (recip (plus x one))
+
+--! assertNoErrors
+
+-- POSITIVE: a function with only AddGroup constraint can still use plus and zero.
+addGroupOnly : forall (a : Type). (@_ : AddGroup a) -> a -> a -> a
+let addGroupOnly x y = plus x y
+
+--! assertNoErrors
+
+-- POSITIVE: passing a Field evidence where an AddGroup is needed via superclass.
+-- The caller supplies Field a; the callee needs AddGroup a; this must succeed.
+callAddGroup : forall (a : Type). (@_ : Field a) -> a -> a -> a
+let callAddGroup x y = addGroupOnly x y
+
+--! assertNoErrors
+
+-- POSITIVE: let bindings inside a constrained function retain their
+-- enclosing constraints. The let-bound expression `r` uses Ring methods;
+-- the enclosing function has a Field constraint.
+useLetWithConstraint : forall (a : Type). (@_ : Field a) -> a -> a
+let useLetWithConstraint x =
+    let r = times x x
+    in recip (plus r one)
+
+--! assertNoErrors
+
+-- POSITIVE: a subclass constraint in a where-clause helper is resolved
+-- via the outer function's Ring constraint (Ring implies AddGroup).
+whereHelper : forall (a : Type). (@_ : Ring a) -> a -> a
+let whereHelper x =
+    let doubled : a = plus x x
+    in doubled
+
+--! assertNoErrors

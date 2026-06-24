@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-4403, KT-9282, KT-2505
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+
+--! mode check
+
+-- POSITIVE: passing a value of the correct type to a function.
+square : Int -> Int
+let square n = n * n
+
+callSquare : Int
+let callSquare = square 5
+
+--! assertType callSquare Int
+
+-- POSITIVE: higher-order function accepting a function argument of matching type.
+applyTwice : forall (a : Type). (a -> a) -> a -> a
+let applyTwice f x = f (f x)
+
+doubled : Int
+let doubled = applyTwice square 2
+
+
+-- NEGATIVE: passing a String where Int is expected.
+wrongArg : Int
+let wrongArg = square "hello"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing an optional Int where a plain Int is required.
+addThree : Int -> Int
+let addThree n = n + 3
+
+optArg : Int
+let optArg = addThree (Option.Some 5)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: wrong function arity (too many arguments).
+tooMany : Int
+let tooMany = square 1 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

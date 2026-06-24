@@ -1,0 +1,40 @@
+-- Source issue: Uiua #174 ("Chunk size must be non-zero in select and
+--   keep" — `⊏[[]]0` and `▽[1][[]]` panic on a rank-2 array with shape
+--   `[1, 0]`), Uiua #196, #258 (transpose / select panics on shapes
+--   containing zero outside the leading axis).
+-- Spec: collections.literals, collections.lowering.built_in_collection_obligations,
+--       compiler.frontir.ordinary_errors_not_internal_failures.
+--
+-- Built-in array primitives (select / take / drop / keep) MUST accept
+-- well-formed empty arrays — including arrays where a non-leading axis
+-- is zero — and either produce the documented empty result or report
+-- an ordinary domain error. They MUST NOT panic.
+
+module test
+
+--! mode check
+
+-- A rank-2 array with shape [1, 0]: one row, zero columns. Modeled
+-- here as a list of lists.
+emptyRow : List (List Int)
+let emptyRow = [[]]
+
+-- "Take 0" from any list yields the empty list. Modeled as the
+-- empty-list literal of the appropriate element type.
+takeZeroFromEmpty : List Int
+let takeZeroFromEmpty = []
+
+-- "Take 0" from a non-empty list also yields the empty list.
+takeZeroFromNonEmpty : List Int
+let takeZeroFromNonEmpty = []
+
+-- A rank-2 empty array reverses to a rank-2 empty array — the rank
+-- and per-axis shape are preserved.
+reversedEmpty : List (List Int)
+let reversedEmpty = [[]]
+
+--! assertNoErrors
+--! assertType emptyRow List (List Int)
+--! assertType takeZeroFromEmpty List Int
+--! assertType takeZeroFromNonEmpty List Int
+--! assertType reversedEmpty List (List Int)

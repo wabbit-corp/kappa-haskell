@@ -1,0 +1,39 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Boomerang's `c : lens` for a <composer> element decomposes the
+--         input into a structured view (name; years; nationality). The
+--         "total view" analog in Kappa is an active pattern that returns
+--         a data type rather than `Option`.
+-- Spec: expressions.active_patterns.total_active_patterns_adts_variants
+-- Portable obligation: a `pattern` whose result type is a data type
+--   forms a total active pattern; its subpattern matches against that
+--   data type's constructors in the ordinary way.
+
+module test
+
+--! mode check
+
+-- Structured view of a composer record.
+data ComposerView : Type =
+    EmptyView
+    NamedView String String Int    -- given, family, deathYear
+
+pattern Composer (& s : String) : ComposerView =
+    if s == "" then EmptyView
+    else if s == "Sibelius" then NamedView "Jean" "Sibelius" 1957
+    else NamedView "Unknown" s 0
+
+-- POSITIVE: subpattern decomposes the data-typed view.
+describe : String -> String
+let describe s =
+    match s
+    case Composer (EmptyView)              -> "empty"
+    case Composer (NamedView g f y)        -> g ++ " " ++ f
+
+r1 : String
+let r1 = describe "Sibelius"
+
+r2 : String
+let r2 = describe ""
+
+--! assertNoErrors
+--! assertType describe (String -> String)

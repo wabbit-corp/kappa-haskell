@@ -1,0 +1,11 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+-- Spec: modules.names.dotted_name_resolution_dotted, modules.imports
+-- Helper module: defines Xml.elt and Xml.simpleElt for the consumer.
+
+module Xml
+
+elt : String -> String -> String
+let elt level tag = tag
+
+simpleElt : String -> String -> String
+let simpleElt level tag = tag

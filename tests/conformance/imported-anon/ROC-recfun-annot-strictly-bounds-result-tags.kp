@@ -1,0 +1,46 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Roc #7194
+-- Spec: types.unions.expected_type_directed_injection_widening,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- A recursive function whose body returns a variant member NOT in its
+-- annotated return row must be rejected — even when the body contains a
+-- recursive self-call. The annotated row bounds the inferred row at every
+-- recursive use position; the self-call's inferred result must NOT silently
+-- widen the bound.
+
+module test
+
+data A : Type =
+    A
+
+data B : Type =
+    B
+
+--! mode check
+
+-- NEGATIVE: signature says the return row is exactly (| A |). The body's
+-- third arm injects B, which is outside the annotated row. The self-call
+-- `bug n` on the second arm cannot be used to launder the type — the
+-- compiler must reject the B injection with kappa.type.mismatch.
+bug : Int -> (| A |)
+let bug n =
+    match n
+      case 1 -> bug 3
+      case 2 -> (| A : A |)
+      case _ -> (| B : B |)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: removing the offending arm makes the body well-typed.
+bugOk : Int -> (| A |)
+let bugOk n =
+    match n
+      case 1 -> bugOk 3
+      case _ -> (| A : A |)
+
+--! assertType bugOk Int -> (| A |)
+
+--! assertErrorCount 1

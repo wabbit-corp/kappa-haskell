@@ -1,0 +1,38 @@
+-- Source issue: carp-lang/Carp#105
+-- Spec: declarations.terms,
+--       declarations.signatures
+-- Carp #105: a top-level `def` initialized with a call expression
+-- (`(def myvariable (the Int 5))`) emitted invalid C because the
+-- emitter required compile-time-constant initializers at the C level.
+-- The portable Kappa obligation is that the right-hand side of a
+-- top-level `let` is any well-typed expression; it does not have to be
+-- a literal.  The runtime evaluates the initializer at module
+-- initialization order.
+
+--! mode check
+
+-- POSITIVE: a literal initializer is admitted.
+myVar : Int
+let myVar = 5
+
+--! assertNoErrors
+--! assertType myVar Int
+
+-- POSITIVE: an arbitrary well-typed expression is admitted at top level;
+-- the elaborator does not insist on a compile-time-constant initializer.
+mySum : Int
+let mySum = compute 2 3
+
+compute : Int -> Int -> Int
+let compute a b = a + b
+
+--! assertNoErrors
+--! assertType mySum Int
+
+-- POSITIVE: a top-level `let` may reference another top-level `let`
+-- defined later in the same file; the group is mutually visible.
+doubleMySum : Int
+let doubleMySum = mySum + mySum
+
+--! assertNoErrors
+--! assertType doubleMySum Int

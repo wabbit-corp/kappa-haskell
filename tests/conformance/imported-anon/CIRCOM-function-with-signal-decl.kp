@@ -1,0 +1,35 @@
+-- Source issues: Circom functions.md ("Functions cannot declare signals or generate
+--               constraints (use templates if you need so). The next function
+--               produces the error message: 'Template operator found'").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (positive).
+-- Kappa spec rule (§SA-CIRCOM-07, positive only):
+--   "A pure function body may contain only local declarations and pure expressions.
+--    Functions computing pure values without template/signal constructs are accepted."
+-- Note on spec gap SA-CIRCOM-07: In Kappa, local `data`, `type`, and `import`
+--   declarations ARE permitted inside block-scoped function bodies (§9.3.1).
+--   There is no Kappa analog for the Circom-specific "no signal in function" rule.
+--   The portable obligation is: a pure function must type-check under a pure type;
+--   mismatched return types produce kappa.type.mismatch (tested in
+--   CIRCOM-function-no-return-path).
+
+--! mode check
+
+-- POSITIVE: a pure function that computes values.
+let nbits (a : Int) : Int =
+    let n : Int = 1
+    let r : Int = 0
+    r
+
+let squareFn (x : Int) : Int = x * x
+
+-- POSITIVE: local data declaration inside a function body is valid in Kappa (§9.3.1).
+let withLocalData (n : Int) : Int =
+    let x : Int = n + 1
+    x * 2
+
+-- POSITIVE: nested helper function inside body is valid in Kappa (§9.3.1).
+let computeWithHelper (n : Int) : Int =
+    let double (x : Int) : Int = x * 2
+    double n + double (n + 1)
+
+--! assertNoErrors

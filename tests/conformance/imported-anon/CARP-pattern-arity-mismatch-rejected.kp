@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: carp-lang/Carp tests/test/sumtypes.carp,
+--                   tests/test/pattern.carp; multiple closed Carp issues
+--                   surface this obligation indirectly (e.g. #1113).
+-- Spec: types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp's pattern matching requires that a constructor pattern supply
+-- exactly the same number of sub-patterns as the constructor's declared
+-- arity.  The portable Kappa obligation is that a constructor pattern
+-- with too few or too many sub-patterns is a structured diagnostic.
+
+--! mode check
+
+data Pair : Type =
+    Empty
+    | Pair Int Int
+
+-- POSITIVE: a correctly-shaped constructor pattern is admitted.
+sumPair : Pair -> Int
+let sumPair p =
+    match p
+    case Empty       -> 0
+    case Pair a b    -> a + b
+
+--! assertType sumPair Pair -> Int
+
+-- NEGATIVE: the `Pair` constructor takes two sub-patterns; binding only
+-- one is an arity mismatch.
+underArity : Pair -> Int
+let underArity p =
+    match p
+    case Empty    -> 0
+    case Pair a   -> a
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: too many sub-patterns is also an arity mismatch.
+overArity : Pair -> Int
+let overArity p =
+    match p
+    case Empty            -> 0
+    case Pair a b c       -> a
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 2

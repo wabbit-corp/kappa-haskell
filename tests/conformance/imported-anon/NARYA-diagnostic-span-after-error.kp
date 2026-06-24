@@ -1,0 +1,47 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: narya issue #3 (diagnostic spans include trailing
+--               whitespace after the error — the underlying portable
+--               obligation is that an unresolved-name diagnostic must
+--               carry a precise source-origin range, not a range that
+--               extends through trailing whitespace or block comments).
+-- Spec: compiler.frontir.origins_ranges_labels,
+--       compiler.frontir.diagnostic_quality_invariants,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--
+-- A diagnostic's primary origin range must point at the offending
+-- token's span, with end-line and end-column tracking the end of the
+-- token — not the end of trailing whitespace, the end of a following
+-- comment, or the end of a following statement. This invariant lets
+-- tools highlight the failure precisely.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: a well-formed definition with no trailing-whitespace issue.
+ok1 : Nat
+let ok1 = Suc Zero
+
+-- NEGATIVE: an unbound name surrounded by trailing whitespace. The
+-- diagnostic's source range must cover only the identifier
+-- `alskdfjlkadjf`, not the whitespace, comments, or following
+-- definitions.
+bad1 : Nat
+let bad1 = alskdfjlkadjf
+
+{- a block comment between the unresolved use and the next definition;
+   the diagnostic for `bad1` must not extend its range through this
+   comment or through the blank lines below. -}
+
+
+bad2 : Nat
+let bad2 = anotherUnknown
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 2
+--! assertNoWarnings

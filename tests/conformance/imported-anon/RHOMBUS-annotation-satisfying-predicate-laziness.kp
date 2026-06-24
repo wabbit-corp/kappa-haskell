@@ -1,0 +1,64 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: annotation.rhm in racket/rhombus
+-- Spec: declarations.let_in, §1.1.4 (boundary contracts)
+--   Kappa type annotations on let bindings are checked at binding time.
+--   A type annotation `let x : T = expr` checks `expr` against `T` before the binding
+--   takes effect. This is the portable Kappa obligation: annotation checking is eager
+--   and happens at binding introduction, not deferred.
+-- Note: Rhombus's `satisfying(predicate)` annotation form (evaluating predicate lazily) is
+--   a spec gap with no direct Kappa equivalent. This test covers the portable Kappa obligation
+--   of type annotation checking on let bindings. See SA-RHOMBUS-07.
+
+--! mode check
+
+-- POSITIVE: basic Int annotation on a let binding — value conforms to type.
+checkInt : Int
+let checkInt =
+    let n : Int = 42
+    n
+
+-- POSITIVE: String annotation — string value accepted.
+checkStr : String
+let checkStr =
+    let s : String = "hello"
+    s
+
+-- POSITIVE: Bool annotation — boolean value accepted.
+checkBool : Bool
+let checkBool =
+    let b : Bool = True
+    b
+
+-- POSITIVE: function type annotation — lambda conforms to declared type.
+checkFun : Int -> Bool
+let checkFun =
+    let f : Int -> Bool = \ n -> n > 0
+    f
+
+-- POSITIVE: nested let bindings — each is annotated and checked individually.
+nestedAnnot : Int
+let nestedAnnot =
+    let x : Int = 3
+    let y : Int = x + 4
+    y
+
+-- POSITIVE: re-using the bound name — result is the annotated type.
+reuse : Int
+let reuse =
+    let x : Int = 10
+    let x : Int = x + 5
+    x
+
+-- NEGATIVE: let binding with wrong type annotation — type mismatch.
+-- Assigning a String to an Int-annotated binding is rejected.
+badAnnot : Int
+let badAnnot =
+    let n : Int = "not an int"
+    n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

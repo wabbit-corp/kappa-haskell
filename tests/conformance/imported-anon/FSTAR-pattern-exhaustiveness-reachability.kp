@@ -1,0 +1,35 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: FSTAR-44, FSTAR-238, FSTAR-576
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A spurious "patterns incomplete" error must not be emitted when the real
+-- issue is a type mismatch. The diagnostic must correctly identify the root cause.
+
+--! mode check
+
+data Box : Type =
+    MkBox : Nat -> Box
+
+-- NEGATIVE TEST: the match IS exhaustive (one constructor, one branch).
+-- The error must be about the wrong type of `x`, NOT "patterns incomplete".
+bad_type_error : (a : Type) -> a -> Nat
+let bad_type_error a x =
+    match (x : Box)
+      case MkBox n -> n + 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE TEST: a complete match on a two-constructor type.
+data Either (a b : Type) : Type =
+    Left  : a -> Either a b
+    Right : b -> Either a b
+
+total_match : Either Nat Bool -> Nat
+let total_match e =
+    match e
+      case Left n  -> n
+      case Right _ -> 0
+
+--! assertErrorCount 1

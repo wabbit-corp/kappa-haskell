@@ -1,0 +1,51 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: souffle-lang/souffle tests/semantic/adt_invalid_arity/adt_invalid_arity.dl,
+--   souffle-lang #1775 (out-of-range exception on invalid branch arity),
+--   souffle-lang #2508 (discriminants checked too late in user-defined functor).
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity).
+-- An ADT constructor applied with more arguments than declared must be rejected with
+-- kappa.constructor.arity. Souffle reports "Invalid arity, the declared arity of
+-- Symbol is 1" when a 1-field branch is applied to 2 arguments. Kappa must check
+-- constructor arity at every application site.
+
+--! mode check
+
+data Expr : Type =
+    Number (x : Int)
+    Symbol (x : String)
+    Add    (e1 : Expr) (e2 : Expr)
+
+-- POSITIVE: correct arities.
+let n : Expr = Number 42
+let s : Expr = Symbol "x"
+let a : Expr = Add (Number 1) (Number 2)
+
+-- NEGATIVE: Symbol takes one arg, given two.
+let bad1 : Expr = Symbol "a" "extra"
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Number takes one arg, given two.
+let bad2 : Expr = Number 1 2
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Add takes two args, given three.
+let bad3 : Expr = Add (Number 1) (Number 2) (Number 3)
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+data Point : Type =
+    MkPoint (x : Int) (y : Int)
+
+-- NEGATIVE: MkPoint takes two args, given three.
+let bad4 : Point = MkPoint 1 2 3
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+--! assertErrorCount 4

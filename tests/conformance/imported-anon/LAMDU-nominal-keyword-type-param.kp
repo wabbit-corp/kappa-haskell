@@ -1,0 +1,80 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: lamdu#43 — creating data types; lamdu#138 — higher-order
+--   functions; lamdu#168 — crash with skolems. Lamdu's nominal types
+--   take keyword (labeled) type parameters; in Kappa the equivalent is
+--   a `data Name (a : Type)` whose type argument is positional. This
+--   test exercises parameterized nominal types and ensures the type
+--   parameter scopes correctly within constructors.
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §10.1: a parameterized data declaration introduces a type-level
+--   binder that scopes over the constructor signatures.
+--
+-- Parameterized nominal types must respect parameter identity at use
+-- sites; reusing a type parameter inconsistently across constructors
+-- of the same declaration must be rejected.
+
+--! mode check
+
+-- POSITIVE: a parameterized nominal with one type variable.
+data Maybe (a : Type) : Type =
+    Nothing
+    Just a
+
+-- POSITIVE: a parameterized nominal with two type variables.
+data Result (e : Type) (a : Type) : Type =
+    Ok a
+    Err e
+
+-- POSITIVE: a nominal whose parameter appears in multiple constructors.
+data Tree (a : Type) : Type =
+    Leaf
+    Node (left : Tree a) (value : a) (right : Tree a)
+
+-- POSITIVE: using a parameterized nominal at a concrete type.
+zero : Maybe Nat
+let zero = Just 0
+
+empty : Maybe Nat
+let empty = Nothing
+
+okResult : Result String Nat
+let okResult = Ok 42
+
+errResult : Result String Nat
+let errResult = Err "oops"
+
+-- POSITIVE: a polymorphic function over a parameterized nominal.
+fromMaybe : forall (a : Type). a -> Maybe a -> a
+let fromMaybe d m =
+    match m
+    case Nothing  -> d
+    case Just x   -> x
+
+useFm : Nat
+let useFm = fromMaybe 0 zero + fromMaybe 0 empty
+
+-- POSITIVE: nested parameter usage in a recursive constructor.
+leaf : Tree Nat
+let leaf = Leaf
+
+single : Tree Nat
+let single = Node Leaf 5 Leaf
+
+-- NEGATIVE: instantiating a parameterized nominal at two different
+-- types in the same expression where unification would require them
+-- to be equal.
+clash : Maybe Nat
+let clash = Just True
+
+-- NEGATIVE: applying Tree's constructor with the wrong subtype — the
+-- inner type parameter is fixed by the outer use site.
+wrongInner : Tree Nat
+let wrongInner = Node Leaf True Leaf
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

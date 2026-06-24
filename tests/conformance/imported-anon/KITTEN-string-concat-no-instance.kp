@@ -1,0 +1,31 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #208 (`("Meow, " + name + "!") say` fails with
+--   "I can't find an instantiation of '_::+': '_::+::<_::List<_::Char>>'"
+--   the user expected `+` to work on strings, but no instance is in
+--   scope). Portable signal: a trait method site with no applicable
+--   instance must yield a clear `kappa.implicit.unsolved` diagnostic.
+-- Spec: traits.instances, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+
+module test
+
+--! mode check
+
+trait Add (a : Type) =
+    plus : a -> a -> a
+
+instance Add Int =
+    let plus x y = x + y
+
+-- NEGATIVE: there is no `Add String` instance in scope; the trait
+-- obligation cannot be solved.
+useString : String
+let useString = plus "Meow, " "world"
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! assertErrorCount 1

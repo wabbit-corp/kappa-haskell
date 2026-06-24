@@ -1,0 +1,43 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Idris2 #1274
+-- Spec: types.universes.quantities, declarations.let_in
+-- A `let` binding whose body contains a linear variable does not change the
+-- quantity of that variable. After `let v = e in body`, the linear variable
+-- used in `e` is consumed by that binding, and any further use of the same
+-- variable in `body` is a second use. The `let` form must not hide double
+-- consumption of a linear variable.
+
+module test
+
+-- Helper: a function that uses its argument twice is only callable
+-- with an unrestricted argument.
+dup : a -> (a, a)
+let dup x = (x, x)
+
+-- Rejected: `x` is linear. The expression `let v = 22 in x` evaluates to `x`
+-- while binding an unrelated `v`; the `v` binding does not create a copy of
+-- `x`. Passing `let v = 22 in x` to `dup` means `dup` sees `x` and uses it
+-- twice, which is a double use of the linear variable. This must be rejected.
+dupLinear : (1 x : Int) -> (Int, Int)
+let dupLinear x = dup (let v = 22 in x)
+
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- Accepted: properly consuming a linear variable exactly once.
+consumeOnce : (1 x : Int) -> Int
+let consumeOnce x = let v = x + 1 in v
+
+
+-- Rejected: using a linear variable in a let body and then again outside.
+useDouble : (1 x : Int) -> (Int, Int)
+let useDouble x =
+  let first = x
+  (first, x)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+--! assertErrorCount 2

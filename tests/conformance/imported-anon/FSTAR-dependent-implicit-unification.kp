@@ -1,0 +1,21 @@
+-- Source issues: FSTAR-1459, FSTAR-400
+-- Spec: expressions.match.index_refinement_constructor_knowledge
+-- When a dependent type with implicit type parameters is scrutinized in a
+-- match, the implicit parameters must be unified with the scrutinee's
+-- concrete index before the branch body is checked.
+
+--! mode check
+
+-- Indexed type with explicit constructor.
+data Wrap (a : Nat) : Type =
+    MkWrap : Nat -> Wrap a
+
+-- Pattern match over a Wrap with an ascription that reveals the index.
+-- The implicit parameter `a` in `MkWrap` must be unified to `3` from
+-- the scrutinee's type `Wrap 3`.
+unwrap_three : Wrap 3 -> Nat
+let unwrap_three w =
+    match w
+      case MkWrap n -> n
+
+--! assertNoErrors

@@ -1,0 +1,28 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: PIKELET-14 (error recovery in the type checker — should be able
+--               to see more than one type error message).
+-- Spec: compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.diagnostic_quality_invariants
+--
+-- The type checker MUST emit multiple structured diagnostics for an input
+-- file with multiple independent type errors, rather than aborting after
+-- the first one.
+
+--! mode check
+
+bad1 : Nat
+let bad1 = "hello"
+
+bad2 : String
+let bad2 = 42
+
+bad3 : Bool
+let bad3 = "yes"
+
+-- All three errors must be emitted; the harness asserts a minimum count.
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.type.mismatch

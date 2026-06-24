@@ -1,0 +1,48 @@
+-- Source issues: Factor #358 (a class and a word with the same name
+--   cause confusion and the project wants to forbid the case),
+--   Factor #831 (ERROR: abstraction creates a tuple class and a thrower
+--   word with the same name).
+-- Spec: modules.names.kind_qualified_name_expressions, modules.names.same_spelling_data_families_static_members.
+--
+-- Factor disallows a class and a word sharing a spelling; Kappa instead
+-- supports kind-qualified names so a `data` and a term with the same
+-- spelling coexist unambiguously. This is intentional divergence: the
+-- positive test verifies that Kappa resolves the shared spelling per
+-- kind, and that kind-qualified expressions select the intended facet.
+
+module test
+
+--! mode check
+
+-- A data declaration and an ordinary term may share a spelling: the
+-- former lives in the type/constructor namespace and the latter in the
+-- term namespace.
+data Foo : Type =
+    Foo Int
+
+foo : Foo
+let foo = Foo 7
+
+--! assertNoErrors
+--! assertType foo Foo
+
+-- POSITIVE: an ordinary expression resolves the term `foo`, not the
+-- constructor `Foo`, because the surrounding context demands a term.
+useFoo : Foo
+let useFoo = foo
+
+--! assertNoErrors
+
+-- POSITIVE: in type-annotation position the same spelling resolves to
+-- the type `Foo`, not the term.
+typedFoo : Foo
+let typedFoo = Foo 1
+
+--! assertNoErrors
+
+-- POSITIVE: using a constructor explicitly is unambiguous.
+viaCtor : Foo
+let viaCtor = Foo 42
+
+--! assertNoErrors
+--! assertType viaCtor Foo

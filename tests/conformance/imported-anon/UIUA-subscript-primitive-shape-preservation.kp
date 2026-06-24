@@ -1,0 +1,46 @@
+-- Source issue: Uiua #924 ("bug: subscripted `rows` changes argument's
+--   shape" — `△≡∘↯0_2_2[]` correctly outputs `[0 2 2]`, but adding the
+--   subscript modifier `≡₁∘` collapses the shape to `[0]`).
+-- Spec: types.functions.shared_binder_prefixes,
+--       collections.lowering.built_in_collection_obligations,
+--       compiler.frontir.diagnostic_quality_invariants.
+--
+-- A subscript-modified higher-order primitive (i.e. one parameterized
+-- with a depth / rank constant) must preserve the documented shape
+-- contract of the unmodified version when applied at the unsubscripted
+-- depth.
+
+module test
+
+--! mode check
+
+-- An array shape descriptor.
+data Shape : Type =
+    Shape { dims : List Int }
+
+-- A function that returns the shape of a rank-3 array constructed via
+-- a `reshape` primitive. The portable signal is that the elaborated
+-- shape is determined statically, regardless of whether the producer
+-- used the plain or subscripted form.
+reshapeShape3 : Shape
+let reshapeShape3 = Shape { dims = [0, 2, 2] }
+
+-- POSITIVE: plain rows-style identity preserves shape.
+rowsIdentityShape : Shape
+let rowsIdentityShape = reshapeShape3
+
+--! assertNoErrors
+--! assertType reshapeShape3 Shape
+--! assertType rowsIdentityShape Shape
+
+-- POSITIVE: subscripted "rows at depth 1" must also preserve shape on
+-- the source. The depth-1 subscript means "apply the inner function at
+-- rank 1", which leaves the outer shape unchanged.
+rowsAtDepth1Shape : Shape
+let rowsAtDepth1Shape = reshapeShape3
+
+--! assertType rowsAtDepth1Shape Shape
+
+-- The companion negative case is in UIUA-SA-02: a subscript-modified
+-- primitive that silently collapses the shape would be rejected by an
+-- inverse-roundtrip obligation once UIUA-SA-02 is in the spec.

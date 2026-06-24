@@ -1,0 +1,32 @@
+-- Source issue: FUTHARK-2017
+-- Spec: expressions.patterns.forms, expressions.match
+-- Futhark #2017: the Futhark parser erroneously rejected literal patterns in
+-- function definitions (e.g. `def foo 1 = 1`), even though the language
+-- reference listed them as valid.  In Kappa, the pattern grammar explicitly
+-- includes numeric, boolean, and string literals as valid pattern forms.
+-- This test verifies that literal patterns in match expressions and function
+-- definitions are accepted.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+-- Integer literal patterns in a match expression.
+classify : Int -> String
+let classify n = match n
+  case 0 -> "zero"
+  case 1 -> "one"
+  case _ -> "other"
+
+-- Boolean literal patterns.
+describeBool : Bool -> String
+let describeBool b = match b
+  case True  -> "yes"
+  case False -> "no"
+
+-- Nested literal patterns in a product.
+firstIsZero : (Int, Int) -> Bool
+let firstIsZero pair = match pair
+  case (0, _) -> True
+  case (_, _) -> False

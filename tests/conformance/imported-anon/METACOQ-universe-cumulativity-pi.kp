@@ -1,0 +1,32 @@
+-- Source issues: METACOQ-184, METACOQ-216, METACOQ-348
+-- Spec: types.universes.cumulativity,
+--       core_semantics.definitional_equality
+--
+-- MetaCoq added cumulativity for λ-abstractions' bodies (PR #184) and
+-- inversion of cumulativity for tInd (PR #216). Kappa's universe
+-- cumulativity Type u ≤ Type v (when u ≤ v) lifts to Pi types: if A ≤ A'
+-- and B ≤ B', then `forall (x : A). B ≤ forall (x : A'). B'` when the
+-- domain and codomain are compared at compatible universes.
+
+module test
+
+--! mode check
+
+-- POSITIVE: Pi type at a small level can be coerced to one at a larger
+-- level via cumulativity of the codomain universe.
+smallArrow : Type1
+let smallArrow = Nat -> Nat
+
+largeArrow : Type2
+let largeArrow = Nat -> Nat   -- still at Type1, lifts to Type2
+
+-- POSITIVE: function value whose declared codomain is at a smaller universe.
+small2small : Nat -> Nat
+let small2small x = x
+
+useAsLarger : Nat -> Type0
+let useAsLarger _ = Nat   -- codomain Type0, may be used where Type1 expected
+
+--! assertNoErrors
+--! assertType smallArrow Type1
+--! assertType largeArrow Type2

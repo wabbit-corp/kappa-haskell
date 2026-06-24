@@ -1,0 +1,42 @@
+-- Source issue: Kitten #4 (`define a [b]` then `define b [a]` fails
+--   with "Undefined word 'b'" because the second name does not exist
+--   at the point of invocation in the first; the issue proposes
+--   forward declarations, delayed parsing of bodies, or delayed name
+--   resolution).
+-- Spec: declarations.terms,
+--       declarations.totality.recursive_group_elaboration_invariance.
+--
+-- Kappa groups top-level definitions into a recursive group; names
+-- inside the group resolve to one another regardless of textual order.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a mutually-recursive pair defined in either order.
+isEven : Int -> Bool
+let isEven n =
+    if n == 0 then True else isOdd (n - 1)
+
+isOdd : Int -> Bool
+let isOdd n =
+    if n == 0 then False else isEven (n - 1)
+
+evenTwo : Bool
+let evenTwo = isEven 2
+
+oddThree : Bool
+let oddThree = isOdd 3
+
+-- POSITIVE: forward reference to a definition declared later in the
+-- same recursive group.
+useLater : Int -> Int
+let useLater n = inc n
+
+inc : Int -> Int
+let inc x = x + 1
+
+--! assertNoErrors
+--! assertType evenTwo Bool
+--! assertType oddThree Bool
+--! assertType useLater Int -> Int

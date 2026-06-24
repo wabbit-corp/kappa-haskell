@@ -1,0 +1,48 @@
+-- Source issues: KT-6819 (smart casts in multiple conditions of when arm), KT-8963
+-- Spec: expressions.match, expressions.patterns.forms
+
+--! mode check
+
+data Day : Type =
+    Mon
+    Tue
+    Wed
+    Thu
+    Fri
+    Sat
+    Sun
+
+-- POSITIVE: an or-pattern arm matches any of the listed constructors.
+isWeekend : Day -> Bool
+let isWeekend d =
+    match d
+    case Sat | Sun -> True
+    case _         -> False
+
+--! assertNoErrors
+--! assertType isWeekend (Day -> Bool)
+
+-- POSITIVE: multiple constructors in one arm.
+isWorkday : Day -> Bool
+let isWorkday d =
+    match d
+    case Mon | Tue | Wed | Thu | Fri -> True
+    case _                           -> False
+
+--! assertNoErrors
+
+-- POSITIVE: or-pattern with a binding is consistent across alternatives.
+data Val : Type =
+    IntVal  (n : Int)
+    NatVal  (n : Int)
+    Other
+
+-- Both IntVal and NatVal bind a field `n : Int`, so an or-pattern can bind it.
+getNumericValue : Val -> Int
+let getNumericValue v =
+    match v
+    case IntVal n | NatVal n -> n
+    case Other               -> 0
+
+--! assertNoErrors
+--! assertType getNumericValue (Val -> Int)

@@ -1,0 +1,43 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: BQN-66 (`Switch` example uses `◶` Choose 2-modifier; user
+--   error was an out-of-range index `⊑a⊐C` producing `Index out of range`).
+-- BQN docs/choose.md: `i ◶ Fs` selects `i`-th of `Fs`, requiring `i` in
+-- range.
+-- Spec: expressions.match.
+-- Kappa's portable analog of `◶` is `match` over a Nat with an explicit
+-- catch-all for open numeric domains. §17.1 states that for open/infinite
+-- domains a `match` must include a catch-all (`_`) or it is rejected with
+-- family `kappa.pattern.non-exhaustive`.
+
+--! mode check
+
+-- POSITIVE: a finite cover with a catch-all is exhaustive.
+choose : Nat -> Integer
+let choose i =
+    match i
+      case 0 -> 10
+      case 1 -> 20
+      case 2 -> 30
+      case _ -> -1
+
+defaulted : Integer
+let defaulted = choose 99
+
+picked : Integer
+let picked = choose 1
+
+-- NEGATIVE: same match without a catch-all — Nat is open, so this is
+-- non-exhaustive at compile time.
+unsafeChoose : Nat -> Integer
+let unsafeChoose i =
+    match i
+      case 0 -> 10
+      case 1 -> 20
+      case 2 -> 30
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

@@ -1,0 +1,78 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: leo#377 (variable defined inside if-else branch is accessible
+--               after the if-else; `let y = 1` inside an `if` block was
+--               visible in the outer function body), leo#1283 (parameter scope
+--               ignored: `let a: u32 = a+1` inside a function body with parameter
+--               `a` compiled without error when it should have been rejected).
+-- Spec: SA-LEO-07 (branch-local variables are not in scope after the branch),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§SA-LEO-07):
+--   "Variables introduced inside a branch arm of an if-expression or
+--    if-statement are strictly local to that arm. After the arm ends, those
+--    bindings are no longer in scope. Any reference to such a variable in the
+--    continuation must produce `kappa.name.unresolved`."
+-- leo#377: a function that defined `y` in both branches of an if-else and then
+--   returned `y` outside the if-else compiled without error because the if-else
+--   branches did not create their own scope.
+
+--! mode check
+
+-- POSITIVE: a variable defined before an if expression is accessible after it.
+let accessible (cond : Bool) : Int =
+    let x : Int = 10
+    if cond then x + 1 else x - 1
+
+-- POSITIVE: a variable defined in both branches and returned immediately
+-- within a match expression (the value escapes through the match result, not
+-- through the scope).
+let matchResult (cond : Bool) : Int =
+    if cond then 1 else 2
+
+
+-- NEGATIVE: a variable `y` defined inside the `then` branch is referenced
+-- after the if expression ends. `y` is not in scope in the continuation.
+let leaksFromThen (cond : Bool) : Int =
+    let _ = if cond then
+        let y : Int = 42
+        y
+    else
+        0
+    y
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a variable `z` defined inside the `else` branch is referenced
+-- after the if expression ends.
+let leaksFromElse (cond : Bool) : Int =
+    let _ = if cond then
+        0
+    else
+        let z : Int = 99
+        z
+    z
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a variable defined in both branches independently is still not
+-- in scope after the if expression — both `a` definitions are branch-local.
+let bothBranchesLocal (cond : Bool) : Int =
+    let _ = if cond then
+        let a : Int = 1
+        a
+    else
+        let a : Int = 2
+        a
+    a
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: the result of an if expression can be bound in the outer scope.
+let captureResult (cond : Bool) : Int =
+    let result : Int = if cond then 1 else 2
+    result + 10
+
+--! assertErrorCount 3

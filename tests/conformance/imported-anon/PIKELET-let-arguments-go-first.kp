@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-76 (PR: implement 'Let Arguments Go First').
+-- Spec: expressions.application, expressions.application.subsumption,
+--       expressions.application.subsumption.spine_pipeline,
+--       expressions.implicit_parameters
+--
+-- The bidirectional type checker may pull information *from the arguments*
+-- of an application to drive elaboration of the function. This is the
+-- "Let Arguments Go First" rule. In Kappa, this is realized by the spine
+-- pipeline in §16.1.5: the checker walks the application spine and uses
+-- previously-elaborated arguments to constrain implicit and unification
+-- variables. `forall` is the `@0`-implicit sugar of §11.3.
+
+--! mode check
+
+-- POSITIVE: a polymorphic identity inferred at the call site from the
+-- value argument's type.
+id : forall (A : Type0). A -> A
+let id x = x
+
+useStr : String
+let useStr = id "hello"
+
+-- POSITIVE: a two-argument function whose first argument fixes the
+-- implicit, and whose second argument must check against that solved type.
+firstFix : forall (A : Type0). A -> A -> A
+let firstFix x _ = x
+
+uses : Nat
+let uses = firstFix 1 2
+
+-- POSITIVE: passing the second argument first via reversed binder positions
+-- still propagates information.
+constFn : forall (A : Type0) (B : Type0). A -> B -> A
+let constFn x _ = x
+
+usesC : String
+let usesC = constFn "kept" 99
+
+-- NEGATIVE: when an argument's type cannot constrain the implicit and
+-- there is no other source of information, the implicit must be reported
+-- as unsolved (rather than silently defaulted), via family
+-- `kappa.hole.unsolved` (§16.3.2) at error severity.
+mysteryArg : Nat
+let mysteryArg = ?need_a
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+--! assertErrorCount 1

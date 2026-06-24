@@ -1,0 +1,63 @@
+-- Source artifacts: PURESCRIPT-PR-2566 (Support nested record update),
+--                   PURESCRIPT-PR-2580 (Change nested record update syntax
+--                   and fix bug with depth > 2).
+-- Spec: types.records.update.
+-- Kappa spec rule (§ types.records.update):
+--   "A nested ordinary update path `r.{ a.b.c = e }` is elaborated by
+--    recursively rebuilding the innermost updated record, then each containing
+--    record outward. Multiple ordinary update paths sharing a prefix are
+--    grouped into one recursive update at that prefix."
+-- A nested record update of depth ≥ 2 must rebuild every containing record
+-- and copy omitted siblings from the original projection.
+
+--! mode check
+
+type Address : Type =
+    (city : String, zip : Int)
+
+type User : Type =
+    (name : String, address : Address, age : Int)
+
+mkUser : User
+let mkUser =
+    (name = "Ada",
+     address = (city = "Cambridge", zip = 12345),
+     age = 36)
+
+-- POSITIVE: depth-2 nested update.
+moved : User
+let moved = mkUser.{ address.city = "Paris" }
+
+-- POSITIVE: depth-2 update bundled with a sibling top-level update; both
+-- paths must be merged at their common prefix.
+type Company : Type =
+    (employee : User, founded : Int)
+
+bigCo : Company
+let bigCo = (employee = mkUser, founded = 2026)
+
+bigCoMoved : Company
+let bigCoMoved =
+    bigCo.{ employee.address.city = "Berlin",
+            employee.age = 99 }
+
+-- POSITIVE: depth-3 nested update; omitted siblings (`zip`, `name`,
+-- `founded`) are copied from the original projections at each level.
+type Office : Type =
+    (company : Company, room : Int)
+
+mkOffice : Office
+let mkOffice = (company = bigCo, room = 11)
+
+officeMoved : Office
+let officeMoved =
+    mkOffice.{ company.employee.address.zip = 67890 }
+
+-- POSITIVE: a no-op-style multi-path update that targets two disjoint nested
+-- paths under the same top-level prefix.
+bothMoved : Company
+let bothMoved =
+    bigCo.{ employee.address.city = "Lyon",
+            employee.address.zip = 69001 }
+
+--! assertNoErrors

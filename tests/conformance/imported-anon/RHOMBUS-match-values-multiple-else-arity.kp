@@ -1,0 +1,75 @@
+-- Source issues: rhombus-pr#690 (multiple-value patterns in match), match.rhm in racket/rhombus
+-- Spec: expressions.match
+--   A `match` with a `~else` / wildcard catch-all clause accepts any value of the
+--   correct scrutinee arity, including when arity is > 1 (multi-value scrutinee).
+--   If the runtime arity of the values produced by the scrutinee expression differs from
+--   what the match branches expect, an arity error is raised at runtime.
+--   A `~else` clause does NOT bypass the arity constraint — it still requires the scrutinee
+--   to produce the expected number of values.
+-- Evidence: match.rhm confirms:
+--   `match values(1, 2) | ~else: "one value"` → runtime arity error (expected 1, got 2)
+--   `match values(1, 2) | (_, _): "two" | ~else: "other"` → "two" (no arity error)
+--   `match 1 | (_, _): "two"` → runtime error: expected 2 values, got 1
+
+--! mode check
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair a b
+
+data Triple (a : Type) (b : Type) (c : Type) : Type =
+    MkTriple a b c
+
+-- POSITIVE: single-value match with `~else` wildcard.
+-- Wildcard catches everything that earlier branches don't.
+singleWithElse : Int -> String
+let singleWithElse n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+
+-- POSITIVE: pair match with ~else (wildcard) as fallback.
+-- Both specific and wildcard branches have consistent arity (2).
+pairWithElse : Pair Int Int -> String
+let pairWithElse p =
+    match p
+    case MkPair 0 0 -> "origin"
+    case MkPair 1 _ -> "first-one"
+    case MkPair _ 1 -> "second-one"
+    case _          -> "other pair"
+
+-- POSITIVE: ~else branch works in a 2-value tuple match.
+tupleMatchElse : (Int, Int) -> String
+let tupleMatchElse t =
+    match t
+    case (0, 0) -> "both zero"
+    case (1, 1) -> "both one"
+    case _      -> "other tuple"
+
+-- POSITIVE: multi-value match with `~else` clause consistently typed.
+multiValueElse : Int -> Int -> String
+let multiValueElse a b =
+    match (a, b)
+    case (0, _) -> "first zero"
+    case (_, 0) -> "second zero"
+    case _      -> "neither zero"
+
+-- POSITIVE: triple match with wildcard fallback.
+tripleWithElse : Triple Int String Bool -> String
+let tripleWithElse t =
+    match t
+    case MkTriple 0 _   _    -> "starts zero"
+    case MkTriple _ "x" _    -> "middle x"
+    case MkTriple _ _   True -> "ends true"
+    case _                   -> "other triple"
+
+-- POSITIVE: wildcard on a single-value match with nested list constructor patterns.
+nestedElse : List Int -> String
+let nestedElse xs =
+    match xs
+    case Nil           -> "empty"
+    case x :: Nil      -> "singleton"
+    case x :: y :: Nil -> "pair"
+    case _             -> "longer"
+
+--! assertNoErrors

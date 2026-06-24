@@ -1,0 +1,56 @@
+-- Source issue: MOJO-260
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- When a local binding has the same name as an outer binding but a different
+-- type or arity, lexical lookup resolves unambiguously to the nearest
+-- admissible definition.  The inner definition shadows the outer; the compiler
+-- must not incorrectly report ambiguity (MOJO-260 was a false-ambiguity bug).
+
+module test
+
+--! mode check
+
+-- A module-scope function with two Int parameters.
+work : Int -> Int -> String
+let work a b = show a ++ " + " ++ show b
+
+-- POSITIVE: qualified call to the module-scope `work` is always unambiguous.
+qualifiedCall : String
+let qualifiedCall = work 3 4
+
+--! assertNoErrors
+--! assertType qualifiedCall String
+
+-- POSITIVE: a local `let` binding with the same name as a module-scope
+-- function shadows it; lookup resolves unambiguously to the inner binding.
+shadowTest : Int
+let shadowTest =
+    let work n = n * 2   -- shadows outer `work : Int -> Int -> String`
+    work 5               -- resolves to inner `work : Int -> Int`
+
+--! assertNoErrors
+--! assertType shadowTest Int
+
+-- POSITIVE: a function parameter named after a module-scope definition
+-- shadows that definition for the duration of the function body.
+doubled : Int -> String
+let doubled n = show n
+
+applyDoubled : Int -> String
+let applyDoubled n = doubled n   -- `doubled` is unambiguous here (module-scope fn)
+
+--! assertNoErrors
+--! assertType applyDoubled Int -> String
+
+-- POSITIVE: nested let-bindings with the same name shadow correctly at each
+-- inner level; each inner use picks the nearest in-scope binding.
+nestedShadow : Int
+let nestedShadow =
+    let f n = n + 1
+    let g m =
+        let f k = k * 3   -- shadows the outer `f`
+        f m               -- uses inner `f`
+    g 4
+
+--! assertNoErrors
+--! assertType nestedShadow Int

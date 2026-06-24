@@ -1,0 +1,51 @@
+-- Source issue: Uiua #173 ("⍜ₙ (under log) is mathematically weird" —
+--   `⍜ₙ∘` calls `ⁿ` as the inverse of `ₙ`, but they are not actual
+--   inverses), Uiua #486 ("Incorrect inverse with swapped power and
+--   log").
+-- Spec: declarations.terms, expressions.application,
+--       (gap UIUA-SA-02 — user-declared inverse contracts).
+--
+-- A user-declared inverse pair must satisfy `f ∘ f⁻¹ = id` on the
+-- documented domain. Kappa does not currently carry a normative inverse
+-- declaration syntax, so this test exercises the related obligation
+-- through ordinary algebraic identities.
+
+module test
+
+--! mode check
+
+-- A function and a candidate inverse, expressed as ordinary Kappa
+-- declarations. The portable obligation is the algebraic identity.
+addOne : Int -> Int
+let addOne x = x + 1
+
+subOne : Int -> Int
+let subOne x = x - 1
+
+-- POSITIVE: round-trip identity.
+roundTrip : Int -> Int
+let roundTrip x = subOne (addOne x)
+
+--! assertNoErrors
+--! assertType addOne Int -> Int
+--! assertType subOne Int -> Int
+--! assertType roundTrip Int -> Int
+
+-- An algebraic equation; the elaborator MAY exploit definitional
+-- equality to prove these are pointwise equal.
+identityProperty : Int -> Bool
+let identityProperty x = (roundTrip x) == x
+
+--! assertType identityProperty Int -> Bool
+
+-- NEGATIVE: a candidate inverse that is NOT correct must not be
+-- accepted as a declared inverse. (Kappa has no inverse-declaration
+-- syntax yet; UIUA-SA-02 tracks the gap.)
+wrongInverse : Int -> Int
+let wrongInverse x = x  -- the identity is not the inverse of addOne
+
+-- The body's pointwise inequality is enough evidence; no diagnostic is
+-- required at this level because the inverse declaration does not yet
+-- exist in Kappa. UIUA-SA-02 records the obligation that, once an
+-- inverse-declaration form exists, this binding would be rejected.
+--! assertNoErrors

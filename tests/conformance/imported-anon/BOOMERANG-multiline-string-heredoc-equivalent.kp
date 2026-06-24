@@ -1,0 +1,31 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Boomerang uses heredoc multi-line strings written as
+--         `<< ... >>`. The Kappa analog is the multi-line string literal
+--         with fixed dedent.
+-- Spec: literals.string_literals.multiline_strings_fixed_dedent
+-- Portable obligation: a multi-line string literal with fixed dedent
+--   produces the expected text content and is type String.
+
+module test
+
+--! mode check
+
+-- POSITIVE: multi-line string literal (fixed-dedent form, §6.3.3).
+originalC : String
+let originalC = """
+    <composers>
+      <composer>
+        <name>Jean Sibelius</name>
+      </composer>
+    </composers>
+    """
+
+-- POSITIVE: another multi-line string with different content.
+expected : String
+let expected = """
+    Jean Sibelius, 1865-1956
+    """
+
+--! assertNoErrors
+--! assertType originalC String
+--! assertType expected String

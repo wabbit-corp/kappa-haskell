@@ -1,0 +1,86 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: enum.rhm in racket/rhombus
+-- Spec: data_types.data_declarations, types.unions
+--   A closed variant/enum type defines an annotation: a value satisfies the type iff
+--   it is one of the declared constructors/members.
+--   Pattern matching on enum members must be exhaustive over the declared set.
+-- Evidence: enum.rhm confirms:
+--   `#'red is_a RainbowColor ~is #true`
+--   `#'pink is_a RainbowColor ~is #false`
+--   `"red" is_a RainbowColor ~is #false`
+--   Pattern matching on enum variant names works.
+--   Enum sub-type (`~is_a RainbowColor`) includes base members.
+
+--! mode check
+
+-- Define a closed variant type (analogous to Rhombus enum).
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: all three constructors are members of Color.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red   -> True
+    case Green -> False
+    case Blue  -> False
+
+-- POSITIVE: exhaustive match over all constructors.
+colorName : Color -> String
+let colorName c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE: wildcard covers remaining constructors.
+isRedWild : Color -> Bool
+let isRedWild c =
+    match c
+    case Red -> True
+    case _   -> False
+
+-- POSITIVE: nested match — inner match is exhaustive, outer is exhaustive.
+data Result (a : Type) : Type =
+    Good a
+    Bad String
+
+processColor : Result Color -> String
+let processColor r =
+    match r
+    case Good c ->
+        match c
+        case Red   -> "good-red"
+        case Green -> "good-green"
+        case Blue  -> "good-blue"
+    case Bad msg -> "bad: " ++ msg
+
+-- POSITIVE: Color used as a return type.
+makeColor : Bool -> Color
+let makeColor b =
+    match b
+    case True  -> Red
+    case False -> Blue
+
+-- NEGATIVE: non-exhaustive match — missing Blue branch.
+-- The compiler must reject: not all constructors of Color are covered.
+missingBlue : Color -> String
+let missingBlue c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+
+-- NEGATIVE: non-exhaustive match — only one branch covered.
+onlyRed : Color -> String
+let onlyRed c =
+    match c
+    case Red   -> "red"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

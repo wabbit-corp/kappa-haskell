@@ -1,0 +1,41 @@
+-- Source issue: Uiua #163 ("dump∘ changes inferred signature" — inserting
+--   a `dump∘` debug-trace combinator inside a function body changes the
+--   inferred signature from |2.1 to |3.1, breaking the surrounding
+--   `fold`).
+-- Spec: declarations.signatures, expressions.application,
+--       compiler.frontir.diagnostic_quality_invariants.
+--
+-- A no-op debug-trace primitive (whose elaborated type is the identity
+-- on the value it observes) MUST NOT change the inferred type of the
+-- enclosing function. The obligation is that "instrumented" and
+-- "uninstrumented" versions of the same body elaborate to the same
+-- type.
+
+module test
+
+--! mode check
+
+-- A debug trace primitive that returns its argument unchanged.
+trace : Int -> Int
+let trace x = x
+
+-- POSITIVE: uninstrumented version.
+sumPair : Int -> Int -> Int
+let sumPair x y = x + y
+
+--! assertType sumPair Int -> Int -> Int
+
+-- POSITIVE: instrumented version with trace on the result. The inferred
+-- type must remain Int -> Int -> Int.
+sumPairTraced : Int -> Int -> Int
+let sumPairTraced x y = trace (x + y)
+
+--! assertType sumPairTraced Int -> Int -> Int
+--! assertNoErrors
+
+-- POSITIVE: instrumented version with trace on each argument.
+sumPairTraced2 : Int -> Int -> Int
+let sumPairTraced2 x y = trace x + trace y
+
+--! assertType sumPairTraced2 Int -> Int -> Int
+--! assertNoErrors

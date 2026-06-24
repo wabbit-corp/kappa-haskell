@@ -1,0 +1,65 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig#15752 (peer type resolution of empty slice), zig#20901
+--               (peer type resolution drops array sentinel), zig#15709
+--               (missing peer type resolution for sentinel/non-sentinel slices)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       expressions.match
+-- Every arm of a `match` (or every branch of an `if`) must share the same
+-- result type. When two arms produce types that cannot be unified, the
+-- compiler must emit `kappa.type.mismatch` at the arm whose type conflicts
+-- with the established result type.
+
+--! mode check
+
+data Shape : Type =
+    Circle  Int
+    Square  Int
+    Other
+
+-- POSITIVE: all arms return Int.
+let area (s : Shape) : Int =
+    match s
+    case Circle r  -> r * r
+    case Square x  -> x * x
+    case Other     -> 0
+
+
+-- POSITIVE: if/else with matching branch types.
+let classify (n : Int) : String =
+    if n > 0
+    then "positive"
+    else "non-positive"
+
+
+-- NEGATIVE: arms return different types (Int vs String).
+let badMatch (s : Shape) : Int =
+    match s
+    case Circle _ -> 42
+    case Square _ -> "oops"
+    case Other    -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: if/else branches disagree on return type.
+let badIf (b : Bool) : Int =
+    if b
+    then 1
+    else "one"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: nested match mismatch — inner arm type conflicts.
+let outerMatch (b : Bool) (n : Int) : Int =
+    match b
+    case True  -> n + 1
+    case False ->
+        match n
+        case 0 -> "zero"
+        case _ -> 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

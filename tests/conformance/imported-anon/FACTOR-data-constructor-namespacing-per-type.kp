@@ -1,0 +1,48 @@
+-- Source issue: Factor #1984 (ENUM: declarations are not properly
+--   namespaced — two enums declaring `Completed` collide at the top
+--   level even though each enum is conceptually a closed namespace).
+-- Spec: data_types.data_declarations, modules.names.same_spelling_data_families_static_members,
+--       modules.names.kind_qualified_name_expressions.
+--
+-- Kappa allows two data declarations to declare constructors with the
+-- same spelling provided the spelling is resolvable from context
+-- (expected type or explicit kind-qualified form). The positive test
+-- shows both constructors coexist; a use site whose expected type
+-- selects one constructor must succeed without an ambiguous-name error.
+
+module test
+
+--! mode check
+
+data Dragging : Type =
+    DragStarted
+    | DragContinuing
+    | DragCompleted
+
+data Holding : Type =
+    HoldStarted
+    | HoldCompleted
+    | HoldCanceled
+
+-- POSITIVE: the two `…Completed` constructors are distinct because they
+-- live in different data declarations; their spellings do not collide
+-- in Kappa.
+dragDone : Dragging
+let dragDone = DragCompleted
+
+holdDone : Holding
+let holdDone = HoldCompleted
+
+--! assertNoErrors
+--! assertType dragDone Dragging
+--! assertType holdDone Holding
+
+-- POSITIVE: pattern-matching selects per-type, no cross-data leakage.
+isDone : Dragging -> Bool
+let isDone d =
+    match d
+      case DragCompleted   -> True
+      case DragStarted     -> False
+      case DragContinuing  -> False
+
+--! assertNoErrors

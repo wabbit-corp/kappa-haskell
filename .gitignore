@@ -30,3 +30,4 @@ examples/native/**/kappa.lock
 
 # Native executables (build outputs)
 *.exe
+anon-workspace/

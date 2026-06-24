@@ -1,0 +1,13 @@
+-- Source artifacts: narya docs/imports-and-scoping.rst ("Circular
+--               imports are not allowed (and are checked for)").
+-- Spec: modules.acyclic_imports,
+--       compiler.frontir.standard_diagnostic_families.query_internal
+--
+-- Module m0 imports m1, which in turn imports m0. The dependency
+-- graph contains a cycle, which §8.2 requires the compiler to reject.
+module m0
+
+import m1.(valM1)
+
+valM0 : Int
+let valM0 = valM1

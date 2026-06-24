@@ -1,0 +1,43 @@
+-- Source issue: MLatu #21 ("Switch from traits to type classes").
+--   The proposed syntax `class [T] Eq[T] { member = [T] (T, T -> Bool) }`
+--   plus `instance Eq Int { define = ... }` is a standard nominal-class
+--   typeclass system: method dispatch is parameterized by the type
+--   class instance. The portable Kappa obligation is that overloaded
+--   method calls resolve to the correct instance based on the argument
+--   type.
+-- Spec: traits.headers, traits.instances,
+--       traits.instances.resolution_algorithm.
+
+module test
+
+--! mode check
+
+trait Eq (a : Type) =
+    eq : a -> a -> Bool
+
+instance Eq Int =
+    let eq x y = x == y
+
+instance Eq String =
+    let eq x y = x == y
+
+-- POSITIVE: dispatch chooses Eq Int.
+sameInt : Bool
+let sameInt = eq 7 7
+
+-- POSITIVE: dispatch chooses Eq String.
+sameStr : Bool
+let sameStr = eq "x" "x"
+
+-- POSITIVE: a generic helper threaded with an Eq constraint.
+member : forall (a : Type) . Eq a => a -> a -> a -> Bool
+let member needle a b =
+    if eq needle a then True else eq needle b
+
+found : Bool
+let found = member 3 1 3
+
+--! assertNoErrors
+--! assertType sameInt Bool
+--! assertType sameStr Bool
+--! assertType found Bool

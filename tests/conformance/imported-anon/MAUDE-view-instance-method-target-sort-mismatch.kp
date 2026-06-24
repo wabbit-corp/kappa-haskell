@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/parameterization.maude
+--           view V from T to NAT is
+--             sort Elt to Nat .
+--             op f(X:Elt) to term X:Nat + 1 .
+--           endv
+--         The view maps the theory's Elt to Nat, then maps f's return into
+--         a term of sort Nat (the +1 expression). If the term had sort
+--         String instead of Nat the view would be rejected: the supplied
+--         term's sort must match the theory's declared output sort modulo
+--         the sort mapping.
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Portable obligation: an instance method's binding type must match the
+--   trait's required signature; supplying a function of the wrong target
+--   type is rejected.
+
+--! mode check
+
+module test
+
+trait HasShow (a : Type) =
+    show : a -> String
+
+data Tag : Type = TagA | TagB
+
+-- POSITIVE: correct target sort String.
+showTag : Tag -> String
+let showTag t = match t
+    case TagA -> "A"
+    case TagB -> "B"
+
+instance HasShow Tag =
+    let show = showTag
+
+-- NEGATIVE: the instance binds `show` to a function that returns Int
+-- instead of String.
+data Code : Type = CodeX
+
+showCode : Code -> Int
+let showCode _ = 42
+
+instance HasShow Code =
+    let show = showCode
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

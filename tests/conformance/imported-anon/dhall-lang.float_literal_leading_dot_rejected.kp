@@ -1,0 +1,15 @@
+-- Source issues: dhall-lang #94, #375 (double-literal must have digits on
+--   both sides of the dot; see DHALL_CANDIDATE_LEDGER.md #94)
+-- Spec: literals.numeric_literals.floating_point_float
+-- Split out of dhall-lang.float_literal_both_sides_required on 2026-06-11:
+--   an invalid-syntax file cannot share a directory suite with other files
+--   (Appendix T.2 compiles all .lang files under the suite root together).
+-- NEGATIVE: leading-dot float literal ".5" is not a portable Float literal.
+-- The spec requires both digit sequences to be non-empty.
+-- Write 0.5 instead.
+module bad_leading_dot
+
+--! assertErrorCount 1
+
+x : Float
+let x = .5

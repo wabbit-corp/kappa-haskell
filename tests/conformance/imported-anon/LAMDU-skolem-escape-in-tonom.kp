@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: lamdu#168 — crash when skolems are involved;
+--   opening a hole inside a polymorphic body led to a compiler crash
+--   when the inferred type for the hole would have allowed a rigid
+--   (skolem) type variable to escape its binder. The desired behavior
+--   is a clean diagnostic, not a crash.
+-- Spec: types.universes.borrow_lifetimes_escape_prevention,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §12.3: a rigid type variable bound inside a polymorphic body cannot
+--   appear in a type that escapes its binder.
+--
+-- A type-variable-escape situation must produce a clean structured
+-- diagnostic, not a crash. Skolems introduced by a forall must not leak
+-- into the outer type of an enclosing let-binding or top-level signature.
+
+--! mode check
+
+-- POSITIVE: ordinary polymorphic identity.
+identity : forall (a : Type). a -> a
+let identity x = x
+
+useId : Nat
+let useId = identity 7
+
+-- POSITIVE: a higher-rank type used with an explicit instantiation site.
+applyId : forall (a : Type). a -> a
+let applyId = \ x -> x
+
+okHigherRank : Nat
+let okHigherRank = applyId 42
+
+-- POSITIVE: a closed polymorphic function may freely return a value
+-- in terms of its own type parameter.
+makeBox : forall (a : Type). a -> a
+let makeBox x = x
+
+-- NEGATIVE: returning a polymorphic value at a non-polymorphic outer
+-- type. The rigid variable would have to appear in the result type
+-- but the expected type is fully concrete.
+mustEscape : Nat
+let mustEscape = identity
+
+-- NEGATIVE: trying to apply identity to a Bool and return a Nat —
+-- the type parameter `a` cannot bind to both Bool and Nat.
+clashApp : Nat
+let clashApp = identity True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

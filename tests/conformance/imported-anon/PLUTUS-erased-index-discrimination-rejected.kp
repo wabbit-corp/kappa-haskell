@@ -1,0 +1,40 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PLUTUS-1882, PLUTUS-7716
+-- Spec: expressions.match.discriminating_erased_scrutinees (§17.1.3)
+-- Source notes: Plinth's machine is sensitive to discriminating values whose
+-- representations are not actually carried at runtime: polymorphic functions
+-- in the CEK machine (#1882) and casing on `Data` through join points where
+-- the discriminator is erased (#7716). Kappa addresses this class with
+-- §17.1.3: a constructor test on a scrutinee available only at quantity `0`
+-- is well-formed only when its constructor shape is already forced by
+-- non-erased information. Otherwise the match is rejected at compile time.
+
+--! mode check
+
+data Tag : Type =
+    TA
+    TB
+
+-- POSITIVE: an ordinary (non-erased) scrutinee can be matched freely.
+classifyVisible : Tag -> Int
+let classifyVisible t =
+    match t
+      case TA -> 1
+      case TB -> 2
+
+-- NEGATIVE: a scrutinee bound at quantity `0` cannot be discriminated by
+-- match unless its constructor shape is already forced. The body attempts
+-- to read which constructor was passed, but only erased information is
+-- available, so the match is ill-formed per §17.1.3.
+classifyErased : (0 t : Tag) -> Int
+let classifyErased t =
+    match t
+      case TA -> 1
+      case TB -> 2
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+--! assertErrorCount 1

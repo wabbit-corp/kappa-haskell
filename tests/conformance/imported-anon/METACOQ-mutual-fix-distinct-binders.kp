@@ -1,0 +1,39 @@
+-- Source issues: METACOQ-1182
+-- Spec: declarations.totality.recursive_group_elaboration_invariance,
+--       declarations.totality.hidden_phase_components
+--
+-- A mutually recursive group of fixes must keep its binder names distinct
+-- for diagnostic purposes; MetaCoq's λ-box pretty-printer (#1182) lost the
+-- second binder name. The semantic obligation is unchanged: each member
+-- must have its own preceding signature, and the resulting SCC carries the
+-- canonical hidden phase.
+
+module test
+
+--! mode check
+
+-- POSITIVE: two members of one SCC, each with its own signature and binder.
+forestSize : Forest -> Nat
+treeSize   : MTree  -> Nat
+
+data Forest : Type =
+    FNil
+    FCons MTree Forest
+
+data MTree : Type =
+    MLeaf Nat
+    MNode Forest
+
+let forestSize f decreases structural f =
+    match f
+    case FNil           -> 0
+    case (FCons t rest) -> treeSize t + forestSize rest
+
+let treeSize t decreases structural t =
+    match t
+    case (MLeaf _) -> 1
+    case (MNode f) -> forestSize f
+
+--! assertNoErrors
+--! assertType forestSize Forest -> Nat
+--! assertType treeSize MTree -> Nat

@@ -1,0 +1,18 @@
+-- Stress test: a record with an opaque field creates a signature; abstract outside its module
+-- Spec: types.records (opaque members section)
+
+--! mode check
+
+-- A "signature" record: T is opaque (abstract), val and extract depend on T
+type Sig : Type = (opaque T : Type, val : T, extract : T -> Int)
+
+-- POSITIVE: access val and extract through the abstract interface;
+-- the types align because T is the same opaque field throughout
+readSig : (& s : Sig) -> Int
+let readSig s = s.extract s.val
+
+-- POSITIVE: pass a Sig to another function
+mapSig : (& s : Sig) -> (Int -> Int) -> Int
+let mapSig s f = f (s.extract s.val)
+
+--! assertNoErrors

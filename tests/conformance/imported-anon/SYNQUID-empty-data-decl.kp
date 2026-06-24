@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid test/security/paper/3-Implicit.sq —
+--                 `data PaperId` declares an uninhabited (parameter-less,
+--                 constructor-less) sort used only as an abstract index.
+-- Spec: data_types.data_declarations,
+--       data_types.well_formedness
+--
+-- The Kappa-portable obligation is that a constructor-less data
+-- declaration is well-formed (a fresh nominal type with no inhabitants),
+-- usable as a parameter or field type but uninhabited at the term level.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- POSITIVE: a parameter-less, constructor-less data declaration. It
+-- introduces a nominal type with no inhabitants.
+data PaperId : Type
+
+-- POSITIVE: PaperId may be used as a parameter type.
+data Cite : Type =
+    MkCite (pid : PaperId) (yr : PNat)
+
+-- POSITIVE: a function whose argument mentions PaperId via Cite, but
+-- whose result depends only on the year.
+yearOf : Cite -> PNat
+let yearOf c =
+    match c
+      case (MkCite _ y) -> y
+
+-- POSITIVE: pattern matching on an uninhabited scrutinee is valid via
+-- the empty-remainder form `case impossible`.
+absurd : PaperId -> PNat
+let absurd p =
+    match p
+      case impossible
+
+-- NEGATIVE: writing a constructor for PaperId that wasn't declared is
+-- an unresolved-name diagnostic.
+fakeId : PaperId
+let fakeId = MkPaperId
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

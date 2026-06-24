@@ -1,0 +1,37 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Boomerang has distinct lens combinators per attribute arity
+--         (attr1_elt, attr2_elt_no_kids, etc.). Applying a combinator
+--         with the wrong number of arguments is rejected. Kappa's portable
+--         analog is the constructor-arity diagnostic family.
+-- Spec: compiler.frontir.standard_diagnostic_families.macro_elaboration
+--       (family kappa.constructor.arity),
+--       data_types.data_declarations
+-- Portable obligation: applying a data constructor with the wrong
+--   number of arguments is rejected.
+
+module test
+
+--! mode check
+
+data Years : Type =
+    Years Int Int    -- birth, death
+
+-- A positive baseline expression: arity-2 constructor applied with 2 args.
+sibeliusYears : Years
+let sibeliusYears = Years 1865 1957
+
+-- NEGATIVE: arity 2 applied with 1 argument.
+badYears : Years
+let badYears = Years 1865
+
+-- NEGATIVE: arity 2 applied with 3 arguments.
+worseYears : Years
+let worseYears = Years 1865 1957 1999
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+--! assertErrorCount 2

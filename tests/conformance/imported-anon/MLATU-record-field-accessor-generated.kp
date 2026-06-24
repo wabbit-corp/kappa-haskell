@@ -1,0 +1,31 @@
+-- Source issue: MLatu #15 ("Add record types"). The proposed syntax
+--   `record type Foo: field a (A); field b (B); ...` should
+--   "automatically generate record access methods with signatures like
+--   a(Foo -> A)". The portable Kappa obligation is that named record
+--   fields are projectable by name and the projection has the field's
+--   declared type.
+-- Spec: types.records, types.records.field_projection.
+
+module test
+
+--! mode check
+
+data Foo : Type =
+    Foo { a : Int, b : String, c : (Int, String) }
+
+mkFoo : Foo
+let mkFoo = Foo { a = 1, b = "two", c = (3, "four") }
+
+projA : Int
+let projA = mkFoo.a
+
+projB : String
+let projB = mkFoo.b
+
+projC : (Int, String)
+let projC = mkFoo.c
+
+--! assertNoErrors
+--! assertType projA Int
+--! assertType projB String
+--! assertType projC (Int, String)

@@ -1,0 +1,45 @@
+-- Source issue: Uiua #192 ("Builtin function names get formatted in
+--   user-defined function names if followed by a capital letter" —
+--   `rangeR` is rewritten to `⇡R` because the lexer / formatter eagerly
+--   identifies `range` inside the user identifier).
+-- Spec: lexical.identifiers, lexical.operator_identifiers_fixity,
+--       compiler.frontir.diagnostic_quality_invariants.
+--
+-- Identifier tokenization must obey maximal-munch on the configured
+-- identifier alphabet. A primitive spelling that appears as a prefix of
+-- a longer identifier MUST NOT split the identifier into two tokens.
+-- Round-trip stability: parse(format(source)) must equal parse(source).
+
+module test
+
+--! mode check
+
+-- A primitive-named function whose spelling is a prefix of a user
+-- identifier below.
+range : Int -> List Int
+let range n = []  -- stub
+
+-- POSITIVE: a user identifier that contains the spelling of a primitive
+-- as a prefix is a single identifier, not two tokens.
+rangeR : Int
+let rangeR = 42
+
+-- POSITIVE: a user identifier that contains a primitive name in the
+-- middle resolves as the user identifier.
+mrangeM : Int
+let mrangeM = 7
+
+-- POSITIVE: a user identifier sharing the primitive's exact spelling is
+-- forbidden by ordinary shadowing rules; here we choose distinct names.
+useRangeR : Int
+let useRangeR = rangeR + mrangeM
+
+--! assertNoErrors
+--! assertType rangeR Int
+--! assertType mrangeM Int
+--! assertType useRangeR Int
+
+-- The identifier `rangeR` must not be tokenized as `range` followed by
+-- `R`. If the lexer were greedy, the binding `let rangeR = 42` would
+-- attempt to bind `R = 42` and fail because `range` is already in
+-- scope as a function.

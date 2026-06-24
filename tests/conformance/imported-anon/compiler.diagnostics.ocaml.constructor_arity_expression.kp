@@ -1,0 +1,51 @@
+-- Source issue: OCaml#10990, OCaml#5502
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       kappa.constructor.arity
+-- OCaml#5502 established that a nullary constructor applied to a pattern argument must be
+-- rejected (covered by the constructor_arity_nullary_pattern test). OCaml#10990 shows the
+-- analogous confusion arises in expression position and with excess-argument constructors:
+-- a user wrote `Some(C _ _)` expecting an arity error but got a parse error.
+-- In Kappa, expression-level constructor applications with too many arguments must fire
+-- E_CONSTRUCTOR_ARITY_MISMATCH, and pattern-level excess-argument applications must fire
+-- E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH. The diagnostic must identify the constructor and
+-- the arity mismatch clearly.
+
+module test
+
+data Option (a : Type) : Type =
+    None : Option a
+    Some : a -> Option a
+
+-- Expression-level: None takes zero arguments; applying one is an arity error.
+badExprNone : Option Int
+let badExprNone = None 1              --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! mode check
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Expression-level: Some takes one argument; applying two is an arity error.
+badExprSome : Option Int
+let badExprSome = Some 1 2            --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Pattern-level: Some takes one argument; a pattern applying it to two is an arity error.
+badPatSome : Option Int -> Int
+let badPatSome x =
+    match x
+      case Some _ _ -> 0              --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+      case None     -> 0
+
+--! assertDiagnostic error E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Accepted: correct arities at both expression and pattern level.
+goodExpr : Option Int
+let goodExpr = Some 42
+
+goodPat : Option Int -> Int
+let goodPat x =
+    match x
+      case Some n -> n
+      case None   -> 0
+
+

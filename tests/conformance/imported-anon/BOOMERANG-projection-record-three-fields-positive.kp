@@ -1,0 +1,44 @@
+-- Source: Boomerang docs/docs/main.src "Lens record-style projection"
+--         table:  lens.get, lens.put, lens.create, lens.bij, lens.stype.
+--         The Boomerang lens value is a record carrying these three (or
+--         more) functions accessed by dotted projection. In Kappa the
+--         portable obligation is record projection over a user data
+--         type that carries multiple function-typed fields.
+-- Spec: declarations.terms.projection_definitions
+-- Portable obligation: a record-shaped data type with named projections
+--   exposes its fields via the dotted projection syntax.
+
+module test
+
+--! mode check
+
+-- A "lens record" carrying three pure functions (row type, §13.2).
+type Lens s v =
+    ( get    : s -> v
+    , put    : v -> s -> s
+    , create : v -> s
+    )
+
+-- A concrete lens: identity-like projections used only to exercise the
+-- record-projection sugar from §13.2.4.
+firstCharLens : Lens String String
+let firstCharLens =
+    ( get    = \s -> s
+    , put    = \v s -> v
+    , create = \v -> v
+    )
+
+-- POSITIVE: projection accesses each field.
+getFn : String -> String
+let getFn = firstCharLens.get
+
+putFn : String -> String -> String
+let putFn = firstCharLens.put
+
+createFn : String -> String
+let createFn = firstCharLens.create
+
+--! assertNoErrors
+--! assertType getFn (String -> String)
+--! assertType putFn (String -> String -> String)
+--! assertType createFn (String -> String)

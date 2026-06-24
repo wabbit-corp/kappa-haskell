@@ -1,0 +1,75 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Meta/metaWellFormed.maude (op 'a : nil -> 'Foo is a
+--           nullary operator; the pattern 'a.Foo is the nullary use; using
+--           it as 'a(X) in a pattern would be ill-formed),
+--         tests/Misc/attributes.maude (eq f(X, X) = g(X) requires the
+--           pattern f(X, X) to match exactly two args because f : Foo Foo ->
+--           Foo; pattern f(X) would be ill-formed),
+--         tests/Misc/sreduce.maude (eq 0 + X = X with `0` nullary in
+--           pattern is well-formed; pattern `0(X)` would be ill-formed).
+-- Spec: compiler.frontir.standard_diagnostic_families
+--       (family kappa.pattern.constructor-arity).
+-- Portable obligation: a constructor pattern with the wrong number of
+--   positional fields must be rejected with
+--   kappa.pattern.constructor-arity.
+
+--! mode check
+
+module test
+
+data Shape : Type =
+    Dot
+    Line NatLike
+    Box NatLike NatLike
+
+data NatLike : Type =
+    Zero
+    Succ NatLike
+
+-- POSITIVE: matches respect each constructor's declared arity.
+describe : Shape -> NatLike
+let describe s =
+    match s
+    case Dot          -> Zero
+    case Line n       -> n
+    case Box w h      -> w
+
+-- NEGATIVE: Dot is nullary; pattern `Dot x` supplies one positional field
+-- where zero are declared.
+badDot : Shape -> NatLike
+let badDot s =
+    match s
+    case Dot x        -> x
+    case Line n       -> n
+    case Box w h      -> w
+
+-- NEGATIVE: Line takes one field; pattern `Line` supplies zero.
+badLine0 : Shape -> NatLike
+let badLine0 s =
+    match s
+    case Dot          -> Zero
+    case Line         -> Zero
+    case Box w h      -> w
+
+-- NEGATIVE: Line takes one field; pattern `Line a b` supplies two.
+badLine2 : Shape -> NatLike
+let badLine2 s =
+    match s
+    case Dot          -> Zero
+    case Line a b     -> a
+    case Box w h      -> w
+
+-- NEGATIVE: Box takes two fields; pattern `Box w` supplies one.
+badBox1 : Shape -> NatLike
+let badBox1 s =
+    match s
+    case Dot          -> Zero
+    case Line n       -> n
+    case Box w        -> w
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 4

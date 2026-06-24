@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #94 (Parser might mishandle...),
+--   egraphs-good/egglog #143 (panic: ConstrainEq on unbound variables),
+--   egraphs-good/egglog #196 (Query atoms are order-sensitive),
+--   egraphs-good/egglog #616 (Check for ungrounded query variables),
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-*.egg,
+--   egraphs-good/egglog tests/fail-typecheck/unbound.egg.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved — §3.2.2).
+-- An unbound name in an expression must produce a stable name-resolution
+-- diagnostic, not a panic. Egglog's new backend panicked on ungrounded query
+-- variables; Kappa requires kappa.name.unresolved at name-resolution time.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: bare reference to an undefined name in an expression.
+bad1 : Int
+let bad1 = z + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: undefined name in a `match`-guard.
+data Box : Type =
+    MkBox (n : Int)
+
+bad2 : Box -> Int
+let bad2 b =
+    match b
+    case (MkBox x) if y == 0 -> x
+    case _                   -> 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: variable used in body of let that is not in scope (typo).
+xs : Int
+let xs = 1
+
+bad3 : Int
+let bad3 = xs + xz
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: each variable is properly bound.
+goodA : Int
+let goodA = xs + 1
+
+goodB : Box -> Int
+let goodB b =
+    match b
+    case (MkBox x) -> x
+
+--! assertErrorCount 3

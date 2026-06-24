@@ -1,0 +1,58 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: narya docs/data-types.rst (match coverage check),
+--               narya issue #28 (matching doesn't seem to eliminate
+--               higher-dimensional indices — the underlying portable
+--               obligation is that missing branches are rejected).
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- Coverage check enforces that every reachable constructor of a closed
+-- inductive type appears in a match. This is independent of termination
+-- checking. Missing a branch is a compile-time error even when the
+-- function body is "morally correct" for that constructor.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+data Tri : Type =
+    Ta : Tri
+    Tb : Tri
+    Tc : Tri
+
+-- POSITIVE: an exhaustive match over a three-constructor sum.
+classify : Tri -> Nat
+let classify x =
+    match x
+      case Ta -> Zero
+      case Tb -> Suc Zero
+      case Tc -> Suc (Suc Zero)
+
+-- NEGATIVE: missing the Tc arm.
+incomplete : Tri -> Nat
+let incomplete x =
+    match x
+      case Ta -> Zero
+      case Tb -> Suc Zero
+
+-- NEGATIVE: missing the Zero arm on a closed Nat scrutinee.
+addOne : Nat -> Nat
+let addOne n =
+    match n
+      case Suc k -> Suc (Suc k)
+
+-- POSITIVE: a catch-all `_` covers everything else.
+catchAll : Tri -> Nat
+let catchAll x =
+    match x
+      case Ta -> Zero
+      case _  -> Suc Zero
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

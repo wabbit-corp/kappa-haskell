@@ -1,0 +1,34 @@
+-- Source issues: BQN docs/expression.md (Nothing `·`: *"If it's the right
+--   argument, the function isn't called, and `returns' Nothing"*);
+-- BQN tests/test/cases/syntax.bqn lone-Nothing rejections (`·`, `+´·`,
+-- `·¨↕2`, `·∘↕2`); BQN-98 (`0⊸↕·⋄{0}` invalid LHS).
+-- Spec: expressions.application, expressions.lambdas.
+-- BQN's "Nothing" is a parser-level placeholder that may appear only in
+-- argument positions where the operation can absorb a missing argument.
+-- Kappa has no Nothing value; the portable analog is `Option a` where
+-- `None` means "skip this side". A function called with explicit `None`
+-- must be defined for that case.
+
+--! mode check
+
+-- A helper that consumes an Option Nat as a left argument.
+maybeAdd : Option Nat -> Nat -> Nat
+let maybeAdd left right =
+    match left
+      case None    -> right        -- BQN: `· F x` reduces to `F x`
+      case Some n  -> n + right
+
+-- POSITIVE: omitted left argument.
+viaNone : Nat
+let viaNone = maybeAdd None 5
+
+-- POSITIVE: present left argument.
+viaSome : Nat
+let viaSome = maybeAdd (Some 3) 5
+
+-- POSITIVE: chaining two stages — outputs of each are valid.
+chain : Nat
+let chain = maybeAdd None (maybeAdd (Some 2) 7)
+
+--! assertNoErrors
+--! assertType maybeAdd (Option Nat -> Nat -> Nat)

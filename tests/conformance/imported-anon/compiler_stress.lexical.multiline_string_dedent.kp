@@ -1,0 +1,25 @@
+-- Stress test: multiline strings with fixed-dedent processing
+-- Spec: literals.string_literals.multiline_strings_fixed_dedent
+
+--! mode check
+
+-- POSITIVE: indentation is stripped to the level of the closing delimiter.
+let poem : String = """
+    Roses are red
+    Violets are blue
+    """
+
+-- POSITIVE: empty lines inside the literal are preserved after dedent.
+let block : String = """
+    first line
+
+    third line
+    """
+
+-- POSITIVE: a multiline string with no indentation on the closing delimiter.
+let raw : String = """
+line one
+line two
+"""
+
+--! assertNoErrors

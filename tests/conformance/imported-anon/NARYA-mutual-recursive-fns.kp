@@ -1,0 +1,56 @@
+-- Source artifacts: narya docs/mutual-definitions.rst (def even / and odd
+--               using the mutual `and` keyword).
+-- Spec: declarations.terms,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Kappa elaborates mutually recursive top-level declarations as one SCC
+-- (§15.16). Every member must have a preceding top-level signature
+-- declaration (§15.17). There is no `mutual ... end` syntax: the SCC
+-- is detected by name resolution and the headers are collected before
+-- any body is checked.
+
+--! mode check
+
+data Nat : Type =
+    Zero : Nat
+    Suc  : Nat -> Nat
+
+-- POSITIVE: mutually recursive even/odd. The two signature declarations
+-- are visible to each other's bodies via the SCC-environment rule.
+isEven : Nat -> Bool
+isOdd  : Nat -> Bool
+
+let isEven n =
+    match n
+      case Zero  -> True
+      case Suc k -> isOdd k
+
+let isOdd n =
+    match n
+      case Zero  -> False
+      case Suc k -> isEven k
+
+-- POSITIVE: witnesses using both definitions.
+twoEven : Bool
+let twoEven = isEven (Suc (Suc Zero))
+
+threeOdd : Bool
+let threeOdd = isOdd (Suc (Suc (Suc Zero)))
+
+-- POSITIVE: a small example combining a recursive type family and a
+-- recursive function (induction-recursion-style). The SCC publishes
+-- headers for U and El together.
+data U : Type =
+    UUnit : U
+    UArr  : U -> U -> U
+
+El : U -> Type
+let El u =
+    match u
+      case UUnit    -> Bool
+      case UArr a b -> El a -> El b
+
+useArr : El (UArr UUnit UUnit)
+let useArr b = b
+
+--! assertNoErrors

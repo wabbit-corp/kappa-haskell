@@ -1,0 +1,18 @@
+-- Stress test: a user-supplied measure that strictly decreases is accepted
+-- Spec: declarations.terms
+
+--! mode check
+
+-- POSITIVE: countdown uses n as an explicit decreasing measure (integer decreases toward 0).
+countdown : Int -> Int
+let countdown n decreases n =
+    if n <= 0 then 0 else countdown (n - 1)
+
+-- POSITIVE: fibonacci with explicit measure.
+fib : Int -> Int
+let fib n decreases n =
+    if n <= 1
+    then n
+    else fib (n - 1) + fib (n - 2)
+
+--! assertNoErrors

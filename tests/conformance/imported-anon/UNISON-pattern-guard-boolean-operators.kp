@@ -1,0 +1,45 @@
+-- Source issue: UNISON#875 (fixes UNISON#770)
+-- Spec: expressions.match.guarded_cases_introduce_guard_success_evidence
+-- §17.1.9: "If `guard` contains `&&`, `||`, or `not`, the body is checked
+-- as if that guard were recursively lowered". A `match` arm guard may use
+-- ordinary boolean operators (including `&&`, `||`, `not`); each
+-- operator combination produces appropriate guard-success evidence for
+-- the body without rejecting the guard at parse time.
+
+--! mode check
+
+-- POSITIVE: conjunctive guard.
+let classify_pair (p : (Int, Int)) : String =
+    match p
+        case (x, y) if x > 0 && y > 0 -> "both positive"
+        case (x, y) if x < 0 || y < 0 -> "some negative"
+        case _                         -> "other"
+
+--! assertNoErrors
+
+-- POSITIVE: a `not`-guard.
+let not_zero (n : Int) : Bool =
+    match n
+        case x if not (x == 0) -> True
+        case _                  -> False
+
+--! assertNoErrors
+
+-- POSITIVE: nested boolean operators. The guard is checked as a Bool
+-- expression and the body sees `(a && b) || c = True` evidence.
+let pick_case (t : (Bool, Bool, Bool)) : Int =
+    match t
+        case (a, b, c) if (a && b) || c -> 1
+        case _                           -> 0
+
+--! assertNoErrors
+
+-- POSITIVE: a guard that uses the bound pattern variables on the right of
+-- `&&` — the guard is checked under the bindings introduced by the
+-- pattern, not as a free expression.
+let lookahead (xs : List Int) : Bool =
+    match xs
+        case a :: b :: _ if a < b && a > 0 -> True
+        case _                              -> False
+
+--! assertNoErrors

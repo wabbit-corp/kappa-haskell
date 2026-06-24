@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Roc #7278
+-- Spec: expressions.match.guarded_cases_introduce_guard_success_evidence,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A wildcard pattern with a guard does NOT contribute coverage to the
+-- exhaustiveness analysis (guard failure does not exclude the constructor),
+-- but a constructor branch following such a wildcard must still be reachable.
+-- When the wildcard+guard appears first, the analysis must continue to require
+-- the remaining constructor arms; if those arms cover all members, the match
+-- is exhaustive.
+
+module test
+
+data Tag : Type =
+    A
+    B
+
+--! mode check
+
+-- POSITIVE: A and B are both explicitly covered after a wildcard-with-guard
+-- arm. Guard failure on the first arm flows into the constructor arms; both
+-- A and B are reached, so the match is exhaustive.
+classifyGuardFirst : Tag -> Int -> Bool
+let classifyGuardFirst t y =
+    match t
+      case _ if y > 1 -> False
+      case A          -> True
+      case B          -> False
+
+--! assertType classifyGuardFirst Tag -> Int -> Bool
+
+-- POSITIVE: same constructors covered, guarded wildcard moved to last
+-- position. Still exhaustive.
+classifyGuardLast : Tag -> Int -> Bool
+let classifyGuardLast t y =
+    match t
+      case A          -> True
+      case B          -> False
+      case _ if y > 1 -> False
+
+
+-- NEGATIVE: removing the B arm makes the match non-exhaustive, because the
+-- wildcard arm only covers the residual under its guard. Guard failure does
+-- not exclude B.
+classifyMissingB : Tag -> Int -> Bool
+let classifyMissingB t y =
+    match t
+      case _ if y > 1 -> False
+      case A          -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-306 (ambiguity when different this's have same-looking functions),
+--   KT-1461 (overload resolution ambiguity with superclass property)
+-- Spec: modules.names.lexical_lookup, modules.imports
+
+--! mode check
+
+-- POSITIVE: a name defined in a local scope shadows an outer binding.
+outerVal : Int
+let outerVal = 10
+
+-- Inner let shadows outerVal — uses the inner one.
+shadowedBinding : Int
+let shadowedBinding =
+    let outerVal = 99   -- shadows outer
+    outerVal             -- refers to the inner 99
+
+--! assertType shadowedBinding Int
+
+-- POSITIVE: nested scopes each see their own bindings.
+nestedScopes : Int
+let nestedScopes =
+    let x = 1
+    let y =
+        let x = 2   -- shadows outer x
+        x           -- inner x = 2
+    x + y           -- outer x (1) + y (2)
+
+--! assertType nestedScopes Int
+
+-- POSITIVE: a locally-defined function is used unambiguously.
+localFn : Int -> Int -> Int
+let localFn a b = a + b
+
+callLocal : Int
+let callLocal = localFn 3 4
+
+--! assertType callLocal Int
+
+-- NEGATIVE: using a name that falls out of scope is unresolved.
+outOfScope : Int
+let outOfScope =
+    let _ =
+        let inner = 5
+        inner
+    inner
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

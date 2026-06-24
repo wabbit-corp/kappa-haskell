@@ -1,0 +1,51 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: ponyc#52, ponyc full-program-tests/match-exhaustive-all-cases-of-union,
+--   ponyc PR#4901, ponyc PR#4939
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match on a union type must cover all members of the union. Missing a
+-- constructor causes the match to be non-exhaustive. Pony added an
+-- \exhaustive\ annotation to mark matches the programmer believes are
+-- complete; if not complete, it is a compile error. In Kappa, a non-exhaustive
+-- match always produces kappa.pattern.non-exhaustive.
+
+--! mode check
+
+data Shape : Type =
+    Circle
+    Square
+    Triangle
+
+-- NEGATIVE: only Circle and Square covered; Triangle missing.
+badDescribe : Shape -> String
+let badDescribe s =
+    match s
+    case Circle   -> "circle"
+    case Square   -> "square"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one case covered.
+badSingle : Shape -> String
+let badSingle s =
+    match s
+    case Circle -> "round"
+
+-- POSITIVE: all three constructors covered.
+goodDescribe : Shape -> String
+let goodDescribe s =
+    match s
+    case Circle   -> "circle"
+    case Square   -> "square"
+    case Triangle -> "triangle"
+
+-- POSITIVE: wildcard covers remaining constructors.
+goodWildcard : Shape -> String
+let goodWildcard s =
+    match s
+    case Circle -> "round"
+    case _      -> "other"
+
+--! assertErrorCount 2

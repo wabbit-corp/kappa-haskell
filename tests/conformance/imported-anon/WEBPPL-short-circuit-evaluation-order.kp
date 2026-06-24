@@ -1,0 +1,41 @@
+-- Source: WebPPL #58 (CPS transform breaks logical short-circuiting).
+-- Spec: expressions.application.short_circuit.
+--
+-- Per §16.1.3, `&&` and `||` are surface spellings whose observable
+-- behavior is `a && b ≡ if a then b else False` and
+-- `a || b ≡ if a then True else b`. A conforming implementation MUST
+-- preserve this short-circuit evaluation-count behavior across lowering.
+--
+-- We assert at `mode check` that the short-circuit operators have the
+-- expected Bool -> Bool -> Bool surface type and compose in conditional
+-- positions. Run-mode behavior (call-count distinctness) belongs to a
+-- run-time fixture, not to this `mode check` test.
+
+module test
+
+--! mode check
+
+ok : Bool
+let ok = True && True
+
+--! assertNoErrors
+--! assertType ok Bool
+
+orOk : Bool
+let orOk = False || True
+
+--! assertType orOk Bool
+
+-- Chained && and || compose as ordinary Bool expressions.
+chained : Bool -> Bool -> Bool -> Bool
+let chained a b c = a && (b || c)
+
+--! assertType chained (Bool -> Bool -> Bool -> Bool)
+
+-- A conditional position consumes a short-circuit result.
+inIf : Int -> Int -> Bool
+let inIf x y =
+    if x == 0 || y == 0 then True
+    else False
+
+--! assertType inIf (Int -> Int -> Bool)

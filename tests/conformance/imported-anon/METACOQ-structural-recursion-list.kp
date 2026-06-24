@@ -1,0 +1,45 @@
+-- Source issues: METACOQ-367, METACOQ-436, METACOQ-504
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.explicit_decreases
+--
+-- Kappa's structural-subterm relation requires the recursive argument to be
+-- a constructor-bound subterm of the original scrutinee. MetaCoq's guard
+-- condition (#504) enforces the same rule on PCUIC fixes. The portable
+-- obligation: structural decreases on a pattern-bound subterm is accepted.
+
+module test
+
+--! mode check
+
+-- POSITIVE: structural recursion on the list spine using prelude `List`
+-- constructors.
+length : forall (a : Type). List a -> Nat
+let length xs decreases structural xs =
+    match xs
+    case Nil          -> 0
+    case (::) _ rest  -> 1 + length rest
+
+-- POSITIVE: nested recursion still terminates structurally — each recursive
+-- call passes a constructor-bound subterm.
+sumList : List Nat -> Nat
+let sumList xs decreases structural xs =
+    match xs
+    case Nil          -> 0
+    case (::) x rest  -> x + sumList rest
+
+-- POSITIVE: tuple of structural arguments under lexicographic order.
+data BTree : Type =
+    BLeaf
+    BNode BTree BTree
+
+bsize : BTree -> BTree -> Nat
+let bsize l r decreases structural (l, r) =
+    match l
+    case BLeaf ->
+        match r
+        case BLeaf       -> 0
+        case (BNode a b) -> 1 + bsize a b
+    case (BNode a b)     -> 1 + bsize a b
+
+--! assertNoErrors
+--! assertType length forall (a : Type). List a -> Nat

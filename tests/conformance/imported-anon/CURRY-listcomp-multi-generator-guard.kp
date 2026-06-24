@@ -1,0 +1,55 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestListComprehension.curry
+--   (testSquareOdds, testPairs).
+-- Spec: collections.comprehensions (§20.3),
+--       collections.clauses (§20.4),
+--       collections.literals (§20.1).
+--
+-- Multi-generator list comprehensions with conditional guards in Kappa
+-- use the `[ for x in xs, if guard, yield expr ]` clause-based form
+-- (§20.3). Iteration order is left-to-right: the rightmost `for`
+-- generator varies fastest. An `if` clause discards rows that fail
+-- the predicate.
+
+module test
+
+--! mode check
+
+odd : Int -> Bool
+let odd n = (n - (2 * (n / 2))) /= 0
+
+-- POSITIVE: simple comprehension with a `for` and an `if` filter.
+squareOdds : List Int
+let squareOdds =
+    [ for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    , if odd x
+    , yield x * x
+    ]
+-- expected: [1, 9, 25, 49, 81]
+
+--! assertNoErrors
+--! assertType squareOdds (List Int)
+
+-- POSITIVE: two `for` generators plus an inequality `if` filter.
+pairs : List (Int, Int)
+let pairs =
+    [ for i in [1, 2, 3]
+    , for j in [2, 3, 4]
+    , if i /= j
+    , yield (i, j)
+    ]
+-- expected: [(1,2),(1,3),(1,4),(2,3),(2,4),(3,2),(3,4)]
+
+--! assertNoErrors
+--! assertType pairs (List (Int, Int))
+
+-- POSITIVE: a comprehension whose right-hand generator depends on the
+-- left-hand binder.
+upperTriangle : List (Int, Int)
+let upperTriangle =
+    [ for i in [1, 2, 3]
+    , for j in [i, i + 1, i + 2]
+    , yield (i, j)
+    ]
+
+--! assertNoErrors
+--! assertType upperTriangle (List (Int, Int))

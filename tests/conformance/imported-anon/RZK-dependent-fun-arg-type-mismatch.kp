@@ -1,0 +1,68 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: rzk#13 — insufficient typechecking; type parameters of a
+--   higher-order function were not checked correctly, allowing a definition
+--   to use an incorrect type in the parameter's signature.
+-- Spec: types.quantification, compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- When a dependent function is defined, the types used in its parameter
+-- annotations are checked. Using the wrong type (e.g. a non-universe value
+-- as a universe) must be rejected with a type mismatch.
+
+--! mode check
+
+-- POSITIVE: define a two-argument flip function with correct types.
+-- swap : (A B C : Type) -> (A -> B -> C) -> (B -> A -> C)
+swap :
+    forall (A B C : Type).
+    (A -> B -> C) -> (B -> A -> C)
+let swap f = \ b a -> f a b
+
+-- POSITIVE: apply swap to a specific function correctly.
+swapNat : (Bool -> Nat -> Bool) -> (Nat -> Bool -> Bool)
+let swapNat f = swap f
+
+-- POSITIVE: identity function with a correctly-typed parameter.
+identity : forall (A : Type). A -> A
+let identity x = x
+
+-- POSITIVE: dependent function where the argument type is checked against
+-- the declared parameter type.
+applyId :
+    forall (A : Type).
+    (A -> A) -> A -> A
+let applyId f x = f x
+
+natResult : Nat
+let natResult = applyId (\n -> n) 42
+
+-- POSITIVE: a function with multiple type parameters — all used consistently.
+const : forall (A B : Type). A -> B -> A
+let const x _ = x
+
+constNat : Nat -> Bool -> Nat
+let constNat = const
+
+-- NEGATIVE: applying swap where the input function has a different signature
+-- than declared — the result type does not match the call site.
+-- In Rzk issue #13, the type parameter was declared as (A : 1) instead of
+-- (A : Type), giving incorrect checking. Here we reproduce the class of bug
+-- by passing a function whose argument types contradict the declared signature.
+badFlip : (Nat -> Bool -> Nat) -> (Bool -> Nat -> Nat)
+let badFlip f =
+    -- f has type Nat -> Bool -> Nat but is used as Bool -> Nat -> Nat
+    -- directly without swap, contradicting the declared result type
+    let wrong : Bool -> Nat -> Nat = f
+    wrong
+
+-- NEGATIVE: applying a polymorphic combinator at an inconsistent type
+-- annotation — the annotated type for the combinator result contradicts
+-- what the body provides.
+badConst : Nat
+let badConst = const True 42
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

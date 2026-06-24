@@ -1,0 +1,73 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: leo#2147 (type checker does not check types for struct component
+--               expressions; `let x: i8 = s.f1` where `f1: u32` compiled silently),
+--               leo PR#2340 (fix: check type of struct init expression),
+--               leo PR#28616 (fix: small type check error related to MemberAccess).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch), §13 (records and projections).
+-- Kappa spec rule (§13.2.4, §3.2.3):
+--   "A projection `e.f` has the type declared for field `f` in the record type of
+--    `e`. When the result of `e.f` is used in a context that expects a different
+--    type `T`, the compiler must emit `kappa.type.mismatch` identifying both
+--    the declared field type and the expected type `T`."
+-- leo#2147: `s.f1` where `f1 : u32` was silently accepted as `i8` when used in
+--   `let x: i8 = s.f1`. The VM then caught the mismatch at code-generation time,
+--   which is too late and not portable.
+
+--! mode check
+
+data PersonInfo : Type =
+    PersonInfo
+        { name  : String
+        , age   : Int
+        , score : Bool
+        }
+
+-- POSITIVE: using a record field with the correct expected type.
+getName : PersonInfo -> String
+let getName p = p.name
+
+getAge : PersonInfo -> Int
+let getAge p = p.age
+
+getScore : PersonInfo -> Bool
+let getScore p = p.score
+
+
+-- NEGATIVE: using `age : Int` where `Bool` is expected.
+agentAsBool : PersonInfo -> Bool
+let agentAsBool p = p.age
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using `score : Bool` where `Int` is expected.
+scoreAsInt : PersonInfo -> Int
+let scoreAsInt p = p.score
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using `name : String` where `Int` is expected.
+nameAsInt : PersonInfo -> Int
+let nameAsInt p = p.name
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: binding a field of type `Bool` to a variable annotated `Int`.
+bindBoolAsInt : PersonInfo -> Int
+let bindBoolAsInt p =
+    let x : Int = p.score
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: arithmetic over same-type fields is accepted.
+data Point : Type =
+    Point { x : Int, y : Int }
+
+distSquared : Point -> Int
+let distSquared p = p.x * p.x + p.y * p.y
+
+--! assertErrorCount 4

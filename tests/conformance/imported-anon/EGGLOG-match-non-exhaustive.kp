@@ -1,0 +1,67 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: (adapted) egglog has no `match`; these partial-lookup issues
+--   are remapped onto match exhaustiveness per the ledger ('portable angle is
+--   exhaustiveness'). Wording clarified 2026-06-11 (audit FAB-026).
+--   egraphs-good/egglog #420 (Disallowing looking up non-constructor
+--   functions — partial functions),
+--   egraphs-good/egglog #482 (Disabling custom function lookups in merge
+--   functions — partial),
+--   egraphs-good/egglog #255 (Disallow primitives that might fail in actions),
+--   egraphs-good/egglog #91 (Implement default for non-eq-able functions).
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive),
+--       expressions.match (§17.1).
+-- Egglog tracked "partial functions" that could fail at lookup; the portable
+-- Kappa obligation is that pattern matches in total programs must be exhaustive.
+-- A `match` over a closed data type with a missing constructor case is rejected
+-- with kappa.pattern.non-exhaustive.
+
+module test
+
+--! mode check
+
+data Op : Type =
+    OAdd
+    OSub
+    OMul
+    ODiv
+
+-- POSITIVE: exhaustive match covers every constructor.
+arity : Op -> Int
+let arity op =
+    match op
+    case OAdd -> 2
+    case OSub -> 2
+    case OMul -> 2
+    case ODiv -> 2
+
+-- NEGATIVE: match omits `ODiv`.
+badArity1 : Op -> Int
+let badArity1 op =
+    match op
+    case OAdd -> 2
+    case OSub -> 2
+    case OMul -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: match omits both `OMul` and `ODiv`.
+badArity2 : Op -> Int
+let badArity2 op =
+    match op
+    case OAdd -> 2
+    case OSub -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: a wildcard `_` catches the residual cases.
+arityOr : Op -> Int
+let arityOr op =
+    match op
+    case OAdd -> 2
+    case _    -> 2
+
+--! assertErrorCount 2

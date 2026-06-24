@@ -1,0 +1,31 @@
+-- Source issue: Kitten #34 (overloading: resolve names into sets of
+--   possible overloads; let the typechecker select the unique overload
+--   that typechecks at each site).
+-- Spec: traits.instances, traits.members,
+--       traits.instances.resolution_algorithm.
+--
+-- Two trait instances with disjoint head types resolve unambiguously
+-- based on the inferred argument type at each call site.
+
+module test
+
+--! mode check
+
+trait Show (a : Type) =
+    showIt : a -> String
+
+instance Show Int =
+    let showIt n = "int"
+
+instance Show Bool =
+    let showIt b = "bool"
+
+useInt : String
+let useInt = showIt 42
+
+useBool : String
+let useBool = showIt True
+
+--! assertNoErrors
+--! assertType useInt String
+--! assertType useBool String

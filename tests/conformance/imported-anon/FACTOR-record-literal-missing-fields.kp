@@ -1,0 +1,39 @@
+-- Source issue: Factor #1443 (insufficient field count produces an
+--   unclear internal error; the patch in the issue introduces
+--   `too-many-slots` and the symmetric missing-fields case must also
+--   be diagnosed precisely).
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c, data_types.data_declarations,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_CONSTRUCTOR_ARITY_MISMATCH),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.constructor.arity).
+--
+-- A named-field constructor application missing required fields must
+-- fire kappa.constructor.arity (E_CONSTRUCTOR_ARITY_MISMATCH). The
+-- payload must list the missing fields by name.
+
+module test
+
+--! mode check
+
+data Foo : Type =
+    Foo { a : Int, b : Int, c : Int }
+
+-- POSITIVE: all required named fields supplied.
+ok : Foo
+let ok = Foo { a = 1, b = 2, c = 3 }
+
+--! assertType ok Foo
+
+-- NEGATIVE: field `c` is missing.
+missingOne : Foo
+let missingOne = Foo { a = 1, b = 2 }    --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: fields `b` and `c` are both missing.
+missingTwo : Foo
+let missingTwo = Foo { a = 1 }            --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH

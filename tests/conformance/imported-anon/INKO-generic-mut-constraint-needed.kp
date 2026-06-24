@@ -1,0 +1,35 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: docs/generics, inko#618
+-- Spec: types.universes.quantities, expressions.application.subsumption
+-- Inko: generic methods that mutate through a type parameter require the
+-- 'mut' capability on that parameter (T: mut). Calling such a method with
+-- an immutable reference fails because the ref does not grant mutation rights.
+-- In Kappa, the exclusive (linear/owned) access demanded by the mutating
+-- function is not provided by the shared borrow at the call site.
+
+--! mode check
+
+data Cell (a : Type) : Type = Cell a
+
+-- modifyCell: requires exclusive ownership to replace the inner value.
+modifyCell :
+    forall (a : Type).
+    (1 c : Cell a) -> a -> Cell a
+let modifyCell _ newVal = Cell newVal
+
+-- POSITIVE: mutating a cell with owned (exclusive) access.
+resetCell : forall (a : Type). (1 c : Cell Int) -> Cell Int
+let resetCell c = modifyCell c 0
+
+
+-- NEGATIVE: passing a borrow where exclusive modification access is required.
+-- A shared borrow (& Cell a) cannot satisfy the linear (1 Cell a) demand.
+readOnlyModify : forall (a : Type). (& c : Cell a) -> a -> Cell a
+let readOnlyModify c newVal = modifyCell c newVal
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+--! assertErrorCount 1

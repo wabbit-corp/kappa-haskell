@@ -1,0 +1,56 @@
+-- Source issues: egraphs-good/egglog #556 (Underscore isn't a wildcard),
+--   egraphs-good/egglog #409 (Add underscore as matching anything?),
+--   egraphs-good/egglog PR#565 (Underscores, shadowing, and misc.).
+-- Spec: expressions.patterns.forms (§17.2.1),
+--       expressions.patterns.scoping_validity (§17.2.2).
+-- Each occurrence of `_` in a pattern is an independent fresh wildcard: it
+-- binds nothing and does not constrain other `_` occurrences. In egglog the
+-- original behavior was to alias both occurrences to the same variable (so
+-- `(Mul _ _)` was read as `(Mul _1 _1)`); the maintainers corrected this.
+-- Kappa's pattern grammar already says `_` is the discard pattern and does
+-- not introduce a binder, so multiple wildcards in one pattern are independent.
+
+module test
+
+--! mode check
+
+data Pair : Type =
+    MkPair (a : Int) (b : Int)
+
+-- POSITIVE: two wildcards in one pattern accept all values, including unequal
+-- left/right components — `_` does NOT alias to itself.
+constTrue : Pair -> Bool
+let constTrue p =
+    match p
+    case (MkPair _ _) -> True
+
+r1 : Bool
+let r1 = constTrue (MkPair 1 2)
+
+r2 : Bool
+let r2 = constTrue (MkPair 3 3)
+
+-- POSITIVE: wildcard in nested constructor pattern is independent of an outer
+-- wildcard.
+data Tree : Type =
+    Leaf
+    Node (v : Int) (l : Tree) (r : Tree)
+
+leftWild : Tree -> Bool
+let leftWild t =
+    match t
+    case (Node _ Leaf _) -> True
+    case _               -> False
+
+-- POSITIVE: when the user really wants equality, they bind and compare in a
+-- guard.
+equalSides : Pair -> Bool
+let equalSides p =
+    match p
+    case (MkPair x y) if x == y -> True
+    case _                       -> False
+
+--! assertNoErrors
+--! assertType constTrue (Pair -> Bool)
+--! assertType leftWild (Tree -> Bool)
+--! assertType equalSides (Pair -> Bool)

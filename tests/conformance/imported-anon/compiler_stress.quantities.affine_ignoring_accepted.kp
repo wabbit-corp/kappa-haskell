@@ -1,0 +1,14 @@
+-- Stress test: an affine (<=1) binding may be ignored (used zero times), unlike linear (=1)
+-- Spec: types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: affine x is ignored entirely; this is valid for <=1
+discard : (<=1 x : Int) -> Unit
+let discard x = ()
+
+-- POSITIVE: affine x used exactly once; also valid for <=1
+useOnce : (<=1 x : Int) -> Int
+let useOnce x = x + 1
+
+--! assertNoErrors

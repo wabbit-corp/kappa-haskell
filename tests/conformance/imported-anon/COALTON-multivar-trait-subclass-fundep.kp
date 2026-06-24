@@ -1,0 +1,59 @@
+-- Source: Coalton issues #1050 (subclass constraints and fundeps not checking
+--   right?), #1588 (multiple functional dependency bugs — fundep should be
+--   inherited from superclass).
+-- Spec: traits.headers.supertraits (§14.1.4),
+--   traits.instances.resolution_algorithm (§14.3.1),
+--   COALTON-SA-01, COALTON-SA-03.
+--
+-- When a subclass inherits a multi-parameter superclass that establishes a
+-- determinacy relationship between type variables, the subclass should
+-- benefit from the same relationship. A method that uses only one type
+-- variable in a subclass that inherits the determinacy from the superclass
+-- should not be flagged as ambiguous — the determinacy propagates.
+-- Note: a negative test for truly unconstrained multi-param implicit is not
+-- included here because its behavior depends on COALTON-SA-01 (fundep spec gap).
+
+--! mode check
+
+-- A two-parameter base class whose method mentions both parameters.
+trait Container (f : Type -> Type) (item : Type) =
+    empty   : f item
+    insert  : item -> f item -> f item
+    toList  : f item -> List item
+
+-- POSITIVE: a concrete instance for List.
+instance Container List Int =
+    let empty          = Nil
+    let insert x xs    = x :: xs
+    let toList xs      = xs
+
+-- POSITIVE: a function with a Container constraint, using both methods.
+-- Both `f` and `item` are fully determined by the call context.
+buildAndList : List Int
+let buildAndList =
+    let c0 = (empty : List Int)
+    in let c1 = insert 1 c0
+    in let c2 = insert 2 c1
+    in toList c2
+
+--! assertType buildAndList (List Int)
+
+-- A subclass that inherits Container's constraint and adds a lookup method.
+trait Container f item => SearchContainer (f : Type -> Type) (item : Type) =
+    contains : item -> f item -> Bool
+
+instance Eq Int => SearchContainer List Int =
+    let contains x xs =
+        match xs
+        case Nil    -> False
+        case h :: t -> if h == x then True else contains x t
+
+-- POSITIVE: a function with a SearchContainer constraint can use both
+-- its own methods and the inherited Container methods.
+buildAndSearch : Bool
+let buildAndSearch =
+    let c0 = insert 5 (insert 3 (insert 1 (empty : List Int)))
+    in contains 3 c0
+
+--! assertNoErrors
+--! assertType buildAndSearch Bool

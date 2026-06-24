@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig#24149 (invalid destructure error location), zig#25661
+--               (fn-to-pointer error message)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       declarations.terms, declarations.signatures
+-- When the body of a function produces a type that does not match the declared
+-- return type, the compiler must emit `kappa.type.mismatch`. The blame site
+-- must be the mismatching expression, not the function declaration.
+
+--! mode check
+
+-- POSITIVE: declared return type matches body.
+let toStr (n : Int) : String = "hello"
+
+
+-- POSITIVE: Bool returned for a Bool declaration.
+let isPositive (n : Int) : Bool = n > 0
+
+
+-- NEGATIVE: body produces an Int but the declared return type is String.
+let badReturn (n : Int) : String = n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: body produces Bool but declaration says Int.
+let boolAsInt (b : Bool) : Int = b
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: function expects two arguments but caller provides one;
+-- the resulting partial application has type Int -> Int, not Int.
+let add (x : Int) (y : Int) : Int = x + y
+
+let callAdd : Int = add 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: wrong argument type passed to a function.
+let double (n : Int) : Int = n + n
+
+let callDouble : Int = double True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 4

@@ -1,0 +1,25 @@
+-- Source issue: MLatu issue #51 ("fix the loading"; body empty —
+--   apparently a triggering case where the loader rejects an
+--   essentially trivial input). MLatu's tutorial says a file is a set
+--   of rules; a file with definitions only and no top-level effect
+--   must elaborate. The portable Kappa obligation is that a module
+--   containing only definitions (no top-level expressions) is
+--   accepted.
+-- Spec: declarations.terms, modules.files.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a module with definitions only.
+one : Int
+let one = 1
+
+two : Int
+let two = 2
+
+sum : Int
+let sum = one + two
+
+--! assertNoErrors
+--! assertType sum Int

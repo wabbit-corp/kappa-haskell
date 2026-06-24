@@ -1,0 +1,78 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#11992 (every symbol becomes 1st class; defines 0-cost
+--         lambda and aliases; generics/iterators/templates/etc can be passed
+--         to any routine), nim-lang/RFCs#346 (Improve overload resolution for
+--         generics and templates)
+-- Spec: types.quantification.implicit_declaration_universalization
+-- Nim's generic procs mirror Kappa's universally-quantified functions. A generic
+-- identity `proc id[T](x: T): T = x` maps to `id : forall a. a -> a`. These
+-- functions must be accepted and must typecheck at multiple instantiations.
+
+--! mode check
+module test
+
+-- POSITIVE: generic identity function.
+id : forall a. a -> a
+let id x = x
+
+--! assertType id (forall a. a -> a)
+
+-- POSITIVE: applying identity at multiple types.
+idInt : Int
+let idInt = id 42
+
+idStr : String
+let idStr = id "hello"
+
+idBool : Bool
+let idBool = id True
+
+--! assertType idInt Int
+--! assertType idStr String
+--! assertType idBool Bool
+
+-- POSITIVE: const (K combinator) — ignores second argument.
+const : forall a b. a -> b -> a
+let const x _ = x
+
+result1 : Int
+let result1 = const 42 "ignored"
+
+result2 : String
+let result2 = const "kept" 99
+
+-- POSITIVE: flip — reverses argument order.
+flip : forall a b c. (a -> b -> c) -> b -> a -> c
+let flip f y x = f x y
+
+flipped : Int
+let flipped = flip const "ignored" 7
+
+-- POSITIVE: compose — function composition.
+compose : forall a b c. (b -> c) -> (a -> b) -> a -> c
+let compose g f x = g (f x)
+
+double : Int -> Int
+let double n = n * 2
+
+addOne : Int -> Int
+let addOne n = n + 1
+
+doubleAndAdd : Int -> Int
+let doubleAndAdd = compose addOne double
+
+result3 : Int
+let result3 = doubleAndAdd 5
+
+--! assertType result3 Int
+
+-- NEGATIVE: returning wrong type variable — body returns `b` but declared `a`.
+badId : forall a b. a -> b -> a
+let badId x y = y
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

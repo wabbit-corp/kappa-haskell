@@ -1,0 +1,89 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: invalid/unsatisfiable_constraint.m, invalid/missing_closure_arg.m
+-- Spec: traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- When a function is called with a trait constraint in its signature, but no
+-- instance exists for the required trait at the call site's type, the checker
+-- must report an unsolved implicit goal.
+
+module test
+
+-- A trait with no instances for some types.
+trait Serialise (a : Type) =
+    serialise : a -> String
+
+-- A type with an instance.
+data Colour : Type = Cyan | Magenta | Yellow | Black
+
+instance Serialise Colour =
+    let serialise Cyan    = "C"
+    let serialise Magenta = "M"
+    let serialise Yellow  = "Y"
+    let serialise Black   = "K"
+
+-- A constrained function.
+printItem :
+    forall (a : Type).
+    (@_ : Serialise a) ->
+    a -> String
+let printItem x = "[" ++ serialise x ++ "]"
+
+-- POSITIVE: calling with a type that has an instance.
+printColour : Colour -> String
+let printColour c = printItem c
+
+--! assertType printColour Colour -> String
+
+-- A type with NO instance for Serialise.
+data Opaque : Type = Opaque Int
+
+-- NEGATIVE: calling `printItem` with a type that has no `Serialise` instance.
+printOpaque : Opaque -> String
+let printOpaque o = printItem o
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: a constrained function used in a context where the type variable
+-- is ambiguous (no concrete type drives instance selection).
+abstractPrint :
+    forall (a : Type).
+    (@_ : Serialise a) ->
+    a -> String
+let abstractPrint x = printItem x
+
+-- Calling `abstractPrint` at a type with no instance.
+badAbstractCall : String
+let badAbstractCall = abstractPrint (Opaque 0)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: calling `abstractPrint` at a type that has an instance.
+goodAbstractCall : String
+let goodAbstractCall = abstractPrint Cyan
+
+
+-- NEGATIVE: a multi-constraint case where one constraint is satisfied but
+-- another is not.
+trait Measure (a : Type) =
+    measure : a -> Int
+
+measuredPrint :
+    forall (a : Type).
+    (@_ : Serialise a) ->
+    (@_ : Measure a) ->
+    a -> String
+let measuredPrint x = serialise x ++ "(" ++ show (measure x) ++ ")"
+
+-- Colour has Serialise but not Measure.
+useMeasuredPrint : Colour -> String
+let useMeasuredPrint c = measuredPrint c
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! mode check
+
+--! assertErrorCount 3

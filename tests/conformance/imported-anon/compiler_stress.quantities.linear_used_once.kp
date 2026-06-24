@@ -1,0 +1,14 @@
+-- Stress test: a linear binding used exactly once in the body must be accepted
+-- Spec: types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: linear x consumed exactly once by the addition
+consume : (1 x : Int) -> Int
+let consume x = x + 1
+
+-- POSITIVE: linear x consumed exactly once; returned as first component of a pair
+passThrough : (1 x : Int) -> (Int, Unit)
+let passThrough x = (x, ())
+
+--! assertNoErrors

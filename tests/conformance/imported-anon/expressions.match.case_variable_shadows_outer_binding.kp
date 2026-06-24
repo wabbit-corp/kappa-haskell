@@ -1,0 +1,44 @@
+-- Source issues: Idris2 #694, #1356
+-- Spec: expressions.match, declarations.let_in
+-- Pattern variables introduced on the left-hand side of a `match` branch or a
+-- function clause are FRESH bindings that shadow any outer name with the same
+-- identifier. The pattern variable must NOT be resolved as a backward reference
+-- to an outer constant or local helper. When shadowing fails, the checker may
+-- erroneously interpret the pattern variable as a self-reference, triggering a
+-- false totality or scope error.
+
+module test
+
+-- Outer constant named `result`.
+result : Int
+let result = 42
+
+-- Accepted: the pattern `result` in the function clause is a fresh variable
+-- that shadows the outer `result`. The body `result` refers to this fresh
+-- variable (the matched argument), not to the outer constant.
+-- No recursion exists; the totality checker must accept this.
+shadowOuter : Int -> Int
+let shadowOuter result = result
+
+--! mode check
+--! assertNoErrors
+
+-- Accepted: a `match` branch introduces a fresh `x` that shadows outer `x`.
+-- The match returns the scrutinee via the pattern variable; no self-reference.
+shadowInMatch : Int -> Int
+let shadowInMatch n =
+  match n
+    case x -> x
+
+--! assertNoErrors
+
+-- Accepted: a local `let`-bound helper `inner` whose parameter `n` shadows
+-- an enclosing `let n = 0`. The parameter `n` in `inner n = n + 1` refers to
+-- the function argument, not the enclosing `n = 0`.
+shadowLocalLet : Int -> Int
+let shadowLocalLet outer =
+  let n = 0
+  let inner n = n + 1
+  inner outer
+
+--! assertNoErrors

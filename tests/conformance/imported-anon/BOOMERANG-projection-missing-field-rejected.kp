@@ -1,0 +1,32 @@
+-- Source: Boomerang docs/docs/main.src "Lens record-style projection"
+--         A Boomerang user that tries lens.foo where foo is not one of
+--         the declared lens projections receives an unbound-field error.
+-- Spec: types.records.field_projection,
+--       declarations.terms.projection_definitions.
+-- Spec gap: BSA-BOOMERANG-10 — §3.2.8 records no dedicated family for
+--   "record-field projection with a name not in the row"; the existing
+--   `kappa.accessor.missing-capability` is reserved for capability
+--   mismatches (read/borrow/open/set/sink/fill), not for "field absent".
+--   This test is downgraded to a generic compile-error count and the
+--   spec gap is recorded in BOOMERANG_SPEC_ADDITIONS.md.
+-- Portable obligation: projecting an undeclared field name on a record
+--   value is rejected at elaboration time.
+
+module test
+
+--! mode check
+
+-- A record (row) carrying two function-typed fields.
+type Lens2 = (get : String -> String, put : String -> String -> String)
+
+idLens : Lens2
+let idLens =
+    ( get = \s -> s
+    , put = \v s -> v
+    )
+
+-- NEGATIVE: `create` is not a field of the Lens2 row.
+createFn : String -> String
+let createFn = idLens.create
+
+--! assertErrorCount 1

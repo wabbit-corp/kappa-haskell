@@ -1,0 +1,39 @@
+-- Source issues: Move #263, Move #568
+-- Spec: literals.numeric_literals.integers
+-- Underscores between digits in integer literals (decimal, hex, octal,
+-- binary) are legal and have no semantic effect.  This covers both the
+-- decimal case (#263) and the hexadecimal case (#568).
+
+--! mode check
+
+module move_263_underscore_separator
+
+-- Accepted: decimal integer with underscore grouping.
+hardCap : Int
+let hardCap = 1_000_000_000
+
+--! assertNoErrors
+
+-- Accepted: large decimal literal with separators.
+bigDecimal : Int
+let bigDecimal = 9_223_372_036_854_775_807
+
+--! assertNoErrors
+
+-- Accepted: hex literal with underscore separator.
+magicHex : Int
+let magicHex = 0xDEAD_BEEF
+
+--! assertNoErrors
+
+-- Accepted: binary literal with underscore separators.
+bitPattern : Int
+let bitPattern = 0b1010_1111
+
+--! assertNoErrors
+
+-- Accepted: multiple separators are fine; they carry no value.
+sameValue : Bool
+let sameValue = (1_000 == 1000)
+
+--! assertNoErrors

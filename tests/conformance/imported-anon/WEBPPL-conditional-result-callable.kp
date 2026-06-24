@@ -1,0 +1,43 @@
+-- Source: WebPPL #760 (the result of evaluating a conditional expression
+--   cannot be called directly), PR #831 (fix bug directly calling
+--   conditional).
+-- Spec: expressions.application, expressions.conditionals,
+--   types.functions.
+--
+-- The result of an `if/then/else` (or ternary/conditional) expression has
+-- the joined function type of its arms; applying it directly to an
+-- argument must elaborate just as binding it to a let-bound name first
+-- would.
+
+module test
+
+--! mode check
+
+idF : Int -> Int
+let idF x = x
+
+succ : Int -> Int
+let succ x = x + 1
+
+-- POSITIVE: bind the conditional, then apply.
+viaLet : Int
+let viaLet =
+    let f = if True then idF else succ
+    in f 0
+
+--! assertNoErrors
+--! assertType viaLet Int
+
+-- POSITIVE: apply the conditional directly (the case #760/#831 fixes).
+viaDirect : Int
+let viaDirect = (if True then idF else succ) 0
+
+--! assertNoErrors
+--! assertType viaDirect Int
+
+-- POSITIVE: same with both arms returning the same function value.
+viaDirectSame : Int
+let viaDirectSame = (if False then idF else idF) 7
+
+--! assertNoErrors
+--! assertType viaDirectSame Int

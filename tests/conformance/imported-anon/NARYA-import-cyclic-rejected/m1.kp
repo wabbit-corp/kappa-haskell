@@ -1,0 +1,8 @@
+-- Module m1 imports m0. Combined with m0's import of m1, this closes
+-- the cycle.
+module m1
+
+import m0.(valM0)
+
+valM1 : Int
+let valM1 = valM0

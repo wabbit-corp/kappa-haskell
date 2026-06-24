@@ -1,0 +1,41 @@
+-- Source issues: METACOQ-348
+-- Spec: core_semantics.definitional_equality,
+--       core_semantics.definitional_equality.position_independent_transparent_normalization
+--
+-- η-conversion on functions: `(\x -> f x) ≡ f` whenever `x` does not occur
+-- free in `f`. MetaCoq added η-conversion to `eq_term` (#348). Kappa's
+-- definitional equality is required to accept this equivalence at function
+-- type position; the obligation here is acceptance of the η-expanded form
+-- against the same arrow type.
+
+module test
+
+--! mode check
+
+-- POSITIVE: identity function, η-expanded.
+idEta : Nat -> Nat
+let idEta = \x -> x
+
+idApp : Nat -> Nat
+let idApp x = x
+
+-- POSITIVE: an η-expanded version of an existing function type-checks
+-- against the same signature.
+foo : Nat -> Nat
+let foo = \x -> idApp x
+
+bar : Nat -> Nat
+let bar = idApp
+
+-- POSITIVE: at higher order, η-expanded composition.
+appOnce : (Nat -> Nat) -> Nat -> Nat
+let appOnce f x = f x
+
+useEta : (Nat -> Nat) -> Nat -> Nat
+let useEta g = \x -> g x
+
+--! assertNoErrors
+--! assertType idEta Nat -> Nat
+--! assertType foo Nat -> Nat
+--! assertType bar Nat -> Nat
+--! assertType useEta (Nat -> Nat) -> Nat -> Nat

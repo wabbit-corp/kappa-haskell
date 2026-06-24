@@ -1,0 +1,72 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Coalton issue #1246 (non-exhaustive match on integer literal causes
+--   stream error), general Coalton pattern-matching contract.
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--   (kappa.pattern.non-exhaustive §3.2.10).
+--
+-- A match expression on an ADT scrutinee that does not cover all constructors
+-- must produce kappa.pattern.non-exhaustive. A match expression that
+-- does cover all constructors (possibly via wildcard) must compile without error.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Shape : Type =
+    Circle Int
+    Rectangle Int Int
+    Triangle Int Int Int
+
+-- POSITIVE: exhaustive match on a three-constructor enum.
+colorName : Color -> String
+let colorName c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+-- POSITIVE: exhaustive match using a wildcard.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red -> True
+    case _   -> False
+
+-- POSITIVE: exhaustive match on Shape, all constructors covered.
+shapeArea : Shape -> Int
+let shapeArea s =
+    match s
+    case Circle r       -> r * r
+    case Rectangle w h  -> w * h
+    case Triangle a b c -> (a + b + c)
+
+-- NEGATIVE: missing the Blue constructor — non-exhaustive.
+colorCode : Color -> Int
+let colorCode c =
+    match c
+    case Red   -> 0
+    case Green -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: missing Rectangle and Triangle — non-exhaustive.
+isCircle : Shape -> Bool
+let isCircle s =
+    match s
+    case Circle _ -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: empty match on an inhabited type — non-exhaustive.
+emptyMatch : Color -> String
+let emptyMatch c = match c
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

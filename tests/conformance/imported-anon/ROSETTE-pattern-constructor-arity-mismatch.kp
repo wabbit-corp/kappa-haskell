@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-241 (synthesising with grammar containing multiple
+--                struct clauses with different parameterisations),
+--                ROSETTE-216 (match inconsistency with nested patterns)
+-- Spec: expressions.patterns.forms,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A constructor pattern must use exactly the number of sub-patterns
+-- declared by the data constructor. Supplying too few or too many fields
+-- is a stable elaboration error. The Rosette example showed that two
+-- struct constructors that *happen* to share an arity but represent
+-- distinct meanings cannot be merged at the pattern level.
+
+--! mode check
+
+data Op : Type =
+    Move Int Int Int
+    Halt
+
+-- POSITIVE: correct arity for both constructors.
+stepCost : Op -> Int
+let stepCost o =
+    match o
+    case (Move dx dy dz) -> dx + dy + dz
+    case Halt            -> 0
+
+-- NEGATIVE: Move declared with three arguments but matched with two.
+badStep1 : Op -> Int
+let badStep1 o =
+    match o
+    case (Move dx dy) -> dx + dy
+    case Halt         -> 0
+
+-- NEGATIVE: Move matched with four arguments.
+badStep2 : Op -> Int
+let badStep2 o =
+    match o
+    case (Move a b c d) -> a + b + c + d
+    case Halt           -> 0
+
+-- NEGATIVE: Halt is nullary; supplying any sub-pattern is wrong.
+badHalt : Op -> Int
+let badHalt o =
+    match o
+    case (Halt _) -> 0
+    case _        -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 3

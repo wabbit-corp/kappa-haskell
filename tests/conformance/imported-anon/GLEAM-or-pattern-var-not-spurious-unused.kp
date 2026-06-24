@@ -1,0 +1,36 @@
+-- Source issues: gleam#989
+-- Spec: expressions.patterns.validity, compiler.frontir.warning_hygiene
+-- Variables bound in an or-pattern are genuinely used if they appear in the
+-- branch body. The compiler must not emit spurious "unused variable" warnings
+-- for binders that are used in the branch body, even when those binders appear
+-- in multiple or-pattern alternatives.
+
+--! mode check
+
+-- Variables bound in or-pattern alternatives and used in the branch body must
+-- not produce spurious unused-variable warnings.
+--! assertNoWarnings
+--! assertNoErrors
+
+data MyVal : Type =
+    A Int
+    B Int
+    C
+
+-- POSITIVE: `x` is used in the body; no spurious unused warning expected.
+let extract_int (v : MyVal) : Int =
+    match v
+    case A x | B x -> x     -- `x` used; must not warn as unused
+    case C         -> 0
+
+-- POSITIVE: `n` appears in both alternatives and is used.
+let double_or_triple (v : MyVal) : Int =
+    match v
+    case A n | B n -> n * 2
+    case C         -> -1
+
+-- POSITIVE: wildcard in or-pattern for the unused slot; no warning.
+let first_only (p : (Int, Int)) : Int =
+    match p
+    case (x, 0) | (0, x) -> x
+    case (a, _)           -> a

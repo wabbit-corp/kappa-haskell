@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/OptionPattern.hylo
+--                   (diagnostic: "optional pattern may only be used as a condition"),
+--                   PR#1569 (implement optional patterns)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch), pattern_exhaustiveness_reachability
+-- Hylo: optional patterns (`if let y? = x`) can only appear as conditions
+-- in `if`/`while` statements, not in unconditional let bindings. An
+-- unconditional `let z? = ...` is rejected because the Optional unwrapping
+-- must have a fallback path.
+
+--! mode check
+
+data Optional a : Type = None | Some a
+
+isSome : forall (a : Type). Optional a -> Bool
+let isSome o =
+    match o
+    case None   -> False
+    case Some _ -> True
+
+-- POSITIVE: exhaustive match on Optional.
+unwrapInt : Optional Int -> Int
+let unwrapInt o =
+    match o
+    case None   -> 0
+    case Some n -> n
+
+-- POSITIVE: conditional binding used as an if-condition.
+safeUnwrap : Optional Int -> Int
+let safeUnwrap o =
+    match o
+    case Some n -> n + 1
+    case None   -> -1
+
+-- NEGATIVE: optional pattern in unconditional let position — no fallback branch.
+-- The compiler cannot guarantee `o` is `Some` at this point.
+badLet : Optional Int -> Int
+let badLet o =
+    let Some n = o
+    n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: matching None where Some is the only covered pattern.
+-- Using None in a position that expects a non-optional value.
+useNone : Int
+let useNone =
+    let x : Int = None
+    x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

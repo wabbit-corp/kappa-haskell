@@ -1,0 +1,41 @@
+-- Source artifacts: Pikelet book reference/comments.md (doc comments are `|||`),
+--                   tests/comments.pi (doc comments attached to record fields).
+-- Spec: lexical.comments
+-- Gap citation: PIKELET-SA-05 (doc-comment provenance attachment).
+--
+-- Kappa's §5.3 admits ordinary `--` line comments and `{- -}` block
+-- comments only. There is currently no portable `|||` doc-comment token
+-- in Kappa; PIKELET-SA-05 documents the obligation that any future
+-- doc-comment token MUST propagate through FrontIR to the
+-- tooling-facing `docComment` query.
+--
+-- This test acts as a documentary fixture for that obligation by using
+-- only the Kappa-portable comment forms: line and block comments may
+-- appear anywhere ordinary whitespace may, including inside record-type
+-- field rows, and MUST NOT introduce tokens or participate in expression
+-- syntax.
+
+--! mode check
+
+-- The unit type — synonym for the empty closed record.
+-- Multiple line comments may stack as a paragraph attached to a decl.
+type MyUnit : Type0 = Unit
+
+-- A pair of natural numbers; type-internal comments are well-formed
+-- between field declarators.
+type XY : Type0 =
+  ( -- The x coordinate.
+    x : Nat,
+    {- The y coordinate (block-comment form). -}
+    y : Nat,
+  )
+
+-- POSITIVE: ordinary line comments coexist with block comments and are
+-- discarded by the lexer.
+mkXY : Nat -> Nat -> XY
+let mkXY x y = (x = x, y = y)
+
+px : Nat
+let px = (mkXY 1 2).x
+
+--! assertNoErrors

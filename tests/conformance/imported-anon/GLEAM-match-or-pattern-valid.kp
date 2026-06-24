@@ -1,0 +1,46 @@
+-- Source issues: gleam#391, gleam#1489
+-- Spec: expressions.patterns.forms, expressions.patterns.validity
+-- Or-patterns (p1 | p2 | ...) are valid when each alternative binds the same
+-- set of names with definitionally equal types. The compiler must:
+--   • accept or-patterns where binder sets and types match;
+--   • correctly count or-pattern arms toward exhaustiveness.
+
+--! mode check
+--! assertNoErrors
+
+data Color : Type =
+    Red
+    Green
+    Blue
+    Yellow
+
+data Shape : Type =
+    Circle
+    Square
+    Triangle
+
+-- POSITIVE: two-arm or-pattern covering two constructors.
+let is_warm (c : Color) : Bool =
+    match c
+    case Red | Yellow -> True
+    case _            -> False
+
+-- POSITIVE: or-pattern covers all constructors → exhaustive without wildcard.
+let color_group (c : Color) : String =
+    match c
+    case Red | Yellow -> "warm"
+    case Green | Blue -> "cool"
+
+-- POSITIVE: nested or-pattern with binder; each arm binds same name.
+let first_int (p : (Int, Int)) : Int =
+    match p
+    case (x, 0) | (0, x) -> x
+    case (a, _)           -> a
+
+-- POSITIVE: or-pattern used with single constructor type binds nothing.
+let shape_simple (s : Shape) : String =
+    match s
+    case Circle | Square   -> "round or square"
+    case Triangle          -> "triangle"
+
+--! assertType is_warm (Color -> Bool)

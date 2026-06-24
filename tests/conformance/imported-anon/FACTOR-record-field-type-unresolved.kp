@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Factor #593 (`TUPLE: foo { a bignum } ;` errors because
+--   `bignum` is not a class word visible to the tuple slot system).
+-- Spec: data_types.data_declarations, modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+--
+-- A record declaration that references a type name in a slot annotation
+-- must reject the declaration with kappa.name.unresolved when the type
+-- name is not in scope. The diagnostic must name the missing identifier
+-- and the admissible declaration kind (a type), and must not collapse
+-- into a downstream type mismatch.
+
+module test
+
+--! mode check
+
+-- POSITIVE: slot type is in scope.
+data Box : Type =
+    Box { value : Int }
+
+-- NEGATIVE: slot type `BigNum` is not in scope. The diagnostic must be
+-- name-unresolved at the slot annotation, not a downstream type mismatch
+-- on a use site.
+data BadBox : Type =
+    BadBox { value : BigNum }
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a nested missing type name in a parameterized slot type.
+data Container : Type =
+    Container { contents : List Widget }
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

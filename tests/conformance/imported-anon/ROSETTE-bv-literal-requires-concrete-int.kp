@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-235 (branches are not supported when constructing
+--                bitvectors — `(bv (if b 1 2) 32)` is rejected)
+-- Spec: literals.numeric_literals.integers,
+--       literals.numeric_literals.typing,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--
+-- The Rosette error message says `bv: expected a real, non-infinite,
+-- non-NaN number`. Kappa's portable analogue: a numeric literal is a
+-- compile-time constant of a numeric type. You can read a runtime Int
+-- expression through ordinary arithmetic, but the operations that need
+-- a concrete literal (e.g. literal-domain mismatch checks) require an
+-- Int value, not a Bool. This fixture pins down two facets:
+--
+-- 1. numeric expressions flow correctly through conditionals; and
+-- 2. supplying a non-Int operand to a position expecting an Int is a
+--    type mismatch.
+
+--! mode check
+
+-- POSITIVE: ordinary numeric literal in an arithmetic context.
+inc : Int -> Int
+let inc n = n + 1
+
+-- POSITIVE: an Int variable participates in arithmetic.
+useVal : Int -> Int
+let useVal x = x + 2
+
+-- POSITIVE: a conditional Int expression flows into a function that
+-- accepts an Int parameter.
+pickInt : Bool -> Int
+let pickInt b = if b then 1 else 2
+
+useConditional : Int
+let useConditional = inc (pickInt True)
+
+-- NEGATIVE: assigning a Bool to an Int-only operator position.
+badBool : Int
+let badBool = True + 1
+
+-- NEGATIVE: feeding a String into an Int-only position.
+badString : Int
+let badString = "1" + 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

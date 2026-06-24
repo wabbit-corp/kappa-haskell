@@ -1,0 +1,34 @@
+-- Source issues: elm #2252, #2292, #953
+-- Spec: data_types.type_aliases
+-- A non-opaque type alias `type Id (a : Type) = a` is transparent.
+-- `Id Int` is definitionally equal to `Int`.
+-- A function with a signature using `Id` should be accepted where `a` is needed.
+
+--! mode check
+
+-- Define a transparent identity alias.
+type Id (a : Type) = a
+
+-- POSITIVE: the identity alias is transparent; `Id Int` unifies with `Int`.
+useIdInt : Id Int -> Int
+let useIdInt x = x
+
+-- POSITIVE: a value of type `Int` is accepted where `Id Int` is expected.
+toIdA : Int -> Id Int
+let toIdA x = x
+
+-- POSITIVE: type-checking across the alias boundary in both directions.
+applyId : (a -> b) -> Id a -> Id b
+let applyId f x = f x
+
+-- POSITIVE: a composed alias (double identity still folds to the base type).
+type Wrapped (a : Type) = Id (Id a)
+
+useWrapped : Wrapped Int -> Int
+let useWrapped x = x
+
+-- POSITIVE: arithmetic through the alias boundary is accepted.
+addOne : Id Int -> Id Int
+let addOne x = x + 1
+
+--! assertNoErrors

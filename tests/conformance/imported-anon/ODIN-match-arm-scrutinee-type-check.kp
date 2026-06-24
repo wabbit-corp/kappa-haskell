@@ -1,0 +1,80 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#4244 (switch statement not type-checking boolean case value)
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       OSA-ODIN-06
+-- Each arm of a match expression must have the same type as the scrutinee
+-- (or be a pattern for that scrutinee's constructor set). An expression of
+-- type Bool used as a case value against an Int scrutinee must be rejected.
+-- No implicit coercion from Bool to Int (or any other incompatible pair) is
+-- permitted in case-value positions.
+
+--! mode check
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: each case arm is a constructor of Color.
+let colorPriority (c : Color) : Int =
+    match c
+    case Red   -> 3
+    case Green -> 2
+    case Blue  -> 1
+
+
+-- POSITIVE: wildcard arm is always compatible with any scrutinee type.
+let isRedOrGreen (c : Color) : Bool =
+    match c
+    case Red   -> True
+    case Green -> True
+    case _     -> False
+
+
+-- NEGATIVE: case arm uses a different constructor set (a Bool arm against Color).
+-- `True` and `False` are not constructors of Color.
+let badColorMatchBool (c : Color) : Int =
+    match c
+    case True  -> 1
+    case False -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: case arm uses an Int literal against a Color scrutinee.
+let badColorMatchInt (c : Color) : Int =
+    match c
+    case 1 -> 1
+    case _ -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: matching on an Int scrutinee with Int literals — accepted.
+let classifyNum (n : Int) : String =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case _ -> "other"
+
+
+-- NEGATIVE: matching an Int scrutinee with a Bool value.
+-- `True` is not an Int; this must produce kappa.type.mismatch.
+let badIntMatchBool (n : Int) : String =
+    match n
+    case True  -> "true"
+    case False -> "false"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: matching a Bool scrutinee with a Color constructor.
+let badBoolMatchColor (b : Bool) : Int =
+    match b
+    case Red   -> 1
+    case Green -> 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 4

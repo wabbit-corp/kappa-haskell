@@ -1,0 +1,34 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: BQN scope.md (*"The first access to a variable must be
+--   made by its definition"*),
+-- BQN tests/test/cases/syntax.bqn rejected: `a↩2` at top-level (must use
+--   `←` for first definition), `a+↩2` modify before define.
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- Kappa does not have BQN's `←` (define) vs `↩` (modify) distinction;
+-- both use `let`. The portable obligation BQN reveals is: referencing
+-- a name that has never been introduced in any enclosing scope produces
+-- the unresolved-name family, not an internal failure.
+
+--! mode check
+
+-- POSITIVE: an ordinary top-level definition then a separate top-level
+-- reference. Both `defined` and `useDefined` are well-scoped.
+defined : Nat
+let defined = 0
+
+useDefined : Nat
+let useDefined = defined + 1
+
+-- NEGATIVE: referencing a name `nowhere` that was never declared at
+-- the top level or in any enclosing scope is an unresolved-name error.
+poke : Nat
+let poke = nowhere + 7
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

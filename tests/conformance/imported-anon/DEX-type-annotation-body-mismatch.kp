@@ -1,0 +1,70 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: dex-lang type-tests.dx
+--   (`f : (Int) -> Float = \x. z = x + 1.0; x` →
+--   `Type error: Expected: Int32  Actual: Float32`),
+--   dex-lang #286 (return type cannot depend on component of argument),
+--   dex-lang #709 (dependent-type case body mismatch).
+-- Spec: declarations.term_declarations.body_type_check (§9.1),
+--       compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch).
+-- A function's body must produce a value whose type is consistent with the
+-- declared return type annotation. When the body's inferred type differs from
+-- the declared type, the compiler must reject the definition with a
+-- kappa.type.mismatch diagnostic naming both the expected and actual types.
+
+--! mode check
+
+-- NEGATIVE: declared return type is Float but body returns the Int input.
+intToFloat : Int -> Float
+let intToFloat x =
+    let z = x + 1    -- z has type Int (x + 1)
+    x
+                 -- x has type Int, but the return type is Float
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: body applies Int arithmetic to a Float declared argument,
+-- then returns the Int.
+mixedArith : Float -> Int
+let mixedArith x =
+    let y = x + 1.0    -- y has type Float
+    y
+                   -- y is Float but return type is Int
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: polymorphic return type but body returns a concrete type.
+polyFn : forall (a : Type). a -> Bool
+let polyFn x = True
+-- `True` has type Bool, but the declared return type is the unconstrained `a`.
+-- `a` is universally quantified, so it cannot be unified with Bool.
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: declared return type matches body.
+addOne : Int -> Int
+let addOne x = x + 1
+
+-- POSITIVE: returning the input unchanged — identity is correctly typed.
+identityFn : forall (a : Type). a -> a
+let identityFn x = x
+
+-- POSITIVE: multi-expression body; final expression matches return type.
+computeFloat : Float -> Float
+let computeFloat x =
+    let y = x * 2.0
+    let z = y + 1.0
+    z
+
+-- NEGATIVE: a function claiming to convert Bool to Int returns a Float.
+boolToInt : Bool -> Int
+let boolToInt b =
+    if b then 1.0 else 0.0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertType addOne Int -> Int
+
+--! assertErrorCount 4

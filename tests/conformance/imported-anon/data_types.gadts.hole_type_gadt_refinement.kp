@@ -1,0 +1,23 @@
+-- Source issues: GHC#11325, GHC#12468
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       data_types.gadts
+-- After matching a GADT constructor that carries a type equality, a typed hole
+-- in the branch body must reflect the refined index type, not the original
+-- unrefined type variable.
+
+module test
+
+data STy (t : Type) : Type =
+  SInt  : STy Int
+  SBool : STy Bool
+
+-- Accepted: in the SInt branch, the hole should have type Int (not a free ty).
+-- In the SBool branch, the hole should have type Bool.
+-- Both holes are unsolved; each must be blamed individually as a hole error.
+zero : STy t -> t
+let zero ty =
+  match ty
+    case SInt  -> _
+    case SBool -> _
+
+--! assertDiagnosticFamily error kappa.hole.unsolved

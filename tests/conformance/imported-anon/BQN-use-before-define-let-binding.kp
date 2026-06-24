@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: BQN-30 (try.html predicate-guard reports `s is undefined`
+--   for `{ (1 = 2) ? 3 }`; the inner read of an implicit subject occurs
+--   before its definition).
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved).
+-- A read of a name in the same scope before any defining occurrence is
+-- structurally indistinguishable from a name that does not exist at all
+-- and must produce kappa.name.unresolved, not an internal-compiler
+-- failure or undefined-symbol leak.
+
+--! mode check
+
+-- POSITIVE: a normal forward-reading let where the binding precedes its use.
+n : Nat
+let n = 5
+
+useN : Nat
+let useN = n + 1
+
+-- NEGATIVE: read before any defining occurrence — `result` is never
+-- declared on a previous line and is not a top-level signature.
+badRead : Nat
+let badRead = result + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: function body reads a parameter spelled differently than the
+-- declared parameter; the misspelling has no binder in scope.
+mistypedParam : Nat -> Nat
+let mistypedParam x = y + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

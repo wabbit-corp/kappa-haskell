@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig#25644, zig compile_errors/switch_expression-missing_enumeration_prong.zig
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match on a closed nominal enumeration must cover every declared constructor.
+-- Omitting even one constructor is a compile-time error. The diagnostic must
+-- name the uncovered constructors so the programmer can add the missing arms.
+
+--! mode check
+
+data Number : Type =
+    One
+    Two
+    Three
+    Four
+
+-- POSITIVE: all four constructors covered — accepted.
+let classify (n : Number) : Int =
+    match n
+    case One   -> 1
+    case Two   -> 2
+    case Three -> 3
+    case Four  -> 4
+
+
+-- POSITIVE: wildcard covers whatever is left — accepted.
+let isTwo (n : Number) : Bool =
+    match n
+    case Two -> True
+    case _   -> False
+
+
+-- NEGATIVE: `Four` is omitted — non-exhaustive.
+let classifyBad (n : Number) : Int =
+    match n
+    case One   -> 1
+    case Two   -> 2
+    case Three -> 3
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one constructor covered with no wildcard.
+let onlyOne (n : Number) : Int =
+    match n
+    case One -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

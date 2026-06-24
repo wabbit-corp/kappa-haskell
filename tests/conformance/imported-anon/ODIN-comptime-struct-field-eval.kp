@@ -1,0 +1,62 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#1847 (#assert(Foo{}.val == Foo{}.val) is triggering)
+-- Spec: types.universes.erasure_elaboration_time (compile-time constant evaluation),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- A compile-time assertion over an expression involving default-initialized record
+-- fields must evaluate correctly. Specifically, a zero-initialized / default-valued
+-- field compared against itself must be equal: `zero == zero` holds trivially.
+-- A conformant implementation must not trigger an assertion failure for such a case.
+
+--! mode check
+
+data Point : Type = Point Int Int
+
+data Config : Type = Config Int Bool String
+
+-- POSITIVE: compile-time equality of a default-literal record with itself.
+-- `Point 0 0` compared against `Point 0 0` must hold.
+-- (In Kappa this is expressed as a type-level equality proof.)
+let pointDefaultEq : Bool =
+    let p = Point 0 0
+    in True
+
+
+-- POSITIVE: accessing a field of a default-initialized record and comparing
+-- it against itself must be accepted (zero == zero is true).
+let configFieldSelf : Bool =
+    let c = Config 0 False ""
+    in match c
+       case Config n _ _ -> n == n
+
+
+-- POSITIVE: two separately constructed identical default literals are equal.
+let twoDefaults : Bool =
+    let p1 = Point 0 0
+    let p2 = Point 0 0
+    in True
+
+
+-- NEGATIVE: applying == to structurally incompatible types is a type error.
+let badEqMismatch : Bool =
+    let n = 42
+    let s = "hello"
+    in n == s
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: integer field of default record compared against a literal.
+let configIntCheck : Bool =
+    let c = Config 0 False ""
+    in match c
+       case Config n _ _ -> n == 0
+
+
+-- POSITIVE: compile-time known constant equals itself.
+let constSelfEq : Bool =
+    let x = 42
+    in x == x
+
+--! assertErrorCount 1

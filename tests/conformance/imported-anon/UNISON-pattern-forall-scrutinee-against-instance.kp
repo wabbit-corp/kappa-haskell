@@ -1,0 +1,40 @@
+-- Source issue: UNISON#6087 (fixes UNISON#6018)
+-- Spec: expressions.match, expressions.match.index_refinement_constructor_knowledge
+-- When a scrutinee has a universally quantified type, the pattern's
+-- constructor may legitimately fix the universal to a specific instance.
+-- The PR fixed a backwards subtyping check (pattern <: scrutinee), which
+-- prevented `match (s : forall a. Box a) with Box (x : Int) -> ...` even
+-- when `Box` is a data type and `Int` is a valid instantiation.
+-- Kappa's normative rule: matching against a constructor pattern unifies
+-- the scrutinee's type with the constructor's elaborated head; the
+-- instantiation is by *unification*, not by an asymmetric subtype check.
+
+--! mode check
+
+data Box (a : Type) : Type =
+    Box a
+
+-- POSITIVE: a polymorphic scrutinee may be matched by a pattern that
+-- fixes the universal to a concrete type.
+let unwrap_int (s : forall (a : Type). Box a) : Int =
+    match s
+        case Box (x : Int) -> x
+
+--! assertNoErrors
+
+-- POSITIVE: the same scrutinee matched at a different instantiation in
+-- a separate branch group is also valid (each match site instantiates
+-- independently).
+let unwrap_unit (s : forall (a : Type). Box a) : Unit =
+    match s
+        case Box (_ : Unit) -> ()
+
+--! assertNoErrors
+
+-- POSITIVE: pattern-binding a fresh type variable infers the
+-- instantiation from context (the result type is `Int`).
+let unwrap_via_inference (s : forall (a : Type). Box a) : Int =
+    match s
+        case Box x -> (x : Int)
+
+--! assertNoErrors

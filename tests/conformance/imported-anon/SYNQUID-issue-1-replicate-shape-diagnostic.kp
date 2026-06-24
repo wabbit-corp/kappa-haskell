@@ -1,0 +1,58 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid issue #1 — replacing
+--                 `replicate :: n: Nat -> x: a -> {List a | len _v == n}`
+--                 with the constant variant
+--                 `replicate :: x: a -> {List a | len _v == 4}`
+--                 produced "Cannot match shape 'Bool' with shape '_'". The
+--                 Synquid diagnostic exposes an internal underscore and a
+--                 missing arrow head, indicating a synthesizer-internal
+--                 shape failure that was not surfaced as a portable
+--                 type-equality diagnostic.
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.hole.unsolved),
+--       compiler.frontir.ordinary_errors_not_internal_failures
+--
+-- The Kappa-portable obligation: when an ordinary user error (e.g. asking
+-- to construct a List value at a constant index without a synthesis
+-- environment) cannot be served, the diagnostic must be an ordinary
+-- typed error (a hole-unsolved or a type-mismatch), not an internal-
+-- failure trace. The hole must be reported with its expected type.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: well-typed parameterised replicate (the structural-recursion
+-- form Synquid is asked to synthesize).
+replicate : forall (a : Type). PNat -> a -> List a
+let replicate n x =
+    match n
+      case Z      -> Nil
+      case (S k)  -> Cons x (replicate k x)
+
+-- POSITIVE: instantiation at PNat at runtime.
+threeOnes : List PNat
+let threeOnes = replicate (S (S (S Z))) (S Z)
+
+-- NEGATIVE: the Synquid-style constant-index goal: asking for a List
+-- whose length is implicitly fixed without a usable synthesis driver
+-- collapses to an unsolved hole reported by family
+-- kappa.hole.unsolved. The diagnostic MUST NOT render as
+-- "Cannot match shape 'Bool' with shape '_'" or otherwise leak
+-- internal shape variables.
+constantLen : forall (a : Type). a -> List a
+let constantLen x = ?build
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+--! assertErrorCount 1

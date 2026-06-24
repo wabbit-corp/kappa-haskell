@@ -1,0 +1,25 @@
+-- Source: WebPPL #489 (returnify error for non-expression last statement),
+--   PR #574 (change error for missing return value),
+--   PR #587 (append "undefined" to programs without a final expression).
+-- Spec: effects.elaboration_model.result_producing_item,
+--   effects.elaboration_model.do_item_sequences.
+--
+-- Per §18.8.6, the final item of a `do` block MUST be a result-producing
+-- expression item `final : m A` (e.g. `pure x`). A `do` block whose only
+-- item is a `let` binding (no following expression) has no result
+-- producer and is rejected. Kappa does not currently specify a portable
+-- diagnostic code or family for this case; we assert only that the
+-- program is rejected. The WebPPL diagnostic-quality lessons referenced
+-- by #489/PR #574/PR #587 are tracked under WEBPPL-SA-07.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a `do` block whose only item is a `let` has no result
+-- producer; the program is rejected.
+badDo : Eff <[ ]> Int
+let badDo = do
+    let x = 1
+
+--! assertErrorCount 1

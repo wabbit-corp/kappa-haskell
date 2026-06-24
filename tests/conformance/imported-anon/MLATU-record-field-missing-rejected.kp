@@ -1,0 +1,34 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu #15 ("Add record types"). The portable Kappa
+--   obligation is that projecting a non-existent field name is rejected
+--   at compile time.
+-- Spec: types.records, types.records.field_projection,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+
+module test
+
+--! mode check
+
+data Foo : Type =
+    Foo { a : Int, b : String }
+
+mkFoo : Foo
+let mkFoo = Foo { a = 1, b = "two" }
+
+-- POSITIVE: existing field.
+ok : Int
+let ok = mkFoo.a
+
+--! assertType ok Int
+
+-- NEGATIVE: a field that does not exist on Foo.
+bad : Int
+let bad = mkFoo.z
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

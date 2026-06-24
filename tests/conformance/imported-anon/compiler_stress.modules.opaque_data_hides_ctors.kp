@@ -1,0 +1,30 @@
+-- Stress test: Constructors of `opaque data` are not accessible outside the defining module
+-- Spec: modules.visibility_opacity_private_opaque.data
+
+--! mode check
+
+-- Inside the defining module, the constructor `Counter` is available.
+opaque data Counter : Type = Counter Int
+
+-- Construction is valid inside this module (where opacity is transparent).
+mkCounter : Int -> Counter
+let mkCounter n = Counter n
+
+-- Pattern matching is valid inside this module.
+getCount : Counter -> Int
+let getCount c = match c
+    case Counter n -> n
+
+-- Operations on Counter using only the internal representation.
+increment : Counter -> Counter
+let increment c = match c
+    case Counter n -> Counter (n + 1)
+
+zero : Counter
+let zero = Counter 0
+
+-- Document: outside this module, `Counter` (the constructor) is not name-resolvable.
+-- An importing module cannot write `Counter 5` or `match c case Counter n -> ...`
+-- without an explicit `clarify Counter` import item under the unsafe debug facility.
+
+--! assertNoErrors

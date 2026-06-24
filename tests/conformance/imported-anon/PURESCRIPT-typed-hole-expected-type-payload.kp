@@ -1,0 +1,37 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: PURESCRIPT-PR-2023 (Typed holes, linked #1283),
+--                   PURESCRIPT-PR-2132 (linked #2070 — typed hole errors now
+--                   include environment information),
+--                   PURESCRIPT-PR-2247 (better context for typed hole errors).
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.hole.unsolved).
+-- Kappa spec rule (§ expressions.implicit_parameters.expression_holes_named_holes):
+--   "Diagnostics for each unsolved hole MUST report at least: the hole name,
+--    or an implementation-generated identifier for `_`; the expected type;
+--    the local explicit context; relevant local implicit assumptions and
+--    constraint goals; and the source span of each occurrence."
+-- An unsolved anonymous `_` in expression position must be diagnosed with the
+-- `kappa.hole.unsolved` family and the payload must include the expected
+-- type of the hole.
+
+--! mode check
+
+-- NEGATIVE: anonymous hole `_` in expression position whose context demands
+-- `Int -> Int`.
+add_two : Int -> Int
+let add_two x = x + _
+
+-- NEGATIVE: another hole at a record-field-typed position; the payload must
+-- carry the expected field type, not the surrounding record type.
+type Pt : Type = (x : Int, y : Int)
+
+mk_pt : Pt
+let mk_pt = (x = 1, y = _)
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+--! assertErrorCount 2

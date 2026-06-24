@@ -1,0 +1,25 @@
+-- Source issues: BQN-98 (`0⊸↕·⋄{0}` reports `Invalid left-hand side in
+--   assignment` in JS REPL and `Stack size goes negative` in CBQN — two
+--   different errors for the same parse-level invalidity).
+-- BQN tests/test/cases/syntax.bqn rejected: `2←3`, `←`, `a←`, `˜←˙`,
+-- `a+←1`, `-⟜a←1`, `(A b)←@`.
+-- Spec: expressions.patterns.forms, expressions.patterns.scoping_validity.
+-- The LHS of a top-level `let` binding must be a pattern. The Kappa
+-- pattern grammar lists numeric literals as a valid pattern form, but
+-- a bare numeric-literal pattern in a top-level binding is a
+-- non-irrefutable pattern, which §9.3 rejects.  See SA-BQN-04 for the
+-- still-open spec gap on a stable invalid-LHS diagnostic family.
+
+--! mode check
+
+-- POSITIVE: an ordinary binding with a literal RHS is accepted.
+goodBinding : Nat
+let goodBinding = 3
+
+-- NEGATIVE: a numeric literal on the LHS is not a valid binding form.
+-- BQN's `2←3` is rejected; Kappa must reject the analog at parse time.
+-- The precise diagnostic family is not yet specified (see SA-BQN-04);
+-- in either case at least one error is required.
+let 2 = 3
+
+--! assertErrorCount 1

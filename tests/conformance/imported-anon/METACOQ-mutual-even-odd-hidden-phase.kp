@@ -1,0 +1,47 @@
+-- Source issues: METACOQ-1182, METACOQ-367
+-- Spec: declarations.totality.hidden_phase_components,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- Mutually recursive `isEven`/`isOdd` is accepted by Kappa's hidden-phase
+-- scheme: each call alternates between the SCC members, and the phase
+-- component decreases at each cross-call. MetaCoq's pretty-printer issue
+-- (#1182) exposed a naming bug in the printed mutual fix; the portable
+-- semantic obligation is that the SCC is accepted at all.
+
+module test
+
+--! mode check
+
+-- A local Peano so we can pattern-match on the inductive structure that
+-- the hidden-phase scheme tracks. (Prelude `Nat` is `expect data` and has
+-- no source-level constructors.)
+data Peano : Type =
+    PZ
+    PS Peano
+
+-- POSITIVE: classic even/odd mutual recursion. Both members carry a
+-- preceding signature so they form one SCC, and the hidden phase ensures
+-- the cross-call alternation is well-founded.
+isEven : Peano -> Bool
+isOdd  : Peano -> Bool
+
+let isEven n decreases structural n =
+    match n
+    case PZ      -> True
+    case (PS m)  -> isOdd m
+
+let isOdd n decreases structural n =
+    match n
+    case PZ      -> False
+    case (PS m)  -> isEven m
+
+-- POSITIVE: cross-call uses produce expected Bool results.
+e2 : Bool
+let e2 = isEven (PS (PS PZ))
+
+o3 : Bool
+let o3 = isOdd (PS (PS (PS PZ)))
+
+--! assertNoErrors
+--! assertType isEven Peano -> Bool
+--! assertType isOdd Peano -> Bool

@@ -1,0 +1,43 @@
+-- Source issue: carp-lang/Carp#1443
+-- Spec: types.unions.elimination_match,
+--       types.unions.formation,
+--       data_types.data_declarations
+-- Carp #1443: a single-constructor product `(deftype Struct [x Int])`
+-- could not be pattern-matched because the lowering looked for a `_tag`
+-- field that single-constructor types don't have.  The portable Kappa
+-- obligation is that pattern matching on a single-constructor `data`
+-- type is well-formed; the elaborator treats it as an irrefutable
+-- match.
+
+--! mode check
+
+data Box : Type = MkBox Int
+
+-- POSITIVE: a single-constructor match is exhaustive and well-formed.
+unwrap : Box -> Int
+let unwrap b =
+    match b
+    case MkBox n -> n
+
+--! assertNoErrors
+--! assertType unwrap Box -> Int
+
+-- POSITIVE: the same pattern in a let irrefutable position is admitted
+-- (single-constructor types are valid irrefutable binders).
+unwrapLet : Box -> Int
+let unwrapLet b =
+    let (MkBox n) : Box = b
+    n
+
+--! assertNoErrors
+--! assertType unwrapLet Box -> Int
+
+-- POSITIVE: composing the single-constructor unwrap with arithmetic is
+-- well-formed; the elaborator does not insist on a `_tag` field.
+extract : Box -> Int
+let extract b =
+    let n : Int = unwrap b
+    n + 1
+
+--! assertNoErrors
+--! assertType extract Box -> Int

@@ -1,0 +1,37 @@
+-- Source issue: carp-lang/Carp#1296
+-- Spec: literals.unit_tuples,
+--       declarations.terms
+-- Carp #1296: assigning a unit-typed expression to a `def` produced
+-- invalid C (an `int` declaration of `void`).  The portable Kappa
+-- obligation is that a top-level binding may have unit type; reading the
+-- binding yields the unit value.
+
+--! mode check
+
+-- POSITIVE: a top-level let bound to a unit-typed expression.
+sideEffect : Unit
+let sideEffect = ()
+
+--! assertNoErrors
+--! assertType sideEffect Unit
+
+-- POSITIVE: a top-level let bound to a side-effecting call returning
+-- unit.
+result : Unit
+let result = noisyOp 7
+
+noisyOp : Int -> Unit
+let noisyOp x = ()
+
+--! assertNoErrors
+--! assertType result Unit
+
+-- POSITIVE: reading a unit-typed binding in a `do`-like expression
+-- propagates the unit value without diagnostic.
+useUnit : Int
+let useUnit =
+    let _ : Unit = sideEffect
+    1
+
+--! assertNoErrors
+--! assertType useUnit Int

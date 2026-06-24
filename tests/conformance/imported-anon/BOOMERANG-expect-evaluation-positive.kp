@@ -1,0 +1,33 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         `test cs.get original_c = << ... >>` is a Boomerang inline
+--         unit test asserting that evaluating `cs.get original_c`
+--         produces the expected string. Kappa has no inline-test
+--         ergonomic at module scope (recorded as BSA-BOOMERANG-07); the
+--         portable substitute is to bind the equality expression as an
+--         ordinary `Bool` term and let the harness assertions confirm
+--         it elaborates.
+-- Spec: appendices.test_harness.assertion_directives.diagnostic_assertions,
+--       appendices.test_harness.assertion_directives.type_declaration_shape_assertions.
+-- Related spec gap: BSA-BOOMERANG-07 (no inline `test EXPR = EXPECTED`
+--   form in Kappa).
+-- Portable obligation: an equality expression elaborates at type Bool
+--   and the surrounding declarations remain error-free.
+
+module test
+
+--! mode check
+
+double : Int -> Int
+let double n = n + n
+
+-- POSITIVE: equality expression typechecks at Bool.
+checkDouble : Bool
+let checkDouble = double 21 == 42
+
+checkZero : Bool
+let checkZero = double 0 == 0
+
+--! assertNoErrors
+--! assertType double (Int -> Int)
+--! assertType checkDouble Bool
+--! assertType checkZero Bool

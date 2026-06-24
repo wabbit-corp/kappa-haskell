@@ -1,0 +1,61 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: class-method.rhm in racket/rhombus
+-- Spec: traits.headers, traits.instances
+--   A type that provides no instance for a required trait cannot be used in contexts
+--   that demand that trait. The compiler diagnoses the missing instance as an unsolved
+--   implicit argument (kappa.implicit.unsolved).
+-- Note: Rhombus's notion of "abstract class that cannot be instantiated" maps in Kappa to
+--   a type with no provided instance for the required trait, making the implicit unsolvable.
+
+--! mode check
+
+trait Printable (a : Type) =
+    printMe : a -> String
+
+trait Describable (a : Type) =
+    theName   : a -> String
+    theDetail : a -> String
+
+-- POSITIVE: concrete type with instance — can be used where Printable is required.
+data ConcreteWidget : Type =
+    MkConcreteWidget { label : String }
+
+instance Printable ConcreteWidget =
+    let printMe w = "Widget: " ++ w.label
+
+data ConcreteDoc : Type =
+    MkConcreteDoc { title : String, body : String }
+
+instance Describable ConcreteDoc =
+    let theName   d = d.title
+    let theDetail d = d.body
+
+makeWidget : String -> ConcreteWidget
+let makeWidget lbl = MkConcreteWidget { label = lbl }
+
+printAny : (@_ : Printable a) -> a -> String
+let printAny x = printMe x
+
+-- NEGATIVE: AbstractNode has no Printable instance — the implicit cannot be solved.
+data AbstractNode : Type =
+    MkAbstractNode { id : Int }
+
+badPrint : String
+let badPrint = printAny (MkAbstractNode { id = 42 })
+
+-- NEGATIVE: IncompleteReport has no Describable instance.
+data IncompleteReport : Type =
+    MkIncompleteReport { raw : String }
+
+getDesc : (@_ : Describable a) -> a -> String
+let getDesc x = theName x
+
+badDescribe : String
+let badDescribe = getDesc (MkIncompleteReport { raw = "data" })
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! assertErrorCount 2

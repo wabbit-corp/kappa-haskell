@@ -1,0 +1,32 @@
+-- Source issue: MLatu docs/docs/tutorial.md ("you can also define
+--   rules yourself: `a b = c.` is a rule that matches on `a b`, and
+--   will rewrite it to `c`"). MLatu rules are equational definitions
+--   that rewrite the left side to the right side. The portable
+--   obligation for Kappa is that a `let` definition behaves
+--   equationally: the defined name reduces to the body at every use
+--   site.
+-- Spec: declarations.terms, expressions.application,
+--       core_semantics.definitional_equality.
+
+module test
+
+--! mode check
+
+-- POSITIVE: equational definition.
+-- "a = 1." then "use = a" expects use ≡ 1.
+a : Int
+let a = 1
+
+useA : Int
+let useA = a
+
+-- POSITIVE: an "a b = c" style rule expressed as a function definition.
+pairRule : Int -> Int -> Int
+let pairRule x y = x + y
+
+callRule : Int
+let callRule = pairRule 2 3
+
+--! assertNoErrors
+--! assertType useA Int
+--! assertType callRule Int

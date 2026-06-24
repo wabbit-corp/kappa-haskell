@@ -1,0 +1,47 @@
+-- Source issues: METACOQ-326, METACOQ-369
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c,
+--       expressions.patterns.forms
+--
+-- Constructors with named binders may be matched using named-record pattern
+-- syntax. This is the deconstruction counterpart of the named application
+-- in §10.1.1. MetaCoq's primitive-projection quoting issue (#326) showed
+-- that record-style construction and destruction must use one declarative
+-- form, not two duplicated ones.
+
+module test
+
+--! mode check
+
+data Point : Type =
+    MkPoint (x : Nat) (y : Nat)
+
+-- POSITIVE: positional pattern.
+extractX : Point -> Nat
+let extractX p =
+    match p
+    case MkPoint a _ -> a
+
+-- POSITIVE: named-record pattern.
+extractY : Point -> Nat
+let extractY p =
+    match p
+    case MkPoint { y = b } -> b
+
+-- POSITIVE: named pattern with field punning.
+sumXY : Point -> Nat
+let sumXY p =
+    match p
+    case MkPoint { x, y } -> x + y
+
+-- POSITIVE: GADT-style constructor with named arguments.
+data Box (a : Type) : Type =
+    MkBox : (value : a) -> (size : Nat) -> Box a
+
+unbox : forall (a : Type). Box a -> a
+let unbox b =
+    match b
+    case MkBox { value = v } -> v
+
+--! assertNoErrors
+--! assertType extractX Point -> Nat
+--! assertType sumXY Point -> Nat

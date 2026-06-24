@@ -1,0 +1,37 @@
+-- Source artifacts: PURESCRIPT-PR-2761 (linked #469, #2715 — `Union` /
+--                   row-union family), PURESCRIPT-PR-4159 (linked #3701 —
+--                   improved row error messages),
+--                   PURESCRIPT-PR-4224 (linked #3938 — eagerly apply
+--                   substitutions when inferring object binders).
+-- Spec: types.records.row_polymorphism,
+--       types.quantification.rows_labels,
+--       expressions.application.
+-- Kappa spec rule (§ types.records.row_polymorphism):
+--   "A function `(name : String | r) -> String` is polymorphic in the residual
+--    row `r : RecRow` with the implicit constraint `LacksRec r name`."
+-- A function polymorphic over the residual record row `r : RecRow` accepts any
+-- closed record that supplies the explicit fields, regardless of what other
+-- fields the row contains, and the projection is well-typed via
+-- `ContainsRec r ℓ T`.
+
+--! mode check
+
+-- POSITIVE: row-polymorphic projection from a one-field demand.
+get_x : forall (r : RecRow). (x : Int | r) -> Int
+let get_x rec = rec.x
+
+-- POSITIVE: applying `get_x` to two structurally different closed records.
+e1 : Int
+let e1 = get_x (x = 10, y = "hello")
+
+e2 : Int
+let e2 = get_x (x = 20, z = True, w = (a = 1, b = 2))
+
+-- POSITIVE: row-polymorphic over multiple explicit fields.
+add_xy : forall (r : RecRow). (x : Int, y : Int | r) -> Int
+let add_xy rec = rec.x + rec.y
+
+e3 : Int
+let e3 = add_xy (x = 3, y = 4, label = "extra")
+
+--! assertNoErrors

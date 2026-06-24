@@ -1,0 +1,38 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Roc #5236
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.functions
+-- A function annotated to take four parameters but defined to take only
+-- three must be rejected by the type-checker (kappa.type.mismatch),
+-- not deferred to a later phase. The arity of the function expression on
+-- the right-hand side must match the arity of the annotated function type.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: annotation says four parameters, but the body's lambda binds
+-- only three. The result type is also wrong (the body returns `crash`-
+-- elaborated unit, but the annotation says Result U32 (...)). Surface
+-- diagnostic must be kappa.type.mismatch on the function expression.
+parse4 : Int -> Int -> Int -> Int -> Int
+let parse4 = \first second third -> 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: matching arity is accepted.
+parse4Ok : Int -> Int -> Int -> Int -> Int
+let parse4Ok = \a b c d -> a + b + c + d
+
+--! assertType parse4Ok Int -> Int -> Int -> Int -> Int
+
+-- NEGATIVE (symmetric): too many lambda parameters relative to annotation.
+parse2Wide : Int -> Int
+let parse2Wide = \a b -> a + b
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

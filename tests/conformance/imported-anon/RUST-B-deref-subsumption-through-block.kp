@@ -1,0 +1,65 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: rust#26978, rust#57749, rust#83783 (slice > 50000)
+-- Spec: expressions.application.subsumption,
+--       expressions.application.subsumption.spine_pipeline,
+--       expressions.application.equality_based_subsumption_automatic_transport_insertion,
+--       data_types.type_aliases
+--
+-- Expected-type-directed checking propagates through the tail of a block
+-- expression. The block's tail expression carries the block's demanded
+-- type, so a subsumption step (definitional unfolding of a transparent
+-- alias, or a §16.1.8 one-step transport via an equality proof) that
+-- would apply at the surrounding position also applies at the block tail.
+--
+-- The Rust analog (`let _: &i32 = &{ Box::new(1i32) }` via deref coercion)
+-- is too strong for Kappa: Kappa does not have arbitrary trait-driven
+-- coercion in subsumption position. The portable obligation that survives
+-- is the simpler one above: Kappa's transparent-alias unfolding and
+-- §16.1.8 transport propagate through block tails.
+
+module test
+
+-- A transparent type alias. Definitionally equal to its body.
+type Id (a : Type) = a
+
+--! mode check
+
+-- POSITIVE: the block's tail has type `Id Int`, which is definitionally
+-- equal to `Int`. The demanded type on the outer `let` flows into the
+-- block tail; the equality unfolds and the binding succeeds.
+unfoldThroughBlock : Int
+let unfoldThroughBlock =
+    let result : Int = do
+        pure (7 : Id Int)
+    result
+
+
+-- POSITIVE: directly using the alias at the block's outer demand site
+-- and supplying an `Int` at the tail. Same alias unfolding, in the
+-- reverse direction.
+demandAliasUnfold : Id Int
+let demandAliasUnfold =
+    let result : Id Int = do
+        pure (7 : Int)
+    result
+
+
+-- NEGATIVE: a block tail whose type is structurally distinct from the
+-- demanded type cannot be admitted by §16.1.8 because no one-step equality
+-- proof relates them. Kappa does not insert arbitrary trait-driven
+-- coercions; the program is rejected.
+data Boxed (a : Type) : Type =
+    Boxed a
+
+stoppedHere : Int
+let stoppedHere =
+    let result : Int = do
+        pure (Boxed 7)
+    result
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

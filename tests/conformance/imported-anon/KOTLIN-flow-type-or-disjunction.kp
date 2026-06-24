@@ -1,0 +1,43 @@
+-- Source issues: KT-1982 (smart cast to common supertype after ||)
+-- Spec: expressions.conditionals.flow_typing_through_short_circuit_short_circuit_not
+
+--! mode check
+
+-- A sealed hierarchy with a shared supertype.
+data Status : Type =
+    Ok     (code : Int)
+    Warn   (code : Int)
+    Fail   (msg  : String)
+
+-- POSITIVE: `||` desugars to nested if. The then body is checked under each arm's
+-- success environment separately. If a projection type is the same in both, it
+-- type-checks. Here both Ok and Warn have a `code` field of type Int.
+getCode : Status -> Int
+let getCode st =
+    if st is Ok || st is Warn then
+        st.code   -- checked once under HasCtor Ok, once under HasCtor Warn
+    else
+        -1
+
+--! assertNoErrors
+--! assertType getCode (Status -> Int)
+
+-- POSITIVE: disjunction on optional types.
+eitherPresent : String? -> Int? -> Bool
+let eitherPresent s n =
+    if s != Option.None || n != Option.None then
+        True
+    else
+        False   -- here neither is narrowed (both could be None)
+
+--! assertNoErrors
+
+-- POSITIVE: triple disjunction on a sealed type.
+isSuccessful : Status -> Bool
+let isSuccessful st =
+    if st is Ok || st is Warn || st is Fail then
+        True   -- exhaustive for sealed Status; all arms reachable
+    else
+        False
+
+--! assertNoErrors

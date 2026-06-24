@@ -1,0 +1,48 @@
+-- Source issue: OCaml#5502
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       kappa.pattern.constructor-arity
+-- A nullary constructor (one with no parameters) applied to an argument in a
+-- pattern position is a constructor-arity mismatch and must be rejected.
+-- OCaml accepted `fun (None _) -> 42` incorrectly; Kappa must reject this.
+-- The diagnostic must use portable alias E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH.
+
+module test
+
+data Option (a : Type) : Type =
+    None : Option a
+    Some : a -> Option a
+
+-- Rejected: `None` is nullary; applying it to `_` in a pattern is an arity error.
+badNoneWild : Option Int -> Int
+let badNoneWild x =
+    match x
+      case None _   -> 0        --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+      case Some n   -> n
+
+--! mode check
+--! assertDiagnostic error E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Rejected: `None` applied to a named pattern is also an arity error.
+badNoneVar : Option Int -> Int
+let badNoneVar x =
+    match x
+      case None z   -> 0        --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+      case Some n   -> n
+
+--! assertDiagnostic error E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+-- Accepted: `None` with no argument, `Some` with one argument.
+goodMatch : Option Int -> Int
+let goodMatch x =
+    match x
+      case None   -> 0
+      case Some n -> n
+
+
+-- Accepted: `Some` takes one argument.
+goodSome : Option Int -> Bool
+let goodSome x =
+    match x
+      case Some _ -> True
+      case None   -> False
+

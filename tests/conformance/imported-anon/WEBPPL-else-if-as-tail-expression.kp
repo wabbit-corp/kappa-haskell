@@ -1,0 +1,39 @@
+-- Source: WebPPL #790 ('else if' clauses cannot be used as program return
+--   value), PR #834 (fix top-level use of `else if`).
+-- Spec: expressions.conditionals.
+--
+-- A chain `if c1 then a elif c2 then b else c` is a single conditional
+-- expression usable in any expression position, including as the final
+-- expression of a module / function body.
+
+module test
+
+--! mode check
+
+classify : Int -> Int
+let classify x =
+    if x < 0 then -1
+    elif x == 0 then 0
+    else 1
+
+--! assertNoErrors
+--! assertType classify (Int -> Int)
+
+-- POSITIVE: a longer chain still elaborates as one conditional expression.
+score : Int -> Int
+let score n =
+    if n == 0 then 0
+    elif n == 1 then 10
+    elif n == 2 then 20
+    elif n == 3 then 30
+    else 40
+
+--! assertNoErrors
+--! assertType score (Int -> Int)
+
+-- POSITIVE: the chain is a tail expression of the module evaluation.
+tailResult : Int
+let tailResult = classify 5
+
+--! assertNoErrors
+--! assertType tailResult Int

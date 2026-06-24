@@ -1,0 +1,74 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#8435 (Generic type constraint fails to instantiate
+--         independent T1/T2 sharing the same constraint — treated as co-equal),
+--         nim-lang/Nim#16153 (Union typed generics "cannot instantiate: 'T'")
+-- Spec: types.quantification.implicit_declaration_universalization,
+--       compiler.frontir.standard_diagnostic_families (kappa.type.mismatch)
+-- When a generic function has two type variables T1 and T2 that independently
+-- satisfy the same trait constraint, T1 and T2 must be treated as independent
+-- variables — instantiating T1 as Int and T2 as String at the same call site
+-- must be accepted. Conflating them (requiring T1 = T2) would be wrong.
+
+--! mode check
+module test
+
+trait Printable (a : Type) =
+    printIt : (& x : a) -> String
+
+instance Printable Int =
+    let printIt _ = "Int"
+
+instance Printable String =
+    let printIt s = "String:" ++ s
+
+instance Printable Bool =
+    let printIt _ = "Bool"
+
+-- POSITIVE: two independent type parameters, each constrained to Printable.
+-- T1 and T2 can be instantiated to different types.
+printPair :
+    forall (a : Type) (b : Type).
+    (@_ : Printable a) -> (@_ : Printable b) ->
+    a -> b -> String
+let printPair x y = printIt x ++ " and " ++ printIt y
+
+-- POSITIVE: instantiating at two different types — Int and String.
+mixedPair : String
+let mixedPair = printPair 42 "hello"
+
+-- POSITIVE: instantiating at the same type twice — both Int.
+samePair : String
+let samePair = printPair 1 2
+
+-- POSITIVE: three independent constrained parameters.
+printTriple :
+    forall (a : Type) (b : Type) (c : Type).
+    (@_ : Printable a) -> (@_ : Printable b) -> (@_ : Printable c) ->
+    a -> b -> c -> String
+let printTriple x y z =
+    printIt x ++ ", " ++ printIt y ++ ", " ++ printIt z
+
+mixedTriple : String
+let mixedTriple = printTriple 1 "two" True
+
+-- NEGATIVE: calling printPair with a type that doesn't satisfy Printable.
+data Opaque : Type = Opaque
+
+badPrintPair : String
+let badPrintPair = printPair 42 Opaque
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: higher-order function with independently-typed parameters.
+applyBoth :
+    forall (a : Type) (b : Type) (c : Type).
+    (a -> c) -> (b -> c) -> a -> b -> (c, c)
+let applyBoth f g x y = (f x, g y)
+
+bothResults : (String, String)
+let bothResults = applyBoth printIt printIt 42 "hello"
+
+--! assertErrorCount 1

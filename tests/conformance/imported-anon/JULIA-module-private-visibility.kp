@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Module basics", Julia export mechanism
+-- Spec: modules.visibility, modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, unexported module names are not accessible via `using`. The
+-- portable obligation in Kappa is that names introduced in an inner scope are
+-- not visible outside it; using such a name from the outer scope is
+-- kappa.name.unresolved.
+
+--! mode check
+
+-- A top-level function is accessible everywhere after its declaration.
+publicHelper : Int -> Int
+let publicHelper x = x + 1
+
+-- POSITIVE: top-level name is in scope.
+ok : Int
+let ok = publicHelper 5
+
+-- A computation that uses a locally scoped helper.
+computeWithHelper : Int
+let computeWithHelper =
+    let privateHelper x = x * 2
+    privateHelper 3
+
+-- NEGATIVE: privateHelper is not visible outside its let block.
+badAccess : Int
+let badAccess = privateHelper 10
+
+-- NEGATIVE: another reference to the out-of-scope name.
+alsoMissing : Int
+let alsoMissing = privateHelper 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

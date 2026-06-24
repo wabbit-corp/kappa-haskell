@@ -1,0 +1,35 @@
+-- Source: Maude tests/BuiltIn/int.maude (INT module: quo, rem, ^, gcd,
+--           lcm, abs, ~, comparison),
+--         tests/BuiltIn/rat.maude (RAT module: rational arithmetic),
+--         tests/BuiltIn/nat.maude (NAT subsumes by subsort).
+-- Spec: literals.numeric_literals,
+--       literals.numeric_literals.typing,
+--       collections.lowering.built_in_collection_obligations.
+-- Portable obligation: Kappa's Int prelude must implement integer
+--   quotient and remainder satisfying the standard division identity
+--   `n = (n / d) * d + (n % d)` for d /= 0.
+
+--! mode check
+
+module test
+
+q : Int
+let q = 100 / 7    -- 14
+
+r : Int
+let r = 100 % 7    -- 2
+
+-- POSITIVE: the standard division identity holds for d /= 0.
+ident : Bool
+let ident = (100 / 7) * 7 + (100 % 7) == 100
+
+absN : Int
+let absN = if (0 - 5) < 0 then 0 - (0 - 5) else (0 - 5)
+
+negSqr : Int
+let negSqr = (0 - 3) * (0 - 3)    -- 9
+
+--! assertNoErrors
+--! assertType q Int
+--! assertType r Int
+--! assertType ident Bool

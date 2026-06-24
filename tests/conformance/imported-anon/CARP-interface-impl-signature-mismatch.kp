@@ -1,0 +1,45 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: carp-lang/Carp#758
+-- Spec: types.universes.trait_evidence,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+-- Carp #758: a function in an unrelated module accidentally shared a
+-- name with an `interface`; the compiler reported an interface mismatch
+-- (`Bucket.empty doesn't match the interface signature (Fn [] (f a))`).
+-- The portable Kappa obligation is that an `instance`/`implements`
+-- declaration must produce a function whose type matches the trait
+-- signature; an incompatible signature is rejected.
+
+--! mode check
+
+trait Speaks (a : Type) =
+    speak : a -> String
+
+-- POSITIVE: a valid implementation that matches the signature.
+data Dog : Type = MkDog
+
+instance Speaks Dog =
+    let speak d = "woof"
+
+
+-- NEGATIVE: implementation has the wrong arity for `speak` (zero args
+-- instead of one); rejection comes from instance-evidence checking.
+data Number : Type = MkNumber
+
+instance Speaks Number =
+    let speak = "WOO!"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: implementation has the wrong return type (Int instead of
+-- String).
+data Counter : Type = MkCounter
+
+instance Speaks Counter =
+    let speak c = 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

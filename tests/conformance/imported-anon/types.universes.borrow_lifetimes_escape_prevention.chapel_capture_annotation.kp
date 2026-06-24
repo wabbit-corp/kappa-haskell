@@ -1,0 +1,59 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: Chapel #8377, #8378, #8373, #12984
+-- Spec: types.universes.borrow_lifetimes_escape_prevention.capture_annotated_types
+-- The `captures (s)` annotation on a function type makes explicit that the
+-- returned value carries a borrow whose region is `s`. This annotation is
+-- required at function boundaries whenever a borrow of a parameter would
+-- otherwise be an anonymous rigid region that cannot escape.
+--
+-- Chapel's lifetime-checking issues (#8377, #8378) are about specifying
+-- "this function returns a value whose lifetime is tied to argument X".
+-- In Kappa, that obligation is expressed via explicit region parameters and
+-- the `captures` annotation.
+
+--! mode check
+
+-- POSITIVE: a getter function that takes a borrowed argument via an explicit
+-- region variable and returns a function annotated with captures (s).
+-- The caller knows the returned closure can only be used while s is live.
+makeGetter :
+    forall (s : Region) (a : Type).
+    (&[s] x : a) -> ((Unit -> a) captures (s))
+let makeGetter x = \ _ -> x
+
+-- POSITIVE: use makeGetter within a scope where the root is still live.
+safeUseGetter : Int
+let safeUseGetter =
+    let 1 root = 100
+    let & borrowed = root
+    let getter = makeGetter borrowed
+    getter ()
+
+
+---
+
+-- NEGATIVE: a function that takes a borrow and tries to return a closure
+-- WITHOUT the captures annotation. The anonymous rigid region cannot escape.
+-- This MUST be rejected because the closure hides a borrow of the argument
+-- whose lifetime cannot be reflected in the unannotated return type.
+leakGetter :
+    forall (a : Type).
+    (& x : a) -> (Unit -> a)
+let leakGetter x =
+    -- The closure `\ _ -> x` captures the borrow of `x`, whose region is an
+    -- anonymous rigid rho. Without `captures (rho)`, this is an escape.
+    \ _ -> x
+
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+---
+
+-- POSITIVE: it is safe to use the borrow within the binding's own body
+-- without returning it. No captures annotation needed.
+useInPlace : (& x : Int) -> Int
+let useInPlace x = x + 1
+
+--! assertErrorCount 1

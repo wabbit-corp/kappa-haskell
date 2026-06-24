@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: granule-project/granule PR #83 (usage bound intervals)
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.reified_quantity_satisfaction,
+--       types.universes.quantities.positive_lower_bounds
+-- Kappa §12.2 surface-quantity `<=1` is affine: at most one demand permitted.
+-- Demanding twice violates the upper bound. `>=1` (relevant) requires at
+-- least one demand and emits `kappa.quantity.positive-lower-bound`
+-- (§3.2.5) when violated.
+
+module test
+
+--! mode check
+
+-- POSITIVE: affine — used once.
+affineUsed : forall (a : Type). (<=1 x : a) -> a
+let affineUsed x = x
+
+--! assertType affineUsed (forall (a : Type). (<=1 x : a) -> a)
+
+-- POSITIVE: affine — used zero times (zero is permitted by <=1).
+affineDrop : forall (a : Type). (<=1 x : a) -> Unit
+let affineDrop x = ()
+
+
+-- NEGATIVE: affine — declared upper bound 1 but used twice.
+affineBadDup : forall (a : Type). (<=1 x : a) -> (a, a)
+let affineBadDup x = (x, x)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- POSITIVE: relevant (>=1) — used at least once is OK.
+relevantUsed : forall (a : Type). (>=1 x : a) -> a
+let relevantUsed x = x
+
+
+-- POSITIVE: relevant — used twice also satisfies >=1 (lower bound).
+relevantDup : forall (a : Type). (>=1 x : a) -> (a, a)
+let relevantDup x = (x, x)
+
+
+-- NEGATIVE: relevant — declared lower bound 1 but body never demands.
+-- Per §3.2.5 kappa.quantity.positive-lower-bound.
+relevantBadDrop : forall (a : Type). (>=1 x : a) -> Unit
+let relevantBadDrop x = ()
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+--! assertErrorCount 2

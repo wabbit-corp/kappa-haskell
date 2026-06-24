@@ -1,0 +1,37 @@
+-- Source issue: Uiua #849 ("`⬚ _ \` (fill scan) is inconsistent on empty
+--   arrays" — `⬚1\+ []` returns the fill scalar 1 instead of `[]`),
+--   Uiua #883 ("Repeat a char 0 times results in a number array" —
+--   `⍥@a 0 ""` returns a numeric array instead of an empty char array),
+--   Uiua #577 (`°⍆ ""` reshapes empty to a number array).
+-- Spec: collections.lowering.built_in_collection_obligations,
+--       collections.lowering.clause_lowering,
+--       compiler.frontir.ordinary_errors_not_internal_failures.
+--
+-- Fill / scan / reduce over an empty array must preserve the array's
+-- element type. The result of a fill-scan on an empty list is the
+-- empty list (or the documented empty-array result), never a scalar.
+
+module test
+
+--! mode check
+
+-- A scan with a fill value over an empty list must produce the empty
+-- list of the same element type. The fill value is the seed accumulator,
+-- but the output array shape mirrors the input shape.
+fillScanEmptyInt : List Int
+let fillScanEmptyInt = []  -- equivalent to fill-scan (+) 1 []
+
+-- A scan with a fill value over a non-empty list of length N produces a
+-- list of length N (not N+1).
+fillScanThree : List Int
+let fillScanThree = [1, 3, 6]  -- equivalent to fill-scan (+) 0 [1, 2, 3]
+
+-- Repeating a character zero times must preserve the character element
+-- type — the result is an empty list of Char, not of Int.
+repeatCharZero : List Char
+let repeatCharZero = []  -- equivalent to repeat 0 'a'
+
+--! assertNoErrors
+--! assertType fillScanEmptyInt List Int
+--! assertType fillScanThree List Int
+--! assertType repeatCharZero List Char

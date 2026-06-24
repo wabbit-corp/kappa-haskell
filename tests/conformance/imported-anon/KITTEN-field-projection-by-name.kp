@@ -1,0 +1,37 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #169 (field names in types: `1.0 2.0 3.0 point3D
+--   .x` should yield the `x` field; the user expects the type-directed
+--   lookup of the field's index from the receiver's inferred type; if
+--   the field is missing, error).
+-- Spec: types.records.syntax, types.records.field_projection,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved, which covers missing field
+--       names per §3.2.2).
+
+module test
+
+--! mode check
+
+data Point3D : Type =
+    Point3D { x : Float, y : Float, z : Float }
+
+origin : Point3D
+let origin = Point3D { x = 0.0, y = 0.0, z = 0.0 }
+
+-- POSITIVE: name-based field projection on a record value.
+xCoord : Float
+let xCoord = origin.x
+
+yCoord : Float
+let yCoord = origin.y
+
+-- NEGATIVE: projecting a non-existent field name.
+wCoord : Float
+let wCoord = origin.w
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

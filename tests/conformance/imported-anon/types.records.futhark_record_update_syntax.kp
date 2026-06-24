@@ -1,0 +1,35 @@
+-- Source issues: FUTHARK-645, FUTHARK-427, FUTHARK-1160
+-- Spec: types.records.update
+-- Futhark #645: notation for updating a single field of a large record.
+-- Futhark #427: tweaking the record update syntax.
+-- Futhark #1160: shorthand for in-place record updates.
+-- Kappa provides record update via the `r.{ field = value }` patch syntax
+-- (spec §13.2.5).  This test verifies that basic record updates are accepted.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+type Point = (x : Int, y : Int)
+
+-- POSITIVE: update a single field via patch syntax.
+moveRight : Point -> Point
+let moveRight p = p.{ x = p.x + 1 }
+
+-- POSITIVE: update multiple fields in one patch.
+reflect : Point -> Point
+let reflect p = p.{ x = p.y, y = p.x }
+
+-- POSITIVE: nested record update.
+type Segment = (start : Point, end : Point)
+
+shiftEnd : Segment -> Int -> Segment
+let shiftEnd seg dx = seg.{ end.x = seg.end.x + dx }
+
+-- POSITIVE: update on a record with many fields — the fields not mentioned
+-- are preserved unchanged.
+type Config = (width : Int, height : Int, depth : Int, enabled : Bool)
+
+setWidth : Config -> Int -> Config
+let setWidth cfg w = cfg.{ width = w }

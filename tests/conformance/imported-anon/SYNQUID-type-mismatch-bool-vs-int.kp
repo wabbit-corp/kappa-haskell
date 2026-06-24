@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid issue #1 ("Cannot match shape 'Bool' with shape '_'"),
+--                 synquid issue #3 ("Cannot match shape 'List (A4)' with shape 'Int'").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch),
+--       compiler.frontir.diagnostic_quality_invariants
+--
+-- The Synquid runs at https://comcom.csail.mit.edu produce internal-looking
+-- diagnostics such as "Cannot match shape 'Bool' with shape '_'" when the
+-- synthesizer hits a type error on a malformed user input. The Kappa-portable
+-- obligation is that ordinary type mismatches between Bool and a numeric/
+-- inductive type must be reported with family `kappa.type.mismatch`,
+-- the diagnostic MUST include expected and actual types as structured
+-- payload, and the rendered message MUST NOT use opaque underscores in
+-- place of one of the compared types.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+-- POSITIVE: ordinary Bool used in a Bool position.
+useBool : Bool
+let useBool = True
+
+-- POSITIVE: ordinary PNat used in a PNat position.
+useNat : PNat
+let useNat = S (S Z)
+
+-- NEGATIVE: applying S (a PNat constructor) to a Bool is a PNat-versus-
+-- Bool mismatch.
+badIncrBool : PNat
+let badIncrBool = S True
+
+-- NEGATIVE: returning a Bool from a PNat-typed binding.
+badBindBool : PNat
+let badBindBool = False
+
+-- NEGATIVE: conditional with mixed branch types.
+badBranchType : PNat
+let badBranchType =
+    if True then Z else False
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

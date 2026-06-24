@@ -1,0 +1,10 @@
+-- Source issue: dhall-lang #70, #337, #1048
+-- Spec: config_mode.profiles
+-- Minimal harness-visible compilation root for this suite (Appendix T.2
+-- requires at least one .lang file). The behavior under test lives in the
+-- sibling .kcfg fixtures, evaluated only by harnesses that support the
+-- configMode capability declared in suite.ltest; valid_config.kcfg must be
+-- accepted and import_rejected.kcfg must produce kappa.feature.gated.
+module config_mode_probe
+
+--! assertNoErrors

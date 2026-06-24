@@ -1,0 +1,39 @@
+-- Source issue: FUTHARK-292
+-- Spec: literals.numeric_literals.integers
+-- Futhark #292: permit underscores as non-semantic separators in numeric
+-- constants, e.g. 0xFF_FF_FF_FF or 1_000_000.
+-- In Kappa, the spec explicitly includes underscore separators in all integer
+-- literal forms: "Underscores `_` are allowed between digits for readability;
+-- they have no semantic effect."  This test confirms acceptance.
+
+--! mode check
+--! assertNoErrors
+
+module test
+
+-- Decimal with underscore groupings.
+million : Int
+let million = 1_000_000
+
+bigDecimal : Int
+let bigDecimal = 9_223_372_036_854_775_807
+
+-- Hex with underscore separators.
+hexWithSeps : Int
+let hexWithSeps = 0xFF_FF_FF_FF
+
+deadBeef : Int
+let deadBeef = 0xDEAD_BEEF
+
+-- Binary with underscore separators.
+binWithSeps : Int
+let binWithSeps = 0b1111_0000_1010_0101
+
+-- Octal with underscore separators.
+octWithSeps : Int
+let octWithSeps = 0o7_5_5
+
+-- Underscores have no semantic effect: values are equal regardless of grouping.
+-- (Both sides are the same integer literal written differently.)
+separatorsAreCosmetic : Bool
+let separatorsAreCosmetic = (1_000 == 1000)

@@ -1,0 +1,18 @@
+-- Source issue: GHC#18491
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       types.universes.quantities
+-- A typed hole in a linear context must inherit the linear quantity from the
+-- expected type. The compiler must not emit an ownership error for the hole
+-- itself before it is filled.
+
+module test
+
+data Box (a : Type) : Type = Box (x : a)
+
+-- Accepted: hole in a linear context should not produce a spurious ownership error.
+-- The hole inherits quantity 1 from the expected type; no quantity violation.
+linearHole : (1 & b : Box Int) -> Int
+let linearHole b = _
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+--! assertErrorCount 1

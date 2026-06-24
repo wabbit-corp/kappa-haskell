@@ -1,0 +1,92 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/gpats.dats
+--         (`| _ when (n<=0) => 1`, factorial with conditional guard),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (case arms with guards)
+-- Spec: expressions.match (§17),
+--       pattern.exhaustiveness (§3.2.10),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive).
+-- ATS3 pattern: a guard `when P` on a match arm means the arm only applies
+--   when the guard is true. Even if every constructor is listed, if all arms
+--   carry guards the match may still be non-exhaustive (no arm fires when
+--   all guards fail). The exhaustiveness check must account for guards.
+-- Kappa mapping: ATS3 `when P` guard corresponds to Kappa `case pat if expr`.
+-- Portable obligation: a match where every arm has a guard, with no
+--   fall-through wildcard, is non-exhaustive and must be rejected.
+
+--! mode check
+
+data Sign : Type = Neg | Zero | Pos
+
+-- POSITIVE: classify is exhaustive; all three variants covered without guards.
+classify : Int -> Sign
+let classify n =
+    if n < 0 then Neg
+    else if n > 0 then Pos
+    else Zero
+
+-- POSITIVE: guard on one arm, wildcard on the other.
+describeSign : Sign -> String
+let describeSign s =
+    match s
+    case Neg  -> "negative"
+    case Zero -> "zero"
+    case _    -> "positive"
+
+-- POSITIVE: match with guards, plus catch-all wildcard at the end.
+classifyInt : Int -> String
+let classifyInt n =
+    match n
+    case x if x < 0  -> "negative"
+    case x if x == 0 -> "zero"
+    case _           -> "positive"
+
+-- NEGATIVE: all arms carry guards, no unconditional fallthrough.
+-- Statically the exhaustiveness checker cannot prove the guards cover all
+-- Int values, so this is flagged as non-exhaustive.
+guardedOnly : Int -> String
+let guardedOnly n =
+    match n
+    case x if x < 0 -> "negative"
+    case x if x > 0 -> "positive"
+
+-- NEGATIVE: one arm has a guard that always fails (`if False`), leaving
+-- `Neg` potentially unhandled.
+guardedConstructor : Sign -> String
+let guardedConstructor s =
+    match s
+    case Neg if False -> "never fires"
+    case Pos          -> "positive"
+    case Zero         -> "zero"
+
+-- POSITIVE: guard in inner match, outer is exhaustive.
+doubleGuard : Sign -> Int -> String
+let doubleGuard s n =
+    match s
+    case Neg  ->
+        match n
+        case x if x < -100 -> "very negative"
+        case _              -> "mildly negative"
+    case Zero -> "zero"
+    case Pos  ->
+        match n
+        case x if x > 100 -> "very positive"
+        case _             -> "mildly positive"
+
+-- NEGATIVE: guard on every arm of a sub-match with no wildcard.
+badInnerGuard : Sign -> Int -> String
+let badInnerGuard s n =
+    match s
+    case Neg ->
+        match n
+        case x if x < -10  -> "large negative"
+        case x if x >= -10 -> "small negative"
+    case Zero -> "zero"
+    case Pos  -> "positive"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

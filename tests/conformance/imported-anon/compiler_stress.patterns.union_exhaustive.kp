@@ -1,0 +1,21 @@
+-- Stress test: exhaustive match on a closed union type
+-- Spec: types.unions.elimination_match
+
+--! mode check
+
+-- Closed union of three types.
+type Status : Type = (| Int | String | Bool |)
+
+-- POSITIVE: all three injection variants are covered; match is exhaustive.
+summarize : Status -> String
+let summarize s =
+    match s
+    case (| n : Int    |) -> "number"
+    case (| t : String |) -> t
+    case (| b : Bool   |) -> if b then "true" else "false"
+
+let s1 : String = summarize (| 42 : Int |)
+let s2 : String = summarize (| "hi" : String |)
+let s3 : String = summarize (| True : Bool |)
+
+--! assertNoErrors

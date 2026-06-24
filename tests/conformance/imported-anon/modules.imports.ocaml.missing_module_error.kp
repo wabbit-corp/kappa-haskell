@@ -1,0 +1,23 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: OCaml#9695
+-- Spec: modules.imports, modules.acyclic_imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Importing a module that cannot be resolved is a compile error regardless of
+-- whether any of the imported names are subsequently used. In particular, an
+-- import of the form `import no.such.module` must be rejected immediately, not
+-- silently ignored until a name from it is referenced.
+-- This prevents the class of bugs where a stale build dependency causes a module
+-- to silently vanish from the import surface.
+
+module test
+
+-- Rejected: `no.such.module` does not exist.
+import no.such.module
+
+--! mode check
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

@@ -1,0 +1,46 @@
+-- Source issue: Koka #858
+-- Spec: expressions.match
+-- Matching a closed product type (tuple of closed types) with all constructor
+-- combinations must be accepted as exhaustive. No catch-all or exception effect
+-- should be required when all cases are explicitly covered.
+
+module test
+
+data Color : Type = Red : Color | Blue : Color
+
+-- All 4 combinations of (Color, Color) are covered: exhaustive.
+-- This must not require 'exn' or any catch-all pattern.
+colorPairLabel : (Color, Color) -> String
+let colorPairLabel pair =
+    match pair
+        case (Red,  Red)  -> "red-red"
+        case (Red,  Blue) -> "red-blue"
+        case (Blue, Red)  -> "blue-red"
+        case (Blue, Blue) -> "blue-blue"
+
+--! mode check
+--! assertType colorPairLabel (Color, Color) -> String
+
+-- Three-constructor ADT paired with Bool.
+data Shape : Type = Circle : Shape | Square : Shape | Triangle : Shape
+
+-- 3 * 2 = 6 cases, all covered.
+shapeBoolLabel : (Shape, Bool) -> Int
+let shapeBoolLabel pair =
+    match pair
+        case (Circle,   True)  -> 1
+        case (Circle,   False) -> 2
+        case (Square,   True)  -> 3
+        case (Square,   False) -> 4
+        case (Triangle, True)  -> 5
+        case (Triangle, False) -> 6
+
+
+-- Non-exhaustive pair match must be rejected.
+partialPair : (Color, Color) -> String
+let partialPair pair =
+    match pair
+        case (Red, Red) -> "red-red"
+        -- missing three cases
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

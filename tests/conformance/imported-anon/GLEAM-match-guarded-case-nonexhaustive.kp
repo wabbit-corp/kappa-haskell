@@ -1,0 +1,45 @@
+-- Source issues: gleam#2430, gleam#34
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Guards do not contribute to exhaustiveness. A match on a closed ADT is
+-- non-exhaustive if the only cases covering a constructor are guarded,
+-- because a failing guard leaves the constructor uncovered.
+
+--! mode check
+
+-- bad_only_guarded produces a non-exhaustive error; the two positive functions
+-- must not. The primary origin of a non-exhaustive diagnostic is at the match
+-- expression, not a specific arm, so a top-level family assertion is used.
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+
+data Dir : Type =
+    North
+    South
+    East
+    West
+
+-- NEGATIVE: only guarded case for North; guard failure leaves North uncovered.
+let bad_only_guarded (d : Dir) (flag : Bool) : String =
+    match d
+    case North if flag -> "north"
+    case South         -> "south"
+    case East          -> "east"
+    case West          -> "west"
+
+-- The guard on `North if flag` means if flag is False and d is North,
+-- no arm matches. A non-exhaustive diagnostic is required.
+
+-- POSITIVE: guarded case plus a catch-all is exhaustive.
+let ok_guarded_with_default (d : Dir) (flag : Bool) : String =
+    match d
+    case North if flag -> "north (flagged)"
+    case _             -> "other"
+
+-- POSITIVE: all constructors covered unconditionally; additional guard on one.
+let ok_all_covered (d : Dir) (n : Int) : String =
+    match d
+    case North if n > 0 -> "north positive"
+    case North          -> "north non-positive"
+    case South          -> "south"
+    case East           -> "east"
+    case West           -> "west"

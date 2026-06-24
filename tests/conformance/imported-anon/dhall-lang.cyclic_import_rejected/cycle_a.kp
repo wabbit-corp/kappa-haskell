@@ -1,0 +1,11 @@
+-- Source issue: dhall-lang #370
+-- Spec: modules.acyclic_imports
+-- Module A: imports module B, creating a cycle.
+-- Together with cycle_b.lang, this forms a mutual import cycle
+-- that MUST be rejected with kappa.query.cycle.
+module cycle_a
+
+import "./cycle_b"
+
+val_a : Nat
+let val_a = cycle_b.val_b

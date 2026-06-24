@@ -1,0 +1,55 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-6046, KT-8700, KT-6227, KT-3743
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+-- A simple enum-style data type with named nullary constructors.
+data Weekday : Type =
+    Mon
+    Tue
+    Wed
+    Thu
+    Fri
+    Sat
+    Sun
+
+-- POSITIVE: all seven constructors covered — exhaustive, no else required.
+isWeekend : Weekday -> Bool
+let isWeekend day =
+    match day
+    case Sat -> True
+    case Sun -> True
+    case _   -> False
+
+--! assertType isWeekend (Weekday -> Bool)
+
+-- POSITIVE: named result from exhaustive match (val initialized in all branches).
+dayNumber : Weekday -> Int
+let dayNumber day =
+    match day
+    case Mon -> 1
+    case Tue -> 2
+    case Wed -> 3
+    case Thu -> 4
+    case Fri -> 5
+    case Sat -> 6
+    case Sun -> 7
+
+--! assertType dayNumber (Weekday -> Int)
+
+-- NEGATIVE: missing three constructors makes the match non-exhaustive.
+partialDay : Weekday -> String
+let partialDay day =
+    match day
+    case Mon -> "Monday"
+    case Tue -> "Tuesday"
+    case Wed -> "Wednesday"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

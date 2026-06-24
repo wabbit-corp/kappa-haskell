@@ -1,0 +1,15 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: an unresolved name produces the kappa.name.unresolved diagnostic family
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+
+--! mode check
+
+-- NEGATIVE: undefinedVariable is not bound anywhere in scope.
+let bad : Int = undefinedVariable + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

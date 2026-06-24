@@ -1,0 +1,38 @@
+-- Source issues: BQN docs/train.md (2-train: `(G H) x ≡ G (H x)`,
+--   identical to ordinary composition `∘`).
+-- Spec: expressions.lambdas, appendices.pipe_operators.
+-- The 2-train is portable function composition. Kappa has both ordinary
+-- composition and pipe operators; this test pins that the 2-train shape
+-- is exactly composition.
+
+--! mode check
+
+compose : forall a b c. (b -> c) -> (a -> b) -> a -> c
+let compose g h x = g (h x)
+
+addOne : Nat -> Nat
+let addOne n = n + 1
+
+double : Nat -> Nat
+let double n = 2 * n
+
+-- POSITIVE: compose double after addOne.
+doubleAfterAddOne : Nat -> Nat
+let doubleAfterAddOne = compose double addOne
+
+result : Nat
+let result = doubleAfterAddOne 5   -- (5 + 1) * 2 = 12
+
+-- POSITIVE: composition is associative.
+chain : Nat -> Nat
+let chain = compose double (compose addOne double)
+
+associative : Nat -> Nat
+let associative = compose (compose double addOne) double
+
+-- POSITIVE: both spellings produce the same result for any input.
+sameAt7 : Bool
+let sameAt7 = chain 7 == associative 7
+
+--! assertNoErrors
+--! assertType compose (forall a b c. (b -> c) -> (a -> b) -> a -> c)

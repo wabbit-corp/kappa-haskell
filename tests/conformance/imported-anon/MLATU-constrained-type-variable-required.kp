@@ -1,0 +1,39 @@
+-- Source issue: MLatu #10 ("Add semantic support for constrained
+--   parameters"); PR#9 ("Adds syntactic support for constrained type
+--   variables"). The proposed syntax `for t. t show => t -> +io` says
+--   that `print` requires a `show` instance for `t`. The portable
+--   obligation for Kappa is that a polymorphic function may carry a
+--   trait constraint on its type variable, and supplying an argument
+--   whose type has the required instance is accepted.
+-- Spec: types.quantification, traits.members,
+--       traits.members.overloaded_member_names, declarations.signatures.
+--
+-- A `forall (a : Type) . Show a => ...` definition elaborates and may
+-- be used at types for which a Show instance is in scope.
+
+module test
+
+--! mode check
+
+trait Show (a : Type) =
+    show : a -> String
+
+instance Show Int =
+    let show n = "<int>"
+
+instance Show String =
+    let show s = s
+
+-- POSITIVE: a constrained polymorphic function.
+showPair : forall (a : Type) . Show a => a -> a -> String
+let showPair x y = show x
+
+useInt : String
+let useInt = showPair 1 2
+
+useStr : String
+let useStr = showPair "hi" "there"
+
+--! assertNoErrors
+--! assertType useInt String
+--! assertType useStr String

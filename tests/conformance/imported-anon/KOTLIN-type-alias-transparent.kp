@@ -1,0 +1,51 @@
+-- Source issues: KT-7155, general (transparent type aliases in checking)
+-- Spec: data_types.type_aliases
+
+--! mode check
+
+-- POSITIVE: a type alias is transparent; the checker expands it when checking.
+type IntList = List Int
+
+emptyList : IntList
+let emptyList = Nil
+
+--! assertNoErrors
+--! assertType emptyList IntList
+
+-- POSITIVE: passing an IntList where List Int is expected — transparent alias.
+sumList : IntList -> Int
+let sumList xs =
+    match xs
+    case Nil    -> 0
+    case h :: t -> h + sumList t
+
+--! assertNoErrors
+--! assertType sumList (IntList -> Int)
+
+-- POSITIVE: type alias for function types.
+type Predicate a = a -> Bool
+
+alwaysTrue : Predicate Int
+let alwaysTrue _ = True
+
+--! assertNoErrors
+--! assertType alwaysTrue (Predicate Int)
+
+-- POSITIVE: alias used in a generic function signature.
+filterWith : forall (a : Type). Predicate a -> List a -> List a
+let filterWith p xs =
+    match xs
+    case Nil    -> Nil
+    case h :: t ->
+        if p h then h :: filterWith p t else filterWith p t
+
+--! assertNoErrors
+
+-- POSITIVE: aliases compose — alias of an alias is expanded fully.
+type IntPred = Predicate Int
+
+checkEven : IntPred
+let checkEven n = n % 2 == 0
+
+--! assertNoErrors
+--! assertType checkEven IntPred

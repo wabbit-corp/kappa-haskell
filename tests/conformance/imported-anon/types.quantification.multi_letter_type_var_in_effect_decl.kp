@@ -1,0 +1,35 @@
+-- Source issue: Koka #211
+-- Spec: types.quantification.implicit_declaration_universalization
+-- Multi-letter type variables in effect declarations must be accepted.
+-- The implicit universalization rule applies to any free lowercase identifier,
+-- including multi-letter identifiers such as 'msg', 'elem', 'src', 'dst'.
+-- Koka #211 reported that multi-letter type variables failed in effect and
+-- data declarations (single-letter worked but multi-letter did not).
+
+module test
+
+-- Multi-letter type variable as effect declaration parameter.
+effect Logger (msg : Type) =
+    ω logLine : msg -> Unit
+
+--! mode check
+--! assertNoErrors
+
+-- Multi-letter type variables in data declaration.
+data Pair (first second : Type) : Type =
+    MkPair : first -> second -> Pair first second
+
+--! assertNoErrors
+
+-- Multi-letter free type variable in effect operation signature.
+-- 'elem' is implicitly universalized in the operation signature.
+effect Transform (elem : Type) =
+    ω applyTransform : elem -> elem
+
+--! assertNoErrors
+
+-- Multi-letter type variables in two separate parameters.
+effect Mapper (src dst : Type) =
+    ω mapElem : src -> dst
+
+--! assertNoErrors

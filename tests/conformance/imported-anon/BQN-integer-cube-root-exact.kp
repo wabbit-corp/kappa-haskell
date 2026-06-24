@@ -1,0 +1,37 @@
+-- Source issues: BQN-37 (`3 √ 729` returns 8.999999999999998 in BQN due to
+--   IEEE-754 float `cbrt`; user expected exact 9).
+-- Spec: literals.numeric_literals.integers (Kappa has arbitrary-precision
+--   `Integer`).
+-- Kappa's `Integer` is exact mathematical integer arithmetic. For
+-- perfect-cube inputs, an integer cube root must be exact, not subject
+-- to IEEE rounding. This test pins the obligation as a property of the
+-- signature contract (the helper returns `Option Integer`, exact).
+
+--! mode check
+
+-- intCubeRoot n returns Some k when k*k*k == n, else None.  Written as
+-- a tail-recursive search bounded by `n` (no `where`, since Kappa's
+-- portable surface uses `let ... in` for local helpers).
+intCubeRootGo : Integer -> Integer -> Option Integer
+let intCubeRootGo k orig =
+    if k * k * k == orig then Some k
+    else if k > orig then None
+    else intCubeRootGo (k + 1) orig
+
+intCubeRoot : Integer -> Option Integer
+let intCubeRoot n = intCubeRootGo 0 n
+
+-- POSITIVE: 729 has an exact integer cube root (9).
+sevenTwoNine : Option Integer
+let sevenTwoNine = intCubeRoot 729
+
+-- POSITIVE: 64 has an exact integer cube root (4).
+sixtyFour : Option Integer
+let sixtyFour = intCubeRoot 64
+
+-- POSITIVE: 9 has no integer cube root.
+nineHasNoCubeRoot : Option Integer
+let nineHasNoCubeRoot = intCubeRoot 9
+
+--! assertNoErrors
+--! assertType intCubeRoot (Integer -> Option Integer)

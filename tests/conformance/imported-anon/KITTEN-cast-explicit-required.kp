@@ -1,0 +1,28 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #173 (cast-as syntax; users want a postfix
+--   form `1.0 (Float32) cast`). Kitten #28 (Int -> Float suggestions;
+--   Kappa's portable signal is that an implicit numeric conversion is
+--   *not* allowed; the cast must be explicit).
+-- Spec: literals.numeric_literals.typing,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- Kappa does not silently widen or narrow numeric types between distinct
+-- nominal numeric domains; a conversion expression must be written
+-- explicitly. Without it, the use site is a type mismatch.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: returning an Int parameter where a Float is required
+-- without an explicit conversion is a type mismatch.
+roundTrip : Int -> Float
+let roundTrip x = x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

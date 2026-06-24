@@ -1,0 +1,9 @@
+-- Module B: imports module A, completing the cycle.
+-- Together with cycle_a.lang, this forms a mutual import cycle
+-- that MUST be rejected with kappa.query.cycle.
+module cycle_b
+
+import "./cycle_a"
+
+val_b : Nat
+let val_b = cycle_a.val_a

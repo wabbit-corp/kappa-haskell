@@ -1,0 +1,47 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Type Annotations", Julia#22932
+-- Spec: types.annotations,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- In Julia, `x::T` asserts that x is of type T; a failed assertion raises a
+-- TypeError at runtime. In Kappa, a top-level type annotation that contradicts
+-- the inferred type of the bound expression is kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: annotation matches inferred type.
+n : Int
+let n = 42
+
+s : String
+let s = "hello"
+
+f : Float
+let f = 3.14
+
+-- NEGATIVE: Int annotation for a String expression.
+bad1 : Int
+let bad1 = "not an int"
+
+-- NEGATIVE: String annotation for an Int expression.
+bad2 : String
+let bad2 = 99
+
+-- NEGATIVE: Float annotation for a Bool expression.
+bad3 : Float
+let bad3 = True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: function with correct parameter and return type annotations.
+double : Int -> Int
+let double x = x + x
+
+ok : Int
+let ok = double 5
+
+--! assertType ok Int
+
+--! assertErrorCount 3

@@ -1,0 +1,60 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: carp-lang/Carp#1025, #1113, #1436, #1439
+-- Spec: types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #1025: exhaustiveness checking was a long-standing missing feature.
+-- Carp #1113: a literal in a constructor pattern crashed the compiler
+-- (`(Maybe.Just 0)` style); the surrounding match was also incomplete.
+-- Carp #1436: non-exhaustive patterns in a lambda body produced a
+-- Haskell-level Non-exhaustive Patterns error rather than a structured
+-- diagnostic.  Carp #1439: a function defined by direct pattern in the
+-- parameter list desugars to a `match` whose exhaustiveness obligation
+-- must be checked.  The portable Kappa obligation is that every `match`
+-- arm sequence over a closed sumtype is checked for exhaustiveness.
+
+--! mode check
+
+data Mb : Type =
+    Nothing
+    | Just Int
+
+-- POSITIVE: a complete match over `Mb` is admitted.
+classifyOk : Mb -> Int
+let classifyOk m =
+    match m
+    case Nothing -> 0
+    case Just n  -> n
+
+--! assertType classifyOk Mb -> Int
+
+-- POSITIVE: a literal-pattern arm plus a wildcard arm is admitted; the
+-- literal-pattern arm covers exactly the case `Just 0`, and the
+-- wildcard arm covers the residue.
+literalArmOk : Mb -> Int
+let literalArmOk m =
+    match m
+    case Just 0  -> 1
+    case _       -> 0
+
+
+-- NEGATIVE: only `Just _` is matched; the `Nothing` arm is missing.
+classifyBad : Mb -> Int
+let classifyBad m =
+    match m
+    case Just n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: same obligation inside a lambda body.
+lambdaBad : Mb -> Int
+let lambdaBad =
+    \m ->
+        match m
+        case Just n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

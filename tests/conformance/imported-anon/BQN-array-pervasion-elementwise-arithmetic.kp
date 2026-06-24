@@ -1,0 +1,45 @@
+-- Source issues: BQN docs/arithmetic.md (*"BQN applies arithmetic
+--   element-wise to arrays, a system known as pervasion"*).
+-- Spec: expressions.application,
+--       modules.prelude.contents (List a is portable; SizedArray
+--       is the indexed analog).
+-- Elementwise lifting of a scalar binary operation over an indexed
+-- collection is a portable obligation. Kappa's prelude provides `List a`
+-- with `Nil` and `(::)` implicitly imported, so the obligation can be
+-- written as a recursive zipWith on lists without relying on any
+-- non-portable helper.
+
+--! mode check
+
+zipWith : forall a b c. (a -> b -> c) -> List a -> List b -> List c
+let zipWith f xs ys =
+    match xs
+      case Nil       -> Nil
+      case x :: xt   ->
+          match ys
+            case Nil     -> Nil
+            case y :: yt -> (f x y) :: (zipWith f xt yt)
+
+-- POSITIVE: elementwise addition of two integer lists.
+addLists : List Integer -> List Integer -> List Integer
+let addLists xs ys = zipWith (+) xs ys
+
+a4 : List Integer
+let a4 = [1, 2, 3, 4]
+
+b4 : List Integer
+let b4 = [10, 10, 10, 10]
+
+sumOK : List Integer
+let sumOK = addLists a4 b4
+
+-- POSITIVE: elementwise subtraction.
+diffOK : List Integer
+let diffOK = zipWith (-) b4 a4
+
+-- POSITIVE: elementwise multiplication.
+prodOK : List Integer
+let prodOK = zipWith (*) a4 b4
+
+--! assertNoErrors
+--! assertType zipWith (forall a b c. (a -> b -> c) -> List a -> List b -> List c)

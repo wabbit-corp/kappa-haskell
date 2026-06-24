@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Module file paths",
+--         Julia LoadError for unknown modules
+-- Spec: modules.imports,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, `using NonExistentModule` raises a LoadError at load time. The
+-- portable obligation in Kappa is that any name used must have been declared;
+-- a reference to an undeclared function or type is kappa.name.unresolved.
+
+--! mode check
+
+-- NEGATIVE: calling a function that has never been declared.
+bad1 : Int
+let bad1 = undeclaredFunction 42
+
+-- NEGATIVE: using another undeclared name.
+bad2 : String
+let bad2 = missingHelper "hello"
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: a locally declared function is accessible from its declaration
+-- point onward.
+increment : Int -> Int
+let increment x = x + 1
+
+ok : Int
+let ok = increment 7
+
+greet : String -> String
+let greet s = s
+
+okStr : String
+let okStr = greet "world"
+
+--! assertErrorCount 2

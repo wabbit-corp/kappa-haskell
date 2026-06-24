@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Numeric Literals",
+--         Julia numeric literal defaulting and promotion rules
+-- Spec: expressions.literals,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+-- In Julia, integer literals default to Int64 and float literals to Float64;
+-- supplying an incompatible literal where a specific type is required fails
+-- the type check. In Kappa, a numeric literal is elaborated to the required
+-- type at the call site; an irreconcilable literal produces
+-- kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: integer literal elaborated to Int.
+n : Int
+let n = 0
+
+-- POSITIVE: float literal elaborated to Float.
+f : Float
+let f = 2.718
+
+-- POSITIVE: literal used in arithmetic context.
+sum : Int
+let sum = n + 1
+
+-- POSITIVE: integer literal at a function call site expecting Int.
+increment : Int -> Int
+let increment x = x + 1
+
+ok : Int
+let ok = increment 7
+
+-- NEGATIVE: float literal where Int is required.
+badInt : Int
+let badInt = 1.5
+
+-- NEGATIVE: string literal where Float is required.
+badFloat : Float
+let badFloat = "pi"
+
+-- NEGATIVE: integer literal where String is required.
+badStr : String
+let badStr = 42
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

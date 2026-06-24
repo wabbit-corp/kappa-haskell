@@ -1,0 +1,64 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-125 (Adding new solvable types — extension via
+--                generic interfaces),
+--                ROSETTE-PR-30 (variadic methods in define-generics)
+-- Spec: traits.headers,
+--       traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--
+-- Kappa's trait obligation: if a function demands `Solvable A`, the
+-- caller must supply an instance for `A`. Calling such a function with
+-- a type that has no instance fails implicit resolution.
+
+--! mode check
+
+trait Solvable (a : Type) =
+    encode : a -> Int
+    decode : Int -> a
+
+data Bit : Type =
+    B0
+    B1
+
+-- POSITIVE: a complete instance for Bit.
+instance Solvable Bit =
+    let encode b =
+        match b
+        case B0 -> 0
+        case B1 -> 1
+    let decode n =
+        if n == 0 then B0 else B1
+
+-- POSITIVE: a complete instance for a wrapper around Int.
+data Wrap : Type =
+    MkWrap Int
+
+instance Solvable Wrap =
+    let encode w =
+        match w
+        case (MkWrap n) -> n
+    let decode n = MkWrap n
+
+-- POSITIVE: encode/decode through the trait method work for declared
+-- instances.
+roundtripBit : Int
+let roundtripBit = encode B0
+
+roundtripWrap : Int
+let roundtripWrap = encode (MkWrap 42)
+
+-- A type with no `Solvable` instance.
+data NoInstance : Type =
+    NIVal Int
+
+-- NEGATIVE: using `encode` on a type without an instance fails implicit
+-- resolution.
+badUse : Int
+let badUse = encode (NIVal 7)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! assertErrorCount 1

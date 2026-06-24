@@ -1,0 +1,32 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: carp-lang/Carp#1098
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Carp #1098: in the dynamic evaluator, `(set! foo 42)` where `foo` was
+-- unbound silently returned the value 42 instead of reporting that the
+-- name did not exist.  The portable Kappa obligation is that referencing
+-- a non-existent name in any expression position is a structured
+-- name-resolution error.  (Kappa has no `set!` rebind form, so the
+-- portable obligation here is the underlying name-lookup rule.)
+
+--! mode check
+
+-- POSITIVE: an in-scope name resolves normally.
+inScopeOk : Int
+let inScopeOk =
+    let x : Int = 1
+    x
+
+--! assertType inScopeOk Int
+
+-- NEGATIVE: referencing a non-existent name is a structured
+-- name-resolution error; the value is not silently fabricated.
+unboundBad : Int
+let unboundBad = undefinedThing
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

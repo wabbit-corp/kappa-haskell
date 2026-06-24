@@ -1,0 +1,59 @@
+-- Source: Maude tests/Misc/unification.maude (ITER fmod:
+--           op s : EvenNat -> OddNat [iter] .
+--           op s : OddNat -> NzEvenNat [iter] .
+--           op s : Nat -> NzNat [iter] .
+--           order-sorted overload selects the most specific signature),
+--         tests/Misc/commands.maude (op f : Int Int -> Int with the call
+--           f(0, 2) selecting the integer signature; subsort Int < Foo
+--           creates a wider domain),
+--         tests/Misc/unification.maude TEST (op f : NzNat Nat / Nat NzNat /
+--           Nat Nat -> Nat all declared as a family).
+-- Spec: lexical.operator_identifiers_fixity.declarations,
+--       expressions.application,
+--       traits.members.overloaded_member_names.
+-- Maude order-sorted overload: a function name may be declared multiple times
+--   with different sort signatures; at the call site the most specific
+--   applicable signature is selected. In Kappa the same pattern occurs with
+--   trait-method overloading by data type and with multiple instance heads.
+-- Portable obligation: a function name overloaded by domain type (here, the
+--   data variant) must resolve unambiguously when the argument's type
+--   identifies a single applicable signature.
+
+--! mode check
+
+module test
+
+trait Step (a : Type) =
+    step : a -> a
+
+data Odd : Type = O1 | O3 | O5
+data Even : Type = E0 | E2 | E4
+
+-- Different instance heads provide different "step" signatures.
+instance Step Odd =
+    let step o = match o
+        case O1 -> O3
+        case O3 -> O5
+        case O5 -> O1
+
+instance Step Even =
+    let step e = match e
+        case E0 -> E2
+        case E2 -> E4
+        case E4 -> E0
+
+-- POSITIVE: call site picks Odd instance because the argument is Odd.
+o : Odd
+let o = step O1
+
+-- POSITIVE: call site picks Even instance because the argument is Even.
+e : Even
+let e = step E0
+
+-- POSITIVE: nested call follows each layer's resolution.
+o2 : Odd
+let o2 = step (step O1)
+
+--! assertNoErrors
+--! assertType o Odd
+--! assertType e Even

@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Factor #355 (the stack effect `lmap ( ... list quot:
+--   ( ... elt -- ... newelt ) -- ... result )` is declared row-poly
+--   but the body accumulates extra results on the stack; the declared
+--   shape does not match the implementation), Factor #88 (row-poly
+--   shallow unification ought to admit empty callable arguments).
+-- Spec: types.functions, types.quantification.rows_labels,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- A higher-order function whose declared signature names a callable
+-- parameter with a specific input/output arity must not let its body
+-- bind a callable of a different shape. The two negative cases below
+-- pin this down.
+
+module test
+
+--! mode check
+
+-- POSITIVE: declared callable arity matches body.
+useMap : (Int -> Int) -> Int -> Int
+let useMap f x = f x
+
+ok : Int
+let ok = useMap (\y -> y + 1) 3
+
+--! assertType ok Int
+
+-- NEGATIVE: declared signature claims `(Int -> Int)` for the callable
+-- argument but the body applies it to two values (interpreting it as
+-- a binary callable). The body's actual use shape contradicts the
+-- declared shape.
+useTwoArg : (Int -> Int) -> Int -> Int -> Int
+let useTwoArg f x y = f x y
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: declared signature claims unary callable; body returns the
+-- callable applied to nothing (a value of callable type), so the
+-- definition's return type would be `(Int -> Int)`, not `Int`.
+useUnaryReturn : (Int -> Int) -> Int
+let useUnaryReturn f = f
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

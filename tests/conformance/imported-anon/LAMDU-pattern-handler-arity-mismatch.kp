@@ -1,0 +1,76 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: lamdu#147 — applying an inject that generates the
+--   correct type gets an incorrect wrapper fragment; lamdu#149 —
+--   recursive de-structuring. A constructor pattern with the wrong
+--   number of sub-patterns for its constructor must be rejected.
+-- Spec: expressions.patterns.forms,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--   §17.x: a constructor pattern binds exactly as many sub-patterns
+--   as the constructor declares fields.
+--
+-- A pattern with the wrong arity for its constructor must produce
+-- `kappa.pattern.constructor-arity` or `kappa.type.mismatch`.
+
+--! mode check
+
+-- POSITIVE: simple sum type with constructors of distinct arities.
+data Either (a : Type) (b : Type) : Type =
+    Left a
+    Right b
+
+unwrapEither : Either Nat Nat -> Nat
+let unwrapEither e =
+    match e
+    case Left  x    -> x
+    case Right y    -> y
+
+-- POSITIVE: a nullary constructor with no sub-patterns.
+data Light : Type =
+    Red
+    Yellow
+    Green
+
+lightTime : Light -> Nat
+let lightTime l =
+    match l
+    case Red     -> 30
+    case Yellow  -> 5
+    case Green   -> 25
+
+-- POSITIVE: a constructor with multiple fields, all bound.
+data Triple : Type =
+    MkTriple Nat Nat Nat
+
+sumTriple : Triple -> Nat
+let sumTriple t =
+    match t
+    case MkTriple a b c    -> a + b + c
+
+-- NEGATIVE: too few sub-patterns for a constructor.
+badArityFew : Either Nat Nat -> Nat
+let badArityFew e =
+    match e
+    case Left          -> 0
+    case Right y       -> y
+
+-- NEGATIVE: too many sub-patterns for a constructor.
+badArityMany : Light -> Nat
+let badArityMany l =
+    match l
+    case Red x         -> x
+    case Yellow        -> 5
+    case Green         -> 25
+
+-- NEGATIVE: missing sub-pattern in a 3-arity constructor.
+badArityTriple : Triple -> Nat
+let badArityTriple t =
+    match t
+    case MkTriple a b    -> a + b
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 3

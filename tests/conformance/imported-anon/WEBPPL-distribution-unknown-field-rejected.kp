@@ -1,0 +1,43 @@
+-- Source issues: WebPPL #793 (unexpected option to Infer/Optimize should
+--   throw), #613 ('Cannot read property webppl' for wrong-type Infer opt),
+--   #438 (more consistent Infer options), PR #844 (warning on unknown options).
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c,
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--   (kappa.constructor.arity / E_CONSTRUCTOR_ARITY_MISMATCH),
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-02.
+--
+-- An unknown, missing, or duplicated field name in the options record of a
+-- distribution constructor is a malformed named-constructor application:
+-- §10.1.1 makes "extra labels not present in the constructor's argument
+-- list" an error, and §3.2.10 routes such errors through portable alias
+-- `E_CONSTRUCTOR_ARITY_MISMATCH` under family `kappa.constructor.arity`.
+
+module test
+
+--! mode check
+
+data Gaussian : Type =
+    Gaussian { mu : Float, sigma : Float }
+
+-- POSITIVE: all declared fields supplied.
+gOk : Gaussian
+let gOk = Gaussian { mu = 0.0, sigma = 1.0 }
+
+
+-- NEGATIVE: an unknown field name (`mean` instead of `mu`) is rejected.
+gTypo : Gaussian
+let gTypo = Gaussian { mean = 0.0, sigma = 1.0 }   --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- NEGATIVE: a missing required field is also rejected.
+gMissing : Gaussian
+let gMissing = Gaussian { mu = 0.0 }               --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- NEGATIVE: an extra spurious field beyond the declared ones is rejected.
+gExtra : Gaussian
+let gExtra = Gaussian { mu = 0.0, sigma = 1.0, foo = 9.0 }  --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH

@@ -1,0 +1,31 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         A Boomerang inline `test EXPR = EXPECTED` evaluated to a
+--         non-matching value fails the test at module load. Kappa has
+--         no inline test form (BSA-BOOMERANG-07); however Kappa's static
+--         type discipline does reject the closely related case where an
+--         expression that should be Bool is bound at the wrong type.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Related spec gap: BSA-BOOMERANG-07 (no inline `test EXPR = EXPECTED`
+--   shorthand; this test exercises the static portable proxy).
+-- Portable obligation: an Int expression bound where Bool is required
+--   is rejected with kappa.type.mismatch.
+
+module test
+
+--! mode check
+
+triple : Int -> Int
+let triple n = n + n + n
+
+-- NEGATIVE: declared as Bool but the right-hand side is Int.
+shouldBeBool : Bool
+let shouldBeBool = triple 3
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

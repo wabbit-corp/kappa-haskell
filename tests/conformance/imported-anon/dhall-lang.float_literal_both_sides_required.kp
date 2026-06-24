@@ -1,0 +1,25 @@
+-- Source issues: dhall-lang #94, #375 (double-literal must have digits on
+--   both sides of the dot; see DHALL_CANDIDATE_LEDGER.md #94)
+-- Spec: literals.numeric_literals.floating_point_float
+-- Split out of dhall-lang.float_literal_both_sides_required on 2026-06-11:
+--   an invalid-syntax file cannot share a directory suite with other files
+--   (Appendix T.2 compiles all .lang files under the suite root together).
+-- POSITIVE: float literals with digits on both sides of the decimal point.
+module valid_floats
+
+--! assertNoErrors
+
+pi : Float
+let pi = 3.14159
+
+half : Float
+let half = 0.5
+
+five : Float
+let five = 5.0
+
+sci : Float
+let sci = 1.0e10
+
+neg_sci : Float
+let neg_sci = 2.5e-3

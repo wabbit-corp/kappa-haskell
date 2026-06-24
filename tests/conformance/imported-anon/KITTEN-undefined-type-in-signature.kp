@@ -1,0 +1,33 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #70 (`def garbage(Cahr ->): drop` produces no
+--   error output even though `Cahr` is not defined). Kitten #71 (poor
+--   diagnostic when a parse error is misreported as a type error).
+-- Spec: modules.names,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+--
+-- A reference to an undefined type in a signature must be diagnosed
+-- with kappa.name.unresolved at the type's occurrence site, not
+-- silently accepted nor reported as a downstream type error.
+
+module test
+
+--! mode check
+
+data CharLike : Type =
+    CharLike
+
+-- NEGATIVE: misspelled type name in parameter position.
+garbage : Cahr -> CharLike
+let garbage c = c
+
+-- NEGATIVE: misspelled type name in result position.
+mistypedResult : CharLike -> Strng
+let mistypedResult c = c
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

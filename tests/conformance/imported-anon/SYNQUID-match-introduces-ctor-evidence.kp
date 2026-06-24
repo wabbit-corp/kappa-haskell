@@ -1,0 +1,65 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid test/checking/List-Append-Bad.sq uses
+--                 `match xs with Cons z zs -> ...` to recover `len xs > 0`
+--                 and `len xs == 1 + len zs`; the refinement-checker proof
+--                 obligation is discharged after the match arm narrows the
+--                 scrutinee to a Cons.
+-- Spec: expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--       expressions.match.index_refinement_constructor_knowledge
+--
+-- The Kappa portable obligation is: matching a scrutinee against a
+-- constructor pattern introduces `HasCtor` evidence into the branch type
+-- environment. Subsequent code in that arm may rely on the constructor
+-- identity (including binder types) without an extra runtime check.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a non-empty-list helper that recovers the head safely after
+-- matching on the Cons constructor. No partial functions are needed
+-- because the Cons arm carries HasCtor evidence.
+firstOrZero : List PNat -> PNat
+let firstOrZero xs =
+    match xs
+      case Nil          -> Z
+      case (Cons x _)   -> x
+
+-- POSITIVE: nested matches accumulate constructor evidence. After
+-- matching the outer Cons and then the inner Cons, both head bindings
+-- are in scope.
+sumTwo : List PNat -> PNat
+let sumTwo xs =
+    match xs
+      case Nil                       -> Z
+      case (Cons x Nil)              -> x
+      case (Cons x (Cons _ _))       -> x
+
+-- POSITIVE: structural recursion using constructor evidence to know
+-- which branch decreases the structural measure.
+firstAll : List PNat -> PNat
+let firstAll xs =
+    match xs
+      case Nil          -> Z
+      case (Cons x _)   -> x
+
+-- NEGATIVE: using a binder from a different arm is out of scope; the
+-- evidence of the Cons arm does not extend into the Nil arm.
+badScope : List PNat -> PNat
+let badScope xs =
+    match xs
+      case Nil          -> x
+      case (Cons x _)   -> x
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

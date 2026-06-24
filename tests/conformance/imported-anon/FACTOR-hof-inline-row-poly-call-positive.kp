@@ -1,0 +1,40 @@
+-- Source issue: Factor #2879 (an inline word that takes a quotation
+--   with row-polymorphic stack effect and calls it with an explicit
+--   `call( ... )` form fails to compile, but calling without the
+--   explicit `call( ... )` works). The portable signal is that a
+--   higher-order function in Kappa should be able to apply a callable
+--   argument whose declared type matches the application site.
+-- Spec: types.functions, types.quantification.rows_labels,
+--       expressions.application.
+--
+-- Positive: a higher-order function that accepts a callable with a
+-- particular type signature can be applied unambiguously. The test
+-- exercises both a monomorphic callable and a polymorphic one.
+
+module test
+
+--! mode check
+
+-- POSITIVE: monomorphic callable argument applied.
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x = f (f x)
+
+result1 : Int
+let result1 = applyTwice (\y -> y + 1) 10
+
+--! assertNoErrors
+--! assertType result1 Int
+
+-- POSITIVE: a polymorphic callable argument applied at a specific type.
+applyAnything : forall (a : Type) . (a -> a) -> a -> a
+let applyAnything f x = f x
+
+result2 : Int
+let result2 = applyAnything (\y -> y * 2) 5
+
+result3 : Bool
+let result3 = applyAnything (\b -> b) True
+
+--! assertNoErrors
+--! assertType result2 Int
+--! assertType result3 Bool

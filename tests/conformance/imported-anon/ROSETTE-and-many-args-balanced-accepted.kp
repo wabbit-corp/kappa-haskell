@@ -1,0 +1,41 @@
+-- Source issue: ROSETTE-155 (Compilation time of (and ...) form is
+--                quadratic in the number of forms)
+-- Spec: expressions.application.short_circuit,
+--       lexical.operator_identifiers_fixity
+--
+-- The Rosette report demonstrates a quadratic compile-time growth for
+-- the `and` macro under a large operand count. While compile-time
+-- complexity is implementation-defined, Kappa's portable obligation is
+-- that an `&&`-fold over many Bools is well-formed and well-typed at
+-- arbitrary arity. This fixture exercises a wide conjunction so that an
+-- implementation cannot regress by silently rejecting large operands.
+
+--! mode check
+
+-- POSITIVE: many-argument right-fold over &&.
+manyAnd : Bool
+let manyAnd =
+    True && True && True && True && True &&
+    True && True && True && True && True &&
+    True && True && True && True && True &&
+    True && True && True && True && True
+
+-- POSITIVE: balanced explicit tree form.
+balanced : Bool
+let balanced =
+    let
+        a  = True && True
+        b  = True && True
+        c  = True && True
+        d  = True && True
+        ab = a && b
+        cd = c && d
+    in ab && cd
+
+-- POSITIVE: many-argument right-fold over ||.
+manyOr : Bool
+let manyOr =
+    False || False || False || False || False ||
+    False || False || False || False || True
+
+--! assertNoErrors

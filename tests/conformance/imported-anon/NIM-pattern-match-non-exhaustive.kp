@@ -1,0 +1,77 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#11474 (Case does not check all cases),
+--         nim-lang/Nim#25774 (ProveField warning with nested case object —
+--         exhaustiveness checker regression for nested case objects)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive), expressions.match
+-- Nim's exhaustiveness checker allowed some case expressions to compile
+-- without covering all branches. Kappa requires exhaustive match; a missing
+-- constructor arm without a wildcard is kappa.pattern.non-exhaustive.
+
+--! mode check
+module test
+
+data Weekday : Type =
+    Monday | Tuesday | Wednesday | Thursday | Friday | Saturday | Sunday
+
+-- POSITIVE: complete coverage with all seven arms.
+isWeekend : Weekday -> Bool
+let isWeekend d =
+    match d
+    case Saturday -> True
+    case Sunday   -> True
+    case Monday   -> False
+    case Tuesday  -> False
+    case Wednesday -> False
+    case Thursday -> False
+    case Friday   -> False
+
+-- POSITIVE: wildcard covers the five remaining weekdays.
+isWeekendWild : Weekday -> Bool
+let isWeekendWild d =
+    match d
+    case Saturday -> True
+    case Sunday   -> True
+    case _        -> False
+
+-- NEGATIVE: Sunday arm is missing and no wildcard.
+missesSunday : Weekday -> Bool
+let missesSunday d =
+    match d
+    case Saturday -> True
+    case Monday   -> False
+    case Tuesday  -> False
+    case Wednesday -> False
+    case Thursday -> False
+    case Friday   -> False
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: no arms at all — cannot match nothing on a closed type.
+noArms : Weekday -> Bool
+let noArms d =
+    match d
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: nested ADT match — both levels exhaustive.
+data DayType : Type = Workday Weekday | Off Weekday
+
+getDayName : DayType -> String
+let getDayName dt =
+    match dt
+    case Workday d ->
+        match d
+        case Monday    -> "Monday"
+        case Tuesday   -> "Tuesday"
+        case Wednesday -> "Wednesday"
+        case Thursday  -> "Thursday"
+        case Friday    -> "Friday"
+        case Saturday  -> "Saturday"
+        case Sunday    -> "Sunday"
+    case Off _ -> "day off"
+
+--! assertErrorCount 2

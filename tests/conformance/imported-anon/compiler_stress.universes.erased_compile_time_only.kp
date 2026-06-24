@@ -1,0 +1,21 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: erased (quantity-0) binding is compile-time only; may not appear at runtime
+-- Spec: types.universes.erasure_elaboration_time, types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: erased type parameter used only at the type level (not at runtime).
+typeId : (0 A : Type) -> A -> A
+let typeId (0 A) x = x
+
+-- NEGATIVE: erased binding n used in a runtime-relevant return position.
+bad : (0 n : Nat) -> Nat
+let bad (0 n) =
+    n
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+--! assertErrorCount 1

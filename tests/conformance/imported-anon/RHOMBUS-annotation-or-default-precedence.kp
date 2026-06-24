@@ -1,0 +1,61 @@
+-- Source issues: rhombus#364 (matching(_) on rhs of (||) in annotations with default values
+--   causes parsing errors)
+-- Spec: declarations.let_in
+--   In Kappa, union type annotations use the `(| T | U |)` form (§13.1). This form is
+--   parenthesised and unambiguous; it does not have precedence conflicts with default-value
+--   assignment syntax. The Kappa obligation: let bindings with union-typed annotations accept
+--   values of any union member type without ambiguity.
+-- Note: Rhombus-specific `||` annotation-union operator precedence is spec gap SA-RHOMBUS-04.
+--   Kappa uses the `(| T | U |)` form which is already unambiguous due to the delimiters.
+-- See also: SA-RHOMBUS-04.
+
+--! mode check
+
+-- POSITIVE: union type annotation on a let binding — Int injection accepted.
+letUnionInt : (| Bool | Int |)
+let letUnionInt = (| 42 : Int |)
+
+-- POSITIVE: union type annotation — Bool injection accepted.
+letUnionBool : (| Bool | Int |)
+let letUnionBool = (| True : Bool |)
+
+-- POSITIVE: match on a union-typed binding dispatches correctly by member type.
+describeUnion : (| Bool | Int |) -> String
+let describeUnion v =
+    match v
+    case (| _ : Int |)  -> "integer"
+    case (| _ : Bool |) -> "boolean"
+
+-- POSITIVE: three-alternative union — each alternative injection works.
+threeWayInt : (| Int | String | Bool |)
+let threeWayInt = (| 0 : Int |)
+
+threeWayStr : (| Int | String | Bool |)
+let threeWayStr = (| "hello" : String |)
+
+threeWayBool : (| Int | String | Bool |)
+let threeWayBool = (| False : Bool |)
+
+describeThree : (| Int | String | Bool |) -> String
+let describeThree v =
+    match v
+    case (| _ : Int |)    -> "int"
+    case (| _ : String |) -> "string"
+    case (| _ : Bool |)   -> "bool"
+
+-- POSITIVE: explicit union type annotation in parameter position.
+acceptUnion : (| Bool | Int |) -> Int
+let acceptUnion v =
+    match v
+    case (| n : Int |)  -> n
+    case (| b : Bool |) -> if b then 1 else 0
+
+-- POSITIVE: union type as a local let binding with immediate consumption.
+consumeUnion : Int
+let consumeUnion =
+    let v : (| Bool | Int |) = (| 7 : Int |)
+    match v
+    case (| n : Int |)  -> n
+    case (| _ : Bool |) -> -1
+
+--! assertNoErrors

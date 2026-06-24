@@ -1,0 +1,37 @@
+-- Source issues: METACOQ-504, METACOQ-432, METACOQ-436
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.explicit_decreases,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- MetaCoq #504 motivates a guard condition that has access to the local
+-- and global environment so it can reason about transparent unfolding.
+-- Kappa's structural-descent rule already permits transparent local alias
+-- expansion and transparent projection reduction rooted in the structural
+-- parameter; the portable obligation is acceptance of these classes.
+
+module test
+
+--! mode check
+
+-- POSITIVE: structural recursion on a list spine using the prelude `List`
+-- constructors `Nil` and `(::)`.
+sumList : List Nat -> Nat
+let sumList xs decreases structural xs =
+    match xs
+    case Nil          -> 0
+    case (::) x rest  -> x + sumList rest
+
+-- POSITIVE: structural descent through a transparent local alias of the
+-- pattern-bound tail. `t` is a local alias for `rest`, so the recursive
+-- call is still rooted in the structural parameter.
+sumViaLet : List Nat -> Nat
+let sumViaLet xs decreases structural xs =
+    match xs
+    case Nil          -> 0
+    case (::) x rest  ->
+        let t = rest
+        x + sumViaLet t
+
+--! assertNoErrors
+--! assertType sumList List Nat -> Nat
+--! assertType sumViaLet List Nat -> Nat

@@ -1,0 +1,31 @@
+-- Source issue: Kitten #169 (if the same field name is present in
+--   multiple constructors of a type, then the field must have the same
+--   type in each; declaring `age : Float64` in one case and `age : Int32`
+--   in another is rejected).
+-- Spec: types.records.syntax, data_types.data_declarations.
+--
+-- Kappa's current spec does NOT mandate cross-case agreement on named
+-- constructor field types. Each constructor declares its own
+-- independent named parameters (§10.1). This test demonstrates the
+-- portable obligation that we can express today: identically-typed
+-- same-named fields across two constructors are accepted. The Kitten
+-- obligation that conflicting field types should be rejected is
+-- tracked as Kitten spec-gap KSA-07.
+
+module test
+
+--! mode check
+
+-- POSITIVE: two constructors of one type with the same field name and
+-- consistent field type.
+data AnimalA : Type =
+    DogA (age : Float)
+    CatA (age : Float)
+
+aDog : AnimalA
+let aDog = DogA 7.5
+
+aCat : AnimalA
+let aCat = CatA 12.0
+
+--! assertNoErrors

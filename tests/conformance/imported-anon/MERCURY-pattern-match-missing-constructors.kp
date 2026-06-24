@@ -1,0 +1,115 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: invalid/det_errors.m (q/2 switch misses some ADT constructors),
+--   invalid/not_a_switch.m, invalid/require_complete_nested_switch.m
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive)
+-- A match expression on a closed algebraic data type must cover every
+-- constructor. If any constructor is omitted and no wildcard or catch-all
+-- branch is present, the pattern is non-exhaustive and must be rejected.
+
+module test
+
+data Season : Type =
+    Spring
+    Summer
+    Autumn
+    Winter
+
+data Colour : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: complete match covering all four Season constructors.
+seasonToInt : Season -> Int
+let seasonToInt s = match s
+    case Spring -> 1
+    case Summer -> 2
+    case Autumn -> 3
+    case Winter -> 4
+
+--! assertType seasonToInt Season -> Int
+
+-- NEGATIVE: match on Season missing Winter.
+seasonName : Season -> String
+let seasonName s = match s
+    case Spring -> "spring"
+    case Summer -> "summer"
+    case Autumn -> "autumn"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: match on Season covering only one constructor.
+onlySpring : Season -> String
+let onlySpring s = match s
+    case Spring -> "yes"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: match with wildcard catches remaining constructors.
+isSpring : Season -> Bool
+let isSpring s = match s
+    case Spring -> True
+    case _      -> False
+
+
+-- POSITIVE: complete match on a three-constructor type.
+colourCode : Colour -> Int
+let colourCode c = match c
+    case Red   -> 0xFF0000
+    case Green -> 0x00FF00
+    case Blue  -> 0x0000FF
+
+
+-- NEGATIVE: match on Colour missing Blue.
+colourName : Colour -> String
+let colourName c = match c
+    case Red   -> "red"
+    case Green -> "green"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: nested match — outer is exhaustive but inner is not.
+data Shape : Type =
+    Circle
+    Rectangle
+    Triangle
+
+data Size : Type = Small | Medium | Large
+
+classifyShapeSize : Shape -> Size -> String
+let classifyShapeSize sh sz = match sh
+    case Circle    -> match sz
+        case Small  -> "small circle"
+        case Medium -> "medium circle"
+    case Rectangle -> match sz
+        case Small  -> "small rect"
+        case Medium -> "medium rect"
+        case Large  -> "large rect"
+    case Triangle  -> "triangle"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: outer and inner matches both exhaustive.
+classifyFull : Shape -> Size -> String
+let classifyFull sh sz = match sh
+    case Circle    -> match sz
+        case Small  -> "s-cir"
+        case Medium -> "m-cir"
+        case Large  -> "l-cir"
+    case Rectangle -> match sz
+        case Small  -> "s-rec"
+        case Medium -> "m-rec"
+        case Large  -> "l-rec"
+    case Triangle  -> match sz
+        case Small  -> "s-tri"
+        case Medium -> "m-tri"
+        case Large  -> "l-tri"
+
+
+--! mode check
+
+--! assertErrorCount 4

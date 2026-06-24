@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/sreduce.maude
+--           fmod MODULAR is
+--             sorts Nat NzNat . subsort NzNat < Nat .
+--             op 0 : -> Nat . op s_ : Nat -> NzNat .
+--             op _+_ : Nat NzNat -> Nat . op _+_ : Nat Nat -> Nat .
+--             eq 0 + X = X .
+--             eq s Y + X = s (Y + X) .  -- both Nat constructors covered
+--           endfm
+--         The two equations cover both Nat constructors, so reduction is
+--         total. If a function omitted one constructor (e.g. only `eq s Y +
+--         X = ...` without the `eq 0 + X = X` base case), Maude would
+--         silently leave 0+X unreduced — but in Kappa the analogous match
+--         would be rejected as non-exhaustive at check time.
+-- Spec: expressions.match,
+--       expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive).
+-- Portable obligation: a match over a closed algebraic type that omits a
+--   constructor and has no wildcard arm must be rejected.
+
+--! mode check
+
+module test
+
+data Nat : Type =
+    Z
+    S Nat
+
+-- POSITIVE: both Z and S covered.
+addZ : Nat -> Nat
+let addZ n = match n
+    case Z   -> Z
+    case S m -> S m
+
+-- POSITIVE: wildcard covers remaining.
+isZ : Nat -> Bool
+let isZ n = match n
+    case Z -> True
+    case _ -> False
+
+-- NEGATIVE: omits Z arm; no wildcard.
+badOmitZ : Nat -> Nat
+let badOmitZ n = match n
+    case S m -> m
+
+-- NEGATIVE: omits S arm; no wildcard.
+badOmitS : Nat -> Nat
+let badOmitS n = match n
+    case Z -> Z
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

@@ -1,0 +1,16 @@
+-- Stress test: Type0 is a subtype of Type1 via cumulativity
+-- Spec: types.universes.cumulativity
+
+--! mode check
+
+-- POSITIVE: Type0 is placed in a Type1-level position; cumulativity allows this.
+let promoted : Type1 = Type0
+
+-- POSITIVE: a function expecting Type1 can receive a Type0 argument.
+id1 : Type1 -> Type1
+let id1 t = t
+
+-- Type0 is a valid Type1, so this call is accepted.
+let result : Type1 = id1 Type0
+
+--! assertNoErrors

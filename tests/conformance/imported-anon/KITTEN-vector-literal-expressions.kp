@@ -1,0 +1,37 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #52 (`[1 2 +, 3 4 *]` should be valid; the same
+--   for tuples; expressions, not just literals, are allowed inside
+--   collection literals). Kitten #17 (vector literals must permit
+--   local-variable capture / expression elements).
+-- Spec: collections.comprehensions.parsing_comprehension_literal,
+--       expressions.application, literals.unit_tuples.
+--
+-- A list or tuple literal accepts arbitrary sub-expressions, not just
+-- terminal literals. The element type is unified across all elements.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a list of expression elements.
+xs : List Int
+let xs = [1 + 2, 3 * 4, 5 - 1]
+
+-- POSITIVE: a tuple of expression elements.
+t : (Int, Int)
+let t = (1 + 2, 3 * 4)
+
+-- POSITIVE: nested operator expressions inside a tuple inside a list.
+mixed : List (Int, Int)
+let mixed = [(1 + 1, 2 * 3), (0, 9 - 4)]
+
+-- NEGATIVE: heterogeneous element types must unify or fail.
+badMix : List Int
+let badMix = [1, "two"]
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

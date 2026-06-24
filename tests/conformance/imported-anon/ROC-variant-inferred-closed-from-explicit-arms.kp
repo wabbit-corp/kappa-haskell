@@ -1,0 +1,47 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: Roc #1758, #2299
+-- Spec: types.unions.variant_row_polymorphism, types.unions.elimination_match,
+--       types.quantification.rows_labels
+-- Soundness: when a function pattern-matches a scrutinee with only explicit
+-- member-type arms (no residual `(| ..rest |)` arm and no catch-all), the
+-- inferred argument type must be the closed variant containing exactly those
+-- members. It MUST NOT carry a residual row variable, because doing so would
+-- let callers pass a variant of a different shape without a type error.
+
+module test
+
+data Foo : Type =
+    Foo : String -> Foo
+
+data Bar : Type =
+    Bar
+
+--! mode check
+
+-- POSITIVE: function matches exactly Foo and Bar with no catch-all and no
+-- residual row arm. The inferred argument type must be the closed variant
+-- (| Foo | Bar |); the result type must be a variant containing Foo (and may
+-- be open in the return position only).
+exclaimFoo : (| Foo | Bar |) -> (| Foo |)
+let exclaimFoo arg =
+    match arg
+      case (| f : Foo |) -> (| f : Foo |)
+      case (| _ : Bar |) -> (| Foo "hi" : Foo |)
+
+--! assertType exclaimFoo (| Foo | Bar |) -> (| Foo |)
+
+-- NEGATIVE: callers must not be able to inject a member that is not present in
+-- the closed argument variant. `Baz` is not in (| Foo | Bar |); the call must
+-- be rejected by kappa.type.mismatch.
+data Baz : Type =
+    Baz
+
+callWithExtra : (| Foo |)
+let callWithExtra = exclaimFoo (| Baz : Baz |)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

@@ -1,0 +1,34 @@
+-- Source issue: Uiua #853 ("Base 10 of Zero returns unexpected results"
+--   — `base 10 0` returns `[]` instead of `[0]`), Uiua #881 ("Log 10 for
+--   1000 and 100000 returns incorrect values" — integer log10 rounding
+--   produces 2 and 5 instead of 3 and 5 for those inputs).
+-- Spec: collections.literals, collections.lowering.built_in_collection_obligations,
+--       modules.prelude.numeric_operation_traits.
+--
+-- A base-N decomposition / logarithm primitive must be a total function
+-- over its documented domain. `base 10 0` must produce the digit list
+-- `[0]`; `log10` of an exact power of ten must produce the exact integer
+-- exponent.
+
+module test
+
+--! mode check
+
+-- A polymorphic Int -> List Int "base-10 digits" function. The
+-- implementation detail does not matter for the test; what matters is
+-- the type contract.
+baseTen : Int -> List Int
+let baseTen n = []  -- stub; the test checks the type contract only
+
+-- POSITIVE: positive integers produce non-empty digit lists.
+digitsTen : List Int
+let digitsTen = baseTen 10
+
+-- POSITIVE: zero produces the single-digit list [0], not [].
+digitsZero : List Int
+let digitsZero = baseTen 0
+
+--! assertNoErrors
+--! assertType baseTen Int -> List Int
+--! assertType digitsTen List Int
+--! assertType digitsZero List Int

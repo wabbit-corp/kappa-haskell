@@ -1,0 +1,46 @@
+-- Source issues: METACOQ-1182, METACOQ-1179
+-- Spec: declarations.totality.recursive_group_elaboration_invariance,
+--       declarations.totality.hidden_phase_components,
+--       declarations.totality.elaboration_preserved_evidence
+--
+-- A mutual SCC must be elaborated coherently: each member's signature is
+-- visible while checking its siblings, and the canonical hidden phase
+-- component permits cross-calls to alternate provided every cycle strictly
+-- decreases on some visible measure. MetaCoq #1179 swapped two All_fold
+-- lemma signatures; Kappa's portable requirement is that cross-calls in a
+-- mutual group obey the SCC invariants.
+
+module test
+
+--! mode check
+
+data Peano : Type =
+    PZ
+    PS Peano
+
+-- POSITIVE: countdown alternating between two members.
+-- evenCount decreases structurally on its argument and calls oddCount on
+-- the predecessor; oddCount does the same in reverse. The hidden phase
+-- bounds the SCC.
+evenCount : Peano -> Peano
+oddCount  : Peano -> Peano
+
+let evenCount n decreases structural n =
+    match n
+    case PZ      -> PZ
+    case (PS m)  -> oddCount m
+
+let oddCount n decreases structural n =
+    match n
+    case PZ      -> PS PZ
+    case (PS m)  -> evenCount m
+
+at0 : Peano
+let at0 = evenCount PZ
+
+at3 : Peano
+let at3 = oddCount (PS (PS (PS PZ)))
+
+--! assertNoErrors
+--! assertType evenCount Peano -> Peano
+--! assertType oddCount Peano -> Peano

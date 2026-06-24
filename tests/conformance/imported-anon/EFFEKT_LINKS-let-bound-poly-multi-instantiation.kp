@@ -1,0 +1,37 @@
+-- Source issues: links #620 (via PR #695, "Keep quantifiers on IR let-bound values"),
+--                links #871 (via PR #971, "Freshen generalized type variables after turning lambda into named function")
+-- Spec: types.quantification, expressions.let
+-- A let-bound polymorphic value preserves its full quantification across all use
+-- sites. Multiple distinct instantiations of the same let-bound identifier are
+-- independent and must all elaborate to the fully-quantified scheme of the binding.
+
+module test
+
+-- A polymorphic identity bound via 'let'.
+id_ : forall (a : Type). a -> a
+let id_ = \x -> x
+
+-- Two distinct instantiations of the same let binding.
+asInt : Int
+let asInt = id_ 42
+
+asUnit : Unit
+let asUnit = id_ ()
+
+-- A polymorphic pair-former bound via 'let'.
+const_ : forall (a b : Type). a -> b -> a
+let const_ = \x _y -> x
+
+-- Independent instantiations in a single expression.
+mixed : (Int, String)
+let mixed =
+    let i = const_ 1 'c'
+    let s = const_ "hi" 0
+    (i, s)
+
+--! mode check
+--! assertNoErrors
+--! assertType id_ forall (a : Type). a -> a
+--! assertType asInt Int
+--! assertType asUnit Unit
+--! assertType mixed (Int, String)

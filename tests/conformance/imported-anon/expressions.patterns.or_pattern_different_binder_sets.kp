@@ -1,0 +1,44 @@
+-- Source issue: (spec-derived, Noir#7637 adjacent)
+-- Spec: expressions.patterns.validity
+-- In an or-pattern `p1 | p2 | ... | pn`, each alternative MUST bind the same
+-- set of names. An or-pattern whose alternatives bind different names is
+-- ill-formed and MUST be rejected with kappa.pattern.or-binder-mismatch.
+-- Additionally, corresponding binders must carry identical quantities and have
+-- definitionally equal types across all alternatives.
+
+module test
+
+data Shape : Type =
+    Circle  : Int -> Shape          -- radius
+    Square  : Int -> Shape          -- side length
+    Rect    : Int -> Int -> Shape   -- width * height
+
+-- Rejected: `Circle x` binds `x`; `Square y` binds `y` — different names.
+badOrPattern : Shape -> Int
+let badOrPattern s =
+    match s
+    case Circle x | Square y -> x   -- ERROR EXPECTED: or-pattern binder sets differ (counted below)
+    case Rect w h -> w + h
+
+--! mode check
+--! assertErrorCount 2
+-- NOTE (2026-06-11, FAB-011): no registered diagnostic family/code exists yet
+-- for this spec-mandated error; the suite asserts an exact error count instead.
+-- Re-tag to assertDiagnosticFamily when the spec registers one.
+
+-- Rejected: one alternative binds `n`, the other binds nothing (wildcard).
+-- Different binding sets.
+missingBinder : Shape -> Int
+let missingBinder s =
+    match s
+    case Circle n | Square _ -> n   -- ERROR EXPECTED: or-pattern binder sets differ (counted below)
+    case Rect w h -> w + h
+
+
+-- Accepted: both alternatives bind the same name `n`.
+goodOrPattern : Shape -> Int
+let goodOrPattern s =
+    match s
+    case Circle n | Square n -> n
+    case Rect w h -> w + h
+

@@ -1,0 +1,24 @@
+-- Source issue: FSTAR-2043
+-- Spec: declarations.totality.relationship_assertions
+-- When a function is called through a well-founded order combinator,
+-- the result must still be accepted as structurally smaller than the scrutinee.
+-- Wrapping in `applyFn` must not opaquely hide the descent.
+
+--! mode check
+
+data WFTree : Type =
+    Leaf : WFTree
+    Branch : (Nat -> WFTree) -> WFTree
+
+-- applyFn f n is definitionally equal to f n.
+applyFn : (Nat -> WFTree) -> Nat -> WFTree
+let applyFn f n = f n
+
+-- func terminates because applyFn f 0 = f 0 which is a subterm of Branch f.
+func : WFTree -> WFTree
+let func t decreases t =
+    match t
+      case Leaf       -> Leaf
+      case (Branch f) -> func (applyFn f 0)
+
+--! assertNoErrors

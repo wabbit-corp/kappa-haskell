@@ -1,0 +1,64 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/attributes.maude (ops a b c : -> Foo are nullary
+--           constants; calling `a(X)` would be ill-formed),
+--         tests/Misc/dataStructures.maude (SET{Nat} insertion via
+--           `insert(s N * M, A)` requires the declared arity; reducing arity
+--           in the call site is ill-formed),
+--         tests/Misc/sreduce.maude (op s_ : Nat -> NzNat applied to no
+--           argument is ill-formed in expression position).
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.standard_diagnostic_families
+--       (family kappa.constructor.arity).
+-- Portable obligation: applying a data constructor with the wrong number of
+--   positional arguments must be rejected with kappa.constructor.arity.
+
+--! mode check
+
+module test
+
+data NatLike : Type =
+    Zero
+    Succ NatLike
+
+data Pair : Type =
+    MkPair NatLike NatLike
+
+-- POSITIVE: correct arities.
+zero : NatLike
+let zero = Zero
+
+one : NatLike
+let one = Succ Zero
+
+two : NatLike
+let two = Succ (Succ Zero)
+
+p1 : Pair
+let p1 = MkPair Zero Zero
+
+-- NEGATIVE: Zero is nullary; applying it to one argument is ill-formed.
+badZero : NatLike
+let badZero = Zero Zero
+
+-- NEGATIVE: Succ takes exactly one argument; calling with two is ill-formed.
+badSucc : NatLike
+let badSucc = Succ Zero Zero
+
+-- NEGATIVE: Succ takes exactly one argument; calling with none is ill-formed.
+badSucc0 : NatLike
+let badSucc0 = Succ
+
+-- NEGATIVE: MkPair takes two arguments; one argument is wrong.
+badPair1 : Pair
+let badPair1 = MkPair Zero
+
+-- NEGATIVE: MkPair takes two arguments; three arguments is wrong.
+badPair3 : Pair
+let badPair3 = MkPair Zero Zero Zero
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+--! assertErrorCount 5

@@ -1,0 +1,34 @@
+-- Source issue: carp-lang/Carp#350
+-- Spec: declarations.terms (mutually recursive groups)
+-- Carp #350: top-level mutual recursion between `even?` and `odd?` was
+-- once rejected because forward references were not supported. Carp later
+-- accepted mutual recursion at the top level; the Kappa spec already
+-- requires that top-level term declarations within a module form one
+-- mutually recursive group with order-independent visibility.
+
+--! mode check
+
+-- POSITIVE: two top-level definitions reference each other; the order in
+-- which they appear in source is irrelevant to elaboration.
+isEven : Int -> Bool
+let isEven n =
+    if n == 0 then True else isOdd (n - 1)
+
+isOdd : Int -> Bool
+let isOdd n =
+    if n == 0 then False else isEven (n - 1)
+
+--! assertNoErrors
+--! assertType isEven Int -> Bool
+--! assertType isOdd Int -> Bool
+
+-- POSITIVE: forward reference — `usesLater` mentions `definedLater` which
+-- appears later in the file; both are well-formed.
+usesLater : Int -> Int
+let usesLater n = definedLater n + 1
+
+definedLater : Int -> Int
+let definedLater n = n * 2
+
+--! assertNoErrors
+--! assertType usesLater Int -> Int

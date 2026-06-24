@@ -1,0 +1,42 @@
+-- Source issues: gleam#253, gleam#491
+-- Spec: expressions.patterns.scoping_validity
+-- Duplicate binders within the same pattern are an error (§17.2.2).
+-- A user cannot bind the same name twice in one pattern, even if the intent
+-- is equality testing. Three negative cases expected.
+-- Note: no standardized portable alias or diagnostic family for duplicate
+-- pattern binders exists in the spec (SA-GLEAM-13 in GLEAM_SPEC_ADDITIONS.md).
+
+--! mode check
+
+--! assertErrorCount 3
+
+data Pair (a : Type) : Type =
+    Pair a a
+
+-- NEGATIVE: same binder `x` appears twice in a tuple pattern.
+let bad_same_var (p : (Int, Int)) : Bool =
+    match p
+    case (x, x) -> True   -- ERROR EXPECTED: duplicate binder (counted above)
+    case _      -> False
+
+-- NEGATIVE: same binder in a constructor pattern.
+let bad_same_ctor (p : Pair Int) : Bool =
+    match p
+    case Pair x x -> True   -- ERROR EXPECTED: duplicate binder (counted above)
+    case _        -> False
+
+-- NEGATIVE: same binder in nested constructor pattern.
+let bad_nested (p : (Int, (String, Int))) : Bool =
+    match p
+    case (x, (_, x)) -> True   -- ERROR EXPECTED: duplicate binder (counted above)
+    case _           -> False
+
+-- POSITIVE: different names are fine.
+let ok_pair (p : Pair Int) : Bool =
+    match p
+    case Pair a b -> a == b
+
+-- POSITIVE: wildcard repeated is not a binder clash.
+let ok_wildcards (p : (Int, Int)) : Bool =
+    match p
+    case (_, _) -> True

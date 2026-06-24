@@ -1,0 +1,82 @@
+-- Source issues: rhombus#417 (surprising behavior of literal bindings when `case` expansion applies)
+--   match.rhm in racket/rhombus
+-- Spec: expressions.match
+--   Literal patterns in `match` use structural equality (not identity/pointer equality).
+--   A freshly-allocated/copied value that is structurally equal to a literal must match.
+--   A mutable value that is a copy of the literal does NOT match if identity is used
+--   (because it is a different allocation), BUT the spec requires structural equality.
+--   In other words: `match x case "abc" -> ...` uses `==` (structural), not `===` (identity).
+-- Evidence: match.rhm confirms:
+--   `match #"byte string".copy() | #"byte string": "matched" | ~else: "unmatched"` → "unmatched"
+--   (Rhombus uses equal-always? which is identity for mutable byte strings.)
+--   `match "string".copy() | "string": "matched" | ~else: "unmatched"` → "unmatched"
+--   (Mutable-copy strings also don't match by identity in Rhombus's equal-always?.)
+-- The Kappa spec obligation: literal patterns use structural equality. Identity-based matching
+-- of string/byte literals is NOT conforming — structural equality must be used.
+-- (Rhombus's choice of equal-always? for mutable strings is an implementation detail;
+-- the portable Kappa obligation is that IMMUTABLE structural values must match literals.)
+
+--! mode check
+
+-- POSITIVE: integer literals always match by value equality.
+matchInt : Int -> String
+let matchInt n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+    case _ -> "other"
+
+-- POSITIVE: string literals match by structural equality.
+-- An immutable string "hello" must match the pattern "hello".
+matchStr : String -> String
+let matchStr s =
+    match s
+    case "hello" -> "greeting"
+    case "bye"   -> "farewell"
+    case _       -> "other"
+
+-- POSITIVE: Bool literals match by value.
+matchBool : Bool -> String
+let matchBool b =
+    match b
+    case True  -> "yes"
+    case False -> "no"
+
+-- POSITIVE: literal patterns in nested data constructors use structural equality.
+data Wrapper (a : Type) : Type =
+    Wrap a
+
+matchWrappedInt : Wrapper Int -> String
+let matchWrappedInt w =
+    match w
+    case Wrap 0 -> "wrapped zero"
+    case Wrap 1 -> "wrapped one"
+    case _      -> "wrapped other"
+
+-- POSITIVE: or-pattern with literals — both alternatives use structural equality.
+matchOrLit : Int -> String
+let matchOrLit n =
+    match n
+    case 1 | 2 -> "one or two"
+    case _     -> "other"
+
+-- POSITIVE: char literal matching by structural equality.
+matchChar : Char -> String
+let matchChar c =
+    match c
+    case 'a' -> "letter a"
+    case 'b' -> "letter b"
+    case _   -> "other"
+
+-- POSITIVE: structural equality for list constructor patterns.
+-- Nil matches the empty list; (::) decomposes non-empty lists.
+matchList : List Int -> String
+let matchList xs =
+    match xs
+    case Nil              -> "empty"
+    case 1 :: Nil         -> "singleton one"
+    case 1 :: 2 :: Nil    -> "one two"
+    case _                -> "other"
+
+--! assertNoErrors

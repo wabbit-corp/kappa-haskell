@@ -1,0 +1,64 @@
+-- Source issue: AENEAS-615
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       types.universes.borrow_lifetimes_escape_prevention
+-- Borrowing two independent record fields simultaneously is accepted because
+-- their footprints are disjoint.  Aeneas issue #615 is the motivating case:
+-- Rust allows disjoint borrows of s[i].a and s[i].b because indexing is
+-- treated as a built-in projection.  The portable obligation is §12.4: two
+-- borrowed paths are disjoint when they share the same root but have non-
+-- overlapping, non-dependent field footprints.
+
+module test
+
+--! mode check
+
+data Rect : Type =
+    Rect { left : Int, right : Int, top : Int, bottom : Int }
+
+-- POSITIVE: borrow two independent fields from a shared-borrow record.
+-- left and right have no field-dependency relationship; their footprints
+-- are disjoint, so both borrows coexist without conflict.
+sumHorizontal : (& r : Rect) -> Int
+let sumHorizontal r =
+    let & l = r.left
+    let & ri = r.right
+    l + ri
+
+--! assertNoErrors
+--! assertType sumHorizontal ((& r : Rect) -> Int)
+
+-- POSITIVE: borrow all four independent fields at once.
+perimeter : (& r : Rect) -> Int
+let perimeter r =
+    let & l  = r.left
+    let & ri = r.right
+    let & t  = r.top
+    let & b  = r.bottom
+    (ri - l + b - t) * 2
+
+--! assertNoErrors
+
+data Pair : Type = Pair { fst : Int, snd : Int }
+
+-- POSITIVE: pass two field borrows as separate arguments.
+addPair : (& x : Int) -> (& y : Int) -> Int
+let addPair x y = x + y
+
+usePair : (& p : Pair) -> Int
+let usePair p =
+    addPair p.fst p.snd
+
+--! assertNoErrors
+--! assertType usePair ((& p : Pair) -> Int)
+
+-- POSITIVE: nested record — can borrow fields at any depth.
+data Point : Type = Point { x : Int, y : Int }
+data Segment : Type = Segment { start : Point, end : Point }
+
+segmentDeltaX : (& s : Segment) -> Int
+let segmentDeltaX s =
+    let & x1 = s.start.x
+    let & x2 = s.end.x
+    x2 - x1
+
+--! assertNoErrors

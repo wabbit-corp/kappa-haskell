@@ -1,0 +1,32 @@
+-- Source issues: BQN tests/test/cases/identity.bqn (BQN `F´´⟨⟩` only
+--   succeeds when `F` has a known identity element: `+´⟨⟩ ≡ 0`, `×´⟨⟩ ≡ 1`,
+--   `∨´⟨⟩ ≡ 0`); rejected: `√´↕0`, `|´↕0`, `⊢´""`, `⊣´""`, `∾´⟨⟩`.
+-- Spec: modules.prelude.contents (List a, Nil, (::)).
+-- An associative-fold of an empty container must use the operation's
+-- identity element. A foldRight that takes the seed (identity) as an
+-- explicit argument expresses this as a structural obligation on the
+-- type signature.
+
+--! mode check
+
+-- A user-level foldRight that requires the seed (identity-or-default).
+foldRight : forall a b. (a -> b -> b) -> b -> List a -> b
+let foldRight f seed xs =
+    match xs
+      case Nil      -> seed
+      case h :: t   -> f h (foldRight f seed t)
+
+-- POSITIVE: `+` has identity 0, so summing the empty list yields 0.
+sumZero : Integer
+let sumZero = foldRight (+) 0 Nil
+
+-- POSITIVE: `*` has identity 1.
+productOne : Integer
+let productOne = foldRight (*) 1 Nil
+
+-- POSITIVE: a non-empty fold ignores the seed contribution semantically.
+sumThree : Integer
+let sumThree = foldRight (+) 0 [1, 2, 3]
+
+--! assertNoErrors
+--! assertType foldRight (forall a b. (a -> b -> b) -> b -> List a -> b)

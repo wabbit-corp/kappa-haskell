@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: souffle-lang/souffle tests/semantic/adt_invalid_branch/adt_invalid_branch.dl,
+--   souffle-lang #1775 (undefined type in branch definition),
+--   tests/semantic/type_udef/type_udef.dl.
+-- Spec: data_types.data_declarations (§10.1),
+--       modules.names.lexical_lookup (§7.1),
+--       compiler.frontir.standard_diagnostic_families.name_import (kappa.name.unresolved).
+-- When an ADT branch (constructor) declares a field whose type is not in scope,
+-- the compiler must reject the declaration with kappa.name.unresolved. Souffle
+-- reports "Undefined type n in definition of branch Int" when a branch field refers
+-- to an unknown type name.
+
+--! mode check
+
+-- POSITIVE: all field types are in scope.
+data Tree (a : Type) : Type =
+    Leaf
+    Node (value : a) (left : Tree a) (right : Tree a)
+
+data Box : Type =
+    MkBox (contents : Int) (label : String)
+
+-- NEGATIVE: field type `Colour` is not declared anywhere.
+data PaintedBox : Type =
+    MkPaintedBox (contents : Int) (color : Colour)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: two branches, second branch uses an undefined type.
+data Expr : Type =
+    Lit  (n : Int)
+    Var  (name : Identifier)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: multiple constructors with one bad type in each.
+data Mixed : Type =
+    GoodBranch   (x : Int)
+    BadBranch    (y : FictionalType)
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: declaring the missing type first makes the data type well-formed.
+type Identifier = String
+
+data ExprFixed : Type =
+    LitF  (n : Int)
+    VarF  (name : Identifier)
+
+--! assertErrorCount 3

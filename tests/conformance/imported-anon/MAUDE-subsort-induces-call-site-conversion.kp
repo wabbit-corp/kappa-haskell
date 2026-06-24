@@ -1,0 +1,47 @@
+-- Source: Maude tests/Misc/commands.maude
+--           sort Foo .
+--           subsort Int < Foo .
+--           ... parse in FOO : f(0, 2) .
+--         where f : Int Int -> Int. The literal `0` and `2` have sort `Int`
+--         and the call site is well-typed; but in any expression typed
+--         `Foo`, an `Int` value is automatically accepted by virtue of the
+--         subsort declaration. See also tests/Misc/unification.maude ITER
+--         (subsort OddNat < OddInt NzNat < NzInt < Int).
+-- Spec: types.unions.expected_type_directed_injection_widening,
+--       data_types.data_declarations.
+-- Portable obligation: when a value's declared variant is a strict subset
+--   of an expected union/sum type, the value must be accepted by widening
+--   without an explicit injection at the call site. (Maude expresses this
+--   with explicit `subsort` declarations; Kappa expresses it with
+--   expected-type-directed widening into the variant union.)
+-- This is the portion of MSA-MAUDE-02 that survives translation: the
+--   call-site direction.
+
+--! mode check
+
+module test
+
+data Posnat : Type = One | Two | Three
+data Nat : Type = Z | Pos Posnat
+data Number : Type = N Nat | NegFlag
+
+-- POSITIVE: a Posnat value flows into a Nat-expected position via Pos.
+toNat : Posnat -> Nat
+let toNat p = Pos p
+
+-- POSITIVE: a Nat value flows into a Number-expected position via N.
+toNumber : Nat -> Number
+let toNumber n = N n
+
+-- POSITIVE: chain Posnat -> Nat -> Number.
+fromPosnat : Posnat -> Number
+let fromPosnat p = N (Pos p)
+
+-- POSITIVE: pattern match recovers each layer.
+isZero : Number -> Bool
+let isZero x = match x
+    case N Z         -> True
+    case N (Pos _)   -> False
+    case NegFlag     -> False
+
+--! assertNoErrors

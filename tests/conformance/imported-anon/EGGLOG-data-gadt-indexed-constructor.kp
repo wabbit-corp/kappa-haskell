@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #237 (Merge on user defined sorts —
+--   distinct sorts behave differently),
+--   egraphs-good/egglog #298 (Clarifying Valid Types — eq-sort vs primitive
+--   sort distinction),
+--   egraphs-good/egglog #422 (Renaming `function` whose output is an E-class to
+--   `constructor`).
+-- Spec: data_types.gadts (§10.2),
+--       data_types.well_formedness (§10.4),
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch).
+-- Egglog distinguishes `constructor` (returns an e-class) from `function`
+-- (returns a primitive) and from `relation` (returns nothing). The portable
+-- Kappa obligation is that data constructors live in the data type's namespace
+-- and have a fully-specified, well-formed signature; indexed (GADT) constructor
+-- signatures must respect the indices of the declared family.
+
+module test
+
+--! mode check
+
+data Nat : Type =
+    Zero
+    Succ (n : Nat)
+
+-- POSITIVE: an indexed (GADT) family with the result type appearing in the
+-- constructor signature after `:` (per §10.2 GADT-style).
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec Zero a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (Succ n) a
+
+-- POSITIVE: well-typed VCons preserves index.
+v1 : Vec (Succ Zero) Int
+let v1 = VCons 7 (VNil)
+
+-- NEGATIVE: declared index `Succ n` is violated when we VCons onto a vector but
+-- assign the wrong index in the annotation.
+bad1 : Vec Zero Int
+let bad1 = VCons 7 (VNil)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: applying VCons with an element of the wrong type.
+bad2 : Vec (Succ Zero) Int
+let bad2 = VCons "x" (VNil)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

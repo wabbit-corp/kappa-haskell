@@ -1,0 +1,7 @@
+module provider
+
+-- Kappa's default visibility is public (§8.5). A top-level binding is
+-- exported unless it is marked `private`, so no separate `export`
+-- statement is needed for `X`.
+X : Int -> Int -> Int
+let X a b = a + b

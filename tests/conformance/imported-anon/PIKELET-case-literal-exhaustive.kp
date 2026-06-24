@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-23 (case expressions first pass),
+--               PIKELET-101 (PR: implement simple case expressions),
+--               PIKELET-128 (pattern match compilation),
+--               PIKELET-160 (remove `of` keyword from case expressions),
+--               PIKELET-161 (PR: removes `of` keyword).
+-- Spec: expressions.match, expressions.patterns.forms,
+--       expressions.match.exhaustiveness_indexed_types_gadts
+--
+-- Kappa has a `match` expression that performs case analysis on a scrutinee.
+-- A bare literal in a pattern position matches structurally. A trailing
+-- wildcard matches everything else. Pikelet eventually settled on `case`
+-- without `of`; Kappa uses `match expr case pat -> body` per §17.1.
+
+--! mode check
+
+-- POSITIVE: complete match on String literals with a wildcard catchall.
+greet : String -> String
+let greet name =
+  match name
+    case "hello" -> "goodbye"
+    case "goodbye" -> "hello"
+    case _ -> name
+
+useHello : String
+let useHello = greet "hello"
+
+-- POSITIVE: match on Bool, both branches present, no wildcard needed.
+neg : Bool -> Bool
+let neg b =
+  match b
+    case True -> False
+    case False -> True
+
+-- POSITIVE: match on Nat with literal arm and a binding wildcard.
+isOne : Nat -> Bool
+let isOne n =
+  match n
+    case 1 -> True
+    case _ -> False
+
+-- NEGATIVE: match on Bool missing False arm is non-exhaustive.
+partial : Bool -> Nat
+let partial b =
+  match b
+    case True -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

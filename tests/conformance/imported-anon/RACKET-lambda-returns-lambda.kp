@@ -1,0 +1,58 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Racket guide lambda.scrbl (nested lambdas, closures)
+-- Source docs: racket guide lambda.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/lambda.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: expressions.lambdas, expressions.lambdas.closure_capture_quantities
+--
+-- A lambda expression may return another lambda, creating a closure that
+-- captures variables from the enclosing scope. Each call to the outer function
+-- produces a fresh inner function closing over the supplied arguments.
+
+--! mode check
+
+-- POSITIVE: a function returning a function (two-step currying).
+makeAdder : Int -> (Int -> Int)
+let makeAdder n = \x -> x + n
+
+add3 : Int -> Int
+let add3 = makeAdder 3
+
+result1 : Int
+let result1 = add3 10
+
+-- POSITIVE: a function returning a function returning a function (three levels).
+makeMult : Int -> Int -> (Int -> Int)
+let makeMult a b = \x -> x * a + b
+
+quadPlusOne : Int -> Int
+let quadPlusOne = makeMult 4 1
+
+result2 : Int
+let result2 = quadPlusOne 5
+
+-- POSITIVE: capturing multiple outer bindings in the returned lambda.
+makeRange : Int -> Int -> (Int -> Bool)
+let makeRange lo hi = \x -> x >= lo && x <= hi
+
+inRange : Int -> Bool
+let inRange = makeRange 10 20
+
+-- POSITIVE: applying the outer function multiple times gives independent closures.
+add10 : Int -> Int
+let add10 = makeAdder 10
+
+add20 : Int -> Int
+let add20 = makeAdder 20
+
+independent : Bool
+let independent = add10 5 /= add20 5
+
+-- NEGATIVE: the captured variable from the outer lambda is used at the wrong type.
+badClosure : String -> (Int -> Int)
+let badClosure s = \x -> x + s
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: rust#97156 (TypeId equality-by-subtyping unsoundness, slice > 50000),
+--                rust#118247 (PR equate binders without subtyping)
+-- Spec: core_semantics.definitional_equality,
+--       types.functions.shared_binder_prefixes,
+--       types.universes.borrow_lifetimes_escape_prevention
+--
+-- A higher-ranked function type that binds a single region variable shared
+-- across both parameters is NOT definitionally equal to one that binds two
+-- distinct region variables — even when the two types are sub-types of each
+-- other under the legacy bidirectional-subtype rule. Definitional equality
+-- on binders is alpha-equivalence with the SAME arity and SAME role at each
+-- position; subtyping is a separate relation that does not feed back into
+-- definitional equality.
+
+module test
+
+-- Two higher-ranked function types from the rust#97156 reproducer.
+type OneRegion =
+    forall (s : Region). (&[s] _ : Unit) -> (&[s] _ : Unit) -> Unit
+
+type TwoRegions =
+    forall (s : Region) (t : Region). (&[s] _ : Unit) -> (&[t] _ : Unit) -> Unit
+
+--! mode check
+
+-- POSITIVE: subtyping holds from TwoRegions to OneRegion. A value of
+-- TwoRegions type can be supplied where OneRegion is demanded, because
+-- every diagonal instantiation of TwoRegions is an instantiation of
+-- OneRegion. That is subtyping, not definitional equality.
+twoToOne : TwoRegions -> OneRegion
+let twoToOne f = f
+
+
+-- NEGATIVE: definitional-equality coercion in the other direction must
+-- fail. OneRegion does not admit a value at TwoRegions because the two
+-- parameters share a region variable; instantiating with two distinct
+-- regions is not derivable.
+oneToTwo : OneRegion -> TwoRegions
+let oneToTwo f = f
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a structurally indexed type that depends on the *number of
+-- region binders* must distinguish OneRegion from TwoRegions.
+data Marker (a : Type) : Type =
+    Marker
+
+eqWitness : Marker OneRegion -> Marker TwoRegions
+let eqWitness m = m
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

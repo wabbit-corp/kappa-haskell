@@ -1,0 +1,28 @@
+-- Source issues: GHC#29, GHC#30
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence
+-- Guarded clauses must not suppress exhaustiveness checking: a match over Bool
+-- with explicit True and False branches (even with guards) is exhaustive.
+-- A match over Bool with only one guarded branch and no catch-all is non-exhaustive.
+
+module test
+
+-- Accepted: exhaustive match over Bool.
+choose : Bool -> Int -> Int -> Int
+let choose flag x y =
+  match flag
+    case True  -> x
+    case False -> y
+
+--! assertNoErrors
+--! assertType choose Bool -> Int -> Int -> Int
+
+-- Accepted: guarded clause + catch-all is exhaustive.
+guardedOk : Bool -> Int
+let guardedOk b =
+  match b
+    case True  if False -> 0
+    case True           -> 1
+    case False          -> 2
+
+--! assertNoErrors

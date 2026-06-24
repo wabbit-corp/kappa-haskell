@@ -1,0 +1,25 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         If the user writes Xml.elt without first importing the Xml
+--         module, Boomerang reports an unbound identifier. The Kappa
+--         portable analog is kappa.name.unresolved.
+-- Spec: modules.names.dotted_name_resolution_dotted,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: qualified access into a module that has not been
+--   imported (and was never declared in scope) is rejected.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: Xml is not imported anywhere; the qualified access fails.
+composerTag : String
+let composerTag = Xml.elt "NL2" "composer"
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

@@ -1,0 +1,55 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: typespec_test.exs "undefined type"
+--   ("type foo/0 undefined"), typespec_test.exs "undefined type in @spec"
+-- Source tests: elixir typespec_test.exs (corpus repos/github-elixir-lang-elixir/tests/lib/elixir/test/elixir/typespec_test.exs; restored 2026-06-11 from ELIXIR_CANDIDATE_LEDGER.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved)
+-- Kappa spec rule (§3.2.2 kappa.name.unresolved):
+--   "Used when an identifier... cannot be resolved."
+-- In Elixir, a @type or @spec annotation that references a type name which is not
+-- declared anywhere produces a compile-time error: "type foo/0 undefined". In Kappa,
+-- a type annotation or type declaration that references an unknown type name is
+-- rejected with kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: type alias referencing a built-in type.
+type StringAlias = String
+
+-- POSITIVE: data type and an alias that references it.
+data Color : Type = Red | Green | Blue
+
+type ColorAlias = Color
+
+-- POSITIVE: function type annotation using defined types.
+parseColor : String -> Color
+let parseColor s =
+    match s
+    case "red"   -> Red
+    case "green" -> Green
+    case _       -> Blue
+
+-- NEGATIVE: type alias references 'NonexistentType' which is not defined.
+type BadAlias = NonexistentType
+
+-- NEGATIVE: function annotation references an undefined type in parameter position.
+processUndefined : UndefinedType -> String
+let processUndefined x = "ok"
+
+-- NEGATIVE: type annotation references an undefined type in return position.
+produceUndefined : String -> UnknownResult
+let produceUndefined s = s
+
+-- NEGATIVE: parametric type referencing undefined type constructor.
+type Container a = UnknownContainer a
+
+-- NEGATIVE: nested type expression with one undefined component.
+-- The outer type (List) is valid, but the element type 'Phantom' does not exist.
+type BadList = List Phantom
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 5

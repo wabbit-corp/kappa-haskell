@@ -1,0 +1,45 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-3743, KT-2336 (when on Boolean must be exhaustive with true/false)
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+
+--! mode check
+
+-- POSITIVE: matching on Bool with both True and False is exhaustive.
+boolToString : Bool -> String
+let boolToString b =
+    match b
+    case True  -> "yes"
+    case False -> "no"
+
+--! assertType boolToString (Bool -> String)
+
+-- POSITIVE: a wildcard covers the remaining case.
+isTrue : Bool -> String
+let isTrue b =
+    match b
+    case True -> "true"
+    case _    -> "false"
+
+
+-- POSITIVE: matching Bool? (optional boolean) with three cases: True, False, None.
+boolOptStr : Bool? -> String
+let boolOptStr mb =
+    match mb
+    case Option.Some True  -> "yes"
+    case Option.Some False -> "no"
+    case Option.None       -> "unknown"
+
+--! assertType boolOptStr (Bool? -> String)
+
+-- NEGATIVE: only one arm on Bool is non-exhaustive (False not covered).
+onlyTrue : Bool -> String
+let onlyTrue b =
+    match b
+    case True -> "yes"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

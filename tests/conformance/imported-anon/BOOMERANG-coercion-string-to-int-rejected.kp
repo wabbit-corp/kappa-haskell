@@ -1,0 +1,38 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Boomerang docs/docs/main.src § "Coercions"
+--         Boomerang silently coerces string -> regexp -> aregexp -> lens.
+--         Kappa deliberately rejects implicit cross-type coercions to
+--         keep type errors local (see design.boundary_honesty); the
+--         portable check is that String used where Int is expected is
+--         rejected with kappa.type.mismatch.
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch),
+--       design.boundary_honesty.progressive_precision.
+-- Related spec gap: BSA-BOOMERANG-04 (intentional divergence from
+--   Boomerang's automatic up-coercions).
+-- Portable obligation: a String value cannot silently inhabit Int.
+
+module test
+
+--! mode check
+
+-- A placeholder library function for explicit conversion (would be a
+-- prelude / library API in a real program). Establishes that an explicit
+-- conversion call typechecks, in contrast to the negative case below.
+parseInt : String -> Int
+let parseInt s = 0
+
+n1 : Int
+let n1 = parseInt "1865"
+
+-- NEGATIVE: bare String literal where Int is required must be rejected;
+-- Kappa does not silently up-coerce String to Int (cf. BSA-BOOMERANG-04).
+n2 : Int
+let n2 = "1865"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

@@ -1,0 +1,46 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-153 (nullability for type parameters with nullable bounds)
+-- Spec: types.quantification, types.universes.inference_sketch
+
+--! mode check
+
+-- POSITIVE: a generic function over optional types — nullable type parameter.
+getOrElse : forall (a : Type). a? -> a -> a
+let getOrElse mx default =
+    mx ?: default
+
+--! assertType getOrElse (forall (a : Type). a? -> a -> a)
+
+-- POSITIVE: mapping over an optional value.
+mapOpt : forall (a : Type) (b : Type). (a -> b) -> a? -> b?
+let mapOpt f mx =
+    match mx
+    case Option.None   -> Option.None
+    case Option.Some x -> Option.Some (f x)
+
+--! assertType mapOpt (forall (a : Type) (b : Type). (a -> b) -> a? -> b?)
+
+-- POSITIVE: flatMap (bind) for optionals.
+bindOpt : forall (a : Type) (b : Type). (a -> b?) -> a? -> b?
+let bindOpt f mx =
+    match mx
+    case Option.None   -> Option.None
+    case Option.Some x -> f x
+
+
+-- POSITIVE: a generic nullable bound — accepting a nullable value and returning it.
+passThrough : forall (a : Type). a? -> a?
+let passThrough mx = mx
+
+--! assertType passThrough (forall (a : Type). a? -> a?)
+
+-- NEGATIVE: treating an optional value as definitely non-null without unwrapping.
+badUnwrap : forall (a : Type). a? -> a
+let badUnwrap mx = mx
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

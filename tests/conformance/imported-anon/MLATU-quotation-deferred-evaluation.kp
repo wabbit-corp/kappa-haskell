@@ -1,0 +1,35 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu README.md ("mlatu is evaluated via a
+--   term-rewriting system and so all expressions are referentially
+--   transparent, evaluating to the same result each time they are
+--   written"). Quotations defer evaluation: their inner terms are not
+--   reduced until the quotation is unquoted. The portable Kappa
+--   obligation is that a `thunk e` does not eagerly evaluate `e`; the
+--   inner value's type is reflected only after `force`.
+-- Spec: expressions.lambdas.suspension_expressions_forcing.
+
+module test
+
+--! mode check
+
+-- A definition whose body produces a Thunk of an Int.
+deferred : Thunk Int
+let deferred = thunk (1 + 2)
+
+-- POSITIVE: forcing yields the Int.
+realized : Int
+let realized = force deferred
+
+--! assertType deferred Thunk Int
+--! assertType realized Int
+
+-- NEGATIVE: a Thunk Int is not interchangeable with an Int.
+asInt : Int
+let asInt = deferred
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

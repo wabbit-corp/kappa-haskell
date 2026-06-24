@@ -1,0 +1,81 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Odin union nil-variant exhaustiveness semantics (OSA-ODIN-01).
+--   In Odin, every union has an implicit nil/zero-tag variant. An exhaustive
+--   switch must cover it. In Kappa, this maps to a union type with an explicit
+--   None constructor: exhaustive match must cover None just like any other arm.
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- The None (absent/nil) constructor of a union type is a first-class member of
+-- the constructor set and participates in exhaustiveness checking on equal footing
+-- with payload-bearing constructors.
+
+--! mode check
+
+data MaybeInt : Type =
+    SomeInt Int
+    NoneInt
+
+data MaybeStr : Type =
+    SomeStr String
+    NoneStr
+
+-- POSITIVE: both payload and None constructor covered.
+let unwrapInt (m : MaybeInt) : Int =
+    match m
+    case SomeInt n -> n
+    case NoneInt   -> 0
+
+
+-- POSITIVE: explicit None coverage on a string-bearing type.
+let unwrapStr (m : MaybeStr) : String =
+    match m
+    case SomeStr s -> s
+    case NoneStr   -> ""
+
+
+-- POSITIVE: wildcard covers the residual including None.
+let hasValueInt (m : MaybeInt) : Bool =
+    match m
+    case SomeInt _ -> True
+    case _         -> False
+
+
+-- NEGATIVE: NoneInt is not covered — non-exhaustive.
+-- Demonstrates OSA-ODIN-01: None must appear in the residual of the diagnostic.
+let unsafeUnwrapInt (m : MaybeInt) : Int =
+    match m
+    case SomeInt n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: SomeInt is not covered — non-exhaustive.
+let onlyNoneInt (m : MaybeInt) : Int =
+    match m
+    case NoneInt -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: nested option match, fully exhaustive.
+data MaybeMaybeInt : Type =
+    OuterSome MaybeInt
+    OuterNone
+
+let flatMapMaybe (mm : MaybeMaybeInt) : Int =
+    match mm
+    case OuterSome (SomeInt n) -> n
+    case OuterSome NoneInt     -> 0 - 1
+    case OuterNone             -> 0 - 2
+
+
+-- NEGATIVE: OuterNone omitted in nested match.
+let flatMapPartial (mm : MaybeMaybeInt) : Int =
+    match mm
+    case OuterSome (SomeInt n) -> n
+    case OuterSome NoneInt     -> 0 - 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

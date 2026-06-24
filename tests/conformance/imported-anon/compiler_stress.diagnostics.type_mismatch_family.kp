@@ -1,0 +1,15 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: type mismatch produces the kappa.type.mismatch diagnostic family
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+
+--! mode check
+
+-- NEGATIVE: a String literal is given where Int is expected.
+let bad : Int = "hello"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

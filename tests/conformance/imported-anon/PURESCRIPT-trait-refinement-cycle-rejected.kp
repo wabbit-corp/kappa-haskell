@@ -1,0 +1,42 @@
+-- Source artifacts: PURESCRIPT-PR-1376 (linked #1247 — disallow orphan
+--                   instances; corpus context for trait-graph well-formedness),
+--                   PURESCRIPT-PR-4047 (fix kinded declaration reordering in
+--                   desugaring; supertrait + alias interaction),
+--                   PURESCRIPT-PR-4064 (improve apartness checking;
+--                   trait-graph edge analysis).
+-- Spec: traits.headers.supertraits.refinement_graph_cycles (§14.1.5),
+--       traits.headers.supertraits (§14.1.4).
+-- Kappa spec rule (§14.1.5):
+--   "A trait declaration group is well-formed only if the refinement graph
+--    induced by that group and all visible referenced trait headers is acyclic
+--    after normalization of transparent aliases available at the declaration
+--    site. If a cycle is found, the checker rejects the whole strongly
+--    connected component as one graph-level error."
+-- The diagnostic must report the SCC as one error, not as separate
+-- unrelated-edge errors.
+
+--! mode check
+
+-- NEGATIVE: a 3-trait cycle through supertrait premises. The trait
+-- declaration group { Alpha, Beta, Gamma } induces edges:
+--   Alpha a → Beta a (Alpha's supertrait premise)
+--   Beta a  → Gamma a (Beta's supertrait premise)
+--   Gamma a → Alpha a (Gamma's supertrait premise)
+-- which is a single SCC. The checker MUST reject this group as one
+-- graph-level error.
+trait Gamma a => Alpha (a : Type) =
+    alphaTag : a -> Int
+
+trait Alpha a => Beta (a : Type) =
+    betaTag : a -> Int
+
+trait Beta a => Gamma (a : Type) =
+    gammaTag : a -> Int
+
+-- POSITIVE control: an unrelated trait whose graph is acyclic must be
+-- accepted independently of the cycle above (the cycle rejection should
+-- not contaminate disjoint declarations).
+trait Sane (a : Type) =
+    saneTag : a -> Int
+
+--! assertErrorCount 1

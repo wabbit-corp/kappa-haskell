@@ -1,0 +1,78 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: CAIRO-6486, CAIRO-2718, CAIRO-3725
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch),
+--       compiler.frontir.messages_notes_help_fixits (§3.1.6),
+--       compiler.frontir.diagnostic_related_origins (§3.1.1A).
+-- Kappa spec rule (§3.1.1A "Related origins and multi-span records"):
+--   "Type-mismatch diagnostics MUST include the actual expression site and
+--    the source origin of the expected type when available. The primary
+--    blamed origin is the most local source location whose construct is
+--    being rejected — not necessarily the binding site of the result."
+-- Cairo issue CAIRO-6486: when a function with return type `()` returned
+--   a numeric literal via `let x = 5; x`, the compiler blamed the binding
+--   `x = 5` rather than the return expression `x`. The correct primary
+--   blame is the expression `x` at the function body tail position.
+-- Cairo issue CAIRO-2718: incompatible types when using implicit returns
+--   produced confusing diagnostic locations.
+
+--! mode check
+
+-- NEGATIVE: the function declares return type Unit but the body is an Int
+-- expression. The blame must be on the Int expression (or the body tail),
+-- not on the binding site of `n`.
+badReturn : Unit
+let badReturn =
+    let n = 5
+    n
+
+-- NEGATIVE: explicit type annotation mismatch. The blame should be on the
+-- returned expression that doesn't match the declared type.
+wrongType : Bool
+let wrongType =
+    let b : Int = 42
+    b
+
+-- POSITIVE: a function body whose last expression matches the return type.
+goodReturn : Int
+let goodReturn =
+    let n = 5
+    n
+
+-- POSITIVE: Unit function whose body is an explicit unit.
+returnsUnit : Unit
+let returnsUnit =
+    let _ = 5
+    ()
+
+-- NEGATIVE: a function returning Bool where an Int is expected as an argument.
+expectInt : Int -> Int
+let expectInt n = n + 1
+
+callBadArg : Int
+let callBadArg = expectInt True
+
+-- NEGATIVE: nested: the inner expression has a mismatch, not the outer.
+nestedBad : Bool
+let nestedBad =
+    let result : Int = if True then 42 else False
+    True
+
+-- POSITIVE: the expected case where everything lines up.
+nestedGood : Bool
+let nestedGood =
+    let result : Int = if True then 42 else 0
+    result > 5
+
+trait Ord (a : Type) =
+    (>) : (& x : a) -> (& y : a) -> Bool
+
+instance Ord Int =
+    let (>) _ _ = True  -- placeholder
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 4

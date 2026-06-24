@@ -1,0 +1,59 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestClassInst.curry
+--   (class Dup a where dup :: a -> a; instance Dup Int; instance Dup Bool).
+-- Spec: traits.headers (§14.1), traits.instances (§14.3),
+--       traits.instances.resolution_algorithm (§14.3.1),
+--       traits.instances.normalized_instance_heads (§14.3.2).
+--
+-- A trait with one method and two ground instances. Dispatch at a
+-- call site is by the (resolved) instance head; the method body is
+-- selected by the type of the argument.
+
+module test
+
+--! mode check
+
+trait Dup (a : Type) =
+    dup : a -> a
+
+--! assertNoErrors
+
+instance Dup Int =
+    let dup x = x + x
+
+instance Dup Bool =
+    let dup x = not (not x)
+
+not : Bool -> Bool
+let not b =
+    match b
+    case True  -> False
+    case False -> True
+
+--! assertNoErrors
+
+-- POSITIVE: dispatching on Int selects the Int instance.
+dupOnInt : Int
+let dupOnInt = dup 5
+-- expected: 10
+
+--! assertNoErrors
+--! assertType dupOnInt Int
+
+-- POSITIVE: dispatching on Bool selects the Bool instance.
+dupOnBool : Bool
+let dupOnBool = dup True
+-- expected: True
+
+--! assertNoErrors
+--! assertType dupOnBool Bool
+
+-- POSITIVE: polymorphic function over `Dup a` evidence.
+dupTwice : forall (a : Type). Dup a => a -> a
+let dupTwice x = dup (dup x)
+
+dupTwiceOnInt : Int
+let dupTwiceOnInt = dupTwice 3
+-- expected: 12
+
+--! assertNoErrors
+--! assertType dupTwiceOnInt Int

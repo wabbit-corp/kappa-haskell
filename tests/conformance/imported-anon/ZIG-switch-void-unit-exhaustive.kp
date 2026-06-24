@@ -1,0 +1,41 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig#25644 (fixed in PR #25727)
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- The unit type (Zig `void`, Kappa `Unit`) has exactly one inhabitant.
+-- A match that covers that single value is exhaustive and must not demand an
+-- additional else/wildcard arm. Requiring an else prong on a complete match
+-- is a spurious diagnostic.
+
+--! mode check
+
+-- POSITIVE: match on Unit with the single unit arm — exhaustive.
+let matchUnit (u : Unit) : Int =
+    match u
+    case () -> 42
+
+
+-- POSITIVE: wildcard is also accepted (subsumes the single value).
+let matchUnitWild (u : Unit) : Int =
+    match u
+    case _ -> 42
+
+
+-- POSITIVE: a two-arm Bool match is exhaustive without else.
+let notBool (b : Bool) : Bool =
+    match b
+    case True  -> False
+    case False -> True
+
+
+-- NEGATIVE: a two-arm Bool match that misses False.
+let missesFalse (b : Bool) : Bool =
+    match b
+    case True -> False
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

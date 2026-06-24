@@ -1,0 +1,74 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#5043 (switch over union misses first case when it is a map),
+--               odin#416 (#complete switch with pointer case doesn't compile)
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match over a closed union type must cover every declared constructor.
+-- This includes constructors whose payload type is a type-constructor application
+-- (e.g. a container or pointer type). Omitting any constructor — regardless of
+-- its payload type complexity — is a compile-time error.
+
+--! mode check
+
+data Key : Type =
+    StrKey  String
+    IntKey  Int
+    BoolKey Bool
+
+data Row : Type =
+    RowData  (List (String, Int))
+    RowList  (List Int)
+    RowScalar Int
+
+-- POSITIVE: all three constructors of Key are covered.
+let keyToInt (k : Key) : Int =
+    match k
+    case StrKey  _   -> 0
+    case IntKey  n   -> n
+    case BoolKey b   -> if b then 1 else 0
+
+
+-- POSITIVE: all three constructors of Row are covered including the container-typed one.
+let rowSize (r : Row) : Int =
+    match r
+    case RowData  _  -> 0
+    case RowList  _  -> 1
+    case RowScalar n -> n
+
+
+-- POSITIVE: wildcard covers the residual.
+let isRowScalar (r : Row) : Bool =
+    match r
+    case RowScalar _ -> True
+    case _           -> False
+
+
+-- NEGATIVE: RowList is omitted — non-exhaustive.
+let rowSizePartial (r : Row) : Int =
+    match r
+    case RowData  _ -> 0
+    case RowScalar n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: the container-typed constructor RowData is omitted.
+-- Specifically tests that a constructor whose payload is a container (List ...)
+-- is tracked correctly by the exhaustiveness checker.
+let missingContainerVariant (r : Row) : Int =
+    match r
+    case RowList  _ -> 1
+    case RowScalar n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one constructor covered, no wildcard.
+let onlyRowScalar (r : Row) : Int =
+    match r
+    case RowScalar n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

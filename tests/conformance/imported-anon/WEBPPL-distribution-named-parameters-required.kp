@@ -1,0 +1,52 @@
+-- Source issues: WebPPL #268 (make all arguments to distribution
+--   constructors named parameters), #393 (new ERP/Dist interface).
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c,
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-02.
+--
+-- A distribution constructor that declares an options-record binder
+-- supports named-argument application with field-order independence and
+-- field punning (§10.1.1). Duplicate field labels are rejected as a
+-- malformed constructor application (E_CONSTRUCTOR_ARITY_MISMATCH).
+--
+-- Note: §10.1.1 ALSO permits positional application of a constructor with
+-- named binders (`Conn "db" 5432` is "valid positional application").
+-- WebPPL's preference for the named form is a stylistic obligation that
+-- maps to WEBPPL-SA-02; it is not enforced by an Kappa diagnostic.
+
+module test
+
+--! mode check
+
+data Gaussian : Type =
+    Gaussian { mu : Float, sigma : Float }
+
+-- POSITIVE: named-argument application is accepted.
+gOk : Gaussian
+let gOk = Gaussian { mu = 0.0, sigma = 1.0 }
+
+--! assertType gOk Gaussian
+
+-- POSITIVE: argument order in the options record is irrelevant.
+gReorder : Gaussian
+let gReorder = Gaussian { sigma = 1.0, mu = 0.0 }
+
+--! assertType gReorder Gaussian
+
+-- POSITIVE: punning — a field label may be supplied without `= expr` if a
+-- term of the same spelling is in scope at the matching type.
+mu : Float
+let mu = 0.0
+
+sigma : Float
+let sigma = 1.0
+
+gPunned : Gaussian
+let gPunned = Gaussian { mu, sigma }
+
+--! assertType gPunned Gaussian
+
+-- NEGATIVE: duplicate field label is a malformed constructor application.
+gDuplicate : Gaussian
+let gDuplicate = Gaussian { mu = 0.0, mu = 0.5, sigma = 1.0 }    --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH

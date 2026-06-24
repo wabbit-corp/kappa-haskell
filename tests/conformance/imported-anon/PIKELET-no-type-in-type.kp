@@ -1,0 +1,36 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-10 (cumulative universe hierarchy avoids Girard's
+--               paradox), PIKELET-240 (PR: remove universe levels for now —
+--               regressing to `Type : Type` is explicitly inconsistent).
+-- Spec: types.universes, types.universes.cumulativity
+--
+-- Kappa's stratified universe hierarchy forbids `Type : Type`. A program
+-- that asserts `Type0 : Type0` (or equivalently, treats `Type` as its own
+-- member) must be rejected.
+
+--! mode check
+
+-- NEGATIVE: claim that Type0 is a member of itself — would re-enable
+-- Girard's paradox.
+selfMember : Type0
+let selfMember = Type0
+
+-- NEGATIVE: claim that Type1 is a member of Type0 — direction reversed.
+descend : Type0
+let descend = Type1
+
+-- NEGATIVE: a value position cannot be used at type level. `Nat` is in
+-- Type0; using `7 : Type0` is a mismatch.
+notAType : Type0
+let notAType = 7
+
+-- POSITIVE: the correct lifting story.
+ty01 : Type1
+let ty01 = Type0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

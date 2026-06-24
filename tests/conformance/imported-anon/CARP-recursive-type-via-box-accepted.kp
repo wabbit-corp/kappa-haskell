@@ -1,0 +1,33 @@
+-- Source artifact: carp-lang/Carp docs/docs/Memory.md "Recursive Types",
+--                  Carp issue #623
+-- Spec: data_types.well_formedness (strict positivity),
+--       types.universes.quantities (Box is managed; Ptr is unmanaged)
+-- Carp explicitly admits recursive `deftype` declarations when the
+-- recursion goes through indirection — `Box` (managed) or `Ptr`
+-- (unmanaged).  The portable Kappa obligation is that a recursive
+-- `data` declaration is admitted iff every recursive occurrence appears
+-- in a strictly-positive position; in practice this is achieved by
+-- placing the recursive occurrence under a parameterised type that is
+-- known to be strictly positive in that parameter.
+
+--! mode check
+
+-- POSITIVE: a recursive sum via a parameterised List-like ctor.  The
+-- recursive `Cons` field uses `Box` (or any sp-admissible carrier) for
+-- the tail; this is the canonical Carp pattern from Memory.md.
+data List (a : Type) : Type =
+    Nil
+    | Cons a (Box (List a))
+
+data Box (a : Type) : Type = MkBox a
+
+-- POSITIVE: a recursive struct through Box.
+data Node : Type = MkNode Int (Box Node)
+
+-- POSITIVE: a sumtype with several constructors, one of which is
+-- recursive through a strictly-positive carrier.
+data Tree : Type =
+    Leaf Int
+    | Branch (Box Tree) (Box Tree)
+
+--! assertNoErrors

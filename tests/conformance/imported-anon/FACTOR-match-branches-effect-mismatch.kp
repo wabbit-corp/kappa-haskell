@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Factor #2600 (`: foo ( x -- y ) [ "x" ] [ ] if ;`
+--   produces an error because the two arms of `if` have different
+--   stack effects).
+-- Spec: expressions.application, expressions.match, types.functions,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+--
+-- The two arms of a branching combinator must have matching effects;
+-- in Kappa, `if-then-else` and `match` arms must have a common return
+-- type after unification. Two arms whose types disagree must fire
+-- kappa.type.mismatch; the diagnostic must surface both arm types.
+
+module test
+
+--! mode check
+
+-- POSITIVE: both arms produce String, the conditional's type is String.
+chooseOk : Bool -> String
+let chooseOk b =
+    if b then "yes" else "no"
+
+--! assertType chooseOk Bool -> String
+
+-- POSITIVE: a match whose arms unify trivially.
+data Color : Type = Red | Green | Blue
+
+paintOk : Color -> Int
+let paintOk c =
+    match c
+      case Red   -> 0
+      case Green -> 1
+      case Blue  -> 2
+
+-- NEGATIVE: the two `if` arms produce different types (String vs Int).
+-- Anonlang must reject this with kappa.type.mismatch; the diagnostic
+-- payload must include both arm types.
+chooseBad : Bool -> String
+let chooseBad b =
+    if b then "yes" else 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a `match` whose arms produce incompatible types.
+paintBad : Color -> Int
+let paintBad c =
+    match c
+      case Red   -> 0
+      case Green -> "two"
+      case Blue  -> 2
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

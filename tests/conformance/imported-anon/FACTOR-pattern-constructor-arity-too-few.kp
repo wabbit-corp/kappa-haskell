@@ -1,0 +1,46 @@
+-- Source issue: Factor #1443 (constructor arity errors are dumped as
+--   "Cannot create slice: from > to" rather than a clear "too-many/too-few
+--   slots" error) extended to pattern position.
+-- Spec: expressions.patterns.forms, data_types.data_declarations,
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.constructor-arity).
+--
+-- A pattern that destructures a constructor with too few or too many
+-- positional arguments must fire E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH.
+-- The diagnostic must identify the constructor and the expected vs.
+-- supplied positional counts.
+
+module test
+
+--! mode check
+
+data Triple : Type =
+    Triple Int Int Int
+
+-- POSITIVE: pattern with the correct positional arity.
+sumOk : Triple -> Int
+let sumOk t =
+    match t
+      case Triple a b c -> a + b + c
+
+--! assertType sumOk Triple -> Int
+
+-- NEGATIVE: pattern supplies two positional arguments where three are
+-- expected.
+sumTooFew : Triple -> Int
+let sumTooFew t =
+    match t
+      case Triple a b -> a + b           --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+-- NEGATIVE: pattern supplies four positional arguments where three are
+-- expected.
+sumTooMany : Triple -> Int
+let sumTooMany t =
+    match t
+      case Triple a b c d -> a + b + c + d  --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH

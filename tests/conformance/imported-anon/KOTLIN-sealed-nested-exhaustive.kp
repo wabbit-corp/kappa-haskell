@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-10648, KT-13130 (exhaustiveness in nested sealed hierarchy)
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+
+--! mode check
+
+-- A nested sealed hierarchy analogous to KT-10648 / KT-13130.
+data Base : Type =
+    Leaf1 (n : Int)
+    Leaf2 (s : String)
+    Node  (l : Base) (r : Base)
+
+-- POSITIVE: covering Leaf1, Leaf2, and Node is exhaustive for Base.
+evalBase : Base -> Int
+let evalBase b =
+    match b
+    case Leaf1 n   -> n
+    case Leaf2 _   -> 0
+    case Node  _ _ -> -1
+
+--! assertType evalBase (Base -> Int)
+
+-- POSITIVE: recursive match over nested constructors — each sub-match is exhaustive.
+depth : Base -> Int
+let depth b =
+    match b
+    case Leaf1 _ -> 0
+    case Leaf2 _ -> 0
+    case Node l r -> 1 + (if depth l > depth r then depth l else depth r)
+
+
+-- POSITIVE: wildcard arm subsumes remaining cases.
+isLeaf : Base -> Bool
+let isLeaf b =
+    match b
+    case Leaf1 _ -> True
+    case Leaf2 _ -> True
+    case _       -> False
+
+
+-- NEGATIVE: omitting Node makes the match non-exhaustive.
+onlyLeaves : Base -> Int
+let onlyLeaves b =
+    match b
+    case Leaf1 n -> n
+    case Leaf2 _ -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

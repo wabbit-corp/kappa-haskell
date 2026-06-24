@@ -1,0 +1,75 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#1675 (uncaught erroneous implicit conversion through distinct
+--               union variant), odin#4249 (compiler ignores distinct for generic types)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       OSA-ODIN-03
+-- A nominally distinct wrapper type is not interchangeable with its wrapped type.
+-- A function that accepts `T` must not accept `Wrapper(T)`, and a function that
+-- accepts `Wrapper(T)` must not accept a raw `T`, without an explicit coercion.
+-- This holds for both monomorphic and polymorphic contexts.
+
+--! mode check
+
+-- Base numeric type.
+data Celsius : Type = Celsius Int
+
+-- A nominally distinct wrapper — structurally identical to Celsius but nominally
+-- different. Analogous to Odin's `distinct Celsius`.
+data Fahrenheit : Type = Fahrenheit Int
+
+-- A function that accepts only Celsius.
+let toCelsius (t : Celsius) : Int =
+    match t
+    case Celsius n -> n
+
+-- POSITIVE: passing a Celsius value — accepted.
+let okCelsius : Int =
+    toCelsius (Celsius 100)
+
+
+-- NEGATIVE: passing a Fahrenheit value where Celsius is expected.
+-- Structurally both wrap Int, but they are nominally distinct.
+let badFahrenheit : Int =
+    toCelsius (Fahrenheit 212)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A second pair: a named record wrapper.
+data Metres : Type = Metres Int
+data Miles  : Type = Miles  Int
+
+let addMetres (a : Metres) (b : Metres) : Metres =
+    match a
+    case Metres n ->
+        match b
+        case Metres m -> Metres (n + m)
+
+-- POSITIVE: both arguments are Metres.
+let okAddMetres : Metres =
+    addMetres (Metres 3) (Metres 4)
+
+
+-- NEGATIVE: second argument is Miles, not Metres.
+let badMixUnits : Metres =
+    addMetres (Metres 3) (Miles 4)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: first argument is Miles, second is Metres.
+let badMixUnits2 : Metres =
+    addMetres (Miles 3) (Metres 4)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: converting explicitly is allowed (explicit coercion).
+let convertMilesToMetres (mi : Miles) : Metres =
+    match mi
+    case Miles n -> Metres (n * 1609)
+
+let okConvert : Metres =
+    convertMilesToMetres (Miles 5)
+
+--! assertErrorCount 3

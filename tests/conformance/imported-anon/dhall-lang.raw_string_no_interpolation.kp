@@ -1,0 +1,48 @@
+-- Source issue: dhall-lang #352
+-- Spec: literals.string_literals.prefixed_strings
+-- Raw strings using the #"..."# hash-count mechanism suppress ${...} interpolation.
+-- The content of a raw string is taken literally; ${...} sequences are NOT
+-- treated as interpolation placeholders. Only #...#{...} with matching hash
+-- count would be an interpolation site.
+
+module test
+
+data Nat : Type = Zero : Nat | Succ : Nat -> Nat
+
+show_nat : Nat -> String
+let show_nat _ = "n"
+
+-- POSITIVE TEST 1: basic raw string, dollar-brace is literal text.
+raw1 : String
+let raw1 = #"${show_nat Zero}"#
+
+-- raw1 must equal the literal string "${show_nat Zero}", not "n".
+raw1_is_literal : Bool
+let raw1_is_literal = raw1 == "${show_nat Zero}"
+
+-- POSITIVE TEST 2: raw string with multiple hash characters.
+-- ##"text ${expr} text"## suppresses interpolation.
+raw2 : String
+let raw2 = ##"hello ${name} world"##
+
+raw2_is_literal : Bool
+let raw2_is_literal = raw2 == "hello ${name} world"
+
+-- POSITIVE TEST 3: interpolation in a raw string requires matching hash count.
+-- In a #"..."# raw string, only #{...} would be an interpolation site.
+-- ${...} is still just literal text.
+raw3 : String
+let raw3 = #"price: ${amount} USD"#
+
+raw3_is_literal : Bool
+let raw3_is_literal = raw3 == "price: ${amount} USD"
+
+-- POSITIVE TEST 4: ordinary (non-raw) string still performs interpolation.
+ordinary : String
+let ordinary = "value: ${show_nat Zero}"
+
+ordinary_is_evaluated : Bool
+let ordinary_is_evaluated = ordinary == "value: n"
+
+--! mode check
+--! assertNoErrors

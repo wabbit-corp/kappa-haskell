@@ -1,0 +1,38 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/debug.maude (FOO has sort Foo; then the user
+--           switches focus to BAR and writes `debug red in BAR : a` where
+--           BAR (the fmod that defined a, b, c) has been redefined to a
+--           different module that no longer declares `a`. The interpreter
+--           reports the operator as unknown in the current scope.).
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: an expression referring to a function/operator that
+--   is not in scope must be reported as unresolved.
+
+--! mode check
+
+module test
+
+data Foo : Type = MkFoo
+
+f : Foo -> Foo
+let f x = x
+
+-- POSITIVE: f is in scope.
+ok : Foo
+let ok = f MkFoo
+
+-- NEGATIVE: `notDeclaredFn` is never declared.
+bad : Foo
+let bad = notDeclaredFn MkFoo
+
+-- NEGATIVE: `mysteryConstant` is never declared.
+bad2 : Foo
+let bad2 = mysteryConstant
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

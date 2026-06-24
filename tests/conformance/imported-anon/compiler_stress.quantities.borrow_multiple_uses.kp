@@ -1,0 +1,14 @@
+-- Stress test: a borrowed (& x) binding may be used multiple times within its borrow scope
+-- Spec: types.universes.quantities, static.functions_borrowing
+
+--! mode check
+
+-- POSITIVE: borrowed x used twice in addition; borrows are unrestricted within their scope
+readTwice : (& x : Int) -> Int
+let readTwice x = x + x
+
+-- POSITIVE: borrowed x compared with itself; two uses are fine for a borrow
+compareToSelf : (& x : Int) -> Bool
+let compareToSelf x = x == x
+
+--! assertNoErrors

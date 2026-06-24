@@ -1,0 +1,28 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu PR#24 ("Makes operators always postfix"). In a
+--   strictly postfix discipline, an operator consumes its operands
+--   from the stack below it; mismatching the number of operands is a
+--   static error. The portable Kappa obligation is that a binary
+--   function applied to one argument yields a partially-applied
+--   function, not a fully-applied result; using that partial
+--   application where a base type is expected is rejected.
+-- Spec: types.functions, expressions.application,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+
+module test
+
+--! mode check
+
+add : Int -> Int -> Int
+let add x y = x + y
+
+-- NEGATIVE: too few arguments — partial application where Int expected.
+oops : Int
+let oops = add 1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

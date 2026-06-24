@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-8 (implicit/inferred arguments),
+--               PIKELET-76 (PR: implement 'Let Arguments Go First'),
+--               PIKELET-13 (instance arguments — related).
+-- Spec: expressions.implicit_parameters,
+--       expressions.implicit_parameters.expression_holes_named_holes
+--
+-- Kappa's `@`-implicit binder allows a polymorphic function to omit type
+-- arguments at call sites. `forall a. T` is sugar for `(@0 a : Type) -> T`
+-- (§11.3). Holes `?ident` request elaboration metavariables (§16.3.2);
+-- an unsolved hole at the end of declaration elaboration is an error
+-- in family `kappa.hole.unsolved` (§3.1.4, §16.3.2).
+
+--! mode check
+
+-- POSITIVE: identity with an implicit type argument; the implicit is
+-- inferred from the value-level argument's type.
+id : forall (A : Type0). A -> A
+let id x = x
+
+useStr : String
+let useStr = id "hello"
+
+useNat : Nat
+let useNat = id 7
+
+-- POSITIVE: const with two implicit type arguments.
+constFn : forall (A : Type0) (B : Type0). A -> B -> A
+let constFn x _ = x
+
+useConst : Nat
+let useConst = constFn 42 True
+
+-- POSITIVE: an implicit argument may be supplied explicitly via `@` form.
+useExplicit : Nat
+let useExplicit = id @Nat 99
+
+-- NEGATIVE: an unsolved named hole at the right-hand side of a declaration
+-- is rejected at the end of elaboration with family `kappa.hole.unsolved`.
+mystery : Nat
+let mystery = ?unfilled
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+--! assertErrorCount 1

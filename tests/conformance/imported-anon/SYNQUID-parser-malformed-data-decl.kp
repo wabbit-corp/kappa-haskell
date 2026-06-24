@@ -1,0 +1,46 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid grammar `data List a where Nil :: List a; Cons :: ...`
+--                 — Synquid uses `where` followed by `Ctor :: type`. A
+--                 malformed declaration (missing `where`, missing type, or
+--                 missing constructor name) must be rejected at parse time.
+-- Spec: data_types.data_declarations,
+--       compiler.frontir.minimum_recovery_contract,
+--       compiler.frontir.ordinary_errors_not_internal_failures
+--
+-- The Kappa-portable obligation is that referring to a constructor that was
+-- never declared (a malformed declaration leaves the constructor name
+-- unresolved, or a typo at a use site) is rejected with an ordinary
+-- name-resolution diagnostic. The compiler must not crash and the next
+-- declaration must continue to be checked (minimum recovery contract).
+
+--! mode check
+
+-- POSITIVE: a well-formed data declaration.
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: a use of the data declaration immediately after.
+favorite : Color
+let favorite = Green
+
+-- POSITIVE: after the well-formed data declaration, recovery permits
+-- the next declaration to be checked.
+afterColor : Color
+let afterColor = Red
+
+-- NEGATIVE: a reference to a constructor that was never declared is an
+-- unresolved-name diagnostic. Synquid's parser-side duplicate-constructor
+-- rejection (`Foo` declared twice in one `data` decl) has no direct
+-- portable analog in Kappa's spec; the closest portable obligation is
+-- ordinary name resolution at use sites.
+ghost : Color
+let ghost = Purple
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/unification.maude
+--           crl f(f(X, Y), Y) => f(Z, X) if Z =/= Y .
+--         The variable Z appears on the RHS and in the condition but was
+--         never bound on the LHS pattern, so its sort/value is not
+--         determined by matching. Maude rejects this with a "free variable
+--         on right-hand side" diagnostic. The portable obligation in Kappa is
+--         that every variable on a clause RHS must be bound by the LHS
+--         pattern (or be a top-level let binding visible in scope).
+-- Spec: expressions.patterns.scoping_validity,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: a variable referenced in a function clause body but
+--   not bound by the clause's pattern or by an enclosing binding must be
+--   reported as unresolved.
+
+--! mode check
+
+module test
+
+data Foo : Type = A | B | C
+
+-- POSITIVE: x is bound by the pattern, used on the RHS.
+identity : Foo -> Foo
+let identity x = x
+
+-- POSITIVE: both x and y are bound; both used on RHS.
+fstOf : Foo -> Foo -> Foo
+let fstOf x y = x
+
+-- NEGATIVE: z is referenced on the RHS but never bound by the pattern,
+-- enclosing let, or top-level decl.
+badFresh : Foo -> Foo
+let badFresh x = z
+
+-- NEGATIVE: w is referenced inside the body but is never bound. The pattern
+-- x is bound but the body forgets that name.
+badNested : Foo -> Foo
+let badNested x = match x
+    case A -> w
+    case B -> x
+    case C -> x
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

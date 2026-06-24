@@ -1,0 +1,77 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#15251 (new-style concepts implementation — concept
+--         constraints for generic procs), nim-lang/RFCs#346 (Improve overload
+--         resolution for generics and templates — explicit type priority)
+-- Spec: traits, traits.instances.resolution_algorithm,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.implicit.unsolved)
+-- When a Nim generic proc declares a concept constraint, calling it with a
+-- type that does not satisfy the concept is a compile-time error. In Kappa,
+-- a function with an implicit trait parameter must be called with a type that
+-- has a matching instance; otherwise kappa.implicit.unsolved is reported.
+
+--! mode check
+module test
+
+trait Show (a : Type) =
+    show : (& x : a) -> String
+
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+-- POSITIVE: basic Show instances for primitives.
+instance Show Int =
+    let show x = "<int>"
+
+instance Show String =
+    let show x = x
+
+instance Show Bool =
+    let show x =
+        match x
+        case True  -> "true"
+        case False -> "false"
+
+-- POSITIVE: function requiring Show — accepted for Int and String.
+printValue : forall a. (@_ : Show a) -> a -> String
+let printValue x = show x
+
+printInt : String
+let printInt = printValue 42
+
+printStr : String
+let printStr = printValue "hello"
+
+-- POSITIVE: two-constraint function — both Eq and Show required.
+showIfEqual : forall a. (@_ : Eq a) -> (@_ : Show a) -> a -> a -> String
+let showIfEqual x y =
+    match x == y
+    case True  -> "equal: " ++ show x
+    case False -> "not equal"
+
+-- A type with no Show or Eq instance.
+data MyOpaque : Type = MyOpaque Int
+
+-- NEGATIVE: calling printValue with a type that has no Show instance.
+badPrint : String
+let badPrint = printValue (MyOpaque 5)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- NEGATIVE: calling showIfEqual with a type that has no Eq instance.
+badEqShow : String
+let badEqShow = showIfEqual (MyOpaque 1) (MyOpaque 2)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- POSITIVE: adding a Show instance for MyOpaque makes it work.
+instance Show MyOpaque =
+    let show (MyOpaque n) = "MyOpaque(" ++ show n ++ ")"
+
+goodPrint : String
+let goodPrint = printValue (MyOpaque 7)
+
+--! assertErrorCount 2

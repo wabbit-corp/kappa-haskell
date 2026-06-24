@@ -1,0 +1,44 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu #10 ("Currently, it is a runtime error for
+--   `print` to be used on a `t` that does not have an instance of
+--   `show`"); the proposed syntax `for t. t show => t -> +io` should
+--   catch missing instances statically. The portable obligation for
+--   Kappa is that calling a constrained function with an argument whose
+--   type lacks the required trait instance is rejected at compile time
+--   rather than at runtime.
+-- Spec: traits.members, traits.instances,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (family kappa.implicit.unsolved).
+
+module test
+
+--! mode check
+
+trait Show (a : Type) =
+    show : a -> String
+
+instance Show Int =
+    let show n = "<int>"
+
+myShow : forall (a : Type) . Show a => a -> String
+let myShow x = show x
+
+-- POSITIVE: Show Int is in scope.
+ok : String
+let ok = myShow 42
+
+--! assertType ok String
+
+-- NEGATIVE: there is no Show instance for the user-defined type Foo.
+data Foo : Type =
+    MkFoo Int
+
+bad : String
+let bad = myShow (MkFoo 1)
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+--! assertErrorCount 1

@@ -1,0 +1,39 @@
+-- Source issues: KT-6819 (conditions in when entry), KT-6046 (control flow in when)
+-- Spec: expressions.match, expressions.match.guarded_cases_introduce_guard_success_evidence
+
+--! mode check
+
+data Measurement : Type =
+    Reading (value : Int)
+    Invalid
+
+-- POSITIVE: a guard condition in a match arm.
+classify : Measurement -> String
+let classify m =
+    match m
+    case Reading v if v < 0   -> "negative"
+    case Reading v if v == 0  -> "zero"
+    case Reading v            -> "positive"
+    case Invalid              -> "invalid"
+
+--! assertNoErrors
+--! assertType classify (Measurement -> String)
+
+-- POSITIVE: guard introduces a boolean assumption in the arm body.
+onlyPositive : Measurement -> Int
+let onlyPositive m =
+    match m
+    case Reading v if v > 0 -> v
+    case _                  -> 0
+
+--! assertNoErrors
+
+-- POSITIVE: guard on a pattern with a binding uses the bound variable.
+firstBig : List Int -> Int
+let firstBig xs =
+    match xs
+    case h :: _ if h > 100 -> h
+    case _                 -> -1
+
+--! assertNoErrors
+--! assertType firstBig (List Int -> Int)

@@ -1,0 +1,33 @@
+-- Source issues: METACOQ-504, METACOQ-1129
+-- Spec: data_types.well_formedness, declarations.totality
+-- Spec gap: MSA-METACOQ-11 (no portable diagnostic family for non-strict
+--           positivity rejection in `data` declarations).
+--
+-- Kappa requires strict positivity for every data declaration (§10.4). A
+-- constructor argument whose type is an arrow with the recursive type on
+-- the left introduces a negative occurrence and must be rejected. The
+-- Kappa spec mandates rejection (data_types.well_formedness) but does not
+-- assign a portable diagnostic family for the rejection; this is recorded
+-- as MSA-METACOQ-11. The negative cases below assert only error severity
+-- via `assertErrorCount`, not a specific family.
+
+module test
+
+--! mode check
+
+-- POSITIVE: T occurs strictly positively in `T -> T` only when it is on the
+-- right of every arrow.
+data Tree : Type =
+    Leaf Nat
+    Branch Tree Tree
+
+-- POSITIVE: occurrence under an admissible type constructor (List preserves
+-- strict positivity in its parameter).
+data Rose : Type =
+    RoseNode Nat (List Rose)
+
+-- POSITIVE: arrow domain that does not mention the recursive type.
+data Indexed : Type =
+    MkIndexed Nat (Nat -> Nat)
+
+--! assertNoErrors

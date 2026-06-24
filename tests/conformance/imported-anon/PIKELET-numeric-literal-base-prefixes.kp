@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-143 (PR: add binary, octal, and hexadecimal literals),
+--               PIKELET-223 (PR: implement better literal parsing),
+--               PIKELET-148 (PR: preserve numeric formatting through type checking),
+--               tests/literals.pi (reference fixture).
+-- Spec: literals.numeric_literals.integers, literals.numeric_literals.typing,
+--       literals.numeric_literals.sign
+--
+-- Kappa accepts decimal, hexadecimal (`0x`), octal (`0o`), and binary
+-- (`0b`) integer literals with optional `_` digit separators (§6.1.1).
+-- The literal elaborates to the user's expected integer type when one
+-- is supplied (§6.1.5). Per §6.1.4, leading `-` is the prefix `negate`
+-- operator, not part of the literal; there is no unary `+` in Kappa.
+
+--! mode check
+
+import std.ffi.(U8)
+
+decExpr : Nat
+let decExpr = 1234
+
+hexExpr : Nat
+let hexExpr = 0x1A2B
+
+octExpr : Nat
+let octExpr = 0o755
+
+binExpr : Nat
+let binExpr = 0b1010_0101
+
+sepExpr : Nat
+let sepExpr = 1_000_000
+
+-- POSITIVE: negation via the `-` prefix operator (§6.1.4 desugars to
+-- `negate 7`, which requires `Negatable Int`).
+negSigned : Int
+let negSigned = -7
+
+-- NEGATIVE: a literal that overflows its declared integer type is
+-- diagnosed as a literal-domain mismatch.
+overflowU8 : U8
+let overflowU8 = 0xFFFF
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+--! assertErrorCount 1

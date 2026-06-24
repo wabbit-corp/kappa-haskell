@@ -1,0 +1,54 @@
+-- Source issues: METACOQ-367
+-- Spec: declarations.totality.structural_descent,
+--       declarations.totality.recursive_group_elaboration_invariance
+--
+-- MetaCoq #367 argues that each member of a mutual fix must be checked to
+-- be itself a well-formed type, not merely a lifted variable. Kappa's
+-- recursive-group elaboration requires every header to be collected and
+-- published before any body is checked, and each member's declared type
+-- must itself be a type expression — the obligation is positive.
+
+module test
+
+--! mode check
+
+-- A local Peano-like data so we can structurally recurse without relying
+-- on prelude `Nat` (which is `expect data` with no source constructors).
+data Peano : Type =
+    PZ
+    PS Peano
+
+-- POSITIVE: each member has a complete signature whose type is a
+-- well-formed Kappa type expression. The two members form one mutual
+-- recursive SCC because `times` calls `plus`.
+plus  : Peano -> Peano -> Peano
+times : Peano -> Peano -> Peano
+
+let plus a b decreases structural a =
+    match a
+    case PZ      -> b
+    case (PS x)  -> PS (plus x b)
+
+let times a b decreases structural a =
+    match a
+    case PZ      -> PZ
+    case (PS x)  -> plus b (times x b)
+
+-- POSITIVE: a polymorphic-typed member of an SCC. Its signature is itself
+-- a Pi type, not a bare variable.
+mapL : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+sumP : List Peano -> Peano
+
+let mapL f xs decreases structural xs =
+    match xs
+    case Nil          -> Nil
+    case (::) x rest  -> (::) (f x) (mapL f rest)
+
+let sumP xs decreases structural xs =
+    match xs
+    case Nil          -> PZ
+    case (::) x rest  -> plus x (sumP rest)
+
+--! assertNoErrors
+--! assertType plus Peano -> Peano -> Peano
+--! assertType times Peano -> Peano -> Peano

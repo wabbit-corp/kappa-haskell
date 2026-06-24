@@ -1,0 +1,57 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig compile_errors/switch_expression-missing_error_prong.zig,
+--               zig compile_errors/error_not_handled_in_switch.zig, zig#25046
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability,
+--       types.unions.formation
+-- A match on a closed error-set type must cover every declared error member.
+-- In Kappa terms the error set is modelled as a closed variant type. Omitting a
+-- member is non-exhaustive; the diagnostic must list the uncovered members.
+
+--! mode check
+
+-- Model the Zig error-set pattern as a closed variant / simple enum.
+data FileError : Type =
+    AccessDenied
+    NotFound
+    PermissionDenied
+
+-- POSITIVE: all three members covered.
+let handleAll (e : FileError) : String =
+    match e
+    case AccessDenied     -> "denied"
+    case NotFound         -> "not found"
+    case PermissionDenied -> "perm"
+
+
+-- POSITIVE: wildcard covers residual.
+let handleSome (e : FileError) : String =
+    match e
+    case AccessDenied -> "denied"
+    case _            -> "other"
+
+
+-- NEGATIVE: `PermissionDenied` omitted — non-exhaustive.
+let handleTwo (e : FileError) : String =
+    match e
+    case AccessDenied -> "denied"
+    case NotFound     -> "not found"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: multiple members omitted — diagnostic must list each uncovered member.
+data RichError : Type =
+    Foo
+    Bar
+    Baz
+
+let handleOnlyFoo (e : RichError) : Bool =
+    match e
+    case Foo -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

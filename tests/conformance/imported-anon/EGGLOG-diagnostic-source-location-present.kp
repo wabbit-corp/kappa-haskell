@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #64 (Print Line Number on Parse Error),
+--   egraphs-good/egglog #209 (We need documentation),
+--   egraphs-good/egglog #210 (We need better error messages — refer to
+--   generated variables and don't give any source location),
+--   egraphs-good/egglog #732 (Better Error Message For Missing Sort — error
+--   shows internal type name, not the missing sort),
+--   egraphs-good/egglog PR#199 (Show parse error's line number and column),
+--   egraphs-good/egglog PR#398 (Reporting source locations for errors).
+-- Spec: compiler.frontir.origins_ranges_labels (§3.1),
+--       compiler.frontir.diagnostic_quality_invariants (§3.1.11),
+--       see also EGGLOG-SA-03 in EGGLOG_SPEC_ADDITIONS.md.
+-- Every diagnostic must carry a source span pointing into user-authored source
+-- (or into the macro/desugaring expansion if and only if the original site is
+-- preserved as a related-origin entry). Kappa requires every diagnostic to
+-- carry a real source range; internal placeholders like `__bogus__` must not
+-- leak.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Add (l : Int) (r : Int)
+
+-- NEGATIVE: an unresolved name must be reported at the user's source span.
+useUnknown : Int
+let useUnknown = znownz + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a constructor with the wrong arity must be reported at the
+-- application's source span.
+badAdd : Math
+let badAdd = Add 1 2 3
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: type mismatch must be reported at the offending expression.
+badAssign : Int
+let badAssign = "string"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

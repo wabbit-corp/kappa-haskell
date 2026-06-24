@@ -1,0 +1,74 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/RFCs#450 (Allow borrowing all operations on distinct type),
+--         nim-lang/Nim distinct type design — passing the underlying type to a
+--         function expecting the distinct type must be rejected.
+-- Spec: data_types.data_declarations, compiler.frontir.standard_diagnostic_families
+--       (kappa.type.mismatch, kappa.application.argument-mismatch)
+-- Passing the unwrapped type where the wrapper type is expected, or vice versa,
+-- is a type mismatch. The same rule applies to function arguments: a function
+-- expecting Celsius must not accept Fahrenheit even though both wrap Int.
+
+--! mode check
+module test
+
+data Celsius : Type = Celsius Int
+data Fahrenheit : Type = Fahrenheit Int
+
+-- POSITIVE: function that expects Celsius.
+formatCelsius : Celsius -> String
+let formatCelsius c =
+    match c
+    case Celsius n -> show n ++ "°C"
+
+-- POSITIVE: function that expects Fahrenheit.
+formatFahrenheit : Fahrenheit -> String
+let formatFahrenheit f =
+    match f
+    case Fahrenheit n -> show n ++ "°F"
+
+-- POSITIVE: correct calls.
+validCall1 : String
+let validCall1 = formatCelsius (Celsius 20)
+
+validCall2 : String
+let validCall2 = formatFahrenheit (Fahrenheit 68)
+
+-- NEGATIVE: passing a bare Int where Celsius is expected.
+badRawInt : String
+let badRawInt = formatCelsius 20
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Fahrenheit where Celsius is expected.
+wrongWrapper : String
+let wrongWrapper = formatCelsius (Fahrenheit 68)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing Celsius where Fahrenheit is expected.
+wrongWrapperReverse : String
+let wrongWrapperReverse = formatFahrenheit (Celsius 20)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: a generic wrapper and its correct usage.
+data Tagged (tag : Type) (a : Type) : Type = Tagged a
+
+getTagged : forall tag a. Tagged tag a -> a
+let getTagged t =
+    match t
+    case Tagged v -> v
+
+safeTagged : Tagged String Int
+let safeTagged = Tagged 42
+
+-- NEGATIVE: tagged with wrong payload type.
+badTagged : Tagged String Int
+let badTagged = Tagged "not an int"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 4

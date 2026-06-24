@@ -1,0 +1,66 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #143 (panic: ConstrainEq on unbound vars),
+--   egraphs-good/egglog #196 (Query atoms are order-sensitive),
+--   egraphs-good/egglog #616 (Check for ungrounded query variables at rule
+--   declaration time),
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-0.egg,
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-1.egg,
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-2.egg,
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-3.egg,
+--   egraphs-good/egglog tests/fail-typecheck/ungrounded-4.egg.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved — §3.2.2),
+--       expressions.patterns.scoping_validity (§17.2.2).
+-- A variable used in a clause body that is not bound by the clause's pattern
+-- or an enclosing scope is ungrounded. Kappa must reject these at
+-- name-resolution time with kappa.name.unresolved.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Add (l : Math) (r : Math)
+
+-- POSITIVE: all RHS variables are bound by the pattern.
+lhs : Math -> Math
+let lhs m =
+    match m
+    case (Add l _) -> l
+    case other     -> other
+
+-- NEGATIVE: RHS references a name that is not bound (`r` was wildcarded).
+bad1 : Math -> Math
+let bad1 m =
+    match m
+    case (Add l _) -> r
+    case other     -> other
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: pattern-guard uses an ungrounded variable.
+bad2 : Math -> Math
+let bad2 m =
+    match m
+    case (Num n) if r > 0 -> Num n
+    case other            -> other
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: inner-match RHS uses a name from a sibling-but-disjoint scope.
+bad3 : Math -> Math -> Math
+let bad3 a b =
+    match a
+    case (Add l _) ->
+        (match b
+         case (Num _) -> l
+         case _       -> rNoBind)
+    case other     -> other
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 3

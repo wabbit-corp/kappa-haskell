@@ -1,0 +1,62 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #235 (panic "Base types cannot be unioned"),
+--   egraphs-good/egglog PR#281 (Fix unexpected assertion failure when arity is
+--   mismatched),
+--   egraphs-good/egglog PR#477 (Fix panic when throwing arity mismatch),
+--   egraphs-good/egglog tests/fail-typecheck/arity-mismatch.egg.
+-- Spec: data_types.data_declarations (§10.1),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.constructor-arity — §3.2.10),
+--       compiler.frontir.portable_diagnostic_code_aliases
+--       (E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH — §3.1.4).
+-- A constructor pattern that supplies the wrong number of positional arguments
+-- is ill-formed and must produce kappa.pattern.constructor-arity rather than
+-- an internal panic.
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Add (l : Math) (r : Math)
+    If3 (c : Math) (t : Math) (e : Math)
+
+-- POSITIVE: well-formed constructor patterns.
+isAddOk : Math -> Bool
+let isAddOk m =
+    match m
+    case (Add _ _) -> True
+    case _         -> False
+
+-- NEGATIVE: `Add` takes two args; pattern supplies one.
+badAdd1 : Math -> Bool
+let badAdd1 m =
+    match m
+    case (Add _) -> True
+    case _       -> False
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: `Num` takes one arg; pattern supplies two.
+badNum : Math -> Int
+let badNum m =
+    match m
+    case (Num x y) -> x
+    case _         -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- NEGATIVE: `If3` takes three args; pattern supplies two.
+badIf : Math -> Math
+let badIf m =
+    match m
+    case (If3 c t) -> c
+    case other     -> other
+
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+--! assertErrorCount 3

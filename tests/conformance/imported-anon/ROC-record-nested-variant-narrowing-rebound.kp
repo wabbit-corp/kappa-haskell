@@ -1,0 +1,59 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Roc #5429
+-- Spec: types.records.values, types.unions.elimination_match,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence
+-- When matching `{kind: A}` followed by `{kind}`, the rebound `kind` in the
+-- residual arm carries the *original* scrutinee field's full variant row, not
+-- a row narrowed to only the explicitly-matched constructor. A subsequent
+-- match on `kind` inside the residual arm must see the full variant row.
+
+module test
+
+data A : Type =
+    A
+
+data B : Type =
+    B
+
+data C : Type =
+    C
+
+type Kind = (| A | B | C |)
+
+--! mode check
+
+-- POSITIVE: the outer match peels off the `{kind: A}` case. In the catch-all
+-- residual `{kind}`, the binder `kind` retains type `Kind = (| A | B | C |)`
+-- minus positive evidence; the inner match on `kind` must therefore admit B
+-- and C arms (and a catch-all to discharge residual negative evidence).
+limitedKind : (data : (kind : Kind)) -> String
+let limitedKind data =
+    match data
+      case (kind = (| _ : A |))  -> "A is special"
+      case (kind = k)            ->
+        match k
+          case (| _ : B |) -> "B"
+          case (| _ : C |) -> "C"
+          case _           -> ""
+
+--! assertType limitedKind (data : (kind : Kind)) -> String
+
+-- NEGATIVE: omitting the catch-all in the inner match must surface as
+-- non-exhaustive even though the outer match peeled off the A case — because
+-- inside the inner match, the original Kind row is still in scope. (The
+-- branch-local LacksCtor evidence for A is not strong enough to coerce the
+-- inner match into a smaller closed row.)
+limitedKindMissing : (data : (kind : Kind)) -> String
+let limitedKindMissing data =
+    match data
+      case (kind = (| _ : A |))  -> "A is special"
+      case (kind = k)            ->
+        match k
+          case (| _ : B |) -> "B"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

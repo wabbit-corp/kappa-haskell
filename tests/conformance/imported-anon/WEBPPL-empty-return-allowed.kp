@@ -1,0 +1,38 @@
+-- Source: WebPPL #154 (CPS doesn't handle 'empty return'),
+--   PR #170 (handle empty return statements).
+-- Spec: effects.return, literals.unit_tuples, expressions.lambdas.
+--
+-- A function that exits via an "empty return" returns the unit value.
+-- In Kappa this is the same as a function returning `Unit`. A function
+-- body that flows off the end without an explicit return also yields
+-- `Unit`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: explicit return of unit.
+noOp : Unit -> Unit
+let noOp _ = ()
+
+--! assertNoErrors
+--! assertType noOp (Unit -> Unit)
+
+-- POSITIVE: a `do` block whose result-producing item is `pure ()`.
+sideOnly : Eff <[ ]> Unit
+let sideOnly = do
+    let _ = 0
+    pure ()
+
+--! assertNoErrors
+--! assertType sideOnly (Eff <[ ]> Unit)
+
+-- POSITIVE: a conditional with an "early-out" arm — both arms return
+-- `Unit`, satisfying the join.
+maybeShortCircuit : Bool -> Unit
+let maybeShortCircuit b =
+    if b then ()
+    else ()
+
+--! assertNoErrors
+--! assertType maybeShortCircuit (Bool -> Unit)

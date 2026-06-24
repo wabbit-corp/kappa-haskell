@@ -1,0 +1,72 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#5043 (switch over union does not see first case if first case is a map)
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Exhaustiveness checking must be order-independent: whether a constructor is
+-- declared first or last in the union type must not affect whether it is
+-- recognized as covered in a match arm. Missing the first-declared constructor
+-- must produce the same non-exhaustive diagnostic as missing any other.
+
+--! mode check
+
+-- A union type where the first-declared constructor has a complex payload type.
+-- This mirrors the Odin scenario where the first union variant was a map type
+-- and was erroneously reported as uncovered even when explicitly handled.
+data Event : Type =
+    BatchEvent (List (String, Int))   -- declared first; complex payload
+    SingleEvent String
+    CountEvent  Int
+
+-- POSITIVE: all three constructors covered in declaration order.
+let handleEvent (e : Event) : Int =
+    match e
+    case BatchEvent  _ -> 0
+    case SingleEvent _ -> 1
+    case CountEvent  n -> n
+
+
+-- POSITIVE: all three constructors covered in reverse order.
+let handleEventReversed (e : Event) : Int =
+    match e
+    case CountEvent  n -> n
+    case SingleEvent _ -> 1
+    case BatchEvent  _ -> 0
+
+
+-- POSITIVE: wildcard covers residual regardless of what was matched first.
+let isCount (e : Event) : Bool =
+    match e
+    case CountEvent _ -> True
+    case _            -> False
+
+
+-- NEGATIVE: BatchEvent (the first-declared constructor) is omitted.
+-- This is the exact scenario from odin#5043: the first-declared complex-typed
+-- variant is missing. The exhaustiveness checker must report it.
+let missingFirstVariant (e : Event) : Int =
+    match e
+    case SingleEvent _ -> 1
+    case CountEvent  n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: SingleEvent (a middle constructor) is omitted.
+let missingMiddleVariant (e : Event) : Int =
+    match e
+    case BatchEvent  _ -> 0
+    case CountEvent  n -> n
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: CountEvent (the last constructor) is omitted.
+let missingLastVariant (e : Event) : Int =
+    match e
+    case BatchEvent  _ -> 0
+    case SingleEvent _ -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

@@ -1,0 +1,51 @@
+-- Source artifacts: synquid test/unit/HOChecking.sq, test/pldi16/List-Append.sq,
+--                 test/comcom/List-Replicate.sq — polymorphic `map`,
+--                 `append`, and `replicate` are instantiated at multiple
+--                 concrete element types in client code.
+-- Spec: types.quantification,
+--       types.quantification.implicit_declaration_universalization
+--
+-- Synquid lets the user declare polymorphic signatures like
+-- `map :: (a -> b) -> List a -> List b` and instantiate them at each call
+-- site. The Kappa-portable counterpart is rank-1 universal quantification
+-- at a top-level signature; the polymorphic identifier is instantiated at
+-- the expected type of each application.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a generic identity function.
+id : forall (a : Type). a -> a
+let id x = x
+
+-- POSITIVE: instantiation at PNat.
+useNat : PNat
+let useNat = id Z
+
+-- POSITIVE: instantiation at Bool.
+useBool : Bool
+let useBool = id True
+
+-- POSITIVE: instantiation at List PNat.
+useListNat : List PNat
+let useListNat = id (Cons Z Nil)
+
+-- POSITIVE: a generic length function instantiated at Bool, structurally
+-- recursive on its argument.
+lenB : List Bool -> PNat
+let lenB xs =
+    match xs
+      case Nil         -> Z
+      case (Cons _ ys) -> S (lenB ys)
+
+three : PNat
+let three = lenB (Cons True (Cons False (Cons True Nil)))
+
+--! assertNoErrors

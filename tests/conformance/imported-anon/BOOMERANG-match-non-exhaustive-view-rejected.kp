@@ -1,0 +1,31 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Boomerang's lens types require the source regex to cover all
+--         possible inputs. The Kappa-portable analog is exhaustiveness of
+--         `match` arms over a closed algebraic type.
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive),
+--       expressions.active_patterns.total_active_patterns_adts_variants
+-- Portable obligation: a `match` over a closed algebraic view omitting
+--   a constructor with no wildcard must be rejected.
+
+module test
+
+--! mode check
+
+data ComposerView : Type =
+    EmptyView
+    NamedView String String
+
+-- NEGATIVE: omits EmptyView, no wildcard.
+describeBad : ComposerView -> String
+let describeBad v =
+    match v
+    case NamedView g f -> g ++ " " ++ f
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

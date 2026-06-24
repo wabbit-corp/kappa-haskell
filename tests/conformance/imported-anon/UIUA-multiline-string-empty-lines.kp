@@ -1,0 +1,52 @@
+-- Source issue: Uiua #488 ("Bug: comment changes multiline string
+--   parsing" — the presence of `# baz` after the closing fence
+--   changes how internal blank lines are parsed), Uiua #529 (feature
+--   request for multiline-string syntax that preserves whitespace).
+-- Spec: literals.string_literals.multiline_strings_fixed_dedent,
+--       literals.string_literals.basic_strings.
+--
+-- A multiline string literal's content is determined solely by the
+-- literal's own surface bytes and indentation. The presence or absence
+-- of comments, trailing code, or whitespace AFTER the closing fence
+-- MUST NOT change the parsed content. Embedding the same literal in
+-- different surrounding source must produce the same value.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a multiline string with internal blank lines.
+greeting : String
+let greeting = """
+foo
+
+bar
+"""
+
+-- POSITIVE: the same multiline string text written again, with a
+-- trailing line-comment on the next line. The trailing comment MUST
+-- NOT change the parsed content.
+greetingWithComment : String
+let greetingWithComment = """
+foo
+
+bar
+"""
+-- trailing comment after the literal block
+
+-- POSITIVE: the same multiline string text embedded in a larger list
+-- expression. The surrounding source MUST NOT change the parsed value.
+nested : List String
+let nested = [
+    """
+foo
+
+bar
+""",
+    "extra"
+]
+
+--! assertNoErrors
+--! assertType greeting String
+--! assertType greetingWithComment String
+--! assertType nested List String

@@ -1,0 +1,37 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: BQN scope spec (*"Two identifier instances have the same
+--   name if their tokens, as strings, match after removing all underscores
+--   and ignoring case"*), BQN-48 (Unicode identifier discussion).
+-- Spec: lexical.identifiers,
+--       compiler.frontir.standard_diagnostic_families.name_import.
+-- Kappa does NOT adopt BQN's case-insensitive, underscore-stripping
+-- equivalence — case and underscores are significant. This negative test
+-- pins the Kappa convention: two visually similar spellings are DISTINCT
+-- identifiers.
+
+--! mode check
+
+-- POSITIVE: two case-different spellings denote two distinct bindings.
+my_value : Nat
+let my_value = 1
+
+myValue : Nat
+let myValue = 2
+
+-- POSITIVE: each is independently in scope.
+sumThem : Nat
+let sumThem = my_value + myValue
+
+-- NEGATIVE: a reference using a spelling that matches neither binding is
+-- unresolved, even though BQN would have considered it equivalent.
+badRef : Nat
+let badRef = myvalue + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertType my_value Nat
+--! assertType myValue Nat
+
+--! assertErrorCount 1

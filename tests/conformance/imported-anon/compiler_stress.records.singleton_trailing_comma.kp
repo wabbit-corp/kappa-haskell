@@ -1,0 +1,25 @@
+-- Stress test: a one-element record type requires a trailing comma: (x : T,)
+-- Spec: types.records
+
+--! mode check
+
+-- POSITIVE: one-element record type with required trailing comma
+type Single : Type = (value : Int,)
+
+-- POSITIVE: one-element record value with required trailing comma
+mkSingle : Int -> Single
+let mkSingle n = (value = n,)
+
+-- POSITIVE: field access on a single-element record
+getSingle : Single -> Int
+let getSingle s = s.value
+
+-- Note: (Int) without a trailing comma is a parenthesized type expression (just Int),
+-- not a one-element record type.  The trailing comma is the syntactic discriminant.
+-- A two-element record needs no trailing comma: (x : Int, y : Int)
+type Pair : Type = (fst : Int, snd : Int)
+
+mkPair : Int -> Int -> Pair
+let mkPair a b = (fst = a, snd = b)
+
+--! assertNoErrors

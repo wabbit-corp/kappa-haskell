@@ -1,0 +1,31 @@
+-- Source issue: PLUTUS-6085
+-- Spec: expressions.lambdas (§16.2)
+-- Source notes: In Plinth, an old version accepted `\_ _ -> ()` as a
+-- validator body, but a later version rejected it because GHC inferred a
+-- kind-polymorphic type `forall k. k` for the unused binders (#6085). In
+-- Kappa, §16.2 explicitly states that a bare binder `x` or `_` is equivalent
+-- to `(x : _)` or `(_ : _)` with inferred type. When the surrounding
+-- expected type is known, the binder types must be inferred from context
+-- without requiring user annotation.
+
+--! mode check
+
+-- POSITIVE: a closed lambda with two wildcard binders elaborates correctly
+-- when the expected type is fixed by the binding's signature.
+twoArg : Int -> Int -> Int
+let twoArg = \_ _ -> 0
+
+-- POSITIVE: bare identifier binders (no annotation) likewise elaborate from
+-- context.
+addPair : Int -> Int -> Int
+let addPair = \x y -> x + y
+
+-- POSITIVE: mixed bare and annotated binders.
+mixed : Int -> Int -> Int
+let mixed = \x (y : Int) -> x + y
+
+-- POSITIVE: the wildcard pair `\_ _ -> Unit` at a fully fixed expected type.
+alwaysUnit : Int -> Int -> Unit
+let alwaysUnit = \_ _ -> Unit
+
+--! assertNoErrors

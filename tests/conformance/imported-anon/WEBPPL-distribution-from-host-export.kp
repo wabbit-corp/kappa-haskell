@@ -1,0 +1,40 @@
+-- Source: WebPPL #469 (distribution constructors must be usable from the
+--   host JavaScript runtime as ordinary values, so that re-implementations
+--   like `dippl` can build distributions without rerunning the compiler).
+-- Spec: WEBPPL_SPEC_ADDITIONS WEBPPL-SA-08
+--   (proposed constructor bridge-export obligation — not yet specified;
+--    the related existing anchor is compiler.ffi.bridge_contract_formation).
+--
+-- A publicly-declared distribution constructor is an ordinary typed term
+-- whose constructor and field-projection identity is preserved across
+-- backend lowering. The bridge-callable-from-host obligation itself is a
+-- pending spec gap; this fixture pins only the Kappa-side surface that
+-- such an obligation would build on (named-binder constructor, ordinary
+-- first-class value, public visibility).
+
+module test
+
+--! mode check
+
+-- A public distribution constructor. (In Kappa, top-level declarations are
+-- exported by default; `public` is meaningful only under @PrivateByDefault.)
+data Gaussian : Type =
+    Gaussian { mu : Float, sigma : Float }
+
+-- POSITIVE: the constructor is usable inside the module.
+g : Gaussian
+let g = Gaussian { mu = 0.0, sigma = 1.0 }
+
+--! assertNoErrors
+--! assertType g Gaussian
+
+-- POSITIVE: the data declaration kind list reflects the declared items.
+--! assertDeclKinds data, signature, let, signature, let
+
+-- POSITIVE: the constructor is a first-class value usable by a wrapping
+-- function — the obligation the bridge-export note builds on.
+makeNormal : Float -> Float -> Gaussian
+let makeNormal m s = Gaussian { mu = m, sigma = s }
+
+--! assertNoErrors
+--! assertType makeNormal (Float -> Float -> Gaussian)

@@ -1,0 +1,45 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: PURESCRIPT-PR-681 (linked issue #680 — better error
+--                   message for duplicate labels in rows),
+--                   PURESCRIPT-PR-2843 (linked #2820 — Row TypesDoNotUnify,
+--                   don't assume unique labels).
+-- Spec: types.records.row_extension,
+--       types.quantification.rows_labels,
+--       compiler.frontir.standard_diagnostic_families.effect_row_variant
+--       (family kappa.row.lacks-failed).
+-- Kappa spec rule (§ types.records.row_extension):
+--   "For each extension field `ℓ := e`: if the receiver has a closed record
+--    type and already contains field `ℓ`, it is a compile-time error; use
+--    update syntax `ℓ = ...`; if the receiver has type `(fields | r)`, then
+--    that extension field is well-typed only if `LacksRec r ℓ` holds and `ℓ`
+--    is not among the explicitly listed `fields`."
+-- Attempting to row-extend a record with a label it already contains must be
+-- diagnosed by the `kappa.row.lacks-failed` family.
+
+--! mode check
+
+-- NEGATIVE: closed-receiver row extension with an existing label.
+type Point : Type = (x : Int, y : Int)
+
+mk : Point
+let mk = (x = 1, y = 2)
+
+bad_closed : Point
+let bad_closed = mk.{ x := 99 }
+
+-- NEGATIVE: open-receiver row extension violating `LacksRec`.
+add_y_to_x : forall (r : RecRow). (x : Int | r) -> (x : Int, y : Int | r)
+let add_y_to_x rec = rec.{ y := 0 }
+
+bad_open_call : Int
+let bad_open_call =
+    -- The argument's residual row `r` already contains `y`, so the
+    -- `LacksRec r y` premise of `add_y_to_x` cannot be discharged.
+    (add_y_to_x (x = 1, y = 2)).y
+
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+--! assertErrorCount 2

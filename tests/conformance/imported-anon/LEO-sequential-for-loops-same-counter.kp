@@ -1,0 +1,53 @@
+-- Source issues: leo#1892 (sequential for-loops with the same counter variable
+--               gave a spurious "variable `i` shadowed by" error; the second
+--               `for i: u8 in 0u8..2u8` was treated as a redefinition of the
+--               first loop's `i`, which was already out of scope).
+-- Spec: SA-LEO-07 (branch-local variables are not in scope after the branch;
+--       by analogy, loop-local variables are not in scope after the loop),
+--       §SA-LEO-03 (duplicate-name rule applies only within the same scope).
+-- Kappa spec rule:
+--   "Sequential bindings that use the same identifier in non-overlapping scopes
+--    do not produce a duplicate-name error. Each `let` introduces a fresh scope
+--    for the remainder of the block; re-using a name in a later binding simply
+--    shadows the earlier one in the new scope, not a redefinition."
+-- Rewrite note: Leo's `for i: u8 in 0..2 {}` is Leo-specific syntax. The Kappa
+-- equivalent uses sequential `let i = ...` bindings to show that re-using the
+-- same identifier in successive non-overlapping scopes is accepted.
+
+--! mode check
+
+-- POSITIVE: two sequential let bindings with the same name in a pure block.
+let twoSeqBindings : Int =
+    let i : Int = 1
+    let v1 : Int = i + i      -- uses first `i`
+    let i : Int = 3           -- fresh scope; no conflict
+    let v2 : Int = i + i      -- uses second `i`
+    v1 + v2                   -- 2 + 6 = 8
+
+ok1 : Int
+let ok1 = twoSeqBindings
+
+-- POSITIVE: three sequential bindings with the same name.
+let threeSeqBindings : Int =
+    let i : Int = 1
+    let s1 : Int = i
+    let i : Int = 2
+    let s2 : Int = i
+    let i : Int = 3
+    s1 + s2 + i               -- 1 + 2 + 3 = 6
+
+ok2 : Int
+let ok2 = threeSeqBindings
+
+-- POSITIVE: outer parameter remains accessible across all re-bindings of `i`.
+let outerInSeq (x : Int) : Int =
+    let i : Int = 1
+    let a : Int = x + i       -- x = outer param; i = 1
+    let i : Int = 2
+    let b : Int = x + i       -- x still in scope; i = 2
+    a + b
+
+ok3 : Int
+let ok3 = outerInSeq 10
+
+--! assertNoErrors

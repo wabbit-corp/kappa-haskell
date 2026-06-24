@@ -1,0 +1,37 @@
+-- Source issue: Factor #1825 (`T{ foo { a 1 } { a 2 } }` silently uses
+--   the last value for `a` instead of throwing an error on the redundant
+--   key — an unannounced last-write-wins is a foot-gun).
+-- Spec: data_types.data_declarations.constructor_application_named_arguments_c, expressions.application,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.constructor.arity).
+--
+-- Kappa named-field constructor applications must reject duplicated named
+-- fields with kappa.constructor.arity. The payload must include the
+-- duplicated field name; the diagnostic must not silently apply
+-- last-write-wins semantics.
+
+module test
+
+--! mode check
+
+data Foo : Type =
+    Foo { a : Int, b : Int }
+
+-- POSITIVE: named-field application with each field set once.
+ok : Foo
+let ok = Foo { a = 1, b = 2 }
+
+--! assertType ok Foo
+
+-- NEGATIVE: duplicate named field `a` in the constructor application.
+dup : Foo
+let dup = Foo { a = 1, a = 2, b = 3 }    --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: duplicate occurs even with different formatting / ordering.
+dup2 : Foo
+let dup2 = Foo { b = 7, a = 1, b = 8 }   --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH

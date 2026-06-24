@@ -1,0 +1,20 @@
+-- Source issues: PIKELET-15 (module import planner / implement import declarations),
+--               PIKELET-141 (PR: add stubbed out import expression syntax),
+--               PIKELET-158 (PR: implement cross-file imports).
+-- Spec: modules.imports, modules.files, modules.exports
+--
+-- Importing a sibling module brings that module's exported names into the
+-- current scope. A misspelled module name is a name-resolution error.
+-- Kappa requires URL imports to use one of `as`, `.*`, `.(...)` per §8.3.
+
+--! mode check
+
+-- NEGATIVE: import a non-existent dotted module path. Kappa resolves
+-- bare dotted imports per §8.3; an unknown module short-name surfaces as
+-- `kappa.name.unresolved`.
+import nonexistent.module
+
+useNat : Nat
+let useNat = 7
+
+--! assertDiagnosticFamily error kappa.name.unresolved

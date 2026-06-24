@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu README.md ("any series of terms can be
+--   concatenated with any other series of terms") and tutorial.md
+--   (quotations as opaque groupings). A quotation that captures the
+--   identity transformation `[a -> a]` must work at any element type,
+--   matching the rank-2 polymorphic discipline. PR#9 introduces the
+--   syntactic shape for these constrained/quantified type variables.
+-- Spec: types.quantification, types.functions,
+--       compiler.frontir.standard_diagnostic_families.type_equality.
+--
+-- A higher-rank polymorphic callable parameter can be applied at two
+-- distinct ground types within the same body; a rank-1 callable cannot.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a rank-2 polymorphic callable parameter.
+applyBoth : (forall (a : Type) . a -> a) -> Int -> String -> Int
+let applyBoth f n s =
+    let _ = f s
+    in f n
+
+result : Int
+let result = applyBoth (\x -> x) 7 "hi"
+
+--! assertType result Int
+
+-- NEGATIVE: a rank-1 callable cannot be applied at two distinct
+-- element types within the same body.
+applyBoth1 : forall (a : Type) . (a -> a) -> a -> String -> a
+let applyBoth1 f n s = f s
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

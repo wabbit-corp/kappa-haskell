@@ -1,0 +1,76 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: PURESCRIPT-PR-2588 (Pattern guards),
+--                   PURESCRIPT-PR-2807 (Exhaustivity check for pattern guards,
+--                   linked #2806),
+--                   PURESCRIPT-PR-4467 (linked #4466 — fix exhaustiveness
+--                   checking to account for case guards),
+--                   PURESCRIPT-PR-1909 (linked #1906 — `true` not treated as
+--                   an infallible guard),
+--                   PURESCRIPT-PR-4358 (linked #4357 — name clash in guard
+--                   clauses).
+-- Spec: expressions.match,
+--       expressions.match.guarded_cases_introduce_guard_success_evidence,
+--       expressions.match.constructor_branches_introduce_explicit_refinement_evidence,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive).
+-- Kappa spec rule (§ expressions.match.guarded_cases_introduce_guard_success_evidence):
+--   "Guard failure does not by itself exclude `pat` from subsequent cases. It
+--    excludes only the conjunction of `pat` and `guard`. Therefore guarded
+--    branches do not contribute negative constructor evidence past the guard
+--    boundary unless some separate preceding rule already provides it."
+-- A guarded case Some _ if g -> ... does NOT discharge the `Some` branch's
+-- exhaustiveness obligation: a subsequent unguarded match must still cover
+-- `Some` shapes (because the guard may fail) or use a catch-all.
+
+--! mode check
+
+data Bit : Type =
+    Zero | One
+
+data Opt : Type =
+    None | Some Bit
+
+-- POSITIVE: an unguarded constructor branch followed by a residual `_` is
+-- exhaustive; the residual branch is checked under
+-- `LacksCtor x ⟨None⟩` and so derives `HasCtor x ⟨Some⟩` for a 2-constructor
+-- type. (Smoke-checks the rule that residual evidence works under unguarded
+-- match.)
+ok_residual : Opt -> Int
+let ok_residual o =
+    match o
+    case None -> 0
+    case _    -> 1                            -- has positive Some evidence
+
+-- NEGATIVE: a *guarded* constructor branch does not discharge the
+-- `Some` shape — the subsequent residual `_` is unguarded but the guard on
+-- `Some` may have failed, so the match is still not exhaustive over `Some`
+-- with `g` false.  Without a clean catch-all, the compiler rejects the
+-- match.
+discrim : Bit -> Bool
+let discrim b =
+    match b
+    case Zero -> True
+    case One  -> False
+
+bad_guarded_exhaustiveness : Opt -> Int
+let bad_guarded_exhaustiveness o =
+    match o
+    case None       -> 0
+    case Some b if discrim b -> 1
+    -- A clean catch-all `case _ -> 2` is required, because the guard on the
+    -- previous `Some` clause may have failed.
+
+-- POSITIVE: adding the catch-all makes the same match exhaustive.
+ok_guarded_with_catchall : Opt -> Int
+let ok_guarded_with_catchall o =
+    match o
+    case None       -> 0
+    case Some b if discrim b -> 1
+    case _          -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

@@ -1,0 +1,48 @@
+-- Source issue: Factor #743 (`TYPED: (search) ( node: tree-node ch:
+--   fixnum -- node/f ) ... recursive` errors with "The inline recursive
+--   word must be declared recursive"; recursive typed words demand an
+--   explicit recursive declaration).
+-- Spec: declarations.term_definitions, recursive_groups, declarations.totality.
+--
+-- Kappa's recursive groups make every typed recursive function part of
+-- an explicit group; the positive test confirms that a recursive
+-- function with a complete type signature is elaborated correctly when
+-- the recursive group is closed.
+
+module test
+
+--! mode check
+
+data Tree : Type =
+    Leaf
+    | Node { value : Int, left : Tree, right : Tree }
+
+-- POSITIVE: a typed recursive function inside a single declaration is
+-- accepted; the recursive group is the singleton {find}.
+find : Tree -> Int -> Bool
+let find t k =
+    match t
+      case Leaf -> False
+      case Node { value = v, left = l, right = r } ->
+        if v == k then True
+        else if k < v then find l k
+        else find r k
+
+--! assertNoErrors
+--! assertType find Tree -> Int -> Bool
+
+-- POSITIVE: a mutually-recursive group with two typed functions; both
+-- can name each other within the same group.
+isEven : Int -> Bool
+let isEven n =
+    if n == 0 then True
+    else isOdd (n - 1)
+
+isOdd : Int -> Bool
+let isOdd n =
+    if n == 0 then False
+    else isEven (n - 1)
+
+--! assertNoErrors
+--! assertType isEven Int -> Bool
+--! assertType isOdd  Int -> Bool

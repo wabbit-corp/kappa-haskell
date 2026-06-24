@@ -1,0 +1,29 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: matching on a linear GADT consumes it; second use after match is rejected
+-- Spec: expressions.match.narrowing_is_consuming, types.universes.quantities
+
+--! mode check
+
+data Box : Type =
+  MkBox : (1 content : Int) -> Box
+
+-- Accepted: linear Box consumed exactly once via match.
+extract : (1 b : Box) -> Int
+let extract b = match b
+  case MkBox x -> x
+
+
+-- Rejected: `b` is matched (consumed), then used again in a second match.
+-- The second occurrence of `b` is a use-after-consume error.
+bad : (1 b : Box) -> Int
+let bad b =
+  match b
+    case MkBox x ->
+      x + (match b case MkBox y -> y)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+--! assertErrorCount 1

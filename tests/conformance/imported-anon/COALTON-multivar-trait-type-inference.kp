@@ -1,0 +1,61 @@
+-- Source: Coalton `tests/fundep-tests.lisp` (fundep type inference tests),
+--   Coalton issue #422 (functional dependencies), #560 (defaulting does not
+--   work when using `into`), #560.
+-- Spec: traits.instances.resolution_algorithm (§14.3.1),
+--   types.universes.defaulting_non_user_written_inference_variables (§11.1.3),
+--   COALTON-SA-01.
+--
+-- A multi-parameter trait `C a b` where the relationship between `a` and `b`
+-- is constrained by a unique instance allows the checker to infer `b` from `a`
+-- at use sites. The canonical example is a conversion trait `Into a b` with a
+-- unique instance tying the two parameters. This test verifies that:
+--   1. When both parameters can be determined from a use site, inference succeeds.
+--   2. When only one parameter is known from the call, the other is determined
+--      by the unique instance.
+
+--! mode check
+
+-- A two-parameter conversion trait. Each pair (a, b) may have at most one instance.
+trait Convert (a : Type) (b : Type) =
+    convert : a -> b
+
+-- Instances for concrete pairs.
+instance Convert Int String =
+    let convert n = "int"
+
+instance Convert Bool String =
+    let convert b = if b then "true" else "false"
+
+instance Convert String Int =
+    let convert _ = 0
+
+-- POSITIVE: calling `convert` where both `a` and `b` are determined by
+-- the explicit return type annotation and the argument type.
+intToStr : String
+let intToStr = convert (42 : Int)
+
+--! assertNoErrors
+--! assertType intToStr String
+
+-- POSITIVE: convert in a context where `b` is fixed by the expected type.
+boolConverted : String
+let boolConverted = (convert True : String)
+
+--! assertNoErrors
+--! assertType boolConverted String
+
+-- POSITIVE: chained conversions where types flow through.
+chainConvert : Int
+let chainConvert = convert (convert (42 : Int) : String)
+
+--! assertNoErrors
+--! assertType chainConvert Int
+
+-- POSITIVE: passing `convert` as a higher-order function argument.
+-- The type of `g` must be inferred correctly from the call context.
+applyConvert : String
+let applyConvert =
+    let g : Int -> String = convert
+    in g 5
+
+--! assertNoErrors

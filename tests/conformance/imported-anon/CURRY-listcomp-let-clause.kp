@@ -1,0 +1,55 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestListComprehension.curry
+--   (testLetComp).
+-- Spec: collections.comprehensions (§20.3),
+--       collections.clauses (§20.4),
+--       collections.literals (§20.1).
+--
+-- A `let` clause inside a list comprehension binds a local value that
+-- depends on the preceding generators and may be used by subsequent
+-- `if` filters and by the `yield` expression. Kappa §20.3/§20.4 admit
+-- exactly this form, using the clause-based `for ... let ... if ...
+-- yield` shape rather than Haskell's `[expr | gen, guard]` syntax.
+
+module test
+
+--! mode check
+
+triplesWithSum : List (Int, Int, Int)
+let triplesWithSum =
+    [ for x in [1, 2, 3, 4]
+    , for y in [2, 3, 4, 5, 6]
+    , let z = x + y
+    , if x /= y
+    , yield (x, y, z)
+    ]
+
+--! assertNoErrors
+--! assertType triplesWithSum (List (Int, Int, Int))
+
+-- POSITIVE: a `let` clause that binds a structurally-derived value,
+-- which is then both selected on and emitted.
+doubledEvens : List (Int, Int)
+let doubledEvens =
+    [ for x in [1, 2, 3, 4, 5]
+    , let twice = x + x
+    , if twice >= 4
+    , yield (x, twice)
+    ]
+-- expected: [(2,4),(3,6),(4,8),(5,10)]
+
+--! assertNoErrors
+--! assertType doubledEvens (List (Int, Int))
+
+-- POSITIVE: a comprehension with two `let` clauses, where the second
+-- depends on the first.
+chainedLets : List Int
+let chainedLets =
+    [ for x in [1, 2, 3]
+    , let y = x * 10
+    , let z = y + x
+    , yield z
+    ]
+-- expected: [11, 22, 33]
+
+--! assertNoErrors
+--! assertType chainedLets (List Int)

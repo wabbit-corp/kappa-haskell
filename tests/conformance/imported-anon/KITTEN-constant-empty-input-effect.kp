@@ -1,0 +1,30 @@
+-- Source issue: Kitten #72 (`def debug(Bool): true` is rejected; the
+--   programmer expects to write a constant with type `Bool` without
+--   having to spell out the empty input arrow `(-> Bool)`).
+-- Spec: declarations.terms, declarations.signatures.
+--
+-- Kappa allows zero-argument terms (constants) to be declared by giving
+-- a base type as the signature. A constant definition with no
+-- parameters is accepted; the body is checked against the declared
+-- result type directly.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a base-type constant accepted without an arrow signature.
+debug : Bool
+let debug = True
+
+-- POSITIVE: an Int constant.
+answer : Int
+let answer = 42
+
+-- POSITIVE: a constant whose body uses other constants.
+twice : Int
+let twice = answer + answer
+
+--! assertNoErrors
+--! assertType debug Bool
+--! assertType answer Int
+--! assertType twice Int

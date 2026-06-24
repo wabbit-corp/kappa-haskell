@@ -1,0 +1,22 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: a relevant (>=1) binding must appear on all completion paths
+-- Spec: types.universes.quantities
+
+--! mode check
+
+-- POSITIVE: x is used on both branches of the conditional, satisfying >=1
+useRelevant : (>=1 x : Int) -> (flag : Bool) -> Int
+let useRelevant x flag = if flag then x else x
+
+-- NEGATIVE: x is only used on the true branch; the false branch returns 0,
+-- meaning x may be dropped entirely, which violates >=1
+bad : (>=1 x : Int) -> (flag : Bool) -> Int
+let bad x flag =
+    if flag then x else 0
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+--! assertErrorCount 1

@@ -1,0 +1,47 @@
+-- Source issues: METACOQ-238, METACOQ-432, METACOQ-1091
+-- Spec: core_semantics.definitional_equality,
+--       declarations.totality.termination_certified_definitions
+--
+-- Kappa's definitional equality includes β (function application), ι
+-- (constructor projection / match), and δ (transparent definition
+-- unfolding) reductions. MetaCoq #238 showed PCUIC's evaluation relation
+-- not handling these uniformly; #1091 asked about `Unquote` normalization.
+-- The portable obligation is acceptance of equal-up-to-reduction terms.
+
+module test
+
+--! mode check
+
+-- A local Peano-like data type so we can exhibit ι-reduction over a
+-- user-declared constructor (the prelude `Nat` is an `expect data` and
+-- has no source-level constructor pattern).
+data Peano : Type =
+    PZ
+    PS Peano
+
+-- POSITIVE: β-reduction.
+betaApply : Peano
+let betaApply = (\x -> x) (PS PZ)
+
+-- POSITIVE: ι-reduction over a constructor matched in a `match`.
+iotaMatch : Peano
+let iotaMatch =
+    match (PS PZ)
+    case PZ      -> PS (PS PZ)
+    case (PS _)  -> PS PZ
+
+-- POSITIVE: δ-reduction unfolds a transparent definition.
+deltaId : Peano -> Peano
+let deltaId = \x -> x
+
+deltaUse : Peano
+let deltaUse = deltaId (PS PZ)
+
+-- POSITIVE: composition of β, ι, δ is acceptable.
+chained : Peano
+let chained = deltaId iotaMatch
+
+--! assertNoErrors
+--! assertType betaApply Peano
+--! assertType iotaMatch Peano
+--! assertType chained Peano

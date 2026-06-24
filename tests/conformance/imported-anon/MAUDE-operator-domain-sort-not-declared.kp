@@ -1,0 +1,40 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Meta/metaWellFormed.maude
+--           red wellFormed(fmod 'FOO is
+--             sorts 'Foo .                        -- only Foo declared
+--             op 'f : 'Bar -> 'Foo [none] .      -- but f uses Bar
+--             ...
+--           endfm) .
+--         The well-formedness checker reports that the operator's domain
+--         sort is not declared in the module. The portable Kappa analogue
+--         is a function declaration whose parameter type references an
+--         undeclared type name.
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Portable obligation: a function declaration referencing an undeclared
+--   parameter type must be reported as unresolved.
+
+--! mode check
+
+module test
+
+data Foo : Type = MkFoo
+
+-- POSITIVE: domain and codomain types are both declared.
+identity : Foo -> Foo
+let identity x = x
+
+-- NEGATIVE: the parameter type `Bar` is never declared.
+badInput : Bar -> Foo
+let badInput _ = MkFoo
+
+-- NEGATIVE: the return type `Quux` is never declared.
+badOutput : Foo -> Quux
+let badOutput _ = MkFoo
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

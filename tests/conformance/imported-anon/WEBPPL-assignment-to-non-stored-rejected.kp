@@ -1,0 +1,56 @@
+-- Source: WebPPL #105 (dangerous assignment should throw error),
+--   PR #110 (reinstate error on dangerous assignment),
+--   #567 (confusing "Assignment is allowed only to fields of globalStore"),
+--   PR #576 (more informative syntax error for assignment),
+--   #610 (accidental assignment in if condition: "Did you mean var..." fix-it).
+-- Spec: effects.loops.mutable_variables_var_semantics (§18.6.1),
+--   compiler.frontir.standard_diagnostic_families.name_import
+--   (kappa.name.unresolved),
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-07
+--   (proposed portable alias E_ASSIGN_TO_NON_MUTABLE_BINDING with fix-it
+--    discipline — not yet registered under §3.1.4 / not yet a standalone
+--    diagnostic family in §3.2).
+--
+-- Per §18.6.1, statement-level pure-assignment sugar `x = expr` inside a
+-- `do` block is valid only when `x` was introduced by `var`. Assignment
+-- to a name that was never declared (the case #567/PR #576 cover) is
+-- rejected. Kappa currently reports this via the unresolved-name family;
+-- SA-07 proposes a more specific portable alias and a fix-it that
+-- introduces `var x = ...`.
+
+module test
+
+--! mode check
+
+-- POSITIVE: an explicit mutable variable accepts pure-assignment sugar.
+-- Per §18.6.1 the var-bound identifier denotes the Ref itself, not the
+-- contained value, so we explicitly read it before computing the next
+-- value.
+mutOk : Eff <[ ]> Int
+let mutOk = do
+    var x = 0
+    let v <- readRef x
+    x = v + 1
+    let w <- readRef x
+    pure w
+
+--! assertType mutOk (Eff <[ ]> Int)
+
+-- POSITIVE: a let-bound name does not receive assignment, but rebinding
+-- the same spelling in a fresh `let` simply shadows the earlier name.
+shadowOk : Int
+let shadowOk =
+    let a = 1
+    in let a = 2
+       in a
+
+--! assertType shadowOk Int
+
+-- NEGATIVE: assignment to a name that was never introduced by `var` (or
+-- otherwise declared) is rejected as an unresolved-name diagnostic.
+assignUndeclared : Eff <[ ]> Int
+let assignUndeclared = do
+    a = 1
+    pure 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

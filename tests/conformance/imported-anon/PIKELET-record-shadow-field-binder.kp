@@ -1,0 +1,42 @@
+-- Source artifacts: Pikelet book reference/records.md (`as`-binding form
+--                   `String as String-1 : Type`),
+--                   PIKELET_SPEC_ADDITIONS.md PIKELET-SA-07.
+-- Spec: types.records.syntax, types.records.values
+-- Gap citation: PIKELET-SA-07 (explicit binding-name `as` sugar for
+--               shadowing records).
+--
+-- A record field's label may shadow an outer binding. Kappa's §13.2.1 says:
+-- "A bare identifier `label` in a sibling-reference position is shorthand
+-- for `this.label` only when that reading is unambiguous; otherwise the
+-- user MUST write `this.label`." So when the outer name and a sibling
+-- field share a label, the user MUST disambiguate by writing
+-- `this.label` for the sibling and a fully-qualified outer name for the
+-- outer binding. Kappa has no portable `as` sugar to rename a field's
+-- local binder; PIKELET-SA-07 documents that gap.
+
+--! mode check
+
+-- POSITIVE: `this.label` resolution always picks the sibling field, even
+-- when the label would otherwise shadow an outer name.
+type Layered : Type1 =
+  ( Nat : Type0,
+    inner : this.Nat,
+  )
+
+ex : Layered
+let ex =
+  ( Nat = Bool,
+    inner = True,
+  )
+
+innerValue : Bool
+let innerValue = ex.inner
+
+-- POSITIVE: ordinary `this.x` resolution picks the sibling field in a
+-- record value initializer (§13.2.1.1).
+type Two : Type0 = (x : Nat, y : Nat)
+
+mkY : Two
+let mkY = (x = 1, y = this.x)
+
+--! assertNoErrors

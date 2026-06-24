@@ -1,0 +1,41 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: carp-lang/Carp#561, #886
+-- Spec: data_types.data_declarations,
+--       types.quantification,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (see also CARP_SPEC_ADDITIONS.md SA-CARP-06).
+-- Carp #561: `(deftype Player [pos Vector3])` was admitted even though
+-- `Vector3` was declared `(deftype (Vector3 a) [...])` and expected a
+-- type argument.  Only later warnings about missing deleters surfaced
+-- the problem.  Carp #886: in `(deftype (Index (f a) b) [...])` the
+-- naked `a` could not be used as a member type even though the head
+-- introduced it.  The portable Kappa obligation is that every occurrence
+-- of a type constructor in a member position is kind-checked.
+
+--! mode check
+
+data Vec3 (a : Type) : Type = MkVec3 a a a
+
+-- POSITIVE: applying the type constructor with one argument is
+-- well-kinded.
+data PlayerOk : Type = MkPlayer (Vec3 Int) Int
+
+
+-- POSITIVE: parameter pattern `(f a)` in the head of `Index` introduces
+-- both `f` and `a` into scope; naked `a` is admissible as a member
+-- type.
+data Index (f : Type -> Type) (a : Type) (b : Type) : Type =
+    MkIndex a b
+
+
+-- NEGATIVE: `Vec3` is used without an argument in a member position;
+-- kind mismatch is reported at the data declaration, before any
+-- subsequent diagnostics about deleters or projections.
+data PlayerBad : Type = MkPlayerBad Vec3 Int
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

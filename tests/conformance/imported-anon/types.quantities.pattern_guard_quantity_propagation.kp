@@ -1,0 +1,17 @@
+-- Source issue: GHC MR !4115 (fixes GHC pattern guard bind always using Many)
+-- Spec: types.universes.quantities, expressions.match.guarded_cases_introduce_guard_success_evidence
+-- A pattern-guard binding in a guarded case clause must propagate the quantity
+-- of the scrutinee through to the bound variable, not unconditionally treat it as
+-- unrestricted.
+
+module test
+
+data Box (a : Type) : Type = Box (x : a)
+
+-- Extracting linearly from a Box in a guarded case: must consume x exactly once.
+unwrapLinear : (1 & b : Box Int) -> Int
+let unwrapLinear b =
+  match b
+    case (Box x) -> x
+
+--! assertNoErrors

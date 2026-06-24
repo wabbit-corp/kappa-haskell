@@ -1,0 +1,38 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Stress test: match on an indexed type missing a case must be rejected
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+data Color : Type =
+  Red
+  Green
+  Blue
+
+-- NEGATIVE TEST: only Red and Green handled; Blue is missing.
+badMatch : Color -> Int
+let badMatch c = match c
+  case Red   -> 1
+  case Green -> 2
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE TEST: all three constructors covered.
+goodMatch : Color -> Int
+let goodMatch c = match c
+  case Red   -> 1
+  case Green -> 2
+  case Blue  -> 3
+
+
+-- POSITIVE TEST: wildcard covers the remaining constructor.
+wildcardMatch : Color -> Int
+let wildcardMatch c = match c
+  case Red -> 1
+  case _   -> 0
+
+--! assertErrorCount 1

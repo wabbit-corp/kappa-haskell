@@ -1,0 +1,23 @@
+-- Source issue: Uiua #587 ("Surprising module scoping" — defining
+--   `M ~ X` then referencing `X` inside a sibling module fails with
+--   "X is private", even though `X` is exported from `M`).
+-- Spec: modules.exports, modules.visibility_opacity_private_opaque,
+--       modules.names.dotted_name_resolution_dotted.
+--
+-- A binding that a module explicitly exports must be resolvable from
+-- another importing module via the qualified path. This positive test
+-- pins down the working case; the companion negative
+-- (UIUA-private-module-member-not-accessible) covers privacy.
+
+module test
+
+import provider
+
+--! mode check
+
+-- POSITIVE: use the exported binding through the import.
+sumViaImport : Int
+let sumViaImport = provider.X 1 2
+
+--! assertNoErrors
+--! assertType sumViaImport Int

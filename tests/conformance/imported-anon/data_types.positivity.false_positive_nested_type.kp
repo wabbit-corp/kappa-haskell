@@ -1,0 +1,49 @@
+-- Source issues: Idris2 #660, #1502
+-- Spec: data_types.well_formedness (§10.4)
+-- Recursive types whose only recursive occurrences appear in positive positions
+-- through strictly-positive type constructors (e.g. List, Maybe) MUST be accepted.
+-- The positivity checker must consult the parameter-positivity signature of the
+-- container type (e.g. List's first parameter is positive) rather than treating
+-- all functor arguments as non-positive.
+-- Idris2 bug #660: types with Vect.Elem or List.Elem in constructor arguments were
+-- incorrectly rejected. Idris2 bug #1502: a vacuous forward declaration caused an
+-- otherwise-positive type to be rejected.
+
+module test
+
+data List (a : Type) : Type =
+  Nil  : List a
+  Cons : a -> List a -> List a
+
+data Maybe (a : Type) : Type =
+  Nothing : Maybe a
+  Just    : a -> Maybe a
+
+-- Accepted: Tree a is strictly positive (spec §10.4 example).
+-- Tree a appears only in constructor argument positions (positive), never in a domain.
+data Tree (a : Type) : Type =
+  Leaf   : Tree a
+  Branch : Tree a -> a -> Tree a -> Tree a
+
+--! mode check
+
+-- Accepted: Rose a uses List as a functor. Since List's first parameter is
+-- recorded as strictly positive, Rose a appearing as `List (Rose a)` is still
+-- a positive occurrence (spec §10.4 example: `data Rose a = Node a (List (Rose a))`).
+data Rose (a : Type) : Type =
+  Node : a -> List (Rose a) -> Rose a
+
+
+-- Accepted: a binary tree with Maybe-wrapped children.
+-- Maybe's parameter is positive, so Tree2 inside Maybe (Tree2 a) is positive.
+data Tree2 (a : Type) : Type =
+  Leaf2   : Tree2 a
+  Branch2 : a -> Maybe (Tree2 a) -> Maybe (Tree2 a) -> Tree2 a
+
+
+-- Rejected: a directly negative occurrence is still rejected.
+-- MkBad places Bad in a domain (left of ->), which is a negative position.
+data Bad : Type =
+  MkBad : (Bad -> Bad) -> Bad
+
+--! assertErrorCount 1

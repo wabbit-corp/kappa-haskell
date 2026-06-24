@@ -1,0 +1,52 @@
+-- Source issues: WebPPL #246 (sample(D(args)) vs sample(erp, params)),
+--   #268 (named parameters for distribution constructors),
+--   #393 (distribution objects are typed, not record+function pairs),
+--   #412 (rename ERP -> Dist).
+-- Spec: data_types.data_declarations,
+--   data_types.data_declarations.constructor_application_named_arguments_c,
+--   compiler.frontir.portable_diagnostic_code_aliases
+--   (E_APPLICATION_NON_CALLABLE),
+--   WEBPPL_SPEC_ADDITIONS WEBPPL-SA-02.
+--
+-- A distribution constructor in Kappa is a named-argument typed constructor.
+-- The constructor application produces a value of a distinct distribution
+-- type; the value is first-class. Sampling-like operators consume values of
+-- this type, not bare parameter records.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a distribution type declared as a record-style constructor with
+-- named binders.
+data Bernoulli : Type =
+    Bernoulli { p : Float }
+
+data Gaussian : Type =
+    Gaussian { mu : Float, sigma : Float }
+
+-- POSITIVE: each constructor application produces a typed distribution value.
+d1 : Bernoulli
+let d1 = Bernoulli { p = 0.7 }
+
+d2 : Gaussian
+let d2 = Gaussian { mu = 0.0, sigma = 1.0 }
+
+--! assertType d1 Bernoulli
+--! assertType d2 Gaussian
+
+-- POSITIVE: a higher-order combinator may take any distribution-typed value.
+identity : forall a. a -> a
+let identity x = x
+
+d3 : Bernoulli
+let d3 = identity (Bernoulli { p = 0.3 })
+
+--! assertType d3 Bernoulli
+
+-- NEGATIVE: applying a value of distribution type as a function fires
+-- E_APPLICATION_NON_CALLABLE.
+notCallable : Float
+let notCallable = d1 0.5                  --!! E_APPLICATION_NON_CALLABLE
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE

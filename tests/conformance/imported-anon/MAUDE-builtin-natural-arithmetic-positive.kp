@@ -1,0 +1,43 @@
+-- Source: Maude tests/BuiltIn/nat.maude (NAT module operations: +, *, quo,
+--           rem, ^, modExp, gcd, lcm, comparisons),
+--         tests/BuiltIn/int.maude (INT module subsumes NAT with negatives),
+--         tests/BuiltIn/rat.maude (RAT subsumes INT with rationals).
+-- Spec: literals.numeric_literals,
+--       literals.numeric_literals.typing.
+-- Portable obligation: Kappa's prelude must provide Int arithmetic with
+--   the standard operations and the expected algebraic results.
+
+--! mode check
+
+module test
+
+oneTwoSum : Int
+let oneTwoSum = 1 + 2
+
+threeTimesFour : Int
+let threeTimesFour = 3 * 4
+
+quotient : Int
+let quotient = 100 / 7
+
+remainder : Int
+let remainder = 100 % 7
+
+negative : Int
+let negative = 0 - 5
+
+isPositive : Int -> Bool
+let isPositive n = n > 0
+
+ok1 : Bool
+let ok1 = isPositive 1
+
+ok2 : Bool
+let ok2 = isPositive negative    -- expected False; result Bool
+
+ok3 : Bool
+let ok3 = (1 + 2) == 3
+
+--! assertNoErrors
+--! assertType oneTwoSum Int
+--! assertType isPositive Int -> Bool

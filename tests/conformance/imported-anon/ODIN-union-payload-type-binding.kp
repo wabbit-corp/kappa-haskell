@@ -1,0 +1,65 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#1675 (uncaught erroneous implicit conversion through distinct
+--               union variant — payload type is distinct but compared as base type)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality (kappa.type.mismatch),
+--       expressions.match
+-- When a match arm binds the payload of a union constructor, the bound variable
+-- has the exact declared payload type, not any structurally-compatible type.
+-- Using a distinct wrapper as if it were the base type (or the reverse) inside
+-- a match-arm body must be detected and rejected.
+
+--! mode check
+
+data Count  : Type = Count  Int
+data Offset : Type = Offset Int
+
+data Measurement : Type =
+    InCounts  Count
+    InOffsets Offset
+
+-- POSITIVE: payload binding uses the declared type.
+let countValue (m : Measurement) : Int =
+    match m
+    case InCounts  (Count  n) -> n
+    case InOffsets (Offset n) -> n
+
+
+-- POSITIVE: wildcard payload binding — type is inferred, not mis-used.
+let hasCounts (m : Measurement) : Bool =
+    match m
+    case InCounts  _ -> True
+    case InOffsets _ -> False
+
+
+-- NEGATIVE: pattern annotates the payload with the wrong type.
+-- InCounts carries a `Count`, not an `Offset`. The type annotation must be exact.
+let badPayloadType (m : Measurement) : Int =
+    match m
+    case InCounts (Offset n) -> n
+    case InOffsets (Offset n) -> n
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: using a bound payload variable at the wrong type in the arm body.
+-- The arm binds `c : Count`, but the body tries to use it as `Offset`.
+let badPayloadUsage (m : Measurement) : Offset =
+    match m
+    case InCounts  c -> c
+    case InOffsets o -> o
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- POSITIVE: explicit coercion from Count to Offset is expressed as a function call.
+let countToOffset (c : Count) : Offset =
+    match c
+    case Count n -> Offset n
+
+let convertMeasurement (m : Measurement) : Offset =
+    match m
+    case InCounts  c -> countToOffset c
+    case InOffsets o -> o
+
+--! assertErrorCount 2

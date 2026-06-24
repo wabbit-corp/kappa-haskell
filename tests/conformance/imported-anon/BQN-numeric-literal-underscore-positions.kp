@@ -1,0 +1,32 @@
+-- Source issues: BQN-PR-32 (correctly highlight numbers containing
+--   underscores in editors); BQN docs/literal.md (*"underscores—they can
+--   be placed anywhere in a number, including after the last non-underscore
+--   character, and are ignored entirely"*).  See SA-BQN-06.
+-- Spec: literals.numeric_literals.integers.
+-- Kappa's portable convention for digit-grouping underscore should be:
+-- permitted between adjacent digits, never as the leading character of a
+-- numeric token, never adjacent to a radix prefix.
+
+--! mode check
+
+-- POSITIVE: digit-grouping underscores between digits.
+million : Integer
+let million = 1_000_000
+
+binary : Integer
+let binary = 0b1010_1010
+
+hex : Integer
+let hex = 0xFF_FF
+
+-- POSITIVE: long numeric literal with multiple groupings.
+big : Integer
+let big = 12_345_678_901
+
+-- Identity check via arithmetic — underscores must be ignored.
+sameAsPlain : Bool
+let sameAsPlain = million == 1000000
+
+--! assertNoErrors
+--! assertType million Integer
+--! assertType sameAsPlain Bool

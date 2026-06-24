@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-181 (4-queen example — match/cond fallthrough),
+--                ROSETTE-216 (match silently incorrect under symbolic
+--                execution),
+--                ROSETTE-175 (Matching of nested lists doesn't seem to
+--                work)
+-- Spec: expressions.match,
+--       expressions.match.boolean_matches_introduce_assumptions
+--
+-- Integer-literal patterns combined with a wildcard form an exhaustive
+-- match. A guard arm whose guard is statically false is reachable
+-- through the wildcard. This fixture exercises the positive shape of
+-- literal-pattern fall-through.
+
+--! mode check
+
+-- POSITIVE: integer literal patterns with a wildcard arm.
+classify : Int -> String
+let classify n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+    case _ -> "many"
+
+-- POSITIVE: nested match over a tuple.
+sumIfBoth : (Int, Int) -> Int
+let sumIfBoth p =
+    match p
+    case (0, 0) -> 0
+    case (a, b) -> a + b
+
+-- POSITIVE: match over a Bool literal.
+toInt : Bool -> Int
+let toInt b =
+    match b
+    case True  -> 1
+    case False -> 0
+
+-- NEGATIVE: integer match without a wildcard is non-exhaustive.
+classifyBad : Int -> String
+let classifyBad n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

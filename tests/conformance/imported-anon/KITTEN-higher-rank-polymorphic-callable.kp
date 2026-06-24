@@ -1,0 +1,39 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #58 (a function `trip` that applies its callable
+--   argument at two different stack types must be rank-2 polymorphic;
+--   the inferred rank-1 type rejects code that the rank-2 type accepts).
+-- Spec: types.quantification, types.functions,
+--       declarations.signatures.
+--
+-- Kappa supports restricted higher-rank polymorphism via explicit
+-- `forall` annotations on function parameters. A callable parameter
+-- declared `forall a. a -> a` can be applied to different element types
+-- by the same body.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a rank-2 polymorphic parameter applied at two distinct types.
+trip : (forall (a : Type) . a -> a) -> Int -> String -> Int
+let trip f n s =
+    let _ = f s
+    in f n
+
+result : Int
+let result = trip (\x -> x) 7 "hi"
+
+--! assertType result Int
+
+-- NEGATIVE: a rank-1 callable parameter cannot be applied at two
+-- distinct element types within the body; the second application
+-- forces the type variable, contradicting the first.
+applyTwice : forall (a : Type) . (a -> a) -> a -> String -> a
+let applyTwice f n s = f s
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

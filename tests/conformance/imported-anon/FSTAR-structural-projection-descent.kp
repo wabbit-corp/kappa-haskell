@@ -1,0 +1,28 @@
+-- Source issues: FSTAR-138, FSTAR-2201
+-- Spec: declarations.totality.structural_descent
+-- Structural descent through projected subterms of a constructor must be
+-- recognized by the termination checker.
+
+--! mode check
+
+data Tree : Type =
+    Leaf : Tree
+    Node : Nat -> List Tree -> Tree
+
+expect term sum_sizes : List Tree -> Nat
+
+-- size recurses on a subterm via sum_sizes; each element of sons is smaller than Node.
+size : Tree -> Nat
+let size t decreases t =
+    match t
+      case Leaf          -> 1
+      case (Node n sons) -> 1 + sum_sizes sons
+
+-- sum_sizes recurses on list elements each of which is a subtree.
+sum_sizes : List Tree -> Nat
+let sum_sizes ts decreases ts =
+    match ts
+      case Nil         -> 0
+      case (t :: ts2)  -> size t + sum_sizes ts2
+
+--! assertNoErrors

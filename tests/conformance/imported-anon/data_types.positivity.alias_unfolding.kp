@@ -1,0 +1,36 @@
+-- Source issue: Agda #108
+-- Spec: data_types.well_formedness
+-- Positivity checking MUST unfold transparent type aliases when checking for
+-- negative occurrences. A data type with a constructor argument whose type
+-- aliases back to the data type (putting it in a negative position) MUST be
+-- rejected even when the negative occurrence is concealed behind a transparent alias.
+
+module test
+
+-- Baseline: direct negative occurrence is rejected (spec §10.4 example).
+-- `Bad` appears in the domain of `Bad -> Bad`, which is a negative position.
+data Bad : Type =
+    mkBad : (Bad -> Bad) -> Bad
+
+--! mode check
+--! assertErrorCount 1
+
+-- Alias-concealed negative occurrence.
+-- `NegAlias` is a transparent alias for `NegViaAlias`.
+-- Positivity checking MUST unfold NegAlias to NegViaAlias, revealing that
+-- (NegAlias -> NegAlias) = (NegViaAlias -> NegViaAlias) which places
+-- NegViaAlias in a negative (domain) position.
+-- This MUST be rejected per spec §10.4: "Positivity checking unfolds all
+-- transparent local type aliases before reasoning about occurrences."
+
+NegAlias : Type   -- forward signature required for mutual group
+
+-- NegAlias is a transparent alias for the data type NegViaAlias.
+let NegAlias = NegViaAlias
+
+-- MUST be rejected: constructor argument type (NegAlias -> NegAlias)
+-- unfolds to (NegViaAlias -> NegViaAlias), placing NegViaAlias negatively.
+data NegViaAlias : Type =
+    mkNeg : (NegAlias -> NegAlias) -> NegViaAlias
+
+--! assertErrorCount 1

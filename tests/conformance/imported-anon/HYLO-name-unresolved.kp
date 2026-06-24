@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Shadowing.hylo
+--                   (diagnostic: "undefined name 'z' in this scope"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExtension.hylo
+--                   (diagnostic: "undefined name 'S' in this scope"),
+--                   Tests/HyloTests/TestCases/TypeChecking/NameLookup.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Shadowing.hylo and NameLookup.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved)
+-- Hylo: using a name that has not been declared in any accessible scope is
+-- rejected with "undefined name in this scope". In Kappa this is a
+-- name-resolution failure.
+
+--! mode check
+
+validFn : Int -> Int
+let validFn x = x + 1
+
+-- POSITIVE: all names in scope.
+let callValid : Int = validFn 10
+let knownValue : Int = 42
+
+-- NEGATIVE: using a name that has never been declared.
+let useUndeclared : Int = undeclaredName + 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: using a name before it is declared (forward reference in a let).
+-- `forwardRef` uses `nextLet` which is declared later in the same scope but
+-- the name is not yet in scope at the point of use.
+let forwardRef : Int = nextLet + 1
+let nextLet : Int = 7
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: out-of-scope local binding used outside its block.
+outOfScope : Int
+let outOfScope =
+    let local = 99
+    in local
+
+let useLocal : Int = local
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 3

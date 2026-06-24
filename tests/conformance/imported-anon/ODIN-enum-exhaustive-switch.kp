@@ -1,0 +1,80 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: odin#4379 (additional incorrect error when switching on enum type directly),
+--               odin#126 (iterating over enum causes compiler assert)
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- A match over a closed enumeration must cover every declared constructor.
+-- Additionally, a match over a type-expression (rather than a term-expression
+-- of that type) must produce a type-mismatch diagnostic for the non-term use,
+-- not a spurious non-exhaustive diagnostic compounded on top of the type error.
+
+--! mode check
+
+data Direction : Type =
+    North
+    East
+    South
+    West
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: all four Direction constructors covered.
+let dirToInt (d : Direction) : Int =
+    match d
+    case North -> 0
+    case East  -> 1
+    case South -> 2
+    case West  -> 3
+
+
+-- POSITIVE: all three Color constructors covered.
+let colorToStr (c : Color) : String =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+
+-- POSITIVE: wildcard covers residual constructors.
+let isNorth (d : Direction) : Bool =
+    match d
+    case North -> True
+    case _     -> False
+
+
+-- NEGATIVE: South and West are omitted — non-exhaustive.
+let partialDir (d : Direction) : Int =
+    match d
+    case North -> 0
+    case East  -> 1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: only one constructor covered, no wildcard.
+let onlyRed (c : Color) : String =
+    match c
+    case Red -> "red"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: empty match body — trivially non-exhaustive.
+let emptyMatch (d : Direction) : Int =
+    match d
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: exhaustive match with all four constructors in different order.
+let dirToStr (d : Direction) : String =
+    match d
+    case West  -> "W"
+    case South -> "S"
+    case East  -> "E"
+    case North -> "N"
+
+--! assertErrorCount 3

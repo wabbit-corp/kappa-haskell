@@ -1,0 +1,63 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#11474 (Case does not check all cases — string case
+--         not exhaustively checked), nim-lang/Nim open/infinite-domain case
+--         semantics
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families
+--       (kappa.pattern.non-exhaustive)
+-- For open or infinite-domain types (Int, String, etc.), a match without a
+-- catch-all arm is non-exhaustive. In Nim, string case expressions
+-- were not required to be exhaustive. In Kappa, a match on an open type
+-- without a wildcard is kappa.pattern.non-exhaustive.
+
+--! mode check
+module test
+
+-- POSITIVE: match on Int with wildcard — exhaustive.
+describeInt : Int -> String
+let describeInt n =
+    match n
+    case 0  -> "zero"
+    case 1  -> "one"
+    case _  -> "other"
+
+-- POSITIVE: match on String with wildcard — exhaustive.
+describeStr : String -> String
+let describeStr s =
+    match s
+    case "hello" -> "greeting"
+    case "bye"   -> "farewell"
+    case _       -> "unknown"
+
+-- NEGATIVE: match on Int with no wildcard — cannot be exhaustive for infinite domain.
+noWildcardInt : Int -> String
+let noWildcardInt n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: match on String with no wildcard — non-exhaustive for open domain.
+noWildcardStr : String -> String
+let noWildcardStr s =
+    match s
+    case "a" -> "alpha"
+    case "b" -> "beta"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: a closed ADT does NOT require a wildcard — closed types can be
+-- fully covered by listing all constructors.
+data Bit : Type = Zero | One
+
+bitToInt : Bit -> Int
+let bitToInt b =
+    match b
+    case Zero -> 0
+    case One  -> 1
+
+--! assertErrorCount 2

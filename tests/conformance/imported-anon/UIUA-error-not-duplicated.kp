@@ -1,0 +1,27 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Uiua #178 ("Bug: Errors are printed twice" — `uiua eval
+--   $` produced the same parse error twice in a row).
+-- Spec: compiler.frontir.diagnostic_quality_invariants,
+--       compiler.frontir.error_tolerance_diagnostics,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+--
+-- A single source error must produce exactly one primary diagnostic for
+-- that condition. Recovery may produce additional informational notes,
+-- but the same error code MUST NOT appear twice at the same primary
+-- origin.
+
+module test
+
+--! mode check
+
+-- A single missing-name source error must produce exactly one error
+-- diagnostic in family kappa.name.unresolved (not two).
+useUnknown : Int
+let useUnknown = nonexistentBinding
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 1

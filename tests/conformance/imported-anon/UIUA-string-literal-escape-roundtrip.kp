@@ -1,0 +1,40 @@
+-- Source issue: Uiua #88 ("Unimplemented Unicode escape in @" — the
+--   pretty-printer emits `@\u{2000}` but the lexer rejects exactly that
+--   spelling), Uiua #199 (emoji typo), Uiua #236 (backslash duplicated
+--   in printed string).
+-- Spec: literals.string_literals.basic_strings,
+--       literals.unicode_scalar_literals, compiler.frontir.unicode_diagnostics,
+--       (gap UIUA-SA-08 — escape round-trippability).
+--
+-- The pretty-printer / unparse output of a string literal must be
+-- accepted by the lexer at the same language version. A printable form
+-- that contains an escape sequence the lexer rejects is a contract
+-- violation.
+
+module test
+
+--! mode check
+
+-- POSITIVE: ordinary string with no escapes.
+plain : String
+let plain = "hello"
+
+-- POSITIVE: string containing a `\n` escape.
+withNewline : String
+let withNewline = "a\nb"
+
+-- POSITIVE: string containing a `\u{NNNN}` Unicode scalar escape that
+-- the spec requires the lexer to accept (BMP scalar in literals).
+unicodeEscape : String
+let unicodeEscape = "\u{2000}"
+
+-- POSITIVE: string containing an emoji surrogate pair via the
+-- supplementary-plane scalar escape.
+withEmoji : String
+let withEmoji = "smile \u{1F600} face"
+
+--! assertNoErrors
+--! assertType plain String
+--! assertType withNewline String
+--! assertType unicodeEscape String
+--! assertType withEmoji String

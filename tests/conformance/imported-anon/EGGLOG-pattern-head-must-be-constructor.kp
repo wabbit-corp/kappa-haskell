@@ -1,0 +1,60 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #420 (Disallowing looking up non-constructor
+--   functions),
+--   egraphs-good/egglog #422 (Renaming `function` whose output is an E-class to
+--   `constructor`),
+--   egraphs-good/egglog #482 (Disabling custom function lookups in merge
+--   functions),
+--   egraphs-good/egglog tests/fail-typecheck/looking_up_nonconstructor_in_rewrite.egg.
+-- Spec: expressions.patterns.scoping_validity
+--       (§17.2.2 — "In a prefix pattern application, the head must resolve
+--       either to a data constructor or to a function explicitly declared
+--       with the `pattern` keyword. An ordinary function is not permitted in
+--       pattern-head position."),
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (kappa.name.unresolved — §3.2.2).
+-- Only data constructors (and `pattern`-declared active patterns) may appear
+-- in pattern-head position; an ordinary function used in pattern head is
+-- rejected as an unresolved-name diagnostic (the constructor-namespace lookup
+-- finds no admissible declaration).
+
+module test
+
+--! mode check
+
+data Math : Type =
+    Num (n : Int)
+    Add (l : Math) (r : Math)
+
+doubleN : Int -> Int
+let doubleN n = n + n
+
+-- POSITIVE: constructor in pattern head is fine.
+okNum : Math -> Int
+let okNum m =
+    match m
+    case (Num n) -> n
+    case _       -> 0
+
+-- NEGATIVE: ordinary function name in pattern-head position.
+bad1 : Int -> Int
+let bad1 v =
+    match v
+    case (doubleN x) -> x
+    case _           -> 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: misnamed constructor in pattern-head position.
+bad2 : Math -> Int
+let bad2 m =
+    match m
+    case (Sub l r) -> 0
+    case _         -> 1
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

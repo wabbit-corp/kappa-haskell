@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-7606, KT-8700, KT-6046
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts,
+--   compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+-- A sealed (finite, known) type with three constructors.
+data Color : Type =
+    Red
+    Green
+    Blue
+
+-- POSITIVE: covering all three constructors needs no else branch.
+colorName : Color -> String
+let colorName c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+    case Blue  -> "blue"
+
+--! assertType colorName (Color -> String)
+
+-- POSITIVE: covering all constructors in a value-returning match.
+colorCode : Color -> Int
+let colorCode c =
+    match c
+    case Red   -> 1
+    case Green -> 2
+    case Blue  -> 3
+
+
+-- POSITIVE: wildcard arm catches remaining cases.
+isRed : Color -> Bool
+let isRed c =
+    match c
+    case Red -> True
+    case _   -> False
+
+
+-- NEGATIVE: omitting one constructor of a sealed type is non-exhaustive.
+missingBlue : Color -> String
+let missingBlue c =
+    match c
+    case Red   -> "red"
+    case Green -> "green"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

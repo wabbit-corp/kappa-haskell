@@ -1,0 +1,46 @@
+-- Source: WebPPL #262 (CPS transform doesn't allow object literal as
+--   return value of program).
+-- Spec: expressions.application, types.records.values,
+--   types.records.formation,
+--   data_types.data_declarations.constructor_application_named_arguments_c.
+--
+-- A record-style constructor application is an ordinary expression and is
+-- admissible as the final expression of a function body or module
+-- evaluation. Any transformation must preserve this.
+
+module test
+
+--! mode check
+
+data Result : Type =
+    Result { val : Float }
+
+-- A small computation we want to wrap in a record literal.
+sampleLike : Unit -> Float
+let sampleLike _ = 0.5
+
+-- POSITIVE: a record literal containing a call expression in field
+-- position is admissible as a tail expression.
+tailRecord : Result
+let tailRecord = Result { val = sampleLike () }
+
+--! assertNoErrors
+--! assertType tailRecord Result
+
+-- POSITIVE: a record literal at the very tail of a function body.
+mkResult : Unit -> Result
+let mkResult _ = Result { val = sampleLike () }
+
+--! assertNoErrors
+--! assertType mkResult (Unit -> Result)
+
+-- POSITIVE: a record literal with several fields each computed by a
+-- separate call.
+data Stats : Type =
+    Stats { mean : Float, variance : Float }
+
+mkStats : Unit -> Stats
+let mkStats _ = Stats { mean = sampleLike (), variance = sampleLike () }
+
+--! assertNoErrors
+--! assertType mkStats (Unit -> Stats)

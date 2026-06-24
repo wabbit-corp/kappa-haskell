@@ -1,0 +1,36 @@
+-- Source issue: carp-lang/Carp#320
+-- Spec: declarations.let_in
+-- Carp #320: writing two `let` bindings for the same name in one `let` form
+-- produced invalid C.  Kappa's `let ... in` explicitly permits a later
+-- binding to shadow an earlier one in the same group (§9.3, "A later
+-- binding may introduce a name already in scope; the new binding shadows
+-- the old one").  This test captures the Kappa-side obligation: the
+-- program is accepted, the inner binding wins, and the type of the result
+-- is determined by the latest binding.
+
+--! mode check
+
+-- POSITIVE: a later binding in the same `let` group shadows the earlier
+-- binding of the same name; the resulting value uses the later binding.
+sequentialShadow : Int
+let sequentialShadow =
+    let x : Int = 1
+    let x : Int = 2
+    x
+
+--! assertNoErrors
+--! assertType sequentialShadow Int
+
+-- POSITIVE: a nested `let` introduces a new scope and shadowing again
+-- works as expected; the outer `x` is reachable inside the inner block's
+-- right-hand side, but the inner `x` is what the body sees.
+nestedShadow : Int
+let nestedShadow =
+    let x : Int = 1
+    let result =
+        let x : Int = x + 9
+        x
+    result
+
+--! assertNoErrors
+--! assertType nestedShadow Int

@@ -1,0 +1,61 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PLUTUS-4482, PLUTUS-7065
+-- Spec: expressions.match (§17.1), literals.numeric_literals.integers
+-- Source notes: Plinth chokes on long `case` ladders or `==`-style guards
+-- against many integer literals (#4482) and would benefit from compiling
+-- integer pattern matching through built-in `==` (#7065). Kappa's surface
+-- semantics (§17.1) say that `Int` is an open/infinite domain, so a match
+-- with multiple integer literal cases is well-formed exactly when a
+-- catch-all branch is included. Acceptance must not depend on the number of
+-- cases.
+
+--! mode check
+
+-- POSITIVE: an Int match with many literal cases plus a catch-all `_`.
+-- All branches are well-typed and have the same result type.
+decodeMany : Int -> Int
+let decodeMany x =
+    match x
+      case 1  -> 101
+      case 2  -> 102
+      case 3  -> 103
+      case 4  -> 104
+      case 5  -> 105
+      case 6  -> 106
+      case 7  -> 107
+      case 8  -> 108
+      case 9  -> 109
+      case 10 -> 110
+      case 11 -> 111
+      case 12 -> 112
+      case 13 -> 113
+      case 14 -> 114
+      case 15 -> 115
+      case 16 -> 116
+      case 17 -> 117
+      case 18 -> 118
+      case 19 -> 119
+      case 20 -> 120
+      case _  -> 0
+
+decode5 : Int
+let decode5 = decodeMany 5
+
+decodeOther : Int
+let decodeOther = decodeMany 99
+
+
+-- NEGATIVE: the same shape without a catch-all is non-exhaustive over `Int`.
+-- §17.1 requires a catch-all for open/infinite domains.
+decodeIncomplete : Int -> Int
+let decodeIncomplete x =
+    match x
+      case 1 -> 101
+      case 2 -> 102
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

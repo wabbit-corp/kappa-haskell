@@ -1,0 +1,42 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: Circom variables-and-mutability.md ("An assignment is a statement
+--               and does not return any value, hence it cannot be part of an
+--               expression, which avoids misleading uses of `=`. Any use of `=`
+--               inside an expression will lead to a compilation error").
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Kappa spec rule (§SA-CIRCOM-07):
+--   "An expression used as a condition must have type Bool (§16.4). Using a
+--    non-Bool expression in a condition position must produce
+--    kappa.type.mismatch."
+-- Note: In Kappa, `=` is a definition separator, not an expression operator. The
+--   Circom 'assignment as expression' rule maps to Kappa's Bool condition constraint:
+--   any non-Bool value in an `if` condition position gives kappa.type.mismatch.
+
+--! mode check
+
+-- POSITIVE: Bool expression in condition position.
+let validBoolCondition (x : Int) : Int =
+    if x > 0 then 1 else 0
+
+let validBoolCondition2 (flag : Bool) : Int =
+    if flag then 42 else 0
+
+
+-- NEGATIVE: Int expression used in a Bool condition position.
+-- Mirrors Circom's "assignment (Int result) in expression position" error.
+let badIntCondition (x : Int) : Int =
+    if x then 1 else 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: Unit expression used as an if-condition.
+let badUnitCondition : Int =
+    if () then 1 else 0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

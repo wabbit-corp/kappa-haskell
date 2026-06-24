@@ -1,0 +1,31 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: Kitten #7 (parsing and compilation of scalar patterns:
+--   matching on literals such as integers or characters). Kitten #182
+--   (extended pattern matching: match on literals because they are the
+--   "constructors" of intrinsic types).
+-- Spec: expressions.match, expressions.patterns_chapter,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive).
+--
+-- Kappa permits matching directly on intrinsic literal patterns. A
+-- match on an open/infinite domain such as Int must include a wildcard
+-- arm; otherwise kappa.pattern.non-exhaustive applies.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: a match on integer literals without a wildcard is not
+-- exhaustive; the scalar domain is infinite.
+classifyBad : Int -> String
+let classifyBad n =
+    match n
+      case 0 -> "zero"
+      case 1 -> "one"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

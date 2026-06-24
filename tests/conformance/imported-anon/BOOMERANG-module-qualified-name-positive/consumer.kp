@@ -1,0 +1,22 @@
+-- Source: Boomerang docs/docs/main.src § "An Example Lens"
+--         Xml.elt, Xml.simple_elt, Xml.attr2_elt_no_kids — Boomerang
+--         qualifies library identifiers by module name.
+-- Spec: modules.names.dotted_name_resolution_dotted, modules.imports.
+-- Portable obligation: a qualified identifier resolves to the named
+--   item in the named module when the module is imported.
+
+module consumer
+
+import Xml
+
+-- POSITIVE: qualified access to imported module's items.
+composerTag : String
+let composerTag = Xml.elt "NL2" "composer"
+
+nameTag : String
+let nameTag = Xml.simpleElt "NL4" "name"
+
+--! mode check
+--! assertNoErrors
+--! assertType composerTag String
+--! assertType nameTag String

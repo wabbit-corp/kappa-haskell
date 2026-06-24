@@ -1,0 +1,21 @@
+-- Stress test: thunk and lazy field declaration sugar are accepted
+-- Spec: types.records (field-suspension sugar section)
+
+--! mode check
+
+-- POSITIVE: sugar form using thunk and lazy field keywords
+-- thunk name : T desugars to name : Thunk T
+-- lazy name : T desugars to name : Need T
+type LazyConfig : Type = (thunk expensiveValue : Int, lazy cachedResult : String)
+
+-- POSITIVE: equivalent desugared form
+type LazyConfig2 : Type = (expensiveValue : Thunk Int, cachedResult : Need String)
+
+-- POSITIVE: extract the thunk field by forcing it, and access the lazy field
+getExpensive : LazyConfig -> Int
+let getExpensive cfg = force cfg.expensiveValue
+
+getCached : LazyConfig -> String
+let getCached cfg = force cfg.cachedResult
+
+--! assertNoErrors

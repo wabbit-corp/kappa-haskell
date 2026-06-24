@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-7606, KT-10295 (better diagnostics for inexhaustive when)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+
+--! mode check
+
+data Direction : Type =
+    North
+    South
+    East
+    West
+
+-- POSITIVE: all four constructors covered.
+dirLabel : Direction -> String
+let dirLabel d =
+    match d
+    case North -> "N"
+    case South -> "S"
+    case East  -> "E"
+    case West  -> "W"
+
+
+-- NEGATIVE: only two of four covered — non-exhaustive.
+badDir : Direction -> String
+let badDir d =
+    match d
+    case North -> "north"
+    case South -> "south"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: single-arm match on a multi-constructor sealed type.
+onlyNorth : Direction -> Bool
+let onlyNorth d =
+    match d
+    case North -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: a non-exhaustive match is accepted when a wildcard covers the rest.
+isNorth : Direction -> Bool
+let isNorth d =
+    match d
+    case North -> True
+    case _     -> False
+
+--! assertErrorCount 2

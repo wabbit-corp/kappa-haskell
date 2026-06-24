@@ -1,0 +1,57 @@
+-- Source: Curry/KiCS2 testsuite/SpecialTests/TestPolySubExp.curry
+--   (poly1 = fst (3, id); testPolymorphicId = poly1 -=- 3).
+-- Spec: declarations.let_in (§9.3),
+--       expressions.application.subsumption (§16.1.subsumption),
+--       data_types.data_declarations (§10.1).
+--
+-- Locally polymorphic sub-expression: a sub-expression's type may
+-- contain polymorphism that does not appear in the type of the
+-- enclosing expression. Kappa's elaborator must accept `fst (3, id)`
+-- even though the second tuple component is polymorphic and the
+-- result type is monomorphic `Int`.
+
+module test
+
+--! mode check
+
+idFn : forall (a : Type). a -> a
+let idFn x = x
+
+-- POSITIVE: a pair whose second component is the polymorphic identity
+-- function; `fst` discards that component, so the enclosing type is
+-- `Int`.
+poly1 : Int
+let poly1 =
+    let pair : (Int, forall (a : Type). a -> a) = (3, idFn)
+    fst pair
+
+--! assertNoErrors
+--! assertType poly1 Int
+
+-- POSITIVE: the same idea inlined without an explicit let.
+poly1Inline : Int
+let poly1Inline = fst (3, idFn)
+
+--! assertNoErrors
+--! assertType poly1Inline Int
+
+-- POSITIVE: nested locally-polymorphic structure.
+nestedPoly : Int
+let nestedPoly =
+    let outer : (Int, (Int, forall (a : Type). a -> a)) = (5, (3, idFn))
+    fst (snd outer)
+
+--! assertNoErrors
+--! assertType nestedPoly Int
+
+fst : forall (a : Type) (b : Type). (a, b) -> a
+let fst p =
+    match p
+    case (x, _) -> x
+
+snd : forall (a : Type) (b : Type). (a, b) -> b
+let snd p =
+    match p
+    case (_, y) -> y
+
+--! assertNoErrors

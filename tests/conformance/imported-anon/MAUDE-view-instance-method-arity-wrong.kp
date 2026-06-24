@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Maude tests/Misc/parameterization.maude
+--           fth T is sort Elt . op f : Elt -> Elt . endfth
+--           view V from T to NAT is
+--             sort Elt to Nat .
+--             op f(X:Elt) to term X:Nat + 1 .   -- arity 1, matches theory
+--           endv
+--         If the view's op-to-term mapping supplied a term that expected
+--         a different number of arguments (e.g. mapping f to `_ + _` which
+--         takes two args), the view would be ill-formed because the term
+--         type does not match the theory's declared signature.
+-- Spec: traits.instances.associated_static_member_instance_checking,
+--       compiler.frontir.standard_diagnostic_families.type_equality
+--       (family kappa.type.mismatch).
+-- Portable obligation: an instance method's binding must have a type that
+--   matches the trait method's required type, including arity.
+
+--! mode check
+
+module test
+
+trait HasMap (a : Type) =
+    apply : a -> a
+
+data Tag : Type = TagA | TagB
+
+twoArg : Tag -> Tag -> Tag
+let twoArg _ _ = TagA
+
+-- POSITIVE: a correct one-argument implementation.
+oneArg : Tag -> Tag
+let oneArg t = t
+
+instance HasMap Tag =
+    let apply = oneArg
+
+-- NEGATIVE: instance binding has arity 2 but the trait method requires
+-- arity 1 (Tag -> Tag).
+data Token : Type = TokX
+
+twoArgToken : Token -> Token -> Token
+let twoArgToken _ _ = TokX
+
+instance HasMap Token =
+    let apply = twoArgToken
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

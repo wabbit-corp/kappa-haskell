@@ -1,0 +1,57 @@
+-- Source artifacts: synquid test/unit/HigherOrder.sq, test/unit/oracle:
+--                 `all :: <p :: a -> Bool> . arg1:(x:a -> {Bool | _v == p x})
+--                  -> arg0: List {a | p _v} -> {Bool | _v}`
+--                 declares a polymorphic predicate `p :: a -> Bool` as a
+--                 type-level abstraction. Kappa does not have predicate
+--                 abstraction at type-level over Bool-returning predicates
+--                 in the same form; see SYNQUID_SPEC_ADDITIONS.md
+--                 (SA-SYNQUID-02).
+-- Spec: types.quantification,
+--       types.quantification.implicit_declaration_universalization
+--
+-- The portable Kappa substitute is rank-1 universal quantification over an
+-- ordinary value-level predicate parameter `(p : a -> Bool)`, where the
+-- consumer applies `p` like an ordinary function.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- POSITIVE: a portable `allOf` that quantifies over an explicit value-
+-- level predicate `p : a -> Bool`.
+allOf : forall (a : Type). (a -> Bool) -> List a -> Bool
+let allOf p xs =
+    match xs
+      case Nil          -> True
+      case (Cons x ys)  -> if p x then allOf p ys else False
+
+-- A simple total predicate on PNat: true iff the value is Z.
+isZ : PNat -> Bool
+let isZ n =
+    match n
+      case Z     -> True
+      case (S _) -> False
+
+-- POSITIVE: an instantiation of allOf with an ad-hoc Bool predicate.
+allTrue : List Bool -> Bool
+let allTrue xs = allOf (\ b -> b) xs
+
+-- POSITIVE: a second instantiation at a different element type.
+allZero : List PNat -> Bool
+let allZero xs = allOf isZ xs
+
+-- POSITIVE: composition with map-like structural recursion.
+filterP : forall (a : Type). (a -> Bool) -> List a -> List a
+let filterP p xs =
+    match xs
+      case Nil          -> Nil
+      case (Cons x ys)  ->
+          if p x then Cons x (filterP p ys) else filterP p ys
+
+--! assertNoErrors

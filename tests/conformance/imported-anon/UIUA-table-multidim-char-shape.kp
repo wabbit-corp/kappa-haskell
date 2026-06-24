@@ -1,0 +1,44 @@
+-- Source issue: Uiua #960 ("Bug: incorrect behavior of `table` on
+--   multidimensional character arrays" — `△˙⊞⊟↯3_4 0` and
+--   `△˙⊞⊟↯3_4 @a` should produce the same shape, but the second
+--   produces `[3 4 3 4 2]` instead of `[3 3 2 4]`; using subscripts
+--   gives a third inconsistent shape).
+-- Spec: compiler.frontir.diagnostic_quality_invariants,
+--       collections.lowering.built_in_collection_obligations,
+--       types.records.formation.
+--
+-- A higher-order combinator that computes a Cartesian product /
+-- outer-product over two arrays must produce a result shape determined
+-- by the documented shape rule, independent of the element types of
+-- the operands.
+
+module test
+
+--! mode check
+
+-- A polymorphic outer product whose shape is determined by the two
+-- input shapes: outer (xs `outer` ys) has shape `(shape xs) ++ (shape ys)`.
+outerProduct : List Int -> List Int -> List (List Int)
+let outerProduct xs ys = []  -- stub; the test pins down the type
+
+-- POSITIVE: the result of outer on two rank-1 lists has rank 2.
+outerInts : List (List Int)
+let outerInts = outerProduct [1, 2, 3] [10, 20]
+
+--! assertNoErrors
+--! assertType outerProduct List Int -> List Int -> List (List Int)
+--! assertType outerInts List (List Int)
+
+-- POSITIVE: the same shape rule applies when both operands have rank 2.
+outerProduct2 : List (List Int) -> List (List Int) -> List (List (List (List Int)))
+let outerProduct2 xs ys = []  -- stub
+
+outerRank2 : List (List (List (List Int)))
+let outerRank2 = outerProduct2 [[1, 2], [3, 4]] [[10, 20], [30, 40]]
+
+--! assertType outerRank2 List (List (List (List Int)))
+
+-- The shape consistency requirement (the Uiua bug was that character
+-- arrays produced a different result shape than integer arrays) is
+-- expressed here through the explicit type contract: there is one
+-- shape rule, independent of element type.

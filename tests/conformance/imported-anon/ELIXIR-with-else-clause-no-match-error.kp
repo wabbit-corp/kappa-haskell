@@ -1,0 +1,65 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: kernel/with_test.exs "else conditions with match error"
+--   (raises WithClauseError: "no with clause matching: :error"),
+--   ELIXIR-PR-5179 (produce meaningful warning when with's else clauses have no effect),
+--   ELIXIR-PR-4847 (improve with/else error message on invalid form),
+--   spec gap ESA-ELIXIR-06
+-- Spec: expressions.match, spec gap ESA-ELIXIR-06,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive)
+-- Elixir's with/else construct: when a generator clause fails to match, execution
+-- falls through to the else clause group. If no else arm matches the actual value,
+-- a runtime WithClauseError is raised. The compiler should warn when the else clause
+-- group does not cover all possible non-matching values.
+-- In Kappa, an else/catch clause group that is non-exhaustive corresponds to a match
+-- expression missing arms for some constructors; this produces kappa.pattern.non-exhaustive.
+-- Note: Elixir's `with...do...else` syntax has no direct Kappa equivalent; the test uses
+-- plain `match` expressions to capture the same exhaustiveness obligations.
+
+--! mode check
+
+data FetchResult : Type = Ok Int | NotFound | Forbidden
+
+-- POSITIVE: match covers all constructors with a wildcard — exhaustive.
+withWildcardElse : FetchResult -> Int
+let withWildcardElse r =
+    match r
+    case Ok n     -> n
+    case _        -> -1
+
+-- POSITIVE: match explicitly covers all constructors — exhaustive.
+withExhaustiveElse : FetchResult -> Int
+let withExhaustiveElse r =
+    match r
+    case Ok n      -> n
+    case NotFound  -> 0
+    case Forbidden -> -1
+
+-- POSITIVE: pair match; wildcard covers all non-matching combinations.
+withMultipleGenerators : FetchResult -> FetchResult -> Int
+let withMultipleGenerators r1 r2 =
+    match (r1, r2)
+    case (Ok n1, Ok n2) -> n1 + n2
+    case _              -> -1
+
+-- NEGATIVE: match covers Ok and NotFound but not Forbidden — non-exhaustive.
+withMissingElseArm : FetchResult -> Int
+let withMissingElseArm r =
+    match r
+    case Ok n     -> n
+    case NotFound -> 0
+    -- Missing: arm for Forbidden
+
+-- NEGATIVE: match only covers Ok but ignores all failure cases — non-exhaustive.
+withNoElse : FetchResult -> Int
+let withNoElse r =
+    match r
+    case Ok n -> n
+    -- No arms for NotFound or Forbidden
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

@@ -1,0 +1,19 @@
+-- Source issue: FSTAR-1847
+-- Spec: core_semantics.definitional_equality.position_independent_transparent_normalization
+-- Return type of a let-alias must be fully normalized before application type-checks.
+
+--! mode check
+
+-- A type alias defined as a function type.
+type T = Unit -> Unit
+
+-- A value of type T: getT returns the identity function on Unit.
+getT : Unit -> T
+let getT u = \x -> x
+
+-- Applying getT must work: return type T must normalize before the second application.
+-- getT () : T = Unit -> Unit, so getT () () : Unit.
+useT : Unit -> Unit
+let useT u = getT () ()
+
+--! assertNoErrors

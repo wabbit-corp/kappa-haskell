@@ -1,0 +1,61 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Coalton issues #1853 (Bug: Void return "value" isn't inferred),
+--   #1854 (Bug: Void is Settable to Values).
+-- Spec: declarations.terms (§9), compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch §3.2.3).
+--
+-- A `Unit` (zero-information) return type is a type like any other, and its
+-- value `()` can be bound. However, `Void` (the zero-constructor type, like
+-- Haskell's `Void` or an uninhabited type) cannot be bound meaningfully.
+-- More practically:
+--   - A function declared to return Unit must not be used where a specific
+--     payload type is expected.
+--   - The return value of a unit-returning function should not be used as a
+--     payload in a context expecting a non-Unit type.
+-- This test checks the basic type-mismatch obligations around unit/void returns.
+
+--! mode check
+
+-- A function that explicitly returns Unit.
+doSomething : Int -> Unit
+let doSomething _ = ()
+
+-- POSITIVE: calling a Unit function in a sequencing context (ignoring result).
+useUnit : Unit
+let useUnit =
+    let _ = doSomething 5
+    in ()
+
+-- POSITIVE: binding the Unit return value to a Unit-typed variable is fine.
+bindUnit : Unit
+let bindUnit =
+    let u : Unit = doSomething 3
+    in u
+
+-- NEGATIVE: using a Unit-returning function's result where Int is expected.
+-- The type of `doSomething 5` is Unit, not Int.
+wrongReturn : Int
+let wrongReturn = doSomething 5
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: passing the Unit result of a function as an argument to a
+-- function expecting a different type.
+intFun : Int -> String
+let intFun n = "ok"
+
+badArg : String
+let badArg = intFun (doSomething 1)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a function declared to return Int but whose body returns Unit.
+claimsInt : Int
+let claimsInt = ()
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

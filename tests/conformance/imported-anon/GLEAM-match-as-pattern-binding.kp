@@ -1,0 +1,41 @@
+-- Source issues: gleam#226, gleam#2294
+-- Spec: expressions.patterns.forms
+-- As-patterns `name@pat` bind the whole matched value to `name` and also
+-- destructure via `pat`. Both the whole value and the inner bindings are
+-- available in the branch body.
+
+--! mode check
+--! assertNoErrors
+
+data Result (e : Type) (a : Type) : Type =
+    Ok a
+    Err e
+
+data List2 (a : Type) : Type =
+    Nil2
+    Cons2 a (List2 a)
+
+-- POSITIVE: as-pattern on a constructor arm captures the whole value.
+let keep_ok (r : Result String Int) : Result String Int =
+    match r
+    case x@(Ok _) -> x
+    case Err _    -> r
+
+-- POSITIVE: as-pattern with inner destructuring; both whole and parts used.
+let first_and_list (xs : List2 Int) : (Int, List2 Int) =
+    match xs
+    case full@(Cons2 h _) -> (h, full)
+    case Nil2             -> (0, Nil2)
+
+-- POSITIVE: as-pattern on a wildcard; binds whole value regardless.
+let id_via_as (x : Int) : Int =
+    match x
+    case n@_ -> n
+
+-- POSITIVE: as-pattern inside or-pattern (same binder name across alternatives).
+let classify_small (n : Int) : String =
+    match n
+    case v@0 | v@1 | v@2 -> "small"
+    case _               -> "large"
+
+--! assertType id_via_as (Int -> Int)

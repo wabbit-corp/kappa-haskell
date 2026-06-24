@@ -1,0 +1,21 @@
+-- Source issues: FSTAR-24, FSTAR-33
+-- Spec: expressions.match.exhaustiveness_indexed_types_gadts
+-- Tuple match over polymorphic constructors: wildcard final arm must be accepted
+-- as exhaustive cover for all remaining combinations.
+
+--! mode check
+
+data Opt (a : Type) : Type =
+    None : Opt a
+    Some : a -> Opt a
+
+-- A match over a tuple of options where the first branch handles one
+-- combination and the wildcard handles all others.
+-- The exhaustiveness checker must accept the wildcard as a total cover.
+classify : Opt Nat -> Opt Nat -> Nat
+let classify x y =
+    match (x, y)
+      case (Some a, Some b) -> a + b
+      case (_, _)           -> 0
+
+--! assertNoErrors

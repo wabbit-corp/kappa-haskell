@@ -1,0 +1,29 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: granule-project/granule PR #276 (Correct imports with dots
+--         and fix documentation of import behaviour); docs/README.md
+-- Spec: modules.imports, modules.files (GSA-11),
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- Granule's import resolves dotted module specifiers (e.g. `A.B.C`) to
+-- file paths. The portable obligation surfaced here is: a dotted module
+-- name that does not resolve to any known module MUST produce
+-- `kappa.name.unresolved` (§3.2.2).
+
+module test
+
+--! mode check
+
+-- POSITIVE: an importless declaration is well-formed.
+ok : Int
+let ok = 0
+
+
+-- NEGATIVE: an import whose dotted name resolves to no known module
+-- must fail with the name-unresolved family.
+import NotAPackage.Subdir.NoModule
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

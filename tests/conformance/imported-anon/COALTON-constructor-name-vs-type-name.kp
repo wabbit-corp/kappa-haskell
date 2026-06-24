@@ -1,0 +1,58 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Coalton issue #1095 (using type name instead of constructor returns
+--   opaque "unknown variable" error). The error should distinguish "this is a
+--   type name, not a constructor" from "this name is entirely unknown."
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--   (kappa.name.unresolved §3.2.2),
+--   compiler.frontir.diagnostic_quality_invariants (§3.1.11).
+--
+-- Using a type name in expression position (where only constructors are valid)
+-- must produce kappa.name.unresolved. The diagnostic payload MUST include
+-- the unresolved name and its use site. A conforming implementation SHOULD
+-- note that the name refers to a type, not a term-level constructor.
+
+--! mode check
+
+-- A simple ADT with one constructor that has a different name from the type.
+data DataType : Type =
+    MakeData Int
+
+-- POSITIVE: using the constructor name in expression position is accepted.
+good1 : DataType
+let good1 = MakeData 42
+
+-- POSITIVE: using the constructor in pattern position is accepted.
+getField : DataType -> Int
+let getField d =
+    match d
+    case MakeData n -> n
+
+-- NEGATIVE: using the type name `DataType` in expression position.
+-- `DataType` is a type constructor, not a term-level constructor.
+-- The name is not bound in term namespace.
+bad1 : DataType
+let bad1 = DataType 42
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- A type with constructors that happen to look like applications.
+data Pair : Type =
+    MakePair Int String
+
+-- NEGATIVE: using the type name `Pair` where a term constructor is expected.
+bad2 : Pair
+let bad2 = Pair 1 "hello"
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: a completely unknown name is also kappa.name.unresolved.
+-- (Verifying the diagnostic family is the same as for the above case.)
+bad3 : Int
+let bad3 = noSuchThing 5
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 3

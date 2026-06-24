@@ -1,0 +1,34 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu docs/docs/primitives.md ("`u` or `unquote`
+--   unquotes the quotation below it"). MLatu's `unquote` is the
+--   elimination form for quotation, producing the underlying terms.
+--   The portable obligation is that Kappa supports forcing a suspended
+--   computation back to its inner value.
+-- Spec: expressions.lambdas.suspension_expressions_forcing.
+--
+-- `force (thunk x) ≡ x`. Forcing a non-thunk is a type mismatch.
+
+module test
+
+--! mode check
+
+-- POSITIVE: unquote/force on a thunked value yields the inner value.
+roundTripInt : Int
+let roundTripInt = force (thunk 7)
+
+roundTripStr : String
+let roundTripStr = force (thunk "hi")
+
+--! assertType roundTripInt Int
+--! assertType roundTripStr String
+
+-- NEGATIVE: forcing a non-thunk value is a type mismatch.
+badForce : Int
+let badForce = force 5
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

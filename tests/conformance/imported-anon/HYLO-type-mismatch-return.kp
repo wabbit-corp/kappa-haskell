@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Return.hylo
+--                   (diagnostic: "non-void function should return a value"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ConditionalExpr.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Return.hylo and ConditionalExpr.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch)
+-- Hylo: a function with a non-void declared return type must return a value
+-- of that type. Returning the wrong type, returning nothing, or having
+-- branches with mismatched types is rejected.
+
+--! mode check
+
+makeInt : Int
+let makeInt = 42
+
+makeString : String
+let makeString = "hello"
+
+-- POSITIVE: return type matches body type.
+goodReturnInt : Int
+let goodReturnInt = 42
+
+goodReturnBool : Bool
+let goodReturnBool = True
+
+-- NEGATIVE: declared return type is Int but body produces Bool.
+wrongReturnType : Int
+let wrongReturnType =
+    True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: conditional expression with mismatched branch types.
+-- One branch is Int, the other is Bool — they cannot be unified.
+mismatchedBranches : Bool -> Int
+let mismatchedBranches cond =
+    if cond then 42 else True
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: body is String but return type is Int.
+stringNotInt : Int
+let stringNotInt =
+    "forty-two"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

@@ -1,0 +1,30 @@
+-- Source issues: PIKELET-33 (remove block comments — Pikelet removed block
+--                comments entirely),
+--                PIKELET-84 (PR: remove block comments).
+-- Spec: lexical.comments
+--
+-- Kappa line comments are introduced by `--` and extend to end-of-line
+-- (§5.3). Unlike Pikelet, Kappa keeps `{- -}` block comments as part of
+-- the portable subset; this fixture covers the portable line-comment
+-- case alone. Pikelet's decision to remove block comments is an
+-- intentional source-language divergence and not imported into Kappa.
+--
+-- This test asserts that ordinary line comments are stripped lexically
+-- and do not perturb declaration sequencing or expression elaboration.
+
+--! mode check
+
+-- An ordinary comment.
+top : Nat
+let top = 1 -- trailing line comment
+
+-- POSITIVE: comments interleaved with normal source produce no token
+-- artifacts.
+add2 : Nat -> Nat -> Nat
+let add2 a b =       -- helper
+  a + b              -- the actual addition
+
+useSum : Nat
+let useSum = add2 1 2
+
+--! assertNoErrors

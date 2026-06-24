@@ -1,0 +1,48 @@
+-- Source issue: AENEAS-615
+-- Spec: types.universes.disjoint_path_borrowing_records,
+--       types.universes.borrow_lifetimes_escape_prevention
+-- §12.4: "Because & is a non-consuming shared borrow in v1, overlapping
+-- borrowed paths may coexist with each other."
+-- When the root is already a shared borrow, further sub-borrows of
+-- independent fields are always accepted.  A borrow of the whole record and
+-- a borrow of a field are compatible (sub-borrow relationship).
+
+module test
+
+--! mode check
+
+data Wallet : Type = Wallet { balance : Int, limit : Int }
+
+-- POSITIVE: function receives a shared borrow of Wallet; borrows two
+-- independent fields and uses them both.
+canAfford : (& w : Wallet) -> Int -> Bool
+let canAfford w amount =
+    let & bal = w.balance
+    let & lim = w.limit
+    bal >= amount && lim >= amount
+
+--! assertNoErrors
+--! assertType canAfford ((& w : Wallet) -> Int -> Bool)
+
+-- POSITIVE: shared borrow of same field twice — both read, no conflict.
+-- Shared borrows may overlap each other.
+doubleRead : (& w : Wallet) -> Int
+let doubleRead w =
+    let & b1 = w.balance
+    let & b2 = w.balance
+    b1 + b2
+
+--! assertNoErrors
+
+data Matrix : Type = Matrix { a : Int, b : Int, c : Int, d : Int }
+
+-- POSITIVE: computing a 2×2 determinant by borrowing all four cells.
+det2x2 : (& m : Matrix) -> Int
+let det2x2 m =
+    let & a = m.a
+    let & b = m.b
+    let & c = m.c
+    let & d = m.d
+    a * d - b * c
+
+--! assertNoErrors

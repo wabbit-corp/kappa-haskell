@@ -1,0 +1,28 @@
+-- Source issue: MLatu #25 ("Add a substructural type system"); PR#26
+--   ("Linear types"). MLatu proposed replacing `+IO` permissions with
+--   a Clean-style linear `World` value: every IO-performing function
+--   takes the current world and returns a new one, threaded linearly.
+--   The portable Kappa obligation is that a linear resource (quantity
+--   `1`) is consumed exactly once and the consumer returns a fresh
+--   token.
+-- Spec: types.universes.quantities,
+--       types.universes.quantities.linear_discharge_discard_destructor_use.
+
+module test
+
+--! mode check
+
+data World : Type =
+    World
+
+-- An IO step consumes the current world linearly and returns the (new)
+-- world value.
+ioStep : (1 w : World) -> World
+let ioStep w = w
+
+-- POSITIVE: linear world threaded through ioStep exactly once.
+program : (1 w : World) -> World
+let program w = ioStep w
+
+--! assertNoErrors
+--! assertType program (1 w : World) -> World

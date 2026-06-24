@@ -1,0 +1,16 @@
+-- Source issue: Kitten #55 (typecheck top-level code; should accept an
+--   empty stack). Kitten #29 (accumulate errors — but also accept the
+--   trivial empty program).
+-- Spec: declarations.terms, modules.files.
+--
+-- A TRULY EMPTY module — a module header with no declarations at all —
+-- is accepted. The empty input "stack" / unit context elaborates
+-- successfully; the expected outcome is acceptance, not a complaint
+-- that "no top-level expression was provided". (The definitions-only,
+-- no-top-level-effect variant of this scenario is covered by
+-- MLATU-empty-program-accepted.)
+
+module test
+
+--! mode check
+--! assertNoErrors

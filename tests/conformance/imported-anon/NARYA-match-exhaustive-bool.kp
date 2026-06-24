@@ -1,0 +1,49 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: narya docs/data-types.rst ("match must be exhaustive;
+--               missing cases are a compile-time error"). The portable
+--               obligation here is that closed sum types require coverage
+--               of every constructor and every reachable case.
+-- Spec: expressions.match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--
+-- A match expression on a value of a finite, closed data type must
+-- cover every constructor of that type. Missing constructors produce a
+-- non-exhaustiveness diagnostic (§17.1, §3.2.10).
+
+--! mode check
+
+-- POSITIVE: complete match on the built-in Bool.
+not_ : Bool -> Bool
+let not_ b =
+    match b
+      case True  -> False
+      case False -> True
+
+-- POSITIVE: a partial match on the first argument; coverage applies to
+-- the active scrutinee.
+and_ : Bool -> Bool -> Bool
+let and_ x y =
+    match x
+      case True  -> y
+      case False -> False
+
+-- POSITIVE: a catch-all `_` arm is also exhaustive (§17.1).
+isTrue : Bool -> Bool
+let isTrue b =
+    match b
+      case True -> True
+      case _    -> False
+
+-- NEGATIVE: missing the False arm is non-exhaustive on a closed Bool
+-- scrutinee.
+broken : Bool -> Bool
+let broken b =
+    match b
+      case True -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 1

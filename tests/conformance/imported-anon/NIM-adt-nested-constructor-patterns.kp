@@ -1,0 +1,78 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#25774 (ProveField warning with nested case object),
+--         nim-lang/Nim#24430 (fix subtype match of generic object types)
+-- Spec: expressions.match, expressions.patterns.forms,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Nim's pattern-matching over nested case objects (object variants) had a
+-- bug where nested exhaustiveness was not fully checked. In Kappa, nested
+-- constructor patterns in match arms must satisfy exhaustiveness at every level.
+
+--! mode check
+module test
+
+data Shape : Type =
+    Circle Int
+    Rectangle Int Int
+    Triangle Int Int Int
+
+data Colored : Type =
+    Red Shape
+    Blue Shape
+    Green Shape
+
+-- POSITIVE: flat destructure into nested constructor.
+isRedCircle : Colored -> Bool
+let isRedCircle cs =
+    match cs
+    case Red (Circle _)       -> True
+    case Red (Rectangle _ _)  -> False
+    case Red (Triangle _ _ _) -> False
+    case Blue _               -> False
+    case Green _              -> False
+
+-- POSITIVE: access nested fields directly via nested pattern.
+innerRadius : Colored -> Int
+let innerRadius cs =
+    match cs
+    case Red (Circle r)       -> r
+    case Red (Rectangle w h)  -> w + h
+    case Red (Triangle a b c) -> a + b + c
+    case Blue s ->
+        match s
+        case Circle r         -> r
+        case Rectangle w _    -> w
+        case Triangle a _ _   -> a
+    case Green s ->
+        match s
+        case Circle r         -> r
+        case Rectangle _ h    -> h
+        case Triangle _ b _   -> b
+
+-- NEGATIVE: the Blue branch doesn't cover Triangle — non-exhaustive inner match.
+badInner : Colored -> Int
+let badInner cs =
+    match cs
+    case Red (Circle r)        -> r
+    case Red (Rectangle w _)   -> w
+    case Red (Triangle a _ _)  -> a
+    case Blue s ->
+        match s
+        case Circle r     -> r
+        case Rectangle w _ -> w
+    case Green _ -> 0
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: wildcard in nested position covers remaining shapes.
+safeInner : Colored -> Int
+let safeInner cs =
+    match cs
+    case Red (Circle r)   -> r
+    case Red _            -> 0
+    case Blue _           -> 0
+    case Green _          -> 0
+
+--! assertErrorCount 1

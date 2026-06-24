@@ -1,0 +1,47 @@
+-- Source issues: KT-2779 (copy function with named fields), KT-2628
+-- Spec: data_types.data_declarations, data_types.data_declarations.constructor_application_named_arguments_c
+
+--! mode check
+
+-- POSITIVE: a data type with named constructor parameters can be constructed
+-- using named-argument syntax.
+data Point : Type =
+    Point (x : Int) (y : Int)
+
+origin : Point
+let origin = Point { x = 0, y = 0 }
+
+--! assertNoErrors
+--! assertType origin Point
+
+-- POSITIVE: projecting named fields after construction.
+sumCoords : Point -> Int
+let sumCoords p = p.x + p.y
+
+--! assertNoErrors
+--! assertType sumCoords (Point -> Int)
+
+-- POSITIVE: a record-style data type with multiple named fields.
+data Person : Type =
+    Person (name : String) (age : Int) (active : Bool)
+
+makePerson : String -> Int -> Person
+let makePerson n a = Person { name = n, age = a, active = True }
+
+--! assertNoErrors
+
+getName : Person -> String
+let getName p = p.name
+
+getAge : Person -> Int
+let getAge p = p.age
+
+--! assertNoErrors
+--! assertType getName (Person -> String)
+--! assertType getAge  (Person -> Int)
+
+-- POSITIVE: constructing with positional arguments also works.
+makePoint : Int -> Int -> Point
+let makePoint x y = Point x y
+
+--! assertNoErrors

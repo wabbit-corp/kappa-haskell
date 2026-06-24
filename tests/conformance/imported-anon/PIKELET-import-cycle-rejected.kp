@@ -1,0 +1,24 @@
+-- Source issue: PIKELET-15 (module import planner — modules will not be
+--               mutually recursive, must form a DAG).
+-- Spec: modules.acyclic_imports, modules.imports
+--
+-- Kappa requires the module import graph to be acyclic (§8.2). A self-import
+-- is the smallest manifestation of the rule violation. In a single-file
+-- inline test the self-import target cannot be the same file being
+-- compiled (it has no module path of its own that the parser can name);
+-- the closest portable approximation here imports a non-existent
+-- declared-module path, which surfaces as name resolution failure. The
+-- cycle obligation itself is documented under PIKELET-SA-09 (new this
+-- reverify) because §3.2 has no dedicated cycle family.
+
+--! mode check
+
+-- NEGATIVE: import a module whose name cannot resolve — proxy for a
+-- cyclic-DAG rejection because the test harness has no portable way to
+-- materialise two mutually-importing files in a single-file inline test.
+import this.module.cycle
+
+placeholder : Nat
+let placeholder = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved

@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: AENEAS-86
+-- Spec: expressions.lambdas.closure_capture_quantities,
+--       compiler.frontir.standard_diagnostic_families.quantity_ownership,
+--       kappa.quantity.positive-lower-bound
+-- §16.2.1: "Positive lower-bound capture: Uses of a captured variable inside
+-- a lambda body are delayed uses.  Constructing the closure does not itself
+-- demand the captured variable."
+-- If a variable with a positive lower bound (>=1 or 1) is captured in a
+-- closure that is never called, the lower-bound obligation is not discharged.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: `x` has a positive lower bound (>=1) but the closure f is never
+-- called.  Constructing f does not count as using x; f is then ignored.
+-- The scope of x closes without the lower bound being satisfied.
+neverCalled : (>=1 x : Int) -> Unit
+let neverCalled x =
+    let f = \() -> x    -- delayed use: f is never demanded
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- NEGATIVE: the closure is constructed and stored but the let-binding goes
+-- out of scope without any call.
+storedButUnused : (>=1 x : Int) -> Int
+let storedButUnused x =
+    let f = \() -> x
+    42                  -- returns 42 without ever calling f
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- POSITIVE: the closure captures x and is called once — demand satisfied.
+calledOnce : (>=1 x : Int) -> Int
+let calledOnce x =
+    let f = \() -> x
+    f ()
+
+--! assertType calledOnce ((>=1 x : Int) -> Int)
+
+-- POSITIVE: the closure is called multiple times — also satisfies >=1.
+calledTwice : (>=1 x : Int) -> Int
+let calledTwice x =
+    let f = \() -> x
+    f () + f ()
+
+--! assertErrorCount 2

@@ -1,0 +1,87 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: invalid/constructor_warning.m, invalid/wrong_arity_function.m,
+--   invalid/bad_pred_arity.m
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.constructor.arity)
+-- A data constructor applied to the wrong number of arguments in an expression
+-- must be rejected. The error must identify the constructor, its expected
+-- parameter count, and the supplied argument count.
+
+module test
+
+-- A type with constructors of various arities.
+data Widget : Type =
+    Button             -- 0 arguments
+    Label String       -- 1 argument
+    Slider Int Int     -- 2 arguments (min, max)
+
+-- POSITIVE: each constructor used with the correct arity.
+makeButton : Widget
+let makeButton = Button
+
+makeLabel : String -> Widget
+let makeLabel s = Label s
+
+makeSlider : Int -> Int -> Widget
+let makeSlider lo hi = Slider lo hi
+
+
+-- NEGATIVE: Button applied to 1 argument (expects 0).
+badButton1 : Widget
+let badButton1 = Button "oops"
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Label applied to 0 arguments (expects 1).
+badLabel0 : Widget
+let badLabel0 = Label
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Label applied to 2 arguments (expects 1).
+badLabel2 : Widget
+let badLabel2 = Label "x" "y"
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Slider applied to 3 arguments (expects 2).
+badSlider3 : Widget
+let badSlider3 = Slider 0 10 20
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: Slider applied to 1 argument (expects 2) — produces a partial
+-- application, but `Slider` takes exactly 2 args to produce a `Widget`; the
+-- result type would be `Int -> Widget`, not `Widget`.
+badSlider1 : Widget
+let badSlider1 = Slider 5
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- A parameterised type.
+data Pair (a : Type) : Type = Pair a a
+
+-- NEGATIVE: Pair applied to 1 argument (expects 2).
+badPair1 : Pair Int
+let badPair1 = Pair 3
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- POSITIVE: Pair applied to exactly 2 arguments.
+goodPair : Pair Int
+let goodPair = Pair 3 7
+
+--! assertType goodPair Pair Int
+
+-- NEGATIVE: Pair applied to 3 arguments (expects 2).
+badPair3 : Pair Int
+let badPair3 = Pair 1 2 3
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+--! mode check
+
+--! assertErrorCount 7

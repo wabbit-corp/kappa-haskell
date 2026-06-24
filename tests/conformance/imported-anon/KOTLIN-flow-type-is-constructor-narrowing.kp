@@ -1,0 +1,63 @@
+-- Source issues: KT-4403, KT-1358, KT-4113
+-- Spec: expressions.conditionals.flow_sensitive_branch_evidence_atomic_conditions,
+--   expressions.conditionals.stable_aliases_transport_refinement_evidence
+
+--! mode check
+
+-- A simple sum type with two constructors.
+data Shape : Type =
+    Circle  (radius : Int)
+    Square  (side   : Int)
+
+-- POSITIVE: `is Circle` constructor test in if-condition introduces HasCtor evidence.
+-- The then branch may access the Circle-specific field.
+describeShape : Shape -> String
+let describeShape s =
+    if s is Circle then
+        "circle"   -- s narrowed to Circle here; s.radius would also be valid
+    else
+        "square"
+
+--! assertNoErrors
+
+-- POSITIVE: `is Circle` in the else gives Square narrowing (two-ctor type).
+getCircleRadius : Shape -> Int
+let getCircleRadius s =
+    if s is Circle then
+        s.radius
+    else
+        0
+
+--! assertNoErrors
+--! assertType getCircleRadius (Shape -> Int)
+
+-- POSITIVE: using `if s !is Circle` puts the narrowing in the else.
+getSide : Shape -> Int
+let getSide s =
+    if s is Square then
+        s.side
+    else
+        -1
+
+--! assertNoErrors
+
+-- POSITIVE: type narrowing through a local alias.
+getRadiusViaAlias : Shape -> Int
+let getRadiusViaAlias sh =
+    let s = sh
+    if s is Circle then
+        s.radius    -- alias narrowing: refinement transports through 's = sh'
+    else
+        0
+
+--! assertNoErrors
+
+-- POSITIVE: narrowing in a negated branch (`!is`): early return pattern.
+onlySquare : Shape -> Int
+let onlySquare s =
+    if s is Circle then
+        0
+    else
+        s.side   -- after failing Circle test, s is Square (two-ctor type)
+
+--! assertNoErrors

@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: egraphs-good/egglog #255 (Disallow primitives that might fail
+--   in actions — `<` is partial),
+--   egraphs-good/egglog #228 (RFC: fix semi-naive and table problems — failing
+--   primitives in actions).
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--       (kappa.type.mismatch),
+--       see also EGGLOG-SA-01 in EGGLOG_SPEC_ADDITIONS.md.
+-- Numeric ordering operators `<`, `<=`, `>`, `>=` require operands of an
+-- ordered numeric (or otherwise comparable) type. Egglog originally allowed
+-- `<` to be used on non-numeric sorts, which could fail at run time. Kappa
+-- rejects ordering on non-ordered types at type-check time.
+
+module test
+
+--! mode check
+
+-- POSITIVE: numeric comparisons are well-typed.
+ok1 : Bool
+let ok1 = 1 < 2
+
+ok2 : Bool
+let ok2 = 3 >= 2
+
+ok3 : Bool
+let ok3 = 1.0 < 2.5
+
+-- NEGATIVE: comparing values of a user data type with `<` (no Ord instance).
+data Color : Type =
+    Red
+    Green
+
+bad1 : Bool
+let bad1 = Red < Green
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: comparing Int and Float with `<` (numerics are not implicitly
+-- coerced).
+bad2 : Bool
+let bad2 = (1 : Int) < (1.0 : Float)
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

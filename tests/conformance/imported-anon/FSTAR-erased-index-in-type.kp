@@ -1,0 +1,20 @@
+-- Source issues: FSTAR-2423, FSTAR-3128
+-- Spec: types.universes.erasure_elaboration_time
+-- A type that is polymorphic in both a parameter universe and a result universe
+-- must be accepted when the result universe is expressed as an index.
+-- Universe name variables must not leak between the val declaration (polymorphic)
+-- and the let binding (monomorphic instantiation).
+
+--! mode check
+
+-- Polymorphic monad type: the type parameter `a` is an index in the result type.
+-- The compiler must accept `a` as a universe-polymorphic parameter, not confuse
+-- it with the other parameter `s`.
+data M (s : Type) (a : Type) : Type =
+    Ret : a -> M s a
+
+-- A function that constructs a Ret at a specific type.
+pure_m : (s : Type) -> (a : Type) -> a -> M s a
+let pure_m s a x = Ret x
+
+--! assertNoErrors

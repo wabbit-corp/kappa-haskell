@@ -1,0 +1,42 @@
+-- Source issues: KT-297, KT-880, KT-7770 (overload resolution ambiguity in traits)
+-- Spec: traits.members, traits.instances, traits.members.overloaded_member_names
+
+--! mode check
+
+-- POSITIVE: a trait with a method that has a default implementation.
+-- Kappa declares trait members as either `name : Type` (required) or
+-- `let name : Type = body` (default); see ANON_SPEC.md §14.2.
+trait Animal (a : Type) =
+    sound : a -> String
+    let greet : a -> String =
+        \x -> "Hello, I say " ++ sound x
+
+data Cat : Type = Cat
+data Dog : Type = Dog
+
+instance Animal Cat =
+    let sound _ = "meow"
+    -- greet uses the default
+
+instance Animal Dog =
+    let sound _ = "woof"
+    let greet _ = "Dog says: woof!"   -- overrides default
+
+--! assertNoErrors
+
+catGreet : String
+let catGreet = greet Cat
+
+--! assertNoErrors
+
+dogGreet : String
+let dogGreet = greet Dog
+
+--! assertNoErrors
+
+-- POSITIVE: calling the interface method via the trait constraint.
+animalGreeting : forall (a : Type). (@_ : Animal a) -> a -> String
+let animalGreeting x = greet x
+
+--! assertNoErrors
+--! assertType animalGreeting (forall (a : Type). (@_ : Animal a) -> a -> String)

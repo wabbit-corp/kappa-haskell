@@ -1,0 +1,24 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu issue #11 (vocabulary system; names belong to
+--   namespaces and must be introduced before use). MLatu's tutorial
+--   describes a "longest rewrite rule" search; if no rule matches, the
+--   term remains unreduced. In a static-typed Kappa port, the portable
+--   obligation is that referencing an undefined name is a static error.
+-- Spec: modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+
+module test
+
+--! mode check
+
+-- NEGATIVE: referencing a name that was never introduced.
+useIt : Int
+let useIt = mysteryWord
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

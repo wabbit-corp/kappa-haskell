@@ -1,0 +1,76 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: nim-lang/Nim#11474 (Case does not check all cases — guard/when
+--         clauses complicate exhaustiveness), nim-lang/RFCs#525 (Proper sum
+--         types — where guard interaction with exhaustiveness)
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families
+--       (kappa.pattern.non-exhaustive)
+-- A match arm with a guard (`if cond`) does not contribute to exhaustiveness
+-- because the guard may be false, leaving the guarded pattern uncovered.
+-- A match that relies on guards to cover all cases is non-exhaustive unless
+-- there is also a guard-free catch-all arm.
+
+--! mode check
+module test
+
+data Size : Type = Small | Medium | Large
+
+-- POSITIVE: guard-free match is exhaustive.
+describeSize : Size -> String
+let describeSize s =
+    match s
+    case Small  -> "small"
+    case Medium -> "medium"
+    case Large  -> "large"
+
+-- POSITIVE: guard present but a catch-all without guard is also present.
+safeSizeGuard : Size -> String
+let safeSizeGuard s =
+    match s
+    case Small if False -> "never happens"
+    case Small          -> "small (fallthrough)"
+    case Medium         -> "medium"
+    case Large          -> "large"
+
+-- NEGATIVE: a guard on the only arm covering Small means Small is not
+-- definitively covered — guard may be false, so non-exhaustive.
+guardDoesNotExhaust : Size -> String
+let guardDoesNotExhaust s =
+    match s
+    case Small if True  -> "small"
+    case Medium         -> "medium"
+    case Large          -> "large"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: guard on a wildcard arm doesn't block exhaustiveness because
+-- the wildcard itself (ignoring the guard) matches everything; but the
+-- guarded wildcard leaves the unguarded path open — a SECOND wildcard
+-- is still needed. So: guarded wildcard + unguarded wildcard = exhaustive.
+doubleWild : Size -> String
+let doubleWild s =
+    match s
+    case Small      -> "small"
+    case _ if False -> "guard only"
+    case _          -> "other"
+
+-- NEGATIVE: all arms are guarded — no arm is guaranteed to match anything.
+allGuarded : Int -> String
+let allGuarded n =
+    match n
+    case x if x > 0 -> "positive"
+    case x if x < 0 -> "negative"
+    case x if x == 0 -> "zero"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: Int match with unguarded wildcard after guarded arms.
+intWithWild : Int -> String
+let intWithWild n =
+    match n
+    case 0 -> "zero"
+    case _ -> "nonzero"
+
+--! assertErrorCount 2

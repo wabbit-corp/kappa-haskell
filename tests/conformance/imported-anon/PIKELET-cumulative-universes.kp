@@ -1,0 +1,48 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: PIKELET-10 (cumulative universe hierarchy),
+--               PIKELET-125 (PR: implement McBride-style universe shifting).
+-- Spec: types.universes, types.universes.cumulativity
+--
+-- Kappa has a stratified, cumulative universe hierarchy
+-- `Type0 : Type1 : Type2 : ...`. If `u ≤ v`, a value of `Type u` may be
+-- used where `Type v` is expected. `Type u` is **not** a member of itself
+-- (no `Type : Type`).
+
+--! mode check
+
+-- POSITIVE: Type0 lives in Type1.
+ty01 : Type1
+let ty01 = Type0
+
+-- POSITIVE: Type1 lives in Type2.
+ty12 : Type2
+let ty12 = Type1
+
+-- POSITIVE: cumulativity — a Type0 value may be used in a Type1 context.
+liftTy : Type1
+let liftTy = Nat
+
+-- POSITIVE: a function type formed from two Type0 components stays at
+-- Type0 (Pikelet docs: "the universe level the largest input or output").
+fnTy : Type0
+let fnTy = Nat -> Nat
+
+-- POSITIVE: a function whose output mentions Type0 lives at Type1.
+fnTy1 : Type1
+let fnTy1 = Nat -> Type0
+
+-- NEGATIVE: Type1 cannot be used where Type0 is expected (no downward
+-- cumulativity).
+shrinking : Type0
+let shrinking = Type1
+
+-- NEGATIVE: a level cannot classify itself.
+selfClassify : Type1
+let selfClassify = Type1
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2

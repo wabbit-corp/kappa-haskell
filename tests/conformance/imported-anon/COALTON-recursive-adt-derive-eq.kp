@@ -1,0 +1,66 @@
+-- Source: Coalton issue #1517 (`(derive Eq)` broken on recursive data types —
+--   comparing Leaf and Node caused infinite recursion at runtime).
+-- Spec: traits.deriving (§14.5), traits.instances.resolution_algorithm (§14.3.1),
+--   traits.proof_irrelevance (§14.4).
+--
+-- Equality (or any equivalence trait) derived for a recursive algebraic data type
+-- must be finitely computable. A correct derive implementation for Eq on a
+-- recursive type such as a binary tree must produce structurally recursive equality
+-- — not a diverging function that recurses infinitely on the constructors.
+-- This test verifies:
+--   1. Derived equality compiles and type-checks without error.
+--   2. The inferred type is the declared type.
+--   3. No circularity or non-termination is observable in the type-checker.
+
+--! mode check
+
+-- A simple recursive binary tree.
+data Tree (a : Type) : Type =
+    Leaf
+    Node a (Tree a) (Tree a)
+
+-- POSITIVE: manually writing Eq for Tree is accepted.
+-- The instance must not cause the type-checker to loop.
+instance Eq a => Eq (Tree a) =
+    let (==) t1 t2 =
+        match (t1, t2)
+        case (Leaf, Leaf)                   -> True
+        case (Node v1 l1 r1, Node v2 l2 r2) ->
+            (v1 == v2) && (l1 == l2) && (r1 == r2)
+        case _                              -> False
+
+--! assertNoErrors
+
+-- POSITIVE: a mutually recursive type pair can also have derived equality.
+data Even (a : Type) : Type =
+    EvenNil
+    EvenCons a (Odd a)
+
+data Odd (a : Type) : Type =
+    OddCons a (Even a)
+
+instance Eq a => Eq (Even a) =
+    let (==) e1 e2 =
+        match (e1, e2)
+        case (EvenNil, EvenNil)               -> True
+        case (EvenCons h1 t1, EvenCons h2 t2) ->
+            (h1 == h2) && (t1 == t2)
+        case _                                -> False
+
+instance Eq a => Eq (Odd a) =
+    let (==) o1 o2 =
+        match (o1, o2)
+        case (OddCons h1 t1, OddCons h2 t2) ->
+            (h1 == h2) && (t1 == t2)
+        case _ -> False
+
+--! assertNoErrors
+
+-- POSITIVE: the type of the Eq instance method for Tree should be correctly
+-- inferred — recursive references to `==` on sub-trees use the instance evidence,
+-- not an unresolved free variable.
+compareLeafLeaf : Bool
+let compareLeafLeaf = (Leaf : Tree Int) == Leaf
+
+--! assertNoErrors
+--! assertType compareLeafLeaf Bool

@@ -1,0 +1,51 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: Circom scoping.md ("if c is built using another component d, the
+--               signals of d cannot be accessed from t"; error: "Signal not found
+--               in component: only accesses to input/output signals are allowed").
+-- Spec: compiler.frontir.standard_diagnostic_families.name_import
+--       (family kappa.name.unresolved).
+-- Kappa spec rule (§SA-CIRCOM-06):
+--   "Only the declared input and output signals of a component are accessible from
+--    the surrounding template. Attempting to access intermediate signals or signals
+--    of nested sub-components must produce kappa.name.unresolved."
+
+--! mode check
+
+-- Model components with only their I/O signals visible externally.
+data InnerComp : Type =
+    InnerComp { innerInput : Int, innerOutput : Int }
+
+-- OuterComp exposes only `output`; its internal sub-component is not accessible.
+data OuterComp : Type =
+    OuterComp { output : Int }
+
+let makeInner (x : Int) : InnerComp =
+    InnerComp { innerInput = x, innerOutput = x * x }
+
+let makeOuter (x : Int) : OuterComp =
+    let inner = makeInner x
+    OuterComp { output = inner.innerOutput }
+
+-- POSITIVE: accessing only the exported `output` signal of OuterComp.
+let getOutput (o : OuterComp) : Int = o.output
+
+goodResult : Int
+let goodResult = getOutput (makeOuter 5)
+
+
+-- NEGATIVE: accessing `nested` which is not a declared field of OuterComp.
+let getNestedSignal (o : OuterComp) : Int =
+    o.nested.innerOutput
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- NEGATIVE: accessing an intermediate (non-IO) signal that is not exported.
+let getNonIO (o : OuterComp) : Int =
+    o.intermediate
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 2

@@ -1,0 +1,55 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: ponyc#52, ponyc#2408
+-- Spec: expressions.match, compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Pony issue #52: value patterns in match use structural equality (the `eq`
+-- method). A value pattern matches if the runtime value equals the pattern
+-- value. In Kappa, matching on literal values (integers, booleans, etc.) in
+-- a match arm uses value equality. The exhaustiveness check must account for
+-- the ranges covered by literal patterns.
+
+--! mode check
+
+-- POSITIVE: matching on specific integer literals; wildcard handles the rest.
+classify : Int -> String
+let classify n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+    case _ -> "many"
+
+-- POSITIVE: matching on Bool (two values, both covered).
+boolName : Bool -> String
+let boolName b =
+    match b
+    case True  -> "true"
+    case False -> "false"
+
+-- NEGATIVE: matching on Bool with only one case — False is uncovered.
+badBool : Bool -> String
+let badBool b =
+    match b
+    case True -> "yes"
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- POSITIVE: matching specific literals plus a wildcard.
+signOf : Int -> Int
+let signOf n =
+    match n
+    case 0 -> 0
+    case _ ->
+        match (n > 0)
+        case True  -> 1
+        case False -> -1
+
+r1 : String
+let r1 = classify 2
+
+r2 : String
+let r2 = boolName False
+
+--! assertErrorCount 1

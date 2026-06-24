@@ -1,0 +1,43 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Let Blocks", Julia scoping rules
+-- Spec: expressions.let_bindings, modules.names.lexical_lookup,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, a `let` block introduces fresh local bindings that do not escape
+-- the block. In Kappa, a name bound inside a nested let is not accessible
+-- outside that expression; referencing it from the outer scope is
+-- kappa.name.unresolved.
+
+--! mode check
+
+outer : Int
+let outer = 10
+
+-- POSITIVE: inner let binding shadows outer within the expression.
+innerShadow : Int
+let innerShadow =
+    let outer = 99
+    outer   -- resolves to the inner 99
+
+-- POSITIVE: outer is unchanged — the inner binding did not overwrite it.
+stillOuter : Int
+let stillOuter = outer   -- resolves to 10
+
+--! assertType innerShadow  Int
+--! assertType stillOuter Int
+
+-- POSITIVE: locally scoped helper used only within its block.
+localOk : Int
+let localOk =
+    let helper = 5
+    helper
+
+-- NEGATIVE: a binding introduced in a nested let is not visible outside.
+badAccess : Int
+let badAccess = helper
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

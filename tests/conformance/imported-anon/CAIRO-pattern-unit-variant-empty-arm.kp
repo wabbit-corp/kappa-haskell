@@ -1,0 +1,86 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: CAIRO-3453, CAIRO-2313
+-- Spec: expressions.patterns (§ data_types data patterns),
+--       expressions.match (§17),
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (family kappa.pattern.non-exhaustive).
+-- Kappa spec rule (§ expressions.match):
+--   "A constructor with no fields may be matched using either the bare
+--    constructor name or the constructor name followed by an empty argument
+--    list. Both forms are acceptable in pattern position."
+-- Cairo issue CAIRO-3453: unit enum variants (variants with no payload)
+--   should support empty match arms like `A =>` not just `A(()) =>`.
+-- Cairo issue CAIRO-2313: enum variant `Rounding::Up(_)` with unit payload
+--   was rejected in match; both `Up` and `Up()` should be accepted.
+
+--! mode check
+
+data Rounding : Type =
+    Down | Up | Zero
+
+-- POSITIVE: matching with bare constructor names (no argument list).
+roundingDown : Bool
+let roundingDown =
+    match Down
+    case Down -> True
+    case Up   -> False
+    case Zero -> False
+
+-- POSITIVE: matching an enum value with all variants covered.
+isUp : Rounding -> Bool
+let isUp r =
+    match r
+    case Up   -> True
+    case Down -> False
+    case Zero -> False
+
+-- POSITIVE: unit enum variants may use wildcard in place of missing branches.
+roundingLabel : Rounding -> String
+let roundingLabel r =
+    match r
+    case Down -> "negative"
+    case _    -> "non-negative"
+
+-- NEGATIVE: match missing the Zero branch must be rejected.
+incompleteMatch : Rounding -> Bool
+let incompleteMatch r =
+    match r
+    case Up   -> True
+    case Down -> False
+
+-- NEGATIVE: match missing Up and Zero must be rejected.
+onlyDown : Rounding -> Bool
+let onlyDown r =
+    match r
+    case Down -> True
+
+-- A variant type with mixed payloads: one unit variant and one with a field.
+data Event : Type =
+    Tick | Value Int
+
+-- POSITIVE: complete match with bare Tick and `Value n`.
+describeEvent : Event -> String
+let describeEvent e =
+    match e
+    case Tick      -> "tick"
+    case Value n   -> "value"
+
+-- POSITIVE: Tick can also be matched as `Tick` (no extra parens needed).
+isTick : Event -> Bool
+let isTick e =
+    match e
+    case Tick  -> True
+    case Value _ -> False
+
+-- NEGATIVE: missing the Value branch.
+onlyTick : Event -> Bool
+let onlyTick e =
+    match e
+    case Tick -> True
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 3

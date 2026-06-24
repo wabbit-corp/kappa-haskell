@@ -1,0 +1,58 @@
+-- Source issue: AENEAS-118
+-- Spec: compiler.frontir.standard_diagnostic_families.quantity_ownership
+-- §12.2: values bound with quantity ω (unrestricted) may be used any number
+-- of times, including zero.  Aeneas issue #118 (non-primitive Copy types)
+-- requires that a generic parameter constrained to behave like Copy can be
+-- duplicated freely.  In Kappa this maps to ω quantity on the generic binder.
+
+module test
+
+--! mode check
+
+-- POSITIVE: an ω-quantified Int may be used multiple times in the same body.
+doubleInt : Int -> Int
+let doubleInt n = n + n
+
+--! assertNoErrors
+--! assertType doubleInt (Int -> Int)
+
+-- POSITIVE: an ω-quantified value may be passed to multiple functions.
+fanOut : Int -> (Int, Int, Int)
+let fanOut n = (n, n + 1, n * 2)
+
+--! assertNoErrors
+
+-- POSITIVE: a generic function with ω-quantified type parameter.
+-- The type parameter is unrestricted; the value can be freely duplicated.
+copyTwice : forall (a : Type). a -> (a, a)
+let copyTwice x = (x, x)
+
+useCopy : (Int, Int)
+let useCopy = copyTwice 7
+
+--! assertNoErrors
+--! assertType useCopy (Int, Int)
+
+-- POSITIVE: unrestricted value can be used inside a closure and also outside.
+useBoth : Int -> Int
+let useBoth n =
+    let f = \() -> n    -- n is ω, captured freely
+    f () + n            -- both the closure call and direct use are fine
+
+--! assertNoErrors
+--! assertType useBoth (Int -> Int)
+
+-- POSITIVE: generic ω parameter can be used in both branches of a match.
+replicate : forall (a : Type). a -> Bool -> (a, a)
+let replicate x flag =
+    if flag then (x, x)
+    else    (x, x)
+
+--! assertNoErrors
+
+-- POSITIVE: an ω borrow; can be read multiple times.
+sumThrice : (& n : Int) -> Int
+let sumThrice n = n + n + n
+
+--! assertNoErrors
+--! assertType sumThrice ((& n : Int) -> Int)

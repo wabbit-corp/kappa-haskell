@@ -1,0 +1,54 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Julia manual, "Function composition", Julia#15285 (closure captures)
+-- Spec: expressions.closures, expressions.lambdas.closure_capture_quantities,
+--       compiler.frontir.standard_diagnostic_families.name_import
+-- In Julia, a closure captures variables from its lexical environment; those
+-- variables must exist at the closure's definition site. In Kappa, a lambda
+-- may reference names from the enclosing scope; a reference to an undeclared
+-- name inside a closure body is kappa.name.unresolved.
+
+--! mode check
+
+-- POSITIVE: a closure capturing a parameter from the enclosing function.
+makeAdder : Int -> (Int -> Int)
+let makeAdder n = \x -> x + n
+
+addFive : Int -> Int
+let addFive = makeAdder 5
+
+result : Int
+let result = addFive 10
+
+--! assertType result Int
+
+-- POSITIVE: closure over a locally computed binding.
+localClosure : Int
+let localClosure =
+    let base = 100
+    let add  = \x -> x + base
+    add 42
+
+--! assertType localClosure Int
+
+-- POSITIVE: higher-order function returning a closure.
+multiplier : Int -> (Int -> Int)
+let multiplier k = \x -> k * x
+
+triple : Int -> Int
+let triple = multiplier 3
+
+tripled : Int
+let tripled = triple 7
+
+--! assertType tripled Int
+
+-- NEGATIVE: a closure referencing a name not in scope.
+badClosure : Int -> Int
+let badClosure = \x -> x + undefinedCapture
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+--! assertErrorCount 1

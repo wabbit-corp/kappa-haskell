@@ -1,0 +1,36 @@
+-- Source: Boomerang docs/docs/main.src § "Boomerang Overview"
+--         Boomerang's Kleene-star core combinator (`e*`) corresponds in
+--         Kappa to a recursive list type over `e`'s view type. The list
+--         type appears in positive position only, so positivity is fine.
+-- Spec: data_types.data_declarations
+-- Portable obligation: a recursive data declaration whose recursive
+--   reference appears in positive position is accepted.
+
+module test
+
+--! mode check
+
+-- A "Kleene-star" of String: a list type ranging over String values
+-- (recursive occurrence is in strictly positive position).
+data StringStar : Type =
+    SNil
+    SCons String StringStar
+
+-- POSITIVE: constructing and consuming the recursive list.
+empty : StringStar
+let empty = SNil
+
+twoComposers : StringStar
+let twoComposers = SCons "Sibelius" (SCons "Copland" SNil)
+
+-- POSITIVE: pattern-match over the recursive type is exhaustive.
+isEmpty : StringStar -> Bool
+let isEmpty xs =
+    match xs
+    case SNil       -> True
+    case SCons _ _  -> False
+
+--! assertNoErrors
+--! assertType empty StringStar
+--! assertType twoComposers StringStar
+--! assertType isEmpty (StringStar -> Bool)

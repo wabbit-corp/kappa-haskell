@@ -1,0 +1,25 @@
+-- Stress test: a record update that preserves the dependent invariant is accepted
+-- Spec: types.records, compiler.diagnostics.path_sensitive_diagnostics.dependent_record_update_repair_failure
+
+--! mode check
+
+-- A non-dependent record; updating any single field is always safe
+type Point : Type = (x : Int, y : Int, label : String)
+
+-- POSITIVE: update an independent field; no dependent constraint is broken
+moveX : Point -> Int -> Point
+let moveX p newX = p.{ x = newX }
+
+-- POSITIVE: update two independent fields at once
+moveXY : Point -> Int -> Int -> Point
+let moveXY p newX newY = p.{ x = newX, y = newY }
+
+-- POSITIVE: update the label field
+relabel : Point -> String -> Point
+let relabel p s = p.{ label = s }
+
+-- POSITIVE: chain of updates
+translate : Point -> Int -> Int -> Point
+let translate p dx dy = p.{ x = p.x + dx, y = p.y + dy }
+
+--! assertNoErrors

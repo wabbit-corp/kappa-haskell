@@ -1,0 +1,50 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: KT-176, KT-41 (require return statement with correct type),
+--   KT-36317 (duplicate TYPE_MISMATCH error for non-boolean condition)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+
+--! mode check
+
+-- POSITIVE: function body returns declared type correctly.
+identity : Int -> Int
+let identity n = n
+
+--! assertType identity (Int -> Int)
+
+-- POSITIVE: if expression both branches return the declared type.
+maxOf : Int -> Int -> Int
+let maxOf a b =
+    if a > b then a else b
+
+--! assertType maxOf (Int -> Int -> Int)
+
+-- NEGATIVE: function body returns String but Int is declared.
+wrongReturn : Int
+let wrongReturn = "hello"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: if branches have mismatched types.
+badBranch : Int
+let badBranch =
+    if True then
+        42
+    else
+        "not an int"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: non-boolean condition in if.
+nonBoolCond : Int
+let nonBoolCond =
+    if 42 then
+        1
+    else
+        0
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

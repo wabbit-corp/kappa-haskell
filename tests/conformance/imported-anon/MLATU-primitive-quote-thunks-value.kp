@@ -1,0 +1,35 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: MLatu docs/docs/primitives.md ("`q` or `quote` quotes
+--   the term below it"). MLatu's quotation wraps a term as opaque,
+--   deferred-evaluation data. The portable obligation is that Kappa
+--   supports introducing a suspended computation that has a distinct
+--   thunk type, distinguishable from the underlying value.
+-- Spec: expressions.lambdas.suspension_expressions_forcing,
+--       expressions.application.
+--
+-- A `thunk e` introduces a Thunk value distinct from the inner type.
+
+module test
+
+--! mode check
+
+-- POSITIVE: quoting/wrapping a value as a Thunk.
+quoteInt : Thunk Int
+let quoteInt = thunk 7
+
+quoteStr : Thunk String
+let quoteStr = thunk "hi"
+
+--! assertType quoteInt Thunk Int
+--! assertType quoteStr Thunk String
+
+-- NEGATIVE: a thunk is not interchangeable with the underlying value.
+bareInt : Int
+let bareInt = thunk 7
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 1

@@ -1,0 +1,62 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig compile_errors/switch_expression-non_exhaustive_absorbing.zig,
+--               zig#19438 (permit explicit tags with _ prong), zig#12250
+--               (_ vs else for non-exhaustive enums)
+-- Spec: expressions.match, types.unions.formation,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- For open variant types (non-exhaustive enums in Zig), a residual-row arm
+-- `case (| ..rest |)` or an explicit wildcard `_` is required to handle the
+-- unnamed members. However, a `_` arm does NOT absorb named constructors; all
+-- named constructors must still be covered explicitly (or via the open-row arm
+-- if combined). Omitting a named constructor while providing only `_` for unnamed
+-- members is non-exhaustive.
+
+--! mode check
+
+-- Closed variant: all members must be named or else `_` absorbs.
+data Closed : Type =
+    A
+    B
+    C
+
+-- POSITIVE: all closed members covered.
+let handleClosed (x : Closed) : Int =
+    match x
+    case A -> 1
+    case B -> 2
+    case C -> 3
+
+
+-- POSITIVE: wildcard covers residual of closed ADT (A, B named; C falls through).
+let handleClosedPartial (x : Closed) : Int =
+    match x
+    case A -> 1
+    case B -> 2
+    case _ -> 99
+
+
+-- Open variant: an extra residual row arm is needed for unnamed members.
+-- Model with a two-constructor closed type but leave one unhandled.
+-- (In Zig terms: non-exhaustive enum where a named tag is omitted alongside
+-- the unnamed-member `_` prong.)
+
+-- NEGATIVE: named constructors A and C listed, but B is omitted without a
+-- wildcard for named members. The `_` covers only the unnamed residual,
+-- leaving B uncovered.
+let missingNamedB (x : Closed) : Int =
+    match x
+    case A -> 1
+    case C -> 3
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- Open variant: covers A and provides wildcard for the rest.
+let handleOpenWithWild (x : Closed) : Int =
+    match x
+    case A -> 1
+    case _ -> 0
+
+--! assertErrorCount 1

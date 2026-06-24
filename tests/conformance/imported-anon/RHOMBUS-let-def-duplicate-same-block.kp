@@ -1,0 +1,60 @@
+-- Source issues: rhombus#480, rhombus-pr#485 (let+def duplicate in same definition context)
+-- Spec: declarations.let_in §9.3
+--   Kappa explicitly allows `let` shadowing: a later `let x = ...` introduces a fresh
+--   binding that shadows the earlier `x`. Both bindings are valid; the later one wins.
+-- Note: SA-RHOMBUS-03 documents that Rhombus rejects `let`+`def` duplicates at the same
+--   definition level. Kappa's portable obligation is that let-shadowing IS accepted (§9.3).
+
+--! mode check
+
+-- POSITIVE: different names in the same block — no conflict.
+differentNames : Int
+let differentNames =
+    let x = 1
+    let y = 2
+    x + y
+
+-- POSITIVE: nested let shadowing — outer `x` remains 10, inner `x` is 20.
+innerShadow : Int
+let innerShadow =
+    let x = 10
+    let inner =
+        let x = 20
+        x
+    inner + x
+
+-- POSITIVE: sibling blocks with the same name — each has its own scope.
+siblingBlocks : Int
+let siblingBlocks =
+    let a =
+        let x = 1
+        x
+    let b =
+        let x = 2
+        x
+    a + b
+
+-- POSITIVE: sequential let-shadowing in the same block is accepted per §9.3.
+-- The second `let x` shadows the first; the result is 2.
+letShadowSeq : Int
+let letShadowSeq =
+    let x = 1
+    let x = 2
+    x
+
+-- POSITIVE: three sequential shadowings — last definition wins.
+letTripleShadow : Int
+let letTripleShadow =
+    let y = 10
+    let y = 20
+    let y = 30
+    y
+
+-- POSITIVE: shadowing followed by use of the shadowed name.
+reusedName : Int
+let reusedName =
+    let z = 5
+    let z = z + 3
+    z
+
+--! assertNoErrors

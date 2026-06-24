@@ -1,0 +1,18 @@
+-- Stress test: an irrefutable pattern in a let binding is accepted
+-- Spec: declarations.terms.irrefutable_patterns_let_bindings
+
+--! mode check
+
+-- POSITIVE: pair pattern is irrefutable.
+let (x, y) = (1, 2)
+
+-- POSITIVE: triple pattern is irrefutable.
+let (name, age, active) = ("Alice", 30, True)
+
+-- POSITIVE: nested irrefutable tuple pattern.
+let ((a, b), c) = ((10, 20), 30)
+
+-- Exercise the bound names to confirm they are in scope.
+let sum : Int = x + y + age + a + b + c
+
+--! assertNoErrors

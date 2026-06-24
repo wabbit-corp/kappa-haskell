@@ -1,0 +1,31 @@
+-- Source issues: METACOQ-28
+-- Spec: expressions.match.case_impossible_empty_remainder,
+--       expressions.match.impossible_unreachable_branch_bodies
+--
+-- A data type with no constructors is empty: pattern matching on a value
+-- of that type may end with `case impossible` because the remainder is
+-- structurally uninhabited. MetaCoq's `tmUnquote` accepting ill-typed
+-- terms (#28) motivates this: the elaborator must reject branches that
+-- claim to inspect uninhabited values productively.
+
+module test
+
+--! mode check
+
+-- A data type with zero constructors.
+data Bottom : Type
+
+-- POSITIVE: `case impossible` on a Bottom scrutinee discharges all remaining
+-- cases — there are none.
+absurd : forall (a : Type). Bottom -> a
+let absurd v =
+    match v
+    case impossible
+
+-- POSITIVE: a function returning any type from a Bottom argument.
+bottomToNat : Bottom -> Nat
+let bottomToNat v = absurd @Nat v
+
+--! assertNoErrors
+--! assertType absurd forall (a : Type). Bottom -> a
+--! assertType bottomToNat Bottom -> Nat

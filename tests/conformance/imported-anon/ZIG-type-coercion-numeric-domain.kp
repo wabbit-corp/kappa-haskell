@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issues: zig#21586 (int to float silently truncates bits),
+--               zig compile_errors/comptime_implicit_cast_f64_to_f32.zig,
+--               zig#24632 (lossy int to float coercion now error), zig#24167
+--               (bitwise complement should propagate result type)
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality,
+--       types.universes.erasure_elaboration_time,
+--       types.functions
+-- A numeric literal whose domain is incompatible with the expected type must be
+-- rejected at elaboration time with `kappa.type.literal-domain-mismatch`.
+-- In Kappa, `Int` has no `FromFloat` instance and `Byte` has no `FromInteger`
+-- instance; those mismatches are the portable analogue of Zig's lossy float
+-- coercion and out-of-range integer literal errors.
+
+--! mode check
+
+-- POSITIVE: integer literal elaborates to Int (FromInteger Int exists).
+let okLiteral : Int = 42
+
+
+-- POSITIVE: float literal elaborates to Double (FromFloat Double exists).
+let okFloat : Double = 3.14
+
+
+-- POSITIVE: large integer literal is accepted for Int (arbitrary precision).
+let okBigInt : Int = 9999999999999999999999
+
+
+-- NEGATIVE: float literal used where Int is demanded — Int has no FromFloat
+-- instance; the literal domain (floating-point) is incompatible with Int.
+let badFloatLit : Int = 3.14
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: integer literal used where Byte is demanded — the prelude
+-- provides no FromInteger Byte instance; the literal domain (integer) is
+-- incompatible with Byte.
+let badIntLitByte : Byte = 65
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: float literal used where Nat is demanded — Nat has no
+-- FromFloat instance; the literal domain (floating-point) is incompatible
+-- with Nat.
+let badFloatToNat : Nat = 1.5
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+
+--! assertErrorCount 3

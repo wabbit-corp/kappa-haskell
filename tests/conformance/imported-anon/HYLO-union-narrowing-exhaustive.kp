@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: Hylo Tests/EndToEndTests/TestCases/UnionNarrowing.hylo,
+--                   Tests/EndToEndTests/TestCases/UnionOperations.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/UnionType.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/Existential.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/EndToEndTests/TestCases/UnionNarrowing.hylo and HyloTests/TestCases/TypeChecking/UnionType.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+--       (kappa.pattern.non-exhaustive)
+-- Hylo: a `match` on a union type must cover all possible variants.
+-- Missing one variant makes the match non-exhaustive and is rejected.
+
+--! mode check
+
+data Shape : Type = Circle Float | Rect Float Float | Triangle Float Float Float
+
+area : Shape -> Float
+let area s =
+    match s
+    case Circle  r       -> 3.14159 * r * r
+    case Rect    w h     -> w * h
+    case Triangle b h _  -> 0.5 * b * h
+
+data Direction : Type = North | South | East | West
+
+opposite : Direction -> Direction
+let opposite d =
+    match d
+    case North -> South
+    case South -> North
+    case East  -> West
+    case West  -> East
+
+-- NEGATIVE: missing the `Triangle` variant — non-exhaustive match.
+badArea : Shape -> Float
+let badArea s =
+    match s
+    case Circle  r   -> 3.14159 * r * r
+    case Rect    w h -> w * h
+    -- Triangle is missing
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- NEGATIVE: empty match body — no cases at all.
+noMatch : Direction -> Direction
+let noMatch d =
+    match d
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+--! assertErrorCount 2

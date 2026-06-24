@@ -1,0 +1,46 @@
+-- Source issue: Factor #423 (a tuple `TUPLE: foo ;` redefined later as
+--   `TUPLE: foo { a foo } ;` is silently accepted with the slot
+--   referring to the redefined class). In Factor, the second definition
+--   sees the prior `foo` binding by name; the slot ends up referring to
+--   the class that is being redefined. Kappa instead supports self-
+--   referential record types within a single declaration group, so the
+--   intended self-reference is the only meaning.
+-- Spec: data_types.data_declarations, recursive_groups, modules.names.lexical_lookup.
+--
+-- Positive: a self-referential record is accepted when written as a
+-- single declaration; it is NOT accepted when written across two
+-- separate top-level definitions (because the second declaration is a
+-- redefinition, not a forward reference).
+
+module test
+
+--! mode check
+
+-- POSITIVE: a record with a self-referential field via a recursive type
+-- in its own declaration group.
+data Tree : Type =
+    Leaf
+    | Node { value : Int, left : Tree, right : Tree }
+
+example : Tree
+let example = Node { value = 1
+                   , left  = Leaf
+                   , right = Node { value = 2, left = Leaf, right = Leaf } }
+
+--! assertNoErrors
+--! assertType example Tree
+
+-- POSITIVE: cross-referencing data declarations in the same recursive
+-- group resolve each other by name.
+data Even : Type =
+    EvenZero
+    | EvenSucc Odd
+
+data Odd : Type =
+    OddSucc Even
+
+three : Odd
+let three = OddSucc (EvenSucc (OddSucc EvenZero))
+
+--! assertNoErrors
+--! assertType three Odd

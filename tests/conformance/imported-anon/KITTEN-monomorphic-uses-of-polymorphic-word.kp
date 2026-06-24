@@ -1,0 +1,40 @@
+-- Source issue: Kitten #33 (typecheck type variables; programs that
+--   typecheck must not fail at runtime). Kitten #68 (alias of a
+--   polymorphic word must itself be polymorphic, so the two callers can
+--   pick incompatible instantiations).
+-- Spec: types.quantification, declarations.terms.
+--
+-- Two independent applications of a polymorphic word at different
+-- monomorphic types must both elaborate successfully without forcing a
+-- single solution.
+
+module test
+
+--! mode check
+
+-- The polymorphic source word.
+myId : forall (a : Type) . a -> a
+let myId x = x
+
+-- POSITIVE: two independent monomorphic uses succeed.
+useA : Int
+let useA = myId 10
+
+useB : String
+let useB = myId "hello"
+
+-- POSITIVE: a higher-order context that instantiates `myId` at a
+-- different position than its caller.
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+pair : forall (a : Type) (b : Type) . a -> b -> Pair a b
+let pair x y = Pair x y
+
+usePair : Pair Int String
+let usePair = pair (myId 1) (myId "x")
+
+--! assertNoErrors
+--! assertType useA Int
+--! assertType useB String
+--! assertType usePair Pair Int String

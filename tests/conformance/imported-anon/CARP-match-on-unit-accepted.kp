@@ -1,0 +1,31 @@
+-- Source issue: carp-lang/Carp#1345
+-- Spec: literals.unit_tuples,
+--       types.unions.elimination_match,
+--       compiler.frontir.standard_diagnostic_families.pattern_exhaustiveness_reachability
+-- Carp #1345: `(match () _ ())` emitted invalid C because the lowering
+-- did not handle the unit type in pattern position.  The portable Kappa
+-- obligation is that the unit type `()` has exactly one inhabitant; a
+-- wildcard arm against it is exhaustive, and the match elaborates without
+-- diagnostic.
+
+--! mode check
+
+-- POSITIVE: matching on the unit value with a wildcard is admitted; the
+-- entire value space (one inhabitant) is covered.
+matchUnit : Int
+let matchUnit =
+    match ()
+    case _ -> 0
+
+--! assertNoErrors
+--! assertType matchUnit Int
+
+-- POSITIVE: a unit-typed binding is matched against the unit value
+-- explicitly; both forms accepted.
+matchUnitNamed : Unit -> Int
+let matchUnitNamed u =
+    match u
+    case _ -> 1
+
+--! assertNoErrors
+--! assertType matchUnitNamed Unit -> Int

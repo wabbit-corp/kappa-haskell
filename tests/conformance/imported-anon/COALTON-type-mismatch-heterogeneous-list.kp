@@ -1,0 +1,47 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source: Coalton issue #1236 (improve error message when trying to construct
+--   a heterogeneous list). The error message should explicitly say the list
+--   contains different types, not just "failed to unify".
+-- Spec: compiler.frontir.standard_diagnostic_families.type_equality
+--   (kappa.type.mismatch §3.2.3),
+--   compiler.frontir.diagnostic_quality_invariants (§3.1.11).
+--
+-- A list constructor applied to elements of different types must produce
+-- kappa.type.mismatch. The diagnostic must name the conflicting types —
+-- it MUST NOT report only internal metavariable names (§3.1.11).
+
+--! mode check
+
+-- POSITIVE: a homogeneous list of integers.
+intList : List Int
+let intList = 1 :: 2 :: 3 :: Nil
+
+-- POSITIVE: a homogeneous list of strings.
+strList : List String
+let strList = "a" :: "b" :: Nil
+
+-- NEGATIVE: cons applied to an Int head and a List String tail.
+-- The head type (Int) does not match the list element type (String).
+heteroList1 : List String
+let heteroList1 = 42 :: "hello" :: Nil
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: a list that mixes Int and Float.
+-- The second element's type conflicts with the first.
+heteroList2 : List Int
+let heteroList2 = 1 :: 2.0 :: Nil
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- NEGATIVE: cons applied to a Bool element in a List Int context.
+-- The element type Bool does not match expected Int.
+heteroList3 : List Int
+let heteroList3 = True :: 1 :: Nil
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 3

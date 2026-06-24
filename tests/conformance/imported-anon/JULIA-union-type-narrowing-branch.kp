@@ -1,0 +1,52 @@
+-- Source: Julia manual, "Union Types" chapter (cited by name only).
+--   NOTE 2026-06-11 (audit FAB-005): the previous citation "Julia#28065
+--   (union-splitting optimization)" was removed — the real JuliaLang/julia
+--   #28065 is an unrelated REPL/Doc performance PR (verified via API).
+-- Spec: types.sums, expressions.patterns
+-- In Julia, a Union{A,B} variable is narrowed to its concrete variant inside
+-- each match arm; the compiler specializes per branch. In Kappa, a sum type
+-- (tagged union) is narrowed via pattern matching; each arm receives the
+-- specific constructor's bound type.
+
+--! mode check
+
+data Num : Type = IsInt Int | IsFloat Float
+
+-- POSITIVE: both variants covered; each arm uses the narrowed type.
+describe : Num -> String
+let describe v =
+    match v
+        case IsInt _ -> "integer"
+        case IsFloat _ -> "float"
+
+-- POSITIVE: extracting the wrapped value, narrowed per arm.
+toFloat : Num -> Float
+let toFloat v =
+    match v
+        case IsInt _ -> 0.0
+        case IsFloat f -> f
+
+-- POSITIVE: nested narrowing — inner variant accessible in inner arm.
+data Wrapper : Type = Wrap Num | Empty
+
+getInner : Wrapper -> String
+let getInner w =
+    match w
+        case Wrap (IsInt _) -> "wrapped int"
+        case Wrap (IsFloat _) -> "wrapped float"
+        case Empty -> "nothing"
+
+r1 : String
+let r1 = describe (IsInt 42)
+
+r2 : String
+let r2 = describe (IsFloat 3.14)
+
+r3 : String
+let r3 = getInner (Wrap (IsInt 1))
+
+--! assertType r1 String
+--! assertType r2 String
+--! assertType r3 String
+
+--! assertNoErrors

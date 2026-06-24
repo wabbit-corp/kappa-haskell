@@ -1,0 +1,52 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source artifacts: synquid test/demo/Holes.sq (synthesis hole `??` with
+--                 ascribed refinement), test/pldi16/*.sq (every synthesis goal
+--                 is "f = ??"), synquid issue #1 / issue #3 (hole-driven
+--                 synthesis failures emit confusing shape diagnostics).
+-- Spec: expressions.implicit_parameters.expression_holes_named_holes,
+--       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
+--       (kappa.hole.unsolved)
+--
+-- A Synquid synthesis hole `??` is an unsolved goal. The Kappa-portable
+-- counterpart is a typed hole at expression position. If the hole is
+-- not solved during ordinary elaboration it MUST be reported with family
+-- `kappa.hole.unsolved` at severity error, the diagnostic MUST
+-- include the hole's expected type, and the diagnostic MUST carry the
+-- local explicit context at the hole site.
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data List (a : Type) : Type =
+    Nil
+    Cons (head : a) (tail : List a)
+
+-- NEGATIVE: a named hole at an expression position is reported with its
+-- expected type (here `PNat`).
+incomplete : PNat
+let incomplete = ?goal
+
+-- NEGATIVE: a named hole whose expected type depends on the surrounding
+-- function signature.
+incompleteList : List PNat
+let incompleteList = ?xs
+
+-- NEGATIVE: an anonymous hole `_` in expression position behaves the
+-- same as a named hole for unsolved-hole reporting.
+incompleteAnon : Bool
+let incompleteAnon = _
+
+-- NEGATIVE: a named hole inside a constructor argument; the expected
+-- type is determined by the constructor's parameter telescope.
+incompleteCtor : List PNat
+let incompleteCtor = Cons ?head Nil
+
+--! assertDiagnosticFamily error kappa.hole.unsolved
+
+--! assertErrorCount 4

@@ -1,0 +1,28 @@
+-- Source: Boomerang docs/docs/main.src "Operators" table.
+--         Boomerang's regex literals appear inside string-like contexts
+--         where backslashes and meta-characters should not be re-escaped.
+--         The Kappa portable analog is the raw string literal.
+-- Spec: literals.string_literals.raw_strings
+-- Portable obligation: a raw string literal preserves backslashes and
+--   meta-characters verbatim and is type String.
+
+module test
+
+--! mode check
+
+-- POSITIVE: raw string with regex-like content (backslashes are NOT
+-- interpreted as escapes per §6.3.2).
+digitClass : String
+let digitClass = #"[0-9]+"#
+
+namePattern : String
+let namePattern = #"[A-Za-z ]+"#
+
+-- POSITIVE: raw string preserves backslashes and braces verbatim.
+yearsRange : String
+let yearsRange = #"\d{4}-\d{4}"#
+
+--! assertNoErrors
+--! assertType digitClass String
+--! assertType namePattern String
+--! assertType yearsRange String

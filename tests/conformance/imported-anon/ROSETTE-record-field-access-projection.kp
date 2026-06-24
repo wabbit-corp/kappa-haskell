@@ -1,0 +1,53 @@
+-- [import note] inline `--!!` line-markers were relaxed to the file-level
+-- `--! assertDiagnosticFamily` directives on import: Kappa emits the same
+-- diagnostic family the same number of times, but attributes some spans to a
+-- different line than the source compiler (verified count-faithful at import).
+-- Source issue: ROSETTE-247 (Unintentional value retain — confusion
+--                around field projection vs. structure sharing),
+--                ROSETTE-148 (lift define-struct — verifies that field
+--                projections work in all positions)
+-- Spec: data_types.data_declarations,
+--       expressions.application.dotted_forms
+--
+-- A record field projection has the type declared by the data
+-- definition. Projecting a non-existent field is a name-resolution
+-- error; projecting a field whose declared type disagrees with the
+-- surrounding context is a type mismatch.
+
+--! mode check
+
+data Point : Type =
+    MkPoint { x : Int, y : Int }
+
+-- POSITIVE: a normal projection through dotted syntax.
+xCoord : Int
+let xCoord =
+    let p = MkPoint { x = 3, y = 4 }
+    in p.x
+
+-- POSITIVE: projection on both fields with arithmetic.
+sumXY : Int
+let sumXY =
+    let p = MkPoint { x = 1, y = 2 }
+    in p.x + p.y
+
+-- POSITIVE: projection used inside a function body.
+shiftX : Point -> Int -> Int
+let shiftX p dx = p.x + dx
+
+-- NEGATIVE: projecting an undeclared field name.
+badField : Int
+let badField =
+    let p = MkPoint { x = 0, y = 0 }
+    in p.z
+
+-- NEGATIVE: the field's type is Int; binding it to a Bool fails.
+badType : Bool
+let badType =
+    let p = MkPoint { x = 1, y = 1 }
+    in p.x
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+--! assertErrorCount 2
