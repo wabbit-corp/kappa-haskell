@@ -312,6 +312,16 @@
       ],
       "vulnerabilities": [
         "fire"
+      ],
+      "corpse_effects": [
+        {
+          "kind": "heal",
+          "amount": 8,
+          "clear_wounds": false
+        },
+        {
+          "kind": "grant_species_resist"
+        }
       ]
     },
     {
@@ -351,7 +361,16 @@
       "language": "chaos",
       "corpse_nutrition": 130,
       "corpse_effect": "taint",
-      "ranged_element": "chaos"
+      "ranged_element": "chaos",
+      "corpse_effects": [
+        {
+          "kind": "corrupt",
+          "amount": 45
+        },
+        {
+          "kind": "grant_species_resist"
+        }
+      ]
     },
     {
       "id": "chaos_spawn",
@@ -390,6 +409,15 @@
       "corpse_effect": "taint",
       "resistances": [
         "chaos"
+      ],
+      "corpse_effects": [
+        {
+          "kind": "corrupt",
+          "amount": 45
+        },
+        {
+          "kind": "grant_species_resist"
+        }
       ]
     },
     {
@@ -435,7 +463,21 @@
       "resistances": [
         "fire"
       ],
-      "ranged_element": "fire"
+      "ranged_element": "fire",
+      "corpse_effects": [
+        {
+          "kind": "boost_stat",
+          "stat": "str",
+          "n": 1
+        },
+        {
+          "kind": "corrupt",
+          "amount": 60
+        },
+        {
+          "kind": "grant_species_resist"
+        }
+      ]
     },
     {
       "id": "pilgrim",

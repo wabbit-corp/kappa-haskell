@@ -8,7 +8,12 @@
       "skill_min_level": 1,
       "needs_target": true,
       "effect": "douse",
-      "flavor": "Snuff a fire to its embers; the dark floods back in."
+      "flavor": "Snuff a fire to its embers; the dark floods back in.",
+      "effects": [
+        {
+          "kind": "douse_tile"
+        }
+      ]
     },
     {
       "id": "glimmer",
@@ -18,7 +23,13 @@
       "skill_min_level": 1,
       "needs_target": true,
       "effect": "glimmer",
-      "flavor": "A cold light blooms where you point, fixing the place in memory."
+      "flavor": "A cold light blooms where you point, fixing the place in memory.",
+      "effects": [
+        {
+          "kind": "reveal_area",
+          "radius": 1
+        }
+      ]
     },
     {
       "id": "lure",
@@ -28,7 +39,13 @@
       "skill_min_level": 2,
       "needs_target": true,
       "effect": "lure",
-      "flavor": "A din erupts elsewhere; curious ears turn from you."
+      "flavor": "A din erupts elsewhere; curious ears turn from you.",
+      "effects": [
+        {
+          "kind": "make_noise",
+          "loudness": 78
+        }
+      ]
     },
     {
       "id": "phantom",
@@ -38,7 +55,13 @@
       "skill_min_level": 2,
       "needs_target": false,
       "effect": "phantom",
-      "flavor": "A double of yourself steps from the air to draw the blade meant for you."
+      "flavor": "A double of yourself steps from the air to draw the blade meant for you.",
+      "effects": [
+        {
+          "kind": "spawn_phantom",
+          "turns": 5
+        }
+      ]
     },
     {
       "id": "emberlance",
@@ -48,7 +71,14 @@
       "skill_min_level": 4,
       "needs_target": true,
       "effect": "emberlance",
-      "flavor": "A lance of fire, and most of your strength with it."
+      "flavor": "A lance of fire, and most of your strength with it.",
+      "effects": [
+        {
+          "kind": "deal_damage",
+          "element": "fire",
+          "amount": 12
+        }
+      ]
     }
   ]
 }

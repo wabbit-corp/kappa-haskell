@@ -1,0 +1,63 @@
+{
+  "tiles": [
+    {
+      "kind": "trap",
+      "on_enter": [
+        {
+          "kind": "message",
+          "text": "A trap bites your ankle."
+        },
+        {
+          "kind": "deal_damage",
+          "element": "physical",
+          "amount": 2
+        }
+      ],
+      "per_turn": []
+    },
+    {
+      "kind": "lava",
+      "on_enter": [
+        {
+          "kind": "message",
+          "text": "The lava burns you."
+        }
+      ],
+      "per_turn": [
+        {
+          "kind": "message",
+          "text": "The lava sears you."
+        },
+        {
+          "kind": "deal_damage",
+          "element": "fire",
+          "amount": 6
+        }
+      ]
+    },
+    {
+      "kind": "chaos_vent",
+      "on_enter": [
+        {
+          "kind": "message",
+          "text": "The chaos vent floods you with unstable power."
+        },
+        {
+          "kind": "corrupt",
+          "amount": 12
+        }
+      ],
+      "per_turn": []
+    },
+    {
+      "kind": "water",
+      "on_enter": [
+        {
+          "kind": "message",
+          "text": "You splash through dark water."
+        }
+      ],
+      "per_turn": []
+    }
+  ]
+}

@@ -26,7 +26,28 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": false
+      "flammable": false,
+      "use_effects": [
+        {
+          "kind": "heal",
+          "amount": 10,
+          "clear_wounds": true
+        }
+      ],
+      "use_effects_blessed": [
+        {
+          "kind": "heal",
+          "amount": 18,
+          "clear_wounds": true
+        }
+      ],
+      "use_effects_cursed": [
+        {
+          "kind": "deal_damage",
+          "element": "poison",
+          "amount": 4
+        }
+      ]
     },
     {
       "id": "potion_mutation",
@@ -40,7 +61,30 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": false
+      "flammable": false,
+      "use_effects": [
+        {
+          "kind": "add_corruption",
+          "amount": 20
+        },
+        {
+          "kind": "gain_mutation"
+        }
+      ],
+      "use_effects_blessed": [
+        {
+          "kind": "gain_mutation"
+        }
+      ],
+      "use_effects_cursed": [
+        {
+          "kind": "add_corruption",
+          "amount": 60
+        },
+        {
+          "kind": "gain_mutation"
+        }
+      ]
     },
     {
       "id": "potion_water",
@@ -54,7 +98,24 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": false
+      "flammable": false,
+      "use_effects": [
+        {
+          "kind": "message",
+          "text": "It is water."
+        }
+      ],
+      "use_effects_blessed": [
+        {
+          "kind": "cleanse_corruption"
+        }
+      ],
+      "use_effects_cursed": [
+        {
+          "kind": "corrupt",
+          "amount": 40
+        }
+      ]
     },
     {
       "id": "scroll_identify",
@@ -68,7 +129,12 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": true
+      "flammable": true,
+      "use_effects": [
+        {
+          "kind": "identify_inventory"
+        }
+      ]
     },
     {
       "id": "scroll_mapping",
@@ -82,7 +148,12 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": true
+      "flammable": true,
+      "use_effects": [
+        {
+          "kind": "reveal_map"
+        }
+      ]
     },
     {
       "id": "scroll_ward",
@@ -96,7 +167,12 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": true
+      "flammable": true,
+      "use_effects": [
+        {
+          "kind": "ward_tile"
+        }
+      ]
     },
     {
       "id": "food_ration",
@@ -335,7 +411,12 @@
       "charges": 0,
       "starts_identified": false,
       "beatitude_known": false,
-      "flammable": true
+      "flammable": true,
+      "use_effects": [
+        {
+          "kind": "learn_taught_spell"
+        }
+      ]
     }
   ],
   "affixes": [

@@ -45,7 +45,7 @@ let fallbackItemDef kind =
     -- Should be unreachable after config validation. Keeping a visible fallback
     -- makes accidental schema breakage noisy in-game rather than crashing the
     -- renderer with a missing glyph.
-    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True False Physical
+    ItemDef "missing" kind "missing content" "missing content" "?" ToolClass False 0 0 True True False Physical Nil Nil Nil
 
 itemDef : ContentPack -> ItemKind -> ItemDef
 let itemDef pack kind =
@@ -329,7 +329,7 @@ let findActorDefById pack id =
 
 fallbackActorDef : Species -> ActorDef
 let fallbackActorDef species =
-    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none" Nil Nil Physical
+    ActorDef "missing" species "missing actor" "?" (Stats 1 1 0 0 1 1 0 0 1) Hostile CaveFaction 8 0 Nil ["missing"] Nil "An indistinct shape; the chronicle forgot its name." 6 0 "" 100 "none" Nil Nil Physical Nil
 
 actorDefBySpecies : ContentPack -> Species -> ActorDef
 let actorDefBySpecies pack species =

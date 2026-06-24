@@ -287,6 +287,65 @@ data Ability : Type =
     Ranged (power : Int)
     Frenzy
 
+-- Which stat BoostStat raises. Kept small + general so the effect is reusable.
+data StatKind : Type =
+    StrStat
+    DexStat
+    DefStat
+
+-- The composable behavior vocabulary. Spells, potions, scrolls, corpses, and
+-- tile hazards are authored as lists of these, run by one generic interpreter
+-- (engine.applyEffects). New *compositions* of these verbs are pure JSON; only a
+-- genuinely new verb needs a new constructor here. `effect` is a reserved keyword
+-- but the capitalized type/constructors are not — never use lowercase `effect`
+-- as a binding name.
+data Effect : Type =
+    DealDamage (element : DamageType) (amount : Int)
+    Heal (amount : Int) (clearWounds : Bool)
+    Corrupt (amount : Int)
+    AddCorruption (amount : Int)
+    GainMutation
+    BoostStat (stat : StatKind) (n : Int)
+    Nourish (amount : Int)
+    GrantSpeciesResist
+    DouseTile
+    RevealArea (radius : Int)
+    RevealMap
+    MakeNoise (loudness : Int)
+    SpawnPhantom (turns : Int)
+    WardTile
+    IdentifyInventory
+    LearnTaughtSpell
+    CleanseCorruption
+    Inflict (element : DamageType) (magnitude : Int)
+    SetAttitude (attitude : Attitude)
+    SetFaction (faction : Faction)
+    Chance (pct : Int) (fxs : List Effect)
+    Message (text : String)
+    Noop
+
+-- Who/what an effect applies to. Resolved by the caller before interpretation.
+data EffectTarget : Type =
+    TSelf
+    TActor (pos : Vec2)
+    TTile (pos : Vec2)
+
+-- The context one effect list runs in: who cast it, what it targets, and the
+-- triggering item (for corpse source / tome / beatitude lookups).
+data EffectContext : Type =
+    EffectContext
+        (casterId : Int)
+        (target : EffectTarget)
+        (item : Option Item)
+
+-- On-enter / per-turn effects for a tile kind (tiles are a bare enum, so their
+-- behavior lives here, authored in tiles.json).
+data TileEffectDef : Type =
+    TileEffectDef
+        (kind : TileKind)
+        (onEnter : List Effect)
+        (perTurn : List Effect)
+
 data Stats : Type =
     Stats
         (hp : Int)
@@ -371,6 +430,7 @@ data SpellDef : Type =
         (needsTarget : Bool)
         (effect : String)
         (flavor : String)
+        (effects : List Effect)
 
 -- Per-species knowledge earned by encountering a creature. `damageSeen` records
 -- which elements the player has actually tested it with — so a weakness is only
@@ -433,6 +493,9 @@ data ItemDef : Type =
         (beatitudeKnownByDefault : Bool)
         (flammable : Bool)
         (damageType : DamageType)
+        (useEffectsBlessed : List Effect)
+        (useEffectsUncursed : List Effect)
+        (useEffectsCursed : List Effect)
 
 data ItemAffix : Type =
     ItemAffix
@@ -465,6 +528,7 @@ data ActorDef : Type =
         (resistances : List DamageType)
         (vulnerabilities : List DamageType)
         (rangedElement : DamageType)
+        (corpseEffects : List Effect)
 
 data SpawnRule : Type =
     SpawnRule
@@ -704,6 +768,7 @@ data ContentPack : Type =
         (spells : List SpellDef)
         (statuses : List StatusDef)
         (tuning : TuningConfig)
+        (tileEffects : List TileEffectDef)
 
 -- ECS-ish runtime mirror. The old Actor/Item lists remain the authoritative
 -- gameplay representation for this pass so no feature is lost; the ECS world is

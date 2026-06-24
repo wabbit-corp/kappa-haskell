@@ -76,6 +76,7 @@ let loadPack packPath =
         spellsPath <- filePath "spells" filesObject
         statusPath <- filePath "status_effects" filesObject
         tuningPath <- filePath "tuning" filesObject
+        tilesPath <- filePath "tiles" filesObject
         world <- loadWorldGen worldPath
         branches <- loadBranches worldPath
         items <- loadItems itemPath
@@ -91,6 +92,7 @@ let loadPack packPath =
         spells <- loadSpells spellsPath
         statuses <- loadStatuses statusPath
         tuning <- loadTuning tuningPath
+        tileEffects <- loadTileEffects tilesPath
         save <- decodeSave saveObject
         rules <- decodeRules rulesObject
         reveal <- decodeReveal revealObject
@@ -121,7 +123,8 @@ let loadPack packPath =
                 reveal = reveal,
                 spells = spells,
                 statuses = statuses,
-                tuning = tuning
+                tuning = tuning,
+                tileEffects = tileEffects
             }
         validateContentPack pack
 
@@ -211,6 +214,136 @@ let decodeDamageType s =
     elif s == "chaos" then pure Chaos
     else raise (ConfigError ("unknown damage type: " ++ s))
 
+decodeStatKind : String -> IO GameError StatKind
+let decodeStatKind s =
+    if s == "str" then pure StrStat
+    elif s == "dex" then pure DexStat
+    elif s == "def" then pure DefStat
+    else raise (ConfigError ("unknown stat: " ++ s))
+
+-- One effect (every verb except chance). decodeEffect wraps this to add chance,
+-- so neither is self-recursive — chance holds a flat list of simple effects.
+decodeSimpleEffect : json.JsonValue -> IO GameError Effect
+let decodeSimpleEffect value =
+    do
+        kind <- stringField "kind" value
+        if kind == "deal_damage" then
+            do
+                elemName <- stringField "element" value
+                dt <- decodeDamageType elemName
+                amount <- intField "amount" value
+                pure (DealDamage dt amount)
+        elif kind == "heal" then
+            do
+                amount <- intField "amount" value
+                clear <- boolField "clear_wounds" value
+                pure (Heal amount clear)
+        elif kind == "corrupt" then
+            do
+                amount <- intField "amount" value
+                pure (Corrupt amount)
+        elif kind == "add_corruption" then
+            do
+                amount <- intField "amount" value
+                pure (AddCorruption amount)
+        elif kind == "gain_mutation" then pure GainMutation
+        elif kind == "boost_stat" then
+            do
+                statName <- stringField "stat" value
+                sk <- decodeStatKind statName
+                n <- intField "n" value
+                pure (BoostStat sk n)
+        elif kind == "nourish" then
+            do
+                amount <- intField "amount" value
+                pure (Nourish amount)
+        elif kind == "grant_species_resist" then pure GrantSpeciesResist
+        elif kind == "douse_tile" then pure DouseTile
+        elif kind == "reveal_area" then
+            do
+                radius <- intField "radius" value
+                pure (RevealArea radius)
+        elif kind == "reveal_map" then pure RevealMap
+        elif kind == "make_noise" then
+            do
+                loudness <- intField "loudness" value
+                pure (MakeNoise loudness)
+        elif kind == "spawn_phantom" then
+            do
+                turns <- intField "turns" value
+                pure (SpawnPhantom turns)
+        elif kind == "ward_tile" then pure WardTile
+        elif kind == "identify_inventory" then pure IdentifyInventory
+        elif kind == "learn_taught_spell" then pure LearnTaughtSpell
+        elif kind == "cleanse_corruption" then pure CleanseCorruption
+        elif kind == "inflict" then
+            do
+                elemName <- stringField "element" value
+                dt <- decodeDamageType elemName
+                magnitude <- intField "magnitude" value
+                pure (Inflict dt magnitude)
+        elif kind == "set_attitude" then
+            do
+                attName <- stringField "attitude" value
+                att <- decodeAttitude attName
+                pure (SetAttitude att)
+        elif kind == "set_faction" then
+            do
+                facName <- stringField "faction" value
+                fac <- decodeFaction facName
+                pure (SetFaction fac)
+        elif kind == "message" then
+            do
+                text <- stringField "text" value
+                pure (Message text)
+        elif kind == "noop" then pure Noop
+        else raise (ConfigError ("unknown effect kind: " ++ kind))
+
+decodeEffect : json.JsonValue -> IO GameError Effect
+let decodeEffect value =
+    do
+        kind <- stringField "kind" value
+        if kind == "chance" then
+            do
+                pct <- intField "pct" value
+                subVals <- arrayField "effects" value
+                fxs <- traverse decodeSimpleEffect subVals
+                pure (Chance pct fxs)
+        else decodeSimpleEffect value
+
+decodeEffectsField : String -> json.JsonValue -> IO GameError (List Effect)
+let decodeEffectsField name obj =
+    match json.objectField name obj
+    case None -> pure Nil
+    case Some v ->
+        match json.asArray v
+        case Err e -> raise e
+        case Ok xs -> traverse decodeEffect xs
+
+decodeTileKindName : String -> IO GameError TileKind
+let decodeTileKindName s =
+    if s == "trap" then pure Trap
+    elif s == "lava" then pure Lava
+    elif s == "chaos_vent" then pure ChaosVent
+    elif s == "water" then pure Water
+    else raise (ConfigError ("unknown tile kind for effects: " ++ s))
+
+decodeTileEffect : json.JsonValue -> IO GameError TileEffectDef
+let decodeTileEffect value =
+    do
+        kindName <- stringField "kind" value
+        kind <- decodeTileKindName kindName
+        onEnter <- decodeEffectsField "on_enter" value
+        perTurn <- decodeEffectsField "per_turn" value
+        pure (TileEffectDef kind onEnter perTurn)
+
+loadTileEffects : String -> IO GameError (List TileEffectDef)
+let loadTileEffects path =
+    do
+        root <- readJsonFile path
+        xs <- arrayField "tiles" root
+        traverse decodeTileEffect xs
+
 optDamageType : String -> json.JsonValue -> IO GameError DamageType
 let optDamageType name obj =
     match json.objectField name obj
@@ -272,7 +405,8 @@ let decodeSpell value =
         needsTarget <- boolField "needs_target" value
         eff <- stringField "effect" value
         flavor <- optStringField "" "flavor" value
-        pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget eff flavor)
+        effects <- decodeEffectsField "effects" value
+        pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget eff flavor effects)
 
 loadSpells : String -> IO GameError (List SpellDef)
 let loadSpells path =
@@ -487,7 +621,12 @@ let decodeItem value =
         beatitudeKnown <- boolField "beatitude_known" value
         flammable <- boolField "flammable" value
         damageType <- optDamageType "damage_type" value
-        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable damageType)
+        baseUse <- decodeEffectsField "use_effects" value
+        blessedRaw <- decodeEffectsField "use_effects_blessed" value
+        cursedRaw <- decodeEffectsField "use_effects_cursed" value
+        let useBlessed = if listLength blessedRaw == 0 then baseUse else blessedRaw
+        let useCursed = if listLength cursedRaw == 0 then baseUse else cursedRaw
+        pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable damageType useBlessed baseUse useCursed)
 
 decodeAffix : json.JsonValue -> IO GameError ItemAffix
 let decodeAffix value =
@@ -564,7 +703,8 @@ let decodeActor value =
         resistances <- optDamageTypes "resistances" value
         vulnerabilities <- optDamageTypes "vulnerabilities" value
         rangedElement <- optDamageType "ranged_element" value
-        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect resistances vulnerabilities rangedElement)
+        corpseEffects <- decodeEffectsField "corpse_effects" value
+        pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition corpseEffect resistances vulnerabilities rangedElement corpseEffects)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =

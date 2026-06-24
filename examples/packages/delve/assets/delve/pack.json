@@ -14,7 +14,8 @@
     "skills": "assets/delve/skills.json",
     "spells": "assets/delve/spells.json",
     "status_effects": "assets/delve/status_effects.json",
-    "tuning": "assets/delve/tuning.json"
+    "tuning": "assets/delve/tuning.json",
+    "tiles": "assets/delve/tiles.json"
   },
   "save": {
     "path": "saves/delve-save.json",

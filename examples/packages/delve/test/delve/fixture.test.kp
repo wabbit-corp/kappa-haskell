@@ -38,18 +38,18 @@ let testRules = RulesConfig 1200 9
 
 testItems : List ItemDef
 let testItems =
-    [ ItemDef "dagger" Dagger "dagger" "dagger" ")" WeaponClass False 2 0 True True False Physical
-    , ItemDef "food_ration" FoodRation "food ration" "food ration" "%" FoodClass True 800 0 True True True Physical
-    , ItemDef "holy_symbol" HolySymbol "plain holy symbol" "plain holy symbol" "_" ToolClass False 0 0 True True False Physical
-    , ItemDef "corpse" Corpse "fresh corpse" "fresh corpse" "%" CorpseClass False 250 0 True True False Physical
-    , ItemDef "gold" Gold "gold pieces" "gold pieces" "$" CoinClass True 1 0 True True False Physical
+    [ ItemDef "dagger" Dagger "dagger" "dagger" ")" WeaponClass False 2 0 True True False Physical Nil Nil Nil
+    , ItemDef "food_ration" FoodRation "food ration" "food ration" "%" FoodClass True 800 0 True True True Physical Nil Nil Nil
+    , ItemDef "holy_symbol" HolySymbol "plain holy symbol" "plain holy symbol" "_" ToolClass False 0 0 True True False Physical Nil Nil Nil
+    , ItemDef "corpse" Corpse "fresh corpse" "fresh corpse" "%" CorpseClass False 250 0 True True False Physical Nil Nil Nil
+    , ItemDef "gold" Gold "gold pieces" "gold pieces" "$" CoinClass True 1 0 True True False Physical Nil Nil Nil
     ]
 
 testActors : List ActorDef
 let testActors =
-    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice." 9 0 "" 0 "none" Nil Nil Physical
-    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason." 7 6 "" 0 "none" Nil Nil Physical
-    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings." 5 2 "" 80 "none" Nil Nil Physical
+    [ ActorDef "player" PlayerSpecies "player" "@" (stats 26 26 6 6 6 6 2 0 1) PlayerControlled HeroFaction 12 0 [Dagger, FoodRation, HolySymbol] ["player"] Nil "A delver who came down by choice." 9 0 "" 0 "none" Nil Nil Physical Nil
+    , ActorDef "hound" Hound "Moss" "d" (stats 12 12 0 0 4 8 1 3 1) Friendly HeroFaction 12 90 Nil ["companion"] Nil "A shaggy hound, loyal past reason." 7 6 "" 0 "none" Nil Nil Physical Nil
+    , ActorDef "rat" Rat "giant rat" "r" (stats 4 4 0 0 2 8 0 1 1) Hostile BeastFaction 8 0 Nil ["beast"] Nil "A rat grown dog-large on cave-leavings." 5 2 "" 80 "none" Nil Nil Physical Nil
     ]
 
 testTactics : List TacticDef
@@ -124,5 +124,6 @@ let testPack =
             poolHealBand = 35, poolPoisonBand = 60, poolNothingBand = 80, poolCorruptBand = 92,
             poolHealAmount = 6, poolPoisonAmount = 3, poolCorruptAmount = 25,
             feedTameBand = 15, feedPacifyBand = 85
-        }
+        },
+        tileEffects = Nil
     }
