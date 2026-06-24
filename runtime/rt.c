@@ -98,6 +98,12 @@ KValue *kpf_sleep_for(KValue **a)          { return krt2_sleep_for(a[0]); }
 KValue *kpf_new_promise(KValue **a)        { (void)a; return krt2_new_promise(); }
 KValue *kpf_complete_promise(KValue **a)   { return krt2_complete_promise(a[0], a[1]); }
 KValue *kpf_await_promise_exit(KValue **a) { return krt2_await_promise_exit(a[0]); }
+/* §18.1.8 structured scopes + monitors (Stage 3): scheduler OP_* nodes. */
+KValue *kpf_new_scope(KValue **a)          { (void)a; return krt2_new_scope(); }
+KValue *kpf_fork_in(KValue **a)            { return krt2_fork_in(a[0], a[1]); }
+KValue *kpf_shutdown_scope(KValue **a)     { return krt2_shutdown_scope(a[0]); }
+KValue *kpf_monitor(KValue **a)            { return krt2_monitor(a[0]); }
+KValue *kpf_await_monitor(KValue **a)      { return krt2_await_monitor(a[0]); }
 
 /* structured concurrency */
 KValue *krt2_new_scope(void)              { return op0(OP_NEW_SCOPE, "rt.newScope"); }

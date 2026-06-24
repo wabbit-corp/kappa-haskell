@@ -399,6 +399,8 @@ basePrims =
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "sleepFor"
     , "newPromise", "completePromise", "awaitPromiseExit"
+      -- §18.1.8 structured scopes + monitors (CPS do-kernel, Stage 3)
+    , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     ]
 
 -- | Compile the reachable closure of @main@ to a C translation unit.
@@ -1838,6 +1840,12 @@ primEntries = Map.fromList
   , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
   , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
   , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
+  -- §18.1.8 structured scopes + monitors (Stage 3)
+  , ("newScope", PrimEntry "kpf_new_scope" 0 False)
+  , ("forkIn", PrimEntry "kpf_fork_in" 2 False)
+  , ("shutdownScope", PrimEntry "kpf_shutdown_scope" 1 False)
+  , ("monitor", PrimEntry "kpf_monitor" 1 False)
+  , ("awaitMonitor", PrimEntry "kpf_await_monitor" 1 False)
   -- §18.1.13 STM, single-agent semantics (TVar = cell, atomically runs the
   -- transaction directly — matching the reference interpreter)
   , ("newTVar", PrimEntry "kpf_io_newTVar" 1 True)
@@ -2661,6 +2669,10 @@ suspendingNames =
     [ "fork", "forkDaemon", "await", "awaitPromise" -- surface (std.prelude)
     , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
     , "cede", "sleepFor", "newPromise", "completePromise", "awaitPromiseExit"
+      -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
+      -- monitor build a node; shutdownScope/awaitMonitor park) but all are
+      -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
+    , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     ]
 
 spineHeadSuspends :: Term -> Bool
