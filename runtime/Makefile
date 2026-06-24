@@ -2,23 +2,21 @@
 #
 # This does NOT need the Kappa compiler: the harnesses construct KValue IO
 # actions directly (via the kappart constructors + the krt2_* builders) and run
-# them on the real scheduler, so the runtime is testable before backend
-# integration (DESIGN.md §17).  Once integration lands, kappa.build.kp drives
-# the same sources through the Kappa build system.
+# them on the real scheduler, so the runtime is testable in isolation
+# (docs/DESIGN.md §17).  The Kappa backend (Kappa.Backend.Driver) links the same
+# sources for a real program.
 #
-#   make            build libkappart2.a and the test harnesses
+#   make            build build/libkappart2.a and the test harnesses
 #   make test       build + run the harnesses
 #   make tsan       build with ThreadSanitizer (catch the parallel races early)
 #   make clean
-
-# The existing boxed-value runtime we layer over (KValue, Boehm GC, primitives).
-KAPPART_DIR ?= ../../../runtime
 
 CC      ?= cc
 AR      ?= ar
 # -fno-strict-aliasing: the KValue union is type-punned, like kappart itself.
 CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -fno-strict-aliasing -pthread
-CPPFLAGS += -I include -I $(KAPPART_DIR)
+# All sources + headers live flat in this directory.
+CPPFLAGS += -I .
 
 # Homebrew prefix (Apple Silicon /opt/homebrew, Intel /usr/local) for gc/gmp/uv.
 # Override BREW=... on non-homebrew systems; on Linux the system paths are used.
@@ -38,29 +36,27 @@ CPPFLAGS  += -DGC_THREADS
 # -pthread (CFLAGS) + libuv's pkg-config -lpthread already cover threads.
 LIBS      := $(UV_LIBS) -lgc -lgmp
 
-RT_SRC := $(wildcard native/*.c)
-RT_OBJ := $(RT_SRC:.c=.o)
-# kappart.c is the value model + GC; compile it into our archive too.
-KAPPART_OBJ := build/kappart.o
+# The runtime: kappart.c (the boxed-value model + Boehm GC + primitives) plus
+# the kappart2 scheduler/reactor/structured-concurrency/race/STM translation units.
+RT_SRC  := kappart.c rt.c reactor.c scope.c race.c stm.c
+RT_OBJ  := $(RT_SRC:%.c=build/%.o)
+RT_HDRS := kappart.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
 
-LIB := libkappart2.a
+LIB := build/libkappart2.a
 
-TEST_SRC := $(wildcard test/*.c)
-TEST_BIN := $(TEST_SRC:test/%.c=build/%)
+TEST_SRC := $(wildcard tests/*.c)
+TEST_BIN := $(TEST_SRC:tests/%.c=build/%)
 
 .PHONY: all test clean tsan
 all: $(LIB) $(TEST_BIN)
 
-$(LIB): $(RT_OBJ) $(KAPPART_OBJ)
+$(LIB): $(RT_OBJ)
 	$(AR) rcs $@ $^
 
-native/%.o: native/%.c include/kappart2.h native/internal.h
+build/%.o: %.c $(RT_HDRS) | build
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-build/kappart.o: $(KAPPART_DIR)/kappart.c | build
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-
-build/%: test/%.c $(LIB) | build
+build/%: tests/%.c $(LIB) | build
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< $(LIB) $(LIBS) -o $@
 
 build:
@@ -76,5 +72,4 @@ tsan: clean all
 	@set -e; for t in $(TEST_BIN); do echo "=== tsan $$t ==="; $$t; done
 
 clean:
-	rm -f $(RT_OBJ) $(LIB)
 	rm -rf build

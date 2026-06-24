@@ -683,29 +683,31 @@ threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` an
 
 ## 20. File map
 
+The runtime lives in `runtime/`, flat alongside `kappart.c` (the boxed-value
+model it layers over). The scheduler is consolidated into a handful of
+translation units rather than the finer-grained split this design originally
+sketched (`sched.c`/`fiber.c`/`runq.c`/`timer.c`/`promise.c`/`interrupt.c`/
+`cause.c`/`fiberlocal.c` all fold into `rt.c`/`reactor.c`/`scope.c`; `atomic.c`
+is not yet built — see [`PRIMITIVES.md`](PRIMITIVES.md)).
+
 ```
-examples/packages/kappa-runtime/
-  DESIGN.md            this document
-  README.md            quickstart, capability table, how to build/run
-  kappa.build.kp       build manifest (libuv via pkgConfig; the rt host-binding seam)
-  Makefile             standalone build of the runtime lib + C demos (no compiler needed)
-  include/
-    kappart2.h         the public C ABI: Fiber/Scope/Promise/TVar/AtomicRef + all krt2_* entry points
-  native/
-    rt.c               runtime lifecycle, Rt struct, krt2_run_main, worker bootstrap
-    sched.c            workers, run queues (Chase–Lev deque + global queue), steal/park
-    fiber.c            Fiber lifecycle, the CK-machine step loop, Cont builders
-    runq.c             lock-free deque + MPMC injection queue
-    reactor.c          the libuv reactor thread, IoReq queue, uv_async wakeups
-    blocking.c         the rt-blocking offload lane (uv_queue_work)
-    timer.c            sleepFor/sleepUntil/timeout/race timers
-    promise.c          one-shot promises + monitors
-    scope.c            supervision scopes, structured shutdown, unacknowledged-child defects
-    interrupt.c        interruption requests, masking, delivery/unwind
-    stm.c              TVars, transactions, commit/retry/orElse, wait-sets
-    atomic.c           AtomicRef + C11 atomics
-    cause.c            Exit/Cause construction + Both/Then composition
-    fiberlocal.c       FiberRef copy-on-fork map
-  src/rt/              the Kappa surface (facade modules + rt.supervisor)
-  test/                C harness tests + Kappa tests
+runtime/
+  kappart.c            the boxed-value model: KValue, Boehm GC, pure + IO primitives
+  kappart.h            its public header (KValue/KTag, kint/kctor/kapp/krun_io, …)
+  kappa_ucd.h          Unicode tables used by the string primitives
+  kappart2.h           the public C ABI: Fiber/Scope/Promise/TVar/AtomicRef + all krt2_* entry points
+  kappart2_harness.h   test-harness helpers (build IO actions directly + run them)
+  internal.h           private structs/opcodes shared by the scheduler TUs
+  rt.c                 lifecycle + scheduler: workers, run queue, the CK-machine step
+                       loop, Cont builders, fork/await/cede, promises, mask/restore, refs
+  reactor.c            the libuv reactor thread, sleep timers, IoReq queue, uv_async wakeups
+  scope.c              supervision scopes, structured shutdown, monitors, interrupt delivery/unwind
+  race.c               race/timeout, composed from fork + promise + interrupt
+  stm.c                TVars, optimistic transactions, commit/retry/orElse, wait-sets
+  Makefile             standalone build of the runtime lib + C harnesses (no compiler needed)
+  docs/                DESIGN.md (this), README, REVIEW, RESEARCH, COVERAGE, DEPLOYMENT, INTEGRATION, PRIMITIVES
+  tests/               C harnesses: spine, parallel, scopes, completion, race, cancel, stm, stm_retry, stm_orelse
 ```
+
+The Kappa backend (`Kappa.Backend.Driver`) links these TUs directly; there is no
+separate package manifest.

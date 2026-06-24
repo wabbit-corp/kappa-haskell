@@ -2,7 +2,7 @@
 
 An 8-lens adversarial review (conformance, GC/parallelism, CK-machine, libuv,
 STM, structured+multishot, alternative-architecture, ABI/build) was run against
-[`DESIGN.md`](DESIGN.md) and [`include/kappart2.h`](include/kappart2.h) before any
+[`DESIGN.md`](DESIGN.md) and [`include/kappart2.h`](../kappart2.h) before any
 core code was written. **Verdict: proceed with fixes.** The architecture
 (stackless CK-machine + M:N work-stealing + single libuv reactor + Boehm GC) is
 sound; no reviewer found a materially better alternative (the steelman of

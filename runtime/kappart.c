@@ -310,21 +310,6 @@ KValue *kclo(KFn fn, KEnv *env) {
   return r;
 }
 
-static int prim_is_io(const char *p);
-static int prim_arity(const char *p);
-static KValue *prim_fire_pure(const char *p, KValue **a);
-
-KValue *kprim(const char *name) {
-  /* A nullary pure primitive (e.g. __bytesEmpty) is a value, not a
-   * function: fire it immediately rather than leaving a stuck K_PRIM. */
-  if (prim_arity(name) == 0 && !prim_is_io(name)) return prim_fire_pure(name, NULL);
-  KValue *r = alloc_val(K_PRIM);
-  r->as.prim.name = name;
-  r->as.prim.argc = 0;
-  r->as.prim.args = NULL;
-  return r;
-}
-
 KValue *kio(KIOFn fn, KEnv *env) {
   KValue *r = alloc_val(K_IO);
   r->as.io.fn = fn;
@@ -389,8 +374,8 @@ KValue *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io) {
 }
 
 /* §34.5.3 IO builtin direct entry points (codegen calls these via K_NATIVE,
- * never by name).  The pure builtins are kpf_* extracted from prim_fire_pure;
- * these are the effectful ones the do-kernel sequences. */
+ * never by name).  The pure builtins are the kp_ and kpf_ helpers below; these
+ * kpf_io_ entries are the effectful ones the do-kernel sequences. */
 KValue *kpf_io_printString(KValue **a) {
   if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
   fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
@@ -429,6 +414,31 @@ KValue *kpf_io_finallyIO(KValue **a) {
 KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
 KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
 KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
+
+/* §18.1.13 STM, single-agent semantics — matching the reference interpreter
+ * (Kappa.Interp.stmAtomically, which runs an STM action through the very same
+ * IO runner): a TVar is a mutable cell and `atomically` runs the transaction
+ * directly.  A transaction that never `retry`s commits in one pass, which is
+ * everything expressible without a concurrent writer.  Real multi-fiber STM —
+ * journaled reads, optimistic commit, retry-parking — lives in the kappart2
+ * scheduler (stm.c) and is reached once the do-kernel is CPS-lowered so a
+ * transaction can suspend a fiber. */
+KValue *kpf_io_newTVar(KValue **a) { return kref_new(a[0]); }
+KValue *kpf_io_readTVar(KValue **a) { return kref_get(a[0]); }
+KValue *kpf_io_writeTVar(KValue **a) { return kref_set(a[0], a[1]); }
+KValue *kpf_io_atomically(KValue **a) { return krun_io(a[0]); }
+KValue *kpf_io_retry(KValue **a) {
+  (void)a;
+  /* Single-agent: there is no concurrent writer to advance a read TVar, so a
+   * blocked transaction can never make progress.  Fail loudly rather than
+   * livelock; blocking retry needs the concurrent scheduler. */
+  krt_fail("STM retry: the single-agent native runtime has no concurrent writer "
+           "to wake a blocked transaction (needs the kappart2 scheduler)");
+}
+KValue *kpf_io_check(KValue **a) {
+  /* check b = if b then pure () else retry (§18.1.13). */
+  return kas_bool(a[0]) ? kunit() : kpf_io_retry(a);
+}
 
 /* ── §18.1 algebraic-effect runtime ───────────────────────────────────
  * Mirrors Kappa.Eval.evalEffPrim over the untyped OpCall tree
@@ -577,23 +587,7 @@ KValue *kvar(KEnv *e, int ix) {
   return e->val;
 }
 
-/* ── primitive firing ──────────────────────────────────────────────── */
-
-static int prim_is_io(const char *p);
-static int prim_arity(const char *p);
-static KValue *prim_fire_pure(const char *p, KValue **a);
-
-static KValue *prim_append_arg(KValue *f, KValue *x) {
-  int n = f->as.prim.argc;
-  KValue *r = alloc_val(K_PRIM);
-  r->as.prim.name = f->as.prim.name;
-  r->as.prim.argc = n + 1;
-  KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n + 1));
-  for (int i = 0; i < n; i++) a[i] = f->as.prim.args[i];
-  a[n] = x;
-  r->as.prim.args = a;
-  return r;
-}
+/* ── native-action firing ─────────────────────────────────────────── */
 
 /* §27.1.1: accumulate one argument onto a curried native action. */
 static KValue *native_append_arg(KValue *f, KValue *x) {
@@ -618,15 +612,6 @@ static KValue *kapply_once(KValue *f, KValue *x) {
   switch (f->tag) {
     case K_CLO:
       return f->as.clo.fn(f->as.clo.env, x);
-    case K_PRIM: {
-      KValue *r = prim_append_arg(f, x);
-      int ar = prim_arity(r->as.prim.name);
-      if (r->as.prim.argc >= ar) {
-        if (prim_is_io(r->as.prim.name)) return r; /* suspended; runs in krun_io */
-        return prim_fire_pure(r->as.prim.name, r->as.prim.args);
-      }
-      return r; /* still partial */
-    }
     case K_NATIVE: {
       /* §34.5.3/§27.1.1: a direct-call action.  On saturation a PURE builtin
        * fires its fn immediately (the value is its result); an effectful
@@ -694,26 +679,11 @@ KValue *kio_finally(KValue *action, KValue **defers, int n) {
 
 KValue *kapp(KValue *f, KValue *x) { return ktrampoline(kapply_once(f, x)); }
 
-/* Direct application of a named primitive to a contiguous argument array.
- * The common case — a saturated pure primitive — fires in a single call
- * with no intermediate curried K_PRIM boxes or per-argument allocation
- * (the codegen emits this for any application whose spine head is a known
- * primitive).  Partial application, IO primitives (which stay suspended
- * for krun_io), and over-saturation fall back to the curried path. */
-KValue *kprim_call(const char *name, int argc, KValue **args) {
-  if (argc == prim_arity(name) && !prim_is_io(name))
-    return prim_fire_pure(name, args);
-  KValue *f = kprim(name);
-  for (int i = 0; i < argc; i++) f = kapp(f, args[i]);
-  return f;
-}
-
 KValue *kappi(KValue *f, KValue *x) {
   switch (f->tag) {
     /* implicit args are erased at runtime for constructors and primitives
      * (§31.2); an implicit lambda is a real binder and is applied. */
     case K_CTOR:
-    case K_PRIM:
     case K_NATIVE:
       return f;
     case K_CLO:
@@ -1437,8 +1407,6 @@ static int ku_is_space(uint32_t c) {
   return c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
 }
 
-#define PRIM(n) (strcmp(p, n) == 0)
-
 /* Bignum fallback for a binary integer op (used when either operand is a
  * K_BIGINT or the int64 fast path overflowed). */
 typedef void (*kmpz_binop)(mpz_t, const mpz_t, const mpz_t);
@@ -1466,13 +1434,12 @@ static int kint_is_zero(KValue *v) {
 }
 
 /* ── Direct primitive helpers (QW1) ──────────────────────────────────────
- * The hot pure primitives are factored into named, externally-visible
- * helpers so the codegen can emit a DIRECT call (`kp_addInt(x, y)`) for a
- * statically known saturated primitive — no string dispatch, no `prim_arity`
- * / `prim_is_io` check, no per-call argument array.  `prim_fire_pure` (the
- * reflective string-keyed path, used for partial application / dynamic
- * firing) delegates to the same helpers, so there is one source of truth for
- * each primitive's semantics. */
+ * The pure primitives are factored into named, externally-visible helpers so
+ * the codegen emits a DIRECT call (`kp_addInt(x, y)`) for a statically known
+ * saturated primitive, or wraps the helper pointer in a curried K_NATIVE for
+ * partial application — no string dispatch, no name lookup, no per-call
+ * argument array.  These helpers ARE the single source of truth for each
+ * primitive's semantics; there is no reflective by-name firing path. */
 KValue *kp_addInt(KValue *x, KValue *y) {
   int64_t r;
   if (x->tag == K_INT && y->tag == K_INT && !__builtin_add_overflow(x->as.i, y->as.i, &r))
@@ -2112,130 +2079,6 @@ KValue *kpf___stringSentences(KValue **a) {
     return acc;
 }
 
-static KValue *prim_fire_pure(const char *p, KValue **a) {
-  if (PRIM("addInt")) return kpf_addInt(a);
-  if (PRIM("subInt")) return kpf_subInt(a);
-  if (PRIM("mulInt")) return kpf_mulInt(a);
-  if (PRIM("divInt")) return kpf_divInt(a);
-  if (PRIM("modInt")) return kpf_modInt(a);
-  if (PRIM("negInt")) return kpf_negInt(a);
-  if (PRIM("eqInt")) return kpf_eqInt(a);
-  if (PRIM("ltInt")) return kpf_ltInt(a);
-  if (PRIM("leInt")) return kpf_leInt(a);
-  if (PRIM("addDouble")) return kpf_addDouble(a);
-  if (PRIM("subDouble")) return kpf_subDouble(a);
-  if (PRIM("mulDouble")) return kpf_mulDouble(a);
-  if (PRIM("divDouble")) return kpf_divDouble(a);
-  if (PRIM("negDouble")) return kpf_negDouble(a);
-  if (PRIM("ltDouble")) return kpf_ltDouble(a);
-  if (PRIM("floatEq")) return kpf_floatEq(a);
-  if (PRIM("eqDouble")) return kpf_eqDouble(a);
-  if (PRIM("stringAppend")) return kpf_stringAppend(a);
-  if (PRIM("eqStr")) return kpf_eqStr(a);
-  if (PRIM("ltStr")) return kpf_ltStr(a);
-  if (PRIM("eqScalar")) return kpf_eqScalar(a);
-  if (PRIM("ltScalar")) return kpf_ltScalar(a);
-  if (PRIM("natToInt") || PRIM("natOfInt")) return kpf_natToInt(a);
-  if (PRIM("intToNat")) return kpf_intToNat(a);
-  if (PRIM("intToDouble")) return kpf_intToDouble(a);
-  if (PRIM("primitiveIntToString")) return kpf_primitiveIntToString(a);
-  if (PRIM("showInt")) return kpf_showInt(a);
-  if (PRIM("showDouble")) return kpf_showDouble(a);
-  if (PRIM("showScalar")) return kpf_showScalar(a);
-  if (PRIM("showStringLit")) return kpf_showStringLit(a);
-  if (PRIM("__ratOfInt")) return kpf___ratOfInt(a);
-  if (PRIM("__ratNum")) return kpf___ratNum(a);
-  if (PRIM("__ratDen")) return kpf___ratDen(a);
-  if (PRIM("addRat")) return kpf_addRat(a);
-  if (PRIM("subRat")) return kpf_subRat(a);
-  if (PRIM("mulRat")) return kpf_mulRat(a);
-  if (PRIM("divRat")) return kpf_divRat(a);
-  if (PRIM("negRat")) return kpf_negRat(a);
-  if (PRIM("eqRat")) return kpf_eqRat(a); if (PRIM("ltRat")) return kpf_ltRat(a);
-  if (PRIM("showRat")) return kpf_showRat(a);
-  if (PRIM("ratOfDouble")) return kpf_ratOfDouble(a);
-  if (PRIM("eqByte")) return kpf_eqByte(a);
-  if (PRIM("ltByte")) return kpf_ltByte(a);
-  if (PRIM("showByte")) return kpf_showByte(a);
-  if (PRIM("eqBytes")) return kpf_eqBytes(a);
-  if (PRIM("ltBytes")) return kpf_ltBytes(a);
-  if (PRIM("showBytes")) return kpf_showBytes(a);
-  if (PRIM("eqGrapheme")) return kpf_eqGrapheme(a);
-  if (PRIM("showGrapheme")) return kpf_showGrapheme(a);
-  if (PRIM("__bytesEmpty")) return kpf___bytesEmpty(a);
-  if (PRIM("__bytesSingleton")) return kpf___bytesSingleton(a);
-  if (PRIM("__bytesLength")) return kpf___bytesLength(a);
-  if (PRIM("__bytesIsEmpty")) return kpf___bytesIsEmpty(a);
-  if (PRIM("__bytesGet")) return kpf___bytesGet(a);
-  if (PRIM("__bytesIndexUnsafe")) return kpf___bytesIndexUnsafe(a);
-  if (PRIM("__bytesAppend")) return kpf___bytesAppend(a);
-  if (PRIM("__bytesSlice")) return kpf___bytesSlice(a);
-  if (PRIM("__bytesTake")) return kpf___bytesTake(a);
-  if (PRIM("__bytesDrop")) return kpf___bytesDrop(a);
-  if (PRIM("__bytesStartsWith")) return kpf___bytesStartsWith(a);
-  if (PRIM("__bytesEndsWith")) return kpf___bytesEndsWith(a);
-  if (PRIM("__bytesContains")) return kpf___bytesContains(a);
-  if (PRIM("__bytesFind")) return kpf___bytesFind(a);
-  if (PRIM("__bytesBreakIndex")) return kpf___bytesBreakIndex(a);
-  if (PRIM("__bytesToList")) return kpf___bytesToList(a);
-  if (PRIM("__bytesFromList")) return kpf___bytesFromList(a);
-  if (PRIM("__bytesCompact")) return kpf___bytesCompact(a);
-  if (PRIM("__newBytesBuilder")) return kpf___newBytesBuilder(a);
-  if (PRIM("__bytesBuilderByte")) return kpf___bytesBuilderByte(a);
-  if (PRIM("__bytesBuilderBytes")) return kpf___bytesBuilderBytes(a);
-  if (PRIM("__finishBytesBuilder")) return kpf___finishBytesBuilder(a);
-  if (PRIM("__utf8Bytes")) return kpf___utf8Bytes(a);
-  if (PRIM("__utf8Valid")) return kpf___utf8Valid(a);
-  if (PRIM("__decodeUtf8Lossy")) return kpf___decodeUtf8Lossy(a);
-  if (PRIM("__byteLength")) return kpf___byteLength(a);
-  if (PRIM("__uniScalarValue")) return kpf___uniScalarValue(a);
-  if (PRIM("__scalarInRange")) return kpf___scalarInRange(a);
-  if (PRIM("__scalarOfValue")) return kpf___scalarOfValue(a);
-  if (PRIM("__scalarToString")) return kpf___scalarToString(a);
-  if (PRIM("__scalarCount")) return kpf___scalarCount(a);
-  if (PRIM("__stringScalars")) return kpf___stringScalars(a);
-  if (PRIM("__byteToNat")) return kpf___byteToNat(a);
-  if (PRIM("__natToByte")) return kpf___natToByte(a);
-  if (PRIM("__graphemeToString")) return kpf___graphemeToString(a);
-  if (PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") || PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") || PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") || PRIM("__stringCompact")) return kpf___queryFromList(a);
-  if (PRIM("unsafeConsume")) return kpf_unsafeConsume(a);
-  if (PRIM("__arrayIndexUnsafe")) return kpf___arrayIndexUnsafe(a);
-  if (PRIM("__rangeEnum")) return kpf___rangeEnum(a);
-  if (PRIM("__intAnd")) return kpf___intAnd(a);
-  if (PRIM("__intOr")) return kpf___intOr(a);
-  if (PRIM("__intXor")) return kpf___intXor(a);
-  if (PRIM("__hashMixInt")) return kpf___hashMixInt(a);
-  if (PRIM("__hashMixDouble")) return kpf___hashMixDouble(a);
-  if (PRIM("__hashMixString")) return kpf___hashMixString(a);
-  if (PRIM("__hashMixBytes")) return kpf___hashMixBytes(a);
-  if (PRIM("__newStringBuilder")) return kpf___newStringBuilder(a);
-  if (PRIM("__stringBuilderString")) return kpf___stringBuilderString(a);
-  if (PRIM("__stringBuilderScalar")) return kpf___stringBuilderScalar(a);
-  if (PRIM("__stringBuilderGrapheme")) return kpf___stringBuilderGrapheme(a);
-  if (PRIM("__finishStringBuilder")) return kpf___finishStringBuilder(a);
-  if (PRIM("__stringStart")) return kpf___stringStart(a);
-  if (PRIM("__stringEnd")) return kpf___stringEnd(a);
-  if (PRIM("__stringCursorOffset")) return kpf___stringCursorOffset(a);
-  if (PRIM("__stringNextScalar")) return kpf___stringNextScalar(a);
-  if (PRIM("__stringPrevScalar")) return kpf___stringPrevScalar(a);
-  if (PRIM("__stringSpan")) return kpf___stringSpan(a);
-  if (PRIM("__newUtf8Decoder")) return kpf___newUtf8Decoder(a);
-  if (PRIM("__decodeUtf8Chunk")) return kpf___decodeUtf8Chunk(a);
-  if (PRIM("__finishUtf8Decoder")) return kpf___finishUtf8Decoder(a);
-  if (PRIM("__atomicRepEq")) return kpf___atomicRepEq(a);
-  if (PRIM("__normalize")) return kpf___normalize(a);
-  if (PRIM("__caseFold")) return kpf___caseFold(a);
-  if (PRIM("__graphemeCount")) return kpf___graphemeCount(a);
-  if (PRIM("__graphemeValid")) return kpf___graphemeValid(a);
-  if (PRIM("__graphemeOfString")) return kpf___graphemeOfString(a);
-  if (PRIM("__stringGraphemes")) return kpf___stringGraphemes(a);
-  if (PRIM("__stringNextGrapheme")) return kpf___stringNextGrapheme(a);
-  if (PRIM("__stringWords")) return kpf___stringWords(a);
-  if (PRIM("__stringSentences")) return kpf___stringSentences(a);
-  if (PRIM("__absurd")) return kpf___absurd(a);
-  krt_fail("internal: unknown pure primitive");
-}
-
 /* ── IO execution ──────────────────────────────────────────────────── */
 
 /* A heap stack of pending §18.7 finalizers (see kio_finally / krun_io). */
@@ -2295,54 +2138,6 @@ KValue *krun_io(KValue *action) {
       }
       return krun_finish(r, discard, defers);
     }
-    case K_PRIM: {
-      const char *p = action->as.prim.name;
-      KValue **a = action->as.prim.args;
-      if (PRIM("printString")) {
-        if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
-        fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
-        return krun_finish(kunit(), discard, defers);
-      }
-      if (PRIM("printlnString")) {
-        if (a[0]->tag != K_STR) krt_fail("printlnString: argument is not a String");
-        fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
-        fputc('\n', stdout);
-        return krun_finish(kunit(), discard, defers);
-      }
-      if (PRIM("ioPure")) return krun_finish(a[0], discard, defers);
-      if (PRIM("ioBind")) {
-        KValue *r = krun_io(a[0]);
-        if (kis_fail(r)) return krun_finish(r, discard, defers);
-        action = kapp(a[1], r);      /* tail: continue the loop */
-        continue;
-      }
-      if (PRIM("ioThen")) {
-        KValue *r = krun_io(a[0]);
-        if (kis_fail(r)) return krun_finish(r, discard, defers);
-        action = a[1];               /* tail: continue the loop */
-        continue;
-      }
-      if (PRIM("throwIO")) return krun_finish(kfail(a[0]), discard, defers);
-      if (PRIM("catchIO")) {
-        KValue *r = krun_io(a[0]);
-        if (kis_fail(r)) {
-          action = kapp(a[1], r->as.fail.err);
-          continue;
-        }
-        return krun_finish(r, discard, defers);
-      }
-      if (PRIM("finallyIO")) {
-        KValue *r = krun_io(a[0]);
-        KValue *fr = krun_io(a[1]);
-        if (kis_fail(r)) return krun_finish(r, discard, defers);
-        if (kis_fail(fr)) return krun_finish(fr, discard, defers);
-        return krun_finish(r, discard, defers);
-      }
-      if (PRIM("newRef")) return krun_finish(kref_new(a[0]), discard, defers);
-      if (PRIM("readRef")) return krun_finish(kref_get(a[0]), discard, defers);
-      if (PRIM("writeRef")) return krun_finish(kref_set(a[0], a[1]), discard, defers);
-      krt_fail("internal: unknown IO primitive (native host bindings run as K_NATIVE)");
-    }
     case K_NATIVE: {
       /* §27.1.1: fire the manifest symbol by calling the codegen-emitted
        * wrapper DIRECTLY — no name lookup, no strcmp, no dispatch table. */
@@ -2362,82 +2157,4 @@ KValue *krun_io_checked(KValue *action) {
   KValue *result = krun_io(action);
   if (kis_fail(result)) krt_fail("__runIO: uncaught typed IO failure");
   return result;
-}
-
-/* ── primitive tables ──────────────────────────────────────────────── */
-
-static int prim_is_io(const char *p) {
-  return PRIM("printString") || PRIM("printlnString") || PRIM("ioPure") ||
-         PRIM("ioBind") || PRIM("ioThen") || PRIM("throwIO") ||
-         PRIM("catchIO") || PRIM("finallyIO") || PRIM("newRef") ||
-         PRIM("readRef") || PRIM("writeRef");
-}
-
-static int prim_arity(const char *p) {
-  /* hot path: the arithmetic / comparison ops that dominate numeric loops
-   * are matched first so kprim_call's saturation check is a few strcmps,
-   * not a full scan (they also appear in the binary block below — the
-   * first match wins, so this is purely an ordering optimisation). */
-  if (PRIM("addInt") || PRIM("subInt") || PRIM("mulInt") || PRIM("divInt") ||
-      PRIM("modInt") || PRIM("eqInt") || PRIM("ltInt") || PRIM("leInt")) return 2;
-  /* nullary (a value, fired on reference) */
-  if (PRIM("__bytesEmpty") || PRIM("__newBytesBuilder") ||
-      PRIM("__newStringBuilder") || PRIM("__newUtf8Decoder")) return 0;
-  /* unary */
-  if (PRIM("negInt") || PRIM("negDouble") || PRIM("showInt") ||
-      PRIM("showDouble") || PRIM("showScalar") || PRIM("showStringLit") ||
-      PRIM("__ratOfInt") || PRIM("__ratNum") || PRIM("__ratDen") ||
-      PRIM("negRat") || PRIM("showRat") || PRIM("ratOfDouble") ||
-      PRIM("natToInt") || PRIM("natOfInt") || PRIM("intToNat") ||
-      PRIM("intToDouble") || PRIM("primitiveIntToString") ||
-      PRIM("showByte") || PRIM("showBytes") || PRIM("showGrapheme") ||
-      PRIM("__bytesSingleton") || PRIM("__bytesLength") || PRIM("__bytesIsEmpty") ||
-      PRIM("__bytesToList") || PRIM("__bytesFromList") || PRIM("__bytesCompact") ||
-      PRIM("__finishBytesBuilder") ||
-      PRIM("__utf8Bytes") || PRIM("__utf8Valid") || PRIM("__decodeUtf8Lossy") ||
-      PRIM("__byteLength") || PRIM("__uniScalarValue") || PRIM("__scalarInRange") ||
-      PRIM("__scalarOfValue") || PRIM("__scalarToString") || PRIM("__scalarCount") ||
-      PRIM("__stringScalars") || PRIM("__byteToNat") || PRIM("__natToByte") ||
-      PRIM("__graphemeToString") || PRIM("__stringCompact") ||
-      PRIM("__caseFold") || PRIM("__graphemeCount") || PRIM("__graphemeValid") ||
-      PRIM("__graphemeOfString") || PRIM("__stringGraphemes") ||
-      PRIM("__stringWords") || PRIM("__stringSentences") ||
-      PRIM("__queryFromList") || PRIM("__queryToList") || PRIM("__setFromList") ||
-      PRIM("__setToList") || PRIM("__arrayFromList") || PRIM("__arrayToList") ||
-      PRIM("__mapFromEntries") || PRIM("__mapToList") || PRIM("__transport") ||
-      PRIM("unsafeConsume") || /* {a} -> (x:a) -> Unit : one explicit arg */
-      PRIM("__stringStart") || PRIM("__stringEnd") || PRIM("__finishStringBuilder") ||
-      PRIM("__finishUtf8Decoder") ||
-      PRIM("ioPure") || PRIM("throwIO") || PRIM("newRef") || PRIM("readRef") ||
-      PRIM("printString") || PRIM("printlnString"))
-    return 1;
-  /* ternary */
-  if (PRIM("__bytesSlice") || PRIM("__rangeEnum") || PRIM("__stringSpan")) return 3;
-  /* binary (all remaining pure ops + ioBind/ioThen/writeRef) */
-  if (PRIM("addInt") || PRIM("subInt") || PRIM("mulInt") || PRIM("divInt") ||
-      PRIM("modInt") || PRIM("eqInt") || PRIM("ltInt") || PRIM("leInt") ||
-      PRIM("addDouble") || PRIM("subDouble") || PRIM("mulDouble") ||
-      PRIM("divDouble") || PRIM("eqDouble") || PRIM("ltDouble") ||
-      PRIM("floatEq") || PRIM("stringAppend") || PRIM("eqStr") ||
-      PRIM("ltStr") || PRIM("eqScalar") || PRIM("ltScalar") ||
-      PRIM("addRat") || PRIM("subRat") || PRIM("mulRat") || PRIM("divRat") ||
-      PRIM("eqRat") || PRIM("ltRat") ||
-      PRIM("eqByte") || PRIM("ltByte") || PRIM("eqBytes") || PRIM("ltBytes") ||
-      PRIM("eqGrapheme") || PRIM("__bytesGet") || PRIM("__bytesIndexUnsafe") ||
-      PRIM("__bytesAppend") || PRIM("__bytesStartsWith") || PRIM("__bytesEndsWith") ||
-      PRIM("__bytesContains") || PRIM("__bytesFind") || PRIM("__bytesBreakIndex") ||
-      PRIM("__bytesTake") || PRIM("__bytesDrop") ||
-      PRIM("__bytesBuilderByte") || PRIM("__bytesBuilderBytes") ||
-      PRIM("__intAnd") || PRIM("__intOr") || PRIM("__intXor") ||
-      PRIM("__hashMixInt") || PRIM("__hashMixDouble") || PRIM("__hashMixString") ||
-      PRIM("__hashMixBytes") || PRIM("__arrayIndexUnsafe") ||
-      PRIM("__stringBuilderString") || PRIM("__stringBuilderScalar") ||
-      PRIM("__stringBuilderGrapheme") || PRIM("__stringCursorOffset") ||
-      PRIM("__stringNextScalar") || PRIM("__stringPrevScalar") ||
-      PRIM("__decodeUtf8Chunk") ||
-      PRIM("__normalize") || PRIM("__stringNextGrapheme") ||
-      PRIM("__atomicRepEq") ||
-      PRIM("ioBind") || PRIM("ioThen") || PRIM("catchIO") || PRIM("finallyIO") || PRIM("writeRef"))
-    return 2;
-  krt_fail("internal: unknown primitive arity");
 }

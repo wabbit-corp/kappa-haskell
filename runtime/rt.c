@@ -663,7 +663,7 @@ static void fiber_step(Rt *rt, Fiber *f) {
            * concurrency (fork/await suspension) needs the do-kernel CPS rewrite
            * (INTEGRATION.md).  A typed K_FAIL propagates as RK_FAIL. */
           case K_IO: case K_IOTAIL: case K_IOEFFECT: case K_IOFINALLY:
-          case K_BOUNCE: case K_PRIM: case K_NATIVE: case K_FAIL: {
+          case K_BOUNCE: case K_NATIVE: case K_FAIL: {
             KValue *r = krun_io(cur);
             if (kis_fail(r)) { if (!unwind(rt, f, RK_FAIL, r->as.fail.err, NULL)) return; break; }
             if (!deliver(rt, f, r)) return;

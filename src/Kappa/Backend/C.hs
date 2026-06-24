@@ -100,7 +100,7 @@ data GenState = GenState
   , gsTraits :: !(Set GName)
   , gsDeclSites :: !(Map GName Span)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
-  , gsPrimUsed :: !(Set Text) -- ^ §34.5.3: builtin primitives actually referenced; 'assemble' emits an @extern@ decl for each direct entry point (@kpf_*@) so the optimized output calls it DIRECTLY — never @kprim_call@/@prim_fire_pure@ string dispatch.
+  , gsPrimUsed :: !(Set Text) -- ^ §34.5.3: builtin primitives actually referenced; 'assemble' emits an @extern@ decl for each direct entry point (@kp_*@/@kpf_*@) so the optimized output calls it DIRECTLY — never a by-name string dispatch.
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ §27.1.1/§36.28: each provided @host.native.*@ member (an abstract global) ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings (never a hardcoded catalog). A reference to such a member lowers to a DIRECT typed call ('knative'), not a runtime primitive.
   , gsHostUsed :: !(Set GName) -- ^ §27.1.1: host members actually referenced; 'assemble' emits one extern prototype + marshalling wrapper per used member.
   , gsBounceMemo :: !(Map (GName, Int) (Maybe Bool)) -- ^ Native lowering cache: whether a boxed worker of this arity may return K_BOUNCE. 'Nothing' marks an in-progress analysis; recursive cycles conservatively read as may-bounce. The analysis is pure in the stable codegen environment, so caching prevents large game targets from re-walking the same bodies at every call site.
@@ -394,6 +394,8 @@ basePrims =
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
     , "newRef", "readRef", "writeRef"
+      -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
+    , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
     ]
 
 -- | Compile the reachable closure of @main@ to a C translation unit.
@@ -1263,7 +1265,7 @@ assemble st =
       ++ tagEnumBlock st
       ++ [""]
       -- §34.5.3: extern decls for each used builtin primitive's direct C
-      -- entry point, so the optimized output calls it directly (no kprim_call).
+      -- entry point, so the optimized output calls it directly (no by-name dispatch).
       ++ primExternBlock st
       -- §27.1.1: direct extern prototypes + typed marshalling wrappers for
       -- each used host-binding member — the manifest-declared C symbols are
@@ -1275,8 +1277,8 @@ assemble st =
 
 -- | Extern declarations for the direct C entry point of each used builtin
 -- primitive (@kpf_*@). The optimized output calls these directly; the runtime
--- defines them (the @kprim_call@/@prim_fire_pure@ string path is bootstrap-only
--- and never referenced by generated code).
+-- defines them. There is no by-name firing path in the runtime — every prim is
+-- reached by a direct call or a curried @knative@ function pointer.
 primExternBlock :: GenState -> [Text]
 primExternBlock st
   | null cfns = []
@@ -1476,7 +1478,7 @@ emitTailLoop ti args = do
 
 -- | Emit a tail-position application.  A call whose spine head is a
 -- primitive cannot recurse, so it is computed directly and returned (the
--- saturated-prim fast path, no needless partial @K_PRIM@ box or bounce).
+-- saturated-prim fast path, no needless partial-application box or bounce).
 -- A call to anything else (a function value / closure that could recurse)
 -- becomes a trampoline @kbounce(f,a)@, returned so the driving
 -- @kapp@/@krun_io@ performs the deferred application in constant C stack.
@@ -1497,7 +1499,7 @@ emitTailApp term = do
   mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
   case (mp, term) of
     (Just _, _) -> do
-      e <- compile term -- prim spine: direct helper / kprim_call, computed here, no trampoline
+      e <- compile term -- prim spine: direct helper / entry-point call, computed here, no trampoline
       emit ("return " <> e <> ";")
     (Nothing, CApp Expl f a) -> do
       fe <- compile f
@@ -1599,8 +1601,8 @@ isTypeKindTerm = \case
 -- on its runtime entry point. A nullary pure builtin is a value, fired
 -- immediately (@kpf_x(0)@); any other builtin becomes a curried native
 -- action carrying the function pointer (@knative@, pure fires on saturation,
--- IO suspends). There is NO @kprim@/@kprim_call@ string dispatch. An unknown
--- primitive is a compile-time 'E_BACKEND_UNSUPPORTED'.
+-- IO suspends). There is NO by-name string dispatch. An unknown primitive is a
+-- compile-time 'E_BACKEND_UNSUPPORTED'.
 emitPrim :: Text -> Gen Text
 emitPrim name = case Map.lookup name primEntries of
   Just (PrimEntry cfn ar isio) -> do
@@ -1662,12 +1664,12 @@ globPrimName g@(GName m nm) = do
         _ -> Nothing
 
 -- | §34.5.3: the complete builtin-primitive table — each primitive maps to
--- its DIRECT C entry point (@kpf_*@ in the runtime: pure builtins extracted
--- from @prim_fire_pure@; effectful ones the do-kernel sequences), its arity,
--- and whether it is an IO action. Codegen emits a direct call to the entry
--- point (saturated) or a curried @knative@ value (partial) — never a
--- @kprim_call@/@kprim@ string dispatch. Generated from the runtime's
--- @prim_arity@/@prim_is_io@ and the @prim_fire_pure@ branch extraction.
+-- its DIRECT C entry point (@kp_*@/@kpf_*@ in the runtime: pure builtins, and
+-- the effectful @kpf_io_*@ ones the do-kernel sequences), its arity, and
+-- whether it is an IO action. Codegen emits a direct call to the entry point
+-- (saturated) or a curried @knative@ value (partial) — never a by-name string
+-- dispatch. This table is the single source of truth for each prim's arity and
+-- IO-ness; the native suite catches any drift from the runtime's helpers.
 data PrimEntry = PrimEntry !Text !Int !Bool -- ^ C entry point, arity, isIO
 
 primEntries :: Map Text PrimEntry
@@ -1821,16 +1823,24 @@ primEntries = Map.fromList
   , ("subRat", PrimEntry "kpf_subRat" 2 False)
   , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
   , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
+  -- §18.1.13 STM, single-agent semantics (TVar = cell, atomically runs the
+  -- transaction directly — matching the reference interpreter)
+  , ("newTVar", PrimEntry "kpf_io_newTVar" 1 True)
+  , ("readTVar", PrimEntry "kpf_io_readTVar" 1 True)
+  , ("writeTVar", PrimEntry "kpf_io_writeTVar" 2 True)
+  , ("atomically", PrimEntry "kpf_io_atomically" 1 True)
+  , ("retry", PrimEntry "kpf_io_retry" 0 True)
+  , ("check", PrimEntry "kpf_io_check" 1 True)
   ]
 
 -- | QW1: the statically-known saturated pure primitives that have a direct C
 -- helper (`kp_…` in the runtime).  A saturated call to one of these is
 -- lowered to a direct helper call — no string dispatch, no `prim_arity` /
 -- `prim_is_io` check, no per-call argument array.  Maps the primitive name to
--- (helper C name, explicit arity).  The runtime's `prim_fire_pure` delegates
--- to the same helpers (single source of truth); the native suite catches any
--- drift between this table and the runtime.  IO / partial / unlisted prims
--- keep the general `kprim_call` path.
+-- (helper C name, explicit arity).  These `kp_…` helpers are the runtime's
+-- single source of truth for each prim's semantics; the native suite catches
+-- any drift between this table and the runtime.  IO / partial / unlisted prims
+-- lower to a curried `knative` value instead.
 primDirect :: Text -> Maybe (Text, Int)
 primDirect = \case
   "addInt" -> Just ("kp_addInt", 2)
@@ -1869,9 +1879,10 @@ primDirect = \case
 
 -- | Compile an application spine.  When the spine head is a known runtime
 -- primitive, emit a direct helper call ('primDirect') for a saturated pure
--- prim, else a 'kprim_call' over a stack argument array — the saturated case
--- fires in one call with no intermediate curried @K_PRIM@ boxes or
--- per-argument allocation (the dominant cost in hot numeric loops).
+-- prim, else a direct call on its C entry point over a stack argument array —
+-- the saturated case fires in one call with no intermediate curried
+-- partial-application boxes or per-argument allocation (the dominant cost in
+-- hot numeric loops).
 -- Otherwise fall back to per-argument 'kapp'/'kappi'.
 compileApp :: Term -> Gen Text
 compileApp term
@@ -1945,7 +1956,7 @@ compileAppGlob g sargs term = do
 
 -- | Compile @__runIO action@.  A mutable-reference action (@readRef@ /
 -- @writeRef@ / @newRef@, §18.6.1) run inline is lowered directly to the
--- @kref_*@ operation, skipping the suspend-as-K_PRIM-then-krun_io path —
+-- @kref_*@ operation, skipping the suspend-as-action-then-krun_io path —
 -- a mutable @var@ read/write in a loop is then a single cell access, not a
 -- per-step primitive allocation + dispatch.  Any other action keeps the
 -- general @krun_io@ lowering.

@@ -1,0 +1,45 @@
+-- §18.1.13 STM on the native runtime. Single-agent semantics: a TVar is a
+-- mutable cell and `atomically` runs the transaction directly, so this must
+-- print identically under the interpreter and the kappart2 native backend.
+-- Exercises: single-op transactions, multi-op read-modify-write STM do-blocks,
+-- transactions that return a value, and a multi-TVar atomic swap.
+module main
+
+-- A read-modify-write transaction that also yields the new value.
+bump : TVar Int -> STM Int
+let bump t = do
+    cur <- readTVar t
+    writeTVar t (cur + 100)
+    readTVar t
+
+-- Two TVars mutated in one transaction (atomic swap of their contents).
+swap : TVar Int -> TVar Int -> STM Unit
+let swap a b = do
+    x <- readTVar a
+    y <- readTVar b
+    writeTVar a y
+    writeTVar b x
+
+main : UIO Unit
+let main = do
+    -- single-op transactions: create, write, read
+    c <- atomically (newTVar 10)
+    atomically (writeTVar c 25)
+    a <- atomically (readTVar c)
+    printlnString (showInt a)            -- 25
+    -- one multi-op transaction reads, writes, and returns the new value
+    v <- atomically (bump c)
+    printlnString (showInt v)            -- 125
+    -- two transactions accumulate on a fresh counter
+    d <- atomically (newTVar 0)
+    atomically (bump d)
+    v2 <- atomically (bump d)
+    printlnString (showInt v2)           -- 200
+    -- a multi-TVar transaction: swap p and q atomically
+    p <- atomically (newTVar 1)
+    q <- atomically (newTVar 2)
+    atomically (swap p q)
+    pv <- atomically (readTVar p)
+    qv <- atomically (readTVar q)
+    printlnString (showInt pv)           -- 2
+    printlnString (showInt qv)           -- 1

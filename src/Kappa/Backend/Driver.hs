@@ -213,18 +213,16 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                     ["-target", T.unpack (opts.targetTriple)]
                 | otherwise = []
               isZig = takeFileName ccExe == "zig" && ccLead == ["cc"]
-              -- The native runtime is kappart2 (the M:N fiber/libuv/STM runtime,
-              -- examples/packages/kappa-runtime): its TUs + kappart.c (the value
-              -- model it layers over) + threaded Boehm + GMP + libuv.  NOTE:
+              -- The native runtime is kappart2 (the M:N fiber/libuv/STM runtime):
+              -- kappart.c (the boxed-value model + Boehm GC + primitives) plus the
+              -- scheduler/reactor/scope/race/STM translation units, all in
+              -- @runtime/@, linked against threaded Boehm + GMP + libuv.  NOTE:
               -- libuv is wired with dev-machine (homebrew) paths for this first
               -- integration cut; the proper pkg-config discovery + static /
-              -- self-contained link modes are in
-              -- examples/packages/kappa-runtime/DEPLOYMENT.md.
-              kappart2Dir = takeDirectory runtimeDir </> "examples" </> "packages" </> "kappa-runtime"
-              rtCFlags = ["-I", kappart2Dir </> "include", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
+              -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
+              rtCFlags = ["-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources =
-                [kappart2Dir </> "native" </> f | f <- ["rt.c", "reactor.c", "scope.c", "race.c", "stm.c"]]
-                  ++ [runtimeDir </> "kappart.c"]
+                [runtimeDir </> f | f <- ["kappart.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c"]]
               rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv"]
               args =
                 ccLead

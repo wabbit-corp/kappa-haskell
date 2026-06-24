@@ -32,7 +32,6 @@ typedef enum {
   K_CTOR,  /* data constructor: interned name + boxed args               */
   K_REC,   /* record value: lexicographically-sorted fields              */
   K_CLO,   /* closure: arity-1 function pointer + captured environment   */
-  K_PRIM,  /* primitive, possibly partially applied                      */
   K_IO,    /* suspended IO action (do-block / sequencing)                */
   K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
   K_FGN,   /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
@@ -57,9 +56,9 @@ typedef enum {
             /* former string-named FFI primitive: there is NO runtime name */
             /* table and NO strcmp dispatch — krun_io fires the action by  */
             /* CALLING the function pointer the .kappa.c emitted for the   */
-            /* manifest's symbol.  Curries like K_PRIM (argc<arity is a    */
-            /* partial value); a saturated K_NATIVE is the suspended UIO   */
-            /* action that krun_io runs.                                   */
+            /* manifest's symbol.  Curries by accumulating args (argc<     */
+            /* arity is a partial value); a saturated K_NATIVE is the      */
+            /* suspended UIO action that krun_io runs.                     */
 } KTag;
 
 /* LR2 constructor tag ids (numeric pattern-match dispatch).  These FIXED ids
@@ -104,7 +103,6 @@ struct KValue {
     struct { const char *name; int argc; KValue **args; int tagid; } ctor;
     struct { int n; const char **names; KValue **vals; } rec;
     struct { KFn fn; KEnv *env; } clo;
-    struct { const char *name; int argc; KValue **args; } prim;
     struct { KIOFn fn; KEnv *env; } io;
     struct { KValue **cell; } ref;             /* cell[0] is the contents */
     struct { void *p; const char *kind; } fgn;
@@ -156,7 +154,6 @@ KValue *kctor(int tagid, const char *name, int argc, KValue **args);
 KValue *kctor0(int tagid, const char *name);    /* nullary constructor     */
 KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
-KValue *kprim(const char *name);                /* 0-ary; saturates via kapp */
 KValue *kio(KIOFn fn, KEnv *env);
 KValue *kfail(KValue *err);
 int     kis_fail(KValue *v);
@@ -174,10 +171,10 @@ KValue *kvar(KEnv *e, int ix);
 /* ── application ───────────────────────────────────────────────────── */
 KValue *kapp(KValue *f, KValue *x);   /* explicit application (drains tail bounces) */
 KValue *kappi(KValue *f, KValue *x);  /* implicit (erased for ctor/prim)  */
-KValue *kprim_call(const char *name, int argc, KValue **args); /* saturated-prim fast path */
-/* Direct helpers for statically known saturated primitives (QW1): the
- * codegen emits these instead of `kprim_call` — no string dispatch, no arity
- * check, no per-call argument array.  `prim_fire_pure` delegates to them. */
+/* Direct helpers for the pure primitives: the codegen emits a direct call for
+ * a statically known saturated primitive, or a curried K_NATIVE wrapping the
+ * helper pointer for partial application — no string dispatch, no arity check,
+ * no per-call argument array, no by-name firing path. */
 KValue *kp_addInt(KValue *, KValue *);   KValue *kp_subInt(KValue *, KValue *);
 KValue *kp_mulInt(KValue *, KValue *);   KValue *kp_divInt(KValue *, KValue *);
 KValue *kp_modInt(KValue *, KValue *);   KValue *kp_negInt(KValue *);

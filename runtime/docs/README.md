@@ -82,27 +82,27 @@ right one*).
   `KK_FINSEQ`) that survive a cross-worker resume; early `return`; `while` loops
   with `break`/`continue` (`KK_LOOP`); and mutable refs.
 - *`race` / `timeout`* — first-wins with the mandated tie-break (left/io wins),
-  loser interrupted **and awaited** before returning ([`race.c`](native/race.c),
+  loser interrupted **and awaited** before returning ([`race.c`](../race.c),
   composed from the primitives as the reference `Interp.hs` does).
 - *Cancellation surface (ZIO-grade)* — `uninterruptible`/`poll`, **`mask` + `restore`**
   (uninterruptibleMask: a restored region is interruptible inside an otherwise
   masked one), **`acquireRelease`** (bracket: acquire uninterruptible, use
   interruptible, release **always** runs even on interrupt), and `ensuring`.
 - *Parallel STM* (`rt-shared-stm`) — GHC-style optimistic transactions
-  ([`native/stm.c`](native/stm.c)): `atomically`/`TVar`/`readTVar`/`writeTVar`/
+  ([`stm.c`](../stm.c)): `atomically`/`TVar`/`readTVar`/`writeTVar`/
   `retry`/`check`/`orElse`, with lock-free versioned reads, commit-lock
   validation, and `retry` parking on watcher lists. Verified **serializable under
   real parallelism** — 16 fibers × 200 transfers contending on 2 TVars across 12
   cores conserve their total (60× clean).
 
-Nine harnesses: [`spine`](test/spine.c) (fork+promise+sleep+throw/catch, byte-exact),
-[`parallel`](test/parallel.c) (200 fibers across 12 cores), [`scopes`](test/scopes.c)
+Nine harnesses: [`spine`](../tests/spine.c) (fork+promise+sleep+throw/catch, byte-exact),
+[`parallel`](../tests/parallel.c) (200 fibers across 12 cores), [`scopes`](../tests/scopes.c)
 (a scope cancels a child parked on a 30-second sleep and drains in **1 ms**),
-[`completion`](test/completion.c) (defer/return/while/break+continue),
-[`race`](test/race.c) (race+timeout, loser cancelled), [`cancel`](test/cancel.c)
-(`acquireRelease` release-on-interrupt + `mask`/`restore`), [`stm`](test/stm.c)
-(parallel serializability), [`stm_retry`](test/stm_retry.c) (retry parks+wakes,
-orElse), and [`stm_orelse`](test/stm_orelse.c) (orElse write-isolation). All
+[`completion`](../tests/completion.c) (defer/return/while/break+continue),
+[`race`](../tests/race.c) (race+timeout, loser cancelled), [`cancel`](../tests/cancel.c)
+(`acquireRelease` release-on-interrupt + `mask`/`restore`), [`stm`](../tests/stm.c)
+(parallel serializability), [`stm_retry`](../tests/stm_retry.c) (retry parks+wakes,
+orElse), and [`stm_orelse`](../tests/stm_orelse.c) (orElse write-isolation). All
 stress-looped clean.
 
 The FFI + dynamic/static-linking + deployment plan for wiring this runtime into a
@@ -136,27 +136,25 @@ Chase–Lev work-stealing deques, and Go-1.14-style async preemption.
 
 ## Build
 
-Standalone (no Kappa compiler needed — builds the runtime lib + C demos):
+Standalone (no Kappa compiler needed — builds the runtime lib + C harnesses):
 
 ```sh
-make            # builds libkappart2.a and the test harnesses
+make            # builds build/libkappart2.a and the test harnesses
 make test       # runs the C harness conformance demos
 ```
 
 Requires `libuv` (`pkg-config --exists libuv`), Boehm GC (`-lgc`), and GMP
 (`-lgmp`) — the same dependency set as the existing native examples plus libuv.
 
-Via the Kappa build system (once backend integration lands):
-
-```sh
-kappa build --manifest examples/packages/kappa-runtime --target rt-demos
-```
-
-The [`kappa.build.kp`](kappa.build.kp) manifest declares libuv via `pkgConfig`
-and the runtime C sources as a native binding shim.
+Via the Kappa compiler: the native backend (`Kappa.Backend.Driver`) links these
+sources automatically — `kappa build foo.kp` produces an executable on this
+runtime. Sequential programs and single-agent STM run today through the legacy-IO
+bridge; full concurrency (`fork`/`await` suspension) needs the do-kernel CPS
+rewrite (see [`INTEGRATION.md`](INTEGRATION.md)).
 
 ## Layout
 
-See [`DESIGN.md`](DESIGN.md) §20 for the full file map. In short:
-`include/kappart2.h` is the public C ABI, `native/` holds the runtime C sources,
-`src/rt/` the Kappa surface facade + `rt.supervisor`, and `test/` the harnesses.
+See [`DESIGN.md`](DESIGN.md) §20 for the full file map. In short: the sources are
+flat in `runtime/` — [`../kappart2.h`](../kappart2.h) is the public C ABI, the
+`rt`/`reactor`/`scope`/`race`/`stm` `.c` TUs are the scheduler (layered over
+`kappart.c`), `docs/` holds the design docs, and `tests/` the C harnesses.
