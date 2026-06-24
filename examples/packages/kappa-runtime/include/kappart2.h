@@ -78,6 +78,10 @@ KValue *krt2_run_main(KValue *action);
  * krt2_run_main; exposed for embedders. */
 void krt2_shutdown(Rt *rt);
 
+/* 1 if a terminal `Exit` is Success, 0 if Failure.  Used by generated `main` for
+ * the process exit code (kept here so the generated C carries no kctor_is). */
+int krt2_exit_is_success(KValue *exit);
+
 /* The active runtime (NULL before krt2_new). */
 Rt *krt2_current(void);
 

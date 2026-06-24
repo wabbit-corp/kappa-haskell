@@ -655,9 +655,25 @@ static void fiber_step(Rt *rt, Fiber *f) {
       case OP_ATOMICALLY:                       /* run an STM transaction (§18.1.13) */
         if (krt2i_op_atomically(rt, f, kctor_arg(cur, 0))) break; else return;
       default:
-        /* Not an rt action node: a bare value reached the driver — hand it to
-         * the continuation (lets a plain value act as `pure value`). */
-        if (!deliver(rt, f, cur)) return;
+        switch (cur->tag) {
+          /* v2 BRIDGE: a legacy kappart IO action — emitted by generated code
+           * not yet CPS-lowered to krt2_* nodes (the do-kernel still uses
+           * krun_io/kpf_io_*).  Drive it via the legacy krun_io synchronously on
+           * this worker.  Sequential programs run on the scheduler this way;
+           * concurrency (fork/await suspension) needs the do-kernel CPS rewrite
+           * (INTEGRATION.md).  A typed K_FAIL propagates as RK_FAIL. */
+          case K_IO: case K_IOTAIL: case K_IOEFFECT: case K_IOFINALLY:
+          case K_BOUNCE: case K_PRIM: case K_NATIVE: case K_FAIL: {
+            KValue *r = krun_io(cur);
+            if (kis_fail(r)) { if (!unwind(rt, f, RK_FAIL, r->as.fail.err, NULL)) return; break; }
+            if (!deliver(rt, f, r)) return;
+            break;
+          }
+          default:
+            /* a bare value reached the driver — hand it to the continuation. */
+            if (!deliver(rt, f, cur)) return;
+            break;
+        }
         break;
     }
   }
@@ -732,6 +748,8 @@ Rt *krt2_new(int nworkers) {
 }
 
 Rt *krt2_current(void) { return g_rt; }
+
+int krt2_exit_is_success(KValue *exit) { return kctor_is(exit, "Success"); }
 
 KValue *krt2_run_main(KValue *action) {
   Rt *rt = g_rt ? g_rt : krt2_new(0);
