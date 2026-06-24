@@ -128,7 +128,6 @@ are the next tier after §1.
 | §17.1.4 | A `-> impossible` arm is **never** accepted (always `E_IMPOSSIBLE_REACHABLE`), so a GADT-refined uninhabited case can't use it. Unblocked by §30.2.7. | `Check.hs:3451-3454` | medium |
 | §17.1.7 / §7.4.1 | A constructor/variable-scrutinee `match` arm doesn't register `ctxRefines` for the scrutinee, so `match b case Full v -> b.val …` fails member projection (records `csFacts` only). | `Check.hs:8098-8124` (`goCase`) | medium |
 | §15.14 | **Block-local recursive helpers** aren't run through the termination pass at all — a divergent local `let go k decreases k = go (k+1)` is accepted silently (no `W_TERMINATION_UNVERIFIED`), unlike the identical top-level def. | termination pass (top-level SCC only) | medium |
-| §14.3.5 | No declaration-time **Paterson check**: `instance C a => C a = …` (premise identical to head) is accepted. Only a search-depth backstop (`>16`) + determinacy cut exist. | `Check.hs:2452-2471` | medium |
 | §12.4.3 | First-class accessor/borrow descriptor ops use simplified `1`/ω binders instead of exact `(&[ρ] x : A)` borrow-marked domains. | `Prelude.hs:204` (`captureBorrowTy`) | medium |
 | §28.1 / §28.2 | Conventional prefixed-string handlers `re"…"` (regex) and `b"…"` (bytes-from-string) absent (`E_NAME_UNRESOLVED` as prefix). *(Distinct `b'…'`/`g'…'` quoted-literal handlers do work.)* | `Prelude.hs` | medium |
 | §29.4 | `std.unicode.collation` and `std.unicode.security` submodules not provided as modules (some security prims exist internally for source-hygiene lints only). | `Prelude.hs:2553`, `Pipeline.hs:91-110` | large |
@@ -218,6 +217,22 @@ The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
 
+- **§14.3.5 declaration-time Paterson termination check — FIXED.** Instance
+  declaration now rejects a context that is not structurally smaller than the
+  head (`registerInstanceHead`): a premise on the **same trait** as the head
+  must be strictly smaller (constructor-and-variable size), and no premise may
+  use a type variable more often than the head. This keeps a circular instance
+  (`Container f => Container f`, or the exponentially-branching
+  `(C f, C f, C f) => C f`) out of the search set entirely — the depth backstop
+  alone capped depth but not breadth, so such an instance previously *hung* the
+  checker. A cross-trait bridge at equal size (the prelude's `Eq a => Equiv a`)
+  is still accepted (the strict-size condition applies only to same-trait,
+  self-recursive premises). New code `E_INSTANCE_SEARCH_NONTERMINATING`
+  (`kappa.termination.failure`). Test: `traits/instance-paterson-termination.kp`.
+  *(Also fixed the harness: inline `--!! kappa.family` markers now match by
+  diagnostic family via `matchCF`, not just by code — the §T.5.1 "code-or-family"
+  rule now applies to the positional/inline matchers, not only the structured
+  directives.)*
 - **§17.1.9 guard-success evidence in `match` arms (and `try` handlers) — FIXED.**
   A plain-`match` arm's guard is now pushed onto `csBoolFacts` while its body is
   checked (`checkMatchPlain.goCase`), so `case _ if y <= x -> x - y` discharges the

@@ -310,6 +310,8 @@ registry =
       "A value-level definition refers to itself without an intervening function abstraction, so its evaluation can never terminate."
   , ent "E_DATA_NOT_STRICTLY_POSITIVE" (Just "kappa.termination.failure")
       "A data declaration is not strictly positive: the defined type occurs in a negative position (left of an arrow), as an argument of a non-admissible type former, or as a non-positive parameter of an admissible one (Spec 10.4)."
+  , ent "E_INSTANCE_SEARCH_NONTERMINATING" (Just "kappa.termination.failure")
+      "An instance declaration's context violates the Paterson-style termination conditions: a premise is not structurally smaller than the head, or uses some type variable more often than the head, so instance resolution may not terminate (Spec 14.3.5)."
   , ent "E_SIGNATURE_UNSATISFIED" (Just "kappa-hs.signature.unsatisfied")
       "A non-expect top-level term signature has no matching definition in the same source file (Spec 9.1)."
   , ent "E_UNEXPECTED_INDENTATION" (Just "kappa-hs.parse.error")

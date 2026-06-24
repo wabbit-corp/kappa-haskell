@@ -1,0 +1,31 @@
+-- Stress test: A Paterson-condition-violating instance head must be rejected
+-- Spec: traits.instances.search_termination
+
+--! mode check
+
+trait Container (f : Type -> Type) =
+    empty  : f Int
+    insert : Int -> f Int -> f Int
+
+-- NEGATIVE TEST: premise is identical to head — circular, violates Paterson condition.
+-- `Container f => Container f` means the head and premise are the same type.
+instance Container f => Container f =   --!! kappa.termination.failure
+    let empty = empty
+    let insert x c = insert x c
+
+-- NEGATIVE TEST: type variable occurs strictly more times in the premise than in head.
+-- Head mentions `f` once; premises mention `f` three times total.
+instance (Container f, Container f, Container f) => Container f =  --!! kappa.termination.failure
+    let empty = empty
+    let insert x c = insert x c
+
+-- POSITIVE TEST: a standard well-founded instance accepted.
+data SimpleList : Type -> Type =
+    SLNil
+    SLCons Int (SimpleList Int)
+
+instance Container SimpleList =
+    let empty = SLNil
+    let insert x xs = SLCons x xs
+
+--! assertDiagnosticFamily error kappa.termination.failure

@@ -14148,6 +14148,42 @@ registerInstanceHead premises hd sp = do
     Just g -> do
       -- collect implicitly-universalized lowercase variables (§11.3.3)
       let fvs = nub (concatMap freeLower (hd : premises))
+      -- §14.3.5 instance-search termination (Paterson-style): every premise
+      -- must be structurally smaller than the head, so resolution cannot
+      -- loop. A premise is rejected if its constructor-and-variable size is
+      -- not strictly smaller than the head's, or if it uses some type
+      -- variable more often than the head does. Rejecting at declaration
+      -- time keeps a circular instance (e.g. `Container f => Container f`,
+      -- or `(C f, C f, C f) => C f`) out of the search set entirely — the
+      -- depth backstop alone does not stop the exponential breadth.
+      let headOccs = constraintIdOccs hd
+          headSize = length headOccs
+          headName = constraintHead hd
+          occCount xs v = length (filter (== v) xs)
+          patersonViolation p =
+            let pOccs = constraintIdOccs p
+                -- the strict-size condition (§14.3.5) bites only for a
+                -- premise on the SAME trait as the head — that is the
+                -- self-recursive case that can loop. A cross-trait bridge
+                -- (e.g. the prelude's `Eq a => Equiv a`) is well-founded
+                -- even at equal size, so only the variable-occurrence
+                -- condition applies there.
+                sameTrait = constraintHead p == headName
+             in (sameTrait && length pOccs >= headSize)
+                  || any (\v -> occCount pOccs v > occCount headOccs v) fvs
+      if any patersonViolation premises
+        then do
+          errAt sp "E_INSTANCE_SEARCH_NONTERMINATING" (Just "kappa.termination.failure")
+            ( "instance for trait '" <> gnameText g
+                <> "' has a premise that is not structurally smaller than the head, "
+                <> "so instance search may not terminate; every premise must be strictly "
+                <> "smaller than the head and use no type variable more often than the head (§14.3.5)"
+            )
+          pure Nothing
+        else patersonOk g argEs
+  where
+    patersonOk g argEs = do
+      let fvs = nub (concatMap freeLower (hd : premises))
       -- telescope: fvs as Type params, then premise dicts
       let teleLen = length fvs + length premises
       -- elaborate under fvs bound
@@ -14490,3 +14526,35 @@ freeLower = go
     isLowerHead n = case T.uncons n of
       Just (c, _) -> c >= 'a' && c <= 'z'
       Nothing -> False
+
+-- | §14.3.5 instance-search termination: the identifier-leaf occurrences
+-- of a constraint (type constructors AND variables, counting repetitions),
+-- used to measure each instance premise against the head. Mirrors the
+-- 'freeLower' traversal but keeps every name (not just free lowercase ones)
+-- and does not deduplicate.
+-- | The head identifier (trait name) of a constraint's application spine,
+-- if any. Tells a self-recursive premise (same trait as the head) from a
+-- cross-trait bridge premise like @Eq a => Equiv a@ (§14.3.5).
+constraintHead :: Expr -> Maybe Text
+constraintHead = \case
+  EApp f _ -> constraintHead f
+  EVar (Name n _) -> Just n
+  _ -> Nothing
+
+constraintIdOccs :: Expr -> [Text]
+constraintIdOccs = go
+  where
+    go = \case
+      EVar (Name n _) -> [n]
+      EApp f args -> go f ++ concatMap goArg args
+      EArrow b e -> maybe [] go (bType b) ++ go e
+      EForall bs e _ -> concatMap (maybe [] go . bType) bs ++ go e
+      ETraitArrow a b -> go a ++ go b
+      EOptionSugar e _ -> go e
+      ETuple es _ -> concatMap go es
+      EDot {} -> []
+      _ -> []
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      _ -> []

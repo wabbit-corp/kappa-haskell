@@ -1,31 +1,29 @@
--- Stress test: A Paterson-condition-violating instance head must be rejected
--- Spec: traits.instances.search_termination
-
 --! mode check
-
-trait Container (f : Type -> Type) =
-    empty  : f Int
-    insert : Int -> f Int -> f Int
-
--- NEGATIVE TEST: premise is identical to head — circular, violates Paterson condition.
--- `Container f => Container f` means the head and premise are the same type.
-instance Container f => Container f =   --!! kappa.termination.failure
-    let empty = empty
-    let insert x c = insert x c
-
--- NEGATIVE TEST: type variable occurs strictly more times in the premise than in head.
--- Head mentions `f` once; premises mention `f` three times total.
-instance (Container f, Container f, Container f) => Container f =  --!! kappa.termination.failure
-    let empty = empty
-    let insert x c = insert x c
-
--- POSITIVE TEST: a standard well-founded instance accepted.
-data SimpleList : Type -> Type =
-    SLNil
-    SLCons Int (SimpleList Int)
-
-instance Container SimpleList =
-    let empty = SLNil
-    let insert x xs = SLCons x xs
-
+--! assertErrorCount 2
 --! assertDiagnosticFamily error kappa.termination.failure
+
+-- §14.3.5: instance-search termination (Paterson-style). A premise that is
+-- not structurally smaller than the head — here a self-recursive premise on
+-- the SAME trait — is rejected at DECLARATION time, so instance search can
+-- never loop (the depth backstop alone does not stop the exponential breadth
+-- of `(C a, C a, ...) => C a`). A strictly-smaller premise is still accepted.
+module main
+
+trait Box (a : Type) =
+    unbox : a -> Int
+
+-- NEGATIVE: premise identical to the head (same trait, not smaller).
+instance Box a => Box a =                 --!! kappa.termination.failure
+    let unbox x = 0
+
+-- NEGATIVE: a type variable occurs more often across the premises than the head.
+instance (Box a, Box a) => Box a =        --!! kappa.termination.failure
+    let unbox x = 0
+
+data Stack (a : Type) : Type =
+    Empty
+    Push a (Stack a)
+
+-- POSITIVE: a premise strictly smaller than the head is accepted.
+instance Box a => Box (Stack a) =
+    let unbox s = 0
