@@ -396,6 +396,9 @@ basePrims =
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "check"
+      -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
+    , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "sleepFor"
+    , "newPromise", "completePromise", "awaitPromiseExit"
     ]
 
 -- | Compile the reachable closure of @main@ to a C translation unit.
@@ -1823,6 +1826,18 @@ primEntries = Map.fromList
   , ("subRat", PrimEntry "kpf_subRat" 2 False)
   , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
   , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
+  -- §18.1.4/§18.1.6/§18.1.9 concurrency node builders (CPS do-kernel): each
+  -- lowers to its krt2_* OP_* node so the CK-machine can park on it.  isIO=False
+  -- because building the node is pure construction; the node IS the suspended
+  -- action the CPS-lowered do-block sequences via krt2_bind.
+  , ("__forkRun", PrimEntry "kpf_fork" 1 False)
+  , ("__forkDaemon", PrimEntry "kpf_fork_daemon" 1 False)
+  , ("__awaitFiber", PrimEntry "kpf_await" 1 False)
+  , ("cede", PrimEntry "kpf_cede" 0 False)
+  , ("sleepFor", PrimEntry "kpf_sleep_for" 1 False)
+  , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
+  , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
+  , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
   -- §18.1.13 STM, single-agent semantics (TVar = cell, atomically runs the
   -- transaction directly — matching the reference interpreter)
   , ("newTVar", PrimEntry "kpf_io_newTVar" 1 True)
@@ -2622,9 +2637,107 @@ litValue = \case
 
 -- ── do-kernel ────────────────────────────────────────────────────────
 
+-- | §18.1 CPS do-kernel (Stage 1).  A do-block whose binds reach a SUSPENDING
+-- operation (fork/await/sleepFor/cede/awaitPromiseExit/…) cannot run on the
+-- synchronous @krun_io@ bridge — the fiber must be able to park.  Such a block
+-- is lowered to a @krt2_*@ action TREE the CK-machine drives node-by-node
+-- (parking at OP_FORK/OP_AWAIT/…), instead of a @kio@ do-fn.
+--
+-- Detection is by the action's spine head (the direct @fork child@ / @await f@
+-- shape).  This is a syntactic fast-positive, NOT the sound effect-witness
+-- analysis of CPS-DESIGN §3.3: it does not see through a user function that
+-- only transitively suspends.  It is sound for the direct shape; a block that
+-- suspends only transitively stays on the legacy bridge until the §3.3 analysis
+-- lands.  A suspending op inside a defer/loop/if/var/return block is Stage-2
+-- work and is not yet CPS-lowered ('cpsEligible' is False, so it falls back).
+-- The wired-and-tested suspending operations, by name.  Only the surface
+-- (preludeModule) and prim (primModule) globals are matched — a user global
+-- named e.g. @join@/@race@/@timeout@ in another module never triggers CPS.
+-- (Stage-3 ops — forkIn/shutdownScope/awaitMonitor — and the derived
+-- join/race/timeout are added here as each is wired and tested.)
+suspendingNames :: Set Text
+suspendingNames =
+  Set.fromList
+    [ "fork", "forkDaemon", "await", "awaitPromise" -- surface (std.prelude)
+    , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
+    , "cede", "sleepFor", "newPromise", "completePromise", "awaitPromiseExit"
+    ]
+
+spineHeadSuspends :: Term -> Bool
+spineHeadSuspends t = case fst (spineOf t) of
+  CGlob (GName m nm) ->
+    (m == primModule || m == ModuleName ["std", "prelude"]) && nm `Set.member` suspendingNames
+  _ -> False
+
+cpsEligible :: [KItem] -> Bool
+cpsEligible items = any itemSuspends items && all simpleLinear items
+  where
+    itemSuspends (KBind _ _ t) = spineHeadSuspends t
+    itemSuspends (KExpr t) = spineHeadSuspends t
+    itemSuspends _ = False
+    simpleLinear KBind {} = True
+    simpleLinear KLet {} = True
+    simpleLinear KExpr {} = True
+    simpleLinear _ = False
+
+-- | Lower a CPS-eligible do-block to its @krt2_bind@/@krt2_then@ action tree.
+-- Each non-tail bind becomes @krt2_bind(action, kclo(kdok_N, env))@ with the
+-- continuation emitted as a sibling function; a discarded effect becomes
+-- @krt2_then@; the tail action is returned directly (tail position — the
+-- CK-machine, not a nested bind, so the spine stays bounded).
+cpsItems :: [KItem] -> Gen Text
+cpsItems items = case items of
+  [] -> pure "krt2_pure(kunit())"
+  [KExpr t] -> compile t
+  [KBind _ _ t] -> compile t
+  (KExpr t : rest) -> seqThen t rest
+  (KBind _ CPWild t : rest) -> seqThen t rest
+  (KBind _ pat t : rest) -> do
+    m <- compile t
+    contFn <- emitCpsCont pat rest
+    env <- gets gsEnv
+    pure ("krt2_bind(" <> m <> ", kclo(" <> contFn <> ", " <> env <> "))")
+  (KLet _ CPWild t : rest) -> compile t >> cpsItems rest
+  (KLet _ pat t : rest) -> do
+    te <- compile t
+    contFn <- emitCpsCont pat rest
+    env <- gets gsEnv
+    pure ("krt2_bind(krt2_pure(" <> te <> "), kclo(" <> contFn <> ", " <> env <> "))")
+  (item : _) ->
+    unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
+  where
+    seqThen t rest = do
+      m <- compile t
+      r <- cpsItems rest
+      pure ("krt2_then(" <> m <> ", " <> r <> ")")
+
+-- | Emit a CPS continuation function @kdok_N(KEnv *cenv, KValue *karg)@: bind
+-- the delivered value @karg@ to @pat@ (extending the captured @cenv@), then
+-- build the rest of the block as a tree.
+emitCpsCont :: CorePat -> [KItem] -> Gen Text
+emitCpsCont pat rest = do
+  fnName <- freshFn "kdok_"
+  (stmts, tree) <- captured "cenv" $ do
+    e2 <- bindPatScrut "karg" "cenv" pat
+    withEnv e2 (cpsItems rest)
+  let fn =
+        T.unlines $
+          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+            ++ map ("  " <>) stmts
+            ++ ["  return " <> tree <> ";", "}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
 -- | Compile a do-block to a suspended IO action (@kio@) whose body runs
--- the scope.  The captured environment is the current one.
+-- the scope.  The captured environment is the current one.  A block reaching a
+-- suspending operation is CPS-lowered instead (see 'cpsEligible').
 compileDo :: Maybe Text -> [KItem] -> Gen Text
+compileDo lbl items
+  | cpsEligible items = cpsItems items
 compileDo lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv

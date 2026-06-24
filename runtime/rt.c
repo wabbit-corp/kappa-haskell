@@ -84,6 +84,21 @@ KValue *krt2_ensuring(KValue *body, KValue *fin) { return krt2_finally(body, fin
  * see reactor.c.  Implemented as identity so the advertised rt-blocking
  * capability is actually backed, not just declared. */
 KValue *krt2_blocking(KValue *body)       { return body; }
+
+/* §34.5.3 do-kernel CPS wrappers.  The codegen's curried/array path calls a prim
+ * via fn(KValue**), but the krt2_* node builders take individual args; these
+ * thin wrappers adapt the convention so fork/await/cede/sleepFor/promises lower
+ * to their OP_* nodes.  (The saturated fast path calls the builders directly via
+ * primDirect; these serve a bare/curried reference.) */
+KValue *kpf_fork(KValue **a)               { return krt2_fork(a[0]); }
+KValue *kpf_fork_daemon(KValue **a)        { return krt2_fork_daemon(a[0]); }
+KValue *kpf_await(KValue **a)              { return krt2_await(a[0]); }
+KValue *kpf_cede(KValue **a)               { (void)a; return krt2_cede(); }
+KValue *kpf_sleep_for(KValue **a)          { return krt2_sleep_for(a[0]); }
+KValue *kpf_new_promise(KValue **a)        { (void)a; return krt2_new_promise(); }
+KValue *kpf_complete_promise(KValue **a)   { return krt2_complete_promise(a[0], a[1]); }
+KValue *kpf_await_promise_exit(KValue **a) { return krt2_await_promise_exit(a[0]); }
+
 /* structured concurrency */
 KValue *krt2_new_scope(void)              { return op0(OP_NEW_SCOPE, "rt.newScope"); }
 KValue *krt2_fork_in(KValue *s, KValue *a){ return op2(OP_FORK_IN, "rt.forkIn", s, a); }

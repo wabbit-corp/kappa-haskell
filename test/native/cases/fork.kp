@@ -1,0 +1,23 @@
+-- §18.1.4 fork/await on the native runtime (the CPS do-kernel, Stage 1). A
+-- do-block reaching `fork`/`await` is lowered to a krt2_bind action tree the
+-- CK-machine drives, so the parent fiber actually PARKS on `await` until the
+-- child completes — rather than running synchronously on the krun_io bridge.
+--
+-- The output is deterministic on any worker count: each `await` establishes a
+-- happens-before edge (the child's print precedes the continuation's), so this
+-- must print identically under the interpreter and the kappart2 native backend.
+module main
+
+child1 : UIO Unit
+let child1 = printlnString "first"
+
+child2 : UIO Unit
+let child2 = printlnString "second"
+
+main : UIO Unit
+let main = do
+    f1 <- fork child1
+    r1 <- await f1            -- waits for child1: "first" precedes everything below
+    f2 <- fork child2
+    r2 <- await f2            -- waits for child2: "second" precedes "third"
+    printlnString "third"
