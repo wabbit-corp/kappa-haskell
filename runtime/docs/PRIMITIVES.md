@@ -35,22 +35,29 @@ primitives (`onInterrupt`/`onExit`, `disconnect`, `Promise.poll`/`isDone`,
 ## Already implemented
 
 These `krt2_*` entry points cover the corresponding spec §18.1 / §28 `expect
-term`s and the ZIO/CE primitive core:
+term`s and the ZIO/CE primitive core. **Note (C ABI vs. Kappa surface):** a few
+spec primitives are reached today via the Kappa-level prelude over lower
+primitives (e.g. `join`/`awaitPromise` over `await` + a `match`; single-agent
+`FiberRef` over `Ref`) and do **not** yet have a dedicated `krt2_*` C
+definition — those land with the do-kernel CPS rewrite + per-fiber state and are
+marked *(prelude-derived; no C ABI yet)* below. The unbacked declarations were
+removed from `kappart2.h` (see its "Planned ABI" note) so no advertised symbol
+is a link-fail trap.
 
 | Spec surface | runtime |
 |---|---|
 | `fork` / `forkDaemon` / `forkIn` (§18.1.4, §18.1.8) | `krt2_fork` / `krt2_fork_daemon` / `krt2_fork_in` |
-| `await` / `join` (§18.1.4) | `krt2_await` / `krt2_join` |
+| `await` (§18.1.4); `join` *(prelude-derived; no C ABI yet)* | `krt2_await` |
 | `interrupt` / `interruptFork` / `interruptAs` / `interruptForkAs` (§18.1.4) | `krt2_interrupt` / `krt2_interrupt_fork` / `krt2_interrupt_as` / `krt2_interrupt_fork_as` |
 | `cede` (§18.1.5) | `krt2_cede` (+ `krt2_safepoint` for loop back-edges) |
-| `nowMonotonic` / `sleepFor` / `sleepUntil` / `timeout` / `race` (§18.1.6) | `krt2_now_monotonic` / `krt2_sleep_for` / `krt2_sleep_until` / `krt2_timeout` / `krt2_race` |
-| `newFiberRef` / `getFiberRef` / `setFiberRef` / `locallyFiberRef` (§18.1.7) | `krt2_new_fiber_ref` / `get` / `set` / `locally` (**partial — ADD #4**) |
+| `nowMonotonic` / `sleepFor` / `timeout` / `race` (§18.1.6); `sleepUntil` *(prelude-derived; no C ABI yet)* | `krt2_now_monotonic` / `krt2_sleep_for` / `krt2_timeout` / `krt2_race` |
+| `newFiberRef` / `getFiberRef` / `setFiberRef` / `locallyFiberRef` (§18.1.7) | *(single-agent over `Ref` in the prelude; no `krt2_*` C ABI yet — ADD #4)* |
 | `newScope` / `withScope` / `forkIn` / `shutdownScope` / `monitor` / `awaitMonitor` / `demonitor` (§18.1.8) | `krt2_new_scope` / `with_scope` / `fork_in` / `shutdown_scope` / `monitor` / `await_monitor` / `demonitor` |
-| `newPromise` / `awaitPromiseExit` / `awaitPromise` / `completePromise` (§18.1.9) | `krt2_new_promise` / `await_promise_exit` / `await_promise` / `complete_promise` (**poll/isDone missing — ADD #3**) |
-| `fiberId` / `currentFiberId` / `getFiberLabel` / `setFiberLabel` / `locallyFiberLabel` (§18.1.10) | `krt2_fiber_id` / `current_fiber_id` / `get_fiber_label` / `set_fiber_label` / `locally_fiber_label` |
-| `blocking` (§18.1.11) | `krt2_blocking` |
+| `newPromise` / `awaitPromiseExit` / `completePromise` (§18.1.9); `awaitPromise` *(prelude-derived; no C ABI yet)* | `krt2_new_promise` / `await_promise_exit` / `complete_promise` (**poll/isDone missing — ADD #3**) |
+| `fiberId` / `currentFiberId` (§18.1.10); labels *(no C ABI yet — needs a per-fiber label field)* | `krt2_fiber_id` / `krt2_current_fiber_id` |
+| `blocking` (§18.1.11) | `krt2_blocking` (identity v1; uv_queue_work offload lane is TODO) |
 | `poll` / `uninterruptible` / `mask`+restore / `ensuring` / `acquireRelease` (§18.1.12) | `krt2_poll` / `uninterruptible` / `mask` / `ensuring` / `acquire_release` |
-| `sandbox` / `unsandbox` (§18.1.2) | `krt2_sandbox` / `krt2_unsandbox` |
+| `sandbox` / `unsandbox` (§18.1.2) | *(prelude-derived; no `krt2_*` C ABI yet)* |
 | STM: `newTVar` / `readTVar` / `writeTVar` / `retry` / `check` / `atomically` / `orElse` + `stm_pure`/`stm_bind` (§18.1.13) | `krt2_new_tvar` / `read_tvar` / `write_tvar` / `retry` / `check` / `atomically` / `or_else` — implemented in `stm.c`, adversarially reviewed |
 | do-kernel: `defer` / `return` / `break` / `continue` / `while` + do-scope finalizers (§18.7/§18.8) | `krt2_defer` / `return` / `break` / `continue` / `while` / `doscope` |
 | MonadRef: `newRef` / `readRef` / `writeRef` (§18.6.1) | `krt2_new_ref` / `read_ref` / `write_ref` |
