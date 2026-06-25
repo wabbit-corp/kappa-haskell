@@ -1,0 +1,16 @@
+-- Milestone I (Part 2): a Double ARITHMETIC RESULT.  The Double prims (addDouble
+-- /mulDouble/divDouble/subDouble, kp_* direct helpers) compute over the boxed
+-- IEEE-754 values built from hex-exact `compileLit` literals.  The printed
+-- result must be bit-identical across interp == C == LLVM — the parity harness
+-- compares full stdout, so any FP rounding divergence (literal OR operation)
+-- fails it.  0.1 + 0.2 is the classic non-exact case (0.30000000000000004);
+-- the rest exercise multiply / divide / subtract / a whole-number result.
+module main
+
+main : UIO Unit
+let main = do
+    println (addDouble 0.1 0.2 : Double)     -- 0.30000000000000004
+    println (mulDouble 3.0 2.5 : Double)     -- 7.5
+    println (divDouble 1.0 3.0 : Double)     -- 0.3333333333333333
+    println (subDouble 5.5 2.25 : Double)    -- 3.25
+    println (mulDouble 1.0e8 1.0e8 : Double)  -- 1.0e16

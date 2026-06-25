@@ -1,0 +1,11 @@
+-- Milestone I (Part 2): a Char (Unicode scalar) LITERAL VALUE.  `'a'` and
+-- `'\n'` are built as runtime scalars via 'compileLit' (kchr(i32 <ord>)) — the
+-- value form, not a pattern.  `showScalar` (a saturated pure prim with a kp_*
+-- helper) renders each with the interpreter's Haskell-faithful escaping.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString (showScalar 'a')    -- 'a'
+    printlnString (showScalar '\n')   -- '\n'
+    printlnString (showScalar '★')    -- '\9733'

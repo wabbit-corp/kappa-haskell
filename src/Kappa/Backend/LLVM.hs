@@ -31,6 +31,8 @@ module Kappa.Backend.LLVM
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.List (sort)
+import Data.Word (Word8)
+import GHC.Float (castDoubleToWord64)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
@@ -387,23 +389,57 @@ generateLL cs mainG ffiPrims _hostSyms =
         [] -> Right (assembleLL final)
         errs -> Left errs
 
--- | The base primitives the @kappart@ runtime implements.  M0 recognised only
--- @printlnString@/@printString@; M1 widens this to the saturated pure
--- first-order prims it lowers (the @kp_*@ direct helpers below).  The full set
--- is owned by 'Kappa.Backend.C' (kept private there); later milestones widen
--- this further as their lowerings land.  A reference to a name outside this set
--- is an honest @E_BACKEND_UNSUPPORTED@.
+-- | The base primitives the @kappart@ runtime implements.  Milestone I widens
+-- this to EVERY prim in the shared 'primEntries' table (the C backend's full
+-- catalogue of cfn/arity/isIO), minus the small 'ckMachinePrims' blocklist of
+-- ops whose synchronous @knative@/@knative_sat@ bridge would diverge from the
+-- CK-machine semantics the interpreter (the oracle) and the C backend's
+-- node-builders give them.  Every name here is lowerable: a saturated call goes
+-- through 'compilePrimApp' (IO ⇒ @knative_sat@; pure ⇒ @kp_*@ direct or the
+-- @kpf_*(arr)@ array call), and a bare/partial reference goes through
+-- 'compilePrimValue' (the curried @knative@ closure).
 --
--- INVARIANT: every name here that is not an IO prim ('ioPrimEntry') must have a
--- 'pureDirectEntry' lowering, and vice versa — 'globPrimName' returns a name
--- only when it is in @gsPrims@, and 'compilePrimApp' must then handle it.
+-- INVARIANT: 'globPrimName' returns a name only when it is in @gsPrims@, and
+-- 'compilePrimApp'/'compilePrimValue' must then handle it — which they do for
+-- any 'primEntries' member.  The do-kernel monad/ref ops (@ioBind@/@ioThen@/
+-- @ioPure@/@newRef@/@readRef@/@writeRef@) are still recognised here, but their
+-- NODE-BUILDER handling in 'compileDo'/'compileMonadicAction'/'newRefAction'
+-- takes precedence in the do-context (only OUTSIDE it do they fall to the
+-- generic @knative_sat@ path, which is exactly what the C backend does too).
 basePrims :: Set Text
-basePrims =
-  Set.fromList $
-    ["printlnString", "printString"] -- M0 IO prims
-      ++ ["ioPure", "ioBind", "ioThen"] -- Milestone E do-kernel monadic prims
-      ++ ["newRef", "readRef", "writeRef"] -- Milestone G mutable cells
-      ++ pureDirectPrims -- M1 pure first-order prims
+basePrims = Set.difference (Map.keysSet primEntries) ckMachinePrims
+
+-- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
+-- node, not the synchronous @knative@/@knative_sat@ bridge: structured
+-- concurrency (fork/await/spawn/scope/monitor), STM (atomically/stm*/TVars/
+-- retry), cooperative scheduling (sleep/yield/self), and the EXCEPTION ops
+-- (throwIO/catchIO/finallyIO).  The C backend lowers these via dedicated
+-- @krt2_*@ node-builders ('compileAppGlob') or its CPS do-kernel; the LLVM
+-- backend implements neither, so the synchronous bridge mis-runs a body that is
+-- itself a CK-machine action tree.
+--
+-- The exception ops are here because of a CONCRETE parity divergence (the
+-- @ioerror@ native case): @catchIO risky handler@ where @risky@ is a do-block
+-- (`printlnString "before"; raise "boom"; …`) lowers @risky@ to a @krt2_*@
+-- action tree, but the synchronous @kpf_io_catchIO@ bridge's @krun_io@ cannot
+-- drive that tree — it drops the body's effects and the thrown value (interp/C
+-- print @before\\ncaught:boom\\nafter@; the bridge printed only @after@).  The C
+-- backend avoids this because its do-kernel keeps the action tree CK-machine-
+-- driven end to end; until the LLVM backend has that, throwIO/catchIO/finallyIO
+-- are a clean @E_BACKEND_UNSUPPORTED@ rather than a wrong answer (the
+-- interpreter is the oracle).
+ckMachinePrims :: Set Text
+ckMachinePrims =
+  Set.fromList
+    [ "throwIO", "catchIO", "finallyIO" -- exceptions over an action tree
+    , "atomically", "stmBind", "stmPure", "retry"
+    , "newTVar", "readTVar", "writeTVar"
+    , "forkIO", "fork", "spawn", "spawnIn", "spawnLink"
+    , "__awaitFiber", "awaitPromise", "awaitPromiseExit"
+    , "monitor", "awaitMonitor", "demonitor"
+    , "sleepFor", "yieldNow", "self"
+    , "newScope", "forkIn", "scopeJoin", "scopeCancel"
+    ]
 
 -- | Emit globals until the work queue is empty (mirrors C's 'drainQueue').
 drainQueue :: Gen ()
@@ -669,17 +705,27 @@ compileTail term = case term of
 
 -- | Is @pname@ a SATURATED-prim application in @term@ (so it returns a value
 -- and never bounces)?  Mirrors the C backend's saturated-prim fast-path gate
--- ('compilePrimApp' accepts only the exact arity): the explicit-argument count
--- equals the prim's known arity.  An under-/over-saturated prim spine is a
--- curried closure that goes through the @kapp@ chain (and may bounce) instead.
+-- ('compileAppGlob' fires its direct arm only at the exact arity): the
+-- explicit-argument count equals the prim's known arity.  The arity is read
+-- from ANY of the three saturated lowerings — an IO prim ('ioPrimEntry'), a
+-- pure prim with a @kp_*@ helper ('pureDirectEntry'), or a pure prim with only
+-- a @kpf_*@ wrapper ('primNativeEntry') — so a saturated nat/byte/bytes
+-- conversion takes the direct wrapper-array call instead of the curried @kapp@
+-- chain, exactly as the C backend does.  An under-/over-saturated prim spine
+-- stays a curried closure through @kapp@ (and may bounce).
 saturatedPrim :: Text -> Term -> Bool
 saturatedPrim pname term =
   let (_, sargs) = spineOf term
       nexpl = length [() | (Expl, _) <- sargs]
-   in case (ioPrimEntry pname, pureDirectEntry pname) of
-        (Just (_, ar), _) -> nexpl == ar
-        (_, Just (_, ar)) -> nexpl == ar
-        _ -> False
+   in case primArity pname of
+        Just ar -> nexpl == ar
+        Nothing -> False
+
+-- | The runtime arity of a lowerable prim (across all three saturated paths).
+primArity :: Text -> Maybe Int
+primArity pname = case primNativeEntry pname of
+  Just (_, ar, _) -> Just ar
+  Nothing -> Nothing
 
 -- | Lower a general CLOSURE application in TAIL position: the head + all but the
 -- final explicit argument are built EAGERLY with the ordinary @kapp@ chain (the
@@ -2177,9 +2223,16 @@ compileLit = \case
     | n >= toInteger (minBound :: Int) && n <= toInteger (maxBound :: Int) ->
         compileInt n
     | otherwise -> compileBigInt n
+  -- Milestone I: Char/Byte/Double literal VALUES (the literal PATTERN forms
+  -- already exist in 'litValueLL').  Char and Byte reuse that lowering verbatim
+  -- (@kchr@ / @kbyte@).  Double is the parity hazard — see 'compileDbl'.
+  LitScalar c -> compileScalar c
+  LitByte w -> compileByte w
+  LitDouble d -> compileDbl d
   l ->
     unsupported "literal"
-      ("the LLVM backend M1 supports String and Int literals, not " <> litName l)
+      ("the LLVM backend supports String, Int, Char, Byte, and Double literals, not "
+        <> litName l)
 
 -- | An in-range Integer literal: @call ptr \@kint(i64 N)@.  LLVM i64 literals
 -- accept plain signed decimal (including @-9223372036854775808@ for
@@ -2203,6 +2256,57 @@ compileBigInt n = do
   r <- freshReg
   emit (r <> " = call ptr @kbigint_str(ptr " <> ptrG <> ")")
   pure r
+
+-- | A Char (Unicode scalar) literal value: @call ptr \@kchr(i32 <ord c>)@ — the
+-- SAME builder the C backend's @kchr(<ord c>)@ and the literal-PATTERN path
+-- ('litValueLL') use.
+compileScalar :: Char -> Gen Text
+compileScalar c = do
+  declRuntime "declare ptr @kchr(i32)"
+  r <- freshReg
+  emit (r <> " = call ptr @kchr(i32 " <> T.pack (show (ord c)) <> ")")
+  pure r
+
+-- | A Byte (octet) literal value: @call ptr \@kbyte(i8 <w>)@ — the SAME builder
+-- the C backend's @kbyte(<w>)@ and the literal-PATTERN path ('litValueLL') use.
+compileByte :: Word8 -> Gen Text
+compileByte w = do
+  declRuntime "declare ptr @kbyte(i8)"
+  r <- freshReg
+  emit (r <> " = call ptr @kbyte(i8 " <> T.pack (show (fromIntegral w :: Int)) <> ")")
+  pure r
+
+-- | A Double literal value: @call ptr \@kdbl(double 0xHHHHHHHHHHHHHHHH)@.
+--
+-- PARITY HAZARD.  The C backend lowers @LitDouble d@ to @kdbl(<show d>)@ — a
+-- decimal whose exact value depends on the C compiler's @strtod@.  Emitting the
+-- same decimal text into LLVM IR is NOT guaranteed to parse to the identical
+-- 'Double': LLVM's literal parser and the C @strtod@ are independent
+-- implementations, and a decimal that round-trips a 'Double' need not be the
+-- shortest one each rounds back.  LLVM IR therefore accepts (and the LLVM
+-- reference recommends) a HEX float literal — @double 0x@ followed by the raw
+-- IEEE-754 big-endian bits — which denotes an EXACT 'Double' with no decimal
+-- re-rounding.  We bit-cast the Haskell 'Double' to its 64 IEEE-754 bits
+-- ('doubleBitsHex') and emit those, so the boxed value is bit-identical to the
+-- C backend's regardless of how @strtod@ rounded the decimal.  (Haskell's
+-- 'castDoubleToWord64' uses the platform IEEE-754 representation, the same one
+-- the C runtime's @double@ uses.)
+compileDbl :: Double -> Gen Text
+compileDbl d = do
+  declRuntime "declare ptr @kdbl(double)"
+  r <- freshReg
+  emit (r <> " = call ptr @kdbl(double 0x" <> doubleBitsHex d <> ")")
+  pure r
+
+-- | The 16-hex-digit, UPPERCASE, zero-padded big-endian IEEE-754 bit pattern of
+-- a 'Double' — the operand LLVM expects after @double 0x@ for an exact
+-- (non-decimal) floating literal.  'castDoubleToWord64' is the platform's
+-- IEEE-754 reinterpret, so the bits are exactly those the C @double@ holds.
+doubleBitsHex :: Double -> Text
+doubleBitsHex d =
+  let bits = castDoubleToWord64 d
+      h = T.toUpper (T.pack (showHex bits ""))
+   in T.justifyRight 16 '0' h
 
 litName :: Literal -> Text
 litName = \case
@@ -2230,16 +2334,8 @@ litValueLL = \case
   LitInt n -> Just <$> compileLit (LitInt n)
   LitStr s -> Just <$> compileLit (LitStr s)
   LitGrapheme g -> Just <$> compileLit (LitGrapheme g)
-  LitScalar c -> do
-    declRuntime "declare ptr @kchr(i32)"
-    r <- freshReg
-    emit (r <> " = call ptr @kchr(i32 " <> T.pack (show (ord c)) <> ")")
-    pure (Just r)
-  LitByte w -> do
-    declRuntime "declare ptr @kbyte(i8)"
-    r <- freshReg
-    emit (r <> " = call ptr @kbyte(i8 " <> T.pack (show (fromIntegral w :: Int)) <> ")")
-    pure (Just r)
+  LitScalar c -> Just <$> compileScalar c
+  LitByte w -> Just <$> compileByte w
   l -> do
     _ <- unsupported "pattern"
       ( "the LLVM backend (Milestone F) lowers Int/String/Char/Byte literal "
@@ -2279,6 +2375,15 @@ compileGlob g@(GName m nm)
 -- clean @E_BACKEND_UNSUPPORTED@.
 compilePrimValue :: Text -> Gen Text
 compilePrimValue pname = case primNativeEntry pname of
+  -- A 0-arity PURE prim is a CONSTANT (e.g. @__bytesEmpty@): there is nothing to
+  -- curry, so the C backend fires it immediately (@cfn((KValue **)0)@,
+  -- C.hs:1619–1620) rather than wrapping a closure.  Mirror that exactly — a
+  -- direct call on the @kpf_*@ wrapper with a NULL argument array.
+  Just (cfn, 0, False) -> do
+    declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+    r <- freshReg
+    emit (r <> " = call ptr @" <> cfn <> "(ptr null)")
+    pure r
   Just (cfn, ar, isio) -> do
     declRuntime "declare ptr @knative(ptr, i32, ptr, i32)"
     declRuntime ("declare ptr @" <> cfn <> "(ptr)")
@@ -2476,12 +2581,21 @@ etaCtorApp term =
       CVar j | j >= 0, j < k -> Just (args !! (k - 1 - j))
       _ -> Nothing
 
--- | Lower a saturated application of a known primitive.  IO prims take the M0
--- @knative_sat@ path; PURE first-order prims take the M1 direct @kp_*@ helper
--- path ('compilePureDirect').  This mirrors the C backend's dispatch in
--- 'compileAppGlob' (C.hs:2102–2116): @isio@ ⇒ @knative_sat@, else the QW1
--- positional @primDirect@ call.  Under-/over-saturation, or an unknown prim,
--- is reported as unsupported.
+-- | Lower a saturated application of a known primitive.  Mirrors the C
+-- backend's dispatch in 'compileAppGlob' (C.hs:2110–2124) EXACTLY, so the two
+-- backends emit the identical runtime call for any prim:
+--
+--   * an IO prim ⇒ @knative_sat(cfn, ar, argv, 1)@ ('compileIoSat');
+--   * a PURE prim WITH a @kp_*@ direct helper ⇒ the positional fast path
+--     @kp_NAME(a0, …)@ ('compilePureDirect', C's QW1 path);
+--   * a PURE prim WITHOUT a direct helper ⇒ a direct call to its @kpf_*@
+--     wrapper over an argument array @cfn(argv)@ ('compilePureWrapper',
+--     C.hs:2121–2124).
+--
+-- Under-/over-saturation falls back to the curried @knative@ + @kapp@ chain
+-- (handled by the caller, which only routes a SATURATED spine here).  A prim
+-- outside 'primNativeEntry' (the 'ckMachinePrims' blocklist) never reaches here
+-- — 'globPrimName' does not recognise it — but is reported defensively.
 compilePrimApp :: Text -> [(Icit, Term)] -> Gen Text
 compilePrimApp pname sargs =
   case ioPrimEntry pname of
@@ -2490,9 +2604,14 @@ compilePrimApp pname sargs =
       case pureDirectEntry pname of
         Just (helper, ar) -> compilePureDirect pname helper ar sargs
         Nothing ->
-          unsupported "primitive"
-            ("the LLVM backend (Milestone A) does not implement the primitive '"
-              <> pname <> "'; use the C backend")
+          case primNativeEntry pname of
+            -- A pure prim with no positional @kp_*@ helper: call its @kpf_*@
+            -- wrapper directly over the argument array (C's @cfn(arr)@ arm).
+            Just (cfn, ar, False) -> compilePureWrapper pname cfn ar sargs
+            _ ->
+              unsupported "primitive"
+                ("the LLVM backend does not implement the primitive '"
+                  <> pname <> "'; use the C backend")
 
 -- | Lower a saturated IO primitive to @knative_sat@ (M0 path, unchanged):
 -- build a stack @[N x ptr]@ arg array, store each compiled argument operand,
@@ -2547,71 +2666,82 @@ compilePureDirect pname helper ar sargs = do
           <> pname <> "' (got " <> T.pack (show (length explArgs))
           <> " of " <> T.pack (show ar) <> " arguments)")
 
+-- | Lower a saturated PURE primitive that has NO positional @kp_*@ helper to a
+-- direct call on its @kpf_*@ wrapper over an argument array: @call ptr \@kpf_X
+-- (ptr %argv)@ where @%argv@ is a stack @[ar x ptr]@ holding the compiled
+-- arguments.  This is the C backend's @cfn(arr)@ arm (C.hs:2121–2124) — the
+-- wrapper IS the runtime's single source of truth for the prim, so both
+-- backends emit the identical call.  A 0-arity pure prim never reaches here (it
+-- is a bare value, handled by 'compilePrimValue'); @ar@ is therefore ≥ 1 and the
+-- @alloca [ar x ptr]@ is well-formed.
+compilePureWrapper :: Text -> Text -> Int -> [(Icit, Term)] -> Gen Text
+compilePureWrapper pname cfn ar sargs = do
+  let explArgs = [a | (Expl, a) <- sargs]
+  if length explArgs == ar
+    then do
+      aes <- mapM compile explArgs
+      argv <- freshReg
+      emit (argv <> " = alloca [" <> T.pack (show ar) <> " x ptr], align 8")
+      forM_ (zip [0 :: Int ..] aes) $ \(i, ae) -> do
+        slot <- freshReg
+        emit (slot <> " = getelementptr inbounds [" <> T.pack (show ar)
+                <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show i) <> "")
+        emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
+      declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+      r <- freshReg
+      emit (r <> " = call ptr @" <> cfn <> "(ptr " <> argv <> ")")
+      pure r
+    else
+      unsupported "application"
+        ("the LLVM backend supports only a SATURATED application of '"
+          <> pname <> "' (got " <> T.pack (show (length explArgs))
+          <> " of " <> T.pack (show ar) <> " arguments)")
+
 -- ── LLVM primitive coverage (the only LLVM-local prim data) ──────────
 --
 -- The cfn/arity/isIO of every prim, and the @kp_*@ direct-helper subset, are
--- single-sourced in "Kappa.Backend.C" ('primEntries' / 'primDirect'). What is
--- LLVM-specific is only WHICH prims this backend has lowered so far — the two
--- coverage sets below. Every prim lowering ('ioPrimEntry'/'pureDirectEntry'/
--- 'primNativeEntry'/'pureDirectPrims') is a DERIVATION over the shared C tables
--- intersected with these sets, so a lowering can never disagree with the C
--- backend on a prim's entry point, arity, or IO-ness — the two backends emit
--- the identical runtime call for any prim both cover.
+-- single-sourced in "Kappa.Backend.C" ('primEntries' / 'primDirect').  What is
+-- LLVM-specific is only WHICH prims this backend lowers — and as of Milestone I
+-- that is EVERY 'primEntries' member except the 'ckMachinePrims' blocklist
+-- ('lowerablePrim').  Every prim lowering ('ioPrimEntry'/'pureDirectEntry'/
+-- 'primNativeEntry') is a DERIVATION over the shared C tables, so a lowering can
+-- never disagree with the C backend on a prim's entry point, arity, or IO-ness —
+-- the two backends emit the identical runtime call for any prim both cover.
 
--- | The IO prims the LLVM backend has lowered (M0 print + Milestone-E do-kernel
--- monadic prims). Their (entry point, arity, isIO=True) come from 'primEntries'.
-llvmIoSet :: Set Text
-llvmIoSet =
-  Set.fromList
-    [ "printlnString", "printString" -- M0 IO prims
-    , "ioPure", "ioBind", "ioThen" -- Milestone E do-kernel monadic prims
-    , "newRef", "readRef", "writeRef" -- Milestone G mutable cells (§18.6.1)
-    ]
+-- | A prim is lowerable iff it is a 'primEntries' member and NOT in the
+-- 'ckMachinePrims' blocklist (which needs the CK-machine, not the synchronous
+-- bridge).  The single gate every coverage query derives from.
+lowerablePrim :: Text -> Maybe PrimEntry
+lowerablePrim name
+  | name `Set.member` ckMachinePrims = Nothing
+  | otherwise = Map.lookup name primEntries
 
--- | The pure first-order prims the LLVM backend has lowered: Milestone A's
--- Integer arithmetic/comparison/@show@, widened in Milestone B to the String
--- ops and Integer bitwise ops. Each has a @kp_*@ direct helper in 'primDirect'
--- and a @kpf_*@ wrapper in 'primEntries'. Deliberately NOT yet covered (their
--- literals are not lowered, so no caller can build an argument): the Double,
--- Scalar (Char), and Byte helpers.
-llvmPureSet :: Set Text
-llvmPureSet =
-  Set.fromList
-    [ "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
-    , "eqInt", "ltInt", "leInt", "showInt"
-    , "stringAppend", "eqStr", "ltStr", "showStringLit"
-    , "__intAnd", "__intOr", "__intXor"
-    ]
-
--- | The (entry point, arity) of an IO primitive the LLVM backend lowers,
--- derived from the shared 'primEntries' restricted to 'llvmIoSet'. A SATURATED
--- @ioPure@/@ioBind@/@ioThen@ lowers to @knative_sat(kpf_io_*, …, isio=1)@ — the
--- SAME lowering the C backend gives these names.
+-- | The (entry point, arity) of a lowerable IO primitive, from the shared
+-- 'primEntries'.  A saturated IO prim lowers to @knative_sat(cfn, ar, argv, 1)@
+-- — the SAME lowering the C backend gives it (C.hs:2113–2117).
 ioPrimEntry :: Text -> Maybe (Text, Int)
 ioPrimEntry name = do
-  PrimEntry cfn arity isIO <- Map.lookup name primEntries
-  if isIO && name `Set.member` llvmIoSet then Just (cfn, arity) else Nothing
+  PrimEntry cfn arity isIO <- lowerablePrim name
+  if isIO then Just (cfn, arity) else Nothing
 
--- | The (direct @kp_*@ helper, arity) of a pure first-order primitive the LLVM
--- backend lowers, derived from the shared 'primDirect' restricted to
--- 'llvmPureSet'. A saturated call emits the identical runtime call in both
--- backends (e.g. @kp_addInt(a,b)@).
+-- | The (direct @kp_*@ helper, arity) of a lowerable PURE primitive that HAS a
+-- positional fast-path helper in the shared 'primDirect'.  A saturated call
+-- emits the identical runtime call in both backends (e.g. @kp_addInt(a,b)@).
+-- A pure prim WITHOUT such a helper is lowered via 'primNativeEntry' instead
+-- (the @kpf_*(arr)@ array call) — exactly the C backend's fallback arm.
 pureDirectEntry :: Text -> Maybe (Text, Int)
-pureDirectEntry name =
-  if name `Set.member` llvmPureSet then primDirect name else Nothing
+pureDirectEntry name = do
+  PrimEntry _ _ isIO <- lowerablePrim name
+  if isIO then Nothing else primDirect name
 
--- | The names in 'pureDirectEntry' — the pure prims registered into @gsPrims@
--- ('basePrims') so 'globPrimName' recognises them.
-pureDirectPrims :: [Text]
-pureDirectPrims = Set.toList llvmPureSet
-
--- | The CURRIED native-closure form of a prim — its @kpf_*@ wrapper entry
--- point, arity, and IO-ness — for the prim set this backend lowers. Used when
--- a prim appears as a VALUE (a bare reference, or a partial/over-saturated
--- application): the prim is built as @knative(\@kpf_*, arity, name, isio)@, the
--- same curried closure the C backend's 'emitPrim' builds. Derived from the
--- shared 'primEntries' restricted to the LLVM coverage sets, so the wrapper
--- symbol/arity/isIO always agree with the C backend.
+-- | The CURRIED native-closure form of a lowerable prim — its @kpf_*@ wrapper
+-- entry point, arity, and IO-ness.  Used when a prim appears as a VALUE (a bare
+-- reference, or a partial/over-saturated application): the prim is built as
+-- @knative(\@kpf_*, arity, name, isio)@, the same curried closure the C
+-- backend's 'emitPrim' builds.  Also the source for the saturated PURE-with-no-
+-- @kp_*@-helper @kpf_*(arr)@ arm in 'compilePrimApp'.  Derived from the shared
+-- 'primEntries', so the wrapper symbol/arity/isIO always agree with the C
+-- backend.
 --
 -- NOTE the @kpf_*@ wrapper is DISTINCT from the @kp_*@ direct helper
 -- ('pureDirectEntry'): @kp_addInt(a,b)@ is the saturated fast call, whereas
@@ -2619,10 +2749,8 @@ pureDirectPrims = Set.toList llvmPureSet
 -- curried argument at a time.
 primNativeEntry :: Text -> Maybe (Text, Int, Bool)
 primNativeEntry name = do
-  PrimEntry cfn arity isIO <- Map.lookup name primEntries
-  if name `Set.member` llvmIoSet || name `Set.member` llvmPureSet
-    then Just (cfn, arity, isIO)
-    else Nothing
+  PrimEntry cfn arity isIO <- lowerablePrim name
+  Just (cfn, arity, isIO)
 
 -- | The runtime primitive name a global resolves to, if any (a @__prim@
 -- module name, or a prelude @prim@ registration whose value is a bare

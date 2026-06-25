@@ -1,0 +1,13 @@
+-- Milestone I (Part 1): a previously-UNCOVERED prim used as a curried VALUE.
+-- `natToInt` (Nat -> Int) has NO kp_* direct helper, only a kpf_* wrapper, and
+-- was outside the old coverage set.  Here it is passed to the higher-order
+-- `apply` as a function value, so it lowers to the curried native closure
+-- `knative(kpf_natToInt, 1, "natToInt", 0)` ('compilePrimValue') and is driven
+-- through kapp.  `apply natToInt (natOfInt 7)` = natToInt (natOfInt 7) = 7.
+module main
+
+apply : forall (a : Type) (b : Type). (a -> b) -> a -> b
+let apply f x = f x
+
+main : UIO Unit
+let main = printlnString (showInt (apply natToInt (natOfInt 7)))

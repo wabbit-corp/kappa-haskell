@@ -1,0 +1,18 @@
+-- Milestone I (Part 2): a Byte LITERAL VALUE.  `b'\x41'` ('A', 0x41) is built
+-- as a runtime Byte via 'compileLit' (kbyte(i8 65)) — the VALUE form, not just
+-- the pattern form.  Three uses drive that value through prims: `showByte`
+-- renders its literal text; `eqByte` compares two byte literals (a saturated
+-- pure prim with a kp_* helper); and `singletonByte` folds the literal into a
+-- Bytes whose `showBytes` is its hex.  Each forces the literal as a real KValue.
+module main
+
+import std.bytes.*
+
+sameH : String
+let sameH = if eqByte b'\x68' b'\x68' then "yes" else "no"
+
+main : UIO Unit
+let main = do
+    printlnString (showByte b'\x41')             -- b'\x41'
+    printlnString sameH                          -- yes
+    printlnString (showBytes (singletonByte b'\x69'))  -- 0x69

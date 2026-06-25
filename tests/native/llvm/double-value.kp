@@ -1,0 +1,18 @@
+-- Milestone I (Part 2): Double LITERAL VALUES.  Each `<lit> : Double` is built
+-- via 'compileLit' (kdbl(double 0x<IEEE-754 bits>)) — the bit-exact hex form,
+-- so the boxed value is identical to the C backend's kdbl(<decimal>) regardless
+-- of how each parser rounds.  `showDouble` (the prim behind `println @Double`)
+-- renders the shortest round-trip text, which must match interp == C == LLVM.
+-- These cover the tricky cases: e-notation thresholds, a negative, and a value
+-- (0.1) whose shortest decimal is NOT its exact binary value.
+module main
+
+main : UIO Unit
+let main = do
+    println (3.14 : Double)
+    println (0.1 : Double)
+    println (1.0e20 : Double)
+    println (0.001 : Double)
+    println (negate 2.5 : Double)
+    println (123.456 : Double)
+    println (10000000.0 : Double)

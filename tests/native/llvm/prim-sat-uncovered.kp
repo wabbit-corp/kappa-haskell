@@ -1,0 +1,10 @@
+-- Milestone I (Part 1): a SATURATED call of a previously-uncovered prim.
+-- `natToInt` / `natOfInt` are pure prims with NO kp_* positional helper, only a
+-- kpf_* wrapper, so a saturated `natToInt (natOfInt n)` exercises the new
+-- pure-wrapper arm of 'compilePrimApp' (a direct `kpf_natToInt(argv)` call over
+-- a stack argument array — the C backend's cfn(arr) path), NOT the kp_* fast
+-- call.  natToInt (natOfInt (addInt 40 2)) = 42.
+module main
+
+main : UIO Unit
+let main = printlnString (showInt (natToInt (natOfInt (addInt 40 2))))
