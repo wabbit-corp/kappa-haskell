@@ -1,0 +1,11 @@
+-- Milestone H: a function RETURNING a record, then projecting a field of the
+-- result.  `mkPoint` builds the record in its (tail) body — a record value flows
+-- through compileTail unchanged — and the caller projects `.y`.
+-- Expected stdout: `20`.
+module main
+
+mkPoint : Int -> Int -> (x : Int, y : Int)
+let mkPoint a b = (x = a, y = b)
+
+main : UIO Unit
+let main = printlnString (showInt (mkPoint 10 20).y)

@@ -1,0 +1,14 @@
+-- Milestone H: a record field that is itself COMPUTED (an arithmetic expression
+-- and a function-call result), plus a third literal field declared out of order.
+-- The field operands are evaluated before the krec call; projecting `.sum` and
+-- `.prod` reads the computed slots.  Expected stdout: `30\n200`.
+module main
+
+double : Int -> Int
+let double n = mulInt n 2
+
+main : UIO Unit
+let main = do
+    let r = (sum = addInt 10 20, base = 5, prod = double 100)
+    printlnString (showInt r.sum)
+    printlnString (showInt r.prod)

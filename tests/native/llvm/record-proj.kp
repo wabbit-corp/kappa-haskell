@@ -1,0 +1,9 @@
+-- Milestone H: build a record and project a numeric field.  `r.age` lowers to a
+-- name-based kproj (or a krec_at offset, per elaboration) reading the K_REC slot.
+-- Expected stdout: `36`.
+module main
+
+main : UIO Unit
+let main = do
+    let r = (name = "ada", age = 36)
+    printlnString (showInt r.age)

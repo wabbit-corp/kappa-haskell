@@ -1,0 +1,10 @@
+-- Milestone H: a NESTED record — a record field holding a record — projected
+-- twice (`outer.inner.b`).  The outer projection yields a K_REC, the inner one
+-- projects a field of THAT record, so the two projections compose.
+-- Expected stdout: `42`.
+module main
+
+main : UIO Unit
+let main = do
+    let outer = (inner = (a = 41, b = 42), tag = 7)
+    printlnString (showInt outer.inner.b)

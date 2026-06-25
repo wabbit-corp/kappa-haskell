@@ -584,6 +584,17 @@ compile term = case term of
   CIf c t e -> compileIf c t e
   CMatch scrut alts -> compileMatch scrut alts
   CDo lbl items -> compileDo lbl items
+  -- Records (Milestone H) — a record VALUE, a name-based projection, and a
+  -- precomputed-offset projection.  All three are plain values, so 'compileTail'
+  -- routes them here unchanged (its @_ -> compile term@ fallback).
+  CRecordV fs -> compileRecord fs
+  CProj e f -> compileProj e f
+  CProjAt e _ i -> compileProjAt e i
+  -- A record TYPE is type-level / quantity-0 erased (§12.2): if one ever reaches
+  -- value position it is the unit placeholder, never inspected (mirrors C's
+  -- @CRecordT _ -> kunit()@).  Keeps an erased record type from being reported as
+  -- an unsupported "record".
+  CRecordT _ -> compileUnit
   _ ->
     unsupported "term"
       ("the LLVM backend M0 cannot lower this construct: " <> constructName term)
@@ -805,6 +816,109 @@ compileCtor g args = do
       emit (r <> " = call ptr @kctor(i32 " <> tagOp <> ", ptr " <> nameG
               <> ", i32 " <> T.pack (show argc) <> ", ptr " <> arr <> ")")
       pure r
+
+-- ── Records (Milestone H) ────────────────────────────────────────────
+
+-- | The unit placeholder operand (@call ptr \@kunit()@) — used for an erased
+-- type-level term that reaches value position (e.g. a 'CRecordT').
+compileUnit :: Gen Text
+compileUnit = do
+  declRuntime "declare ptr @kunit()"
+  r <- freshReg
+  emit (r <> " = call ptr @kunit()")
+  pure r
+
+-- | A record VALUE (mirrors C's 'compileRecord').  The fields arrive in canonical
+-- lexicographic order — the SAME order the @K_REC@ runtime layout expects — so we
+-- preserve it.  The runtime constructor is
+--
+--   @KValue *krec(int n, const char **names, KValue **vals)@
+--
+-- which STORES the @names@ pointer without copying (the labels are compile-time
+-- literals) and COPIES @vals@ into a GC array (runtime/kappart.c:322).  So:
+--
+--   * the NAMES array must OUTLIVE this frame — emit it as a module-level
+--     @private constant [n x ptr]@ of pointers to the interned field-name
+--     C-strings (the LLVM analogue of C's @static const char*[]@).  A record
+--     built in a CAF/closure and projected later would otherwise read a dangling
+--     stack array.
+--   * the VALS array can be a per-call @alloca@ (krec copies it immediately),
+--     exactly like 'compileCtor' materialises its field array.
+--
+-- The argument shape matches the C backend EXACTLY: a wrong field order or a
+-- missing name array breaks the name-based 'kproj' path.
+compileRecord :: [(Text, Term)] -> Gen Text
+compileRecord fs = do
+  let n = length fs
+  -- Compile each field value (in canonical order) BEFORE materialising arrays,
+  -- so any instructions the fields emit land before the krec call.  A type-level
+  -- field erases to @kunit()@ ('compileErasableArg'), exactly as C's
+  -- 'compileRecord' does — so an erased field never reports unsupported.
+  valEs <- mapM (compileErasableArg . snd) fs
+  -- The names array: a module-level constant of pointers to interned C-strings.
+  nameGs <- mapM (internCStr . fst) fs
+  namesArr <- freshNamesGlobal nameGs
+  declRuntime "declare ptr @krec(i32, ptr, ptr)"
+  if n == 0
+    then do
+      -- An empty record: no vals array needed (krec stores NULL for n==0).
+      r <- freshReg
+      emit (r <> " = call ptr @krec(i32 0, ptr " <> namesArr <> ", ptr null)")
+      pure r
+    else do
+      valsArr <- freshReg
+      emit (valsArr <> " = alloca [" <> T.pack (show n) <> " x ptr], align 8")
+      forM_ (zip [0 :: Int ..] valEs) $ \(i, ve) -> do
+        slot <- freshReg
+        emit (slot <> " = getelementptr inbounds [" <> T.pack (show n)
+                <> " x ptr], ptr " <> valsArr <> ", i64 0, i64 " <> T.pack (show i) <> "")
+        emit ("store ptr " <> ve <> ", ptr " <> slot <> ", align 8")
+      r <- freshReg
+      emit (r <> " = call ptr @krec(i32 " <> T.pack (show n) <> ", ptr " <> namesArr
+              <> ", ptr " <> valsArr <> ")")
+      pure r
+
+-- | Emit a module-level @[n x ptr]@ constant holding the given interned-C-string
+-- globals (the field-name pointer array @krec@ stores).  Returns its global name.
+-- Lives in 'gsGlobalsExtra' (rendered alongside the @.cache@ globals) so it
+-- outlives every call frame, matching C's @static const char*[]@.
+freshNamesGlobal :: [Text] -> Gen Text
+freshNamesGlobal nameGs = do
+  k <- gets gsFresh
+  modify' $ \g -> g {gsFresh = k + 1}
+  let gname = "@.rnames." <> T.pack (show k)
+      n = length nameGs
+      elems = T.intercalate ", " ["ptr " <> ng | ng <- nameGs]
+      def = gname <> " = private unnamed_addr constant [" <> T.pack (show n)
+              <> " x ptr] [" <> elems <> "], align 8"
+  modify' $ \g -> g {gsGlobalsExtra = def : gsGlobalsExtra g}
+  pure gname
+
+-- | A name-based projection (mirrors C's @kproj(rec, "f")@).  Compile the record
+-- to an operand, intern the field name as a C-string, and call
+-- @KValue *kproj(KValue *rec, const char *name)@.  This is the path used for dict
+-- members (trait-method access) and open/sealed records — a strcmp scan over the
+-- record's stored name array (which is exactly why 'compileRecord' must store it).
+compileProj :: Term -> Text -> Gen Text
+compileProj e f = do
+  rec <- compile e
+  nameG <- internCStr f
+  declRuntime "declare ptr @kproj(ptr, ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @kproj(ptr " <> rec <> ", ptr " <> nameG <> ")")
+  pure r
+
+-- | A precomputed-offset projection (mirrors C's @krec_at(rec, i)@).  The index
+-- @i@ is @f@'s slot in the lexicographically-sorted field list (elaboration's
+-- closed-record fast path), so this reads the field at a fixed offset with no
+-- name scan: @KValue *krec_at(KValue *rec, int i)@.
+compileProjAt :: Term -> Int -> Gen Text
+compileProjAt e i = do
+  rec <- compile e
+  declRuntime "declare ptr @krec_at(ptr, i32)"
+  r <- freshReg
+  emit (r <> " = call ptr @krec_at(ptr " <> rec <> ", i32 " <> T.pack (show i) <> ")")
+  pure r
 
 -- ── if (Milestone C) ─────────────────────────────────────────────────
 

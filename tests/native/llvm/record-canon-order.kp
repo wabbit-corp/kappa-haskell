@@ -1,0 +1,13 @@
+-- Milestone H: a record whose fields are written OUT of lexicographic order
+-- (`zeta`, `alpha`, `mid`).  Elaboration canonicalises CRecordV to lex order
+-- (alpha, mid, zeta), so the K_REC slots and the field-name array must agree —
+-- projecting each by name proves canonicalisation + the stored name array line up.
+-- Expected stdout: `1\n2\n3`.
+module main
+
+main : UIO Unit
+let main = do
+    let r = (zeta = 3, alpha = 1, mid = 2)
+    printlnString (showInt r.alpha)
+    printlnString (showInt r.mid)
+    printlnString (showInt r.zeta)
