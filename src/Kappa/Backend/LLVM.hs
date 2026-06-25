@@ -3153,8 +3153,8 @@ compilePrimApp pname sargs
   -- before the generic 'ioPrimEntry'/@knative_sat@ arm (mirrors how the C
   -- backend special-cases catchIO/finallyIO/throwIO to @krt2_*@ in
   -- 'compileAppGlob', and how this backend would otherwise mis-run a do-block
-  -- body through the bridge — the M-I divergence).  See 'compileExnNode'.
-  | Just r <- exnNodeBuilder pname = compileExnNode pname r sargs
+  -- body through the bridge — the M-I divergence).  See 'compileIoNode'.
+  | Just r <- ioNodeBuilder pname = compileIoNode pname r sargs
 compilePrimApp pname sargs =
   case ioPrimEntry pname of
     Just (cfn, ar) -> compileIoSat pname cfn ar sargs
@@ -3189,8 +3189,20 @@ compilePrimApp pname sargs =
 -- the runtime catch/finally node drives it, body effects and the thrown value
 -- included.  @handler@ is a function value (@e -> IO a@) compiled to a closure;
 -- @err@/@cause@ are plain values.  Mirrors C.hs:2014–2035 (just always-on).
-exnNodeBuilder :: Text -> Maybe (Text, Int)
-exnNodeBuilder = \case
+ioNodeBuilder :: Text -> Maybe (Text, Int)
+ioNodeBuilder = \case
+  -- §18.1 IO MONAD ops: an EXPLICIT ioBind/ioThen/ioPure (e.g. the body of
+  -- liftA2/<*>/traverse, applied OUTSIDE a do-block) MUST take the uniform
+  -- CK-machine path.  The synchronous kpf_io_ioBind bridge ('compileIoSat')
+  -- cannot DRIVE a krt2_bind action tree (a do-block-valued action), so it
+  -- silently yields a wrong-typed value — the same divergence class as catchIO
+  -- over a do-block.  (The do-kernel 'compileDo' lowers its OWN binds; this arm
+  -- only catches explicit applications — exactly where liftA2/traverse broke
+  -- delve's loadActors.)
+  "ioBind" -> Just ("krt2_bind", 2)
+  "ioThen" -> Just ("krt2_then", 2)
+  "ioPure" -> Just ("krt2_pure", 1)
+  -- exception ops (Milestone M)
   "catchIO" -> Just ("krt2_catch", 2)
   "finallyIO" -> Just ("krt2_finally", 2)
   "throwIO" -> Just ("krt2_throw", 1)
@@ -3198,15 +3210,15 @@ exnNodeBuilder = \case
   _ -> Nothing
 
 -- | Lower a saturated exception op to its @krt2_*@ node-builder
--- ('exnNodeBuilder').  Each explicit argument is compiled to an operand
+-- ('ioNodeBuilder').  Each explicit argument is compiled to an operand
 -- (a body/fin to a CK-machine ACTION, a handler to a closure, an err/cause to a
 -- value — all via 'compileErasableArg', exactly as the C backend), then the
 -- single @call ptr \@krt2_X(...)@ returns the node.  A CURRIED / under- or
 -- over-saturated occurrence (rare) is NOT routed here — the caller only reaches
 -- 'compilePrimApp' for a SATURATED spine ('saturatedPrim'); a partial one stays
 -- a curried @knative@ closure ('compilePrimValue'), where the runtime drives it.
-compileExnNode :: Text -> (Text, Int) -> [(Icit, Term)] -> Gen Text
-compileExnNode pname (builder, ar) sargs = do
+compileIoNode :: Text -> (Text, Int) -> [(Icit, Term)] -> Gen Text
+compileIoNode pname (builder, ar) sargs = do
   let explArgs = [a | (Expl, a) <- sargs]
   if length explArgs == ar
     then do
