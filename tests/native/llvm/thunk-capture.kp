@@ -1,0 +1,13 @@
+-- Milestone J: a THUNK that CAPTURES a local var.  `base` is a let-bound local
+-- (env slot, de Bruijn 0 at the thunk site); `thunk (addInt base 19)` suspends an
+-- expression that READS it.  The lifted thunk function captures the CURRENT env
+-- directly (the kthunk's `env` argument is the enclosing chain, no kpush), so the
+-- delayed expression's de Bruijn index for `base` reads the captured slot via
+-- kvar UNCHANGED when forced.  base = 123; force (thunk (addInt base 19)) = 142.
+module main
+
+main : UIO Unit
+let main =
+    let base = addInt 100 23
+    in let t = thunk (addInt base 19)
+    in printlnString (showInt (force t))

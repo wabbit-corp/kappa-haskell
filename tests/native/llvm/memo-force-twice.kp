@@ -1,0 +1,14 @@
+-- Milestone J: a §19 MEMO thunk (CLazyE) forced TWICE.  `lazy e` builds a kthunk
+-- with the memo flag set (i32 1), so the FIRST `force` evaluates `e` and caches
+-- the result, and the SECOND `force` returns the cached value (Delay, i32 0,
+-- would re-evaluate — same value here since `e` is pure, so the cache is an
+-- efficiency property, not an observable one).  Both forces yield 42; 42+42 = 84,
+-- confirming kforce drives a CLazyE correctly across repeated forces.
+module main
+
+main : UIO Unit
+let main =
+    let t = lazy (mulInt 6 7)
+    in let a = force t
+    in let b = force t
+    in printlnString (showInt (addInt a b))

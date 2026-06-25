@@ -630,6 +630,13 @@ compile term = case term of
   CVar i -> compileVar i
   CLam _ _ _ body -> compileLam body
   CLet _ _ _ rhs body -> compileLet rhs body
+  -- Milestone J: a recursive local let — the body is in expression position
+  -- here, so the body-compiler is plain 'compile'.
+  CLetRec _ _ _ rhs body -> compileLetRecWith compile rhs body
+  -- §19 suspensions: Delay re-evaluates on force; Memo caches (memo flag).
+  CThunkE e -> compileSuspension 0 e
+  CLazyE e -> compileSuspension 1 e
+  CForceE e -> compileForce e
   CCtor g args -> compileCtor g args
   CIf c t e -> compileIf c t e
   CMatch scrut alts -> compileMatch scrut alts
@@ -699,6 +706,13 @@ compileTail term = case term of
     pure bv
   CIf c t e -> compileIfWith compileTail c t e
   CMatch scrut alts -> compileMatchWith compileTail scrut alts
+  -- Milestone J: a recursive local let whose BODY is in tail position — thread
+  -- the tail-ness through to the body (the body-compiler is 'compileTail') so a
+  -- tail self-call inside it still lowers to a @kbounce@ and deep local
+  -- recursion stays stack-safe.
+  CLetRec _ _ _ rhs body -> compileLetRecWith compileTail rhs body
+  -- A force is a value (the forced thunk's result); compile it and return it.
+  CForceE e -> compileForce e
   -- Every other form is a value (or a non-bouncing construct): compile it
   -- normally and return it.  A CLam here is a closure value, NOT a bounce.
   _ -> compile term
@@ -781,6 +795,101 @@ compileLet rhs body = do
   bv <- compile body
   modify' $ \g -> g {gsEnv = env0}
   pure bv
+
+-- ── Recursive local let + suspensions (Milestone J) ──────────────────
+
+-- | A recursive local @let@ ('CLetRec' @q name ty rhs body@ — only @rhs@ and
+-- @body@ matter here, and BOTH live UNDER the binder, i.e. de Bruijn index 0 in
+-- each refers to the let-bound name).  Mirrors the C backend's backpatch
+-- fixpoint (C.hs:2541, docs/NATIVE_BACKEND.md §5):
+--
+--   * push a PLACEHOLDER slot @%e2 = call ptr \@kpush(ptr <kunit()>, ptr %env0)@
+--     — the binder is de Bruijn 0 in @%e2@;
+--   * compile @rhs@ with 'gsEnv' := @%e2@.  For a recursive lambda the rhs is a
+--     @kclo@ that CAPTURES @%e2@ but does not read the slot until applied, so a
+--     self-reference inside it reads @kvar(%e2, 0)@ at RUN time — by which point
+--     the slot has been backpatched to the real rhs value;
+--   * backpatch @call void \@kenv_set_val(ptr %e2, ptr %re)@ — overwrite the
+--     placeholder with the real rhs operand (the runtime helper added in PART 0,
+--     since this backend's opaque @ptr@ cannot write @e2->val@ directly the way
+--     the C backend does);
+--   * compile @body@ with 'gsEnv' := @%e2@ using the supplied body-compiler
+--     (@compile@ in expression position, @compileTail@ in tail position — this
+--     is what threads tail-ness through so deep local recursion is stack-safe);
+--   * restore 'gsEnv' to @%env0@ afterwards.
+compileLetRecWith :: (Term -> Gen Text) -> Term -> Term -> Gen Text
+compileLetRecWith compileBody rhs body = do
+  env0 <- gets gsEnv
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  declRuntime "declare ptr @kunit()"
+  declRuntime "declare void @kenv_set_val(ptr, ptr)"
+  -- The placeholder slot: a unit value the rhs never reads before backpatch.
+  ph <- freshReg
+  emit (ph <> " = call ptr @kunit()")
+  e2 <- freshReg
+  emit (e2 <> " = call ptr @kpush(ptr " <> ph <> ", ptr " <> env0 <> ")")
+  -- Compile the rhs under %e2 (it captures the binder cell but does not read it
+  -- until run time); then backpatch the slot to the real rhs value.
+  modify' $ \g -> g {gsEnv = e2}
+  re <- compile rhs
+  emit ("call void @kenv_set_val(ptr " <> e2 <> ", ptr " <> re <> ")")
+  -- Compile the body under %e2 (with whatever tail-ness the caller threaded in).
+  bv <- compileBody body
+  modify' $ \g -> g {gsEnv = env0}
+  pure bv
+
+-- | A §19 suspension (mirrors C's 'compileSuspension', C.hs:3150): lift the
+-- delayed expression @e@ into a fresh ONE-ARG thunk function and build a
+-- @kthunk@ over it.  @memo@ is 0 for Delay ('CThunkE', re-evaluate each force)
+-- and 1 for Memo ('CLazyE', cache on first force).
+--
+-- The thunk function is @KIOFn = KValue*(*)(KEnv*)@ — a ONE-ARG (env only)
+-- function, NOT the two-arg @kfn@ closure shape:
+--   @define internal ptr \@kthn_N(ptr %env) { <compile e with gsEnv := %env> }@.
+-- The thunk captures the CURRENT env DIRECTLY (no @kpush@): @e@'s de Bruijn
+-- indices read @%env@ as-is, since the suspension introduces no binder.  At the
+-- use site: @call ptr \@kthunk(ptr \@kthn_N, ptr <gsEnv>, i32 <memo>)@.
+compileSuspension :: Int -> Term -> Gen Text
+compileSuspension memo e = do
+  fnIdent <- freshLabel "kthn_"
+  capturedEnv <- gets gsEnv
+  declRuntime "declare ptr @kthunk(ptr, ptr, i32)"
+  -- Compile @e@ in its OWN buffer with the thunk's %env as the env operand (no
+  -- kpush: the delayed expression reads the captured chain unchanged).
+  (bodyInsns, _endBlock, resultOp) <- captured "%env" (compile e)
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %env) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  r <- freshReg
+  emit
+    ( r
+        <> " = call ptr @kthunk(ptr @"
+        <> fnIdent
+        <> ", ptr "
+        <> capturedEnv
+        <> ", i32 "
+        <> T.pack (show memo)
+        <> ")"
+    )
+  pure r
+
+-- | A §19 @force@ ('CForceE'): @call ptr \@kforce(ptr %v)@ where @%v@ is the
+-- compiled thunk operand (mirrors C.hs:1382).  In tail position this is still a
+-- value — 'compileTail' returns it.
+compileForce :: Term -> Gen Text
+compileForce e = do
+  ve <- compile e
+  declRuntime "declare ptr @kforce(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @kforce(ptr " <> ve <> ")")
+  pure r
 
 -- ── Lambdas / closures (Milestone D) ─────────────────────────────────
 

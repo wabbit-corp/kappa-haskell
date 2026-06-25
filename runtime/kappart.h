@@ -183,6 +183,7 @@ KValue *kbytes(const unsigned char *p, size_t len);  /* §29.5 byte sequence   *
 /* ── environment ───────────────────────────────────────────────────── */
 KEnv   *kpush(KValue *v, KEnv *e);
 KValue *kvar(KEnv *e, int ix);
+void    kenv_set_val(KEnv *e, KValue *v);  /* backpatch a pushed env slot (CLetRec) */
 
 /* ── application ───────────────────────────────────────────────────── */
 KValue *kapp(KValue *f, KValue *x);   /* explicit application (drains tail bounces) */

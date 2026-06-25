@@ -1,0 +1,24 @@
+-- Milestone J: a DEEP recursive LOCAL let (CLetRec) — the stack-safety proof for
+-- local recursion.  `loop` is a recursive local function (CLetRec); its self-call
+-- `loop (subInt n 1)` is in TAIL position, so the body — compiled with the
+-- tail-threading body-compiler (compileTail) — lowers it to a `kbounce` rather
+-- than a nested kapp.  The driving kapp's trampoline drains the bounce, so the C
+-- stack stays CONSTANT no matter how deep the local recursion goes.
+--
+-- The depth here (5000) is bounded by the INTERPRETER, not the backend: the
+-- interpreter re-normalizes the let-rec closure environment each step (super-
+-- linear), so the parity harness (interp == C == LLVM, 30s budget) caps it there.
+-- The NATIVE binaries are far stronger — both the C and LLVM binaries survive
+-- 5_000_000 by hand with the C stack flat, conclusive evidence the trampoline is
+-- load-bearing for local recursion (a non-bounced lowering overflows at a few
+-- hundred-thousand frames).  Returns 42, proving the recursion ran all the way.
+module main
+
+deepLocal : Int -> Int
+let deepLocal m =
+    let loop : Int -> Int = \n ->
+        if leInt n 0 then 42 else loop (subInt n 1)
+    in loop m
+
+main : UIO Unit
+let main = printlnString (showInt (deepLocal 5000))

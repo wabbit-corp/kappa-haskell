@@ -1,0 +1,11 @@
+-- Milestone J: a §19 DELAY/FORCE pair (CThunkE + CForceE).  `thunk e` suspends
+-- `e` into a kthunk over a lifted ONE-ARG thunk function (KIOFn = ptr(ptr)) that
+-- captures the current env directly (no kpush — the suspension binds nothing);
+-- `force t` runs `kforce(t)` to drive that function and yield its value.
+-- force (thunk (addInt 40 2)) = 42.
+module main
+
+main : UIO Unit
+let main =
+    let t = thunk (addInt 40 2)
+    in printlnString (showInt (force t))

@@ -617,6 +617,12 @@ KValue *kvar(KEnv *e, int ix) {
   return e->val;
 }
 
+/* Backpatch a pushed env slot's value (the CLetRec fixpoint, §5): the LLVM
+ * backend pushes a placeholder slot, compiles the rhs capturing that slot,
+ * then writes the real rhs value back into it.  The C backend writes the
+ * struct field directly; the LLVM backend uses opaque ptr and needs this. */
+void kenv_set_val(KEnv *e, KValue *v) { e->val = v; }
+
 /* ── native-action firing ─────────────────────────────────────────── */
 
 /* §27.1.1: accumulate one argument onto a curried native action. */

@@ -1,0 +1,19 @@
+-- Milestone J: a RECURSIVE LOCAL let (CLetRec).  `sumTo` introduces a local
+-- function `go` via an ANNOTATED self-referencing lambda — `let go : ... = \... ->`
+-- whose body calls `go` — which the elaborator lowers to a `CLetRec` (the binder
+-- is in scope inside its own rhs).  The LLVM backend lowers CLetRec with the
+-- backpatch fixpoint (kenv_set_val): it pushes a PLACEHOLDER env slot, builds the
+-- rhs (a kclo that CAPTURES the slot), then `kenv_set_val` writes the real closure
+-- back into the slot.  A self-call inside `go` reads that slot via kvar at RUN
+-- time — by which point it holds the real closure, so the recursion resolves.
+-- go 0 5 = 5+4+3+2+1+0 = 15.
+module main
+
+sumTo : Int -> Int
+let sumTo m =
+    let go : Int -> Int -> Int = \acc -> \n ->
+        if leInt n 0 then acc else go (addInt acc n) (subInt n 1)
+    in go 0 m
+
+main : UIO Unit
+let main = printlnString (showInt (sumTo 5))
