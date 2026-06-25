@@ -272,6 +272,7 @@ KValue  *kref_set(KValue *r, KValue *v);         /* returns Unit          */
 /* ── IO execution ──────────────────────────────────────────────────── */
 KValue  *krun_io(KValue *action);    /* run an IO action to a result      */
 KValue  *krun_io_checked(KValue *action); /* run IO; abort on uncaught typed failure */
+KValue  *krt2_run_op_sync(KValue *action); /* drive a non-suspending krt2_* OP node on the synchronous bridge (rt.c) */
 
 /* list helpers for `for` loops and FFI glue (Cons "::" / Nil) */
 KValue  *knil(void);

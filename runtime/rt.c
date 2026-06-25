@@ -162,6 +162,62 @@ KValue *krt2_finally(KValue *body, KValue *fin) {
 KValue *krt2_print_c(const char *s)   { return op1(OP_PRINT, "rt.print", kstr0(s)); }
 KValue *krt2_println_c(const char *s) { return op1(OP_PRINTLN, "rt.println", kstr0(s)); }
 
+/* ── synchronous bridge for CK-machine action nodes ─────────────────────────
+ * A do-bind whose action is an IO combinator that BUILDS a krt2_* node — e.g.
+ * the prelude's `liftA2 f a b = ioBind a (\x -> ioBind b (\y -> ioPure (f x y)))`,
+ * and `<*>`/`traverse`/`bracketM` — lowers that `ioBind`-over-PARAMETER to a
+ * krt2_bind node (mayActSuspend via spineHeadIsLocal), so the combinator RETURNS
+ * a krt2_* action tree.  But it is reached through the `Applicative (IO e)`
+ * dictionary, which the §3.3 (suspenderGlobals) analysis cannot see through, so
+ * the do-bind stays on the legacy `krun_io` bridge — which used to hit krun_io's
+ * `default` arm and bind the raw NODE (e.g. `r <- liftA2 f a b` gave a wrong-typed
+ * value: the `traverse`/delve crash, and the C != interp baseline gap).
+ *
+ * Drive the NON-suspending OPs here with exactly the legacy bridge's semantics
+ * (krun_io recursion for sub-actions; the kpf_io_catchIO fail/handler shape),
+ * trampolining bind/then/catch so a straight chain stays flat.  A genuinely
+ * suspending node (OP_FORK/OP_AWAIT/…) never reaches the bridge — those blocks
+ * are CPS-lowered onto the CK-machine — and a non-OP value (a data ctor, a
+ * `return`ed result) is returned unchanged.  (This is also why `catchIO (do …)`
+ * over a non-suspending do-block body now runs correctly on the bridge: its
+ * kpf_io_catchIO body runs through krun_io, which drives the krt2_* tree here.) */
+KValue *krt2_run_op_sync(KValue *action) {
+  for (;;) {
+    switch (kctor_tagid(action)) {
+      case OP_PURE:
+        return kctor_arg(action, 0);
+      case OP_BIND: {
+        KValue *r = krun_io(kctor_arg(action, 0));
+        if (kis_fail(r)) return r;
+        action = kapp(kctor_arg(action, 1), r);
+        if (kctor_tagid(action) >= KRT2_OP_BASE) continue; /* another OP tree: trampoline */
+        return krun_io(action);                            /* legacy node / value: run it */
+      }
+      case OP_THEN: {
+        KValue *r = krun_io(kctor_arg(action, 0));
+        if (kis_fail(r)) return r;
+        action = kctor_arg(action, 1);
+        if (kctor_tagid(action) >= KRT2_OP_BASE) continue;
+        return krun_io(action);
+      }
+      case OP_CATCH: {
+        KValue *r = krun_io(kctor_arg(action, 0));
+        if (!kis_fail(r)) return r;
+        action = kapp(kctor_arg(action, 1), r->as.fail.err); /* run handler on the error */
+        if (kctor_tagid(action) >= KRT2_OP_BASE) continue;
+        return krun_io(action);
+      }
+      case OP_THROW:
+        return kfail(kctor_arg(action, 0));
+      default:
+        /* not a non-suspending OP node: a value / data ctor (returned as-is), or
+         * a node the synchronous bridge does not drive (never a codegen-reachable
+         * suspending OP — those are CPS-lowered onto the CK-machine). */
+        return action;
+    }
+  }
+}
+
 /* The while-loop's per-iteration branch: \cond_result ->
  *   if True then doscope(body) (run an iteration), else break (exit the loop).
  * `body` is captured in env[0].  After an iteration's doscope completes

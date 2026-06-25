@@ -2185,8 +2185,14 @@ KValue *krun_io(KValue *action) {
       return krun_finish(r, discard, defers);
     }
     default:
-      /* a pure value used in IO position (e.g. a `return`ed result) */
-      return krun_finish(action, discard, defers);
+      /* A pure value used in IO position (a `return`ed result, a data ctor) —
+       * OR a CK-machine action node (krt2_bind/then/pure/catch/throw) that
+       * reached the bridge because its do-bind action is an IO combinator
+       * building a krt2_* tree (liftA2/<*>/traverse via the Applicative (IO e)
+       * dictionary, which the §3.3 analysis cannot see through; see rt.c).
+       * krt2_run_op_sync drives the non-suspending OPs to a value and returns
+       * any non-OP value unchanged. */
+      return krun_finish(krt2_run_op_sync(action), discard, defers);
   }
   }
 }
