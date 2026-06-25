@@ -89,8 +89,8 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **M0** | `CLit` string, `printlnString`/`printString` (`knative_sat`), `CGlob` CAF refs, `main` | ✅ `c28797d` |
 | **M1** | `CLit Int` (`kint`/`kbigint_str`), ten pure direct `kp_*` Int/show prims, prim-spine apps | ✅ `88f9e8f` |
 | **M2** | CAF cross-references (enqueue + accessor) | ✅ `88f9e8f` |
-| **B**  | `CVar`/`CLet` (uniform `kpush`/`kvar`), widen pure-direct prims to Integer/String/Bool | in progress |
-| **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | planned |
+| **B**  | `CVar`/`CLet` (uniform `kpush`/`kvar`), widen pure-direct prims to Integer/String/Bool | ✅ `ce30ca5` |
+| **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | in progress |
 | **D**  | `CLam` + closures + general `kapp` (worker `kw_*` + closure chain `kclo*_*` + lifted `kfn_*`) | planned |
 | **E**  | `CDo` / CPS bridge (`krt2_bind`/`krt2_then`/`krt2_pure`; continuations as `kdo_N_kM` — the §5 seam) | planned |
 | **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
