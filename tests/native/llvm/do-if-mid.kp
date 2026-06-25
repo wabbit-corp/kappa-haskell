@@ -1,0 +1,15 @@
+-- Milestone F: a do-kernel `if` in NON-tail (mid-block) position, with more
+-- statements after it.  The if is sequenced with the rest as `_ <- ifAction;
+-- rest` — its phi'd branch action becomes the action operand of a `krt2_bind`
+-- whose continuation (`printlnString "after"`) is lifted LAZILY into a `kdo_N`
+-- closure.  The if's own normal completion is discarded (§18.8); the rest always
+-- runs.  Effect order: less, then after.
+module main
+
+main : UIO Unit
+let main = do
+    if ltInt 3 5 then
+        printlnString "less"
+    else
+        printlnString "notless"
+    printlnString "after"

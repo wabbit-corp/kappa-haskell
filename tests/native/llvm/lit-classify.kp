@@ -1,0 +1,23 @@
+-- Milestone F: a `match` on an Int with LITERAL arms plus a default var arm.
+-- Each literal alt is a `klit_eq(scrut, lit)` test (`icmp ne 0` → branch), chained
+-- so a failing literal opens the next alt's block; the final `case n` is a bare
+-- var catch-all that binds the scrutinee.  A `fizzbuzz`-ish classifier exercises
+-- several literal arms meeting one default — the kind of Int dispatch elaboration
+-- desugars a numeric `case` to.
+module main
+
+classify : Int -> String
+let classify n =
+    match n
+    case 0 -> "zero"
+    case 1 -> "one"
+    case 2 -> "two"
+    case 3 -> "three"
+    case n -> "many"
+
+main : UIO Unit
+let main = do
+    printlnString (classify 0)
+    printlnString (classify 2)
+    printlnString (classify 3)
+    printlnString (classify 99)

@@ -1,0 +1,20 @@
+-- Milestone F: a NESTED do-kernel `if`.  The outer if's then-branch is itself a
+-- sub-do — an action (`outer-then`) followed by ANOTHER if.  So the inner if
+-- lowers to its own phi'd action, which is the tail of the then-branch's bind
+-- tree; the outer phi then selects that whole action.  This exercises the
+-- `gsBlock`-based phi labeling: the outer then-branch's action lives in the
+-- block ACTIVE after the inner if (not the branch entry).  Effect order:
+-- outer-then, inner-else (1 < 0 is False), after.
+module main
+
+main : UIO Unit
+let main = do
+    if ltInt 2 4 then
+        printlnString "outer-then"
+        if ltInt 1 0 then
+            printlnString "inner-then"
+        else
+            printlnString "inner-else"
+    else
+        printlnString "outer-else"
+    printlnString "after"

@@ -1,0 +1,21 @@
+-- Milestone F: a `match` MIXING literal arms with a BINDING var arm — the
+-- `case 0 -> a; case n -> b` shape from the milestone.  The two literal alts
+-- (`klit_eq` tests, no field bindings) chain ahead of a var alt (`case k`) whose
+-- binder IS used in the body (`showInt k`), so the alt-chain must keep a literal
+-- test and a binding var catch-all coexisting: a literal alt binds nothing and
+-- branches on the `klit_eq` result; the var alt binds the scrutinee and runs
+-- unconditionally as the fall-through.
+module main
+
+label : Int -> String
+let label n =
+    match n
+    case 0 -> "none"
+    case 1 -> "single"
+    case k -> showInt k
+
+main : UIO Unit
+let main = do
+    printlnString (label 0)
+    printlnString (label 1)
+    printlnString (label 42)

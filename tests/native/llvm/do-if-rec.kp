@@ -1,0 +1,19 @@
+-- Milestone F: IO RECURSION through a do-kernel `if` TAIL — the stack-safety
+-- proof for the if-action lowering.  `loop n` does an IO action then, in the
+-- if's else branch, recurses (`loop (subInt n 1)`).  Because the recursive call
+-- is a branch tail it becomes a `krt2_*` action the CK-machine drives node by
+-- node — the if only CHOOSES the action, it does not nest the recursion's binds
+-- on the C stack.  100_000 levels would overflow a naive recursion but the
+-- trampolined action tree stays bounded, so the single `done` line prints with
+-- no stack overflow (interp == C == LLVM all reach the base case).
+module main
+
+loop : Int -> UIO Unit
+let loop n decreases n = do
+    if leInt n 0 then
+        printlnString "done"
+    else
+        loop (subInt n 1)
+
+main : UIO Unit
+let main = loop 100000

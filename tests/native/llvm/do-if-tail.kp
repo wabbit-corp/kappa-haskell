@@ -1,0 +1,15 @@
+-- Milestone F: a do-block whose TAIL is a do-kernel `if`.  After the leading
+-- action, the block ends in `if cond then <IO> else <IO>` — the if-action IS the
+-- block's result, so the LLVM backend lowers each branch's sub-do to a `krt2_*`
+-- action, phis the two at `doif.join`, and returns the phi directly (no
+-- surrounding bind).  Both arms do DIFFERENT IO, so the taken branch's output is
+-- the observable parity check: `ltInt 3 5` is True, so `less`.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "start"
+    if ltInt 3 5 then
+        printlnString "less"
+    else
+        printlnString "notless"

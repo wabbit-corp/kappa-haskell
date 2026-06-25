@@ -37,7 +37,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (forM_, foldM, unless)
+import Control.Monad (forM_, foldM, msum, mplus, unless)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
@@ -867,11 +867,13 @@ compileIfWith arm c t e = do
 -- SUPPORTED pattern forms (the subset the C backend's CMatch produces that this
 -- milestone lowers): a constructor pattern with var/wildcard field binders
 -- ('CPCtor' over 'CPVar'/'CPWild'), a bare var/wildcard catch-all
--- ('CPVar'/'CPWild'), and an as-pattern over those ('CPAs').  Guards are
--- supported (an extra @kas_bool@ test inside the alt).  Literal patterns, tuple/
--- record/variant/or/nested-constructor patterns are left UNSUPPORTED here (a
--- clean 'unsupported' rather than a miscompile) — single-level constructor
--- dispatch is what the data-type corpus needs and what elaboration desugars to.
+-- ('CPVar'/'CPWild'), an as-pattern over those ('CPAs'), and (Milestone F) an
+-- Int/String/Char/Byte literal pattern ('CPLit', a @klit_eq@ test that binds no
+-- fields — freely mixed with ctor/var arms in one match).  Guards are supported
+-- (an extra @kas_bool@ test inside the alt).  Tuple/record/variant/or/nested-
+-- constructor patterns are left UNSUPPORTED here (a clean 'unsupported' rather
+-- than a miscompile) — single-level dispatch is what the data-type corpus needs
+-- and what elaboration desugars to.
 compileMatch :: Term -> [CaseAlt] -> Gen Text
 compileMatch = compileMatchWith compile
 
@@ -1019,10 +1021,23 @@ patTestLL v = \case
         _ <- unsupported "pattern"
           "the LLVM backend (Milestone C) supports constructor patterns whose fields are only variable/wildcard binders (nested constructor/literal sub-patterns are not yet lowered)"
         falseCond
-  CPLit _ -> do
-    _ <- unsupported "pattern"
-      "the LLVM backend (Milestone C) does not yet lower literal patterns (use the C backend)"
-    falseCond
+  -- Milestone F: a literal pattern.  Build the literal as a 'KValue*' comparand
+  -- and test value-equality against the scrutinee with the SAME runtime call the
+  -- C backend uses ('patTest' → @klit_eq(v, lit)@, an @int@ truthy result).  A
+  -- literal alt binds no fields ('patBindingsLL' returns @[]@ for 'CPLit'), so
+  -- this is purely a guard.  An unsupported literal type falls through to a
+  -- recorded error + constant-false test (parity with C's @"0"@).
+  CPLit l -> do
+    mlv <- litValueLL l
+    case mlv of
+      Nothing -> falseCond -- unsupported literal: error already recorded, never matches
+      Just lv -> do
+        declRuntime "declare i32 @klit_eq(ptr, ptr)"
+        eqi <- freshReg
+        emit (eqi <> " = call i32 @klit_eq(ptr " <> v <> ", ptr " <> lv <> ")")
+        cond <- freshReg
+        emit (cond <> " = icmp ne i32 " <> eqi <> ", 0")
+        pure (Just cond)
   CPTuple _ -> reportUnsupportedPat "tuple"
   CPRecord _ _ -> reportUnsupportedPat "record"
   CPInject _ _ -> reportUnsupportedPat "variant"
@@ -1131,9 +1146,13 @@ compileDo _lbl items
   | Just bad <- firstUnsupportedItem items = unsupportedDoItem bad
   | otherwise = cpsItemsLL items
 
--- | The first do-item outside the Milestone-E linear subset, if any — used to
--- fail the WHOLE block closed (a clean unsupported) before emitting a partial
--- tree, so a deferred construct can never be silently dropped.
+-- | The first do-item outside the supported subset, if any — used to fail the
+-- WHOLE block closed (a clean unsupported) before emitting a partial tree, so a
+-- deferred construct can never be silently dropped.  The supported set is the
+-- Milestone-E linear bind/let/action items plus (Milestone F) a do-kernel @if@
+-- whose branches are themselves entirely supported (recurse into each branch and
+-- the optional else, so an unsupported item nested in a branch is caught here too
+-- rather than mis-lowered when the branch is built).
 firstUnsupportedItem :: [KItem] -> Maybe KItem
 firstUnsupportedItem = go
   where
@@ -1142,6 +1161,10 @@ firstUnsupportedItem = go
       KBind {} -> go rest
       KExpr {} -> go rest
       KLet {} -> go rest
+      KIf alts mels ->
+        case msum (map (go . snd) alts) `mplus` (mels >>= go) of
+          Just bad -> Just bad
+          Nothing -> go rest
       _ -> Just it
 
 -- | Report a do-item that is outside Milestone E (the loop family, mutable
@@ -1202,12 +1225,22 @@ cpsItemsLL items = case items of
     r <- freshReg
     emit (r <> " = call ptr @krt2_pure(ptr " <> te <> ")")
     pure r
+  -- FINAL do-kernel `if` (Milestone F): the if-action IS the block's result —
+  -- lower it to its phi'd action operand and return it directly (no surrounding
+  -- bind; the CK-machine drives whichever branch's action the phi selected).
+  [KIf alts mels] -> compileDoIf alts mels
   -- A plain ACTION with a following rest: treat as `_ <- action; rest` so REST
   -- stays LAZY inside the continuation closure (NOT krt2_then with an eager rest
   -- operand — that would eagerly build the tail and overflow on IO recursion).
   (KExpr t : rest) -> bindThen t CPWild rest
   -- A monadic bind: `x <- action; rest`.
   (KBind _ pat t : rest) -> bindThen t pat rest
+  -- NON-final do-kernel `if` (Milestone F): build the if-action, then sequence
+  -- it with REST as `_ <- ifAction; rest` (REST lazy inside a kdo_N closure),
+  -- exactly the 'KExpr' shape — the if's own result is discarded (§18.8).
+  (KIf alts mels : rest) -> do
+    ifAction <- compileDoIf alts mels
+    seqActionThen ifAction CPWild rest
   -- A pure LET binding: compile e, kpush, compile REST under the extended env
   -- (restored after).  No krt2 node — the runtime never sees this binding.
   (KLet _ CPWild t : rest) -> do
@@ -1232,6 +1265,15 @@ cpsItemsLL items = case items of
 bindThen :: Term -> CorePat -> [KItem] -> Gen Text
 bindThen action pat rest = do
   m <- compile action
+  seqActionThen m pat rest
+
+-- | Sequence an ALREADY-COMPILED action operand @m@ with the rest of the block:
+-- @krt2_bind(m, kclo(@kdo_N, env))@ where @kdo_N@ binds the delivered value to
+-- @pat@ and lowers REST.  Same machinery as 'bindThen' but the action is a value
+-- operand the caller already produced (e.g. a do-kernel @if@'s phi'd action),
+-- not a 'Term' to compile.  Keeps REST lazy inside @kdo_N@ for stack safety.
+seqActionThen :: Text -> CorePat -> [KItem] -> Gen Text
+seqActionThen m pat rest = do
   contFn <- emitDoCont pat rest
   capturedEnv <- gets gsEnv
   declRuntime "declare ptr @kclo(ptr, ptr)"
@@ -1241,6 +1283,80 @@ bindThen action pat rest = do
   r <- freshReg
   emit (r <> " = call ptr @krt2_bind(ptr " <> m <> ", ptr " <> k <> ")")
   pure r
+
+-- | Lower a do-kernel @if@ ('KIf') to a single @krt2_*@ ACTION operand (Milestone
+-- F), mirroring the C backend's 'compileKIf' chain but producing krt2 actions
+-- rather than C statements.  'KIf' is an else-if CHAIN — a list of @(cond,
+-- branch-items)@ guarded branches plus an optional final @else@ block.  Each
+-- branch is its own sub-do: its items lower via 'cpsItemsLL' to a branch action.
+--
+-- The lowering is exactly 'compileIf' (cond → @kas_bool@ → @icmp ne@ → @br i1@ to
+-- a then/else block), except the THEN arm is the branch's sub-do action and the
+-- ELSE arm is the rest of the chain (the next guarded branch, or the final else
+-- / an implicit @krt2_pure(kunit())@ when there is no/exhausted else — §18.8: a
+-- one-armed if's normal completion is Unit).  The two arm actions meet at a
+-- @phi ptr@; each phi incoming names the arm's ACTUAL end block (read from
+-- 'gsBlock' after the arm), since a branch may emit its own control flow (a
+-- nested if, a bind tree).  'gsEnv' is saved/restored around each branch so a
+-- branch's local 'KLet' bindings never leak into a sibling branch or the join.
+--
+-- This builds the branch action trees INLINE (in the current function, under the
+-- if's control flow) — NOT in lifted continuations.  That is sound for stack
+-- safety because each branch's own tail is itself a @krt2_*@ action the
+-- CK-machine drives; the if only chooses WHICH action, it does not nest the
+-- branches' binds on the C stack.  An IO-recursive call in a branch tail is a
+-- @kbounce@/bind action like any other tail.
+compileDoIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen Text
+compileDoIf alts mels = go alts
+  where
+    -- The else continuation once the guard chain is exhausted: the final else
+    -- block's sub-do, or an implicit `pure unit` (a missing/empty else yields
+    -- Unit, the if's discarded normal completion — parity with C's
+    -- 'compileKIfTail' / 'krt2_pure(kunit())').
+    go [] = case mels of
+      Just els -> branchAction els
+      Nothing -> do
+        declRuntime "declare ptr @kunit()"
+        declRuntime "declare ptr @krt2_pure(ptr)"
+        u <- freshReg
+        emit (u <> " = call ptr @kunit()")
+        r <- freshReg
+        emit (r <> " = call ptr @krt2_pure(ptr " <> u <> ")")
+        pure r
+    go ((cond, body) : more) = do
+      cv <- compile cond
+      declRuntime "declare i32 @kas_bool(ptr)"
+      bi <- freshReg
+      emit (bi <> " = call i32 @kas_bool(ptr " <> cv <> ")")
+      c1 <- freshReg
+      emit (c1 <> " = icmp ne i32 " <> bi <> ", 0")
+      thenL <- freshLabel "doif.then."
+      elseL <- freshLabel "doif.else."
+      joinL <- freshLabel "doif.join."
+      emit ("br i1 " <> c1 <> ", label %" <> thenL <> ", label %" <> elseL)
+      -- then arm: this guard's branch sub-do
+      startBlock thenL
+      tv <- branchAction body
+      thenEnd <- gets gsBlock
+      emit ("br label %" <> joinL)
+      -- else arm: the rest of the chain (next guard / final else / pure unit)
+      startBlock elseL
+      ev <- go more
+      elseEnd <- gets gsBlock
+      emit ("br label %" <> joinL)
+      -- join: select the taken arm's action
+      startBlock joinL
+      r <- freshReg
+      emit (r <> " = phi ptr [ " <> tv <> ", %" <> thenEnd <> " ], [ "
+              <> ev <> ", %" <> elseEnd <> " ]")
+      pure r
+    -- Lower one branch's items to its action, isolating its env so a local
+    -- binding in the branch does not extend into the join's de Bruijn layout.
+    branchAction items = do
+      env0 <- gets gsEnv
+      a <- cpsItemsLL items
+      modify' $ \g -> g {gsEnv = env0}
+      pure a
 
 -- | Emit a continuation closure @kdo_N(ptr %cenv, ptr %arg)@ (a one-argument
 -- @kfn@, exactly the 'compileLam' shape): bind the delivered @%arg@ to @pat@ by
@@ -1364,6 +1480,39 @@ litName = \case
   LitByte {} -> "Byte"
   LitBytes {} -> "Bytes"
   LitGrapheme {} -> "Grapheme"
+
+-- | Build a 'CPLit' pattern's literal as a 'KValue*' comparand for @klit_eq@
+-- (the analogue of C's 'litValue').  An 'Int' (in-range @kint@ / out-of-range
+-- @kbigint_str@) and a 'String'\/'Grapheme' are exactly the value forms
+-- 'compileLit' already builds, so this reuses it; 'Char' is @kchr@ and 'Byte'
+-- is @kbyte@, the same runtime builders the C backend uses.  'Double' and
+-- 'Bytes' literal patterns are NOT yet lowered here — building an LLVM
+-- floating-point\/byte-buffer constant is its own hazard (the LLVM value path
+-- 'compileLit' doesn't build them either) — so they record a clean unsupported
+-- finding and return 'Nothing' (the alt then compiles to a constant-false test,
+-- never a miscompile).  Other backends key parity off 'klit_eq', so an Int/
+-- String/Char/Byte literal pattern matches the C backend bit-for-bit.
+litValueLL :: Literal -> Gen (Maybe Text)
+litValueLL = \case
+  LitInt n -> Just <$> compileLit (LitInt n)
+  LitStr s -> Just <$> compileLit (LitStr s)
+  LitGrapheme g -> Just <$> compileLit (LitGrapheme g)
+  LitScalar c -> do
+    declRuntime "declare ptr @kchr(i32)"
+    r <- freshReg
+    emit (r <> " = call ptr @kchr(i32 " <> T.pack (show (ord c)) <> ")")
+    pure (Just r)
+  LitByte w -> do
+    declRuntime "declare ptr @kbyte(i8)"
+    r <- freshReg
+    emit (r <> " = call ptr @kbyte(i8 " <> T.pack (show (fromIntegral w :: Int)) <> ")")
+    pure (Just r)
+  l -> do
+    _ <- unsupported "pattern"
+      ( "the LLVM backend (Milestone F) lowers Int/String/Char/Byte literal "
+          <> "patterns, not a " <> litName l <> " literal pattern (use the C backend)"
+      )
+    pure Nothing
 
 -- | A bare global reference.  A prelude @prim@ registration / @__prim@ name is
 -- a primitive: as a VALUE (used unsaturated — e.g. passed to a higher-order
