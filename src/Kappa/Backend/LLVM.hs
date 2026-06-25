@@ -438,6 +438,7 @@ basePrims :: Set Text
 basePrims =
   Set.fromList $
     ["printlnString", "printString"] -- M0 IO prims
+      ++ ["ioPure", "ioBind", "ioThen"] -- Milestone E do-kernel monadic prims
       ++ pureDirectPrims -- M1 pure first-order prims
 
 -- | Emit globals until the work queue is empty (mirrors C's 'drainQueue').
@@ -620,6 +621,7 @@ compile term = case term of
   CCtor g args -> compileCtor g args
   CIf c t e -> compileIf c t e
   CMatch scrut alts -> compileMatch scrut alts
+  CDo lbl items -> compileDo lbl items
   _ ->
     unsupported "term"
       ("the LLVM backend M0 cannot lower this construct: " <> constructName term)
@@ -1130,6 +1132,207 @@ patBindingsLL = go
       emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> idx <> ")")
       pure r
 
+-- ── do-kernel (Milestone E) ──────────────────────────────────────────
+--
+-- A do-block lowers to a @krt2_*@ ACTION TREE — the uniform CPS path the
+-- kappart2 CK-machine ('krt2_run_main') drives.  This mirrors the C backend's
+-- 'cpsItems' shape (C.hs:3006) rather than its synchronous @kio@ bridge: parity
+-- first, one lowering for both the sequential and the (future) suspending case.
+-- The whole block compiles to a single 'KValue*' operand — a @krt2_pure@ leaf,
+-- or a @krt2_bind@/@krt2_then@ spine whose tail is the block's final action.
+--
+-- Stack safety (the load-bearing invariant): every non-final item becomes a
+-- @krt2_bind(action, kclo(@kdo_N, env))@ where @kdo_N@ is a lifted continuation
+-- closure whose body — the REST of the block — is compiled INSIDE @kdo_N@, not
+-- inline.  So building the tree never recurses through @rest@ on the C stack at
+-- build time, and at run time the CK-machine pops one bind frame per step (the
+-- spine stays bounded even for IO-recursive blocks).  This is exactly the M-D
+-- 'compileLam' machinery: a one-argument @kfn@-style function captured by @kclo@
+-- over the WHOLE current env (no free-var analysis — every binder is one env
+-- slot, so the continuation's de Bruijn indices line up after the delivered
+-- value is pushed at index 0).
+--
+-- SUPPORTED items (the linear bind/let/action/final subset): 'KBind' (monadic
+-- @x <- action@), 'KExpr' (a plain action), 'KLet' (a pure binding — no krt2
+-- node), and the terminal item (a final action / @pure e@).  A bind/let whose
+-- binder is a constructor/tuple PATTERN is lowered as a bind-to-fresh-var
+-- followed by a 'CMatch' (via 'matchAfterBind').  Everything else — the loop
+-- family ('KWhile'/'KFor'), 'KVarItem'/'KAssign' (mutable cells),
+-- 'KReturn'/'KBreak'/'KContinue' (abrupt control), 'KDefer', 'KIf', 'KUsing',
+-- 'KSubDo', 'KLetQ' — is a later milestone and is reported as a clean
+-- @E_BACKEND_UNSUPPORTED@ (never miscompiled).
+compileDo :: Maybe Text -> [KItem] -> Gen Text
+compileDo _lbl items
+  -- The optional scope label is only observable through §18.7 defers / labeled
+  -- abrupt control, all of which are deferred below; for the linear subset it
+  -- has no runtime effect, so it is ignored here (parity with the C CPS path,
+  -- which threads it only through 'krt2_doscope').
+  | Just bad <- firstUnsupportedItem items = unsupportedDoItem bad
+  | otherwise = cpsItemsLL items
+
+-- | The first do-item outside the Milestone-E linear subset, if any — used to
+-- fail the WHOLE block closed (a clean unsupported) before emitting a partial
+-- tree, so a deferred construct can never be silently dropped.
+firstUnsupportedItem :: [KItem] -> Maybe KItem
+firstUnsupportedItem = go
+  where
+    go [] = Nothing
+    go (it : rest) = case it of
+      KBind {} -> go rest
+      KExpr {} -> go rest
+      KLet {} -> go rest
+      _ -> Just it
+
+-- | Report a do-item that is outside Milestone E (the loop family, mutable
+-- cells, abrupt control, defer, using, sub-do, let?) as unsupported.
+unsupportedDoItem :: KItem -> Gen Text
+unsupportedDoItem it =
+  unsupported "do-kernel"
+    ( "the LLVM backend (Milestone E) lowers only the linear bind/let/action "
+        <> "do-kernel subset; this item is a later milestone: "
+        <> doItemKind it
+    )
+
+-- | A short label for an unsupported do-item, for the diagnostic.
+doItemKind :: KItem -> Text
+doItemKind = \case
+  KLetQ {} -> "let? (fallible binding)"
+  KVarItem {} -> "var (mutable cell)"
+  KAssign {} -> "assignment"
+  KReturn {} -> "return"
+  KBreak {} -> "break"
+  KContinue {} -> "continue"
+  KWhile {} -> "while loop"
+  KFor {} -> "for loop"
+  KIf {} -> "do-if"
+  KDefer {} -> "defer"
+  KUsing {} -> "using"
+  KSubDo {} -> "statement-position sub-do"
+  _ -> "this construct"
+
+-- | Lower a linear do-block to its @krt2_*@ action tree (mirrors C's 'cpsItems',
+-- C.hs:3006).  An empty block is @krt2_pure(kunit())@; the FINAL item is the
+-- block's action (compiled directly, in tail-ish position — its own value); a
+-- non-final bind/action becomes a @krt2_bind@ over a lazily-compiled
+-- continuation closure; a non-final let is a pure binding compiled INLINE
+-- (extending the env for the rest, then restored).
+cpsItemsLL :: [KItem] -> Gen Text
+cpsItemsLL items = case items of
+  [] -> do
+    declRuntime "declare ptr @kunit()"
+    declRuntime "declare ptr @krt2_pure(ptr)"
+    u <- freshReg
+    emit (u <> " = call ptr @kunit()")
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_pure(ptr " <> u <> ")")
+    pure r
+  -- FINAL item: a plain action or a monadic bind whose value is the block's
+  -- result.  Compiled directly — the block's tail action, which the CK-machine
+  -- drives (no surrounding bind, so the spine stays bounded).
+  [KExpr t] -> compile t
+  [KBind _ _ t] -> compile t
+  -- FINAL let: a pure binding with no following action is degenerate (the block
+  -- must end in an action), but lower it as @pure(value)@ for totality.
+  [KLet _ pat t] -> do
+    te <- compile t
+    declRuntime "declare ptr @krt2_pure(ptr)"
+    -- bind the value (so a constructor pattern is still well-typed) then pure it
+    _ <- bindPatDo te pat
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_pure(ptr " <> te <> ")")
+    pure r
+  -- A plain ACTION with a following rest: treat as `_ <- action; rest` so REST
+  -- stays LAZY inside the continuation closure (NOT krt2_then with an eager rest
+  -- operand — that would eagerly build the tail and overflow on IO recursion).
+  (KExpr t : rest) -> bindThen t CPWild rest
+  -- A monadic bind: `x <- action; rest`.
+  (KBind _ pat t : rest) -> bindThen t pat rest
+  -- A pure LET binding: compile e, kpush, compile REST under the extended env
+  -- (restored after).  No krt2 node — the runtime never sees this binding.
+  (KLet _ CPWild t : rest) -> do
+    _ <- compile t -- evaluated for its (pure) value; result discarded
+    cpsItemsLL rest
+  (KLet _ pat t : rest) -> do
+    te <- compile t
+    env0 <- gets gsEnv
+    env1 <- bindPatDo te pat
+    modify' $ \g -> g {gsEnv = env1}
+    r <- cpsItemsLL rest
+    modify' $ \g -> g {gsEnv = env0}
+    pure r
+  (it : _) -> unsupportedDoItem it
+
+-- | Lower `pat <- action; rest` (or `action; rest` with @pat = CPWild@) as
+-- @krt2_bind(action, kclo(@kdo_N, env))@, where @kdo_N@ is a lifted continuation
+-- closure that receives the delivered value, binds it to @pat@, and compiles
+-- REST as an action tree.  The rest lives INSIDE @kdo_N@ — that laziness is what
+-- keeps an IO-recursive do-block stack-safe (the tree is built one bind at a
+-- time as the CK-machine runs it, not all at once at build time).
+bindThen :: Term -> CorePat -> [KItem] -> Gen Text
+bindThen action pat rest = do
+  m <- compile action
+  contFn <- emitDoCont pat rest
+  capturedEnv <- gets gsEnv
+  declRuntime "declare ptr @kclo(ptr, ptr)"
+  declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+  k <- freshReg
+  emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_bind(ptr " <> m <> ", ptr " <> k <> ")")
+  pure r
+
+-- | Emit a continuation closure @kdo_N(ptr %cenv, ptr %arg)@ (a one-argument
+-- @kfn@, exactly the 'compileLam' shape): bind the delivered @%arg@ to @pat@ by
+-- extending the captured @%cenv@, then compile REST as a @krt2_*@ action tree
+-- and @ret@ it.  Emitted via 'gsTop' and invoked by @krt2_bind@ through @kclo@.
+emitDoCont :: CorePat -> [KItem] -> Gen Text
+emitDoCont pat rest = do
+  fnIdent <- freshLabel "kdo_"
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  -- Compile the continuation body in its OWN buffer (like 'compileLam'): %cenv is
+  -- the captured env; the delivered value %arg is bound to @pat@ over it, and the
+  -- block's REST is built as an action tree under the extended env.
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+    env1 <- bindPatDo "%arg" pat
+    modify' $ \g -> g {gsEnv = env1}
+    cpsItemsLL rest
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | Bind a do-item's binder pattern, delivering the action's result operand
+-- @v@.  A simple variable/wildcard binder ('CPVar'/'CPWild'/'CPAs' over those)
+-- is a direct env push, mirroring 'bindPat'.  An intricate constructor/tuple
+-- PATTERN is destructured by projecting it through a single-alt 'CMatch': bind
+-- @v@ to a fresh var, then match — i.e. the same kpush-then-project the
+-- match path already lowers.  Returns the extended env operand.
+bindPatDo :: Text -> CorePat -> Gen Text
+bindPatDo v pat
+  | isVarLike pat = bindPat v pat
+  | otherwise = do
+      -- A structured binder: push the whole value as one slot (so the rest can
+      -- read it), then project each field via 'patBindingsLL' (the same
+      -- single-level constructor projection the match path uses).  Restricting
+      -- to 'patBindingsLL'-supported shapes keeps parity with the match subset;
+      -- a shape it cannot bind is reported there (a clean unsupported).
+      env0 <- gets gsEnv
+      vals <- patBindingsLL v pat
+      foldM pushSlot env0 vals
+  where
+    pushSlot e valOp = do
+      declRuntime "declare ptr @kpush(ptr, ptr)"
+      n <- freshReg
+      emit (n <> " = call ptr @kpush(ptr " <> valOp <> ", ptr " <> e <> ")")
+      pure n
+
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
 constructName = \case
@@ -1492,6 +1695,14 @@ ioPrimEntry :: Text -> Maybe (Text, Int)
 ioPrimEntry = \case
   "printlnString" -> Just ("kpf_io_printlnString", 1)
   "printString" -> Just ("kpf_io_printString", 1)
+  -- Milestone E: the do-kernel's monadic primitives.  @ioPure e@ appears as the
+  -- action of a @x <- ioPure e@ bind (and as a final @pure e@); a SATURATED
+  -- @ioPure@/@ioBind@/@ioThen@ lowers to @knative_sat(kpf_io_*, …, isio=1)@,
+  -- producing the IO action value the @krt2_*@ tree drives — the SAME lowering
+  -- the C backend's 'primEntries' gives these names (kpf_io_ioPure/ioBind/ioThen).
+  "ioPure" -> Just ("kpf_io_ioPure", 1)
+  "ioBind" -> Just ("kpf_io_ioBind", 2)
+  "ioThen" -> Just ("kpf_io_ioThen", 2)
   _ -> Nothing
 
 -- | The pure first-order primitives Milestone A lowers, mapping the prim name
@@ -1569,6 +1780,9 @@ primNativeEntry :: Text -> Maybe (Text, Int, Bool)
 primNativeEntry = \case
   "printlnString" -> Just ("kpf_io_printlnString", 1, True)
   "printString" -> Just ("kpf_io_printString", 1, True)
+  "ioPure" -> Just ("kpf_io_ioPure", 1, True)
+  "ioBind" -> Just ("kpf_io_ioBind", 2, True)
+  "ioThen" -> Just ("kpf_io_ioThen", 2, True)
   "addInt" -> Just ("kpf_addInt", 2, False)
   "subInt" -> Just ("kpf_subInt", 2, False)
   "mulInt" -> Just ("kpf_mulInt", 2, False)

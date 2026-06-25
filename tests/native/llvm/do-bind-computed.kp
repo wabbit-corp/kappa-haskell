@@ -1,0 +1,13 @@
+-- Milestone E: a do-block that binds the result of a COMPUTED action — a call to
+-- `twice`, a function whose body returns `ioPure (addInt n n)`.  The bind's
+-- action is the worker call `twice 21`; its delivered value (42) flows to the
+-- continuation, which prints it.  Expected stdout: `42`.
+module main
+
+twice : Integer -> UIO Integer
+let twice n = ioPure (addInt n n)
+
+main : UIO Unit
+let main = do
+    r <- twice 21
+    printlnString (showInt r)

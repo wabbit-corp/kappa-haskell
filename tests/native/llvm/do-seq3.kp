@@ -1,0 +1,11 @@
+-- Milestone E: a do-block sequencing three IO actions.  The do-kernel lowers to
+-- a `krt2_bind` tree (one bind per non-final action, the rest LAZILY inside a
+-- `kdo_N` continuation closure); the kappart2 CK-machine drives it, so the
+-- stdout ORDER (one, two, three) is the observable parity check.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "one"
+    printlnString "two"
+    printlnString "three"

@@ -1,0 +1,14 @@
+-- Milestone E: a NESTED do-block.  The inner do (`printlnString "inner-1"` then
+-- `ioPure 10`) is itself an action — it is the bound action of the outer
+-- `x <- …` — so it lowers to its own `krt2_bind` tree, which becomes the action
+-- operand of the outer bind.  Effect order is observable: inner-1, then 10, then
+-- outer-end.
+module main
+
+main : UIO Unit
+let main = do
+    x <- do
+        printlnString "inner-1"
+        ioPure 10
+    printlnString (showInt x)
+    printlnString "outer-end"

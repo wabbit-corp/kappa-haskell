@@ -1,0 +1,9 @@
+-- Milestone E: a do-block with a LET item (`let y = addInt 2 3`).  A do-let is a
+-- PURE binding — it pushes one env slot and compiles the rest under it, with NO
+-- `krt2_*` node (the runtime never sees the binding).  Expected stdout: `5`.
+module main
+
+main : UIO Unit
+let main = do
+    let y = addInt 2 3
+    printlnString (showInt y)

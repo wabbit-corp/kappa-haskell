@@ -1,0 +1,10 @@
+-- Milestone E: a do-block that BINDS a pure value (`x <- ioPure 5`) and then
+-- prints it.  `ioPure 5` lowers to `knative_sat(kpf_io_ioPure, …, isio=1)`; the
+-- bind delivers 5 to the continuation closure, which reads it (de Bruijn 0) and
+-- prints `showInt x`.  Expected stdout: `5`.
+module main
+
+main : UIO Unit
+let main = do
+    x <- ioPure 5
+    printlnString (showInt x)
