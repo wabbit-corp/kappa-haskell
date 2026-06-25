@@ -92,8 +92,24 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **B**  | `CVar`/`CLet` (uniform `kpush`/`kvar`), widen pure-direct prims to Integer/String/Bool | ✅ `ce30ca5` |
 | **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | in progress |
 | **D**  | `CLam` + closures + general `kapp` + tail-call `kbounce` (curried model; worker chain is Phase 2) | ✅ `5848b85` |
-| **E**  | `CDo` / CPS bridge (`krt2_bind`/`krt2_then`/`krt2_pure`; continuations as `kdo_N_kM` — the §5 seam) | in progress |
+| **E**  | `CDo` do-kernel (linear `bind`/`let`/`action`/`final` → `krt2_bind`/`krt2_pure` tree, lazy continuations — the §5 seam) | ✅ `3cab171` |
 | **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
+
+**Phase-1 core (M0–E) is complete** at interp == C == LLVM over 35 corpus programs:
+strings, integers (incl. big-Integer), pure prims, CAF graphs, local bindings,
+constructors/match/if, curried closures + general application + stack-safe tail
+recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
+`E_BACKEND_UNSUPPORTED` today, not a miscompile):
+
+- **do-kernel control flow** — `KIf` (incl. an `if` as the do tail), loops
+  (`KWhile`/`KFor`), mutable cells (`KVarItem`/`KAssign`), abrupt control
+  (`KReturn`/`KBreak`/`KContinue`), `KDefer`, `KUsing`, `KSubDo`, `KLetQ`.
+- **patterns** — literal patterns (`CPLit`), nested constructor sub-patterns,
+  tuple/record/variant/or patterns.
+- **literals + prims** — `Double`/`Char`/`Byte`/`Bytes` literals and their `kp_*`
+  ops; more IO prims (`readLine`, …); concurrency/STM prims (`fork`/`await`/…).
+- **the worker/closure-chain + self-TCO** direct-call optimization (this is a
+  perf path; the curried model already gives correctness).
 
 ## Extending it
 
