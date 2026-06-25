@@ -44,7 +44,7 @@ import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
 import Kappa.Builtins (builtinCtorTagId, kctUserBase)
 import Kappa.Check (CheckState (..))
 import Kappa.Core
-import Kappa.Eval (GlobalDef (..))
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
 import Kappa.Source (Span, noSpan)
 import Numeric (showHex)
 
@@ -69,6 +69,7 @@ data GenState = GenState
   , gsErrs :: ![BackendError] -- ^ unsupported-construct findings
   , gsCur :: !GName -- ^ definition currently being compiled (for diagnostics)
   , gsGlobals :: !(Map GName GlobalDef)
+  , gsEvalCtx :: !EvalCtx -- ^ a non-runtime EvalCtx (from the CheckState), used only to 'quote' a global's 'gdType' to a Term in 'isTypeGlob' (the sort-kind erasure fallback — mirrors C's 'gsEvalCtx').
   , gsBodies :: !(Map GName Term)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsDeclSites :: !(Map GName Span)
@@ -372,6 +373,7 @@ generateLL cs mainG ffiPrims _hostSyms =
           , gsErrs = []
           , gsCur = mainG
           , gsGlobals = csGlobals cs
+          , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
           , gsBodies = csCoreBodies cs
           , gsPrims = Set.union basePrims ffiPrims
           , gsDeclSites = csDeclSites cs
@@ -432,11 +434,23 @@ emitGlobal g = do
   bodies <- gets gsBodies
   let ident = cGlobIdent g
   case Map.lookup g bodies of
-    Nothing ->
-      -- No recorded core body: a purely type-level global with no runtime value.
-      reportArity0Failure ident
-        ("'" <> gKey g <> "' has no recorded core body (the LLVM backend lowers "
-          <> "only globals with a runtime value)")
+    Nothing -> do
+      -- §12.2/§31.2: a genuinely type-level / opaque global (a data\/trait name, or
+      -- a sort-typed builtin like @Integer@ pulled in by an instance head) is
+      -- computationally ERASED — its accessor yields the unit placeholder (the inert
+      -- value the interpreter never inspects), so an accepted program that mentions
+      -- it compiles rather than being refused.  Mirrors the C backend (C.hs:483-499).
+      -- A real value-typed global with no recorded body is NOT erasable (that would
+      -- miscompile it) — surfaced honestly as a backend gap.
+      typeLevel <- isTypeGlob g
+      if typeLevel
+        then do
+          (insns, endBlock, operand) <- captured "null" compileUnit
+          emitArity0Accessor ident insns endBlock operand
+        else
+          reportArity0Failure ident
+            ("'" <> gKey g <> "' has no recorded core body and is not a type-level "
+              <> "global, so it cannot be lowered (no-core-body)")
     Just tm -> do
       -- A CAF accessor's value is consumed DIRECTLY (cached + returned to a plain
       -- caller), so it must be a real value/closure — NOT a tail position.  Using
@@ -2410,11 +2424,27 @@ compileErasableArg a = do
     else compile a
 
 -- | A global that denotes a type or trait (so a reference to it in argument
--- position is computationally erased): a declared data type or trait.
+-- position is computationally erased): a declared data type or trait, OR a global
+-- whose kind is a sort (e.g. the builtin @Integer@, dragged in as an instance head).
+-- The sort-kind fallback mirrors the C backend's 'isTypeGlob' (C.hs:1588) — without
+-- it a @instance T Integer@ rejects, since @Integer@ has no recorded core body.
 isTypeGlob :: GName -> Gen Bool
 isTypeGlob g = do
   datas <- gets gsDataSet
-  pure (g `Set.member` datas)
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  let sortish = case Map.lookup g globals of
+        Just gd -> isTypeKindTerm (quote ctx 0 (gdType gd))
+        Nothing -> False
+  pure (g `Set.member` datas || sortish)
+
+-- | Whether a (quoted) type Term is sort-kinded — a sort, or a Pi telescope ending
+-- in a sort.  Mirrors the C backend's 'isTypeKindTerm' (C.hs:1599).
+isTypeKindTerm :: Term -> Bool
+isTypeKindTerm = \case
+  CSort _ -> True
+  CPi _ _ _ _ _ body -> isTypeKindTerm body
+  _ -> False
 
 -- | §10.1/P0-A: recognise a saturated application of an eta-expanded
 -- constructor and beta-reduce it to @(ctor, selected field args)@.  A FAITHFUL

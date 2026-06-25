@@ -1,0 +1,20 @@
+-- emitGlobal type-level erasure: an `instance` whose head is a builtin opaque type
+-- (Int/Bool) drags that sort-typed type name into the emission queue as a no-body
+-- global.  isTypeGlob now consults the sort-kind fallback (like the C backend) and
+-- emitGlobal erases such a global to kunit() instead of rejecting it.  tag 9 = 1
+-- (Tag Int), tag True = 2 (Tag Bool).
+module main
+
+trait Tag a =
+    tag : a -> Int
+
+instance Tag Int =
+    let tag x = 1
+
+instance Tag Bool =
+    let tag x = 2
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (tag 9))
+    printlnString (showInt (tag True))
