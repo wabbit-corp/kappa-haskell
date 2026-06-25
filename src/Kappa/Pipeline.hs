@@ -40,6 +40,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TEE
+import Kappa.Backend.C (primRegistryDiagnostics)
 import Kappa.Backend.NativeFfi
   ( ResolvedNativeSymbol (..)
   , nativeMemberType
@@ -127,22 +128,53 @@ preludeState =
 -- | §28: the prelude must define every name the compiler wires in (see
 -- "Kappa.Builtins"). Any name the compiler spells but the prelude does not
 -- define is an internal inconsistency between the compiler and its bundled
--- prelude; report it here rather than let it miscompile downstream.
+-- prelude; report it here rather than let it miscompile downstream. The same
+-- pass also checks the runtime-pinned constructor-tag table is internally
+-- sound (ids contiguous and below 'kctUserBase') and that the primitive
+-- registry only names prims the runtime implements.
 builtinContractDiags :: CheckState -> Diagnostics
 builtinContractDiags st =
-  case unresolvedBuiltins st of
-    [] -> []
-    miss ->
-      [ diag
-          SevError
-          StageElaborate
-          "E_INTERNAL_BUILTIN_MISSING"
-          (Just "kappa-hs.internal.builtin-missing")
-          noSpan
-          ( "the bundled prelude is missing names the compiler depends on (§28): "
-              <> T.intercalate ", " (map (gnameText . wiName) miss)
-          )
-      ]
+  missingNameDiags ++ ctorTagDiags ++ primRegistryDiags
+  where
+    missingNameDiags = case unresolvedBuiltins st of
+      [] -> []
+      miss ->
+        [ diag
+            SevError
+            StageElaborate
+            "E_INTERNAL_BUILTIN_MISSING"
+            (Just "kappa-hs.internal.builtin-missing")
+            noSpan
+            ( "the bundled prelude is missing names the compiler depends on (§28): "
+                <> T.intercalate ", " (map (gnameText . wiName) miss)
+            )
+        ]
+    ctorTagDiags = case runtimeCtorsDiagnostics of
+      [] -> []
+      problems ->
+        [ diag
+            SevError
+            StageElaborate
+            "E_INTERNAL_CTOR_TAG"
+            (Just "kappa-hs.internal.ctor-tag")
+            noSpan
+            ( "the runtime-pinned constructor tag table is inconsistent (§28): "
+                <> T.intercalate "; " problems
+            )
+        ]
+    primRegistryDiags = case primRegistryDiagnostics of
+      [] -> []
+      problems ->
+        [ diag
+            SevError
+            StageElaborate
+            "E_INTERNAL_PRIM_REGISTRY"
+            (Just "kappa-hs.internal.prim-registry")
+            noSpan
+            ( "the primitive registry is inconsistent with the runtime-implemented set (§28): "
+                <> T.intercalate "; " problems
+            )
+        ]
 
 -- | Compile one embedded standard-library module on top of the
 -- prelude state and register its exports.

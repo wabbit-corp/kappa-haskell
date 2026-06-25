@@ -39,12 +39,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (forM_, foldM, unless)
 import Control.Monad.State.Strict
-import Kappa.Backend.C (BackendError (..))
+import Kappa.Backend.C (BackendError (..), PrimEntry (..), primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
+import Kappa.Builtins (builtinCtorTagId, kctUserBase)
 import Kappa.Check (CheckState (..))
 import Kappa.Core
 import Kappa.Eval (GlobalDef (..))
-import Kappa.Source (ModuleName (..), Span, noSpan)
+import Kappa.Source (Span, noSpan)
 import Numeric (showHex)
 
 -- ── Code-generation monad ────────────────────────────────────────────
@@ -163,9 +164,6 @@ enqueue g = do
 -- @[A-Za-z0-9_]@ charset C does, so @kg_main_2e_main@ is a legal LLVM symbol
 -- (prefixed with @\@@ at use sites).
 
-gKey :: GName -> Text
-gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
-
 -- | A unique, valid identifier for a global's accessor function (no @\@@).
 cGlobIdent :: GName -> Text
 cGlobIdent g = "kg_" <> mangle (gKey g)
@@ -200,49 +198,12 @@ mangle = T.concatMap esc
 --     (construct id == match id); the sorted assignment additionally makes them
 --     match the C backend's @KT_*@ enum for debuggability.
 
--- | The fixed kappart.h @KCT_*@ NUMERIC id for a runtime-built builtin
--- constructor, keyed by gKey, or @Nothing@ for a user constructor.  This pairs
--- 'Kappa.Backend.C.builtinCtorTag' (gKey -> @"KCT_name"@) with the enum's
--- numeric values transcribed from runtime/kappart.h (KCT_OTHER=0, KCT_UNIT=1,
--- then sequential; KCT_USER_BASE=40).  The C backend emits the symbolic @KCT_*@
--- name and lets the C compiler resolve it against the included header; LLVM IR
--- has no symbolic enum constant, so this backend must spell the literal number,
--- and so MUST be kept in sync with the kappart.h enum BY HAND.
-builtinCtorTagId :: Text -> Maybe Int
-builtinCtorTagId = \case
-  "std.prelude.Unit" -> Just 1 -- KCT_UNIT
-  "std.prelude.True" -> Just 2 -- KCT_TRUE
-  "std.prelude.False" -> Just 3 -- KCT_FALSE
-  "std.prelude.::" -> Just 4 -- KCT_CONS
-  "std.prelude.Nil" -> Just 5 -- KCT_NIL
-  "std.prelude.Some" -> Just 6 -- KCT_SOME
-  "std.prelude.None" -> Just 7 -- KCT_NONE
-  "__rat" -> Just 8 -- KCT_RAT
-  "std.prelude.__EffPure" -> Just 9 -- KCT_EFFPURE
-  "std.prelude.__EffOp" -> Just 10 -- KCT_EFFOP
-  "std.prelude.Success" -> Just 11 -- KCT_SUCCESS
-  "std.prelude.Failure" -> Just 12 -- KCT_FAILURE
-  "std.prelude.Fail" -> Just 13 -- KCT_FAIL
-  "std.prelude.Interrupt" -> Just 14 -- KCT_INTERRUPT
-  "std.prelude.Defect" -> Just 15 -- KCT_DEFECT
-  "std.prelude.Both" -> Just 16 -- KCT_BOTH
-  "std.prelude.Then" -> Just 17 -- KCT_THEN
-  "std.prelude.ROLeft" -> Just 18 -- KCT_RO_LEFT
-  "std.prelude.RORight" -> Just 19 -- KCT_RO_RIGHT
-  "std.prelude.TOTimedOut" -> Just 20 -- KCT_TO_TIMED_OUT
-  "std.prelude.TOExit" -> Just 21 -- KCT_TO_EXIT
-  "std.prelude.MkInterruptCause" -> Just 22 -- KCT_MK_INTERRUPT_CAUSE
-  "std.prelude.Requested" -> Just 23 -- KCT_IT_REQUESTED
-  "std.prelude.ScopeShutdown" -> Just 24 -- KCT_IT_SCOPE_SHUTDOWN
-  "std.prelude.TimedOut" -> Just 25 -- KCT_IT_TIMED_OUT
-  "std.prelude.RaceLost" -> Just 26 -- KCT_IT_RACE_LOST
-  "std.prelude.External" -> Just 27 -- KCT_IT_EXTERNAL
-  _ -> Nothing
-
--- | @KCT_USER_BASE@ from runtime/kappart.h: the first id codegen may assign to
--- a user constructor (the builtin ids above all sit below it).
-kctUserBase :: Int
-kctUserBase = 40
+-- The fixed @KCT_*@ numeric id for a runtime-built builtin constructor
+-- ('builtinCtorTagId') and the user-id base ('kctUserBase') are imported from
+-- "Kappa.Builtins" — the single source of truth shared with the C backend and
+-- checked against @runtime/kappart.h@. LLVM IR has no symbolic enum constant
+-- (unlike the C backend's @KCT_*@ names), so this backend spells the literal
+-- number 'builtinCtorTagId' returns.
 
 -- | Walk every recorded core body and assign each referenced USER constructor
 -- (one not in 'builtinCtorTagId') a @KCT_USER_BASE+i@ id, sorting the gKeys so
@@ -1688,119 +1649,81 @@ compilePureDirect pname helper ar sargs = do
           <> pname <> "' (got " <> T.pack (show (length explArgs))
           <> " of " <> T.pack (show ar) <> " arguments)")
 
--- | The (entry point, arity) of the IO primitives M0 lowers.  A small fixed
--- table — the C backend's full 'primEntries' is private to it; later
--- milestones port more entries as their lowerings land.
-ioPrimEntry :: Text -> Maybe (Text, Int)
-ioPrimEntry = \case
-  "printlnString" -> Just ("kpf_io_printlnString", 1)
-  "printString" -> Just ("kpf_io_printString", 1)
-  -- Milestone E: the do-kernel's monadic primitives.  @ioPure e@ appears as the
-  -- action of a @x <- ioPure e@ bind (and as a final @pure e@); a SATURATED
-  -- @ioPure@/@ioBind@/@ioThen@ lowers to @knative_sat(kpf_io_*, …, isio=1)@,
-  -- producing the IO action value the @krt2_*@ tree drives — the SAME lowering
-  -- the C backend's 'primEntries' gives these names (kpf_io_ioPure/ioBind/ioThen).
-  "ioPure" -> Just ("kpf_io_ioPure", 1)
-  "ioBind" -> Just ("kpf_io_ioBind", 2)
-  "ioThen" -> Just ("kpf_io_ioThen", 2)
-  _ -> Nothing
+-- ── LLVM primitive coverage (the only LLVM-local prim data) ──────────
+--
+-- The cfn/arity/isIO of every prim, and the @kp_*@ direct-helper subset, are
+-- single-sourced in "Kappa.Backend.C" ('primEntries' / 'primDirect'). What is
+-- LLVM-specific is only WHICH prims this backend has lowered so far — the two
+-- coverage sets below. Every prim lowering ('ioPrimEntry'/'pureDirectEntry'/
+-- 'primNativeEntry'/'pureDirectPrims') is a DERIVATION over the shared C tables
+-- intersected with these sets, so a lowering can never disagree with the C
+-- backend on a prim's entry point, arity, or IO-ness — the two backends emit
+-- the identical runtime call for any prim both cover.
 
--- | The pure first-order primitives Milestone A lowers, mapping the prim name
--- to its (direct @kp_*@ helper, explicit arity).  A FAITHFUL transliteration of
--- the C backend's 'primDirect' (C.hs:1901–1935) restricted to the prims this
--- milestone needs (arithmetic, integer comparison, and @show@) — every entry
--- here is also a @primDirect@ entry there with the SAME helper symbol and
--- arity, so a saturated call emits the identical runtime call in both backends.
--- (The C backend additionally requires a matching 'primEntries' arity; for
--- these prims the two tables agree, which this table encodes directly.)
---
--- Milestone B widens this from the M1 Integer-only set to every pure-direct
--- @kp_*@ helper whose arguments AND result are restricted to the value types
--- already lowered (Integer, String, Bool): the String ops (@stringAppend@,
--- @eqStr@, @ltStr@, @showStringLit@) and the Integer bitwise ops (@__intAnd@,
--- @__intOr@, @__intXor@).  @eqStr@/@ltStr@ take String args and return a Bool
--- (@kbool@), which is fine even without Bool literals — the Bool is produced
--- by the runtime, not parsed from source.
---
--- Deliberately STILL NOT ported (their literals are not yet lowered, so a
--- caller can never construct an argument): the Double helpers
--- (@addDouble@/…/@showDouble@/@intToDouble@/@floatEq@/@eqDouble@), the Scalar
--- (Char) helpers (@eqScalar@/@ltScalar@/@showScalar@), and the Byte helpers
--- (@eqByte@/@ltByte@).  Every entry here is also a @primDirect@ entry in
--- "Kappa.Backend.C" with the SAME helper symbol and arity, so a saturated call
--- emits the identical runtime call in both backends.
+-- | The IO prims the LLVM backend has lowered (M0 print + Milestone-E do-kernel
+-- monadic prims). Their (entry point, arity, isIO=True) come from 'primEntries'.
+llvmIoSet :: Set Text
+llvmIoSet =
+  Set.fromList
+    [ "printlnString", "printString" -- M0 IO prims
+    , "ioPure", "ioBind", "ioThen" -- Milestone E do-kernel monadic prims
+    ]
+
+-- | The pure first-order prims the LLVM backend has lowered: Milestone A's
+-- Integer arithmetic/comparison/@show@, widened in Milestone B to the String
+-- ops and Integer bitwise ops. Each has a @kp_*@ direct helper in 'primDirect'
+-- and a @kpf_*@ wrapper in 'primEntries'. Deliberately NOT yet covered (their
+-- literals are not lowered, so no caller can build an argument): the Double,
+-- Scalar (Char), and Byte helpers.
+llvmPureSet :: Set Text
+llvmPureSet =
+  Set.fromList
+    [ "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
+    , "eqInt", "ltInt", "leInt", "showInt"
+    , "stringAppend", "eqStr", "ltStr", "showStringLit"
+    , "__intAnd", "__intOr", "__intXor"
+    ]
+
+-- | The (entry point, arity) of an IO primitive the LLVM backend lowers,
+-- derived from the shared 'primEntries' restricted to 'llvmIoSet'. A SATURATED
+-- @ioPure@/@ioBind@/@ioThen@ lowers to @knative_sat(kpf_io_*, …, isio=1)@ — the
+-- SAME lowering the C backend gives these names.
+ioPrimEntry :: Text -> Maybe (Text, Int)
+ioPrimEntry name = do
+  PrimEntry cfn arity isIO <- Map.lookup name primEntries
+  if isIO && name `Set.member` llvmIoSet then Just (cfn, arity) else Nothing
+
+-- | The (direct @kp_*@ helper, arity) of a pure first-order primitive the LLVM
+-- backend lowers, derived from the shared 'primDirect' restricted to
+-- 'llvmPureSet'. A saturated call emits the identical runtime call in both
+-- backends (e.g. @kp_addInt(a,b)@).
 pureDirectEntry :: Text -> Maybe (Text, Int)
-pureDirectEntry = \case
-  "addInt" -> Just ("kp_addInt", 2)
-  "subInt" -> Just ("kp_subInt", 2)
-  "mulInt" -> Just ("kp_mulInt", 2)
-  "divInt" -> Just ("kp_divInt", 2)
-  "modInt" -> Just ("kp_modInt", 2)
-  "negInt" -> Just ("kp_negInt", 1)
-  "eqInt" -> Just ("kp_eqInt", 2)
-  "ltInt" -> Just ("kp_ltInt", 2)
-  "leInt" -> Just ("kp_leInt", 2)
-  "showInt" -> Just ("kp_showInt", 1)
-  -- Milestone B: String ops (args/result are String or Bool).
-  "stringAppend" -> Just ("kp_stringAppend", 2)
-  "eqStr" -> Just ("kp_eqStr", 2)
-  "ltStr" -> Just ("kp_ltStr", 2)
-  "showStringLit" -> Just ("kp_showStringLit", 1)
-  -- Milestone B: Integer bitwise ops.
-  "__intAnd" -> Just ("kp_intAnd", 2)
-  "__intOr" -> Just ("kp_intOr", 2)
-  "__intXor" -> Just ("kp_intXor", 2)
-  _ -> Nothing
+pureDirectEntry name =
+  if name `Set.member` llvmPureSet then primDirect name else Nothing
 
 -- | The names in 'pureDirectEntry' — the pure prims registered into @gsPrims@
 -- ('basePrims') so 'globPrimName' recognises them.
 pureDirectPrims :: [Text]
-pureDirectPrims =
-  [ "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
-  , "eqInt", "ltInt", "leInt", "showInt"
-  , "stringAppend", "eqStr", "ltStr", "showStringLit"
-  , "__intAnd", "__intOr", "__intXor"
-  ]
+pureDirectPrims = Set.toList llvmPureSet
 
--- | Milestone D: the CURRIED native-closure form of a prim — its @kpf_*@
--- wrapper entry point (a @KNativeFn@ taking @KValue**@), its arity, and whether
--- it is an IO prim.  Used when a prim appears as a VALUE (a bare reference, or a
--- partial/over-saturated application) rather than a saturated direct call: the
--- prim is built as @knative(\@kpf_*, arity, name, isio)@ — the same curried
--- closure the C backend's 'emitPrim' builds (C.hs:1642).  The wrapper symbols
--- and arities are transcribed from the C backend's 'primEntries' table for
--- exactly the prim set this backend lowers ('basePrims'); a prim outside the set
--- is honestly 'Nothing' (a clean @E_BACKEND_UNSUPPORTED@).
+-- | The CURRIED native-closure form of a prim — its @kpf_*@ wrapper entry
+-- point, arity, and IO-ness — for the prim set this backend lowers. Used when
+-- a prim appears as a VALUE (a bare reference, or a partial/over-saturated
+-- application): the prim is built as @knative(\@kpf_*, arity, name, isio)@, the
+-- same curried closure the C backend's 'emitPrim' builds. Derived from the
+-- shared 'primEntries' restricted to the LLVM coverage sets, so the wrapper
+-- symbol/arity/isIO always agree with the C backend.
 --
 -- NOTE the @kpf_*@ wrapper is DISTINCT from the @kp_*@ direct helper
 -- ('pureDirectEntry'): @kp_addInt(a,b)@ is the saturated fast call, whereas
 -- @kpf_addInt@ is the @KValue**@-taking wrapper that @knative@ drives one
 -- curried argument at a time.
 primNativeEntry :: Text -> Maybe (Text, Int, Bool)
-primNativeEntry = \case
-  "printlnString" -> Just ("kpf_io_printlnString", 1, True)
-  "printString" -> Just ("kpf_io_printString", 1, True)
-  "ioPure" -> Just ("kpf_io_ioPure", 1, True)
-  "ioBind" -> Just ("kpf_io_ioBind", 2, True)
-  "ioThen" -> Just ("kpf_io_ioThen", 2, True)
-  "addInt" -> Just ("kpf_addInt", 2, False)
-  "subInt" -> Just ("kpf_subInt", 2, False)
-  "mulInt" -> Just ("kpf_mulInt", 2, False)
-  "divInt" -> Just ("kpf_divInt", 2, False)
-  "modInt" -> Just ("kpf_modInt", 2, False)
-  "negInt" -> Just ("kpf_negInt", 1, False)
-  "eqInt" -> Just ("kpf_eqInt", 2, False)
-  "ltInt" -> Just ("kpf_ltInt", 2, False)
-  "leInt" -> Just ("kpf_leInt", 2, False)
-  "showInt" -> Just ("kpf_showInt", 1, False)
-  "stringAppend" -> Just ("kpf_stringAppend", 2, False)
-  "eqStr" -> Just ("kpf_eqStr", 2, False)
-  "ltStr" -> Just ("kpf_ltStr", 2, False)
-  "showStringLit" -> Just ("kpf_showStringLit", 1, False)
-  "__intAnd" -> Just ("kpf___intAnd", 2, False)
-  "__intOr" -> Just ("kpf___intOr", 2, False)
-  "__intXor" -> Just ("kpf___intXor", 2, False)
-  _ -> Nothing
+primNativeEntry name = do
+  PrimEntry cfn arity isIO <- Map.lookup name primEntries
+  if name `Set.member` llvmIoSet || name `Set.member` llvmPureSet
+    then Just (cfn, arity, isIO)
+    else Nothing
 
 -- | The runtime primitive name a global resolves to, if any (a @__prim@
 -- module name, or a prelude @prim@ registration whose value is a bare

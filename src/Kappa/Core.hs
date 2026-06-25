@@ -31,6 +31,7 @@
 module Kappa.Core
   ( GName (..)
   , gnameText
+  , gKey
   , primModule
   , Icit (..)
   , Q (..)
@@ -55,6 +56,7 @@ import Control.Concurrent.STM (TVar)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Word (Word8)
 import Kappa.Source (ModuleName (..), Span)
 import Kappa.Syntax (Expr)
@@ -69,6 +71,13 @@ data GName = GName !ModuleName !Text
 
 gnameText :: GName -> Text
 gnameText (GName _ t) = t
+
+-- | The fully-qualified dotted key of a global: its module path segments and
+-- spelling joined by @.@ (e.g. @std.prelude.Unit@, or just @__rat@ for a
+-- module-less runtime name). The stable string identity used by the backends
+-- (and "Kappa.Builtins") to key constructor-tag and primitive tables.
+gKey :: GName -> Text
+gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
 
 data Icit = Expl | Impl
   deriving stock (Eq, Ord, Show)

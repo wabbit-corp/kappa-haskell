@@ -276,6 +276,10 @@ registry =
       "Internal compiler invariant violation. This is an implementation bug, not an error in the source program."
   , ent "E_INTERNAL_BUILTIN_MISSING" (Just "kappa-hs.internal.builtin-missing")
       "The bundled prelude does not define a name the compiler wires in (see Kappa.Builtins). This is an implementation bug — a drift between the compiler and its prelude — not an error in the source program."
+  , ent "E_INTERNAL_CTOR_TAG" (Just "kappa-hs.internal.ctor-tag")
+      "The runtime-pinned constructor tag table (Kappa.Builtins.runtimeCtors) is internally inconsistent — its ids are not contiguous, or one is not below KCT_USER_BASE. This is an implementation bug — a drift between the compiler and the runtime tag enum — not an error in the source program."
+  , ent "E_INTERNAL_PRIM_REGISTRY" (Just "kappa-hs.internal.prim-registry")
+      "The native backend's primitive registry names a primitive the runtime-implemented set does not list. This is an implementation bug — a drift between the prim tables and the runtime — not an error in the source program."
   , ent "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
       "A labeled 'break' or 'continue' names a loop label that is not in scope."
   , ent "E_LAYOUT_BAD_DEDENT" Nothing

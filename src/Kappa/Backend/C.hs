@@ -26,6 +26,11 @@ module Kappa.Backend.C
   , BackendError (..)
   , backendDiagnostics
   , basePrims
+    -- * Shared primitive registry (consumed by "Kappa.Backend.LLVM")
+  , PrimEntry (..)
+  , primEntries
+  , primDirect
+  , primRegistryDiagnostics
   ) where
 
 import Data.ByteString (ByteString)
@@ -47,6 +52,7 @@ import Kappa.Backend.NativeFfi
   , wrapperCName
   , wrapperDefinition
   )
+import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Diagnostic
@@ -197,11 +203,6 @@ enqueue g = do
 
 -- ── Names ────────────────────────────────────────────────────────────
 
--- | Canonical dotted key of a global (used for constructor tag-name
--- comparison and the runtime's well-known constructor spellings).
-gKey :: GName -> Text
-gKey (GName (ModuleName segs) nm) = T.intercalate "." (segs ++ [nm])
-
 -- | A unique, valid C identifier for a global's accessor function.
 cGlobIdent :: GName -> Text
 cGlobIdent g = "kg_" <> mangle (gKey g)
@@ -262,45 +263,16 @@ cStrL s = "kstr(" <> cStr s <> ", " <> T.pack (show (utf8Len s)) <> ")"
 --     a `KVT_<mangle tag>` name, collected into `gsCollectVars`, 0-based.
 
 -- | The fixed kappart.h @KCT_*@ id for a runtime-built builtin constructor,
--- or @Nothing@ for a user constructor (which gets a @KT_*@ id).
+-- or @Nothing@ for a user constructor (which gets a @KT_*@ id). A thin
+-- re-export of the single source of truth in "Kappa.Builtins"
+-- ('Builtins.runtimeCtors'); the emitted symbolic @KCT_*@ name is resolved to
+-- its numeric value by the C compiler against the included @kappart.h@.
+--
+-- §11 Ordering (LT\/EQ\/GT) is deliberately NOT here: @durationCompare@ and
+-- the @Ord@ instances are @.kp@ definitions, so Ordering is a USER constructor
+-- codegen builds (id @KCT_USER_BASE+i@) — the runtime never delivers it.
 builtinCtorTag :: Text -> Maybe Text
-builtinCtorTag = \case
-  "std.prelude.Unit" -> Just "KCT_UNIT"
-  "std.prelude.True" -> Just "KCT_TRUE"
-  "std.prelude.False" -> Just "KCT_FALSE"
-  "std.prelude.::" -> Just "KCT_CONS"
-  "std.prelude.Nil" -> Just "KCT_NIL"
-  "std.prelude.Some" -> Just "KCT_SOME"
-  "std.prelude.None" -> Just "KCT_NONE"
-  "__rat" -> Just "KCT_RAT"
-  -- §18.1 algebraic-effect OpCall tree nodes (built/matched by the native
-  -- effect runtime in kappart.c, so they need fixed shared tags)
-  "std.prelude.__EffPure" -> Just "KCT_EFFPURE"
-  "std.prelude.__EffOp" -> Just "KCT_EFFOP"
-  -- §18.1 Exit/Cause outcomes the RUNTIME builds (await/join/race/timeout):
-  -- fixed ids so a runtime-delivered result matches a codegen id-based `case`.
-  "std.prelude.Success" -> Just "KCT_SUCCESS"
-  "std.prelude.Failure" -> Just "KCT_FAILURE"
-  "std.prelude.Fail" -> Just "KCT_FAIL"
-  "std.prelude.Interrupt" -> Just "KCT_INTERRUPT"
-  "std.prelude.Defect" -> Just "KCT_DEFECT"
-  "std.prelude.Both" -> Just "KCT_BOTH"
-  "std.prelude.Then" -> Just "KCT_THEN"
-  -- §18.1.6 race/timeout outcomes the runtime builds (race.c) + §18.1.2
-  -- interruption metadata (scope.c/rt.c).  Pinned so a runtime-delivered outcome
-  -- matches a .kp id-based `case` (the runtime's diagnostic name may differ).
-  "std.prelude.ROLeft" -> Just "KCT_RO_LEFT"
-  "std.prelude.RORight" -> Just "KCT_RO_RIGHT"
-  "std.prelude.TOTimedOut" -> Just "KCT_TO_TIMED_OUT"
-  "std.prelude.TOExit" -> Just "KCT_TO_EXIT"
-  "std.prelude.MkInterruptCause" -> Just "KCT_MK_INTERRUPT_CAUSE"
-  "std.prelude.Requested" -> Just "KCT_IT_REQUESTED"
-  "std.prelude.ScopeShutdown" -> Just "KCT_IT_SCOPE_SHUTDOWN"
-  "std.prelude.TimedOut" -> Just "KCT_IT_TIMED_OUT"
-  "std.prelude.RaceLost" -> Just "KCT_IT_RACE_LOST"
-  "std.prelude.External" -> Just "KCT_IT_EXTERNAL"
-  -- §11 Ordering (durationCompare builds it in the runtime)
-  _ -> Nothing
+builtinCtorTag = Builtins.builtinCtorCName
 
 -- | The C tag constant for a constructor, recording a user constructor's use
 -- so @assemble@ emits its @KT_*@ enum entry.
@@ -1890,6 +1862,36 @@ primEntries = Map.fromList
   , ("retry", PrimEntry "kpf_retry" 0 False)
   ]
 
+-- | Internal-consistency problems between the two primitive tables. The
+-- saturated fast-path table 'primDirect' (@kp_*@ helpers) must be a subset of
+-- the full registry 'primEntries' (@kpf_*@ wrappers, arity, IO-ness): every
+-- prim with a direct lowering must also have a registry entry, and the two
+-- must agree on arity — otherwise a saturated call and a partial/by-value
+-- reference to the same prim would disagree on how many arguments it takes.
+-- Reports any 'primDirect' entry missing from the registry, or whose arity
+-- disagrees. An empty result means the tables are consistent. Surfaced by the
+-- pipeline's §28 contract pass, so a drift becomes a reported diagnostic rather
+-- than a silent miscompile.
+primRegistryDiagnostics :: [Text]
+primRegistryDiagnostics =
+  [ msg
+  | (name, (_, dArity)) <- Map.toList primDirectTable
+  , Just msg <- [checkOne name dArity]
+  ]
+  where
+    checkOne name dArity = case Map.lookup name primEntries of
+      Nothing ->
+        Just ("primDirect '" <> name <> "' has no primEntries registry entry")
+      Just (PrimEntry _ eArity _)
+        | eArity /= dArity ->
+            Just
+              ( "primDirect '" <> name <> "' has arity " <> tShow dArity
+                  <> " but primEntries records arity " <> tShow eArity
+              )
+        | otherwise -> Nothing
+    tShow :: Show a => a -> Text
+    tShow = T.pack . show
+
 -- | QW1: the statically-known saturated pure primitives that have a direct C
 -- helper (`kp_…` in the runtime).  A saturated call to one of these is
 -- lowered to a direct helper call — no string dispatch, no `prim_arity` /
@@ -1899,40 +1901,46 @@ primEntries = Map.fromList
 -- any drift between this table and the runtime.  IO / partial / unlisted prims
 -- lower to a curried `knative` value instead.
 primDirect :: Text -> Maybe (Text, Int)
-primDirect = \case
-  "addInt" -> Just ("kp_addInt", 2)
-  "subInt" -> Just ("kp_subInt", 2)
-  "mulInt" -> Just ("kp_mulInt", 2)
-  "divInt" -> Just ("kp_divInt", 2)
-  "modInt" -> Just ("kp_modInt", 2)
-  "negInt" -> Just ("kp_negInt", 1)
-  "eqInt" -> Just ("kp_eqInt", 2)
-  "ltInt" -> Just ("kp_ltInt", 2)
-  "leInt" -> Just ("kp_leInt", 2)
-  "addDouble" -> Just ("kp_addDouble", 2)
-  "subDouble" -> Just ("kp_subDouble", 2)
-  "mulDouble" -> Just ("kp_mulDouble", 2)
-  "divDouble" -> Just ("kp_divDouble", 2)
-  "negDouble" -> Just ("kp_negDouble", 1)
-  "ltDouble" -> Just ("kp_ltDouble", 2)
-  "floatEq" -> Just ("kp_floatEq", 2)
-  "eqDouble" -> Just ("kp_eqDouble", 2)
-  "stringAppend" -> Just ("kp_stringAppend", 2)
-  "eqStr" -> Just ("kp_eqStr", 2)
-  "ltStr" -> Just ("kp_ltStr", 2)
-  "eqScalar" -> Just ("kp_eqScalar", 2)
-  "ltScalar" -> Just ("kp_ltScalar", 2)
-  "showInt" -> Just ("kp_showInt", 1)
-  "showDouble" -> Just ("kp_showDouble", 1)
-  "showScalar" -> Just ("kp_showScalar", 1)
-  "showStringLit" -> Just ("kp_showStringLit", 1)
-  "intToDouble" -> Just ("kp_intToDouble", 1)
-  "eqByte" -> Just ("kp_eqByte", 2)
-  "ltByte" -> Just ("kp_ltByte", 2)
-  "__intAnd" -> Just ("kp_intAnd", 2)
-  "__intOr" -> Just ("kp_intOr", 2)
-  "__intXor" -> Just ("kp_intXor", 2)
-  _ -> Nothing
+primDirect = (`Map.lookup` primDirectTable)
+
+-- | The backing table for 'primDirect', kept enumerable so the §28 prim-registry
+-- contract check ('primRegistryDiagnostics') can cross-validate every direct
+-- entry against the full 'primEntries' registry.
+primDirectTable :: Map Text (Text, Int)
+primDirectTable = Map.fromList
+  [ ("addInt", ("kp_addInt", 2))
+  , ("subInt", ("kp_subInt", 2))
+  , ("mulInt", ("kp_mulInt", 2))
+  , ("divInt", ("kp_divInt", 2))
+  , ("modInt", ("kp_modInt", 2))
+  , ("negInt", ("kp_negInt", 1))
+  , ("eqInt", ("kp_eqInt", 2))
+  , ("ltInt", ("kp_ltInt", 2))
+  , ("leInt", ("kp_leInt", 2))
+  , ("addDouble", ("kp_addDouble", 2))
+  , ("subDouble", ("kp_subDouble", 2))
+  , ("mulDouble", ("kp_mulDouble", 2))
+  , ("divDouble", ("kp_divDouble", 2))
+  , ("negDouble", ("kp_negDouble", 1))
+  , ("ltDouble", ("kp_ltDouble", 2))
+  , ("floatEq", ("kp_floatEq", 2))
+  , ("eqDouble", ("kp_eqDouble", 2))
+  , ("stringAppend", ("kp_stringAppend", 2))
+  , ("eqStr", ("kp_eqStr", 2))
+  , ("ltStr", ("kp_ltStr", 2))
+  , ("eqScalar", ("kp_eqScalar", 2))
+  , ("ltScalar", ("kp_ltScalar", 2))
+  , ("showInt", ("kp_showInt", 1))
+  , ("showDouble", ("kp_showDouble", 1))
+  , ("showScalar", ("kp_showScalar", 1))
+  , ("showStringLit", ("kp_showStringLit", 1))
+  , ("intToDouble", ("kp_intToDouble", 1))
+  , ("eqByte", ("kp_eqByte", 2))
+  , ("ltByte", ("kp_ltByte", 2))
+  , ("__intAnd", ("kp_intAnd", 2))
+  , ("__intOr", ("kp_intOr", 2))
+  , ("__intXor", ("kp_intXor", 2))
+  ]
 
 -- | Compile an application spine.  When the spine head is a known runtime
 -- primitive, emit a direct helper call ('primDirect') for a saturated pure

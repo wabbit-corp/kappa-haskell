@@ -82,14 +82,29 @@ module Kappa.Builtins
   , prelInterrupt
   , prelDefect
   , prelMkDefectInfo
+  , prelBoth
+  , prelThen
   , prelMkInterruptCause
   , prelTimedOut
+  , prelRequested
+  , prelScopeShutdown
+  , prelRaceLost
+  , prelExternal
+  , prelRat
 
     -- * Timeout/race result constructors (§18.1.6)
   , prelTOTimedOut
   , prelTOExit
   , prelROLeft
   , prelRORight
+
+    -- * Runtime-pinned constructor tag ids (the single source of truth)
+  , RuntimeCtor (..)
+  , runtimeCtors
+  , kctUserBase
+  , builtinCtorTagId
+  , builtinCtorCName
+  , runtimeCtorsDiagnostics
 
     -- * Prelude traits
   , prelShow
@@ -171,7 +186,8 @@ module Kappa.Builtins
   ) where
 
 import Data.Text (Text)
-import Kappa.Core (GName (..), primModule)
+import qualified Data.Text as T
+import Kappa.Core (GName (..), gKey, primModule)
 import Kappa.Source (ModuleName (..))
 
 -- | The module owning every built-in type, constructor, trait and helper
@@ -287,10 +303,35 @@ prelInterrupt = gPrel "Interrupt"
 prelDefect = gPrel "Defect"
 prelMkDefectInfo = gPrel "MkDefectInfo"
 
+-- | The §18.1 binary @Cause@ combinators the runtime builds (parallel/
+-- sequential aggregation of failures: @await@ on a both-failed scope, etc.).
+prelBoth, prelThen :: GName
+prelBoth = gPrel "Both"
+prelThen = gPrel "Then"
+
 -- | The §18.1.8 interrupt-cause record builder and its @TimedOut@ tag.
 prelMkInterruptCause, prelTimedOut :: GName
 prelMkInterruptCause = gPrel "MkInterruptCause"
 prelTimedOut = gPrel "TimedOut"
+
+-- | The remaining §18.1.2 @InterruptTag@ constructors (the @TimedOut@ tag
+-- is 'prelTimedOut' above). The runtime names the native subset
+-- (Requested/ScopeShutdown/TimedOut) and the interp/future subset
+-- (RaceLost/External) under diagnostic spellings; dispatch is by id.
+prelRequested, prelScopeShutdown, prelRaceLost, prelExternal :: GName
+prelRequested = gPrel "Requested"
+prelScopeShutdown = gPrel "ScopeShutdown"
+prelRaceLost = gPrel "RaceLost"
+prelExternal = gPrel "External"
+
+-- | The @__rat@ rational value head (§ rationals). Unlike the other
+-- constructors this is NOT a declared @std.prelude@ global — the runtime and
+-- evaluator build it as a bare @VPrim "__rat"@, so its 'gKey' is the bare
+-- spelling @"__rat"@ (empty module path), exactly the key the backend tag
+-- tables match. It is therefore part of 'runtimeCtors' (it carries a fixed
+-- @KCT_RAT@ id) but deliberately NOT part of 'wiredInPreludeNames'.
+prelRat :: GName
+prelRat = GName (ModuleName []) "__rat"
 
 -- | The §18.1.6 @timeout@ / @race@ result constructors.
 prelTOTimedOut, prelTOExit, prelROLeft, prelRORight :: GName
@@ -536,6 +577,13 @@ wiredInPreludeNames =
     , (prelMkDefectInfo, BKCtor)
     , (prelMkInterruptCause, BKCtor)
     , (prelTimedOut, BKCtor)
+    -- §18.1.2 InterruptTag constructors the runtime pins by id (Requested/
+    -- ScopeShutdown/RaceLost/External; TimedOut is above). Real prelude ctors
+    -- of @data InterruptTag@, so the §28 contract check covers them.
+    , (prelRequested, BKCtor)
+    , (prelScopeShutdown, BKCtor)
+    , (prelRaceLost, BKCtor)
+    , (prelExternal, BKCtor)
     , (prelTOTimedOut, BKCtor)
     , (prelTOExit, BKCtor)
     , (prelROLeft, BKCtor)
@@ -572,3 +620,108 @@ wiredInPreludeNames =
     , (prelCodeQuote, BKIntrinsic)
     , (prelCodeEscape, BKIntrinsic)
     ]
+
+-- ── Runtime-pinned constructor tag ids ───────────────────────────────
+--
+-- The runtime builds a fixed set of builtin constructors (Bool, list, Option,
+-- the §18 Exit/Cause/Interrupt outcome ctors, …) and delivers values tagged
+-- with the numeric ids in @runtime/kappart.h@'s @KCT_*@ enum. Codegen
+-- dispatches matches on those same ids, so the two MUST agree. This list is
+-- the SINGLE source of truth for that correspondence: the C backend derives
+-- its symbolic @KCT_*@ name map from it, the LLVM backend derives its numeric
+-- id map from it, and the runtime's @_Static_assert@ block is checked against
+-- it. Editing this list (or the header) without the other is caught by the
+-- build — see the per-id assertions in @runtime/kappart.c@ and the contiguity
+-- check in "Kappa.Pipeline".
+--
+-- The order and ids here mirror @kappart.h@ byte-for-byte (KCT_OTHER=0 is a
+-- never-constructed sentinel and is NOT listed; the real ids run 1..27, and
+-- user constructors begin at 'kctUserBase' = 40).
+
+-- | One runtime-pinned constructor: its 'GName' (whose 'gKey' is the lookup
+-- key both backends already use), its fixed numeric tag id, and the @KCT_*@
+-- C macro the runtime header spells it with.
+data RuntimeCtor = RuntimeCtor
+  { rcGName :: !GName
+  , rcTag :: !Int
+  , rcCName :: !Text
+  }
+
+-- | The ordered list of runtime-pinned builtin constructors. The ids match
+-- @runtime/kappart.h@ exactly and MUST NOT drift (see module note above).
+runtimeCtors :: [RuntimeCtor]
+runtimeCtors =
+  [ RuntimeCtor prelUnit 1 "KCT_UNIT"
+  , RuntimeCtor prelTrue 2 "KCT_TRUE"
+  , RuntimeCtor prelFalse 3 "KCT_FALSE"
+  , RuntimeCtor prelCons 4 "KCT_CONS"
+  , RuntimeCtor prelNil 5 "KCT_NIL"
+  , RuntimeCtor prelSome 6 "KCT_SOME"
+  , RuntimeCtor prelNone 7 "KCT_NONE"
+  , RuntimeCtor prelRat 8 "KCT_RAT"
+  , RuntimeCtor prelEffPure 9 "KCT_EFFPURE"
+  , RuntimeCtor prelEffOp 10 "KCT_EFFOP"
+  , RuntimeCtor prelSuccess 11 "KCT_SUCCESS"
+  , RuntimeCtor prelFailure 12 "KCT_FAILURE"
+  , RuntimeCtor prelFail 13 "KCT_FAIL"
+  , RuntimeCtor prelInterrupt 14 "KCT_INTERRUPT"
+  , RuntimeCtor prelDefect 15 "KCT_DEFECT"
+  , RuntimeCtor prelBoth 16 "KCT_BOTH"
+  , RuntimeCtor prelThen 17 "KCT_THEN"
+  , RuntimeCtor prelROLeft 18 "KCT_RO_LEFT"
+  , RuntimeCtor prelRORight 19 "KCT_RO_RIGHT"
+  , RuntimeCtor prelTOTimedOut 20 "KCT_TO_TIMED_OUT"
+  , RuntimeCtor prelTOExit 21 "KCT_TO_EXIT"
+  , RuntimeCtor prelMkInterruptCause 22 "KCT_MK_INTERRUPT_CAUSE"
+  , RuntimeCtor prelRequested 23 "KCT_IT_REQUESTED"
+  , RuntimeCtor prelScopeShutdown 24 "KCT_IT_SCOPE_SHUTDOWN"
+  , RuntimeCtor prelTimedOut 25 "KCT_IT_TIMED_OUT"
+  , RuntimeCtor prelRaceLost 26 "KCT_IT_RACE_LOST"
+  , RuntimeCtor prelExternal 27 "KCT_IT_EXTERNAL"
+  ]
+
+-- | @KCT_USER_BASE@ from @runtime/kappart.h@: the first id codegen may assign
+-- to a USER constructor. Every 'runtimeCtors' id sits strictly below it, so
+-- user ids never collide with a builtin.
+kctUserBase :: Int
+kctUserBase = 40
+
+-- | The fixed numeric tag id for a runtime-built builtin constructor, keyed by
+-- 'gKey', or @Nothing@ for a user constructor (which gets a @KCT_USER_BASE+i@
+-- id). Used by the LLVM backend, which must emit the literal number.
+builtinCtorTagId :: Text -> Maybe Int
+builtinCtorTagId k = lookup k [(gKey (rcGName c), rcTag c) | c <- runtimeCtors]
+
+-- | The @KCT_*@ C macro name for a runtime-built builtin constructor, keyed by
+-- 'gKey', or @Nothing@ for a user constructor. Used by the C backend, which
+-- emits the symbolic name and lets the C compiler resolve its value against
+-- the included @kappart.h@.
+builtinCtorCName :: Text -> Maybe Text
+builtinCtorCName k = lookup k [(gKey (rcGName c), rcCName c) | c <- runtimeCtors]
+
+-- | Internal-consistency problems with 'runtimeCtors' itself (independent of
+-- any checked state): the ids must run @[1..n]@ contiguously and every id must
+-- be strictly below 'kctUserBase', so a runtime-pinned ctor can never collide
+-- with a codegen-assigned user id. An empty result means the list is sound.
+-- Surfaced by the pipeline's §28 contract pass alongside the prelude check;
+-- a hand-edit that misnumbers an entry becomes a reported diagnostic rather
+-- than a silent miscompile.
+runtimeCtorsDiagnostics :: [Text]
+runtimeCtorsDiagnostics =
+  contiguity ++ belowBase
+  where
+    ids = map rcTag runtimeCtors
+    contiguity
+      | ids == [1 .. length runtimeCtors] = []
+      | otherwise =
+          [ "runtimeCtors ids are not [1.." <> tShow (length runtimeCtors)
+              <> "] contiguous (got " <> tShow ids <> ")"
+          ]
+    belowBase =
+      [ "runtimeCtors id " <> tShow (rcTag c) <> " ("
+          <> rcCName c <> ") is not below kctUserBase=" <> tShow kctUserBase
+      | c <- runtimeCtors
+      , rcTag c >= kctUserBase
+      ]
+    tShow :: Show a => a -> Text
+    tShow = T.pack . show

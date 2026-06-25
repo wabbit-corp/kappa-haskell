@@ -251,10 +251,40 @@ KValue *kunit(void) {
 }
 
 /* LR2: the builtin tag ids are shared with codegen (which spells them KCT_*);
- * pin the order so a header edit that desyncs them fails the build, not a
- * pattern match at runtime. */
-_Static_assert(KCT_RAT == 8 && KCT_USER_BASE > KCT_RAT,
-               "LR2 builtin ctor tag ids must stay pinned and below KCT_USER_BASE");
+ * pin every id so a header edit that desyncs them from Kappa.Builtins's
+ * `runtimeCtors` (the compiler-side source of truth) fails THIS build, not a
+ * pattern match at runtime.  One assert per id, in enum order — keep in lockstep
+ * with `runtimeCtors`. */
+_Static_assert(KCT_UNIT                 ==  1, "KCT_UNIT must be 1");
+_Static_assert(KCT_TRUE                 ==  2, "KCT_TRUE must be 2");
+_Static_assert(KCT_FALSE                ==  3, "KCT_FALSE must be 3");
+_Static_assert(KCT_CONS                 ==  4, "KCT_CONS must be 4");
+_Static_assert(KCT_NIL                  ==  5, "KCT_NIL must be 5");
+_Static_assert(KCT_SOME                 ==  6, "KCT_SOME must be 6");
+_Static_assert(KCT_NONE                 ==  7, "KCT_NONE must be 7");
+_Static_assert(KCT_RAT                  ==  8, "KCT_RAT must be 8");
+_Static_assert(KCT_EFFPURE              ==  9, "KCT_EFFPURE must be 9");
+_Static_assert(KCT_EFFOP                == 10, "KCT_EFFOP must be 10");
+_Static_assert(KCT_SUCCESS              == 11, "KCT_SUCCESS must be 11");
+_Static_assert(KCT_FAILURE              == 12, "KCT_FAILURE must be 12");
+_Static_assert(KCT_FAIL                 == 13, "KCT_FAIL must be 13");
+_Static_assert(KCT_INTERRUPT            == 14, "KCT_INTERRUPT must be 14");
+_Static_assert(KCT_DEFECT               == 15, "KCT_DEFECT must be 15");
+_Static_assert(KCT_BOTH                 == 16, "KCT_BOTH must be 16");
+_Static_assert(KCT_THEN                 == 17, "KCT_THEN must be 17");
+_Static_assert(KCT_RO_LEFT              == 18, "KCT_RO_LEFT must be 18");
+_Static_assert(KCT_RO_RIGHT             == 19, "KCT_RO_RIGHT must be 19");
+_Static_assert(KCT_TO_TIMED_OUT         == 20, "KCT_TO_TIMED_OUT must be 20");
+_Static_assert(KCT_TO_EXIT              == 21, "KCT_TO_EXIT must be 21");
+_Static_assert(KCT_MK_INTERRUPT_CAUSE   == 22, "KCT_MK_INTERRUPT_CAUSE must be 22");
+_Static_assert(KCT_IT_REQUESTED         == 23, "KCT_IT_REQUESTED must be 23");
+_Static_assert(KCT_IT_SCOPE_SHUTDOWN    == 24, "KCT_IT_SCOPE_SHUTDOWN must be 24");
+_Static_assert(KCT_IT_TIMED_OUT         == 25, "KCT_IT_TIMED_OUT must be 25");
+_Static_assert(KCT_IT_RACE_LOST         == 26, "KCT_IT_RACE_LOST must be 26");
+_Static_assert(KCT_IT_EXTERNAL          == 27, "KCT_IT_EXTERNAL must be 27");
+_Static_assert(KCT_USER_BASE            == 40, "KCT_USER_BASE must be 40");
+_Static_assert(KCT_USER_BASE > KCT_IT_EXTERNAL,
+               "user ctor ids must not collide with the pinned builtin ids");
 
 KValue *kctor(int tagid, const char *name, int argc, KValue **args) {
   KValue *r = alloc_val(K_CTOR);
