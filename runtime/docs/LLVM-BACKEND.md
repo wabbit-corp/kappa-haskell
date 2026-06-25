@@ -90,9 +90,10 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **M1** | `CLit Int` (`kint`/`kbigint_str`), ten pure direct `kp_*` Int/show prims, prim-spine apps | ✅ `88f9e8f` |
 | **M2** | CAF cross-references (enqueue + accessor) | ✅ `88f9e8f` |
 | **B**  | `CVar`/`CLet` (uniform `kpush`/`kvar`), widen pure-direct prims to Integer/String/Bool | ✅ `ce30ca5` |
-| **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | in progress |
+| **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | ✅ `f4d443b` |
 | **D**  | `CLam` + closures + general `kapp` + tail-call `kbounce` (curried model; worker chain is Phase 2) | ✅ `5848b85` |
 | **E**  | `CDo` do-kernel (linear `bind`/`let`/`action`/`final` → `krt2_bind`/`krt2_pure` tree, lazy continuations — the §5 seam) | ✅ `3cab171` |
+| **F–M** | do-kernel `KIf`/loops/cells/abrupt, records, recursive patterns, all literals + prim coverage, `letrec`/thunks, host FFI, exceptions, `KSubDo` — the delve-driven surface (see below) | ✅ → `0ec0078` |
 | **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
 
 **Phase-1 core (M0–E) is complete** at interp == C == LLVM over 35 corpus programs:
@@ -110,22 +111,26 @@ recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
 - **records** — ✅ `CRecordV` + `CProjAt`/`CProj` via `krec`/`krec_at`/`kproj`
   (`1b3770d`); ✅ type-level-global erasure so trait instances on builtin types
   compile (`fb3c2bc`).
-- **patterns** — ✅ literal patterns (`ee9064f`); recursive nested/tuple/record/variant
-  patterns (in progress); or-patterns remaining.
+- **patterns** — ✅ literal patterns (`ee9064f`); ✅ recursive nested/tuple/record/variant
+  + or-patterns with exact de-Bruijn binder order (`e600d61`).
 - **literals + prims** — ✅ `Byte`/`Char`/`Double` literals + generalized prim-as-value
-  coverage (`71003bc`); ✅ `letrec` (`CLetRec` backpatch via `kenv_set_val`) +
-  `delay`/`memo`/`force` thunks (`502188d`); remaining: concurrency/STM (`fork`/`await`/…),
-  `catchIO`/`throwIO`/`finallyIO` (need CK-machine exception semantics), host-binding/FFI
-  members, `KFor`/while-`else`/`KSubDo`/labeled loops.
-- **the worker/closure-chain + self-TCO** direct-call optimization (this is a
-  perf path; the curried model already gives correctness).
+  coverage (`71003bc`); ✅ `letrec` + `delay`/`memo`/`force` thunks (`502188d`).
+- **host FFI** — ✅ host-native members via a C-wrapper sidecar (lower like prims over
+  `wrapperCName`; the Driver emits the marshalling `.c`) (`5ac0e21`).
+- **exceptions + sub-do** — ✅ `catchIO`/`finallyIO`/`throwIO` as `krt2_catch`/`finally`/
+  `throw` node-builders + `KSubDo` (`0ec0078`).
+- **remaining (not needed by delve/voxelcraft)** — concurrency/STM (`fork`/`await`/STM),
+  `KFor`/while-`else`/labeled loops, the worker/closure-chain + self-TCO perf path.
 
-**Empirically driven by building the real packages:** voxelcraft is LLVM
-codegen-clean (only the shared native-binding lockfile blocks it). delve started at
-**721 unsupported sites → 117**: records closed 368, type-global erasure 6, curried
-prims + `Byte`/`Char`/`Double` literals 124, `letrec`/`delay`/`force` 127. The remaining
-117 are patterns (90, in progress), host-binding/FFI members (17), `catchIO`/`throwIO`/
-`finallyIO` (8), and `KSubDo` (2).
+**Empirically driven by building the real packages — Phase 1 surface DONE:** both real
+packages codegen fully LLVM-clean. voxelcraft was clean from the start; delve went from
+**721 unsupported sites → 0**: records 368, curried prims + `Byte`/`Char`/`Double`
+literals 124, `letrec`/`delay`/`force` 127, recursive patterns 90, host-native FFI 17,
+exceptions + `KSubDo` 10, type-global erasure 6. `delve-macos-arm64` now codegens with
+zero `E_BACKEND_UNSUPPORTED` on `KAPPA_BACKEND=llvm`. The corpus gate is 81/81
+interp == C == LLVM, with zero miscompiles found across every milestone's adversarial
+sweep. Phase 2 (the layout system · Perceus + GC backstop · coroutine CPS) is the next
+chapter.
 
 ## Extending it
 
