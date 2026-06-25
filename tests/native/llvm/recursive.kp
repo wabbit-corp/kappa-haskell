@@ -1,0 +1,13 @@
+-- Milestone D: a recursive function at MODERATE depth.  `sumTo` is NON-tail
+-- (the recursive call `sumTo (subInt n 1)` is an argument to `addInt`), so each
+-- call goes through the kapp chain in non-tail position; its C-stack depth is
+-- bounded by expression depth per frame, and the recursion still terminates
+-- because every call drives the cached closure.  sumTo 100 = 0+1+…+100 = 5050.
+module main
+
+sumTo : Int -> Int
+let sumTo n decreases n =
+    if eqInt n 0 then 0 else addInt n (sumTo (subInt n 1))
+
+main : UIO Unit
+let main = printlnString (showInt (sumTo 100))

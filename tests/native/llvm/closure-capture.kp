@@ -1,0 +1,14 @@
+-- Milestone D: a closure CAPTURING a local let var.  `makeAdder n` binds a
+-- local `base = addInt n 100`, then returns a lambda `\y -> addInt base y` that
+-- closes over BOTH the let-bound `base` and the parameter `n`'s environment.
+-- The whole environment is captured by kclo (no free-var analysis): inside the
+-- lifted kfn_ body, `y` is kvar(env,0), `base` is kvar(env,1), `n` is
+-- kvar(env,2) — the de Bruijn indices line up because every binder pushed one
+-- env slot.  makeAdder 5 7 = addInt (addInt 5 100) 7 = 112.
+module main
+
+makeAdder : Int -> (Int -> Int)
+let makeAdder n = let base = addInt n 100 in \y -> addInt base y
+
+main : UIO Unit
+let main = printlnString (showInt (makeAdder 5 7))

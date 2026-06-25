@@ -1,0 +1,14 @@
+-- Milestone D: a PRIMITIVE used as a curried VALUE.  `addInt 10` is a PARTIAL
+-- application of a prim (under-saturated), so the bare prim is built as a
+-- curried native closure `knative(kpf_addInt, 2, "addInt", 0)` (compilePrimValue)
+-- and `kapp`-ed one argument at a time — the same closure the C backend's
+-- emitPrim builds.  Passing it to the higher-order `twice` exercises both the
+-- prim-value path and applying a prim closure through kapp.
+-- twice (addInt 10) 5 = addInt 10 (addInt 10 5) = 25.
+module main
+
+twice : (Int -> Int) -> Int -> Int
+let twice f x = f (f x)
+
+main : UIO Unit
+let main = printlnString (showInt (twice (addInt 10) 5))

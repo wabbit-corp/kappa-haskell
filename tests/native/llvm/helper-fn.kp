@@ -1,0 +1,16 @@
+-- Milestone D: top-level HELPER functions of arity 1 and 2 called from main.
+-- `add` (arity 2) and `inc` (arity 1) are function-shaped globals: each is a
+-- CAF whose value is a nested CLam, lowered to a kclo via `compileLam`; the
+-- memoised kg_ accessor caches that (capture-free) closure.  At the call site
+-- `add 3 (inc 4)` is a general application — a kapp chain over the cached
+-- closures — not a saturated prim.  Prints "10".
+module main
+
+add : Int -> Int -> Int
+let add x y = addInt x y
+
+inc : Int -> Int
+let inc x = addInt x 1
+
+main : UIO Unit
+let main = printlnString (showInt (add 3 (inc 4)))

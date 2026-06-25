@@ -1,0 +1,15 @@
+-- Milestone D: a HIGHER-ORDER function — `applyTwice` takes a function argument
+-- `f` (a closure value) and applies it twice, `f (f x)`.  At the call site
+-- `applyTwice inc 10`, the closure `inc` is passed as a runtime KValue and
+-- applied inside `applyTwice`'s body via the kapp chain (a CVar read of the
+-- function parameter, then kapp).  applyTwice inc 10 = inc (inc 10) = 12.
+module main
+
+applyTwice : (Int -> Int) -> Int -> Int
+let applyTwice f x = f (f x)
+
+inc : Int -> Int
+let inc x = addInt x 1
+
+main : UIO Unit
+let main = printlnString (showInt (applyTwice inc 10))

@@ -1,0 +1,15 @@
+-- Milestone D regression: a TOP-LEVEL CAF whose value is a PARTIAL application
+-- (add3 1 20 = an arity-1 closure waiting for the last arg). The accessor must
+-- produce the closure VALUE, not an undrained K_BOUNCE — so the accessor body is
+-- compiled with `compile` (kapp drains), not `compileTail` (which would bounce).
+-- Then `partial 300` applies the last arg. 1 + 20 + 300 = 321.
+module main
+
+add3 : Int -> Int -> Int -> Int
+let add3 a b c = addInt (addInt a b) c
+
+partial : Int -> Int
+let partial = add3 1 20
+
+main : UIO Unit
+let main = printlnString (showInt (partial 300))

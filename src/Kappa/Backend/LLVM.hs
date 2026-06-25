@@ -73,6 +73,8 @@ data GenState = GenState
   , gsDeclSites :: !(Map GName Span)
   , gsCtorTags :: !(Map Text Int) -- ^ Milestone C: USER-constructor gKey -> numeric tag id (@KCT_USER_BASE+i@). Precomputed once ('collectUserCtorTags') so 'compileCtor'/'compileMatch' can emit a literal @i32@ immediate (LLVM has no symbolic enum constant like the C backend's @KT_*@). Builtin ctors are NOT here — they use the fixed 'builtinCtorTagId'.
   , gsBlock :: !Text -- ^ Milestone C: label of the basic block currently being filled. A @phi@ at a control-flow join needs the PREDECESSOR block of each incoming value, which — for a branch that itself emitted control flow (a nested match/if) — is NOT the branch-entry label but whatever block was active when the branch finished. 'compileIf'/'compileMatch' read this after compiling each arm to spell the phi's incoming labels correctly. Updated by 'startBlock'.
+  , gsCtorSet :: !(Set GName) -- ^ Milestone D: every declared constructor's gname. An IMPLICIT application whose head is a constructor erases its implicit arg (§31.2); 'isErasedHead' consults this (mirrors C's 'gsCtors' membership test).
+  , gsDataSet :: !(Set GName) -- ^ Milestone D: declared data-type / trait gnames — a reference to one in argument position is computationally erased ('isTypeGlob'); mirrors C's @gsDatas@ ∪ @gsTraits@.
   }
 
 type Gen = State GenState
@@ -414,6 +416,8 @@ generateLL cs mainG ffiPrims _hostSyms =
           , gsDeclSites = csDeclSites cs
           , gsCtorTags = collectUserCtorTags (csCoreBodies cs)
           , gsBlock = "build"
+          , gsCtorSet = Map.keysSet (csCtors cs)
+          , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -447,10 +451,18 @@ drainQueue = do
       emitGlobal g
       drainQueue
 
--- | Emit one global's accessor.  M0 supports the arity-0 CAF shape: a
--- memoised @kg_*()@ accessor whose body is the compiled term, cached in a
--- module-level @.cache@ global.  A function global (arity ≥ 1) is out of M0
--- scope and reported.
+-- | Emit one global's accessor as a memoised @kg_*()@ CAF: a module-level
+-- @.cache@ global plus an accessor that compiles the term once, caches it, and
+-- returns the cached-or-fresh value.
+--
+-- Milestone D removes the M0 arity≥1 guard.  A FUNCTION-shaped global
+-- (@f = lam x => …@) is simply a CAF whose value is a (nested) 'CLam'; the body
+-- is compiled UNIFORMLY in tail position and the 'CLam' lowers to a @kclo@
+-- (see 'compileLam').  The memoised accessor then caches that closure — which is
+-- capture-free (its @cenv@ is @null@), so the cache is sound.  Recursion works
+-- without a build-time loop: a self-reference is @CGlob f@ → a call to THIS
+-- accessor, and the closure is built LAZILY (the @kfn_N@ body runs only when
+-- applied), so emitting/​caching @f@'s closure never re-enters @f@'s accessor.
 emitGlobal :: GName -> Gen ()
 emitGlobal g = do
   modify' $ \st -> st {gsCur = g}
@@ -458,18 +470,22 @@ emitGlobal g = do
   let ident = cGlobIdent g
   case Map.lookup g bodies of
     Nothing ->
-      -- No recorded core body: M0 does not handle type-level erasure; report.
+      -- No recorded core body: a purely type-level global with no runtime value.
       reportArity0Failure ident
-        ("'" <> gKey g <> "' has no recorded core body (M0 supports only "
-          <> "arity-0 CAFs over string literals and saturated IO prims)")
-    Just tm -> case funcArity tm of
-      (n, _) | n >= 1 ->
-        reportArity0Failure ident
-          ("'" <> gKey g <> "' is a function (arity " <> T.pack (show n)
-            <> "); the LLVM backend M0 supports only arity-0 CAFs")
-      _ -> do
-        (insns, endBlock, operand) <- captured "null" (compile tm)
-        emitArity0Accessor ident insns endBlock operand
+        ("'" <> gKey g <> "' has no recorded core body (the LLVM backend lowers "
+          <> "only globals with a runtime value)")
+    Just tm -> do
+      -- A CAF accessor's value is consumed DIRECTLY (cached + returned to a plain
+      -- caller), so it must be a real value/closure — NOT a tail position.  Using
+      -- 'compile' (not 'compileTail') drains any final application through @kapp@
+      -- immediately; otherwise the cache would store an undrained @K_BOUNCE@ (a
+      -- deferred tail call only the trampoline inside @kapp@ knows how to run), and
+      -- a later 'kapp(op, …)' / 'showInt op' would see a non-value.  A function-shaped
+      -- global is unaffected: its body is a 'CLam', a value in both paths.  Only the
+      -- lifted @kfn_N@ FUNCTION body (invoked through @kapp@'s trampoline) is tail
+      -- position and keeps 'compileTail'.
+      (insns, endBlock, operand) <- captured "null" (compile tm)
+      emitArity0Accessor ident insns endBlock operand
 
 -- | The leading-lambda arity of a term and the body beneath those binders
 -- (mirrors C's 'funcArity').
@@ -599,6 +615,7 @@ compile term = case term of
   CGlob g -> compileGlob g
   CApp {} -> compileApp term
   CVar i -> compileVar i
+  CLam _ _ _ body -> compileLam body
   CLet _ _ _ rhs body -> compileLet rhs body
   CCtor g args -> compileCtor g args
   CIf c t e -> compileIf c t e
@@ -606,6 +623,91 @@ compile term = case term of
   _ ->
     unsupported "term"
       ("the LLVM backend M0 cannot lower this construct: " <> constructName term)
+
+-- | Compile a term in TAIL position — a function body, a @match@/@if@ branch.
+-- This is what gives DEEP recursion stack safety (Milestone D): a tail-position
+-- closure call is deferred to the trampoline via @kbounce@ instead of recursing
+-- in the C stack.  The AUTHORITY is the C backend's 'emitTailApp' (C.hs:1525):
+--
+--   * A general CLOSURE application (a 'CApp' spine whose head is NOT a
+--     saturated prim and NOT an eta-ctor): evaluate the head and all-but-last
+--     args EAGERLY with the ordinary @kapp@ chain (they build the partial
+--     closure), then RETURN @call ptr \@kbounce(ptr %headClosure, ptr %lastArg)@
+--     for the final application.  The driving @kapp@'s trampoline drains the
+--     bounce, so a self-tail-recursive call runs in CONSTANT C stack.
+--   * A saturated PRIM application (or eta-ctor): a prim/ctor returns a value
+--     and never bounces — compile it normally and return it ('compile').
+--   * 'CLet': compile the rhs NON-tail, @kpush@, then 'compileTail' the body
+--     (restoring the env after) — the let-bound tail call still bounces.
+--   * 'CMatch' / 'CIf': 'compileTail' each branch and @phi@ the results at the
+--     join.  A @kbounce@ value flows through the phi unchanged and is drained by
+--     the caller — that is fine.
+--   * Any VALUE form ('CLam' / 'CLit' / 'CCtor' / 'CVar' / 'CGlob' / …): compile
+--     normally and return it.  In particular a 'CLam' in tail position is a
+--     closure VALUE returned directly — NOT bounced.
+--
+-- A non-tail subexpression uses plain 'compile' (the @kapp@ chain); its C-stack
+-- depth is bounded by EXPRESSION depth, not recursion depth.
+compileTail :: Term -> Gen Text
+compileTail term = case term of
+  CApp {}
+    -- A saturated eta-expanded constructor is a final data value — build it
+    -- directly (it cannot bounce or recurse).
+    | Just (g, ctorArgs) <- etaCtorApp term -> compileCtor g ctorArgs
+    | otherwise -> do
+        let (hd, _) = spineOf term
+        mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
+        case mp of
+          -- A prim spine returns a value (no bounce) iff it is the saturated
+          -- fast path; otherwise it falls through 'compile' to the kapp chain.
+          Just pname | saturatedPrim pname term -> compile term
+          _ -> compileTailApp term
+  CLet _ _ _ rhs body -> do
+    rv <- compile rhs
+    env0 <- gets gsEnv
+    declRuntime "declare ptr @kpush(ptr, ptr)"
+    env1 <- freshReg
+    emit (env1 <> " = call ptr @kpush(ptr " <> rv <> ", ptr " <> env0 <> ")")
+    modify' $ \g -> g {gsEnv = env1}
+    bv <- compileTail body
+    modify' $ \g -> g {gsEnv = env0}
+    pure bv
+  CIf c t e -> compileIfWith compileTail c t e
+  CMatch scrut alts -> compileMatchWith compileTail scrut alts
+  -- Every other form is a value (or a non-bouncing construct): compile it
+  -- normally and return it.  A CLam here is a closure value, NOT a bounce.
+  _ -> compile term
+
+-- | Is @pname@ a SATURATED-prim application in @term@ (so it returns a value
+-- and never bounces)?  Mirrors the C backend's saturated-prim fast-path gate
+-- ('compilePrimApp' accepts only the exact arity): the explicit-argument count
+-- equals the prim's known arity.  An under-/over-saturated prim spine is a
+-- curried closure that goes through the @kapp@ chain (and may bounce) instead.
+saturatedPrim :: Text -> Term -> Bool
+saturatedPrim pname term =
+  let (_, sargs) = spineOf term
+      nexpl = length [() | (Expl, _) <- sargs]
+   in case (ioPrimEntry pname, pureDirectEntry pname) of
+        (Just (_, ar), _) -> nexpl == ar
+        (_, Just (_, ar)) -> nexpl == ar
+        _ -> False
+
+-- | Lower a general CLOSURE application in TAIL position: the head + all but the
+-- final explicit argument are built EAGERLY with the ordinary @kapp@ chain (the
+-- partial-closure spine), and the FINAL application is a @kbounce@ that the
+-- driving @kapp@'s trampoline drains — bounding the C stack on tail recursion.
+-- An implicit final argument (or no explicit argument at all) cannot bounce by
+-- itself, so it falls back to a plain 'compile' of the whole spine.
+compileTailApp :: Term -> Gen Text
+compileTailApp term = case term of
+  CApp Expl f a -> do
+    fe <- compile f
+    ae <- compileErasableArg a
+    declRuntime "declare ptr @kbounce(ptr, ptr)"
+    r <- freshReg
+    emit (r <> " = call ptr @kbounce(ptr " <> fe <> ", ptr " <> ae <> ")")
+    pure r
+  _ -> compile term
 
 -- | A bound variable read (Milestone B): @call ptr \@kvar(ptr %env, i32 i)@,
 -- where @%env@ is the current 'gsEnv' operand and @i@ is the de Bruijn /index/
@@ -644,6 +746,58 @@ compileLet rhs body = do
   bv <- compile body
   modify' $ \g -> g {gsEnv = env0}
   pure bv
+
+-- ── Lambdas / closures (Milestone D) ─────────────────────────────────
+
+-- | A lambda @lam x => body@ (mirrors C's 'compileLam', using the SIMPLE
+-- curried model — one @kclo@ per lambda, one @kpush@ per parameter; the C
+-- backend's flat-closure / worker optimisation is deliberately NOT ported).
+--
+-- The body is lifted into a fresh top-level
+-- @define internal ptr \@kfn_N(ptr %cenv, ptr %arg)@ whose first act is
+-- @%env = call ptr \@kpush(ptr %arg, ptr %cenv)@ — the parameter becomes env
+-- slot 0.  The body is then compiled in TAIL position ('compileTail') with
+-- 'gsEnv' := @%env@, and the result is @ret@'d.
+--
+-- At the USE site we emit @call ptr \@kclo(ptr \@kfn_N, ptr <gsEnv>)@, capturing
+-- the WHOLE current environment (no free-variable analysis).  This is sound
+-- because every binder pushes exactly one env slot: inside @kfn_N@ the chain is
+-- (param :: capturedEnv), so the body's Core de Bruijn indices read correctly
+-- via @kvar@ with NO renumbering — index 0 is the parameter, index i+1 is what
+-- index i named in the enclosing scope.
+--
+-- 'captured' gives @kfn_N@ its own instruction buffer (and restores the caller's
+-- buffer / env / block); the @define@ is emitted via 'gsTop'.
+compileLam :: Term -> Gen Text
+compileLam body = do
+  fnIdent <- freshLabel "kfn_"
+  capturedEnv <- gets gsEnv -- the env captured at closure-creation time
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  declRuntime "declare ptr @kclo(ptr, ptr)"
+  -- Compile the body in its OWN buffer: the parameter is pushed onto %cenv to
+  -- form %env, then the body runs in tail position over %env.
+  -- The third 'captured' result (the block active when the body finished) is
+  -- unused here: a lambda body ends in a straight @ret@, which is appended
+  -- textually after the body's final block, so 'compileTail' has already wired
+  -- any internal control flow + phis and the @ret@ just returns the operand
+  -- defined in that last block.  (Contrast the accessor, where the trailing
+  -- @store@/@phi@ must name the end block — hence 'emitArity0Accessor' uses it.)
+  (bodyInsns, _endBlock, resultOp) <- captured "%env" $ do
+    emit ("%env = call ptr @kpush(ptr %arg, ptr %cenv)")
+    compileTail body
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  r <- freshReg
+  emit (r <> " = call ptr @kclo(ptr @" <> fnIdent <> ", ptr " <> capturedEnv <> ")")
+  pure r
 
 -- ── Constructors (Milestone C) ───────────────────────────────────────
 
@@ -698,7 +852,16 @@ compileCtor g args = do
 -- — a nested control form in an arm leaves a different block active than the
 -- arm's entry, so the phi must name the block that actually reaches the join).
 compileIf :: Term -> Term -> Term -> Gen Text
-compileIf c t e = do
+compileIf = compileIfWith compile
+
+-- | 'compileIf' parameterised on how each ARM is compiled: 'compile' for an
+-- expression-position @if@, 'compileTail' for a tail-position one (so a tail
+-- call inside a branch lowers to @kbounce@).  The condition is always compiled
+-- non-tail (it is forced to an @i1@ here), and the arm results meet at a
+-- @phi ptr@ over the two arms' predecessor blocks — a @kbounce@ value flows
+-- through the phi unchanged.
+compileIfWith :: (Term -> Gen Text) -> Term -> Term -> Term -> Gen Text
+compileIfWith arm c t e = do
   cv <- compile c
   declRuntime "declare i32 @kas_bool(ptr)"
   bi <- freshReg
@@ -711,12 +874,12 @@ compileIf c t e = do
   emit ("br i1 " <> cond <> ", label %" <> thenL <> ", label %" <> elseL)
   -- then arm
   startBlock thenL
-  tv <- compile t
+  tv <- arm t
   thenEnd <- gets gsBlock
   emit ("br label %" <> joinL)
   -- else arm
   startBlock elseL
-  ev <- compile e
+  ev <- arm e
   elseEnd <- gets gsBlock
   emit ("br label %" <> joinL)
   -- join
@@ -747,13 +910,21 @@ compileIf c t e = do
 -- clean 'unsupported' rather than a miscompile) — single-level constructor
 -- dispatch is what the data-type corpus needs and what elaboration desugars to.
 compileMatch :: Term -> [CaseAlt] -> Gen Text
-compileMatch scrut alts = do
+compileMatch = compileMatchWith compile
+
+-- | 'compileMatch' parameterised on how each ALT BODY is compiled: 'compile' for
+-- an expression-position @match@, 'compileTail' for a tail-position one (so a
+-- tail call inside an alt body lowers to @kbounce@).  A bounce flows through the
+-- join @phi@ unchanged and is drained by the caller.  The scrutinee and any
+-- guard are always compiled non-tail (they are forced to values here).
+compileMatchWith :: (Term -> Gen Text) -> Term -> [CaseAlt] -> Gen Text
+compileMatchWith compileBody scrut alts = do
   sv <- compile scrut
   joinL <- freshLabel "match.join."
   -- Each alt contributes one (operand, predecessor-block) pair to the phi; the
   -- non-exhaustive fallback contributes an (unreachable) @null@ incoming so the
   -- phi is always well-formed even for a match with no value-producing alt.
-  incomings <- compileAlts sv joinL alts
+  incomings <- compileAlts compileBody sv joinL alts
   startBlock joinL
   r <- freshReg
   let phiArgs = T.intercalate ", " ["[ " <> op <> ", %" <> blk <> " ]" | (op, blk) <- incomings]
@@ -767,8 +938,8 @@ compileMatch scrut alts = do
 -- block.  Returns the @(operand, predecessor-block)@ incomings for the join phi
 -- — one per alt that reaches the join, plus the non-exhaustive fallback's
 -- (unreachable) @null@ incoming.
-compileAlts :: Text -> Text -> [CaseAlt] -> Gen [(Text, Text)]
-compileAlts sv joinL = go
+compileAlts :: (Term -> Gen Text) -> Text -> Text -> [CaseAlt] -> Gen [(Text, Text)]
+compileAlts compileBody sv joinL = go
   where
     go [] = do
       -- No alt matched: abort like the C backend's krt_fail, then feed the join
@@ -779,7 +950,7 @@ compileAlts sv joinL = go
       blk <- gets gsBlock
       emit ("br label %" <> joinL)
       pure [("null", blk)]
-    go (alt : rest) = compileAlt sv joinL alt (go rest)
+    go (alt : rest) = compileAlt compileBody sv joinL alt (go rest)
 
 -- | Lower one alternative.  @onFail@ emits the failure continuation (the next
 -- alt, or the non-exhaustive fallback) and returns ITS join incomings; the
@@ -790,14 +961,14 @@ compileAlts sv joinL = go
 -- block running @onFail@), the body is compiled, and control branches to the
 -- join.  'gsEnv' is restored after binding so a sibling alt never inherits the
 -- binders.  Returns this alt's incomings ++ @onFail@'s.
-compileAlt :: Text -> Text -> CaseAlt -> Gen [(Text, Text)] -> Gen [(Text, Text)]
-compileAlt sv joinL (CaseAlt pat mguard body) onFail = do
+compileAlt :: (Term -> Gen Text) -> Text -> Text -> CaseAlt -> Gen [(Text, Text)] -> Gen [(Text, Text)]
+compileAlt compileBody sv joinL (CaseAlt pat mguard body) onFail = do
   mtest <- patTestLL sv pat
   case (mtest, mguard) of
     -- Always-matching pattern, no guard: no branch at all — bind and run the
     -- body directly (the C backend's first-match order makes later alts dead).
     (Nothing, Nothing) -> do
-      inc <- bindAndBody sv joinL pat body
+      inc <- bindAndBody compileBody sv joinL pat body
       pure [inc]
     -- Otherwise at least one failable test exists; give the failure path a
     -- block so 'onFail' has somewhere to emit.
@@ -814,7 +985,7 @@ compileAlt sv joinL (CaseAlt pat mguard body) onFail = do
       modify' $ \g -> g {gsEnv = env'}
       okIncs <- case mguard of
         Nothing -> do
-          inc <- bodyToJoin joinL body
+          inc <- bodyToJoin compileBody joinL body
           pure [inc]
         Just gd -> do
           gv <- compile gd
@@ -827,7 +998,7 @@ compileAlt sv joinL (CaseAlt pat mguard body) onFail = do
           gfailL <- freshLabel "guard.no."
           emit ("br i1 " <> gcond <> ", label %" <> passL <> ", label %" <> gfailL)
           startBlock passL
-          inc <- bodyToJoin joinL body
+          inc <- bodyToJoin compileBody joinL body
           -- A failing guard falls through to the SAME failure continuation as a
           -- failing pattern test: branch to the shared failL.
           startBlock gfailL
@@ -841,22 +1012,24 @@ compileAlt sv joinL (CaseAlt pat mguard body) onFail = do
 
 -- | Bind the pattern's fields, compile the body, and branch to the join,
 -- restoring 'gsEnv' afterwards.  Returns the body's @(operand, pred-block)@.
-bindAndBody :: Text -> Text -> CorePat -> Term -> Gen (Text, Text)
-bindAndBody sv joinL pat body = do
+bindAndBody :: (Term -> Gen Text) -> Text -> Text -> CorePat -> Term -> Gen (Text, Text)
+bindAndBody compileBody sv joinL pat body = do
   env0 <- gets gsEnv
   env' <- bindPat sv pat
   modify' $ \g -> g {gsEnv = env'}
-  inc <- bodyToJoin joinL body
+  inc <- bodyToJoin compileBody joinL body
   modify' $ \g -> g {gsEnv = env0}
   pure inc
 
--- | Compile @body@ in the current (env-extended) block, branch to the join, and
+-- | Compile @body@ (with the supplied body compiler — 'compile' or
+-- 'compileTail') in the current (env-extended) block, branch to the join, and
 -- report the body's @(operand, predecessor-block)@ for the join phi.  The
 -- predecessor is read AFTER compiling the body (a nested match/if leaves a
--- different block active than the body's entry).
-bodyToJoin :: Text -> Term -> Gen (Text, Text)
-bodyToJoin joinL body = do
-  bv <- compile body
+-- different block active than the body's entry; a tail body's @kbounce@ value
+-- is the operand and flows through the phi).
+bodyToJoin :: (Term -> Gen Text) -> Text -> Term -> Gen (Text, Text)
+bodyToJoin compileBody joinL body = do
+  bv <- compileBody body
   bvBlk <- gets gsBlock
   emit ("br label %" <> joinL)
   pure (bv, bvBlk)
@@ -1028,17 +1201,18 @@ litName = \case
   LitBytes {} -> "Bytes"
   LitGrapheme {} -> "Grapheme"
 
--- | A bare global reference.  A prelude @prim@ registration / @__prim@ name
--- is a primitive (only meaningful saturated in M0, so a BARE prim is
--- unsupported here); any other global is a CAF: emit a call to its accessor
--- and enqueue it.
+-- | A bare global reference.  A prelude @prim@ registration / @__prim@ name is
+-- a primitive: as a VALUE (used unsaturated — e.g. passed to a higher-order
+-- function, or partially applied) it is built as a curried native closure
+-- ('compilePrimValue', Milestone D).  Any other global is a CAF: emit a call to
+-- its accessor and enqueue it.
 compileGlob :: GName -> Gen Text
 compileGlob g@(GName m nm)
-  | m == primModule = bareUnsupported nm
+  | m == primModule = compilePrimValue nm
   | otherwise = do
       globals <- gets gsGlobals
       case Map.lookup g globals of
-        Just gd | Just (VPrim pname _) <- gdValue gd -> bareUnsupported pname
+        Just gd | Just (VPrim pname _) <- gdValue gd -> compilePrimValue pname
         _ -> do
           enqueue g
           let ident = cGlobIdent g
@@ -1050,11 +1224,27 @@ compileGlob g@(GName m nm)
           r <- freshReg
           emit (r <> " = call ptr @" <> ident <> "()")
           pure r
-  where
-    bareUnsupported p =
-      unsupported "primitive"
-        ("the LLVM backend M0 supports a primitive ('" <> p
-          <> "') only when fully applied, not as a bare value")
+
+-- | A primitive used as a VALUE (Milestone D): build the curried native closure
+-- @knative(\@kpf_*, arity, name, isio)@ — the same closure the C backend's
+-- 'emitPrim' builds (C.hs:1642), which @kapp@ then drives one argument at a time
+-- (so partial application of a prim, or passing a prim to a higher-order
+-- function, works).  A prim outside the lowered set ('primNativeEntry') is a
+-- clean @E_BACKEND_UNSUPPORTED@.
+compilePrimValue :: Text -> Gen Text
+compilePrimValue pname = case primNativeEntry pname of
+  Just (cfn, ar, isio) -> do
+    declRuntime "declare ptr @knative(ptr, i32, ptr, i32)"
+    declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+    nameG <- internCStr pname
+    r <- freshReg
+    emit (r <> " = call ptr @knative(ptr @" <> cfn <> ", i32 " <> T.pack (show ar)
+            <> ", ptr " <> nameG <> ", i32 " <> (if isio then "1" else "0") <> ")")
+    pure r
+  Nothing ->
+    unsupported "primitive"
+      ("the LLVM backend does not implement the primitive '" <> pname
+        <> "' as a curried value; use the C backend")
 
 -- | An application spine: head term plus its arguments with icities
 -- (mirrors C's 'spineOf').
@@ -1087,15 +1277,112 @@ compileApp term = do
     CGlob g -> do
       mp <- globPrimName g
       case mp of
-        Just pname -> compilePrimApp pname sargs
-        Nothing ->
-          unsupported "application"
-            ("the LLVM backend (Milestone A) cannot lower an application of '"
-              <> gKey g <> "' (only saturated IO and pure first-order "
-              <> "primitives are supported; general application is Milestone C)")
-    _ ->
-      unsupported "application"
-        "the LLVM backend (Milestone A) cannot lower this application head"
+        -- A prim spine: take the saturated direct fast path ('compilePrimApp')
+        -- when the explicit-argument count matches the prim's arity; otherwise
+        -- (partial / over-application) fall through to the general @kapp@ chain,
+        -- where the bare prim is a curried native closure ('compilePrimValue').
+        Just pname | saturatedPrim pname term -> compilePrimApp pname sargs
+        _ -> compileAppDefault term
+    _ -> compileAppDefault term
+
+-- | The general application path (Milestone D): a curried @kapp@ chain over the
+-- compiled head and arguments — @f x y@ ⇒ @kapp(kapp(compile f, compile x),
+-- compile y)@ (mirrors C's 'compileAppDefault', C.hs:2262).  An EXPLICIT
+-- argument is applied with @kapp@; an IMPLICIT argument to an ERASED head (a
+-- prim or constructor, §31.2) is DROPPED, otherwise it is applied with @kappi@
+-- (the runtime's implicit-application entry).  A non-application term is just
+-- 'compile'd (the recursion base case).
+compileAppDefault :: Term -> Gen Text
+compileAppDefault = \case
+  CApp Expl f a -> do
+    fe <- compile f
+    ae <- compileErasableArg a -- §31.2: an explicit type-level/staging arg is erased
+    declRuntime "declare ptr @kapp(ptr, ptr)"
+    r <- freshReg
+    emit (r <> " = call ptr @kapp(ptr " <> fe <> ", ptr " <> ae <> ")")
+    pure r
+  CApp Impl f a -> do
+    erased <- isErasedHead f
+    if erased
+      then compile f -- implicit arg to a prim/constructor: erased (§31.2)
+      else do
+        fe <- compile f
+        ae <- compileErasableArg a
+        declRuntime "declare ptr @kappi(ptr, ptr)"
+        r <- freshReg
+        emit (r <> " = call ptr @kappi(ptr " <> fe <> ", ptr " <> ae <> ")")
+        pure r
+  t -> compile t
+
+-- ── Erasure of type-level / staging arguments (Milestone D) ──────────
+--
+-- Ports of the C backend's 'isErasedHead' / 'isErasableArg' /
+-- 'compileErasableArg' / 'isTypeGlob' (C.hs:1567–1620), the §31.2 erasure
+-- discipline.  An implicit argument to a primitive or constructor head is
+-- DROPPED; an explicit type-level / staging argument is replaced by a @kunit()@
+-- placeholder so a constructor's runtime arity (positional projection) stays
+-- aligned without compiling a type/quote value the interpreter never inspects.
+
+-- | Is the (implicit) argument to this head erased at runtime? — a primitive or
+-- constructor head erases its implicit arguments (§31.2).
+isErasedHead :: Term -> Gen Bool
+isErasedHead t = case headGlob t of
+  Just g@(GName m _)
+    | m == primModule -> pure True
+    | otherwise -> do
+        globals <- gets gsGlobals
+        ctors <- gets gsCtorSet
+        case Map.lookup g globals of
+          Just gd | isVPrimValue (gdValue gd) -> pure True
+          _ -> pure (g `Set.member` ctors)
+  Nothing -> pure False
+
+-- | The 'GName' at the head of a (possibly applied) term, if it is a global.
+headGlob :: Term -> Maybe GName
+headGlob = \case
+  CGlob g -> Just g
+  CApp _ f _ -> headGlob f
+  _ -> Nothing
+
+isVPrimValue :: Maybe Value -> Bool
+isVPrimValue (Just (VPrim _ _)) = True
+isVPrimValue _ = False
+
+-- | Is this argument purely type-level (computationally erased)?  Type-level
+-- forms and references to type/trait globals are erasable; everything else is
+-- compiled for real.
+isErasableArg :: Term -> Gen Bool
+isErasableArg = \case
+  CSort _ -> pure True
+  CPi {} -> pure True
+  CVariantT _ -> pure True
+  CRecordT _ -> pure True
+  CSigT {} -> pure True
+  CMeta _ -> pure True
+  CQuote {} -> pure True
+  CApp _ f _ -> isErasableArg f -- the spine head decides (e.g. @(List a))
+  CGlob g -> isTypeGlob g
+  _ -> pure False
+
+-- | Compile a value-position argument, erasing it to the @kunit()@ placeholder
+-- when it is a type-level / staging term (§12.2, §31.2).
+compileErasableArg :: Term -> Gen Text
+compileErasableArg a = do
+  er <- isErasableArg a
+  if er
+    then do
+      declRuntime "declare ptr @kunit()"
+      r <- freshReg
+      emit (r <> " = call ptr @kunit()")
+      pure r
+    else compile a
+
+-- | A global that denotes a type or trait (so a reference to it in argument
+-- position is computationally erased): a declared data type or trait.
+isTypeGlob :: GName -> Gen Bool
+isTypeGlob g = do
+  datas <- gets gsDataSet
+  pure (g `Set.member` datas)
 
 -- | §10.1/P0-A: recognise a saturated application of an eta-expanded
 -- constructor and beta-reduce it to @(ctor, selected field args)@.  A FAITHFUL
@@ -1263,6 +1550,43 @@ pureDirectPrims =
   , "stringAppend", "eqStr", "ltStr", "showStringLit"
   , "__intAnd", "__intOr", "__intXor"
   ]
+
+-- | Milestone D: the CURRIED native-closure form of a prim — its @kpf_*@
+-- wrapper entry point (a @KNativeFn@ taking @KValue**@), its arity, and whether
+-- it is an IO prim.  Used when a prim appears as a VALUE (a bare reference, or a
+-- partial/over-saturated application) rather than a saturated direct call: the
+-- prim is built as @knative(\@kpf_*, arity, name, isio)@ — the same curried
+-- closure the C backend's 'emitPrim' builds (C.hs:1642).  The wrapper symbols
+-- and arities are transcribed from the C backend's 'primEntries' table for
+-- exactly the prim set this backend lowers ('basePrims'); a prim outside the set
+-- is honestly 'Nothing' (a clean @E_BACKEND_UNSUPPORTED@).
+--
+-- NOTE the @kpf_*@ wrapper is DISTINCT from the @kp_*@ direct helper
+-- ('pureDirectEntry'): @kp_addInt(a,b)@ is the saturated fast call, whereas
+-- @kpf_addInt@ is the @KValue**@-taking wrapper that @knative@ drives one
+-- curried argument at a time.
+primNativeEntry :: Text -> Maybe (Text, Int, Bool)
+primNativeEntry = \case
+  "printlnString" -> Just ("kpf_io_printlnString", 1, True)
+  "printString" -> Just ("kpf_io_printString", 1, True)
+  "addInt" -> Just ("kpf_addInt", 2, False)
+  "subInt" -> Just ("kpf_subInt", 2, False)
+  "mulInt" -> Just ("kpf_mulInt", 2, False)
+  "divInt" -> Just ("kpf_divInt", 2, False)
+  "modInt" -> Just ("kpf_modInt", 2, False)
+  "negInt" -> Just ("kpf_negInt", 1, False)
+  "eqInt" -> Just ("kpf_eqInt", 2, False)
+  "ltInt" -> Just ("kpf_ltInt", 2, False)
+  "leInt" -> Just ("kpf_leInt", 2, False)
+  "showInt" -> Just ("kpf_showInt", 1, False)
+  "stringAppend" -> Just ("kpf_stringAppend", 2, False)
+  "eqStr" -> Just ("kpf_eqStr", 2, False)
+  "ltStr" -> Just ("kpf_ltStr", 2, False)
+  "showStringLit" -> Just ("kpf_showStringLit", 1, False)
+  "__intAnd" -> Just ("kpf___intAnd", 2, False)
+  "__intOr" -> Just ("kpf___intOr", 2, False)
+  "__intXor" -> Just ("kpf___intXor", 2, False)
+  _ -> Nothing
 
 -- | The runtime primitive name a global resolves to, if any (a @__prim@
 -- module name, or a prelude @prim@ registration whose value is a bare

@@ -1,0 +1,12 @@
+-- Milestone D: PARTIAL application.  `add3` has arity 3; `add3 1` builds a
+-- partial closure (under-saturated, so the general kapp chain — not the
+-- saturated direct path), `f 20` applies one more argument, `g 300` the last.
+-- Each kapp drains its argument into the curried closure; only the final
+-- application is saturated and runs the body.  add3 1 20 300 = 321.
+module main
+
+add3 : Int -> Int -> Int -> Int
+let add3 a b c = addInt (addInt a b) c
+
+main : UIO Unit
+let main = let f = add3 1 in let g = f 20 in printlnString (showInt (g 300))

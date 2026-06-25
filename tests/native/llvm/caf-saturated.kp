@@ -1,0 +1,14 @@
+-- Milestone D regression: a TOP-LEVEL CAF whose value is a fully-SATURATED user
+-- function call returning a plain Int. The accessor must cache the Int 321, not an
+-- undrained K_BOUNCE (else `showInt total` fails "not an Int"). Same root fix as
+-- caf-fn-value: a CAF accessor is not a tail position.
+module main
+
+add3 : Int -> Int -> Int -> Int
+let add3 a b c = addInt (addInt a b) c
+
+total : Int
+let total = add3 1 20 300
+
+main : UIO Unit
+let main = printlnString (showInt total)
