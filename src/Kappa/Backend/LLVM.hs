@@ -27,6 +27,7 @@
 -- sub-result as an instruction first.
 module Kappa.Backend.LLVM
   ( generateLL
+  , hostFfiSidecar
   ) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
@@ -42,7 +43,7 @@ import qualified Data.Text as T
 import Control.Monad (forM_, foldM, msum, mplus, unless, when, void)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), primDirect, primEntries)
-import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
+import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import Kappa.Builtins (builtinCtorTagId, kctUserBase)
 import Kappa.Check (CheckState (..))
 import Kappa.Core
@@ -75,10 +76,11 @@ data GenState = GenState
   , gsBodies :: !(Map GName Term)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsDeclSites :: !(Map GName Span)
-  , gsCtorTags :: !(Map Text Int) -- ^ Milestone C: USER-constructor gKey -> numeric tag id (@KCT_USER_BASE+i@). Precomputed once ('collectUserCtorTags') so 'compileCtor'/'compileMatch' can emit a literal @i32@ immediate (LLVM has no symbolic enum constant like the C backend's @KT_*@). Builtin ctors are NOT here — they use the fixed 'builtinCtorTagId'.
+  , gsCtorTags :: !(Map Text Int) -- ^ Milestone C: USER-constructor gKey -> numeric tag id (@KCT_USER_BASE+i@). Precomputed once ('hostCtorTags') so 'compileCtor'/'compileMatch' can emit a literal @i32@ immediate (LLVM has no symbolic enum constant like the C backend's @KT_*@). Builtin ctors are NOT here — they use the fixed 'builtinCtorTagId'. Milestone L: includes the @std.ffi@ ctors host marshalling builds, so the @.ll@ and the wrapper sidecar agree on ids.
   , gsBlock :: !Text -- ^ Milestone C: label of the basic block currently being filled. A @phi@ at a control-flow join needs the PREDECESSOR block of each incoming value, which — for a branch that itself emitted control flow (a nested match/if) — is NOT the branch-entry label but whatever block was active when the branch finished. 'compileIf'/'compileMatch' read this after compiling each arm to spell the phi's incoming labels correctly. Updated by 'startBlock'.
   , gsCtorSet :: !(Set GName) -- ^ Milestone D: every declared constructor's gname. An IMPLICIT application whose head is a constructor erases its implicit arg (§31.2); 'isErasedHead' consults this (mirrors C's 'gsCtors' membership test).
   , gsDataSet :: !(Set GName) -- ^ Milestone D: declared data-type / trait gnames — a reference to one in argument position is computationally erased ('isTypeGlob'); mirrors C's @gsDatas@ ∪ @gsTraits@.
+  , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ Milestone L (§27.1.1/§36.28): each provided @host.native.*@ member ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings. A reference to such a member is lowered like a PRIM over the codegen-emitted C-wrapper symbol ('wrapperCName') — a saturated reference to a @knative_sat@ over the wrapper, a curried/bare reference to a @knative@ closure — and the wrapper is compiled+linked from a sidecar @.c@ the Driver emits ('hostFfiSidecar'). Mirrors C's @gsHostSyms@; recognised at the REFERENCE so a host member is NEVER enqueued as a no-core-body CAF.
   }
 
 type Gen = State GenState
@@ -196,10 +198,12 @@ mangle = T.concatMap esc
 --     backend's True/False ids equal the runtime's.  'builtinCtorTagId' is the
 --     numeric transcription of that enum and MUST stay in sync with kappart.h.
 --   * USER constructors (everything else) get @KCT_USER_BASE+i@, assigned by
---     'collectUserCtorTags' deterministically (sorted by gKey).  These never
---     cross a backend boundary, so they need only be self-consistent
---     (construct id == match id); the sorted assignment additionally makes them
---     match the C backend's @KT_*@ enum for debuggability.
+--     'hostCtorTags' deterministically (sorted by gKey).  These are self-
+--     consistent within the @.ll@ (construct id == match id); the sorted
+--     assignment additionally makes them match the C backend's @KT_*@ enum for
+--     debuggability.  Milestone L: the assignment ALSO covers the @std.ffi@
+--     wrapper ctors a host binding marshals through, so the @.ll@ and the
+--     Driver's wrapper sidecar @.c@ ('hostFfiSidecar') agree on each id.
 
 -- The fixed @KCT_*@ numeric id for a runtime-built builtin constructor
 -- ('builtinCtorTagId') and the user-id base ('kctUserBase') are imported from
@@ -213,9 +217,23 @@ mangle = T.concatMap esc
 -- the assignment is deterministic (Blue<Green<Red ⇒ 40,41,42) and matches the
 -- C backend's @KT_*@ enum order.  Builtins are excluded (they keep their fixed
 -- ids).  Computed once up front so 'compile' can emit a literal @i32@.
-collectUserCtorTags :: Map GName Term -> Map Text Int
-collectUserCtorTags bodies =
-  let keys = sort (Set.toList (foldMap userCtorKeys (Map.elems bodies)))
+-- | Milestone L: the user-constructor tag map, INCLUDING the @std.ffi.MkXxx@
+-- wrapper constructors a host-binding member's marshalling builds
+-- ('rnsCollectCtors': @MkI64@/@MkU64@/@MkRawPtr@/…).  Folding the host ctors in
+-- here is what makes the @.ll@ and the Driver's wrapper sidecar @.c@ agree on a
+-- ctor's numeric tag id: a host symbol that boxes its result as @MkU64@ (in the
+-- sidecar, via @kctor(KT_std_ffi_MkU64, …)@) and an in-program match on the same
+-- @MkU64@ (in the @.ll@, via a literal @i32@) MUST use the identical id, or the
+-- match never fires.  Both derive that id from THIS map — the @.ll@ via
+-- 'gsCtorTags', the sidecar via 'hostFfiSidecar' (which emits a @#define
+-- KT_<mangle> <id>@ for exactly the ctors a wrapper references).  The ordering
+-- (sorted gKeys from 'kctUserBase') is unchanged, so a program that uses no host
+-- bindings gets byte-identical ids to before.
+hostCtorTags :: Map GName Term -> Map GName ResolvedNativeSymbol -> Map Text Int
+hostCtorTags bodies hostSyms =
+  let bodyKeys = foldMap userCtorKeys (Map.elems bodies)
+      hostKeys = Set.fromList (concatMap rnsCollectCtors (Map.elems hostSyms))
+      keys = sort (Set.toList (Set.union bodyKeys hostKeys))
    in Map.fromList (zip keys [kctUserBase ..])
 
 -- | The gKeys of every USER constructor referenced (constructed via 'CCtor' or
@@ -270,7 +288,7 @@ userCtorKeys = goT
 
 -- | Resolve a constructor's gKey to its numeric tag id: the fixed builtin id if
 -- it is one, else its precomputed @KCT_USER_BASE+i@ id.  A user ctor missing
--- from the map would be an internal bug ('collectUserCtorTags' walks all bodies
+-- from the map would be an internal bug ('hostCtorTags' walks all bodies
 -- before codegen), so default to @kctUserBase@ rather than crash — a clean
 -- non-match at worst, never a silent collision with a builtin.
 ctorTagId :: GName -> Gen Int
@@ -359,7 +377,7 @@ internCStr s = do
 -- 'Kappa.Backend.C.generateC', so the Driver dispatches on a flag with no
 -- change to the call site's type.
 generateLL :: CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either [BackendError] Text
-generateLL cs mainG ffiPrims _hostSyms =
+generateLL cs mainG ffiPrims hostSyms =
   let st0 =
         GenState
           { gsFresh = 0
@@ -379,15 +397,86 @@ generateLL cs mainG ffiPrims _hostSyms =
           , gsBodies = csCoreBodies cs
           , gsPrims = Set.union basePrims ffiPrims
           , gsDeclSites = csDeclSites cs
-          , gsCtorTags = collectUserCtorTags (csCoreBodies cs)
+          , gsCtorTags = hostCtorTags (csCoreBodies cs) hostSyms
           , gsBlock = "build"
           , gsCtorSet = Map.keysSet (csCtors cs)
           , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
+          , gsHostSyms = hostSyms
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
         [] -> Right (assembleLL final)
         errs -> Left errs
+
+-- | Milestone L (§27.1.1): the C-WRAPPER SIDECAR translation unit for a build's
+-- host-native FFI members.  The @.ll@ the LLVM backend emits lowers a host
+-- member reference like a prim over the wrapper symbol ('wrapperCName') and
+-- @declare@s that symbol extern; this sidecar @.c@ DEFINES each wrapper (reusing
+-- the SAME 'externPrototype' / 'wrapperDefinition' marshalling the C backend
+-- uses — the FFI boundary is inherently C-ABI, so the marshalling is not
+-- re-derived in IR), and the Driver compiles + links it alongside the @.ll@ and
+-- the runtime @.c@ sources.  Wrappers are emitted for ALL host syms (an unused
+-- one is dead-stripped by the linker), so no usage tracking is needed.
+--
+-- The @KT_<mangle>@ tag-id macros a wrapper references for an @std.ffi.MkXxx@ /
+-- @MkRawPtr@ boxed result are @#define@d here to the SAME numeric ids the @.ll@
+-- assigns ('hostCtorTags' over the program's core bodies + the host syms), so a
+-- ctor a wrapper builds matches an in-program pattern-match on it.  Returns
+-- 'Nothing' when there are no host syms (the Driver then emits no sidecar).
+hostFfiSidecar :: CheckState -> Map GName ResolvedNativeSymbol -> Maybe Text
+hostFfiSidecar cs hostSyms
+  | Map.null hostSyms = Nothing
+  | otherwise =
+      let syms = Map.elems hostSyms
+          tagMap = hostCtorTags (csCoreBodies cs) hostSyms
+          -- the std.ffi ctors any wrapper actually boxes/unboxes (MkU64/MkI32/…);
+          -- each gets a KT_<mangle> define so the wrapper's kctor(KT_…, …) uses
+          -- the exact id the .ll's match emits.  Sorted for a deterministic file.
+          ctorKeys = sort (Set.toList (Set.fromList (concatMap rnsCollectCtors syms)))
+          ktDefines =
+            [ "#define KT_" <> mangle k <> " " <> T.pack (show i)
+            | k <- ctorKeys
+            , Just i <- [Map.lookup k tagMap]
+            ]
+          protos = dedupKeep (map externPrototype syms)
+          -- 'wrapperDefinition' emits the wrapper @static@ (the C backend keeps
+          -- it in the same TU as the call site).  In the sidecar the wrapper is
+          -- a SEPARATE TU from the .ll that calls it, so it needs EXTERNAL
+          -- linkage — strip the leading @static @ so the symbol is visible to
+          -- the .ll's extern @declare@.  ('wrapperDefinition' is unchanged: the C
+          -- backend, the only other caller, still gets the @static@ form.)
+          wrappers = map (externalizeWrapper . wrapperDefinition) syms
+       in Just . T.unlines $
+            [ "/* Generated by the Kappa LLVM backend host-FFI sidecar"
+                <> " (Kappa.Backend.LLVM.hostFfiSidecar). */"
+            , "/* §27.1.1 native host bindings: the C-wrapper marshalling the"
+                <> " emitted .ll calls extern. */"
+            , "#include \"kappart2.h\"" -- same runtime header the generated C uses; pulls in kappart.h
+            , ""
+            , "/* std.ffi wrapper-ctor tag ids — identical to the .ll's literal"
+                <> " ids (LLVM.hostCtorTags) so a boxed FFI result matches an"
+                <> " in-program pattern-match on it. */"
+            ]
+              ++ ktDefines
+              ++ [""]
+              ++ protos
+              ++ [""]
+              ++ wrappers
+  where
+    -- keep first occurrence, drop later duplicates (a C symbol shared by two
+    -- members gets one extern prototype) — mirrors C.hs 'hostNativeBlock'.
+    dedupKeep = go Set.empty
+      where
+        go _ [] = []
+        go seen (x : xs)
+          | x `Set.member` seen = go seen xs
+          | otherwise = x : go (Set.insert x seen) xs
+    -- Give the wrapper external linkage by dropping the leading @static @ that
+    -- 'wrapperDefinition' prepends.  Each wrapper definition begins with the
+    -- exact prefix @"static KValue *"@; replace just that one occurrence.
+    externalizeWrapper t = case T.stripPrefix "static " t of
+      Just rest -> rest
+      Nothing -> t
 
 -- | The base primitives the @kappart@ runtime implements.  Milestone I widens
 -- this to EVERY prim in the shared 'primEntries' table (the C backend's full
@@ -2681,8 +2770,18 @@ compileGlob g@(GName m nm)
   | m == primModule = compilePrimValue nm
   | otherwise = do
       globals <- gets gsGlobals
+      hostSyms <- gets gsHostSyms
       case Map.lookup g globals of
         Just gd | Just (VPrim pname _) <- gdValue gd -> compilePrimValue pname
+        -- Milestone L (§27.1.1): a provided host-binding member is lowered like
+        -- a PRIM over its codegen-emitted C wrapper — a CURRIED native closure
+        -- ('knative' over 'wrapperCName', IO since native bindings are UIO).
+        -- Recognised HERE at the reference (mirrors C's 'emitHostNative' at the
+        -- 'compileGlob' site), so it is never enqueued as a no-core-body CAF
+        -- (the 'emitGlobal' no-core-body rejection — the delve "(definition)"
+        -- errors).  A saturated reference takes the 'knative_sat' fast path in
+        -- 'compileApp'.
+        _ | Just rns <- Map.lookup g hostSyms -> compileHostValue rns
         _ -> do
           enqueue g
           let ident = cGlobIdent g
@@ -2725,6 +2824,28 @@ compilePrimValue pname = case primNativeEntry pname of
       ("the LLVM backend does not implement the primitive '" <> pname
         <> "' as a curried value; use the C backend")
 
+-- | Milestone L (§27.1.1): a host-binding member used as a VALUE (a bare /
+-- partial reference) lowers exactly like 'compilePrimValue', but over the
+-- codegen-emitted C-wrapper symbol ('wrapperCName') instead of a runtime
+-- @kpf_*@.  The wrapper has the @KValue *(KValue **)@ prim shape, so @knative@
+-- drives it one argument at a time (so partial application / passing the binding
+-- to a higher-order function works); arity = the C signature's parameter count;
+-- isio = 1 because a native binding is conservatively typed in @UIO@ (the action
+-- is suspended, fired by @krun_io@).  Mirrors C's 'emitHostNative' (C.hs:1637).
+-- The wrapper is DEFINED in the Driver's sidecar @.c@ and linked in, so a forward
+-- @declare@ of the external symbol is all the @.ll@ needs.
+compileHostValue :: ResolvedNativeSymbol -> Gen Text
+compileHostValue rns = do
+  let cfn = wrapperCName rns
+      ar = length (rns.params)
+  declRuntime "declare ptr @knative(ptr, i32, ptr, i32)"
+  declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+  nameG <- internCStr (rns.cSymbol)
+  r <- freshReg
+  emit (r <> " = call ptr @knative(ptr @" <> cfn <> ", i32 " <> T.pack (show ar)
+          <> ", ptr " <> nameG <> ", i32 1)")
+  pure r
+
 -- | An application spine: head term plus its arguments with icities
 -- (mirrors C's 'spineOf').
 spineOf :: Term -> (Term, [(Icit, Term)])
@@ -2754,15 +2875,63 @@ compileApp term = do
   let (hd, sargs) = spineOf term
   case hd of
     CGlob g -> do
-      mp <- globPrimName g
-      case mp of
-        -- A prim spine: take the saturated direct fast path ('compilePrimApp')
-        -- when the explicit-argument count matches the prim's arity; otherwise
-        -- (partial / over-application) fall through to the general @kapp@ chain,
-        -- where the bare prim is a curried native closure ('compilePrimValue').
-        Just pname | saturatedPrim pname term -> compilePrimApp pname sargs
-        _ -> compileAppDefault term
+      hostSyms <- gets gsHostSyms
+      case Map.lookup g hostSyms of
+        -- Milestone L (§27.1.1): a SATURATED host-member application is a DIRECT
+        -- native action — build the arg array and call @knative_sat@ over the
+        -- wrapper (the suspended UIO action @krun_io@ fires by calling the
+        -- wrapper).  Mirrors C's 'compileApp' host arm (C.hs:1968) EXACTLY: only
+        -- the saturated (explicit args ≥ arity, arity > 0) case takes this fast
+        -- path; a partial application falls through to the curried bare-reference
+        -- path ('compileGlob' → 'compileHostValue' → @knative@ + @kapp@).
+        Just rns
+          | let arity = length (rns.params)
+                explArgs = [a | (Expl, a) <- sargs]
+          , length explArgs >= arity
+          , arity > 0 -> compileHostSat rns (take arity explArgs)
+        _ -> do
+          mp <- globPrimName g
+          case mp of
+            -- A prim spine: take the saturated direct fast path
+            -- ('compilePrimApp') when the explicit-argument count matches the
+            -- prim's arity; otherwise (partial / over-application) fall through
+            -- to the general @kapp@ chain, where the bare prim is a curried
+            -- native closure ('compilePrimValue').
+            Just pname | saturatedPrim pname term -> compilePrimApp pname sargs
+            _ -> compileAppDefault term
     _ -> compileAppDefault term
+
+-- | Milestone L (§27.1.1): lower a saturated host-member application to a direct
+-- @knative_sat@ over its C wrapper ('wrapperCName'), the same node 'compileIoSat'
+-- builds for an IO prim — only the called symbol differs (the codegen wrapper vs
+-- a runtime @kpf_io_*@).  Mirrors C's 'compileApp' host arm (C.hs:1972–1981):
+-- compile each of the @arity@ explicit args, materialise a stack @[arity x ptr]@
+-- argv, and call @knative_sat(@wrapper, arity, argv, 1)@ (isio = 1: native
+-- bindings are UIO, so the action is suspended).  @arity > 0@ is guaranteed by
+-- the caller, so the @alloca@ is well-formed.  An over-application (more explicit
+-- args than @arity@) takes only the first @arity@ here; the surplus would need a
+-- @kapp@ chain on the result — but a native UIO action is itself the value, so an
+-- over-application of a host member does not arise in an accepted program (its
+-- result is @UIO r@, not a function), matching the C backend which likewise
+-- consumes exactly @arity@.
+compileHostSat :: ResolvedNativeSymbol -> [Term] -> Gen Text
+compileHostSat rns explArgs = do
+  let cfn = wrapperCName rns
+      ar = length explArgs
+  aes <- mapM compile explArgs
+  argv <- freshReg
+  emit (argv <> " = alloca [" <> T.pack (show ar) <> " x ptr], align 8")
+  forM_ (zip [0 :: Int ..] aes) $ \(i, ae) -> do
+    slot <- freshReg
+    emit (slot <> " = getelementptr inbounds [" <> T.pack (show ar)
+            <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show i) <> "")
+    emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
+  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  declRuntime ("declare ptr @" <> cfn <> "(ptr)")
+  r <- freshReg
+  emit (r <> " = call ptr @knative_sat(ptr @" <> cfn <> ", i32 "
+          <> T.pack (show ar) <> ", ptr " <> argv <> ", i32 1)")
+  pure r
 
 -- | The general application path (Milestone D): a curried @kapp@ chain over the
 -- compiled head and arguments — @f x y@ ⇒ @kapp(kapp(compile f, compile x),

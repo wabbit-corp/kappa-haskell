@@ -24,7 +24,7 @@ import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Kappa.Backend.C (backendDiagnostics, generateC)
-import Kappa.Backend.LLVM (generateLL)
+import Kappa.Backend.LLVM (generateLL, hostFfiSidecar)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype)
 import Kappa.Backend.NativeProbe (NativeProvenance (..), discoverAndVerifyNative)
 import Kappa.Build.Types (NativeInput (..), NativeLinkSpec (..))
@@ -117,6 +117,18 @@ buildNative cs mainG inputPath opts = do
           let base = dropExtensionSafe (takeFileName inputPath)
               cPath = workDir </> (base ++ ext)
           TIO.writeFile cPath csource
+          -- Milestone L (§27.1.1): under the LLVM backend, the emitted .ll calls
+          -- the host-FFI marshalling wrappers extern; emit them as a C-wrapper
+          -- SIDECAR ('hostFfiSidecar') the link step compiles + links alongside
+          -- the .ll, so those extern calls resolve.  The C backend needs no
+          -- sidecar — it emits the wrappers inline in its generated .c.
+          msidecar <-
+            case (useLLVM, hostFfiSidecar cs (opts.hostSyms)) of
+              (True, Just sidecar) -> do
+                let scPath = workDir </> (base ++ ".kappa.hostffi.c")
+                TIO.writeFile scPath sidecar
+                pure (Just scPath)
+              _ -> pure Nothing
           -- §26.1.5/§27.1.1/§36.28: discover + VERIFY the native ABI against
           -- the real host (pkg-config version/.pc identity, header digests,
           -- compiler-checked signature probe) and record provenance. This is
@@ -129,7 +141,7 @@ buildNative cs mainG inputPath opts = do
             Right () ->
               if opts.emitCOnly
                 then pure (Right cPath)
-                else linkExecutable cs mainG opts runtimeDir cPath base workDir
+                else linkExecutable cs mainG opts runtimeDir cPath msidecar base workDir
 
 -- | Run native ABI discovery + verification for the binding inputs and write
 -- the resolved native provenance next to the artifact. A no-op (no cc needed)
@@ -163,9 +175,9 @@ needsDiscovery = any req
     req _ = False
 
 linkExecutable
-  :: CheckState -> GName -> BuildOptions -> FilePath -> FilePath -> String -> FilePath
+  :: CheckState -> GName -> BuildOptions -> FilePath -> FilePath -> Maybe FilePath -> String -> FilePath
   -> IO (Either Diagnostics FilePath)
-linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
+linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
   mcc <- detectCC (opts.cc)
   case mcc of
     Nothing -> pure (Left [toolDiag noCcMsg])
@@ -262,6 +274,10 @@ linkExecutable _cs _mainG opts runtimeDir cPath base workDir = do
                   ++ hdrInclude
                   ++ inCFlags
                   ++ [cPath]
+                  -- Milestone L: the host-FFI wrapper sidecar (.kappa.hostffi.c),
+                  -- present only on the LLVM path with host bindings; compiled +
+                  -- linked so the .ll's extern wrapper calls resolve.
+                  ++ maybe [] (: []) mSidecar
                   ++ rtSources
                   ++ inSources
                   ++ rtLibs
