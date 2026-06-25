@@ -21,8 +21,11 @@ The buildout is in two phases:
 
 - **Phase 2 — the perf endgame (later, CPS-DESIGN Stage 5).** The LLVM-native layout
   system (immediate-tagged ints, unboxed scalars, niche optimization, newtype erasure),
-  Perceus RC (`dup`/`drop` replacing the Boehm GC), and coroutine-lowered CPS
-  (`llvm.coro.*`, with `CoroSplit` seeded by the live `KEnv` set). The *stable seam*
+  Perceus precise RC (`dup`/`drop` + in-place reuse) **as the primary mechanism in a
+  mixed/hybrid memory model** — *not* a wholesale GC replacement, since pure reference
+  counting leaks cycles, so a tracing/cycle-collector (or region) backstop for cyclic
+  data is still needed (exact scheme TBD) — and coroutine-lowered CPS (`llvm.coro.*`,
+  with `CoroSplit` seeded by the live `KEnv` set). The *stable seam*
   CPS-DESIGN §5 mandates — the continuation signature and the `KEnv` de-Bruijn
   discipline — is preserved by building Phase 1 on the same runtime, so Phase 2 slots in
   without tearing anything out.
@@ -90,7 +93,7 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | planned |
 | **D**  | `CLam` + closures + general `kapp` (worker `kw_*` + closure chain `kclo*_*` + lifted `kfn_*`) | planned |
 | **E**  | `CDo` / CPS bridge (`krt2_bind`/`krt2_then`/`krt2_pure`; continuations as `kdo_N_kM` — the §5 seam) | planned |
-| **Phase 2** | layout system · Perceus RC · coroutine CPS | future |
+| **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
 
 ## Extending it
 
