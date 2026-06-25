@@ -400,6 +400,7 @@ basePrims =
   Set.fromList $
     ["printlnString", "printString"] -- M0 IO prims
       ++ ["ioPure", "ioBind", "ioThen"] -- Milestone E do-kernel monadic prims
+      ++ ["newRef", "readRef", "writeRef"] -- Milestone G mutable cells
       ++ pureDirectPrims -- M1 pure first-order prims
 
 -- | Emit globals until the work queue is empty (mirrors C's 'drainQueue').
@@ -1153,6 +1154,11 @@ compileDo _lbl items
 -- whose branches are themselves entirely supported (recurse into each branch and
 -- the optional else, so an unsupported item nested in a branch is caught here too
 -- rather than mis-lowered when the branch is built).
+-- Milestone G adds the imperative do-kernel: mutable cells ('KVarItem'/
+-- 'KAssign'), the @while@ loop ('KWhile') with an UNLABELED @break@/@continue@
+-- ('KBreak'/'KContinue' over 'Nothing'), and early @return@ ('KReturn').  A
+-- LABELED loop / @break@ / @continue@, a @while@-@else@, 'KFor', 'KDefer',
+-- 'KUsing', 'KSubDo', and 'KLetQ' remain deferred (they fail the block closed).
 firstUnsupportedItem :: [KItem] -> Maybe KItem
 firstUnsupportedItem = go
   where
@@ -1161,19 +1167,38 @@ firstUnsupportedItem = go
       KBind {} -> go rest
       KExpr {} -> go rest
       KLet {} -> go rest
+      KVarItem {} -> go rest
+      KAssign {} -> go rest
+      KReturn {} -> go rest
+      KBreak Nothing -> go rest
+      KContinue Nothing -> go rest
+      -- §18.8 while: only the UNLABELED, else-less form is lowered, and its body
+      -- must be entirely supported too — recurse into it so a deferred item nested
+      -- in the loop is caught here rather than mis-lowered.  (A labeled loop or a
+      -- while-else hits the catch-all below and fails the block closed.)  The
+      -- condition itself is lowered by 'compileMonadicCond'; the only shape it
+      -- cannot handle is an `__runIO` splice over an action outside this backend's
+      -- prim coverage, which is reported as a clean unsupported at compile time.
+      KWhile Nothing _cond body Nothing ->
+        case go body of
+          Just bad -> Just bad
+          Nothing -> go rest
       KIf alts mels ->
         case msum (map (go . snd) alts) `mplus` (mels >>= go) of
           Just bad -> Just bad
           Nothing -> go rest
       _ -> Just it
 
--- | Report a do-item that is outside Milestone E (the loop family, mutable
--- cells, abrupt control, defer, using, sub-do, let?) as unsupported.
+-- | Report a do-item this backend cannot yet lower.  Milestone E covered the
+-- linear bind/let/action subset; Milestone F the do-kernel @if@; Milestone G the
+-- imperative kernel (mutable cells, the UNLABELED @while@/@break@/@continue@, and
+-- @return@).  Still deferred: a LABELED loop / break / continue, a @while@-@else@,
+-- 'KFor', 'KDefer', 'KUsing', 'KSubDo', and 'KLetQ' — each fails the block closed.
 unsupportedDoItem :: KItem -> Gen Text
 unsupportedDoItem it =
   unsupported "do-kernel"
-    ( "the LLVM backend (Milestone E) lowers only the linear bind/let/action "
-        <> "do-kernel subset; this item is a later milestone: "
+    ( "the LLVM backend does not yet lower this do-kernel item (use the C "
+        <> "backend): "
         <> doItemKind it
     )
 
@@ -1184,8 +1209,12 @@ doItemKind = \case
   KVarItem {} -> "var (mutable cell)"
   KAssign {} -> "assignment"
   KReturn {} -> "return"
-  KBreak {} -> "break"
-  KContinue {} -> "continue"
+  KBreak (Just l) -> "labeled break@" <> l
+  KBreak Nothing -> "break"
+  KContinue (Just l) -> "labeled continue@" <> l
+  KContinue Nothing -> "continue"
+  KWhile (Just l) _ _ _ -> "labeled while loop (@" <> l <> ")"
+  KWhile _ _ _ (Just _) -> "while loop with an else block"
   KWhile {} -> "while loop"
   KFor {} -> "for loop"
   KIf {} -> "do-if"
@@ -1213,10 +1242,15 @@ cpsItemsLL items = case items of
   -- FINAL item: a plain action or a monadic bind whose value is the block's
   -- result.  Compiled directly — the block's tail action, which the CK-machine
   -- drives (no surrounding bind, so the spine stays bounded).
-  [KExpr t] -> compile t
-  [KBind _ _ t] -> compile t
+  [KExpr t] -> compileMonadicAction t
+  [KBind _ _ t] -> compileMonadicAction t
   -- FINAL let: a pure binding with no following action is degenerate (the block
   -- must end in an action), but lower it as @pure(value)@ for totality.
+  -- A FINAL let.  If its rhs reads `var`s (a splice), it must be a re-runnable
+  -- value-action ('compileMonadic' — which already yields an IO action delivering
+  -- the value); the pattern binding is moot since nothing follows.  Otherwise the
+  -- pure value is bound and `krt2_pure`d.
+  [KLet _ _ t] | hasSpliceLL t -> compileMonadic t
   [KLet _ pat t] -> do
     te <- compile t
     declRuntime "declare ptr @krt2_pure(ptr)"
@@ -1243,6 +1277,14 @@ cpsItemsLL items = case items of
     seqActionThen ifAction CPWild rest
   -- A pure LET binding: compile e, kpush, compile REST under the extended env
   -- (restored after).  No krt2 node — the runtime never sees this binding.
+  -- A `let` whose rhs reads `var`s (e.g. `let t = addInt a b` in a loop body):
+  -- the rhs is a re-runnable value-action; bind its delivered value to @pat@ via
+  -- the same lazy continuation machinery as a 'KBind', so REST sees @pat@ at de
+  -- Bruijn 0.  The pure (linear) case keeps the cheap build-time `kpush` (no krt2
+  -- node — the runtime never sees a splice-free binding).
+  (KLet _ pat t : rest) | hasSpliceLL t -> do
+    m <- compileMonadic t
+    seqActionThen m pat rest
   (KLet _ CPWild t : rest) -> do
     _ <- compile t -- evaluated for its (pure) value; result discarded
     cpsItemsLL rest
@@ -1254,6 +1296,66 @@ cpsItemsLL items = case items of
     r <- cpsItemsLL rest
     modify' $ \g -> g {gsEnv = env0}
     pure r
+  -- ── Milestone G: the imperative do-kernel ──────────────────────────
+  -- ── FINAL imperative items (the block's tail action) ──────────────
+  -- A FINAL `var` is degenerate (a do-block ends in an action), but the newRef
+  -- IS an action — return it directly.  A FINAL assignment is its writeRef
+  -- action; a FINAL return/break/continue/while is its own action operand.
+  [KVarItem _ e] -> newRefAction e
+  [KAssign refT _ rhsT] -> writeRefAction refT rhsT
+  [KReturn e] -> returnAction e
+  [KBreak Nothing] -> breakAction
+  [KContinue Nothing] -> continueAction
+  [KWhile Nothing cond body Nothing] -> whileAction cond body
+  -- ── NON-final imperative items (sequenced with the rest) ──────────
+  -- `var x = e` ≡ `x <- newRef e`: the action is a `newRef` IO node (built via
+  -- the prim path), bound like a 'KBind' so the slot at de Bruijn 0 holds the
+  -- Ref.  A source `readRef x` (already a `__runIO (readRef x)` splice in Core)
+  -- then reads it through 'compileMonadic'; an assignment is 'KAssign'.
+  (KVarItem x e : rest) -> do
+    refAct <- newRefAction e
+    seqActionThen refAct (CPVar x) rest
+  -- `x = e` (pure rhs) / `x <- e` (monadic rhs): a `writeRef ref val` IO action,
+  -- sequenced like a 'KExpr' (`_ <- writeAction; rest`).  For a monadic rhs the
+  -- value is the result of running e first ('emitAssignCont' binds it, then the
+  -- continuation writes); for a pure rhs the value is e's compiled operand.
+  (KAssign refT monadic rhsT : rest)
+    | monadic -> do
+        -- `x <- e`: bind e's result, then writeRef ref boundResult; rest.
+        rhsAct <- compileMonadic rhsT
+        contFn <- emitAssignCont refT rest
+        capturedEnv <- gets gsEnv
+        declRuntime "declare ptr @kclo(ptr, ptr)"
+        declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+        k <- freshReg
+        emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+        r <- freshReg
+        emit (r <> " = call ptr @krt2_bind(ptr " <> rhsAct <> ", ptr " <> k <> ")")
+        pure r
+    | otherwise -> do
+        writeAct <- writeRefAction refT rhsT
+        seqActionThen writeAct CPWild rest
+  -- `return e`: an early-return IO action (`krt2_return value`).  Whatever
+  -- follows in the items list is dead (return unwinds the fiber), but it is
+  -- sequenced uniformly anyway — the CK-machine never delivers past the return.
+  (KReturn e : rest) -> do
+    retAct <- returnAction e
+    seqActionThen retAct CPWild rest
+  -- `break` / `continue` (unlabeled): an abrupt-control IO action targeting the
+  -- innermost enclosing `krt2_while`.  Like 'KReturn', anything after is dead.
+  (KBreak Nothing : rest) -> do
+    a <- breakAction
+    seqActionThen a CPWild rest
+  (KContinue Nothing : rest) -> do
+    a <- continueAction
+    seqActionThen a CPWild rest
+  -- `while cond do body` (unlabeled, no else): `krt2_while(condIO, bodyIO)`,
+  -- where condIO re-reads its `var`s each iteration ('compileMonadicCond') and
+  -- bodyIO is the body's own action tree ('compileLoopBody').  Sequenced like a
+  -- 'KExpr' (`_ <- whileAction; rest`) — the while's normal completion is Unit.
+  (KWhile Nothing cond body Nothing : rest) -> do
+    whileAct <- whileAction cond body
+    seqActionThen whileAct CPWild rest
   (it : _) -> unsupportedDoItem it
 
 -- | Lower `pat <- action; rest` (or `action; rest` with @pat = CPWild@) as
@@ -1264,7 +1366,11 @@ cpsItemsLL items = case items of
 -- time as the CK-machine runs it, not all at once at build time).
 bindThen :: Term -> CorePat -> [KItem] -> Gen Text
 bindThen action pat rest = do
-  m <- compile action
+  -- The action term may carry `__runIO` `var`-read splices (e.g. a `KExpr`
+  -- `printlnString (showInt (readRef i))` inside a loop body); 'compileMonadicAction'
+  -- hoists them so the reads re-execute, and is a plain 'compile' when there are
+  -- none (so the linear-do path is unchanged).
+  m <- compileMonadicAction action
   seqActionThen m pat rest
 
 -- | Sequence an ALREADY-COMPILED action operand @m@ with the rest of the block:
@@ -1300,12 +1406,17 @@ seqActionThen m pat rest = do
 -- nested if, a bind tree).  'gsEnv' is saved/restored around each branch so a
 -- branch's local 'KLet' bindings never leak into a sibling branch or the join.
 --
--- This builds the branch action trees INLINE (in the current function, under the
--- if's control flow) — NOT in lifted continuations.  That is sound for stack
--- safety because each branch's own tail is itself a @krt2_*@ action the
--- CK-machine drives; the if only chooses WHICH action, it does not nest the
--- branches' binds on the C stack.  An IO-recursive call in a branch tail is a
--- @kbounce@/bind action like any other tail.
+-- The if must be a RUNTIME-branching action, not a build-time @br i1@.  Inside a
+-- @krt2_while@ body the body action tree is built ONCE and re-run each iteration
+-- (rt.c KK_LOOP), so a build-time branch on the condition would freeze the
+-- decision at the first iteration.  Instead, the condition is an ACTION
+-- ('compileMonadicCond' — it re-reads its `var`s each iteration) and the branch
+-- is chosen INSIDE a lifted selector closure that the CK-machine re-invokes with
+-- the freshly-evaluated condition value: @krt2_bind(condIO, kclo(@doifsel))@.  The
+-- selector @br i1@s on @kas_bool(%cond)@ and RETURNS the taken branch's action
+-- (built fresh each invocation), so the choice re-decides every iteration.  This
+-- is also correct (just slightly less direct) for a non-loop / recursive do-if,
+-- where the containing closure would rebuild the tree each call anyway.
 compileDoIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen Text
 compileDoIf alts mels = go alts
   where
@@ -1324,31 +1435,16 @@ compileDoIf alts mels = go alts
         emit (r <> " = call ptr @krt2_pure(ptr " <> u <> ")")
         pure r
     go ((cond, body) : more) = do
-      cv <- compile cond
-      declRuntime "declare i32 @kas_bool(ptr)"
-      bi <- freshReg
-      emit (bi <> " = call i32 @kas_bool(ptr " <> cv <> ")")
-      c1 <- freshReg
-      emit (c1 <> " = icmp ne i32 " <> bi <> ", 0")
-      thenL <- freshLabel "doif.then."
-      elseL <- freshLabel "doif.else."
-      joinL <- freshLabel "doif.join."
-      emit ("br i1 " <> c1 <> ", label %" <> thenL <> ", label %" <> elseL)
-      -- then arm: this guard's branch sub-do
-      startBlock thenL
-      tv <- branchAction body
-      thenEnd <- gets gsBlock
-      emit ("br label %" <> joinL)
-      -- else arm: the rest of the chain (next guard / final else / pure unit)
-      startBlock elseL
-      ev <- go more
-      elseEnd <- gets gsBlock
-      emit ("br label %" <> joinL)
-      -- join: select the taken arm's action
-      startBlock joinL
+      -- condIO re-evaluates the guard (re-reading `var`s) each time it runs.
+      condIO <- compileMonadicCond cond
+      selFn <- emitDoIfSelector body more
+      capturedEnv <- gets gsEnv
+      declRuntime "declare ptr @kclo(ptr, ptr)"
+      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+      k <- freshReg
+      emit (k <> " = call ptr @kclo(ptr @" <> selFn <> ", ptr " <> capturedEnv <> ")")
       r <- freshReg
-      emit (r <> " = phi ptr [ " <> tv <> ", %" <> thenEnd <> " ], [ "
-              <> ev <> ", %" <> elseEnd <> " ]")
+      emit (r <> " = call ptr @krt2_bind(ptr " <> condIO <> ", ptr " <> k <> ")")
       pure r
     -- Lower one branch's items to its action, isolating its env so a local
     -- binding in the branch does not extend into the join's de Bruijn layout.
@@ -1357,6 +1453,48 @@ compileDoIf alts mels = go alts
       a <- cpsItemsLL items
       modify' $ \g -> g {gsEnv = env0}
       pure a
+    -- A selector closure @doifsel(%cenv, %cond)@: it does NOT bind %cond into the
+    -- env (it is the guard's Bool, not a value binder).  @br i1@ on
+    -- @kas_bool(%cond)@; the then-block returns this guard's branch action, the
+    -- else-block returns the rest of the chain — both built fresh on each call so
+    -- a loop re-decides the branch every iteration.  %cenv is the enclosing env.
+    emitDoIfSelector body more = do
+      fnIdent <- freshLabel "doifsel_"
+      (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+        modify' $ \g -> g {gsEnv = "%cenv"}
+        declRuntime "declare i32 @kas_bool(ptr)"
+        bi <- freshReg
+        emit (bi <> " = call i32 @kas_bool(ptr %cond)")
+        c1 <- freshReg
+        emit (c1 <> " = icmp ne i32 " <> bi <> ", 0")
+        thenL <- freshLabel "doif.then."
+        elseL <- freshLabel "doif.else."
+        joinL <- freshLabel "doif.join."
+        emit ("br i1 " <> c1 <> ", label %" <> thenL <> ", label %" <> elseL)
+        startBlock thenL
+        tv <- branchAction body
+        thenEnd <- gets gsBlock
+        emit ("br label %" <> joinL)
+        startBlock elseL
+        ev <- go more
+        elseEnd <- gets gsBlock
+        emit ("br label %" <> joinL)
+        startBlock joinL
+        r <- freshReg
+        emit (r <> " = phi ptr [ " <> tv <> ", %" <> thenEnd <> " ], [ "
+                <> ev <> ", %" <> elseEnd <> " ]")
+        pure r
+      let def =
+            T.unlines $
+              [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %cond) {"
+              , "entry:"
+              ]
+                ++ map ("  " <>) bodyInsns
+                ++ [ "  ret ptr " <> resultOp
+                   , "}"
+                   ]
+      modify' $ \st -> st {gsTop = def : gsTop st}
+      pure fnIdent
 
 -- | Emit a continuation closure @kdo_N(ptr %cenv, ptr %arg)@ (a one-argument
 -- @kfn@, exactly the 'compileLam' shape): bind the delivered @%arg@ to @pat@ by
@@ -1409,6 +1547,473 @@ bindPatDo v pat
       n <- freshReg
       emit (n <> " = call ptr @kpush(ptr " <> valOp <> ", ptr " <> e <> ")")
       pure n
+
+-- ── Milestone G: the imperative do-kernel ────────────────────────────
+--
+-- Mutable cells, `while` loops, and abrupt control, lowered onto the kappart2
+-- CK-machine the do-kernel already uses (NOT the C backend's synchronous
+-- `goto`/`krun_io` loop, which is a Phase-2 perf path).  The load-bearing fact:
+-- `krt2_while(condIO, bodyIO)` RE-RUNS both action operands every iteration
+-- (rt.c OP_WHILE → KK_LOOP), so a `var` read re-evaluates for free PROVIDED the
+-- read is an IO ACTION (a `knative_sat(kpf_io_readRef,…)` node whose `kref_get`
+-- fires when the CK-machine runs it), not a value frozen at build time.
+--
+-- A source `var` read arrives in Core as a `__runIO (readRef <ref>)` MONADIC
+-- SPLICE buried in an otherwise-pure term (e.g. `ltInt (__runIO (readRef i)) 3`).
+-- 'compileMonadic' turns such a term into a re-runnable action by HOISTING each
+-- splice into a `krt2_bind` (the read becomes a real action; its delivered value
+-- is bound and the pure residual `krt2_pure`d) — the standard monadic-normal-form
+-- lift.  A wholly-monadic condition (`while check i`, elaborated to `__runIO
+-- actTm`) is just `actTm` directly.
+
+-- | Recognise a @__runIO action@ monadic splice and return the single explicit
+-- action argument (mirrors C's 'runIOSplice').  Implicit type arguments are
+-- erased.
+runIOSpliceLL :: Term -> Maybe Term
+runIOSpliceLL t = case spineOf t of
+  (CGlob (GName _ "__runIO"), args)
+    | [a] <- [x | (Expl, x) <- args] -> Just a
+  _ -> Nothing
+
+-- | Shift every FREE de Bruijn index (one at cutoff @c@ or above) in a term by
+-- @d@.  Used by 'compileMonadic' when a hoisted splice pushes one fresh env slot
+-- under which the pure residual is re-expressed (so the residual's references to
+-- the enclosing scope stay correct after the push).  A complete traversal over
+-- 'Term' / 'CaseAlt' / 'CorePat', incrementing the cutoff under every binder.
+shiftTerm :: Int -> Int -> Term -> Term
+shiftTerm d = goT
+  where
+    goT c = \case
+      CVar i -> CVar (if i >= c then i + d else i)
+      CGlob g -> CGlob g
+      CLam ic q n b -> CLam ic q n (goT (c + 1) b)
+      CPi ic q bw n ty b -> CPi ic q bw n (goT c ty) (goT (c + 1) b)
+      CApp ic f a -> CApp ic (goT c f) (goT c a)
+      CSort u -> CSort u
+      CLit l -> CLit l
+      CCtor g as -> CCtor g (map (goT c) as)
+      CMatch s alts -> CMatch (goT c s) (map (goAlt c) alts)
+      CRecordT fs -> CRecordT [(k, goT c v) | (k, v) <- fs]
+      CRecordV fs -> CRecordV [(k, goT c v) | (k, v) <- fs]
+      CProj e f -> CProj (goT c e) f
+      CProjAt e f i -> CProjAt (goT c e) f i
+      CVariantT ts -> CVariantT (map (goT c) ts)
+      CInject l e -> CInject l (goT c e)
+      CLet q n ty rhs body -> CLet q n (goT c ty) (goT c rhs) (goT (c + 1) body)
+      CLetRec q n ty rhs body -> CLetRec q n (goT c ty) (goT (c + 1) rhs) (goT (c + 1) body)
+      CMeta m -> CMeta m
+      CDo lbl items -> CDo lbl (goItems c items)
+      CSealE ls e -> CSealE ls (goT c e)
+      CSigT ls e -> CSigT ls (goT c e)
+      CThunkE e -> CThunkE (goT c e)
+      CLazyE e -> CLazyE (goT c e)
+      CForceE e -> CForceE (goT c e)
+      CIf cc th el -> CIf (goT c cc) (goT c th) (goT c el)
+      CQuote q ts -> CQuote q (map (goT c) ts)
+    goAlt c (CaseAlt pat mg body) =
+      let n = patArity pat
+       in CaseAlt pat (goT (c + n) <$> mg) (goT (c + n) body)
+    -- KItems run under accumulating binders; shifting do-kernel items here is
+    -- only reached if a residual contains a nested do, which the loop corpus
+    -- does not produce — a conservative same-cutoff walk keeps it total.
+    goItems _ = id
+
+-- | The number of binders a 'CorePat' introduces (for 'shiftTerm''s cutoff under
+-- a 'CaseAlt').  Mirrors the left-to-right binder count the match path pushes.
+patArity :: CorePat -> Int
+patArity = \case
+  CPWild -> 0
+  CPVar _ -> 1
+  CPLit _ -> 0
+  CPCtor _ ps -> sum (map patArity ps)
+  CPTuple ps -> sum (map patArity ps)
+  CPRecord fs _ -> sum (map (patArity . snd) fs)
+  CPInject _ p -> patArity p
+  CPInjectRest _ -> 0
+  CPOr (p : _) _ -> patArity p
+  CPOr [] _ -> 0
+  CPAs _ p -> 1 + patArity p
+
+-- | Find the leftmost (first-to-evaluate) @__runIO action@ splice that sits at
+-- binder depth 0 within @t@ (i.e. not under a local lambda/let/match binder),
+-- and return its action together with @t@ rewritten so that occurrence becomes a
+-- reference to a freshly-pushed slot: every other free var is shifted by +1 and
+-- the splice itself is 'CVar 0'.  'Nothing' when @t@ has no liftable splice (it
+-- is then a pure residual).  Splice search follows evaluation order (function
+-- before argument) so reads are sequenced as written.
+liftFirstSplice :: Term -> Maybe (Term, Term)
+liftFirstSplice t0
+  | Just _ <- runIOSpliceLL t0 = Nothing -- the WHOLE term is a splice: handled directly
+  | otherwise = case go t0 of
+      Nothing -> Nothing
+      Just (action, residual) -> Just (action, residual)
+  where
+    -- Returns (action, residual) where residual is @t@ with the found splice
+    -- replaced by 'CVar 0' and all of t's own free vars shifted +1.
+    go :: Term -> Maybe (Term, Term)
+    go t = case runIOSpliceLL t of
+      Just action -> Just (action, CVar 0) -- this node IS a splice → slot 0
+      Nothing -> case t of
+        CApp ic f a -> case go f of
+          Just (act, f') -> Just (act, CApp ic f' (shiftTerm 1 0 a))
+          Nothing -> case go a of
+            Just (act, a') -> Just (act, CApp ic (shiftTerm 1 0 f) a')
+            Nothing -> Nothing
+        CCtor g as -> goList as (CCtor g)
+        CIf c th el -> case go c of
+          Just (act, c') -> Just (act, CIf c' (shiftTerm 1 0 th) (shiftTerm 1 0 el))
+          Nothing -> Nothing
+        _ -> Nothing
+    -- Lift the first splice across a list of subterms (left to right), shifting
+    -- the untouched siblings +1 and rebuilding via @mk@.
+    goList :: [Term] -> ([Term] -> Term) -> Maybe (Term, Term)
+    goList xs mk = goAt [] xs
+      where
+        goAt _ [] = Nothing
+        goAt before (x : after) = case go x of
+          Just (act, x') ->
+            Just (act, mk (map (shiftTerm 1 0) (reverse before) ++ x' : map (shiftTerm 1 0) after))
+          Nothing -> goAt (x : before) after
+
+-- | True if a value-position term carries a `__runIO` `var`-read splice (a whole-
+-- term splice, or one buried inside a larger pure term), so it must be lowered as
+-- a re-runnable IO action via 'compileMonadic' rather than the build-time 'compile'
+-- (which would hit the unlowered @__runIO@ primitive).  In the imperative do-kernel
+-- a @let@/@var@ rhs over `var`s (e.g. @let t = addInt a b@) is exactly this case.
+hasSpliceLL :: Term -> Bool
+hasSpliceLL t
+  | Just _ <- runIOSpliceLL t = True
+  | Just _ <- liftFirstSplice t = True
+  | otherwise = False
+
+-- | Compile a value-position term that may carry @__runIO@ monadic splices into
+-- a re-runnable IO ACTION yielding the term's value.  The whole-term splice case
+-- (@__runIO actTm@, a monadic `while` condition) is the action itself; otherwise
+-- each splice is hoisted into a `krt2_bind` (so a `var` read re-executes each
+-- time the action runs) and the pure residual is `krt2_pure`d.  This is the
+-- monadic-normal-form lift; it reuses the do-kernel's lazy continuation closures
+-- ('emitDoCont') so the spine stays bounded.
+compileMonadic :: Term -> Gen Text
+compileMonadic = compileMonadicAs ResValue
+
+-- | Lower an ACTION-position term that may carry `__runIO` splices to a
+-- re-runnable IO action.  Same hoist as 'compileMonadic', but the residual IS
+-- itself an action (e.g. `printlnString (showInt (readRef i))`), so it is
+-- compiled DIRECTLY — never `krt2_pure`-wrapped (which would give @IO (IO a)@).
+compileMonadicAction :: Term -> Gen Text
+compileMonadicAction = compileMonadicAs ResAction
+
+-- | Whether the residual of a splice lift is a VALUE (wrap in @krt2_pure@) or an
+-- ACTION (compile directly).  A `while` condition / assignment rhs is a value; a
+-- `KExpr` / bind action term is an action.
+data ResidualKind = ResValue | ResAction
+
+compileMonadicAs :: ResidualKind -> Term -> Gen Text
+compileMonadicAs rk t
+  | ResAction <- rk, Just action <- runIOSpliceLL t = compile action
+  | ResValue <- rk, Just action <- runIOSpliceLL t = compile action
+  | otherwise = case liftFirstSplice t of
+      Nothing -> case rk of
+        ResAction -> compile t -- the residual is the action itself
+        ResValue -> do
+          -- No splice: a pure value lifted into the IO monad.
+          v <- compile t
+          declRuntime "declare ptr @krt2_pure(ptr)"
+          r <- freshReg
+          emit (r <> " = call ptr @krt2_pure(ptr " <> v <> ")")
+          pure r
+      Just (action, residual) -> do
+        -- Bind the splice's action; in the continuation, the delivered value is
+        -- pushed at slot 0 and the residual (now an action) is built lazily.
+        m <- compile action
+        contFn <- emitMonadicCont rk residual
+        capturedEnv <- gets gsEnv
+        declRuntime "declare ptr @kclo(ptr, ptr)"
+        declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+        k <- freshReg
+        emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+        r <- freshReg
+        emit (r <> " = call ptr @krt2_bind(ptr " <> m <> ", ptr " <> k <> ")")
+        pure r
+
+-- | Emit a continuation closure for 'compileMonadicAs': the delivered splice
+-- value is pushed at env slot 0 (the 'CVar 0' the residual references) and the
+-- residual term is compiled (recursing for any further splices, preserving the
+-- residual kind).  The same lifted-`kfn` shape as 'emitDoCont'.
+emitMonadicCont :: ResidualKind -> Term -> Gen Text
+emitMonadicCont rk residual = do
+  fnIdent <- freshLabel "kmc_"
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+    env1 <- freshReg
+    emit (env1 <> " = call ptr @kpush(ptr %arg, ptr %cenv)")
+    modify' $ \g -> g {gsEnv = env1}
+    compileMonadicAs rk residual
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | The @newRef e@ IO action for a @var x = e@ (or @x <- newRef e@).  A SPLICE-FREE
+-- init is a saturated `newRef` prim application through the existing IO-prim path
+-- (@knative_sat(kpf_io_newRef, [e], isio=1)@).  An init that reads `var`s (e.g.
+-- @var b = addInt a 3@) is built as a re-runnable value-action via 'compileMonadic',
+-- whose delivered value is `newRef`-ed in the continuation — symmetric with
+-- 'writeRefAction'.
+newRefAction :: Term -> Gen Text
+newRefAction e
+  | not (hasSpliceLL e) = compilePrimApp "newRef" [(Expl, e)]
+  | otherwise = do
+      initAct <- compileMonadic e
+      contFn <- emitNewRefCont
+      capturedEnv <- gets gsEnv
+      declRuntime "declare ptr @kclo(ptr, ptr)"
+      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+      k <- freshReg
+      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+      r <- freshReg
+      emit (r <> " = call ptr @krt2_bind(ptr " <> initAct <> ", ptr " <> k <> ")")
+      pure r
+
+-- | Build a @newRef@ IO action from an already-compiled init-value operand
+-- (a direct @knative_sat(kpf_io_newRef, [val], 1)@).
+newRefValueAction :: Text -> Gen Text
+newRefValueAction valOp = do
+  argv <- freshReg
+  emit (argv <> " = alloca [1 x ptr], align 8")
+  s0 <- freshReg
+  emit (s0 <> " = getelementptr inbounds [1 x ptr], ptr " <> argv <> ", i64 0, i64 0")
+  emit ("store ptr " <> valOp <> ", ptr " <> s0 <> ", align 8")
+  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  declRuntime "declare ptr @kpf_io_newRef(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @knative_sat(ptr @kpf_io_newRef, i32 1, ptr " <> argv <> ", i32 1)")
+  pure r
+
+-- | A continuation closure for a splicey @var x = e@: the delivered init value
+-- arrives at @%arg@ and is @newRef@-ed as the tail action (the resulting Ref is the
+-- bound value).  No env push — @%arg@ is consumed by the newRef.
+emitNewRefCont :: Gen Text
+emitNewRefCont = do
+  fnIdent <- freshLabel "knr_"
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" (newRefValueAction "%arg")
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | The @writeRef ref val@ IO action for an assignment.  @val@ may itself carry
+-- `__runIO` splices (e.g. @addInt (readRef x) 1@), so it is compiled through
+-- 'compileMonadic' — but the result must be a plain VALUE for `writeRef`'s second
+-- argument, so a splicey rhs is sequenced first via 'compileMonadic' and the
+-- write happens in its continuation.  The common case (a rhs with splices) is
+-- handled by 'KAssign''s own bind in 'cpsItemsLL'; here we cover the SPLICE-FREE
+-- rhs as a single `writeRef` action.
+writeRefAction :: Term -> Term -> Gen Text
+writeRefAction refT rhsT
+  | Nothing <- liftFirstSplice rhsT
+  , Nothing <- runIOSpliceLL rhsT =
+      -- Splice-free rhs: a single writeRef action over the compiled value.
+      compilePrimApp "writeRef" [(Expl, refT), (Expl, rhsT)]
+  | otherwise = do
+      -- The rhs reads `var`s: build it as an action, bind the value, then write.
+      rhsAct <- compileMonadic rhsT
+      contFn <- emitAssignCont' refT
+      capturedEnv <- gets gsEnv
+      declRuntime "declare ptr @kclo(ptr, ptr)"
+      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+      k <- freshReg
+      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+      r <- freshReg
+      emit (r <> " = call ptr @krt2_bind(ptr " <> rhsAct <> ", ptr " <> k <> ")")
+      pure r
+
+-- | A continuation closure that, given the delivered rhs value at @%arg@, emits
+-- @writeRef ref %arg@ as the tail action.  @ref@ is re-compiled inside the
+-- closure under the captured env (a `var` ref is just an env read, so this is
+-- a `kvar` — cheap and correct).  Used by 'writeRefAction' for a splicey rhs.
+emitAssignCont' :: Term -> Gen Text
+emitAssignCont' refT = do
+  fnIdent <- freshLabel "kwr_"
+  -- The captured %cenv IS the enclosing env; the ref term reads from it with no
+  -- shift, and the delivered rhs value is %arg (no env push needed).
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+    re <- compile refT
+    writeRefValueAction re "%arg"
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | Build a @writeRef@ IO action from already-compiled ref and value operands
+-- (a direct @knative_sat(kpf_io_writeRef, [ref,val], 1)@), bypassing the prim
+-- argument-compilation path since both operands are in hand.
+writeRefValueAction :: Text -> Text -> Gen Text
+writeRefValueAction refOp valOp = do
+  argv <- freshReg
+  emit (argv <> " = alloca [2 x ptr], align 8")
+  s0 <- freshReg
+  emit (s0 <> " = getelementptr inbounds [2 x ptr], ptr " <> argv <> ", i64 0, i64 0")
+  emit ("store ptr " <> refOp <> ", ptr " <> s0 <> ", align 8")
+  s1 <- freshReg
+  emit (s1 <> " = getelementptr inbounds [2 x ptr], ptr " <> argv <> ", i64 0, i64 1")
+  emit ("store ptr " <> valOp <> ", ptr " <> s1 <> ", align 8")
+  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  declRuntime "declare ptr @kpf_io_writeRef(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @knative_sat(ptr @kpf_io_writeRef, i32 2, ptr " <> argv <> ", i32 1)")
+  pure r
+
+-- | A continuation closure for a MONADIC assignment (@x <- e@): the delivered
+-- result of running @e@ arrives at @%arg@ and is written to @ref@, then the rest
+-- of the block runs.  An assignment introduces NO new env binder (it mutates an
+-- existing ref), so @ref@ and the rest read the captured @%cenv@ with no shift;
+-- @%arg@ is consumed by the write, not pushed.
+emitAssignCont :: Term -> [KItem] -> Gen Text
+emitAssignCont refT rest = do
+  fnIdent <- freshLabel "kasgk_"
+  declRuntime "declare ptr @krt2_then(ptr, ptr)"
+  -- The captured %cenv IS the enclosing env: `x <- e` writes to an existing ref,
+  -- introducing NO new binder, so both the ref term and `rest` use %cenv with no
+  -- shift.  The delivered rhs result (%arg) is written, not bound into the env.
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+    re <- compile refT
+    writeAct <- writeRefValueAction re "%arg"
+    -- _ <- writeRef ref value; rest  (rest sequenced after the write completes;
+    -- writeRef has no result to bind, so krt2_then is exact).
+    restAct <- cpsItemsLL rest
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_then(ptr " <> writeAct <> ", ptr " <> restAct <> ")")
+    pure r
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | The @return e@ early-exit IO action: @krt2_return(value)@.  When @e@ is a
+-- splice-free value it is compiled directly; when it carries `var`-read splices
+-- (e.g. @return i@ ≡ @return (__runIO (readRef i))@) the read is sequenced as an
+-- action FIRST ('compileMonadic') and the @krt2_return@ runs in its continuation,
+-- so the returned value is the freshly-read cell.
+returnAction :: Term -> Gen Text
+returnAction e
+  | Nothing <- liftFirstSplice e
+  , Nothing <- runIOSpliceLL e = do
+      v <- compile e
+      declRuntime "declare ptr @krt2_return(ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @krt2_return(ptr " <> v <> ")")
+      pure r
+  | otherwise = do
+      valAct <- compileMonadic e
+      contFn <- emitReturnCont
+      capturedEnv <- gets gsEnv
+      declRuntime "declare ptr @kclo(ptr, ptr)"
+      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+      k <- freshReg
+      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
+      r <- freshReg
+      emit (r <> " = call ptr @krt2_bind(ptr " <> valAct <> ", ptr " <> k <> ")")
+      pure r
+
+-- | A continuation closure that returns @krt2_return(%arg)@ — the delivered value
+-- (a freshly-read `var`) is the early-return value.
+emitReturnCont :: Gen Text
+emitReturnCont = do
+  fnIdent <- freshLabel "kret_"
+  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
+    declRuntime "declare ptr @krt2_return(ptr)"
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_return(ptr %arg)")
+    pure r
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "entry:"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> resultOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | The unlabeled @break@ IO action: @krt2_break()@ — exits the innermost
+-- enclosing @krt2_while@ (rt.c KK_LOOP, RK_BREAK).
+breakAction :: Gen Text
+breakAction = do
+  declRuntime "declare ptr @krt2_break()"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_break()")
+  pure r
+
+-- | The unlabeled @continue@ IO action: @krt2_continue()@ — re-tests the
+-- innermost enclosing @krt2_while@'s condition (rt.c KK_LOOP, RK_CONTINUE).
+continueAction :: Gen Text
+continueAction = do
+  declRuntime "declare ptr @krt2_continue()"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_continue()")
+  pure r
+
+-- | The @while cond do body@ IO action: @krt2_while(condIO, bodyIO)@.  Both
+-- operands are re-runnable actions ('compileMonadicCond' / 'compileLoopBody'),
+-- which the CK-machine re-executes each iteration (so `var` reads re-evaluate).
+-- The loop's normal completion (condition False) yields Unit.
+whileAction :: Term -> [KItem] -> Gen Text
+whileAction cond body = do
+  condIO <- compileMonadicCond cond
+  bodyIO <- compileLoopBody body
+  declRuntime "declare ptr @krt2_while(ptr, ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_while(ptr " <> condIO <> ", ptr " <> bodyIO <> ")")
+  pure r
+
+-- | The condition action for a @while@: a re-runnable IO action yielding a Bool.
+-- Just 'compileMonadic' — a pure condition lifts its `var` reads into binds and
+-- `krt2_pure`s the residual Bool; a monadic `while` condition (`__runIO actTm`)
+-- is the action itself.
+compileMonadicCond :: Term -> Gen Text
+compileMonadicCond = compileMonadic
+
+-- | The body action for a @while@: the body items lowered to a `krt2_*` action
+-- tree via 'cpsItemsLL'.  The body runs under the enclosing env (its `var`s are
+-- env slots the loop's actions read); 'krt2_while' re-runs this whole action each
+-- iteration, and `var` reads inside re-execute because they are IO read actions.
+compileLoopBody :: [KItem] -> Gen Text
+compileLoopBody body = do
+  env0 <- gets gsEnv
+  a <- cpsItemsLL body
+  modify' $ \g -> g {gsEnv = env0}
+  pure a
 
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
@@ -1816,6 +2421,7 @@ llvmIoSet =
   Set.fromList
     [ "printlnString", "printString" -- M0 IO prims
     , "ioPure", "ioBind", "ioThen" -- Milestone E do-kernel monadic prims
+    , "newRef", "readRef", "writeRef" -- Milestone G mutable cells (§18.6.1)
     ]
 
 -- | The pure first-order prims the LLVM backend has lowered: Milestone A's

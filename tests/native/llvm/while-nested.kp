@@ -1,0 +1,16 @@
+-- Milestone G: NESTED `while` loops.  The outer loop runs `i` over 0..2; for
+-- each `i` the inner loop runs `j` over 0..2 and prints the pair sum.  Each loop
+-- is its own `krt2_while`; the inner `var j` is re-created each outer iteration
+-- (a fresh `newRef` action) so its reads/writes are isolated per pass.  Expected
+-- stdout: the nine sums 0,1,2,1,2,3,2,3,4 — one per line.
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while ltInt i 3 do
+        var j = 0
+        while ltInt j 3 do
+            printlnString (showInt (addInt i j))
+            j = addInt j 1
+        i = addInt i 1

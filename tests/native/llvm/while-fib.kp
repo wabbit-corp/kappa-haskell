@@ -1,0 +1,17 @@
+-- Milestone G fix: a `let` whose rhs reads TWO `var`s in one expression
+-- (`let t = addInt a b`) — a KLet with multiple `__runIO (readRef)` splices.
+-- The fix routes a splicey KLet rhs through compileMonadic (which hoists every
+-- splice into a krt2_bind), not build-time `compile`.  Iterative fib(10) = 55.
+module main
+
+main : UIO Unit
+let main = do
+    var a = 0
+    var b = 1
+    var i = 0
+    while ltInt i 10 do
+        let t = addInt a b
+        a = b
+        b = t
+        i = addInt i 1
+    printlnString (showInt a)

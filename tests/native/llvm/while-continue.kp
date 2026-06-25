@@ -1,0 +1,16 @@
+-- Milestone G: a `while` loop with `continue` (skip the rest of the body for
+-- some iterations).  `continue` is a `krt2_continue()` action that re-tests the
+-- innermost `krt2_while`'s condition (rt.c KK_LOOP / RK_CONTINUE).  Here the
+-- increment happens BEFORE the continue so the loop still terminates: even
+-- numbers are skipped (not printed), odd numbers 1..9 are printed.  Expected
+-- stdout: `1\n3\n5\n7\n9\n`.
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while ltInt i 10 do
+        i = addInt i 1
+        if eqInt (modInt i 2) 0 then
+            continue
+        printlnString (showInt i)

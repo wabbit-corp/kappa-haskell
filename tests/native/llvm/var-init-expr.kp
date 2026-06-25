@@ -1,0 +1,10 @@
+-- Milestone G fix: a `var` whose INIT reads another `var` (`var b = addInt a 3`)
+-- — a splicey newRef init.  newRefAction now builds it as a re-runnable
+-- value-action (compileMonadic) and newRef's the delivered value.  7 + 3 = 10.
+module main
+
+main : UIO Unit
+let main = do
+    var a = 7
+    var b = addInt a 3
+    printlnString (showInt b)
