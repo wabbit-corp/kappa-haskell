@@ -91,8 +91,8 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **M2** | CAF cross-references (enqueue + accessor) | ✅ `88f9e8f` |
 | **B**  | `CVar`/`CLet` (uniform `kpush`/`kvar`), widen pure-direct prims to Integer/String/Bool | ✅ `ce30ca5` |
 | **C**  | constructors + `CMatch` + `CIf` (tag ids as IR `i32`; `kctor`/`kctor_tagid`/`kctor_arg`) | in progress |
-| **D**  | `CLam` + closures + general `kapp` (worker `kw_*` + closure chain `kclo*_*` + lifted `kfn_*`) | planned |
-| **E**  | `CDo` / CPS bridge (`krt2_bind`/`krt2_then`/`krt2_pure`; continuations as `kdo_N_kM` — the §5 seam) | planned |
+| **D**  | `CLam` + closures + general `kapp` + tail-call `kbounce` (curried model; worker chain is Phase 2) | ✅ `5848b85` |
+| **E**  | `CDo` / CPS bridge (`krt2_bind`/`krt2_then`/`krt2_pure`; continuations as `kdo_N_kM` — the §5 seam) | in progress |
 | **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
 
 ## Extending it
