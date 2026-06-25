@@ -1,0 +1,6 @@
+-- Milestone B: a single local `let x = e in body`.  The rhs is a pure-prim
+-- expression (addInt -> kp_addInt); the body reads the binder via CVar 0
+-- (kvar(env,0)) after one kpush.  Shown (kp_showInt) and printed.  Prints "42".
+module main
+main : UIO Unit
+let main = printlnString (showInt (let x = addInt 40 2 in x))

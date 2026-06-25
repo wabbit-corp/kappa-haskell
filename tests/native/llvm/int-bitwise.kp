@@ -1,0 +1,8 @@
+-- Milestone B: the Integer bitwise pure-direct prims (__intAnd -> kp_intAnd,
+-- __intOr -> kp_intOr, __intXor -> kp_intXor).  Bound through a let to combine
+-- Part 1 + Part 2: a = (6 & 3) = 2; (a | 8) = 10; (10 ^ 1) = 11.  Prints "11".
+module main
+main : UIO Unit
+let main =
+    let a = __intAnd 6 3
+    printlnString (showInt (__intXor (__intOr a 8) 1))

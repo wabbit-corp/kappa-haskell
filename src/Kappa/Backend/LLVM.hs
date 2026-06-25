@@ -11,12 +11,15 @@
 -- only the emitted text differs (LLVM IR instead of C statements).  The
 -- output must match the C backend's observable behaviour bit-for-bit.
 --
--- This module currently implements M0 (hello-world): a Kappa program whose
--- @main@ is a saturated effectful primitive over string literals.  The
+-- Landed so far: M0 (hello-world: a saturated effectful primitive over string
+-- literals), M1 (Int literals + the pure first-order @kp_*@ prims), M2
+-- (cross-global arity-0 CAF references), and Milestone B — LOCAL BINDINGS
+-- ('CVar'/'CLet' via the uniform @kpush@/@kvar@ environment) plus a widened
+-- pure-direct prim table (the String and Integer-bitwise @kp_*@ helpers).  The
 -- structural scaffolding (the work queue, the memoised accessor shape, the
 -- @\@main@ entry point, the assembled module) mirrors 'Kappa.Backend.C'
--- one-to-one so later milestones (arithmetic, constructors, closures, do)
--- slot in by adding 'compile' arms, not by reworking the frame.
+-- one-to-one so later milestones (constructors, closures, do) slot in by adding
+-- 'compile' arms, not by reworking the frame.
 --
 -- The single structural difference from C: C nests expressions in one
 -- string; LLVM is three-address, so 'compile' returns an SSA OPERAND
@@ -53,7 +56,7 @@ import Numeric (showHex)
 data GenState = GenState
   { gsFresh :: !Int -- ^ fresh counter; feeds SSA @%vN@ registers AND block labels
   , gsInsns :: ![Text] -- ^ instructions of the CURRENT basic block, reversed
-  , gsEnv :: !Text -- ^ SSA operand for the current @KEnv*@ (@"ptr null"@ at top level)
+  , gsEnv :: !Text -- ^ SSA VALUE operand for the current @KEnv*@ (no @ptr@ type prefix; @"null"@ at top level, a @%vN@ once a binder pushes a slot via @kpush@). Use sites supply the @ptr@ type (e.g. @kvar(ptr <env>, …)@).
   , gsTop :: ![Text] -- ^ completed top-level @define@s, reversed
   , gsDecls :: !(Set Text) -- ^ runtime @declare@ lines (Set-dedup: one fn referenced many times)
   , gsStrs :: ![(Text, Text, Int)] -- ^ string pool: (global name, escaped IR bytes, byte length)
@@ -227,7 +230,7 @@ generateLL cs mainG ffiPrims _hostSyms =
         GenState
           { gsFresh = 0
           , gsInsns = []
-          , gsEnv = "ptr null"
+          , gsEnv = "null"
           , gsTop = []
           , gsDecls = Set.empty
           , gsStrs = []
@@ -295,7 +298,7 @@ emitGlobal g = do
           ("'" <> gKey g <> "' is a function (arity " <> T.pack (show n)
             <> "); the LLVM backend M0 supports only arity-0 CAFs")
       _ -> do
-        (insns, operand) <- captured "ptr null" (compile tm)
+        (insns, operand) <- captured "null" (compile tm)
         emitArity0Accessor ident insns operand
 
 -- | The leading-lambda arity of a term and the body beneath those binders
@@ -341,7 +344,7 @@ emitArity0Accessor ident buildInsns operand = do
 -- are errors; the accessor only needs to keep the State consistent.)
 reportArity0Failure :: Text -> Text -> Gen ()
 reportArity0Failure ident detail = do
-  (insns, operand) <- captured "ptr null" (unsupported "definition" detail)
+  (insns, operand) <- captured "null" (unsupported "definition" detail)
   emitArity0Accessor ident insns operand
 
 -- | The @\@main@ entry point.  Mirrors C's 'emitMain' (C.hs:1280) EXACTLY,
@@ -412,16 +415,58 @@ assembleLL st =
 -- value.  The three-address discipline is the one structural difference
 -- from C's 'compile' (which returns a nested expression string).
 --
--- M0 subset: a string literal, a bare global reference, and a saturated
--- application whose head is a known prim or another global.
+-- Supported subset: a literal, a bare global reference, a saturated
+-- application whose head is a known prim, a bound-variable read ('CVar'), and a
+-- non-recursive local @let@ ('CLet').  General application and closures remain
+-- a later milestone.
 compile :: Term -> Gen Text
 compile term = case term of
   CLit l -> compileLit l
   CGlob g -> compileGlob g
   CApp {} -> compileApp term
+  CVar i -> compileVar i
+  CLet _ _ _ rhs body -> compileLet rhs body
   _ ->
     unsupported "term"
       ("the LLVM backend M0 cannot lower this construct: " <> constructName term)
+
+-- | A bound variable read (Milestone B): @call ptr \@kvar(ptr %env, i32 i)@,
+-- where @%env@ is the current 'gsEnv' operand and @i@ is the de Bruijn /index/
+-- (0 = innermost binder = top of the env chain).  This is the UNIFORM
+-- environment realisation — every binder pushes exactly one env slot
+-- ('compileLet'), so the index lines up with Core's de Bruijn numbering with
+-- no flat-param shortcut (the C backend's @gsParamLvals@ fast path is
+-- deliberately NOT replicated; it is always correct, just not the fastest).
+-- The interpreter is the oracle: if a let/var program's output diverges, the
+-- index threading is wrong.
+compileVar :: Int -> Gen Text
+compileVar i = do
+  env <- gets gsEnv
+  declRuntime "declare ptr @kvar(ptr, i32)"
+  r <- freshReg
+  emit (r <> " = call ptr @kvar(ptr " <> env <> ", i32 " <> T.pack (show i) <> ")")
+  pure r
+
+-- | A single non-recursive @let@ (Milestone B).  The 'CLet' constructor is
+-- @CLet q name ty rhs body@; only @rhs@ and @body@ matter for codegen (the
+-- quantity/name/type are erased here).  Lower it by compiling @rhs@ to an
+-- operand, pushing it onto the env chain
+-- (@%env1 = call ptr \@kpush(ptr %v, ptr %env0)@ — value first, env second,
+-- matching the runtime's @kpush(KValue *v, KEnv *e)@), then compiling @body@
+-- with 'gsEnv' set to the extended env so a @CVar 0@ in @body@ reads the
+-- let-bound value.  The previous env operand is RESTORED afterwards (a @let@
+-- in expression position must not leak its binder into a sibling expression).
+compileLet :: Term -> Term -> Gen Text
+compileLet rhs body = do
+  rv <- compile rhs
+  env0 <- gets gsEnv
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  env1 <- freshReg
+  emit (env1 <> " = call ptr @kpush(ptr " <> rv <> ", ptr " <> env0 <> ")")
+  modify' $ \g -> g {gsEnv = env1}
+  bv <- compile body
+  modify' $ \g -> g {gsEnv = env0}
+  pure bv
 
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
@@ -643,10 +688,21 @@ ioPrimEntry = \case
 -- (The C backend additionally requires a matching 'primEntries' arity; for
 -- these prims the two tables agree, which this table encodes directly.)
 --
--- Deliberately NOT yet ported (left to a later milestone): the Double/String/
--- Scalar/Byte/bitwise @kp_*@ helpers — they need no new lowering machinery
--- (this same path serves them once their literals are wired), but are out of
--- this milestone's first-order-arithmetic scope.
+-- Milestone B widens this from the M1 Integer-only set to every pure-direct
+-- @kp_*@ helper whose arguments AND result are restricted to the value types
+-- already lowered (Integer, String, Bool): the String ops (@stringAppend@,
+-- @eqStr@, @ltStr@, @showStringLit@) and the Integer bitwise ops (@__intAnd@,
+-- @__intOr@, @__intXor@).  @eqStr@/@ltStr@ take String args and return a Bool
+-- (@kbool@), which is fine even without Bool literals — the Bool is produced
+-- by the runtime, not parsed from source.
+--
+-- Deliberately STILL NOT ported (their literals are not yet lowered, so a
+-- caller can never construct an argument): the Double helpers
+-- (@addDouble@/…/@showDouble@/@intToDouble@/@floatEq@/@eqDouble@), the Scalar
+-- (Char) helpers (@eqScalar@/@ltScalar@/@showScalar@), and the Byte helpers
+-- (@eqByte@/@ltByte@).  Every entry here is also a @primDirect@ entry in
+-- "Kappa.Backend.C" with the SAME helper symbol and arity, so a saturated call
+-- emits the identical runtime call in both backends.
 pureDirectEntry :: Text -> Maybe (Text, Int)
 pureDirectEntry = \case
   "addInt" -> Just ("kp_addInt", 2)
@@ -659,14 +715,25 @@ pureDirectEntry = \case
   "ltInt" -> Just ("kp_ltInt", 2)
   "leInt" -> Just ("kp_leInt", 2)
   "showInt" -> Just ("kp_showInt", 1)
+  -- Milestone B: String ops (args/result are String or Bool).
+  "stringAppend" -> Just ("kp_stringAppend", 2)
+  "eqStr" -> Just ("kp_eqStr", 2)
+  "ltStr" -> Just ("kp_ltStr", 2)
+  "showStringLit" -> Just ("kp_showStringLit", 1)
+  -- Milestone B: Integer bitwise ops.
+  "__intAnd" -> Just ("kp_intAnd", 2)
+  "__intOr" -> Just ("kp_intOr", 2)
+  "__intXor" -> Just ("kp_intXor", 2)
   _ -> Nothing
 
--- | The names in 'pureDirectEntry' — the M1 pure prims registered into
--- @gsPrims@ ('basePrims') so 'globPrimName' recognises them.
+-- | The names in 'pureDirectEntry' — the pure prims registered into @gsPrims@
+-- ('basePrims') so 'globPrimName' recognises them.
 pureDirectPrims :: [Text]
 pureDirectPrims =
   [ "addInt", "subInt", "mulInt", "divInt", "modInt", "negInt"
   , "eqInt", "ltInt", "leInt", "showInt"
+  , "stringAppend", "eqStr", "ltStr", "showStringLit"
+  , "__intAnd", "__intOr", "__intXor"
   ]
 
 -- | The runtime primitive name a global resolves to, if any (a @__prim@

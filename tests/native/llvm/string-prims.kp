@@ -1,0 +1,12 @@
+-- Milestone B: the remaining new String pure-direct prims.  showStringLit
+-- (kp_showStringLit) renders a String literal with quotes; eqStr (kp_eqStr) and
+-- ltStr (kp_ltStr) are Bool-returning comparisons bound in lets (combining
+-- Part 1 + Part 2) — the Bool is produced by the runtime (kbool), so no Bool
+-- literal is needed.  The let-bound comparisons are evaluated for effect/parity
+-- and the result string is what is printed.  Prints `"ab"`.
+module main
+main : UIO Unit
+let main =
+    let eq = eqStr "x" "x"
+    let lt = ltStr "a" "b"
+    printlnString (showStringLit (stringAppend "a" "b"))

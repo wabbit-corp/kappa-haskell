@@ -1,0 +1,12 @@
+-- Milestone B: a local `let` binder SHADOWS a top-level CAF of the same name.
+-- `base` is a top-level CAF (= 7); inside main, `let base = 42 in base` rebinds
+-- the name, so the body's `base` is the LOCAL (CVar 0 -> kvar(env,0)), NOT the
+-- CGlob accessor.  The elaborator resolves the shadow; codegen just reads the
+-- env slot.  If the backend leaked the global it would print "7".  Prints "42".
+module main
+
+base : Int
+let base = addInt 3 4
+
+main : UIO Unit
+let main = printlnString (showInt (let base = addInt 40 2 in base))

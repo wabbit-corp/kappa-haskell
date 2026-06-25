@@ -1,0 +1,6 @@
+-- Milestone B: a let whose body uses the binder MULTIPLE times.  Each use is
+-- an independent CVar 0 (kvar(env,0)); the binder cell is read, not re-bound.
+-- `let x = 21 in addInt x x` = 42.  Prints "42".
+module main
+main : UIO Unit
+let main = printlnString (showInt (let x = addInt 20 1 in addInt x x))

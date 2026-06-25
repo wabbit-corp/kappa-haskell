@@ -1,0 +1,8 @@
+-- Milestone B: NESTED lets exercise de Bruijn threading across two kpush
+-- frames.  `let x = 40 in let y = 2 in addInt x y`: in the innermost body,
+-- y is CVar 0 (kvar(env,0)) and x is CVar 1 (kvar(env,1)) — the outer binder
+-- is one slot deeper.  If the index threading were wrong the sum would be
+-- wrong; parity with interp/C confirms it.  Prints "42".
+module main
+main : UIO Unit
+let main = printlnString (showInt (let x = addInt 40 0 in let y = addInt 1 1 in addInt x y))
