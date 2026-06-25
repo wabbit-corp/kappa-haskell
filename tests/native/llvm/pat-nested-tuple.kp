@@ -1,0 +1,14 @@
+-- Nested tuple ((a,b),c): binders at different depths.
+module main
+
+nested : ((Int, Int), Int)
+let nested = ((4, 5), 6)
+
+-- a=4, b=5, c=6. Print a*100 + b*10 + c = 456.
+result : Int
+let result =
+    match nested
+    case ((a, b), c) -> addInt (addInt (mulInt a 100) (mulInt b 10)) c
+
+main : UIO Unit
+let main = printlnString (showInt result)

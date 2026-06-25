@@ -1,0 +1,29 @@
+-- Milestone K: bind x, y, AND rest in a SINGLE nested pattern
+-- `Cons x (Cons y rest)` and use all three in one body — the sharpest binder-
+-- order test.  The body computes `x*100 + y*10 + lengthOf rest` so a swap of any
+-- two binders changes the printed digits.  x=7, y=8, rest=Cons 9 Nil (length 1)
+-- -> 7*100 + 8*10 + 1 = 781.
+module main
+
+data IntList : Type =
+    Nil
+    Cons (head : Int) (tail : IntList)
+
+lengthOf : IntList -> Int
+let lengthOf xs =
+    match xs
+    case Nil -> 0
+    case Cons _ t -> addInt 1 (lengthOf t)
+
+sample : IntList
+let sample = Cons 7 (Cons 8 (Cons 9 Nil))
+
+result : Int
+let result =
+    match sample
+    case Cons x (Cons y rest) ->
+        addInt (addInt (mulInt x 100) (mulInt y 10)) (lengthOf rest)
+    case _ -> 0
+
+main : UIO Unit
+let main = printlnString (showInt result)

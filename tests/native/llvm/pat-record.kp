@@ -1,0 +1,14 @@
+-- Record pattern {x, y} (anonymous record): bind named fields, asymmetric values.
+module main
+
+point : (x : Int, y : Int)
+let point = (x = 2, y = 5)
+
+-- x=2, y=5. Print x*10 + y = 25 (if fields confused -> 52).
+result : Int
+let result =
+    match point
+    case (x = a, y = b) -> addInt (mulInt a 10) b
+
+main : UIO Unit
+let main = printlnString (showInt result)

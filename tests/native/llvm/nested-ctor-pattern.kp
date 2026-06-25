@@ -1,0 +1,29 @@
+-- Milestone K: a NESTED constructor pattern that binds several variables at
+-- DIFFERENT depths, stressing the de-Bruijn binder ORDER.  `Cons x (Cons y rest)`
+-- binds x (depth 1), then y (depth 2), then rest (depth 2) — left-to-right, so a
+-- swapped binding would print a different number.  We sum x + y and also read a
+-- field of `rest`, so every binder is observed.
+module main
+
+data IntList : Type =
+    Nil
+    Cons (head : Int) (tail : IntList)
+
+-- list: Cons 10 (Cons 20 (Cons 30 Nil))
+sample : IntList
+let sample = Cons 10 (Cons 20 (Cons 30 Nil))
+
+-- Match the nested shape `Cons x (Cons y rest)`; sum x + y, then add the head of
+-- `rest` (30) so the third, deepest binder is also load-bearing.  Result: 60.
+result : Int
+let result =
+    match sample
+    case Cons x (Cons y rest) ->
+        match rest
+        case Cons z _ -> addInt (addInt x y) z
+        case Nil -> 0
+    case Cons x Nil -> x
+    case Nil -> 0
+
+main : UIO Unit
+let main = printlnString (showInt result)

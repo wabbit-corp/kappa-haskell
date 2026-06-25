@@ -1,0 +1,19 @@
+-- OR-pattern that BINDS a common var across both branches (Ok x | Err x).
+-- Each branch carries an Int payload at the SAME binder name x. The body uses x,
+-- so picking the wrong branch's payload (or a wrong binder slot) shows.
+module main
+
+data Res : Type =
+    Ok (v : Int)
+    Err (v : Int)
+
+-- Both arms bind x; double it so the path is observable.
+unwrap : Res -> Int
+let unwrap r =
+    match r
+    case Ok x | Err x -> mulInt x 2
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (unwrap (Ok 11)))
+    printlnString (showInt (unwrap (Err 13)))

@@ -39,7 +39,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (forM_, foldM, msum, mplus, unless)
+import Control.Monad (forM_, foldM, msum, mplus, unless, when, void)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
@@ -860,7 +860,7 @@ compileSuspension memo e = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %env) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -929,10 +929,14 @@ compileLam body = do
   (bodyInsns, _endBlock, resultOp) <- captured "%env" $ do
     emit ("%env = call ptr @kpush(ptr %arg, ptr %cenv)")
     compileTail body
+  -- The body's first block is labeled @build@ to match 'captured' (which sets
+  -- @gsBlock = "build"@): a control form in the body (a @match@/@if@ taking the
+  -- irrefutable fast path) reads @gsBlock@ for a phi predecessor, so the textual
+  -- label and the recorded one MUST agree, or the phi names a non-existent block.
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -1136,28 +1140,31 @@ compileIfWith arm c t e = do
           <> ev <> ", %" <> elseEnd <> " ]")
   pure r
 
--- ── Pattern matching (Milestone C) ───────────────────────────────────
+-- ── Pattern matching (Milestone C; recursive in Milestone K) ──────────
 
 -- | A @match@ expression (mirrors C's 'consumeMatch' / 'consumeAlt' chain,
 -- specialised to expression position).  The scrutinee is compiled once; each
--- alternative is an @icmp eq i32 <tagid>@ test that branches into a per-alt
--- block which binds the constructor's fields ('kpush' onto 'gsEnv', in pattern
--- order) and compiles the body.  Every alt block branches to a shared join
--- whose @phi ptr@ selects the matched alt's operand.  A fall-through past the
--- last alt calls @krt_fail("non-exhaustive match")@ (mirroring the C backend's
--- @if (!matched) krt_fail(...)@), in an UNREACHABLE-then-branch block that still
--- feeds the join (with a @null@ placeholder) so the phi is well-formed.
+-- alternative runs a (now RECURSIVE) pattern test that short-circuits to a
+-- per-alt @fail@ block, then binds the pattern's fields ('kpush' onto 'gsEnv',
+-- in pattern order) and compiles the body.  Every alt block branches to a shared
+-- join whose @phi ptr@ selects the matched alt's operand.  A fall-through past
+-- the last alt calls @krt_fail("non-exhaustive match")@ (mirroring the C
+-- backend's @if (!matched) krt_fail(...)@), in an UNREACHABLE-then-branch block
+-- that still feeds the join (with a @null@ placeholder) so the phi is
+-- well-formed.
 --
--- SUPPORTED pattern forms (the subset the C backend's CMatch produces that this
--- milestone lowers): a constructor pattern with var/wildcard field binders
--- ('CPCtor' over 'CPVar'/'CPWild'), a bare var/wildcard catch-all
--- ('CPVar'/'CPWild'), an as-pattern over those ('CPAs'), and (Milestone F) an
--- Int/String/Char/Byte literal pattern ('CPLit', a @klit_eq@ test that binds no
--- fields — freely mixed with ctor/var arms in one match).  Guards are supported
--- (an extra @kas_bool@ test inside the alt).  Tuple/record/variant/or/nested-
--- constructor patterns are left UNSUPPORTED here (a clean 'unsupported' rather
--- than a miscompile) — single-level dispatch is what the data-type corpus needs
--- and what elaboration desugars to.
+-- SUPPORTED pattern forms (Milestone K extends this to the C backend's full
+-- structural set): bare var/wildcard catch-alls ('CPVar'/'CPWild'),
+-- constructor patterns with arbitrary NESTED sub-patterns ('CPCtor', recursing
+-- via @kctor_arg@), tuple patterns ('CPTuple' via @krec_at@), record patterns
+-- ('CPRecord' via @kproj@, incl. a binding rest via @krec_without@), variant
+-- patterns ('CPInject' via @kvariant_is@/@kvariant_payload@), as-patterns
+-- ('CPAs'), literal patterns ('CPLit', @klit_eq@), and top-level or-patterns
+-- ('CPOr', expanded into separate alternatives via 'expandTopOrLL').  Guards are
+-- supported (an extra @kas_bool@ test inside the alt).  Still UNSUPPORTED (a
+-- clean 'unsupported', never a miscompile): residual-row variant patterns
+-- ('CPInjectRest'), nested binding or-patterns, and an or-pattern that binds the
+-- shared names in a non-canonical order ('orReorderedLL' — refused like C).
 compileMatch :: Term -> [CaseAlt] -> Gen Text
 compileMatch = compileMatchWith compile
 
@@ -1170,15 +1177,67 @@ compileMatchWith :: (Term -> Gen Text) -> Term -> [CaseAlt] -> Gen Text
 compileMatchWith compileBody scrut alts = do
   sv <- compile scrut
   joinL <- freshLabel "match.join."
+  -- §17.2.3: an or-pattern whose alternatives list the shared binders in a
+  -- different ORDER than the first needs a per-alternative de-Bruijn body
+  -- permutation; this backend distributes alternatives over a shared body and
+  -- does not perform it, so refuse rather than miscompile (mirrors the C
+  -- backend's 'consumeMatch' guard; the interpreter handles this case).
+  forM_ alts $ \(CaseAlt pat _ _) ->
+    when (orReorderedLL pat) $
+      void $
+        unsupported "pattern"
+          "an or-pattern alternative that binds the shared names in a different order than the first alternative is not supported by the LLVM backend (use a consistent binder order across alternatives, or the C backend)"
+  -- Milestone K: expand every top-level or-pattern into separate or-free
+  -- alternatives (mirroring the C backend's 'expandTopOr'/'distributePat'), so
+  -- each branch is handled by the ordinary recursive test/bind path and binds the
+  -- shared variables in its own structural order — the body's de Bruijn layout
+  -- stays correct because the reordered case was refused just above.
+  let alts' = concatMap expandTopOrLL alts
   -- Each alt contributes one (operand, predecessor-block) pair to the phi; the
   -- non-exhaustive fallback contributes an (unreachable) @null@ incoming so the
   -- phi is always well-formed even for a match with no value-producing alt.
-  incomings <- compileAlts compileBody sv joinL alts
+  incomings <- compileAlts compileBody sv joinL alts'
   startBlock joinL
   r <- freshReg
   let phiArgs = T.intercalate ", " ["[ " <> op <> ", %" <> blk <> " ]" | (op, blk) <- incomings]
   emit (r <> " = phi ptr " <> phiArgs)
   pure r
+
+-- | Milestone K: §17.2.3 — expand one alternative whose pattern contains
+-- or-patterns into the list of or-free alternatives it denotes (the Cartesian
+-- product over every nested 'CPOr', left-to-right, matching the interpreter's
+-- first-match order).  All branches share the alternative's guard and body.
+-- Mirrors the C backend's 'expandTopOr'/'distributePat' (C.hs:2632).
+expandTopOrLL :: CaseAlt -> [CaseAlt]
+expandTopOrLL (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePatLL pat]
+
+-- | The or-free patterns a pattern denotes, distributing every nested 'CPOr' as
+-- the Cartesian product over its positions (mirrors C's 'distributePat').
+distributePatLL :: CorePat -> [CorePat]
+distributePatLL = \case
+  CPOr ps _ -> concatMap distributePatLL ps
+  CPCtor g ps -> [CPCtor g qs | qs <- mapM distributePatLL ps]
+  CPTuple ps -> [CPTuple qs | qs <- mapM distributePatLL ps]
+  CPRecord fs rest ->
+    let (names, pats) = unzip fs
+     in [CPRecord (zip names qs) rest | qs <- mapM distributePatLL pats]
+  CPInject t p -> [CPInject t q | q <- distributePatLL p]
+  CPAs n p -> [CPAs n q | q <- distributePatLL p]
+  p -> [p] -- CPWild / CPVar / CPLit / CPInjectRest: no nested or
+
+-- | Whether a pattern contains an or-pattern whose alternatives bind the shared
+-- names in a NON-canonical order (a non-identity permutation on some
+-- alternative) — these need a per-alternative de Bruijn permutation the shared-
+-- body distribution can't express.  Mirrors C's 'orReordered' (C.hs:2617).
+orReorderedLL :: CorePat -> Bool
+orReorderedLL = \case
+  CPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReorderedLL ps
+  CPCtor _ ps -> any orReorderedLL ps
+  CPTuple ps -> any orReorderedLL ps
+  CPRecord fs _ -> any (orReorderedLL . snd) fs
+  CPInject _ p -> orReorderedLL p
+  CPAs _ p -> orReorderedLL p
+  _ -> False
 
 -- | Lower the alternatives of a 'compileMatch' as a test/branch chain.  The
 -- chain is linearised so each alt's FAILURE path opens the next alt's block
@@ -1212,23 +1271,27 @@ compileAlts compileBody sv joinL = go
 -- binders.  Returns this alt's incomings ++ @onFail@'s.
 compileAlt :: (Term -> Gen Text) -> Text -> Text -> CaseAlt -> Gen [(Text, Text)] -> Gen [(Text, Text)]
 compileAlt compileBody sv joinL (CaseAlt pat mguard body) onFail = do
-  mtest <- patTestLL sv pat
-  case (mtest, mguard) of
-    -- Always-matching pattern, no guard: no branch at all — bind and run the
-    -- body directly (the C backend's first-match order makes later alts dead).
-    (Nothing, Nothing) -> do
+  -- A pattern that contributes no test (a bare var/wildcard, or an as-pattern /
+  -- nested shape over only those) with no guard is the unconditional catch-all:
+  -- bind and run the body directly (the C backend's first-match order makes any
+  -- later alt dead), with NO failure block — nothing can route there.
+  case (patAlwaysMatches pat, mguard) of
+    (True, Nothing) -> do
       inc <- bindAndBody compileBody sv joinL pat body
       pure [inc]
-    -- Otherwise at least one failable test exists; give the failure path a
-    -- block so 'onFail' has somewhere to emit.
     _ -> do
-      okL <- freshLabel "alt.ok."
+      -- Otherwise at least one failable test (a tag/shape/literal check) or a
+      -- guard exists; give the failure path a block so 'onFail' has somewhere to
+      -- emit, and thread it through the RECURSIVE pattern test so a nested
+      -- sub-pattern that fails short-circuits to the SAME continuation (and never
+      -- projects deeper — the field accessors abort on a shape mismatch, so the
+      -- C backend's `&&` short-circuit MUST be reproduced with control flow).
       failL <- freshLabel "alt.fail."
-      case mtest of
-        Just test -> emit ("br i1 " <> test <> ", label %" <> okL <> ", label %" <> failL)
-        Nothing -> emit ("br label %" <> okL) -- guarded var/wildcard: guard decides
-      -- success: bind, (guard), body
-      startBlock okL
+      patTestBranch sv pat failL
+      -- The current block is now "all of the pattern's tests passed": bind, check
+      -- the optional guard, run the body.  Binding re-projects the (now shape-
+      -- confirmed) fields — safe, since the test established every accessor's
+      -- precondition.
       env0 <- gets gsEnv
       env' <- bindPat sv pat
       modify' $ \g -> g {gsEnv = env'}
@@ -1283,62 +1346,147 @@ bodyToJoin compileBody joinL body = do
   emit ("br label %" <> joinL)
   pure (bv, bvBlk)
 
--- | A boolean ('i1') test that is true iff @pat@ matches scrutinee operand @v@,
--- or 'Nothing' if the pattern always matches (var/wildcard).  Mirrors the C
--- backend's 'patTest' for the Milestone-C subset (single-level constructor
--- dispatch via @kctor_tagid@); other pattern forms are reported unsupported.
-patTestLL :: Text -> CorePat -> Gen (Maybe Text)
-patTestLL v = \case
-  CPWild -> pure Nothing
-  CPVar _ -> pure Nothing
-  CPAs _ p -> patTestLL v p
-  CPCtor g ps
-    | all isVarLike ps -> do
-        tag <- ctorTagId g
-        declRuntime "declare i32 @kctor_tagid(ptr)"
-        ti <- freshReg
-        emit (ti <> " = call i32 @kctor_tagid(ptr " <> v <> ")")
-        cond <- freshReg
-        emit (cond <> " = icmp eq i32 " <> ti <> ", " <> T.pack (show tag))
-        pure (Just cond)
-    | otherwise -> do
-        _ <- unsupported "pattern"
-          "the LLVM backend (Milestone C) supports constructor patterns whose fields are only variable/wildcard binders (nested constructor/literal sub-patterns are not yet lowered)"
-        falseCond
-  -- Milestone F: a literal pattern.  Build the literal as a 'KValue*' comparand
-  -- and test value-equality against the scrutinee with the SAME runtime call the
-  -- C backend uses ('patTest' → @klit_eq(v, lit)@, an @int@ truthy result).  A
-  -- literal alt binds no fields ('patBindingsLL' returns @[]@ for 'CPLit'), so
-  -- this is purely a guard.  An unsupported literal type falls through to a
-  -- recorded error + constant-false test (parity with C's @"0"@).
+-- | Milestone K: does @pat@ contribute NO runtime test at all — i.e. it matches
+-- every value of its (statically known) type?  True for a bare variable /
+-- wildcard, an as-pattern or nested shape over only those, a tuple/record whose
+-- every field is irrefutable, and a single-member variant-inject over an
+-- irrefutable payload (the variant's row is statically a singleton at that
+-- position, so no tag test is needed — same as the C backend's @patTest@
+-- returning 'Nothing').  A 'CPCtor', 'CPLit', or 'CPInjectRest' is always
+-- refutable (it dispatches on a tag / equality).  Mirrors which 'CorePat' forms
+-- C's 'patTest' answers 'Nothing' for.
+patAlwaysMatches :: CorePat -> Bool
+patAlwaysMatches = \case
+  CPWild -> True
+  CPVar _ -> True
+  CPAs _ p -> patAlwaysMatches p
+  CPTuple ps -> all patAlwaysMatches ps
+  CPRecord fs _ -> all (patAlwaysMatches . snd) fs
+  -- A CPInject test exists in the C backend (kvariant_tagid dispatch), so an
+  -- inject is refutable; keep parity by treating it as a test.
+  _ -> False
+
+-- | Milestone K: emit the RECURSIVE pattern test for @pat@ against scrutinee
+-- operand @v@, branching to @failL@ on ANY mismatch and FALLING THROUGH (into a
+-- fresh open block) when every sub-test passes.  This mirrors the C backend's
+-- 'patTest' but threads the short-circuit through CONTROL FLOW rather than a
+-- pure @&&@ expression — load-bearing, because the field accessors
+-- (@kctor_arg@/@krec_at@/@kvariant_payload@) ABORT (@krt_fail@) on a shape
+-- mismatch, so a nested sub-pattern must NOT be projected until its parent's
+-- tag/shape has been confirmed.  Each refutable check (tag, size, literal,
+-- variant tag) emits @br i1 cond, label %next, label %failL@ and continues in
+-- @next@; an irrefutable sub-pattern emits nothing.  After the call the current
+-- block is the "all tests passed" block.
+--
+--   * 'CPWild' / 'CPVar' -> no test.
+--   * 'CPAs' n p -> test p (the as-name binds the whole value, no test).
+--   * 'CPLit' l -> @klit_eq(v, lit)@.
+--   * 'CPCtor' g ps -> @kctor_tagid(v) == tag(g)@, then recurse into each field
+--     i at @kctor_arg(v, kctor_argc(v) - nps + i)@ (the C M-C offset).
+--   * 'CPTuple' ps -> @krec_size(v) == n@, then recurse into @krec_at(v, i)@.
+--   * 'CPRecord' fs _ -> recurse into @kproj(v, f)@ for each named field (the
+--     rest binder always matches, so it adds no test — like C's 'patTest').
+--   * 'CPInject' t p -> @kvariant_is(v, "t")@ (the runtime's string-tag test —
+--     self-contained, unlike the numeric @kvariant_tagid@ enum the C backend
+--     uses, which has no LLVM counterpart since this backend never BUILDS
+--     variants), then recurse into @kvariant_payload(v)@.
+--   * 'CPInjectRest' / 'CPOr' -> a clean 'unsupported' (see notes below); emit a
+--     constant-false branch so the IR stays well-formed.
+patTestBranch :: Text -> CorePat -> Text -> Gen ()
+patTestBranch v pat failL = case pat of
+  CPWild -> pure ()
+  CPVar _ -> pure ()
+  CPAs _ p -> patTestBranch v p failL
+  -- Milestone F: a literal pattern — value-equality against the scrutinee via
+  -- the SAME runtime call the C backend uses (@klit_eq(v, lit)@, an @int@ truthy
+  -- result).  A literal binds no fields ('patBindingsLL' returns @[]@), so this
+  -- is purely a test.  An unsupported literal records an error and never matches.
   CPLit l -> do
     mlv <- litValueLL l
     case mlv of
-      Nothing -> falseCond -- unsupported literal: error already recorded, never matches
+      Nothing -> branchFalse -- unsupported literal: error already recorded
       Just lv -> do
         declRuntime "declare i32 @klit_eq(ptr, ptr)"
         eqi <- freshReg
         emit (eqi <> " = call i32 @klit_eq(ptr " <> v <> ", ptr " <> lv <> ")")
         cond <- freshReg
         emit (cond <> " = icmp ne i32 " <> eqi <> ", 0")
-        pure (Just cond)
-  CPTuple _ -> reportUnsupportedPat "tuple"
-  CPRecord _ _ -> reportUnsupportedPat "record"
-  CPInject _ _ -> reportUnsupportedPat "variant"
-  CPInjectRest _ -> reportUnsupportedPat "residual-row variant"
-  CPOr _ _ -> reportUnsupportedPat "or"
+        branchOn cond
+  CPCtor g ps -> do
+    tag <- ctorTagId g
+    declRuntime "declare i32 @kctor_tagid(ptr)"
+    ti <- freshReg
+    emit (ti <> " = call i32 @kctor_tagid(ptr " <> v <> ")")
+    cond <- freshReg
+    emit (cond <> " = icmp eq i32 " <> ti <> ", " <> T.pack (show tag))
+    branchOn cond
+    -- Tag confirmed: recurse LEFT-TO-RIGHT into each field, each at the C M-C
+    -- offset @kctor_arg(v, kctor_argc(v) - nps + i)@.  A field's own test (if
+    -- any) short-circuits to the SAME failL.
+    let nps = length ps
+    forM_ (zip [0 ..] ps) $ \(i, p) -> do
+      av <- ctorArgLL v nps i
+      patTestBranch av p failL
+  CPTuple ps -> do
+    -- A tuple IS a record (K_REC); the arity is fixed, but the C backend still
+    -- guards on @krec_size@, so mirror that, then recurse into @krec_at(v, i)@.
+    let n = length ps
+    declRuntime "declare i32 @krec_size(ptr)"
+    sz <- freshReg
+    emit (sz <> " = call i32 @krec_size(ptr " <> v <> ")")
+    cond <- freshReg
+    emit (cond <> " = icmp eq i32 " <> sz <> ", " <> T.pack (show n))
+    branchOn cond
+    forM_ (zip [0 ..] ps) $ \(i, p) -> do
+      av <- recAtLL v i
+      patTestBranch av p failL
+  -- §17.2.5: a record pattern's rest binder always matches; the named fields
+  -- determine the test.  Recurse into each @kproj(v, f)@.
+  CPRecord pfs _ ->
+    forM_ pfs $ \(f, p) -> do
+      av <- projNameLL v f
+      patTestBranch av p failL
+  -- §13 variant pattern: tag test via the runtime's string-tag predicate, then
+  -- recurse into the payload.
+  CPInject tag p -> do
+    nameG <- internCStr tag
+    declRuntime "declare i32 @kvariant_is(ptr, ptr)"
+    isv <- freshReg
+    emit (isv <> " = call i32 @kvariant_is(ptr " <> v <> ", ptr " <> nameG <> ")")
+    cond <- freshReg
+    emit (cond <> " = icmp ne i32 " <> isv <> ", 0")
+    branchOn cond
+    av <- variantPayloadLL v
+    patTestBranch av p failL
+  -- Deferred forms: record a clean unsupported and emit a never-taken branch so
+  -- the surrounding IR is still well-formed.
+  CPInjectRest _ -> do
+    _ <- unsupported "pattern"
+      "the LLVM backend does not lower residual-row variant patterns (CPInjectRest); use the C backend"
+    branchFalse
+  CPOr _ _ -> do
+    -- Top-level or-patterns are expanded into separate alternatives before
+    -- codegen ('expandTopOrLL' / 'distributePatLL'), so any CPOr reaching here is
+    -- nested — which would need decision-tree compilation.  Deferred.
+    _ <- unsupported "pattern"
+      "the LLVM backend does not lower nested or-patterns (CPOr); lift them to top-level alternatives or use the C backend"
+    branchFalse
   where
-    falseCond = do
-      r <- freshReg
-      emit (r <> " = icmp eq i32 0, 1") -- a constant-false i1
-      pure (Just r)
-    reportUnsupportedPat what = do
-      _ <- unsupported "pattern"
-        ("the LLVM backend (Milestone C) does not yet lower " <> what <> " patterns (use the C backend)")
-      falseCond
+    -- Continue iff @cond@ holds, else jump to the shared failure continuation.
+    branchOn cond = do
+      okL <- freshLabel "pat.ok."
+      emit ("br i1 " <> cond <> ", label %" <> okL <> ", label %" <> failL)
+      startBlock okL
+    -- A never-matching pattern: unconditionally route to failL, then open a dead
+    -- block for the (unreachable) fall-through so subsequent emits stay legal.
+    branchFalse = do
+      deadL <- freshLabel "pat.dead."
+      emit ("br label %" <> failL)
+      startBlock deadL
 
--- | A pattern whose fields 'patTestLL' / 'bindPat' handle as a single-level
--- binder: a variable, a wildcard, or an as-pattern over one of those.
+-- | A pattern whose fields 'bindPatDo' can push as a single env slot without a
+-- shape test: a variable, a wildcard, or an as-pattern over one of those.  Used
+-- only by the do-kernel's irrefutable binder fast path.
 isVarLike :: CorePat -> Bool
 isVarLike = \case
   CPVar _ -> True
@@ -1363,34 +1511,105 @@ bindPat sv pat = do
       emit (n <> " = call ptr @kpush(ptr " <> valOp <> ", ptr " <> e <> ")")
       pure n
 
--- | The field operands a pattern binds, as compiled SSA operands, in matchPat's
--- left-to-right binding order (mirrors C's 'patBindings' for the subset).  A
--- constructor field is projected with @kctor_arg(v, kctor_argc(v) - nps + i)@,
--- exactly as the C backend computes it ('ctorArgExpr').
+-- | Milestone K: the field operands a pattern binds, as compiled SSA operands,
+-- in matchPat's left-to-right binding order — RECURSIVELY, mirroring the C
+-- backend's 'patBindings' (C.hs ~2792) so the binder ORDER (and thus the body's
+-- de Bruijn indices) agrees exactly.  The order MUST match 'patBinders'
+-- (C.hs:875): the rightmost binder lands at de Bruijn index 0 once 'bindPat'
+-- @kpush@es them left-to-right.
+--
+--   * 'CPVar' -> @[v]@.            'CPWild' -> @[]@.
+--   * 'CPAs' n p -> @v : go p@     (the as-name FIRST, then the inner — C's
+--                                   @v : go v p@, matching @patBinders = 1 +
+--                                   inner@).
+--   * 'CPCtor' g ps -> concat the fields left-to-right, each at
+--     @kctor_arg(v, kctor_argc(v) - nps + i)@ (the C M-C offset, 'ctorArgExpr').
+--   * 'CPTuple' ps -> concat the fields left-to-right at @krec_at(v, i)@.
+--   * 'CPRecord' fs mr -> the named-field bindings left-to-right, then (only for
+--     a non-discard rest binder) the residual record — matchPat's order.  The
+--     rest binder is deferred ('krec_without' is not emitted here); a record
+--     pattern WITH a binding rest is reported unsupported in 'patTestBranch'
+--     (its test path) — but a discard / absent rest binds cleanly.
+--   * 'CPInject' t p -> the payload's bindings at @kvariant_payload(v)@.
 patBindingsLL :: Text -> CorePat -> Gen [Text]
 patBindingsLL = go
   where
     go v = \case
       CPWild -> pure []
+      CPLit _ -> pure []
       CPVar _ -> pure [v]
       CPAs _ p -> do rest <- go v p; pure (v : rest)
       CPCtor _ ps -> do
         let nps = length ps
-        concat <$> mapM (\(i, p) -> ctorArg v nps i >>= \av -> go av p) (zip [0 ..] ps)
-      _ -> pure [] -- other forms are rejected in 'patTestLL' before binding
-    -- @kctor_arg(v, kctor_argc(v) - nps + i)@ as SSA: read the field count,
-    -- compute the absolute index, then the field.  Matches 'ctorArgExpr'.
-    ctorArg v nps i = do
-      declRuntime "declare i32 @kctor_argc(ptr)"
-      declRuntime "declare ptr @kctor_arg(ptr, i32)"
-      argc <- freshReg
-      emit (argc <> " = call i32 @kctor_argc(ptr " <> v <> ")")
-      idx <- freshReg
-      -- kctor_argc(v) - nps + i  (nps and i are compile-time constants)
-      emit (idx <> " = add i32 " <> argc <> ", " <> T.pack (show (i - nps)))
-      r <- freshReg
-      emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> idx <> ")")
-      pure r
+        concat <$> mapM (\(i, p) -> ctorArgLL v nps i >>= \av -> go av p) (zip [0 ..] ps)
+      CPTuple ps ->
+        concat <$> mapM (\(i, p) -> recAtLL v i >>= \av -> go av p) (zip [0 ..] ps)
+      CPRecord pfs mrest -> do
+        named <- concat <$> mapM (\(f, p) -> projNameLL v f >>= \av -> go av p) pfs
+        case mrest of
+          Just nm | not (T.null nm) -> do
+            rv <- recWithoutLL v (map fst pfs)
+            pure (named ++ [rv])
+          _ -> pure named
+      CPInject _ p -> variantPayloadLL v >>= \pl -> go pl p
+      CPInjectRest _ -> pure [v]
+      CPOr _ _ -> pure [] -- only non-binding ors could reach here; deferred anyway
+
+-- | @kctor_arg(v, kctor_argc(v) - nps + i)@ as SSA: read the field count,
+-- compute the absolute index, then the field.  Matches C's 'ctorArgExpr' — the
+-- M-C offset that drops the leading (non-bound) constructor arguments.
+ctorArgLL :: Text -> Int -> Int -> Gen Text
+ctorArgLL v nps i = do
+  declRuntime "declare i32 @kctor_argc(ptr)"
+  declRuntime "declare ptr @kctor_arg(ptr, i32)"
+  argc <- freshReg
+  emit (argc <> " = call i32 @kctor_argc(ptr " <> v <> ")")
+  idx <- freshReg
+  -- kctor_argc(v) - nps + i  (nps and i are compile-time constants)
+  emit (idx <> " = add i32 " <> argc <> ", " <> T.pack (show (i - nps)))
+  r <- freshReg
+  emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> idx <> ")")
+  pure r
+
+-- | @krec_at(v, i)@ as SSA — a tuple's i-th positional field (mirrors C's
+-- 'recAtExpr').
+recAtLL :: Text -> Int -> Gen Text
+recAtLL v i = do
+  declRuntime "declare ptr @krec_at(ptr, i32)"
+  r <- freshReg
+  emit (r <> " = call ptr @krec_at(ptr " <> v <> ", i32 " <> T.pack (show i) <> ")")
+  pure r
+
+-- | @kproj(v, "f")@ as SSA — a record's named field (mirrors C's @kproj@).
+projNameLL :: Text -> Text -> Gen Text
+projNameLL v f = do
+  nameG <- internCStr f
+  declRuntime "declare ptr @kproj(ptr, ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @kproj(ptr " <> v <> ", ptr " <> nameG <> ")")
+  pure r
+
+-- | @kvariant_payload(v)@ as SSA — a variant's carried value (mirrors C).
+variantPayloadLL :: Text -> Gen Text
+variantPayloadLL v = do
+  declRuntime "declare ptr @kvariant_payload(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @kvariant_payload(ptr " <> v <> ")")
+  pure r
+
+-- | @krec_without(v, n, names)@ as SSA — the §17.2.5 record rest binder: the
+-- record minus the named fields, passing the excluded names as a constant @ptr@
+-- array (mirrors C's 'recWithoutExpr').
+recWithoutLL :: Text -> [Text] -> Gen Text
+recWithoutLL v names = do
+  declRuntime "declare ptr @krec_without(ptr, i32, ptr)"
+  arr <-
+    if null names
+      then pure "null"
+      else freshNamesGlobal =<< mapM internCStr names
+  r <- freshReg
+  emit (r <> " = call ptr @krec_without(ptr " <> v <> ", i32 " <> T.pack (show (length names)) <> ", ptr " <> arr <> ")")
+  pure r
 
 -- ── do-kernel (Milestone E) ──────────────────────────────────────────
 --
@@ -1770,7 +1989,7 @@ compileDoIf alts mels = go alts
       let def =
             T.unlines $
               [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %cond) {"
-              , "entry:"
+              , "build:"
               ]
                 ++ map ("  " <>) bodyInsns
                 ++ [ "  ret ptr " <> resultOp
@@ -1797,7 +2016,7 @@ emitDoCont pat rest = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -2035,7 +2254,7 @@ emitMonadicCont rk residual = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -2090,7 +2309,7 @@ emitNewRefCont = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -2140,7 +2359,7 @@ emitAssignCont' refT = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -2192,7 +2411,7 @@ emitAssignCont refT rest = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp
@@ -2240,7 +2459,7 @@ emitReturnCont = do
   let def =
         T.unlines $
           [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "entry:"
+          , "build:"
           ]
             ++ map ("  " <>) bodyInsns
             ++ [ "  ret ptr " <> resultOp

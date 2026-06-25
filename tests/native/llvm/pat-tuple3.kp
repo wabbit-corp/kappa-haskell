@@ -1,0 +1,14 @@
+-- Tuple pattern (a,b,c): project each. Distinct values so any permutation shows.
+module main
+
+triple : (Int, Int, Int)
+let triple = (1, 2, 3)
+
+-- a=1, b=2, c=3. Print a*100 + b*10 + c = 123 (any swap changes digits).
+result : Int
+let result =
+    match triple
+    case (a, b, c) -> addInt (addInt (mulInt a 100) (mulInt b 10)) c
+
+main : UIO Unit
+let main = printlnString (showInt result)

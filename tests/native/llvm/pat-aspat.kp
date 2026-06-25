@@ -1,0 +1,23 @@
+-- As-pattern: whole@(a,b). C's patBinders for CPAs is `1 + inner`, and
+-- patBindings is `v : go v p` (as-name FIRST). So binder order is [whole, a, b].
+-- We use ALL THREE with distinct weights; a wrong order changes the number.
+module main
+
+pair : (Int, Int)
+let pair = (3, 4)
+
+-- sumPair of whole = 7; a=3, b=4. Print sum*100 + a*10 + b = 734.
+sumPair : (Int, Int) -> Int
+let sumPair p =
+    match p
+    case (x, y) -> addInt x y
+
+result : Int
+let result =
+    match pair
+    case whole@(a, b) ->
+        addInt (addInt (mulInt (sumPair whole) 100) (mulInt a 10)) b
+    case _ -> 0
+
+main : UIO Unit
+let main = printlnString (showInt result)
