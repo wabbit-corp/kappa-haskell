@@ -1,0 +1,17 @@
+-- A 3-way enum constructed and matched in an arity-0 CAF, via a let binding.
+module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+shown : String
+let shown =
+    match Green
+    case Red -> "red"
+    case Green -> "green"
+    case Blue -> "blue"
+
+main : UIO Unit
+let main = printlnString shown

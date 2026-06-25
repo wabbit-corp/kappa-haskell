@@ -1,0 +1,20 @@
+-- A nested match: match an Option, and inside the Some arm match a Color.
+module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+described : String
+let described =
+    match Some Blue
+    case Some c ->
+        match c
+        case Red -> "some-red"
+        case Green -> "some-green"
+        case Blue -> "some-blue"
+    case None -> "none"
+
+main : UIO Unit
+let main = printlnString described

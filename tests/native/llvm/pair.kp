@@ -1,0 +1,13 @@
+-- A 2-field constructor, constructed + matched + both fields projected.
+module main
+
+data Pair : Type =
+    Pair (fst : Int) (snd : Int)
+
+summed : Int
+let summed =
+    match Pair 40 2
+    case Pair a b -> addInt a b
+
+main : UIO Unit
+let main = printlnString (showInt summed)

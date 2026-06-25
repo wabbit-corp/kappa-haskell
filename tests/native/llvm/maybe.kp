@@ -1,0 +1,11 @@
+-- Construct + match a Maybe (Some/None) in an arity-0 CAF.
+module main
+
+unwrapped : Int
+let unwrapped =
+    match Some 7
+    case Some n -> n
+    case None -> 0
+
+main : UIO Unit
+let main = printlnString (showInt unwrapped)

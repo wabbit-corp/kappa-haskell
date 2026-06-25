@@ -1,0 +1,8 @@
+-- Match on a Bool produced by a comparison primitive.
+module main
+
+main : UIO Unit
+let main =
+    match eqInt 1 1
+    case True -> printlnString "yes"
+    case False -> printlnString "no"

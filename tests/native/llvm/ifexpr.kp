@@ -1,0 +1,6 @@
+-- An if-expression over a comparison.
+module main
+
+main : UIO Unit
+let main =
+    printlnString (if ltInt 3 5 then "less" else "notless")

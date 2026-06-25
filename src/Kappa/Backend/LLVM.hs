@@ -30,13 +30,14 @@ module Kappa.Backend.LLVM
   ) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
+import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, foldM, unless)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..))
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol)
@@ -70,6 +71,8 @@ data GenState = GenState
   , gsBodies :: !(Map GName Term)
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsDeclSites :: !(Map GName Span)
+  , gsCtorTags :: !(Map Text Int) -- ^ Milestone C: USER-constructor gKey -> numeric tag id (@KCT_USER_BASE+i@). Precomputed once ('collectUserCtorTags') so 'compileCtor'/'compileMatch' can emit a literal @i32@ immediate (LLVM has no symbolic enum constant like the C backend's @KT_*@). Builtin ctors are NOT here — they use the fixed 'builtinCtorTagId'.
+  , gsBlock :: !Text -- ^ Milestone C: label of the basic block currently being filled. A @phi@ at a control-flow join needs the PREDECESSOR block of each incoming value, which — for a branch that itself emitted control flow (a nested match/if) — is NOT the branch-entry label but whatever block was active when the branch finished. 'compileIf'/'compileMatch' read this after compiling each arm to spell the phi's incoming labels correctly. Updated by 'startBlock'.
   }
 
 type Gen = State GenState
@@ -82,27 +85,53 @@ freshReg = do
   modify' $ \g -> g {gsFresh = n + 1}
   pure ("%v" <> T.pack (show n))
 
+-- | A fresh basic-block label (no leading @%@; used bare after @label:@ and as
+-- @label %name@ in branch/phi operands).  Shares 'gsFresh' with 'freshReg' so a
+-- label and a register never collide.
+freshLabel :: Text -> Gen Text
+freshLabel base = do
+  n <- gets gsFresh
+  modify' $ \g -> g {gsFresh = n + 1}
+  pure (base <> T.pack (show n))
+
 -- | Prepend an IR instruction to the current basic block.
 emit :: Text -> Gen ()
 emit s = modify' $ \g -> g {gsInsns = s : gsInsns g}
+
+-- | Open a new basic block: emit its @label:@ header and record it as the
+-- current block ('gsBlock') so a later @phi@ names the right predecessor.  The
+-- caller is responsible for having terminated the previous block (every LLVM
+-- block needs exactly one terminator) before calling this.
+startBlock :: Text -> Gen ()
+startBlock label = do
+  emit (label <> ":")
+  modify' $ \g -> g {gsBlock = label}
 
 -- | Add a runtime @declare@ line (idempotent — a Set).
 declRuntime :: Text -> Gen ()
 declRuntime d = modify' $ \g -> g {gsDecls = Set.insert d (gsDecls g)}
 
 -- | Run a sub-action with a fresh (empty) instruction buffer and the given
--- current-env operand, returning the produced instructions IN ORDER plus the
--- action's result; restores the caller's buffer and env afterwards.  The
--- LLVM analogue of C's 'captured'.
-captured :: Text -> Gen a -> Gen ([Text], a)
+-- current-env operand, returning the produced instructions IN ORDER, the label
+-- of the block ACTIVE when the action finished (which differs from the @build@
+-- entry when the action emitted its own control flow — the accessor's trailing
+-- @store@/@br@/@phi@ must reference this final block, not @build@), and the
+-- action's result; restores the caller's buffer, env, and block afterwards.
+-- The LLVM analogue of C's 'captured'.
+captured :: Text -> Gen a -> Gen ([Text], Text, a)
 captured env act = do
   saved <- gets gsInsns
   savedEnv <- gets gsEnv
-  modify' $ \g -> g {gsInsns = [], gsEnv = env}
+  savedBlock <- gets gsBlock
+  -- The captured region is spliced verbatim under the accessor's @build:@
+  -- label, so that is the block active when @act@ starts emitting; a control
+  -- form ('compileMatch'/'compileIf') reads/updates 'gsBlock' from here.
+  modify' $ \g -> g {gsInsns = [], gsEnv = env, gsBlock = "build"}
   r <- act
   produced <- gets gsInsns
-  modify' $ \g -> g {gsInsns = saved, gsEnv = savedEnv}
-  pure (reverse produced, r)
+  endBlock <- gets gsBlock
+  modify' $ \g -> g {gsInsns = saved, gsEnv = savedEnv, gsBlock = savedBlock}
+  pure (reverse produced, endBlock, r)
 
 -- | Record an unsupported-construct finding and return a placeholder operand
 -- so error collection can continue.
@@ -145,6 +174,145 @@ mangle = T.concatMap esc
     esc c
       | isAsciiLower c || isAsciiUpper c || isDigit c = T.singleton c
       | otherwise = "_" <> T.pack (showHex (ord c) "") <> "_"
+
+-- ── Constructor tag ids (Milestone C) ────────────────────────────────
+--
+-- A constructor value carries a small integer @tagid@; pattern matching
+-- dispatches on an int compare (@kctor_tagid@) rather than a name strcmp.  The
+-- id must be IDENTICAL at every construction site and every match site for a
+-- given constructor — this backend guarantees that with the SAME two-bucket
+-- rule the C backend uses ("Kappa.Backend.C", LR2 §244):
+--
+--   * BUILTIN constructors (the eight the runtime builds — Unit/True/False/
+--     ::/Nil/Some/None/__rat — plus the §18.1 effect/Exit/Cause/outcome ctors
+--     the runtime delivers) use the FIXED numeric ids from runtime/kappart.h's
+--     @KCT_*@ enum.  This is load-bearing for cross-backend value flow: e.g.
+--     every comparison prim (@eqInt@/@ltInt@/@eqStr@/…) builds its Bool via the
+--     runtime's @kbool@, which tags it @KCT_TRUE@/@KCT_FALSE@; a @match@ on a
+--     comparison result — or a 'compileIf' — only dispatches correctly if THIS
+--     backend's True/False ids equal the runtime's.  'builtinCtorTagId' is the
+--     numeric transcription of that enum and MUST stay in sync with kappart.h.
+--   * USER constructors (everything else) get @KCT_USER_BASE+i@, assigned by
+--     'collectUserCtorTags' deterministically (sorted by gKey).  These never
+--     cross a backend boundary, so they need only be self-consistent
+--     (construct id == match id); the sorted assignment additionally makes them
+--     match the C backend's @KT_*@ enum for debuggability.
+
+-- | The fixed kappart.h @KCT_*@ NUMERIC id for a runtime-built builtin
+-- constructor, keyed by gKey, or @Nothing@ for a user constructor.  This pairs
+-- 'Kappa.Backend.C.builtinCtorTag' (gKey -> @"KCT_name"@) with the enum's
+-- numeric values transcribed from runtime/kappart.h (KCT_OTHER=0, KCT_UNIT=1,
+-- then sequential; KCT_USER_BASE=40).  The C backend emits the symbolic @KCT_*@
+-- name and lets the C compiler resolve it against the included header; LLVM IR
+-- has no symbolic enum constant, so this backend must spell the literal number,
+-- and so MUST be kept in sync with the kappart.h enum BY HAND.
+builtinCtorTagId :: Text -> Maybe Int
+builtinCtorTagId = \case
+  "std.prelude.Unit" -> Just 1 -- KCT_UNIT
+  "std.prelude.True" -> Just 2 -- KCT_TRUE
+  "std.prelude.False" -> Just 3 -- KCT_FALSE
+  "std.prelude.::" -> Just 4 -- KCT_CONS
+  "std.prelude.Nil" -> Just 5 -- KCT_NIL
+  "std.prelude.Some" -> Just 6 -- KCT_SOME
+  "std.prelude.None" -> Just 7 -- KCT_NONE
+  "__rat" -> Just 8 -- KCT_RAT
+  "std.prelude.__EffPure" -> Just 9 -- KCT_EFFPURE
+  "std.prelude.__EffOp" -> Just 10 -- KCT_EFFOP
+  "std.prelude.Success" -> Just 11 -- KCT_SUCCESS
+  "std.prelude.Failure" -> Just 12 -- KCT_FAILURE
+  "std.prelude.Fail" -> Just 13 -- KCT_FAIL
+  "std.prelude.Interrupt" -> Just 14 -- KCT_INTERRUPT
+  "std.prelude.Defect" -> Just 15 -- KCT_DEFECT
+  "std.prelude.Both" -> Just 16 -- KCT_BOTH
+  "std.prelude.Then" -> Just 17 -- KCT_THEN
+  "std.prelude.ROLeft" -> Just 18 -- KCT_RO_LEFT
+  "std.prelude.RORight" -> Just 19 -- KCT_RO_RIGHT
+  "std.prelude.TOTimedOut" -> Just 20 -- KCT_TO_TIMED_OUT
+  "std.prelude.TOExit" -> Just 21 -- KCT_TO_EXIT
+  "std.prelude.MkInterruptCause" -> Just 22 -- KCT_MK_INTERRUPT_CAUSE
+  "std.prelude.Requested" -> Just 23 -- KCT_IT_REQUESTED
+  "std.prelude.ScopeShutdown" -> Just 24 -- KCT_IT_SCOPE_SHUTDOWN
+  "std.prelude.TimedOut" -> Just 25 -- KCT_IT_TIMED_OUT
+  "std.prelude.RaceLost" -> Just 26 -- KCT_IT_RACE_LOST
+  "std.prelude.External" -> Just 27 -- KCT_IT_EXTERNAL
+  _ -> Nothing
+
+-- | @KCT_USER_BASE@ from runtime/kappart.h: the first id codegen may assign to
+-- a user constructor (the builtin ids above all sit below it).
+kctUserBase :: Int
+kctUserBase = 40
+
+-- | Walk every recorded core body and assign each referenced USER constructor
+-- (one not in 'builtinCtorTagId') a @KCT_USER_BASE+i@ id, sorting the gKeys so
+-- the assignment is deterministic (Blue<Green<Red ⇒ 40,41,42) and matches the
+-- C backend's @KT_*@ enum order.  Builtins are excluded (they keep their fixed
+-- ids).  Computed once up front so 'compile' can emit a literal @i32@.
+collectUserCtorTags :: Map GName Term -> Map Text Int
+collectUserCtorTags bodies =
+  let keys = sort (Set.toList (foldMap userCtorKeys (Map.elems bodies)))
+   in Map.fromList (zip keys [kctUserBase ..])
+
+-- | The gKeys of every USER constructor referenced (constructed via 'CCtor' or
+-- matched via 'CPCtor') anywhere in a term.  Builtins are dropped — they do not
+-- need a codegen-assigned id.
+userCtorKeys :: Term -> Set Text
+userCtorKeys = goT
+  where
+    user g = case builtinCtorTagId (gKey g) of
+      Just _ -> Set.empty
+      Nothing -> Set.singleton (gKey g)
+    goT t = case t of
+      CVar {} -> Set.empty
+      CGlob {} -> Set.empty
+      CLam _ _ _ b -> goT b
+      CPi _ _ _ _ ty b -> goT ty <> goT b
+      CApp _ a b -> goT a <> goT b
+      CSort {} -> Set.empty
+      CLit {} -> Set.empty
+      CCtor g args -> user g <> foldMap goT args
+      CMatch s alts -> goT s <> foldMap goAlt alts
+      CRecordT fs -> foldMap (goT . snd) fs
+      CRecordV fs -> foldMap (goT . snd) fs
+      CProj e _ -> goT e
+      CProjAt e _ _ -> goT e
+      CVariantT ts -> foldMap goT ts
+      CInject _ e -> goT e
+      CLet _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CLetRec _ _ ty rhs body -> goT ty <> goT rhs <> goT body
+      CMeta {} -> Set.empty
+      CDo _ _ -> Set.empty -- do-kernel is not a Milestone-C lowering target
+      CSealE _ e -> goT e
+      CSigT _ e -> goT e
+      CThunkE e -> goT e
+      CLazyE e -> goT e
+      CForceE e -> goT e
+      CIf c th el -> goT c <> goT th <> goT el
+      CQuote _ ts -> foldMap goT ts
+    goAlt (CaseAlt pat mg body) =
+      goPat pat <> maybe Set.empty goT mg <> goT body
+    goPat p = case p of
+      CPWild -> Set.empty
+      CPVar _ -> Set.empty
+      CPLit _ -> Set.empty
+      CPCtor g ps -> user g <> foldMap goPat ps
+      CPTuple ps -> foldMap goPat ps
+      CPRecord fs _ -> foldMap (goPat . snd) fs
+      CPInject _ q -> goPat q
+      CPInjectRest _ -> Set.empty
+      CPOr ps _ -> foldMap goPat ps
+      CPAs _ q -> goPat q
+
+-- | Resolve a constructor's gKey to its numeric tag id: the fixed builtin id if
+-- it is one, else its precomputed @KCT_USER_BASE+i@ id.  A user ctor missing
+-- from the map would be an internal bug ('collectUserCtorTags' walks all bodies
+-- before codegen), so default to @kctUserBase@ rather than crash — a clean
+-- non-match at worst, never a silent collision with a builtin.
+ctorTagId :: GName -> Gen Int
+ctorTagId g = case builtinCtorTagId (gKey g) of
+  Just i -> pure i
+  Nothing -> do
+    tags <- gets gsCtorTags
+    pure (Map.findWithDefault kctUserBase (gKey g) tags)
 
 -- ── String literal pool ──────────────────────────────────────────────
 
@@ -244,6 +412,8 @@ generateLL cs mainG ffiPrims _hostSyms =
           , gsBodies = csCoreBodies cs
           , gsPrims = Set.union basePrims ffiPrims
           , gsDeclSites = csDeclSites cs
+          , gsCtorTags = collectUserCtorTags (csCoreBodies cs)
+          , gsBlock = "build"
           }
       final = execState (drainQueue >> emitMain mainG) st0
    in case reverse (gsErrs final) of
@@ -298,8 +468,8 @@ emitGlobal g = do
           ("'" <> gKey g <> "' is a function (arity " <> T.pack (show n)
             <> "); the LLVM backend M0 supports only arity-0 CAFs")
       _ -> do
-        (insns, operand) <- captured "null" (compile tm)
-        emitArity0Accessor ident insns operand
+        (insns, endBlock, operand) <- captured "null" (compile tm)
+        emitArity0Accessor ident insns endBlock operand
 
 -- | The leading-lambda arity of a term and the body beneath those binders
 -- (mirrors C's 'funcArity').
@@ -310,10 +480,14 @@ funcArity = go 0
     go !n t = (n, t)
 
 -- | Emit a memoised arity-0 accessor (the §3.1 IR): a @.cache@ global, a
--- load+null-check fast path, a @build@ block that compiles the term and
--- stores the result, and a @phi@ that returns the cached-or-fresh value.
-emitArity0Accessor :: Text -> [Text] -> Text -> Gen ()
-emitArity0Accessor ident buildInsns operand = do
+-- load+null-check fast path, a @build@ block that compiles the term and stores
+-- the result, and a @phi@ that returns the cached-or-fresh value.  @endBlock@ is
+-- the label of the block active when the term FINISHED compiling — the same as
+-- @build@ for straight-line code, but a distinct join block when the term
+-- introduced control flow (a @match@/@if@).  The trailing @store@/@br@ run in
+-- that block, and the @ret@ phi names it as the fresh value's predecessor.
+emitArity0Accessor :: Text -> [Text] -> Text -> Text -> Gen ()
+emitArity0Accessor ident buildInsns endBlock operand = do
   let cacheG = "@" <> ident <> ".cache"
   modify' $ \st ->
     st {gsGlobalsExtra = (cacheG <> " = internal global ptr null, align 8") : gsGlobalsExtra st}
@@ -332,7 +506,7 @@ emitArity0Accessor ident buildInsns operand = do
                , "  br label %ret"
                , ""
                , "ret:"
-               , "  %r = phi ptr [ %cached, %entry ], [ " <> operand <> ", %build ]"
+               , "  %r = phi ptr [ %cached, %entry ], [ " <> operand <> ", %" <> endBlock <> " ]"
                , "  ret ptr %r"
                , "}"
                ]
@@ -344,8 +518,8 @@ emitArity0Accessor ident buildInsns operand = do
 -- are errors; the accessor only needs to keep the State consistent.)
 reportArity0Failure :: Text -> Text -> Gen ()
 reportArity0Failure ident detail = do
-  (insns, operand) <- captured "null" (unsupported "definition" detail)
-  emitArity0Accessor ident insns operand
+  (insns, endBlock, operand) <- captured "null" (unsupported "definition" detail)
+  emitArity0Accessor ident insns endBlock operand
 
 -- | The @\@main@ entry point.  Mirrors C's 'emitMain' (C.hs:1280) EXACTLY,
 -- including: @krt2_new(0)@ (which calls @krt_init@ internally — there is NO
@@ -426,6 +600,9 @@ compile term = case term of
   CApp {} -> compileApp term
   CVar i -> compileVar i
   CLet _ _ _ rhs body -> compileLet rhs body
+  CCtor g args -> compileCtor g args
+  CIf c t e -> compileIf c t e
+  CMatch scrut alts -> compileMatch scrut alts
   _ ->
     unsupported "term"
       ("the LLVM backend M0 cannot lower this construct: " <> constructName term)
@@ -467,6 +644,318 @@ compileLet rhs body = do
   bv <- compile body
   modify' $ \g -> g {gsEnv = env0}
   pure bv
+
+-- ── Constructors (Milestone C) ───────────────────────────────────────
+
+-- | A saturated constructor application (mirrors C's 'compileCtor').  The
+-- runtime ABI is the same as the C backend uses:
+--
+--   * nullary    — @call ptr \@kctor0(i32 <tag>, ptr <name>)@;
+--   * with fields — materialise a stack @[argc x ptr]@, store each compiled
+--     field operand, then @call ptr \@kctor(i32 <tag>, ptr <name>, i32 argc,
+--     ptr <fields>)@.
+--
+-- @<tag>@ is the literal numeric id ('ctorTagId'); @<name>@ is the ctor's gKey
+-- interned as a NUL-terminated C string (the same string the C backend passes —
+-- diagnostics / rep-equality only, never dispatch).  Type-level / staging
+-- fields are NOT erased here (Milestone C targets value-carrying ctors); a ctor
+-- with an erased field falls through to the per-argument 'compile', which
+-- reports it cleanly if it is not yet lowerable.
+compileCtor :: GName -> [Term] -> Gen Text
+compileCtor g args = do
+  tag <- ctorTagId g
+  nameG <- internCStr (gKey g)
+  let tagOp = T.pack (show tag)
+  if null args
+    then do
+      declRuntime "declare ptr @kctor0(i32, ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @kctor0(i32 " <> tagOp <> ", ptr " <> nameG <> ")")
+      pure r
+    else do
+      argEs <- mapM compile args
+      let argc = length argEs
+      arr <- freshReg
+      emit (arr <> " = alloca [" <> T.pack (show argc) <> " x ptr], align 8")
+      forM_ (zip [0 :: Int ..] argEs) $ \(i, ae) -> do
+        slot <- freshReg
+        emit (slot <> " = getelementptr inbounds [" <> T.pack (show argc)
+                <> " x ptr], ptr " <> arr <> ", i64 0, i64 " <> T.pack (show i) <> "")
+        emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
+      declRuntime "declare ptr @kctor(i32, ptr, i32, ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @kctor(i32 " <> tagOp <> ", ptr " <> nameG
+              <> ", i32 " <> T.pack (show argc) <> ", ptr " <> arr <> ")")
+      pure r
+
+-- ── if (Milestone C) ─────────────────────────────────────────────────
+
+-- | An @if@ expression (mirrors C's 'consumeIf', which tests @kas_bool@).  The
+-- condition is compiled to a @KValue*@, coerced to an @i1@ via @kas_bool@
+-- (@call i32 \@kas_bool(ptr)@ then @icmp ne i32 _, 0@), and branched on.  Each
+-- arm computes its operand in its own block; the result is a @phi ptr@ at the
+-- join over the two arms' PREDECESSOR blocks (read from 'gsBlock' after each arm
+-- — a nested control form in an arm leaves a different block active than the
+-- arm's entry, so the phi must name the block that actually reaches the join).
+compileIf :: Term -> Term -> Term -> Gen Text
+compileIf c t e = do
+  cv <- compile c
+  declRuntime "declare i32 @kas_bool(ptr)"
+  bi <- freshReg
+  emit (bi <> " = call i32 @kas_bool(ptr " <> cv <> ")")
+  cond <- freshReg
+  emit (cond <> " = icmp ne i32 " <> bi <> ", 0")
+  thenL <- freshLabel "if.then."
+  elseL <- freshLabel "if.else."
+  joinL <- freshLabel "if.join."
+  emit ("br i1 " <> cond <> ", label %" <> thenL <> ", label %" <> elseL)
+  -- then arm
+  startBlock thenL
+  tv <- compile t
+  thenEnd <- gets gsBlock
+  emit ("br label %" <> joinL)
+  -- else arm
+  startBlock elseL
+  ev <- compile e
+  elseEnd <- gets gsBlock
+  emit ("br label %" <> joinL)
+  -- join
+  startBlock joinL
+  r <- freshReg
+  emit (r <> " = phi ptr [ " <> tv <> ", %" <> thenEnd <> " ], [ "
+          <> ev <> ", %" <> elseEnd <> " ]")
+  pure r
+
+-- ── Pattern matching (Milestone C) ───────────────────────────────────
+
+-- | A @match@ expression (mirrors C's 'consumeMatch' / 'consumeAlt' chain,
+-- specialised to expression position).  The scrutinee is compiled once; each
+-- alternative is an @icmp eq i32 <tagid>@ test that branches into a per-alt
+-- block which binds the constructor's fields ('kpush' onto 'gsEnv', in pattern
+-- order) and compiles the body.  Every alt block branches to a shared join
+-- whose @phi ptr@ selects the matched alt's operand.  A fall-through past the
+-- last alt calls @krt_fail("non-exhaustive match")@ (mirroring the C backend's
+-- @if (!matched) krt_fail(...)@), in an UNREACHABLE-then-branch block that still
+-- feeds the join (with a @null@ placeholder) so the phi is well-formed.
+--
+-- SUPPORTED pattern forms (the subset the C backend's CMatch produces that this
+-- milestone lowers): a constructor pattern with var/wildcard field binders
+-- ('CPCtor' over 'CPVar'/'CPWild'), a bare var/wildcard catch-all
+-- ('CPVar'/'CPWild'), and an as-pattern over those ('CPAs').  Guards are
+-- supported (an extra @kas_bool@ test inside the alt).  Literal patterns, tuple/
+-- record/variant/or/nested-constructor patterns are left UNSUPPORTED here (a
+-- clean 'unsupported' rather than a miscompile) — single-level constructor
+-- dispatch is what the data-type corpus needs and what elaboration desugars to.
+compileMatch :: Term -> [CaseAlt] -> Gen Text
+compileMatch scrut alts = do
+  sv <- compile scrut
+  joinL <- freshLabel "match.join."
+  -- Each alt contributes one (operand, predecessor-block) pair to the phi; the
+  -- non-exhaustive fallback contributes an (unreachable) @null@ incoming so the
+  -- phi is always well-formed even for a match with no value-producing alt.
+  incomings <- compileAlts sv joinL alts
+  startBlock joinL
+  r <- freshReg
+  let phiArgs = T.intercalate ", " ["[ " <> op <> ", %" <> blk <> " ]" | (op, blk) <- incomings]
+  emit (r <> " = phi ptr " <> phiArgs)
+  pure r
+
+-- | Lower the alternatives of a 'compileMatch' as a test/branch chain.  The
+-- chain is linearised so each alt's FAILURE path opens the next alt's block
+-- inline (no dangling fall-through): 'compileAlt' is given an @onFail@ action
+-- that emits the continuation INTO the current (already-open, unterminated)
+-- block.  Returns the @(operand, predecessor-block)@ incomings for the join phi
+-- — one per alt that reaches the join, plus the non-exhaustive fallback's
+-- (unreachable) @null@ incoming.
+compileAlts :: Text -> Text -> [CaseAlt] -> Gen [(Text, Text)]
+compileAlts sv joinL = go
+  where
+    go [] = do
+      -- No alt matched: abort like the C backend's krt_fail, then feed the join
+      -- a placeholder so the phi stays well-formed (this edge is unreachable).
+      declRuntime "declare void @krt_fail(ptr)"
+      msg <- internCStr "non-exhaustive match"
+      emit ("call void @krt_fail(ptr " <> msg <> ")")
+      blk <- gets gsBlock
+      emit ("br label %" <> joinL)
+      pure [("null", blk)]
+    go (alt : rest) = compileAlt sv joinL alt (go rest)
+
+-- | Lower one alternative.  @onFail@ emits the failure continuation (the next
+-- alt, or the non-exhaustive fallback) and returns ITS join incomings; the
+-- caller guarantees the block current when @onFail@ runs is open and
+-- unterminated.  Structure: an optional pattern-tag test branches to a fresh
+-- @fail@ block (where @onFail@ runs) or the @ok@ block; in @ok@ the fields are
+-- bound, an optional guard is checked (a failing guard ALSO routes to a fail
+-- block running @onFail@), the body is compiled, and control branches to the
+-- join.  'gsEnv' is restored after binding so a sibling alt never inherits the
+-- binders.  Returns this alt's incomings ++ @onFail@'s.
+compileAlt :: Text -> Text -> CaseAlt -> Gen [(Text, Text)] -> Gen [(Text, Text)]
+compileAlt sv joinL (CaseAlt pat mguard body) onFail = do
+  mtest <- patTestLL sv pat
+  case (mtest, mguard) of
+    -- Always-matching pattern, no guard: no branch at all — bind and run the
+    -- body directly (the C backend's first-match order makes later alts dead).
+    (Nothing, Nothing) -> do
+      inc <- bindAndBody sv joinL pat body
+      pure [inc]
+    -- Otherwise at least one failable test exists; give the failure path a
+    -- block so 'onFail' has somewhere to emit.
+    _ -> do
+      okL <- freshLabel "alt.ok."
+      failL <- freshLabel "alt.fail."
+      case mtest of
+        Just test -> emit ("br i1 " <> test <> ", label %" <> okL <> ", label %" <> failL)
+        Nothing -> emit ("br label %" <> okL) -- guarded var/wildcard: guard decides
+      -- success: bind, (guard), body
+      startBlock okL
+      env0 <- gets gsEnv
+      env' <- bindPat sv pat
+      modify' $ \g -> g {gsEnv = env'}
+      okIncs <- case mguard of
+        Nothing -> do
+          inc <- bodyToJoin joinL body
+          pure [inc]
+        Just gd -> do
+          gv <- compile gd
+          declRuntime "declare i32 @kas_bool(ptr)"
+          gb <- freshReg
+          emit (gb <> " = call i32 @kas_bool(ptr " <> gv <> ")")
+          gcond <- freshReg
+          emit (gcond <> " = icmp ne i32 " <> gb <> ", 0")
+          passL <- freshLabel "guard.ok."
+          gfailL <- freshLabel "guard.no."
+          emit ("br i1 " <> gcond <> ", label %" <> passL <> ", label %" <> gfailL)
+          startBlock passL
+          inc <- bodyToJoin joinL body
+          -- A failing guard falls through to the SAME failure continuation as a
+          -- failing pattern test: branch to the shared failL.
+          startBlock gfailL
+          emit ("br label %" <> failL)
+          pure [inc]
+      modify' $ \g -> g {gsEnv = env0}
+      -- failure: open the fail block and run the continuation there.
+      startBlock failL
+      failIncs <- onFail
+      pure (okIncs ++ failIncs)
+
+-- | Bind the pattern's fields, compile the body, and branch to the join,
+-- restoring 'gsEnv' afterwards.  Returns the body's @(operand, pred-block)@.
+bindAndBody :: Text -> Text -> CorePat -> Term -> Gen (Text, Text)
+bindAndBody sv joinL pat body = do
+  env0 <- gets gsEnv
+  env' <- bindPat sv pat
+  modify' $ \g -> g {gsEnv = env'}
+  inc <- bodyToJoin joinL body
+  modify' $ \g -> g {gsEnv = env0}
+  pure inc
+
+-- | Compile @body@ in the current (env-extended) block, branch to the join, and
+-- report the body's @(operand, predecessor-block)@ for the join phi.  The
+-- predecessor is read AFTER compiling the body (a nested match/if leaves a
+-- different block active than the body's entry).
+bodyToJoin :: Text -> Term -> Gen (Text, Text)
+bodyToJoin joinL body = do
+  bv <- compile body
+  bvBlk <- gets gsBlock
+  emit ("br label %" <> joinL)
+  pure (bv, bvBlk)
+
+-- | A boolean ('i1') test that is true iff @pat@ matches scrutinee operand @v@,
+-- or 'Nothing' if the pattern always matches (var/wildcard).  Mirrors the C
+-- backend's 'patTest' for the Milestone-C subset (single-level constructor
+-- dispatch via @kctor_tagid@); other pattern forms are reported unsupported.
+patTestLL :: Text -> CorePat -> Gen (Maybe Text)
+patTestLL v = \case
+  CPWild -> pure Nothing
+  CPVar _ -> pure Nothing
+  CPAs _ p -> patTestLL v p
+  CPCtor g ps
+    | all isVarLike ps -> do
+        tag <- ctorTagId g
+        declRuntime "declare i32 @kctor_tagid(ptr)"
+        ti <- freshReg
+        emit (ti <> " = call i32 @kctor_tagid(ptr " <> v <> ")")
+        cond <- freshReg
+        emit (cond <> " = icmp eq i32 " <> ti <> ", " <> T.pack (show tag))
+        pure (Just cond)
+    | otherwise -> do
+        _ <- unsupported "pattern"
+          "the LLVM backend (Milestone C) supports constructor patterns whose fields are only variable/wildcard binders (nested constructor/literal sub-patterns are not yet lowered)"
+        falseCond
+  CPLit _ -> do
+    _ <- unsupported "pattern"
+      "the LLVM backend (Milestone C) does not yet lower literal patterns (use the C backend)"
+    falseCond
+  CPTuple _ -> reportUnsupportedPat "tuple"
+  CPRecord _ _ -> reportUnsupportedPat "record"
+  CPInject _ _ -> reportUnsupportedPat "variant"
+  CPInjectRest _ -> reportUnsupportedPat "residual-row variant"
+  CPOr _ _ -> reportUnsupportedPat "or"
+  where
+    falseCond = do
+      r <- freshReg
+      emit (r <> " = icmp eq i32 0, 1") -- a constant-false i1
+      pure (Just r)
+    reportUnsupportedPat what = do
+      _ <- unsupported "pattern"
+        ("the LLVM backend (Milestone C) does not yet lower " <> what <> " patterns (use the C backend)")
+      falseCond
+
+-- | A pattern whose fields 'patTestLL' / 'bindPat' handle as a single-level
+-- binder: a variable, a wildcard, or an as-pattern over one of those.
+isVarLike :: CorePat -> Bool
+isVarLike = \case
+  CPVar _ -> True
+  CPWild -> True
+  CPAs _ p -> isVarLike p
+  _ -> False
+
+-- | Bind a pattern's variables by pushing each projected field onto the env
+-- chain ('kpush'), in the SAME left-to-right order the C backend's
+-- 'patBindings' uses (so the rightmost binder lands at de Bruijn index 0 and the
+-- body's indices line up).  Returns the extended env operand.  Mirrors C's
+-- 'bindPatScrut' (boxed path) restricted to the Milestone-C pattern subset.
+bindPat :: Text -> CorePat -> Gen Text
+bindPat sv pat = do
+  env0 <- gets gsEnv
+  vals <- patBindingsLL sv pat
+  foldM push env0 vals
+  where
+    push e valOp = do
+      declRuntime "declare ptr @kpush(ptr, ptr)"
+      n <- freshReg
+      emit (n <> " = call ptr @kpush(ptr " <> valOp <> ", ptr " <> e <> ")")
+      pure n
+
+-- | The field operands a pattern binds, as compiled SSA operands, in matchPat's
+-- left-to-right binding order (mirrors C's 'patBindings' for the subset).  A
+-- constructor field is projected with @kctor_arg(v, kctor_argc(v) - nps + i)@,
+-- exactly as the C backend computes it ('ctorArgExpr').
+patBindingsLL :: Text -> CorePat -> Gen [Text]
+patBindingsLL = go
+  where
+    go v = \case
+      CPWild -> pure []
+      CPVar _ -> pure [v]
+      CPAs _ p -> do rest <- go v p; pure (v : rest)
+      CPCtor _ ps -> do
+        let nps = length ps
+        concat <$> mapM (\(i, p) -> ctorArg v nps i >>= \av -> go av p) (zip [0 ..] ps)
+      _ -> pure [] -- other forms are rejected in 'patTestLL' before binding
+    -- @kctor_arg(v, kctor_argc(v) - nps + i)@ as SSA: read the field count,
+    -- compute the absolute index, then the field.  Matches 'ctorArgExpr'.
+    ctorArg v nps i = do
+      declRuntime "declare i32 @kctor_argc(ptr)"
+      declRuntime "declare ptr @kctor_arg(ptr, i32)"
+      argc <- freshReg
+      emit (argc <> " = call i32 @kctor_argc(ptr " <> v <> ")")
+      idx <- freshReg
+      -- kctor_argc(v) - nps + i  (nps and i are compile-time constants)
+      emit (idx <> " = add i32 " <> argc <> ", " <> T.pack (show (i - nps)))
+      r <- freshReg
+      emit (r <> " = call ptr @kctor_arg(ptr " <> v <> ", i32 " <> idx <> ")")
+      pure r
 
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
@@ -583,6 +1072,15 @@ spineOf = go []
 -- prim, is out of Milestone-A scope (general @kapp@/closures are Milestone C)
 -- and reported.
 compileApp :: Term -> Gen Text
+compileApp term
+  -- §10.1/P0-A: a saturated application of an ETA-EXPANDED constructor — the
+  -- @CApp (… (CLam … (CCtor g [CVar…]))) args@ shape elaboration produces for a
+  -- field-carrying constructor occurrence ('etaCtorApp') — beta-reduces to a
+  -- direct 'compileCtor'.  This is REQUIRED for Milestone C: a literal @Some 7@
+  -- or @Pair a b@ in source arrives here as that redex (only nullary ctors come
+  -- through as a bare 'CCtor'), so without it 'match'-on-a-constructed-value and
+  -- every field-carrying construction would fall to the unsupported head path.
+  | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
 compileApp term = do
   let (hd, sargs) = spineOf term
   case hd of
@@ -598,6 +1096,36 @@ compileApp term = do
     _ ->
       unsupported "application"
         "the LLVM backend (Milestone A) cannot lower this application head"
+
+-- | §10.1/P0-A: recognise a saturated application of an eta-expanded
+-- constructor and beta-reduce it to @(ctor, selected field args)@.  A FAITHFUL
+-- port of "Kappa.Backend.C"'s 'etaCtorApp' (the two MUST agree so both backends
+-- build the same constructor payload):
+--
+-- 'etaCtor' (§10.1) elaborates a @k@-Pi constructor into @k@ nested lambdas
+-- whose innermost body is @CCtor g [CVar j …]@ over only the runtime-field
+-- binders (erased implicit/type binders dropped).  When the spine applies
+-- exactly one argument per lambda, the redex reduces: each field @CVar j@ names
+-- the binder at de Bruijn index @j@ = spine position @k-1-j@ (the spine lists
+-- arguments outermost-first).  Every field var is a bare in-range binder
+-- reference, so the reduction is a pure selection — no index shifting.
+--
+-- 'Nothing' for a partial application (still a closure), an over-application, or
+-- any head that is not an eta-expanded constructor.
+etaCtorApp :: Term -> Maybe (GName, [Term])
+etaCtorApp term =
+  case spineOf term of
+    (hd, sargs)
+      | (k, body) <- funcArity hd
+      , k >= 1
+      , k == length sargs
+      , CCtor g fieldVars <- body ->
+          (,) g <$> traverse (pick (map snd sargs) k) fieldVars
+    _ -> Nothing
+  where
+    pick args k = \case
+      CVar j | j >= 0, j < k -> Just (args !! (k - 1 - j))
+      _ -> Nothing
 
 -- | Lower a saturated application of a known primitive.  IO prims take the M0
 -- @knative_sat@ path; PURE first-order prims take the M1 direct @kp_*@ helper
