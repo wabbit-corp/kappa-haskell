@@ -101,9 +101,12 @@ constructors/match/if, curried closures + general application + stack-safe tail
 recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
 `E_BACKEND_UNSUPPORTED` today, not a miscompile):
 
-- **do-kernel control flow** — ✅ `KIf` (else-if chain, tail + mid; `ee9064f`);
-  remaining: loops (`KWhile`/`KFor`), mutable cells (`KVarItem`/`KAssign`), abrupt
-  control (`KReturn`/`KBreak`/`KContinue`), `KDefer`, `KUsing`, `KSubDo`, `KLetQ`.
+- **do-kernel control flow** — ✅ `KIf` (`ee9064f`); ✅ `KWhile` + mutable cells
+  (`KVarItem`/`KAssign`) + abrupt control (`KBreak`/`KContinue`/`KReturn`) via
+  `krt2_while`/`krt2_break`/`krt2_continue`/`krt2_return` + `newRef`/`readRef`/`writeRef`,
+  with `var`-read splices hoisted to monadic-normal-form (`b4ba6fa`); remaining: `KFor`
+  (list cursor), while-`else`, labeled loops, `KDefer`, `KUsing`, `KSubDo`, `KLetQ`, and
+  function-scoped `return` (a runtime gap — `krt2_return` finishes the fiber).
 - **patterns** — ✅ literal patterns (`CPLit`, via `klit_eq`; `ee9064f`); remaining:
   nested constructor sub-patterns, tuple/record/variant/or patterns.
 - **literals + prims** — `Double`/`Char`/`Byte`/`Bytes` literals and their `kp_*`
