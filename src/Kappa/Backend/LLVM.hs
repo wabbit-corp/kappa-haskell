@@ -1370,7 +1370,8 @@ compileAlts compileBody sv joinL = go
       -- No alt matched: abort like the C backend's krt_fail, then feed the join
       -- a placeholder so the phi stays well-formed (this edge is unreachable).
       declRuntime "declare void @krt_fail(ptr)"
-      msg <- internCStr "non-exhaustive match"
+      cur <- gets gsCur
+      msg <- internCStr ("non-exhaustive match in " <> gKey cur)
       emit ("call void @krt_fail(ptr " <> msg <> ")")
       blk <- gets gsBlock
       emit ("br label %" <> joinL)
