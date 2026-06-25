@@ -36,8 +36,30 @@ static void krt_at_exit(void) {
   }
 }
 
+/* UNBOXING Stage 0 (§5.4): the immediate-tagging scheme requires GC_MALLOC (and
+ * thus gmp_gc_alloc, the same allocator) to return >= 8-byte-aligned pointers so
+ * the low 3 bits of a KValue* word are always free.  Verify at startup, failing
+ * closed, rather than silently miscompiling on a hypothetical under-aligned
+ * platform.  (Boehm returns >= 16-byte-aligned objects on 64-bit targets.) */
+static void krt_assert_gc_alignment(void) {
+  for (size_t n = 8; n < 8 + 16; n++) {
+    void *p = GC_MALLOC(n);
+    if (((uintptr_t)p & 0x7u) != 0)
+      krt_fail("UNBOXING: GC_MALLOC returned a non-8-aligned pointer (tag-bit contract violated)");
+  }
+}
+
 void krt_init(void) {
+  /* UNBOXING Stage 0 (§5.4): turn OFF interior-pointer recognition BEFORE
+   * GC_INIT, so the collector roots only BASE pointers.  The (future) immediate
+   * tagging packs small values into the low 3 bits of a KValue* word; a tagged
+   * immediate must not be mistaken for a (possibly interior) heap pointer and
+   * falsely retain an object.  The runtime only ever holds base KValue and array
+   * pointers (never an interior pointer as the sole reference to an object), so
+   * base-only rooting is safe — verified by the native suite + parity corpus. */
+  GC_set_all_interior_pointers(0);
   GC_INIT();
+  krt_assert_gc_alignment();
   mp_set_memory_functions(gmp_gc_alloc, gmp_gc_realloc, gmp_gc_free);
   atexit(krt_at_exit);
 }

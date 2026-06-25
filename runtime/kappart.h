@@ -22,6 +22,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <assert.h>
 
 typedef enum {
   K_INT,   /* Nat/Int/Integer (signed 64-bit; see docs §3) */
@@ -149,6 +150,53 @@ struct KEnv {
   KValue *val;
   KEnv   *next;
 };
+
+/* ── UNBOXING Stage 0: KValue* word tag space (UNBOXING-DESIGN §5.4) ─────────
+ * The native backend will (Stage 1) carry small Int / Bool / Char / Unit /
+ * nullary-ctor values as IMMEDIATES packed into the KValue*-sized word instead
+ * of separate heap boxes — closing the per-`addInt` allocation.  The low 3 bits
+ * of the word are the discriminator: GC_MALLOC is >= 8-byte aligned (asserted at
+ * startup) and interior-pointer recognition is OFF (see krt_init), so a real
+ * heap KValue* has them all 0 and a tagged immediate has at least one set, which
+ * the collector then treats as a non-pointer (an odd word is not a root).
+ * RESERVED budget — do NOT repurpose a code without auditing every kderef site:
+ *
+ *     b000   a real heap KValue* pointer
+ *     b001   immediate Int    (Stage 1: arithmetic-shifted 61-bit value)
+ *     b010   immediate ctor   (Stage 1: Bool / Unit / Nil / None; id in payload)
+ *     b011 .. b111   RESERVED for the future Perceus borrow / thread-shared split
+ *
+ * Stage 0 installs ONLY this discriminator API + the GC/alignment contract; NO
+ * value is an immediate yet (every KValue is still a b000 pointer), so kis_imm()
+ * is always false today and kderef()'s debug assert pins that invariant across
+ * the runtime ahead of the Stage-1 deref audit (the 299 raw ->tag/->as.* sites
+ * are routed through kderef() then). */
+_Static_assert(_Alignof(max_align_t) >= 8,
+               "UNBOXING: immediate tagging needs >= 8-byte heap alignment (low 3 bits free)");
+
+#define KIMM_TAG_MASK ((uintptr_t)0x7)
+#define KIMM_PTR      ((uintptr_t)0x0)   /* b000: a heap pointer */
+#define KIMM_INT      ((uintptr_t)0x1)   /* b001: immediate Int  */
+#define KIMM_CTOR     ((uintptr_t)0x2)   /* b010: immediate ctor */
+
+/* Is this word a tagged immediate (not a heap pointer)?  False for every value
+ * today (Stage 0); Stage 1 makes it true for small Int/Bool/Char/Unit/nullary. */
+static inline int kis_imm(const KValue *v) {
+  return ((uintptr_t)v & KIMM_TAG_MASK) != KIMM_PTR;
+}
+/* Confirm-and-return a heap pointer.  Stage 1 routes every ->tag/->as.* deref
+ * through this; the debug-build assert trips if a tagged immediate is ever
+ * dereferenced as a pointer (caught in CI before it segfaults on an odd word). */
+static inline KValue *kderef(KValue *v) {
+  assert(((uintptr_t)v & KIMM_TAG_MASK) == KIMM_PTR &&
+         "kderef on a tagged immediate (UNBOXING invariant)");
+  return v;
+}
+/* The payload of an immediate, sign-extended (arithmetic >> drops the 3-bit
+ * tag).  Caller discriminates Int vs ctor on the low 3 bits first. */
+static inline intptr_t kimm_payload(const KValue *v) {
+  return (intptr_t)(uintptr_t)v >> 3;
+}
 
 /* ── lifecycle ─────────────────────────────────────────────────────── */
 void krt_init(void);                 /* GC_INIT once, at the top of main */

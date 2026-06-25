@@ -36,7 +36,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 **§3.3 suspendability/escape analysis** — which is why it is first.
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
-2. [ ] **Unboxing Stage 0** — GC/alignment contract + canonical encoding (safe prep, parallel).
+2. [~] **Unboxing Stage 0** — GC/alignment contract ENFORCED + tag-bit API done; canonical encoding + benches remain (safe prep, parallel).
 3. [ ] **CPS loop family** — var-read normalization.
 4. [ ] **Unboxing Stage 1** — immediate-int tagging (the allocation win).
 5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
@@ -159,11 +159,22 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ## Track: Value unboxing ([`UNBOXING-DESIGN.md`](UNBOXING-DESIGN.md))
 
-- [~] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7). Alignment contract VERIFIED (`tests/align.c`: every KValue* 8-aligned, low 3 bits free); canonical-encoding audit (kbool/kunit/kint singletons) folds into the Stage-1 deref audit.
-      Verify `GC_MALLOC` 8-byte alignment (low 3 bits 0) + Boehm treats odd words
-      as non-pointers; canonicalize `kbool`/`kunit`/`kint`/nullary-ctor encoding to
-      a single form; reserve the low 3 tag bits. **Safe, verifiable prep** that
-      de-risks Stage 1.
+- [~] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7).
+      GC/alignment **CONTRACT now ENFORCED in the runtime** (`krt_init`, kappart.c):
+      `GC_set_all_interior_pointers(0)` *before* `GC_INIT` (Boehm roots only BASE
+      pointers, so a tagged odd word is a non-pointer, not a false interior root);
+      a startup `krt_assert_gc_alignment` (sampled `GC_MALLOC` all 8-aligned,
+      fail-closed); `_Static_assert(_Alignof(max_align_t) >= 8)`. The **low-3-bit
+      tag budget is reserved + documented** (`b000` ptr / `b001` imm-Int / `b010`
+      imm-ctor / `b011..` Perceus) with the `kis_imm`/`kderef`/`kimm_payload`
+      discriminator API in `kappart.h` — a debug `kderef` assert pins "no immediate
+      yet (every value is a b000 pointer)" ahead of the Stage-1 deref audit.
+      VERIFIED safe under heavy collection: **corpus 81/81**, a 1M-cons-cell
+      **251-collection GC stress** (interp == C == LLVM, correct), full native suite
+      green. **REMAINING:** canonicalize `kbool`/`kunit`/`kint`/nullary-ctor
+      encoding to a single form (folds into the Stage-1 deref audit) + land the
+      Stage-0 ctor-build / match-projection / across-park / Double-add benches (the
+      Stage-1 go/no-go baseline, §7/§8).
 - [ ] **Stage 1 — immediate-int tagging** (UNBOXING §1/§5/§7). `(i<<1)|1` in the
       `KValue*` word for small `Int`/`Bool`/`Char`/`Unit`. **299+ deref sites in
       `kappart.c` must tag-test** — a runtime-wide audit, not a swap. Removes the
