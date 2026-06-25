@@ -1,0 +1,14 @@
+-- Milestone M: a statement-position sub-do (a bare `do { … }` written as a
+-- statement, KSubDo) with effects, sequenced between two outer statements.  The
+-- sub-do's items lower to their own krt2 action tree (via the do-kernel item
+-- compiler) and the action is sequenced into the parent like a plain action —
+-- `outer-1`, the sub-block's `inner-1`/`inner-2`, then `outer-2`.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "outer-1"
+    do
+        printlnString "inner-1"
+        printlnString "inner-2"
+    printlnString "outer-2"

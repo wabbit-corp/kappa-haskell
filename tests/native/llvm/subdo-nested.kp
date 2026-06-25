@@ -1,0 +1,18 @@
+-- Milestone M: NESTED statement-position sub-do blocks (KSubDo inside KSubDo),
+-- including one as the do-block's TAIL item (its action IS the block's result).
+-- Verifies the recursive cpsItemsLL lowering — a sub-do nested two deep, then a
+-- trailing sub-do whose action is returned directly rather than bound-and-discarded.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "L0"
+    do
+        printlnString "L1-a"
+        do
+            printlnString "L2-a"
+            printlnString "L2-b"
+        printlnString "L1-b"
+    do
+        printlnString "tail-sub-1"
+        printlnString "tail-sub-2"

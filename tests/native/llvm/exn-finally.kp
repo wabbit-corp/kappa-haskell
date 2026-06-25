@@ -1,0 +1,20 @@
+-- Milestone M: finallyIO whose finalizer runs on BOTH a normal completion and a
+-- thrown failure.  `ok` completes normally — its finalizer (`fin-1`) still runs;
+-- `bad` throws — its finalizer (`fin-2`) runs before the exception propagates to
+-- the surrounding catchIO (`caught:kaboom`).  Lowered to krt2_finally over a
+-- krt2 action body (the finalizer fires on every exit path).
+module main
+
+ok : IO String Unit
+let ok = printlnString "work-ok"
+
+bad : IO String Unit
+let bad = do
+    printlnString "work-bad"
+    raise "kaboom"
+
+main : UIO Unit
+let main = do
+    finallyIO ok (printlnString "fin-1")
+    catchIO (finallyIO bad (printlnString "fin-2")) (\m -> printlnString ("caught:" ++ m))
+    printlnString "done"

@@ -501,27 +501,34 @@ basePrims = Set.difference (Map.keysSet primEntries) ckMachinePrims
 -- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
 -- node, not the synchronous @knative@/@knative_sat@ bridge: structured
 -- concurrency (fork/await/spawn/scope/monitor), STM (atomically/stm*/TVars/
--- retry), cooperative scheduling (sleep/yield/self), and the EXCEPTION ops
--- (throwIO/catchIO/finallyIO).  The C backend lowers these via dedicated
--- @krt2_*@ node-builders ('compileAppGlob') or its CPS do-kernel; the LLVM
--- backend implements neither, so the synchronous bridge mis-runs a body that is
--- itself a CK-machine action tree.
+-- retry), cooperative scheduling (sleep/yield/self).  The C backend lowers these
+-- via dedicated @krt2_*@ node-builders ('compileAppGlob') or its CPS do-kernel;
+-- the LLVM backend implements neither, so the synchronous bridge mis-runs a body
+-- that is itself a CK-machine action tree.
 --
--- The exception ops are here because of a CONCRETE parity divergence (the
--- @ioerror@ native case): @catchIO risky handler@ where @risky@ is a do-block
+-- Milestone M closed the EXCEPTION ops (throwIO/catchIO/finallyIO), which used
+-- to live here because of a CONCRETE parity divergence (the @ioerror@ native
+-- case): @catchIO risky handler@ where @risky@ is a do-block
 -- (`printlnString "before"; raise "boom"; …`) lowers @risky@ to a @krt2_*@
 -- action tree, but the synchronous @kpf_io_catchIO@ bridge's @krun_io@ cannot
--- drive that tree — it drops the body's effects and the thrown value (interp/C
--- print @before\\ncaught:boom\\nafter@; the bridge printed only @after@).  The C
--- backend avoids this because its do-kernel keeps the action tree CK-machine-
--- driven end to end; until the LLVM backend has that, throwIO/catchIO/finallyIO
--- are a clean @E_BACKEND_UNSUPPORTED@ rather than a wrong answer (the
--- interpreter is the oracle).
+-- drive that tree — it dropped the body's effects and the thrown value
+-- (interp/C print @before\\ncaught:boom\\nafter@; the bridge printed only
+-- @after@).  The fix mirrors the C backend's do-kernel: 'compilePrimApp' lowers
+-- catchIO\/finallyIO\/throwIO to the @krt2_catch@\/@krt2_finally@\/@krt2_throw@
+-- node-builders on the UNIFORM CK-machine path (always — no sync bridge), so the
+-- before\/caught\/after case is now CK-machine-driven end to end and correct.
 ckMachinePrims :: Set Text
 ckMachinePrims =
   Set.fromList
-    [ "throwIO", "catchIO", "finallyIO" -- exceptions over an action tree
-    , "atomically", "stmBind", "stmPure", "retry"
+    [ -- NOTE: the exception ops (throwIO/catchIO/finallyIO) are NO LONGER here
+      -- (Milestone M).  They are lowered to the @krt2_throw@/@krt2_catch@/
+      -- @krt2_finally@ NODE-BUILDERS in 'compilePrimApp' (the same place
+      -- ioBind/ioThen/ioPure become krt2_bind/then/pure) so the runtime
+      -- CK-machine drives them end to end — NOT the synchronous
+      -- @kpf_io_catchIO@ bridge that produced the M-I before/caught/after
+      -- divergence.  The remaining names below still need the CK-machine node
+      -- the LLVM backend does not yet build, so they stay a clean unsupported.
+      "atomically", "stmBind", "stmPure", "retry"
     , "newTVar", "readTVar", "writeTVar"
     , "forkIO", "fork", "spawn", "spawnIn", "spawnLink"
     , "__awaitFiber", "awaitPromise", "awaitPromiseExit"
@@ -1778,6 +1785,14 @@ firstUnsupportedItem = go
         case msum (map (go . snd) alts) `mplus` (mels >>= go) of
           Just bad -> Just bad
           Nothing -> go rest
+      -- Milestone M: a statement-position sub-do is supported — recurse into its
+      -- items so a genuinely-unsupported inner item still fails the block closed.
+      -- The label is ignored (a labeled sub-scope's break@L/continue@L would show
+      -- up as a labeled KBreak/KContinue nested here and be rejected by 'go').
+      KSubDo _lbl subItems ->
+        case go subItems of
+          Just bad -> Just bad
+          Nothing -> go rest
       _ -> Just it
 
 -- | Report a do-item this backend cannot yet lower.  Milestone E covered the
@@ -1947,6 +1962,22 @@ cpsItemsLL items = case items of
   (KWhile Nothing cond body Nothing : rest) -> do
     whileAct <- whileAction cond body
     seqActionThen whileAct CPWild rest
+  -- ── Milestone M: a statement-position sub-do (`then do { … }`) ──────
+  -- §18.8.3.1 'KSubDo': a nested do-block written in statement position.  Its
+  -- items are lowered to their OWN @krt2_*@ action tree via the same do-kernel
+  -- item compiler ('cpsItemsLL'), and that action is sequenced into the parent.
+  -- As the TAIL item the sub-do's action IS the block's result (no surrounding
+  -- bind — it is returned directly, like a tail 'KExpr'); as a NON-final item it
+  -- is `_ <- subAction; rest` (the sub-do's result is discarded, REST lazy inside
+  -- the continuation).  The label is IGNORED here — a labeled sub-scope's
+  -- break@L/continue@L is a separate concern (deferred via 'firstUnsupportedItem'
+  -- recursion), but a plain `then do { … }` works.  The sub-do's own bindings
+  -- live inside its 'cpsItemsLL' continuation closures, so the build-time 'gsEnv'
+  -- is unchanged and REST sees only the enclosing scope (correct lexical nesting).
+  [KSubDo _lbl subItems] -> cpsItemsLL subItems
+  (KSubDo _lbl subItems : rest) -> do
+    subAct <- cpsItemsLL subItems
+    seqActionThen subAct CPWild rest
   (it : _) -> unsupportedDoItem it
 
 -- | Lower `pat <- action; rest` (or `action; rest` with @pat = CPWild@) as
@@ -3094,6 +3125,14 @@ etaCtorApp term =
 -- outside 'primNativeEntry' (the 'ckMachinePrims' blocklist) never reaches here
 -- — 'globPrimName' does not recognise it — but is reported defensively.
 compilePrimApp :: Text -> [(Icit, Term)] -> Gen Text
+compilePrimApp pname sargs
+  -- Milestone M: the EXCEPTION ops are NODE-BUILDERS on the uniform CK-machine
+  -- path, NOT the synchronous @kpf_io_*@ bridge — they MUST be intercepted here
+  -- before the generic 'ioPrimEntry'/@knative_sat@ arm (mirrors how the C
+  -- backend special-cases catchIO/finallyIO/throwIO to @krt2_*@ in
+  -- 'compileAppGlob', and how this backend would otherwise mis-run a do-block
+  -- body through the bridge — the M-I divergence).  See 'compileExnNode'.
+  | Just r <- exnNodeBuilder pname = compileExnNode pname r sargs
 compilePrimApp pname sargs =
   case ioPrimEntry pname of
     Just (cfn, ar) -> compileIoSat pname cfn ar sargs
@@ -3109,6 +3148,58 @@ compilePrimApp pname sargs =
               unsupported "primitive"
                 ("the LLVM backend does not implement the primitive '"
                   <> pname <> "'; use the C backend")
+
+-- | Milestone M: the EXCEPTION node-builders.  Each name maps to its @krt2_*@
+-- runtime builder + explicit arity — the SAME node the C backend's
+-- 'compileAppGlob' emits, but taken on the UNIFORM CK-machine path always (the
+-- LLVM backend has no working synchronous bridge for these, and the bridge is
+-- exactly what produced the M-I before/caught/after divergence).  These are
+-- recognised in 'compilePrimApp' BEFORE the generic @knative_sat@ arm:
+--
+--   * @catchIO body handler@   ⇒ @krt2_catch(body, handler)@   (IO a -> (e->IO a) -> IO a)
+--   * @finallyIO body fin@     ⇒ @krt2_finally(body, fin)@     (IO a -> IO () -> IO a)
+--   * @throwIO err@            ⇒ @krt2_throw(err)@             (e -> IO a)
+--   * @__reraiseCause cause@   ⇒ @krt2_reraise(cause)@         (Cause e -> IO a)
+--
+-- @body@/@fin@ are IO actions: 'compileErasableArg' (≡ 'compile' here) routes a
+-- @CDo@ body to 'compileDo' (a @krt2_bind@/@krt2_then@ action tree) and a bare
+-- IO call to its own node, so the body operand is already a CK-machine action —
+-- the runtime catch/finally node drives it, body effects and the thrown value
+-- included.  @handler@ is a function value (@e -> IO a@) compiled to a closure;
+-- @err@/@cause@ are plain values.  Mirrors C.hs:2014–2035 (just always-on).
+exnNodeBuilder :: Text -> Maybe (Text, Int)
+exnNodeBuilder = \case
+  "catchIO" -> Just ("krt2_catch", 2)
+  "finallyIO" -> Just ("krt2_finally", 2)
+  "throwIO" -> Just ("krt2_throw", 1)
+  "__reraiseCause" -> Just ("krt2_reraise", 1)
+  _ -> Nothing
+
+-- | Lower a saturated exception op to its @krt2_*@ node-builder
+-- ('exnNodeBuilder').  Each explicit argument is compiled to an operand
+-- (a body/fin to a CK-machine ACTION, a handler to a closure, an err/cause to a
+-- value — all via 'compileErasableArg', exactly as the C backend), then the
+-- single @call ptr \@krt2_X(...)@ returns the node.  A CURRIED / under- or
+-- over-saturated occurrence (rare) is NOT routed here — the caller only reaches
+-- 'compilePrimApp' for a SATURATED spine ('saturatedPrim'); a partial one stays
+-- a curried @knative@ closure ('compilePrimValue'), where the runtime drives it.
+compileExnNode :: Text -> (Text, Int) -> [(Icit, Term)] -> Gen Text
+compileExnNode pname (builder, ar) sargs = do
+  let explArgs = [a | (Expl, a) <- sargs]
+  if length explArgs == ar
+    then do
+      aes <- mapM compileErasableArg explArgs
+      declRuntime ("declare ptr @" <> builder
+                     <> "(" <> T.intercalate ", " (replicate ar "ptr") <> ")")
+      r <- freshReg
+      emit (r <> " = call ptr @" <> builder
+              <> "(" <> T.intercalate ", " ["ptr " <> ae | ae <- aes] <> ")")
+      pure r
+    else
+      unsupported "application"
+        ("the LLVM backend supports only a SATURATED application of '"
+          <> pname <> "' (got " <> T.pack (show (length explArgs))
+          <> " of " <> T.pack (show ar) <> " arguments)")
 
 -- | Lower a saturated IO primitive to @knative_sat@ (M0 path, unchanged):
 -- build a stack @[N x ptr]@ arg array, store each compiled argument operand,

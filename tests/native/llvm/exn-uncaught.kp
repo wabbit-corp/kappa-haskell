@@ -1,0 +1,12 @@
+-- Milestone M: a throwIO that is NOT caught — it propagates to the top and the
+-- process exits NON-zero (rc=1).  The effects before the throw (`start`) print;
+-- the statement after it (`unreachable`) does not.  The parity harness checks
+-- stdout AND exit code, so the krt2_throw must unwind exactly as the interpreter
+-- and the C backend do.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "start"
+    throwIO "uncaught boom"
+    printlnString "unreachable"

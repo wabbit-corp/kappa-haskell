@@ -1,0 +1,12 @@
+-- Milestone M: a throwIO caught by catchIO — the handler runs and recovers the
+-- thrown value (both the throwing and the non-throwing arm of the same catch).
+-- Lowered on the LLVM backend to krt2_throw / krt2_catch node-builders on the
+-- uniform CK-machine path (NOT the synchronous kpf_io_catchIO bridge).
+module main
+
+main : UIO Unit
+let main = do
+    x <- catchIO (throwIO "boom") (\m -> ioPure ("recovered:" ++ m))
+    printlnString x
+    y <- catchIO (ioPure "no-throw") (\m -> ioPure ("recovered:" ++ m))
+    printlnString y

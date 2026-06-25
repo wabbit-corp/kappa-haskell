@@ -1,0 +1,18 @@
+-- Milestone M: catchIO over a DO-BLOCK that throws partway — the EXACT M-I
+-- divergence case.  The body's effects before the raise (`before`) must print,
+-- then the caught message (`caught:boom`), then the after-effect (`after`).  The
+-- old synchronous kpf_io_catchIO bridge dropped the body's effects and the thrown
+-- value and printed only `after`; the krt2_catch node drives the body's krt2
+-- action tree end to end, so the order is now correct (== interp == C).
+module main
+
+risky : IO String Unit
+let risky = do
+    printlnString "before"
+    raise "boom"
+    printlnString "unreachable"
+
+main : UIO Unit
+let main = do
+    catchIO risky (\msg -> printlnString ("caught:" ++ msg))
+    printlnString "after"

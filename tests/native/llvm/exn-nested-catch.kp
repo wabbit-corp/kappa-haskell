@@ -1,0 +1,24 @@
+-- Milestone M: a NESTED try/catch.  The inner catchIO recovers `inner-boom`
+-- locally; control resumes in `outer`, which then throws `outer-boom`, caught by
+-- the outer catchIO in `main`.  Exercises a krt2_catch nested inside the body of
+-- another krt2_catch — each handler catches only its own scope's failure.
+module main
+
+inner : IO String Unit
+let inner = do
+    printlnString "inner-before"
+    raise "inner-boom"
+    printlnString "inner-unreachable"
+
+outer : IO String Unit
+let outer = do
+    printlnString "outer-before"
+    catchIO inner (\m -> printlnString ("inner-caught:" ++ m))
+    printlnString "outer-after-inner"
+    raise "outer-boom"
+    printlnString "outer-unreachable"
+
+main : UIO Unit
+let main = do
+    catchIO outer (\m -> printlnString ("outer-caught:" ++ m))
+    printlnString "done"
