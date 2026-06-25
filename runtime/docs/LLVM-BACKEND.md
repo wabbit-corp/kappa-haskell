@@ -110,19 +110,22 @@ recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
 - **records** — ✅ `CRecordV` + `CProjAt`/`CProj` via `krec`/`krec_at`/`kproj`
   (`1b3770d`); ✅ type-level-global erasure so trait instances on builtin types
   compile (`fb3c2bc`).
-- **patterns** — ✅ literal patterns (`CPLit`, via `klit_eq`; `ee9064f`); remaining:
-  nested constructor sub-patterns, tuple/record/variant/or patterns.
-- **literals + prims** — `Byte`/`Char`/`Double` literals as values + generalized
-  prim-as-value coverage (in progress); `letrec` + `delay`/`force`; concurrency/STM
-  (`fork`/`await`/…); host-binding/FFI members.
+- **patterns** — ✅ literal patterns (`ee9064f`); recursive nested/tuple/record/variant
+  patterns (in progress); or-patterns remaining.
+- **literals + prims** — ✅ `Byte`/`Char`/`Double` literals + generalized prim-as-value
+  coverage (`71003bc`); ✅ `letrec` (`CLetRec` backpatch via `kenv_set_val`) +
+  `delay`/`memo`/`force` thunks (`502188d`); remaining: concurrency/STM (`fork`/`await`/…),
+  `catchIO`/`throwIO`/`finallyIO` (need CK-machine exception semantics), host-binding/FFI
+  members, `KFor`/while-`else`/`KSubDo`/labeled loops.
 - **the worker/closure-chain + self-TCO** direct-call optimization (this is a
   perf path; the curried model already gives correctness).
 
 **Empirically driven by building the real packages:** voxelcraft is LLVM
 codegen-clean (only the shared native-binding lockfile blocks it). delve started at
-721 unsupported sites — records closed 368, type-global erasure 6 more — and the
-remaining work (curried prims, `Byte` literals, `letrec`, `delay`/`force`, host
-bindings) is exactly delve's remaining gap list.
+**721 unsupported sites → 117**: records closed 368, type-global erasure 6, curried
+prims + `Byte`/`Char`/`Double` literals 124, `letrec`/`delay`/`force` 127. The remaining
+117 are patterns (90, in progress), host-binding/FFI members (17), `catchIO`/`throwIO`/
+`finallyIO` (8), and `KSubDo` (2).
 
 ## Extending it
 
