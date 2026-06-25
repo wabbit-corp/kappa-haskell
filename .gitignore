@@ -16,6 +16,7 @@ dist/
 *.kappa.c
 *.kappa.h
 *.kappa.ll
+*.kappa.hostffi.c
 *.native.prov
 native-abi-probe.c
 native-header-gen-probe.c

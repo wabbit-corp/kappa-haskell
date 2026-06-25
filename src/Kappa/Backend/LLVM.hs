@@ -264,7 +264,7 @@ userCtorKeys = goT
       CLet _ _ ty rhs body -> goT ty <> goT rhs <> goT body
       CLetRec _ _ ty rhs body -> goT ty <> goT rhs <> goT body
       CMeta {} -> Set.empty
-      CDo _ _ -> Set.empty -- do-kernel is not a Milestone-C lowering target
+      CDo _ items -> foldMap goItem items -- §M-E+: ctors ARE built/matched in the do-kernel
       CSealE _ e -> goT e
       CSigT _ e -> goT e
       CThunkE e -> goT e
@@ -274,6 +274,27 @@ userCtorKeys = goT
       CQuote _ ts -> foldMap goT ts
     goAlt (CaseAlt pat mg body) =
       goPat pat <> maybe Set.empty goT mg <> goT body
+    -- §M-E+: a do-kernel item carries Terms (its actions/conditions) AND its own
+    -- CorePat binders (KBind/KLet/KLetQ/KFor/KUsing) — both can mention user ctors.
+    -- Mirrors 'Kappa.CoreOps.foldTerm' goK, plus the patterns that walker ignores.
+    -- WITHOUT this, a ctor used only inside a do-block was missed -> defaulted to
+    -- 'kctUserBase' -> tag-id collision -> non-exhaustive/wrong match (the delve bug).
+    goItem k = case k of
+      KBind _ pat t -> goPat pat <> goT t
+      KLet _ pat t -> goPat pat <> goT t
+      KLetQ pat t m -> goPat pat <> goT t <> foldMap (\(p, e) -> goPat p <> goT e) m
+      KExpr t -> goT t
+      KVarItem _ t -> goT t
+      KAssign lhs _ rhs -> goT lhs <> goT rhs
+      KReturn t -> goT t
+      KBreak _ -> Set.empty
+      KContinue _ -> Set.empty
+      KWhile _ c b e -> goT c <> foldMap goItem b <> foldMap (foldMap goItem) e
+      KFor _ pat s b e -> goPat pat <> goT s <> foldMap goItem b <> foldMap (foldMap goItem) e
+      KIf alts e -> foldMap (\(c, b) -> goT c <> foldMap goItem b) alts <> foldMap (foldMap goItem) e
+      KDefer _ t -> goT t
+      KUsing pat a r -> goPat pat <> goT a <> goT r
+      KSubDo _ b -> foldMap goItem b
     goPat p = case p of
       CPWild -> Set.empty
       CPVar _ -> Set.empty
