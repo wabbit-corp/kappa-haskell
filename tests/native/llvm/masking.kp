@@ -1,0 +1,21 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "uninterruptible-body\nmasked-1\nrestored\nmasked-2\n"
+
+-- §18.1.12 interruption-masking surface: `uninterruptible`, `mask`/`restore`,
+-- and `poll`. With no pending interrupt these are pure control flow — the body
+-- runs to completion and `poll` returns Unit — so the observable output is fixed
+-- and identical under the interpreter and both native backends (the masking ops
+-- lower to the OP_UNINTERRUPTIBLE/OP_MASK/OP_RESTORE/OP_POLL runtime nodes).
+module main
+
+ioThenU : forall (a : Type) (b : Type). IO Void a -> IO Void b -> IO Void b
+let ioThenU x y = ioBind x (\ignore -> y)
+
+-- mask hands its body a `restore` that re-enables interruption for a selected
+-- subcomputation; `poll` is an explicit checkpoint (Unit when nothing pending).
+masked : (IO Void Unit -> IO Void Unit) -> UIO Unit
+let masked restore = ioThenU (printlnString "masked-1") (ioThenU (restore (printlnString "restored")) (ioThenU poll (printlnString "masked-2")))
+
+main : UIO Unit
+let main = ioThenU (uninterruptible (printlnString "uninterruptible-body")) (mask masked)

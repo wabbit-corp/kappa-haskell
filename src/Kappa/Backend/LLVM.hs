@@ -523,7 +523,14 @@ hostFfiSidecar cs hostSyms
 -- takes precedence in the do-context (only OUTSIDE it do they fall to the
 -- generic @knative_sat@ path, which is exactly what the C backend does too).
 basePrims :: Set Text
-basePrims = Set.difference (Map.keysSet primEntries) ckMachinePrims
+basePrims =
+  Set.difference (Map.keysSet primEntries) ckMachinePrims
+    -- §18.1.12 masking node-builders ('ioNodeBuilder'): like the exception ops,
+    -- these have no @kpf_*@ entry in 'primEntries' (they ARE krt2_* nodes), so add
+    -- them here so 'globPrimName' recognises a saturated `uninterruptible`/`mask`/
+    -- `poll` and routes it to 'compilePrimApp' → 'compileIoNode' (krt2_*) rather
+    -- than the bare-value path.
+    `Set.union` Set.fromList ["uninterruptible", "__mask", "poll"]
 
 -- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
 -- node, not the synchronous @knative@/@knative_sat@ bridge: structured
@@ -859,10 +866,16 @@ saturatedPrim pname term =
         Nothing -> False
 
 -- | The runtime arity of a lowerable prim (across all three saturated paths).
+-- The CK-machine node-builders ('ioNodeBuilder' — exception ops + §18.1.12
+-- masking) have no @kpf_*@ entry but ARE saturated-lowerable, so consult them
+-- too; otherwise a saturated `uninterruptible`/`mask`/`poll` would be classed as
+-- a bare value and rejected.
 primArity :: Text -> Maybe Int
 primArity pname = case primNativeEntry pname of
   Just (_, ar, _) -> Just ar
-  Nothing -> Nothing
+  Nothing -> case ioNodeBuilder pname of
+    Just (_, ar) -> Just ar
+    Nothing -> Nothing
 
 -- | Lower a general CLOSURE application in TAIL position: the head + all but the
 -- final explicit argument are built EAGERLY with the ordinary @kapp@ chain (the
@@ -2874,6 +2887,14 @@ compileGlob g@(GName m nm)
 -- function, works).  A prim outside the lowered set ('primNativeEntry') is a
 -- clean @E_BACKEND_UNSUPPORTED@.
 compilePrimValue :: Text -> Gen Text
+-- §18.1.12 `poll` is a 0-arity IO action that IS the OP_POLL node; a bare
+-- reference lowers to the node builder directly (no curried @kpf_poll@ wrapper),
+-- mirroring the C backend's 'emitPrim' special case.
+compilePrimValue "poll" = do
+  declRuntime "declare ptr @krt2_poll()"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_poll()")
+  pure r
 compilePrimValue pname = case primNativeEntry pname of
   -- A 0-arity PURE prim is a CONSTANT (e.g. @__bytesEmpty@): there is nothing to
   -- curry, so the C backend fires it immediately (@cfn((KValue **)0)@,
@@ -3250,6 +3271,12 @@ ioNodeBuilder = \case
   "finallyIO" -> Just ("krt2_finally", 2)
   "throwIO" -> Just ("krt2_throw", 1)
   "__reraiseCause" -> Just ("krt2_reraise", 1)
+  -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders, the
+  -- same lowering as the C backend (compileAppGlob).  `uninterruptible body` and
+  -- `__mask f` are 1-arg; `poll` is 0-arg (handled below as a bare value too).
+  "uninterruptible" -> Just ("krt2_uninterruptible", 1)
+  "__mask" -> Just ("krt2_mask", 1)
+  "poll" -> Just ("krt2_poll", 0)
   _ -> Nothing
 
 -- | Lower a saturated exception op to its @krt2_*@ node-builder

@@ -417,6 +417,7 @@ basePrims =
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
+    , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
@@ -1760,6 +1761,11 @@ isTypeKindTerm = \case
 -- IO suspends). There is NO by-name string dispatch. An unknown primitive is a
 -- compile-time 'E_BACKEND_UNSUPPORTED'.
 emitPrim :: Text -> Gen Text
+-- §18.1.12 `poll` is a 0-arity IO action that IS the OP_POLL node: a bare
+-- reference (e.g. `ioBind poll k`, where `poll` is the action operand) lowers to
+-- the node builder directly, exactly as the saturated `poll` case in
+-- 'compileAppGlob'.  There is no curried `kpf_poll` wrapper in the runtime.
+emitPrim "poll" = pure "krt2_poll()"
 emitPrim name = case Map.lookup name primEntries of
   Just (PrimEntry cfn ar isio) -> do
     markPrimUsed name
@@ -2231,6 +2237,21 @@ compileAppGlob g sargs term = do
           | [use] <- [a | (Expl, a) <- sargs] -> do
               uc <- compileErasableArg use
               pure ("krt2_with_scope(" <> uc <> ")")
+        -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders.
+        -- `uninterruptible body` raises mask_depth for the body (krt2_uninterruptible);
+        -- `mask`'s surface wrapper forwards to `__mask f`, which the runtime applies
+        -- to its `restore` closure (krt2_mask); `poll` is the explicit checkpoint
+        -- (krt2_poll). All are CK-machine nodes driven by the do-kernel.
+        Just "uninterruptible"
+          | [body] <- [a | (Expl, a) <- sargs] -> do
+              bc <- compileErasableArg body
+              pure ("krt2_uninterruptible(" <> bc <> ")")
+        Just "__mask"
+          | [f] <- [a | (Expl, a) <- sargs] -> do
+              fc <- compileErasableArg f
+              pure ("krt2_mask(" <> fc <> ")")
+        Just "poll"
+          | null [a | (Expl, a) <- sargs] -> pure "krt2_poll()"
         -- §18.1.4 interruption: __interruptWait (request + await termination) and
         -- __interruptNoWait (request, return at once) — OP_INTERRUPT[_FORK] nodes.
         Just "__interruptWait"
@@ -2682,6 +2703,9 @@ cpsNodeApp term = do
         (Just "__race", [_, _]) -> True
         (Just "__timeout", [_, _]) -> True
         (Just "withScope", [_]) -> True
+        (Just "uninterruptible", [_]) -> True
+        (Just "__mask", [_]) -> True
+        (Just "poll", []) -> True
         (Just "__interruptWait", [_, _]) -> True
         (Just "__interruptNoWait", [_, _]) -> True
         (Just "atomically", [_]) -> True
@@ -3047,6 +3071,7 @@ suspendingNames =
     , "cede", "__sleepForNanos", "newPromise", "completePromise", "awaitPromiseExit"
     , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 scope + interruption nodes
+    , "uninterruptible", "__mask", "poll" -- §18.1.12 masking: OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL nodes
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.

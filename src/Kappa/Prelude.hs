@@ -485,6 +485,44 @@ builtinState =
         prim "withScope"
           (tyV (forallEA
             ((tcon "Scope" ~> io (CVar 2) (CVar 1)) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.12 interruption masking surface. `uninterruptible body` runs
+        -- `body` with interruption delivery suppressed; a pending interrupt is
+        -- re-checked when the region is left. The native backend lowers this to
+        -- the OP_UNINTERRUPTIBLE node (krt2_uninterruptible), which raises the
+        -- fiber's mask_depth for the body's duration.
+        -- forall e a. IO e a -> IO e a
+        prim "uninterruptible"
+          (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.12 `poll`: an explicit interruption checkpoint that delivers a
+        -- pending interrupt even inside a masked region (otherwise returns Unit).
+        -- Lowered to the OP_POLL node (krt2_poll). UIO Unit.
+        prim "poll" (tyV (io (tcon "Void") tUnit))
+      , -- §18.1.12 `mask f`: run `f` with interruption masked, handing it a
+        -- `restore` that re-enables interruption for a selected subcomputation.
+        -- Lowered to the OP_MASK node (krt2_mask), which applies `f` to the
+        -- runtime `restore` closure (rt.c). That closure is MONOMORPHIC — a
+        -- one-argument function — so `restore` is typed rank-1 here:
+        --   restore : IO e a -> IO e a
+        -- (the spec's §18.1.12 `forall x. IO e x -> IO e x` is stronger, but the
+        -- runtime restore is a single 1-arg closure; a rank-2 `restore` would emit
+        -- an erased implicit type-application `kappi(restore, ⟨x⟩)` that the 1-arg
+        -- runtime closure consumes AS the action — the "non-function value" crash.
+        -- Monomorphising restore to the mask's result type `a` is what the native
+        -- runtime can honor; `restore` is in practice applied at that one type.)
+        -- forall e a. ((IO e a -> IO e a) -> IO e a) -> IO e a
+        prim "__mask"
+          (tyV (forallEA
+            ( ( (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))   -- restore : IO e a -> IO e a
+                ~> io (CVar 2) (CVar 1) )                         -- -> IO e a  (the body f)
+              ~> io (CVar 2) (CVar 1) )))                         -- -> IO e a  (mask's result)
+      , -- §18.1.12 internal: the action transformer `mask` hands to its body.
+        -- `__restore act` runs `act` at the interruptibility level that held at
+        -- the enclosing `mask`'s entry (OP_RESTORE in the runtime). Not a source
+        -- name — `mask` supplies it; typed monomorphically here (the rank-2
+        -- `restore` binder above is the source-visible polymorphic facet).
+        -- forall e a. IO e a -> IO e a
+        prim "__restore"
+          (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
       , -- §18.1.8 monitors. forall e a. Fiber e a -> UIO (Monitor e a)
         prim "monitor"
           (tyV (forallEA
@@ -1346,8 +1384,16 @@ preludeSource =
       -- completion, typed failure, interruption, defect), as the §18.8/§18.1
       -- finally kernel guarantees.
       "instance MonadResource (IO e) ="
-    , "    let bracketM acquire release use ="
-    , "        ioBind acquire (\\r -> finallyIO (use r) (release r))"
+    , -- §18.1.12: `bracket` masks the WHOLE acquire-and-register region, then
+      -- runs `use` restored (interruptible). Masking `acquire` AND the
+      -- `finallyIO` finalizer-registration as one unit closes the gap where a
+      -- born-interrupted fiber would deliver its pending interrupt before the
+      -- release is installed (skipping the finalizer). With this, the interrupt
+      -- can only fire inside `restore (use r)`, by which point the release is
+      -- registered, so the finalizer RUNS on interrupt (ZIO/bracket semantics).
+      -- This mirrors the runtime's krt2_acquire_release (rt.c).
+      "    let bracketM acquire release use ="
+    , "        mask (\\restore -> ioBind acquire (\\r -> finallyIO (restore (use r)) (release r)))"
     , ""
     , -- §28.2 `bracket` surface name (the MonadResource method for IO).
       "bracket : forall (e : Type) (a : Type) (b : Type). IO e a -> (a -> IO e Unit) -> (a -> IO e b) -> IO e b"
@@ -1444,6 +1490,14 @@ preludeSource =
     , "      case Success v -> ioPure v"
     , "      case Failure (Fail e) -> throwIO e"
     , "      case Failure c -> __reraiseCause c)"
+    , ""
+    , -- §18.1.12 masking surface. `mask f` runs `f` with interruption masked,
+      -- handing it a `restore` that re-enables interruption for a chosen
+      -- subcomputation. `restore` is rank-1 (IO e a -> IO e a) to match the
+      -- runtime's monomorphic restore closure (see `__mask` above); the body
+      -- forwards to the `__mask` prim (OP_MASK), lowered to `krt2_mask`.
+      "mask : forall (e : Type) (a : Type). ((IO e a -> IO e a) -> IO e a) -> IO e a"
+    , "let mask f = __mask f"
     , ""
     , -- §18.1.4 interruption surface. interrupt/interruptFork use the Requested
       -- tag with no recorded initiator; the *As forms carry explicit metadata.

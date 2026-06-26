@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nreleased-on-interrupt\ninterrupted\n"
+
+-- §18.1.12 bracket finalizer-on-interrupt. `bracketM` runs its acquire and the
+-- finalizer-registration as one MASKED (uninterruptible) region via `mask`, so a
+-- fiber interrupted while parked in `use` is GUARANTEED to have registered its
+-- release first — the release therefore RUNS on interrupt (ZIO/bracket
+-- semantics). Before the masking fix the interrupt could be delivered between
+-- acquire returning and the release being installed, skipping the finalizer.
+--
+-- The `cede`s hand the agent to the child so it reaches `use` (the sleep) before
+-- the interrupt is requested; the interrupt is then taken at that suspension
+-- point and unwinds through the registered release (run masked, §32.2.5).
+module main
+
+acquireR : IO String Integer
+let acquireR = do
+    printlnString "acquired"
+    ioPure 1
+
+releaseR : Integer -> IO String Unit
+let releaseR r = printlnString "released-on-interrupt"
+
+useSleep : Integer -> IO String Integer
+let useSleep r = do
+    sleepFor (seconds 10)
+    ioPure r
+
+main : UIO Unit
+let main = do
+    f <- fork (bracket acquireR releaseR useSleep)
+    cede
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"
