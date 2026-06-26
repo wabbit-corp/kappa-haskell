@@ -1,0 +1,11 @@
+-- Regression: `sequence_` over a List of IO actions (run for effect, discard
+-- results).  `sequence_ xs = foldr (\m acc -> liftA2 (\u v -> Unit) m acc)
+-- (pureA Unit) xs` synthesises the SAME erased type-level applications into the
+-- internal `foldr`/`liftA2` spine that the OLD codegen mis-lowered to a runtime
+-- `kapp` over erased slots — crashing both native backends at base while the
+-- interpreter printed the three lines.  The observable is stdout ORDER.
+-- Expected stdout: a / b / c (each on its own line).
+module main
+
+main : UIO Unit
+let main = sequence_ (printlnString "a" :: printlnString "b" :: printlnString "c" :: Nil)
