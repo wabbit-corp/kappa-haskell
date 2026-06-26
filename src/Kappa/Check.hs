@@ -85,6 +85,7 @@ import Kappa.Inhabitance
   , InhabitancePurpose (..)
   , InhabitanceSummary (..)
   , HeadClass (..)
+  , CtorFiber (..)
   , inhabitanceSummary
   , isEmpty
   )
@@ -665,7 +666,13 @@ lookupCtx n ctx = go 0 (ctxEntries ctx)
       | otherwise = go (i + 1) rest
 
 ec_ :: CheckM EvalCtx
-ec_ = gets (\st -> EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st))
+ec_ = gets ecOf
+
+-- | The (compile-time, non-runtime) 'EvalCtx' implied by a 'CheckState'. Pure
+-- so callers holding a saved state can force values without re-entering the
+-- monad.
+ecOf :: CheckState -> EvalCtx
+ecOf st = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
 
 evalIn :: Ctx -> Term -> CheckM Value
 evalIn ctx t = do
@@ -8360,26 +8367,98 @@ inhabClassifyHead t = do
       Nothing -> Nothing
     _ -> Nothing
 
+-- | Is a (demanded scrutinee index) value GROUND — free of any rigid skolem?
+--
+-- Soundness hinges on this for the §30.2.7 GADT rule: a constructor's
+-- result-index unify-failure means 'Empty' ONLY when the demanded index is
+-- ground. A surviving 'VRigid' (a free/abstract index variable like the @b@ in
+-- @Tag b@) makes the index non-ground, so a unify-failure there is merely
+-- "absent for this instantiation", not a contradiction.
+--
+-- We FORCE at every node so that (a) solved metavariables are followed to their
+-- solutions and (b) a rigid pinned by a branch-local @FactIs@ (§7.4.1 dependent
+-- match) resolves to its witness — only a genuinely free 'VRigid' counts.
+-- Unsolved 'VFlex' metas are GROUND-COMPATIBLE: unification can still solve them,
+-- and any such solve is itself a reachable inhabitant, so they never block the
+-- 'Empty' verdict on their own.
+--
+-- Conservative on the fringes: a recursion-budget exhaustion, an opaque closure
+-- (@VLam@/@VPi@/@VThunkV@/…), or any other shape we cannot cheaply prove rigid-
+-- free is treated as NON-ground (returns 'False'), which can only refuse an
+-- 'Empty' verdict — never fabricate one.
+--
+-- Residual hole (documented, not load-bearing for the cases we gate): an
+-- unsolved 'VFlex' that a /later/ unification would have resolved to a rigid is
+-- still counted ground here. Today the only producers of the demanded scrutinee
+-- index for this query are real source types, whose abstract indices are 'VRigid'
+-- (not metas), so this does not arise; it would need a metas-as-indices caller
+-- to ever bite.
+noRigidSkolemForced :: EvalCtx -> Value -> Bool
+noRigidSkolemForced ec = go (1000 :: Int)
+  where
+    go fuel v
+      | fuel <= 0 = False -- budget exhausted: fail closed (treat as non-ground)
+      | otherwise = case force ec v of
+          VRigid _ _ -> False -- a surviving free skolem: NOT ground
+          VFlex _ sp -> all (go (fuel - 1) . snd) sp -- unsolved meta head is fine; check its args
+          VGlobN _ sp -> all (go (fuel - 1) . snd) sp
+          VCtor _ args -> all (go (fuel - 1)) args
+          VLit _ -> True
+          VSort _ -> True
+          VInject _ w -> go (fuel - 1) w
+          VRecordT fs -> all (go (fuel - 1) . snd) fs
+          VRecordV fs -> all (go (fuel - 1) . snd) fs
+          VVariantT ms -> all (go (fuel - 1)) ms
+          VPrim _ args -> all (go (fuel - 1)) args
+          -- Anything else (binders/closures/suspensions/neutral projections and
+          -- matches we did not unfold) is conservatively NON-ground: we refuse
+          -- the Empty verdict rather than risk hiding a rigid inside it.
+          _ -> False
+
 -- | Speculatively refine one constructor against the demanded scrutinee type
--- (§17.1.2 family-argument refinement). Returns 'Nothing' when the
--- constructor's result type cannot unify with the target — that arm is then
--- 'Empty'. Otherwise returns the constructor's field types under the
--- branch-local equalities forced by unification. Runs under a saved/restored
--- 'CheckState' so neither the meta solutions nor any diagnostics escape.
-inhabCtorFiber :: Ctx -> Value -> GName -> CheckM (Maybe [Value])
+-- (§17.1.2 family-argument refinement). Three-way result (see 'CtorFiber'):
+--
+--   * 'CtorRefined' — unification succeeded; the constructor's field types under
+--     the branch-local equalities forced by unification.
+--   * 'CtorContradiction' — unification failed and the demanded scrutinee index
+--     is GROUND (carries no rigid skolem). A real no-confusion contradiction, so
+--     this arm is 'Empty'.
+--   * 'CtorIndexUnknown' — unification failed but the demanded index carries a
+--     rigid/free skolem (e.g. an abstract @Tag b@). The failure only rules the
+--     constructor out for /this/ instantiation, not all of them, so emptiness is
+--     'Unknown'. Concluding 'Empty' here is the §30.2.7 soundness bug.
+--
+-- Runs under a saved/restored 'CheckState' so neither the meta solutions nor any
+-- diagnostics escape. The ground-ness probe ('noRigidSkolem') reads only the
+-- ORIGINAL demanded scrutinee type (forced in the restored state) — never the
+-- post-unification metas — so the rigid/ground classification is independent of
+-- the speculative solve.
+inhabCtorFiber :: Ctx -> Value -> GName -> CheckM CtorFiber
 inhabCtorFiber ctx scrutTy c = do
   st <- get
   mci <- gets (Map.lookup c . csCtors)
   case mci of
-    Nothing -> put st >> pure Nothing
+    Nothing -> put st >> pure (failureVerdict st)
     Just ci -> do
       nBefore <- gets (length . filter isError . csDiags)
       ctype <- evalIn emptyCtx (ciType ci)
       (ok, fields) <- peelCtorResult ctype []
       nAfter <- gets (length . filter isError . csDiags)
       put st -- discard speculative meta solutions and diagnostics
-      pure $ if ok && nAfter == nBefore then Just fields else Nothing
+      pure $
+        if ok && nAfter == nBefore
+          then CtorRefined fields
+          else failureVerdict st
   where
+    -- A unify-failure is a genuine no-confusion contradiction ('Empty') only
+    -- when the demanded scrutinee index is ground. If it carries a rigid skolem,
+    -- the constructor is merely absent for /this/ instantiation, so emptiness is
+    -- undecidable here. We classify against the demanded type as forced in the
+    -- ORIGINAL (pre-speculation) state, so speculative metas can't perturb it.
+    failureVerdict st
+      | noRigidSkolemForced (ecOf st) scrutTy = CtorContradiction
+      | otherwise = CtorIndexUnknown
+
     -- Instantiate the constructor telescope with fresh metas, then unify its
     -- result with the scrutinee; mirrors 'ctorFieldTypes' but reports unify
     -- success/failure instead of swallowing it.
@@ -8422,10 +8501,13 @@ inhabHasEvidence ctx traitG ty = do
 -- | §17.1.4: is the fiber selected by this arm's pattern provably uninhabited?
 --
 --   * A constructor pattern @C ..@ refines the scrutinee's family arguments;
---     the fiber is 'Empty' when @C@'s result type cannot unify with the
---     scrutinee (the contradictory-GADT case, e.g. @Never : Choice False@ under
---     a @Choice True@ scrutinee), or when @C@'s retained field types multiply to
---     'Empty'.
+--     the fiber is 'Empty' when @C@'s result type cannot unify with a GROUND
+--     scrutinee index (the contradictory-GADT case, e.g. @Never : Choice False@
+--     under a @Choice True@ scrutinee), or when @C@'s retained field types
+--     multiply to 'Empty'. A unify-failure against an ABSTRACT (rigid-indexed)
+--     scrutinee — @Tag b@, @Vec n a@ — is /not/ empty: the constructor is
+--     present for some instantiation of the free index, so the arm is reachable
+--     ('CtorIndexUnknown', §30.2.7).
 --   * Any other pattern (wildcard, variable, tuple, record, …) does not narrow
 --     by a constructor, so the arm's fiber is just the whole refined scrutinee
 --     type and we defer to its summary.
@@ -8433,10 +8515,11 @@ branchFiberEmpty :: Ctx -> Value -> CorePat -> CheckM Bool
 branchFiberEmpty ctx scrutTy = \case
   CPCtor g _ -> do
     env <- mkInhabEnv ctx
-    mfiber <- inhabCtorFiber ctx scrutTy g
-    case mfiber of
-      Nothing -> pure True -- family-argument unification failed: arm is Empty
-      Just fieldTys -> do
+    fiber <- inhabCtorFiber ctx scrutTy g
+    case fiber of
+      CtorContradiction -> pure True -- ground-index no-confusion: arm is Empty
+      CtorIndexUnknown -> pure False -- rigid index: arm reachable, not empty
+      CtorRefined fieldTys -> do
         ss <- mapM (inhabitanceSummary env SourceReachability) fieldTys
         pure (any isEmpty ss)
   CPAs _ p -> branchFiberEmpty ctx scrutTy p

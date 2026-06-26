@@ -29,6 +29,7 @@ module Kappa.Inhabitance
   , InhabitancePurpose (..)
   , InhabEnv (..)
   , HeadClass (..)
+  , CtorFiber (..)
   , isEmpty
   , canonicalizeFinite
   , multiplySummaries
@@ -95,13 +96,30 @@ data InhabEnv m = InhabEnv
     -- closed data type's constructor set so sums/finite-enumeration rules fire.
     ieClassifyHead :: Value -> m (Maybe HeadClass)
   , -- | Speculatively refine one constructor of a GADT-style family against the
-    -- demanded scrutinee type (§17.1.2). 'Nothing' ⇒ the constructor's result
-    -- family arguments do /not/ unify with the target, so this arm is 'Empty'.
-    -- @Just fieldTys@ ⇒ unification succeeded and these are the constructor's
-    -- retained field types under the branch-local equalities; the arm's summary
-    -- is their product. The implementation MUST NOT leak meta solutions or
-    -- diagnostics from the speculative unification.
-    ieCtorFiber :: Value -> GName -> m (Maybe [Value])
+    -- demanded scrutinee type (§17.1.2). The three-way result distinguishes the
+    -- two reasons a constructor's result family arguments can fail to unify:
+    --
+    --   * @'CtorRefined' fieldTys@ ⇒ unification succeeded; these are the
+    --     constructor's retained field types under the branch-local equalities,
+    --     and the arm's summary is their product.
+    --
+    --   * 'CtorContradiction' ⇒ unification failed /and/ the demanded
+    --     family-argument index is GROUND (no rigid skolem). This is a genuine
+    --     no-confusion contradiction, so this arm is 'Empty'. (e.g. @FF : Tag
+    --     False@ against a @Tag True@ scrutinee.)
+    --
+    --   * 'CtorIndexUnknown' ⇒ unification failed but the demanded index
+    --     contains a RIGID/free skolem (e.g. @FF : Tag False@ against an abstract
+    --     @Tag b@). The failure only means "this constructor is absent for /this/
+    --     instantiation of @b@", not that the arm is empty for /every/
+    --     instantiation — so emptiness is 'Unknown', never 'Empty'. Concluding
+    --     'Empty' here is the §30.2.7 soundness bug. (Unsolved metavariables in
+    --     the index are FINE: unification can still solve them, and a solve is a
+    --     reachable inhabitant.)
+    --
+    -- The implementation MUST NOT leak meta solutions or diagnostics from the
+    -- speculative unification.
+    ieCtorFiber :: Value -> GName -> m CtorFiber
   , -- | Does the local context carry @IsEmpty t@ evidence for this type?
     ieIsEmptyEvidence :: Value -> m Bool
   , -- | @IsContr t@ evidence.
@@ -125,6 +143,21 @@ data HeadClass
     -- so each constructor can be refined against /these/ family arguments.
     IsData !Value ![GName]
   deriving (Show)
+
+-- | The three-way verdict of speculatively refining one constructor's result
+-- type against the demanded scrutinee index (see 'ieCtorFiber'). The split
+-- between 'CtorContradiction' (ground index, genuinely empty arm) and
+-- 'CtorIndexUnknown' (rigid index, emptiness undecidable) is what keeps
+-- §30.2.7 sound under abstract/free GADT indices.
+data CtorFiber
+  = -- | Unification succeeded; the constructor's retained field types.
+    CtorRefined ![Value]
+  | -- | Unification failed against a GROUND demanded index: a real no-confusion
+    -- contradiction, so this arm is 'Empty'.
+    CtorContradiction
+  | -- | Unification failed but the demanded index carries a rigid/free skolem:
+    -- the arm is present for /some/ instantiation, so emptiness is 'Unknown'.
+    CtorIndexUnknown
 
 -- | Compute the §30.2.7 inhabitance summary of a (already context-aware) type.
 --
@@ -202,8 +235,10 @@ inhabitanceSummary env purpose ty0
       pure (foldr addSummaries Empty ss)
 
     -- Exact sum over a data type's constructor arms, each refined against the
-    -- scrutinee's family arguments. A constructor whose result type cannot
-    -- unify with the demanded target contributes Empty (§17.1.2); otherwise its
+    -- scrutinee's family arguments. A constructor whose result type cannot unify
+    -- with a GROUND demanded target contributes Empty (§17.1.2); against an
+    -- abstract (rigid-indexed) target a unify-failure is Unknown, which makes the
+    -- whole sum Unknown — the sound answer for @Tag b@ and friends. Otherwise the
     -- arm summary is the product of its retained field-type summaries.
     sumOfCtors :: Set GName -> Value -> [GName] -> m InhabitanceSummary
     sumOfCtors seen scrut ctors = do
@@ -212,10 +247,11 @@ inhabitanceSummary env purpose ty0
 
     armSummary :: Set GName -> Value -> GName -> m InhabitanceSummary
     armSummary seen scrut c = do
-      mfiber <- ieCtorFiber env scrut c
-      case mfiber of
-        Nothing -> pure Empty -- family-argument unification failed: arm is Empty
-        Just fieldTys -> productOf seen fieldTys
+      fiber <- ieCtorFiber env scrut c
+      case fiber of
+        CtorRefined fieldTys -> productOf seen fieldTys
+        CtorContradiction -> pure Empty -- ground-index no-confusion: arm is Empty
+        CtorIndexUnknown -> pure Unknown -- rigid index: emptiness undecidable
 
 -- | Proof-classification evidence (§30.2.7). Precedence is exact-over-bound:
 -- 'IsEmpty' and 'IsContr' win over 'IsSubsingleton'. 'Nothing' means no
