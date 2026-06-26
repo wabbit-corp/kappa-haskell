@@ -149,11 +149,15 @@ OCaml RFC #14 + POPL'24 constructor-unboxing; OxCaml layouts; BDW-GC.
 
 ## Staged plan
 
-- **Stage 1b — nullary-ctor immediates (`b010`), ALL nullary ctors.** The first
-  increment: a compile-time "is this ctor nullary" check drives `kmk_imm_ctor` at
-  construction; `kctor_tagid` returns the tag id from a `b010` word; the ctor
-  deref audit gains the `b010` branch. Gate: `ctor0-build` 48→0 B/op for arbitrary
-  enums; corpus/native/conformance green; the go/no-go ctor-deref tax flat.
+- **Stage 1b — nullary-ctor immediates (`b010`), ALL nullary ctors. DONE**
+  (commit `20498d1`, merged `2050f08`). Runtime-only: `kctor(argc==0)`/`kctor0`/
+  `kbool`/`kunit` → `kmk_imm_ctor(tagId)` (the `the_true`/`the_false`/`the_unit`
+  carriers retired, §5.2); `kctor_tagid`/`kctor_argc`/`kctor_name`/`kas_bool` read
+  the id from a `b010` word before any deref; a `knullary_builtin_id` name→id
+  table keeps the runtime's race/scope outcome name-matching working (`kctor_is`
+  turned out NOT to be purely diagnostic). VERIFIED: **corpus 83/83**, native
+  suite + conformance 1738/1738 green, kderef assert never fired, **`ctor0-build`
+  48→0 B/op** for arbitrary enums (`ctor-build` flat 64 B, the boxed Cons control).
 - **Stage 1c — niche optimization** for the single-boxed-payload + nullary-rest
   shape (`Option<boxed>` and friends). (Research-informed.)
 - **Stage 1d — packed tagged unions (`b011`)** for small-payload multi-variant

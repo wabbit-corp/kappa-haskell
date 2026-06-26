@@ -38,7 +38,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
 2. [~] **Unboxing Stage 0** — GC/alignment contract + tag-bit API + Stage-0 go/no-go benches done; only the canonical encoding remains (it folds into Stage 1).
 3. [x] **CPS loop family** — DONE: var/while/break/continue/return in suspending blocks + R7 var-read normalization (`for`/labeled/`using`/`let?` still fail-closed).
-4. [~] **Unboxing Stage 1** — immediate-INT tagging DONE (`addInt` 48→0 B/op, the allocation win); the `b010` immediate-ctor phase remains.
+4. [~] **Unboxing Stage 1 / value layout** — immediate-INT (`addInt` 48→0) + nullary-ctor immediates (`b010`, ALL nullary ctors, `ctor0-build` 48→0) DONE. Niche `Option<boxed>` (1c), packed `b011` unions (1d), specialization (2) remain — see [`LAYOUT-DESIGN.md`](../docs/LAYOUT-DESIGN.md).
 5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
 6. [ ] **General CPS** — `ioBind` expressions (unblocks `join`/`race`/`timeout`).
 7. [ ] **Unboxing Stage 2** — worker/wrapper specialization (`Double`/FFI/fused).
