@@ -327,6 +327,28 @@ data CheckState = CheckState
   -- consults this and is accepted exactly when it is 'Just True'. 'Nothing'
   -- (the default, e.g. outside any match arm) makes @impossible@ reject as
   -- reachable. Saved/restored around each arm body, like 'csFacts'.
+  , csHoles :: !(Map Text NamedHole)
+  -- ^ §16.3.2 named expression holes (@?name@) in scope for the top-level
+  -- declaration currently being elaborated. Every occurrence of the same
+  -- spelling shares one term metavariable and one type metavariable (one
+  -- @HoleId@, §16.3.2 "Repeated occurrences of a named hole MUST share one
+  -- @HoleId@"), so the occurrences denote the same unknown and MUST receive
+  -- definitionally equal expected types. Reset per enclosing declaration in
+  -- 'elabLetDecl' (a named hole does not escape its enclosing declaration).
+  -- Anonymous @_@ never enters this map: each @_@ stays a fresh hole.
+  }
+
+-- | §16.3.2 a named expression hole (@?name@) shared across its
+-- occurrences in one enclosing declaration. All occurrences denote the
+-- same unknown: they share one term metavariable ('nhTerm') and one type
+-- metavariable ('nhType', kept as a 'Value' so the shared expected type
+-- can be unified and re-quoted at each occurrence). 'nhOccs' records the
+-- source span of each occurrence (most recent first) so an inconsistency
+-- diagnostic can cite every occurrence (§3.2.4 @kappa.hole.inconsistent@).
+data NamedHole = NamedHole
+  { nhTerm :: !Term -- ^ the shared term metavariable (one @HoleId@)
+  , nhType :: !Value -- ^ the shared type metavariable, as a value to unify
+  , nhOccs :: ![Span] -- ^ occurrence spans, most recent first
   }
 
 -- | §4.2 build-level gating record. Each flag enables exactly one
@@ -471,6 +493,7 @@ initCheckState =
     , csModEffLabels = Map.empty
     , csAssertReducible = Set.empty
     , csImpossibleScrut = Nothing
+    , csHoles = Map.empty
     }
 
 -- | The §22 derivation-shape reflection module.
@@ -1953,6 +1976,96 @@ anyHole ctx = do
   ty <- freshMetaV ctx
   pure (m, ty)
 
+-- | §16.3.2 resolve an expression hole to its shared term metavariable and
+-- type metavariable, recording this occurrence's span.
+--
+-- For an anonymous hole (@_@, 'Nothing') this is just 'anyHole': @_@ always
+-- introduces a fresh hole, so anonymous holes are never tracked and never
+-- shared. For a named hole (@?name@) all occurrences within one enclosing
+-- declaration refer to the SAME metavariable (one @HoleId@): the first
+-- occurrence creates the shared metas and later occurrences reuse them, so
+-- the occurrences denote the same unknown and must elaborate at
+-- definitionally equal expected types. Reset per declaration in
+-- 'elabLetDecl'. Returns the shared metas plus the 'NamedHole' record (when
+-- named) so a check-direction inconsistency can cite every occurrence.
+holeMetas :: Ctx -> Maybe Name -> Span -> CheckM (Term, Value, Maybe NamedHole)
+holeMetas ctx Nothing _ = do
+  (m, ty) <- anyHole ctx
+  pure (m, ty, Nothing)
+holeMetas ctx (Just n) sp = do
+  let nm = nameText n
+  existing <- gets (Map.lookup nm . csHoles)
+  case existing of
+    Just nh -> do
+      let nh' = nh {nhOccs = sp : nhOccs nh}
+      modify' $ \st -> st {csHoles = Map.insert nm nh' (csHoles st)}
+      pure (nhTerm nh', nhType nh', Just nh')
+    Nothing -> do
+      m <- freshMeta
+      ty <- freshMetaV ctx
+      let nh = NamedHole {nhTerm = m, nhType = ty, nhOccs = [sp]}
+      modify' $ \st -> st {csHoles = Map.insert nm nh (csHoles st)}
+      pure (m, ty, Just nh)
+
+-- | The display spelling of a hole (§16.3.2): @?name@ for a named hole,
+-- @_@ for the anonymous hole.
+holeSpelling :: Maybe Name -> Text
+holeSpelling = maybe "_" (("?" <>) . nameText)
+
+-- | §3.2.4 @E_HOLE_UNSOLVED@: report that an expression hole remains
+-- unsolved, stating its expected type. Shared by both elaboration
+-- directions so a hole reports the same payload whether it was inferred
+-- (expected type = a fresh meta, rendered @_@ until solved) or checked
+-- (expected type = the known checking type). The type term is zonked so a
+-- solved expected type is shown concretely and an unsolved one renders as
+-- the stable hole @_@ (§3.1.11).
+reportUnsolvedHole :: Ctx -> Maybe Name -> Span -> Term -> CheckM ()
+reportUnsolvedHole ctx mn sp tyT = do
+  tyTz <- zonkTermM (ctxLen ctx) tyT
+  let holeName = holeSpelling mn
+      expectedR = renderTerm tyTz
+  report $
+    -- §3.2.4 kappa.hole.unsolved payload: hole identifier + expected type.
+    withPayload
+      ( withPayloadField "hole" holeName $
+          withPayloadField "expected" expectedR $
+            payloadKind "hole-unsolved"
+      )
+      $ diag SevError StageElaborate "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved") sp
+          ("hole " <> holeName <> " : " <> expectedR)
+
+-- | §3.2.4 @E_HOLE_INCONSISTENT_EXPECTED_TYPE@ / family
+-- @kappa.hole.inconsistent@: emitted when two occurrences of one named
+-- hole receive expected types that are not definitionally equal
+-- (unifying the shared type metavariable with the second occurrence's
+-- expected type failed). The diagnostic cites every occurrence of the
+-- hole (§16.3.2 MUST) and both distinct expected types.
+reportInconsistentHole :: Ctx -> Name -> Span -> NamedHole -> Value -> CheckM ()
+reportInconsistentHole ctx n sp nh expected = do
+  -- the type the earlier occurrences agreed on (the shared meta, now
+  -- solved to the first occurrence's expected type) versus this one.
+  priorT <- quoteIn ctx (nhType nh) >>= zonkTermM (ctxLen ctx)
+  thisT <- quoteIn ctx expected >>= zonkTermM (ctxLen ctx)
+  let holeName = "?" <> nameText n
+      priorR = renderTerm priorT
+      thisR = renderTerm thisT
+      -- every occurrence (nhOccs holds them most-recent first, including
+      -- this one); cite each as a use-site related origin (§3.1.1A).
+      rels = [related RoleUseSite osp ("occurrence of " <> holeName) | osp <- reverse (nhOccs nh)]
+  report $
+    withRelateds rels $
+      withPayload
+        ( withPayloadField "hole" holeName $
+            withPayloadField "expected" priorR $
+              withPayloadField "expected2" thisR $
+                payloadKind "hole-inconsistent"
+        )
+        $ diag SevError StageElaborate "E_HOLE_INCONSISTENT_EXPECTED_TYPE"
+            (Just "kappa.hole.inconsistent") sp
+            ( "named hole " <> holeName <> " is used at inconsistent expected types: "
+                <> priorR <> " and " <> thisR <> " (§16.3.2)"
+            )
+
 reportUnsupported :: Span -> Text -> CheckM ()
 reportUnsupported sp what =
   let msg = what <> " is not supported by this implementation"
@@ -3177,22 +3290,12 @@ infer ctx expr = case expr of
           else pure (CSort lvl, VSort (lvl + 1))
     | otherwise -> resolveName ctx n
   EHole mn sp -> do
-    (tm, ty) <- anyHole ctx
+    -- §16.3.2 inference direction: no expected type is known here, so the
+    -- hole's type is a fresh meta (shared across occurrences for a named
+    -- hole). It may still be solved later by unification at the use site.
+    (tm, ty, _) <- holeMetas ctx mn sp
     tyT <- quoteIn ctx ty
-    -- §3.1.11: zonk so a solved expected type is shown concretely; a
-    -- still-unsolved expected type renders as the stable hole `_`.
-    tyTz <- zonkTermM (ctxLen ctx) tyT
-    let holeName = maybe "_" (("?" <>) . nameText) mn
-        expectedR = renderTerm tyTz
-    report $
-      -- §3.2.4 kappa.hole.unsolved payload: hole identifier + expected type.
-      withPayload
-        ( withPayloadField "hole" holeName $
-            withPayloadField "expected" expectedR $
-              payloadKind "hole-unsolved"
-        )
-        $ diag SevError StageElaborate "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved") sp
-            ("hole " <> holeName <> " : " <> expectedR)
+    reportUnsolvedHole ctx mn sp tyT
     pure (tm, ty)
   EIntLit v msuf sp -> elabIntLit ctx v msuf sp Nothing
   EFloatLit v msuf sp -> elabFloatLit ctx v msuf sp Nothing
@@ -3592,6 +3695,30 @@ check :: Ctx -> Expr -> Value -> CheckM Term
 check ctx expr expected0 = do
   expected <- forceM expected0
   case (expr, expected) of
+    -- §16.3.2 a hole in checking position. The expected type is known, so
+    -- the unsolved-hole diagnostic states it directly. A named hole shares
+    -- one type metavariable across its occurrences: unifying that shared
+    -- meta with this occurrence's expected type both records the agreed
+    -- type (first occurrence) and enforces that later occurrences receive a
+    -- definitionally equal expected type. An incompatible later occurrence
+    -- fails that unification and is reported as kappa.hole.inconsistent.
+    (EHole mn sp, _) -> do
+      (tm, ty, mnh) <- holeMetas ctx mn sp
+      ok <- unify ctx ty expected
+      case (mn, mnh) of
+        (Just n, Just nh)
+          | not ok
+          , (_ : _ : _) <- nhOccs nh ->
+              -- a repeat occurrence whose expected type disagrees with the
+              -- type the earlier occurrences fixed (the shared meta is
+              -- already solved): §16.3.2 inconsistent named hole.
+              reportInconsistentHole ctx n sp nh expected
+        _ -> pure ()
+      -- report the still-unsolved hole against the (now unified) expected
+      -- type; zonk shows the concrete checking type.
+      tyT <- quoteIn ctx expected
+      reportUnsolvedHole ctx mn sp tyT
+      pure tm
     (ELambda l bs body sp, VPi Impl q _ nm dom clo)
       | not (firstImplicit bs) -> do
           let ctx' = bindCtx nm True dom ctx
@@ -12694,17 +12821,29 @@ sigHeadNames = go
       _ -> []
 
 bodyPass :: Decl -> CheckM ()
-bodyPass = \case
-  DLet mods ld sp -> elabLetDecl mods ld sp
-  DInstance inst sp -> elabInstance inst sp
-  DPattern mods ld sp -> elabActivePatternDecl mods ld sp
-  DProjection mods n bs ty body sp -> elabProjectionDecl mods n bs ty body sp
-  DDerive _ sp ->
-    unsupportedAt sp "derive declarations are not supported by this implementation"
-  DTopSplice _ sp ->
-    unsupportedAt sp "top-level splices are not supported by this implementation"
-  DUnsafeAssert akind inner sp -> elabUnsafeAssert akind inner sp
-  _ -> pure ()
+bodyPass d = do
+  -- §16.3.2 named holes do not escape their enclosing declaration: each
+  -- top-level declaration body is its own hole scope, so the same @?name@
+  -- shares one metavariable within a declaration but is independent across
+  -- declarations. Reset on entry and restore on exit (no top-level
+  -- enclosing scope today, but the save/restore keeps this robust under
+  -- any future nesting).
+  savedHoles <- gets csHoles
+  modify' $ \st -> st {csHoles = Map.empty}
+  bodyPass' d
+  modify' $ \st -> st {csHoles = savedHoles}
+  where
+    bodyPass' = \case
+      DLet mods ld sp -> elabLetDecl mods ld sp
+      DInstance inst sp -> elabInstance inst sp
+      DPattern mods ld sp -> elabActivePatternDecl mods ld sp
+      DProjection mods n bs ty body sp -> elabProjectionDecl mods n bs ty body sp
+      DDerive _ sp ->
+        unsupportedAt sp "derive declarations are not supported by this implementation"
+      DTopSplice _ sp ->
+        unsupportedAt sp "top-level splices are not supported by this implementation"
+      DUnsafeAssert akind inner sp -> elabUnsafeAssert akind inner sp
+      _ -> pure ()
 
 -- | §4.4 termination-assertion escape. The assertion is gated by the
 -- §4.2 build configuration: rejected by default (kappa.feature.gated)

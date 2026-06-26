@@ -1,0 +1,15 @@
+--! mode check
+-- §16.3.2 / §3.2.4: an unsolved hole's diagnostic MUST report its
+-- expected type. A hole in checking position knows the expected type
+-- up front (here `Bool`, the declared type of `g`), so the unsolved-hole
+-- diagnostic states it concretely in both the prose and the payload —
+-- not the stable `_` placeholder reserved for a genuinely unknown
+-- expected type.
+--! assertDiagnostic error E_HOLE_UNSOLVED
+--! assertDiagnosticMatch hole \?h : Bool
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/hole ?h
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected Bool
+module main
+
+g : Bool
+let g = ?h

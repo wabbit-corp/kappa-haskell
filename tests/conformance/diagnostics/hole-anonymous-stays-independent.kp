@@ -1,0 +1,15 @@
+--! mode check
+-- §16.3.2: `_` ALWAYS introduces a fresh hole — anonymous holes are
+-- never shared, even when written next to each other. Two `_` forced to
+-- DIFFERENT types (`Integer` and `Bool`, the components of the expected
+-- pair type) are therefore each independent: no kappa.hole.inconsistent
+-- is produced (that would mean `_` over-shared like a named hole). Each
+-- reports its own expected type. Exactly two unsolved-hole errors result.
+--! assertErrorCount 2
+--! assertDiagnostic error E_HOLE_UNSOLVED
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/hole _
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected Integer
+module main
+
+pair : (Integer, Bool)
+let pair = (_, _)

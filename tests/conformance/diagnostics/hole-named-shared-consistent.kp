@@ -1,0 +1,17 @@
+--! mode check
+-- §16.3.2 named expression holes: repeated occurrences of the same named
+-- hole within one enclosing declaration refer to the SAME metavariable
+-- (one HoleId). Here both `?h` occurrences are forced to `Integer` (the
+-- two components of the expected pair type), which is definitionally
+-- equal, so the occurrences are CONSISTENT: the only diagnostics are the
+-- two §16.3.2 "hole still unsolved" reports (one per occurrence), with no
+-- kappa.hole.inconsistent and no type mismatch. Both report the shared
+-- expected type, evidencing that they denote one unknown.
+--! assertErrorCount 2
+--! assertDiagnostic error E_HOLE_UNSOLVED
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/hole ?h
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected Integer
+module main
+
+pair : (Integer, Integer)
+let pair = (?h, ?h)
