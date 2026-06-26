@@ -103,17 +103,17 @@ rewrite. Each stage stays interp==C==LLVM byte-identical until the niche). The
 ONE ordering constraint: typed-Core head annotations are the keystone — niche AND
 the real Lint are both impossible without them.
 
-- [ ] **Stage 0 — typed-Core head annotations + observe-only Lint (KEYSTONE, do
-      first; tractable, lowest-risk).** Thread the already-computed monomorphic head
-      type onto `CMatch` (from `sTy1`, in scope at `Check.hs:8205-8285`), then the
-      ~30 `CCtor` build sites (+ `CProjAt`/`CInject`) — they carry NO type today
-      (`Core.hs:117-134`). Plus an **observe-only Lint** (`CoreOps.hs`) of one
-      property: every `CApp` head has a function type — which retires the
-      `eraseQ0Args` silent-failure mode (it would have caught the `kapp(unit,unit)`
-      crash). No backend reads the annotation → parity byte-identical. The hard
-      prerequisite for everything below.
-- [ ] **Stage 1 — §30.2.7 inhabitance query** (parallel, `Check.hs`-local, no
-      codegen change). Generalize `scrutineeEmpty` (`Check.hs:8276`) into the
+- [x] **Stage 0 — typed-Core head annotations + observe-only Lint. DONE** (merged
+      `6315758`). `CMatch`/`CCtor` carry an optional head-type field, threaded from
+      `Check.hs`; observe-only (`Eq Term` ignores it, backends don't read it) →
+      parity byte-identical 104/104. The `CoreLint.hs` Lint warns
+      `W_BACKENDIR_NON_FUNCTION_HEAD` — clean on the whole corpus, catches the
+      `kapp(unit,…)` miscompile class at compile time. The keystone for the rest.
+- [x] **Stage 1 — §30.2.7 inhabitance query. DONE** (merged `63400fb`; `Inhabitance.hs`).
+      Soundness hardened across 3 adversarial sweeps — a rigid-index hole, a
+      pre-existing existential-index hole, and a de Bruijn miscompile (all caught +
+      fixed: `a7fa3b1`, `60b81bd`, `aa5af7c`; conformance 1738→1755). It generalizes
+      `scrutineeEmpty` (`Check.hs:8276`) into the
       terminating structural `InhabitanceSummary = Empty | Subsingleton |
       Contractible | Finite n | Unknown`, keyed by `InhabitancePurpose` (Stage 1
       uses only SourceReachability; Stage 4 uses RuntimeShape — they MUST NOT

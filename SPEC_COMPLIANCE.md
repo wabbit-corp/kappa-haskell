@@ -7,7 +7,7 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 substantially self-superseded.
 
 **Status (count refreshed 2026-06-26; gap list verified 2026-06-23):**
-`kappa test tests/conformance` = **1738/1738** pass (0 fail, 0 unsupported, 0
+`kappa test tests/conformance` = **1755/1755** pass (0 fail, 0 unsupported, 0
 harness error — was 1334 at the audit; the corpus kept growing as the
 reference-repo conformance corpus was imported). The gap LIST below was verified
 against the *current* code in a parallel 9-group re-audit on 2026-06-23 (see
@@ -16,6 +16,19 @@ against the *current* code in a parallel 9-group re-audit on 2026-06-23 (see
 (referenced from [`ROADMAP.md`](ROADMAP.md) → Spec-coverage track). Since the
 audit, §14.3.4 (associated members) and §28.2 `Iterator.next` have also been
 fixed (see Appendix A).
+
+**Closed 2026-06-26** (this session; not yet struck from the §1 tables below —
+do that in the per-gap re-verify):
+- **§30.2.7 inhabitance-summary query** (§1.2, was "large") — implemented as the
+  terminating structural `Inhabitance.hs` (`Empty|Subsingleton|Contractible|Finite|
+  Unknown`); drives `case impossible`/exhaustiveness via `SourceReachability`.
+  Soundness hardened across 3 adversarial sweeps (rigid-index, existential-index,
+  + a de Bruijn miscompile of the existential-skolemize) — commits `97408fb`,
+  `a7fa3b1`, `60b81bd`, `aa5af7c`. *(Also unblocks §17.1.4 `impossible`.)*
+- **§28.2 prelude surface** (§1.4) — `DefectTag` added; `DefectInfo` reshaped to
+  `(tag : DefectTag) (message : Option String)`; `InterruptCause` ctor renamed to
+  the spec namespace; `and`/`or`/`force` exported as first-class values
+  (commit `b1dd316`).
 
 ## Scope and profile model
 
