@@ -368,9 +368,10 @@ current code + the `E_*` diagnostic-catalogue coverage.
 
 ### Known issues (not spec gaps, but tracked)
 
-- [ ] **`kp_showDouble` ≠ interpreter `show` on the last digit** for some
-      large-magnitude doubles. `show_double` (kappart.c:1207) uses the standard
-      increment-`%.*e`-until-round-trip shortest hack, which differs from Haskell's
-      Dragon4 on tie cases. Fix = vendor a correct shortest-float (Ryū) or port
-      Dragon4 with Haskell's tie-breaking (moderate). Boxed-path only (LLVM
-      diverges identically); FP tests use printer-stable values meanwhile.
+- [x] **`kp_showDouble` + `kp_intToDouble` now match the interpreter EXACTLY**
+      (commit `5736f31`, merged `3178f72`). `show_double` ports GHC's
+      `floatToDigits`/Dragon4 via GMP (the exact algorithm `show` uses);
+      `kp_intToDouble` does IEEE round-to-nearest-even (was truncating via
+      `mpz_get_d`). Verified against a GHC oracle over ~276k cases (incl. 10,944
+      exact-tie integers, bignums to 2^1000), zero mismatches; corpus 104,
+      conformance 1738.
