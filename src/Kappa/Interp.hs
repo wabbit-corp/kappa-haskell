@@ -23,6 +23,7 @@ import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThr
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
+import qualified Control.Exception as CE
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -123,6 +124,18 @@ fiberRefInit = unsafePerformIO (newIORef Map.empty)
 {-# NOINLINE fiberLocals #-}
 fiberLocals :: IORef (Map.Map ThreadId (Map.Map Int Value))
 fiberLocals = unsafePerformIO (newIORef Map.empty)
+
+-- | §18.1.12 masking: a per-fiber stack of the @restore@ wrappers handed out by
+-- enclosing 'mask' calls. The head of a thread's list is the innermost active
+-- 'mask's restore (the GHC @restore :: IO a -> IO a@ that re-enables interruption
+-- to the level that held at that 'mask's entry). The internal '__restore'
+-- primitive — which a 'mask' body invokes through its 'restore' argument — peeks
+-- the head to run an action interruptibly inside the masked region. This mirrors
+-- the runtime's OP_MASK/OP_RESTORE (rt.c), where 'restore' is a closure that
+-- resets @mask_depth@ to the mask-entry level for one subcomputation.
+{-# NOINLINE maskRestores #-}
+maskRestores :: IORef (Map.Map ThreadId [IO Value -> IO Value])
+maskRestores = unsafePerformIO (newIORef Map.empty)
 
 -- | The current fiber's value for a fiber-local cell: its override if set,
 -- else the cell's initial value.
@@ -687,6 +700,42 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     r <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
     shutdownScopeReg reg
     either throwIO pure r
+  -- §18.1.12 interruption masking. The interpreter runs fibers on GHC green
+  -- threads where interruption is an async 'Interrupt' exception, so masking
+  -- maps directly onto 'Control.Exception' masking — the oracle the native
+  -- backends (krt2_uninterruptible/krt2_mask/krt2_poll) must match.
+  --
+  -- `uninterruptible body` suppresses delivery for the whole body: a pending
+  -- interrupt is held until the region is left (uninterruptibleMask_ blocks even
+  -- the interruptible-blocking escape hatch, matching "delivery suppressed while
+  -- body executes"). This is what makes `bracketM`'s acquire register its
+  -- finalizer before a born-interrupted fiber's pending interrupt lands.
+  ("uninterruptible", [body]) ->
+    CE.uninterruptibleMask_ (runIOValue rt body)
+  -- `poll` is an explicit checkpoint: deliver a pending interrupt even inside a
+  -- masked region (allowInterrupt opens a one-instant interruptible window),
+  -- else return Unit.
+  ("poll", _) -> CE.allowInterrupt >> pure unitV
+  -- `mask f` runs `f` masked and hands it a `restore`. We push the GHC `restore`
+  -- (which re-enables interruption to the mask-entry level) onto this fiber's
+  -- restore stack so the internal '__restore' prim — invoked when the body
+  -- applies its `restore` argument — can find it. The stack is popped on every
+  -- exit path (the body is run under 'CE.finally').
+  ("__mask", [f]) -> CE.mask $ \restoreGHC -> do
+    tid <- myThreadId
+    modifyIORef' maskRestores (Map.insertWith (++) tid [restoreGHC])
+    let pop = modifyIORef' maskRestores (Map.adjust (drop 1) tid)
+    runIOValue rt (vapp ec f Expl (VPrim "__restore" [])) `CE.finally` pop
+  -- '__restore act' (supplied by `mask` as its body's `restore`): run `act` at
+  -- the interruptibility that held at the enclosing `mask`'s entry. With no
+  -- active mask (defensive — the elaborator only produces this under `mask`),
+  -- run the action unchanged.
+  ("__restore", [act]) -> do
+    tid <- myThreadId
+    rs <- readIORef maskRestores
+    case Map.lookup tid rs of
+      Just (r : _) -> r (runIOValue rt act)
+      _ -> runIOValue rt act
   -- §18.1.8 monitors: a non-destructive observer of a fiber's terminal Exit
   -- (the result cell is read, not consumed, so monitoring is independent of
   -- awaiting). demonitor drops the observation.
