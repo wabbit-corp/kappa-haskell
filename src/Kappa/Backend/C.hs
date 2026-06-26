@@ -926,13 +926,33 @@ erasedSpinePositionsP globals ctx g =
   where
     walk lvl ty =
       case force ctx ty of
-        VPi _ q _ _ _ clo ->
-          (q == Q0) : walk (lvl + 1) (closApply lvl clo)
+        VPi _ q _ _ dom clo ->
+          (q == Q0 || isKindDomain lvl dom) : walk (lvl + 1) (closApply lvl clo)
         _ -> []
     closApply lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
+    -- A parameter whose DOMAIN is a kind (@Type@, or @A -> … -> Type@) is a type
+    -- or type constructor: it is RuntimeErased (Spec §1.1.1 — types carry no
+    -- runtime representation; §11.4 — there is no typecase), so it is erasable
+    -- REGARDLESS of its quantity (a type argument need not be 'Q0').  This is the
+    -- broader half of the verdict: 'Q0' alone caught the type args that happened
+    -- to be quantity-zero, but a non-'Q0' type *application* @f a@ would still
+    -- crash as @kapp(unit,unit)@.  Crucially this NEVER erases a dictionary: a
+    -- dict's domain is a trait type @C a : Type@ — an inhabitant of a kind, not a
+    -- kind — so 'isKindDomain' is False for it (Spec §14.4: @IsTrait@ does not
+    -- imply @RuntimeErased@; a method projection is runtime-relevant).  Proofs of
+    -- a 'RuntimeErased'/'IsProp' proposition are likewise erasable, but at a
+    -- non-'Q0' position that needs the elaborator's IsProp evidence (not re-derived
+    -- here); the common Q0 proof position is already covered above.  Mirrors
+    -- 'Kappa.Check.isKindLike'.
+    isKindDomain lvl v =
+      case force ctx v of
+        VSort _ -> True
+        VPi _ _ _ _ _ clo -> isKindDomain (lvl + 1) (closApply lvl clo)
+        _ -> False
 
--- | Rewrite a global-headed application @g a0 a1 …@ so each argument at a 'Q0'
--- (erased) telescope position becomes a 'CSort' placeholder — see
+-- | Rewrite a global-headed application @g a0 a1 …@ so each argument at an
+-- ERASED (Q0 OR type-level/kind-domain) telescope position becomes a 'CSort'
+-- placeholder — see
 -- 'erasedSpinePositions' for the why.  The icities are preserved (an erased arg
 -- can be implicit or explicit); the placeholder is then erased to @kunit()@ by
 -- the existing 'compileErasableArg' path, with no new threading.  Positions past
