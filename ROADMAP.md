@@ -135,10 +135,21 @@ the real Lint are both impossible without them.
       seed. NOT per-node decoration (the reference's short-sighted, unused part).
       *Residual:* the C-only scalar-**worker** marshalling stays in `C.hs` (not
       cross-backend duplication; `scalarRep` already centralizes its discriminator).
-- [ ] **Stage 3 — §34.3.3 legality verifier + `scalarPlan` unification** (hard).
-      Promote the observe-only Lint to the §34.3.3 closed checkpoint list over the
-      annotated nodes + the rep table; fold `scalarPlan` into one `repSelect` — the
-      single source of truth for rep/§31.2-erasure legality.
+- [~] **Stage 3 — §34.3.3 legality verifier (DONE) + `scalarPlan` unification (TODO)**
+      (hard). **Verifier landed** (merged `b6cbb0b`; `Backend/Verify.hs`,
+      user-invokable `kappa verify-kbackendir [--json] FILE`, observe-only). Checks
+      the three currently-relevant §34.3.3 checkpoints: erasure-legality (generalizes
+      Stage 0's non-function-head + erased-type-form-in-runtime-slot, dual of
+      `erasedSpinePositionsP`), fixed runtime arity (`CCtor` vs `runtimeField`), and
+      layout-consistency vs `Repr` (tag-id injectivity + `ciData` back-pointer). 1199
+      programs verify clean / 0 false positives; catches `W_BACKENDIR_NON_FUNCTION_HEAD`
+      / `_ERASED_REFERENCE` / `_ARITY_MISMATCH` / `_LAYOUT_INCONSISTENT`. Deferred:
+      the runtime-profile checkpoints (handlers/fibers/atomics/multishot/§34.3.9/.11),
+      error-promotion + the §34.3.6 interpreter gate, and **`scalarPlan` unification**
+      (fold `scalarPlan` into one `repSelect` over the `Repr` table).
+      *NB:* Stage 2's `Repr.scalarRep` keyed on `gKey` (qualified) not the bare type
+      name — regressed the Int/Double scalar workers to boxing; fixed `f9e0bf4`
+      (caught by `run-native-tests.sh` perf gates, invisible to `llvm-parity`).
 - [ ] **Stage 4 — niche `Option<boxed>` + coercion-insertion pass** (last,
       hardest). The one packing the runtime can't decide blind: bare-pointer niche
       for the canonical shape, with a pass that boxes a niche value escaping into
