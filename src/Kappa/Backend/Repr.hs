@@ -58,7 +58,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Kappa.Builtins (builtinCtorTagId, kctUserBase)
-import Kappa.Core (GName, Value (..), gKey)
+import Kappa.Core (GName (..), Value (..), gKey)
 
 -- ── Runtime representation classes ───────────────────────────────────
 --
@@ -102,18 +102,22 @@ data Rep
 -- existing scalar-worker eligibility is unchanged.
 scalarRep :: Value -> Rep
 scalarRep = \case
-  VGlobN g [] -> scalarRepName (gKey g)
+  -- Match the bare NAME field of the type head, NOT 'gKey' — a prelude type's
+  -- 'gKey' is its QUALIFIED key (@"std.prelude.Double"@), whereas the historical
+  -- @scalarHeadKindV@ pattern-matched on the GName's short spelling (@"Double"@).
+  -- Keying on 'gKey' here silently classified every primitive as 'RepBoxed',
+  -- regressing the Int/Double scalar workers to allocation (R2.2/R2.4/tailsum/
+  -- scalar_doubleloop). (Ctor tag ids elsewhere DO key on 'gKey' — that is
+  -- correct for them; this is the one place the bare name is the right key.)
+  VGlobN (GName _ nm) [] -> scalarRepName nm
   _ -> RepBoxed
 
--- | The representation a primitive type NAME (its 'gKey') denotes, by spelling.
--- Factored out so a caller that already has the name (not a 'Value') can
--- consult the same table.  The name set mirrors the C backend's historical
--- @scalarHeadKindV@ exactly: @Int@/@Nat@/@Integer@ are int-represented,
--- @Float@/@Double@ are double-represented, everything else is boxed.
---
--- NOTE: the @gKey@ of a bare prelude type head is its short spelling (e.g.
--- @"Int"@), matching how @scalarHeadKindV@ pattern-matched on the @GName@'s
--- text; this preserves byte-identical behaviour.
+-- | The representation a primitive type's BARE NAME (its short spelling, the
+-- @Text@ field of the 'GName' — NOT its qualified 'gKey') denotes. Factored out
+-- so a caller that already has the name (not a 'Value') can consult the same
+-- table.  The name set mirrors the C backend's historical @scalarHeadKindV@
+-- exactly: @Int@/@Nat@/@Integer@ are int-represented, @Float@/@Double@ are
+-- double-represented, everything else is boxed.
 scalarRepName :: Text -> Rep
 scalarRepName nm
   | nm `elem` ["Int", "Nat", "Integer"] = RepInt
