@@ -37,8 +37,8 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
 2. [~] **Unboxing Stage 0** — GC/alignment contract + tag-bit API + Stage-0 go/no-go benches done; only the canonical encoding remains (it folds into Stage 1).
-3. [ ] **CPS loop family** — var-read normalization.
-4. [ ] **Unboxing Stage 1** — immediate-int tagging (the allocation win).
+3. [~] **CPS loop family** — var-read normalization. (Suspending-loop lowering in progress on a correct-base worktree.)
+4. [~] **Unboxing Stage 1** — immediate-INT tagging DONE (`addInt` 48→0 B/op, the allocation win); the `b010` immediate-ctor phase remains.
 5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
 6. [ ] **General CPS** — `ioBind` expressions (unblocks `join`/`race`/`timeout`).
 7. [ ] **Unboxing Stage 2** — worker/wrapper specialization (`Double`/FFI/fused).
@@ -180,11 +180,21 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       survives) — bytes/op bit-identical across runs. **REMAINING:** canonicalize
       `kbool`/`kunit`/`kint`/nullary-ctor encoding to a single form, which folds
       into the Stage-1 deref audit.
-- [ ] **Stage 1 — immediate-int tagging** (UNBOXING §1/§5/§7). `(i<<1)|1` in the
-      `KValue*` word for small `Int`/`Bool`/`Char`/`Unit`. **299+ deref sites in
-      `kappart.c` must tag-test** — a runtime-wide audit, not a swap. Removes the
-      per-`addInt` allocation; survives CPS parks. **Gate:** the
-      ctor-build/match-heavy go/no-go (UNBOXING §7); measure against `make bench`.
+- [~] **Stage 1 — immediate tagging** (UNBOXING §1/§5/§7). **Immediate INT (b001)
+      DONE** (commit `a074259`, merged `4cdd181`): a small Int rides the `KValue*`
+      word as `(value<<3)|b001`, a 61-bit signed immediate (the **3-bit** tag of
+      `docs/TAGGING-RESEARCH.md`, not the original `(i<<1)|1`); out-of-range escapes
+      to boxed `K_BIGINT`; `kint()` canonical (`kint_cache` retired as a carrier,
+      §5.2); `kp_*Int` + compares tag-test with `__builtin_*_overflow`->GMP +
+      canonical reduce-to-inline; Int eq/match normalizes across inline/bignum
+      (`kint_cmp`, never `klit_eq`'s tag shortcut, §5.3); the ~299-site
+      `->tag`/`->as.*` deref audit routes through `kis_imm`/`kderef` (the debug
+      assert stayed live and never fired). VERIFIED: **corpus 82/82**
+      interp==C==LLVM (incl. the §5.3 boundary test at 2^60), full native suite
+      green, **boxed `addInt` 48 -> 0 B/op** (the ~50x allocation lever; `ctor-build`
+      112 -> 64 B as its `kint` head is now immediate too), the go/no-go ctor-deref
+      tax flat in isolation. **REMAINING:** the secondary `b010` immediate-CTOR
+      (`Bool`/`Unit`/`Nil`/`None` -> 0-alloc; `ctor0-build` 48 -> 0) deferred.
 - [ ] **Stage 1.5** = the §3.3 analysis above (shared).
 - [ ] **Stage 2 — worker/wrapper specialization** (UNBOXING §1/§7). Generalize
       `scalarPlan`/`kwi_`/`kwd_` to a layout kind (`Boxed|I64|F64|FixedFFI`) on Core
