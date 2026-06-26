@@ -163,7 +163,9 @@ struct KEnv {
  *
  *     b000   a real heap KValue* pointer (zero low bits -> kderef needs NO mask)
  *     b001   immediate Int    (Stage 1: arithmetic-shifted 61-bit value)
- *     b010   immediate ctor   (Stage 1: Bool / Unit / Nil / None; id in payload)
+ *     b010   immediate ctor   (Stage 1b: EVERY nullary ctor of ANY ADT; tag id
+ *                              in the payload — Unit / True / False / Nil / None
+ *                              AND every user enum variant)
  *     b011 .. b111   RESERVED for additional immediate KINDS (e.g. immediate Char).
  *                    NOT the Perceus RC borrow / thread-shared discriminator: that
  *                    lives in the heap-object HEADER (Koka-style), since an
@@ -243,6 +245,31 @@ static inline int64_t kint_word(KValue *v) {
  * to inline by kfrom_mpz, so a surviving K_BIGINT never fits int64.) */
 static inline int kis_int_word(KValue *v) {
   return kis_imm_int(v) || (!kis_imm(v) && kderef(v)->tag == K_INT);
+}
+
+/* ── Stage 1b: immediate nullary-ctor encoding (b010) ───────────────────────
+ * EVERY nullary constructor (0 fields) — of ANY ADT — rides INSIDE the
+ * KValue*-sized word as (tagId << 3) | KIMM_CTOR.  This covers Unit, True/False,
+ * Nil, None AND every user enum variant / nullary case of a mixed ADT (a
+ * GameMode, `Quit`, …).  Construction is alloc-free and a `match` on a nullary
+ * arm is a deref-free integer compare against the tag id.  Mixed ADTs work
+ * uniformly: the immediate `None` and a boxed `Some x` both answer kctor_tagid,
+ * which reads the id from the word for a b010 and from the box for a b000.
+ * The encoding is CANONICAL (§5.2): a given nullary ctor is ALWAYS this one
+ * immediate and NEVER a surviving boxed K_CTOR/K_UNIT, so pointer-identity and
+ * rep equality can never collide between the two forms. */
+static inline int kis_imm_ctor(const KValue *v) {
+  return ((uintptr_t)v & KIMM_TAG_MASK) == KIMM_CTOR;
+}
+/* The tag id of an immediate nullary ctor (logical >> 3 drops the 3-bit tag; the
+ * id is small and non-negative, so an unsigned shift is correct). */
+static inline int kimm_ctor_id(const KValue *v) {
+  return (int)((uintptr_t)v >> 3);
+}
+/* Pack a ctor tag id as a b010 immediate KValue* word.  Only ever called for a
+ * NULLARY ctor (argc == 0); an n-ary ctor stays a boxed K_CTOR. */
+static inline KValue *kmk_imm_ctor(int tagid) {
+  return (KValue *)(((uintptr_t)(unsigned)tagid << 3) | KIMM_CTOR);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────────────── */

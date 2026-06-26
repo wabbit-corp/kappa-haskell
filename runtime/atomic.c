@@ -35,15 +35,18 @@ struct AtomicRef {
 
 static int64_t atomic_unbox(KValue *v) {
   if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1 immediate Int */
+  /* Stage 1b: Bool is now a b010 nullary immediate, not a boxed K_CTOR. */
+  if (kis_imm_ctor(v)) return kas_bool(v);
   if (kis_imm(v))
     krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
   if (v->tag == K_INT) return v->as.i;
-  if (v->tag == K_CTOR) return kas_bool(v); /* the only ctor AtomicValue is Bool */
+  if (v->tag == K_CTOR) return kas_bool(v); /* a retired boxed Bool carrier */
   krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
 }
 
 static AtomicKind atomic_kind_of(KValue *v) {
   if (kis_imm_int(v)) return AKIND_INT;         /* Stage 1 immediate Int */
+  if (kis_imm_ctor(v)) return AKIND_BOOL;       /* Stage 1b: Bool immediate */
   if (kis_imm(v))
     krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
   if (v->tag == K_INT) return AKIND_INT;

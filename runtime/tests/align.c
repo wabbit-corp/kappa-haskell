@@ -4,14 +4,19 @@
  * has its low 3 bits clear (8-byte aligned), so a real pointer never collides
  * with an immediate's tag and the low 3 bits are free for the discriminator.
  *
- * Stage 1 turns that latent budget on for Int: a small Int (61-bit range) is now
- * a b001 IMMEDIATE packed into the KValue* word ((value << 3) | KIMM_INT) — NOT
- * a heap pointer — while every other value (ctor / string / ref / Double / the
- * singletons / out-of-61-bit Int) stays an 8-aligned heap box.  This harness
- * verifies BOTH halves of the post-Stage-1 contract:
- *   - heap boxes are still 8-aligned (a missed alignment makes tagging unsound);
- *   - in-range Ints are immediates that round-trip through kas_int exactly, and
- *     out-of-range Ints fall back to an 8-aligned heap box.
+ * Stage 1 turns that latent budget on for Int: a small Int (61-bit range) is a
+ * b001 IMMEDIATE packed into the KValue* word ((value << 3) | KIMM_INT).  Stage
+ * 1b extends it to EVERY nullary ctor: a 0-field constructor of any ADT (Unit /
+ * Bool / Nil / None / a user enum variant) is a b010 IMMEDIATE ((tagId << 3) |
+ * KIMM_CTOR) — NOT a heap pointer.  Only an n-ary ctor / string / ref / Double /
+ * out-of-61-bit Int stays an 8-aligned heap box.  This harness verifies all of
+ * the post-Stage-1b contract:
+ *   - heap boxes (n-ary ctors, strings, refs) are still 8-aligned (a missed
+ *     alignment makes tagging unsound);
+ *   - in-range Ints are b001 immediates that round-trip through kas_int exactly,
+ *     and out-of-range Ints fall back to an 8-aligned heap box;
+ *   - nullary ctors are b010 immediates that round-trip through kctor_tagid and
+ *     report 0 args (kctor_argc).
  */
 #include "kappart2.h"
 #include "kappart2_harness.h"
@@ -58,14 +63,36 @@ static void boxed_int(int64_t i) {
   }
 }
 
+/* A nullary ctor must be a b010 immediate (NOT a heap pointer) carrying the
+ * tag id, with 0 args, recovered through kctor_tagid / kctor_argc. */
+static void imm_ctor(KValue *v, int tagid, const char *what) {
+  if (!kis_imm_ctor(v)) {
+    fprintf(stderr, "  FAIL: %s is not a b010 nullary immediate (%p, low3=%lu)\n",
+            what, (void *)v, (unsigned long)((uintptr_t)v & 7u));
+    fails++;
+    return;
+  }
+  if (kctor_tagid(v) != tagid) {
+    fprintf(stderr, "  FAIL: %s tagid %d, expected %d\n", what, kctor_tagid(v), tagid);
+    fails++;
+  }
+  if (kctor_argc(v) != 0) {
+    fprintf(stderr, "  FAIL: %s argc %d, expected 0\n", what, kctor_argc(v));
+    fails++;
+  }
+}
+
 int main(void) {
   krt2_new(1); /* initialize the runtime + threaded Boehm GC */
 
-  /* the immutable singletons are still heap boxes (Stage 1 keeps Unit/Bool boxed;
-   * the immediate-ctor phase is secondary/future work). */
-  aligned(kunit(), "kunit");
-  aligned(kbool(0), "kbool false");
-  aligned(kbool(1), "kbool true");
+  /* Stage 1b: the nullary builtins are now b010 IMMEDIATES, not heap boxes —
+   * one canonical representation each, alloc-free, id recovered without a deref. */
+  imm_ctor(kunit(),  KCT_UNIT,  "kunit");
+  imm_ctor(kbool(0), KCT_FALSE, "kbool false");
+  imm_ctor(kbool(1), KCT_TRUE,  "kbool true");
+  /* a user-id nullary ctor (KCT_USER_BASE+) is likewise a b010 immediate */
+  imm_ctor(kctor0(KCT_USER_BASE + 3, "GameMode.Quit"), KCT_USER_BASE + 3, "kctor0 user");
+  imm_ctor(kctor(KCT_USER_BASE + 7, "Enum.V", 0, NULL), KCT_USER_BASE + 7, "kctor argc=0");
 
   /* small ints: now b001 immediates across the former cache range and beyond */
   for (int64_t i = -300; i <= 300; i++) imm_int(i);
@@ -83,17 +110,19 @@ int main(void) {
 
   /* a churn of freshly-allocated boxes of assorted shapes, forcing the
    * thread-local freelist refill + a few collections along the way.  Note kint(i)
-   * here is an immediate (no allocation); the boxes are the ctors/strings/refs. */
+   * and the nullary kctor0 here are immediates (no allocation); the boxes are the
+   * n-ary ctor / string / ref. */
   for (int i = 0; i < 20000; i++) {
-    aligned(kctor0(0, "Tag"), "kctor0");
+    imm_ctor(kctor0(KCT_OTHER, "Tag"), KCT_OTHER, "kctor0 churn"); /* b010, no alloc */
     KValue *a[1] = {kint(i)};
-    aligned(kctor(1, "Box", 1, a), "kctor");
+    aligned(kctor(1, "Box", 1, a), "kctor");      /* 1-ary: a heap box */
     aligned(kstr0("alignment"), "kstr0");
     aligned(kref_new(kunit()), "kref_new");
   }
 
   if (fails == 0) {
-    fprintf(stderr, "PASS: align (heap boxes 8-aligned; small Ints are b001 immediates that round-trip)\n");
+    fprintf(stderr, "PASS: align (heap boxes 8-aligned; small Ints are b001 immediates; "
+                    "nullary ctors are b010 immediates — all round-trip)\n");
     return 0;
   }
   fprintf(stderr, "FAIL: align (%d contract violations)\n", fails);

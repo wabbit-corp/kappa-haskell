@@ -278,10 +278,14 @@ KValue *kchr(uint32_t scalar) {
   return r;
 }
 
-static KValue *the_unit = NULL;
+/* UNBOXING Stage 1b (§5.2): Unit is a NULLARY ctor, so it is the CANONICAL b010
+ * immediate (tag id KCT_UNIT) — never a boxed K_UNIT singleton.  This RETIRES the
+ * old `the_unit` carrier exactly as Stage 1 retired kint_cache: with one
+ * representation, pointer identity (`a == b` in kvalue_rep_eq) can never see two
+ * encodings of `()`.  The boxed K_UNIT tag remains accepted by readers (kctor_is,
+ * kctor_tagid) for forward compatibility, but the runtime never produces one. */
 KValue *kunit(void) {
-  if (!the_unit) the_unit = alloc_val(K_UNIT);
-  return the_unit;
+  return kmk_imm_ctor(KCT_UNIT);
 }
 
 /* LR2: the builtin tag ids are shared with codegen (which spells them KCT_*);
@@ -321,36 +325,35 @@ _Static_assert(KCT_USER_BASE > KCT_IT_EXTERNAL,
                "user ctor ids must not collide with the pinned builtin ids");
 
 KValue *kctor(int tagid, const char *name, int argc, KValue **args) {
+  /* UNBOXING Stage 1b (§5.1/§5.2): EVERY nullary ctor — of ANY ADT — is the
+   * CANONICAL b010 immediate carrying its tag id, alloc-free, with no surviving
+   * boxed K_CTOR for a 0-field value.  An n-ary ctor (argc > 0) stays a boxed
+   * K_CTOR (its fields need heap storage).  This generalizes the Stage-1 narrow
+   * Bool/Unit/Nil/None plan to arbitrary enum variants. */
+  if (argc == 0) return kmk_imm_ctor(tagid);
   KValue *r = alloc_val(K_CTOR);
   r->as.ctor.name = name;
   r->as.ctor.tagid = tagid;   /* LR2 numeric identity for matching */
   r->as.ctor.argc = argc;
-  if (argc) {
-    KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
-    for (int i = 0; i < argc; i++) a[i] = args[i];
-    r->as.ctor.args = a;
-  } else {
-    r->as.ctor.args = NULL;
-  }
+  KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
+  for (int i = 0; i < argc; i++) a[i] = args[i];
+  r->as.ctor.args = a;
   return r;
 }
 
 KValue *kctor0(int tagid, const char *name) {
-  /* canonicalise the nullary Unit constructor to the single K_UNIT value so
-   * Unit has one runtime representation.  kctor_tagid maps K_UNIT->KCT_UNIT,
-   * so codegen passing KCT_UNIT here is consistent even though the K_UNIT
-   * value carries no ctor.tagid field. */
-  if (strcmp(name, "std.prelude.Unit") == 0) return kunit();
-  return kctor(tagid, name, 0, NULL);
+  /* Every nullary ctor is the canonical b010 immediate (§5.2).  `name` is unused
+   * now (the immediate carries only the tag id); kept in the signature for the
+   * codegen call shape and diagnostic parity with kctor. */
+  (void)name;
+  return kmk_imm_ctor(tagid);
 }
 
-/* The two Bool constructors are immutable nullary ctors; cache them so
- * every comparison/boolean result does not allocate (static = GC root). */
-static KValue *the_true = NULL, *the_false = NULL;
+/* The two Bool constructors are nullary, so True/False are canonical b010
+ * immediates (KCT_TRUE/KCT_FALSE) — alloc-free, one representation each, never a
+ * boxed singleton (§5.2).  This RETIRES the old `the_true`/`the_false` carriers. */
 KValue *kbool(int b) {
-  if (b) { if (!the_true) the_true = kctor0(KCT_TRUE, "std.prelude.True"); return the_true; }
-  if (!the_false) the_false = kctor0(KCT_FALSE, "std.prelude.False");
-  return the_false;
+  return kmk_imm_ctor(b ? KCT_TRUE : KCT_FALSE);
 }
 
 KValue *krec(int n, const char **names, KValue **vals) {
@@ -767,34 +770,81 @@ KValue *kappi(KValue *f, KValue *x) {
 
 /* ── deconstruction ────────────────────────────────────────────────── */
 
+/* Stage 1b: a nullary builtin ctor is a b010 immediate carrying ONLY its tag id
+ * (the diagnostic `name` it was built with is gone).  Resolve that name back to
+ * the KCT id so kctor_is — a name-based identity test still used by the runtime
+ * (race/scope outcome classification) and the C harnesses — keeps working on
+ * the immediate form.  These are exactly the names the runtime passes to
+ * kctor0()/kctor(...,0,...) (the diagnostic short form AND the std.prelude.*
+ * spelling); an n-ary builtin (Success/Failure/Interrupt/Some/InterruptCause/…)
+ * is boxed and never reaches here.  -1 means "not a known builtin nullary name"
+ * (a user nullary ctor: dispatch is by id, not name). */
+static int knullary_builtin_id(const char *name) {
+  if (strcmp(name, "std.prelude.Unit")  == 0) return KCT_UNIT;
+  if (strcmp(name, "std.prelude.True")  == 0) return KCT_TRUE;
+  if (strcmp(name, "std.prelude.False") == 0) return KCT_FALSE;
+  if (strcmp(name, "std.prelude.Nil")   == 0) return KCT_NIL;
+  if (strcmp(name, "std.prelude.None")  == 0 || strcmp(name, "None") == 0) return KCT_NONE;
+  /* §18.1 race / timeout / interrupt-tag nullary outcomes (built under their
+   * diagnostic short names in rt.c/race.c/scope.c). */
+  if (strcmp(name, "TimeoutFired")  == 0) return KCT_TO_TIMED_OUT;
+  if (strcmp(name, "Requested")     == 0) return KCT_IT_REQUESTED;
+  if (strcmp(name, "ScopeShutdown") == 0) return KCT_IT_SCOPE_SHUTDOWN;
+  if (strcmp(name, "TimedOut")      == 0) return KCT_IT_TIMED_OUT;
+  if (strcmp(name, "RaceLost")      == 0) return KCT_IT_RACE_LOST;
+  if (strcmp(name, "External")      == 0) return KCT_IT_EXTERNAL;
+  return -1;
+}
+
 int kctor_is(KValue *v, const char *name) {
+  /* Stage 1b: match a nullary b010 immediate by resolving the requested name to
+   * its builtin id (the hot path is kctor_tagid; this is the name-based reader). */
+  if (kis_imm_ctor(v)) {
+    int want = knullary_builtin_id(name);
+    return want >= 0 && kimm_ctor_id(v) == want;
+  }
   if (kis_imm(v)) return 0;   /* an immediate Int is never a constructor */
-  /* Unit has two surface spellings — the canonical K_UNIT value (kunit(),
-   * yielded by IO/erased/discarded positions) and the nullary constructor
-   * `std.prelude.Unit` — so a `()` pattern must accept either. */
+  /* Unit's boxed spelling is retired as a carrier but still accepted by readers. */
   if (v->tag == K_UNIT) return strcmp(name, "std.prelude.Unit") == 0;
   return v->tag == K_CTOR && strcmp(v->as.ctor.name, name) == 0;
 }
-/* LR2: the numeric pattern-match dispatch primitive.  Unit's canonical K_UNIT
- * value reports KCT_UNIT (its dual nullary-ctor spelling carries the same id).
- * Any non-constructor value reports -1, which equals no valid tag id, so a
- * ctor pattern test on a non-ctor scrutinee fails — preserving the
+/* LR2: the numeric pattern-match dispatch primitive.  A b010 nullary-ctor
+ * immediate reports its tag id straight from the word — a deref-free integer
+ * compare, the whole point of Stage 1b.  Unit's (retired) boxed spelling still
+ * reports KCT_UNIT.  Any non-constructor value reports -1, which equals no valid
+ * tag id, so a ctor pattern test on a non-ctor scrutinee fails — preserving the
  * `v->tag == K_CTOR &&` type guard that kctor_is had. */
 int kctor_tagid(KValue *v) {
+  if (kis_imm_ctor(v)) return kimm_ctor_id(v);   /* Stage 1b: id from the word */
   if (kis_imm(v)) return -1;   /* an immediate Int matches no ctor id */
   if (v->tag == K_UNIT) return KCT_UNIT;
   if (v->tag == K_CTOR) return v->as.ctor.tagid;
   return -1;
 }
 const char *kctor_name(KValue *v) {
+  /* A nullary immediate carries no name; this is diagnostic-only, so recover the
+   * builtin names and label an unknown user nullary ctor generically. */
+  if (kis_imm_ctor(v)) {
+    switch (kimm_ctor_id(v)) {
+      case KCT_UNIT:  return "std.prelude.Unit";
+      case KCT_TRUE:  return "std.prelude.True";
+      case KCT_FALSE: return "std.prelude.False";
+      case KCT_NIL:   return "std.prelude.Nil";
+      case KCT_NONE:  return "std.prelude.None";
+      default:        return "<nullary>";
+    }
+  }
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
   return v->as.ctor.name;
 }
 int kctor_argc(KValue *v) {
+  if (kis_imm_ctor(v)) return 0;   /* Stage 1b: a nullary immediate has 0 args */
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
   return v->as.ctor.argc;
 }
 KValue *kctor_arg(KValue *v, int i) {
+  /* A b010 immediate has 0 args, so any index into it is a codegen bug. */
+  assert(!kis_imm_ctor(v) && "kctor_arg on a nullary immediate (0 args)");
   if (kis_imm(v) || v->tag != K_CTOR || i < 0 || i >= v->as.ctor.argc)
     krt_fail("kctor_arg: out of range");
   return v->as.ctor.args[i];
@@ -938,9 +988,14 @@ double kas_dbl(KValue *v) {
   return v->as.d;
 }
 int kas_bool(KValue *v) {
-  if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kas_bool: not a Bool");
-  if (v->as.ctor.tagid == KCT_TRUE) return 1;
-  if (v->as.ctor.tagid == KCT_FALSE) return 0;
+  /* Stage 1b: True/False are b010 nullary immediates — read the id from the word
+   * (no deref).  A retired boxed K_CTOR Bool is still accepted by id. */
+  int id;
+  if (kis_imm_ctor(v)) id = kimm_ctor_id(v);
+  else if (!kis_imm(v) && v->tag == K_CTOR) id = v->as.ctor.tagid;
+  else krt_fail("kas_bool: not a Bool");
+  if (id == KCT_TRUE) return 1;
+  if (id == KCT_FALSE) return 0;
   krt_fail("kas_bool: not a Bool constructor");
 }
 
