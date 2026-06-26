@@ -42,6 +42,7 @@ library
         Kappa.Backend.LLVM
         Kappa.Backend.NativeFfi
         Kappa.Backend.NativeProbe
+        Kappa.Backend.Repr
         Kappa.Builtins
         Kappa.Build.Lock
         Kappa.Build.Plan

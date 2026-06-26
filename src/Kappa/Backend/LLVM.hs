@@ -44,7 +44,7 @@ import Control.Monad (forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
-import Kappa.Builtins (builtinCtorTagId, kctUserBase)
+import qualified Kappa.Backend.Repr as Repr
 import Kappa.Check (CheckState (..))
 import Kappa.Core
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
@@ -233,8 +233,11 @@ hostCtorTags :: Map GName Term -> Map GName ResolvedNativeSymbol -> Map Text Int
 hostCtorTags bodies hostSyms =
   let bodyKeys = foldMap userCtorKeys (Map.elems bodies)
       hostKeys = Set.fromList (concatMap rnsCollectCtors (Map.elems hostSyms))
-      keys = sort (Set.toList (Set.union bodyKeys hostKeys))
-   in Map.fromList (zip keys [kctUserBase ..])
+      keys = Set.toList (Set.union bodyKeys hostKeys)
+   in -- KBackendIR Stage 2: the user-ctor numbering (sort gKeys, assign
+      -- @KCT_USER_BASE + i@) is the single authority in "Kappa.Backend.Repr",
+      -- shared with the C backend so the two agree on every id by construction.
+      Repr.assignUserCtorTags keys
 
 -- | The gKeys of every USER constructor referenced (constructed via 'CCtor' or
 -- matched via 'CPCtor') anywhere in a term.  Builtins are dropped — they do not
@@ -242,9 +245,9 @@ hostCtorTags bodies hostSyms =
 userCtorKeys :: Term -> Set Text
 userCtorKeys = goT
   where
-    user g = case builtinCtorTagId (gKey g) of
-      Just _ -> Set.empty
-      Nothing -> Set.singleton (gKey g)
+    user g
+      | Repr.isBuiltinCtor g = Set.empty -- builtins keep fixed ids; not numbered
+      | otherwise = Set.singleton (gKey g)
     goT t = case t of
       CVar {} -> Set.empty
       CGlob {} -> Set.empty
@@ -313,11 +316,13 @@ userCtorKeys = goT
 -- before codegen), so default to @kctUserBase@ rather than crash — a clean
 -- non-match at worst, never a silent collision with a builtin.
 ctorTagId :: GName -> Gen Int
-ctorTagId g = case builtinCtorTagId (gKey g) of
-  Just i -> pure i
-  Nothing -> do
-    tags <- gets gsCtorTags
-    pure (Map.findWithDefault kctUserBase (gKey g) tags)
+ctorTagId g = do
+  tags <- gets gsCtorTags
+  -- KBackendIR Stage 2: builtin-or-user tag-id resolution is the single
+  -- authority 'Repr.tagId' — the SAME resolver the C backend routes through,
+  -- so a literal @i32@ here and the C backend's @KCT_*@/@KT_*@ name resolve to
+  -- identical numbers.
+  pure (Repr.tagId tags g)
 
 -- ── String literal pool ──────────────────────────────────────────────
 
@@ -1085,13 +1090,16 @@ compileCtor g args = do
   tag <- ctorTagId g
   nameG <- internCStr (gKey g)
   let tagOp = T.pack (show tag)
-  if null args
-    then do
+  -- KBackendIR Stage 2: the nullary ⇒ canonical @b010@ immediate decision is
+  -- 'Repr.ctorLayoutByArity' (the arity-pure slice both backends act on); a
+  -- 'Repr.LayoutImmediate' ctor lowers to @kctor0@, anything else to @kctor@.
+  case Repr.ctorLayoutByArity (length args) of
+    Repr.LayoutImmediate -> do
       declRuntime "declare ptr @kctor0(i32, ptr)"
       r <- freshReg
       emit (r <> " = call ptr @kctor0(i32 " <> tagOp <> ", ptr " <> nameG <> ")")
       pure r
-    else do
+    _ -> do
       argEs <- mapM compile args
       let argc = length argEs
       arr <- freshReg
