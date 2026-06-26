@@ -1,0 +1,40 @@
+module main
+
+-- Kappa analogue: §17.1.2 / §30.2.7 must NOT over-reject a GROUND-index
+-- no-confusion just because an UNRELATED type-PARAMETER position is rigid.
+-- Under `Vec a Z` with `a` a rigid type parameter, `Cons : Vec a (S n)` cannot
+-- unify its index `S n` with the ground `Z` (a real no-confusion contradiction),
+-- so the `Cons` fiber IS Empty. The rigid `a` sits in a position that unifies
+-- fine (`a ~ a`) and is irrelevant to the index clash — it must not downgrade the
+-- verdict to Unknown. So `Cons -> impossible` (reachability) and omitting `Cons`
+-- (exhaustiveness) are BOTH accepted. This locks the param-rigid-vs-index-ground
+-- distinction (the §30.2.x over-rejection regression).
+-- Spec: §17.1.1, §17.1.2, §17.1.4, §30.2.7
+
+--! mode check
+
+data Peano : Type =
+    Z
+    S Peano
+
+data Vec (a : Type) (n : Peano) : Type =
+    Nil : Vec a Z
+    Cons : a -> Vec a n -> Vec a (S n)
+
+-- POSITIVE: `Cons -> impossible` is accepted — its fiber is Empty under `Vec a Z`
+-- even though the type parameter `a` is rigid.
+headImpossible : forall (a : Type). Vec a Z -> Int
+let headImpossible v =
+    match v
+      case Nil -> 0
+      case (Cons x xs) -> impossible
+
+-- POSITIVE: omitting the Empty-fibered `Cons` arm is exhaustive under `Vec a Z`.
+headOmit : forall (a : Type). Vec a Z -> Int
+let headOmit v =
+    match v
+      case Nil -> 0
+
+--! assertNoErrors
+--! assertType headImpossible forall (a : Type). Vec a Z -> Int
+--! assertType headOmit forall (a : Type). Vec a Z -> Int

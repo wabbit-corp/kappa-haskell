@@ -1,0 +1,39 @@
+module main
+
+-- Kappa analogue: §17.1 / §30.2.7 soundness when UNPACKING an EXISTENTIAL GADT
+-- index. `MkP : forall (s : Bool). Tag s -> P` hides an existential `s` that is
+-- NOT pinned by the result type `P`. Pattern-matching `MkP y` binds `y : Tag s`
+-- where `s` MUST stay a fresh rigid skolem (an opened existential): an inner
+-- `match y` then sees `Tag s` ABSTRACT, so each ctor's index (Tag True / Tag
+-- False) only fails to unify with the rigid `s` for THIS instantiation. The `FF`
+-- fiber is therefore Unknown, never Empty, so `FF -> impossible` is REACHABLE
+-- and MUST be rejected.
+--
+-- The exploit this guards: if `s` were instead instantiated as a destructively
+-- solvable METAvariable, the sibling `TT` arm would solve `?s := True`, and that
+-- solution would persist into the `FF` arm's reachability query, mis-classifying
+-- the genuinely-inhabited `FF` fiber as Empty. Accepting then lets
+-- `use (MkP FF)` run `impossible` over a real `FF` value.
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode check
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+data P : Type =
+    MkP : forall (s : Bool). Tag s -> P
+
+-- NEGATIVE: `FF -> impossible` is reachable under the existential `s` (FF is a
+-- genuine inhabitant of `Tag s` at s := False), so it MUST be rejected.
+use : P -> Int
+let use p =
+    match p
+      case MkP y ->
+        match y
+          case TT -> 0
+          case FF -> impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|unreachable
