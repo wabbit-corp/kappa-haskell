@@ -1,0 +1,43 @@
+module main
+
+-- §17.1 / §30.2.7 soundness — the SYMMETRIC (arm-order-flipped) companion of
+-- match-negative-existential-index-impossible-rejected.kp.
+--
+-- The original existential-index meta-leak was ORDER-DEPENDENT: when the unpacked
+-- existential `s` of `MkP : forall (s : Bool). Tag s -> P` was instantiated as a
+-- destructively-solvable METAvariable, whichever sibling arm elaborated FIRST
+-- solved `?s` (`TT` => `?s := True`, or here `FF` => `?s := False`), and that
+-- solution leaked into the OTHER arm's reachability query, mis-classifying a
+-- genuinely-inhabited fiber as Empty. So the exploit is symmetric: with the arms
+-- written `FF -> 0 ; TT -> impossible`, the leak (if present) would solve
+-- `?s := False` first and then wrongly accept `TT -> impossible` — letting
+-- `use (MkP TT)` run `impossible` over a real `TT` value.
+--
+-- The fix (commit 60b81bd) skolemizes the existential index to a rigid `VRigid`
+-- on unpack, so `y : Tag s` stays ABSTRACT regardless of arm order; each ctor's
+-- index only fails to unify with the rigid `s` for THIS instantiation, so every
+-- arm's fiber is Unknown (never Empty). Both orderings MUST therefore reject.
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode check
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+data P : Type =
+    MkP : forall (s : Bool). Tag s -> P
+
+-- NEGATIVE: `TT -> impossible` is reachable under the existential `s` (TT is a
+-- genuine inhabitant of `Tag s` at s := True), so it MUST be rejected — proving
+-- the skolemization fix is arm-order-independent.
+use : P -> Int
+let use p =
+    match p
+      case MkP y ->
+        match y
+          case FF -> 0
+          case TT -> impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|unreachable
