@@ -558,8 +558,8 @@ bodyCapturesEnv = go
       -- forces the per-iteration env rebuild.
       CApp {} | Just (_, ctorArgs) <- etaCtorApp t -> any go ctorArgs
       CApp _ f a -> go f || go a
-      CCtor _ args -> any go args
-      CMatch s alts -> go s || any goAlt alts
+      CCtor _ _ args -> any go args
+      CMatch s _ alts -> go s || any goAlt alts
       CProj e _ -> go e
       CProjAt e _ _ -> go e
       CInject _ e -> go e
@@ -835,11 +835,11 @@ scalarBodyMaySuspend susp = go
       headSusp t || case t of
         CIf c th el -> go c || go th || go el
         CApp _ a b -> go a || go b
-        CMatch s alts -> go s || any (\a -> maybe False go (caGuard a) || go (caBody a)) alts
+        CMatch s _ alts -> go s || any (\a -> maybe False go (caGuard a) || go (caBody a)) alts
         CLet _ _ _ rhs body -> go rhs || go body
         CLetRec _ _ _ rhs body -> go rhs || go body
         CDo _ _ -> True -- a do-block is an IO action: conservatively may-suspend
-        CCtor _ as -> any go as
+        CCtor _ _ as -> any go as
         CSealE _ e -> go e
         CSigT _ e -> go e
         CForceE e -> go e
@@ -922,8 +922,8 @@ typeScalarKinds g n = do
       CApp _ f a -> max (maxVar f) (maxVar a)
       CSort _ -> -1
       CLit _ -> -1
-      CCtor _ as -> maximum (-1 : map maxVar as)
-      CMatch s alts ->
+      CCtor _ _ as -> maximum (-1 : map maxVar as)
+      CMatch s _ alts ->
         maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
       CRecordT fs -> maximum (-1 : map (maxVar . snd) fs)
       CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
@@ -1513,7 +1513,7 @@ compile term = case term of
   CLit l -> compileLit l
   CApp {} -> compileApp term
   CLam _ _ _ body -> compileLam body
-  CCtor g args -> compileCtor g args
+  CCtor g _ args -> compileCtor g args
   CIf {} -> sinkToExpr term
   CMatch {} -> sinkToExpr term
   CLet {} -> sinkToExpr term
@@ -1566,7 +1566,7 @@ headGlob :: Term -> Maybe GName
 headGlob = \case
   CApp _ f _ -> headGlob f
   CGlob g -> Just g
-  CCtor g _ -> Just g
+  CCtor g _ _ -> Just g
   _ -> Nothing
 
 -- | An application spine: head term plus its arguments with icities.
@@ -1607,7 +1607,7 @@ etaCtorApp term =
       | (k, body) <- funcArity hd -- count the leading eta lambdas
       , k >= 1
       , k == length sargs
-      , CCtor g fieldVars <- body ->
+      , CCtor g _ fieldVars <- body ->
           (,) g <$> traverse (pick (map snd sargs) k) fieldVars
     _ -> Nothing
   where
@@ -2404,7 +2404,7 @@ workerMayBounceUncached g n = tailMay
   where
     tailMay term = case term of
       CIf _ t e -> orM [tailMay t, tailMay e]
-      CMatch _ alts -> orM [tailMay b | CaseAlt _ _ b <- alts]
+      CMatch _ _ alts -> orM [tailMay b | CaseAlt _ _ b <- alts]
       CLet _ _ _ _ body -> tailMay body
       CLetRec _ _ _ _ body -> tailMay body
       _
@@ -2706,7 +2706,7 @@ cpsNodeApp term = do
 consume :: Sink -> Term -> Gen ()
 consume sink term = case term of
   CIf c t e -> consumeIf sink c t e
-  CMatch scrut alts -> consumeMatch sink scrut alts
+  CMatch scrut _ alts -> consumeMatch sink scrut alts
   CLet _ _ _ rhs body -> do
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
@@ -3074,8 +3074,8 @@ termGlobals = goT
       CApp _ a b -> goT a <> goT b
       CSort {} -> Set.empty
       CLit {} -> Set.empty
-      CCtor g args -> Set.insert g (goAll args)
-      CMatch s alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
+      CCtor g _ args -> Set.insert g (goAll args)
+      CMatch s _ alts -> goT s <> mconcat [maybe Set.empty goT (caGuard a) <> goT (caBody a) | a <- alts]
       CRecordT fs -> goAll (map snd fs)
       CRecordV fs -> goAll (map snd fs)
       CProj e _ -> goT e
@@ -3435,7 +3435,7 @@ termHasVarRead term = do
     Just _ -> pure True
     Nothing -> case term of
       CApp _ f a -> (||) <$> termHasVarRead f <*> termHasVarRead a
-      CCtor _ args -> orM (map termHasVarRead args)
+      CCtor _ _ args -> orM (map termHasVarRead args)
       CProj e _ -> termHasVarRead e
       CProjAt e _ _ -> termHasVarRead e
       CRecordV fs -> orM (map (termHasVarRead . snd) fs)
@@ -3507,7 +3507,7 @@ collectReads term = do
     Just i -> pure [i]
     Nothing -> case term of
       CApp _ f a -> (++) <$> collectReads f <*> collectReads a
-      CCtor _ args -> concat <$> mapM collectReads args
+      CCtor _ _ args -> concat <$> mapM collectReads args
       CProj e _ -> collectReads e
       CProjAt e _ _ -> collectReads e
       CRecordV fs -> concat <$> mapM (collectReads . snd) fs
@@ -3533,9 +3533,9 @@ rewriteReads n t0 = fst <$> runRW 0 t0
             (f', j') <- runRW j f
             (a', j'') <- runRW j' a
             pure (CApp ic f' a', j'')
-          CCtor g args -> do
+          CCtor g ann args -> do
             (args', j') <- runList j args
-            pure (CCtor g args', j')
+            pure (CCtor g ann args', j')
           CProj e f -> do (e', j') <- runRW j e; pure (CProj e' f, j')
           CProjAt e f i -> do (e', j') <- runRW j e; pure (CProjAt e' f i, j')
           CRecordV fs -> do

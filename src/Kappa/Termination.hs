@@ -145,8 +145,8 @@ instantiateByLevelMaybe oldDepth _callDepth subst = go oldDepth
       CApp ic f a -> CApp ic <$> go curDepth f <*> go curDepth a
       CSort u -> Just (CSort u)
       CLit l -> Just (CLit l)
-      CCtor cg as -> CCtor cg <$> traverse (go curDepth) as
-      CMatch s alts -> CMatch <$> go curDepth s <*> traverse goAlt alts
+      CCtor cg ann as -> CCtor cg <$> traverse (go curDepth) ann <*> traverse (go curDepth) as
+      CMatch s ann alts -> CMatch <$> go curDepth s <*> traverse (go curDepth) ann <*> traverse goAlt alts
         where
           goAlt (CaseAlt pat gd b) =
             CaseAlt pat
@@ -181,20 +181,20 @@ simplifyDecisionTerm = go
             t' = go t
             e' = go e
          in case (c', t', e') of
-              (CCtor g [], _, _) | g == prelTrue -> t'
-              (CCtor g [], _, _) | g == prelFalse -> e'
-              (_, CCtor gt [], CCtor gf []) | gt == prelTrue, gf == prelFalse -> c'
+              (CCtor g _ [], _, _) | g == prelTrue -> t'
+              (CCtor g _ [], _, _) | g == prelFalse -> e'
+              (_, CCtor gt _ [], CCtor gf _ []) | gt == prelTrue, gf == prelFalse -> c'
               _ -> CIf c' t' e'
-      CMatch (CIf c t e) alts | all ((== 0) . patBindersC . caPat) alts ->
-        go (CIf c (CMatch t alts) (CMatch e alts))
-      CMatch s alts ->
+      CMatch (CIf c t e) ann alts | all ((== 0) . patBindersC . caPat) alts ->
+        go (CIf c (CMatch t ann alts) (CMatch e ann alts))
+      CMatch s ann alts ->
         let s' = go s
             alts' = [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
-         in fromMaybe (CMatch s' alts') (reduceSimpleMatch s' alts')
+         in fromMaybe (CMatch s' ann alts') (reduceSimpleMatch s' alts')
       CApp ic f a -> CApp ic (go f) (go a)
       CLam ic q n b -> CLam ic q n (go b)
       CPi ic q brw n a b -> CPi ic q brw n (go a) (go b)
-      CCtor g as -> CCtor g (map go as)
+      CCtor g ann as -> CCtor g ann (map go as)
       CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
       CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
       CProj e f -> CProj (go e) f
@@ -227,7 +227,7 @@ simplifyDecisionTerm = go
       (CPWild, _) -> Just True
       (CPVar _, _) -> Just True
       (CPLit l, CLit l') -> Just (l == l')
-      (CPCtor g ps, CCtor g' as)
+      (CPCtor g ps, CCtor g' _ as)
         | g /= g' -> Just False
         | length ps == length as -> allDecisions (zipWith simplePatDecision ps as)
         | otherwise -> Just False
@@ -378,8 +378,8 @@ boolRel d t0 = case simplifyDecisionTerm t0 of
         Nothing -> Nothing
     _ -> Nothing
   where
-    isTrueTm = \case CCtor g [] -> g == prelTrue; _ -> False
-    isFalseTm = \case CCtor g [] -> g == prelFalse; _ -> False
+    isTrueTm = \case CCtor g _ [] -> g == prelTrue; _ -> False
+    isFalseTm = \case CCtor g _ [] -> g == prelFalse; _ -> False
     combineOr (AFact ACmpLt a b) (AFact ACmpEq a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr (AFact ACmpEq a b) (AFact ACmpLt a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr _ _ = Nothing

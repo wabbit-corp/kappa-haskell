@@ -49,6 +49,7 @@ import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
 import Kappa.Core (GName (..), Term, gnameText)
+import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
 import Kappa.Parser (parseModule)
@@ -709,7 +710,15 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                 (\tm -> evalState (zonkTermM 0 tm) finalSt)
                 (csCoreBodies finalSt)
           }
-   in CompiledUnit finalSt' allDiags lastName allTrace
+      -- KBackendIR Stage 0: an OBSERVE-ONLY lint over the elaborated,
+      -- zonked Core. It only appends 'SevWarning' diagnostics — it never
+      -- changes 'finalSt'' or codegen — so byte-identical backend output and
+      -- conformance fixtures are unaffected. On a well-typed corpus it emits
+      -- nothing; it exists to surface ill-typed application heads (the
+      -- @kapp(unit, …)@ crash class) as a diagnostic rather than a crash.
+      lintDiags =
+        lintCoreBodies (csGlobals finalSt') (csMetas finalSt') (csCoreBodies finalSt')
+   in CompiledUnit finalSt' (allDiags ++ lintDiags) lastName allTrace
 
 renderModuleName :: ModuleName -> Text
 renderModuleName (ModuleName segs) = T.intercalate "." segs

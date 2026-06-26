@@ -51,6 +51,7 @@ library
         Kappa.Check
         Kappa.Config
         Kappa.Core
+        Kappa.CoreLint
         Kappa.CoreOps
         Kappa.Diagnostic
         Kappa.Eval

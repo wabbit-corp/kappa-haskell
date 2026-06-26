@@ -123,8 +123,11 @@ eval ctx env = \case
   CApp ic f a -> vapp ctx (eval ctx env f) ic (eval ctx env a)
   CSort n -> VSort n
   CLit l -> VLit l
-  CCtor g args -> VCtor g (map (eval ctx env) args)
-  CMatch scrut alts ->
+  -- the Stage 0 head-type annotation is observe-only and is not represented
+  -- in the 'Value' domain, so evaluation drops it (and a quote/eval roundtrip
+  -- yields 'Nothing'); see 'Kappa.Core' for the contract.
+  CCtor g _ args -> VCtor g (map (eval ctx env) args)
+  CMatch scrut _ alts ->
     reduceMatch ctx (eval ctx env scrut) alts env
   CRecordT fs -> VRecordT [(n, eval ctx env t) | (n, t) <- fs]
   CRecordV fs -> VRecordV [(n, eval ctx env t) | (n, t) <- fs]
@@ -456,7 +459,9 @@ quote ctx lvl v = case forceQ ctx v of
     CPi ic q brw n (quote ctx lvl a) (quote ctx (lvl + 1) (closApply ctx clo (VRigid lvl [])))
   VSort n -> CSort n
   VLit l -> CLit l
-  VCtor g args -> CCtor g (map (quote ctx lvl) args)
+  -- the Value domain carries no head-type annotation, so a quoted ctor has
+  -- 'Nothing'; the annotation is a fresh-elaboration-only artifact.
+  VCtor g args -> CCtor g Nothing (map (quote ctx lvl) args)
   VRecordT fs -> CRecordT [(n, quote ctx lvl t) | (n, t) <- fs]
   VRecordV fs -> CRecordV [(n, quote ctx lvl t) | (n, t) <- fs]
   VVariantT ms -> CVariantT (map (quote ctx lvl) ms)
@@ -464,7 +469,7 @@ quote ctx lvl v = case forceQ ctx v of
   VMatchN scrut alts env ->
     -- Stuck match: quote scrutinee, keep alts with their env baked in
     -- only when env is empty; otherwise approximate via fresh rigids.
-    CMatch (quote ctx lvl scrut) (map (quoteAlt env) alts)
+    CMatch (quote ctx lvl scrut) Nothing (map (quoteAlt env) alts)
   VProjN e f -> CProj (quote ctx lvl e) f
   VSealV ls x -> CSealE ls (quote ctx lvl x)
   VSigT ls x -> CSigT ls (quote ctx lvl x)

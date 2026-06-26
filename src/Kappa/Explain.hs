@@ -635,6 +635,8 @@ registry =
       "A native binding's foreign-call classification requires a runtime capability the backend profile does not advertise (e.g. a 'blocking-cancellable' binding needs a safe-cancellation capability the native profile lacks); the binding is rejected rather than executed with weakened semantics (Spec §26.1.4, §27.6)."
   , ent "E_BACKEND_INTRINSIC_SIGNATURE_MISMATCH" (Just "kappa-hs.backend.intrinsic")
       "An 'expect term' whose name matches a native backend host-binding intrinsic declares a type that does not match the intrinsic's signature up to definitional equality (Spec §9.4, §34.5)."
+  , ent "W_BACKENDIR_NON_FUNCTION_HEAD" (Just "kappa-hs.backendir.non-function-head")
+      "An observe-only KBackendIR lint found a value application whose head is statically a non-function value (e.g. an erased/unit-valued term or a saturated constructor). Such a term would lower to an ill-typed 'kapp(unit, …)' call; this warning surfaces it without changing codegen."
   ]
   where
     -- §3.1.2A registry metadata is derived uniformly from the code and

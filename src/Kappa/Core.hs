@@ -114,8 +114,21 @@ data Term
   | CSort !Int -- ^ @Type u@
   | CLit !Literal
   -- Data and pattern matching --------------------------------------------
-  | CCtor !GName ![Term] -- ^ saturated constructor application
-  | CMatch !Term ![CaseAlt]
+  -- | Saturated constructor application. The optional 'Term' is the
+  -- KBackendIR Stage 0 /head-type annotation/: the constructor's
+  -- instantiated, monomorphic head type as a quoted Core type term
+  -- (e.g. @Option Int@ rather than the polymorphic @Option a@), or
+  -- 'Nothing' where the concrete head was not in scope at the build
+  -- site. It is observe-only metadata: NO backend reads it, and
+  -- conversion\/'Eq' must ignore it (see 'Eq' instance note below), so
+  -- it can never change tag ids, codegen, or evaluation.
+  | CCtor !GName !(Maybe Term) ![Term]
+  -- | Pattern match. The optional 'Term' is the KBackendIR Stage 0
+  -- annotation: the scrutinee's monomorphic type as a quoted Core type
+  -- term (populated from the elaborator's @sTy1@). Like 'CCtor's
+  -- annotation it is observe-only — backends ignore it and 'Eq'\/
+  -- conversion drop it.
+  | CMatch !Term !(Maybe Term) ![CaseAlt]
   -- Records --------------------------------------------------------------
   | CRecordT ![(Text, Term)] -- ^ canonical (lexicographic) field order
   | CRecordV ![(Text, Term)]
@@ -148,7 +161,49 @@ data Term
   -- Conditional and metaprogramming --------------------------------------
   | CIf !Term !Term !Term
   | CQuote !QuotedSyntax ![Term] -- ^ §21.1 syntax quote: payload + in-quote splice slots
-  deriving stock (Eq, Show)
+  deriving stock (Show)
+
+-- | Structural equality on 'Term'.
+--
+-- Hand-written rather than derived for ONE reason: the KBackendIR Stage 0
+-- head-type annotations on 'CCtor' and 'CMatch' are observe-only metadata
+-- and MUST NOT participate in term identity. Two terms that differ only in
+-- their annotation are the same term for every existing client (conversion
+-- caches, quote-payload comparison, dedup), so we compare the structural
+-- fields and deliberately drop the annotation. Every other constructor is
+-- compared field-by-field exactly as the derived instance would.
+instance Eq Term where
+  CVar a == CVar a' = a == a'
+  CGlob a == CGlob a' = a == a'
+  CLam a b c d == CLam a' b' c' d' = a == a' && b == b' && c == c' && d == d'
+  CPi a b c d e f == CPi a' b' c' d' e' f' =
+    a == a' && b == b' && c == c' && d == d' && e == e' && f == f'
+  CApp a b c == CApp a' b' c' = a == a' && b == b' && c == c'
+  CSort a == CSort a' = a == a'
+  CLit a == CLit a' = a == a'
+  -- annotation (the 'Maybe Term') is intentionally NOT compared
+  CCtor g _ as == CCtor g' _ as' = g == g' && as == as'
+  CMatch s _ alts == CMatch s' _ alts' = s == s' && alts == alts'
+  CRecordT a == CRecordT a' = a == a'
+  CRecordV a == CRecordV a' = a == a'
+  CProj a b == CProj a' b' = a == a' && b == b'
+  CProjAt a b c == CProjAt a' b' c' = a == a' && b == b' && c == c'
+  CVariantT a == CVariantT a' = a == a'
+  CInject a b == CInject a' b' = a == a' && b == b'
+  CLet a b c d e == CLet a' b' c' d' e' =
+    a == a' && b == b' && c == c' && d == d' && e == e'
+  CLetRec a b c d e == CLetRec a' b' c' d' e' =
+    a == a' && b == b' && c == c' && d == d' && e == e'
+  CMeta a == CMeta a' = a == a'
+  CDo a b == CDo a' b' = a == a' && b == b'
+  CSealE a b == CSealE a' b' = a == a' && b == b'
+  CSigT a b == CSigT a' b' = a == a' && b == b'
+  CThunkE a == CThunkE a' = a == a'
+  CLazyE a == CLazyE a' = a == a'
+  CForceE a == CForceE a' = a == a'
+  CIf a b c == CIf a' b' c' = a == a' && b == b' && c == c'
+  CQuote a b == CQuote a' b' = a == a' && b == b'
+  _ == _ = False
 
 -- | A free object-language binder captured by a syntax quote (§21.4
 -- hidden syntax-scope metadata): the fresh hygienic spelling used in

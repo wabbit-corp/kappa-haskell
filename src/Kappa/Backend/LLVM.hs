@@ -253,8 +253,8 @@ userCtorKeys = goT
       CApp _ a b -> goT a <> goT b
       CSort {} -> Set.empty
       CLit {} -> Set.empty
-      CCtor g args -> user g <> foldMap goT args
-      CMatch s alts -> goT s <> foldMap goAlt alts
+      CCtor g _ args -> user g <> foldMap goT args
+      CMatch s _ alts -> goT s <> foldMap goAlt alts
       CRecordT fs -> foldMap (goT . snd) fs
       CRecordV fs -> foldMap (goT . snd) fs
       CProj e _ -> goT e
@@ -754,9 +754,9 @@ compile term = case term of
   CThunkE e -> compileSuspension 0 e
   CLazyE e -> compileSuspension 1 e
   CForceE e -> compileForce e
-  CCtor g args -> compileCtor g args
+  CCtor g _ args -> compileCtor g args
   CIf c t e -> compileIf c t e
-  CMatch scrut alts -> compileMatch scrut alts
+  CMatch scrut _ alts -> compileMatch scrut alts
   CDo lbl items -> compileDo lbl items
   -- Records (Milestone H) — a record VALUE, a name-based projection, and a
   -- precomputed-offset projection.  All three are plain values, so 'compileTail'
@@ -822,7 +822,7 @@ compileTail term = case term of
     modify' $ \g -> g {gsEnv = env0}
     pure bv
   CIf c t e -> compileIfWith compileTail c t e
-  CMatch scrut alts -> compileMatchWith compileTail scrut alts
+  CMatch scrut _ alts -> compileMatchWith compileTail scrut alts
   -- Milestone J: a recursive local let whose BODY is in tail position — thread
   -- the tail-ness through to the body (the body-compiler is 'compileTail') so a
   -- tail self-call inside it still lowers to a @kbounce@ and deep local
@@ -2235,8 +2235,8 @@ shiftTerm d = goT
       CApp ic f a -> CApp ic (goT c f) (goT c a)
       CSort u -> CSort u
       CLit l -> CLit l
-      CCtor g as -> CCtor g (map (goT c) as)
-      CMatch s alts -> CMatch (goT c s) (map (goAlt c) alts)
+      CCtor g ann as -> CCtor g (fmap (goT c) ann) (map (goT c) as)
+      CMatch s ann alts -> CMatch (goT c s) (fmap (goT c) ann) (map (goAlt c) alts)
       CRecordT fs -> CRecordT [(k, goT c v) | (k, v) <- fs]
       CRecordV fs -> CRecordV [(k, goT c v) | (k, v) <- fs]
       CProj e f -> CProj (goT c e) f
@@ -2303,7 +2303,7 @@ liftFirstSplice t0
           Nothing -> case go a of
             Just (act, a') -> Just (act, CApp ic (shiftTerm 1 0 f) a')
             Nothing -> Nothing
-        CCtor g as -> goList as (CCtor g)
+        CCtor g ann as -> goList as (CCtor g (fmap (shiftTerm 1 0) ann))
         CIf c th el -> case go c of
           Just (act, c') -> Just (act, CIf c' (shiftTerm 1 0 th) (shiftTerm 1 0 el))
           Nothing -> Nothing
@@ -3146,7 +3146,7 @@ etaCtorApp term =
       | (k, body) <- funcArity hd
       , k >= 1
       , k == length sargs
-      , CCtor g fieldVars <- body ->
+      , CCtor g _ fieldVars <- body ->
           (,) g <$> traverse (pick (map snd sargs) k) fieldVars
     _ -> Nothing
   where

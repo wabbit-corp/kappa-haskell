@@ -37,10 +37,10 @@ renderTerm = go 0
       CSort 0 -> "Type"
       CSort n -> "Type" <> tshow n
       CLit l -> renderLit l
-      CCtor g args
+      CCtor g _ args
         | null args -> gnameText g
         | otherwise -> paren (p > 1) (T.unwords (gnameText g : map (go 2) args))
-      CMatch s _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
+      CMatch s _ _ -> paren (p > 0) ("match " <> go 0 s <> " ...")
       -- §3.1.11 / §13.2.11: internal existential labels (`⟨wit_i⟩`,
       -- `⟨payload⟩`) are not source-addressable fields. They are hidden
       -- from user-facing renderings — a record carrying only such labels
