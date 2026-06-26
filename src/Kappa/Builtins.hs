@@ -81,10 +81,11 @@ module Kappa.Builtins
   , prelFail
   , prelInterrupt
   , prelDefect
-  , prelMkDefectInfo
+  , prelDefectInfo
+  , prelOtherDefect
   , prelBoth
   , prelThen
-  , prelMkInterruptCause
+  , prelInterruptCause
   , prelTimedOut
   , prelRequested
   , prelScopeShutdown
@@ -296,12 +297,16 @@ prelSuccess = gPrel "Success"
 prelFailure = gPrel "Failure"
 
 -- | The §18 @Cause@ constructors (a failed/interrupted/defected outcome)
--- and their payload builders.
-prelFail, prelInterrupt, prelDefect, prelMkDefectInfo :: GName
+-- and their payload builders. Per §28.2 the @DefectInfo@ ctor is spelled
+-- @DefectInfo@ (carrying a 'DefectTag' + an @Option String@ message), and
+-- 'prelOtherDefect' is the catch-all 'DefectTag' the interpreter tags an
+-- otherwise-unclassified host failure with.
+prelFail, prelInterrupt, prelDefect, prelDefectInfo, prelOtherDefect :: GName
 prelFail = gPrel "Fail"
 prelInterrupt = gPrel "Interrupt"
 prelDefect = gPrel "Defect"
-prelMkDefectInfo = gPrel "MkDefectInfo"
+prelDefectInfo = gPrel "DefectInfo"
+prelOtherDefect = gPrel "OtherDefect"
 
 -- | The §18.1 binary @Cause@ combinators the runtime builds (parallel/
 -- sequential aggregation of failures: @await@ on a both-failed scope, etc.).
@@ -309,9 +314,12 @@ prelBoth, prelThen :: GName
 prelBoth = gPrel "Both"
 prelThen = gPrel "Then"
 
--- | The §18.1.8 interrupt-cause record builder and its @TimedOut@ tag.
-prelMkInterruptCause, prelTimedOut :: GName
-prelMkInterruptCause = gPrel "MkInterruptCause"
+-- | The §18.1.8 interrupt-cause record builder and its @TimedOut@ tag. Per
+-- §28.2 the ctor is spelled @InterruptCause@ (matching the type); its runtime
+-- id is unchanged (still KCT_MK_INTERRUPT_CAUSE = 22), only the surface name
+-- moved, so dispatch by id continues to agree with the runtime.
+prelInterruptCause, prelTimedOut :: GName
+prelInterruptCause = gPrel "InterruptCause"
 prelTimedOut = gPrel "TimedOut"
 
 -- | The remaining §18.1.2 @InterruptTag@ constructors (the @TimedOut@ tag
@@ -574,8 +582,9 @@ wiredInPreludeNames =
     , (prelFail, BKCtor)
     , (prelInterrupt, BKCtor)
     , (prelDefect, BKCtor)
-    , (prelMkDefectInfo, BKCtor)
-    , (prelMkInterruptCause, BKCtor)
+    , (prelDefectInfo, BKCtor)
+    , (prelOtherDefect, BKCtor)
+    , (prelInterruptCause, BKCtor)
     , (prelTimedOut, BKCtor)
     -- §18.1.2 InterruptTag constructors the runtime pins by id (Requested/
     -- ScopeShutdown/RaceLost/External; TimedOut is above). Real prelude ctors
@@ -672,7 +681,7 @@ runtimeCtors =
   , RuntimeCtor prelRORight 19 "KCT_RO_RIGHT"
   , RuntimeCtor prelTOTimedOut 20 "KCT_TO_TIMED_OUT"
   , RuntimeCtor prelTOExit 21 "KCT_TO_EXIT"
-  , RuntimeCtor prelMkInterruptCause 22 "KCT_MK_INTERRUPT_CAUSE"
+  , RuntimeCtor prelInterruptCause 22 "KCT_MK_INTERRUPT_CAUSE"
   , RuntimeCtor prelRequested 23 "KCT_IT_REQUESTED"
   , RuntimeCtor prelScopeShutdown 24 "KCT_IT_SCOPE_SHUTDOWN"
   , RuntimeCtor prelTimedOut 25 "KCT_IT_TIMED_OUT"

@@ -799,6 +799,29 @@ preludeSource =
     , "(||) : Bool -> Thunk Bool -> Bool"
     , "let (||) lhs rhs = if lhs then True else force rhs"
     , ""
+    , -- §28.2 n-ary boolean folds over a `List Bool`. `and` is the conjunction
+      -- (True over the empty list), `or` the disjunction (False over empty);
+      -- both short-circuit. Unlike `(&&)`/`(||)` these are nameable first-class
+      -- terms (no Thunk in their signature), so `and`/`or` may be passed around.
+      "and : List Bool -> Bool"
+    , "let and xs ="
+    , "    match xs"
+    , "    case Nil -> True"
+    , "    case b :: rest -> if b then and rest else False"
+    , ""
+    , "or : List Bool -> Bool"
+    , "let or xs ="
+    , "    match xs"
+    , "    case Nil -> False"
+    , "    case b :: rest -> if b then True else or rest"
+    , ""
+    , -- §28.2 `force` as a first-class term: the keyword `force e` evaluates a
+      -- suspension in place, but the bare name `force` is also a nameable value
+      -- (e.g. `map force thunks`). The body uses the keyword form (it is applied
+      -- to the argument `t`), so this binds the NAME `force` to that function.
+      "force : forall (a : Type). Thunk a -> a"
+    , "let force t = force t"
+    , ""
     , "trait Show (a : Type) ="
     , "    show : a -> String"
     , ""
@@ -1347,11 +1370,31 @@ preludeSource =
     , "data FiberId : Type ="
     , "    MkFiberId Integer"
     , ""
-    , "data InterruptCause : Type ="
-    , "    MkInterruptCause InterruptTag (Option FiberId)"
+    , -- §28.2 constructor namespace: the InterruptCause type's single ctor is
+      -- spelled `InterruptCause` (matching the type), not `MkInterruptCause`.
+      -- The runtime builds this value by its pinned id (KCT_MK_INTERRUPT_CAUSE),
+      -- so the rename is purely at the prelude surface; the id is unchanged.
+      "data InterruptCause : Type ="
+    , "    InterruptCause InterruptTag (Option FiberId)"
     , ""
-    , "data DefectInfo : Type ="
-    , "    MkDefectInfo (message : String)"
+    , -- §28.2 defect classification: a defect's structured tag, used to project
+      -- a host/runtime failure into a known category. `OtherDefect` is the
+      -- catch-all for an unclassified host exception.
+      "data DefectTag : Type ="
+    , "    Panic"
+    , "    AssertionFailed"
+    , "    ArithmeticFault"
+    , "    StackOverflow"
+    , "    OutOfMemory"
+    , "    HostFailure"
+    , "    ForeignContractViolation"
+    , "    UnhandledChildFailure"
+    , "    OtherDefect"
+    , ""
+    , -- §28.2: a defect carries a classifying tag plus an optional diagnostic
+      -- message (None when no human-readable text is available).
+      "data DefectInfo : Type ="
+    , "    DefectInfo (tag : DefectTag) (message : Option String)"
     , ""
     , "data Cause (e : Type) : Type ="
     , "    Fail e"
@@ -1411,10 +1454,10 @@ preludeSource =
     , "let interruptForkAs cause fib = __interruptNoWait cause fib"
     , ""
     , "interrupt : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
-    , "let interrupt fib = __interruptWait (MkInterruptCause Requested None) fib"
+    , "let interrupt fib = __interruptWait (InterruptCause Requested None) fib"
     , ""
     , "interruptFork : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
-    , "let interruptFork fib = __interruptNoWait (MkInterruptCause Requested None) fib"
+    , "let interruptFork fib = __interruptNoWait (InterruptCause Requested None) fib"
     , ""
     , -- §18.1.6 race result + the typed timeout error.
       "data RaceResult (a : Type) (b : Type) : Type ="

@@ -19,5 +19,5 @@ let main = do
     ex <- await s
     match ex
     case Success v -> printlnString "completed"
-    case Failure (Interrupt (MkInterruptCause Requested by)) -> printlnString "interrupt:Requested"
+    case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupt:Requested"
     case Failure c -> printlnString "other"

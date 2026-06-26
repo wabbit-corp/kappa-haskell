@@ -1,0 +1,67 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "other\nboom\nFalse\nTrue\n7\n9\nFalse\nTrue\n"
+
+-- §28.2 prelude surface: the DefectTag/DefectInfo/InterruptCause shapes and
+-- the first-class boolean folds `and`/`or` plus the `force` value. Exercises
+-- construction, projection, and use-as-value at runtime so the interpreter and
+-- both native backends must agree (this file is also run under llvm-parity).
+
+module main
+
+-- §28.2 DefectTag: a value built + matched.
+tagName : DefectTag -> String
+let tagName t =
+    match t
+    case Panic -> "panic"
+    case OtherDefect -> "other"
+    case _ -> "?"
+
+-- §28.2 DefectInfo new shape: ctor `DefectInfo (tag) (Option String)`.
+di : DefectInfo
+let di = DefectInfo OtherDefect (Some "boom")
+
+diMsg : DefectInfo -> Option String
+let diMsg d = match d case DefectInfo tag msg -> msg
+
+diTag : DefectInfo -> DefectTag
+let diTag d = match d case DefectInfo tag msg -> tag
+
+-- §28.2 InterruptCause ctor spelled `InterruptCause` (matches the type).
+ic : InterruptCause
+let ic = InterruptCause Requested None
+
+icTag : InterruptCause -> InterruptTag
+let icTag c = match c case InterruptCause tag by -> tag
+
+isRequested : InterruptTag -> Bool
+let isRequested t = match t case Requested -> True case _ -> False
+
+-- §28.2 n-ary boolean folds.
+ands : Bool
+let ands = and (True :: False :: True :: Nil)
+
+ors : Bool
+let ors = or (False :: True :: Nil)
+
+-- empty-list identities: and [] = True, or [] = False.
+andEmpty : Bool
+let andEmpty = and Nil
+
+orEmpty : Bool
+let orEmpty = or Nil
+
+-- §28.2 `force` usable as a first-class value (passed to a higher-order fn).
+forceFn : Thunk Integer -> Integer
+let forceFn = force
+
+main : UIO Unit
+let main = do
+    printlnString (tagName (diTag di))            -- other
+    printlnString (orElse (diMsg di) "none")      -- boom
+    println ands                                   -- False
+    println ors                                    -- True
+    printlnString (showInt (forceFn (thunk 7)))   -- 7
+    printlnString (showInt (force (thunk 9)))     -- 9 (keyword form)
+    println (and (orEmpty :: ands :: Nil))        -- False
+    println (isRequested (icTag ic))              -- True
