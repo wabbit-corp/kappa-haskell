@@ -1,0 +1,21 @@
+--! mode check
+--! assertDiagnostic error E_RECOVERY_SKIPPED_INVALID_SYNTAX
+--! assertDiagnosticPayload error E_RECOVERY_SKIPPED_INVALID_SYNTAX /payload/kind recovery-node
+--! assertDiagnosticPayload error E_RECOVERY_SKIPPED_INVALID_SYNTAX /payload/recoverySite declaration
+--! assertDiagnosticPayload error E_RECOVERY_SKIPPED_INVALID_SYNTAX /code E_RECOVERY_DECLARATION_SKIPPED
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.1.4 portable diagnostic-code alias: declaration-skip recovery
+-- (Parser.hs 'recoverDecl', the non-misindent branch) MUST expose the
+-- portable alias E_RECOVERY_SKIPPED_INVALID_SYNTAX. This fixture asserts
+-- the diagnostic via the portable spelling — the harness only matches it
+-- when the emitted impl code's §3.1.4 alias resolves to it
+-- ('Explain.codeNames' / 'Diagnostic.requiredAliasTable'). The /code
+-- assertion confirms the underlying impl code is the DISTINCT
+-- E_RECOVERY_DECLARATION_SKIPPED, not the shared E_EXPECTED_SYNTAX_TOKEN.
+-- Recovery resynchronizes at the next declaration, whose unresolved name
+-- is still reported.
+module main
+
+%% this stray operator chain is not a declaration
+
+let next : Int = stillMissing

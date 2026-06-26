@@ -439,6 +439,12 @@ requiredAliasTable =
   , ("E_NAMED_ARG_MISSING", "E_CONSTRUCTOR_ARITY_MISMATCH")
   , ("E_NAMED_ARG_DUPLICATE", "E_CONSTRUCTOR_ARITY_MISMATCH")
   , ("E_NAMED_ARG_UNKNOWN", "E_CONSTRUCTOR_ARITY_MISMATCH")
+    -- §3.1.4: declaration-skip recovery (Parser.hs 'recoverDecl') skips an
+    -- invalid declaration region. Its own impl code maps to the portable
+    -- alias so tooling recovers it without prose; the shared
+    -- E_EXPECTED_SYNTAX_TOKEN (plain expected-token, constructor-alternative
+    -- salvage) is deliberately NOT mapped here.
+  , ("E_RECOVERY_DECLARATION_SKIPPED", "E_RECOVERY_SKIPPED_INVALID_SYNTAX")
   ]
 
 diagPairs :: Diagnostic -> [(Text, Text)]

@@ -10,4 +10,4 @@ let bad x =
     case True -> return x
 
 --! assertErrorCount 1
---! assertDiagnosticCodes E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnosticCodes E_RECOVERY_SKIPPED_INVALID_SYNTAX

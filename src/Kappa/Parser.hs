@@ -309,7 +309,14 @@ recoverDecl = do
             , "a clause body is indented less than its clause header (Spec §5.4 layout)"
             )
         | otherwise =
-            ( "E_EXPECTED_SYNTAX_TOKEN"
+            -- §3.1.4: this recovery skipped an invalid declaration region;
+            -- its own impl code carries the required portable alias
+            -- E_RECOVERY_SKIPPED_INVALID_SYNTAX (see
+            -- 'Kappa.Diagnostic.requiredAliasTable'). It is intentionally
+            -- distinct from the generic expected-token code so that the
+            -- alias is not mis-attributed to the plain expected-token error
+            -- (Parser.hs ~59) or the constructor-alternative salvage (~662).
+            ( "E_RECOVERY_DECLARATION_SKIPPED"
             , "declaration-start"
             , "unexpected " <> tokenDescr t <> " at start of declaration"
             )
