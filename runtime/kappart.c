@@ -1203,29 +1203,170 @@ static KValue *show_string_lit(KValue *v) {
   sb_putc(&b, '"'); return sb_to_str(&b);
 }
 
+/* ── Dragon4: shortest correctly-rounded decimal digits, matching GHC ────────
+ *
+ * GHC's `show :: Double -> String` extracts its digits with
+ * `GHC.Float.floatToDigits 10` — the Burger-Dybvig "Printing Floating-Point
+ * Numbers Quickly and Accurately" scaled-bigint loop (a.k.a. Dragon4).  The
+ * old `show_double` instead grew the precision of `%.*e` until `strtod`
+ * round-tripped; on tie cases (e.g. bits 0x43144d1cd2252491) that last digit
+ * disagrees with Dragon4.  We port `floatToDigits 10` verbatim over GMP so the
+ * digits are *guaranteed* identical to the interpreter, then hand them to the
+ * unchanged Haskell-style formatter below.
+ *
+ * `decode_double` mirrors GHC's `decodeFloat`: it returns (f0, e0) with x ==
+ * f0 * 2^e0 and f0 NORMALIZED to exactly 53 significant bits (subnormals are
+ * shifted up, the exponent lowered to match) — GHC does the same, then the
+ * floatToDigits `(f,e)` step re-denormalizes through `n = minExp - e0`.
+ */
+
+/* Decode a finite, nonzero, positive double into (f0, e0): x == f0 * 2^e0 with
+ * f0 in [2^52, 2^53). Matches GHC `decodeFloat` for IEEE-754 binary64. */
+static void decode_double(double ax, uint64_t *f0, int *e0) {
+  uint64_t bits; memcpy(&bits, &ax, sizeof bits);
+  uint64_t mant = bits & 0xfffffffffffffULL;       /* low 52 bits */
+  int      rexp = (int)((bits >> 52) & 0x7ff);     /* biased exponent */
+  if (rexp == 0) {
+    /* subnormal: value = mant * 2^(1-1023-52) = mant * 2^-1074.  Normalize the
+     * mantissa up to 53 bits the way GHC's decodeFloat does. */
+    uint64_t m = mant; int e = -1074;
+    while (m < (1ULL << 52)) { m <<= 1; e--; }
+    *f0 = m; *e0 = e;
+  } else {
+    /* normal: value = (2^52 | mant) * 2^(rexp-1023-52). */
+    *f0 = (1ULL << 52) | mant;
+    *e0 = rexp - 1075;                              /* (rexp-1023) - 52 */
+  }
+}
+
+/* expt b n == b^n, into z (n >= 0). */
+static void ftd_expt(mpz_t z, unsigned long b, unsigned long n) {
+  mpz_ui_pow_ui(z, b, n);
+}
+
+/* floatToDigits 10 over GMP: write the decimal digits (one per byte, value
+ * 0..9) into out[] and return the count; *kout receives the Haskell `k`
+ * (value == 0.d1d2... * 10^k).  Caller guarantees ax finite, > 0.  At most 17
+ * significant digits are produced, so out[] need only hold ~20. */
+static int float_to_digits10(double ax, int *kout, char *out) {
+  const unsigned long base = 10, b = 2; const long p = 53;
+  const int minExp0 = -1021;                 /* fst (floatRange x) */
+  const long minExp = (long)minExp0 - p;     /* -1074: the real minimum exponent */
+  uint64_t f0u; int e0;
+  decode_double(ax, &f0u, &e0);
+
+  mpz_t f, r, s, mUp, mDn, tmp, be, bk, dn, prod;
+  mpz_inits(f, r, s, mUp, mDn, tmp, be, bk, dn, prod, (mpz_ptr)0);
+  mpz_set_ui(f, (unsigned long)(f0u >> 32));
+  mpz_mul_2exp(f, f, 32);
+  mpz_add_ui(f, f, (unsigned long)(f0u & 0xffffffffULL));   /* f = f0 (64-bit) */
+  int e = e0;
+
+  /* (f,e): re-denormalize so subnormals get an impossibly low exponent. */
+  long n = minExp - (long)e0;
+  if (n > 0) { ftd_expt(tmp, b, (unsigned long)n); mpz_fdiv_q(f, f, tmp); e = e0 + (int)n; }
+
+  /* bpm1 = b^(p-1) = 2^52 — test "f is the smallest normalized mantissa". */
+  mpz_t bpm1; mpz_init(bpm1); ftd_expt(bpm1, b, (unsigned long)(p - 1));
+
+  if (e >= 0) {
+    ftd_expt(be, b, (unsigned long)e);                 /* be = b^e */
+    if (mpz_cmp(f, bpm1) == 0) {
+      /* (f*be*b*2, 2*b, be*b, be) */
+      mpz_mul(r, f, be); mpz_mul_ui(r, r, b); mpz_mul_ui(r, r, 2);
+      mpz_set_ui(s, 2 * b);
+      mpz_mul_ui(mUp, be, b);
+      mpz_set(mDn, be);
+    } else {
+      /* (f*be*2, 2, be, be) */
+      mpz_mul(r, f, be); mpz_mul_ui(r, r, 2);
+      mpz_set_ui(s, 2);
+      mpz_set(mUp, be); mpz_set(mDn, be);
+    }
+  } else {
+    if (e > (int)minExp && mpz_cmp(f, bpm1) == 0) {
+      /* (f*b*2, expt b (-e+1)*2, b, 1) */
+      mpz_mul_ui(r, f, b); mpz_mul_ui(r, r, 2);
+      ftd_expt(s, b, (unsigned long)(-e + 1)); mpz_mul_ui(s, s, 2);
+      mpz_set_ui(mUp, b); mpz_set_ui(mDn, 1);
+    } else {
+      /* (f*2, expt b (-e)*2, 1, 1) */
+      mpz_mul_ui(r, f, 2);
+      ftd_expt(s, b, (unsigned long)(-e)); mpz_mul_ui(s, s, 2);
+      mpz_set_ui(mUp, 1); mpz_set_ui(mDn, 1);
+    }
+  }
+
+  /* k0: the GHC fast estimate for b==2, base==10. */
+  int lx = (int)(p - 1) + e0;
+  int k1 = (int)(((long)lx * 8651) / 28738);
+  int k0 = (lx >= 0) ? k1 + 1 : k1;
+
+  /* fixup: smallest k with r + mUp <= 10^k * s (for k>=0), else
+   * 10^(-k) * (r + mUp) <= s. */
+  mpz_t rpUp; mpz_init(rpUp); mpz_add(rpUp, r, mUp);
+  int k = k0;
+  for (;;) {
+    if (k >= 0) {
+      ftd_expt(bk, base, (unsigned long)k);
+      mpz_mul(prod, bk, s);
+      if (mpz_cmp(rpUp, prod) <= 0) break;       /* r+mUp <= 10^k * s */
+    } else {
+      ftd_expt(bk, base, (unsigned long)(-k));
+      mpz_mul(prod, bk, rpUp);
+      if (mpz_cmp(prod, s) <= 0) break;          /* 10^(-k)*(r+mUp) <= s */
+    }
+    k++;
+  }
+  mpz_clear(rpUp);
+
+  /* Apply k to the scaled big integers, then run the generate loop. */
+  if (k >= 0) {
+    ftd_expt(bk, base, (unsigned long)k);
+    mpz_mul(s, s, bk);                            /* s := s * 10^k */
+  } else {
+    ftd_expt(bk, base, (unsigned long)(-k));
+    mpz_mul(r, r, bk); mpz_mul(mUp, mUp, bk); mpz_mul(mDn, mDn, bk);
+  }
+
+  int nd = 0;
+  for (;;) {
+    /* (dn, r) = (r*10) quotRem s ; mUp*=10 ; mDn*=10 */
+    mpz_mul_ui(r, r, base);
+    mpz_fdiv_qr(dn, r, r, s);                     /* dn = r/s, r = r mod s (>=0) */
+    mpz_mul_ui(mUp, mUp, base);
+    mpz_mul_ui(mDn, mDn, base);
+    int digit = (int)mpz_get_ui(dn);
+    int low  = mpz_cmp(r, mDn) < 0;               /* r < mDn */
+    mpz_add(tmp, r, mUp);                         /* r + mUp */
+    int high = mpz_cmp(tmp, s) > 0;               /* r + mUp > s */
+    if (!low && !high) { out[nd++] = (char)digit; continue; }
+    if (low && !high)      out[nd++] = (char)digit;
+    else if (!low && high) out[nd++] = (char)(digit + 1);
+    else {                                        /* (True,True): tie -> r*2 < s ? */
+      mpz_mul_ui(tmp, r, 2);
+      out[nd++] = (mpz_cmp(tmp, s) < 0) ? (char)digit : (char)(digit + 1);
+    }
+    break;
+  }
+
+  mpz_clears(f, r, s, mUp, mDn, tmp, be, bk, dn, prod, bpm1, (mpz_ptr)0);
+  *kout = k;
+  return nd;
+}
+
 /* show :: Double, matching Haskell's shortest round-trip + format rules. */
 static KValue *show_double(double x) {
   if (isnan(x)) return kstr0("NaN");
   if (isinf(x)) return kstr0(x < 0 ? "-Infinity" : "Infinity");
   if (x == 0.0) return kstr0(signbit(x) ? "-0.0" : "0.0");
   int neg = x < 0; double ax = neg ? -x : x;
-  /* shortest digit string that round-trips, via %.*e */
-  char ebuf[40]; int prec;
-  for (prec = 0; prec <= 17; prec++) {
-    snprintf(ebuf, sizeof ebuf, "%.*e", prec, ax);
-    if (strtod(ebuf, NULL) == ax) break;
-  }
-  /* ebuf = "D.FFFe±XX" (or "De±XX" when prec==0) */
-  char digits[32]; int nd = 0; int exp10 = 0;
-  const char *q = ebuf;
-  digits[nd++] = *q++;            /* leading digit D */
-  if (*q == '.') { q++; while (*q != 'e' && *q != 'E') digits[nd++] = *q++; }
-  q++;                            /* skip 'e' */
-  exp10 = (int)strtol(q, NULL, 10);
-  /* drop trailing zeros (keep at least one digit) */
-  while (nd > 1 && digits[nd - 1] == '0') nd--;
-  /* Haskell e = position of the decimal point: value = 0.d1.. * 10^e */
-  int e = exp10 + 1;
+  /* shortest correctly-rounded digits via floatToDigits 10 (Dragon4). */
+  char dig10[24]; int e;
+  int nd = float_to_digits10(ax, &e, dig10);
+  /* render digits as ASCII for the formatter below ('0'..'9'). */
+  char digits[32];
+  for (int i = 0; i < nd; i++) digits[i] = (char)('0' + dig10[i]);
   sbuf b; sb_init(&b); if (neg) sb_putc(&b, '-');
   if (e < 0 || e > 7) { /* scientific: d1 . (rest|0) e (e-1) */
     sb_putc(&b, digits[0]); sb_putc(&b, '.');
@@ -1794,10 +1935,51 @@ KValue *kp_showInt(KValue *x) { return show_int_val(x); }
 KValue *kp_showDouble(KValue *x) { return show_double(kas_dbl(x)); }
 KValue *kp_showScalar(KValue *x) { return show_scalar(x); }
 KValue *kp_showStringLit(KValue *x) { return show_string_lit(x); }
+/* Convert a (possibly huge) integer magnitude to a double with IEEE
+ * round-to-NEAREST-EVEN, matching Haskell `fromInteger :: Integer -> Double`.
+ * GMP's `mpz_get_d` rounds TOWARD ZERO, which is wrong for values whose nearest
+ * double rounds up (off by up to a ULP, e.g. 2^60+129 -> 2^60+256).  We extract
+ * the top 53 significant bits + a round bit + a sticky bit and round ties-to-
+ * even, then scale by 2^(bitlen-53).  `z` is treated as a nonnegative magnitude;
+ * the caller applies the sign. */
+static double mpz_to_double_rne(mpz_srcptr z) {
+  if (mpz_sgn(z) == 0) return 0.0;
+  size_t bits = mpz_sizeinbase(z, 2);          /* exact bit length of |z| */
+  if (bits <= 53) return mpz_get_d(z);         /* exact: no rounding needed */
+  /* mantissa = top 53 bits; let shift = bits-53 be the dropped low bits. */
+  unsigned long shift = (unsigned long)(bits - 53);
+  mpz_t hi, lo, halfbit; mpz_inits(hi, lo, halfbit, (mpz_ptr)0);
+  mpz_fdiv_q_2exp(hi, z, shift);               /* hi = z >> shift  (53 bits) */
+  mpz_fdiv_r_2exp(lo, z, shift);               /* lo = z mod 2^shift (dropped) */
+  uint64_t mant = mpz_get_ui(hi);              /* fits 53 bits, < 2^64 */
+  /* round bit = bit (shift-1) of z; sticky = any lower bit set. */
+  mpz_setbit(halfbit, shift - 1);              /* halfbit = 2^(shift-1) */
+  int cmp = mpz_cmp(lo, halfbit);              /* lo vs the halfway point */
+  int round_up;
+  if (cmp < 0)       round_up = 0;             /* below halfway: round down */
+  else if (cmp > 0)  round_up = 1;             /* above halfway: round up */
+  else               round_up = (int)(mant & 1);   /* exact tie: to even */
+  mant += (uint64_t)round_up;
+  /* a carry out of 53 bits (mant == 2^53) renormalizes: drop one more low bit. */
+  if (mant == (1ULL << 53)) { mant >>= 1; shift += 1; }
+  mpz_clears(hi, lo, halfbit, (mpz_ptr)0);
+  return ldexp((double)mant, (int)shift);      /* mant * 2^shift, exact */
+}
+
 KValue *kp_intToDouble(KValue *x) {
   if (kis_int_word(x)) return kdbl((double)kint_word(x));
-  if (!kis_imm(x) && x->tag == K_BIGINT)
-    return kdbl(mpz_get_d((const __mpz_struct *)x->as.big.mpz));
+  if (!kis_imm(x) && x->tag == K_BIGINT) {
+    mpz_srcptr z = (mpz_srcptr)x->as.big.mpz;
+    int neg = mpz_sgn(z) < 0;
+    double mag;
+    if (neg) {
+      mpz_t a; mpz_init(a); mpz_neg(a, z);
+      mag = mpz_to_double_rne(a); mpz_clear(a);
+    } else {
+      mag = mpz_to_double_rne(z);
+    }
+    return kdbl(neg ? -mag : mag);
+  }
   krt_fail("intToDouble: not an Int");
 }
 /* §6.5 byte compares + §29.1 bitwise (hot in hashing / byte loops).  Byte values

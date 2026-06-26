@@ -1,0 +1,44 @@
+-- Regression: two runtime double-conversion bugs that diverged from the
+-- interpreter (the trusted oracle for every Double behavior).  The parity
+-- harness diffs full stdout across interp == C == LLVM, so any last-digit /
+-- last-ULP divergence fails it.
+--
+-- Bug 1 — kp_intToDouble rounding (a VALUE miscompile):
+--   `intToDouble` on an Integer >= 2^60 must round to NEAREST-EVEN, matching
+--   `fromInteger` in the interpreter.  The bignum path used GMP `mpz_get_d`,
+--   which rounds TOWARD ZERO.  `intToDouble 1152921504606847105` (= 2^60+129)
+--   must give 1.1529215046068472e18 (2^60+256), NOT 1.152921504606847e18 (2^60).
+--
+-- Bug 2 — show_double shortest-digit extraction:
+--   `showDouble` must reproduce GHC's `floatToDigits 10` (Dragon4) digits.
+--   The old `%.*e`-until-strtod-round-trips hack disagreed on tie cases; the
+--   literal 1.4285714285714283e15 (bits 0x43144d1cd2252491) used to render
+--   1.4285714285714282e15 on the C backend (last digit 2 vs 3).
+module main
+
+main : UIO Unit
+let main = do
+    -- Bug 1: the former-failing tie that rounds UP, plus its neighbours.
+    println (intToDouble 1152921504606847105 : Double)   -- 1.1529215046068472e18
+    println (intToDouble 1152921504606846976 : Double)    -- 2^60 exactly
+    println (intToDouble 1152921504606847232 : Double)    -- 2^60+256
+    -- exact-tie integers around 2^60 (round-to-even): 2^60+128 ties to 2^60.
+    println (intToDouble 1152921504606847104 : Double)    -- 2^60+128 -> even (2^60)
+    -- a large bignum and its negation.
+    println (intToDouble 100000000000000000000000000000 : Double)  -- 1.0e29
+    println (intToDouble (negate 1152921504606847105) : Double)    -- -1.1529215046068472e18
+    -- around 2^53 / 2^64.
+    println (intToDouble 9007199254740993 : Double)        -- 2^53+1 -> ties to even
+    println (intToDouble 18446744073709551617 : Double)    -- 2^64+1
+    -- Bug 2: the former-failing shortest-digit tie + a spread of formats.
+    println (1.4285714285714283e15 : Double)
+    println (3.14 : Double)
+    println (0.1 : Double)
+    println (1.0e20 : Double)
+    println (0.001 : Double)
+    println (negate 2.5 : Double)
+    println (123.456 : Double)
+    println (10000000.0 : Double)
+    println (5.0e-324 : Double)                            -- smallest subnormal
+    println (1.7976931348623157e308 : Double)              -- max double
+    println (9.999999999999999e22 : Double)
