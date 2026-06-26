@@ -918,6 +918,11 @@ erasedSpinePositions g = do
   pure (erasedSpinePositionsP globals ctx g)
 
 -- | The pure spine-erasure analysis (see 'erasedSpinePositions').
+-- FAIL-SAFE: an unknown global, or a 'gdType' that does not 'force' to a 'VPi'
+-- telescope (an unsolved-meta/thunk head), yields @[]@ — i.e. nothing is flagged.
+-- That can only UNDER-erase (miss a position), never over-erase: a missed
+-- type-application position reverts to the original @kapp(unit,unit)@ crash, but
+-- a dictionary or runtime value is never wrongly dropped.
 erasedSpinePositionsP :: Map GName GlobalDef -> EvalCtx -> GName -> [Bool]
 erasedSpinePositionsP globals ctx g =
   case Map.lookup g globals of

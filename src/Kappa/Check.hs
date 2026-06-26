@@ -2082,6 +2082,11 @@ isTraitWitness ctx goal = go (ctxLen ctx) goal
 
 -- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
 -- use sites (metavariables), never searched as evidence (§16.3.3).
+-- LOCKSTEP: @Kappa.Backend.C.isKindDomain@ is a pure (non-'CheckM') copy of this
+-- predicate — it decides which spine arguments are 'RuntimeErased' type/type-ctor
+-- positions to erase to @kunit()@.  If the notion of kind-like changes here
+-- (e.g. a new sort-former), update that copy in lockstep or the backend's
+-- erasure verdict silently desyncs from the elaborator.
 isKindLike :: Int -> Value -> CheckM Bool
 isKindLike lvl v = do
   t <- forceM v
