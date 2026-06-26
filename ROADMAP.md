@@ -135,7 +135,7 @@ the real Lint are both impossible without them.
       seed. NOT per-node decoration (the reference's short-sighted, unused part).
       *Residual:* the C-only scalar-**worker** marshalling stays in `C.hs` (not
       cross-backend duplication; `scalarRep` already centralizes its discriminator).
-- [~] **Stage 3 — §34.3.3 legality verifier (DONE) + `scalarPlan` unification (TODO)**
+- [x] **Stage 3 — §34.3.3 legality verifier + `scalarPlan` unification. DONE**
       (hard). **Verifier landed** (merged `b6cbb0b`; `Backend/Verify.hs`,
       user-invokable `kappa verify-kbackendir [--json] FILE`, observe-only). Checks
       the three currently-relevant §34.3.3 checkpoints: erasure-legality (generalizes
@@ -143,23 +143,40 @@ the real Lint are both impossible without them.
       `erasedSpinePositionsP`), fixed runtime arity (`CCtor` vs `runtimeField`), and
       layout-consistency vs `Repr` (tag-id injectivity + `ciData` back-pointer). 1199
       programs verify clean / 0 false positives; catches `W_BACKENDIR_NON_FUNCTION_HEAD`
-      / `_ERASED_REFERENCE` / `_ARITY_MISMATCH` / `_LAYOUT_INCONSISTENT`. Deferred:
-      the runtime-profile checkpoints (handlers/fibers/atomics/multishot/§34.3.9/.11),
-      error-promotion + the §34.3.6 interpreter gate, and **`scalarPlan` unification**
-      (fold `scalarPlan` into one `repSelect` over the `Repr` table).
+      / `_ERASED_REFERENCE` / `_ARITY_MISMATCH` / `_LAYOUT_INCONSISTENT`.
+      **`scalarPlan` unification landed** (merged `12de5d0`): `Repr.repSelect` is the
+      rep-plan authority (`EvalCtx -> Value -> Maybe ([Rep], Rep)`); `typeScalarKinds`
+      derives its `ParamKind`/`ScalarKind` from it; proven byte-identical (the
+      `kwd_`/`kwi_`/`kwm_` worker codegen unchanged, native perf gates green).
+      Deferred: the runtime-profile checkpoints (handlers/fibers/atomics/multishot/
+      §34.3.9/.11) + error-promotion + the §34.3.6 interpreter gate.
       *NB:* Stage 2's `Repr.scalarRep` keyed on `gKey` (qualified) not the bare type
       name — regressed the Int/Double scalar workers to boxing; fixed `f9e0bf4`
       (caught by `run-native-tests.sh` perf gates, invisible to `llvm-parity`).
       Then made principled in `c776a9c`: classify by **declaration-symbol IDENTITY**
       (`GName` equality vs the canonical prelude globals), not a spelling string —
       §1.2 "a resolved reference MUST NOT target a spelling string" (a user type
-      spelling `Double` in another module now stays boxed; unit-pinned).
-- [ ] **Stage 4 — niche `Option<boxed>` + coercion-insertion pass** (last,
-      hardest). The one packing the runtime can't decide blind: bare-pointer niche
-      for the canonical shape, with a pass that boxes a niche value escaping into
-      polymorphic code (§5.2 canonicalization). The genuine type-directed layout
-      win; full-range `Option<Int>` rides here. **§21.6 semantic reflection** reuses
-      the same typed Core (one foundation, two payoffs).
+      spelling `Double` in another module now stays boxed; unit-pinned). A §1.2 audit
+      of `C.hs`/`LLVM.hs` then caught the same smell in `runIOSplice`/`runIOSpliceLL`
+      (they matched the bare name `"__runIO"`) — fixed `ef6987b` to compare
+      `g == prelRunIO`; the rest of the backend's string uses (mangling, diagnostics,
+      module-gated prim tables) were reviewed and cleared.
+- [ ] **Stage 4 — niche layout + coercion pass. DEFERRED — architectural mismatch
+      with type erasure.** A bare-pointer niche (None=null, Some x=x) for ANY
+      niche-able ADT *shape* (k nullary ctors + one ctor wrapping a niche-having
+      field — shape-based, NEVER `Option`-by-name, per §1.2). **Why deferred:** Kappa
+      is `RuntimeErased` — `Option Foo` and `Option a` share ONE runtime body (no
+      monomorphization), so the runtime cannot distinguish a niche-able instance from
+      a generic one. The niche then needs coercions at every erased-type boundary
+      (pervasive), and even the universal `None=0` trick (immediate-tagging makes
+      every `Some` payload non-zero) dies on nested `Option<Option<_>>`. Net: the
+      highest-complexity / miscompile-risk stage (no byte-identical net) for a payoff
+      mostly eroded by erasure — it survives only for short-lived concrete
+      `Some<boxed>` that never escapes to polymorphic code. Revisit ONLY alongside
+      specialization/monomorphization, or a type-directed LLVM layout. **§21.6
+      semantic reflection** still reuses the typed-Core foundation (Stage 0)
+      independent of the niche. (Analysis: 2026-06-26; see the
+      `niche-layout-vs-type-erasure` memory.)
 
 ---
 

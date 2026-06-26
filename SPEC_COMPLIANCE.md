@@ -7,7 +7,7 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 substantially self-superseded.
 
 **Status (count + gap list re-verified per-gap 2026-06-26):**
-`kappa test tests/conformance` = **1771/1771** pass (0 fail, 0 unsupported, 0
+`kappa test tests/conformance` = **1776/1776** pass (0 fail, 0 unsupported, 0
 harness error — was 1334 at the audit; the corpus kept growing as the
 reference-repo conformance corpus was imported). The gap LIST below was first
 verified against the code in a parallel 9-group re-audit on 2026-06-23 (see
@@ -54,7 +54,7 @@ completeness but are **not** required for core conformance.
 
 | Bucket | Count | Meaning |
 | --- | --- | --- |
-| **Core MUST/SHALL gaps** (§1) | 17 | Required for portable-profile conformance. Do these. (Was 29 at the 2026-06-23 audit; 8 closed this session — §11.4.2, §16.4.1, the §16.4.2 flow-refinement row, §30.2.7, and the four §28.2 `and`/`or`/`force` / `DefectTag` / `DefectInfo` / `InterruptCause` rows — all struck to Appendix A; the remaining audit-count delta was reconciled to Appendix A in the 2026-06-23–26 refreshes.) |
+| **Core MUST/SHALL gaps** (§1) | 16 | Required for portable-profile conformance. Do these. (Was 29 at the 2026-06-23 audit; 9 closed this session — §11.4.2, §16.3.2 (named-hole sharing + expected-type, commit `26d9b58`), §16.4.1, the §16.4.2 flow-refinement row, §30.2.7, and the four §28.2 `and`/`or`/`force` / `DefectTag` / `DefectInfo` / `InterruptCause` rows — all struck to Appendix A; the remaining audit-count delta was reconciled to Appendix A in the 2026-06-23–26 refreshes.) |
 | **SHOULD gaps** (§2) | 10 | Recommended; non-conformance is permitted but discouraged. (Was 12; §17.1.4 `-> impossible` and §17.1.7 `match`-arm refinement closed this session — Appendix A.) |
 | **Profile-scoped / adjudication** (§3) | 22 | Sanctioned by an explicit profile clause, or spec-MUST-but-profile-gated (flagged). |
 | **Optional / MAY** (§4) | 1 | Pure latitude. |
@@ -89,7 +89,6 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic, emitted in the `infer` direction *before* unification, reports the still-unsolved meta as `_` rather than the type a checked `?h` is being matched against (no `EHole` case in the `check` direction). | `Check.hs:1950-1954` (`anyHole`), `Check.hs:3179-3196` (only-`infer` `EHole`) | medium |
 | **§16.4.2 / §18.6.2** | **IO-kernel do-statement condition facts — partial.** Each `DoIf` **then-suite** (and every `elif` suite) now pushes its own condition as evidence, so `do { if y <= x then consume (x - y) }` discharges the checked-sub proof the if-*expression* already could. Remaining: the **else-suite** and the `elif` *preceding-conditions-false* facts need accumulated-negation threading; and the `DoWhile` body needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) before a `var`-condition fact can be pushed soundly (a stale fact after `x := …` would be unsound — so it is deliberately not pushed). *(Distinct from the flow-refinement §16.4.2 gap closed this session — Appendix A.)* | `Check.hs:9712` (`DoIf` else-suite), `Check.hs:9650` (`DoWhile`), in `elabDoIOItems.goItems` | medium |
 
 ### 1.3 Effects, resources, collections
