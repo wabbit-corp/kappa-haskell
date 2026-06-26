@@ -43,13 +43,15 @@ static void semantics(void) {
   /* CAS success: expected 7, desired 99 -> Exchanged 7; cell becomes 99. */
   KValue *res = krt2_atomic_compare_exchange(rmw_relaxed(), cas_fail_relaxed(), r, kint(7), kint(99));
   CHECK(kctor_tagid(res) == 0, "CAS success -> Exchanged (tag 0)");
-  CHECK(iv(res->as.ctor.args[0]) == 7, "CAS success old == 7");
+  /* Stage 1d: Exchanged(kint(7)) packs into a b011 word — project the field with
+   * the immediate-aware accessor, never a raw ->as.ctor deref of an odd word. */
+  CHECK(iv(kctor_arg(res, 0)) == 7, "CAS success old == 7");
   CHECK(iv(krt2_atomic_load(load_relaxed(), r)) == 99, "after CAS success == 99");
 
   /* CAS failure: expected 7 (now 99), desired 0 -> NotExchanged 99; unchanged. */
   KValue *res2 = krt2_atomic_compare_exchange(rmw_relaxed(), cas_fail_relaxed(), r, kint(7), kint(0));
   CHECK(kctor_tagid(res2) == 1, "CAS failure -> NotExchanged (tag 1)");
-  CHECK(iv(res2->as.ctor.args[0]) == 99, "CAS failure current == 99");
+  CHECK(iv(kctor_arg(res2, 0)) == 99, "CAS failure current == 99");
   CHECK(iv(krt2_atomic_load(load_relaxed(), r)) == 99, "after CAS failure still 99");
 
   /* fetch-* return the OLD value. */

@@ -1,0 +1,23 @@
+-- UNBOXING Stage 1d fallback: a single-field ctor whose ONE field is a HEAP
+-- pointer (a List) cannot pack — `Some (xs : List Int)` stays a boxed K_CTOR.
+-- It must still match `Some`/`None` and project the list back, summing it.
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case y :: ys -> y + sumList ys
+
+-- Some over a List (a boxed pointer field): the ctor stays boxed; project + sum.
+optSum : Option (List Int) -> Int
+let optSum o =
+    match o
+    case Some xs -> sumList xs
+    case None -> 0 - 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (optSum (Some (1 :: 2 :: 3 :: Nil))))  -- boxed Some -> 6
+    printlnString (showInt (optSum (Some Nil)))                   -- boxed Some [] -> 0
+    printlnString (showInt (optSum None))                        -- None -> -1

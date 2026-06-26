@@ -16,8 +16,8 @@ pointers OFF, so a low-tagged odd word is a non-pointer to Boehm):
 ```
 b000  a heap KValue* pointer (a boxed K_CTOR/K_REC/… — kderef needs no mask)
 b001  immediate Int   (value<<3)                         [DONE — Stage 1]
-b010  immediate ctor  (a NULLARY constructor; tag id in the payload)
-b011  packed union    (discriminant + small payload in the 61-bit field)
+b010  immediate ctor  (a NULLARY constructor; tag id in the payload) [DONE — 1b]
+b011  packed ctor     ([field-word:41 | tagId:20 | b011]; one immediate field) [DONE — 1d]
 b1xx  RESERVED        (niche markers, immediate Char, future kinds)
 ```
 
@@ -172,16 +172,41 @@ OCaml RFC #14 + POPL'24 constructor-unboxing; OxCaml layouts; BDW-GC.
   turned out NOT to be purely diagnostic). VERIFIED: **corpus 83/83**, native
   suite + conformance 1738/1738 green, kderef assert never fired, **`ctor0-build`
   48→0 B/op** for arbitrary enums (`ctor-build` flat 64 B, the boxed Cons control).
-- **Stage 1d — packed single-field ctors (`b011`). IN PROGRESS.** A single
-  immediate field that fits the word packs as `[field-word | tagId | b011]` (else
-  boxed) — `Option<Int>`(small)/`Option<Bool>`/`Option<enum>`/`Result<small,small>`
-  alloc-free. UNIFORM + sound for nesting (the explicit `tagId` keeps `Some None`
-  ≠ `None`). A runtime change like 1b; no layout pass needed (the `b011` tag
-  provides head-shape disjointness). *Reordered ahead of 1c — see the caveat above.*
+- **Stage 1d — packed single-field ctors (`b011`). DONE** (runtime-only, the b010
+  analogue one tag code up). A constructor with EXACTLY ONE explicit field whose
+  runtime value is an IMMEDIATE (a b001 Int or a b010 nullary ctor) that fits the
+  payload packs into a single word `[ field-word : 41 | tagId : 20 | b011 : 3 ]`;
+  otherwise (heap-pointer field / too-big immediate / argc≠1 / tagId ≥ 2^20) it
+  stays the boxed `K_CTOR`. This makes the `Some`/`Ok`/`Err` single-field arms of
+  `Option<Int>` / `Option<Bool>` / `Option<enum>` / `Result<small,small>`
+  alloc-free. The discriminant (`tagId`) is stored EXPLICITLY in the word so
+  `kctor_tagid` decodes it blind (polymorphic `Option a -> …` works) and **`Some
+  None` packs as a b011 word DISTINCT from `None`'s b010** — nested
+  `Option<Option>` has NO collision (the soundness win over a niche, per the
+  caveat above). Per-value packing is canonical: a given value has ONE rep (`Some
+  5` always packs; `Some (2^55)` always boxes), so equality stays consistent.
+  Runtime: `kctor(argc==1 && fits)` → `kmk_imm_packed`; `kctor_tagid`/
+  `kctor_argc(=1)`/`kctor_arg(=field word)`/`kctor_name`/`kctor_is` are b011-aware
+  (a `kbuiltin_ctor_id` name→id table extends Stage-1b's nullary table to the
+  single-field builtins — `Some`/`Success`/`RaceWonLeft`/`RaceWonRight`/
+  `TimeoutDone` — whose Exit field can itself be a packing immediate, so the
+  OUTCOME packs too and is matched by name in race/scope/atomic paths);
+  `kvalue_rep_eq` compares a packed value STRUCTURALLY against any ctor rep. The
+  packing also gates on `tagId` fitting 20 bits so the kappart2 CK-machine OP
+  nodes at `KRT2_OP_BASE = 0x40000000` (e.g. `ioPure(immediate)`) stay boxed and
+  keep their full id. VERIFIED: **corpus 90/90** interp==C==LLVM (incl. the
+  nested-`Option<Option<Int>>` soundness test and `Some None /= None`), native
+  suite + conformance 1738/1738 green, kderef assert never fired, **`packed-build
+  (Some smallInt)` 0 B/op** (the bench WIN), `ctor0-build` / `addInt` still 0,
+  `ctor-build` (n-ary Cons) flat 64 B. No backend change needed — single-field
+  `CCtor` lowers through `kctor` and `CMatch` dispatches via `kctor_tagid`/
+  `kctor_arg`, all now b011-aware.
 - **Stage 2 — specialization** (worker/wrapper per statically-known layout), which
-  UNLOCKS the non-uniform layouts:
+  UNLOCKS the non-uniform layouts that the uniform `b010`/`b011` packings cannot
+  reach:
   - **niche** `Option<boxed>` = the bare pointer / `None` = a reserved immediate
-    (the former "1c" — non-uniform, so it rides on specialization, not Stage 1);
+    (the former "1c" — non-uniform per the caveat above, so it rides on
+    specialization, not Stage 1);
   - full-range `Option<Int>` and multi-field / multi-variant Direct-tag packing
     (the per-ADT compute-both-pick-smaller layout pass + head-shape gate);
   - inline construct/match/project for hot polymorphic call sites over known

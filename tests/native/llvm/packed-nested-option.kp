@@ -1,0 +1,27 @@
+-- UNBOXING Stage 1d soundness: NESTED Option<Option<Int>>.  This is the win over
+-- a niche encoding (which would collide `Some None` with `None`).  Because the
+-- packed b011 word stores the tag id EXPLICITLY:
+--   * `None`            is a b010 immediate (tag KCT_NONE).
+--   * `Some None`       is a b011 packed word: tag KCT_SOME, field = `None`'s b010
+--                       word — DISTINCT from `None`.
+--   * `Some (Some 5)`   is a b011 packed word: tag KCT_SOME, field = the inner
+--                       `Some 5` b011 word (nested packing).
+-- All three must land on DIFFERENT arms and project correctly.
+module main
+
+-- Classify an Option<Option<Int>> into one of the three shapes; the inner value
+-- (when present) is folded in so a wrong nesting would change the number.
+classify : Option (Option Int) -> String
+let classify oo =
+    match oo
+    case None -> "outer-none"
+    case Some inner -> (match inner
+                        case None -> "some-none"
+                        case Some n -> stringAppend "some-some-" (showInt n))
+
+main : UIO Unit
+let main = do
+    printlnString (classify None)              -- outer-none
+    printlnString (classify (Some None))       -- some-none      (NOT outer-none!)
+    printlnString (classify (Some (Some 5)))   -- some-some-5
+    printlnString (classify (Some (Some 0)))   -- some-some-0

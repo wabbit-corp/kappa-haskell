@@ -1,0 +1,34 @@
+-- UNBOXING Stage 1d: a construct -> match -> project round-trip sweep over a
+-- spread of packed shapes (Option<Int> across the small/zero/negative range, a
+-- user single-field ctor, a packed value rebuilt and re-projected) so a wrong
+-- bit-split or sign handling shows as a changed number.
+module main
+
+data Boxed : Type =
+    Wrap Int
+
+-- Rebuild a fresh Some from a projected value, then project again: the value must
+-- survive two packings.
+rebuild : Option Int -> Int
+let rebuild o =
+    match o
+    case Some n -> (match Some (addInt n 1)
+                    case Some m -> m
+                    case None -> 0 - 100)
+    case None -> 0 - 1
+
+unwrapBox : Boxed -> Int
+let unwrapBox b =
+    match b
+    case Wrap v -> v
+
+main : UIO Unit
+let main = do
+    -- Option<Int> across a spread: each packs, matches, projects exactly.
+    printlnString (showInt (rebuild (Some 0)))          -- 1
+    printlnString (showInt (rebuild (Some 41)))         -- 42
+    printlnString (showInt (rebuild (Some (0 - 7))))    -- -6
+    printlnString (showInt (rebuild None))              -- -1
+    -- a user single-field ctor packs and projects.
+    printlnString (showInt (unwrapBox (Wrap 99)))       -- 99
+    printlnString (showInt (unwrapBox (Wrap (0 - 50)))) -- -50
