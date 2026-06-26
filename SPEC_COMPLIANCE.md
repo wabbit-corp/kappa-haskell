@@ -6,13 +6,16 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 (requirement matrix + ranked Gn worklist), both of which had become
 substantially self-superseded.
 
-**Status (verified 2026-06-23):** `kappa test tests/conformance` = **1334/1334**
-pass (0 fail, 0 unsupported, 0 harness error; the suite grew from 349 as the
-reference-repo conformance corpus was imported). Every gap below was re-verified
-against the *current* code in a parallel 9-group re-audit (see
+**Status (count refreshed 2026-06-26; gap list verified 2026-06-23):**
+`kappa test tests/conformance` = **1738/1738** pass (0 fail, 0 unsupported, 0
+harness error — was 1334 at the audit; the corpus kept growing as the
+reference-repo conformance corpus was imported). The gap LIST below was verified
+against the *current* code in a parallel 9-group re-audit on 2026-06-23 (see
 [Methodology](#appendix-b-methodology)); fix loci are `file:line` at audit time.
-Since the audit, §14.3.4 (associated members) and §28.2 `Iterator.next` have
-also been fixed (see Appendix A).
+**A per-gap re-verify against today's code is the pending refresh step**
+(referenced from [`ROADMAP.md`](ROADMAP.md) → Spec-coverage track). Since the
+audit, §14.3.4 (associated members) and §28.2 `Iterator.next` have also been
+fixed (see Appendix A).
 
 ## Scope and profile model
 

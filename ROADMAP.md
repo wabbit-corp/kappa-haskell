@@ -30,6 +30,8 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 - [`COVERAGE.md`](runtime/docs/COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
 - [`DESIGN.md`](runtime/docs/DESIGN.md) / [`REVIEW.md`](runtime/docs/REVIEW.md) / [`RESEARCH.md`](runtime/docs/RESEARCH.md) — the original runtime architecture + 8-lens review.
 - [`bench/README.md`](runtime/bench/README.md) — the perf baseline (`make bench`); the numbers that gate the perf work.
+- [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) — the spec-conformance gap list (single source of truth; see the Spec-coverage track), backed by [`docs/audit/`](docs/audit) (probe-audits) + [`docs/digests/`](docs/digests) (per-§ digests) + [`docs/notes/KNOWN_SPEC_ISSUES.md`](docs/notes/KNOWN_SPEC_ISSUES.md).
+- Native backend: [`NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md), [`LLVM-BACKEND.md`](runtime/docs/LLVM-BACKEND.md), [`NATIVE_FFI_DESIGN.md`](docs/NATIVE_FFI_DESIGN.md), [`NATIVE_BACKEND_OPTIMIZATION_GUIDE.md`](docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md).
 
 ---
 
@@ -105,10 +107,15 @@ niche-unblocking slice) before implementing.
       analysis under one principled pass. Structural reference ONLY (never its
       detail): `../kappa/` `KBackendIR.fs` (rep-annotated nodes +
       `KBackendDataLayout`/`KBackendConstructorLayout`) + `KBackendLowering.fs`.
+      Building the `INHABITANCE` stage ALSO closes SPEC_COMPLIANCE §1.2's missing
+      **§30.2.7 inhabitance-summary query** (+ unblocks §17.1.4 `impossible`).
 - [ ] **Core / KBackendIR Lint** — an independent re-checker of the typed IR.
       Would have caught the erased-type-application crash (`apply unit to unit` is
       ill-typed) at compile time; realizes "formally verified at Core level."
-      Sequence: annotate nodes → Lint → niche rides on it.
+      Sequence: annotate nodes → Lint → niche rides on it. The faithful typed Core
+      this needs is also what SPEC_COMPLIANCE §1.5's **§21.6 semantic-reflection
+      tier** (`asCore`/`reifyCore`, a runtime Core carrying QTT/scope evidence)
+      requires — one foundation, two payoffs.
 - [ ] **Niche `Option<boxed>` = bare pointer + full-range `Option<Int>`**
       (LAYOUT-DESIGN classes 2 & 3 over boxed/large payloads) — the non-uniform
       layout wins; need REPRESENTATION_SELECTION + a coercion-insertion pass (box a
@@ -308,22 +315,47 @@ niche-unblocking slice) before implementing.
 
 ---
 
-## Track: Spec coverage — not-yet-implemented surfaces (to be populated)
+## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
-To make this roadmap hold *all* the tasks, the remaining work is a survey of
-[`docs/Spec.md`](docs/Spec.md) against kappa-haskell's implementation status.
-**Next planning step: run that survey and fold the missing tracks here in
-dependency order.** Areas to assess (done / partial / missing), each against its
-spec section + the corresponding source:
+[`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) is the DETAILED single source of truth
+for "remaining work to 100% conformance with [`docs/Spec.md`](docs/Spec.md)" —
+structured by area with `file:line` fix loci, backed by the hostile probe-audits
+in [`docs/audit/`](docs/audit) and the per-§ digests in
+[`docs/digests/`](docs/digests); known issues in
+[`docs/notes/KNOWN_SPEC_ISSUES.md`](docs/notes/KNOWN_SPEC_ISSUES.md). This roadmap
+**references** it rather than duplicating the list. **STALE:** it states
+`1334/1334` (2026-06-23); current is **1738/1738** → needs a status refresh + a
+per-gap re-verify (some may have closed).
 
-- §11 universes / classifiers / rows / **propositions** (`IsProp`/`RuntimeErased`);
-  §12 quantities / borrow / erasure justifications; §13 sealed packages /
-  signatures / existentials; §14 traits / coherence / **specialization** (ties to
-  the IR-pipeline track); §15 termination / refinement evidence; §16 implicits /
-  closure capture; §17 match / refinement / erased scrutinees; §19 resources /
-  scopes (`using`); §20 queries / collection lowering; §21–23 metaprogramming /
-  quotes / reflection; §26–27 native / capabilities / FFI / bridge contracts;
-  §28 effectful traversal; §29 std.atomic / supervisor; §30 KCore surfaces; §31
-  erasure; §33 gradual / `DynRep`; §34 compilation / IRs / tooling / backends.
-- Cross-cutting: the diagnostic catalogue (the `E_*` codes) — which are emitted
-  vs missing — is a concrete coverage signal worth a pass of its own.
+Buckets (SPEC_COMPLIANCE §Status-at-a-glance): **29 core MUST gaps** (§1), 12
+SHOULD (§2), 22 profile-scoped (§3), 1 MAY (§4), ~6 open questions (§5).
+Soundness (§1.1) is fully RESOLVED. The core gaps that CROSS-CUT this roadmap's
+other tracks (do them THERE, not as separate items):
+
+- **§30.2.7 inhabitance-summary query** (§1.2, large) — IS the `INHABITANCE`
+  lowering stage; build it in the **IR-pipeline track** (also unblocks §17.1.4
+  `impossible`).
+- **§21.6 semantic-reflection tier** (`asCore`/`reifyCore`/…) + §21.5
+  quotation-pattern matching (§1.5, large) — need "a faithful runtime Core
+  representation carrying QTT/scope evidence" → the **typed-Core / Lint** work in
+  the IR-pipeline track.
+- **§19.5 borrow-correct `bracket`** + **§32.2.19-21 Eff-typed do-blocks**
+  (`defer`/`using`/`var`/loop) + **§28.2 `mask`/`poll`/`uninterruptible`/
+  `ensuring`** (§1.3-1.4) — the **CPS track** (the bracket + masking-surface items).
+
+Self-contained spec-coverage items (no other track; pull into dated tasks here as
+scheduled): the rest of §1.2 (§11.4.2 bool→type coercion, §16.3.2 named holes,
+§16.4.1-2 flow-refinement exhaustiveness + `not`-refinement), §1.4 prelude surface
+(fiber-id terms, `and`/`or`/`force` as values, `DefectTag`/`DefectInfo`/
+`InterruptCause` shapes, the row/var/eff solver traits), §1.5 `std.deriving.shape`,
+§1.6 §3.1.7 repair-ranking. Refresh step: re-verify SPEC_COMPLIANCE's §1 gaps vs
+current code + the `E_*` diagnostic-catalogue coverage.
+
+### Known issues (not spec gaps, but tracked)
+
+- [ ] **`kp_showDouble` ≠ interpreter `show` on the last digit** for some
+      large-magnitude doubles. `show_double` (kappart.c:1207) uses the standard
+      increment-`%.*e`-until-round-trip shortest hack, which differs from Haskell's
+      Dragon4 on tie cases. Fix = vendor a correct shortest-float (Ryū) or port
+      Dragon4 with Haskell's tie-breaking (moderate). Boxed-path only (LLVM
+      diverges identically); FP tests use printer-stable values meanwhile.
