@@ -1,0 +1,33 @@
+-- CPS LOOP FAMILY (CPS-DESIGN §4): break / continue / return inside a SUSPENDING
+-- loop.  These lower to the abrupt-control nodes OP_BREAK / OP_CONTINUE /
+-- OP_RETURN that the CK-machine routes through the KK_LOOP / KK_RETSCOPE frames
+-- — `continue` re-iterates (skipping the rest of the body), `break` exits the
+-- loop, and `return` exits the do-block VALUE (delimited by KK_RETSCOPE, NOT the
+-- whole fiber).  The loop suspends each iteration (`fork`/`await`), so this
+-- exercises abrupt control THROUGH a park.  Deterministic ⇒ ≡ interpreter.
+module main
+
+note : Int -> UIO Unit
+let note n = printlnString (stringAppend "n=" (showInt n))
+
+-- continue past even numbers, break at the first odd not-<= 4 (i.e. >= 5),
+-- returning it.
+scan : UIO Int
+let scan = do
+    var i = 0
+    var found = 0
+    while leInt i 100 do
+        i = addInt i 1
+        f <- fork (note i)
+        _ <- await f
+        if eqInt (modInt i 2) 0 then
+            continue          -- skip evens
+        if not (leInt i 4) then
+            found = i
+            break             -- first odd >= 5
+    return found              -- exits THIS do-block with `found`
+
+main : UIO Unit
+let main = do
+    r <- scan
+    printlnString (stringAppend "found " (showInt r))

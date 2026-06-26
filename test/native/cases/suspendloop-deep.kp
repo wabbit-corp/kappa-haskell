@@ -1,0 +1,17 @@
+-- R12 stack-safety: a SUSPENDING `while` loop at 10^5 iterations must run in
+-- CONSTANT continuation depth.  Each iteration forks + awaits (a real park),
+-- and each iteration body is a fresh per-iteration do-scope re-run via KK_LOOP
+-- (rt.c).  If the per-iteration frame were NOT fully unwound before the loop
+-- re-iterates, `f->k` would grow by one frame per iteration and 10^5 iterations
+-- would blow the heap continuation; constant depth means it completes.  Only the
+-- final count is printed (deterministic) ⇒ ≡ interpreter.
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while leInt i 100000 do
+        f <- fork (ioPure i)
+        _ <- await f
+        i = addInt i 1
+    printlnString (showInt i)

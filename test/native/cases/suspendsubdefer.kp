@@ -1,0 +1,18 @@
+-- CPS LOOP FAMILY (CPS-DESIGN §4): a transparent nested do-statement (sub-do)
+-- inside a SUSPENDING block, carrying its own §18.7 defer.  The sub-block is
+-- wrapped in krt2_doscope so its defer runs LIFO + masked at the SUB-block's
+-- exit (before the rest of the outer block), not the outer scope's exit — even
+-- though the block parks on `await` mid-flight.  Deterministic ⇒ ≡ interpreter.
+module main
+
+child : UIO Unit
+let child = printlnString "child"
+
+main : UIO Unit
+let main = do
+    f <- fork child
+    _ <- await f
+    do
+        defer (printlnString "sub-defer")
+        printlnString "in-sub"
+    printlnString "after-sub"

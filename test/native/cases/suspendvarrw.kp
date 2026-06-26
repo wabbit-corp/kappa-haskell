@@ -1,0 +1,23 @@
+-- CPS LOOP FAMILY (CPS-DESIGN §4) — read-after-write across iterations of a
+-- SUSPENDING loop.  `total` accumulates `i`; each iteration writes `total` then
+-- a later statement (and the next iteration) READS it.  Because the block
+-- suspends (`fork`/`await`), it is CPS-lowered, and every read of `total`/`i` is
+-- a run-time OP_READ_REF (§4 R7) against the LIVE cell — so the write THIS
+-- iteration is visible to the read in the SAME iteration, and to all later
+-- iterations and the post-loop print, never a stale build-time snapshot.
+-- A build-time `kref_get` snapshot would print the wrong running sum.
+module main
+
+obs : Int -> UIO Unit
+let obs n = printlnString (stringAppend "sum " (showInt n))
+
+main : UIO Unit
+let main = do
+    var total = 0
+    var i = 1
+    while leInt i 5 do
+        total = addInt total i        -- write
+        f <- fork (obs total)         -- read-after-write THIS iteration (the live cell)
+        _ <- await f
+        i = addInt i 1
+    printlnString (stringAppend "total " (showInt total))  -- post-loop read sees all mutations

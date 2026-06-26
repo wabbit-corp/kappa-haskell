@@ -145,6 +145,7 @@ KValue *krt2_with_scope(KValue *use) {
 KValue *krt2_doscope(KValue *body) { return op1(OP_DOSCOPE, "rt.doscope", body); }
 KValue *krt2_defer(KValue *a)      { return op1(OP_DEFER, "rt.defer", a); }
 KValue *krt2_return(KValue *v)     { return op1(OP_RETURN, "rt.return", v); }
+KValue *krt2_retscope(KValue *b)   { return op1(OP_RETSCOPE, "rt.retscope", b); }
 KValue *krt2_break(void)           { return op0(OP_BREAK, "rt.break"); }
 KValue *krt2_continue(void)        { return op0(OP_CONTINUE, "rt.continue"); }
 KValue *krt2_while(KValue *cond, KValue *body) { return op2(OP_WHILE, "rt.while", cond, body); }
@@ -527,6 +528,8 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
     case KK_LOOP:                        /* an iteration body completed normally */
       f->cur = c->a;                     /* re-run `iterate`; KEEP the KK_LOOP    */
       return 1;
+    case KK_RETSCOPE:                    /* body completed normally: transparent  */
+      f->k = c->next; f->cur = krt2_pure(v); return 1;
     case KK_DOSCOPE: {                    /* normal exit: run exit actions, deliver v */
       ExitStack *xs = (ExitStack *)c->aux;
       ExitStack *restore = (ExitStack *)c->aux2;
@@ -580,6 +583,12 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         if (rkind == RK_BREAK)    { f->k = c->next; f->cur = krt2_pure(kunit()); return 1; } /* exit loop */
         if (rkind == RK_CONTINUE) { f->cur = c->a; return 1; }   /* re-iterate, KEEP KK_LOOP */
         f->k = c->next; continue;       /* return/fail/interrupt pass through the loop */
+      case KK_RETSCOPE:
+        /* a `return` delimited by this scope: deliver its value HERE as the
+         * scope's normal result (§18.8 — `return` exits the do-block, not the
+         * fiber).  fail/break/continue/interrupt are not delimited here. */
+        if (rkind == RK_RETURN) { f->k = c->next; f->cur = krt2_pure(rval); return 1; }
+        f->k = c->next; continue;
       case KK_DOSCOPE: {
         ExitStack *xs = (ExitStack *)c->aux;
         ExitStack *restore = (ExitStack *)c->aux2;
@@ -760,6 +769,10 @@ static void fiber_step(Rt *rt, Fiber *f) {
         break;
       case OP_RETURN:
         if (!unwind(rt, f, RK_RETURN, kctor_arg(cur, 0), NULL)) return;
+        break;
+      case OP_RETSCOPE:                       /* delimit `return` to this body */
+        f->k = cont_new(KK_RETSCOPE, NULL, f->k);
+        f->cur = kctor_arg(cur, 0);
         break;
       case OP_BREAK:
         if (!unwind(rt, f, RK_BREAK, NULL, NULL)) return;
