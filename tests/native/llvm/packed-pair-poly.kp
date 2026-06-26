@@ -1,0 +1,36 @@
+-- UNBOXING Stage 1e uniformity: a packed two-field b011 value flows through a
+-- GENERIC (polymorphic) function that knows nothing about its type, swaps its
+-- fields, and matches on a DIFFERENT type entirely — proving the packed rep is
+-- uniform (the discriminant + both fields live explicitly in the word, so blind
+-- polymorphic code handles it with no type witness).
+module main
+
+data Pair (a : Type) (b : Type) : Type =
+    Pair a b
+
+-- A fully polymorphic swap: it constructs and matches `Pair a b` without any
+-- knowledge of a/b.  When a,b are small immediates the value is a packed b011
+-- word both going in and coming out — uniformity is the property under test.
+swap : (a : Type) -> (b : Type) -> Pair a b -> Pair b a
+let swap a b p =
+    match p
+    case Pair x y -> Pair y x
+
+-- identity through a polymorphic container: the packed value is passed by value
+-- and returned unchanged.
+idP : (a : Type) -> a -> a
+let idP a x = x
+
+encode : Pair Int Int -> Int
+let encode p =
+    match p
+    case Pair x y -> addInt (mulInt x 1000) y
+
+main : UIO Unit
+let main = do
+    -- swap a packed Pair Int Int: 7,9 -> 9,7 -> encodes 9007.
+    printlnString (showInt (encode (swap Int Int (Pair 7 9))))   -- 9007
+    -- pass a packed Pair through a polymorphic identity, then encode.
+    printlnString (showInt (encode (idP (Pair Int Int) (Pair 3 4)))) -- 3004
+    -- double swap returns the original.
+    printlnString (showInt (encode (swap Int Int (swap Int Int (Pair 1 2))))) -- 1002

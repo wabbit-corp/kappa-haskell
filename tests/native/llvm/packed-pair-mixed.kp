@@ -1,0 +1,23 @@
+-- UNBOXING Stage 1e fallback: a TWO-field ctor with ONE immediate field and ONE
+-- HEAP-pointer field (a String) does NOT pack — it stays the boxed K_CTOR.  It
+-- must still build, match the right arm, and project BOTH fields back: the
+-- immediate field and the heap field, unchanged.
+module main
+
+data Labeled : Type =
+    Labeled (n : Int) (name : String)
+
+-- Render both fields so a lost/swapped field would change the output.
+render : Labeled -> String
+let render l =
+    match l
+    case Labeled k s -> stringAppend (stringAppend (showInt k) "=") s
+
+main : UIO Unit
+let main = do
+    -- field1 is a String (a heap pointer): the whole ctor stays boxed, yet both
+    -- fields project correctly.
+    printlnString (render (Labeled 1 "one"))     -- 1=one
+    printlnString (render (Labeled 42 "answer")) -- 42=answer
+    -- a negative immediate field alongside the heap field still round-trips.
+    printlnString (render (Labeled (0 - 5) "neg")) -- -5=neg

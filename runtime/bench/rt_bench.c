@@ -236,6 +236,34 @@ int main(void) {
       printf("x");
   }
 
+  /* 7c. pair-build (Stage 1e): a TWO-field ctor over two small immediates
+   *    (Pair smallInt smallInt) packs into a b011 word (nfields=1) — alloc-free,
+   *    the multi-field analogue of packed-build.  bytes/op -> 0 under Stage 1e;
+   *    contrast the n-ary boxed Cons (#6).  PAIR_TAG is a stand-in user `Pair`
+   *    ctor id: it fits the 20-bit discriminant (so it packs) and is not a nullary
+   *    builtin.  Assert BOTH projections round-trip so a broken bit-split fails the
+   *    bench, not just the gates. */
+  {
+    enum { PAIR_TAG = KCT_USER_BASE + 2 };           /* a small user `Pair` id     */
+    KValue *p[2] = { kint(0), kint(0) };
+    KValue *last = kctor(PAIR_TAG, "Pair", 2, p);
+    double t0 = now_ns();
+    size_t a0 = allocated();
+    for (int i = 0; i < ST; i++) {
+      KValue *a[2] = { kint(i & 0x3ff), kint((i + 1) & 0x3ff) }; /* both pack (≤10 bits) */
+      last = kctor(PAIR_TAG, "Pair", 2, a);          /* b011 packed: no allocation */
+    }
+    size_t a1 = allocated();
+    double t1 = now_ns();
+    printf("%-34s %10.2f %12.0f\n", "pair-build (Pair smallInt b011)",
+           (t1 - t0) / ST, (double)(a1 - a0) / ST);
+    /* DCE defense + correctness: both fields of the last Pair must round-trip. */
+    if (kctor_tagid(last) != PAIR_TAG || kctor_argc(last) != 2 ||
+        kas_int(kctor_arg(last, 0)) != ((ST - 1) & 0x3ff) ||
+        kas_int(kctor_arg(last, 1)) != (ST & 0x3ff))
+      printf("x");
+  }
+
   /* 8. constructor deref (kctor_tagid + kctor_arg): the TAG-TEST-TAX detector.
    *    Build ONE boxed Cons before timing; per iter do a match-dispatch (tagid)
    *    and a projection (arg), with NO allocation in the loop.  Stage 1 adds a

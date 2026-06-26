@@ -1,0 +1,31 @@
+-- UNBOXING Stage 1e: a TWO-field ctor whose BOTH fields are immediates packs
+-- into a b011 word (nfields=1) carrying the tag id AND both field words —
+-- alloc-free.  Pair(Int,Int) over two SMALL ints packs; over a LARGE field
+-- (past the 20-bit per-slot budget) it falls back to the boxed K_CTOR.  BOTH
+-- must build, match, and PROJECT BOTH FIELDS back exactly.
+--
+-- The .kp can only observe VALUES (parity interp == C == LLVM is the witness);
+-- the 0-byte/op packing win is the runtime/bench `pair-build` gate.
+module main
+
+data Pair : Type =
+    Pair (fst : Int) (snd : Int)
+
+-- Project both fields and combine them so a wrong field order / lost field would
+-- change the number.  fst*1000 + snd makes both fields observable independently.
+encode : Pair -> Int
+let encode p =
+    match p
+    case Pair a b -> addInt (mulInt a 1000) b
+
+main : UIO Unit
+let main = do
+    -- both fields small: packs into a b011 word (nfields=1), projects 7 and 9.
+    printlnString (showInt (encode (Pair 7 9)))            -- 7009
+    -- both fields at the small edge of the 20-bit slot still pack.
+    printlnString (showInt (encode (Pair 511 510)))        -- 511510
+    -- field0 LARGE (2^30, past the 20-bit slot): the whole Pair stays BOXED, but
+    -- still matches `Pair` and projects both fields back unchanged.
+    printlnString (showInt (encode (Pair 1073741824 3)))   -- 1073741824003
+    -- field1 LARGE: likewise boxed, both fields recovered.
+    printlnString (showInt (encode (Pair 2 1073741824)))   -- 1073741826

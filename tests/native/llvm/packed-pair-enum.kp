@@ -1,0 +1,32 @@
+-- UNBOXING Stage 1e: a TWO-field ctor whose both fields are NULLARY-ctor
+-- immediates (b010 words) packs into a b011 word (nfields=1).  Here both fields
+-- are a small enum, so the ctor `Cell c1 c2` packs and both nullary fields are
+-- recovered as their own b010 words on projection.
+module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Cell : Type =
+    Cell (a : Color) (b : Color)
+
+showColor : Color -> String
+let showColor c =
+    match c
+    case Red -> "R"
+    case Green -> "G"
+    case Blue -> "B"
+
+-- Project both enum fields; concatenation makes order + both fields observable.
+showCell : Cell -> String
+let showCell cell =
+    match cell
+    case Cell x y -> stringAppend (showColor x) (showColor y)
+
+main : UIO Unit
+let main = do
+    printlnString (showCell (Cell Red Green))   -- RG
+    printlnString (showCell (Cell Blue Blue))   -- BB
+    printlnString (showCell (Cell Green Red))   -- GR  (order preserved)

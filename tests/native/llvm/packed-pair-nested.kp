@@ -1,0 +1,41 @@
+-- UNBOXING Stage 1e nesting/soundness: a two-field packed b011 word nests inside
+-- itself and inside a single-field packed b011 word, and the tag id stored
+-- EXPLICITLY in each level keeps every shape distinct.
+--   * Option (Pair Int Int): `Some (Pair 1 2)` is a b011 single-field word whose
+--     field is the b011 TWO-field `Pair 1 2` word (nested packing); `None` is the
+--     b010 immediate — distinct.
+--   * Pair (Pair Int Int) Int: a two-field ctor whose field0 is ITSELF a packed
+--     two-field word and field1 is an immediate; both must project, and the inner
+--     Pair must project both of its fields.
+module main
+
+data Pair : Type =
+    Pair (fst : Int) (snd : Int)
+
+data Nest : Type =
+    Nest (inner : Pair) (tag : Int)
+
+-- Some (Pair a b) -> a*1000+b ; None -> -1.
+unOpt : Option Pair -> Int
+let unOpt o =
+    match o
+    case None -> 0 - 1
+    case Some p -> (match p
+                    case Pair a b -> addInt (mulInt a 1000) b)
+
+-- Nest (Pair a b) t -> a*1000000 + b*1000 + t, exposing all three numbers.
+unNest : Nest -> Int
+let unNest n =
+    match n
+    case Nest inner t -> (match inner
+                          case Pair a b -> addInt (addInt (mulInt a 1000000) (mulInt b 1000)) t)
+
+main : UIO Unit
+let main = do
+    -- Some (Pair 1 2): nested b011-in-b011; projects to 1002.
+    printlnString (showInt (unOpt (Some (Pair 1 2))))   -- 1002
+    -- None: the b010 immediate, distinct from any Some.
+    printlnString (showInt (unOpt None))                -- -1
+    -- Pair (Pair 1 2) 3: field0 is a packed two-field word, field1 immediate.
+    printlnString (showInt (unNest (Nest (Pair 1 2) 3))) -- 1002003
+    printlnString (showInt (unNest (Nest (Pair 9 8) 7))) -- 9008007
