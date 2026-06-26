@@ -8438,30 +8438,63 @@ inhabCtorFiber ctx scrutTy c = do
   st <- get
   mci <- gets (Map.lookup c . csCtors)
   case mci of
-    Nothing -> put st >> pure (failureVerdict st)
+    -- Constructor not registered: we cannot refine it, so fail OPEN. Reporting a
+    -- contradiction here would let an unresolved/absent constructor masquerade as
+    -- a no-confusion Empty (an unsound accept of `impossible`/omission); 'Unknown'
+    -- is strictly safer and costs no legitimate acceptance.
+    Nothing -> put st >> pure CtorIndexUnknown
     Just ci -> do
       nBefore <- gets (length . filter isError . csDiags)
       ctype <- evalIn emptyCtx (ciType ci)
-      (ok, fields) <- peelCtorResult ctype []
+      (result, fields) <- peelCtorResult ctype []
+      -- Decide unify success/failure WITH per-position clash tracking, so the
+      -- ground-ness probe can target only the family-argument positions that
+      -- actually disagreed (§17.1.2). Each clash records the (ctorResultArg,
+      -- scrutineeArg) pair, forced in the PRE-speculation state.
+      (ok, clashPairs) <- unifyHeadByPosition result scrutTy
       nAfter <- gets (length . filter isError . csDiags)
       put st -- discard speculative meta solutions and diagnostics
       pure $
         if ok && nAfter == nBefore
           then CtorRefined fields
-          else failureVerdict st
+          else failureVerdict st clashPairs
   where
     -- A unify-failure is a genuine no-confusion contradiction ('Empty') only
-    -- when the demanded scrutinee index is ground. If it carries a rigid skolem,
-    -- the constructor is merely absent for /this/ instantiation, so emptiness is
-    -- undecidable here. We classify against the demanded type as forced in the
-    -- ORIGINAL (pre-speculation) state, so speculative metas can't perturb it.
-    failureVerdict st
-      | noRigidSkolemForced (ecOf st) scrutTy = CtorContradiction
+    -- when every DISAGREEING family-argument position is PROVABLY APART — the
+    -- two sides diverge at a pair of distinct constructor heads, with no rigid
+    -- or meta shielding the divergence (so no instantiation could reconcile
+    -- them). Examples that ARE apart: `Z` vs `S n`, `True` vs `b`-position when
+    -- the OTHER index already clashed on ground heads. A rigid sitting AT the
+    -- divergence (e.g. `Box m` vs `Box (S n)` — the whole index is the rigid `m`)
+    -- is NOT apart: emptiness is undecidable ('CtorIndexUnknown', §30.2.7). A
+    -- rigid in a position that UNIFIED (the `a` of `Vec a Z` vs `Vec a (S n)`)
+    -- never enters 'clashPairs', so it cannot downgrade the verdict — fixing the
+    -- §30.2.x over-rejection. Classification reads the pre-speculation forcing
+    -- (captured into the pairs), so speculative metas can't perturb it.
+    --
+    -- @clashPairs@ empty ⇒ we could not localize the disagreement (heads/arities
+    -- differ, or a non-data result); fall back to probing the WHOLE scrutinee for
+    -- rigids, preserving the conservative pre-existing behavior.
+    -- A constructor's result family-arguments must ALL equal the scrutinee's for
+    -- it to apply, so a SINGLE provably-apart family-argument position already
+    -- rules the constructor out for EVERY instantiation ⇒ the fiber is Empty.
+    -- Hence 'any', not 'all': in `Pair True b` vs `FT : Pair False True`, the
+    -- first index clashes on ground heads (`True` vs `False`) — Empty — even
+    -- though the second clash (`True` vs rigid `b`) is on its own undecidable.
+    -- Only when NO clashing position is provably apart (every disagreement is
+    -- shielded by a rigid/meta) is emptiness undecidable ('CtorIndexUnknown').
+    failureVerdict st clashPairs
+      | null clashPairs =
+          if noRigidSkolemForced (ecOf st) scrutTy
+            then CtorContradiction
+            else CtorIndexUnknown
+      | any (\(ca, sa) -> groundlyApart (ecOf st) ca sa) clashPairs =
+          CtorContradiction
       | otherwise = CtorIndexUnknown
 
-    -- Instantiate the constructor telescope with fresh metas, then unify its
-    -- result with the scrutinee; mirrors 'ctorFieldTypes' but reports unify
-    -- success/failure instead of swallowing it.
+    -- Instantiate the constructor telescope with fresh metas; return the result
+    -- type (unsolved) and the retained Expl field types. Unlike the old peel we
+    -- do NOT unify here — the caller drives a position-aware unification.
     peelCtorResult t acc = do
       t' <- forceM t
       case t' of
@@ -8473,9 +8506,88 @@ inhabCtorFiber ctx scrutTy c = do
           m <- freshMetaV ctx
           r <- clApp clo m
           peelCtorResult r (acc ++ [dom])
-        result -> do
-          ok <- unify ctx result scrutTy
-          pure (ok, acc)
+        result -> pure (result, acc)
+
+    -- Unify the constructor result against the scrutinee. When both sides are
+    -- the same data head with matching arity, unify each family-argument
+    -- position independently and record (ctorResultArg, scrutineeArg) — forced
+    -- in the PRE-speculation state — for the positions that FAILED. Otherwise
+    -- fall back to a single whole-type unify and report no localized clash (the
+    -- caller then probes the whole scrutinee).
+    unifyHeadByPosition result scrut = do
+      stPre <- get
+      let ecPre = ecOf stPre
+      rf <- forceM result
+      sf <- forceM scrut
+      case (rf, sf) of
+        (VGlobN dh rsp, VGlobN sh ssp)
+          | dh == sh, length rsp == length ssp -> do
+              let ctorArgs0 = map (force ecPre . snd) rsp
+                  scrutArgs0 = map (force ecPre . snd) ssp
+              results <- zipWithM unifyPos rsp ssp
+              let ok = and results
+                  clashPairs =
+                    [ (ca, sa)
+                    | ((ca, sa), r) <- zip (zip ctorArgs0 scrutArgs0) results
+                    , not r
+                    ]
+              pure (ok, clashPairs)
+        _ -> do
+          ok <- unify ctx result scrut
+          pure (ok, [])
+    unifyPos (_, ra) (_, sa) = unify ctx ra sa
+
+-- | Rigidity-aware structural no-confusion: are these two values PROVABLY
+-- distinct — diverging at a pair of different constructor heads, with neither
+-- side a rigid skolem or meta at (or above) the point of divergence?
+--
+-- This is the decidable half of GADT no-confusion (§17.1.2 / §30.2.7). It
+-- returns 'True' only when /no/ instantiation of the free variables could make
+-- the two sides equal, so concluding the refined fiber 'Empty' is sound:
+--
+--   * @Z@ vs @S n@ ⇒ True (distinct ground constructor heads; the @n@ below the
+--     @S@ is irrelevant — the heads already disagree).
+--   * @True@ vs @False@ ⇒ True (distinct nullary constructors / literals).
+--   * a 'VRigid' or 'VFlex' against ANYTHING ⇒ False (the variable could be
+--     instantiated to match; emptiness is undecidable here).
+--   * same constructor head ⇒ recurse pairwise; apart iff some argument is apart
+--     (this never fires for a genuine unify-failure root, but keeps the check
+--     total and lets a nested ground clash like @S Z@ vs @S (S n)@ be detected).
+--   * anything we cannot cheaply classify (closures, Pi, neutral projections) ⇒
+--     False (conservative: refuse the 'Empty' verdict rather than fabricate it).
+groundlyApart :: EvalCtx -> Value -> Value -> Bool
+groundlyApart ec = go (1000 :: Int)
+  where
+    go fuel a b
+      | fuel <= 0 = False
+      | otherwise = case (force ec a, force ec b) of
+          -- Either side a free variable / unsolved meta: could be instantiated
+          -- to match, so NOT provably apart.
+          (VRigid _ _, _) -> False
+          (_, VRigid _ _) -> False
+          (VFlex _ _, _) -> False
+          (_, VFlex _ _) -> False
+          -- Distinct literals are apart; equal literals agree.
+          (VLit l1, VLit l2) -> l1 /= l2
+          -- Data constructors (the index-argument representation, e.g. `Z` is
+          -- `VCtor Z []`, `S m` is `VCtor S [m]`). Different heads ⇒ apart
+          -- (no-confusion). Same head ⇒ apart iff some argument is apart; the
+          -- rigid `m` under a SHARED head (`S m` vs `S k`) is therefore not a
+          -- clash, while `Z` vs `S m` clashes at the head regardless of `m`.
+          (VCtor g1 as1, VCtor g2 as2)
+            | g1 /= g2 -> True
+            | length as1 /= length as2 -> True
+            | otherwise -> or (zipWith (go (fuel - 1)) as1 as2)
+          -- Same nominal type-application head (e.g. nested `Vec a (S n)` vs
+          -- `Vec a Z` appearing as an index): recurse pairwise. Different type
+          -- heads are NOT treated as apart — nominal type constructors are not
+          -- assumed injective/disjoint at the value level here (conservative).
+          (VGlobN g1 sp1, VGlobN g2 sp2)
+            | g1 == g2
+            , length sp1 == length sp2 ->
+                or (zipWith (\(_, x) (_, y) -> go (fuel - 1) x y) sp1 sp2)
+          -- Anything else: not cheaply decidable ⇒ conservatively NOT apart.
+          _ -> False
 
 -- | §30.2.7 proof-classification evidence: does the /local/ context carry an
 -- explicit @C t'@ binder (e.g. @IsEmpty t@) with @t'@ convertible to the
@@ -8941,7 +9053,14 @@ elabPattern ctx0 pat0 ty0 = do
                     ("constructor pattern of type '" <> gnameText (ciData ci)
                        <> "' cannot match a scrutinee of type '" <> renderTerm hT <> "' (§17.1)")
                 _ -> pure ()
-              fieldTys <- ctorFieldTypes ctx g ci ty sp
+              -- §17.1: unpacking a GADT constructor binds its EXISTENTIAL
+              -- indices (the implicit params not pinned by the scrutinee type)
+              -- as fresh rigid skolems in 'ctxEx'. The field patterns — and any
+              -- inner match over a field whose type mentions such a skolem — must
+              -- elaborate under that extended context so the skolem has a valid de
+              -- Bruijn level and stays abstract (cannot be destructively solved by
+              -- a sub-match arm). See 'ctorFieldTypesCtx'.
+              (fieldTys, ctxEx) <- ctorFieldTypesCtx ctx g ci ty sp
               when (length ps /= length fieldTys) $
                 errAt sp "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.constructor-arity")
                   ("constructor pattern arity mismatch: expected "
@@ -8950,8 +9069,8 @@ elabPattern ctx0 pat0 ty0 = do
                      <> T.pack (show (length ps)))
               -- Surplus binders get fresh metas, not Type: after the
               -- arity diagnostic the bodies must not cascade (§3.1).
-              padTys <- mapM (const (freshMetaV ctx)) (drop (length fieldTys) ps)
-              (ps', ctx') <- goList ctx (zip ps (fieldTys ++ padTys))
+              padTys <- mapM (const (freshMetaV ctxEx)) (drop (length fieldTys) ps)
+              (ps', ctx') <- goList ctxEx (zip ps (fieldTys ++ padTys))
               pure (CPCtor g ps', ctx')
         PActive _ _ _ sp -> do
           unsupportedAt sp "active patterns are not supported by this implementation"
@@ -8986,6 +9105,16 @@ elabPattern ctx0 pat0 ty0 = do
 
 -- instantiate the constructor's field types against the scrutinee type
 -- (GADT-lite: unify the constructor's result with the scrutinee type).
+--
+-- This is the value-only variant used by callers that consume the field types
+-- as plain values (record-field projection, field-instance probing, record-patch
+-- elaboration). It instantiates EVERY telescope binder (implicit and explicit)
+-- with a fresh meta, exactly as before — it does NOT skolemize existentials and
+-- does NOT extend the context. Keeping it meta-based is important: these callers
+-- quote field types against the ORIGINAL context, so a field type must never
+-- reference a skolem bound at a level outside that context (which would quote to
+-- a negative de Bruijn index). The pattern-match path that DOES need rigid
+-- existentials uses 'ctorFieldTypesCtx', which returns the extended context.
 ctorFieldTypes :: Ctx -> GName -> CtorInfo -> Value -> Span -> CheckM [Value]
 ctorFieldTypes ctx _ ci scrutTy _ = do
   ctype <- evalIn emptyCtx (ciType ci)
@@ -9005,6 +9134,74 @@ ctorFieldTypes ctx _ ci scrutTy _ = do
         result -> do
           _ <- unify ctx result scrutTy
           pure acc
+
+-- | Instantiate a constructor's field types against the demanded scrutinee
+-- type, and return the context EXTENDED with fresh rigid skolems for the
+-- constructor's existential parameters.
+--
+-- §17.1 GADT unpacking: a constructor like @MkP : forall (s : Bool). Tag s -> P@
+-- binds an EXISTENTIAL index @s@ — it appears in a field type (@Tag s@) but is
+-- NOT pinned by the result type @P@, so unifying the result with the scrutinee
+-- leaves it free. We instantiate every implicit binder with a fresh meta and
+-- unify the result with the scrutinee (this SOLVES the indices that the result
+-- determines, e.g. @n@ in @Vec a (S n)@ against @Vec a (S Z)@). Any implicit
+-- meta that remains UNSOLVED afterwards is genuinely existential: we promote it
+-- to a fresh RIGID skolem bound as a real context entry (proper de Bruijn
+-- level, so the field types — and any later quote of them — stay well-scoped).
+--
+-- Why a rigid skolem rather than a leftover meta: the pattern variable bound at
+-- @Tag s@ may be scrutinized by an INNER match whose arms would otherwise each
+-- destructively solve the shared existential meta (@?s := True@ from a @TT@
+-- arm), and that solution would persist into a SIBLING arm's §30.2.7
+-- reachability query (@branchFiberEmpty@), making a genuinely-inhabited fiber
+-- look ground-and-Empty — the existential-index @impossible@ exploit. As a
+-- rigid skolem, @s@ is unsolvable, so the inner match sees @Tag s@ abstract and
+-- the §30.2.7 rigid-index rule correctly reports the fiber Unknown (reachable).
+-- Skolemizing ONLY the result-undetermined binders keeps the
+-- determined-from-scrutinee indices solved, so ordinary GADT refinement (and the
+-- ground-index no-confusion that powers exhaustiveness) is unaffected.
+ctorFieldTypesCtx :: Ctx -> GName -> CtorInfo -> Value -> Span -> CheckM ([Value], Ctx)
+ctorFieldTypesCtx ctx _ ci scrutTy _ = do
+  ctype <- evalIn emptyCtx (ciType ci)
+  (result, fields, implMetas) <- peel ctype [] []
+  -- An implicit param is EXISTENTIAL exactly when its meta does NOT occur in the
+  -- constructor's RESULT type — syntactically, before any unification. This is
+  -- the precise discriminator (§17.1): `MkP : forall s. Tag s -> P` has `s`
+  -- absent from `P` (existential), whereas `Some : forall a. a -> Option a` and
+  -- `Cons : .. -> Vec a (S n)` have `a`/`n` present in the result, so the result
+  -- (and via it the scrutinee) DETERMINES them. We must NOT skolemize the latter:
+  -- when the scrutinee type is itself an unsolved meta (e.g. an unannotated match
+  -- binder), `a` legitimately stays an unsolved meta to be GENERALIZED at the top
+  -- level — turning it into a dangling rigid would quote to a negative de Bruijn
+  -- index. Existential params, by contrast, are absent from the result, so unify
+  -- never touches them; we promote each to a fresh rigid skolem bound in-context.
+  metas0 <- gets csMetas
+  let existential (m, _) = not (metaOccursInValue metas0 m result)
+      exMetas = filter existential implMetas
+  _ <- unify ctx result scrutTy
+  ctx' <- foldM promoteExistential ctx exMetas
+  pure (fields, ctx')
+  where
+    -- Bind a fresh rigid skolem for a genuinely existential implicit param and
+    -- solve its meta to that skolem (so field types mentioning it force to the
+    -- rigid variable). Threads the extended context.
+    promoteExistential cx (m, dom) = do
+      let skol = VRigid (length (ctxEnv cx)) []
+      solveMeta m skol
+      pure (bindCtx "_ex" False dom cx)
+    peel t accFields accImpl = do
+      t' <- forceM t
+      case t' of
+        VPi Impl _ _ _ dom clo -> do
+          m <- freshMetaId
+          mv <- evalIn ctx (CMeta m)
+          r <- clApp clo mv
+          peel r accFields (accImpl ++ [(m, dom)])
+        VPi Expl _ _ _ dom clo -> do
+          mv <- freshMetaV ctx
+          r <- clApp clo mv
+          peel r (accFields ++ [dom]) accImpl
+        result -> pure (result, accFields, accImpl)
 
 -- ── try / do ─────────────────────────────────────────────────────────
 
