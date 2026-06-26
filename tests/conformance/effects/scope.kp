@@ -30,7 +30,7 @@ let main = do
     ex <- await f
     match ex
     case Success v -> printlnString "completed"
-    case Failure (Interrupt (MkInterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
+    case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
     case Failure c -> printlnString "other"
     r <- withScope useScope
     printlnString (showInt r)

@@ -1,5 +1,5 @@
 -- §18.1.2 a structured-scope shutdown interrupts its child; awaiting the child
--- yields Failure(Interrupt(MkInterruptCause ScopeShutdown _)). Matching that cause
+-- yields Failure(Interrupt(InterruptCause ScopeShutdown _)). Matching that cause
 -- natively requires the runtime-built InterruptCause/InterruptTag to carry their
 -- fixed KCT_ ids (kappart.h) — else the nested match is non-exhaustive. ≡ interp.
 module main
@@ -12,5 +12,5 @@ let main = do
     ex <- await f
     match ex
     case Success v -> printlnString "success"
-    case Failure (Interrupt (MkInterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
+    case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
     case Failure c -> printlnString "other-cause"

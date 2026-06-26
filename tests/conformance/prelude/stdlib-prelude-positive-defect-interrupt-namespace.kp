@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 constructor namespace: the §28.2 spec lists the qualified ctor paths
+-- `InterruptCause.InterruptCause` and the `DefectTag` constructors. They must
+-- resolve under their type's namespace (and the bare ctor names too), and the
+-- `and`/`or`/`force` terms must be nameable as ordinary values.
+
+module main
+
+-- Qualified ctor namespace forms resolve to the right ctor.
+icQual : InterruptCause
+let icQual = InterruptCause.InterruptCause Requested None
+
+tagQual : DefectTag
+let tagQual = DefectTag.OtherDefect
+
+-- All nine DefectTag constructors exist (§28.2 constructor namespace).
+allTags : List DefectTag
+let allTags = (Panic :: AssertionFailed :: ArithmeticFault :: StackOverflow :: OutOfMemory :: HostFailure :: ForeignContractViolation :: UnhandledChildFailure :: OtherDefect :: Nil)
+
+-- DefectInfo carries (DefectTag, Option String); None message is well-typed.
+diNoMsg : DefectInfo
+let diNoMsg = DefectInfo Panic None
+
+-- `and`/`or` are first-class `List Bool` folds (nameable, not just (&&)/(||)).
+andVal : List Bool -> Bool
+let andVal = and
+
+orVal : List Bool -> Bool
+let orVal = or
+
+-- `force` is a first-class term value.
+forceVal : forall (a : Type). Thunk a -> a
+let forceVal = force

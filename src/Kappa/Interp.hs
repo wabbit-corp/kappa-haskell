@@ -74,7 +74,7 @@ instance Exception CauseReraise
 -- interruption (timeout's @TimedOut@, race's @RaceLost@).
 interruptCause :: Text -> Value
 interruptCause tag =
-  VCtor prelMkInterruptCause [VCtor (gPrel tag) [], VCtor prelNone []]
+  VCtor prelInterruptCause [VCtor (gPrel tag) [], VCtor prelNone []]
 
 -- | The §18.1.2 'Cause' value carried by a host exception that escaped a
 -- fiber/sandbox: typed 'Fail', structured 'Interrupt', a faithfully
@@ -87,8 +87,15 @@ causeOf e = case fromException e of
     Nothing -> case fromException e of
       Just (CauseReraise cause) -> cause
       Nothing ->
+        -- §28.2 DefectInfo shape: an unclassified host failure is tagged
+        -- 'OtherDefect' with its rendered text as the (Some) message.
         VCtor prelDefect
-          [VCtor prelMkDefectInfo [VLit (LitStr (T.pack (show e)))]]
+          [ VCtor
+              prelDefectInfo
+              [ VCtor prelOtherDefect []
+              , VCtor prelSome [VLit (LitStr (T.pack (show e)))]
+              ]
+          ]
 
 -- | Re-raise a §18.1.2 'Cause' value back into host execution: typed 'Fail'
 -- becomes a 'KappaError'; every non-typed cause (Interrupt/Defect/composite)
@@ -201,7 +208,7 @@ exitTimedOut :: EvalCtx -> Value -> Bool
 exitTimedOut ec v = case force ec v of
   VCtor g [c] | g == prelFailure -> case force ec c of
     VCtor g [cause] | g == prelInterrupt -> case force ec cause of
-      VCtor g (tag : _) | g == prelMkInterruptCause -> case force ec tag of
+      VCtor g (tag : _) | g == prelInterruptCause -> case force ec tag of
         VCtor g _ | g == prelTimedOut -> True
         _ -> False
       _ -> False
