@@ -37,7 +37,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
 2. [~] **Unboxing Stage 0** — GC/alignment contract + tag-bit API + Stage-0 go/no-go benches done; only the canonical encoding remains (it folds into Stage 1).
-3. [~] **CPS loop family** — var-read normalization. (Suspending-loop lowering in progress on a correct-base worktree.)
+3. [x] **CPS loop family** — DONE: var/while/break/continue/return in suspending blocks + R7 var-read normalization (`for`/labeled/`using`/`let?` still fail-closed).
 4. [~] **Unboxing Stage 1** — immediate-INT tagging DONE (`addInt` 48→0 B/op, the allocation win); the `b010` immediate-ctor phase remains.
 5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
 6. [ ] **General CPS** — `ioBind` expressions (unblocks `join`/`race`/`timeout`).
@@ -58,13 +58,20 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       Unblocks transitive suspenders (user helpers that fork) and is the gate for
       the unboxing worker/wrapper. **Test:** a user fn that forks, used in a
       do-block, suspends correctly; a proven-pure fn stays straight-line.
-- [ ] **Loop family** (CPS-DESIGN §4, R5/R7/R12). `var`/`:=`/`while`/`break`/
-      `continue` in a suspending block. **Blocker:** var reads in a re-run body
-      must become run-time `OP_READ_REF` (a de-Bruijn hoist preserving
-      read-after-write), not build-time `kref_get`. Loop eligibility (scalarize
-      vs CPS) is decided by §3.3 + the R5 escape rule. **Test:** accept-loop
-      (`while running { c <- accept; fork (handle c) }`); a counter loop forking
-      per iteration; constant `f->k` depth across iterations (R12).
+- [x] **Loop family** (CPS-DESIGN §4, R5/R7/R12) — DONE (commit `67d4ce9`, merged
+      `411933d`). `var`/`:=`/`while`/`break`/`continue`/`return` now CPS-lower inside
+      a suspending do-block (previously fail-closed): `KVarItem`→`krt2_new_ref`+KEnv
+      push, `KAssign`→`krt2_write_ref`, `KWhile`→`krt2_while`/`KK_LOOP`,
+      `KBreak`/`KContinue`→`krt2_break`/`continue`, `KReturn`→`krt2_return` delimited
+      by a new `OP_RETSCOPE`/`KK_RETSCOPE` frame, statement-`if` via a selector
+      closure. **R7 var-read normalization** (the blocker): every var read hoists to
+      a run-time `krt2_read_ref` (`OP_READ_REF`) bind with de-Bruijn shifting, so a
+      re-run body re-reads the LIVE cell. Eligibility reuses the pure §3.3 witness.
+      VERIFIED: corpus 82/82 interp==C==LLVM, native suite green, conformance
+      1738/1738, the accept-loop / counter-fork-loop / read-after-write tests pass,
+      and R12 holds (flat ~4.9 MB RSS across 10⁴–10⁶ suspending iterations = constant
+      `f->k` depth). `for`/labeled loops/loop-`else`/`using`/`let?` in a suspending
+      block remain fail-closed (`E_BACKEND_UNSUPPORTED`), not silently dropped.
 - [ ] **`using`** (§19.5). Resource scope: acquire-bind + register `release` as a
       defer + bind the resource. (Needs the Resource-trait test surface.)
 - [ ] **`return`** (§18.8). Early non-local return — needs the do-block boundary so
