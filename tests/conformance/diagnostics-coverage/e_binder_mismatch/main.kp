@@ -1,0 +1,7 @@
+module main
+
+f : (x : Int) -> Int
+let f @x = x
+
+--! mode check
+--! assertDiagnostic error E_BINDER_MISMATCH

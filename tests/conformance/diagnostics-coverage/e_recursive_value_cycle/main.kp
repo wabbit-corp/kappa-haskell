@@ -1,0 +1,7 @@
+module main
+
+x : Integer
+let x = x
+
+--! mode check
+--! assertDiagnostic error E_RECURSIVE_VALUE_CYCLE

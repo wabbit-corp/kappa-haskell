@@ -1,0 +1,14 @@
+module main
+
+warnThenQuote : Elab (Syntax Int)
+let warnThenQuote =
+    do
+        let _ <- warnElab "deliberate elaboration-time warning"
+        pure '{ 10 }
+
+value : Int
+let value =
+    $(warnThenQuote)
+
+--! mode check
+--! assertDiagnostic warning W_MACRO_DIAGNOSTIC

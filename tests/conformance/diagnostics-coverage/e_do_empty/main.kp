@@ -1,0 +1,11 @@
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+bad : Eff <[Counter : Counter]> Int
+let bad = do
+    let x = 1
+
+--! mode check
+--! assertDiagnostic error E_DO_EMPTY

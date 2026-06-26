@@ -1,0 +1,7 @@
+module main
+
+bad : Integer
+let bad = ${ x }
+
+--! mode check
+--! assertDiagnostic error E_QUOTE_SPLICE_OUTSIDE_QUOTE

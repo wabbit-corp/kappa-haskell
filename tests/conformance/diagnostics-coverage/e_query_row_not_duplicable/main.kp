@@ -1,0 +1,20 @@
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+bad : (1 xs : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> (ys : List Int) -> OnceQuery Int
+let bad xs ys =
+    OnceQuery [
+        for t in xs
+        for y in ys
+        yield consumeToken t + y
+    ]
+
+--! mode check
+--! assertDiagnostic error E_QUERY_ROW_NOT_DUPLICABLE

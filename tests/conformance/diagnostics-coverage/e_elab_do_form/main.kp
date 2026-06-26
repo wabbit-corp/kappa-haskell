@@ -1,0 +1,9 @@
+module main
+
+bad : Elab Bool
+let bad = do
+    let x = defEqSyntax '{ 1 } '{ 1 }
+    break
+
+--! mode check
+--! assertDiagnostic error E_ELAB_DO_FORM

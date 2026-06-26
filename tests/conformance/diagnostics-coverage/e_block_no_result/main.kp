@@ -1,0 +1,8 @@
+module main
+
+let f (i : Int) : Int =
+    block
+        let x = i + 1
+
+--! mode check
+--! assertDiagnostic error E_BLOCK_NO_RESULT

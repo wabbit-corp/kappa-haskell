@@ -212,9 +212,19 @@ the real Lint are both impossible without them.
       defer + bind the resource. (Needs the Resource-trait test surface.)
 - [ ] **`return`** (§18.8). Early non-local return — needs the do-block boundary so
       `return` exits the block, not the fiber.
-- [ ] **Masking surface** (§18.1.12). `mask`/`uninterruptible`/`poll` are runtime-
-      only (`krt2_*`) — NOT yet exposed in the prelude. Requires prelude `prim`
-      decls + interpreter handling FIRST, then the (trivial) backend wiring.
+- [x] **Masking surface** (§18.1.12). DONE (merged `e1a1482`). `uninterruptible`/
+      `mask`/`poll` (+ `__mask`/`__restore`) exposed in the prelude, handled in the
+      interpreter (per-fiber restore stack), and lowered to `krt2_mask`/
+      `krt2_uninterruptible`/`krt2_poll` in C + LLVM — all agree interp==C==LLVM
+      (`masking.kp`). **`bracketM` now masks acquire+register**, closing the
+      bracket-on-interrupt common case (release RUNS on interrupt; `bracket-mask-
+      interrupt.kp`, load-bearing). *Two caveats tracked:* (a) `restore` is rank-1
+      (`IO e a -> IO e a`) not the spec's rank-2 `forall x.` — the runtime restore
+      closure is monomorphic, and rank-2 emits an erased type-application it consumes
+      as the action; spec-exact rank-2 needs a runtime change. (b) the synchronous
+      `krun_io`/`krt2_run_op_sync` bridge still can't drive `OP_MASK` for `bracketM`
+      reached as a bare `K_BOUNCE` worker behind the `MonadResource` dict (born-
+      interrupt can still skip release on C) — needs the deferred do-kernel CPS Stage 2/3.
 - [x] **General CPS for IO combinator expressions** (CPS-DESIGN §3.1) — DONE: a
       saturated `ioBind`/`ioThen`/`catchIO`/`finallyIO` whose body action
       may-suspend (§3.3) lowers to the CK-machine node
@@ -446,6 +456,16 @@ two implementations compare on a stable key. Three strategies port from
       failures collapse to one real gap — **block-local declarations** (nested-`block`
       layout + local `trait`/`instance`/`effect`/`summon`); a candidate spec-coverage
       task, not test noise.
+- [x] **Coverage-driven new tests + dedup — DONE** (2026-06-26;
+      [`TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md) §coverage-driven). (A) Crafted
+      + independently verified **52 negative tests** for previously-untested
+      diagnostics →
+      [`tests/conformance/diagnostics-coverage/`](tests/conformance/diagnostics-coverage),
+      **+0.36% compiler coverage** (558 boxes, ~83% `Kappa.Check` error paths), gate
+      1794→1849. (B) Coverage-signature dedup found **87 strong-duplicate clusters**
+      (55 byte-identical exact-copies naive dedup catches; **32 textually-differ-but-
+      coverage+assertion-identical that naive dedup misses**; 6 distinct-contract →
+      keep) — review candidates, not auto-deleted.
 - [ ] **Land `tests/pending-import/391`** (OracleImport cross-language corpus: Kotlin
       `codegen/box`, Scala 3 `patmat`, harvested from `../datatron/`) + copy any fresh
       oracle `.kp`. Real-world regression behavior the synthetic generators miss. ~1–2h.

@@ -1,0 +1,10 @@
+module main
+
+bad : IO Unit
+let bad = do
+    let x = 0
+    x = 1
+    return ()
+
+--! mode check
+--! assertDiagnostic error E_ASSIGN_NOT_VAR

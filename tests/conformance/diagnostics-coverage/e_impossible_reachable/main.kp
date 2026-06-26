@@ -1,0 +1,12 @@
+module main
+
+-- §17.1.4: the bare 'impossible' EXPRESSION (not a 'case impossible' arm) is
+-- accepted only inside a match-arm body whose §30.2.7-refined fiber is provably
+-- uninhabited (csImpossibleScrut == Just True). Used as a standalone expression
+-- at top level, csImpossibleScrut is Nothing, so the use is reachable and
+-- rejected. This exercises Check.hs:3675 (EImpossible), distinct from the
+-- 'case impossible' arm form which emits E_INDEXED_IMPOSSIBLE_REACHABLE.
+let bad : Int = impossible
+
+--! mode check
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE

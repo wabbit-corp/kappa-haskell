@@ -1,0 +1,6 @@
+module main
+
+let x = #
+
+--! mode check
+--! assertDiagnostic error E_UNEXPECTED_CHARACTER

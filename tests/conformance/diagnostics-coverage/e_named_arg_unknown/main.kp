@@ -1,0 +1,13 @@
+module main
+
+data Rect : Type =
+    Rect {
+        width : Int,
+        height : Int
+    }
+
+bad : Rect
+let bad = Rect { width = 1, height = 2, depth = 3 }
+
+--! mode check
+--! assertDiagnostic error E_NAMED_ARG_UNKNOWN

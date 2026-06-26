@@ -1,0 +1,20 @@
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label other : Counter
+
+comp : Eff <[Counter : Counter]> Int
+let comp =
+    do
+        let x <- Counter.tick ()
+        pure x
+
+let handled =
+    deep handle other comp with
+        case return x -> pure x
+        case tick u k -> k 7
+
+--! mode check
+--! assertDiagnostic error E_EFFECT_LABEL_NOT_IN_ROW

@@ -1,0 +1,11 @@
+module main
+
+-- §6.3.4.3: a prefixed-string handler's evidence must be meta-phase, an
+-- 'Elab (InterpolatedMacro _)' term. A handler whose type is a *runtime*
+-- 'InterpolatedMacro _' value is rejected with E_PREFIX_RUNTIME_HANDLER.
+
+let bad (p : InterpolatedMacro Int) =
+    p"raw"
+
+--! mode check
+--! assertDiagnostic error E_PREFIX_RUNTIME_HANDLER

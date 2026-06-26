@@ -1,0 +1,9 @@
+module main
+
+classify : (| Integer | String |) -> String
+let classify u =
+    match u
+    case (| x |) -> "x"
+
+--! mode check
+--! assertDiagnostic error E_VARIANT_AMBIGUOUS

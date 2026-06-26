@@ -1,0 +1,13 @@
+module main
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Bool |) -> "b"
+    case (| s : String |) -> s
+
+main : UIO Unit
+let main = printlnString "x"
+
+--! mode check
+--! assertDiagnostic error E_VARIANT_MEMBER

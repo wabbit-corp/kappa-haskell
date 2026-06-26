@@ -1,0 +1,8 @@
+module main
+
+let id (@0 a : Type) (x : a) : a = x
+
+let bad = id @5
+
+--! mode check
+--! assertDiagnostic error E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH

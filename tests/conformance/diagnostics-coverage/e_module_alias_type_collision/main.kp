@@ -1,0 +1,10 @@
+module main
+
+import std.bytes as Foo
+
+data Foo : Type = MkFoo
+
+let bad : Int = Foo.nope
+
+--! mode check
+--! assertDiagnostic error E_MODULE_ALIAS_TYPE_COLLISION

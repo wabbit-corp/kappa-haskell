@@ -1,0 +1,9 @@
+module main
+
+o : Option Int
+let o = Some 1
+
+let (Some x) = o
+
+--! mode check
+--! assertDiagnostic error E_REFUTABLE_LET_PATTERN

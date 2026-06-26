@@ -1,0 +1,7 @@
+module main
+
+f : Int
+let f x = 0
+
+--! mode check
+--! assertDiagnostic error E_SIGNATURE_ARITY

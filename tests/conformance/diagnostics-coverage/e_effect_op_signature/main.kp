@@ -1,0 +1,7 @@
+module main
+
+effect Bad =
+    1 oops : Int
+
+--! mode check
+--! assertDiagnostic error E_EFFECT_OP_SIGNATURE

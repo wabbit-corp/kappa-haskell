@@ -1,0 +1,15 @@
+module main
+
+data Rect : Type =
+    Rect {
+        width : Int,
+        height : Int
+    }
+
+describe : Rect -> Int
+let describe rect =
+    match rect
+      case Rect { width = w, depth = d } -> w
+
+--! mode check
+--! assertDiagnostic error E_PATTERN_FIELD_UNKNOWN

@@ -1,0 +1,6 @@
+module main
+
+let mk (e : Elab (Syntax Int)) : Syntax Int = '{ ${ e } + 1 }
+
+--! mode check
+--! assertDiagnostic error E_QUOTE_SPLICE_ELAB

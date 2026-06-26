@@ -1,0 +1,11 @@
+module main
+
+bad : Query Int
+let bad =
+    Query {|
+        for x in [1, 2, 3]
+        yield x
+    |}
+
+--! mode check
+--! assertDiagnostic error E_QUERY_METADATA_LOSS

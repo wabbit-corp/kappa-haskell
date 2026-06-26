@@ -1,0 +1,14 @@
+module main
+
+values : List (Option Int)
+let values = [Some 1, None, Some 3]
+
+bad : List Int
+let bad =
+    [
+        for Some x in values
+        yield x
+    ]
+
+--! mode check
+--! assertDiagnostic error E_QUERY_FOR_REFUTABLE

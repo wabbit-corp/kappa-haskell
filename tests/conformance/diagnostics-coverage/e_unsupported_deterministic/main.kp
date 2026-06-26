@@ -1,0 +1,6 @@
+module main
+
+derive Eq
+
+--! mode check
+--! assertDiagnostic error E_UNSUPPORTED_DETERMINISTIC

@@ -1,0 +1,14 @@
+-- §6.3.5: the conventional `type"…"` handler takes literal type-expression
+-- content; it does not support ${…} interpolation. Splicing a runtime value
+-- into a static type is not a meaningful type-producing form, so the handler
+-- rejects an interpolation fragment with E_PREFIX_HANDLER_TYPE.
+module main
+
+ty : Type
+let ty = type"List ${Int}"
+
+main : UIO Unit
+let main = printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_PREFIX_HANDLER_TYPE

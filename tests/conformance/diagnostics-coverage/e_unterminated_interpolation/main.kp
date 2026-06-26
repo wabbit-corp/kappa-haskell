@@ -1,0 +1,6 @@
+module main
+
+let value = f"hello ${20 + 22"
+
+--! mode check
+--! assertDiagnostic error E_UNTERMINATED_INTERPOLATION

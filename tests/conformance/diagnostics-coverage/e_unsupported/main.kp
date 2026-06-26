@@ -1,0 +1,6 @@
+module main
+
+let x = moduleSig Foo
+
+--! mode check
+--! assertDiagnostic error E_UNSUPPORTED

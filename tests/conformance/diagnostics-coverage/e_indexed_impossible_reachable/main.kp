@@ -1,0 +1,13 @@
+module main
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+bad : forall (b : Bool). Tag b -> Int
+let bad t =
+    match t
+    case impossible
+
+--! mode check
+--! assertDiagnostic error E_INDEXED_IMPOSSIBLE_REACHABLE

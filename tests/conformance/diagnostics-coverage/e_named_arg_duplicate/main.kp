@@ -1,0 +1,10 @@
+module main
+
+data Foo : Type =
+    Foo { a : Int, b : Int }
+
+dup : Foo
+let dup = Foo { a = 1, a = 2, b = 3 }
+
+--! mode check
+--! assertDiagnostic error E_NAMED_ARG_DUPLICATE

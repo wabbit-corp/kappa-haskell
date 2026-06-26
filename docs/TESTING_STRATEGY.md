@@ -277,3 +277,52 @@ Ran both corpora read-only against the compiler (nothing bulk-imported):
   1781→1794, all pass). They exercise multi-shot `deep handle` effects, `Set`/`Map`
   comprehensions with conflict resolution, elvis chains — paths the curated suite
   missed.
+
+## Coverage-driven new tests (2026-06-26)
+
+Two uses of the coverage data beyond selection — generating tests and finding
+redundancy.
+
+### (A) New tests from untested error paths
+The §3 contract defines ~236 emittable diagnostics; `(codes emitted in src/Kappa)
+− (codes any conformance test references)` = **113 untested, 71 core-language**.
+Each is an error path no test triggers. Crafted minimal trigger programs (find the
+emission site → minimal `.kp` → confirm the code is emitted), then **independently
+re-verified** every one with `kappa test`. Result: **52 negative tests** in
+[`tests/conformance/diagnostics-coverage/`](../tests/conformance/diagnostics-coverage),
+adding **+0.36% compiler coverage (558 boxes, ~83% in `Kappa.Check` error paths)** —
+2× the elpi import. The other 19 are out of scope for single-file conformance
+(`E_CONFIG_*`/`E_DEPENDENCY_*`/`E_BACKEND_*` need `build --manifest`; `E_INTERNAL*`
+are invariants; `E_IMPORT_CYCLE` needs a multi-file set).
+
+*Process lesson:* the crafting workflow's `args` reached the script as a JSON
+**string** (not an array), so `slice(i,i+8)` cut 8-**character** fragments → 216
+garbage-labelled agents (7.4M tokens). Guard in workflow scripts:
+`const xs = typeof args === 'string' ? JSON.parse(args) : args;`. The run was
+salvaged by filtering to the real target codes + independent re-verification — the
+re-verification is why the bad batching didn't matter.
+
+### (B) Coverage-based dedup (catches what naive dedup misses)
+Per-test compiler-coverage signatures over the 1,362 real tests (those with `--!`
+directives; auxiliary suite files excluded). Two signals: **identical coverage
+signature** (same boxes ticked) and **no-unique-box** (adds no box another test
+covers). The sharp one is identical-coverage: **87 strong-duplicate clusters**
+(identical coverage AND identical assertions):
+
+- **55 byte-identical** copies — the `X` vs `category-X` rename artifact; naive
+  textual dedup already catches these.
+- **32 textually differ but coverage + assertion identical** — *what naive dedup
+  misses.* Two kinds: (i) trivial near-copies differing only in module name/comments
+  (`elvis-positive-default` ↔ `expressions-elvis-positive-default`, the `queries-*`
+  duplicates, …); (ii) **genuinely different programs, same behavior** — the
+  positivity trio (`positivity-mutual-reject`/`-reject-negative`/`-reject-rose` all
+  reject `E_DATA_NOT_STRICTLY_POSITIVE` via one path), `match/bool-missing-case` ↔
+  `match/not-exhaustive`, and many `unicode-text-appendix-t-*` pairs (distinct
+  invalid-scalar inputs hitting one validation path).
+- 6 clusters share a path but assert *different* things → keep (distinct contracts).
+
+These are **review candidates, not auto-deletes**: kind (ii) and the unicode pairs
+pin distinct spec examples even though the compiler treats them identically. The
+no-unique signal (1,021/1,362) is too weak to act on — conformance tests overlap by
+design (they pin *behaviors*, not unique code paths). Reproduce via
+`/tmp/pertest_collect.py` + `/tmp/dedup_analyze2.py`.

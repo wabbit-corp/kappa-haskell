@@ -1,0 +1,9 @@
+module main
+
+data Bar = Bar
+
+instance Bar Bar =
+    let foo = 0
+
+--! mode check
+--! assertDiagnostic error E_INSTANCE_HEAD

@@ -1,0 +1,23 @@
+module main
+
+result : Int
+let result : Int =
+    block
+        scoped effect State =
+            1 get : Unit -> Int
+
+        let comp : Eff <[State : State]> Int =
+            do
+                let a <- State.get ()
+                pure a
+
+        let handled =
+            deep handle State comp with
+                case return x -> pure x
+                case get _ k -> k 10
+                case bogus _ k -> k 0
+
+        runPure handled
+
+--! mode check
+--! assertDiagnostic error E_HANDLER_OP_UNKNOWN

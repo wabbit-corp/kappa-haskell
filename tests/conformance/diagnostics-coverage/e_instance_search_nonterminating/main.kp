@@ -1,0 +1,10 @@
+module main
+
+trait Box (a : Type) =
+    unbox : a -> Int
+
+instance Box a => Box a =
+    let unbox x = 0
+
+--! mode check
+--! assertDiagnostic error E_INSTANCE_SEARCH_NONTERMINATING

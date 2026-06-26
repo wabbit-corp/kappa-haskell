@@ -1,0 +1,20 @@
+module main
+
+data Match (a : Type) (r : Type) : Type =
+    Hit a
+    Miss r
+
+data Buf : Type =
+    Buf (n : Int)
+
+pattern Grab (1 b : Buf) : Match Int Buf =
+    match b
+    case Buf n -> Hit n
+
+useGrab : Buf -> UIO Int
+let useGrab b = do
+    let? Grab (n) = b
+    pure n
+
+--! mode check
+--! assertDiagnostic error E_ACTIVE_PATTERN_MATCH_RESULT_NOT_ALLOWED_IN_PLAIN_LET_QUESTION

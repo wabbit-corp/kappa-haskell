@@ -1,0 +1,10 @@
+module main
+
+bad : Syntax Integer
+let bad =
+    block
+        let n = 1
+        '{ ${ n } }
+
+--! mode check
+--! assertDiagnostic error E_QUOTE_SPLICE_TYPE

@@ -1,0 +1,7 @@
+module main
+
+result : Int
+let result = 0x
+
+--! mode check
+--! assertDiagnostic error E_NUMERIC_LITERAL_MALFORMED

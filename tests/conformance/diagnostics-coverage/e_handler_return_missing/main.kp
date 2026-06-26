@@ -1,0 +1,23 @@
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+comp : Eff <[State : State]> Int
+let comp =
+    do
+        let a <- State.get ()
+        let _ <- State.put 5
+        pure a
+
+let handled =
+    deep handle State comp with
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+result : Int
+let result = runPure handled
+
+--! mode check
+--! assertDiagnostic error E_HANDLER_RETURN_MISSING

@@ -1,0 +1,14 @@
+module main
+
+bad : List Int
+let bad =
+    [
+        for x in [1, 2, 3]
+        group by x {
+            key = [x]
+        } into g
+        yield g.key
+    ]
+
+--! mode check
+--! assertDiagnostic error E_QUERY_GROUP_KEY_FIELD

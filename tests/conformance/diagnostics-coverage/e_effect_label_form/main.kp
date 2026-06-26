@@ -1,0 +1,9 @@
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label other : Counter Int
+
+--! mode check
+--! assertDiagnostic error E_EFFECT_LABEL_FORM

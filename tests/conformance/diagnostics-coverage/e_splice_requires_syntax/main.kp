@@ -1,0 +1,7 @@
+module main
+
+bad : Int
+let bad = $( 5 )
+
+--! mode check
+--! assertDiagnostic error E_SPLICE_REQUIRES_SYNTAX

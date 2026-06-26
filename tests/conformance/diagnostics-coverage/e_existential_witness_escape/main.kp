@@ -1,0 +1,10 @@
+module main
+
+anonPkg : exists (a : Type). a
+let anonPkg = seal 5 as exists (a : Type). a
+
+let leak =
+    open anonPkg as exists (a). x in (\(y : a) -> y)
+
+--! mode check
+--! assertDiagnostic error E_EXISTENTIAL_WITNESS_ESCAPE

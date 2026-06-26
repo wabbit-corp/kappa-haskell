@@ -1,0 +1,21 @@
+module main
+
+data Token : Type =
+    Token
+
+touches : (& c : Token) -> Int -> Bool
+let touches c o = True
+
+bad :
+    (customers : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token) ->
+    (orders : List Int) ->
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token
+let bad customers orders =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 [
+        for c in customers
+        left join o in orders on touches c o into matchingOrders
+        yield c
+    ]
+
+--! mode check
+--! assertDiagnostic error E_QUERY_LEFT_JOIN_LINEAR_CAPTURE

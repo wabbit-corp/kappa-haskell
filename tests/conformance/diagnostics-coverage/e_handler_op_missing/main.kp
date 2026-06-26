@@ -1,0 +1,20 @@
+-- §18.1.21: a handler must provide one clause per declared operation.
+module main
+
+effect State2 =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+comp : Eff <[State2 : State2]> Int
+let comp = State2.get ()
+
+let handled =
+    deep handle State2 comp with
+        case return x -> pure x
+        case get _ k -> k 10
+
+result : Int
+let result = runPure handled
+
+--! mode check
+--! assertDiagnostic error E_HANDLER_OP_MISSING

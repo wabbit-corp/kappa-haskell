@@ -1,0 +1,11 @@
+module main
+
+let sample = """
+  bad
+    """
+
+main : UIO Unit
+let main = println sample
+
+--! mode check
+--! assertDiagnostic error E_MULTILINE_STRING_BAD_INDENT
