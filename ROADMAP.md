@@ -96,31 +96,46 @@ This track is the one big architecture investment; **scope it as its own effort
 first** (the §34.3 stages × what `Backend/C.hs` does today × the minimal
 niche-unblocking slice) before implementing.
 
-- [ ] **Representation-node type annotations** — thread the concrete head type
-      onto `CCtor`/`CMatch`/`CPCtor` (and ideally `CLam`) from `Check.hs`, the way
-      `CLet`/`CPi` already carry types. The minimal enabler for BOTH the Lint and
-      representation selection.
-- [ ] **KBackendIR slice: `INHABITANCE` + `REPRESENTATION_SELECTION`** (§34.3.1) —
-      a representation-typed backend IR between KCore and the emitter; per-type
-      layout/tag/rep chosen at compile time with type + inhabitance info. Subsumes
-      the ad-hoc runtime `kctor` packing AND the hand-rolled `scalarPlan` worker
-      analysis under one principled pass. Structural reference ONLY (never its
-      detail): `../kappa/` `KBackendIR.fs` (rep-annotated nodes +
-      `KBackendDataLayout`/`KBackendConstructorLayout`) + `KBackendLowering.fs`.
-      Building the `INHABITANCE` stage ALSO closes SPEC_COMPLIANCE §1.2's missing
-      **§30.2.7 inhabitance-summary query** (+ unblocks §17.1.4 `impossible`).
-- [ ] **Core / KBackendIR Lint** — an independent re-checker of the typed IR.
-      Would have caught the erased-type-application crash (`apply unit to unit` is
-      ill-typed) at compile time; realizes "formally verified at Core level."
-      Sequence: annotate nodes → Lint → niche rides on it. The faithful typed Core
-      this needs is also what SPEC_COMPLIANCE §1.5's **§21.6 semantic-reflection
-      tier** (`asCore`/`reifyCore`, a runtime Core carrying QTT/scope evidence)
-      requires — one foundation, two payoffs.
-- [ ] **Niche `Option<boxed>` = bare pointer + full-range `Option<Int>`**
-      (LAYOUT-DESIGN classes 2 & 3 over boxed/large payloads) — the non-uniform
-      layout wins; need REPRESENTATION_SELECTION + a coercion-insertion pass (box a
-      niche value when it escapes into polymorphic code). DEFERRED until the slice
-      exists.
+**Staged plan** (scoped 2026-06-26; §34.3's "observationally equivalent" clause
+means we need NOT materialize a distinct KBackendIR datatype — only behave as-if,
+so this is a *verifier + rep-table over the existing pipeline*, NOT a big-bang IR
+rewrite. Each stage stays interp==C==LLVM byte-identical until the niche). The
+ONE ordering constraint: typed-Core head annotations are the keystone — niche AND
+the real Lint are both impossible without them.
+
+- [ ] **Stage 0 — typed-Core head annotations + observe-only Lint (KEYSTONE, do
+      first; tractable, lowest-risk).** Thread the already-computed monomorphic head
+      type onto `CMatch` (from `sTy1`, in scope at `Check.hs:8205-8285`), then the
+      ~30 `CCtor` build sites (+ `CProjAt`/`CInject`) — they carry NO type today
+      (`Core.hs:117-134`). Plus an **observe-only Lint** (`CoreOps.hs`) of one
+      property: every `CApp` head has a function type — which retires the
+      `eraseQ0Args` silent-failure mode (it would have caught the `kapp(unit,unit)`
+      crash). No backend reads the annotation → parity byte-identical. The hard
+      prerequisite for everything below.
+- [ ] **Stage 1 — §30.2.7 inhabitance query** (parallel, `Check.hs`-local, no
+      codegen change). Generalize `scrutineeEmpty` (`Check.hs:8276`) into the
+      terminating structural `InhabitanceSummary = Empty | Subsingleton |
+      Contractible | Finite n | Unknown`, keyed by `InhabitancePurpose` (Stage 1
+      uses only SourceReachability; Stage 4 uses RuntimeShape — they MUST NOT
+      cross). Closes the SPEC_COMPLIANCE §30.2.7 gap + unblocks `case
+      impossible`/§17.1.4.
+- [ ] **Stage 2 — shared compile-time rep/layout table** (NOT per-node decoration
+      — "rep on every expression node" is the reference's short-sighted part; it
+      goes unused). A pure `Backend/Repr.hs` (`Rep = RInt64|RFloat64|RBool|RBoxed|…`
+      + a per-ADT `CtorLayout`) lifting the rep reasoning currently DUPLICATED in
+      `C.hs`/`LLVM.hs`; C+LLVM agree on tag ids + int/float marshalling by
+      construction. Start by lifting the proven `b010` nullary-immediate decision
+      from runtime `kctor` into the table.
+- [ ] **Stage 3 — §34.3.3 legality verifier + `scalarPlan` unification** (hard).
+      Promote the observe-only Lint to the §34.3.3 closed checkpoint list over the
+      annotated nodes + the rep table; fold `scalarPlan` into one `repSelect` — the
+      single source of truth for rep/§31.2-erasure legality.
+- [ ] **Stage 4 — niche `Option<boxed>` + coercion-insertion pass** (last,
+      hardest). The one packing the runtime can't decide blind: bare-pointer niche
+      for the canonical shape, with a pass that boxes a niche value escaping into
+      polymorphic code (§5.2 canonicalization). The genuine type-directed layout
+      win; full-range `Option<Int>` rides here. **§21.6 semantic reflection** reuses
+      the same typed Core (one foundation, two payoffs).
 
 ---
 
