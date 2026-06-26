@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+--! assertType needsProof (n : Integer) -> (@0 p : (n == n) = True) -> Integer
+
+module main
+
+-- §11.4.2 (form 1): pin the elaborated type to confirm the coercion
+-- `b ⟼ (b = True)` actually fired on the implicit binder annotation. The
+-- declared `(@p : n == n)` must elaborate to `(@0 p : (n == n) = True)`
+-- (omitted quantity on a compile-time proposition defaults to 0, §16.3).
+needsProof : (n : Integer) -> (@p : n == n) -> Integer
+let needsProof n = n

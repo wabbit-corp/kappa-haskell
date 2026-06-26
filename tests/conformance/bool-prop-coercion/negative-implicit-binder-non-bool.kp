@@ -1,0 +1,10 @@
+--! assertDiagnostic error E_NOT_A_TYPE
+
+module main
+
+-- §11.4.2 over-coercion guard: the boolean-proposition coercion fires ONLY
+-- when the type-position expression genuinely has type `Bool`. An implicit
+-- binder annotated with a non-Bool, non-type expression (an `Int` literal)
+-- must STILL raise E_NOT_A_TYPE — there is no general value→type coercion.
+bad : (@p : 42) -> Integer --!! E_NOT_A_TYPE
+let bad = 0

@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"
+
+module main
+
+let isTrue (b : Bool) : Bool = b
+
+-- §11.4.2 (form 3): a record field whose declared type is a bare boolean
+-- expression is coerced, so `ok : isTrue True` elaborates to
+-- `ok : (isTrue True) = True`. The literal supplies `refl`, and `isTrue
+-- True` reduces to `True`, so the `True = True` proof checks.
+let r : (id : Integer, ok : isTrue True) = (id = 1, ok = refl)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt r.id)

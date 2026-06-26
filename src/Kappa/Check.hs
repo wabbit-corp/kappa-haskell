@@ -3291,7 +3291,9 @@ infer ctx expr = case expr of
         let thisMode = case outer of
               Just (ThisTraitSibs sibs) -> ThisTraitSibs (sibs ++ done)
               _ -> ThisType done
-        (t0, lvl) <- withThis (Just thisMode) (inferType ctx (rtfType f))
+        -- §11.4.2: a record/tuple field whose declared type is a bare boolean
+        -- expression (e.g. `ok : id == 1`) is coerced to `(id == 1) = True`.
+        (t0, lvl) <- withThis (Just thisMode) (inferTypeBoolProp ctx (rtfType f))
         -- §13.2.1/§16.1.7.1: a suspension-marked field declares the
         -- suspension type; literals insert the suspension at the field
         let t = case rtfSusp f of
@@ -3367,26 +3369,39 @@ infer ctx expr = case expr of
     domE <- case binderTypeExpr b of
       Just t -> pure t
       Nothing -> pure (EUnit (bSpan b))
-    (domTm, domLvl) <- inferType ctx domE
+    -- §11.4.2: only an *implicit* binder annotation `(@x : b)` admits the
+    -- boolean-proposition coercion `b ⟼ (b = True)`; explicit binders do not.
+    (domTm, domLvl, coerced) <-
+      if bImplicit b
+        then inferTypeBoolProp' ctx domE
+        else (\(tm, lvl) -> (tm, lvl, False)) <$> inferType ctx domE
     domV <- evalIn ctx domTm
     let nm = maybe "_" nameText (bName b)
         ic = if bImplicit b then Impl else Expl
         -- implicit Pi binders join the local implicit context (§16.3.3)
         ctx' = bindCtx nm (bImplicit b) domV ctx
+        -- §11.4.2: `(@x : b)` elaborates to `(@0 x : b = True)`; when the
+        -- coercion fires and the user wrote no explicit quantity, the erased
+        -- proposition defaults to quantity 0 (§16.3, §13.2.1).
+        q = if coerced && isNothing (bpQuantity (bPrefix b)) then Q0 else binderQ b
     (codTm, codLvl) <- inferType ctx' body
     -- §11.1: a Pi type lives in the max of its domain's and codomain's
     -- universe levels (predicative stratification), so e.g.
     -- `(s : Type) -> s` lands in Type1, not Type0.
-    pure (CPi ic (binderQ b) (isJust (bpBorrow (bPrefix b))) nm domTm codTm, VSort (max domLvl codLvl))
+    pure (CPi ic q (isJust (bpBorrow (bPrefix b))) nm domTm codTm, VSort (max domLvl codLvl))
   EForall bs body _ -> elabForall ctx bs body
   EExists bs body sp -> elabExists ctx bs body sp
   ETraitArrow c rest -> do
-    (cTm, cLvl) <- inferType ctx c
+    -- §11.4.2: the left of `b => T` admits the boolean-proposition coercion
+    -- `b ⟼ (b = True)`, elaborating to `(@0 _ : b = True) -> T`.  An ordinary
+    -- trait obligation `C => T` keeps the §16.3 evidence quantity (QW).
+    (cTm, cLvl, coerced) <- inferTypeBoolProp' ctx c
     cV <- evalIn ctx cTm
     -- the evidence binder joins the local implicit context (§16.3.3)
     let ctx' = bindCtx "_ev" True cV ctx
+        q = if coerced then Q0 else QW
     (restTm, restLvl) <- inferType ctx' rest
-    pure (CPi Impl QW False "_ev" cTm restTm, VSort (max cLvl restLvl))
+    pure (CPi Impl q False "_ev" cTm restTm, VSort (max cLvl restLvl))
   EOptionSugar t _ -> do
     -- `Option t : Type (level of t)` (Option : Type u -> Type u)
     (tm, lvl) <- inferType ctx t
@@ -4064,26 +4079,68 @@ inferType ctx (EMatch scrut cases msp) = do
   pure (tm, 0)
 inferType ctx e = do
   (tm, ty) <- inferT ctx e
-  goSort tm ty
-  where
-    goSort tm ty = do
-      t <- forceM ty
-      case t of
-        VSort n -> pure (tm, n)
-        VFlex m [] -> solveMeta m (VSort 0) >> pure (tm, 0)
-        -- compatibility accommodation for the external corpus: `IO a`
-        -- written for `IO ?e a` (§18.1 IO : Type -> Type -> Type); the
-        -- missing error parameter becomes a fresh metavariable
-        VPi Expl _ _ _ _ _
-          | CApp Expl (CGlob g) argTm <- tm
-          , g == prelIO -> do
-              m <- freshMeta
-              pure (CApp Expl (CApp Expl (CGlob g) m) argTm, 0)
-        other -> do
-          oT <- quoteIn ctx other
-          errAt (exprSpan e) "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
-            ("expected a type; this expression has type " <> renderTerm oT)
-          pure (tm, 0)
+  goSortType ctx e tm ty
+
+-- | Reduce an elaborated type-position @(term, inferred-type)@ pair to a
+-- @(term, universe-level)@ pair, or raise @E_NOT_A_TYPE@.  Shared by
+-- 'inferType' and the §11.4.2 boolean-proposition coercion below.
+goSortType :: Ctx -> Expr -> Term -> Value -> CheckM (Term, Int)
+goSortType ctx e tm ty = do
+  t <- forceM ty
+  case t of
+    VSort n -> pure (tm, n)
+    VFlex m [] -> solveMeta m (VSort 0) >> pure (tm, 0)
+    -- compatibility accommodation for the external corpus: `IO a`
+    -- written for `IO ?e a` (§18.1 IO : Type -> Type -> Type); the
+    -- missing error parameter becomes a fresh metavariable
+    VPi Expl _ _ _ _ _
+      | CApp Expl (CGlob g) argTm <- tm
+      , g == prelIO -> do
+          m <- freshMeta
+          pure (CApp Expl (CApp Expl (CGlob g) m) argTm, 0)
+    other -> do
+      oT <- quoteIn ctx other
+      errAt (exprSpan e) "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
+        ("expected a type; this expression has type " <> renderTerm oT)
+      pure (tm, 0)
+
+-- | §11.4.2 Boolean-to-type coercion.  In the three sugar positions — an
+-- implicit binder annotation @(\@x : b)@, the left of @b => T@, and a bare
+-- boolean record/tuple field type — a @Bool@-typed expression @b@ in type
+-- position is coerced to the proposition @(b = True)@.  Elaboration proceeds
+-- exactly like 'inferType', except that when the expression classifies not as
+-- a type but as a value of type @Bool@ (and ONLY @Bool@), we re-elaborate
+-- @(b = True)@ via the ordinary @=@ propositional-equality construction
+-- instead of raising @E_NOT_A_TYPE@.  Any other non-type expression (a bare
+-- @Int@, an ADT value, a partially applied function, a @String@, …) still
+-- raises @E_NOT_A_TYPE@ exactly as before — there is no general value→type
+-- coercion.
+inferTypeBoolProp :: Ctx -> Expr -> CheckM (Term, Int)
+inferTypeBoolProp ctx e = (\(tm, lvl, _) -> (tm, lvl)) <$> inferTypeBoolProp' ctx e
+
+-- | As 'inferTypeBoolProp', but also report whether the boolean-proposition
+-- coercion actually fired.  The implicit-binder site (§11.4.2) uses the flag
+-- to set the binder's quantity to @0@ when no quantity was written, since the
+-- resulting @b = True@ is an erased compile-time proposition (§16.3, §13.2.1).
+inferTypeBoolProp' :: Ctx -> Expr -> CheckM (Term, Int, Bool)
+inferTypeBoolProp' ctx e@(EMatch {}) = (\(tm, lvl) -> (tm, lvl, False)) <$> inferType ctx e
+inferTypeBoolProp' ctx e = do
+  (tm, ty) <- inferT ctx e
+  t <- forceM ty
+  case t of
+    -- the expression has type `Bool` (no spine; `Bool` is parameterless):
+    -- coerce `b` to the proposition `(b = True)` using the existing `=`
+    -- type-former, then elaborate that proposition as a type.
+    VGlobN g [] | g == prelBool -> do
+      let sp = exprSpan e
+          prop =
+            EApp
+              (EOpRef Nothing (Name "=" sp) sp)
+              [ArgExplicit e, ArgExplicit (EVar (Name "True" sp))]
+      (propTm, propLvl) <- inferType ctx prop
+      pure (propTm, propLvl, True)
+    -- not `Bool`: ordinary type-position behavior (including E_NOT_A_TYPE).
+    _ -> (\(tm', lvl') -> (tm', lvl', False)) <$> goSortType ctx e tm ty
 
 -- type-position inference: prefer the type facet for head names (§7.2).
 inferT :: Ctx -> Expr -> CheckM (Term, Value)
@@ -4145,7 +4202,9 @@ inferT ctx e = case e of
   -- (§13.1): (Integer, String) ≡ (_1 : Integer, _2 : String)
   ETuple es _ -> do
     fieldsL <- forM (zip [1 :: Int ..] es) $ \(i, fe) -> do
-      (t, lvl) <- inferType ctx fe
+      -- §11.4.2: a positional tuple field that is a bare boolean expression is
+      -- coerced to its `(b = True)` proposition, the same as a named field.
+      (t, lvl) <- inferTypeBoolProp ctx fe
       pure (("_" <> T.pack (show i), t), lvl)
     let fields = map fst fieldsL
         lvl = maximum (0 : map snd fieldsL)
