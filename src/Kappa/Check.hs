@@ -80,6 +80,14 @@ import Kappa.CoreOps
   )
 import Kappa.Diagnostic
 import Kappa.Eval
+import Kappa.Inhabitance
+  ( InhabEnv (..)
+  , InhabitancePurpose (..)
+  , InhabitanceSummary (..)
+  , HeadClass (..)
+  , inhabitanceSummary
+  , isEmpty
+  )
 import Kappa.Pretty (renderTerm)
 import Kappa.Parser (parseExprText)
 import Kappa.Source
@@ -312,6 +320,12 @@ data CheckState = CheckState
   -- The override is consumed only by the SCC termination pass.  It is not
   -- consulted by runtime evaluation and does not make `assertTerminates`
   -- conversion-reducible.
+  , csImpossibleScrut :: !(Maybe Bool)
+  -- ^ §17.1.4: while a match arm body is being checked, whether that arm's
+  -- §30.2.7-refined fiber is provably 'Empty'. A bare @impossible@ body
+  -- consults this and is accepted exactly when it is 'Just True'. 'Nothing'
+  -- (the default, e.g. outside any match arm) makes @impossible@ reject as
+  -- reachable. Saved/restored around each arm body, like 'csFacts'.
   }
 
 -- | §4.2 build-level gating record. Each flag enables exactly one
@@ -455,6 +469,7 @@ initCheckState =
     , csTerminationDecls = Map.empty
     , csModEffLabels = Map.empty
     , csAssertReducible = Set.empty
+    , csImpossibleScrut = Nothing
     }
 
 -- | The §22 derivation-shape reflection module.
@@ -3527,8 +3542,12 @@ infer ctx expr = case expr of
   EKindQualified sel n sp -> elabKindQualified ctx sel n sp
   EModuleSig _ sp -> unsupported ctx sp "moduleSig"
   EImpossible sp -> do
-    errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.pattern.unreachable")
-      "'impossible' is not provably unreachable here"
+    -- §17.1.4: accepted iff the enclosing match arm's §30.2.7-refined fiber is
+    -- provably uninhabited ('csImpossibleScrut', set while checking arm bodies).
+    fiberEmpty <- gets (\st -> csImpossibleScrut st == Just True)
+    unless fiberEmpty $
+      errAt sp "E_IMPOSSIBLE_REACHABLE" (Just "kappa.pattern.unreachable")
+        "'impossible' is not provably unreachable here (§17.1.4)"
     anyHole ctx
   EOpChain {} -> do
     -- the resolver re-associates every chain (§5.5.2); reaching one here
@@ -8225,7 +8244,7 @@ checkMatchPlain ctx scrut cases sp resT = do
         _ -> Nothing
       goCase (accAlts, prior, covered) c = case c of
         MatchImpossible isp -> do
-          empty <- scrutineeEmpty sTy1
+          empty <- scrutineeEmpty ctx sTy1
           unless empty $
             errAt isp "E_INDEXED_IMPOSSIBLE_REACHABLE" (Just "kappa.proof.impossible-reachable")
               "'case impossible' requires the remaining scrutinee type to be uninhabited (§17.1.5)"
@@ -8259,8 +8278,14 @@ checkMatchPlain ctx scrut cases sp resT = do
           oldBool <- gets csBoolFacts
           forM_ gTm $ \gt ->
             modify' $ \st -> st {csBoolFacts = (gt, True) : csBoolFacts st}
+          -- §17.1.4: a bare `impossible` body is accepted exactly when this
+          -- arm's §30.2.7-refined fiber is provably uninhabited. Expose that
+          -- verdict to the body via 'csImpossibleScrut' (saved/restored).
+          oldImp <- gets csImpossibleScrut
+          fiberEmpty <- branchFiberEmpty ctx' sTy1 patC
+          modify' $ \st -> st {csImpossibleScrut = Just fiberEmpty}
           bTm <- check ctx' body resT
-          modify' $ \st -> st {csFacts = oldFacts, csBoolFacts = oldBool}
+          modify' $ \st -> st {csFacts = oldFacts, csBoolFacts = oldBool, csImpossibleScrut = oldImp}
           let prior' = prior ++ [g | CPCtor g _ <- [patC]]
               covered' = covered ++ [t | CPInject t _ <- [patC]]
           pure (accAlts ++ [CaseAlt patC gTm bTm], prior', covered')
@@ -8273,16 +8298,159 @@ checkMatchPlain ctx scrut cases sp resT = do
     checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
   pure (CMatch sTm1 alts)
 
-scrutineeEmpty :: Value -> CheckM Bool
-scrutineeEmpty ty = do
+-- | §30.2.7 / §17.1.5: is the (refined) scrutinee type provably uninhabited?
+-- Generalizes the old "zero-constructor data type" check into the full
+-- conservative inhabitance fragment: 'Void'/'Unit'/'Bool', closed
+-- sum/product/record cardinality, and GADT family-argument refinement all flow
+-- through 'inhabitanceSummary'. Only an exact 'Empty' result is load-bearing;
+-- everything else (including the old non-data fall-through) stays rejected.
+scrutineeEmpty :: Ctx -> Value -> CheckM Bool
+scrutineeEmpty ctx ty = do
+  env <- mkInhabEnv ctx
+  s <- inhabitanceSummary env SourceReachability ty
+  pure (isEmpty s)
+
+-- | Build the §30.2.7 query interface over the current 'CheckState' and
+-- elaboration context. Each callback is side-effect free /from the caller's
+-- point of view/: the speculative GADT unification and the evidence probe save
+-- and restore 'CheckState', so neither leaks meta solutions nor diagnostics.
+mkInhabEnv :: Ctx -> CheckM (InhabEnv CheckM)
+mkInhabEnv ctx =
+  pure
+    InhabEnv
+      { ieForce = forceM
+      , ieClassifyHead = inhabClassifyHead
+      , ieCtorFiber = inhabCtorFiber ctx
+      , ieIsEmptyEvidence = inhabHasEvidence ctx (gPrel "IsEmpty")
+      , ieIsContrEvidence = inhabHasEvidence ctx (gPrel "IsContr")
+      , ieIsSubsingletonEvidence = \t -> do
+          a <- inhabHasEvidence ctx (gPrel "IsSubsingleton") t
+          if a then pure True else inhabHasEvidence ctx (gPrel "IsProp") t
+      , ieEqualityVerdict = inhabEqualityVerdict
+      }
+
+-- | Classify a forced head: a closed data type registered in 'csDatas' is the
+-- only structural case the analysis reasons about. Everything else (type
+-- families, abstract/opaque heads, primitives) is reported as "not a data
+-- type", which the analysis turns into 'Unknown'.
+inhabClassifyHead :: Value -> CheckM (Maybe HeadClass)
+inhabClassifyHead t = do
+  st <- get
+  pure $ case t of
+    VGlobN g _ -> case Map.lookup g (csDatas st) of
+      Just di -> Just (IsData t (diCtors di))
+      Nothing -> Nothing
+    _ -> Nothing
+
+-- | Speculatively refine one constructor against the demanded scrutinee type
+-- (§17.1.2 family-argument refinement). Returns 'Nothing' when the
+-- constructor's result type cannot unify with the target — that arm is then
+-- 'Empty'. Otherwise returns the constructor's field types under the
+-- branch-local equalities forced by unification. Runs under a saved/restored
+-- 'CheckState' so neither the meta solutions nor any diagnostics escape.
+inhabCtorFiber :: Ctx -> Value -> GName -> CheckM (Maybe [Value])
+inhabCtorFiber ctx scrutTy c = do
+  st <- get
+  mci <- gets (Map.lookup c . csCtors)
+  case mci of
+    Nothing -> put st >> pure Nothing
+    Just ci -> do
+      nBefore <- gets (length . filter isError . csDiags)
+      ctype <- evalIn emptyCtx (ciType ci)
+      (ok, fields) <- peelCtorResult ctype []
+      nAfter <- gets (length . filter isError . csDiags)
+      put st -- discard speculative meta solutions and diagnostics
+      pure $ if ok && nAfter == nBefore then Just fields else Nothing
+  where
+    -- Instantiate the constructor telescope with fresh metas, then unify its
+    -- result with the scrutinee; mirrors 'ctorFieldTypes' but reports unify
+    -- success/failure instead of swallowing it.
+    peelCtorResult t acc = do
+      t' <- forceM t
+      case t' of
+        VPi Impl _ _ _ _ clo -> do
+          m <- freshMetaV ctx
+          r <- clApp clo m
+          peelCtorResult r acc
+        VPi Expl _ _ _ dom clo -> do
+          m <- freshMetaV ctx
+          r <- clApp clo m
+          peelCtorResult r (acc ++ [dom])
+        result -> do
+          ok <- unify ctx result scrutTy
+          pure (ok, acc)
+
+-- | §30.2.7 proof-classification evidence: does the /local/ context carry an
+-- explicit @C t'@ binder (e.g. @IsEmpty t@) with @t'@ convertible to the
+-- analyzed type? This is the conservative, side-effect-free "context contains
+-- explicit evidence" rule — it consults only in-scope implicit binders and
+-- never triggers instance search, so it cannot fabricate evidence.
+inhabHasEvidence :: Ctx -> GName -> Value -> CheckM Bool
+inhabHasEvidence ctx traitG ty = do
+  ec <- ec_
   t <- forceM ty
-  case t of
-    VGlobN g [] -> do
-      st <- get
-      pure $ case Map.lookup g (csDatas st) of
-        Just di -> null (diCtors di)
-        Nothing -> False
-    _ -> pure False
+  let lvl = ctxLen ctx
+      matches e = case ceType e of
+        -- a single-parameter proof trait applied to the analyzed type:
+        -- `IsEmpty t'` with t' convertible to t. The last spine entry is the
+        -- type argument; require a non-empty spine (a bare trait head carries
+        -- no type to match against).
+        VGlobN g sp
+          | g == traitG
+          , (_, arg) : _ <- reverse sp -> convertible ec lvl arg t
+        _ -> False
+  pure (any (\e -> ceImplicitLocal e && matches e) (ctxEntries ctx))
+
+-- | §17.1.4: is the fiber selected by this arm's pattern provably uninhabited?
+--
+--   * A constructor pattern @C ..@ refines the scrutinee's family arguments;
+--     the fiber is 'Empty' when @C@'s result type cannot unify with the
+--     scrutinee (the contradictory-GADT case, e.g. @Never : Choice False@ under
+--     a @Choice True@ scrutinee), or when @C@'s retained field types multiply to
+--     'Empty'.
+--   * Any other pattern (wildcard, variable, tuple, record, …) does not narrow
+--     by a constructor, so the arm's fiber is just the whole refined scrutinee
+--     type and we defer to its summary.
+branchFiberEmpty :: Ctx -> Value -> CorePat -> CheckM Bool
+branchFiberEmpty ctx scrutTy = \case
+  CPCtor g _ -> do
+    env <- mkInhabEnv ctx
+    mfiber <- inhabCtorFiber ctx scrutTy g
+    case mfiber of
+      Nothing -> pure True -- family-argument unification failed: arm is Empty
+      Just fieldTys -> do
+        ss <- mapM (inhabitanceSummary env SourceReachability) fieldTys
+        pure (any isEmpty ss)
+  CPAs _ p -> branchFiberEmpty ctx scrutTy p
+  _ -> scrutineeEmpty ctx scrutTy
+
+-- | §30.2.7 equality no-confusion: for a propositional equality @x = y@, decide
+-- @Just True@ (provably 'Empty' — distinct visible constructor heads) and leave
+-- everything else as 'Nothing' (no portable fact). The Contractible direction
+-- is intentionally omitted for now (it needs proof/set evidence and is not
+-- load-bearing for reachability). Conservative throughout.
+inhabEqualityVerdict :: Value -> CheckM (Maybe Bool)
+inhabEqualityVerdict t = do
+  st <- get
+  case eqSides t of
+    Nothing -> pure Nothing
+    Just (l, r) -> do
+      l' <- forceM l
+      r' <- forceM r
+      pure $ case (ctorHead st l', ctorHead st r') of
+        -- distinct visible constructors of the same algebraic data type: the
+        -- equality type is uninhabited (no-confusion).
+        (Just (c1, d1), Just (c2, d2)) | d1 == d2 && c1 /= c2 -> Just True
+        _ -> Nothing
+  where
+    eqSides v = case v of
+      VGlobN eqG sp | eqG == prelEqType, [(_, l), (_, r)] <- drop (length sp - 2) sp -> Just (l, r)
+      VCtor eqG [_, l, r] | eqG == prelEqType -> Just (l, r)
+      _ -> Nothing
+    -- a fully-saturated constructor value's (ctor, parent-data) pair
+    ctorHead st = \case
+      VCtor c _ -> (\ci -> (c, ciData ci)) <$> Map.lookup c (csCtors st)
+      _ -> Nothing
 
 -- exhaustiveness (§17.1): closed ADTs / Bool / variants / records /
 -- tuples; literal scrutinees require a catch-all.
@@ -8298,12 +8466,19 @@ checkExhaustive ctx sp ty alts = do
         case Map.lookup g (csDatas st) of
           Just di -> do
             let rows = [[p] | (p, Nothing) <- alts]
-                missing =
+                uncovered =
                   [ c
                   | c <- diCtors di
                   , let a = ctorArity st c
                   , wildUseful st (specializeRows st (KCtor c) a rows) (a :: Int)
                   ]
+            -- §17.1.1: an uncovered constructor whose §30.2.7-refined fiber is
+            -- 'Empty' (its result family arguments contradict the scrutinee's,
+            -- as for a GADT, or its fields are uninhabited) is unreachable and
+            -- so is not required for exhaustiveness. A genuinely-inhabited
+            -- uncovered arm (the common case, and the conservative default)
+            -- still makes the match non-exhaustive.
+            missing <- filterM (fmap not . fiberEmptyCtor t) uncovered
             unless (null missing) $
               report $
                 withNote ("missing cases: " <> T.intercalate ", " (map gnameText missing)) $
@@ -8323,6 +8498,14 @@ checkExhaustive ctx sp ty alts = do
       VRecordT _ -> unless (any isRecordIrrefutable [p | (p, Nothing) <- alts]) requireCatchAll
       _ -> requireCatchAll
   where
+    -- §17.1.1: is the fiber of constructor @c@ at scrutinee type @scrutTy@
+    -- provably 'Empty'? Reuses the same arm-fiber analysis used for
+    -- `-> impossible`, with a placeholder pattern (the field patterns are
+    -- irrelevant; only the constructor's family-argument refinement matters).
+    fiberEmptyCtor scrutTy c = do
+      st <- get
+      let arity = ctorArity st c
+      branchFiberEmpty ctx scrutTy (CPCtor c (replicate arity CPWild))
     requireCatchAll =
       report $
         diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp

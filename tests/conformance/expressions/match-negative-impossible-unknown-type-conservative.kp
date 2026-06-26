@@ -1,0 +1,26 @@
+module main
+
+-- Kappa analogue: the §30.2.7 fragment is conservative — a recursive/inductive
+-- type is summarized as Unknown (the analysis never unfolds recursive
+-- occurrences), never Empty. So `case impossible` on an inhabited recursive type
+-- must be rejected as reachable (§17.1.5).
+-- Spec: §17.1.5, §30.2.7
+
+--! mode check
+
+-- An ordinary inductive type. It is inhabited (Z), and its summary is Unknown
+-- (the S arm recurs on Peano, which is not unfolded).
+data Peano : Type =
+    Z
+    S Peano
+
+-- NEGATIVE: `case impossible` on a Peano scrutinee is rejected — Peano is
+-- inhabited and the conservative summary is Unknown, not Empty.
+badRemainder : Peano -> Int
+let badRemainder p =
+    match p
+      case Z -> 0
+      case impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|uninhabited|exhaustive|non-exhaustive
