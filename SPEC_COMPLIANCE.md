@@ -7,7 +7,7 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 substantially self-superseded.
 
 **Status (count refreshed 2026-06-26; gap list verified 2026-06-23):**
-`kappa test tests/conformance` = **1755/1755** pass (0 fail, 0 unsupported, 0
+`kappa test tests/conformance` = **1761/1761** pass (0 fail, 0 unsupported, 0
 harness error — was 1334 at the audit; the corpus kept growing as the
 reference-repo conformance corpus was imported). The gap LIST below was verified
 against the *current* code in a parallel 9-group re-audit on 2026-06-23 (see
@@ -29,6 +29,21 @@ do that in the per-gap re-verify):
   `(tag : DefectTag) (message : Option String)`; `InterruptCause` ctor renamed to
   the spec namespace; `and`/`or`/`force` exported as first-class values
   (commit `b1dd316`).
+- **§16.4.1 / §16.4.2 / §17.1.7 flow refinement** (§1.2) — `checkExhaustive` now
+  consults the scrutinee's flow-refined constructor set (an `if e is C` branch can
+  `match e` covering only `C`); `condRefines` gained the `not` case (`if not a then
+  t else f ≡ if a then f else t`); a `match` arm registers `ctxRefines` for an
+  `EVar` scrutinee (so `match b case Full v -> b.val` projects). Additive — narrows
+  only when refinement is in scope, so §30.2.7 is not regressed (commit `8d81343`).
+  *(3 positive + 3 negative conformance tests; the negatives pin no over-acceptance.)*
+
+These do NOT alter the **§1 gap tables** below yet (struck in the per-gap re-verify).
+
+**Architecture (this session):** the **KBackendIR** pipeline now has Stage 0
+(typed-Core head annotations + observe-only `CoreLint.hs`), Stage 1 (`Inhabitance.hs`
+§30.2.7), and Stage 2 (`Backend/Repr.hs` shared rep/layout table) landed — see
+[`ROADMAP.md`](ROADMAP.md) → "Compiler IR pipeline". Stage 3 (§34.3.3 legality
+verifier) and Stage 4 (niche/coercion) remain.
 
 ## Scope and profile model
 
