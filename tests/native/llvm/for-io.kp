@@ -1,0 +1,10 @@
+-- Regression: `for_` over a Foldable List, running an IO action per element.
+-- `for_ xs act = foldr (\x acc -> liftA2 (\u v -> Unit) (act x) acc) (pureA Unit)
+-- xs` builds the same internal `foldr`/`liftA2` spine carrying erased type-level
+-- applications `@(f a)` that the OLD codegen lowered to a bad runtime `kapp`,
+-- crashing both native backends at base (the interpreter printed 1/2/3).
+-- Expected stdout: 1 / 2 / 3 (each on its own line).
+module main
+
+main : UIO Unit
+let main = for_ (1 :: 2 :: 3 :: Nil) (\n -> printlnString (showInt n))

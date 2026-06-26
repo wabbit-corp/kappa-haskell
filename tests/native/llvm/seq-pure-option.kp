@@ -1,0 +1,17 @@
+-- Regression: `sequence` over a List in a PURE Applicative (Option), pinning the
+-- non-IO dictionary path of the erasure fix alongside the IO path (seq-io.kp).
+-- `sequence (Some 10 :: Some 20 :: Some 30 :: Nil)` flips a `List (Option Int)`
+-- to `Option (List Int)` = `Some [10,20,30]`.  Same root cause as seq-io: the
+-- erased `@(f a)` argument to the internal `traverse` lowered to a bad runtime
+-- `kapp` over erased slots and crashed both native backends at base.
+-- Expected stdout: 60.
+module main
+
+sumList : List Int -> Int
+let sumList xs = match xs case Nil -> 0 case y :: ys -> addInt y (sumList ys)
+
+main : UIO Unit
+let main =
+    match sequence (Some 10 :: Some 20 :: Some 30 :: Nil)
+    case Some xs -> printlnString (showInt (sumList xs))
+    case None -> printlnString "none"

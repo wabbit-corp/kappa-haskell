@@ -1,0 +1,18 @@
+-- Regression: `sequence` over a List of IO actions.  This is the canonical
+-- repro for the interp-vs-native erasure bug.  `sequence xs = traverse (\v->v) xs`
+-- elaborates the erased type argument `@(f a)` of `traverse` as a type-level
+-- APPLICATION `f a` (a CApp over erased type variables).  The OLD codegen lowered
+-- it as a real runtime `kapp(kvar f, kvar a)` over two unit slots, crashing with
+-- `kapp: applying a non-function value` on BOTH native backends — while the
+-- interpreter (which keeps type args applicable) printed 60.  The fix erases an
+-- argument at a Q0 telescope position WHOLESALE (by quantity, not syntax).
+-- Expected stdout: 60.
+module main
+
+sumList : List Int -> Int
+let sumList xs = match xs case Nil -> 0 case y :: ys -> addInt y (sumList ys)
+
+main : UIO Unit
+let main = do
+    xs <- sequence (ioPure 10 :: ioPure 20 :: ioPure 30 :: Nil)
+    printlnString (showInt (sumList xs))

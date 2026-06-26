@@ -42,7 +42,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (forM_, foldM, msum, mplus, unless, when, void)
 import Control.Monad.State.Strict
-import Kappa.Backend.C (BackendError (..), PrimEntry (..), primDirect, primEntries)
+import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import Kappa.Builtins (builtinCtorTagId, kctUserBase)
 import Kappa.Check (CheckState (..))
@@ -2924,7 +2924,30 @@ compileApp term
   -- through as a bare 'CCtor'), so without it 'match'-on-a-constructed-value and
   -- every field-carrying construction would fall to the unsupported head path.
   | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
-compileApp term = do
+compileApp term0 = do
+  -- FIX (interp-vs-native), mirrors C's 'compileApp' (C.hs): at an ORDINARY
+  -- defined function-global spine, replace each argument at a 'Q0' (erased,
+  -- §31.2) telescope position with a 'CSort' placeholder, which
+  -- 'compileErasableArg' lowers to @kunit()@.  Without it an erased type-level
+  -- APPLICATION @f a@ (a 'CApp' over type variables) survives the
+  -- purely-syntactic 'isErasableArg' and lowers to a real @kapp(kvar f, kvar a)@
+  -- over two unit slots — the @sequence@/@sequence_@/@for_@/@traverse@-over-IO
+  -- crash (@kapp: applying a non-function value@).  Uses the SHARED
+  -- 'eraseQ0ArgsP' so the C and LLVM backends agree on the erasure verdict.
+  -- Skipped for an erased head (prim/constructor, 'isErasedHead'): elaboration
+  -- already dropped its implicit args, so telescope index ≠ spine index there
+  -- (would wrongly unit-out a real explicit value, e.g. @__effBind@'s @Eff@ +
+  -- continuation) — see the C backend's note.
+  erasedHd <- isErasedHead term0
+  term <-
+    if erasedHd
+      then pure term0
+      else case fst (spineOf term0) of
+        CGlob g -> do
+          globals <- gets gsGlobals
+          ctx <- gets gsEvalCtx
+          pure (eraseQ0ArgsP globals ctx g term0)
+        _ -> pure term0
   let (hd, sargs) = spineOf term
   case hd of
     CGlob g -> do

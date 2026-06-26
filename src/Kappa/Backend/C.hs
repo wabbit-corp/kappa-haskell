@@ -31,6 +31,8 @@ module Kappa.Backend.C
   , primEntries
   , primDirect
   , primRegistryDiagnostics
+    -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
+  , eraseQ0ArgsP
   ) where
 
 import Data.ByteString (ByteString)
@@ -885,6 +887,72 @@ typeScalarKinds g n = do
       CPInjectRest _ -> 1
       CPOr ps _ -> maximum (0 : map patBinders ps)
       CPAs _ p -> 1 + patBinders p
+
+-- | For a global head @g@, the per-spine-position erasure flags read from its
+-- elaborated type's Pi telescope: @True@ at a binder whose quantity is 'Q0'
+-- (computationally erased, §31.2), @False@ otherwise.  The list runs in
+-- telescope order, which 'spineOf' lists arguments in (binder @k@ ↔ spine
+-- position @k@); spine positions past the telescope (a result that is itself a
+-- function value, applied further) get @False@.
+--
+-- This is the FIX for the interp-vs-native divergence on @sequence@ /
+-- @sequence_@ / @for_@ / @traverse@ over IO: an ERASED type argument that is a
+-- type-level APPLICATION @f a@ (a 'CApp' whose head is a type VARIABLE) is
+-- otherwise lowered as a real runtime @kapp(kvar f, kvar a)@ over two
+-- unit-valued (erased) slots, because the purely SYNTACTIC 'isErasableArg'
+-- only inspects the spine head ('CVar' → @False@).  The interpreter keeps type
+-- arguments as applicable values so it never crashes; the C/LLVM backends
+-- crash with @kapp: applying a non-function value@.  Erasing by the binder's
+-- 'Q0' QUANTITY — the elaborator's own irrelevance verdict — is syntax-blind
+-- and so erases the application form too.  Unlike 'typeScalarKinds' (explicit
+-- value binders only), this walks the WHOLE telescope, since an erased
+-- argument can sit at an implicit OR explicit position.
+-- The pure core ('erasedSpinePositionsP' / 'eraseQ0ArgsP') is exported so the
+-- LLVM backend ("Kappa.Backend.LLVM") shares the SAME erasure verdict (its 'Gen'
+-- monad is a distinct type, so it cannot call the monadic wrappers — but it has
+-- the same 'gsGlobals' / 'gsEvalCtx' to feed the pure version).
+erasedSpinePositions :: GName -> Gen [Bool]
+erasedSpinePositions g = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure (erasedSpinePositionsP globals ctx g)
+
+-- | The pure spine-erasure analysis (see 'erasedSpinePositions').
+erasedSpinePositionsP :: Map GName GlobalDef -> EvalCtx -> GName -> [Bool]
+erasedSpinePositionsP globals ctx g =
+  case Map.lookup g globals of
+    Nothing -> []
+    Just gd -> walk 0 (gdType gd)
+  where
+    walk lvl ty =
+      case force ctx ty of
+        VPi _ q _ _ _ clo ->
+          (q == Q0) : walk (lvl + 1) (closApply lvl clo)
+        _ -> []
+    closApply lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
+
+-- | Rewrite a global-headed application @g a0 a1 …@ so each argument at a 'Q0'
+-- (erased) telescope position becomes a 'CSort' placeholder — see
+-- 'erasedSpinePositions' for the why.  The icities are preserved (an erased arg
+-- can be implicit or explicit); the placeholder is then erased to @kunit()@ by
+-- the existing 'compileErasableArg' path, with no new threading.  Positions past
+-- the telescope keep their original term.
+eraseQ0Args :: GName -> Term -> Gen Term
+eraseQ0Args g term = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure (eraseQ0ArgsP globals ctx g term)
+
+-- | The pure spine rewrite (see 'eraseQ0Args').
+eraseQ0ArgsP :: Map GName GlobalDef -> EvalCtx -> GName -> Term -> Term
+eraseQ0ArgsP globals ctx g term =
+  let flags = erasedSpinePositionsP globals ctx g
+      (hd, sargs) = spineOf term
+      go _ [] = []
+      go (er : ers) ((ic, a) : rest) = (ic, if er then CSort 0 else a) : go ers rest
+      go [] rest = rest -- spine longer than the telescope: leave the tail as-is
+      sargs' = go flags sargs
+   in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
 
 scalarHeadKindV :: Value -> Maybe ScalarKind
 scalarHeadKindV = \case
@@ -1956,7 +2024,36 @@ compileApp term
   -- P0-A: a saturated eta-expanded constructor application is a direct
   -- 'kctor', not a curried closure chain (see 'etaCtorApp').
   | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
-compileApp term = do
+compileApp term0 = do
+  -- FIX (interp-vs-native): at an ORDINARY-function-global spine, replace each
+  -- argument sitting at a 'Q0' (computationally erased, §31.2) telescope position
+  -- with a 'CSort' placeholder.  'compileErasableArg' already lowers a 'CSort' to
+  -- @kunit()@, so this erases the argument WHOLESALE — regardless of its syntax.
+  -- Without it, an erased type-level APPLICATION @f a@ (a 'CApp' over type
+  -- variables) survives the purely-syntactic 'isErasableArg' (which only looks
+  -- at the spine head) and lowers to a real @kapp(kvar f, kvar a)@ over two
+  -- unit-valued slots — the @sequence@/@sequence_@/@for_@/@traverse@-over-IO
+  -- crash (@kapp: applying a non-function value@).  Rewriting the term here keeps
+  -- EVERY downstream path consistent ('compileAppGlob', 'compileDirectCall' +
+  -- 'applyExtra', the prim special-cases, and the 'compileAppDefault' curried
+  -- fallback all re-derive from this term / its spine).
+  --
+  -- ONLY for a NON-erased head (an ordinary defined function global).  For an
+  -- erased head — a primitive or a constructor ('isErasedHead') — elaboration
+  -- has ALREADY dropped the implicit arguments from the spine, so spine position
+  -- k no longer aligns with telescope binder k; erasing by telescope index there
+  -- would wrongly unit-out a real EXPLICIT value argument (e.g. the @Eff@ value
+  -- and continuation of the @__effBind@ prim, whose @~>@ value binders sit at
+  -- telescope positions 3/4 while the spine holds only those two args).  Those
+  -- heads never exhibit the type-application bug anyway (their implicit args are
+  -- dropped, not lowered), and keep the existing per-arg erasure.
+  erasedHd <- isErasedHead term0
+  term <-
+    if erasedHd
+      then pure term0
+      else case fst (spineOf term0) of
+        CGlob g -> eraseQ0Args g term0
+        _ -> pure term0
   let (hd, sargs) = spineOf term
   case hd of
     CGlob g -> do

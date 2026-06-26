@@ -1,0 +1,18 @@
+-- Regression: `traverse` over a List of plain values with a NON-IDENTITY IO
+-- action (`double n = ioPure (n + n)`), collecting `UIO (List Int)`.  This pins
+-- the direct user-level `traverse` path stays correct after the Q0-erasure fix
+-- (it must keep passing the dictionary + the action through unerased while the
+-- erased type binders become kunit()).  Companion to seq-io.kp.
+-- Expected stdout: 12  (= 2 + 4 + 6, from doubling 1/2/3).
+module main
+
+sumList : List Int -> Int
+let sumList xs = match xs case Nil -> 0 case y :: ys -> addInt y (sumList ys)
+
+double : Int -> UIO Int
+let double n = ioPure (addInt n n)
+
+main : UIO Unit
+let main = do
+    xs <- traverse double (1 :: 2 :: 3 :: Nil)
+    printlnString (showInt (sumList xs))
