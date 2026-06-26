@@ -1,0 +1,42 @@
+-- UNBOXING Stage 1 §5.3: the immediate/bignum boundary must normalize so that
+-- native == interpreter for Ints that straddle it.
+--
+-- The native immediate-Int range is 61-bit ([-2^60, 2^60)).  A value at or just
+-- above 2^60 is therefore a BOXED K_BIGINT natively, while the interpreter still
+-- holds it INLINE in a 64-bit K_INT.  If Int literal-match (CPLit) or `==` short-
+-- circuited on the tag (as klit_eq once did), equal numbers across that boundary
+-- would compare NOT-EQUAL natively but EQUAL on the interpreter — a divergence.
+--
+-- Here `big` is 2^60 (one past the immediate max).  `viaArith` is the SAME number
+-- reached by arithmetic from in-immediate-range operands ((2^60 - 1) + 1), which
+-- on the native side flows an immediate-Int add that overflows the 61-bit range
+-- and re-tags through the bignum path.  We:
+--   1. literal-match `big` against its decimal literal (CPLit across the boundary),
+--   2. `==`-compare `big` with `viaArith` (eq across immediate-built vs literal),
+--   3. show both, so the bignum/inline encodings print identically.
+-- Native and interpreter must agree on every line.
+module main
+
+imax1 : Int           -- 2^60 - 1, the largest native immediate Int
+let imax1 = 1152921504606846975
+
+big : Int             -- 2^60, one past the immediate boundary
+let big = 1152921504606846976
+
+viaArith : Int        -- 2^60 reached by adding 1 to the immediate max (overflows imm range)
+let viaArith = imax1 + 1
+
+classify : Int -> String
+let classify n =
+    match n
+    case 1152921504606846976 -> "matched-2^60"
+    case n -> "no-match"
+
+main : UIO Unit
+let main = do
+    printlnString (classify big)
+    printlnString (classify viaArith)
+    printlnString (if big == viaArith then "eq" else "neq")
+    printlnString (if viaArith == big then "eq" else "neq")
+    printlnString (showInt big)
+    printlnString (showInt viaArith)

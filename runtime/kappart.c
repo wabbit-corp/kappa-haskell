@@ -113,20 +113,30 @@ static KValue *alloc_val_atomic(KTag tag) {
 
 /* ── value constructors ────────────────────────────────────────────── */
 
-/* Cache boxes for small integers — the common loop counters / digits —
- * so a hot numeric loop does not allocate a fresh box per step.  K_INT is
- * immutable, so sharing is sound; the static array is a GC root. */
-#define KINT_CACHE_LO (-16)
-#define KINT_CACHE_HI 256
-static KValue *kint_cache[KINT_CACHE_HI - KINT_CACHE_LO + 1];
+/* Forward declarations for the bignum helpers kint() escapes to (defined just
+ * below in the §6 GMP block) — kint() must precede them to be the canonical Int
+ * constructor every other helper calls. */
+static void kmpz_set_i64(mpz_t out, int64_t v);
+static KValue *kbig_from_mpz(const mpz_t z);
+
+/* UNBOXING Stage 1 (§5.2 / research rec 2): an in-range Int is a CANONICAL b001
+ * immediate packed into the KValue* word — no heap box, no allocation, no shared
+ * singleton.  This RETIRES the old kint_cache[-16..256] carrier: a small Int is
+ * now ALWAYS the immediate (never a boxed K_INT), so pointer identity can never
+ * see two encodings of one value.  A value outside the 61-bit immediate range
+ * escapes to the boxed K_BIGINT (GMP) path — the same place a >int64 literal
+ * already lived — so nothing in [2^60, 2^63) survives as an inline K_INT box,
+ * keeping the §5.3 inline/bignum boundary normalized through kfrom_mpz/kint_cmp.
+ * (The boxed K_INT carrier is no longer produced by the runtime at all; it
+ * remains a valid representation that readers still accept, for forward
+ * compatibility with any path that builds one explicitly.) */
 KValue *kint(int64_t v) {
-  if (v >= KINT_CACHE_LO && v <= KINT_CACHE_HI) {
-    KValue **slot = &kint_cache[v - KINT_CACHE_LO];
-    if (!*slot) { KValue *r = alloc_val_atomic(K_INT); r->as.i = v; *slot = r; }
-    return *slot;
-  }
-  KValue *r = alloc_val_atomic(K_INT);
-  r->as.i = v;
+  if (kint_fits_imm(v)) return kmk_imm_int(v);     /* canonical immediate */
+  /* out of the 61-bit immediate range → boxed bignum, exactly as a literal
+   * beyond int64 would be (kfrom_mpz canonicalises a fits-int64 result back to
+   * the immediate, but a >2^60 magnitude stays a K_BIGINT). */
+  mpz_t z; mpz_init(z); kmpz_set_i64(z, v);
+  KValue *r = kbig_from_mpz(z); mpz_clear(z);
   return r;
 }
 
@@ -198,9 +208,11 @@ static KValue *kfrom_mpz(const mpz_t z) {
   return kbig_from_mpz(z);
 }
 
-/* Load a K_INT/K_BIGINT into an mpz for a bignum operation. */
+/* Load an immediate Int / K_INT / K_BIGINT into an mpz for a bignum operation. */
 static void kload_mpz(KValue *v, mpz_t out) {
-  if (v->tag == K_INT) kmpz_set_i64(out, v->as.i);
+  if (kis_imm_int(v)) kmpz_set_i64(out, kimm_int_val(v));   /* Stage 1 immediate */
+  else if (kis_imm(v)) krt_fail("integer operation on a non-integer immediate");
+  else if (v->tag == K_INT) kmpz_set_i64(out, v->as.i);
   else if (v->tag == K_BIGINT) mpz_set(out, (const __mpz_struct *)v->as.big.mpz);
   else krt_fail("integer operation on a non-integer value");
 }
@@ -226,7 +238,7 @@ static KValue *krat(mpz_t num, mpz_t den) {
 }
 
 static void as_rat(KValue *r, mpz_t num, mpz_t den) {
-  if (r->tag != K_CTOR || strcmp(r->as.ctor.name, "__rat") != 0)
+  if (kis_imm(r) || r->tag != K_CTOR || strcmp(r->as.ctor.name, "__rat") != 0)
     krt_fail("Rational operation on a non-Rational value");
   kload_mpz(r->as.ctor.args[0], num);
   kload_mpz(r->as.ctor.args[1], den);
@@ -375,7 +387,7 @@ KValue *kfail(KValue *err) {
   return r;
 }
 
-int kis_fail(KValue *v) { return v && v->tag == K_FAIL; }
+int kis_fail(KValue *v) { return v && !kis_imm(v) && v->tag == K_FAIL; }
 
 KValue *kref_new(KValue *init) {
   KValue *r = alloc_val(K_REF);
@@ -619,7 +631,7 @@ KValue *kcons(KValue *h, KValue *t) {
   KValue *args[2] = {h, t};
   return kctor(KCT_CONS, "std.prelude.::", 2, args);
 }
-int kis_cons(KValue *v) { return v->tag == K_CTOR && v->as.ctor.tagid == KCT_CONS; }
+int kis_cons(KValue *v) { return !kis_imm(v) && v->tag == K_CTOR && v->as.ctor.tagid == KCT_CONS; }
 
 /* ── environment ───────────────────────────────────────────────────── */
 
@@ -667,6 +679,7 @@ static KValue *native_append_arg(KValue *f, KValue *x) {
  * return a K_BOUNCE describing a tail call it deferred (§27.5A.3 stack-safe
  * lowering); the caller drives it via ktrampoline. */
 static KValue *kapply_once(KValue *f, KValue *x) {
+  if (kis_imm(f)) krt_fail("kapp: applying a non-function value");
   switch (f->tag) {
     case K_CLO:
       return f->as.clo.fn(f->as.clo.env, x);
@@ -689,7 +702,7 @@ static KValue *kapply_once(KValue *f, KValue *x) {
  * stack for mutual recursion, calls through a function value, and local
  * let-rec tail recursion (direct self-recursion already loops in-worker). */
 KValue *ktrampoline(KValue *r) {
-  while (r->tag == K_BOUNCE) {
+  while (!kis_imm(r) && r->tag == K_BOUNCE) {   /* an immediate value is never a bounce */
     KValue *fn = r->as.bounce.fn;
     KValue *arg = r->as.bounce.arg;
     r = kapply_once(fn, arg);
@@ -738,6 +751,7 @@ KValue *kio_finally(KValue *action, KValue **defers, int n) {
 KValue *kapp(KValue *f, KValue *x) { return ktrampoline(kapply_once(f, x)); }
 
 KValue *kappi(KValue *f, KValue *x) {
+  if (kis_imm(f)) return f;   /* implicit arg erased onto an immediate value */
   switch (f->tag) {
     /* implicit args are erased at runtime for constructors and primitives
      * (§31.2); an implicit lambda is a real binder and is applied. */
@@ -754,6 +768,7 @@ KValue *kappi(KValue *f, KValue *x) {
 /* ── deconstruction ────────────────────────────────────────────────── */
 
 int kctor_is(KValue *v, const char *name) {
+  if (kis_imm(v)) return 0;   /* an immediate Int is never a constructor */
   /* Unit has two surface spellings — the canonical K_UNIT value (kunit(),
    * yielded by IO/erased/discarded positions) and the nullary constructor
    * `std.prelude.Unit` — so a `()` pattern must accept either. */
@@ -766,28 +781,30 @@ int kctor_is(KValue *v, const char *name) {
  * ctor pattern test on a non-ctor scrutinee fails — preserving the
  * `v->tag == K_CTOR &&` type guard that kctor_is had. */
 int kctor_tagid(KValue *v) {
+  if (kis_imm(v)) return -1;   /* an immediate Int matches no ctor id */
   if (v->tag == K_UNIT) return KCT_UNIT;
   if (v->tag == K_CTOR) return v->as.ctor.tagid;
   return -1;
 }
 const char *kctor_name(KValue *v) {
-  if (v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
+  if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
   return v->as.ctor.name;
 }
 int kctor_argc(KValue *v) {
-  if (v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
+  if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
   return v->as.ctor.argc;
 }
 KValue *kctor_arg(KValue *v, int i) {
-  if (v->tag != K_CTOR || i < 0 || i >= v->as.ctor.argc)
+  if (kis_imm(v) || v->tag != K_CTOR || i < 0 || i >= v->as.ctor.argc)
     krt_fail("kctor_arg: out of range");
   return v->as.ctor.args[i];
 }
 
 KValue *kproj(KValue *rec, const char *name) {
-  if (rec->tag != K_REC) {
+  if (kis_imm(rec) || rec->tag != K_REC) {
     char msg[128];
-    snprintf(msg, sizeof msg, "kproj: field '%s' on non-record (tag %d)", name, (int)rec->tag);
+    snprintf(msg, sizeof msg, "kproj: field '%s' on non-record (tag %d)", name,
+             kis_imm(rec) ? -1 : (int)rec->tag);
     krt_fail(msg);
   }
   for (int i = 0; i < rec->as.rec.n; i++)
@@ -800,16 +817,16 @@ KValue *kproj(KValue *rec, const char *name) {
 }
 
 int kvariant_is(KValue *v, const char *tag) {
-  return v->tag == K_VARIANT && strcmp(v->as.var.tag, tag) == 0;
+  return !kis_imm(v) && v->tag == K_VARIANT && strcmp(v->as.var.tag, tag) == 0;
 }
 /* LR2: numeric §13 variant dispatch; -1 for a non-variant value (matches no
  * tag id, so a variant pattern test on a non-variant fails). */
 int kvariant_tagid(KValue *v) {
-  return v->tag == K_VARIANT ? v->as.var.tagid : -1;
+  return (!kis_imm(v) && v->tag == K_VARIANT) ? v->as.var.tagid : -1;
 }
-int kis_variant(KValue *v) { return v->tag == K_VARIANT; }
+int kis_variant(KValue *v) { return !kis_imm(v) && v->tag == K_VARIANT; }
 KValue *kvariant_payload(KValue *v) {
-  if (v->tag != K_VARIANT) krt_fail("kvariant_payload: not a variant");
+  if (kis_imm(v) || v->tag != K_VARIANT) krt_fail("kvariant_payload: not a variant");
   return v->as.var.payload;
 }
 
@@ -817,6 +834,7 @@ KValue *kvariant_payload(KValue *v) {
  * A non-thunk value forces to itself (matches the interpreter, which
  * forces through already-evaluated values). */
 KValue *kforce(KValue *v) {
+  if (kis_imm(v)) return v;   /* an immediate Int is already a value */
   if (v->tag != K_THUNK) return v;
   if (v->as.thunk.memo && v->as.thunk.cache) return v->as.thunk.cache[0];
   KValue *r = v->as.thunk.fn(v->as.thunk.env);
@@ -829,7 +847,7 @@ KValue *kforce(KValue *v) {
 }
 
 int krec_size(KValue *rec) {
-  if (rec->tag != K_REC) krt_fail("krec_size: not a record");
+  if (kis_imm(rec) || rec->tag != K_REC) krt_fail("krec_size: not a record");
   return rec->as.rec.n;
 }
 
@@ -837,7 +855,7 @@ int krec_size(KValue *rec) {
  * are NOT among excl[0..nexcl). Kept field names alias the original
  * record's (static) name pointers, so no copying of label strings. */
 KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
-  if (rec->tag != K_REC) krt_fail("krec_without: not a record");
+  if (kis_imm(rec) || rec->tag != K_REC) krt_fail("krec_without: not a record");
   int n = rec->as.rec.n;
   const char **names = (const char **)kgc_alloc(sizeof(char *) * (size_t)(n ? n : 1));
   KValue **vals = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n ? n : 1));
@@ -856,12 +874,33 @@ KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
 }
 
 KValue *krec_at(KValue *rec, int i) {
-  if (rec->tag != K_REC || i < 0 || i >= rec->as.rec.n)
+  if (kis_imm(rec) || rec->tag != K_REC || i < 0 || i >= rec->as.rec.n)
     krt_fail("krec_at: out of range");
   return rec->as.rec.vals[i];
 }
 
+/* Is `v` an Integer in ANY representation — immediate, inline K_INT box, or
+ * bignum?  Used to route Int literal-match / equality through a value-
+ * normalizing compare across the inline/bignum boundary (§5.3 / research
+ * rec 3) rather than klit_eq's tag short-circuit. */
+static int kis_int_any(KValue *v) {
+  if (kis_imm_int(v)) return 1;
+  if (kis_imm(v)) return 0;          /* other immediate kinds: not an Int */
+  return v->tag == K_INT || v->tag == K_BIGINT;
+}
+static int kint_cmp(KValue *a, KValue *b);   /* fwd: normalizing Int compare */
+
 int klit_eq(KValue *a, KValue *b) {
+  /* §5.3: an Int in [2^60, 2^63) is an immediate-overflowed K_BIGINT here but
+   * an inline K_INT on the interpreter — different tags, same number.  Route any
+   * Int/Int pair through the value-normalizing kint_cmp, NEVER the tag shortcut,
+   * so equal numbers compare equal across the inline/bignum boundary. */
+  if (kis_int_any(a) && kis_int_any(b)) return kint_cmp(a, b) == 0;
+  /* The remaining literal kinds (String/Bytes/Char/Byte/Double) have no
+   * inline/bignum duality, so the tag short-circuit is exact for them.  An
+   * immediate Int reaching here is, by the test above, paired with a non-Int and
+   * is unequal — guard the deref so we never read ->tag on an odd word. */
+  if (kis_imm(a) || kis_imm(b)) return 0;
   if (a->tag != b->tag) return 0;
   switch (a->tag) {
     case K_INT: return a->as.i == b->as.i;
@@ -884,6 +923,8 @@ int klit_eq(KValue *a, KValue *b) {
 /* ── unboxing ──────────────────────────────────────────────────────── */
 
 int64_t kas_int(KValue *v) {
+  if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1 immediate */
+  if (kis_imm(v)) krt_fail("kas_int: not an Int");
   if (v->tag == K_INT) return v->as.i;
   if (v->tag == K_BIGINT) {
     const __mpz_struct *z = (const __mpz_struct *)v->as.big.mpz;
@@ -893,25 +934,26 @@ int64_t kas_int(KValue *v) {
   krt_fail("kas_int: not an Int");
 }
 double kas_dbl(KValue *v) {
-  if (v->tag != K_DBL) krt_fail("kas_dbl: not a Double");
+  if (kis_imm(v) || v->tag != K_DBL) krt_fail("kas_dbl: not a Double");
   return v->as.d;
 }
 int kas_bool(KValue *v) {
-  if (v->tag != K_CTOR) krt_fail("kas_bool: not a Bool");
+  if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kas_bool: not a Bool");
   if (v->as.ctor.tagid == KCT_TRUE) return 1;
   if (v->as.ctor.tagid == KCT_FALSE) return 0;
   krt_fail("kas_bool: not a Bool constructor");
 }
 
 const char *kas_str(KValue *v) {
-  if (v->tag != K_STR) krt_fail("kas_str: not a String");
+  if (kis_imm(v) || v->tag != K_STR) krt_fail("kas_str: not a String");
   return v->as.str.p; /* kstr() NUL-terminates; length stays authoritative */
 }
 
 /* Read an Integer as an unsigned 64-bit value (§26.1.1 U64/Usize), including
  * the >= 2^63 range that kas_int rejects — the low 64 bits of the magnitude. */
 uint64_t kas_u64(KValue *v) {
-  if (v->tag == K_INT) return (uint64_t)v->as.i;
+  if (kis_imm_int(v)) return (uint64_t)kimm_int_val(v);   /* Stage 1 immediate */
+  if (!kis_imm(v) && v->tag == K_INT) return (uint64_t)v->as.i;
   mpz_t z; mpz_init(z); kload_mpz(v, z);
   uint64_t u = 0; size_t cnt = 0;
   mpz_export(&u, &cnt, -1, sizeof(uint64_t), 0, 0, z);
@@ -920,18 +962,18 @@ uint64_t kas_u64(KValue *v) {
 }
 
 void *kas_fgn(KValue *v) {
-  if (v->tag != K_FGN) krt_fail("kas_fgn: not a foreign handle");
+  if (kis_imm(v) || v->tag != K_FGN) krt_fail("kas_fgn: not a foreign handle");
   return v->as.fgn.p;
 }
 
 /* ── references ────────────────────────────────────────────────────── */
 
 KValue *kref_get(KValue *r) {
-  if (r->tag != K_REF) krt_fail("kref_get: not a ref");
+  if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_get: not a ref");
   return r->as.ref.cell[0];
 }
 KValue *kref_set(KValue *r, KValue *v) {
-  if (r->tag != K_REF) krt_fail("kref_set: not a ref");
+  if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_set: not a ref");
   r->as.ref.cell[0] = v;
   return kunit();
 }
@@ -939,11 +981,12 @@ KValue *kref_set(KValue *r, KValue *v) {
 /* ── pure primitives (mirror Kappa.Eval.evalPurePrim for the subset) ── */
 
 static KValue *show_int_val(KValue *v) {
-  if (v->tag == K_INT) {
+  if (kis_int_word(v)) {
     char buf[32];
-    int n = snprintf(buf, sizeof buf, "%" PRId64, v->as.i);
+    int n = snprintf(buf, sizeof buf, "%" PRId64, kint_word(v));
     return kstr(buf, (size_t)n);
   }
+  if (kis_imm(v)) krt_fail("showInt: not an Int");
   if (v->tag == K_BIGINT) {
     char *s = mpz_get_str(NULL, 10, (const __mpz_struct *)v->as.big.mpz);
     return kstr0(s); /* s is GC-allocated by the GMP allocator */
@@ -952,7 +995,8 @@ static KValue *show_int_val(KValue *v) {
 }
 
 static KValue *str_append(KValue *a, KValue *b) {
-  if (a->tag != K_STR || b->tag != K_STR) krt_fail("stringAppend: argument is not a String");
+  if (kis_imm(a) || kis_imm(b) || a->tag != K_STR || b->tag != K_STR)
+    krt_fail("stringAppend: argument is not a String");
   size_t la = a->as.str.len, lb = b->as.str.len;
   char *buf = (char *)kgc_alloc_atomic(la + lb + 1);
   memcpy(buf, a->as.str.p, la);
@@ -1009,7 +1053,7 @@ static void show_lit_char(sbuf *b, uint32_t cp, int *numeric, int *so) {
 }
 
 static KValue *show_scalar(KValue *v) {
-  if (v->tag != K_CHR) krt_fail("showScalar: not a scalar");
+  if (kis_imm(v) || v->tag != K_CHR) krt_fail("showScalar: not a scalar");
   sbuf b; sb_init(&b); sb_putc(&b, '\'');
   if (v->as.chr == '\'') sb_puts(&b, "\\'");
   else { int n, s; show_lit_char(&b, v->as.chr, &n, &s); }
@@ -1017,7 +1061,7 @@ static KValue *show_scalar(KValue *v) {
 }
 
 static KValue *show_string_lit(KValue *v) {
-  if (v->tag != K_STR) krt_fail("showStringLit: not a String");
+  if (kis_imm(v) || v->tag != K_STR) krt_fail("showStringLit: not a String");
   sbuf b; sb_init(&b); sb_putc(&b, '"');
   const unsigned char *p = (const unsigned char *)v->as.str.p;
   const unsigned char *end = p + v->as.str.len;
@@ -1098,14 +1142,12 @@ static int bytes_cmp(KValue *a, KValue *b) { /* lexicographic by byte */
  * interpreter's `convertible` on the atomic representation.  Integers
  * compare by value across the inline/bignum boundary. */
 static int kvalue_rep_eq(KValue *a, KValue *b) {
-  if (a == b) return 1;
-  int ai = a->tag == K_INT || a->tag == K_BIGINT;
-  int bi = b->tag == K_INT || b->tag == K_BIGINT;
-  if (ai && bi) {
-    if (a->tag == K_INT && b->tag == K_INT) return a->as.i == b->as.i;
-    mpz_t x, y; mpz_init(x); mpz_init(y); kload_mpz(a, x); kload_mpz(b, y);
-    int eq = mpz_cmp(x, y) == 0; mpz_clear(x); mpz_clear(y); return eq;
-  }
+  if (a == b) return 1;   /* immediates canonicalise: word identity == value equality */
+  /* §5.3: any Int/Int pair normalizes across immediate / inline / bignum. */
+  if (kis_int_any(a) && kis_int_any(b)) return kint_cmp(a, b) == 0;
+  /* Past the Int case, an immediate paired with a non-Int (or two immediates of
+   * different value, already ruled out by a==b) is unequal — guard the deref. */
+  if (kis_imm(a) || kis_imm(b)) return 0;
   if (a->tag != b->tag) return 0;
   switch (a->tag) {
     case K_DBL: return a->as.d == b->as.d;
@@ -1252,6 +1294,7 @@ static uint64_t fnv_mix_bytes(uint64_t s, const unsigned char *p, size_t n) {
  * `fromIntegral :: Integer -> Word64`).  K_INT casts directly (two's
  * complement); K_BIGINT reduces modulo 2^64. */
 static uint64_t kint_low64(KValue *v) {
+  if (kis_imm_int(v)) return (uint64_t)kimm_int_val(v);   /* Stage 1 immediate */
   if (v->tag == K_INT) return (uint64_t)v->as.i;
   if (v->tag == K_BIGINT) {
     mpz_t r; mpz_init(r);
@@ -1478,15 +1521,24 @@ static KValue *kint_binop_mpz(KValue *a, KValue *b, kmpz_binop op) {
 
 /* Total ordering across small/big integers. */
 static int kint_cmp(KValue *a, KValue *b) {
-  if (a->tag == K_INT && b->tag == K_INT)
-    return a->as.i < b->as.i ? -1 : (a->as.i > b->as.i ? 1 : 0);
+  /* Fast path: both Ints fit int64 (immediate or inline K_INT box) — compare
+   * the words directly.  This also NORMALIZES the §5.3 boundary: a K_BIGINT that
+   * fit int64 was canonicalised back to inline by kfrom_mpz, so a surviving
+   * K_BIGINT is genuinely out of int64 range and falls to the mpz path. */
+  if (kis_int_word(a) && kis_int_word(b)) {
+    int64_t ia = kint_word(a), ib = kint_word(b);
+    return ia < ib ? -1 : (ia > ib ? 1 : 0);
+  }
   mpz_t za, zb;
   mpz_init(za); mpz_init(zb);
   kload_mpz(a, za); kload_mpz(b, zb);
-  return mpz_cmp(za, zb);
+  int c = mpz_cmp(za, zb);
+  mpz_clear(za); mpz_clear(zb);
+  return c;
 }
 
 static int kint_is_zero(KValue *v) {
+  if (kis_imm_int(v)) return kimm_int_val(v) == 0;
   if (v->tag == K_INT) return v->as.i == 0;
   return mpz_sgn((const __mpz_struct *)v->as.big.mpz) == 0;
 }
@@ -1498,44 +1550,61 @@ static int kint_is_zero(KValue *v) {
  * partial application — no string dispatch, no name lookup, no per-call
  * argument array.  These helpers ARE the single source of truth for each
  * primitive's semantics; there is no reflective by-name firing path. */
+/* UNBOXING Stage 1: the inline arithmetic path operates on int64 words read out
+ * of either an immediate (kis_imm_int) or a boxed K_INT (kis_int_word recognises
+ * both).  __builtin_*_overflow catches the int64 overflow → escape to GMP, which
+ * preserves exact bignum semantics; kint() then re-tags any in-61-bit result as
+ * an immediate and boxes anything larger (canonical reduction). */
 KValue *kp_addInt(KValue *x, KValue *y) {
   int64_t r;
-  if (x->tag == K_INT && y->tag == K_INT && !__builtin_add_overflow(x->as.i, y->as.i, &r))
+  if (kis_int_word(x) && kis_int_word(y) &&
+      !__builtin_add_overflow(kint_word(x), kint_word(y), &r))
     return kint(r);
   return kint_binop_mpz(x, y, mpz_add);
 }
 KValue *kp_subInt(KValue *x, KValue *y) {
   int64_t r;
-  if (x->tag == K_INT && y->tag == K_INT && !__builtin_sub_overflow(x->as.i, y->as.i, &r))
+  if (kis_int_word(x) && kis_int_word(y) &&
+      !__builtin_sub_overflow(kint_word(x), kint_word(y), &r))
     return kint(r);
   return kint_binop_mpz(x, y, mpz_sub);
 }
 KValue *kp_mulInt(KValue *x, KValue *y) {
   int64_t r;
-  if (x->tag == K_INT && y->tag == K_INT && !__builtin_mul_overflow(x->as.i, y->as.i, &r))
+  if (kis_int_word(x) && kis_int_word(y) &&
+      !__builtin_mul_overflow(kint_word(x), kint_word(y), &r))
     return kint(r);
   return kint_binop_mpz(x, y, mpz_mul);
 }
 KValue *kp_divInt(KValue *x, KValue *y) {
   if (kint_is_zero(y)) krt_fail("divInt: division by zero");
-  if (x->tag == K_INT && y->tag == K_INT && !(x->as.i == INT64_MIN && y->as.i == -1))
-    return kint(x->as.i / y->as.i); /* C99 trunc toward zero == quot */
+  if (kis_int_word(x) && kis_int_word(y)) {
+    int64_t ix = kint_word(x), iy = kint_word(y);
+    if (!(ix == INT64_MIN && iy == -1))
+      return kint(ix / iy); /* C99 trunc toward zero == quot */
+  }
   return kint_binop_mpz(x, y, mpz_tdiv_q); /* truncated quotient */
 }
 KValue *kp_modInt(KValue *x, KValue *y) {
   if (kint_is_zero(y)) krt_fail("modInt: division by zero");
-  if (x->tag == K_INT && y->tag == K_INT) {
-    if (x->as.i == INT64_MIN && y->as.i == -1) return kint(0);
-    return kint(x->as.i % y->as.i); /* C99 % == rem */
+  if (kis_int_word(x) && kis_int_word(y)) {
+    int64_t ix = kint_word(x), iy = kint_word(y);
+    if (ix == INT64_MIN && iy == -1) return kint(0);
+    return kint(ix % iy); /* C99 % == rem */
   }
   return kint_binop_mpz(x, y, mpz_tdiv_r); /* remainder, sign of dividend */
 }
 KValue *kp_negInt(KValue *x) {
-  if (x->tag == K_INT && x->as.i != INT64_MIN) return kint(-x->as.i);
+  if (kis_int_word(x)) {
+    int64_t ix = kint_word(x);
+    if (ix != INT64_MIN) return kint(-ix);
+  }
   mpz_t z, zr;
   mpz_init(z); mpz_init(zr);
   kload_mpz(x, z); mpz_neg(zr, z);
-  return kfrom_mpz(zr);
+  KValue *res = kfrom_mpz(zr);
+  mpz_clear(z); mpz_clear(zr);
+  return res;
 }
 /* §18.1.6 Duration/Instant + their construction/arithmetic/compare are the
  * std.time prelude fragment (ordinary Kappa over Integer) — no runtime helpers. */
@@ -1558,17 +1627,20 @@ KValue *kp_eqDouble(KValue *x, KValue *y) { /* §6.1.3 raw-bit equality */
 KValue *kp_stringAppend(KValue *x, KValue *y) { return str_append(x, y); }
 KValue *kp_eqStr(KValue *x, KValue *y) { return kbool(klit_eq(x, y)); }
 KValue *kp_ltStr(KValue *x, KValue *y) {
-  if (x->tag != K_STR || y->tag != K_STR) krt_fail("ltStr: argument is not a String");
+  if (kis_imm(x) || kis_imm(y) || x->tag != K_STR || y->tag != K_STR)
+    krt_fail("ltStr: argument is not a String");
   size_t la = x->as.str.len, lb = y->as.str.len, m = la < lb ? la : lb;
   int c = memcmp(x->as.str.p, y->as.str.p, m);
   return kbool(c < 0 || (c == 0 && la < lb));
 }
 KValue *kp_eqScalar(KValue *x, KValue *y) {
-  if (x->tag != K_CHR || y->tag != K_CHR) krt_fail("eqScalar: argument is not a scalar");
+  if (kis_imm(x) || kis_imm(y) || x->tag != K_CHR || y->tag != K_CHR)
+    krt_fail("eqScalar: argument is not a scalar");
   return kbool(x->as.chr == y->as.chr);
 }
 KValue *kp_ltScalar(KValue *x, KValue *y) {
-  if (x->tag != K_CHR || y->tag != K_CHR) krt_fail("ltScalar: argument is not a scalar");
+  if (kis_imm(x) || kis_imm(y) || x->tag != K_CHR || y->tag != K_CHR)
+    krt_fail("ltScalar: argument is not a scalar");
   return kbool(x->as.chr < y->as.chr);
 }
 /* show* (pure, 1-arg): pervasive in numeric output. */
@@ -1577,24 +1649,27 @@ KValue *kp_showDouble(KValue *x) { return show_double(kas_dbl(x)); }
 KValue *kp_showScalar(KValue *x) { return show_scalar(x); }
 KValue *kp_showStringLit(KValue *x) { return show_string_lit(x); }
 KValue *kp_intToDouble(KValue *x) {
-  if (x->tag == K_BIGINT) return kdbl(mpz_get_d((const __mpz_struct *)x->as.big.mpz));
-  return kdbl((double)x->as.i);
+  if (kis_int_word(x)) return kdbl((double)kint_word(x));
+  if (!kis_imm(x) && x->tag == K_BIGINT)
+    return kdbl(mpz_get_d((const __mpz_struct *)x->as.big.mpz));
+  krt_fail("intToDouble: not an Int");
 }
-/* §6.5 byte compares + §29.1 bitwise (hot in hashing / byte loops). */
+/* §6.5 byte compares + §29.1 bitwise (hot in hashing / byte loops).  Byte values
+ * are always boxed (K_BYTE) — never immediates — so the deref is sound. */
 KValue *kp_eqByte(KValue *x, KValue *y) { return kbool(x->as.byte == y->as.byte); }
 KValue *kp_ltByte(KValue *x, KValue *y) { return kbool(x->as.byte < y->as.byte); }
 KValue *kp_intAnd(KValue *x, KValue *y) {
-  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i & y->as.i);
+  if (kis_int_word(x) && kis_int_word(y)) return kint(kint_word(x) & kint_word(y));
   mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
   mpz_and(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
 }
 KValue *kp_intOr(KValue *x, KValue *y) {
-  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i | y->as.i);
+  if (kis_int_word(x) && kis_int_word(y)) return kint(kint_word(x) | kint_word(y));
   mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
   mpz_ior(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
 }
 KValue *kp_intXor(KValue *x, KValue *y) {
-  if (x->tag == K_INT && y->tag == K_INT) return kint(x->as.i ^ y->as.i);
+  if (kis_int_word(x) && kis_int_word(y)) return kint(kint_word(x) ^ kint_word(y));
   mpz_t a, b, r; mpz_init(a); mpz_init(b); mpz_init(r); kload_mpz(x, a); kload_mpz(y, b);
   mpz_xor(r, a, b); KValue *res = kfrom_mpz(r); mpz_clear(a); mpz_clear(b); mpz_clear(r); return res;
 }
@@ -1671,10 +1746,11 @@ KValue *kpf_natToInt(KValue **a) {
   return a[0];
 }
 KValue *kpf_intToNat(KValue **a) {
-  if (a[0]->tag == K_INT ? a[0]->as.i < 0
-                           : mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0)
-      krt_fail("intToNat: negative Int has no Nat image");
-    return a[0];
+  int neg;
+  if (kis_int_word(a[0])) neg = kint_word(a[0]) < 0;       /* immediate or inline */
+  else neg = mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0;
+  if (neg) krt_fail("intToNat: negative Int has no Nat image");
+  return a[0];
 }
 KValue *kpf_intToDouble(KValue **a) {
   return kp_intToDouble(a[0]);
@@ -1952,7 +2028,7 @@ KValue *kpf___arrayIndexUnsafe(KValue **a) {
 }
 KValue *kpf___rangeEnum(KValue **a) {
   int ex = kas_bool(a[2]); KValue *acc = knil();
-    if (a[0]->tag == K_CHR) {
+    if (!kis_imm(a[0]) && a[0]->tag == K_CHR) {   /* Char range; else Int (immediate) */
       int64_t lo = (int64_t)a[0]->as.chr, hi = (int64_t)a[1]->as.chr, top = ex ? hi - 1 : hi;
       for (int64_t c = top; c >= lo; c--) { if (c >= 0xD800 && c <= 0xDFFF) continue; acc = kcons(kchr((uint32_t)c), acc); }
     } else {
@@ -2172,6 +2248,10 @@ KValue *krun_io(KValue *action) {
    * recursion and run (LIFO) once the recursion reaches a value. */
   struct kdefer_frame *defers = NULL;
   while (1) {
+  /* UNBOXING Stage 1: an immediate value in IO position is a `return`ed result
+   * (e.g. `do { …; pure n }` yielding a small Int) — never an IO node — so it
+   * finishes the loop directly, never dereferencing the odd word. */
+  if (kis_imm(action)) return krun_finish(action, discard, defers);
   switch (action->tag) {
     case K_IOTAIL:
       action = action->as.bounce.fn;
@@ -2189,6 +2269,7 @@ KValue *krun_io(KValue *action) {
     }
     case K_IO: {
       KValue *r = action->as.io.fn(action->as.io.env);
+      if (kis_imm(r)) return krun_finish(r, discard, defers); /* immediate result */
       if (r->tag == K_IOTAIL) { action = r->as.bounce.fn; continue; }
       if (r->tag == K_IOEFFECT) { discard = 1; action = r->as.bounce.fn; continue; }
       if (r->tag == K_IOFINALLY) {

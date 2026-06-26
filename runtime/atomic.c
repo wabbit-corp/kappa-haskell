@@ -34,12 +34,18 @@ struct AtomicRef {
 /* ── value <-> scalar ─────────────────────────────────────────────────── */
 
 static int64_t atomic_unbox(KValue *v) {
+  if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1 immediate Int */
+  if (kis_imm(v))
+    krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
   if (v->tag == K_INT) return v->as.i;
   if (v->tag == K_CTOR) return kas_bool(v); /* the only ctor AtomicValue is Bool */
   krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
 }
 
 static AtomicKind atomic_kind_of(KValue *v) {
+  if (kis_imm_int(v)) return AKIND_INT;         /* Stage 1 immediate Int */
+  if (kis_imm(v))
+    krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
   if (v->tag == K_INT) return AKIND_INT;
   if (v->tag == K_CTOR) return AKIND_BOOL;
   krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
@@ -50,7 +56,7 @@ static KValue *atomic_rebox(int64_t s, AtomicKind k) {
 }
 
 static struct AtomicRef *as_aref(KValue *r) {
-  if (r->tag != K_FGN) krt_fail("atomic: argument is not an AtomicRef");
+  if (kis_imm(r) || r->tag != K_FGN) krt_fail("atomic: argument is not an AtomicRef");
   return (struct AtomicRef *)r->as.fgn.p;
 }
 

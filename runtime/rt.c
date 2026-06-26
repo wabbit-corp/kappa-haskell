@@ -796,6 +796,10 @@ static void fiber_step(Rt *rt, Fiber *f) {
       case OP_ATOMICALLY:                       /* run an STM transaction (§18.1.13) */
         if (krt2i_op_atomically(rt, f, kctor_arg(cur, 0))) break; else return;
       default:
+        /* UNBOXING Stage 1: an immediate Int (or any other immediate value) is a
+         * bare result, not a krt2_* node or legacy IO action — hand it straight
+         * to the continuation, never dereferencing the odd word. */
+        if (kis_imm(cur)) { if (!deliver(rt, f, cur)) return; break; }
         switch (cur->tag) {
           /* v2 BRIDGE: a legacy kappart IO action — emitted by generated code
            * not yet CPS-lowered to krt2_* nodes (the do-kernel still uses
