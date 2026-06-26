@@ -124,13 +124,17 @@ the real Lint are both impossible without them.
       parametricity) — *too much* for this conservative MUST (keep `Unknown`); but
       it is THE reference for a future PRECISE Optimization-purpose summary
       (recursive-type cardinality → tighter layouts in Stage 4+).
-- [ ] **Stage 2 — shared compile-time rep/layout table** (NOT per-node decoration
-      — "rep on every expression node" is the reference's short-sighted part; it
-      goes unused). A pure `Backend/Repr.hs` (`Rep = RInt64|RFloat64|RBool|RBoxed|…`
-      + a per-ADT `CtorLayout`) lifting the rep reasoning currently DUPLICATED in
-      `C.hs`/`LLVM.hs`; C+LLVM agree on tag ids + int/float marshalling by
-      construction. Start by lifting the proven `b010` nullary-immediate decision
-      from runtime `kctor` into the table.
+- [x] **Stage 2 — shared compile-time rep/layout table. DONE** (merged `2782abf`;
+      pure `Backend/Repr.hs`). `Rep`/`scalarRep` (the runtime-rep discriminator,
+      ex-`scalarHeadKindV`) + `CtorLayout`/`ctorLayout` (nullary⇒immediate `b010`,
+      1–2 immediate fields⇒`LayoutMayPack` b011, else boxed) + `tagId`/
+      `assignUserCtorTags` (THE `KCT_USER_BASE+i` numbering authority). C+LLVM now
+      consult it → agree on tag ids + marshalling by construction; proven
+      byte-identical (generated `.c`+`.ll` for 3 ADTs identical, parity 104,
+      conformance 1755). `LayoutMayPack` is defined-but-unconsumed — the Stage 4
+      seed. NOT per-node decoration (the reference's short-sighted, unused part).
+      *Residual:* the C-only scalar-**worker** marshalling stays in `C.hs` (not
+      cross-backend duplication; `scalarRep` already centralizes its discriminator).
 - [ ] **Stage 3 — §34.3.3 legality verifier + `scalarPlan` unification** (hard).
       Promote the observe-only Lint to the §34.3.3 closed checkpoint list over the
       annotated nodes + the rep table; fold `scalarPlan` into one `repSelect` — the
