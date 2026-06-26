@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_NOT_A_TYPE
+
+module main
+
+-- §11.4.2 over-coercion guard (form 2): the left of `=>` must be a trait
+-- constraint or a Bool expression. A non-Bool, non-type expression (a
+-- `String` literal) on the left of `=>` must STILL raise E_NOT_A_TYPE.
+bad : "hi" => Integer --!! E_NOT_A_TYPE
+let bad = 0

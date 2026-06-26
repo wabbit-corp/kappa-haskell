@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n"
+
+module main
+
+-- §11.4.2 (form 2): on the left of `b => T` a Bool expression `b` is
+-- coerced, so `b => Integer` elaborates to `(@0 _ : b = True) -> Integer`.
+-- Supplying `True` makes the obligation `True = True`, discharged by refl
+-- synthesis, so the call type-checks and runs.
+needsTrue : (b : Bool) -> b => Integer
+let needsTrue b = 42
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (needsTrue True))

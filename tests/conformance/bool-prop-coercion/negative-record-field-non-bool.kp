@@ -1,0 +1,9 @@
+--! assertDiagnostic error E_NOT_A_TYPE
+
+module main
+
+-- §11.4.2 over-coercion guard (form 3): a record field whose declared type
+-- is a non-Bool, non-type expression (an `Int` literal) must STILL raise
+-- E_NOT_A_TYPE — only bare *boolean* field types are coerced.
+bad : (id : Integer, ok : 42) -> Integer --!! E_NOT_A_TYPE
+let bad r = r.id

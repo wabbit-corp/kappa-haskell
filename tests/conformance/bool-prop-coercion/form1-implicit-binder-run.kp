@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n"
+
+module main
+
+-- §11.4.2 (form 1): a Bool-typed expression as the annotation of an
+-- *implicit* binder `(@p : b)` is coerced to the proposition `b = True`,
+-- i.e. `(@p : n == n)` elaborates to `(@0 p : (n == n) = True)`.
+-- The proof is supplied implicitly: `n == n` reduces to `True`, so the
+-- `True = True` obligation is discharged by refl synthesis at the call.
+needsProof : (n : Integer) -> (@p : n == n) -> Integer
+let needsProof n = n
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (needsProof 7))

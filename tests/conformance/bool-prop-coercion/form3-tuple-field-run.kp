@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "9\n"
+
+module main
+
+let isTrue (b : Bool) : Bool = b
+
+-- §11.4.2 (form 3): a *positional* tuple field that is a bare boolean
+-- expression is coerced the same way: the second component type
+-- `isTrue True` elaborates to `(isTrue True) = True`, discharged by refl.
+let pair : (Integer, isTrue True) = (9, refl)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt pair._1)

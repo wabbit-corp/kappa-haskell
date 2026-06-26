@@ -1,0 +1,10 @@
+--! assertDiagnostic error E_NOT_A_TYPE
+
+module main
+
+-- §11.4.2 scope guard: the coercion applies to *implicit* binders only.
+-- An EXPLICIT binder annotated with a Bool expression is NOT coerced and
+-- must raise E_NOT_A_TYPE ("In all other type positions, users MUST write
+-- `(b = True)` explicitly.").
+bad : (x : True) -> Integer --!! E_NOT_A_TYPE
+let bad x = 0
