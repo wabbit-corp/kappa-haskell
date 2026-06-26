@@ -161,10 +161,14 @@ struct KEnv {
  * the collector then treats as a non-pointer (an odd word is not a root).
  * RESERVED budget — do NOT repurpose a code without auditing every kderef site:
  *
- *     b000   a real heap KValue* pointer
+ *     b000   a real heap KValue* pointer (zero low bits -> kderef needs NO mask)
  *     b001   immediate Int    (Stage 1: arithmetic-shifted 61-bit value)
  *     b010   immediate ctor   (Stage 1: Bool / Unit / Nil / None; id in payload)
- *     b011 .. b111   RESERVED for the future Perceus borrow / thread-shared split
+ *     b011 .. b111   RESERVED for additional immediate KINDS (e.g. immediate Char).
+ *                    NOT the Perceus RC borrow / thread-shared discriminator: that
+ *                    lives in the heap-object HEADER (Koka-style), since an
+ *                    immediate is value-copied and never reference-counted.  See
+ *                    docs/TAGGING-RESEARCH.md.
  *
  * Stage 0 installs ONLY this discriminator API + the GC/alignment contract; NO
  * value is an immediate yet (every KValue is still a b000 pointer), so kis_imm()
