@@ -25,6 +25,7 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 - [`LAYOUT-DESIGN.md`](runtime/docs/LAYOUT-DESIGN.md) — the value-layout system
   (immediate tagging `b010`/`b011`, niche, Direct-tag, the uniform-vs-niche split).
 - [`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md) — value-representation specialization (immediate tagging + worker/wrapper).
+- [`SPECIALIZATION-SCOPING.md`](docs/SPECIALIZATION-SCOPING.md) — scoping of a monomorphization/specialization pass; **verdict: not worth it** (the static niche needs whole-program mono, which §8.3 separate-compilation forbids; the already-shipped uniform wins + Perceus RC are the better levers).
 - [`CPS-DESIGN.md`](runtime/docs/CPS-DESIGN.md) — the do-kernel CPS / continuation rewrite (Stages 0–5, R1–R15).
 - [`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md) — the ADD/DERIVE/SKIP analysis of missing concurrency primitives.
 - [`COVERAGE.md`](runtime/docs/COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
