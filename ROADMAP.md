@@ -31,6 +31,10 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 - [`DESIGN.md`](runtime/docs/DESIGN.md) / [`REVIEW.md`](runtime/docs/REVIEW.md) / [`RESEARCH.md`](runtime/docs/RESEARCH.md) — the original runtime architecture + 8-lens review.
 - [`bench/README.md`](runtime/bench/README.md) — the perf baseline (`make bench`); the numbers that gate the perf work.
 - [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) — the spec-conformance gap list (single source of truth; see the Spec-coverage track), backed by [`docs/audit/`](docs/audit) (probe-audits) + [`docs/digests/`](docs/digests) (per-§ digests) + [`docs/notes/KNOWN_SPEC_ISSUES.md`](docs/notes/KNOWN_SPEC_ISSUES.md).
+- [`TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md) — testing & verification
+  strategy: independent oracles (imported elpi/cross-language corpora, F#↔Haskell +
+  backend differential, generative fuzzing, internal property/subject-reduction
+  checks); see the Testing track.
 - Native backend: [`NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md), [`LLVM-BACKEND.md`](runtime/docs/LLVM-BACKEND.md), [`NATIVE_FFI_DESIGN.md`](docs/NATIVE_FFI_DESIGN.md), [`NATIVE_BACKEND_OPTIMIZATION_GUIDE.md`](docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md).
 
 ---
@@ -416,3 +420,74 @@ current code + the `E_*` diagnostic-catalogue coverage.
       `mpz_get_d`). Verified against a GHC oracle over ~276k cases (incl. 10,944
       exact-tie integers, bignums to 2^1000), zero mismatches; corpus 104,
       conformance 1738.
+
+---
+
+## Track: Testing & verification strategies ([`TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md))
+
+The path from "the conformance suite passes" to **high assurance the compiler is
+correct**: many *independent oracles*, so a bug must fool all of them to survive.
+[`docs/TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md) is the detailed write-up
+(mechanism, deps, effort, source paths); this track is the worklist. The enabler is
+that the `--!` Appendix-T format is **shared** with the reference impl and the CLI
+emits `--json` portable-code diagnostics, so generated/imported fixtures drop in and
+two implementations compare on a stable key. Three strategies port from
+`../kappa/`; the rest are new.
+
+**Now — cheap, all differential (do first):**
+- [ ] **Copy the 5,000 elpi-synthesis fixtures** → `tests/conformance/elpi-generated/`
+      (from `../kappa/elpi-tests/lp_kappa_*/`). An independent λProlog type checker
+      proved each well-typed; every failure is a real divergence from the spec's
+      typing rules. Quarantine first, promote when green. ~1h. ⭐ highest cheap win.
+- [ ] **Land `tests/pending-import/391`** (OracleImport cross-language corpus: Kotlin
+      `codegen/box`, Scala 3 `patmat`, harvested from `../datatron/`) + copy any fresh
+      oracle `.kp`. Real-world regression behavior the synthetic generators miss. ~1–2h.
+- [ ] **F#↔Haskell differential** ⭐ — a wrapper running every shared `.kp` through
+      both `kappa` binaries, comparing portable §3.1.4 codes (the `portableAlias`
+      table in [`Diagnostic.hs`](src/Kappa/Diagnostic.hs)) + run stdout/exit, with a
+      small known-divergence allowlist. Two mature impls cross-check; pairs with every
+      generator. ~1 day.
+
+**Force-multiplier — generative fuzzing:**
+- [ ] **Port the fuzzer** (`../kappa/scripts/kappa_fuzz*.py`, ≈4400 LOC, mostly
+      compiler-agnostic): rewire the CLI path + backend names to our `kappa` +
+      `interp/C/LLVM` (the parity harness IS its oracle); reuse the
+      `ddmin`-minimize / trace-cluster / promote pipeline (`bounded_run.py`,
+      `triage_pending.py`) as-is. Has caught real crashes/timeouts/backend-mismatches
+      on the reference. ~1–2 days.
+- [ ] **Retraining & generator variants** — (a) **auto-retrain on training-data
+      change** (hash the corpus, retrain when it changes; training is fast, so do it
+      often); (b) try a **transformer/LLM-style generator** instead of the char-LSTM
+      (better long-range structure for dependent+effect code); (c) add a
+      **grammar/type-directed generator as a *separate, parallel* fuzzer** (different
+      bias, different bugs, no PyTorch dep) — *the more the merrier*, both feed the
+      same oracle + promote loop.
+
+**Internal, always-on (no external deps):**
+- [ ] **Type-preservation / KCore subject-reduction** — extend the §34.3.3 legality
+      verifier ([`Backend/Verify.hs`](src/Kappa/Backend/Verify.hs)) toward "each
+      lowering/reduction preserves KCore types". The architecture work doubles as a
+      testing strategy; highest-leverage internal oracle. (Cross-cuts the IR-pipeline track.)
+- [ ] **Metamorphic testing** — semantics-preserving transforms (α-rename, η-expand,
+      let-inline, reorder independent binds, dead-code insert, redundant annotations)
+      must not change typeability/output. The program is its own oracle.
+- [ ] **Property-based / typed-term generation (Hedgehog)** — in-process type-directed
+      generator checking invariants: total ⇒ terminates, well-typed ⇒ accepted, no
+      crash on any well-formed AST, interp ≡ compiled. Integrates into `cabal test`.
+- [ ] **Roundtrip / idempotence** — `parse ∘ print = id`; `normalize` is a fixpoint.
+      Cheap; catches parser/printer + normalization asymmetries.
+
+**Later / research:**
+- [ ] **Mutation testing** — mutate the compiler, confirm a test fails; measures
+      corpus thinness. Most useful once the corpora above are large.
+- [ ] **Port the elpi generator** (vendor `kappa_generator.elpi` + Elpi opam dep +
+      `kappa_lp_generate.py`, validate against our binary) for fresh/deeper synthesis
+      as we add features. ~1–2 days. (Only needed beyond the committed 5,000.)
+- [ ] **Port the OracleImport importer** to Haskell (`aeson` + `regex-tdfa`) for live
+      corpus refresh as upstream suites grow. ~4–8h. (Optional — the `.kp` outputs
+      already drop in; the importer only matters for staying in sync.)
+- [ ] **Elpi as a *live* checker oracle** (DEFERRED — large) — extend the λProlog
+      judgment to *classify arbitrary* programs (accept/reject), adjudicating fuzzer
+      output (oracle-rejects + compiler-accepts = soundness bug). This is ≈writing a
+      second complete independent type checker, so deferred until the cheaper oracles
+      are exhausted; synthesis (#1) already gives most of the value.
