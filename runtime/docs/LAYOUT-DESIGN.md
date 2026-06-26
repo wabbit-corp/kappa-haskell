@@ -99,6 +99,54 @@ a specialized worker that constructs/matches the packed rep inline (no
 the always-correct fallback (the "value witness"), so specialization never
 gates correctness. Truly polymorphic positions stay uniform.
 
+## Research-grounded refinements (cited; full report in the session log)
+
+A fact-checked survey (Rust `rustc_abi`, Swift OOPSLA'19, GHC unboxed sums,
+OCaml/POPL'24 "Unboxed Data Constructors", OxCaml, BDW-GC) confirmed the design
+and pinned the algorithm + the soundness gate:
+
+- **Two encodings, named after Rust's `TagEncoding`.** **Direct** = the
+  discriminant stored explicitly (class 3, packed unions). **Niche** = the
+  discriminant encoded in values invalid for a field (class 2, `Option<boxed>` =
+  the bare pointer, `None` = a reserved immediate; Rust *guarantees* `Option<&T>`
+  is one word, `None` = the null niche). Class 1 (all-nullary enum) is GHC's
+  "zero-width sum collapses to a pure integer tag." Niche packing is a PRIVATE
+  per-ADT choice, never an ABI Kappa must honor.
+- **The layout algorithm is compute-both-pick-smaller** (rustc's actual algorithm,
+  not a size heuristic): for each ADT compute the Direct (tagged) candidate and,
+  when possible, the Niche candidate; keep the smaller that fits one word (tie →
+  larger remaining niche → else tagged); else stay boxed. Recurse over variants
+  (`diCtors`) × field types (each ctor's Pi telescope), bottoming out at
+  Int/enum immediates + pointers; a field that itself needs boxing, or a recursive
+  occurrence, is a pointer base case — so the "too big → boxed" fallback always
+  fires on lists/trees.
+- **The gating SOUNDNESS check is head-shape disjointness (POPL'24).** Packing must
+  be statically REJECTED if it could make two distinct source values share one
+  representation. Compute each ADT's "head shape" (the immediate code / block tag
+  each ctor would occupy); accept a packing ONLY if all ctors' heads are pairwise
+  DISJOINT. (OCaml rejects `X of string | Y of string [@@unboxed]` exactly here.)
+  For Kappa: a reserved immediate (`None`, a packed enum) must provably never
+  collide with a pointer or another packed case. The argument rests on Kappa's OWN
+  tag invariant — **only `b000` is a pointer** — not imported from OCaml's
+  precise-GC odd/even discipline (a disanalogy the verifiers flagged).
+- **Canonicalization is "always inline, never sometimes-boxed."** A packable value
+  has exactly ONE representation, so pointer-identity / `kvalue_rep_eq` / hashing
+  stay consistent (including across a future specialization boundary).
+- **Specialization = uniform path + opportunistic worker/wrapper, NOT a runtime
+  VWT.** Swift's VWT uniform path is 1.56×–21.75× slower than specialized; Kappa
+  already has the uniform boxed path for free, so add worker/wrapper specialization
+  per layout class only where the concrete layout is statically known — never
+  per-value runtime witness passing.
+
+**Open (to settle while building 1c/1d):** the exact tag allocation across
+`b010..b111` (6 codes over 61 bits) for nullary-enum vs Direct-union vs niche
+ranges (can one code be sub-partitioned?); whether to do Rust's MULTI-variant
+niche-filling (it caused rustc compile-time regressions, PR #70477 closed →
+#94075 — start with the simple Option-style single niche); the exact
+recursive-ADT termination rule. Sources: rustc_abi `TagEncoding`/`layout.rs`,
+Nomicon, `std::option`; Swift OOPSLA'19 (VWT cost); GHC unboxed-sums guide;
+OCaml RFC #14 + POPL'24 constructor-unboxing; OxCaml layouts; BDW-GC.
+
 ## Staged plan
 
 - **Stage 1b — nullary-ctor immediates (`b010`), ALL nullary ctors.** The first
