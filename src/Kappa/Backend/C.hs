@@ -54,6 +54,7 @@ import Kappa.Backend.NativeFfi
   , wrapperCName
   , wrapperDefinition
   )
+import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
@@ -298,9 +299,28 @@ variantTagConst tag = do
 -- symbolic names referenced in generated constructions/matches are defined.
 tagEnumBlock :: GenState -> [Text]
 tagEnumBlock st =
-  block "KT_" "KCT_USER_BASE + " (Set.toList (gsCollectCtors st))
+  ctorBlock (Set.toList (gsCollectCtors st))
     ++ block "KVT_" "" (Set.toList (gsCollectVars st))
   where
+    -- KBackendIR Stage 2: the user-ctor numbering (sort gKeys, assign
+    -- @KCT_USER_BASE + i@) is the single authority 'Repr.assignUserCtorTags',
+    -- shared with the LLVM backend so the two agree on every id by
+    -- construction.  We still EMIT the symbolic @KCT_USER_BASE + i@ offset
+    -- (byte-identical to before — the C compiler resolves it against the
+    -- included kappart.h), but derive @i@ from the shared id map rather than a
+    -- second open-coded @sort@ + @zip@.
+    ctorBlock names = case sort names of
+      [] -> []
+      sorted ->
+        let ids = Repr.assignUserCtorTags names
+         in ["enum {"]
+              ++ [ "  KT_" <> mangle n <> " = KCT_USER_BASE + "
+                     <> T.pack (show (Map.findWithDefault 0 n ids - Builtins.kctUserBase)) <> ","
+                 | n <- sorted
+                 ]
+              ++ ["};"]
+    -- §13 variant member tags are never runtime-built (no shared id authority);
+    -- they keep their own 0-based per-program numbering.
     block prefix base names = case sort names of
       [] -> []
       sorted ->
@@ -1047,11 +1067,15 @@ eraseQ0ArgsP globals ctx g term =
       sargs' = go flags sargs
    in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
 
+-- KBackendIR Stage 2: the head-type → scalar-representation discriminator is
+-- 'Repr.scalarRep' (the shared rep table); this backend's @ScalarKind@ is the
+-- @RepInt@/@RepDouble@ projection of it.  A boxed (or non-primitive) head has
+-- no unboxed scalar kind, so it is 'Nothing' — exactly the conservative
+-- classification this function made before, now sourced from the shared table.
 scalarHeadKindV :: Value -> Maybe ScalarKind
-scalarHeadKindV = \case
-  VGlobN (GName _ nm) []
-    | nm `elem` ["Int", "Nat", "Integer"] -> Just KInt64
-    | nm `elem` ["Float", "Double"] -> Just KDouble
+scalarHeadKindV v = case Repr.scalarRep v of
+  Repr.RepInt -> Just KInt64
+  Repr.RepDouble -> Just KDouble
   _ -> Nothing
 
 -- | Eligibility of a tail-position term against the worker's return kind: an
@@ -2500,16 +2524,17 @@ compileGlob g@(GName m nm)
               emitHostNative g rns
         _ -> case Map.lookup g ctors of
           Just ci ->
-            -- A nullary constructor used as a value builds directly. A
-            -- positive-arity constructor reference is eta-expanded to a
-            -- saturated CCtor under lambdas by elaboration (§10.1 etaCtor),
-            -- so a bare positive-arity ctor never reaches codegen for an
-            -- accepted program; treat it as an internal invariant.
-            if null (ciFields ci)
-              then do
+            -- A nullary constructor used as a value builds directly (the
+            -- 'Repr.LayoutImmediate' / @b010@ case). A positive-arity
+            -- constructor reference is eta-expanded to a saturated CCtor under
+            -- lambdas by elaboration (§10.1 etaCtor), so a bare positive-arity
+            -- ctor never reaches codegen for an accepted program; treat it as
+            -- an internal invariant.
+            case Repr.ctorLayoutByArity (length (ciFields ci)) of
+              Repr.LayoutImmediate -> do
                 tc <- ctorTagConst g
                 pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
-              else escalated "bare-ctor"
+              _ -> escalated "bare-ctor"
                 ("constructor '" <> nm <> "' is referenced un-eta-expanded; \
                  \accepted programs eta-expand constructor values (§10.1)")
           Nothing -> do
@@ -2618,9 +2643,12 @@ compileCtor g args = do
   -- never inspects).
   argEs <- mapM compileErasableArg args
   tc <- ctorTagConst g
-  if null argEs
-    then pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
-    else do
+  -- KBackendIR Stage 2: the nullary ⇒ canonical @b010@ immediate decision is
+  -- 'Repr.ctorLayoutByArity' (shared with the LLVM backend); 'Repr.LayoutImmediate'
+  -- lowers to @kctor0@, anything else builds a boxed @kctor@ over its fields.
+  case Repr.ctorLayoutByArity (length argEs) of
+    Repr.LayoutImmediate -> pure ("kctor0(" <> tc <> ", " <> cStr (gKey g) <> ")")
+    _ -> do
       arr <- freshN "args_"
       emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " argEs <> "};")
       pure ("kctor(" <> tc <> ", " <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
