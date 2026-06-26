@@ -14,7 +14,7 @@ generated C.
 | **scalar across a park (run)** | ~320 | 1184 | a counter Int carried across a fork/await park, sum-checked — UNBOXING Stage-0 #4 |
 | CK-machine `then`-step | ~26 | 48 | driving one `OP_THEN` through `deliver` |
 | **boxed `addInt`** | ~12.5 | 48 | the Int VALUE-BOXING cost (one heap `KValue`/op; `sizeof(KValue)=48`) |
-| **boxed `addDouble`** | ~5.2 | 48 | the binary64 boxing FLOOR Stage 2b's F64 worker must beat (no Double cache) |
+| **boxed `addDouble`** | ~5.2 | 48 | the binary64 boxing COST; Stage 2b's unboxed worker drives it to the 0-box floor (no Double cache) |
 | **ctor-build (n-ary Cons)** | ~31 | 112 | boxed 2-arg ctor = Cons(48)+args(16)+`kint` head(48); STAYS boxed in Stage 1 (control) |
 | **ctor0-build (nullary None)** | ~8 | 48 | nullary ctor heap box — Stage 1 makes it a 0-alloc `b010` immediate (the ctor-immediate WIN) |
 | **ctor deref boxed (tagid+arg)** | ~1.2 | 0 | match-dispatch + projection on a boxed ctor — the TAG-TEST-TAX detector (go/no-go gate) |
@@ -32,9 +32,10 @@ Rows 3 and 6–10 are the UNBOXING-DESIGN §7/§8 **Stage-0 baselines**, recorde
 *before* immediate-int/ctor tagging so Stage 1's effect is a measurable delta on
 this same machine. What each gates:
 
-- **`addDouble` (48 B/op)** — the F64 boxing floor; Stage 2b's unboxed worker targets
-  0 B/op in fused regions. No Double cache exists, so it is a clean one-box-per-op
-  analogue of `addInt` (the 7.0 literal is hoisted; an in-loop `kdbl` would box twice).
+- **`addDouble` (48 B/op)** — the F64 boxing COST (the ceiling); Stage 2b's unboxed
+  worker drives it to the 0-box floor in fused regions. No Double cache exists, so it
+  is a clean one-box-per-op analogue of `addInt` (the 7.0 literal is hoisted; an
+  in-loop `kdbl` would box twice).
 - **`ctor-build` (112 B/op) vs `ctor0-build` (48 B/op)** — Stage 1 splits exactly along
   the nullary/n-ary line: n-ary ctors STAY boxed (`ctor-build` must not move — the
   control), while nullary `Bool`/`Unit`/`Nil`/`None` become 0-alloc `b010` immediates

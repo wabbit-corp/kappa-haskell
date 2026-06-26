@@ -11,8 +11,8 @@
  *   4. CK-machine step       — driving one OP_THEN node through deliver/unwind.
  *   5. boxed addInt          — the Int VALUE-BOXING cost (axis #2): one ~KValue
  *      per arithmetic op, orthogonal to CPS.  THIS is the big Go/Rust gap.
- *   6. boxed addDouble        — the binary64 boxing cost; the floor Stage 2b's
- *      unboxed F64 worker must beat (no Double cache, so always one box/op).
+ *   6. boxed addDouble        — the binary64 boxing COST (one box/op); Stage 2b's
+ *      unboxed F64 worker drives it down to the 0-boxing FLOOR (no Double cache).
  *   7. ctor-build (n-ary)     — the boxed n-ary constructor ALLOCATION cost; the
  *      CONTROL for the Stage-1 go/no-go gate (n-ary ctors stay boxed).
  *   8. ctor0-build (nullary)  — the NULLARY constructor allocation cost; the case
@@ -159,9 +159,10 @@ int main(void) {
     if (acc->tag == K_INT && acc->as.i == 0) printf("x"); /* keep acc live */
   }
 
-  /* 5. boxed Double arithmetic (kp_addDouble): the binary64 value-boxing cost —
-   *    the analogue of boxed addInt (item 4) for F64, and the floor Stage 2b's
-   *    unboxed worker must beat.  Hoist the 7.0 literal out of the loop: there
+  /* 5. boxed Double arithmetic (kp_addDouble): the binary64 value-boxing COST —
+   *    the analogue of boxed addInt (item 4) for F64, and the CEILING Stage 2b's
+   *    unboxed worker drives down to the 0-boxing floor.  Hoist the 7.0 literal
+   *    out of the loop: there
    *    is no Double cache (kdbl always allocates), so an in-loop kdbl(7.0) would
    *    box TWICE per op and double the bytes/op vs the single-box addInt row. */
   {

@@ -173,7 +173,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       **251-collection GC stress** (interp == C == LLVM, correct), full native suite
       green. **Stage-0 BENCHES LANDED** (`bench/rt_bench.c` rows 3, 6–10 + the
       `bench/README.md` baseline table, `make bench`): boxed `addDouble` (the F64
-      floor, 48 B/op), `ctor-build` (n-ary, 112 B/op — the control) + `ctor0-build`
+      boxing cost, 48 B/op → 0 unboxed), `ctor-build` (n-ary, 112 B/op — control) + `ctor0-build`
       (nullary `None`, 48 B/op — the immediate WIN that should drop to 0), `ctor
       deref boxed` + `ctor0 dispatch` (the tag-test tax/win = the go/no-go gate),
       and a sum-checked `scalar across a park` (1184 B/op, asserts the carried Int
