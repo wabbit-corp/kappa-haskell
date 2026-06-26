@@ -150,6 +150,10 @@ the real Lint are both impossible without them.
       *NB:* Stage 2's `Repr.scalarRep` keyed on `gKey` (qualified) not the bare type
       name — regressed the Int/Double scalar workers to boxing; fixed `f9e0bf4`
       (caught by `run-native-tests.sh` perf gates, invisible to `llvm-parity`).
+      Then made principled in `c776a9c`: classify by **declaration-symbol IDENTITY**
+      (`GName` equality vs the canonical prelude globals), not a spelling string —
+      §1.2 "a resolved reference MUST NOT target a spelling string" (a user type
+      spelling `Double` in another module now stays boxed; unit-pinned).
 - [ ] **Stage 4 — niche `Option<boxed>` + coercion-insertion pass** (last,
       hardest). The one packing the runtime can't decide blind: bare-pointer niche
       for the canonical shape, with a pass that boxes a niche value escaping into
