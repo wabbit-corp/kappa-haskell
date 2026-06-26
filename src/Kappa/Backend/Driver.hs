@@ -263,12 +263,19 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
                      -- inlines the marshalling wrappers and register-allocates the
                      -- unboxed worker loops.
                      , "-O2"
-                     -- Disable FP contraction (no implicit FMA fusion) so the
-                     -- backend's unboxed double arithmetic rounds per-operation
-                     -- exactly like the interpreter's (and the boxed kp_*Double
-                     -- prims), making native ≡ interpreter for Double bit-for-bit
-                     -- regardless of the -O level (R2.2 / §27 semantics).
+                     -- Pin FP semantics for the unboxed Double worker (§5.5 /
+                     -- Stage 2b).  '-ffp-contract=off' disables implicit FMA
+                     -- fusion (so a `mul`-then-`add` rounds twice, exactly like
+                     -- the boxed kp_mulDouble+kp_addDouble pair, not a single-
+                     -- rounded FMA); '-fno-fast-math' defensively pins that no
+                     -- present-or-future flag/env relaxes IEEE semantics
+                     -- (reassociation, NaN/signed-zero/inf assumptions) — both
+                     -- are required to make the native unboxed Double bit-for-bit
+                     -- identical to the interpreter regardless of -O level
+                     -- (R2.2 / §27 semantics).  The kp_*Double prims are equally
+                     -- protected, so the LLVM (uniform-boxed) backend benefits too.
                      , "-ffp-contract=off"
+                     , "-fno-fast-math"
                      , "-I", runtimeDir
                      ]
                   ++ hdrInclude

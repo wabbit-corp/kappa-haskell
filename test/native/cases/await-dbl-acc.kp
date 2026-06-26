@@ -1,0 +1,27 @@
+module main
+
+-- §6 / Stage 1.5 SOUNDNESS: a Double accumulator whose LIVE RANGE CROSSES a
+-- fork+await park.  `acc` is computed before the fork and read after the await;
+-- the await is polymorphic over the fiber's result (Exit Double), so this is the
+-- "Double counter across an await through a polymorphic/effect indirection" case
+-- the design mandates (§6 conformance).  A scalar Double worker keeps values in
+-- raw C locals that are LOST across a park (CPS-DESIGN R5); the Stage-1.5 witness
+-- must therefore REFUSE a worker for `main` (its do-block is in gsSuspenders /
+-- scalarBodyMaySuspend ⇒ may-suspend ⇒ boxed), so `acc` lives boxed in the KEnv
+-- and survives the park.  Native (C) result MUST equal the interpreter, which it
+-- only does if the witness gated correctly: a naive under-approximating gate that
+-- unboxed `acc` into a C local would print garbage or a stale value here.
+
+producer : Double -> UIO Double
+let producer x = do
+    printlnString "fiber ran"
+    pure (mulDouble x 2.0)
+
+main : UIO Unit
+let main = do
+    let acc = addDouble 0.1 0.2          -- 0.30000000000000004, live across the park
+    f <- fork (producer 21.0)             -- fork: a real CK-machine park
+    ex <- await f                          -- await: parks until the fiber completes
+    match ex
+      case Success v -> printlnString (showDouble (addDouble acc v))   -- 42.300000000000004
+      case Failure _ -> printlnString "failed"

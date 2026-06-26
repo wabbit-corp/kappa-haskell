@@ -1,0 +1,35 @@
+module main
+
+-- Stage 2b FP-CORRECTNESS: non-trivial Double arithmetic routed through the
+-- UNBOXED kwd_ worker (these are monomorphic first-order Double functions, so
+-- they lower to `double` C locals + native +,-,*,/ — NOT boxed kp_*Double).
+-- The native result MUST be bit-identical to the interpreter (which uses the
+-- boxed kp_*Double prims).  This is exactly what `-ffp-contract=off` +
+-- `-fno-fast-math` buy (§5.5): without them, a `mul`-then-`add` could contract
+-- into a single-rounded FMA in the worker while the interpreter rounds twice,
+-- diverging in the last bit.  `fma` below is the canonical a*b+c case.
+
+-- a*b + c, evaluated as two separately-rounded ops (must NOT fuse to one FMA)
+fma : Double -> Double -> Double -> Double
+let fma a b c = addDouble (mulDouble a b) c
+
+-- a chain mixing all four ops + an intToDouble coercion; values chosen so the
+-- intermediate roundings are observable (non-representable decimals).
+mix : Double -> Double -> Double
+let mix x y = divDouble (subDouble (mulDouble x y) (addDouble x y)) (intToDouble 7)
+
+-- a fused accumulator loop (0 B/op): sum of 0.1 added n times, where 0.1 is not
+-- exactly representable, so the accumulated rounding error must match exactly.
+accumTenth : Double -> Int -> Double
+let accumTenth acc n = if leInt n 0 then acc else accumTenth (addDouble acc 0.1) (subInt n 1)
+
+main : UIO Unit
+let main = do
+    -- classic FMA-divergence probe: 0.1*0.1 + (-0.01) is ~tiny; one-rounding FMA
+    -- vs two roundings differ in the low bits.
+    printlnString (showDouble (fma 0.1 0.1 (negate 0.01)))
+    printlnString (showDouble (fma 1.0e8 1.0e8 1.0))
+    printlnString (showDouble (mix 3.3 7.7))
+    printlnString (showDouble (accumTenth 0.0 10))     -- 0.1 added 10x (not 1.0!)
+    printlnString (showDouble (accumTenth 0.0 1000))
+    printlnString (showDouble (fma 0.0 0.0 (negate 0.0)))   -- signed-zero corner
