@@ -1,0 +1,20 @@
+module main
+
+-- §16.4.1 NEGATIVE: with NO flow refinement in scope, a `match c` covering only
+-- `Full` is still genuinely non-exhaustive — the refinement-awareness must NOT
+-- over-accept. `ctxRefinementOf` returns Nothing here, so the full constructor
+-- set is required and the omitted `Hole` makes the match non-exhaustive.
+-- Spec: §16.4.1, §17.1
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readUnrefined : Cell -> Int
+let readUnrefined c =
+    match c
+      case Full v -> v

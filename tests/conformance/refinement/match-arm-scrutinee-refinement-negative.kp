@@ -1,0 +1,22 @@
+module main
+
+-- §17.1.7 NEGATIVE: the arm refinement is exactly that arm's constructor, not a
+-- blanket accept. In the `Hole` arm the scrutinee `b` is refined to {Hole}
+-- (which has no `val` field), so projecting `b.val` there must still be
+-- rejected. This locks the refinement to the matched constructor rather than the
+-- whole data type.
+-- Spec: §17.1.7, §7.4.1
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readWrongArm : Cell -> Int
+let readWrongArm b =
+    match b
+      case Hole -> b.val
+      case Full v -> v

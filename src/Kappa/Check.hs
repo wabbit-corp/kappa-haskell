@@ -7990,11 +7990,10 @@ checkIf ctx alts mels sp resT = go ctx alts
             pure r
       tTm <- withFact "True" (check ctxR t resT)
       -- the negative side refines the subject to the complementary
-      -- constructors of its data type (§7.4.1 lacks-refinement); only
-      -- a bare `x is C` condition licenses the complement
-      negs <- case cnd of
-        EIs (EVar _) _ -> complementRefines refs
-        _ -> pure []
+      -- constructors of its data type (§7.4.1 lacks-refinement); a bare
+      -- `x is C` condition — or its §16.4.2 negation `not (x is C)` —
+      -- licenses the complement
+      negs <- condRefinesElse c cnd
       eTm <- withFact "False" (go (refineCtx negs c) rest)
       pure (CIf cTm tTm eTm)
 
@@ -8015,22 +8014,48 @@ complementRefines refs = fmap concat . forM refs $ \(x, gs) -> do
 -- | §7.4.1/§7.4.2 refinements induced by an if-condition: `x is C`
 -- refines x to {C}; conjunction collects both sides; disjunction
 -- refines a subject to the union of constructors when both sides
--- refine it.
+-- refine it. The positive (then-side) refinements; see
+-- 'condRefinesElse' for the negative (else-side) ones.
 condRefines :: Ctx -> Expr -> CheckM [(Text, [GName])]
-condRefines _ctx = go
+condRefines ctx = fmap fst . condRefinesBoth ctx
+
+-- | §16.4.2: `not e` swaps the branch refinements: `if not a then t
+-- else f ≡ if a then f else t`. So the else-side refinements of a
+-- condition are the then-side refinements of its negation. Only a bare
+-- (possibly negated) `x is C` test yields a usable complement; a failed
+-- conjunction/disjunction proves nothing positive.
+condRefinesElse :: Ctx -> Expr -> CheckM [(Text, [GName])]
+condRefinesElse ctx = fmap snd . condRefinesBoth ctx
+
+-- | The (then-side, else-side) constructor refinements a condition
+-- induces. Resolving `not` here (rather than only in the if/match
+-- checkers) means the negation laws compose through `&&`/`||`/thunks
+-- exactly as the positive refinements do.
+condRefinesBoth :: Ctx -> Expr -> CheckM ([(Text, [GName])], [(Text, [GName])])
+condRefinesBoth _ctx = go
   where
     go = \case
       EIs (EVar n) cref -> do
         mg <- quietCtor cref
-        pure [(nameText n, [g]) | Just g <- [mg]]
+        let pos = [(nameText n, [g]) | Just g <- [mg]]
+        neg <- complementRefines pos
+        pure (pos, neg)
+      -- §16.4.2 negation: `not e` swaps the then/else refinements.
+      EApp (EVar (Name "not" _)) [ArgExplicit e] -> do
+        (pos, neg) <- go e
+        pure (neg, pos)
       EApp (EVar (Name op _)) [ArgExplicit l, ArgExplicit r]
-        | op == "&&" -> (++) <$> go l <*> go r
+        | op == "&&" -> do
+            (lp, _) <- go l
+            (rp, _) <- go r
+            -- a failed conjunction proves nothing positive (§7.4.1)
+            pure (lp ++ rp, [])
         | op == "||" -> do
-            ls <- go l
-            rs <- go r
-            pure [(x, gs ++ gs') | (x, gs) <- ls, (x', gs') <- rs, x == x']
+            (lp, _) <- go l
+            (rp, _) <- go r
+            pure ([(x, gs ++ gs') | (x, gs) <- lp, (x', gs') <- rp, x == x'], [])
       EThunk e _ -> go e
-      _ -> pure []
+      _ -> pure ([], [])
     quietCtor (CtorRef mqual n) = do
       st <- get
       let inScope g@(GName m _) =
@@ -8282,6 +8307,13 @@ checkMatchPlain ctx scrut cases sp resT = do
             _ -> do
               (pc, cx, _) <- elabPattern ctx pat sTy1
               pure (pc, cx)
+          -- §17.1.7: a variable scrutinee is flow-refined to this arm's
+          -- constructor inside the arm, mirroring `if … is C`. This lets
+          -- member projection on the scrutinee (`match b case Full v ->
+          -- b.val`) consult the refined constructor set (§7.4.1).
+          let ctx'' = case (scrut, patC) of
+                (EVar n, CPCtor g _ _) -> refineCtx [(nameText n, [g])] ctx'
+                _ -> ctx'
           let fact = case patC of
                 CPCtor g _ [] -> Just (FactIs (VCtor g []))
                 _ | not (null prior) -> Just (FactNot prior)
@@ -8289,7 +8321,7 @@ checkMatchPlain ctx scrut cases sp resT = do
           oldFacts <- gets csFacts
           forM_ ((,) <$> mLvl <*> fact) $ \(l, f) ->
             modify' $ \st -> st {csFacts = Map.insert l f (csFacts st)}
-          gTm <- traverse (\g -> check ctx' g (VGlobN prelBool [])) mguard
+          gTm <- traverse (\g -> check ctx'' g (VGlobN prelBool [])) mguard
           -- §17.1.9: the arm's guard holds while checking its body, so push
           -- it as boolean evidence (a §3.2.3 proof source consulted by
           -- conversion through 'csBoolFacts'); e.g. `case _ if y <= x ->
@@ -8304,7 +8336,7 @@ checkMatchPlain ctx scrut cases sp resT = do
           oldImp <- gets csImpossibleScrut
           fiberEmpty <- branchFiberEmpty ctx' sTy1 patC
           modify' $ \st -> st {csImpossibleScrut = Just fiberEmpty}
-          bTm <- check ctx' body resT
+          bTm <- check ctx'' body resT
           modify' $ \st -> st {csFacts = oldFacts, csBoolFacts = oldBool, csImpossibleScrut = oldImp}
           let prior' = prior ++ [g | CPCtor g _ _ <- [patC]]
               covered' = covered ++ [t | CPInject t _ <- [patC]]
@@ -8312,10 +8344,15 @@ checkMatchPlain ctx scrut cases sp resT = do
   nErrsBefore <- gets (length . filter isError . csDiags)
   (alts, _, _) <- foldM goCase ([], [], []) cases
   nErrsAfter <- gets (length . filter isError . csDiags)
+  -- §16.4.1: a flow-refined variable scrutinee (e.g. after `if e is C`)
+  -- only needs the refined constructor subset covered for exhaustiveness.
+  let scrutRefined = case scrut of
+        EVar n -> ctxRefinementOf ctx (nameText n)
+        _ -> Nothing
   -- §3.1: a match whose arms already failed to type against the
   -- scrutinee gets no piled-on exhaustiveness diagnostic
   when (nErrsAfter == nErrsBefore) $
-    checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
+    checkExhaustive ctx sp sTy1 scrutRefined [(p, g) | CaseAlt p g _ <- alts]
   -- KBackendIR Stage 0: annotate the match with the scrutinee's
   -- monomorphic type. 'sTy1' is the already-inferred scrutinee type
   -- (a 'Value'); quoting it at the current context depth gives the Core
@@ -8667,8 +8704,13 @@ inhabEqualityVerdict t = do
 
 -- exhaustiveness (§17.1): closed ADTs / Bool / variants / records /
 -- tuples; literal scrutinees require a catch-all.
-checkExhaustive :: Ctx -> Span -> Value -> [(CorePat, Maybe Term)] -> CheckM ()
-checkExhaustive ctx sp ty alts = do
+-- | The @Maybe [GName]@ argument is the §16.4.1 flow-refined
+-- constructor set of the scrutinee (e.g. after `if e is C`): when
+-- present, only that subset of the data type's constructors must be
+-- covered for exhaustiveness. 'Nothing' means "no refinement in scope",
+-- so the full constructor set is required (the conservative default).
+checkExhaustive :: Ctx -> Span -> Value -> Maybe [GName] -> [(CorePat, Maybe Term)] -> CheckM ()
+checkExhaustive ctx sp ty mRefined alts = do
   t <- forceM ty
   let catchAll = any isCatchAll [p | (p, Nothing) <- alts]
   if catchAll
@@ -8678,10 +8720,17 @@ checkExhaustive ctx sp ty alts = do
         st <- get
         case Map.lookup g (csDatas st) of
           Just di -> do
-            let rows = [[p] | (p, Nothing) <- alts]
+            -- §16.4.1: restrict the constructors-to-cover to the
+            -- scrutinee's flow-refined subset, when one is in scope and
+            -- is a subset of this data type's constructors.
+            let allCtors = diCtors di
+                ctorsToCover = case mRefined of
+                  Just gs | not (null gs), all (`elem` allCtors) gs -> gs
+                  _ -> allCtors
+                rows = [[p] | (p, Nothing) <- alts]
                 uncovered =
                   [ c
-                  | c <- diCtors di
+                  | c <- ctorsToCover
                   , let a = ctorArity st c
                   , wildUseful st (specializeRows st (KCtor c) a rows) (a :: Int)
                   ]
@@ -9246,7 +9295,7 @@ elabTry ctx body excepts mfin sp = do
           hTm <- check ctx'' hbody (ioType outErr resT)
           modify' $ \st -> st {csBoolFacts = oldBool}
           pure (CaseAlt patC gTm hTm)
-        checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
+        checkExhaustive ctx sp errT' Nothing [(p, g) | CaseAlt p g _ <- alts]
         errTyTm <- quoteIn ctx' errT'
         let handlerTm = CLam Expl QW nm (CMatch (CVar 0) (Just errTyTm) alts)
         pure (CApp Expl (CApp Expl (CGlob prelCatchIO) bodyTm) handlerTm)
@@ -9632,10 +9681,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   refs <- condRefines c cond
                   pure (refineCtx refs c)
               | abruptSuite thenB -> do
-                  refs <- condRefines c cond
-                  negs <- case cond of
-                    EIs (EVar _) _ -> complementRefines refs
-                    _ -> pure []
+                  negs <- condRefinesElse c cond
                   pure (refineCtx negs c)
             _ -> pure c
           ks <- goItems loops cAfter errT resT rest
