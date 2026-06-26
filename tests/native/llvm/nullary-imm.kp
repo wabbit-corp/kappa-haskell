@@ -1,0 +1,50 @@
+-- UNBOXING Stage 1b: nullary constructors of ANY ADT are b010 IMMEDIATES.
+--
+-- This exercises the generalization beyond the narrow Bool/Unit/Nil/None plan:
+--   * a >=3-variant nullary enum (GameMode, 5 variants) constructed AND matched
+--     across EVERY arm — each construction is alloc-free (kmk_imm_ctor) and each
+--     match is a deref-free integer compare on kctor_tagid.
+--   * a mixed ADT (Option) where the nullary `None` is a b010 immediate and
+--     `Some x` is a boxed K_CTOR — the SAME match dispatch (kctor_tagid)
+--     distinguishes the immediate from the box uniformly.
+--
+-- Parity (interp == C == LLVM) is the behavioural witness; the 0-byte/op win for
+-- the nullary construction is the runtime/bench `ctor0-build` gate (the .kp can
+-- only observe the value, not the allocation).
+module main
+
+data GameMode : Type =
+    Explore
+    Combat
+    Menu
+    Dialogue
+    Quit
+
+-- Construct each nullary variant and match it back: every `case` arm is reached
+-- by building the immediate and dispatching on its tag id.
+modeName : GameMode -> String
+let modeName m =
+    match m
+    case Explore -> "explore"
+    case Combat -> "combat"
+    case Menu -> "menu"
+    case Dialogue -> "dialogue"
+    case Quit -> "quit"
+
+-- A mixed ADT: None is the b010 immediate, Some n is the boxed carrier.  The
+-- match must tell the immediate from the box through one uniform dispatch.
+orElse : Option Int -> Int -> Int
+let orElse o d =
+    match o
+    case Some n -> n
+    case None -> d
+
+main : UIO Unit
+let main = do
+    printlnString (modeName Explore)
+    printlnString (modeName Combat)
+    printlnString (modeName Menu)
+    printlnString (modeName Dialogue)
+    printlnString (modeName Quit)
+    printlnString (showInt (orElse (Some 42) 0))
+    printlnString (showInt (orElse None 7))
