@@ -16,6 +16,7 @@ import Kappa.Backend.Driver
   )
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, scalarOnly)
 import Kappa.Backend.NativeProbe (hostBindingLockEntries)
+import Kappa.Backend.Verify (verifyInputs, verifyUnit)
 import Kappa.Build.Lock (LockEntry (..), lockWellFormed, parseLock, renderLock)
 import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
@@ -52,13 +53,18 @@ main = do
     ["run", "--no-implicit-prelude", "--json", path] -> cmdRun noImplicitPreludeConfig Json path
     ["test", path] -> cmdTest runTestPath path
     ["test", "--suite", path] -> cmdTest runTestSuitePath path
+    ["verify-kbackendir", path] -> cmdVerify defaultUnsafeConfig Human path
+    ["verify-kbackendir", "--json", path] -> cmdVerify defaultUnsafeConfig Json path
+    ["verify-kbackendir", "--no-implicit-prelude", path] -> cmdVerify noImplicitPreludeConfig Human path
+    ["verify-kbackendir", "--json", "--no-implicit-prelude", path] -> cmdVerify noImplicitPreludeConfig Json path
+    ["verify-kbackendir", "--no-implicit-prelude", "--json", path] -> cmdVerify noImplicitPreludeConfig Json path
     ["explain", code] -> cmdExplain (T.pack code)
     ["audit", path] -> cmdAudit path
     ("build" : rest) -> cmdBuild rest
     _ -> do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
-          <> " | kappa (check|run) [--json] [--no-implicit-prelude] PATH"
+          <> " | kappa (check|run|verify-kbackendir) [--json] [--no-implicit-prelude] PATH"
           <> " | kappa build [--emit-c] [--no-implicit-prelude] [-o OUT] [--cc DRIVER] FILE"
           <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--update] [--no-implicit-prelude] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
@@ -98,6 +104,28 @@ cmdCheck cfg fmt path = do
       cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
   emitDiags fmt (cuDiags cu)
   if hasErrors (cuDiags cu) then exitFailure else exitSuccess
+
+-- | §34.3.4: the user-invokable KBackendIR lowering-legality verifier. It
+-- compiles the file through the ordinary pipeline (so it sees exactly the
+-- elaborated Core lowering would), then runs the OBSERVE-ONLY Stage-3 checks
+-- (§34.3.3) over the checked unit and emits their findings as diagnostics.
+--
+-- Observe-only contract: the verifier NEVER changes emitted code, so this
+-- command does not build anything. Its exit status reflects only whether any
+-- error-severity diagnostic was produced — and since every Stage-3 finding is
+-- a warning, a verifier finding does NOT (yet) fail the command (§34.3.3's
+-- "failure is a compile-time error" promotion is the deliberate follow-on).
+-- A genuine compile error in the input still fails, as for 'check'.
+cmdVerify :: UnsafeConfig -> DiagFormat -> FilePath -> IO ()
+cmdVerify cfg fmt path = do
+  (src, preDiags) <- loadSourceFile path
+  let cu0 = compileFilesWithConfig cfg False "." [(path, src)]
+      cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
+  emitDiags fmt (cuDiags cu)
+  when (hasErrors (cuDiags cu)) exitFailure
+  let verifyDiags = verifyUnit (verifyInputs (cuState cu))
+  emitDiags fmt verifyDiags
+  if any isError verifyDiags then exitFailure else exitSuccess
 
 cmdRun :: UnsafeConfig -> DiagFormat -> FilePath -> IO ()
 cmdRun cfg fmt path = do

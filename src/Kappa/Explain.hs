@@ -637,6 +637,13 @@ registry =
       "An 'expect term' whose name matches a native backend host-binding intrinsic declares a type that does not match the intrinsic's signature up to definitional equality (Spec §9.4, §34.5)."
   , ent "W_BACKENDIR_NON_FUNCTION_HEAD" (Just "kappa-hs.backendir.non-function-head")
       "An observe-only KBackendIR lint found a value application whose head is statically a non-function value (e.g. an erased/unit-valued term or a saturated constructor). Such a term would lower to an ill-typed 'kapp(unit, …)' call; this warning surfaces it without changing codegen."
+  , -- §34.3.3 KBackendIR Stage-3 lowering-legality verifier (observe-only)
+    ent "W_BACKENDIR_ERASED_REFERENCE" (Just "kappa-hs.backendir.erased-reference")
+      "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a runtime term that refers to an erased entity — a manifestly-erased type form (a universe, a function/record/variant/signature type) sitting in a runtime-kept argument slot that was not reified as an ordinary runtime value (Spec §34.3.3 bullet 2, line 34688). This warning surfaces it without changing codegen."
+  , ent "W_BACKENDIR_ARITY_MISMATCH" (Just "kappa-hs.backendir.arity-mismatch")
+      "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a constructor application whose runtime field count does not match the constructor's fixed runtime arity (no partial application without a closure, no arity mismatch vs the resolved signature; Spec §34.3.3 bullet 3). This warning surfaces it without changing codegen."
+  , ent "W_BACKENDIR_LAYOUT_INCONSISTENT" (Just "kappa-hs.backendir.layout-inconsistent")
+      "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a data-layout inconsistency: two constructors of one datatype share a runtime tag id (non-injective assignment), a constructor a datatype lists does not point back to it, or a constructor declares more explicit fields than its type's runtime arity (so its layout would under-reserve slots) — Spec §34.3.3 layout-consistency, §§31.3-31.4. This warning surfaces it without changing codegen."
   ]
   where
     -- §3.1.2A registry metadata is derived uniformly from the code and
