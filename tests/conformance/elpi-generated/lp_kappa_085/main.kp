@@ -1,0 +1,29 @@
+module main
+
+generated_85 : Int
+let generated_85 =
+    block
+        scoped effect State (s : Type) =
+            get : Unit -> s
+
+        let seed = 0
+
+        let comp : Eff <[State : State Int]> Int =
+            do
+                let n <- State.get ()
+                n
+
+        let handled : Eff <[ ]> Int =
+            deep handle State comp with
+                case return x -> pure x
+                case get () k -> k seed
+
+        runPure handled
+
+result : Int
+let result = generated_85
+
+--! assertNoErrors
+--! assertType generated_85 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let

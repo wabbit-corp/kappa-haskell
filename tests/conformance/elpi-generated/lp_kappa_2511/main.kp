@@ -1,0 +1,16 @@
+module main
+
+generated_2511 : Map String Int
+let generated_2511 = { for x in [1, 2, 3], yield "k" : ((Some ((match (Some x)
+  case Some payload -> payload
+  case None -> 0) + 1)) ?: ((match (Some x)
+  case Some payload -> payload
+  case None -> 0) + 2)), on conflict keep first }
+
+result : Map String Int
+let result = generated_2511
+
+--! assertNoErrors
+--! assertType generated_2511 Map String Int
+--! assertType result Map String Int
+--! assertDeclKinds signature, let, signature, let

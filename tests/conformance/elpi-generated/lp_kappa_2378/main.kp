@@ -1,0 +1,14 @@
+module main
+
+generated_2378 : Map String Int
+let generated_2378 = { for x in [1, 2, 3], let y = x + 1, if y > 0, yield (if y > 1 then "hi" else "lo") : ((\(n : Int) -> n) (match (Some x)
+  case Some payload -> payload
+  case None -> 0)) }
+
+result : Map String Int
+let result = generated_2378
+
+--! assertNoErrors
+--! assertType generated_2378 Map String Int
+--! assertType result Map String Int
+--! assertDeclKinds signature, let, signature, let

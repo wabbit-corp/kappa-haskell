@@ -1,0 +1,19 @@
+module main
+
+generatedEcho : forall (a : Type). (this x : a) -> a
+let generatedEcho @a (this x : a) = x
+
+generated_2210 : Int
+let generated_2210 = ((match (Some (match (Some 0)
+  case Some payload -> payload
+  case None -> 0))
+  case Some payload -> payload
+  case None -> 0) + 0).generatedEcho
+
+result : Int
+let result = generated_2210
+
+--! assertNoErrors
+--! assertType generated_2210 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let, signature, let

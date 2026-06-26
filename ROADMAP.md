@@ -436,10 +436,16 @@ two implementations compare on a stable key. Three strategies port from
 `../kappa/`; the rest are new.
 
 **Now — cheap, all differential (do first):**
-- [ ] **Copy the 5,000 elpi-synthesis fixtures** → `tests/conformance/elpi-generated/`
-      (from `../kappa/elpi-tests/lp_kappa_*/`). An independent λProlog type checker
-      proved each well-typed; every failure is a real divergence from the spec's
-      typing rules. Quarantine first, promote when green. ~1h. ⭐ highest cheap win.
+- [x] **Coverage-selected elpi import — DONE** (2026-06-26;
+      [`tests/conformance/elpi-generated/`](tests/conformance/elpi-generated)). Ran the
+      5,000 read-only: **1,821 pass**; rather than bulk-import the repetitive corpus,
+      HPC greedy set-cover picked the **13** that add the entire +0.16% new
+      compiler coverage (the other 1,808 are redundant) — gate 1781→1794, all pass,
+      runnable ones `interp==C==LLVM`. Method + run log in
+      [`TESTING_STRATEGY.md`](docs/TESTING_STRATEGY.md). **Key finding:** the 3,179
+      failures collapse to one real gap — **block-local declarations** (nested-`block`
+      layout + local `trait`/`instance`/`effect`/`summon`); a candidate spec-coverage
+      task, not test noise.
 - [ ] **Land `tests/pending-import/391`** (OracleImport cross-language corpus: Kotlin
       `codegen/box`, Scala 3 `patmat`, harvested from `../datatron/`) + copy any fresh
       oracle `.kp`. Real-world regression behavior the synthetic generators miss. ~1–2h.

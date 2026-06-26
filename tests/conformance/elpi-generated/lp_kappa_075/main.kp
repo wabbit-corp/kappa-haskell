@@ -1,0 +1,17 @@
+module main
+
+generated_75 : Int
+let generated_75 =
+    block
+        let pair = (x = (0 + 0), y = (0 + 1))
+        let whole@(x = captured, y = other) = pair
+
+        (whole.x + (captured + other))
+
+result : Int
+let result = generated_75
+
+--! assertNoErrors
+--! assertType generated_75 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let

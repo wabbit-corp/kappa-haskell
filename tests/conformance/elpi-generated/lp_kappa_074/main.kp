@@ -1,0 +1,16 @@
+module main
+
+generated_74 : Int
+let generated_74 =
+    block
+        let (captured : Int) = (0 + 0)
+
+        captured
+
+result : Int
+let result = generated_74
+
+--! assertNoErrors
+--! assertType generated_74 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let

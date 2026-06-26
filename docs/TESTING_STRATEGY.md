@@ -223,3 +223,57 @@ fraction of the cost.
    targets to `cabal test`.
 4. **Later:** **mutation testing** (#13) once the corpus is large; the **live Elpi
    checker** (#14) only if the cheaper oracles stop finding bugs.
+
+---
+
+## Coverage-guided test selection (the method)
+
+When a generator/import produces a large candidate corpus, **do not bulk-import** —
+most cases are coverage-redundant and only slow the suite. Select a minimal subset
+that ticks *compiler* code the current suite doesn't, via HPC:
+
+1. Build the compiler instrumented, into an **isolated builddir** so the shared
+   `dist-newstyle` (and parallel work) is untouched:
+   `cabal build --enable-coverage --builddir=/tmp/kappa-cov exe:kappa`.
+2. **Baseline** `.tix` = the current suite's coverage — run the instrumented binary
+   once over the whole suite (`kappa test tests/conformance`); it runs in-process so
+   one exit writes one tix covering everything.
+3. **Per candidate**, run instrumented `kappa check <file>` (in a clean cwd; the exe
+   writes `kappa.tix` on exit). The tix is text — `Tix [TixModule "pkg/Mod" hash n
+   [ticks…]]` — so parse the non-zero boxes directly; a candidate's *marginal* =
+   its boxes − baseline.
+4. **Greedy set-cover** over the marginals → the minimal subset that adds new
+   coverage. (`hpc report` needs `--hpcdir` per mix parent:
+   `<builddir>/…/hpc/vanilla/mix/{kappa-haskell-…-inplace, …-inplace-kappa}`.)
+
+Reproducible scripts: `/tmp/elpi_greedy_cover.py` (parse-tix + greedy),
+`/tmp/elpi_llvm_diff.py` (the backend differential). Lighter proxies when an HPC
+build is too costly: pipeline-**trace hashing** (the fuzzer's, coarser) or
+**AST-feature** coverage.
+
+## Run log — 2026-06-26 (elpi + pending-import recon)
+
+Ran both corpora read-only against the compiler (nothing bulk-imported):
+
+- **elpi 5,000 → 1,821 pass (36%).** *Every* failure is "we reject a program the
+  λProlog oracle proved well-typed" (0 are decl-kind/type-format divergences — our
+  reporting matches the reference). They collapse to **one theme: block-local
+  declarations** — 2,962 layout (`E_UNEXPECTED_INDENTATION`/`E_EXPECTED_SYNTAX_TOKEN`
+  from nested `block`s) + 217 type/semantic (`E_UNSUPPORTED "local declaration form
+  not supported inside block"` ×62, …). A focused, real spec-coverage gap (local
+  `trait`/`instance`/`effect`/`summon` + nested-block layout), **not** 3,000
+  scattered bugs — the highest-leverage thing the elpi corpus surfaced.
+- **pending-import** is a **pre-triaged staging backlog** (per its README), not new
+  breakage; soundness buckets to revisit are `we-accept-negative/` (67) and
+  `we-reject-positive/` (177).
+- **LLVM differential:** 122/122 sampled `result:Int` positives agree
+  `interp == C == LLVM` (0 divergence, 0 backend build failures) — the backend is
+  solid on the elpi constructs, so no backend-bug regression tests to harvest.
+- **Coverage-guided import:** baseline suite = **59.0%** compiler-expression coverage.
+  All 1,821 passing positives are individually distinct but **coverage-redundant**:
+  greedy HPC set-cover → **13 tests** capture the entire **+0.16%** (248 boxes,
+  almost all `Kappa.Check`) that the full 1,821 would add. Imported only those 13 →
+  [`tests/conformance/elpi-generated/`](../tests/conformance/elpi-generated) (gate
+  1781→1794, all pass). They exercise multi-shot `deep handle` effects, `Set`/`Map`
+  comprehensions with conflict resolution, elvis chains — paths the curated suite
+  missed.

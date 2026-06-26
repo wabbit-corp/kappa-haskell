@@ -1,0 +1,22 @@
+module main
+
+generated_4034 : Int
+let generated_4034 =
+    block
+        generatedSetCount : Set Int -> Int
+        let generatedSetCount values = 2
+
+        let item = (match (0 == 0)
+          case True -> 0
+          case False -> 0)
+        let values = {|item, (item + 1)|}
+
+        generatedSetCount values
+
+result : Int
+let result = generated_4034
+
+--! assertNoErrors
+--! assertType generated_4034 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let

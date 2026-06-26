@@ -1,0 +1,12 @@
+module main
+
+generated_55 : Set Int
+let generated_55 = {| for x in [1, 2, 3], yield x |}
+
+result : Set Int
+let result = generated_55
+
+--! assertNoErrors
+--! assertType generated_55 Set Int
+--! assertType result Set Int
+--! assertDeclKinds signature, let, signature, let

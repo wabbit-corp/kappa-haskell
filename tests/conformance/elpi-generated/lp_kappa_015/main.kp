@@ -1,0 +1,19 @@
+module main
+
+type GeneratedTuple = (Int, Int)
+
+generated_15 : Int
+let generated_15 =
+    block
+        let pair : GeneratedTuple = (20, 22)
+        let (left, right) = pair
+
+        (left + right)
+
+result : Int
+let result = generated_15
+
+--! assertNoErrors
+--! assertType generated_15 Int
+--! assertType result Int
+--! assertDeclKinds type, signature, let, signature, let

@@ -1,0 +1,20 @@
+module main
+
+generated_4520 : Int
+let generated_4520 =
+    block
+        generatedSetCount : Set Int -> Int
+        let generatedSetCount values = 2
+
+        let item = ((Some (0 + 1)) ?: (0 + 2))
+        let values = {|item, (item + 1)|}
+
+        generatedSetCount values
+
+result : Int
+let result = generated_4520
+
+--! assertNoErrors
+--! assertType generated_4520 Int
+--! assertType result Int
+--! assertDeclKinds signature, let, signature, let
