@@ -1,0 +1,528 @@
+-- | KBackendIR __Stage 3__ — a user-invokable, OBSERVE-ONLY lowering-legality
+-- verifier (§34.3.3 / §34.3.4).
+--
+-- This module implements the three §34.3.3 lowering-legality checkpoints that
+-- are actually checkable against today's elaborated Core ("Kappa.Check"'s
+-- 'CheckState') and the Stage-2 representation table ("Kappa.Backend.Repr").
+-- It builds on the Stage-0 lint ("Kappa.CoreLint") and reuses the Stage-0
+-- head-type annotations on 'CCtor'\/'CMatch'.
+--
+-- __Contract (do not violate).__ This pass is OBSERVE-ONLY:
+--
+--   * it only produces 'Diagnostic's (all at 'SevWarning'); it never aborts
+--     compilation, mutates 'CheckState', or changes a single byte of emitted
+--     code — a valid program is byte-identical with or without it;
+--   * it is CONSERVATIVE: every check fires only when a property is /statically
+--     and unambiguously/ violated, so a well-typed corpus is reported clean
+--     (zero false positives). Anything whose legality cannot be decided from
+--     Core + the Repr table alone is skipped, not guessed.
+--
+-- The §34.3.3 promotion to a hard compile-time error (and the §34.3.6
+-- "interpreter executes only verified IR" gate) is the deliberate follow-on
+-- once this is proven false-positive-free on the whole corpus.
+--
+-- The three checkpoints implemented here:
+--
+--   1. __Erasure legality__ (§34.3.3 bullet 2 + the line-34688 reject rule):
+--      no runtime term in a head\/argument\/value position refers to an erased
+--      entity (a 'Type'\/universe term, or a constructor used as if callable)
+--      that was not reified as an ordinary runtime value. This is the class
+--      the @kapp(unit, unit)@ miscompile belonged to. See 'erasureViolations'.
+--
+--   2. __Fixed runtime arity__ (§34.3.3 bullet 3): every 'CCtor' is saturated
+--      to exactly its constructor's runtime arity (the count of runtime fields
+--      in its declared type), so no closure-less partial application or arity
+--      mismatch reaches lowering. See 'arityViolations'.
+--
+--   3. __Layout consistency__ (§34.3.3 "data\/variant\/record layout choices
+--      fixed consistently with §§31.3-31.4"): the per-datatype constructor tag
+--      ids assigned by "Kappa.Backend.Repr" are INJECTIVE within each datatype;
+--      every constructor a datatype lists points BACK to it ('ciData'); and a
+--      constructor's explicit-field count does not exceed its type-derived
+--      runtime arity (so its chosen layout reserves enough slots). See
+--      'layoutViolations'.
+module Kappa.Backend.Verify
+  ( verifyUnit
+  , VerifyInputs (..)
+  , verifyInputs
+  ) where
+
+import Data.List (sort)
+import qualified Data.Map.Strict as Map
+import Data.Map.Strict (Map)
+import Data.Maybe (mapMaybe)
+import Data.Text (Text)
+import qualified Data.Text as T
+
+import Kappa.Backend.Repr
+  ( assignUserCtorTags
+  , isBuiltinCtor
+  , tagId
+  )
+import Kappa.Builtins (prelUnit)
+import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
+import Kappa.Core
+import Kappa.CoreOps (spineOfTerm)
+import Kappa.Diagnostic
+import Kappa.Eval
+  ( EvalCtx (..)
+  , GlobalDef (..)
+  , Globals (..)
+  , MetaState
+  , eval
+  , force
+  , quote
+  )
+import Kappa.Source (noSpan)
+
+-- ── The verifier surface ─────────────────────────────────────────────
+
+-- | The minimal slice of a checked compilation unit the verifier consumes.
+-- Factored out so a caller can build it from a 'CheckState' ('verifyInputs')
+-- or hand-construct one in a test (to exercise a deliberately-malformed IR).
+data VerifyInputs = VerifyInputs
+  { viGlobals :: !(Map GName GlobalDef)
+  -- ^ global signatures\/values (for head-callability + spine erasure).
+  , viMetas :: !MetaState
+  -- ^ meta solutions (so 'force'\/'eval' see the final, zonked types).
+  , viBodies :: !(Map GName Term)
+  -- ^ the elaborated, zonked runtime bodies to walk.
+  , viDatas :: !(Map GName DataInfo)
+  -- ^ datatype → constructor list (for layout cross-checking).
+  , viCtors :: !(Map GName CtorInfo)
+  -- ^ constructor → parent + declared type (for runtime-arity + layout).
+  }
+
+-- | Build the verifier inputs from a checked 'CheckState'.
+verifyInputs :: CheckState -> VerifyInputs
+verifyInputs st =
+  VerifyInputs
+    { viGlobals = csGlobals st
+    , viMetas = csMetas st
+    , viBodies = csCoreBodies st
+    , viDatas = csDatas st
+    , viCtors = csCtors st
+    }
+
+-- | Run all three §34.3.3 checkpoints. An empty result is the clean case.
+-- The order is body-checks first (erasure, arity), then the program-global
+-- layout cross-check, so a reader sees per-definition findings before the
+-- whole-program table findings.
+verifyUnit :: VerifyInputs -> [Diagnostic]
+verifyUnit vi =
+  concatMap perBody (Map.toList (viBodies vi))
+    ++ layoutViolations vi
+  where
+    ctx = EvalCtx (Globals (viGlobals vi)) (viMetas vi) False Map.empty
+    perBody (g, body) =
+      let who = gnameText g
+       in erasureViolations vi ctx who body
+            ++ arityViolations vi who body
+
+-- ── Checkpoint 1 — erasure legality (§34.3.3 bullet 2 / line 34688) ──
+--
+-- "no unerased Type, universe term, row term, anonymous region, quantity-0
+-- binder, or proof-only term remains unless it has been explicitly reified as
+-- an ordinary runtime value" / "A KBackendIR legality verifier MUST reject a
+-- runtime term that refers to erased Type, Universe, Quantity, Region, row,
+-- label, proof, syntax, … except through a specified runtime carrier".
+--
+-- We soundly check the two manifestations that exist in today's Core:
+--
+--   (a) a value-application SPINE whose head is statically a non-function value
+--       — a saturated constructor, a literal, a record\/variant value, a sort,
+--       or a global whose declared type is a non-function (e.g. 'Unit'). This
+--       is the @kapp(unit, unit)@ class. (Generalizes the Stage-0 lint.)
+--
+--   (b) a manifestly-erased TYPE form (a 'CSort' universe, a 'CPi' function
+--       type, a 'CRecordT'\/'CVariantT'\/'CSigT' type) sitting in a runtime
+--       argument slot the lowering KEEPS — i.e. NOT one the callee's signature
+--       erases by quantity-0 or kind-domain. (A type form at an erased slot is
+--       the backend's own @CSort 0@ placeholder, or a legitimately-erased type
+--       argument, and is left alone — checking only kept slots is what keeps
+--       this free of false positives on kind-polymorphic code.)
+
+-- | Erasure-legality findings for one body. @who@ names the enclosing
+-- definition (used only in messages).
+erasureViolations :: VerifyInputs -> EvalCtx -> Text -> Term -> [Diagnostic]
+erasureViolations vi ctx who = go
+  where
+    go t = case t of
+      CApp {} ->
+        let (hd, args) = spineOfTerm t
+            headDiag = case classifyHead ctx hd of
+              Just reason -> [nonFunctionHeadDiag who reason]
+              Nothing -> []
+            -- (b): for a CGlob-headed spine, flag a manifestly-erased type
+            -- form at a runtime-KEPT argument position (per the callee's
+            -- erasure mask). The mask mirrors the backend's own
+            -- 'erasedSpinePositionsP', so we never flag what lowering erases.
+            argDiags = case hd of
+              CGlob g ->
+                let kept = keptArgMask vi ctx g
+                 in concat
+                      [ [erasedArgDiag who g i (typeFormReason a) | typeForm a]
+                      | (keep, (_, a), i) <- zip3 (kept ++ repeat True) args [0 ..]
+                      , keep
+                      ]
+              _ -> []
+         in headDiag ++ argDiags ++ go hd ++ concatMap (go . snd) args
+      CVar _ -> []
+      CGlob _ -> []
+      CLam _ _ _ b -> go b
+      CPi _ _ _ _ a b -> go a ++ go b
+      CSort _ -> []
+      CLit _ -> []
+      CCtor _ _ as -> concatMap go as
+      CMatch s _ alts -> go s ++ concatMap goAlt alts
+      CRecordT fs -> concatMap (go . snd) fs
+      CRecordV fs -> concatMap (go . snd) fs
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CVariantT ms -> concatMap go ms
+      CInject _ e -> go e
+      CLet _ _ a b c -> go a ++ go b ++ go c
+      CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CMeta _ -> []
+      CDo {} -> []
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf a b c -> go a ++ go b ++ go c
+      CQuote _ slots -> concatMap go slots
+    goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
+
+-- | Is @t@ a manifestly-erased TYPE form — something with no runtime value
+-- representation, which in a runtime-kept slot is an erased reference?
+-- We are deliberately narrow: only forms that are UNAMBIGUOUSLY types
+-- (a universe, a function type, a record\/variant\/signature type). A bare
+-- type-constructor name ('CGlob' of a datatype) is NOT included, because the
+-- same name can head a runtime-relevant value spine; restricting to syntactic
+-- type forms keeps this sound.
+typeForm :: Term -> Bool
+typeForm = \case
+  CSort _ -> True
+  CPi {} -> True
+  CRecordT _ -> True
+  CVariantT _ -> True
+  CSigT _ _ -> True
+  _ -> False
+
+typeFormReason :: Term -> Text
+typeFormReason = \case
+  CSort _ -> "a universe ('Type')"
+  CPi {} -> "a function type"
+  CRecordT _ -> "a record type"
+  CVariantT _ -> "a variant type"
+  CSigT _ _ -> "a signature type"
+  _ -> "an erased type form"
+
+-- | The per-argument "kept at runtime" mask of a global's signature, indexed
+-- by spine position. @True@ = the lowering keeps this argument as a runtime
+-- value; @False@ = it erases it (quantity-0 OR a kind\/type domain). This is
+-- the exact dual of "Kappa.Backend.C"'s @erasedSpinePositionsP@ (kept = not
+-- erased), replicated here (its monadic wrappers live in the backend, but the
+-- analysis is pure over the same 'gdType' + 'EvalCtx'). FAIL-SAFE: an unknown
+-- global, or a type that does not 'force' to a 'VPi' telescope, yields @[]@ —
+-- treated as "keep everything", which can only UNDER-flag, never over-flag.
+keptArgMask :: VerifyInputs -> EvalCtx -> GName -> [Bool]
+keptArgMask vi ctx g = case Map.lookup g (viGlobals vi) of
+  Nothing -> []
+  Just gd -> map not (walk 0 (gdType gd))
+  where
+    walk lvl ty = case force ctx ty of
+      VPi _ q _ _ dom clo ->
+        (q == Q0 || isKindDomain lvl dom) : walk (lvl + 1) (closApply lvl clo)
+      _ -> []
+    closApply lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
+    isKindDomain lvl v = case force ctx v of
+      VSort _ -> True
+      VPi _ _ _ _ _ clo -> isKindDomain (lvl + 1) (closApply lvl clo)
+      _ -> False
+
+-- | Decide whether @hd@, used as the head of a value application, is
+-- /statically/ a non-function value. (This is the Stage-0 lint's classifier,
+-- re-stated here so the Stage-3 verifier is self-contained; the two agree by
+-- construction.) 'Just' a human-readable reason when provably bad; 'Nothing'
+-- when the head is fine or its type cannot be decided from Core alone.
+classifyHead :: EvalCtx -> Term -> Maybe Text
+classifyHead ctx = \case
+  CCtor g _ _ -> Just ("the saturated constructor '" <> gnameText g <> "' is a value, not a function")
+  CLit _ -> Just "a literal is a value, not a function"
+  CRecordV _ -> Just "a record value is not a function"
+  CRecordT _ -> Just "a record type is not a function"
+  CVariantT _ -> Just "a variant type is not a function"
+  CInject _ _ -> Just "a variant injection is a value, not a function"
+  CSort _ -> Just "a sort ('Type') is not a function"
+  CGlob g -> case Map.lookup g (globalsMap (ecGlobals ctx)) of
+    Just gd
+      | isNonFunctionType ctx (gdType gd) ->
+          Just ("the global '" <> gnameText g <> "' has a non-function type, so it cannot be applied")
+    _ -> Nothing
+  _ -> Nothing
+
+-- | Is @ty@ (a global's declared type, as a 'Value') statically a
+-- non-function? A residual explicit 'CPi' anywhere is callable; only a
+-- concrete non-function head ('Unit' or a sort) is flagged. Identical to the
+-- Stage-0 lint's classifier.
+isNonFunctionType :: EvalCtx -> Value -> Bool
+isNonFunctionType ctx ty0 = case force ctx ty0 of
+  VPi {} -> False
+  v -> case stripImplicitPis (quote ctx 0 v) of
+    CPi {} -> False
+    CSort _ -> True
+    CGlob g -> g == prelUnit
+    _ -> False
+
+stripImplicitPis :: Term -> Term
+stripImplicitPis (CPi Impl _ _ _ _ b) = stripImplicitPis b
+stripImplicitPis t = t
+
+-- ── Checkpoint 2 — fixed runtime arity (§34.3.3 bullet 3) ────────────
+--
+-- "every call, closure, and entrypoint has a fixed runtime arity and runtime
+-- calling convention". The checkable manifestation in today's Core is the
+-- saturated-constructor invariant: a 'CCtor g _ as' MUST carry exactly the
+-- runtime arity of @g@ (no partial application without a closure, no arity
+-- mismatch vs the resolved constructor signature). The runtime arity is the
+-- number of RUNTIME fields in @g@'s declared type — explicit binders, plus
+-- implicit binders whose quantity is not 0 — matching the eta-expansion the
+-- elaborator emits ("Kappa.Check"'s @etaCtor@ / @runtimeField@) and the
+-- payload the backends build.
+
+-- | Constructor runtime-arity findings for one body.
+arityViolations :: VerifyInputs -> Text -> Term -> [Diagnostic]
+arityViolations vi who = go
+  where
+    go t = case t of
+      CCtor g _ as ->
+        let here = case ctorRuntimeArity vi g of
+              Just n
+                | length as /= n ->
+                    [ ctorArityDiag who g (length as) n ]
+              _ -> []
+         in here ++ concatMap go as
+      CApp _ f a -> go f ++ go a
+      CVar _ -> []
+      CGlob _ -> []
+      CLam _ _ _ b -> go b
+      CPi _ _ _ _ a b -> go a ++ go b
+      CSort _ -> []
+      CLit _ -> []
+      CMatch s _ alts -> go s ++ concatMap goAlt alts
+      CRecordT fs -> concatMap (go . snd) fs
+      CRecordV fs -> concatMap (go . snd) fs
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CVariantT ms -> concatMap go ms
+      CInject _ e -> go e
+      CLet _ _ a b c -> go a ++ go b ++ go c
+      CLetRec _ _ a b c -> go a ++ go b ++ go c
+      CMeta _ -> []
+      CDo {} -> []
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf a b c -> go a ++ go b ++ go c
+      CQuote _ slots -> concatMap go slots
+    goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
+
+-- | The runtime arity of constructor @g@ (number of runtime fields in its
+-- declared type), or 'Nothing' if @g@ is not a known constructor or its type
+-- does not 'force' to a 'VPi' telescope (fail-safe: we then make no arity
+-- claim). Mirrors "Kappa.Check"'s @etaCtor@ runtime-field rule: an explicit
+-- binder is always a runtime field; an implicit binder is a runtime field iff
+-- its quantity is not 0.
+ctorRuntimeArity :: VerifyInputs -> GName -> Maybe Int
+ctorRuntimeArity vi g = do
+  ci <- Map.lookup g (viCtors vi)
+  let ctx = EvalCtx (Globals (viGlobals vi)) (viMetas vi) False Map.empty
+  pure (count ctx 0 (eval ctx [] (ciType ci)))
+  where
+    count ctx lvl ty = case force ctx ty of
+      VPi ic q _ _ _ clo ->
+        runtimeField ic q + count ctx (lvl + 1) (closApply ctx lvl clo)
+      _ -> 0
+    runtimeField Expl _ = 1
+    runtimeField Impl q = if q /= Q0 then 1 else 0
+    closApply ctx lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
+
+-- ── Checkpoint 3 — layout consistency (§34.3.3 / §§31.3-31.4) ────────
+--
+-- "data, variant, and record layout choices are fixed consistently with
+-- §§31.3-31.4". We cross-check the Core's datatypes ('viDatas'\/'viCtors')
+-- against the Stage-2 representation table ("Kappa.Backend.Repr"):
+--
+--   (a) TAG-ID INJECTIVITY: within each datatype, the 'Repr.tagId' assigned to
+--       its constructors are pairwise DISTINCT. A collision is a silent
+--       miscompile (one constructor's value would match another's arm). This
+--       cross-checks the actual program-wide tag map the backends consult.
+--
+--   (b) PARENT BACK-REFERENCE: every constructor a datatype lists in its
+--       'diCtors' must be a KNOWN constructor whose 'ciData' points BACK to
+--       that datatype. A constructor with the wrong (or missing) parent would
+--       be laid out under the wrong datatype's tag context — a layout-identity
+--       inconsistency the §13.1\/§31.3 stable-member-identity rules forbid.
+--
+--   (c) FIELD-COUNT ⟹ LAYOUT CONSISTENCY: a constructor has TWO views of its
+--       field count — the explicit-field list ('ciFields') the elaborator
+--       recorded, and the runtime arity derived from its declared TYPE
+--       telescope ('ctorRuntimeArity'). The runtime arity must cover at least
+--       the explicit fields (the runtime adds non-Q0 implicit fields on top,
+--       never drops an explicit one), so @length ciFields <= runtimeArity@. A
+--       constructor declaring MORE explicit fields than its type's runtime
+--       arity is structurally inconsistent: the chosen 'Repr.CtorLayout' would
+--       reserve fewer slots than the constructor carries. This cross-checks
+--       the two field-count sources the layout decision depends on.
+--
+-- The tag map is derived through the SAME 'Repr.assignUserCtorTags' the
+-- backends use, over the program's full user-ctor set, so this is the exact
+-- table lowering will consult.
+
+layoutViolations :: VerifyInputs -> [Diagnostic]
+layoutViolations vi = concatMap perData (Map.toList (viDatas vi))
+  where
+    -- the program-wide user-ctor tag map (builtins keep their fixed ids and
+    -- are excluded from numbering), built exactly as the backends build it.
+    userKeys =
+      sort
+        [ gKey c
+        | (c, _) <- Map.toList (viCtors vi)
+        , not (isBuiltinCtor c)
+        ]
+    userTags = assignUserCtorTags userKeys
+
+    perData (d, di) =
+      let ctors = diCtors di
+          ids = [(c, tagId userTags c) | c <- ctors]
+          -- (a) injectivity: group by id; any id shared by ≥2 ctors collides.
+          collisions =
+            [ tagCollisionDiag d i cs
+            | (i, cs) <- groupByTag ids
+            , length cs >= 2
+            ]
+          -- (b) parent back-reference + (c) field-count consistency.
+          fieldCountBad = mapMaybe (fieldCountWF d) ctors
+       in collisions ++ mapMaybe (parentWF d) ctors ++ fieldCountBad
+
+    -- (b): a listed constructor must be known with 'ciData' == this datatype.
+    parentWF d c = case Map.lookup c (viCtors vi) of
+      Nothing -> Just (ctorUnknownDiag d c)
+      Just ci
+        | ciData ci /= d -> Just (ctorParentMismatchDiag d c (ciData ci))
+        | otherwise -> Nothing
+
+    -- (c): the explicit-field count must not EXCEED the type-derived runtime
+    -- arity. The runtime arity adds non-Q0 implicit fields on top of the
+    -- explicit ones, so it can only be ≥ the explicit count; a constructor
+    -- whose 'ciFields' is longer than its type's runtime arity is malformed
+    -- (its layout would under-reserve slots). Cross-checks the two
+    -- field-count sources the layout choice depends on.
+    fieldCountWF d c = do
+      ci <- Map.lookup c (viCtors vi)
+      n <- ctorRuntimeArity vi c
+      let explicit = length (ciFields ci)
+      if explicit > n
+        then Just (fieldCountDiag d c explicit n)
+        else Nothing
+
+-- | Group @(ctor, id)@ pairs by id, preserving a deterministic id order.
+groupByTag :: [(GName, Int)] -> [(Int, [GName])]
+groupByTag pairs =
+  Map.toList (Map.fromListWith (++) [(i, [c]) | (c, i) <- pairs])
+
+-- ── Diagnostics ──────────────────────────────────────────────────────
+--
+-- All findings are 'SevWarning' (observe-only). The codes are registered in
+-- "Kappa.Explain"; the families are under this implementation's reserved
+-- @kappa-hs.backendir.*@ namespace.
+
+mkDiag :: DiagnosticCode -> DiagnosticFamily -> Text -> Diagnostic
+mkDiag code fam msg =
+  diag SevWarning StageElaborate code (Just fam) noSpan msg
+
+nonFunctionHeadDiag :: Text -> Text -> Diagnostic
+nonFunctionHeadDiag who reason =
+  mkDiag
+    "W_BACKENDIR_NON_FUNCTION_HEAD"
+    "kappa-hs.backendir.non-function-head"
+    ( "in '" <> who <> "': a value application has a non-function head — "
+        <> reason
+        <> " (KBackendIR §34.3.3 erasure-legality; this would lower to an ill-typed 'kapp')"
+    )
+
+erasedArgDiag :: Text -> GName -> Int -> Text -> Diagnostic
+erasedArgDiag who g i reason =
+  mkDiag
+    "W_BACKENDIR_ERASED_REFERENCE"
+    "kappa-hs.backendir.erased-reference"
+    ( "in '" <> who <> "': argument " <> tshow i <> " of '" <> gnameText g
+        <> "' is " <> reason
+        <> " in a runtime-kept slot — an erased reference (KBackendIR §34.3.3 "
+        <> "erasure-legality / Spec line 34688)"
+    )
+
+ctorArityDiag :: Text -> GName -> Int -> Int -> Diagnostic
+ctorArityDiag who g got want =
+  mkDiag
+    "W_BACKENDIR_ARITY_MISMATCH"
+    "kappa-hs.backendir.arity-mismatch"
+    ( "in '" <> who <> "': constructor '" <> gnameText g <> "' is built with "
+        <> tshow got <> " runtime field(s) but its signature has runtime arity "
+        <> tshow want
+        <> " (KBackendIR §34.3.3 fixed-runtime-arity)"
+    )
+
+tagCollisionDiag :: GName -> Int -> [GName] -> Diagnostic
+tagCollisionDiag d i cs =
+  mkDiag
+    "W_BACKENDIR_LAYOUT_INCONSISTENT"
+    "kappa-hs.backendir.layout-inconsistent"
+    ( "datatype '" <> gnameText d <> "': constructors "
+        <> T.intercalate ", " (map (\c -> "'" <> gnameText c <> "'") (sortNames cs))
+        <> " share tag id " <> tshow i
+        <> " — non-injective tag assignment (KBackendIR §34.3.3 layout-consistency / §§31.3-31.4)"
+    )
+
+fieldCountDiag :: GName -> GName -> Int -> Int -> Diagnostic
+fieldCountDiag d c explicit n =
+  mkDiag
+    "W_BACKENDIR_LAYOUT_INCONSISTENT"
+    "kappa-hs.backendir.layout-inconsistent"
+    ( "datatype '" <> gnameText d <> "': constructor '" <> gnameText c
+        <> "' declares " <> tshow explicit <> " explicit field(s) but its type "
+        <> "has runtime arity " <> tshow n
+        <> " — the chosen layout would under-reserve field slots (KBackendIR "
+        <> "§34.3.3 layout-consistency / §§31.3-31.4)"
+    )
+
+ctorUnknownDiag :: GName -> GName -> Diagnostic
+ctorUnknownDiag d c =
+  mkDiag
+    "W_BACKENDIR_LAYOUT_INCONSISTENT"
+    "kappa-hs.backendir.layout-inconsistent"
+    ( "datatype '" <> gnameText d <> "' lists constructor '" <> gnameText c
+        <> "' which has no constructor info — its layout/tag context is "
+        <> "undetermined (KBackendIR §34.3.3 layout-consistency / §§31.3-31.4)"
+    )
+
+ctorParentMismatchDiag :: GName -> GName -> GName -> Diagnostic
+ctorParentMismatchDiag d c actual =
+  mkDiag
+    "W_BACKENDIR_LAYOUT_INCONSISTENT"
+    "kappa-hs.backendir.layout-inconsistent"
+    ( "datatype '" <> gnameText d <> "' lists constructor '" <> gnameText c
+        <> "' but that constructor's parent is '" <> gnameText actual
+        <> "' — it would be laid out under the wrong datatype's tag context "
+        <> "(KBackendIR §34.3.3 layout-consistency / §§31.3-31.4)"
+    )
+
+sortNames :: [GName] -> [GName]
+sortNames = map snd . sort . map (\g -> (gKey g, g))
+
+tshow :: Int -> Text
+tshow = T.pack . show

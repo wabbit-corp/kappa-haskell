@@ -43,6 +43,7 @@ library
         Kappa.Backend.NativeFfi
         Kappa.Backend.NativeProbe
         Kappa.Backend.Repr
+        Kappa.Backend.Verify
         Kappa.Builtins
         Kappa.Build.Lock
         Kappa.Build.Plan

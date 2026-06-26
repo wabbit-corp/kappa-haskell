@@ -6,11 +6,23 @@ module Main (main) where
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (isInfixOf, isSuffixOf, nub, sort)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
-import Kappa.Diagnostic (jArray, jObject, jStr)
+import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
+import Kappa.Builtins (prelUnit)
+import Kappa.Check (CtorInfo (..), DataInfo (..))
+import Kappa.Core
+  ( GName (..)
+  , Icit (..)
+  , Q (..)
+  , Term (..)
+  )
+import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
+import Kappa.Source (ModuleName (..))
 import Kappa.TestHarness
   ( Outcome (..)
   , Summary (..)
@@ -38,7 +50,8 @@ main = do
   famOk <- familiesHygienic
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
-  let regOk = regOk0 && famOk && harnessOk && jsonOk
+  verifyOk <- verifierCatchesViolations
+  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -198,6 +211,97 @@ jsonEncoderSound = do
     putStrLn "JSON encoder soundness checks failed (Kappa.Diagnostic jStr/jObject/jArray):"
     mapM_ (putStrLn . ("  " <>)) failed
     putStrLn ("  encoded: " <> T.unpack escaped)
+  pure (null failed)
+
+-- | §34.3.3 / §34.3.4: the KBackendIR Stage-3 lowering-legality verifier
+-- ("Kappa.Backend.Verify") must (a) be CLEAN on well-formed inputs and (b)
+-- actually CATCH the legality violations it is responsible for — otherwise it
+-- is vacuous. The corpus-clean half is established by running the whole
+-- conformance tree (0 false positives); this in-process test pins the
+-- non-vacuity half by hand-building deliberately-MALFORMED KBackendIR and
+-- asserting each of the three checkpoints fires with its precise code.
+verifierCatchesViolations :: IO Bool
+verifierCatchesViolations = do
+  let m = ModuleName [T.pack "t"]
+      gn s = GName m (T.pack s)
+      -- ── a tiny world: a datatype D with two unary constructors ────────
+      dN = gn "D"
+      aN = gn "A" -- a stand-in field/element type
+      c1 = gn "C1"
+      c2 = gn "C2"
+      tyA = CGlob aN
+      tyD = CGlob dN
+      -- C1, C2 : A -> D  (declared runtime arity 1)
+      ctorTy = CPi Expl Q1 False (T.pack "_") tyA tyD
+      ci = CtorInfo {ciData = dN, ciType = ctorTy, ciFields = [(Nothing, Nothing)]}
+      datas = Map.fromList [(dN, DataInfo {diCtors = [c1, c2], diParamCount = 0})]
+      ctors = Map.fromList [(c1, ci), (c2, ci)]
+      -- a unit-typed global 'u' (declared type Unit) and a real function 'f'.
+      -- The type VALUEs are obtained by evaluating Core type terms (so their
+      -- Pi closures are real, as the verifier's 'force'/'eval' walk requires).
+      uN = gn "u"
+      fN = gn "f"
+      evalTy = eval (EvalCtx (Globals Map.empty) emptyMetas False Map.empty) []
+      gd tyTm = GlobalDef {gdType = evalTy tyTm, gdValue = Nothing, gdReducible = False}
+      -- f : A -> A   (one explicit, runtime-kept argument)
+      fTyTm = CPi Expl Q1 False (T.pack "_") tyA tyA
+      -- u : Unit  (a non-function value head: 'prelUnit', the canonical erased
+      -- unit type the verifier recognizes).
+      uTyTm = CGlob prelUnit
+      globals = Map.fromList [(uN, gd uTyTm), (fN, gd fTyTm)]
+
+      base =
+        VerifyInputs
+          { viGlobals = globals
+          , viMetas = emptyMetas
+          , viBodies = Map.empty
+          , viDatas = datas
+          , viCtors = ctors
+          }
+
+      codesFor body =
+        sort (nub (map (T.unpack . dCode) (verifyUnit base {viBodies = Map.fromList [(gn "main", body)]})))
+
+      -- 1a. erased/non-function head: u applied to an argument → kapp(unit, …).
+      nonFnHead = CApp Expl (CGlob uN) (CGlob aN)
+      -- 1b. erased TYPE form (a universe) in f's runtime-kept argument slot.
+      erasedArg = CApp Expl (CGlob fN) (CSort 0)
+      -- 2. arity mismatch: C1 has runtime arity 1, built with 0 fields.
+      arityBad = CCtor c1 Nothing []
+      -- 3a. tag-id collision: a datatype listing the SAME ctor twice.
+      collideInputs =
+        base {viDatas = Map.fromList [(dN, DataInfo {diCtors = [c1, c1], diParamCount = 0})]}
+      -- 3b. parent back-reference: a ctor whose ciData points to a DIFFERENT
+      -- datatype than the one listing it.
+      eN = gn "E"
+      wrongParent =
+        base
+          { viDatas = Map.fromList [(eN, DataInfo {diCtors = [c1], diParamCount = 0})]
+          }
+      -- 3c. field-count: a ctor declaring 2 explicit fields but whose type has
+      -- runtime arity 1.
+      fatCtor = ci {ciFields = [(Nothing, Nothing), (Nothing, Nothing)]}
+      fieldCountBad =
+        base {viCtors = Map.fromList [(c1, fatCtor), (c2, ci)]}
+
+      -- a CLEAN body for the same world: f applied to a value (a let-bound
+      -- var), and a well-formed C1 application — must produce NOTHING.
+      cleanBody = CCtor c1 Nothing [CGlob aN]
+
+      checks =
+        [ ("1a non-function head flagged", "W_BACKENDIR_NON_FUNCTION_HEAD" `elem` codesFor nonFnHead)
+        , ("1b erased type-form arg flagged", "W_BACKENDIR_ERASED_REFERENCE" `elem` codesFor erasedArg)
+        , ("2 ctor arity mismatch flagged", "W_BACKENDIR_ARITY_MISMATCH" `elem` codesFor arityBad)
+        , ("3a tag-id collision flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit collideInputs))
+        , ("3b ctor parent mismatch flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit wrongParent))
+        , ("3c ctor field-count overflow flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit fieldCountBad))
+        , ("clean body produces no findings", null (codesFor cleanBody))
+        , ("clean world (no body) produces no findings", null (map (T.unpack . dCode) (verifyUnit base)))
+        ]
+      failed = [name | (name, ok) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "KBackendIR Stage-3 verifier non-vacuity checks failed:"
+    mapM_ (putStrLn . ("  " <>)) failed
   pure (null failed)
 
 -- | §3.1.2A: "A diagnostic emitted in ordinary user-facing compilation
