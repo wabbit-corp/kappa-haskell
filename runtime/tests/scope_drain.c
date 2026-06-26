@@ -67,8 +67,9 @@ int main(void) {
   /* #3 — fresh runtime (also exercises the g_rt reset: run_main is reusable) */
   KValue *e2 = krt2_run_main(krt2_with_scope(kclo(ws_body, NULL)));
   CHECK(kctor_is(e2, "Success"), "withScope: Exit == Success");
-  CHECK(e2->as.ctor.argc == 1 && e2->as.ctor.args[0]->tag == K_INT
-            && e2->as.ctor.args[0]->as.i == 42,
+  /* UNBOXING Stage 1: the body's result 42 is a b001 immediate Int, not a heap
+   * K_INT box — read it through kas_int (immediate-safe), never a raw deref. */
+  CHECK(kctor_argc(e2) == 1 && kas_int(kctor_arg(e2, 0)) == 42,
         "withScope: returns the body's result 42, not Unit");
 
   if (fails == 0) { fprintf(stderr, "PASS: scope_drain (root drain + withScope result + run_main reuse)\n"); return 0; }

@@ -125,7 +125,7 @@ int main(void) {
     KValue *ex = krt2_run_main(prog);                 /* ex = Success(finalAcc)  */
     size_t r1 = allocated();
     double t1 = now_ns();
-    int64_t got  = kctor_arg(ex, 0)->as.i;            /* unwrap Success -> acc   */
+    int64_t got  = kas_int(kctor_arg(ex, 0));         /* unwrap Success -> acc (immediate-safe) */
     int64_t want = (int64_t)FA * (FA + 1) / 2;        /* sum 1..FA               */
     const char *tag = (got == want) ? "scalar across park (run)"
                                     : "scalar across park FAIL!!";
@@ -156,7 +156,7 @@ int main(void) {
     double t1 = now_ns();
     printf("%-34s %10.2f %12.0f\n", "boxed addInt (kp_addInt)",
            (t1 - t0) / ST, (double)(a1 - a0) / ST);
-    if (acc->tag == K_INT && acc->as.i == 0) printf("x"); /* keep acc live */
+    if (kas_int(acc) == 0) printf("x"); /* keep acc live (kas_int is immediate-safe) */
   }
 
   /* 5. boxed Double arithmetic (kp_addDouble): the binary64 value-boxing COST —
@@ -228,7 +228,7 @@ int main(void) {
     for (int i = 0; i < ST; i++) {
       int t = kctor_tagid(v);                  /* match dispatch: the tag test  */
       KValue *a = kctor_arg(v, i & 1);         /* projection: pick arg 0/1      */
-      sink += (int64_t)t + a->as.i;            /* fold both into a volatile sink */
+      sink += (int64_t)t + kas_int(a);         /* fold both into a volatile sink (a is an immediate Int) */
     }
     size_t a1 = allocated();
     double t1 = now_ns();

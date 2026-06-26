@@ -24,7 +24,9 @@ static KValue *cas_fail_relaxed(void) { return kctor0(0, "CasFailRelaxed"); }
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { fprintf(stderr, "  FAIL: %s\n", msg); fails++; } } while (0)
 
-static int64_t iv(KValue *v) { return v->as.i; }
+/* UNBOXING Stage 1: an Int value may be a b001 immediate, not a heap K_INT box —
+ * read it through kas_int (immediate-safe), never a raw v->as.i deref. */
+static int64_t iv(KValue *v) { return kas_int(v); }
 
 /* ── Part A: single-thread semantics ──────────────────────────────────── */
 static void semantics(void) {

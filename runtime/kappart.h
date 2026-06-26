@@ -183,8 +183,8 @@ _Static_assert(_Alignof(max_align_t) >= 8,
 #define KIMM_INT      ((uintptr_t)0x1)   /* b001: immediate Int  */
 #define KIMM_CTOR     ((uintptr_t)0x2)   /* b010: immediate ctor */
 
-/* Is this word a tagged immediate (not a heap pointer)?  False for every value
- * today (Stage 0); Stage 1 makes it true for small Int/Bool/Char/Unit/nullary. */
+/* Is this word a tagged immediate (not a heap pointer)?  Stage 1 makes it true
+ * for small Int in the 61-bit range; every other value is still a b000 pointer. */
 static inline int kis_imm(const KValue *v) {
   return ((uintptr_t)v & KIMM_TAG_MASK) != KIMM_PTR;
 }
@@ -200,6 +200,49 @@ static inline KValue *kderef(KValue *v) {
  * tag).  Caller discriminates Int vs ctor on the low 3 bits first. */
 static inline intptr_t kimm_payload(const KValue *v) {
   return (intptr_t)(uintptr_t)v >> 3;
+}
+
+/* ── Stage 1: immediate-Int encoding (b001) ─────────────────────────────────
+ * A small Int rides INSIDE the KValue*-sized word as (value << 3) | KIMM_INT — a
+ * 61-bit signed Int (research rec 1: the 3-bit tag, not OCaml's 1-bit, leaves
+ * room to grow immediate KINDS).  Out-of-range values escape to the boxed
+ * K_BIGINT (GMP) path, exactly as a >int64 literal does today (§5.3 / research
+ * rec 3).  The encoding is CANONICAL (§5.2): an in-range Int is ALWAYS the
+ * immediate and NEVER a boxed singleton, so pointer identity can never collide. */
+#define KIMM_INT_BITS 61
+/* [-2^60, 2^60).  An arithmetic << of a value in this range neither overflows
+ * the word nor disturbs the sign once the 3 tag bits are shifted out. */
+#define KIMM_INT_MAX  (((int64_t)1 << (KIMM_INT_BITS - 1)) - 1)   /* 2^60 - 1 */
+#define KIMM_INT_MIN  (-((int64_t)1 << (KIMM_INT_BITS - 1)))      /* -2^60    */
+
+/* Does a tagged word carry an immediate Int? */
+static inline int kis_imm_int(const KValue *v) {
+  return ((uintptr_t)v & KIMM_TAG_MASK) == KIMM_INT;
+}
+/* Recover the int64 value of an immediate Int (arithmetic >> 3 sign-extends). */
+static inline int64_t kimm_int_val(const KValue *v) {
+  return (int64_t)((intptr_t)(uintptr_t)v >> 3);
+}
+/* Does an int64 fit the 61-bit immediate range? */
+static inline int kint_fits_imm(int64_t v) {
+  return v >= KIMM_INT_MIN && v <= KIMM_INT_MAX;
+}
+/* Pack an in-range int64 as a b001 immediate KValue* word (caller must have
+ * checked kint_fits_imm; out-of-range packing would corrupt the sign). */
+static inline KValue *kmk_imm_int(int64_t v) {
+  return (KValue *)(uintptr_t)(((uintptr_t)(int64_t)v << 3) | KIMM_INT);
+}
+/* The Int value of `v` whether it is an immediate or a boxed K_INT, WITHOUT a
+ * bignum check.  Caller must already know `v` is one of those two (an immediate,
+ * or a K_INT box) — the hot int prims test `kis_int_word`/tag first. */
+static inline int64_t kint_word(KValue *v) {
+  return kis_imm_int(v) ? kimm_int_val(v) : kderef(v)->as.i;
+}
+/* Is `v` an inline Int — an immediate, or a boxed K_INT — i.e. an Int that fits
+ * int64 with no bignum?  (A K_BIGINT in [MIN_I64, MAX_I64] is canonicalised back
+ * to inline by kfrom_mpz, so a surviving K_BIGINT never fits int64.) */
+static inline int kis_int_word(KValue *v) {
+  return kis_imm_int(v) || (!kis_imm(v) && kderef(v)->tag == K_INT);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────────────── */
@@ -268,7 +311,8 @@ KValue *kp_intXor(KValue *, KValue *);
  * overflow/escape flag so the caller re-runs the boxed worker — the unboxed
  * fast path is only taken when every argument is an inline K_INT. */
 static inline int64_t kunbox_i64(KValue *v, int *ovf) {
-  if (v->tag == K_INT) return v->as.i;
+  if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1: immediate Int */
+  if (!kis_imm(v) && v->tag == K_INT) return v->as.i;
   *ovf = 1;
   return 0;
 }
@@ -279,7 +323,7 @@ static inline int64_t kunbox_i64(KValue *v, int *ovf) {
  * mirroring `kunbox_i64`'s tag-checked escape (never a crash on the wrong
  * tag). */
 static inline double kunbox_dbl(KValue *v, int *ovf) {
-  if (v->tag == K_DBL) return v->as.d;
+  if (!kis_imm(v) && v->tag == K_DBL) return v->as.d;  /* immediates are never K_DBL */
   *ovf = 1;
   return 0.0;
 }
