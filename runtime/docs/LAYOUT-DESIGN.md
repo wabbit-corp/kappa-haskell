@@ -37,6 +37,20 @@ refinement (skip the dispatch / unpack inline for a statically-known layout), NO
 a correctness requirement. This is the central simplification vs Swift's VWT
 machinery: our "value witness" is the single set of immediate-aware accessors.
 
+**Crucial caveat (found 2026-06-26): this holds ONLY when the discriminant is
+stored EXPLICITLY in the word** (`b010` nullary, `b011` packed — `kctor_tagid`
+reads the tag blind). A **niche** layout (`Some p = p`, the discriminant *implicit*
+in a field's invalid values, Rust-style) does NOT have this property:
+`kctor_tagid(Some p)` would see the INNER value's tag, and nested `Option<Option a>`
+makes `Some None` collide with `None` — which a polymorphic `Option a` cannot
+disambiguate (it doesn't know whether `a` is itself an `Option`). So **niche
+layouts are non-uniform and require specialization** (the Swift path) — they are
+**Stage 2, not Stage 1**. The uniform, sound Stage-1 packings (`b010`, `b011`) all
+keep an explicit discriminant, which is exactly why they survive nesting and
+polymorphism. `Option<Int>` (small) and `Option<Bool>` pack uniformly via `b011`;
+`Option<boxed>` (the bare-pointer niche) and full-range `Option<Int>` need
+specialization.
+
 ## Layout classes (computed per ADT at compile time)
 
 Input: `DataInfo.diCtors` (the variants) and each ctor's `CtorInfo.ciType` (the
@@ -158,9 +172,17 @@ OCaml RFC #14 + POPL'24 constructor-unboxing; OxCaml layouts; BDW-GC.
   turned out NOT to be purely diagnostic). VERIFIED: **corpus 83/83**, native
   suite + conformance 1738/1738 green, kderef assert never fired, **`ctor0-build`
   48→0 B/op** for arbitrary enums (`ctor-build` flat 64 B, the boxed Cons control).
-- **Stage 1c — niche optimization** for the single-boxed-payload + nullary-rest
-  shape (`Option<boxed>` and friends). (Research-informed.)
-- **Stage 1d — packed tagged unions (`b011`)** for small-payload multi-variant
-  ADTs, with the per-ADT bit-layout algorithm.
-- **Stage 2 — specialization** (worker/wrapper per layout) for hot polymorphic
-  code over packed ADTs.
+- **Stage 1d — packed single-field ctors (`b011`). IN PROGRESS.** A single
+  immediate field that fits the word packs as `[field-word | tagId | b011]` (else
+  boxed) — `Option<Int>`(small)/`Option<Bool>`/`Option<enum>`/`Result<small,small>`
+  alloc-free. UNIFORM + sound for nesting (the explicit `tagId` keeps `Some None`
+  ≠ `None`). A runtime change like 1b; no layout pass needed (the `b011` tag
+  provides head-shape disjointness). *Reordered ahead of 1c — see the caveat above.*
+- **Stage 2 — specialization** (worker/wrapper per statically-known layout), which
+  UNLOCKS the non-uniform layouts:
+  - **niche** `Option<boxed>` = the bare pointer / `None` = a reserved immediate
+    (the former "1c" — non-uniform, so it rides on specialization, not Stage 1);
+  - full-range `Option<Int>` and multi-field / multi-variant Direct-tag packing
+    (the per-ADT compute-both-pick-smaller layout pass + head-shape gate);
+  - inline construct/match/project for hot polymorphic call sites over known
+    layouts. The uniform boxed path stays the always-correct fallback.
