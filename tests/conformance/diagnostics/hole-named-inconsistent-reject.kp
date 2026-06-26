@@ -1,0 +1,19 @@
+--! mode check
+-- §16.3.2 named expression holes: repeated occurrences of one named hole
+-- MUST elaborate at definitionally equal expected types. Here the two
+-- `?h` occurrences are forced to `Integer` and `Bool` (the components of
+-- the expected pair type) — not definitionally equal — so compilation
+-- fails with diagnostic family kappa.hole.inconsistent
+-- (E_HOLE_INCONSISTENT_EXPECTED_TYPE). The diagnostic cites every
+-- occurrence (§16.3.2 "MUST include every occurrence") as a use-site
+-- related origin and records both distinct expected types.
+--! assertDiagnostic error E_HOLE_INCONSISTENT_EXPECTED_TYPE
+--! assertDiagnosticFamily error kappa.hole.inconsistent
+--! assertDiagnosticRelated error kappa.hole.inconsistent use-site
+--! assertDiagnosticPayload error kappa.hole.inconsistent /payload/hole ?h
+--! assertDiagnosticPayload error kappa.hole.inconsistent /payload/expected Integer
+--! assertDiagnosticPayload error kappa.hole.inconsistent /payload/expected2 Bool
+module main
+
+pair : (Integer, Bool)
+let pair = (?h, ?h)

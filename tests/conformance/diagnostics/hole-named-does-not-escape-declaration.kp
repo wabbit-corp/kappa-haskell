@@ -1,0 +1,18 @@
+--! mode check
+-- §16.3.2: "Named holes do not escape their enclosing declaration." The
+-- hole spelling `?h` is REUSED in two separate top-level declarations, at
+-- `Integer` in `a` and `Bool` in `b`. Because each declaration is its own
+-- hole scope, these are unrelated holes — sharing/consistency is checked
+-- per declaration, so no kappa.hole.inconsistent is produced even though
+-- the two expected types differ. Exactly two unsolved-hole errors result,
+-- one per declaration.
+--! assertErrorCount 2
+--! assertDiagnostic error E_HOLE_UNSOLVED
+--! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected Integer
+module main
+
+a : Integer
+let a = ?h
+
+b : Bool
+let b = ?h

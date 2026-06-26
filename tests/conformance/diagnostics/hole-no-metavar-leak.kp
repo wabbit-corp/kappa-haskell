@@ -3,9 +3,12 @@
 -- §3.1.11 internal-placeholder hygiene: an unsolved metavariable in the
 -- hole's expected type MUST NOT leak as a raw solver id (`?mN`). It
 -- renders as the stable hole spelling `_` in both prose and payload.
+-- An unannotated binding leaves the hole's expected type a genuinely
+-- unsolved metavariable (the inference direction synthesizes no type),
+-- so this exercises exactly the leak-hygiene path: `_`, never `?mN`.
 --! assertDiagnosticMatch hole _ : _
 --! assertDiagnosticPayload error kappa.hole.unsolved /payload/kind hole-unsolved
 --! assertDiagnosticPayload error kappa.hole.unsolved /payload/expected _
 module main
 
-let h : List _ = []
+let h = _

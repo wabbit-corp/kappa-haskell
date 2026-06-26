@@ -248,6 +248,8 @@ registry =
       "An identifier uses Unicode characters outside the active name profile without the corresponding feature gate enabled."
   , ent "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved")
       "A typed hole '?' or '_' in expression position was not solved by elaboration; the expected type or value remains unknown."
+  , ent "E_HOLE_INCONSISTENT_EXPECTED_TYPE" (Just "kappa.hole.inconsistent")
+      "Repeated occurrences of the same named hole '?name' received expected types that are not definitionally equal, so the hole cannot denote one unknown (§16.3.2)."
   , ent "E_IF_MISSING_ELSE" (Just "kappa-hs.control.if-missing-else")
       "An 'if' expression used for its value lacks an 'else' branch, so not all paths produce a result."
   , ent "E_UNSOLVED_IMPLICIT" (Just "kappa.implicit.unsolved")
