@@ -45,6 +45,7 @@ import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import qualified Kappa.Backend.Repr as Repr
+import Kappa.Builtins (prelRunIO)
 import Kappa.Check (CheckState (..))
 import Kappa.Core
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
@@ -2231,8 +2232,9 @@ bindPatDo v pat
 -- erased.
 runIOSpliceLL :: Term -> Maybe Term
 runIOSpliceLL t = case spineOf t of
-  (CGlob (GName _ "__runIO"), args)
-    | [a] <- [x | (Expl, x) <- args] -> Just a
+  (CGlob g, args)
+    | g == prelRunIO -- §1.2: declaration-symbol identity, not the "__runIO" spelling
+    , [a] <- [x | (Expl, x) <- args] -> Just a
   _ -> Nothing
 
 -- | Shift every FREE de Bruijn index (one at cutoff @c@ or above) in a term by

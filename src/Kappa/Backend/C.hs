@@ -1672,7 +1672,7 @@ runIOSplice :: Term -> Maybe Term
 runIOSplice t = case spineOf t of
   (hd, args)
     | Just g <- headOf hd
-    , gnameText g == "__runIO"
+    , g == Builtins.prelRunIO -- §1.2: declaration-symbol identity, not the "__runIO" spelling
     , [a] <- [x | (Expl, x) <- args] ->
         Just a
   _ -> Nothing
