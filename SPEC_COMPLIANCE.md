@@ -7,9 +7,11 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 substantially self-superseded.
 
 **Status (count + gap list re-verified per-gap 2026-06-26):**
-`kappa test tests/conformance` = **1781/1781** pass (0 fail, 0 unsupported, 0
-harness error — was 1334 at the audit; the corpus kept growing as the
-reference-repo conformance corpus was imported). The gap LIST below was first
+`kappa test tests/conformance` = **all pass, 0 fail** (≈1849 and CLIMBING as of
+2026-06-26 — the absolute number is now a MOVING TARGET because the Testing track
+is concurrently importing oracle corpora, e.g. the elpi λProlog-synthesis subset
+`2a17630`; so the pass-count is no longer a useful "our progress" metric — the §1
+**gap count** below is. Was 1334 at the audit). The gap LIST below was first
 verified against the code in a parallel 9-group re-audit on 2026-06-23 (see
 [Methodology](#appendix-b-methodology)), then **re-verified per-gap against
 today's code on 2026-06-26** — the refresh step formerly referenced from
@@ -103,7 +105,7 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§28.2** | Interruption/finalization combinators `poll`, `uninterruptible`, `mask`, `ensuring`, `acquireRelease` are absent (`E_NAME_UNRESOLVED`). The do-driven fiber/scope/promise/race/timeout/bracket surface *is* present. | add to `Prelude.hs` | medium |
+| **§28.2** | Interruption/finalization combinators — **`uninterruptible`/`mask`/`poll` now present** (commit `e1a1482`, prelude+interp+backend, interp==C==LLVM; `restore` is rank-1 not the spec's rank-2 `forall x.` — runtime-restore-closure limitation, tracked). REMAINING: `ensuring` and a spec-named `acquireRelease` value (the `MonadResource` method + `bracket` surface exist, but not yet as those bare names). | `Prelude.hs` | small |
 | **§28.2** | Fiber-identity/label terms `fiberId`, `currentFiberId`, `getFiberLabel`, `setFiberLabel`, `locallyFiberLabel` absent (the `FiberId` type + `MkFiberId` exist at `Prelude.hs:1370-1371`, no accessors). | add to `Prelude.hs` | medium |
 | **§28.2** | `Iterator.next` is now declared, definable in instances, and usable in generic code (the associated `Item` projects from the evidence). Residual: at a **concrete** call the result field's `d.Item` type does not reduce to the instance's `Item` (postponed-evidence timing), so `r.item` of a concrete `next` result reads as the unreduced projection. | §14.2.1 use-site associated-member normalization / eager concrete trait-evidence solving (`Iterator` trait `Prelude.hs:977-979`) | medium |
 | **§28.2** | Of the 8 intrinsic row/var/eff solver traits only `LacksRec` is registered; `ContainsRec`/`StableUnderRecChange`/`RecTailSatisfies`/`ContainsVar`/`LacksVar`/`ContainsEff`/`LacksEff`/`SplitEff` are unresolvable. *(Their value beyond the prelude name — open rows/variants — is profile-scoped, §3.)* | `Prelude.hs:124` / `Builtins.hs:249` (only `LacksRec`) | medium |
@@ -146,7 +148,6 @@ are the next tier after §1.
 | §29.4 | `std.unicode.collation` and `std.unicode.security` submodules not provided as modules (some security prims exist internally for source-hygiene lints only). | `Prelude.hs:2553`, `Pipeline.hs:91-110` | large |
 | §35.10 | Config **tooling queries** (value-path/string-slice provenance, editable-range ranking, contributing-bindings/affected-values, provenance-preserving refactor) — only a whole-`buildConfig` `--provenance` dump exists. | `app/Main.hs:208-211`, `Build/Provenance.hs` | large |
 | §3.1.13 | Explanation entries are 1–2 sentence prose; lack the minimal-invalid / corrected-example / common-causes / cascade-notes structure. | `Explain.hs` entries | medium |
-| §3.1.4 | The declaration-skip recovery emits impl code `E_EXPECTED_SYNTAX_TOKEN` (family `kappa-hs.parse.error`, `portableCode=null`) instead of exposing the portable alias `E_RECOVERY_SKIPPED_INVALID_SYNTAX`. | `Parser.hs:101` (`recoveryDiag`) | small |
 | §5.2 | Expression-continuing/statement-starting soft keywords (`then else in case do if match while for let var return break continue defer import …`) still terminate an unparenthesized application-argument run context-insensitively, so a bare same-named local in argument position misparses. Documented residual (KNOWN_SPEC_ISSUES #8/#10); the query/handler keyword family *is* resolved contextually. | `Parser.hs` `stopKeywords` vs `queryStopKeywords` | large |
 
 ---
