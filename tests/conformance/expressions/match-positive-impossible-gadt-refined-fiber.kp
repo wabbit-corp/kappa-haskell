@@ -1,0 +1,28 @@
+module main
+
+-- Kappa analogue: a GADT constructor whose result family arguments contradict
+-- the demanded scrutinee type has an Empty refined fiber (§30.2.7
+-- constructor-result family-argument refinement). A `-> impossible` body over
+-- such an arm is accepted (§17.1.4).
+-- Spec: §17.1.1, §17.1.2, §17.1.4, §30.2.7
+
+--! mode check
+
+data Choice (flag : Bool) : Type =
+    Always : Choice True
+    Also : Choice True
+    Never : Choice False
+
+-- POSITIVE: under a `Choice True` scrutinee, `Never : Choice False` cannot
+-- unify its result `Choice False` with `Choice True`, so its refined fiber is
+-- Empty and `-> impossible` is accepted; the reachable Always/Also arms are
+-- handled normally.
+chooseImpossible : Choice True -> Int
+let chooseImpossible c =
+    match c
+      case Always -> 1
+      case Also -> 2
+      case Never -> impossible
+
+--! assertNoErrors
+--! assertType chooseImpossible Choice True -> Int

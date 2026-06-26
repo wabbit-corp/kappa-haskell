@@ -55,6 +55,7 @@ library
         Kappa.Diagnostic
         Kappa.Eval
         Kappa.Explain
+        Kappa.Inhabitance
         Kappa.Interp
         Kappa.Lexer
         Kappa.Parser

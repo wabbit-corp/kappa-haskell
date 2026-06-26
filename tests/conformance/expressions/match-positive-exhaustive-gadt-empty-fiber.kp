@@ -1,0 +1,33 @@
+module main
+
+-- Kappa analogue: §17.1.1 exhaustiveness using §30.2.7 summaries — an uncovered
+-- constructor whose refined fiber is Empty is unreachable and so is NOT required
+-- for exhaustiveness. The match omitting `Never` is therefore exhaustive.
+-- Spec: §17.1.1, §30.2.7
+
+--! mode check
+
+data Choice (flag : Bool) : Type =
+    Always : Choice True
+    Also : Choice True
+    Never : Choice False
+
+-- POSITIVE: covering only the two reachable arms (Always, Also) is exhaustive
+-- because the uncovered `Never` arm's fiber is Empty under `Choice True`. No
+-- catch-all and no `case impossible` are needed.
+chooseExhaustive : Choice True -> Int
+let chooseExhaustive c =
+    match c
+      case Always -> 1
+      case Also -> 2
+
+-- POSITIVE: the symmetric `Choice False` scrutinee covers only `Never`; both
+-- `Always` and `Also` have Empty fibers there.
+chooseFalse : Choice False -> Int
+let chooseFalse c =
+    match c
+      case Never -> 0
+
+--! assertNoErrors
+--! assertType chooseExhaustive Choice True -> Int
+--! assertType chooseFalse Choice False -> Int
