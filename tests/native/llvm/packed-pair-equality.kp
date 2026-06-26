@@ -1,0 +1,34 @@
+-- UNBOXING Stage 1e equality: two packed two-field b011 values compare by
+-- structure (same tag id, same arity, recursively-equal fields).  Canonicalization
+-- gives each value ONE rep, so equal Pairs are the same packed word and unequal
+-- ones differ in exactly the field that differs.  We spell equality as an explicit
+-- match so the test exercises the packed-aware kctor_tagid / kctor_arg dispatch on
+-- BOTH fields directly.
+module main
+
+data Pair : Type =
+    Pair (fst : Int) (snd : Int)
+
+eqPair : Pair -> Pair -> Bool
+let eqPair p q =
+    match p
+    case Pair a b -> (match q
+                      case Pair c d -> (match eqInt a c
+                                        case True -> eqInt b d
+                                        case False -> False))
+
+showB : Bool -> String
+let showB b =
+    match b
+    case True -> "true"
+    case False -> "false"
+
+main : UIO Unit
+let main = do
+    printlnString (showB (eqPair (Pair 1 2) (Pair 1 2)))   -- true  (identical)
+    printlnString (showB (eqPair (Pair 1 2) (Pair 1 3)))   -- false (snd differs)
+    printlnString (showB (eqPair (Pair 1 2) (Pair 2 1)))   -- false (both swapped)
+    printlnString (showB (eqPair (Pair 0 0) (Pair 0 0)))   -- true
+    -- a negative field must compare correctly (sign round-trip through the slot).
+    printlnString (showB (eqPair (Pair (0 - 1) 2) (Pair (0 - 1) 2))) -- true
+    printlnString (showB (eqPair (Pair (0 - 1) 2) (Pair 1 2)))       -- false

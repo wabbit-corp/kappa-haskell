@@ -8,21 +8,22 @@
  * b001 IMMEDIATE packed into the KValue* word ((value << 3) | KIMM_INT).  Stage
  * 1b extends it to EVERY nullary ctor: a 0-field constructor of any ADT (Unit /
  * Bool / Nil / None / a user enum variant) is a b010 IMMEDIATE ((tagId << 3) |
- * KIMM_CTOR) — NOT a heap pointer.  Stage 1d packs a SINGLE-field ctor whose one
- * field is itself an immediate (and whose id fits 20 bits) into a b011 IMMEDIATE
- * ([field-word | tagId | KIMM_PACKED]).  Only a multi-field ctor, a single-field
- * ctor over a HEAP field / too-big immediate, a string / ref / Double / out-of-
- * 61-bit Int stays an 8-aligned heap box.  This harness verifies all of the
- * post-Stage-1d contract:
- *   - heap boxes (multi-field ctors, boxed-field single ctors, strings, refs)
- *     are still 8-aligned (a missed alignment makes tagging unsound);
+ * KIMM_CTOR) — NOT a heap pointer.  Stage 1d/1e packs a ONE- or TWO-field ctor
+ * whose every field is itself an immediate (and whose id fits 20 bits) into a b011
+ * IMMEDIATE with a 1-bit nfields selector ([... fields | tagId | nf | KIMM_PACKED]).
+ * Only a 3+-field ctor, a packed-eligible ctor over a HEAP field / too-big
+ * immediate, a string / ref / Double / out-of-61-bit Int stays an 8-aligned heap
+ * box.  This harness verifies all of the post-Stage-1d/1e contract:
+ *   - heap boxes (3+-field ctors, boxed-field ctors, strings, refs) are still
+ *     8-aligned (a missed alignment makes tagging unsound);
  *   - in-range Ints are b001 immediates that round-trip through kas_int exactly,
  *     and out-of-range Ints fall back to an 8-aligned heap box;
  *   - nullary ctors are b010 immediates that round-trip through kctor_tagid and
  *     report 0 args (kctor_argc);
- *   - single-field ctors over a packing immediate are b011 immediates that
- *     round-trip the tag id (kctor_tagid), report 1 arg (kctor_argc), and project
- *     the field back exactly (kctor_arg).
+ *   - single-field ctors over a packing immediate are b011 immediates (nfields=0)
+ *     that round-trip the tag id, report 1 arg, and project the field back;
+ *   - two-field ctors over two packing immediates are b011 immediates (nfields=1)
+ *     that round-trip the tag id, report 2 args, and project BOTH fields back.
  */
 #include "kappart2.h"
 #include "kappart2_harness.h"
@@ -117,6 +118,59 @@ static void imm_packed(int tagid, KValue *field, const char *what) {
   }
 }
 
+/* A TWO-field ctor over two PACKING immediate fields must be a b011 packed
+ * immediate (nfields=1, NOT a heap pointer) carrying the tag id, with 2 args, and
+ * project BOTH fields back to words equal to the originals. */
+static void imm_packed2(int tagid, KValue *f0, KValue *f1, const char *what) {
+  KValue *a[2] = { f0, f1 };
+  KValue *v = kctor(tagid, what, 2, a);
+  if (!kis_imm_packed(v)) {
+    fprintf(stderr, "  FAIL: %s is not a b011 packed immediate (%p, low3=%lu)\n",
+            what, (void *)v, (unsigned long)((uintptr_t)v & 7u));
+    fails++;
+    return;
+  }
+  if (kctor_tagid(v) != tagid) {
+    fprintf(stderr, "  FAIL: %s tagid %d, expected %d\n", what, kctor_tagid(v), tagid);
+    fails++;
+  }
+  if (kctor_argc(v) != 2) {
+    fprintf(stderr, "  FAIL: %s argc %d, expected 2\n", what, kctor_argc(v));
+    fails++;
+  }
+  /* Both fields are packing immediates (canonical: word identity IS value
+   * identity), so each recovered field word must equal its original exactly. */
+  if (kctor_arg(v, 0) != f0) {
+    fprintf(stderr, "  FAIL: %s field0 did not round-trip (%p != %p)\n",
+            what, (void *)kctor_arg(v, 0), (void *)f0);
+    fails++;
+  }
+  if (kctor_arg(v, 1) != f1) {
+    fprintf(stderr, "  FAIL: %s field1 did not round-trip (%p != %p)\n",
+            what, (void *)kctor_arg(v, 1), (void *)f1);
+    fails++;
+  }
+}
+
+/* A TWO-field ctor where at least one field is a HEAP pointer (or a too-big
+ * immediate for the 20-bit slot, or whose id does not fit 20 bits) must stay an
+ * 8-aligned heap box, still projecting both fields. */
+static void boxed_double(int tagid, KValue *f0, KValue *f1, const char *what) {
+  KValue *a[2] = { f0, f1 };
+  KValue *v = kctor(tagid, what, 2, a);
+  if (kis_imm(v)) {
+    fprintf(stderr, "  FAIL: %s should stay boxed but is a tagged immediate (%p)\n",
+            what, (void *)v);
+    fails++;
+    return;
+  }
+  aligned(v, what);
+  if (kctor_argc(v) != 2 || kctor_arg(v, 0) != f0 || kctor_arg(v, 1) != f1) {
+    fprintf(stderr, "  FAIL: boxed %s did not round-trip its fields\n", what);
+    fails++;
+  }
+}
+
 /* A single-field ctor whose field is a HEAP pointer (or a too-big immediate, or
  * whose id does not fit 20 bits) must stay an 8-aligned heap box. */
 static void boxed_single(int tagid, KValue *field, const char *what) {
@@ -159,6 +213,29 @@ int main(void) {
   imm_packed(KCT_USER_BASE + 5, kint(9), "User(9)");     /* a user single-field id   */
   imm_packed(KCT_SOME, kmk_imm_packed(KCT_SOME, kint(5)), "Some(Some(5))"); /* nested, if it fits */
 
+  /* Stage 1e: a TWO-field ctor over two PACKING immediate fields is a b011 packed
+   * immediate (nfields=1) — alloc-free, both fields recovered without a deref. */
+  imm_packed2(KCT_USER_BASE + 9, kint(1), kint(2), "Pair(1,2)");       /* both b001     */
+  imm_packed2(KCT_USER_BASE + 9, kint(-1), kint(-2), "Pair(-1,-2)");   /* both negative */
+  imm_packed2(KCT_USER_BASE + 9, kint(0), kint(0), "Pair(0,0)");
+  imm_packed2(KCT_USER_BASE + 9, kint(7), kint(-3), "Pair(7,-3)");     /* mixed sign    */
+  imm_packed2(KCT_USER_BASE + 9, kbool(1), kbool(0), "Pair(T,F)");     /* both b010     */
+  imm_packed2(KCT_USER_BASE + 9, kint(5), kbool(1), "Pair(5,T)");      /* Int + enum    */
+  imm_packed2(KCT_USER_BASE + 9, kctor0(KCT_NONE, "None"),
+              kctor0(KCT_NONE, "None"), "Pair(None,None)");            /* both nullary  */
+  /* the 20-bit per-slot edges round-trip exactly (whole field word, signed) */
+  imm_packed2(KCT_USER_BASE + 9, kint(KIMM_PACKED2_FIELD_MAX >> 3),
+              kint(KIMM_PACKED2_FIELD_MIN >> 3), "Pair(slot-edges)");
+
+  /* a TWO-field ctor with ANY heap / too-big field stays an 8-aligned box. */
+  boxed_double(KCT_USER_BASE + 9, kstr0("heap"), kint(2), "Pair(string,2)");  /* f0 heap   */
+  boxed_double(KCT_USER_BASE + 9, kint(1), kref_new(kunit()), "Pair(1,ref)"); /* f1 heap   */
+  boxed_double(KCT_USER_BASE + 9, kint((int64_t)1 << 30), kint(2), "Pair(big,2)"); /* f0 too big */
+  boxed_double(KCT_USER_BASE + 9, kint(2), kint((int64_t)1 << 30), "Pair(2,big)"); /* f1 too big */
+  /* an OP-style id above the 20-bit discriminant must NOT pack, even over two
+   * immediate fields (the CK-machine reads its id; truncation would misdispatch). */
+  boxed_double(0x40000000, kint(1), kint(2), "OP-id double");
+
   /* a single-field ctor over a HEAP field stays an 8-aligned box (Option<List>
    * shape) — the field is a real pointer, so it cannot ride in the word. */
   boxed_single(KCT_SOME, kstr0("heap"), "Some(string)");
@@ -193,6 +270,9 @@ int main(void) {
     /* Stage 1d: a 1-ary ctor over the small immediate kint(i) now PACKS into a
      * b011 word (no allocation) — assert that, not heap alignment. */
     imm_packed(KCT_USER_BASE + 1, kint(i), "kctor pack churn");
+    /* Stage 1e: a 2-ary ctor over two small immediates likewise packs (b011,
+     * nfields=1) — no allocation; mask to the 20-bit slot so both always fit. */
+    imm_packed2(KCT_USER_BASE + 1, kint(i & 0x3ff), kint(-(i & 0x3ff)), "kctor pack2 churn");
     /* a 1-ary ctor over a HEAP field is the boxed control that still allocates. */
     KValue *hp[1] = {kstr0("heap-field")};
     aligned(kctor(1, "Box", 1, hp), "kctor heap-field"); /* 1-ary boxed: heap field */
@@ -202,8 +282,8 @@ int main(void) {
 
   if (fails == 0) {
     fprintf(stderr, "PASS: align (heap boxes 8-aligned; small Ints are b001 immediates; "
-                    "nullary ctors are b010 immediates; single-field ctors over a "
-                    "packing immediate are b011 packed immediates — all round-trip)\n");
+                    "nullary ctors are b010 immediates; single- AND two-field ctors over "
+                    "packing immediates are b011 packed immediates — all round-trip)\n");
     return 0;
   }
   fprintf(stderr, "FAIL: align (%d contract violations)\n", fails);

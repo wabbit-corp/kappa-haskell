@@ -1,0 +1,24 @@
+-- UNBOXING Stage 1e sign round-trip: a packed two-field b011 stores each field's
+-- WHOLE immediate word in a 20-bit slot; a negative immediate-Int word has its
+-- high bits set, so recovery MUST sign-extend each slot (arithmetic shift) rather
+-- than zero-extend.  Both fields negative, one negative, and the min/max small
+-- magnitudes all have to project back exactly.
+module main
+
+data Pair : Type =
+    Pair (fst : Int) (snd : Int)
+
+-- Sum both fields so a sign error in EITHER slot changes the result.
+total : Pair -> Int
+let total p =
+    match p
+    case Pair a b -> addInt a b
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (total (Pair (0 - 1) (0 - 2))))   -- -3  (both negative)
+    printlnString (showInt (total (Pair (0 - 7) 4)))         -- -3  (field0 negative)
+    printlnString (showInt (total (Pair 4 (0 - 7))))         -- -3  (field1 negative)
+    printlnString (showInt (total (Pair (0 - 100) 100)))     -- 0   (cancel)
+    -- the negative edge of the 20-bit signed slot (-2^16) round-trips.
+    printlnString (showInt (total (Pair (0 - 65536) 0)))     -- -65536

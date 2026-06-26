@@ -238,10 +238,14 @@ static KValue *krat(mpz_t num, mpz_t den) {
 }
 
 static void as_rat(KValue *r, mpz_t num, mpz_t den) {
-  if (kis_imm(r) || r->tag != K_CTOR || strcmp(r->as.ctor.name, "__rat") != 0)
+  /* A Rational is a 2-field KCT_RAT ctor.  When both parts are small immediates
+   * (e.g. 1/2) it is now a b011 packed word (Stage 1e), so identify it by tag id
+   * and read the parts through the rep-agnostic accessors rather than a raw deref
+   * — kctor_tagid/kctor_arg handle the packed and boxed forms uniformly. */
+  if (kctor_tagid(r) != KCT_RAT)
     krt_fail("Rational operation on a non-Rational value");
-  kload_mpz(r->as.ctor.args[0], num);
-  kload_mpz(r->as.ctor.args[1], den);
+  kload_mpz(kctor_arg(r, 0), num);
+  kload_mpz(kctor_arg(r, 1), den);
 }
 
 /* a*d (+|-) c*b over b*d, then krat normalizes. */
@@ -342,6 +346,16 @@ KValue *kctor(int tagid, const char *name, int argc, KValue **args) {
    * way. */
   if (argc == 1 && kctor_tagid_packs(tagid) && kctor_field_packs(args[0]))
     return kmk_imm_packed(tagid, args[0]);
+  /* UNBOXING Stage 1e (§5.1/§5.2): a TWO-field ctor whose BOTH fields are
+   * immediates that each fit the 20-bit per-slot budget packs into a b011 word
+   * (nfields=1) carrying the tag id AND both fields' whole words — alloc-free
+   * (Pair(smallInt,smallInt), a 2-scalar record lowered to a ctor, a 2-enum
+   * variant).  If either field is a heap pointer or a too-big immediate the ctor
+   * boxes below.  Same tagId gate as the single-field path keeps the kappart2 OP
+   * nodes (KRT2_OP_BASE) boxed.  Per-value packing is canonical. */
+  if (argc == 2 && kctor_tagid_packs(tagid)
+      && kctor_field2_packs(args[0]) && kctor_field2_packs(args[1]))
+    return kmk_imm_packed2(tagid, args[0], args[1]);
   KValue *r = alloc_val(K_CTOR);
   r->as.ctor.name = name;
   r->as.ctor.tagid = tagid;   /* LR2 numeric identity for matching */
@@ -645,7 +659,13 @@ KValue *kcons(KValue *h, KValue *t) {
   KValue *args[2] = {h, t};
   return kctor(KCT_CONS, "std.prelude.::", 2, args);
 }
-int kis_cons(KValue *v) { return !kis_imm(v) && v->tag == K_CTOR && v->as.ctor.tagid == KCT_CONS; }
+/* Cons (`x :: xs`) is a 2-field ctor.  When both fields are small immediates —
+ * e.g. `[smallInt]` = Cons(smallInt, Nil), whose tail Nil is a b010 immediate —
+ * it is now a b011 packed word (Stage 1e), so identify it by tag id rather than a
+ * raw deref; kctor_tagid handles the packed (b011), nullary (b010) and boxed
+ * forms.  A non-ctor immediate (an Int / Nil) reports -1 ≠ KCT_CONS, so the test
+ * still rejects them. */
+int kis_cons(KValue *v) { return kctor_tagid(v) == KCT_CONS; }
 
 /* ── environment ───────────────────────────────────────────────────── */
 
@@ -877,14 +897,21 @@ const char *kctor_name(KValue *v) {
 }
 int kctor_argc(KValue *v) {
   if (kis_imm_ctor(v)) return 0;        /* Stage 1b: a nullary immediate has 0 args */
-  if (kis_imm_packed(v)) return 1;      /* Stage 1d: a packed ctor has exactly 1 arg */
+  /* Stage 1d/1e: a packed ctor has 1 arg (nfields=0) or 2 args (nfields=1). */
+  if (kis_imm_packed(v)) return kimm_packed_is2(v) ? 2 : 1;
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
   return v->as.ctor.argc;
 }
 KValue *kctor_arg(KValue *v, int i) {
-  /* Stage 1d: a b011 packed ctor has one arg — its field, recovered as the whole
-   * immediate word stored in the upper bits (a self-describing b001/b010 word). */
+  /* Stage 1d/1e: a b011 packed ctor has its field(s) inline — recovered as the
+   * whole immediate word(s) (each a self-describing b001/b010 word).  A two-field
+   * (nfields=1) word has fields 0 and 1 in adjacent 20-bit slots; a single-field
+   * (nfields=0) word has field 0 in the top 40 bits. */
   if (kis_imm_packed(v)) {
+    if (kimm_packed_is2(v)) {
+      if (i != 0 && i != 1) krt_fail("kctor_arg: out of range");
+      return kimm_packed2_field(v, i);
+    }
     if (i != 0) krt_fail("kctor_arg: out of range");
     return kimm_packed_field(v);
   }
@@ -1245,18 +1272,23 @@ static int kvalue_rep_eq(KValue *a, KValue *b) {
   if (a == b) return 1;   /* immediates canonicalise: word identity == value equality */
   /* §5.3: any Int/Int pair normalizes across immediate / inline / bignum. */
   if (kis_int_any(a) && kis_int_any(b)) return kint_cmp(a, b) == 0;
-  /* Stage 1d: a b011 packed ctor compares STRUCTURALLY against a ctor in any rep
-   * (another packed word, or a boxed K_CTOR) — same tag id AND recursively-equal
-   * field — through the immediate-aware accessors.  Two packed words of the same
-   * value are already caught by a==b (canonical), so a packed-vs-packed pair that
-   * reaches here differs; the structural compare still gives the right answer and
-   * the boxed-vs-packed direction satisfies Some 5 == Some 5 defensively even
-   * though canonicalization means a boxed Some(small) should not normally arise. */
+  /* Stage 1d/1e: a b011 packed ctor (one OR two fields) compares STRUCTURALLY
+   * against a ctor in any rep (another packed word, or a boxed K_CTOR) — same tag
+   * id, same arity AND recursively-equal fields — through the immediate-aware
+   * accessors.  Two packed words of the same value are already caught by a==b
+   * (canonical), so a packed-vs-packed pair that reaches here differs; the
+   * structural compare still gives the right answer and the boxed-vs-packed
+   * direction satisfies Pair 1 2 == Pair 1 2 defensively even though
+   * canonicalization means a boxed packing-eligible ctor should not normally
+   * arise. */
   if (kis_imm_packed(a) || kis_imm_packed(b)) {
     int ta = kctor_tagid(a), tb = kctor_tagid(b);
     if (ta < 0 || ta != tb) return 0;          /* one side not a ctor, or different ctor */
-    if (kctor_argc(a) != 1 || kctor_argc(b) != 1) return 0;
-    return kvalue_rep_eq(kctor_arg(a, 0), kctor_arg(b, 0));
+    int na = kctor_argc(a);
+    if (na != kctor_argc(b)) return 0;          /* differing arity → unequal */
+    for (int i = 0; i < na; i++)
+      if (!kvalue_rep_eq(kctor_arg(a, i), kctor_arg(b, i))) return 0;
+    return 1;
   }
   /* Past the Int/packed cases, an immediate paired with a non-Int (or two
    * immediates of different value, already ruled out by a==b) is unequal — guard
@@ -1930,9 +1962,11 @@ KValue *kpf_ltRat(KValue **a) {
 }
 KValue *kpf_showRat(KValue **a) {
   mpz_t n, d; mpz_init(n); mpz_init(d); as_rat(a[0], n, d);
-    KValue *ns = show_int_val(a[0]->as.ctor.args[0]);
+    /* A small Rational (e.g. 1/2) is a b011 packed word now, so read its parts
+     * through the rep-agnostic kctor_arg rather than a raw deref. */
+    KValue *ns = show_int_val(kctor_arg(a[0], 0));
     if (mpz_cmp_ui(d, 1) == 0) return ns;
-    return str_append(str_append(ns, kstr0("/")), show_int_val(a[0]->as.ctor.args[1]));
+    return str_append(str_append(ns, kstr0("/")), show_int_val(kctor_arg(a[0], 1)));
 }
 KValue *kpf_ratOfDouble(KValue **a) {
   double x = kas_dbl(a[0]);
