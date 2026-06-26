@@ -48,8 +48,8 @@ foldTerm termF itemF = go
       CApp _ f a -> go f <> go a
       CSort _ -> mempty
       CLit _ -> mempty
-      CCtor _ as -> foldMap go as
-      CMatch s alts -> go s <> foldMap goAlt alts
+      CCtor _ _ as -> foldMap go as
+      CMatch s _ alts -> go s <> foldMap goAlt alts
       CRecordT fs -> foldMap (go . snd) fs
       CRecordV fs -> foldMap (go . snd) fs
       CProj e _ -> go e
@@ -101,8 +101,8 @@ foldTermWithDepth termF = go
       CApp _ f a -> go d f <> go d a
       CSort _ -> mempty
       CLit _ -> mempty
-      CCtor _ as -> foldMap (go d) as
-      CMatch s alts -> go d s <> foldMap (goAlt d) alts
+      CCtor _ _ as -> foldMap (go d) as
+      CMatch s _ alts -> go d s <> foldMap (goAlt d) alts
       CRecordT fs -> foldMap (go d . snd) fs
       CRecordV fs -> foldMap (go d . snd) fs
       CProj e _ -> go d e
@@ -141,8 +141,8 @@ mapTermWithDepth f = go
         CApp ic fn a -> CApp ic (go d fn) (go d a)
         CSort u -> CSort u
         CLit l -> CLit l
-        CCtor g as -> CCtor g (map (go d) as)
-        CMatch s alts -> CMatch (go d s) (map (goAlt d) alts)
+        CCtor g ann as -> CCtor g (fmap (go d) ann) (map (go d) as)
+        CMatch s ann alts -> CMatch (go d s) (fmap (go d) ann) (map (goAlt d) alts)
         CRecordT fs -> CRecordT [(n, go d x) | (n, x) <- fs]
         CRecordV fs -> CRecordV [(n, go d x) | (n, x) <- fs]
         CProj e n -> CProj (go d e) n
@@ -286,9 +286,9 @@ zonkTermWith resolveMeta = go
       CApp ic f a -> CApp ic (go d f) (go d a)
       CSort u -> CSort u
       CLit l -> CLit l
-      CCtor g as -> CCtor g (map (go d) as)
-      CMatch s alts ->
-        CMatch (go d s) [CaseAlt p (fmap (go (d + patBindersC p)) gd) (go (d + patBindersC p) b) | CaseAlt p gd b <- alts]
+      CCtor g ann as -> CCtor g (fmap (go d) ann) (map (go d) as)
+      CMatch s ann alts ->
+        CMatch (go d s) (fmap (go d) ann) [CaseAlt p (fmap (go (d + patBindersC p)) gd) (go (d + patBindersC p) b) | CaseAlt p gd b <- alts]
       CRecordT fs -> CRecordT [(n, go d t) | (n, t) <- fs]
       CRecordV fs -> CRecordV [(n, go d t) | (n, t) <- fs]
       CProj e f -> CProj (go d e) f
@@ -395,8 +395,8 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
           CApp _ f a -> go (next n) f || go (next n) a
           CLam _ _ _ b -> go (next n) b
           CPi _ _ _ _ a b -> go (next n) a || go (next n) b
-          CCtor _ as -> any (go (next n)) as
-          CMatch scrut alts ->
+          CCtor _ _ as -> any (go (next n)) as
+          CMatch scrut _ alts ->
             go (next n) scrut
               || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
           CRecordT fs -> any (go (next n) . snd) fs
@@ -424,7 +424,7 @@ globalsOfTerm = foldTerm here (const Set.empty)
   where
     here = \case
       CGlob g -> Set.singleton g
-      CCtor g _ -> Set.singleton g
+      CCtor g _ _ -> Set.singleton g
       _ -> Set.empty
 
 -- | Split a left-associated application spine into its head and ordered

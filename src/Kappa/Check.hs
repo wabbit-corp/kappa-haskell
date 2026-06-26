@@ -1282,8 +1282,8 @@ metaOccursInTerm metas fuel0 seen target = go fuel0
       CApp _ f a -> go (next n) f || go (next n) a
       CLam _ _ _ b -> go (next n) b
       CPi _ _ _ _ a b -> go (next n) a || go (next n) b
-      CCtor _ as -> any (go (next n)) as
-      CMatch s alts -> go (next n) s || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
+      CCtor _ _ as -> any (go (next n)) as
+      CMatch s _ alts -> go (next n) s || any (\(CaseAlt _ gd b) -> maybe False (go (next n)) gd || go (next n) b) alts
       CRecordT fs -> any (go (next n) . snd) fs
       CRecordV fs -> any (go (next n) . snd) fs
       CProj e _ -> go (next n) e
@@ -1691,7 +1691,7 @@ etaCtor ec g cty = build 0 [] (eval ec [] cty)
         CLam ic q ("x" <> T.pack (show n)) $
           build (n + 1) ((ic, q, n) : acc) (evalClosure clo (VRigid n []))
       _ ->
-        CCtor g [CVar (n - 1 - i) | (ic, q, i) <- reverse acc, runtimeField ic q]
+        CCtor g Nothing [CVar (n - 1 - i) | (ic, q, i) <- reverse acc, runtimeField ic q]
     runtimeField Expl _ = True
     runtimeField Impl q = q /= Q0
     evalClosure (Closure env body) v = eval ec (v : env) body
@@ -2755,7 +2755,7 @@ neutralValueTerm lvl = \case
   VFlex m sp -> neutralSpine (CMeta m) sp
   VGlobN g sp -> neutralSpine (CGlob g) sp
   VLit lit -> Just (CLit lit)
-  VCtor g args -> CCtor g <$> traverse (neutralValueTerm lvl) args
+  VCtor g args -> CCtor g Nothing <$> traverse (neutralValueTerm lvl) args
   VPrim p args ->
     foldM
       (\acc a -> CApp Expl acc <$> neutralValueTerm lvl a)
@@ -2770,7 +2770,7 @@ neutralValueTerm lvl = \case
         hd
 
 propReflTerm :: Term
-propReflTerm = CCtor prelRefl []
+propReflTerm = CCtor prelRefl Nothing []
 
 cachedPropDecision :: Ctx -> Value -> CheckM Bool -> CheckM (Maybe Term)
 cachedPropDecision ctx goal decide = do
@@ -2899,8 +2899,8 @@ proveBoolValue natLvls boolFacts facts d want t = do
 proveBoolValueAttempt :: Set Int -> [(Term, Bool)] -> [AFact] -> Int -> Bool -> Term -> CheckM (Maybe Bool)
 proveBoolValueAttempt natLvls boolFacts facts d want t = do
   case simplifyDecisionTerm t of
-    CCtor g [] | g == prelTrue -> pure (Just want)
-    CCtor g [] | g == prelFalse -> pure (Just (not want))
+    CCtor g _ [] | g == prelTrue -> pure (Just want)
+    CCtor g _ [] | g == prelFalse -> pure (Just (not want))
     _ -> do
       case evalBoolTermWithFacts d boolFacts (6 :: Int) t of
         Just got -> pure (Just (got == want))
@@ -2960,12 +2960,12 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
           CIf c th el -> do
             c' <- go (fuel - 1) c
             case c' of
-              CCtor g [] | g == prelTrue -> go (fuel - 1) th
-              CCtor g [] | g == prelFalse -> go (fuel - 1) el
+              CCtor g _ [] | g == prelTrue -> go (fuel - 1) th
+              CCtor g _ [] | g == prelFalse -> go (fuel - 1) el
               _ -> pure (CIf c' th el)
-          CMatch s alts -> do
+          CMatch s ann alts -> do
             s' <- go (fuel - 1) s
-            pure (simplifyDecisionTerm (CMatch s' alts))
+            pure (simplifyDecisionTerm (CMatch s' ann alts))
           CLet _ _ _ rhs body ->
             go (fuel - 1) (substTopTerm rhs body)
           CLetRec q n a rhs body ->
@@ -3032,8 +3032,8 @@ evalBoolTermWithFacts d facts depth t0 =
       go = evalBoolTermWithFacts d facts (depth - 1)
       t = simplifyDecisionTerm t0
    in case t of
-        CCtor g [] | g == prelTrue -> Just True
-        CCtor g [] | g == prelFalse -> Just False
+        CCtor g _ [] | g == prelTrue -> Just True
+        CCtor g _ [] | g == prelFalse -> Just False
         _ | Just truth <- Map.lookup (branchFactKey t) factMap -> Just truth
         CIf c th el -> do
           truth <- go c
@@ -3201,7 +3201,7 @@ infer ctx expr = case expr of
           Just _ -> badByte sp "the payload contains more than one byte"
           Nothing -> badByte sp "the payload has no single-byte view"
     | otherwise -> snd <$> ((,) () <$> unsupported ctx sp "this quoted-literal form")
-  EUnit _ -> pure (CCtor prelUnit [], VGlobN prelUnit [])
+  EUnit _ -> pure (CCtor prelUnit Nothing [], VGlobN prelUnit [])
   ETuple es _ -> do
     rs <- mapM (infer ctx) es
     let fields = [(tupleField i, tm) | (i, (tm, _)) <- zip [0 :: Int ..] rs]
@@ -3418,7 +3418,7 @@ infer ctx expr = case expr of
     elemT <- freshMetaV ctx
     tms <- mapM (\e -> check ctx e elemT) es
     pure
-      ( foldr (\h t -> CCtor prelCons [h, t]) (CCtor prelNil []) tms
+      ( foldr (\h t -> CCtor prelCons Nothing [h, t]) (CCtor prelNil Nothing []) tms
       , VGlobN prelList [(Expl, elemT)]
       )
   -- §20.5/§20.5.1: a map literal resolves duplicate keys (default: keep last),
@@ -3611,7 +3611,7 @@ check ctx expr expected0 = do
       | nameText pn == "pure"
       , Nothing <- lookupCtx "pure" ctx -> do
           tm <- check ctx pa aT
-          pure (CCtor prelEffPure [tm])
+          pure (CCtor prelEffPure Nothing [tm])
     -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
     -- through the elaboration-time Applicative (the prelude 'pure' is
     -- the IO instance; carrier-polymorphic 'pure' is not modelled)
@@ -4294,8 +4294,8 @@ renameThisLabels labelOf = go
       CLam ic q n b -> CLam ic q n (go b)
       CPi ic q brw n a b -> CPi ic q brw n (go a) (go b)
       CApp ic f a -> CApp ic (go f) (go a)
-      CCtor g as -> CCtor g (map go as)
-      CMatch s alts -> CMatch (go s) [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
+      CCtor g ann as -> CCtor g (fmap go ann) (map go as)
+      CMatch s ann alts -> CMatch (go s) (fmap go ann) [CaseAlt p (fmap go gd) (go b) | CaseAlt p gd b <- alts]
       CRecordT fs -> CRecordT [(n, go x) | (n, x) <- fs]
       CRecordV fs -> CRecordV [(n, go x) | (n, x) <- fs]
       CVariantT ms -> CVariantT (map go ms)
@@ -4960,7 +4960,7 @@ elabSpineArg ctx sp fTm fTy arg rest = do
     termHeadCtor = \case
       CApp _ f _ -> termHeadCtor f
       CLam _ _ _ b -> termHeadCtor b
-      CCtor g _ -> Just g
+      CCtor g _ _ -> Just g
       _ -> Nothing
 
 -- named constructor application (§10.1.1): supplied fields + defaults in
@@ -5028,7 +5028,7 @@ elabNamedBlock ctx fTm fTy items sp rest = do
         "the named-argument block does not match the callee's remaining parameter telescope (§16.1.7.2)"
     ctorOf = \case
       CLam _ _ _ b -> ctorOf b
-      CCtor g _ -> Just g
+      CCtor g _ _ -> Just g
       CGlob g -> Just g
       _ -> Nothing
     valueCtorOf = \case
@@ -5812,7 +5812,8 @@ elabDotUnqualified ctx e member mname = do
                             let arity = length (ciFields ci)
                                 pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]
                              in CaseAlt (CPCtor ctorG pats) Nothing (CVar 0)
-                      pure (CMatch tm1 (map altOf alts0), fty)
+                      sTyTm <- quoteIn ctx t
+                      pure (CMatch tm1 (Just sTyTm) (map altOf alts0), fty)
                 _ -> methodSugar tm1 t mn0
         _ -> methodSugar tm1 t mn0
 
@@ -5971,7 +5972,8 @@ elabElvis ctx l r sp = do
             [ CaseAlt (CPCtor prelSome [CPVar "__elvis"]) Nothing (CVar 0)
             , CaseAlt (CPCtor prelNone []) Nothing rTm
             ]
-      pure (CMatch lTm1 alts, payloadTy)
+      sTyTm <- quoteIn ctx t
+      pure (CMatch lTm1 (Just sTyTm) alts, payloadTy)
     _ -> do
       lT <- quoteIn ctx t
       report $
@@ -6000,12 +6002,13 @@ elabSafeNav ctx e member = do
           errAt (memberSpan member) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
             "the result type of '?.' is undetermined; annotate the member type (§16.1.1.2)"
           pure (bodyTm, bodyT)
-        u -> pure (CCtor prelSome [bodyTm], u)
+        u -> pure (CCtor prelSome Nothing [bodyTm], u)
       let alts =
             [ CaseAlt (CPCtor prelSome [CPVar "__nav"]) Nothing wrapTm
-            , CaseAlt (CPCtor prelNone []) Nothing (CCtor prelNone [])
+            , CaseAlt (CPCtor prelNone []) Nothing (CCtor prelNone Nothing [])
             ]
-      pure (CMatch pTm1 alts, VGlobN prelOption [(Expl, resTy)])
+      sTyTm <- quoteIn ctx t
+      pure (CMatch pTm1 (Just sTyTm) alts, VGlobN prelOption [(Expl, resTy)])
     VFlex {} -> do
       errAt (exprSpan e) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
         "the receiver type of '?.' is undetermined here, so the navigation is ambiguous; annotate the receiver (§16.1.1.2)"
@@ -6028,10 +6031,11 @@ elabIs ctx e cref = do
     Just (g, ci) -> do
       let arity = length (ciFields ci)
           alts =
-            [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor prelTrue [])
-            , CaseAlt CPWild Nothing (CCtor prelFalse [])
+            [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor prelTrue Nothing [])
+            , CaseAlt CPWild Nothing (CCtor prelFalse Nothing [])
             ]
-      pure (CMatch tm1 alts, VGlobN prelBool [])
+      sTyTm <- quoteIn ctx ty
+      pure (CMatch tm1 (Just sTyTm) alts, VGlobN prelBool [])
     Nothing -> anyHole ctx
 
 resolveCtor :: Ctx -> CtorRef -> CheckM (Maybe (GName, CtorInfo))
@@ -6302,7 +6306,8 @@ elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
                     Just updated -> shiftTerm arity 0 updated
                     Nothing -> CVar (arity - 1 - i)
                 args = [argAt i mn | (i, mn) <- zip [0 ..] fieldNames0]
-            pure (CMatch tm1 [CaseAlt (CPCtor ctorG pats) Nothing (CCtor ctorG args)], ty1)
+            sTyTm <- quoteIn ctx ty1
+            pure (CMatch tm1 (Just sTyTm) [CaseAlt (CPCtor ctorG pats) Nothing (CCtor ctorG (Just sTyTm) args)], ty1)
       Nothing -> notCtorPatchable
     _ -> notCtorPatchable
   where
@@ -6777,7 +6782,10 @@ elabOpenExists ctx e ns pat body sp = do
       --           (match payload case pat -> body). At witness-let i's
       --           rhs position, __pkg is i binders up (index i).
       pkgTyTm <- quoteIn ctx pkgTy
-      let payMatch = CMatch payTm [CaseAlt patC Nothing bodyTm]
+      -- the opened payload's monomorphic type is not cleanly in scope here
+      -- (it is the sealed record under fresh witnesses), so leave the Stage 0
+      -- annotation absent rather than risk an ill-scoped type term.
+      let payMatch = CMatch payTm Nothing [CaseAlt patC Nothing bodyTm]
           witLets =
             foldr
               (\(i, (nm, (lbl, _)), wtyTm) b -> CLet Q0 nm wtyTm (CProj (CVar i) lbl) b)
@@ -6806,8 +6814,8 @@ varUsedAt = go
       CLam _ _ _ b -> go (ix + 1) b
       CPi _ _ _ _ a b -> go ix a || go (ix + 1) b
       CApp _ f a -> go ix f || go ix a
-      CCtor _ as -> any (go ix) as
-      CMatch s alts -> go ix s || or [maybe False (go (ix + patBindersC p)) g || go (ix + patBindersC p) b | CaseAlt p g b <- alts]
+      CCtor _ _ as -> any (go ix) as
+      CMatch s _ alts -> go ix s || or [maybe False (go (ix + patBindersC p)) g || go (ix + patBindersC p) b | CaseAlt p g b <- alts]
       CRecordT fs -> any (go ix . snd) fs
       CRecordV fs -> any (go ix . snd) fs
       CProj x _ -> go ix x
@@ -7178,7 +7186,8 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
               (patC, ctx', _) <- elabPattern ctx pat rhsTy
               (bodyTm, bodyTy) <- goUnder ctx' rest
               checkIrrefutable ctx pat rhsTy sp
-              let matchTm = CMatch rhsTm [CaseAlt patC Nothing bodyTm]
+              rhsTyTm' <- quoteIn ctx rhsTy
+              let matchTm = CMatch rhsTm (Just rhsTyTm') [CaseAlt patC Nothing bodyTm]
               pure (List.foldl' (flip mkLet) matchTm acc, bodyTy)
       where
         patVarName = \case
@@ -7546,10 +7555,11 @@ effOpSelection eli op = do
       opCall =
         CCtor
           prelEffOp
+          Nothing
           [ CGlob (eliLabel eli)
           , CLit (LitStr (eoiName op))
           , payload
-          , CLam Expl Q1 "__r" (CCtor prelEffPure [CVar 0])
+          , CLam Expl Q1 "__r" (CCtor prelEffPure Nothing [CVar 0])
           ]
       opBody = foldr (\_ acc -> CLam Expl QW "__x" acc) opCall argsT
       tm = foldr (\(nm, _) acc -> CLam Impl Q0 nm acc) opBody allParams
@@ -7641,11 +7651,11 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
             [] -> do
               errAt sp "E_HANDLER_RETURN_MISSING" (Just "kappa-hs.effect.handler")
                 "a handler requires exactly one 'case return x -> ...' clause (§18.1.21)"
-              pure (CLam Expl QW "__x" (CCtor prelEffPure [CVar 0]))
+              pure (CLam Expl QW "__x" (CCtor prelEffPure Nothing [CVar 0]))
             (_ : (_, _, csp2) : _) -> do
               errAt csp2 "E_HANDLER_RETURN_DUPLICATE" (Just "kappa-hs.effect.handler")
                 "a handler permits only one 'case return x -> ...' clause (§18.1.21)"
-              pure (CLam Expl QW "__x" (CCtor prelEffPure [CVar 0]))
+              pure (CLam Expl QW "__x" (CCtor prelEffPure Nothing [CVar 0]))
           -- one operation clause per declared operation (§18.1.21)
           let opClauses =
                 [(onm, argPats, kn, body, csp) | HandlerOp onm argPats kn body csp <- cases]
@@ -7691,10 +7701,11 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                         c0 = bindCtx "__payload" False tupTy ctxSk
                     (patC, cArgs, _) <- elabPattern c0 (PTuple ps csp) tupTy
                     inner <- mkK cArgs
-                    pure (CLam Expl QW "__payload" (CMatch (CVar 0) [CaseAlt patC Nothing inner]))
+                    tupTyTm <- quoteIn c0 tupTy
+                    pure (CLam Expl QW "__payload" (CMatch (CVar 0) (Just tupTyTm) [CaseAlt patC Nothing inner]))
                 pure (Just (eoiName op, lam))
           let opsRec = CRecordV (sortOn fst clauseTms)
-              deepTm = CCtor (prelBoolV deep) []
+              deepTm = CCtor (prelBoolV deep) Nothing []
               tm =
                 List.foldl'
                   (CApp Expl)
@@ -7721,7 +7732,8 @@ handlerClauseLam ctx q pat ty mkBody = case pat of
     let ctx0 = bindCtx "__scrut" False ty ctx
     (patC, ctx', _) <- elabPattern ctx0 pat ty
     body <- mkBody ctx'
-    pure (CLam Expl q "__scrut" (CMatch (CVar 0) [CaseAlt patC Nothing body]))
+    tyTm <- quoteIn ctx0 ty
+    pure (CLam Expl q "__scrut" (CMatch (CVar 0) (Just tyTm) [CaseAlt patC Nothing body]))
 
 -- | A @do@ block in an @Eff row a@ position (§18.1.14: Eff is the
 -- monadic carrier): items elaborate to @__effBind@ chains.
@@ -7734,7 +7746,7 @@ elabEffDo ctx0 row aT items0 sp = do
     go _ [] = do
       errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
         "a do block must end with an expression item (§18.2)"
-      pure (CCtor prelEffPure [CCtor prelUnit []])
+      pure (CCtor prelEffPure Nothing [CCtor prelUnit Nothing []])
     go c [DoExpr e] = do
       -- final item: an Eff computation of the result type, or (corpus
       -- accommodation, as in the IO kernel) a pure result value
@@ -7748,7 +7760,7 @@ elabEffDo ctx0 row aT items0 sp = do
         else do
           put st0
           tm <- check c eD aT
-          pure (CCtor prelEffPure [tm])
+          pure (CCtor prelEffPure Nothing [tm])
     -- a final statement-if is the result expression (§18.2)
     go c [DoIf alts mels isp] =
       let toExpr its = case its of
@@ -7798,7 +7810,8 @@ elabEffDo ctx0 row aT items0 sp = do
             let c0 = bindCtx "__b" False rhsTy c
             (patC, c', _) <- elabPattern c0 pat rhsTy
             body <- go c' rest
-            pure (CLet QW "__b" tyTm rhsTm (CMatch (CVar 0) [CaseAlt patC Nothing body]))
+            sTyTm <- quoteIn c0 rhsTy
+            pure (CLet QW "__b" tyTm rhsTm (CMatch (CVar 0) (Just sTyTm) [CaseAlt patC Nothing body]))
       other -> do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in an Eff-typed do block by this implementation"
@@ -7913,7 +7926,7 @@ checkIf ctx alts mels sp resT = go ctx alts
       Nothing -> do
         errAt sp "E_IF_MISSING_ELSE" (Just "kappa-hs.control.if-missing-else")
           "if without else is only permitted as a do-block statement (§16.4, §18.4)"
-        pure (CCtor prelUnit [])
+        pure (CCtor prelUnit Nothing [])
     go c ((cnd, t) : rest) = do
       -- §7.4.1 flow refinement: constructor tests in the condition
       -- refine their subjects in the condition's own conjuncts and in
@@ -8271,7 +8284,12 @@ checkMatchPlain ctx scrut cases sp resT = do
   -- scrutinee gets no piled-on exhaustiveness diagnostic
   when (nErrsAfter == nErrsBefore) $
     checkExhaustive ctx sp sTy1 [(p, g) | CaseAlt p g _ <- alts]
-  pure (CMatch sTm1 alts)
+  -- KBackendIR Stage 0: annotate the match with the scrutinee's
+  -- monomorphic type. 'sTy1' is the already-inferred scrutinee type
+  -- (a 'Value'); quoting it at the current context depth gives the Core
+  -- type term the (later) niche/discriminator work will read.
+  sTyTm <- quoteIn ctx sTy1
+  pure (CMatch sTm1 (Just sTyTm) alts)
 
 scrutineeEmpty :: Value -> CheckM Bool
 scrutineeEmpty ty = do
@@ -8757,7 +8775,8 @@ elabTry ctx body excepts mfin sp = do
           modify' $ \st -> st {csBoolFacts = oldBool}
           pure (CaseAlt patC gTm hTm)
         checkExhaustive ctx sp errT' [(p, g) | CaseAlt p g _ <- alts]
-        let handlerTm = CLam Expl QW nm (CMatch (CVar 0) alts)
+        errTyTm <- quoteIn ctx' errT'
+        let handlerTm = CLam Expl QW nm (CMatch (CVar 0) (Just errTyTm) alts)
         pure (CApp Expl (CApp Expl (CGlob prelCatchIO) bodyTm) handlerTm)
   final <- case mfin of
     Nothing -> pure caught
@@ -9039,7 +9058,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   check c (desugarBang e) retT
             Nothing -> do
               expectType c rsp (VGlobN prelUnit []) resT
-              pure (CCtor prelUnit [])
+              pure (CCtor prelUnit Nothing [])
           ks <- goItems loops c errT resT rest
           pure (KReturn tm : ks)
         DoBreak ml bsp -> do
@@ -9564,7 +9583,7 @@ delaborateType ctx dsp = go []
         fE <- go env f
         aE <- go env a
         pure (EApp fE [ArgExplicit aE])
-      CCtor g args -> do
+      CCtor g _ args -> do
         argEs <- mapM (go env) args
         pure (foldl (\acc e -> EApp acc [ArgExplicit e]) (EVar (nm (gnameText g))) argEs)
       _ -> Nothing
@@ -9637,7 +9656,7 @@ headGlobalOf :: Term -> Maybe GName
 headGlobalOf = \case
   CApp _ f _ -> headGlobalOf f
   CGlob g@(GName m _) | m /= primModule -> Just g
-  CCtor g _ -> Just g
+  CCtor g _ _ -> Just g
   _ -> Nothing
 
 -- | A §21.6 'Symbol' value: resolved declaration identity.
@@ -11685,8 +11704,8 @@ mentionsGroup groupNames = go
       CApp _ f a -> go f || go a
       CSort _ -> False
       CLit _ -> False
-      CCtor _ as -> any go as
-      CMatch s alts -> go s || any (\(CaseAlt _ gd b) -> maybe False go gd || go b) alts
+      CCtor _ _ as -> any go as
+      CMatch s _ alts -> go s || any (\(CaseAlt _ gd b) -> maybe False go gd || go b) alts
       CRecordT fs -> any (go . snd) fs
       CRecordV fs -> any (go . snd) fs
       CProj e _ -> go e
@@ -11718,8 +11737,8 @@ mentionsVar = go
       CApp _ f a -> go v f || go v a
       CSort _ -> False
       CLit _ -> False
-      CCtor _ as -> any (go v) as
-      CMatch s alts -> go v s || any (\(CaseAlt p gd b) -> let n = patBindersC p in maybe False (go (v + n)) gd || go (v + n) b) alts
+      CCtor _ _ as -> any (go v) as
+      CMatch s _ alts -> go v s || any (\(CaseAlt p gd b) -> let n = patBindersC p in maybe False (go (v + n)) gd || go (v + n) b) alts
       CRecordT fs -> any (go v . snd) fs
       CRecordV fs -> any (go v . snd) fs
       CProj e _ -> go v e
@@ -11949,8 +11968,8 @@ coreUsesVar0 = go 0
       CApp _ f a -> go d f || go d a
       CSort _ -> False
       CLit _ -> False
-      CCtor _ as -> any (go d) as
-      CMatch s alts ->
+      CCtor _ _ as -> any (go d) as
+      CMatch s _ alts ->
         go d s || any (\(CaseAlt p gd b) -> let d' = d + patBindersC p in maybe False (go d') gd || go d' b) alts
       CRecordT fs -> any (go d . snd) fs
       CRecordV fs -> any (go d . snd) fs
@@ -12398,9 +12417,9 @@ placesToThis n = go 0
       CApp ic f a -> CApp ic (go d f) (go d a)
       CSort _ -> t
       CLit _ -> t
-      CCtor g as -> CCtor g (map (go d) as)
-      CMatch s alts ->
-        CMatch (go d s)
+      CCtor g ann as -> CCtor g ann (map (go d) as)
+      CMatch s ann alts ->
+        CMatch (go d s) (fmap (go d) ann)
           [CaseAlt p (fmap (go (d + patBindersC p)) g) (go (d + patBindersC p) b) | CaseAlt p g b <- alts]
       CRecordT fs -> CRecordT [(nm, go d x) | (nm, x) <- fs]
       CRecordV fs -> CRecordV [(nm, go d x) | (nm, x) <- fs]
@@ -12613,7 +12632,7 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
       (patC, ctxP, _) <- elabPattern emptyCtx pat bodyTy
       let names = ctxEntries ctxP
       forM_ (zip [0 ..] names) $ \(i, entry) -> do
-        let proj = CMatch bodyTm [CaseAlt patC Nothing (CVar i)]
+        let proj = CMatch bodyTm Nothing [CaseAlt patC Nothing (CVar i)]
         g <- ownName (Name (ceName entry) sp)
         projV <- evalIn emptyCtx proj
         addGlobal g (GlobalDef (ceType entry) (Just projV) True)
@@ -13130,7 +13149,7 @@ collectFunEdges funMap src =
         rt <- go d sub ho esc (trueFacts ++ facts) ((c', True) : boolFacts) th
         re <- go d sub ho esc (falseFacts ++ facts) ((c', False) : boolFacts) el
         pure (joinManyEdges [rc, rt, re])
-      CMatch scrut alts -> do
+      CMatch scrut _ alts -> do
         rs <- go d sub ho esc facts boolFacts scrut
         let scrutRoot = case scrut of
               CVar i -> rootOf (d - 1 - i) sub
@@ -13159,7 +13178,7 @@ collectFunEdges funMap src =
           rb <- go d' sub' ho' esc facts' boolFacts' b
           pure (joinEdges rg rb)
         pure (joinManyEdges (rs : ralts))
-      CCtor _ as -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) as
+      CCtor _ _ as -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts) as
       CRecordT fs -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) fs
       CRecordV fs -> joinManyEdges <$> mapM (goArg d sub ho esc facts boolFacts . snd) fs
       CProj e _ -> go d sub ho esc facts boolFacts e
@@ -13232,7 +13251,7 @@ collectFunEdges funMap src =
         rt <- collectStrictSubtermEdges d sub ho (trueFacts ++ facts) ((c', True) : boolFacts) th
         re <- collectStrictSubtermEdges d sub ho (falseFacts ++ facts) ((c', False) : boolFacts) el
         pure (joinManyEdges [rc, rt, re])
-      CMatch scrut alts -> do
+      CMatch scrut _ alts -> do
         rs <- collectStrictSubtermEdges d sub ho facts boolFacts scrut
         let scrutRoot = case scrut of
               CVar i -> rootOf (d - 1 - i) sub
@@ -13260,7 +13279,7 @@ collectFunEdges funMap src =
           rb <- collectStrictSubtermEdges d' sub' ho facts' boolFacts' b
           pure (joinEdges rg rb)
         pure (joinManyEdges (rs : ralts))
-      CCtor _ as -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts) as
+      CCtor _ _ as -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts) as
       CRecordT fs -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts . snd) fs
       CRecordV fs -> joinManyEdges <$> mapM (collectStrictSubtermEdges d sub ho facts boolFacts . snd) fs
       CProj e _ -> collectStrictSubtermEdges d sub ho facts boolFacts e
@@ -13344,8 +13363,8 @@ collectFunEdges funMap src =
       CLam _ _ _ b -> containsSccReference (d + 1) ho esc b
       CPi _ _ _ _ a b -> containsSccReference d ho esc a || containsSccReference (d + 1) ho esc b
       CApp _ f a -> containsSccReference d ho esc f || containsSccReference d ho esc a
-      CCtor _ as -> any (containsSccReference d ho esc) as
-      CMatch s alts ->
+      CCtor _ _ as -> any (containsSccReference d ho esc) as
+      CMatch s _ alts ->
         containsSccReference d ho esc s
           || any
             ( \(CaseAlt pat gd b) ->
@@ -13835,8 +13854,8 @@ boolRelBranchM d t0 = case simplifyDecisionTerm t0 of
     Just fact -> pure (Just fact)
     Nothing -> compareMatchRelBranchM d t
   where
-    isTrueTm = \case CCtor g [] -> g == prelTrue; _ -> False
-    isFalseTm = \case CCtor g [] -> g == prelFalse; _ -> False
+    isTrueTm = \case CCtor g _ [] -> g == prelTrue; _ -> False
+    isFalseTm = \case CCtor g _ [] -> g == prelFalse; _ -> False
     combineOr (AFact ACmpLt a b) (AFact ACmpEq a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr (AFact ACmpEq a b) (AFact ACmpLt a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr _ _ = Nothing
@@ -13858,7 +13877,7 @@ comparePatternFactsM d scrut pat = do
 
 compareMatchRelBranchM :: Int -> Term -> CheckM (Maybe AFact)
 compareMatchRelBranchM d = \case
-  CMatch scrut alts -> do
+  CMatch scrut _ alts -> do
     mArgs <- primitiveOrderedCompareArgsRaw d scrut
     pure $ do
       (aa, bb) <- mArgs
@@ -13900,8 +13919,8 @@ compareBoolMatch alts = do
     compareBoolBranch _ = Nothing
 
     boolBody = \case
-      CCtor g [] | g == prelTrue -> Just True
-      CCtor g [] | g == prelFalse -> Just False
+      CCtor g _ [] | g == prelTrue -> Just True
+      CCtor g _ [] | g == prelFalse -> Just False
       _ -> Nothing
 
 primitiveOrderedCompareArgs :: Int -> Term -> CheckM (Maybe (AExpr, AExpr))
@@ -13938,7 +13957,7 @@ primitiveOrderedCompareArgsRaw d t =
 
 primitiveCompareShape :: Int -> Term -> Maybe (AExpr, AExpr)
 primitiveCompareShape d t0 = case simplifyDecisionTerm t0 of
-  CIf lt (CCtor ltG []) (CIf eq (CCtor eqG []) (CCtor gtG []))
+  CIf lt (CCtor ltG _ []) (CIf eq (CCtor eqG _ []) (CCtor gtG _ []))
     | ltG == prelLT
     , eqG == prelEQ
     , gtG == prelGT -> do
@@ -14002,7 +14021,7 @@ proveBoolTrue :: Set Int -> [AFact] -> Int -> Term -> CheckM Bool
 proveBoolTrue natLvls facts d t = do
   t' <- normalizeTermAt d t
   case t' of
-    CCtor g [] | g == prelTrue -> pure True
+    CCtor g _ [] | g == prelTrue -> pure True
     _ -> case boolRel d t' of
       Just fact -> proveFact natLvls facts fact
       Nothing -> pure False
@@ -14026,8 +14045,8 @@ boolEqualityTruePayload t = case spineOfTerm t of
         let ex = [a | (Expl, a) <- args]
         (lhs, rhs) <- last2 ex
         case (lhs, rhs) of
-          (_, CCtor g []) | g == prelTrue -> Just lhs
-          (CCtor g [], _) | g == prelTrue -> Just rhs
+          (_, CCtor g _ []) | g == prelTrue -> Just lhs
+          (CCtor g _ [], _) | g == prelTrue -> Just rhs
           _ -> Nothing
   _ -> Nothing
 
