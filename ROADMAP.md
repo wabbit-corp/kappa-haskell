@@ -118,7 +118,12 @@ the real Lint are both impossible without them.
       Contractible | Finite n | Unknown`, keyed by `InhabitancePurpose` (Stage 1
       uses only SourceReachability; Stage 4 uses RuntimeShape — they MUST NOT
       cross). Closes the SPEC_COMPLIANCE §30.2.7 gap + unblocks `case
-      impossible`/§17.1.4.
+      impossible`/§17.1.4. **Reference:** `../datatron/app-type-counting` (+ the
+      `fp-counting-type-inhabitants` article) is a COMPLETE exact inhabitant-counter
+      (`Cardinality` Finite|Infinite, `Series` generating functions, a solver,
+      parametricity) — *too much* for this conservative MUST (keep `Unknown`); but
+      it is THE reference for a future PRECISE Optimization-purpose summary
+      (recursive-type cardinality → tighter layouts in Stage 4+).
 - [ ] **Stage 2 — shared compile-time rep/layout table** (NOT per-node decoration
       — "rep on every expression node" is the reference's short-sighted part; it
       goes unused). A pure `Backend/Repr.hs` (`Rep = RInt64|RFloat64|RBool|RBoxed|…`
