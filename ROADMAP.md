@@ -283,14 +283,16 @@ the real Lint are both impossible without them.
            sweep clean). REMAINING: a §3.3 SEED extension to also mark such
            higher-order globals may-suspend (so a NON-forked `r <- bracket …` is
            CPS at the call site too — forked uses already work via the fiber).
-        2. [ ] MASKING SURFACE (§18.1.12): even with (1), the release is skipped
-           because the fiber is BORN-INTERRUPTED — native delivers a pending
-           interrupt at the fiber's first step (`rt.c` fiber_step), before the
-           acquire registers the finalizer. ZIO/bracket semantics require the
-           acquire to be UNINTERRUPTIBLE; the interpreter only gets away without a
-           mask via GHC's lenient async-exception timing. Fix = expose
-           `uninterruptibleMask` (the runtime `krt2_uninterruptible` exists) in the
-           prelude + interp and wrap bracketM's acquire — a distinct piece.
+        2. [~] MASKING SURFACE (§18.1.12) — COMMON CASE DONE (merged `e1a1482`):
+           `uninterruptible`/`mask`/`poll` exposed in the prelude + interp, lowered
+           to `krt2_*`, and `bracketM` now masks acquire+register so a born-
+           interrupted fiber registers the finalizer before the interrupt — release
+           RUNS (`bracket-mask-interrupt.kp`, interp==C). REMAINING: when `bracketM`
+           is reached as a bare `K_BOUNCE` worker behind the `MonadResource` dict,
+           the synchronous `krun_io`/`krt2_run_op_sync` bridge can't drive `OP_MASK`,
+           so bracket-as-whole-fiber-action with a born-interrupt can still skip
+           release on C — closing it needs the do-kernel CPS Stage 2/3 (the sync
+           bridge handling the masking OPs).
 - [x] **Native result-ctor matching — COMPLETE** (§28 shapes) — every runtime-built
       result ctor now carries a FIXED `KCT_*` id shared with codegen
       (`builtinCtorTag`): `Exit`/`Cause`/`Option` (done earlier) PLUS the
