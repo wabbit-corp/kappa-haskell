@@ -915,66 +915,31 @@ typeScalarKinds g n = do
   pure $ case Map.lookup g globals of
     Nothing -> Nothing
     Just gd -> do
-      (pks, ret) <- walkPiV ctx 0 [] (gdType gd)
+      -- KBackendIR Stage 3: rep selection is 'Repr.repSelect' — the single
+      -- authority that walks the type telescope and classifies every relevant
+      -- explicit param + the result as int/double/boxed.  This backend's
+      -- @ParamKind@/@ScalarKind@ are just the projection of that 'Rep' plan:
+      -- the per-param 'Rep' becomes a 'PScalar'/'PBoxed' slot, and the RESULT
+      -- 'Rep' must be a scalar (a boxed-result worker is not eligible in this
+      -- slice — so a non-scalar result rep yields @Nothing@).
+      (paramReps, retRep) <- Repr.repSelect ctx (gdType gd)
+      ret <- repScalarKind retRep
+      let pks = map paramRepKind paramReps
       if length pks == n then Just (pks, ret) else Nothing
   where
-    paramKindV dom = maybe PBoxed PScalar (scalarHeadKindV dom)
-    walkPiV ctx lvl acc ty =
-      case force ctx ty of
-        VPi ic q _ _ dom clo@(Closure env body) -> do
-          if not (closureHasBoundEnv env body)
-            then Nothing
-            else do
-              let x = VRigid lvl []
-                  cod = closApplyV ctx x clo
-                  acc' = if ic == Expl && q /= Q0 then paramKindV dom : acc else acc
-              walkPiV ctx (lvl + 1) acc' cod
-        other -> do
-          rk <- scalarHeadKindV other
-          Just (reverse acc, rk)
-    closApplyV ctx v (Closure env body) = eval ctx (v : env) body
-    closureHasBoundEnv env body = maxVar body < length env + 1
-    maxVar = \case
-      CVar i -> i
-      CGlob _ -> -1
-      CLam _ _ _ b -> maxVar b - 1
-      CPi _ _ _ _ a b -> max (maxVar a) (maxVar b - 1)
-      CApp _ f a -> max (maxVar f) (maxVar a)
-      CSort _ -> -1
-      CLit _ -> -1
-      CCtor _ _ as -> maximum (-1 : map maxVar as)
-      CMatch s _ alts ->
-        maximum (-1 : maxVar s : [max (maybe (-1) (\guardTm -> maxVar guardTm - patBinders p) gd) (maxVar b - patBinders p) | CaseAlt p gd b <- alts])
-      CRecordT fs -> maximum (-1 : map (maxVar . snd) fs)
-      CRecordV fs -> maximum (-1 : map (maxVar . snd) fs)
-      CProj e _ -> maxVar e
-      CProjAt e _ _ -> maxVar e
-      CVariantT ms -> maximum (-1 : map maxVar ms)
-      CInject _ e -> maxVar e
-      CLet _ _ a b c -> maximum [maxVar a, maxVar b, maxVar c - 1]
-      CLetRec _ _ a b c -> maximum [maxVar a, maxVar b - 1, maxVar c - 1]
-      CMeta _ -> -1
-      CDo _ _ -> -1
-      CSealE _ e -> maxVar e
-      CSigT _ e -> maxVar e
-      CThunkE e -> maxVar e
-      CLazyE e -> maxVar e
-      CForceE e -> maxVar e
-      CIf a b c -> maximum [maxVar a, maxVar b, maxVar c]
-      CQuote _ slots -> maximum (-1 : map maxVar slots)
-    patBinders = \case
-      CPWild -> 0
-      CPVar _ -> 1
-      CPLit _ -> 0
-      -- §17.1: @nEx@ existential-skolem placeholder slots sit below the field
-      -- binders and push real runtime slots (see 'patBindings'); count them.
-      CPCtor _ nEx ps -> nEx + sum (map patBinders ps)
-      CPTuple ps -> sum (map patBinders ps)
-      CPRecord fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
-      CPInject _ p -> patBinders p
-      CPInjectRest _ -> 1
-      CPOr ps _ -> maximum (0 : map patBinders ps)
-      CPAs _ p -> 1 + patBinders p
+    -- A param slot is an unboxed scalar (int/double) or a boxed pass-through
+    -- (R2.4 mixed worker) for any non-scalar rep.
+    paramRepKind r = maybe PBoxed PScalar (repScalarKind r)
+
+-- | The unboxed scalar kind of a 'Repr.Rep', or 'Nothing' for a rep that has no
+-- unboxed scalar representation (boxed / immediate-ctor).  This is the
+-- backend-local projection of the shared rep classification onto this backend's
+-- two-element @ScalarKind@ (the only reps it unboxes today).
+repScalarKind :: Repr.Rep -> Maybe ScalarKind
+repScalarKind = \case
+  Repr.RepInt -> Just KInt64
+  Repr.RepDouble -> Just KDouble
+  _ -> Nothing
 
 -- | For a global head @g@, the per-spine-position erasure flags read from its
 -- elaborated type's Pi telescope: @True@ at a binder whose quantity is 'Q0'
@@ -1067,16 +1032,12 @@ eraseQ0ArgsP globals ctx g term =
       sargs' = go flags sargs
    in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
 
--- KBackendIR Stage 2: the head-type → scalar-representation discriminator is
--- 'Repr.scalarRep' (the shared rep table); this backend's @ScalarKind@ is the
--- @RepInt@/@RepDouble@ projection of it.  A boxed (or non-primitive) head has
--- no unboxed scalar kind, so it is 'Nothing' — exactly the conservative
--- classification this function made before, now sourced from the shared table.
-scalarHeadKindV :: Value -> Maybe ScalarKind
-scalarHeadKindV v = case Repr.scalarRep v of
-  Repr.RepInt -> Just KInt64
-  Repr.RepDouble -> Just KDouble
-  _ -> Nothing
+-- KBackendIR Stage 3: the head-type → scalar-representation discriminator is
+-- 'Repr.scalarRep' / 'Repr.repSelect' (the shared rep table); this backend's
+-- @ScalarKind@ is the @RepInt@/@RepDouble@ projection of it ('repScalarKind').
+-- 'typeScalarKinds' consumes 'Repr.repSelect' directly, so the standalone
+-- head-discriminator wrapper that used to live here is gone — its only caller
+-- was the param/result classification now derived from the shared rep plan.
 
 -- | Eligibility of a tail-position term against the worker's return kind: an
 -- @if@ (safe-compare condition, eligible branches), a saturated self-call
