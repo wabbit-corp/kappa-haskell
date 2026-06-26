@@ -1,0 +1,37 @@
+module main
+
+-- RUN-MODE regression: an existential GADT index whose skolem sits BETWEEN two
+-- non-erased field binders, with the arm body reading both fields AND an outer
+-- variable.
+--
+-- `MkBox : forall (s : Bool). Int -> Tag s -> Int -> Box` hides one existential
+-- index `s` and carries three explicit fields (two `Int`, one `Tag s`). The
+-- unpack binds `lo`, `y`, `hi` plus one rigid skolem for `s`. The skolem occupies
+-- a de Bruijn slot below ALL three field binders, so the body's indices for the
+-- fields (`lo`, `hi`) and the outer parameter (`outer`) must all account for it.
+-- The `TT` arm returns `outer + lo + hi`, exercising three distinct indices that
+-- straddle the skolem slot, so any layout error prints the wrong sum or crashes.
+-- With outer = 100, lo = 5, hi = 9, the result is 114.
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "114\n"
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+data Box : Type =
+    MkBox : forall (s : Bool). Int -> Tag s -> Int -> Box
+
+useBox : Int -> Box -> Int
+let useBox outer b =
+    match b
+      case MkBox lo y hi ->
+        match y
+          case TT -> outer + lo + hi
+          case FF -> outer
+
+main : UIO Unit
+let main = printlnString (showInt (useBox 100 (MkBox 5 TT 9)))

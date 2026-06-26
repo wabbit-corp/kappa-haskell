@@ -40,7 +40,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (forM_, foldM, msum, mplus, unless, when, void)
+import Control.Monad (forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
@@ -299,7 +299,7 @@ userCtorKeys = goT
       CPWild -> Set.empty
       CPVar _ -> Set.empty
       CPLit _ -> Set.empty
-      CPCtor g ps -> user g <> foldMap goPat ps
+      CPCtor g _ ps -> user g <> foldMap goPat ps
       CPTuple ps -> foldMap goPat ps
       CPRecord fs _ -> foldMap (goPat . snd) fs
       CPInject _ q -> goPat q
@@ -1333,7 +1333,7 @@ expandTopOrLL (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePatLL pa
 distributePatLL :: CorePat -> [CorePat]
 distributePatLL = \case
   CPOr ps _ -> concatMap distributePatLL ps
-  CPCtor g ps -> [CPCtor g qs | qs <- mapM distributePatLL ps]
+  CPCtor g nEx ps -> [CPCtor g nEx qs | qs <- mapM distributePatLL ps]
   CPTuple ps -> [CPTuple qs | qs <- mapM distributePatLL ps]
   CPRecord fs rest ->
     let (names, pats) = unzip fs
@@ -1349,7 +1349,7 @@ distributePatLL = \case
 orReorderedLL :: CorePat -> Bool
 orReorderedLL = \case
   CPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReorderedLL ps
-  CPCtor _ ps -> any orReorderedLL ps
+  CPCtor _ _ ps -> any orReorderedLL ps
   CPTuple ps -> any orReorderedLL ps
   CPRecord fs _ -> any (orReorderedLL . snd) fs
   CPInject _ p -> orReorderedLL p
@@ -1530,7 +1530,7 @@ patTestBranch v pat failL = case pat of
         cond <- freshReg
         emit (cond <> " = icmp ne i32 " <> eqi <> ", 0")
         branchOn cond
-  CPCtor g ps -> do
+  CPCtor g _ ps -> do
     tag <- ctorTagId g
     declRuntime "declare i32 @kctor_tagid(ptr)"
     ti <- freshReg
@@ -1657,9 +1657,17 @@ patBindingsLL = go
       CPLit _ -> pure []
       CPVar _ -> pure [v]
       CPAs _ p -> do rest <- go v p; pure (v : rest)
-      CPCtor _ ps -> do
+      CPCtor _ nEx ps -> do
+        -- §17.1: the @nEx@ existential-skolem slots come FIRST (so after the
+        -- match path reverses the binding list they land BELOW the field binders,
+        -- matching where 'ctorFieldTypesCtx' bound the skolems). They are erased
+        -- types never read at runtime; a @kunit()@ placeholder ('compileUnit')
+        -- keeps the slot count and ordering aligned with the C backend and the
+        -- interpreter ('VRecordV []').
+        skolems <- replicateM nEx compileUnit
         let nps = length ps
-        concat <$> mapM (\(i, p) -> ctorArgLL v nps i >>= \av -> go av p) (zip [0 ..] ps)
+        fields <- concat <$> mapM (\(i, p) -> ctorArgLL v nps i >>= \av -> go av p) (zip [0 ..] ps)
+        pure (skolems ++ fields)
       CPTuple ps ->
         concat <$> mapM (\(i, p) -> recAtLL v i >>= \av -> go av p) (zip [0 ..] ps)
       CPRecord pfs mrest -> do
@@ -2269,7 +2277,9 @@ patArity = \case
   CPWild -> 0
   CPVar _ -> 1
   CPLit _ -> 0
-  CPCtor _ ps -> sum (map patArity ps)
+  -- §17.1: @nEx@ existential-skolem placeholder slots are real runtime binders
+  -- (see 'patBindingsLL'); count them so 'shiftTerm''s cutoff matches.
+  CPCtor _ nEx ps -> nEx + sum (map patArity ps)
   CPTuple ps -> sum (map patArity ps)
   CPRecord fs _ -> sum (map (patArity . snd) fs)
   CPInject _ p -> patArity p

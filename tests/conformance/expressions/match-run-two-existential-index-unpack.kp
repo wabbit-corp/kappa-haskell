@@ -1,0 +1,44 @@
+module main
+
+-- RUN-MODE regression: TWO existential GADT indices on a single unpack.
+--
+-- `MkQ : forall (s : Bool). forall (t : Bool). Tag s -> Tag t -> Q` hides TWO
+-- existential indices `s` and `t`, neither pinned by the result type `Q`. The
+-- unpack therefore promotes TWO rigid skolems, which occupy two de Bruijn slots
+-- BELOW the field binders. The emitted constructor pattern carries the count `2`
+-- so the interpreter and BOTH native backends push two placeholder slots under
+-- the fields — the de Bruijn indices for the field binders (`y`, `z`) and for the
+-- OUTER parameters (`a`, `b`) all shift by two.
+--
+-- The body of each inner arm references the outer parameters `a` and `b` across
+-- BOTH skolem slots, so an off-by-N layout (N = 2 here) would crash or read the
+-- wrong slot. With `y = TT`, `z = FF`, the selected arm returns `a`, which is 10.
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "10\n"
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+data Q : Type =
+    MkQ : forall (s : Bool). forall (t : Bool). Tag s -> Tag t -> Q
+
+use2 : Int -> Int -> Q -> Int
+let use2 a b q =
+    match q
+      case MkQ y z ->
+        match y
+          case TT ->
+            match z
+              case TT -> a + b
+              case FF -> a
+          case FF ->
+            match z
+              case TT -> b
+              case FF -> a + b
+
+main : UIO Unit
+let main = printlnString (showInt (use2 10 3 (MkQ TT FF)))

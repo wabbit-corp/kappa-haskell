@@ -5837,7 +5837,7 @@ elabDotUnqualified ctx e member mname = do
                       let altOf (ctorG, ci, idx) =
                             let arity = length (ciFields ci)
                                 pats = [if i == idx then CPVar "__field" else CPWild | i <- [0 .. arity - 1]]
-                             in CaseAlt (CPCtor ctorG pats) Nothing (CVar 0)
+                             in CaseAlt (CPCtor ctorG 0 pats) Nothing (CVar 0)
                       sTyTm <- quoteIn ctx t
                       pure (CMatch tm1 (Just sTyTm) (map altOf alts0), fty)
                 _ -> methodSugar tm1 t mn0
@@ -5995,8 +5995,8 @@ elabElvis ctx l r sp = do
     VGlobN (GName _ "Option") [(_, payloadTy)] -> do
       rTm <- check ctx r payloadTy
       let alts =
-            [ CaseAlt (CPCtor prelSome [CPVar "__elvis"]) Nothing (CVar 0)
-            , CaseAlt (CPCtor prelNone []) Nothing rTm
+            [ CaseAlt (CPCtor prelSome 0 [CPVar "__elvis"]) Nothing (CVar 0)
+            , CaseAlt (CPCtor prelNone 0 []) Nothing rTm
             ]
       sTyTm <- quoteIn ctx t
       pure (CMatch lTm1 (Just sTyTm) alts, payloadTy)
@@ -6030,8 +6030,8 @@ elabSafeNav ctx e member = do
           pure (bodyTm, bodyT)
         u -> pure (CCtor prelSome Nothing [bodyTm], u)
       let alts =
-            [ CaseAlt (CPCtor prelSome [CPVar "__nav"]) Nothing wrapTm
-            , CaseAlt (CPCtor prelNone []) Nothing (CCtor prelNone Nothing [])
+            [ CaseAlt (CPCtor prelSome 0 [CPVar "__nav"]) Nothing wrapTm
+            , CaseAlt (CPCtor prelNone 0 []) Nothing (CCtor prelNone Nothing [])
             ]
       sTyTm <- quoteIn ctx t
       pure (CMatch pTm1 (Just sTyTm) alts, VGlobN prelOption [(Expl, resTy)])
@@ -6057,7 +6057,7 @@ elabIs ctx e cref = do
     Just (g, ci) -> do
       let arity = length (ciFields ci)
           alts =
-            [ CaseAlt (CPCtor g (replicate arity CPWild)) Nothing (CCtor prelTrue Nothing [])
+            [ CaseAlt (CPCtor g 0 (replicate arity CPWild)) Nothing (CCtor prelTrue Nothing [])
             , CaseAlt CPWild Nothing (CCtor prelFalse Nothing [])
             ]
       sTyTm <- quoteIn ctx ty
@@ -6333,7 +6333,7 @@ elabCtorFieldPatch nested ctx e tm1 ty1 dataG items sp = do
                     Nothing -> CVar (arity - 1 - i)
                 args = [argAt i mn | (i, mn) <- zip [0 ..] fieldNames0]
             sTyTm <- quoteIn ctx ty1
-            pure (CMatch tm1 (Just sTyTm) [CaseAlt (CPCtor ctorG pats) Nothing (CCtor ctorG (Just sTyTm) args)], ty1)
+            pure (CMatch tm1 (Just sTyTm) [CaseAlt (CPCtor ctorG 0 pats) Nothing (CCtor ctorG (Just sTyTm) args)], ty1)
       Nothing -> notCtorPatchable
     _ -> notCtorPatchable
   where
@@ -8283,7 +8283,7 @@ checkMatchPlain ctx scrut cases sp resT = do
               (pc, cx, _) <- elabPattern ctx pat sTy1
               pure (pc, cx)
           let fact = case patC of
-                CPCtor g [] -> Just (FactIs (VCtor g []))
+                CPCtor g _ [] -> Just (FactIs (VCtor g []))
                 _ | not (null prior) -> Just (FactNot prior)
                 _ -> Nothing
           oldFacts <- gets csFacts
@@ -8306,7 +8306,7 @@ checkMatchPlain ctx scrut cases sp resT = do
           modify' $ \st -> st {csImpossibleScrut = Just fiberEmpty}
           bTm <- check ctx' body resT
           modify' $ \st -> st {csFacts = oldFacts, csBoolFacts = oldBool, csImpossibleScrut = oldImp}
-          let prior' = prior ++ [g | CPCtor g _ <- [patC]]
+          let prior' = prior ++ [g | CPCtor g _ _ <- [patC]]
               covered' = covered ++ [t | CPInject t _ <- [patC]]
           pure (accAlts ++ [CaseAlt patC gTm bTm], prior', covered')
   nErrsBefore <- gets (length . filter isError . csDiags)
@@ -8625,7 +8625,7 @@ inhabHasEvidence ctx traitG ty = do
 --     type and we defer to its summary.
 branchFiberEmpty :: Ctx -> Value -> CorePat -> CheckM Bool
 branchFiberEmpty ctx scrutTy = \case
-  CPCtor g _ -> do
+  CPCtor g _ _ -> do
     env <- mkInhabEnv ctx
     fiber <- inhabCtorFiber ctx scrutTy g
     case fiber of
@@ -8718,7 +8718,7 @@ checkExhaustive ctx sp ty alts = do
     fiberEmptyCtor scrutTy c = do
       st <- get
       let arity = ctorArity st c
-      branchFiberEmpty ctx scrutTy (CPCtor c (replicate arity CPWild))
+      branchFiberEmpty ctx scrutTy (CPCtor c 0 (replicate arity CPWild))
     requireCatchAll =
       report $
         diag SevError StageElaborate "E_PATTERN_NON_EXHAUSTIVE" (Just "kappa.pattern.non-exhaustive") sp
@@ -8779,19 +8779,19 @@ isWildLike st = \case
   CPInjectRest _ -> True
   -- an arity-mismatched constructor pattern was already diagnosed;
   -- do not cascade a non-exhaustiveness report
-  CPCtor c ps -> length ps /= ctorArity st c
+  CPCtor c _ ps -> length ps /= ctorArity st c
   _ -> False
 
 patKey :: CheckState -> CorePat -> Maybe (PatKey, Int)
 patKey st = \case
-  CPCtor c ps | length ps == ctorArity st c -> Just (KCtor c, length ps)
+  CPCtor c _ ps | length ps == ctorArity st c -> Just (KCtor c, length ps)
   CPTuple ps -> Just (KTup (length ps), length ps)
   CPLit l -> Just (KLit l, 0)
   _ -> Nothing
 
 subPats :: CorePat -> [CorePat]
 subPats = \case
-  CPCtor _ ps -> ps
+  CPCtor _ _ ps -> ps
   CPTuple ps -> ps
   _ -> []
 
@@ -8887,7 +8887,7 @@ elabPattern ctx0 pat0 ty0 = do
     corePatNames = \case
       CPVar n -> [n]
       CPAs n p -> n : corePatNames p
-      CPCtor _ ps -> concatMap corePatNames ps
+      CPCtor _ _ ps -> concatMap corePatNames ps
       CPTuple ps -> concatMap corePatNames ps
       CPRecord fs mr -> concatMap (corePatNames . snd) fs ++ [nm | Just nm <- [mr], not (T.null nm)]
       CPInject _ p -> corePatNames p
@@ -8902,7 +8902,7 @@ elabPattern ctx0 pat0 ty0 = do
           -- a Var pattern naming an in-scope nullary constructor is a
           -- constructor pattern (lowercase ctors exist, e.g. ω-free code)
           | otherwise -> pure (CPVar (nameText n), bindCtx (nameText n) False ty ctx)
-        PUnit _ -> pure (CPCtor prelUnit [], ctx)
+        PUnit _ -> pure (CPCtor prelUnit 0 [], ctx)
         PLit l _ -> do
           -- §17.2.1: a literal pattern's type must agree with a known
           -- concrete scrutinee type
@@ -9060,7 +9060,7 @@ elabPattern ctx0 pat0 ty0 = do
               -- elaborate under that extended context so the skolem has a valid de
               -- Bruijn level and stays abstract (cannot be destructively solved by
               -- a sub-match arm). See 'ctorFieldTypesCtx'.
-              (fieldTys, ctxEx) <- ctorFieldTypesCtx ctx g ci ty sp
+              (fieldTys, ctxEx, nEx) <- ctorFieldTypesCtx ctx g ci ty sp
               when (length ps /= length fieldTys) $
                 errAt sp "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.constructor-arity")
                   ("constructor pattern arity mismatch: expected "
@@ -9071,7 +9071,10 @@ elabPattern ctx0 pat0 ty0 = do
               -- arity diagnostic the bodies must not cascade (§3.1).
               padTys <- mapM (const (freshMetaV ctxEx)) (drop (length fieldTys) ps)
               (ps', ctx') <- goList ctxEx (zip ps (fieldTys ++ padTys))
-              pure (CPCtor g ps', ctx')
+              -- 'ctxEx' put @nEx@ existential skolems BELOW the field binders;
+              -- the emitted pattern carries that count so the runtime pushes the
+              -- matching placeholder slots (see 'CPCtor' / 'matchPat').
+              pure (CPCtor g nEx ps', ctx')
         PActive _ _ _ sp -> do
           unsupportedAt sp "active patterns are not supported by this implementation"
           pure (CPWild, ctx)
@@ -9160,7 +9163,13 @@ ctorFieldTypes ctx _ ci scrutTy _ = do
 -- Skolemizing ONLY the result-undetermined binders keeps the
 -- determined-from-scrutinee indices solved, so ordinary GADT refinement (and the
 -- ground-index no-confusion that powers exhaustiveness) is unaffected.
-ctorFieldTypesCtx :: Ctx -> GName -> CtorInfo -> Value -> Span -> CheckM ([Value], Ctx)
+-- Returns the field types, the extended context, AND the number @nEx@ of
+-- existential skolems promoted (= context entries added). The caller threads
+-- @nEx@ into the emitted 'CPCtor' so the runtime pushes the SAME number of
+-- placeholder slots below the field binders — keeping the arm body's de Bruijn
+-- indices for outer-bound variables valid at runtime (otherwise they are
+-- inflated by @nEx@ with no matching binder; see 'CPCtor').
+ctorFieldTypesCtx :: Ctx -> GName -> CtorInfo -> Value -> Span -> CheckM ([Value], Ctx, Int)
 ctorFieldTypesCtx ctx _ ci scrutTy _ = do
   ctype <- evalIn emptyCtx (ciType ci)
   (result, fields, implMetas) <- peel ctype [] []
@@ -9180,7 +9189,7 @@ ctorFieldTypesCtx ctx _ ci scrutTy _ = do
       exMetas = filter existential implMetas
   _ <- unify ctx result scrutTy
   ctx' <- foldM promoteExistential ctx exMetas
-  pure (fields, ctx')
+  pure (fields, ctx', length exMetas)
   where
     -- Bind a fresh rigid skolem for a genuinely existential implicit param and
     -- solve its meta to that skolem (so field types mentioning it force to the
@@ -13945,7 +13954,11 @@ patStrictBinderFlags = \case
   CPWild -> []
   CPVar _ -> [False]
   CPLit _ -> []
-  CPCtor _ ps -> concatMap (map (const True) . patAllBinderFlags) ps
+  -- §17.1: the @nEx@ leading existential-skolem slots are erased placeholders,
+  -- never a strict (constructor-decreasing) subterm, so they are 'False'; the
+  -- field binders below them are structural subterms ('True'). The order matches
+  -- 'matchPat' (skolems first) and the total matches 'patBindersC'.
+  CPCtor _ nEx ps -> replicate nEx False ++ concatMap (map (const True) . patAllBinderFlags) ps
   CPTuple ps -> concatMap (map (const True) . patAllBinderFlags) ps
   CPRecord fs mr -> concatMap (map (const True) . patAllBinderFlags . snd) fs ++ maybe [] (const [False]) mr
   CPInject _ p -> map (const True) (patAllBinderFlags p)
@@ -14333,9 +14346,9 @@ comparePatternFactsM d scrut pat = do
     Nothing -> []
   where
     compareCtorFact = \case
-      CPCtor g [] | g == prelLT -> Just (\a b -> AFact ACmpLt a b)
-      CPCtor g [] | g == prelEQ -> Just (\a b -> AFact ACmpEq a b)
-      CPCtor g [] | g == prelGT -> Just (\a b -> AFact ACmpLt b a)
+      CPCtor g _ [] | g == prelLT -> Just (\a b -> AFact ACmpLt a b)
+      CPCtor g _ [] | g == prelEQ -> Just (\a b -> AFact ACmpEq a b)
+      CPCtor g _ [] | g == prelGT -> Just (\a b -> AFact ACmpLt b a)
       _ -> Nothing
 
 compareMatchRelBranchM :: Int -> Term -> CheckM (Maybe AFact)
@@ -14375,7 +14388,7 @@ compareBoolMatch alts = do
     unlessMaybe False = Nothing
 
     compareBoolBranch :: CaseAlt -> Maybe (Text, Bool)
-    compareBoolBranch (CaseAlt (CPCtor g []) Nothing body)
+    compareBoolBranch (CaseAlt (CPCtor g _ []) Nothing body)
       | g == prelLT = (\b -> ("LT", b)) <$> boolBody body
       | g == prelEQ = (\b -> ("EQ", b)) <$> boolBody body
       | g == prelGT = (\b -> ("GT", b)) <$> boolBody body
