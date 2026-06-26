@@ -1,55 +1,123 @@
-# Kappa Runtime Roadmap
+# Kappa Roadmap — the grand plan
 
-The master checklist tying the design documents together so nothing is lost.
-Each item links to the design doc (and spec section) that specifies it, and to
-the measurement that gates it where one exists.
+The single ordered plan for the **kappa-haskell** compiler + runtime, so work
+does not scatter across 20 directions. Each item links to the design doc (and
+spec section) that specifies it, and to the measurement that gates it where one
+exists. This started life as the runtime-only roadmap and is being grown to
+cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
+
+**Two implementations** — keep them straight:
+- **kappa-haskell** (this repo) — the native (C + LLVM) compiler + the kappart2
+  runtime. The one we are building. It currently lowers `Term` (its KCore)
+  *directly* to C/LLVM with no KBackendIR (see the IR-pipeline track).
+- **`../kappa/`** (F#/.NET) — a second, more spec-complete implementation
+  (`KFrontIR.fs` → `KCore.fs` → `KBackendIR.fs` → `KBackendLowering.fs` →
+  CLR). Use it as a **structural reference for the §34.3 stage decomposition
+  ONLY** — its IR-level detail decisions are short-sighted and must NOT be
+  copied. `docs/Spec.md` is the source of truth, not either implementation.
 
 **Design documents**
-- [`CPS-DESIGN.md`](CPS-DESIGN.md) — the do-kernel CPS / continuation rewrite (Stages 0–5, R1–R15).
-- [`UNBOXING-DESIGN.md`](UNBOXING-DESIGN.md) — value-representation specialization (immediate tagging + worker/wrapper).
-- [`PRIMITIVES.md`](PRIMITIVES.md) — the ADD/DERIVE/SKIP analysis of missing concurrency primitives.
-- [`COVERAGE.md`](COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
-- [`DESIGN.md`](DESIGN.md) / [`REVIEW.md`](REVIEW.md) / [`RESEARCH.md`](RESEARCH.md) — the original runtime architecture + 8-lens review.
-- [`bench/README.md`](../bench/README.md) — the perf baseline (`make bench`); the numbers that gate the perf work.
-- `docs/Spec.md` — §18 (effects/fibers/STM), §27 (capabilities/native), §29 (std.atomic/supervisor), §32.2 (runtime state machine).
+- [`Spec.md`](docs/Spec.md) — the normative spec. IR pipeline: §30.2 KCore (the
+  typed kernel), §34.2 KFrontIR, §34.3 KBackendIR (§34.3.1 lowering stages:
+  ERASURE / INHABITANCE / REPRESENTATION_SELECTION / CALL_LOWERING / …). Runtime:
+  §18 (effects/fibers/STM), §27 (capabilities/native), §29 (std.atomic/supervisor),
+  §31 (erasure), §32.2 (runtime state machine).
+- [`LAYOUT-DESIGN.md`](runtime/docs/LAYOUT-DESIGN.md) — the value-layout system
+  (immediate tagging `b010`/`b011`, niche, Direct-tag, the uniform-vs-niche split).
+- [`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md) — value-representation specialization (immediate tagging + worker/wrapper).
+- [`CPS-DESIGN.md`](runtime/docs/CPS-DESIGN.md) — the do-kernel CPS / continuation rewrite (Stages 0–5, R1–R15).
+- [`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md) — the ADD/DERIVE/SKIP analysis of missing concurrency primitives.
+- [`COVERAGE.md`](runtime/docs/COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
+- [`DESIGN.md`](runtime/docs/DESIGN.md) / [`REVIEW.md`](runtime/docs/REVIEW.md) / [`RESEARCH.md`](runtime/docs/RESEARCH.md) — the original runtime architecture + 8-lens review.
+- [`bench/README.md`](runtime/bench/README.md) — the perf baseline (`make bench`); the numbers that gate the perf work.
 
 ---
 
 ## Done ✅
 
-- [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](..).
+- [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
 - [x] **No by-name prim dispatch** — codegen lowers to direct `kp_*`/`kpf_*` calls or curried `K_NATIVE`; `prim_fire_pure`/`K_PRIM` removed.
-- [x] **`std.atomic`** ([`../atomic.c`](../atomic.c)) — real C11 lock-free `AtomicRef`, stress-verified; `rt-atomics` honest.
+- [x] **`std.atomic`** ([`../atomic.c`](runtime/atomic.c)) — real C11 lock-free `AtomicRef`, stress-verified; `rt-atomics` honest.
 - [x] **Single-agent STM from `.kp`** (`TVar`/`atomically` over a cell, matching the interpreter).
 - [x] **CPS Stage 0** — R1 masked finalizer drains, R10 fail-closed `OP_DEFER` (CPS-DESIGN §4, R1/R10).
 - [x] **CPS Stage 1** — real `fork`/`await` suspension from `.kp` (CPS-DESIGN §3.1, Stage 1).
 - [x] **CPS Stage 2 (partial)** — `defer`/do-scope in suspending blocks; fail-closed boundary for not-yet-CPS-able shapes (CPS-DESIGN §3.1/§7, Stage 2).
 - [x] **CPS Stage 3 (partial)** — structured concurrency `newScope`/`forkIn`/`shutdownScope`/`monitor`/`awaitMonitor` from `.kp` (§18.1.8, §32.2.3).
-- [x] **Perf baseline** — [`../bench`](../bench): boxing is the 50× lever (allocation), fork/await ~3.5× a goroutine; CPS indirection is not the dominant cost.
-- [x] **Design docs** — CPS-DESIGN, UNBOXING-DESIGN, PRIMITIVES.
+- [x] **Perf baseline** — [`runtime/bench`](runtime/bench): boxing is the 50× lever (allocation), fork/await ~3.5× a goroutine; CPS indirection is not the dominant cost.
+- [x] **Value layout — uniform immediates + packing** (LAYOUT-DESIGN): immediate Int (`b001`, `addInt` 48→0), nullary-ctor immediates (`b010`, every nullary ctor, `ctor0-build` 48→0), packed single-field ctors (`b011`, `Some smallInt`/`Ok`/`Err`, 48→0), and packed two-field ctors (`b011`, `Pair`/`Cons(small,Nil)`/small `Rational`, 0 B/op). All UNIFORM (explicit discriminant), adversarially verified (corpus 102/102 interp==C==LLVM, sweeps + clean audits).
+- [x] **Erased-type-application native crash FIXED** — `sequence`/`for_`/`traverse` over IO crashed both native backends (`kapp` on a non-function); root cause was an erased type *application* `f a` lowered as `kapp(unit,unit)`. Fixed via the RuntimeErased erasure verdict (types + Q0, never dicts) at the application spine.
+- [x] **Design docs** — Spec, LAYOUT-DESIGN, UNBOXING-DESIGN, CPS-DESIGN, PRIMITIVES.
 
 ---
 
 ## Recommended order
 
-The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
-**§3.3 suspendability/escape analysis** — which is why it is first.
+The plan front-loads the **uniform** wins (sound with no IR scaffolding) and the
+shared **§3.3 suspendability** prerequisite, then makes the one **architecture
+investment** (KBackendIR / representation selection) that unblocks every
+*type-directed* layout (the niche), then finishes the CPS + primitives + perf
+endgame. The big near-term fork is item 6 — until it lands, the niche and clean
+type-directed layout are blocked (see the IR-pipeline track for why).
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
-2. [~] **Unboxing Stage 0** — GC/alignment contract + tag-bit API + Stage-0 go/no-go benches done; only the canonical encoding remains (it folds into Stage 1).
-3. [x] **CPS loop family** — DONE: var/while/break/continue/return in suspending blocks + R7 var-read normalization (`for`/labeled/`using`/`let?` still fail-closed).
-4. [~] **Unboxing Stage 1 / value layout** — immediate-INT (`addInt` 48→0), nullary-ctor immediates (`b010`, ALL nullary ctors, `ctor0-build` 48→0), AND packed single-field ctors (`b011`, `Some smallInt`/`Ok`/`Err` → `packed-build` 48→0) DONE — all uniform, adversarially verified (corpus 90/90, 32-program sweep + clean audit). The non-uniform layouts — niche `Option<boxed>`, full-range `Option<Int>`, multi-field Direct-tag — ride on specialization (Stage 2). See [`LAYOUT-DESIGN.md`](../docs/LAYOUT-DESIGN.md).
-5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
-6. [ ] **General CPS** — `ioBind` expressions (unblocks `join`/`race`/`timeout`).
-7. [ ] **Unboxing Stage 2** — worker/wrapper specialization (`Double`/FFI/fused).
-8. [ ] **Missing primitives** — `onInterrupt`/`onExit`, `FiberRef.modify`, `Promise.poll`, `disconnect`.
-9. [ ] **CPS Stage 4** — effect-handler unification (`KK_HANDLER`).
-10. [ ] **Perf** — fiber/continuation pooling.
-11. [ ] **CPS Stage 5 + Unboxing endgame** — LLVM coroutines + Perceus RC.
+2. [x] **Value layout — uniform immediates + packing** — `b001` Int, `b010` nullary, `b011` single- AND two-field packing. DONE, adversarially verified (corpus 102/102). The NON-uniform layouts (niche, full-range Int) are blocked on item 6, NOT on more runtime work — see [`LAYOUT-DESIGN.md`](runtime/docs/LAYOUT-DESIGN.md).
+3. [x] **CPS loop family** — var/while/break/continue/return in suspending blocks + R7 var-read normalization. DONE (`for`/labeled/`using`/`let?` still fail-closed).
+4. [x] **Erased-type-application native crash fix** — the RuntimeErased erasure verdict (types + Q0, never dicts) at the application spine. DONE.
+5. [~] **Scalar Double worker** (UNBOXING §7 Stage 1.5 + 2b) — the per-binding transitive may-suspend witness (a C-local `double` is lost across a fiber park), then the `kwd_` Double worker with FP pinned (`-ffp-contract=off`). Kills the `addDouble` 48 B/op box. IN PROGRESS.
+6. [ ] **KBackendIR slice — INHABITANCE + REPRESENTATION_SELECTION** (§34.3) — **the architecture investment.** Introduce a representation-typed backend IR between KCore (`Term`) and the C/LLVM emitter, choosing layouts/tags/reps at compile time with type + inhabitance info, instead of the current ad-hoc runtime packing + hand-rolled scalar worker. Pairs with a **Core/KBackendIR Lint** (catches the erasure-bug class; realizes "verified at Core"). THE home for items 7. See the IR-pipeline track.
+7. [ ] **Niche `Option<boxed>` + full-range `Option<Int>`** — the headline non-uniform layout wins; ride on item 6 (need the concrete type at construct/match + a coercion at mono/poly boundaries).
+8. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
+9. [ ] **Missing primitives** — `onInterrupt`/`onExit`, `FiberRef.modify`, `Promise.poll`, `disconnect`.
+10. [ ] **CPS Stage 4** — effect-handler unification (`KK_HANDLER`).
+11. [ ] **Perf** — fiber/continuation pooling.
+12. [ ] **Spec coverage** — the not-yet-implemented spec surfaces, surveyed + ordered (see the Spec-coverage track; to be populated).
+13. [ ] **CPS Stage 5 + Unboxing endgame** — LLVM coroutines + Perceus RC.
 
 ---
 
-## Track: CPS do-kernel rewrite ([`CPS-DESIGN.md`](CPS-DESIGN.md))
+## Track: Compiler IR pipeline & representation selection (the architecture)
+
+**The gap.** The Spec mandates `KFrontIR` (§34.2) → **KCore** (§30.2, the typed
+kernel) → **KBackendIR** (§34.3); KCore→KBackendIR runs §34.3.1's conceptual
+stages, including **`INHABITANCE`** (shape summaries "consulted by representation
+selection") and **`REPRESENTATION_SELECTION`** ("choose runtime representation
+classes, layouts, and tag encodings for data, variants, records, dictionaries,
+…"). kappa-haskell has **no KBackendIR**: `Backend/C.hs` lowers `Term` (its
+KCore) directly to C/LLVM, doing representation selection **at runtime, per
+value** (`kctor`: argc/fit → `b010`/`b011`/boxed) plus a hand-rolled scalar-worker
+analysis. That is sound + ideal for **uniform** reps (explicit discriminant,
+decodable blind) but **structurally cannot do type-directed layout** — the niche
+`Some p = p` needs the concrete type at the construct/match site, a compile-time
+decision. `Term` is only partially annotated (`CPi`/`CLet` carry types;
+`CLam`/`CCtor`/`CMatch`/`CPCtor` do not — Core.hs), and there is no Core re-checker.
+This track is the one big architecture investment; **scope it as its own effort
+first** (the §34.3 stages × what `Backend/C.hs` does today × the minimal
+niche-unblocking slice) before implementing.
+
+- [ ] **Representation-node type annotations** — thread the concrete head type
+      onto `CCtor`/`CMatch`/`CPCtor` (and ideally `CLam`) from `Check.hs`, the way
+      `CLet`/`CPi` already carry types. The minimal enabler for BOTH the Lint and
+      representation selection.
+- [ ] **KBackendIR slice: `INHABITANCE` + `REPRESENTATION_SELECTION`** (§34.3.1) —
+      a representation-typed backend IR between KCore and the emitter; per-type
+      layout/tag/rep chosen at compile time with type + inhabitance info. Subsumes
+      the ad-hoc runtime `kctor` packing AND the hand-rolled `scalarPlan` worker
+      analysis under one principled pass. Structural reference ONLY (never its
+      detail): `../kappa/` `KBackendIR.fs` (rep-annotated nodes +
+      `KBackendDataLayout`/`KBackendConstructorLayout`) + `KBackendLowering.fs`.
+- [ ] **Core / KBackendIR Lint** — an independent re-checker of the typed IR.
+      Would have caught the erased-type-application crash (`apply unit to unit` is
+      ill-typed) at compile time; realizes "formally verified at Core level."
+      Sequence: annotate nodes → Lint → niche rides on it.
+- [ ] **Niche `Option<boxed>` = bare pointer + full-range `Option<Int>`**
+      (LAYOUT-DESIGN classes 2 & 3 over boxed/large payloads) — the non-uniform
+      layout wins; need REPRESENTATION_SELECTION + a coercion-insertion pass (box a
+      niche value when it escapes into polymorphic code). DEFERRED until the slice
+      exists.
+
+---
+
+## Track: CPS do-kernel rewrite ([`CPS-DESIGN.md`](runtime/docs/CPS-DESIGN.md))
 
 - [x] **§3.3 suspendability analysis** (CPS-DESIGN §3.3, "Stage 1.5") — DONE: `suspenderGlobals` call-graph closure in `C.hs`; transitive user-helper forks work (`fork-transitive` case). Replace the
       flat syntactic `suspendingNames` spine-head check (`C.hs`) with a sound
@@ -155,7 +223,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       scope.c) is consolidated and the dead `ctor1`/`ctor2` removed.
 - [ ] **`atomically`/`retry` real parking** (§18.1.13). Switch the single-agent
       `Ref` STM shim to the journaled `krt2_atomically`/`OP_ATOMICALLY` so
-      transactions park + retry across fibers ([`../stm.c`](../stm.c) already implements it).
+      transactions park + retry across fibers ([`../stm.c`](runtime/stm.c) already implements it).
 - [ ] **Stage 4 — effect-handler unification** (CPS-DESIGN §2, Stage 4). One
       `KK_HANDLER` prompt frame; `perform`/`resume` reuse `deliver`/`unwind`.
       Depends on R1 (done). `rt-multishot` behind the compile-time escape-check.
@@ -164,7 +232,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ---
 
-## Track: Value unboxing ([`UNBOXING-DESIGN.md`](UNBOXING-DESIGN.md))
+## Track: Value unboxing ([`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md))
 
 - [~] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7).
       GC/alignment **CONTRACT now ENFORCED in the runtime** (`krt_init`, kappart.c):
@@ -211,7 +279,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ---
 
-## Track: Missing primitives ([`PRIMITIVES.md`](PRIMITIVES.md))
+## Track: Missing primitives ([`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md))
 
 - [ ] **`onInterrupt`/`onExit`** — finalizer receiving the exit Reason; small
       extension of `KK_FINSEQ` (which already carries the Reason). PRIMITIVES #2.
@@ -227,7 +295,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 
 ---
 
-## Track: Performance ([`bench/README.md`](../bench/README.md))
+## Track: Performance ([`bench/README.md`](runtime/bench/README.md))
 
 - [ ] **Fiber/continuation pooling** — the fork path allocates 832 B/op
       (`sizeof(Fiber)=200`, ~64 of which is the per-fiber `pthread_mutex`).
@@ -237,3 +305,25 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       turns the per-bind/continuation allocation into a reuse/in-place write.
       The endgame for the suspension path; needs the §3.3/unboxing ptr-vs-scalar map.
 - [ ] Keep `make bench` green as a non-regression gate from each stage.
+
+---
+
+## Track: Spec coverage — not-yet-implemented surfaces (to be populated)
+
+To make this roadmap hold *all* the tasks, the remaining work is a survey of
+[`docs/Spec.md`](docs/Spec.md) against kappa-haskell's implementation status.
+**Next planning step: run that survey and fold the missing tracks here in
+dependency order.** Areas to assess (done / partial / missing), each against its
+spec section + the corresponding source:
+
+- §11 universes / classifiers / rows / **propositions** (`IsProp`/`RuntimeErased`);
+  §12 quantities / borrow / erasure justifications; §13 sealed packages /
+  signatures / existentials; §14 traits / coherence / **specialization** (ties to
+  the IR-pipeline track); §15 termination / refinement evidence; §16 implicits /
+  closure capture; §17 match / refinement / erased scrutinees; §19 resources /
+  scopes (`using`); §20 queries / collection lowering; §21–23 metaprogramming /
+  quotes / reflection; §26–27 native / capabilities / FFI / bridge contracts;
+  §28 effectful traversal; §29 std.atomic / supervisor; §30 KCore surfaces; §31
+  erasure; §33 gradual / `DynRep`; §34 compilation / IRs / tooling / backends.
+- Cross-cutting: the diagnostic catalogue (the `E_*` codes) — which are emitted
+  vs missing — is a concrete coverage signal worth a pass of its own.
