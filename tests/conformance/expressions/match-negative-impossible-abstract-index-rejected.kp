@@ -1,0 +1,27 @@
+module main
+
+-- Kappa analogue: §30.2.7 soundness under an ABSTRACT (rigid/free) GADT index.
+-- `Tag b` is inhabited for every concrete `b` (TT at True, FF at False), so the
+-- inhabitance verdict under the free skolem `b` must be Unknown, never Empty. A
+-- whole-match `case impossible` is therefore reachable and MUST be rejected: the
+-- ctor result indices (Tag True / Tag False) fail to unify with the rigid `b`,
+-- but that failure means "absent for THIS instantiation", not "empty for all".
+-- (The exploit: accepting this lets `bad TT` instantiate b := True with the real
+-- inhabitant TT and run `impossible` over a reachable value.)
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode check
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+-- NEGATIVE: the remaining scrutinee type `Tag b` is NOT uninhabited under the
+-- abstract index, so `case impossible` is rejected.
+bad : forall (b : Bool). Tag b -> Int
+let bad t =
+    match t
+    case impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|uninhabited

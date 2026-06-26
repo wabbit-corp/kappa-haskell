@@ -1,0 +1,35 @@
+module main
+
+-- Kappa analogue: the soundness fix must NOT over-reject the GROUND-index case.
+-- Under a CONCRETE `Box Z` scrutinee, `Suc : Box (S n)` cannot unify `S n` with
+-- the ground index `Z` (a real no-confusion contradiction), so its refined fiber
+-- IS Empty: both omitting `Suc` (exhaustiveness) and `Suc -> impossible`
+-- (reachability) remain accepted. This locks the rigid-vs-ground distinction.
+-- Spec: §17.1.1, §17.1.4, §30.2.7
+
+--! mode check
+
+data Peano : Type =
+    Z
+    S Peano
+
+data Box (n : Peano) : Type =
+    Zero : Box Z
+    Suc : Box (S n)
+
+-- POSITIVE: omitting the Empty-fibered `Suc` arm is exhaustive under `Box Z`.
+useZeroOmit : Box Z -> Int
+let useZeroOmit b =
+    match b
+      case Zero -> 0
+
+-- POSITIVE: `Suc -> impossible` is accepted — its fiber is Empty under `Box Z`.
+useZeroImpossible : Box Z -> Int
+let useZeroImpossible b =
+    match b
+      case Zero -> 0
+      case Suc -> impossible
+
+--! assertNoErrors
+--! assertType useZeroOmit Box Z -> Int
+--! assertType useZeroImpossible Box Z -> Int

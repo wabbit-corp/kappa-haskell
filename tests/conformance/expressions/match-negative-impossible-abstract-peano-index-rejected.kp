@@ -1,0 +1,29 @@
+module main
+
+-- Kappa analogue: §30.2.7 soundness under a length-style ABSTRACT Peano index.
+-- `Suc : Box (S n)` is a real inhabitant of `Box m` (at m := S n), so under the
+-- free skolem `m` its refined fiber is Unknown, not Empty. `case Suc ->
+-- impossible` is therefore reachable and MUST be rejected; the `S n`-vs-rigid-`m`
+-- unify-failure must NOT be read as a no-confusion contradiction. (Exploit:
+-- accepting it lets `absurdSuc Suc` run `impossible` over a reachable `Suc`.)
+-- Spec: §17.1.4, §30.2.7
+
+--! mode check
+
+data Peano : Type =
+    Z
+    S Peano
+
+data Box (n : Peano) : Type =
+    Zero : Box Z
+    Suc : Box (S n)
+
+-- NEGATIVE: `Suc -> impossible` is rejected under abstract `m` — Suc is reachable.
+absurdSuc : forall (m : Peano). Box m -> Int
+let absurdSuc b =
+    match b
+      case Zero -> 0
+      case Suc -> impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|unreachable

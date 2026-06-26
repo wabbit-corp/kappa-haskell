@@ -1,0 +1,24 @@
+module main
+
+-- Kappa analogue: §17.1.4 per-arm `-> impossible` under an ABSTRACT GADT index.
+-- `FF : Tag False` is a genuine inhabitant of `Tag b` (at b := False), so under
+-- the free skolem `b` its refined fiber is Unknown, not Empty. `case FF ->
+-- impossible` is therefore reachable and MUST be rejected. Concluding Empty from
+-- the `Tag False`-vs-rigid-`b` unify-failure is the §30.2.7 soundness bug.
+-- Spec: §17.1.4, §30.2.7
+
+--! mode check
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+-- NEGATIVE: `FF -> impossible` is rejected — FF is reachable under abstract `b`.
+bad : forall (b : Bool). Tag b -> Int
+let bad t =
+    match t
+      case TT -> 1
+      case FF -> impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|reachable|unreachable
