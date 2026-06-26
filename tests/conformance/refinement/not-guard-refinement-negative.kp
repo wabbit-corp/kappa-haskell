@@ -1,0 +1,20 @@
+module main
+
+-- §16.4.2 NEGATIVE: the `not` swap is real, not a blanket accept. In the
+-- ELSE-branch of `not (c is Hole)` the subject is refined to {Hole} (which has
+-- no `val` field), so projecting `c.val` there must still be rejected. This
+-- locks the then/else direction of the negation: had `not` been ignored or both
+-- branches refined to {Full}, `c.val` would wrongly type.
+-- Spec: §16.4.2, §7.4.1
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readWrongBranch : Cell -> Int
+let readWrongBranch c =
+    if not (c is Hole) then 0 else c.val

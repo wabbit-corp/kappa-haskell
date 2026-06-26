@@ -1,0 +1,23 @@
+module main
+
+-- §16.4.2 POSITIVE: `not e` swaps the branch refinements
+-- (`if not a then t else f ≡ if a then f else t`). So `not (c is Hole)` refines
+-- `c` to the complement {Full} in the then-branch, and `c.val` projects there.
+-- The else-branch refines `c` to {Hole}. Before this fix `condRefines` had no
+-- `not` case, so neither branch refined `c`.
+-- Spec: §16.4.2, §7.4.1
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n"
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readNotHole : Cell -> Int
+let readNotHole c =
+    if not (c is Hole) then c.val else 0
+
+main : UIO Unit
+let main = printlnString (showInt (readNotHole (Full 5)))

@@ -1,0 +1,26 @@
+module main
+
+-- §16.4.1 POSITIVE: after `c is Full`, the scrutinee is flow-refined to the
+-- {Full} subset, so a `match c` covering only `Full` IS exhaustive — the
+-- omitted `Hole` arm is not reachable on the refined value. Before this fix the
+-- match was wrongly reported E_PATTERN_NON_EXHAUSTIVE because exhaustiveness
+-- consulted the full constructor set and ignored `ctxRefines`.
+-- Spec: §16.4.1, §7.4.1
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n"
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readRefined : Cell -> Int
+let readRefined c =
+    if c is Full then
+      match c
+        case Full v -> v
+    else 0
+
+main : UIO Unit
+let main = printlnString (showInt (readRefined (Full 7)))

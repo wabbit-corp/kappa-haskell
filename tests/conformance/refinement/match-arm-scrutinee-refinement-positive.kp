@@ -1,0 +1,25 @@
+module main
+
+-- §17.1.7 POSITIVE: a `match` arm flow-refines a variable scrutinee to that
+-- arm's constructor, mirroring `if … is C`. So inside the `Full` arm the
+-- scrutinee `b` is refined to {Full}, and member projection on the scrutinee
+-- itself (`b.val`) resolves. Before this fix `goCase` recorded only `csFacts`
+-- and never `ctxRefines`, so `b.val` failed E_UNRESOLVED_MEMBER.
+-- Spec: §17.1.7, §7.4.1
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "9\n"
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+readArm : Cell -> Int
+let readArm b =
+    match b
+      case Full v -> b.val
+      case Hole -> 0
+
+main : UIO Unit
+let main = printlnString (showInt (readArm (Full 9)))
