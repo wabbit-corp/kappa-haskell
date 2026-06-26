@@ -1,0 +1,23 @@
+-- §16.4.2 SOUNDNESS PIN: the `else`-suite gets ONLY the negation of the
+-- conditions, nothing more. Here the guard is `flag`, so the else knows
+-- `flag = False`, which says NOTHING about the order of x and y. The
+-- checked-subtraction obligation `subDefined x y` is therefore genuinely
+-- unprovable and MUST still be REQUIRED (not silently discharged).
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doElseUnprovable : Nat -> Nat -> Bool -> UIO Unit
+let doElseUnprovable x y flag = do
+    if flag then
+        printlnString "flag"
+    else
+        let d = consume (x - y) --!! E_UNSOLVED_IMPLICIT
+        printlnString "no-proof"

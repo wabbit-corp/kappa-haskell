@@ -9839,25 +9839,64 @@ elabDoIOItems mlabel _sp ctx mexp items = do
         DoIf alts mels _ -> do
           -- §7.4.1: `x is C` conditions refine their subject inside the
           -- guarded suite
-          alts' <- forM alts $ \(cond, body) -> do
-            refs <- condRefines c cond
-            let cR = refineCtx refs c
-            condTm <- check cR (desugarBang cond) (VGlobN prelBool [])
-            -- §16.4.2: the condition holds while checking its then-suite,
-            -- so push it as boolean evidence (the §3.2.3 proof source the
-            -- if-expression path already feeds), e.g. so
-            -- `do { if y <= x then consume (x - y) }` discharges the
-            -- checked-subtraction obligation. This is sound per-alt: a
-            -- body runs only when its own condition evaluated True. The
-            -- else-suite and the elif preceding-conditions-false facts
-            -- need accumulated-negation threading, and a `while` condition
-            -- needs §18.6.2 versioned `var`s — both deferred.
-            oldBool <- gets csBoolFacts
-            modify' $ \st -> st {csBoolFacts = (condTm, True) : csBoolFacts st}
-            bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
-            modify' $ \st -> st {csBoolFacts = oldBool}
-            pure (condTm, bodyKs)
-          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
+          --
+          -- §16.4.2/§18.6.2: an `if`/`elif` chain in the IO do-kernel tests
+          -- its conditions in order, with no user code running between two
+          -- conditions and no loop back-edge into the chain. So when
+          -- `alt_k`'s suite runs, every earlier condition `c_1 … c_{k-1}`
+          -- evaluated False and `c_k` evaluated True, all at the chain's
+          -- single straight-line test sequence. We therefore thread the
+          -- accumulated negation `¬c_1 ∧ … ∧ ¬c_{k-1}` (as `(c_i, False)`
+          -- boolean evidence and as the §7.4.1 complement refinements of
+          -- each earlier `x is C`) into `alt_k`'s suite alongside its own
+          -- `(c_k, True)`. The trailing `else` gets `¬c_1 ∧ … ∧ ¬c_n`. Each
+          -- such fact is provably true on the branch it is pushed into: the
+          -- per-alt `(c_k, True)` is exactly the existing sound then-suite
+          -- fact, and a negation is sound under exactly the same conditions
+          -- (same straight-line, back-edge-free chain). The `var`-staleness
+          -- caveat is the same one the then-suite already lives under: a
+          -- `DoWhile` body's loop back-edge (§18.6.2 line 21088) would make
+          -- a naive `var`-condition fact STALE, which is why `DoWhile` does
+          -- NOT push condition facts at all and needs versioned
+          -- `VarCurrent(x,n)` representatives — deliberately left untouched.
+          -- 'goAlts' threads the accumulated false-evidence forward and
+          -- returns it (as 'elseBool'/'elseCtx') so the trailing else suite
+          -- can reuse the same facts without re-elaborating the conditions.
+          let goAlts accBool accCtx [] = pure ([], accBool, accCtx)
+              goAlts accBool accCtx ((cond, body) : moreAlts) = do
+                -- positive refinements of THIS condition, on top of the
+                -- complement refinements accumulated from earlier conditions
+                refs <- condRefines accCtx cond
+                let cR = refineCtx refs accCtx
+                condTm <- check cR (desugarBang cond) (VGlobN prelBool [])
+                -- this suite runs with `c_k` True and every earlier `c_i`
+                -- False, so both kinds of fact hold (§3.2.3 proof source)
+                oldBool <- gets csBoolFacts
+                modify' $ \st ->
+                  st {csBoolFacts = (condTm, True) : accBool ++ csBoolFacts st}
+                bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
+                modify' $ \st -> st {csBoolFacts = oldBool}
+                -- thread this condition's FALSE evidence into the remaining
+                -- elif suites and the final else: `accCtx` for the §7.4.1
+                -- complement refinements (`condRefinesElse accCtx cond`,
+                -- mirroring the if-expression else-branch), `accBool` for the
+                -- bare `(condTm, False)` boolean fact
+                negs <- condRefinesElse accCtx cond
+                let accCtx' = refineCtx negs accCtx
+                    accBool' = (condTm, False) : accBool
+                (restAlts, elseBool, elseCtx) <- goAlts accBool' accCtx' moreAlts
+                pure ((condTm, bodyKs) : restAlts, elseBool, elseCtx)
+          (alts', elseBool, elseCtx) <- goAlts [] c alts
+          elsKs <-
+            traverse
+              ( \body -> do
+                  oldBool <- gets csBoolFacts
+                  modify' $ \st -> st {csBoolFacts = elseBool ++ csBoolFacts st}
+                  ks <- goItems loops elseCtx errT (VGlobN prelUnit []) body
+                  modify' $ \st -> st {csBoolFacts = oldBool}
+                  pure ks
+              )
+              mels
           -- §8.2.2A postdominating refinement: when every branch except
           -- one completes abruptly, the surviving branch's facts hold
           -- for the rest of this do-scope

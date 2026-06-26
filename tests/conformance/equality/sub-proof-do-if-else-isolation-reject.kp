@@ -1,0 +1,23 @@
+-- §16.4.2 SOUNDNESS PIN: the `else`-suite negated fact must NOT leak past the
+-- `if` into the rest of the do-scope. Neither branch here is abrupt, so no
+-- §8.2.2A postdominating refinement survives the join; after the conditional,
+-- the order of x and y is unknown again and the trailing `x - y` is rejected.
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doElseLeak : Nat -> Nat -> UIO Unit
+let doElseLeak x y = do
+    if ltInt (natToInt x) (natToInt y) then
+        printlnString "lt"
+    else
+        printlnString "ge"
+    let d = consume (x - y) --!! E_UNSOLVED_IMPLICIT
+    printlnString "after"

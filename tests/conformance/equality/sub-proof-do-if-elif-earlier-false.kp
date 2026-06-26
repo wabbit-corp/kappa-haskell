@@ -1,0 +1,24 @@
+-- §16.4.2/§18.6.2: in an `elif` suite, every EARLIER condition evaluated
+-- False (the chain tests conditions in straight-line order with no user code
+-- between them and no loop back-edge), so the accumulated negation is threaded
+-- into the later suite. Here the second suite uses the FIRST condition
+-- `(x < y) = False` ⟹ `y <= x` to discharge `subDefined x y`, even though its
+-- OWN guard `flag` says nothing about the order of x and y.
+--! assertNoErrors
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doElifEarlierOk : Nat -> Nat -> Bool -> UIO Unit
+let doElifEarlierOk x y flag = do
+    if ltInt (natToInt x) (natToInt y) then
+        printlnString "lt"
+    elif flag then
+        let d = consume (x - y)
+        printlnString "elif-uses-earlier-false"
