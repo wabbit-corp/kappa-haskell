@@ -1,0 +1,47 @@
+module main
+
+-- RUN-MODE regression for the §17.1 existential-GADT-index inhabitance fix.
+--
+-- Unpacking `MkP : forall (s : Bool). Tag s -> P` binds an existential index `s`
+-- (not pinned by the result type `P`) as a fresh rigid skolem. The skolem must
+-- occupy a real de Bruijn slot in the arm's elaboration context so the inner
+-- `match y` sees `Tag s` abstract (keeping the §30.2.7 soundness query correct).
+--
+-- The runtime de Bruijn layout MUST match: the emitted constructor pattern
+-- carries the existential-skolem count so the interpreter and BOTH native
+-- backends push the same placeholder slot UNDER the field binder. Without it,
+-- every index in the arm body that refers to an OUTER-bound variable (here `w`)
+-- is inflated by one with no matching runtime binder — the program type-checks
+-- but then crashes (`lookupEnv: de Bruijn index N out of range`) or, worse,
+-- silently reads the wrong slot.
+--
+-- This is the exact gap the original fix left: a `--! mode check` test caught the
+-- soundness but no RUN-MODE test exercised an arm body referencing an outer
+-- variable across the skolem binder. The arm returns `w` (an outer parameter), so
+-- a wrong layout would print the wrong number or crash instead of `7`.
+-- Spec: §17.1.4, §17.1.5, §30.2.7
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n"
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+data P : Type =
+    MkP : forall (s : Bool). Tag s -> P
+
+-- both inner arms return the OUTER parameter `w`; its de Bruijn index in the arm
+-- body sits ABOVE the existential skolem, so the runtime must account for the
+-- skolem slot for `w` to resolve to 7.
+use : Int -> P -> Int
+let use w p =
+    match p
+      case MkP y ->
+        match y
+          case TT -> w
+          case FF -> w
+
+main : UIO Unit
+let main = printlnString (showInt (use 7 (MkP TT)))

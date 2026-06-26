@@ -175,7 +175,9 @@ patBindersC = \case
   CPWild -> 0
   CPVar _ -> 1
   CPLit _ -> 0
-  CPCtor _ ps -> sum (map patBindersC ps)
+  -- @nEx@ existential-skolem placeholder slots (§17.1) sit below the field
+  -- binders; they push real runtime slots, so they count.
+  CPCtor _ nEx ps -> nEx + sum (map patBindersC ps)
   CPTuple ps -> sum (map patBindersC ps)
   CPRecord fs rest -> sum (map (patBindersC . snd) fs) + case rest of
     Just nm | not (T.null nm) -> 1

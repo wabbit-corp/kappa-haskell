@@ -246,7 +246,18 @@ data CorePat
   = CPWild
   | CPVar !Text
   | CPLit !Literal
-  | CPCtor !GName ![CorePat]
+  | -- | A constructor pattern @C p₁ … pₖ@. The @Int@ is the number of EXISTENTIAL
+    -- GADT-index skolems the unpack binds (§17.1): @MkP : forall s. Tag s -> P@
+    -- binds an existential @s@ not pinned by the result type, which the checker
+    -- promotes to a rigid skolem occupying a real de Bruijn slot in the arm's
+    -- elaboration context (see 'Kappa.Check.ctorFieldTypesCtx'). Those skolems sit
+    -- BELOW the field binders in the de Bruijn order, so the runtime must push the
+    -- same N placeholder slots (one erased unit per skolem) UNDER the field values
+    -- — otherwise every index in the arm body referring to an outer-bound variable
+    -- is inflated by N with no matching runtime binder. The placeholders are never
+    -- read (a skolem is an erased type); the slots only keep the OTHER indices
+    -- correct. @0@ for an ordinary (non-existential) constructor pattern.
+    CPCtor !GName !Int ![CorePat]
   | CPTuple ![CorePat]
   | CPRecord ![(Text, CorePat)] !(Maybe Text)
   -- ^ fields, optional rest binder (binds the remaining fields; @Just ""@

@@ -342,9 +342,9 @@ tryReduceMatch ctx scrut alts env = tryAlts alts
     -- out the whole alternative (e.g. @_ :: y :: _@ vs @1 :: Nil@).
     definitelyNoMatch pat v0 = case (pat, force ctx v0) of
       -- a rigid known to lack the constructor cannot match it (§7.4.1)
-      (CPCtor g _, VRigid l _)
+      (CPCtor g _ _, VRigid l _)
         | Just (FactNot gs) <- Map.lookup l (ecFacts ctx) -> g `elem` gs
-      (CPCtor g ps, VCtor g' args) ->
+      (CPCtor g _ ps, VCtor g' args) ->
         g /= g'
           || ( length ps <= length args
                  && or
@@ -374,9 +374,15 @@ matchPat ctx pat v0 =
         (CPWild, _) -> Just []
         (CPVar _, _) -> Just [v]
         (CPLit l, VLit l') | l == l' -> Just []
-        (CPCtor g ps, VCtor g' args)
+        (CPCtor g nEx ps, VCtor g' args)
           | g == g', length ps <= length args ->
-              concatM [matchPat ctx p a | (p, a) <- zip ps (drop (length args - length ps) args)]
+              -- §17.1: the @nEx@ existential-skolem slots come FIRST (so after the
+              -- caller's @reverse binds@ they land BELOW the field binders, exactly
+              -- where 'ctorFieldTypesCtx' bound the skolems). They are erased types
+              -- never read at runtime; a unit placeholder keeps the slot count and
+              -- ordering aligned with the arm body's de Bruijn indices.
+              (replicate nEx (VRecordV []) ++)
+                <$> concatM [matchPat ctx p a | (p, a) <- zip ps (drop (length args - length ps) args)]
         (CPTuple ps, VRecordV fs)
           | length ps == length fs ->
               concatM [matchPat ctx p a | (p, (_, a)) <- zip ps fs]

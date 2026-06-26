@@ -227,7 +227,7 @@ simplifyDecisionTerm = go
       (CPWild, _) -> Just True
       (CPVar _, _) -> Just True
       (CPLit l, CLit l') -> Just (l == l')
-      (CPCtor g ps, CCtor g' _ as)
+      (CPCtor g _ ps, CCtor g' _ as)
         | g /= g' -> Just False
         | length ps == length as -> allDecisions (zipWith simplePatDecision ps as)
         | otherwise -> Just False

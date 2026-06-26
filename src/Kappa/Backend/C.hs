@@ -946,7 +946,9 @@ typeScalarKinds g n = do
       CPWild -> 0
       CPVar _ -> 1
       CPLit _ -> 0
-      CPCtor _ ps -> sum (map patBinders ps)
+      -- §17.1: @nEx@ existential-skolem placeholder slots sit below the field
+      -- binders and push real runtime slots (see 'patBindings'); count them.
+      CPCtor _ nEx ps -> nEx + sum (map patBinders ps)
       CPTuple ps -> sum (map patBinders ps)
       CPRecord fs mr -> sum (map (patBinders . snd) fs) + maybe 0 (const 1) mr
       CPInject _ p -> patBinders p
@@ -2807,7 +2809,7 @@ consumeMatch sink scrut alts = do
 orReordered :: CorePat -> Bool
 orReordered = \case
   CPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReordered ps
-  CPCtor _ ps -> any orReordered ps
+  CPCtor _ _ ps -> any orReordered ps
   CPTuple ps -> any orReordered ps
   CPRecord fs _ -> any (orReordered . snd) fs
   CPInject _ p -> orReordered p
@@ -2831,7 +2833,7 @@ expandTopOr (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePat pat]
 distributePat :: CorePat -> [CorePat]
 distributePat = \case
   CPOr ps _ -> concatMap distributePat ps
-  CPCtor g ps -> [CPCtor g qs | qs <- mapM distributePat ps]
+  CPCtor g nEx ps -> [CPCtor g nEx qs | qs <- mapM distributePat ps]
   CPTuple ps -> [CPTuple qs | qs <- mapM distributePat ps]
   CPRecord fs rest ->
     let (names, pats) = unzip fs
@@ -2887,7 +2889,7 @@ patTest v = \case
     case le of
       Just lv -> pure (Just ("klit_eq(" <> v <> ", " <> lv <> ")"))
       Nothing -> pure (Just "0") -- unsupported literal: never matches (error already recorded)
-  CPCtor g ps -> do
+  CPCtor g _ ps -> do
     let nps = length ps
     subs <- forM (zip [0 ..] ps) $ \(i, p) ->
       patTest (ctorArgExpr v nps i) p
@@ -2970,7 +2972,9 @@ bindsNothing :: CorePat -> Bool
 bindsNothing = \case
   CPWild -> True
   CPLit _ -> True
-  CPCtor _ ps -> all bindsNothing ps
+  -- @nEx@ skolem placeholder slots ARE bindings, so a ctor pattern with
+  -- existentials does not "bind nothing".
+  CPCtor _ nEx ps -> nEx == 0 && all bindsNothing ps
   CPTuple ps -> all bindsNothing ps
   CPOr ps _ -> all bindsNothing ps
   CPInjectRest _ -> True
@@ -2987,9 +2991,15 @@ patBindings = go
       CPLit _ -> []
       CPVar _ -> [v]
       CPAs _ p -> v : go v p
-      CPCtor _ ps ->
+      CPCtor _ nEx ps ->
+        -- §17.1: the @nEx@ existential-skolem slots come FIRST, so after the
+        -- match path reverses the binding list they land BELOW the field binders
+        -- — exactly where 'ctorFieldTypesCtx' bound the skolems. They are erased
+        -- types never read at runtime; @kunit()@ is the placeholder (mirrors the
+        -- interpreter's 'VRecordV []' and the LLVM backend's unit placeholder).
         let nps = length ps
-         in concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
+         in replicate nEx "kunit()"
+              ++ concat [go (ctorArgExpr v nps i) p | (i, p) <- zip [0 ..] ps]
       CPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
       -- §17.2.5: named-field bindings, then (if a non-discard rest binder)
       -- the remaining fields as a narrower record — matchPat's order.
