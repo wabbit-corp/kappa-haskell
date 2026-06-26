@@ -39,7 +39,6 @@ module Kappa.Backend.Repr
   ( -- * Runtime representation classes
     Rep (..)
   , scalarRep
-  , scalarRepName
 
     -- * Static constructor layout
   , CtorLayout (..)
@@ -57,8 +56,8 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Kappa.Builtins (builtinCtorTagId, kctUserBase)
-import Kappa.Core (GName (..), Value (..), gKey)
+import Kappa.Builtins (builtinCtorTagId, gPrel, kctUserBase, prelDouble, prelInt, prelInteger, prelNat)
+import Kappa.Core (GName, Value (..), gKey)
 
 -- ── Runtime representation classes ───────────────────────────────────
 --
@@ -95,34 +94,37 @@ data Rep
 -- backend's @scalarHeadKindV@ wraps: a head whose type constructor is one of
 -- the primitive numeric types is unboxed; everything else stays boxed.
 --
--- It matches ONLY the bare, fully-applied primitive type heads
--- (@VGlobN T []@) the runtime gives a dedicated immediate encoding.  A type
--- with arguments (@List Int@, @Option a@) or any other head is 'RepBoxed' —
--- exactly the conservative classification @scalarHeadKindV@ made, so the
--- existing scalar-worker eligibility is unchanged.
+-- It matches ONLY a bare, fully-applied primitive type head (@VGlobN T []@); a
+-- type with arguments (@List Int@, @Option a@) or any other head is 'RepBoxed' —
+-- the conservative classification @scalarHeadKindV@ made, so the existing
+-- scalar-worker eligibility is unchanged.
 scalarRep :: Value -> Rep
 scalarRep = \case
-  -- Match the bare NAME field of the type head, NOT 'gKey' — a prelude type's
-  -- 'gKey' is its QUALIFIED key (@"std.prelude.Double"@), whereas the historical
-  -- @scalarHeadKindV@ pattern-matched on the GName's short spelling (@"Double"@).
-  -- Keying on 'gKey' here silently classified every primitive as 'RepBoxed',
-  -- regressing the Int/Double scalar workers to allocation (R2.2/R2.4/tailsum/
-  -- scalar_doubleloop). (Ctor tag ids elsewhere DO key on 'gKey' — that is
-  -- correct for them; this is the one place the bare name is the right key.)
-  VGlobN (GName _ nm) [] -> scalarRepName nm
+  VGlobN g [] | Just r <- primScalarRep g -> r
   _ -> RepBoxed
 
--- | The representation a primitive type's BARE NAME (its short spelling, the
--- @Text@ field of the 'GName' — NOT its qualified 'gKey') denotes. Factored out
--- so a caller that already has the name (not a 'Value') can consult the same
--- table.  The name set mirrors the C backend's historical @scalarHeadKindV@
--- exactly: @Int@/@Nat@/@Integer@ are int-represented, @Float@/@Double@ are
--- double-represented, everything else is boxed.
-scalarRepName :: Text -> Rep
-scalarRepName nm
-  | nm `elem` ["Int", "Nat", "Integer"] = RepInt
-  | nm `elem` ["Float", "Double"] = RepDouble
-  | otherwise = RepBoxed
+-- | The scalar representation of a primitive type's DECLARATION-SYMBOL IDENTITY.
+--
+-- Spec §1.2 (\"Typed compiler artifacts, not stringly-typed compilation\"):
+-- after @BODY_RESOLVE@, \"every resolved reference MUST target a declaration
+-- symbol, semantic object identity, … It MUST NOT target a spelling string.\"
+-- So this classifies by 'GName' EQUALITY against the canonical prelude type
+-- globals — which compares the MODULE-QUALIFIED identity — never by surface
+-- name.  A user type named @Double@ declared in another module is a different
+-- 'GName' and correctly stays 'RepBoxed'; the bare-name match this replaced
+-- would have mis-unboxed it (and an earlier 'gKey' spelling match dropped the
+-- workers entirely — both were spelling-string keys this avoids).
+primScalarRep :: GName -> Maybe Rep
+primScalarRep g
+  | g `elem` intIds = Just RepInt
+  | g `elem` dblIds = Just RepDouble
+  | otherwise = Nothing
+  where
+    intIds = [prelInt, prelNat, prelInteger]
+    -- @Float@ is the transparent prelude alias @type Float = Double@; the
+    -- elaborator unfolds it to @Double@ before this point, so 'prelDouble'
+    -- normally suffices — matching the alias identity too is robust and free.
+    dblIds = [prelDouble, gPrel "Float"]
 
 -- ── Static constructor layout ────────────────────────────────────────
 --

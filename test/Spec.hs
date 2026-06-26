@@ -10,14 +10,16 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
+import Kappa.Backend.Repr (Rep (..), scalarRep)
 import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
-import Kappa.Builtins (prelUnit)
+import Kappa.Builtins (prelDouble, prelInt, prelUnit)
 import Kappa.Check (CtorInfo (..), DataInfo (..))
 import Kappa.Core
   ( GName (..)
   , Icit (..)
   , Q (..)
   , Term (..)
+  , Value (..)
   )
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval)
@@ -51,7 +53,8 @@ main = do
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
   verifyOk <- verifierCatchesViolations
-  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk
+  reprOk <- reprScalarIdentity
+  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -70,6 +73,34 @@ main = do
       if sFail s > 0 || sHarnessError s > 0 || not regOk
         then exitFailure
         else pure ()
+
+-- | §1.2 regression pin: 'scalarRep' must classify a primitive by its
+-- declaration-symbol IDENTITY (the module-qualified 'GName'), not by surface
+-- spelling — §1.2 "every resolved reference … MUST NOT target a spelling
+-- string". The real prelude @Double@/@Int@ unbox; a user type that merely
+-- SPELLS @Double@ in another module stays boxed. (The spelling-string key this
+-- replaced would have mis-unboxed the user type; an even earlier 'gKey' key
+-- dropped the workers entirely.) The native perf suite only exercises the real
+-- prelude types, so this is the only place the name-collision case is pinned.
+reprScalarIdentity :: IO Bool
+reprScalarIdentity = do
+  let realDouble = scalarRep (VGlobN prelDouble [])
+      realInt = scalarRep (VGlobN prelInt [])
+      userDouble = scalarRep (VGlobN (GName (ModuleName [T.pack "myapp"]) (T.pack "Double")) [])
+      boxedHead = scalarRep (VGlobN prelUnit [])
+      ok =
+        realDouble == RepDouble
+          && realInt == RepInt
+          && userDouble == RepBoxed
+          && boxedHead == RepBoxed
+  unless ok $
+    putStrLn
+      ( "reprScalarIdentity FAILED: realDouble=" ++ show realDouble
+          ++ " realInt=" ++ show realInt
+          ++ " userDouble=" ++ show userDouble
+          ++ " (a user type spelling 'Double' must NOT unbox)"
+      )
+  pure ok
 
 -- | Appendix-T harness-faithfulness mirrors (gaps G32–G35). Each fixed
 -- requirement is pinned here as an expected 'Outcome' over a crafted
