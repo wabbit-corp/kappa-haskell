@@ -1,4 +1,4 @@
---! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnostic error E_RECOVERY_SKIPPED_INVALID_SYNTAX
 
 x : Int
 let x = 1 +

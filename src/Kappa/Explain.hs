@@ -324,6 +324,17 @@ registry =
       "A top-level declaration begins at a deeper indentation level than the module's declaration level (Spec 5.4)."
   , ent "E_EXPECTED_SYNTAX_TOKEN" (Just "kappa-hs.parse.error")
       "The source text does not conform to the Kappa grammar at this position."
+  , -- §3.1.4: distinct from E_EXPECTED_SYNTAX_TOKEN so the portable alias
+    -- E_RECOVERY_SKIPPED_INVALID_SYNTAX applies only to the declaration-skip
+    -- recovery, not to generic expected-token errors (requiredAliasTable).
+    ent "E_RECOVERY_DECLARATION_SKIPPED" (Just "kappa-hs.parse.error")
+      "Declaration-level recovery skipped an invalid top-level declaration region to resynchronize at the next declaration (Spec 3.1.14A; portable alias E_RECOVERY_SKIPPED_INVALID_SYNTAX)."
+  , -- §3.1.4 portable alias itself (no §3.2 family is mandated for parser
+    -- recovery, so it shares the implementation parse-error family). Its
+    -- portableAliases are derived from 'requiredAliasTable', so the harness
+    -- accepts the portable spelling and recovers the impl code consistently.
+    ent "E_RECOVERY_SKIPPED_INVALID_SYNTAX" (Just "kappa-hs.parse.error")
+      "Parser recovery skipped invalid source text to resynchronize (Spec 3.1.4 portable diagnostic-code alias E_RECOVERY_SKIPPED_INVALID_SYNTAX)."
   , ent "E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH" (Just "kappa.pattern.constructor-arity")
       "A constructor pattern has the wrong number of argument subpatterns for the constructor's declaration."
   , ent "E_PATTERN_FIELD_UNKNOWN" (Just "kappa.pattern.constructor-arity")
