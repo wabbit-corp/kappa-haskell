@@ -440,7 +440,7 @@ Stage 0 adds the benches that detect where it *isn't* representative.
   (residual tag arithmetic, §8); "counter across a park" shows zero allocation. *Invariant:*
   conformance green, including the §5.3 `[2^62,2^63)` test.
 
-### Stage 1.5 — CPS-DESIGN §3.3 suspendability analysis (named prerequisite for Stage 2)
+### Stage 1.5 — CPS-DESIGN §3.3 suspendability analysis (named prerequisite for Stage 2) — **LANDED**
 Today `suspendingNames` is syntactic and does not see transitive suspension (`C.hs:2656–2658`).
 Build the transitive, err-toward-may-suspend reachability witness, threaded to the backend at
 **per-binding granularity** (not just per-function), classifying every layout-unresolved /
@@ -450,6 +450,25 @@ scalar is lost across an unpredicted park (R5).
 - *Measurable:* the conformance test of §6 (Double counter across `await` through a
   polymorphic indirection) passes; previously-bridged transitive-suspension blocks are now
   correctly classified.
+- **Landed:** the existing transitive closure `suspenderGlobals`/`gsSuspenders` (`C.hs`)
+  — already computed for the §3.3 do-bind CPS analysis — is now the SOUNDNESS GATE on the
+  unboxed scalar worker.  `scalarPlan` (`C.hs`) refuses a worker for any binding `g` that
+  (a) is itself in the transitive suspender closure (`g ∈ gsSuspenders`) OR (b) has a body that
+  `scalarBodyMaySuspend` (a new per-body walk) classifies may-suspend — a spine-head suspending
+  prim / `gsSuspenders` global, or an opaque local-headed (higher-order) call — recursing into
+  `if`/`match`/`let`/ctor/arg positions and treating any `CDo` as may-suspend.  Both the
+  worker-emission site and the call-site dispatch call the same `scalarPlan`, so the decision is
+  consistent.  Today the arithmetic-only body grammar already makes a scalar body suspension-free
+  *implicitly* (no admitted form is an IO/suspending op; a non-scalar `UIO a` result is already
+  rejected by `scalarHeadKindV`), so the gate refuses nothing the grammar wouldn't — but it makes
+  that property EXPLICIT and INDEPENDENT so it survives the Stage-2a-pre widening to `let`/`match`
+  (which CAN carry a suspending sub-term).  The gate's transitivity is verified load-bearing by a
+  controlled experiment: marking a leaf arith prim (`addDouble`) as suspending pushes a pure
+  `Double` loop into `gsSuspenders` and the worker is correctly REFUSED (falls to the boxed
+  `kw_g`, program still correct) — a naive flat-`suspendingNames` *spine-head* check would NOT
+  catch it (the loop's spine head is the `if`/self-call, not `addDouble`).  The §6 across-`await`
+  Double-accumulator conformance test (`test/native/cases/await-dbl-acc.kp`) is green native ==
+  interpreter.
 
 ### Stage 2a-pre — Local representation re-inference over untyped Core (own soundness review)
 Separate, reviewed sub-stage *before* worker emission. `let`/`match`/`CProjAt` binders carry
@@ -470,12 +489,31 @@ the immediate range.
   an *isolated* call still allocates one box (§8). *Invariant:* overflow → identical GMP result
   as interpreter.
 
-### Stage 2b — F64 worker (`Double`)
+### Stage 2b — F64 worker (`Double`) — **LANDED**
 Add `kwd_` worker generation off the `F64` layout class. Keep `eqDouble`/`leDouble` out of the
 unboxed allowlist; pin FP semantics (`-ffp-contract=off`, no `-ffast-math`, §5.5).
 - *Shippable/Measurable:* **fused** `Double` add drops to 0 B/op; *non-fused/boundary* Doubles
   re-box and do not improve (state this — it bounds the win). Conformance (NaN/signed-zero,
   FMA) green.
+- **Landed:** `kwd_` Double-worker generation is ON via the existing `F64` (`KDouble`) layout
+  class — `scalarHeadKindV` maps `Float`/`Double` → `KDouble`, `arithPrim` admits
+  `add/sub/mul/div/negDouble` + `intToDouble`, `scalarArith` emits native `double` +,-,*,/ in C
+  locals, and `scalarWorkerName` emits `kwd_`.  `eqDouble`/`leDouble` stay OUT of the allowlist
+  (`cmpPrim` admits only `ltDouble`/`floatEq`, whose C operator matches the prim exactly;
+  `eqDouble` is §6.1.3 raw-bit equality ≠ C `==`).  FP semantics are PINNED in the build driver
+  (`src/Kappa/Backend/Driver.hs`): `-ffp-contract=off` (no implicit FMA fusion — a `mul`-then-`add`
+  rounds twice, matching boxed `kp_mulDouble`+`kp_addDouble`) AND `-fno-fast-math` (defensively
+  pins that no present/future flag relaxes IEEE).  A fused `Double` accumulator loop is a raw
+  `double` `while(1)` with **0 B/op** in the hot loop (verified: the only boxes are the one-time
+  arg/result boxes at the call site; the native suite's R2.2 gate measures
+  `scalar_doubleloop ≈17 KB total` for 2 000 000 iterations, i.e. O(1) not O(N)).  FP bit-identity
+  is verified by `test/native/cases/fpbitident.kp` (FMA/mixed-op/accumulator/signed-zero probes,
+  native == interpreter) and the parity test `tests/native/llvm/double-fma-parity.kp`
+  (interp == C == LLVM).  *Known orthogonal limitation:* the native `kp_showDouble` printer
+  diverges from the interpreter's `show` on the last decimal digit for some large-magnitude
+  Doubles (same IEEE bits, different shortest-decimal) — a pre-existing formatting bug on the
+  *boxed* path (LLVM, which has no unboxing, diverges too), unrelated to the worker; tracked
+  separately.
 
 ### Stage 2c — FixedFFI worker
 `FixedFFI<n>` unboxed-but-not-tagged path at the `external` boundary; carrier-specific unbox

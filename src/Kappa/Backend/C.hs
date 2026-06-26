@@ -792,9 +792,68 @@ stripLamsQ = go []
 -- for an unboxed worker: a recorded body of @n@ explicit relevant binders, a
 -- scalar type telescope of exactly @n@ runtime params + a scalar result, and a
 -- scalar-expressible body.  @Nothing@ ⇒ boxed-only (never a miscompile).
+-- | §6/§7 Stage 1.5 — the SUSPENDABILITY WITNESS that gates the unboxed scalar
+-- worker.  A scalar worker keeps its values in raw C locals (@double@/@int64_t@);
+-- those locals are absent from the @KEnv@ chain and the continuation @f->k@, so a
+-- fiber park (await/fork/race/timeout/atomically/STM retry) at any point where a
+-- raw scalar is live would LOSE it on resume (CPS-DESIGN R5) — a silent
+-- miscompile, no crash.  So a worker may be emitted ONLY for a body that PROVABLY
+-- does not may-suspend.  Returns @True@ if the body MAY suspend; the witness
+-- ERRS TOWARD may-suspend (unknown ⇒ True ⇒ refuse the worker ⇒ stay boxed):
+--
+--   * a spine head that is a suspending primitive ('isSuspendingPrim') or a
+--     global in the transitive §3.3 suspender closure ('gsSuspenders');
+--   * an opaque higher-order call whose spine head is a local/param 'CVar'
+--     (may suspend depending on the value passed — §6 "effect-polymorphic /
+--     opaque-higher-order ⇒ may-suspend");
+--
+-- Today the arithmetic-only body grammar ('scalarEligTail'/'scalarKindOf')
+-- already makes a scalar body suspension-free *implicitly* (no admitted form
+-- is an IO/suspending op, and a non-scalar result kind already rejects every
+-- @UIO a@ function).  This witness makes that property EXPLICIT and INDEPENDENT
+-- so it survives the Stage-2a-pre widening to @let@/@match@ (which CAN carry a
+-- suspending sub-term) and is the named soundness gate of §7 Stage 1.5 — not an
+-- emergent accident of the allowlist.  It walks the WHOLE body (not just the
+-- tail spine), recursing into @if@ branches and every prim/self-call argument,
+-- because a suspension anywhere a raw scalar is live is unsound — not only in
+-- tail position.
+scalarBodyMaySuspend :: Set GName -> Term -> Bool
+scalarBodyMaySuspend susp = go
+  where
+    -- a call's spine head decides suspendability for this node; the arguments
+    -- are then walked too (a suspending op can hide in an argument position).
+    -- Only an APPLICATION counts as a call here — a bare 'CVar'/'CGlob' LEAF
+    -- (a value read, not an invocation) cannot itself park, so it is never
+    -- flagged (else every scalar var read would falsely read as may-suspend).
+    headSusp t = case t of
+      CApp {} -> case fst (spineOf t) of
+        CGlob h -> isSuspendingPrim h || h `Set.member` susp
+        CVar _ -> True -- opaque higher-order call: may suspend (conservative)
+        _ -> False
+      _ -> False
+    go t =
+      headSusp t || case t of
+        CIf c th el -> go c || go th || go el
+        CApp _ a b -> go a || go b
+        CMatch s alts -> go s || any (\a -> maybe False go (caGuard a) || go (caBody a)) alts
+        CLet _ _ _ rhs body -> go rhs || go body
+        CLetRec _ _ _ rhs body -> go rhs || go body
+        CDo _ _ -> True -- a do-block is an IO action: conservatively may-suspend
+        CCtor _ as -> any go as
+        CSealE _ e -> go e
+        CSigT _ e -> go e
+        CForceE e -> go e
+        CThunkE e -> go e
+        CLazyE e -> go e
+        CInject _ e -> go e
+        CProj e _ -> go e
+        CProjAt e _ _ -> go e
+        _ -> False
+
 scalarPlan :: GName -> Gen (Maybe ([ParamKind], ScalarKind))
 scalarPlan g = do
   bodies <- gets gsBodies
+  susp <- gets gsSuspenders
   case Map.lookup g bodies of
     Nothing -> pure Nothing
     Just body -> do
@@ -809,8 +868,15 @@ scalarPlan g = do
             -- require at least one unboxed scalar param (else there is nothing
             -- to win — an all-boxed body stays on the boxed/flat path).
             Just (pks, ret) | any (/= PBoxed) pks -> do
+              -- §7 Stage 1.5 SOUNDNESS GATE (before the body grammar check): a
+              -- worker whose body may suspend would lose its raw-scalar C locals
+              -- across a park (§6).  Refuse it (→ boxed) — never miscompile.
+              -- Gates on BOTH the global's own transitive suspender membership
+              -- (g ∈ gsSuspenders) and a per-body walk for an inlined/opaque
+              -- suspending sub-term, so it stays sound once locals widen.
               ok <- scalarEligTail g pks ret inner
-              pure (if ok then Just (pks, ret) else Nothing)
+              let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp inner
+              pure (if ok && not mayParK then Just (pks, ret) else Nothing)
             _ -> pure Nothing
         else pure Nothing
 

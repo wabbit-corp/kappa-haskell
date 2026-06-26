@@ -1,0 +1,32 @@
+-- Stage 2b FP bit-identity (parity): non-trivial Double arithmetic in
+-- monomorphic first-order functions.  On the C backend these lower to the
+-- UNBOXED kwd_ worker (native `double` +,-,*,/ in C locals); on the LLVM
+-- backend they run through the boxed kp_*Double prims.  BOTH must print
+-- bit-identical Doubles, and both must equal the interpreter — this is the
+-- contraction/fast-math guard (§5.5): the C-driver pin `-ffp-contract=off`
+-- `-fno-fast-math` forbids fusing a `mul`-then-`add` into a single-rounded
+-- FMA, so a*b+c rounds twice exactly as the boxed prims (and interpreter) do.
+-- The parity harness diffs full stdout across interp == C == LLVM, so any
+-- last-bit divergence fails it.
+module main
+
+-- a*b + c as two separately-rounded ops (must NOT contract to one FMA)
+fma : Double -> Double -> Double -> Double
+let fma a b c = addDouble (mulDouble a b) c
+
+-- mixed four-op chain with an intToDouble coercion
+mix : Double -> Double -> Double
+let mix x y = divDouble (subDouble (mulDouble x y) (addDouble x y)) (intToDouble 7)
+
+-- fused Double accumulator loop (0 B/op on C): 0.1 added n times
+accumTenth : Double -> Int -> Double
+let accumTenth acc n = if leInt n 0 then acc else accumTenth (addDouble acc 0.1) (subInt n 1)
+
+main : UIO Unit
+let main = do
+    println (fma 0.1 0.1 (negate 0.01) : Double)       -- two-rounding result
+    println (fma 1.0e8 1.0e8 1.0 : Double)             -- 1e16 + 1 rounds away
+    println (mix 3.3 7.7 : Double)
+    println (accumTenth 0.0 10 : Double)               -- NOT 1.0 — rounding error
+    println (accumTenth 0.0 1000 : Double)
+    println (subDouble 0.30000000000000004 0.1 : Double)
