@@ -36,7 +36,7 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
 **§3.3 suspendability/escape analysis** — which is why it is first.
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
-2. [~] **Unboxing Stage 0** — GC/alignment contract ENFORCED + tag-bit API done; canonical encoding + benches remain (safe prep, parallel).
+2. [~] **Unboxing Stage 0** — GC/alignment contract + tag-bit API + Stage-0 go/no-go benches done; only the canonical encoding remains (it folds into Stage 1).
 3. [ ] **CPS loop family** — var-read normalization.
 4. [ ] **Unboxing Stage 1** — immediate-int tagging (the allocation win).
 5. [ ] **CPS Stage 2/3 remainder** — `using`, `return`, masking surface.
@@ -171,10 +171,15 @@ The two big tracks (CPS, Unboxing) interleave around one shared prerequisite —
       yet (every value is a b000 pointer)" ahead of the Stage-1 deref audit.
       VERIFIED safe under heavy collection: **corpus 81/81**, a 1M-cons-cell
       **251-collection GC stress** (interp == C == LLVM, correct), full native suite
-      green. **REMAINING:** canonicalize `kbool`/`kunit`/`kint`/nullary-ctor
-      encoding to a single form (folds into the Stage-1 deref audit) + land the
-      Stage-0 ctor-build / match-projection / across-park / Double-add benches (the
-      Stage-1 go/no-go baseline, §7/§8).
+      green. **Stage-0 BENCHES LANDED** (`bench/rt_bench.c` rows 3, 6–10 + the
+      `bench/README.md` baseline table, `make bench`): boxed `addDouble` (the F64
+      floor, 48 B/op), `ctor-build` (n-ary, 112 B/op — the control) + `ctor0-build`
+      (nullary `None`, 48 B/op — the immediate WIN that should drop to 0), `ctor
+      deref boxed` + `ctor0 dispatch` (the tag-test tax/win = the go/no-go gate),
+      and a sum-checked `scalar across a park` (1184 B/op, asserts the carried Int
+      survives) — bytes/op bit-identical across runs. **REMAINING:** canonicalize
+      `kbool`/`kunit`/`kint`/nullary-ctor encoding to a single form, which folds
+      into the Stage-1 deref audit.
 - [ ] **Stage 1 — immediate-int tagging** (UNBOXING §1/§5/§7). `(i<<1)|1` in the
       `KValue*` word for small `Int`/`Bool`/`Char`/`Unit`. **299+ deref sites in
       `kappart.c` must tag-test** — a runtime-wide audit, not a swap. Removes the
