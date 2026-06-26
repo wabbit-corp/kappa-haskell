@@ -1,0 +1,27 @@
+-- §18.6.2 SOUNDNESS PIN: a condition that reads a tracked local `var` cell
+-- (`x`, via `readRef x`) does NOT yield a usable branch fact in the `else`
+-- suite — exactly as the then-suite already declines for `var` reads, because
+-- a `var`'s current value has no stable representative here (the §18.6.2
+-- `VarCurrent(x,n)` versioning that would make it sound is deliberately not
+-- implemented for do-kernel condition facts). The negation of a `var`-read
+-- condition is therefore NOT pushed as a discharging fact, so `subDefined x y`
+-- stays REQUIRED. Over-rejection is safe; an unsound discharge would be a bug.
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doVarElseStale : Nat -> Nat -> UIO Unit
+let doVarElseStale y z = do
+    var x = y
+    if ltInt (natToInt x) (natToInt y) then
+        printlnString "lt"
+    else
+        let d = consume (x - y) --!! E_UNSOLVED_IMPLICIT
+        printlnString "ge"

@@ -1,0 +1,22 @@
+-- §16.4.2/§18.6.2: an IO-kernel do-block `if` STATEMENT pushes the NEGATED
+-- condition into its `else`-suite (as the if-EXPRESSION else-branch already
+-- does). In the `else` of `if x < y`, `(x < y) = False`, so `subDefined x y`
+-- = `(y <= x) = True` holds branch-locally and discharges checked subtraction.
+--! assertNoErrors
+
+module main
+
+instance CheckedSub Nat =
+    let subDefined x y = leInt (natToInt y) (natToInt x)
+    let subtractUnchecked x y = natOfInt (subInt (natToInt x) (natToInt y))
+
+consume : Nat -> Nat
+let consume n = n
+
+doIfElseOk : Nat -> Nat -> UIO Unit
+let doIfElseOk x y = do
+    if ltInt (natToInt x) (natToInt y) then
+        printlnString "lt"
+    else
+        let d = consume (x - y)
+        printlnString "ge"
