@@ -7,7 +7,7 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 substantially self-superseded.
 
 **Status (count + gap list re-verified per-gap 2026-06-26):**
-`kappa test tests/conformance` = **1776/1776** pass (0 fail, 0 unsupported, 0
+`kappa test tests/conformance` = **1781/1781** pass (0 fail, 0 unsupported, 0
 harness error — was 1334 at the audit; the corpus kept growing as the
 reference-repo conformance corpus was imported). The gap LIST below was first
 verified against the code in a parallel 9-group re-audit on 2026-06-23 (see
@@ -89,7 +89,7 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§16.4.2 / §18.6.2** | **IO-kernel do-statement condition facts — partial.** Each `DoIf` **then-suite** (and every `elif` suite) now pushes its own condition as evidence, so `do { if y <= x then consume (x - y) }` discharges the checked-sub proof the if-*expression* already could. Remaining: the **else-suite** and the `elif` *preceding-conditions-false* facts need accumulated-negation threading; and the `DoWhile` body needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) before a `var`-condition fact can be pushed soundly (a stale fact after `x := …` would be unsound — so it is deliberately not pushed). *(Distinct from the flow-refinement §16.4.2 gap closed this session — Appendix A.)* | `Check.hs:9712` (`DoIf` else-suite), `Check.hs:9650` (`DoWhile`), in `elabDoIOItems.goItems` | medium |
+| **§18.6.2** | **IO-kernel `DoWhile` condition facts — remaining slice.** The `DoIf` then-suite, **else-suite, and `elif` preceding-conditions-false** facts are now all threaded (commit `25405f9`: `goAlts` pushes `(c_i, False)` + the §7.4.1 complement refinements into each later branch; 3 soundness pins guard var-staleness / no-leak / genuinely-unprovable). REMAINING: only the `DoWhile` body needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) before a `var`-condition fact can be pushed soundly — across the loop back-edge a fact is stale after `x := …`, so `DoWhile` deliberately pushes none. *(The flow-refinement §16.4.2 and the `DoIf` else/elif slices are closed — Appendix A.)* | `Check.hs` `elabDoIOItems.goItems` (`DoWhile` arm) | medium |
 
 ### 1.3 Effects, resources, collections
 
