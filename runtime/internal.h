@@ -78,6 +78,14 @@ enum {
   OP_DEFER,               /* [action]         register an exit action on the
                            *                  innermost do-scope (§18.7)        */
   OP_RETURN,              /* [value]          early return from the fiber       */
+  OP_RETSCOPE,            /* [body]           DELIMIT `return`: run body; an
+                           *                  OP_RETURN inside it delivers its
+                           *                  value HERE (as this scope's result)
+                           *                  instead of escaping to the fiber.
+                           *                  Used to scope a do-block VALUE's
+                           *                  `return` to the do-block (§18.8) when
+                           *                  the block is CPS-lowered into a
+                           *                  larger continuation chain.            */
   OP_WHILE,               /* [condIO, bodyIO] a loop; body is a do-scope        */
   OP_BREAK,               /* []               break the innermost loop          */
   OP_CONTINUE,            /* []               continue the innermost loop        */
@@ -119,7 +127,8 @@ typedef enum {
   KK_SETMASK,   /* restore mask_depth to a stored level on the way out (mask/restore) */
   KK_DOSCOPE,   /* a do-scope boundary: run its exit actions on any way out       */
   KK_FINSEQ,    /* run a do-scope's exit actions LIFO, then resume a saved Reason  */
-  KK_LOOP       /* a loop boundary: break/continue target it                      */
+  KK_LOOP,      /* a loop boundary: break/continue target it                      */
+  KK_RETSCOPE   /* a `return` boundary: RK_RETURN delivers its value here (§18.8)  */
 } KKind;
 struct Cont {
   KKind   kind;

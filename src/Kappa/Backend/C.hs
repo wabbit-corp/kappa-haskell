@@ -117,6 +117,7 @@ data GenState = GenState
   , gsDeferLabels :: ![(Text, (Text, Text))] -- ^ §18.7 label ↦ (arr,cnt) frame of each enclosing LABELED do-scope (explicit `do`/loop), innermost first; a `defer@L` registers onto the frame of the scope labeled L (which may be outer) instead of the current scope.
   , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
   , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
+  , gsCpsRefRegion :: !Bool -- ^ CPS loop family (§4 R7): true while building the @cond@/@body@ action trees of a SUSPENDING @while@ (or any CPS re-run scope). A @readRef@ then lowers to the @OP_READ_REF@ action NODE (a RUN-TIME cell access the CK-machine performs each iteration) rather than a build-time @kref_get@ captured once — so a re-run body never reads a stale snapshot, and read-after-write within an iteration is preserved.
   , gsI64Escape :: !Text -- ^ the C statement spliced by scalarArith on int overflow / INT64_MIN: @*kovf = 1; return 0;@ for an unboxed scalar worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
   , gsCollectCtors :: !(Set Text) -- ^ LR2: gKeys of USER constructors referenced (constructed or matched); builtins use the fixed @KCT_*@ ids so they are NOT collected. After codegen, @assemble@ assigns each a @KCT_USER_BASE+i@ id (sorted, deterministic) and emits a @KT_<mangle>@ enum.
   , gsCollectVars :: !(Set Text) -- ^ LR2: §13 variant member-identity tags referenced (injected or matched); @assemble@ emits a 0-based @KVT_<mangle>@ enum (variants are never runtime-built, so no fixed-id constraint).
@@ -443,6 +444,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsDeferLabels = []
           , gsScalars = Map.empty
           , gsScalarRegion = False
+          , gsCpsRefRegion = False
           , gsI64Escape = "*kovf = 1; return 0;"
           , gsCollectCtors = Set.empty
           , gsCollectVars = Set.empty
@@ -2978,20 +2980,37 @@ blockSuspends susp = any itemSuspends
     itemSuspends (KFor _ _ _ b me) = blockSuspends susp b || maybe False (blockSuspends susp) me
     itemSuspends (KIf alts me) = any (blockSuspends susp . snd) alts || maybe False (blockSuspends susp) me
     itemSuspends (KUsing _ a _) = s a
+    -- a transparent sub-do runs in THIS block's continuation chain, so a
+    -- suspending op inside it makes this block suspend too (CPS LOOP FAMILY §4).
+    itemSuspends (KSubDo _ b) = blockSuspends susp b
     itemSuspends _ = False
 
 cpsEligible :: Set GName -> [KItem] -> Bool
 cpsEligible susp items = blockSuspends susp items && all simpleLinear items
   where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
-    -- the runtime's OP_DOSCOPE/OP_DEFER).  The loop family (var/assign/while/
-    -- break/continue) is Stage-2+ work: a re-run loop body needs var reads to be
-    -- run-time OP_READ_REF actions, not build-time kref_get (§4/R7) — until that
-    -- lands, a suspending loop is DIAGNOSED (see 'compileDo'), not mis-lowered.
+    -- the runtime's OP_DOSCOPE/OP_DEFER).  Stage 2.5 — the CPS LOOP FAMILY (§4):
+    -- var / := / while / break / continue / return now lower through the
+    -- CK-machine's OP_WHILE/KK_LOOP + OP_NEW_REF/OP_READ_REF/OP_WRITE_REF + the
+    -- abrupt-control nodes, so a may-suspend block containing them is no longer
+    -- fail-closed.  Scope discipline: the WELL-SCOPED CORE handles the unlabeled
+    -- `while` (no else), `var`/`:=` (assign to a `var` cell), unlabeled
+    -- `break`/`continue`, `return`, plain `defer`, statement-`if`, and a
+    -- transparent unlabeled sub-do.  Labeled loops, `for`, loop `else`, `using`,
+    -- and `let?` remain fail-closed (DIAGNOSED in 'compileDo', not mis-lowered).
     simpleLinear KBind {} = True
     simpleLinear KLet {} = True
     simpleLinear KExpr {} = True
     simpleLinear (KDefer Nothing _) = True
+    simpleLinear KVarItem {} = True
+    simpleLinear (KAssign (CVar _) _ _) = True
+    simpleLinear KReturn {} = True
+    simpleLinear (KBreak Nothing) = True
+    simpleLinear (KContinue Nothing) = True
+    simpleLinear (KWhile Nothing _ body Nothing) = all simpleLinear body
+    simpleLinear (KIf alts mels) =
+      all (all simpleLinear . snd) alts && maybe True (all simpleLinear) mels
+    simpleLinear (KSubDo Nothing body) = all simpleLinear body
     simpleLinear _ = False
 
 -- | Lower a CPS-eligible do-block: build its @krt2_*@ action tree, wrapping it
@@ -3000,11 +3019,38 @@ cpsEligible susp items = blockSuspends susp items && all simpleLinear items
 -- scope frame — just the bind tree.
 compileDoCps :: [KItem] -> Gen Text
 compileDoCps items = do
-  tree <- cpsItems items
-  pure $ if any hasScope items then "krt2_doscope(" <> tree <> ")" else tree
+  -- §4 R7: once any `var` cell exists in the block, EVERY read of it must be a
+  -- RUN-TIME OP_READ_REF, not a build-time kref_get — not only inside the loop
+  -- but for the rest of the block, since a loop body mutates the cell and a
+  -- later read (e.g. `printlnString (showInt total)` after the loop) would
+  -- otherwise capture the cell's value at build time (before the loop ran).  So
+  -- the ref region spans the whole block whenever it declares a `var`.  A block
+  -- with no `var` keeps the build-time read fast path.
+  tree <- (if any hasVar items then withCpsRefRegion else id) (cpsItems items)
+  -- §18.8: a `return` exits THIS do-block (yielding its value), not the fiber.
+  -- When CPS-lowered the block is inlined into a larger continuation chain, so a
+  -- bare OP_RETURN would unwind past the block to the fiber's KK_DONE.  Wrap the
+  -- block in krt2_retscope (KK_RETSCOPE), which catches the RK_RETURN and
+  -- delivers the value as the block's result — restoring do-block-scoped return.
+  let scoped = if any itemReturns items then "krt2_retscope(" <> tree <> ")" else tree
+  pure $ if any hasScope items then "krt2_doscope(" <> scoped <> ")" else scoped
   where
     hasScope (KDefer _ _) = True
     hasScope _ = False
+    -- a `var` declared anywhere in THIS block (recursing into its own loop/if/
+    -- subdo bodies, but NOT into a nested do VALUE).
+    hasVar (KVarItem _ _) = True
+    hasVar (KWhile _ _ b mels) = any hasVar b || maybe False (any hasVar) mels
+    hasVar (KIf alts mels) = any (any hasVar . snd) alts || maybe False (any hasVar) mels
+    hasVar (KSubDo _ b) = any hasVar b
+    hasVar _ = False
+    -- a `return` anywhere in THIS block (recursing into its own loop/if/subdo
+    -- bodies, which return from this block, but NOT into a nested do VALUE).
+    itemReturns (KReturn _) = True
+    itemReturns (KWhile _ _ b mels) = any itemReturns b || maybe False (any itemReturns) mels
+    itemReturns (KIf alts mels) = any (any itemReturns . snd) alts || maybe False (any itemReturns) mels
+    itemReturns (KSubDo _ b) = any itemReturns b
+    itemReturns _ = False
 
 -- | Lower a CPS-eligible do-block to its @krt2_bind@/@krt2_then@ action tree.
 -- Each non-tail bind becomes @krt2_bind(action, kclo(kdok_N, env))@ with the
@@ -3014,21 +3060,99 @@ compileDoCps items = do
 cpsItems :: [KItem] -> Gen Text
 cpsItems items = case items of
   [] -> pure "krt2_pure(kunit())"
-  [KExpr t] -> compile t
-  [KBind _ _ t] -> compile t
+  [KExpr t] -> cpsActionTerm t
+  [KBind _ _ t] -> cpsActionTerm t
   (KExpr t : rest) -> seqThen t rest
   (KBind _ CPWild t : rest) -> seqThen t rest
   (KBind _ pat t : rest) -> do
-    m <- compile t
+    m <- cpsActionTerm t
     contFn <- emitCpsCont pat rest
     env <- gets gsEnv
     pure ("krt2_bind(" <> m <> ", kclo(" <> contFn <> ", " <> env <> "))")
   (KLet _ CPWild t : rest) -> compile t >> cpsItems rest
   (KLet _ pat t : rest) -> do
-    te <- compile t
+    -- a `let` binds a PURE value; its reads (if any, inside a ref region)
+    -- normalize to run-time OP_READ_REF so a re-run body re-reads the live cell,
+    -- exactly as a monadic bind does.  Outside the region this is plain krt2_pure.
+    bindA <- cpsActionOfPure t
     contFn <- emitCpsCont pat rest
     env <- gets gsEnv
-    pure ("krt2_bind(krt2_pure(" <> te <> "), kclo(" <> contFn <> ", " <> env <> "))")
+    pure ("krt2_bind(" <> bindA <> ", kclo(" <> contFn <> ", " <> env <> "))")
+  -- ── CPS LOOP FAMILY (CPS-DESIGN §4) ──────────────────────────────────
+  -- @var x = init@: allocate a cell via OP_NEW_REF and push it onto the captured
+  -- env (de Bruijn 0) for the continuation.  The cell lives in the KEnv, so it
+  -- survives a park (the "free liveness via KEnv" of §4) and every later read/
+  -- write addresses the SAME cell across iterations and across suspension.
+  (KVarItem _ t : rest) -> do
+    -- the initializer is normalized through the ref region too: a `var y = …`
+    -- whose initializer reads an enclosing var must read it at run time.  Bind
+    -- the (action) value, then OP_NEW_REF it and push the cell as de Bruijn 0.
+    initA <- withCpsRefRegion (cpsActionOfPure t)
+    contFn <- emitCpsNewRefCont rest
+    env <- gets gsEnv
+    pure ("krt2_bind(" <> initA <> ", kclo(" <> contFn <> ", " <> env <> "))")
+  -- @x := rhs@ / @x <- rhs@ (a var assignment): write the cell at RUN TIME via
+  -- OP_WRITE_REF so a re-run loop body re-writes the live cell, then continue.
+  -- The rhs value is normalized to run-time reads (§4 R7), bound, then written.
+  -- A monadic rhs additionally runs the rhs ACTION before the write.
+  (KAssign (CVar idx) monadic rhsT : rest) -> do
+    env <- gets gsEnv
+    rhsA <-
+      if monadic
+        -- a monadic rhs (`x <- m`) is an IO ACTION; its var reads must still be
+        -- hoisted to run-time OP_READ_REF (§4 R7) when in a ref region, exactly
+        -- as a discarded effect or bind is — `cpsActionTerm` normalizes iff the
+        -- ref region is on and the term reads a var, else plain compile.
+        then cpsActionTerm rhsT
+        else withCpsRefRegion (cpsActionOfPure rhsT)
+    contFn <- emitCpsAssignCont idx rest
+    pure ("krt2_bind(" <> rhsA <> ", kclo(" <> contFn <> ", " <> env <> "))")
+  -- @return v@: exit THIS do-block (OP_RETURN -> RK_RETURN, caught by the
+  -- enclosing KK_RETSCOPE — compileDoCps), running every crossed do-scope's
+  -- defers en route.  The value is normalized to run-time reads, bound, then
+  -- returned.  Tail (anything following `return` is dead, never reached).
+  (KReturn t : _) -> do
+    rv <- withCpsRefRegion (cpsActionOfPure t)
+    contFn <- emitCpsReturnCont
+    env <- gets gsEnv
+    pure ("krt2_bind(" <> rv <> ", kclo(" <> contFn <> ", " <> env <> "))")
+  -- @break@ / @continue@ (unlabeled): target the innermost OP_WHILE's KK_LOOP.
+  (KBreak Nothing : _) -> pure "krt2_break()"
+  (KContinue Nothing : _) -> pure "krt2_continue()"
+  -- @while c { body }@ (unlabeled, no else): OP_WHILE[condIO, bodyIO] -> KK_LOOP.
+  -- @cond@ is built as an ACTION that reads the loop vars at step time (so each
+  -- iteration re-tests the live cells — §4 R7), and @body@ is a CPS action tree
+  -- the runtime re-runs as a fresh per-iteration do-scope.
+  (KWhile Nothing cond body Nothing : rest) -> do
+    condA <- cpsCondAction cond
+    bodyA <- withCpsRefRegion (cpsItems body)
+    r <- cpsItems rest
+    pure ("krt2_then(krt2_while(" <> condA <> ", " <> bodyA <> "), " <> r <> ")")
+  -- a statement-`if` in a CPS block: each branch is a CPS action tree; the if's
+  -- normal completion is Unit (matching the interpreter's KIf), so a non-tail if
+  -- sequences its (Unit) result before the rest via krt2_then.
+  (KIf alts mels : rest) -> do
+    br <- cpsIf alts mels
+    if null rest
+      then pure br
+      else do
+        r <- cpsItems rest
+        pure ("krt2_then(" <> br <> ", " <> r <> ")")
+  -- a transparent nested do-statement (§18.8.3.1): its own bindings are SCOPED
+  -- to the sub-block (they do not leak into @rest@, matching the legacy Nested
+  -- handling), but abrupt control (break/continue/return) propagates outward —
+  -- automatically, since those lower to unwind NODES the CK-machine routes
+  -- through any scope nesting.  Build the sub-block as its own tree; if it
+  -- registers its own §18.7 defers, wrap it in krt2_doscope so those finalizers
+  -- run when the SUB-block exits (before @rest@), not the outer block's exit.
+  (KSubDo Nothing body : rest) -> do
+    sub0 <- cpsItems body
+    let sub = if any subDefers body then "krt2_doscope(" <> sub0 <> ")" else sub0
+    if null rest
+      then pure sub
+      else do
+        r <- cpsItems rest
+        pure ("krt2_then(" <> sub <> ", " <> r <> ")")
   -- §18.7 plain defer: register the action on the enclosing do-scope's ExitStack
   -- (OP_DEFER), then continue.  The whole block is wrapped in krt2_doscope
   -- (compileDoCps), so cur_exits is this scope's stack — even in a continuation
@@ -3042,9 +3166,15 @@ cpsItems items = case items of
     unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
   where
     seqThen t rest = do
-      m <- compile t
+      m <- cpsActionTerm t
       r <- cpsItems rest
       pure ("krt2_then(" <> m <> ", " <> r <> ")")
+    -- a §18.7 defer registered DIRECTLY in a sub-block (not in its own nested
+    -- loop/if/subdo, which carry their own per-iteration scope): such a defer
+    -- needs the sub-block wrapped in krt2_doscope so it runs at the sub-block's
+    -- exit, LIFO and masked (R1), rather than the enclosing block's.
+    subDefers (KDefer _ _) = True
+    subDefers _ = False
 
 -- | Emit a CPS continuation function @kdok_N(KEnv *cenv, KValue *karg)@: bind
 -- the delivered value @karg@ to @pat@ (extending the captured @cenv@), then
@@ -3063,6 +3193,305 @@ emitCpsCont pat rest = do
   modify' $ \st ->
     st
       { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- ── CPS LOOP FAMILY helpers (CPS-DESIGN §4) ──────────────────────────────
+
+-- | Run a build action with the §4 R7 ref-region flag set: while it is on, a
+-- var read inside a value/action is normalized to a RUN-TIME OP_READ_REF
+-- ('cpsNormalizeReads'), so a re-run loop body re-reads the live cell.
+withCpsRefRegion :: Gen a -> Gen a
+withCpsRefRegion act = do
+  saved <- gets gsCpsRefRegion
+  modify' $ \g -> g {gsCpsRefRegion = True}
+  r <- act
+  modify' $ \g -> g {gsCpsRefRegion = saved}
+  pure r
+
+-- | Compile an IO ACTION term in a CPS block.  In a §4 R7 ref region (a
+-- suspending loop body) its var reads are hoisted to run-time OP_READ_REF so a
+-- re-run observes the live cell; outside the region this is plain 'compile'.
+cpsActionTerm :: Term -> Gen Text
+cpsActionTerm = cpsNormalizeReads False
+
+-- | §4 R7 var-read normalization (PURE result).  Build an ACTION node whose
+-- stepped result is the VALUE of @term@, hoisting every var read to a RUN-TIME
+-- OP_READ_REF bind so a re-run loop body re-reads the live cell.  Outside the
+-- ref region (or for a read-free term) this is just @krt2_pure(<value>)@.
+cpsActionOfPure :: Term -> Gen Text
+cpsActionOfPure = cpsNormalizeReads True
+
+-- | A var read @__runIO (readRef (CVar i))@ (the elaborator's auto-deref of a
+-- surface @var@ read), if @term@ is exactly that shape; the de Bruijn index of
+-- the cell otherwise 'Nothing'.
+varReadIdx :: Term -> Gen (Maybe Int)
+varReadIdx term = case runIOSplice term of
+  Just action -> case spineOf action of
+    (CGlob h, sargs) -> do
+      mp <- globPrimName h
+      pure $ case (mp, [a | (Expl, a) <- sargs]) of
+        (Just "readRef", [CVar i]) -> Just i
+        _ -> Nothing
+    _ -> pure Nothing
+  Nothing -> pure Nothing
+
+-- | Does @term@ contain a var read (@__runIO (readRef …)@) anywhere?  Used to
+-- decide whether a value must be hoisted into OP_READ_REF binds (§4 R7) — a
+-- read-free value is built once and is safe to re-run as a @krt2_pure@ leaf.
+termHasVarRead :: Term -> Gen Bool
+termHasVarRead term = do
+  mi <- varReadIdx term
+  case mi of
+    Just _ -> pure True
+    Nothing -> case term of
+      CApp _ f a -> (||) <$> termHasVarRead f <*> termHasVarRead a
+      CCtor _ args -> orM (map termHasVarRead args)
+      CProj e _ -> termHasVarRead e
+      CProjAt e _ _ -> termHasVarRead e
+      CRecordV fs -> orM (map (termHasVarRead . snd) fs)
+      _ -> pure False
+  where
+    orM = foldr (\m acc -> do b <- m; if b then pure True else acc) (pure False)
+
+-- | The shared §4 R7 normalizer.  Collect every var read in @term@ (left to
+-- right), bind each via a RUN-TIME @krt2_read_ref(cell)@ onto a fresh KEnv slot,
+-- then build the residual — @term@ with each read replaced by its bound slot and
+-- all other free vars shifted past the pushes — wrapping it in @krt2_pure@ iff
+-- @pureResult@.  A read-free term (or outside the ref region) short-circuits to
+-- a plain @compile@ — no binds, preserving the build-time fast path.
+cpsNormalizeReads :: Bool -> Term -> Gen Text
+cpsNormalizeReads pureResult term = do
+  region <- gets gsCpsRefRegion
+  has <- if region then termHasVarRead term else pure False
+  if not has
+    then do
+      v <- compile term
+      pure (if pureResult then "krt2_pure(" <> v <> ")" else v)
+    else do
+      reads' <- collectReads term -- the original cell indices, in occurrence order
+      let n = length reads'
+      bindChain n reads' 0
+  where
+    -- bindChain n remaining done: bind each remaining read (its cell shifted past
+    -- the @done@ prior pushes), pushing the value as the next KEnv slot; once all
+    -- @n@ are bound, compile the rewritten residual under the extended env.
+    bindChain n [] _ = do
+      residual <- rewriteReads n term
+      v <- compile residual
+      pure (if pureResult then "krt2_pure(" <> v <> ")" else v)
+    bindChain n (cellIdx : more) done = do
+      -- the cell lives at original index @cellIdx@; @done@ pushes happened since,
+      -- so it is now at @cellIdx + done@.
+      cell <- compile (CVar (cellIdx + done))
+      contFn <- emitReadHoistCont $ bindChain n more (done + 1)
+      env <- gets gsEnv
+      pure ("krt2_bind(krt2_read_ref(" <> cell <> "), kclo(" <> contFn <> ", " <> env <> "))")
+
+-- | Emit a read-hoist continuation @kdok_N(KEnv*, KValue *karg)@ that pushes the
+-- delivered read value as de Bruijn 0, then runs @build@ under the extended env.
+emitReadHoistCont :: Gen Text -> Gen Text
+emitReadHoistCont build = do
+  fnName <- freshFn "kdok_"
+  (stmts, tree) <- captured "cenv" $ do
+    e2 <- pushEnv "karg" "cenv"
+    withEnv e2 build
+  let fn =
+        T.unlines $
+          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+            ++ map ("  " <>) stmts
+            ++ ["  return " <> tree <> ";", "}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- | Collect the cell de Bruijn indices of every var read in @term@, in
+-- left-to-right occurrence order (with duplicates — each read site is bound
+-- independently; a common-subexpression eliminator is a later refinement).
+collectReads :: Term -> Gen [Int]
+collectReads term = do
+  mi <- varReadIdx term
+  case mi of
+    Just i -> pure [i]
+    Nothing -> case term of
+      CApp _ f a -> (++) <$> collectReads f <*> collectReads a
+      CCtor _ args -> concat <$> mapM collectReads args
+      CProj e _ -> collectReads e
+      CProjAt e _ _ -> collectReads e
+      CRecordV fs -> concat <$> mapM (collectReads . snd) fs
+      _ -> pure []
+
+-- | Rewrite @term@ for the residual of a read hoist: each var read at occurrence
+-- @j@ (0-based, left to right, @n@ total) becomes @CVar (n-1-j)@ (its bound
+-- slot), and every OTHER free var is shifted up by @n@ (past the @n@ pushes).
+-- Stateful over the running occurrence counter so duplicate reads map to their
+-- own slots in order.  Mirrors 'collectReads' exactly so slots line up.
+rewriteReads :: Int -> Term -> Gen Term
+rewriteReads n t0 = fst <$> runRW 0 t0
+  where
+    -- runRW j t = (rewritten t, next occurrence index after t's reads)
+    runRW :: Int -> Term -> Gen (Term, Int)
+    runRW j t = do
+      mi <- varReadIdx t
+      case mi of
+        Just _ -> pure (CVar (n - 1 - j), j + 1)
+        Nothing -> case t of
+          CVar i -> pure (CVar (i + n), j) -- a non-read free var shifts past the pushes
+          CApp ic f a -> do
+            (f', j') <- runRW j f
+            (a', j'') <- runRW j' a
+            pure (CApp ic f' a', j'')
+          CCtor g args -> do
+            (args', j') <- runList j args
+            pure (CCtor g args', j')
+          CProj e f -> do (e', j') <- runRW j e; pure (CProj e' f, j')
+          CProjAt e f i -> do (e', j') <- runRW j e; pure (CProjAt e' f i, j')
+          CRecordV fs -> do
+            (vs', j') <- runList j (map snd fs)
+            pure (CRecordV (zip (map fst fs) vs'), j')
+          _ -> pure (t, j) -- literals, globals, etc.: no reads, no free vars to shift
+    runList j [] = pure ([], j)
+    runList j (x : xs) = do
+      (x', j') <- runRW j x
+      (xs', j'') <- runList j' xs
+      pure (x' : xs', j'')
+
+-- | Push a single value onto the current KEnv expression, returning the new env
+-- C-name (a @kpush(val, env)@ local).
+pushEnv :: Text -> Text -> Gen Text
+pushEnv val env = do
+  n <- freshN "env_"
+  emit ("KEnv *" <> n <> " = kpush(" <> val <> ", " <> env <> ");")
+  pure n
+
+-- | Build the @cond@ action of a CPS @while@: an action whose stepped result is
+-- the loop's Bool condition, with var reads normalized to run-time OP_READ_REF
+-- (§4 R7) so each iteration re-tests the LIVE cells.
+cpsCondAction :: Term -> Gen Text
+cpsCondAction = withCpsRefRegion . cpsActionOfPure
+
+-- | The @var x = init@ continuation: the delivered initializer value @karg@ is
+-- placed into a fresh cell via run-time OP_NEW_REF, and the cell is pushed as de
+-- Bruijn 0 for the rest of the block (so it lives in the KEnv — captured across
+-- a park, §4 — and every read/write addresses the same cell).
+emitCpsNewRefCont :: [KItem] -> Gen Text
+emitCpsNewRefCont rest = do
+  fnName <- freshFn "kdok_"
+  (stmts, tree) <- captured "cenv" $ do
+    ref <- freshN "var_"
+    emit ("KValue *" <> ref <> " = kref_new(karg);")
+    e2 <- pushEnv ref "cenv"
+    withEnv e2 (cpsItems rest)
+  let fn =
+        T.unlines $
+          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+            ++ map ("  " <>) stmts
+            ++ ["  return " <> tree <> ";", "}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- | The @return v@ continuation: the delivered value @karg@ exits the do-block
+-- via OP_RETURN (the abrupt-control node unwinds crossed do-scopes, running
+-- their defers, then is caught by the block's KK_RETSCOPE — §18.8).
+emitCpsReturnCont :: Gen Text
+emitCpsReturnCont = do
+  fnName <- freshFn "kdok_"
+  let body =
+        [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {"
+        , "  (void)cenv;"
+        , "  return krt2_return(karg);"
+        , "}"
+        ]
+  modify' $ \st ->
+    st
+      { gsTop = T.unlines body : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- | A continuation for a MONADIC var assignment @x <- rhs@ (or pure @x := rhs@):
+-- the delivered rhs result @karg@ is written to the cell at de Bruijn @idx@ via
+-- run-time OP_WRITE_REF, then the rest of the block runs.  @karg@ is NOT pushed
+-- (the assignment introduces no binder), so indices in @rest@ are unchanged.
+emitCpsAssignCont :: Int -> [KItem] -> Gen Text
+emitCpsAssignCont idx rest = do
+  fnName <- freshFn "kdok_"
+  (stmts, tree) <- captured "cenv" $ do
+    cell <- compile (CVar idx)
+    r <- cpsItems rest
+    pure ("krt2_then(krt2_write_ref(" <> cell <> ", karg), " <> r <> ")")
+  let fn =
+        T.unlines $
+          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+            ++ map ("  " <>) stmts
+            ++ ["  return " <> tree <> ";", "}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- | A statement-@if@ in a CPS block: each branch is a CPS action tree.  The
+-- condition is a pure Bool (R7-normalized if it reads a var); the runtime picks
+-- the branch.  Built as @krt2_bind(<condAction>, kclo(select))@ where @select@
+-- dispatches in C on the delivered Bool to the chosen branch's tree.
+cpsIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen Text
+cpsIf alts mels = goAlts alts
+  where
+    goAlts [] = case mels of
+      Just els -> cpsItems els
+      Nothing -> pure "krt2_pure(kunit())" -- no/exhausted else: Unit (§18.8)
+    goAlts ((c, body) : more) = do
+      condA <- cpsActionOfPure c
+      thenFn <- emitCpsBranchCont (cpsItems body)
+      elseFn <- emitCpsBranchCont (goAlts more)
+      env <- gets gsEnv
+      sel <- emitCpsIfSelect thenFn elseFn
+      pure ("krt2_bind(" <> condA <> ", kclo(" <> sel <> ", " <> env <> "))")
+
+-- | Emit a branch builder @kdok_N(KEnv *cenv, KValue *karg)@ ignoring @karg@,
+-- returning the branch's CPS tree (built under the captured env, unextended).
+emitCpsBranchCont :: Gen Text -> Gen Text
+emitCpsBranchCont build = do
+  fnName <- freshFn "kdok_"
+  (stmts, tree) <- captured "cenv" build
+  let fn =
+        T.unlines $
+          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+            ++ map ("  " <>) stmts
+            ++ ["  return " <> tree <> ";", "}"]
+  modify' $ \st ->
+    st
+      { gsTop = fn : gsTop st
+      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+      }
+  pure fnName
+
+-- | Emit the if-selector @kdok_N(KEnv *cenv, KValue *karg)@: on the delivered
+-- Bool @karg@, return the then-branch tree or the else-branch tree (each built
+-- by applying its closure to the captured env + Unit).
+emitCpsIfSelect :: Text -> Text -> Gen Text
+emitCpsIfSelect thenFn elseFn = do
+  fnName <- freshFn "kdok_"
+  let body =
+        [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {"
+        , "  return kas_bool(karg)"
+        , "    ? " <> thenFn <> "(cenv, kunit())"
+        , "    : " <> elseFn <> "(cenv, kunit());"
+        , "}"
+        ]
+  modify' $ \st ->
+    st
+      { gsTop = T.unlines body : gsTop st
       , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
       }
   pure fnName

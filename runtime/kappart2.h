@@ -103,6 +103,7 @@ KValue *krt2_reraise(KValue *cause);                /* __reraiseCause : Cause e 
 KValue *krt2_doscope(KValue *body);                 /* a supervised do-scope        */
 KValue *krt2_defer(KValue *action);                 /* register an exit action      */
 KValue *krt2_return(KValue *value);                 /* early return from the fiber  */
+KValue *krt2_retscope(KValue *body);                /* delimit `return` to body     */
 KValue *krt2_while(KValue *condIO, KValue *bodyIO); /* loop while condIO is True    */
 KValue *krt2_break(void);                           /* break the innermost loop     */
 KValue *krt2_continue(void);                        /* continue the innermost loop  */

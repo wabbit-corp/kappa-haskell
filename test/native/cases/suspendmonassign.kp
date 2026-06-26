@@ -1,0 +1,25 @@
+-- CPS LOOP FAMILY (CPS-DESIGN §4): a MONADIC var assignment `acc <- m` inside a
+-- suspending loop, where the rhs action `m` READS a loop var.  The rhs is an IO
+-- action whose argument reads the live `acc`/`i` cells (hoisted to run-time
+-- OP_READ_REF, §4 R7), the action is run, and its result is written back to the
+-- cell via OP_WRITE_REF (emitCpsAssignCont) — all across a per-iteration park.
+-- So `acc` is a true running fold over the awaited results.  ≡ interpreter.
+module main
+
+-- an "IO step": fork+await computing acc + i, so it suspends.
+step : Int -> Int -> UIO Int
+let step acc i = do
+    f <- fork (ioPure (addInt acc i))
+    ec <- await f
+    match ec
+      case Success v -> ioPure v
+      case Failure _ -> ioPure acc
+
+main : UIO Unit
+let main = do
+    var acc = 0
+    var i = 1
+    while leInt i 5 do
+        acc <- step acc i        -- monadic assignment reading acc + i (live cells)
+        i = addInt i 1
+    printlnString (stringAppend "acc " (showInt acc))
