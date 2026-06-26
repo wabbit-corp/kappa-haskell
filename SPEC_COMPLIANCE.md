@@ -6,44 +6,30 @@ to `docs/Spec.md` (the Kappa Language Specification). This replaces the former
 (requirement matrix + ranked Gn worklist), both of which had become
 substantially self-superseded.
 
-**Status (count refreshed 2026-06-26; gap list verified 2026-06-23):**
+**Status (count + gap list re-verified per-gap 2026-06-26):**
 `kappa test tests/conformance` = **1771/1771** pass (0 fail, 0 unsupported, 0
 harness error — was 1334 at the audit; the corpus kept growing as the
-reference-repo conformance corpus was imported). The gap LIST below was verified
-against the *current* code in a parallel 9-group re-audit on 2026-06-23 (see
-[Methodology](#appendix-b-methodology)); fix loci are `file:line` at audit time.
-**A per-gap re-verify against today's code is the pending refresh step**
-(referenced from [`ROADMAP.md`](ROADMAP.md) → Spec-coverage track). Since the
-audit, §14.3.4 (associated members) and §28.2 `Iterator.next` have also been
-fixed (see Appendix A).
+reference-repo conformance corpus was imported). The gap LIST below was first
+verified against the code in a parallel 9-group re-audit on 2026-06-23 (see
+[Methodology](#appendix-b-methodology)), then **re-verified per-gap against
+today's code on 2026-06-26** — the refresh step formerly referenced from
+[`ROADMAP.md`](ROADMAP.md) → Spec-coverage track is now done. Every remaining §1
+row below was checked against the current `src/Kappa/**`: closed gaps were struck
+to [Appendix A](#appendix-a-removed-since-the-prior-docs), shifted `file:line`
+loci were updated, and each genuinely-open gap was confirmed still real. Since the
+2026-06-23 audit, §14.3.4 (associated members) and §28.2 `Iterator.next` were also
+fixed (see Appendix A), and the six gaps below were closed this session.
 
-**Closed 2026-06-26** (this session; not yet struck from the §1 tables below —
-do that in the per-gap re-verify):
-- **§30.2.7 inhabitance-summary query** (§1.2, was "large") — implemented as the
-  terminating structural `Inhabitance.hs` (`Empty|Subsingleton|Contractible|Finite|
-  Unknown`); drives `case impossible`/exhaustiveness via `SourceReachability`.
-  Soundness hardened across 3 adversarial sweeps (rigid-index, existential-index,
-  + a de Bruijn miscompile of the existential-skolemize) — commits `97408fb`,
-  `a7fa3b1`, `60b81bd`, `aa5af7c`. *(Also unblocks §17.1.4 `impossible`.)*
-- **§28.2 prelude surface** (§1.4) — `DefectTag` added; `DefectInfo` reshaped to
-  `(tag : DefectTag) (message : Option String)`; `InterruptCause` ctor renamed to
-  the spec namespace; `and`/`or`/`force` exported as first-class values
-  (commit `b1dd316`).
-- **§16.4.1 / §16.4.2 / §17.1.7 flow refinement** (§1.2) — `checkExhaustive` now
-  consults the scrutinee's flow-refined constructor set (an `if e is C` branch can
-  `match e` covering only `C`); `condRefines` gained the `not` case (`if not a then
-  t else f ≡ if a then f else t`); a `match` arm registers `ctxRefines` for an
-  `EVar` scrutinee (so `match b case Full v -> b.val` projects). Additive — narrows
-  only when refinement is in scope, so §30.2.7 is not regressed (commit `8d81343`).
-  *(3 positive + 3 negative conformance tests; the negatives pin no over-acceptance.)*
-
-- **§11.4.2 Boolean→type coercion** (§1.2) — a `Bool`-typed expression in TYPE
-  position is coerced to the proposition `(b = True)`, in all three spec forms:
-  implicit binder `(@x : b)`, left of `b => T`, and a bare-boolean record/tuple
-  field — previously all `E_NOT_A_TYPE`. Guarded to fire ONLY on `Bool` (4 negative
-  tests pin that non-Bool still rejects `E_NOT_A_TYPE`); commit `5d9b7e1`.
-
-These do NOT alter the **§1 gap tables** below yet (struck in the per-gap re-verify).
+**Closed this session (2026-06-26)** — verified against the code and struck from
+the §1 tables in the per-gap re-verify; full evidence is in
+[Appendix A](#appendix-a-removed-since-the-prior-docs):
+- **§30.2.7 inhabitance-summary query** + **§17.1.4 `-> impossible`** (was §1.2 /
+  §2) — commits `97408fb`, `a7fa3b1`, `60b81bd`, `aa5af7c`.
+- **§28.2 prelude surface** (`DefectTag`/`DefectInfo`/`InterruptCause`/`and`/`or`/
+  `force`, was §1.4) — commit `b1dd316`.
+- **§16.4.1 / §16.4.2 / §17.1.7 flow refinement** (was §1.2 / §2) — commit
+  `8d81343`.
+- **§11.4.2 Boolean→type coercion** (was §1.2) — commit `5d9b7e1`.
 
 **Architecture (this session):** the **KBackendIR** pipeline now has Stage 0
 (typed-Core head annotations + observe-only `CoreLint.hs`), Stage 1 (`Inhabitance.hs`
@@ -68,8 +54,8 @@ completeness but are **not** required for core conformance.
 
 | Bucket | Count | Meaning |
 | --- | --- | --- |
-| **Core MUST/SHALL gaps** (§1) | 29 | Required for portable-profile conformance. Do these. |
-| **SHOULD gaps** (§2) | 12 | Recommended; non-conformance is permitted but discouraged. |
+| **Core MUST/SHALL gaps** (§1) | 17 | Required for portable-profile conformance. Do these. (Was 29 at the 2026-06-23 audit; 8 closed this session — §11.4.2, §16.4.1, the §16.4.2 flow-refinement row, §30.2.7, and the four §28.2 `and`/`or`/`force` / `DefectTag` / `DefectInfo` / `InterruptCause` rows — all struck to Appendix A; the remaining audit-count delta was reconciled to Appendix A in the 2026-06-23–26 refreshes.) |
+| **SHOULD gaps** (§2) | 10 | Recommended; non-conformance is permitted but discouraged. (Was 12; §17.1.4 `-> impossible` and §17.1.7 `match`-arm refinement closed this session — Appendix A.) |
 | **Profile-scoped / adjudication** (§3) | 22 | Sanctioned by an explicit profile clause, or spec-MUST-but-profile-gated (flagged). |
 | **Optional / MAY** (§4) | 1 | Pure latitude. |
 | **Open questions** (§5) | ~6 | Need a spec re-read or a targeted probe before classifying. |
@@ -103,33 +89,25 @@ No unsound "assume the callee uses its argument" defaulting remains.
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§11.4.2** | **Boolean→type coercion** `b ⟼ (b = True)` is unimplemented in all three forms: implicit binder `(@x : b)`, left of `b => T`, and a record/tuple field with a bare-boolean declared type (`ok : id == 1`). All three → `E_NOT_A_TYPE`. | `Check.hs` type-position elaboration (no `= True` coercion path) | medium |
-| **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic doesn't report the expected type (no `EHole` case in the `check` direction). | `Check.hs:1889-1893` (`anyHole`), `Check.hs:3098-3115` (only-`infer` `EHole`) | medium |
-| **§16.4.1** | **Exhaustiveness ignores flow refinement.** After `if e is C`, a `match e` covering only `C` in that branch is wrongly `E_PATTERN_NON_EXHAUSTIVE`. `checkExhaustive` consults `csDatas` and never `ctxRefines`. (Field projection on the refined value *does* work.) | `Check.hs:8146-8169` (`checkExhaustive`) | medium |
-| **§16.4.2** | Flow refinement has **no `not` case.** `condRefines` handles `&&`/`||`/`is`/thunks but not `not`; `complementRefines` only fires on a bare `EIs (EVar _) _`. So `if not (b is Hole) then b.val else 0` doesn't refine. (Spec requires `if not a then t else f ≡ if a then f else t` before §16.4.1.) | `Check.hs:7845-7859` (`condRefines`), `Check.hs:7821-7823` (`negs`) | medium |
-| **§16.4.2 / §18.6.2** | **IO-kernel do-statement condition facts — partial.** Each `DoIf` **then-suite** (and every `elif` suite) now pushes its own condition as evidence, so `do { if y <= x then consume (x - y) }` discharges the checked-sub proof the if-*expression* already could. Remaining: the **else-suite** and the `elif` *preceding-conditions-false* facts need accumulated-negation threading; and the `DoWhile` body needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) before a `var`-condition fact can be pushed soundly (a stale fact after `x := …` would be unsound — so it is deliberately not pushed). | `Check.hs` `elabDoIOItems.goItems` (`DoIf` else-suite, `DoWhile`) | medium |
-| **§30.2.7** | No **inhabitance-summary** query. The only emptiness check (`scrutineeEmpty`) handles one case: a nullary data type with zero constructors. Missing: Subsingleton/Contractible/Finite, closed sum/product summaries, GADT family-argument refinement → Empty, proof-classification evidence (`IsEmpty`/`IsContr`/…), equality no-confusion. Bare `impossible` always rejects as reachable. *(Also unblocks §17.1.4.)* | `Check.hs:8133-8142` (`scrutineeEmpty`), `Check.hs:3451-3454` (`EImpossible` always errors) | large |
+| **§16.3.2** | **Named holes** don't share: every `?h` makes a fresh independent meta (`anyHole` ignores the name), so two `?h` at incompatible types aren't rejected. Also the unsolved-hole diagnostic, emitted in the `infer` direction *before* unification, reports the still-unsolved meta as `_` rather than the type a checked `?h` is being matched against (no `EHole` case in the `check` direction). | `Check.hs:1950-1954` (`anyHole`), `Check.hs:3179-3196` (only-`infer` `EHole`) | medium |
+| **§16.4.2 / §18.6.2** | **IO-kernel do-statement condition facts — partial.** Each `DoIf` **then-suite** (and every `elif` suite) now pushes its own condition as evidence, so `do { if y <= x then consume (x - y) }` discharges the checked-sub proof the if-*expression* already could. Remaining: the **else-suite** and the `elif` *preceding-conditions-false* facts need accumulated-negation threading; and the `DoWhile` body needs §18.6.2 **versioned current-value representatives** (`VarCurrent(x,n)`) before a `var`-condition fact can be pushed soundly (a stale fact after `x := …` would be unsound — so it is deliberately not pushed). *(Distinct from the flow-refinement §16.4.2 gap closed this session — Appendix A.)* | `Check.hs:9712` (`DoIf` else-suite), `Check.hs:9650` (`DoWhile`), in `elabDoIOItems.goItems` | medium |
 
 ### 1.3 Effects, resources, collections
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
-| **§19.5 / §19.1** | `bracket` uses the naive `ioBind acquire (\r -> finally (use r) (release r))` that §19.5 calls insufficient — it hands `use` an **owned** `a`, not a **borrowed** `& r` view, so the no-escape guarantee is unenforced. The method is named `bracketM` (spec: `bracket`), drops all `1`/`&` markers, and neither `MonadError` nor `MonadResource` declares the mandated `MonadFinally m =>` supertrait. | `Prelude.hs:912,917-918,1252-1253` | medium |
-| **§32.2.19/.20/.21** | Eff-typed do-blocks reject `defer`/`using`/`var`/loop items (`elabEffDo` handles only `DoExpr/DoBind/DoLet/DoIf`). So a continuation captured by a handler clause has no do-scope exit-action frames, and the spec's mandated **masked-LIFO unwinding of a captured-then-abandoned segment** (and the per-clone copy / escape restriction) is unimplemented for the `Eff` carrier. | `Check.hs:7634-7680` (`elabEffDo` rejects other items), `Eval.hs:1067-1116` (`__effBind` tree, no exit-action stack) | medium |
-| **§20.4.1 / §20.10.7** | **Borrowed generators** `for x in &coll` (`BorrowSourceIntoQuery`) and `for & pat in coll` / `for? & pat in coll` (`BorrowItemsIntoQuery`) are neither parsed nor lowered. The traits are declared (`Prelude.hs:2114,2118`) but dead. Depends on §12 borrow-region inference (rigid ρ), itself unimplemented. | `Parser.hs:3000` (no `&`-prefixed source/item), no dispatch in `Check.hs` for/comprehension lowering | large |
+| **§19.5 / §19.1** | `bracket` uses the naive `ioBind acquire (\r -> finally (use r) (release r))` that §19.5 calls insufficient — it hands `use` an **owned** `a`, not a **borrowed** `& r` view, so the no-escape guarantee is unenforced. The method is named `bracketM` (the spec name `bracket` exists only as a thin alias), drops all `1`/`&` markers, and neither `MonadError` nor `MonadResource` declares the mandated `MonadFinally m =>` supertrait. | `Prelude.hs:987,992-993` (traits), `Prelude.hs:1348-1349` (IO `bracketM`), `Prelude.hs:1353-1354` (alias) | medium |
+| **§32.2.19/.20/.21** | Eff-typed do-blocks reject `defer`/`using`/`var`/loop items (`elabEffDo` handles only `DoExpr/DoBind/DoLet/DoIf`, else `unsupportedAt`). So a continuation captured by a handler clause has no do-scope exit-action frames, and the spec's mandated **masked-LIFO unwinding of a captured-then-abandoned segment** (and the per-clone copy / escape restriction) is unimplemented for the `Eff` carrier. | `Check.hs:7825,7900-7902` (`elabEffDo` rejects other items), `Eval.hs:1090-1124` (`__effBind` tree, no exit-action stack) | medium |
+| **§20.4.1 / §20.10.7** | **Borrowed generators** `for x in &coll` (`BorrowSourceIntoQuery`) and `for & pat in coll` / `for? & pat in coll` (`BorrowItemsIntoQuery`) are neither parsed nor lowered. The traits are declared (`Prelude.hs:2242,2246`) but dead. Depends on §12 borrow-region inference (rigid ρ), itself unimplemented. | `Parser.hs:3051` (`pFor`, no `&`-prefixed source/item), no dispatch in `Check.hs` for/comprehension lowering | large |
 
 ### 1.4 Prelude surface (§28.2 term/type/constructor namespaces)
 
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
 | **§28.2** | Interruption/finalization combinators `poll`, `uninterruptible`, `mask`, `ensuring`, `acquireRelease` are absent (`E_NAME_UNRESOLVED`). The do-driven fiber/scope/promise/race/timeout/bracket surface *is* present. | add to `Prelude.hs` | medium |
-| **§28.2** | Fiber-identity/label terms `fiberId`, `currentFiberId`, `getFiberLabel`, `setFiberLabel`, `locallyFiberLabel` absent (the `FiberId` type + `MkFiberId` exist at `Prelude.hs:1273`, no accessors). | add to `Prelude.hs` | medium |
-| **§28.2** | `and`, `or`, `force` not exported as first-class terms (the n-ary `List Bool` folds + `force`; `(&&)`/`(||)`/keyword-`force` exist but aren't nameable values). | `Prelude.hs` (`force` keyword-only at `Parser.hs:1602`) | small |
-| **§28.2** | `Iterator.next` is now declared, definable in instances, and usable in generic code (the associated `Item` projects from the evidence). Residual: at a **concrete** call the result field's `d.Item` type does not reduce to the instance's `Item` (postponed-evidence timing), so `r.item` of a concrete `next` result reads as the unreduced projection. | §14.2.1 use-site associated-member normalization / eager concrete trait-evidence solving | medium |
-| **§28.2** | `DefectTag` type entirely absent (constructors `Panic`/`AssertionFailed`/`ArithmeticFault`/`StackOverflow`/`OutOfMemory`/`HostFailure`/`ForeignContractViolation`/`UnhandledChildFailure`/`OtherDefect`). | add to `Prelude.hs` | small |
-| **§28.2** | `DefectInfo` wrong shape + ctor name: is `MkDefectInfo (message : String)`; spec wants `DefectInfo (tag : DefectTag) (message : Option String)`. | `Prelude.hs:1279-1280` | small |
-| **§28.2** | `InterruptCause` ctor is `MkInterruptCause`; spec constructor namespace lists `InterruptCause.InterruptCause`. | `Prelude.hs:1276-1277` | small |
-| **§28.2** | Of the 8 intrinsic row/var/eff solver traits only `LacksRec` is registered; `ContainsRec`/`StableUnderRecChange`/`RecTailSatisfies`/`ContainsVar`/`LacksVar`/`ContainsEff`/`LacksEff`/`SplitEff` are unresolvable. *(Their value beyond the prelude name — open rows/variants — is profile-scoped, §3.)* | `Prelude.hs`/`Builtins.hs` (only `LacksRec`) | medium |
+| **§28.2** | Fiber-identity/label terms `fiberId`, `currentFiberId`, `getFiberLabel`, `setFiberLabel`, `locallyFiberLabel` absent (the `FiberId` type + `MkFiberId` exist at `Prelude.hs:1370-1371`, no accessors). | add to `Prelude.hs` | medium |
+| **§28.2** | `Iterator.next` is now declared, definable in instances, and usable in generic code (the associated `Item` projects from the evidence). Residual: at a **concrete** call the result field's `d.Item` type does not reduce to the instance's `Item` (postponed-evidence timing), so `r.item` of a concrete `next` result reads as the unreduced projection. | §14.2.1 use-site associated-member normalization / eager concrete trait-evidence solving (`Iterator` trait `Prelude.hs:977-979`) | medium |
+| **§28.2** | Of the 8 intrinsic row/var/eff solver traits only `LacksRec` is registered; `ContainsRec`/`StableUnderRecChange`/`RecTailSatisfies`/`ContainsVar`/`LacksVar`/`ContainsEff`/`LacksEff`/`SplitEff` are unresolvable. *(Their value beyond the prelude name — open rows/variants — is profile-scoped, §3.)* | `Prelude.hs:124` / `Builtins.hs:249` (only `LacksRec`) | medium |
 
 ### 1.5 Metaprogramming & reflection (§21–§22)
 
@@ -137,11 +115,11 @@ No unsound "assume the callee uses its argument" defaulting remains.
 | --- | --- | --- | --- |
 | **§21.5** | No **quotation-pattern matching** on `Syntax t` and no equivalent stable structural-inspection API (must distinguish v1 surface constructs). Only `renderSyntax`/`syntaxOrigin`/`normalizeSyntax`/`whnfSyntax`/`typeOfSyntax`/`defEqSyntax`/`headSymbolSyntax` exist — none destructure surface syntax. | no `inspectSyntax`/`SyntaxView`/`PQuote` in `Prelude.hs`/`Parser.hs` | large |
 | **§21.6** | **Semantic-reflection value tier** `asCore`/`asCoreIn`/`reifyCore`/`inferType`/`whnf`/`normalize`/`tryProveDefEq`/`proveDefEq`/`defEq`/`headSymbol` all `E_NAME_UNRESOLVED`. `reifyCore` is one of only two re-entry points to object code, so the whole tier is non-functional (needs a faithful runtime `Core` representation carrying QTT/scope evidence). | `Prelude.hs` | large |
-| **§21.6** | `transCoreEq`/`substCoreEq` not declared (deferral comment only); `reflCoreEq`/`symCoreEq` present but the `CoreEq` witness algebra is incomplete. | `Prelude.hs:1902-1910` | medium |
+| **§21.6** | `transCoreEq`/`substCoreEq` not declared (deferral comment only); `reflCoreEq`/`symCoreEq` present but the `CoreEq` witness algebra is incomplete. | `Prelude.hs:2030` (deferral comment), `Prelude.hs:2034-2038` (`reflCoreEq`/`symCoreEq`) | medium |
 | **§21.6** | No typed scope-safe **constructor/destructor API** over reflected `Core` (vars/binders, global refs, app, lambda/let, Pi/Sigma, records/members/projections, ctors/field projections, match, universes/equality, variant injections/rows). Types `CoreCtx`/`Core`/`CoreEq`/`Symbol` are declared but have no inspect/build API. | `Prelude.hs` | large |
-| **§21.6** | `lowerComprehension : RawComprehension a -> Elab (ComprehensionPlan a)` not provided; `RawComprehension`/`ComprehensionPlan` are opaque with no inspection API (custom sinks get an opaque token). | `Prelude.hs:167-168` | large |
-| **§22** | `std.deriving.shape` missing the `Result`-returning `tryInspectAdt`/`tryInspectRecord`, the construction terms `constructAdt`/`constructRecord`/`matchRecord`, plus `requiredRuntimeFieldConstraints`/`requireRecordFieldInstances`/`fieldArgument`/`omitImplicitFieldArgument`. | `Prelude.hs:2173-2222` (`stdDerivingShapeSource`) | large |
-| **§22** | `std.deriving.shape` missing types `ShapeErrorKind`/`ShapeError`/`ShapeParameter`/`FieldArgument`/`FieldConstraint`, and the shape records are reduced: `ShapeField` has only `sourceName`+`renderName` (no `origin`/`typeOrigin`/`fieldType`/`fieldTypeSyntax`/`quantity`/`implicit`/`compileTimeOnly`/`runtimeRelevant`); `ShapeConstructor`/`AdtShape` lack `symbol`/`origin`/`parameters`; `BoundField`/`BoundFieldPair` lack their Syntax fields. Blocks §22.3 runtime-relevant filtering and §22.4 per-field diagnostics. | `Prelude.hs:2155-2171,2180` | large |
+| **§21.6** | `lowerComprehension : RawComprehension a -> Elab (ComprehensionPlan a)` not provided; `RawComprehension`/`ComprehensionPlan` are opaque with no inspection API — only `fromComprehensionPlan`/`fromComprehensionRaw` trait methods exist, so custom sinks get an opaque token. | `Prelude.hs:167-168` (opaque types), `Prelude.hs:2256-2260` (trait methods) | large |
+| **§22** | `std.deriving.shape` missing the `Result`-returning `tryInspectAdt`/`tryInspectRecord`, the construction terms `constructAdt`/`constructRecord`/`matchRecord`, plus `requiredRuntimeFieldConstraints`/`requireRecordFieldInstances`/`fieldArgument`/`omitImplicitFieldArgument`. | `Prelude.hs:2269` (`stdDerivingShapeSource`) | large |
+| **§22** | `std.deriving.shape` missing types `ShapeErrorKind`/`ShapeError`/`ShapeParameter`/`FieldArgument`/`FieldConstraint`, and the shape records are reduced: `ShapeField` has only `sourceName`+`renderName` (no `origin`/`typeOrigin`/`fieldType`/`fieldTypeSyntax`/`quantity`/`implicit`/`compileTimeOnly`/`runtimeRelevant`); `ShapeConstructor`/`AdtShape` lack `symbol`/`origin`/`parameters`; `BoundField`/`BoundFieldPair` (each just `(field : ShapeField)`) lack their Syntax fields. Blocks §22.3 runtime-relevant filtering and §22.4 per-field diagnostics. | `Prelude.hs:2283-2299` (shape data decls) | large |
 
 ### 1.6 Diagnostic contract (§3)
 
@@ -163,8 +141,6 @@ are the next tier after §1.
 | § | Gap | Fix locus | Effort |
 | --- | --- | --- | --- |
 | §11.1 | **Universe polymorphism** `forall (u : Universe) (a : Type u). …` — no `Universe` intrinsic, `Type u` not callable. *(Distinct from the §1.1 stratification soundness fix.)* | `Check.hs` | large |
-| §17.1.4 | A `-> impossible` arm is **never** accepted (always `E_IMPOSSIBLE_REACHABLE`), so a GADT-refined uninhabited case can't use it. Unblocked by §30.2.7. | `Check.hs:3451-3454` | medium |
-| §17.1.7 / §7.4.1 | A constructor/variable-scrutinee `match` arm doesn't register `ctxRefines` for the scrutinee, so `match b case Full v -> b.val …` fails member projection (records `csFacts` only). | `Check.hs:8098-8124` (`goCase`) | medium |
 | §15.14 | **Block-local recursive helpers** aren't run through the termination pass at all — a divergent local `let go k decreases k = go (k+1)` is accepted silently (no `W_TERMINATION_UNVERIFIED`), unlike the identical top-level def. | termination pass (top-level SCC only) | medium |
 | §12.4.3 | First-class accessor/borrow descriptor ops use simplified `1`/ω binders instead of exact `(&[ρ] x : A)` borrow-marked domains. | `Prelude.hs:204` (`captureBorrowTy`) | medium |
 | §28.1 / §28.2 | Conventional prefixed-string handlers `re"…"` (regex) and `b"…"` (bytes-from-string) absent (`E_NAME_UNRESOLVED` as prefix). *(Distinct `b'…'`/`g'…'` quoted-literal handlers do work.)* | `Prelude.hs` | medium |
@@ -254,6 +230,60 @@ argues *against* full optionality — hence "adjudication".
 The 9-group re-audit verified **~59** items the old docs listed as gaps/Partial/
 MISSING are now **implemented** (dropped from the plan), and corrected **~46**
 stale claims. The headline removals:
+
+### Closed 2026-06-26 (struck from §1/§2 in the per-gap re-verify)
+
+- **§30.2.7 inhabitance-summary query — DONE** (commits `97408fb`, `a7fa3b1`,
+  `60b81bd`, `aa5af7c`). The structural, terminating `Inhabitance.hs`
+  (`Empty|Subsingleton|Contractible|Finite|Unknown`) replaces the one-case
+  `scrutineeEmpty`. `inhabitanceSummary` is consulted via `SourceReachability`
+  to drive `case impossible`, GADT empty-fiber exhaustiveness, and equality
+  no-confusion. Wired into `Check.hs` at `scrutineeEmpty` (`Check.hs:8428`),
+  `branchFiberEmpty` (`Check.hs:8722`), and `inhabEqualityVerdict`
+  (`Check.hs:8741`); rigid-indexed (`Tag b`) and existential-indexed fibers are
+  conservatively *not* classified Empty. Soundness hardened across three
+  adversarial sweeps (rigid-index, existential-index, and a de Bruijn miscompile
+  of the existential-skolemize). Tests: `expressions/match-positive-impossible-*`,
+  `match-positive-exhaustive-gadt-empty-fiber.kp`, and the matching `-negative-*`
+  rejections.
+- **§17.1.4 `-> impossible` arm — DONE** (same commits; unblocked by §30.2.7).
+  A `match` arm body is now checked with `csImpossibleScrut` set to its
+  `branchFiberEmpty` verdict (`Check.hs:8395-8397`); the `EImpossible` handler
+  accepts the arm iff that verdict is `Just True` (`Check.hs:3566-3572`),
+  otherwise `E_IMPOSSIBLE_REACHABLE`. Verified: `case Never -> impossible` under
+  a `Choice True` scrutinee and `match v case impossible` over `Void2` are both
+  Accepted (`expressions/match-positive-impossible-gadt-refined-fiber.kp`,
+  `match-positive-impossible-void-scrutinee.kp`); an inhabited arm still rejects.
+- **§16.4.1 / §16.4.2 (flow refinement) / §17.1.7 — DONE** (commit `8d81343`).
+  `checkExhaustive` consults the scrutinee's flow-refined constructor set
+  (`scrutRefined`/`ctxRefinementOf`, `Check.hs:8406-8414`; `mRefined` honored at
+  `Check.hs:8786`), so an `if e is C` branch may `match e` covering only `C`.
+  `condRefinesBoth` gained the `not` case (`Check.hs:8102-8105`,
+  `if not a then t else f ≡ if a then f else t`). A plain-`match` arm registers
+  `ctxRefines` for an `EVar` scrutinee (`refineCtx`, `Check.hs:8373-8375`), so
+  `match b case Full v -> b.val` projects. Additive — narrows only when refinement
+  is in scope, so §30.2.7 is not regressed. *(The IO-kernel do-statement
+  else-suite / `DoWhile` condition-fact gap — also tagged §16.4.2/§18.6.2 — is a
+  distinct item and remains open in §1.2.)*
+- **§11.4.2 Boolean→type coercion — DONE** (commit `5d9b7e1`). A `Bool`-typed
+  expression in TYPE position is coerced to the proposition `(b = True)` in all
+  three spec forms (implicit binder `(@x : b)`, left of `b => T`, bare-boolean
+  record/tuple field) — `inferTypeBoolProp'` (`Check.hs:4118-4143`). Guarded to
+  fire ONLY when the expression's type is `Bool` (`VGlobN g [] | g == prelBool`);
+  any other non-type still raises `E_NOT_A_TYPE`. Tests: `bool-prop-coercion/form1-*`
+  /`form2-*`/`form3-*` (positive) + `negative-*-non-bool` (4 rejections).
+- **§28.2 prelude surface — DONE** (commit `b1dd316`). `DefectTag` added with all
+  nine constructors (`Panic`/`AssertionFailed`/`ArithmeticFault`/`StackOverflow`/
+  `OutOfMemory`/`HostFailure`/`ForeignContractViolation`/`UnhandledChildFailure`/
+  `OtherDefect`, `Prelude.hs:1383-1392`); `DefectInfo` reshaped to
+  `DefectInfo (tag : DefectTag) (message : Option String)` (`Prelude.hs:1396-1397`);
+  the `InterruptCause` ctor renamed from `MkInterruptCause` to the spec-namespace
+  `InterruptCause` (`Prelude.hs:1377-1378`); `and`/`or`/`force` exported as
+  first-class nameable values (`Prelude.hs:806-823`). *(The remaining §28.2 rows —
+  `poll`/`mask`/…, fiber-identity accessors, `Iterator.next` concrete-reduction
+  residual, the 7 unregistered row/var/eff traits — stay open in §1.4.)*
+
+### Earlier removals
 
 - **§14.3.5 declaration-time Paterson termination check — FIXED.** Instance
   declaration now rejects a context that is not structurally smaller than the
