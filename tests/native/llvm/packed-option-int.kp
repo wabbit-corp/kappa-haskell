@@ -1,0 +1,29 @@
+-- UNBOXING Stage 1d: a SINGLE-field ctor over an immediate field packs into a
+-- b011 word.  Option<Int>'s `Some n` over a SMALL n packs (alloc-free), over a
+-- HUGE n (a bignum past the 41-bit packed field) falls back to the boxed K_CTOR;
+-- BOTH must match the right arm and project the field back exactly.
+--
+-- The .kp can only observe VALUES (parity interp == C == LLVM is the witness);
+-- the 0-byte/op packing win is the runtime/bench `packed-build` gate.
+module main
+
+-- Project Some/None back to an Int, exercising both the b011 packed `Some` arm
+-- (small payload) and the boxed `Some` arm (huge payload), plus the b010 `None`.
+unwrap : Option Int -> Int
+let unwrap o =
+    match o
+    case Some n -> n
+    case None -> 0 - 1
+
+main : UIO Unit
+let main = do
+    -- Some over a small Int: packs into a b011 word, projects back to 5.
+    printlnString (showInt (unwrap (Some 5)))
+    -- Some over a negative small Int: the field word is negative; the arithmetic
+    -- recovery must sign-extend it back to -3.
+    printlnString (showInt (unwrap (Some (0 - 3))))
+    -- Some over a HUGE Int (2^55, beyond the 41-bit packed field): stays boxed,
+    -- still matches `Some` and projects the bignum back unchanged.
+    printlnString (showInt (unwrap (Some 36028797018963968)))
+    -- None: the b010 nullary immediate, distinct from every packed Some.
+    printlnString (showInt (unwrap None))

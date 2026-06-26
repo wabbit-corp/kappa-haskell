@@ -16,8 +16,8 @@ pointers OFF, so a low-tagged odd word is a non-pointer to Boehm):
 ```
 b000  a heap KValue* pointer (a boxed K_CTOR/K_REC/… — kderef needs no mask)
 b001  immediate Int   (value<<3)                         [DONE — Stage 1]
-b010  immediate ctor  (a NULLARY constructor; tag id in the payload)
-b011  packed union    (discriminant + small payload in the 61-bit field)
+b010  immediate ctor  (a NULLARY constructor; tag id in the payload) [DONE — 1b]
+b011  packed ctor     ([field-word:41 | tagId:20 | b011]; one immediate field) [DONE — 1d]
 b1xx  RESERVED        (niche markers, immediate Char, future kinds)
 ```
 
@@ -159,8 +159,36 @@ OCaml RFC #14 + POPL'24 constructor-unboxing; OxCaml layouts; BDW-GC.
   suite + conformance 1738/1738 green, kderef assert never fired, **`ctor0-build`
   48→0 B/op** for arbitrary enums (`ctor-build` flat 64 B, the boxed Cons control).
 - **Stage 1c — niche optimization** for the single-boxed-payload + nullary-rest
-  shape (`Option<boxed>` and friends). (Research-informed.)
-- **Stage 1d — packed tagged unions (`b011`)** for small-payload multi-variant
-  ADTs, with the per-ADT bit-layout algorithm.
+  shape (`Option<boxed>` and friends). (Research-informed.) Not yet done; can be
+  built independently of 1d (a per-ADT *static* layout choice, vs 1d's per-value
+  runtime packing).
+- **Stage 1d — packed single-field ctors (`b011`). DONE** (runtime-only, the b010
+  analogue one tag code up). A constructor with EXACTLY ONE explicit field whose
+  runtime value is an IMMEDIATE (a b001 Int or a b010 nullary ctor) that fits the
+  payload packs into a single word `[ field-word : 41 | tagId : 20 | b011 : 3 ]`;
+  otherwise (heap-pointer field / too-big immediate / argc≠1 / tagId ≥ 2^20) it
+  stays the boxed `K_CTOR`. This makes the `Some`/`Ok`/`Err` single-field arms of
+  `Option<Int>` / `Option<Bool>` / `Option<enum>` / `Result<small,small>`
+  alloc-free. The discriminant (`tagId`) is stored EXPLICITLY in the word so
+  `kctor_tagid` decodes it blind (polymorphic `Option a -> …` works) and **`Some
+  None` packs as a b011 word DISTINCT from `None`'s b010** — nested
+  `Option<Option>` has NO collision (the soundness win over a niche). Per-value
+  packing is canonical: a given value has ONE rep (`Some 5` always packs; `Some
+  (2^55)` always boxes), so equality stays consistent. Runtime: `kctor(argc==1 &&
+  fits)` → `kmk_imm_packed`; `kctor_tagid`/`kctor_argc(=1)`/`kctor_arg(=field
+  word)`/`kctor_name`/`kctor_is` are b011-aware (a `kbuiltin_ctor_id` name→id
+  table extends Stage-1b's nullary table to the single-field builtins —
+  `Some`/`Success`/`RaceWonLeft`/`RaceWonRight`/`TimeoutDone` — whose Exit field
+  can itself be a packing immediate, so the OUTCOME packs too and is matched by
+  name in race/scope/atomic paths); `kvalue_rep_eq` compares a packed value
+  STRUCTURALLY against any ctor rep. The packing also gates on `tagId` fitting 20
+  bits so the kappart2 CK-machine OP nodes at `KRT2_OP_BASE = 0x40000000` (e.g.
+  `ioPure(immediate)`) stay boxed and keep their full id. VERIFIED: **corpus
+  90/90** interp==C==LLVM (incl. the nested-`Option<Option<Int>>` soundness test
+  and `Some None /= None`), native suite + conformance 1738/1738 green, kderef
+  assert never fired, **`packed-build (Some smallInt)` 0 B/op** (the bench WIN),
+  `ctor0-build` / `addInt` still 0, `ctor-build` (n-ary Cons) flat 64 B. No
+  backend change needed — single-field `CCtor` lowers through `kctor` and
+  `CMatch` dispatches via `kctor_tagid`/`kctor_arg`, all now b011-aware.
 - **Stage 2 — specialization** (worker/wrapper per layout) for hot polymorphic
   code over packed ADTs.

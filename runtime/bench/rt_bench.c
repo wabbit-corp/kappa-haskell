@@ -214,6 +214,28 @@ int main(void) {
     if (kctor_tagid(last) != KCT_NONE) printf("x"); /* keep last live */
   }
 
+  /* 7b. packed-build (Stage 1d): a SINGLE-field ctor over a small immediate (Some
+   *    smallInt) packs into a b011 word — alloc-free, like the nullary ctor0 case
+   *    but carrying a payload.  bytes/op -> 0 under Stage 1d; contrast the n-ary
+   *    Cons (#6) which stays boxed.  Also assert the projection round-trips so a
+   *    broken bit-split fails the bench, not just the gates. */
+  {
+    KValue *last = kctor(KCT_SOME, "Some", 1, (KValue *[]){ kint(0) });
+    double t0 = now_ns();
+    size_t a0 = allocated();
+    for (int i = 0; i < ST; i++) {
+      KValue *a[1] = { kint(i & 0xffff) };           /* a small, packing payload   */
+      last = kctor(KCT_SOME, "Some", 1, a);          /* b011 packed: no allocation */
+    }
+    size_t a1 = allocated();
+    double t1 = now_ns();
+    printf("%-34s %10.2f %12.0f\n", "packed-build (Some smallInt b011)",
+           (t1 - t0) / ST, (double)(a1 - a0) / ST);
+    /* DCE defense + correctness: the last Some must project its payload back. */
+    if (kctor_tagid(last) != KCT_SOME || kas_int(kctor_arg(last, 0)) != ((ST - 1) & 0xffff))
+      printf("x");
+  }
+
   /* 8. constructor deref (kctor_tagid + kctor_arg): the TAG-TEST-TAX detector.
    *    Build ONE boxed Cons before timing; per iter do a match-dispatch (tagid)
    *    and a projection (arg), with NO allocation in the loop.  Stage 1 adds a

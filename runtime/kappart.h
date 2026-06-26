@@ -166,7 +166,11 @@ struct KEnv {
  *     b010   immediate ctor   (Stage 1b: EVERY nullary ctor of ANY ADT; tag id
  *                              in the payload — Unit / True / False / Nil / None
  *                              AND every user enum variant)
- *     b011 .. b111   RESERVED for additional immediate KINDS (e.g. immediate Char).
+ *     b011   packed ctor    (Stage 1d: a SINGLE-field ctor whose one field is
+ *                              itself an immediate that fits the payload — tag id
+ *                              AND the field's whole immediate word in the word;
+ *                              e.g. Some(smallInt) / Ok(smallEnum), alloc-free)
+ *     b100 .. b111   RESERVED for additional immediate KINDS (e.g. immediate Char).
  *                    NOT the Perceus RC borrow / thread-shared discriminator: that
  *                    lives in the heap-object HEADER (Koka-style), since an
  *                    immediate is value-copied and never reference-counted.  See
@@ -184,6 +188,7 @@ _Static_assert(_Alignof(max_align_t) >= 8,
 #define KIMM_PTR      ((uintptr_t)0x0)   /* b000: a heap pointer */
 #define KIMM_INT      ((uintptr_t)0x1)   /* b001: immediate Int  */
 #define KIMM_CTOR     ((uintptr_t)0x2)   /* b010: immediate ctor */
+#define KIMM_PACKED   ((uintptr_t)0x3)   /* b011: packed single-field ctor */
 
 /* Is this word a tagged immediate (not a heap pointer)?  Stage 1 makes it true
  * for small Int in the 61-bit range; every other value is still a b000 pointer. */
@@ -270,6 +275,78 @@ static inline int kimm_ctor_id(const KValue *v) {
  * NULLARY ctor (argc == 0); an n-ary ctor stays a boxed K_CTOR. */
 static inline KValue *kmk_imm_ctor(int tagid) {
   return (KValue *)(((uintptr_t)(unsigned)tagid << 3) | KIMM_CTOR);
+}
+
+/* ── Stage 1d: packed single-field-ctor encoding (b011) ─────────────────────
+ * A constructor with EXACTLY ONE explicit field, whose runtime field value is
+ * ITSELF an immediate (a b001 Int or a b010 nullary ctor) small enough to fit,
+ * rides INSIDE the KValue*-sized word — alloc-free — as
+ *
+ *     [ field's whole immediate WORD : 41 bits ][ tagId : 20 bits ][ b011 : 3 ]
+ *
+ * This makes the single-field arms of Option<Int>/Result<small,small>/
+ * Option<enum> (Some / Ok / Err over an immediate payload) allocation-free.
+ *
+ * Why it is SOUND *and* uniform (unlike a niche): the discriminant (`tagId`) is
+ * stored EXPLICITLY, so kctor_tagid decodes it blind — no type parameter needed,
+ * so a polymorphic `Option a -> …` works — and `Some None` packs as a b011 word
+ * distinct from `None`'s b010 word, so nested Option<Option> has NO collision.
+ * Per-value packing is still canonical (§5.2): a given value has exactly ONE rep
+ * (`Some 5` always packs since 5 fits the 41-bit field; `Some (2^55)` always
+ * boxes since it does not), so pointer-identity / rep-equality stay consistent.
+ *
+ * We STORE THE FIELD'S WHOLE IMMEDIATE WORD (not just its decoded value), so
+ * kctor_arg reconstructs a valid immediate KValue with NO type information — it
+ * shifts the field word back out and hands it back as a KValue*.  The field word
+ * keeps its own low 3 tag bits, so the recovered value is a self-describing
+ * immediate (b001 Int or b010 ctor) exactly as it was built. */
+#define KIMM_PACKED_TAG_BITS   20   /* tagIds 0 .. ~1M (>> KCT_USER_BASE+program) */
+#define KIMM_PACKED_FIELD_BITS (64 - 3 - KIMM_PACKED_TAG_BITS)   /* 41 bits */
+#define KIMM_PACKED_TAG_MAX    ((1u << KIMM_PACKED_TAG_BITS) - 1u)              /* 2^20 - 1 */
+#define KIMM_PACKED_FIELD_MAX  (((intptr_t)1 << (KIMM_PACKED_FIELD_BITS - 1)) - 1) /* 2^40 - 1 */
+#define KIMM_PACKED_FIELD_MIN  (-((intptr_t)1 << (KIMM_PACKED_FIELD_BITS - 1)))    /* -2^40   */
+
+/* Does this word carry a b011 packed single-field ctor? */
+static inline int kis_imm_packed(const KValue *v) {
+  return ((uintptr_t)v & KIMM_TAG_MASK) == KIMM_PACKED;
+}
+/* The tag id of a packed ctor (the 20-bit field above the 3-bit tag; unsigned
+ * because the id is small and non-negative). */
+static inline int kimm_packed_tagid(const KValue *v) {
+  return (int)(((uintptr_t)v >> 3) & KIMM_PACKED_TAG_MAX);
+}
+/* The packed field's whole immediate word, reconstructed.  An ARITHMETIC >> of
+ * the top 41 bits sign-extends the stored field word (which itself may be a
+ * negative immediate-Int word like (value<<3)|1), so the recovered KValue* has
+ * the field's original low tag bits and value — a self-describing immediate. */
+static inline KValue *kimm_packed_field(const KValue *v) {
+  return (KValue *)(uintptr_t)((intptr_t)(uintptr_t)v >> (3 + KIMM_PACKED_TAG_BITS));
+}
+/* Does the field value `f` qualify to be packed into a b011 word?  It must be an
+ * immediate (NOT a heap pointer — those stay boxed), and its whole word, viewed
+ * as a signed integer, must fit the 41-bit signed field range so the arithmetic
+ * >> in kimm_packed_field recovers it without loss. */
+static inline int kctor_field_packs(const KValue *f) {
+  if (!kis_imm(f)) return 0;                /* a b000 heap pointer cannot pack */
+  intptr_t w = (intptr_t)(uintptr_t)f;      /* the field's whole immediate word */
+  return w >= KIMM_PACKED_FIELD_MIN && w <= KIMM_PACKED_FIELD_MAX;
+}
+/* Does the tag id fit the 20-bit packed-discriminant field?  Every PROGRAM ctor
+ * id (KCT_USER_BASE + ctor count) is far below 2^20, but the kappart2 CK-machine
+ * OP node ids live at KRT2_OP_BASE = 0x40000000 (2^30) — those single-field
+ * action nodes (e.g. ioPure) must NOT pack (their id would be truncated and the
+ * CK-machine would misdispatch), so packing also gates on the id fitting. */
+static inline int kctor_tagid_packs(int tagid) {
+  return tagid >= 0 && (unsigned)tagid <= KIMM_PACKED_TAG_MAX;
+}
+/* Pack a single-field ctor.  Caller must have checked argc == 1 AND
+ * kctor_field_packs(field); `tagid` must fit KIMM_PACKED_TAG_BITS (every program
+ * ctor id does — KCT_USER_BASE + ctor count is far below 2^20).  The field's
+ * whole word is shifted into the top 41 bits, the tag id into the next 20. */
+static inline KValue *kmk_imm_packed(int tagid, const KValue *field) {
+  uintptr_t fw  = (uintptr_t)field;                 /* whole field word, verbatim */
+  uintptr_t tag = (uintptr_t)(unsigned)tagid & KIMM_PACKED_TAG_MAX;
+  return (KValue *)((fw << (3 + KIMM_PACKED_TAG_BITS)) | (tag << 3) | KIMM_PACKED);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────────────── */

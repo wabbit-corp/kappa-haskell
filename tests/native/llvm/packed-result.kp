@@ -1,0 +1,24 @@
+-- UNBOXING Stage 1d: a user ADT with TWO single-field variants — Result<Int,Int>.
+-- Each of `Ok small` and `Err small` is a single-field ctor over an immediate
+-- and packs into a b011 word carrying its OWN tag id, so a match dispatches the
+-- right arm on the explicit discriminant (no niche ambiguity).
+module main
+
+data Result (a : Type) (b : Type) : Type =
+    Ok a
+    Err b
+
+-- Fold a Result<Int,Int> to an Int, tagging the Err side negative so the arm
+-- choice is observable.
+collapse : Result Int Int -> Int
+let collapse r =
+    match r
+    case Ok v -> v
+    case Err e -> 0 - e
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (collapse (Ok 10)))        -- packed Ok  -> 10
+    printlnString (showInt (collapse (Err 4)))        -- packed Err -> -4
+    printlnString (showInt (collapse (Ok 0)))         -- packed Ok 0
+    printlnString (showInt (collapse (Err 0)))        -- packed Err 0 (distinct from Ok 0)

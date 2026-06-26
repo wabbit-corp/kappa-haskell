@@ -1,0 +1,41 @@
+-- UNBOXING Stage 1d: a single-field ctor over a b010 IMMEDIATE field also packs.
+--   * Option<Bool>: `Some True` / `Some False` pack (the field is a b010 nullary
+--     immediate that fits the 41-bit payload).
+--   * Option<enum>: `Some <enum variant>` packs over a 3-variant nullary enum.
+-- Both must match the right arms and project the inner immediate back exactly.
+module main
+
+data Light : Type =
+    Red
+    Yellow
+    Green
+
+-- Project Option<Bool>, naming the inner Bool by an explicit match (no showBool
+-- dependency).
+showOptBool : Option Bool -> String
+let showOptBool o =
+    match o
+    case Some b -> (match b
+                    case True -> "some-true"
+                    case False -> "some-false")
+    case None -> "none"
+
+-- Project Option<Light>, naming the inner enum variant.
+showOptLight : Option Light -> String
+let showOptLight o =
+    match o
+    case Some l -> (match l
+                    case Red -> "some-red"
+                    case Yellow -> "some-yellow"
+                    case Green -> "some-green")
+    case None -> "none"
+
+main : UIO Unit
+let main = do
+    printlnString (showOptBool (Some True))
+    printlnString (showOptBool (Some False))
+    printlnString (showOptBool None)
+    printlnString (showOptLight (Some Red))
+    printlnString (showOptLight (Some Yellow))
+    printlnString (showOptLight (Some Green))
+    printlnString (showOptLight None)

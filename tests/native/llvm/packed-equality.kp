@@ -1,0 +1,45 @@
+-- UNBOXING Stage 1d equality: two packed b011 values compare by structure.
+-- Canonicalization guarantees a given value has ONE rep, so `Some 5 == Some 5`
+-- (same packed word), `Some 5 /= Some 6` (different packed words), and the
+-- nested-Option soundness case `Some None /= None` (a b011 word never equals a
+-- b010 word).  We spell equality as an explicit match so the test exercises the
+-- packed-aware kctor_tagid / kctor_arg dispatch directly.
+module main
+
+eqOptInt : Option Int -> Option Int -> Bool
+let eqOptInt a b =
+    match a
+    case Some x -> (match b
+                    case Some y -> eqInt x y
+                    case None -> False)
+    case None -> (match b
+                  case Some _ -> False
+                  case None -> True)
+
+eqOptOptInt : Option (Option Int) -> Option (Option Int) -> Bool
+let eqOptOptInt a b =
+    match a
+    case Some x -> (match b
+                    case Some y -> eqOptInt x y
+                    case None -> False)
+    case None -> (match b
+                  case Some _ -> False
+                  case None -> True)
+
+showB : Bool -> String
+let showB b =
+    match b
+    case True -> "true"
+    case False -> "false"
+
+main : UIO Unit
+let main = do
+    printlnString (showB (eqOptInt (Some 5) (Some 5)))            -- true
+    printlnString (showB (eqOptInt (Some 5) (Some 6)))            -- false
+    printlnString (showB (eqOptInt (Some 5) None))               -- false
+    printlnString (showB (eqOptInt None None))                   -- true
+    -- the soundness pair: Some None must NOT equal None.
+    printlnString (showB (eqOptOptInt (Some None) None))         -- false
+    printlnString (showB (eqOptOptInt (Some None) (Some None)))  -- true
+    printlnString (showB (eqOptOptInt (Some (Some 5)) (Some None))) -- false
+    printlnString (showB (eqOptOptInt (Some (Some 5)) (Some (Some 5)))) -- true

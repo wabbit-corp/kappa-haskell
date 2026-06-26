@@ -331,6 +331,17 @@ KValue *kctor(int tagid, const char *name, int argc, KValue **args) {
    * K_CTOR (its fields need heap storage).  This generalizes the Stage-1 narrow
    * Bool/Unit/Nil/None plan to arbitrary enum variants. */
   if (argc == 0) return kmk_imm_ctor(tagid);
+  /* UNBOXING Stage 1d (§5.1/§5.2): a SINGLE-field ctor whose one field is itself
+   * an immediate that fits the 41-bit payload packs into a b011 word carrying the
+   * tag id AND the field's whole word — alloc-free (Some/Ok/Err over a small
+   * Int/enum).  A field that is a heap pointer or a too-big immediate falls back
+   * to the boxed K_CTOR below.  The tag id must ALSO fit the 20-bit discriminant
+   * (kctor_tagid_packs) — the kappart2 OP action nodes at KRT2_OP_BASE do not,
+   * so ioPure(immediate) etc. stay boxed and the CK-machine still sees its id.
+   * Per-value packing is canonical: the same field value always lands the same
+   * way. */
+  if (argc == 1 && kctor_tagid_packs(tagid) && kctor_field_packs(args[0]))
+    return kmk_imm_packed(tagid, args[0]);
   KValue *r = alloc_val(K_CTOR);
   r->as.ctor.name = name;
   r->as.ctor.tagid = tagid;   /* LR2 numeric identity for matching */
@@ -770,21 +781,35 @@ KValue *kappi(KValue *f, KValue *x) {
 
 /* ── deconstruction ────────────────────────────────────────────────── */
 
-/* Stage 1b: a nullary builtin ctor is a b010 immediate carrying ONLY its tag id
- * (the diagnostic `name` it was built with is gone).  Resolve that name back to
- * the KCT id so kctor_is — a name-based identity test still used by the runtime
- * (race/scope outcome classification) and the C harnesses — keeps working on
- * the immediate form.  These are exactly the names the runtime passes to
- * kctor0()/kctor(...,0,...) (the diagnostic short form AND the std.prelude.*
- * spelling); an n-ary builtin (Success/Failure/Interrupt/Some/InterruptCause/…)
- * is boxed and never reaches here.  -1 means "not a known builtin nullary name"
- * (a user nullary ctor: dispatch is by id, not name). */
-static int knullary_builtin_id(const char *name) {
+/* Stage 1b/1d: an IMMEDIATE builtin ctor (a b010 nullary, or a b011 packed
+ * single-field whose field was an immediate) carries ONLY its tag id, not the
+ * diagnostic `name` it was built with.  Resolve that name back to the KCT id so
+ * kctor_is — a name-based identity test still used by the runtime (race/scope
+ * outcome classification, krt2_exit_is_success) and the C harnesses — keeps
+ * working on the immediate form.  These are exactly the names the runtime passes
+ * to kctor0()/kctor(...) (the diagnostic short form AND the std.prelude.*
+ * spelling).  Includes the single-field builtins (Some / Success / Failure /
+ * Interrupt) because their field can be a packing immediate (e.g.
+ * Some(smallInt), Success(smallInt)) and so reach kctor_is as a b011 word; an
+ * n-ary builtin field that is a heap pointer is boxed and dispatched by id.
+ * -1 means "not a known builtin name" (a user ctor: dispatch is by id). */
+static int kbuiltin_ctor_id(const char *name) {
   if (strcmp(name, "std.prelude.Unit")  == 0) return KCT_UNIT;
   if (strcmp(name, "std.prelude.True")  == 0) return KCT_TRUE;
   if (strcmp(name, "std.prelude.False") == 0) return KCT_FALSE;
   if (strcmp(name, "std.prelude.Nil")   == 0) return KCT_NIL;
   if (strcmp(name, "std.prelude.None")  == 0 || strcmp(name, "None") == 0) return KCT_NONE;
+  if (strcmp(name, "std.prelude.Some")  == 0 || strcmp(name, "Some") == 0) return KCT_SOME;
+  /* §18.1 single-field Exit/Cause builtins that can wrap a packing immediate. */
+  if (strcmp(name, "Success")   == 0) return KCT_SUCCESS;
+  if (strcmp(name, "Failure")   == 0) return KCT_FAILURE;
+  if (strcmp(name, "Interrupt") == 0) return KCT_INTERRUPT;
+  /* §18.1 single-field race / timeout OUTCOMES that wrap an Exit.  When the Exit
+   * is itself a Success(smallInt) it packs (b011), so the OUTCOME ctor's field is
+   * an immediate and the outcome ALSO packs — name-matching must resolve these. */
+  if (strcmp(name, "RaceWonLeft")  == 0) return KCT_RO_LEFT;
+  if (strcmp(name, "RaceWonRight") == 0) return KCT_RO_RIGHT;
+  if (strcmp(name, "TimeoutDone")  == 0) return KCT_TO_EXIT;
   /* §18.1 race / timeout / interrupt-tag nullary outcomes (built under their
    * diagnostic short names in rt.c/race.c/scope.c). */
   if (strcmp(name, "TimeoutFired")  == 0) return KCT_TO_TIMED_OUT;
@@ -797,11 +822,17 @@ static int knullary_builtin_id(const char *name) {
 }
 
 int kctor_is(KValue *v, const char *name) {
-  /* Stage 1b: match a nullary b010 immediate by resolving the requested name to
-   * its builtin id (the hot path is kctor_tagid; this is the name-based reader). */
+  /* Stage 1b/1d: match an immediate ctor (b010 nullary or b011 packed
+   * single-field) by resolving the requested name to its builtin id and
+   * comparing against the id carried in the word — no deref.  kctor_tagid is the
+   * hot path; this is the name-based reader. */
   if (kis_imm_ctor(v)) {
-    int want = knullary_builtin_id(name);
+    int want = kbuiltin_ctor_id(name);
     return want >= 0 && kimm_ctor_id(v) == want;
+  }
+  if (kis_imm_packed(v)) {
+    int want = kbuiltin_ctor_id(name);
+    return want >= 0 && kimm_packed_tagid(v) == want;
   }
   if (kis_imm(v)) return 0;   /* an immediate Int is never a constructor */
   /* Unit's boxed spelling is retired as a carrier but still accepted by readers. */
@@ -816,14 +847,15 @@ int kctor_is(KValue *v, const char *name) {
  * `v->tag == K_CTOR &&` type guard that kctor_is had. */
 int kctor_tagid(KValue *v) {
   if (kis_imm_ctor(v)) return kimm_ctor_id(v);   /* Stage 1b: id from the word */
+  if (kis_imm_packed(v)) return kimm_packed_tagid(v); /* Stage 1d: id from the word */
   if (kis_imm(v)) return -1;   /* an immediate Int matches no ctor id */
   if (v->tag == K_UNIT) return KCT_UNIT;
   if (v->tag == K_CTOR) return v->as.ctor.tagid;
   return -1;
 }
 const char *kctor_name(KValue *v) {
-  /* A nullary immediate carries no name; this is diagnostic-only, so recover the
-   * builtin names and label an unknown user nullary ctor generically. */
+  /* An immediate ctor carries no name; this is diagnostic-only, so recover the
+   * builtin names and label an unknown user ctor generically. */
   if (kis_imm_ctor(v)) {
     switch (kimm_ctor_id(v)) {
       case KCT_UNIT:  return "std.prelude.Unit";
@@ -834,15 +866,28 @@ const char *kctor_name(KValue *v) {
       default:        return "<nullary>";
     }
   }
+  if (kis_imm_packed(v)) {                            /* Stage 1d: packed single-field */
+    switch (kimm_packed_tagid(v)) {
+      case KCT_SOME: return "std.prelude.Some";
+      default:       return "<packed>";
+    }
+  }
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
   return v->as.ctor.name;
 }
 int kctor_argc(KValue *v) {
-  if (kis_imm_ctor(v)) return 0;   /* Stage 1b: a nullary immediate has 0 args */
+  if (kis_imm_ctor(v)) return 0;        /* Stage 1b: a nullary immediate has 0 args */
+  if (kis_imm_packed(v)) return 1;      /* Stage 1d: a packed ctor has exactly 1 arg */
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
   return v->as.ctor.argc;
 }
 KValue *kctor_arg(KValue *v, int i) {
+  /* Stage 1d: a b011 packed ctor has one arg — its field, recovered as the whole
+   * immediate word stored in the upper bits (a self-describing b001/b010 word). */
+  if (kis_imm_packed(v)) {
+    if (i != 0) krt_fail("kctor_arg: out of range");
+    return kimm_packed_field(v);
+  }
   /* A b010 immediate has 0 args, so any index into it is a codegen bug. */
   assert(!kis_imm_ctor(v) && "kctor_arg on a nullary immediate (0 args)");
   if (kis_imm(v) || v->tag != K_CTOR || i < 0 || i >= v->as.ctor.argc)
@@ -1200,8 +1245,22 @@ static int kvalue_rep_eq(KValue *a, KValue *b) {
   if (a == b) return 1;   /* immediates canonicalise: word identity == value equality */
   /* §5.3: any Int/Int pair normalizes across immediate / inline / bignum. */
   if (kis_int_any(a) && kis_int_any(b)) return kint_cmp(a, b) == 0;
-  /* Past the Int case, an immediate paired with a non-Int (or two immediates of
-   * different value, already ruled out by a==b) is unequal — guard the deref. */
+  /* Stage 1d: a b011 packed ctor compares STRUCTURALLY against a ctor in any rep
+   * (another packed word, or a boxed K_CTOR) — same tag id AND recursively-equal
+   * field — through the immediate-aware accessors.  Two packed words of the same
+   * value are already caught by a==b (canonical), so a packed-vs-packed pair that
+   * reaches here differs; the structural compare still gives the right answer and
+   * the boxed-vs-packed direction satisfies Some 5 == Some 5 defensively even
+   * though canonicalization means a boxed Some(small) should not normally arise. */
+  if (kis_imm_packed(a) || kis_imm_packed(b)) {
+    int ta = kctor_tagid(a), tb = kctor_tagid(b);
+    if (ta < 0 || ta != tb) return 0;          /* one side not a ctor, or different ctor */
+    if (kctor_argc(a) != 1 || kctor_argc(b) != 1) return 0;
+    return kvalue_rep_eq(kctor_arg(a, 0), kctor_arg(b, 0));
+  }
+  /* Past the Int/packed cases, an immediate paired with a non-Int (or two
+   * immediates of different value, already ruled out by a==b) is unequal — guard
+   * the deref. */
   if (kis_imm(a) || kis_imm(b)) return 0;
   if (a->tag != b->tag) return 0;
   switch (a->tag) {
