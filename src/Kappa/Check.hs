@@ -32,6 +32,8 @@ module Kappa.Check
   , initCheckState
   , DataInfo (..)
   , CtorInfo (..)
+  , EffLabelInfo (..)
+  , EffOpInfo (..)
   , TraitInfo (..)
   , InstanceEntry (..)
   , TerminationDecl (..)
@@ -316,6 +318,13 @@ data CheckState = CheckState
   -- Unlike §9.3.1.1 @scoped effect@ (which lives in 'ctxEffLabels'), a
   -- top-level effect is visible to every definition in the module; effect
   -- resolution consults this as a fallback to 'ctxEffLabels'.
+  , csMultishotOps :: !(Set Text)
+  -- ^ §18.1.16/§18.1.17 the operation NAMES declared MULTI-SHOT (resumption
+  -- quantity ω or 1+) across BOTH top-level @effect@ and §9.3.1.1 block-local
+  -- @scoped effect@ declarations.  Recorded at effect-declaration time so the
+  -- §34.3.3 native-backend capability gate (rt-multishot absent) can reject a
+  -- reachable multi-shot resumption even for scoped effects (whose labels do
+  -- not live in 'csModEffLabels').
   , csAssertReducible :: !(Set GName)
   -- ^ §4.4 definitions explicitly wrapped in a gated `assertReducible`.
   -- The override is consumed only by the SCC termination pass.  It is not
@@ -491,6 +500,7 @@ initCheckState =
     , csTerminationNames = Set.empty
     , csTerminationDecls = Map.empty
     , csModEffLabels = Map.empty
+    , csMultishotOps = Set.empty
     , csAssertReducible = Set.empty
     , csImpossibleScrut = Nothing
     , csHoles = Map.empty
@@ -7582,6 +7592,16 @@ elabEffInterface ctx eff = do
           )
   pure (params, ifaceKindTm, ops)
 
+-- | §18.1.16/§18.1.17: record the MULTI-SHOT operation names (resumption
+-- quantity ω or 1+) of an effect declaration, for the §34.3.3 native-backend
+-- capability gate (rt-multishot absent).  Called for both scoped and top-level
+-- effect declarations so scoped-effect multi-shot ops are covered too.
+recordMultishotOps :: [EffOpInfo] -> CheckM ()
+recordMultishotOps ops =
+  let names = [eoiName op | op <- ops, eoiQ op `elem` [QW, QGe1]]
+   in unless (null names) $
+        modify' $ \st -> st {csMultishotOps = foldr Set.insert (csMultishotOps st) names}
+
 elabScopedEffect :: Ctx -> EffectDecl -> Span -> CheckM (Ctx, Term -> Term)
 elabScopedEffect ctx eff _dsp = do
   let nm = nameText (effName eff)
@@ -7590,6 +7610,7 @@ elabScopedEffect ctx eff _dsp = do
   let ifaceG = GName (csModule st0) (nm <> suffix)
       labelG = GName (csModule st0) (nm <> suffix <> ".label")
   (params, ifaceKindTm, ops) <- elabEffInterface ctx eff
+  recordMultishotOps ops
   ifaceKindV <- evalIn ctx ifaceKindTm
   -- the interface is a (possibly parameterized) local type constructor; the
   -- label is an opaque value of type EffLabel whose identity is its global
@@ -7638,6 +7659,7 @@ elabTopEffect eff _dsp = do
     let ifaceG = GName (csModule st0) nm
         labelG = GName (csModule st0) (nm <> ".label")
     (params, ifaceKindTm, ops) <- elabEffInterface emptyCtx eff
+    recordMultishotOps ops
     ifaceKindV <- evalIn emptyCtx ifaceKindTm
     addGlobal ifaceG (GlobalDef ifaceKindV Nothing False)
     addGlobal labelG (GlobalDef (VGlobN prelEffLabel []) Nothing False)
@@ -7951,9 +7973,18 @@ handlerClauseLam ctx q pat ty mkBody = case pat of
 -- monadic carrier): items elaborate to @__effBind@ chains.
 elabEffDo :: Ctx -> Value -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
 elabEffDo ctx0 row aT items0 sp = do
-  tm <- go ctx0 items0
+  inner <- go ctx0 items0
+  -- §18.7/§32.2.19 Stage-4a: when the block registers exit actions (defer/using),
+  -- delimit it with a do-scope so those finalizers run masked-LIFO on EVERY way
+  -- out — normal completion AND a handler's §32.2.20 abandonment of the captured
+  -- segment.  A block with no exit actions is left as-is (no needless frame).
+  let tm
+        | any isExitItem items0 = CApp Expl (CGlob prelEffDoscope) inner
+        | otherwise = inner
   pure (tm, effTyV row aT)
   where
+    isExitItem DoDefer {} = True
+    isExitItem _ = False
     effT = effTyV row
     go _ [] = do
       errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
@@ -8024,6 +8055,16 @@ elabEffDo ctx0 row aT items0 sp = do
             body <- go c' rest
             sTyTm <- quoteIn c0 rhsTy
             pure (CLet QW "__b" tyTm rhsTm (CMatch (CVar 0) (Just sTyTm) [CaseAlt patC Nothing body]))
+      -- §18.7 Stage-4a: `defer e` in an Eff do-block.  Lower to an `__effDefer`
+      -- node sequenced before the rest; the whole block is wrapped in
+      -- `__effDoscope` (above), so the registered action runs masked-LIFO on
+      -- every exit — including a handler's §32.2.20 abandonment.  Only a bare
+      -- `defer` (no @L label) is supported here in the minimal lift.
+      DoDefer Nothing e _ -> do
+        eTm <- check c (desugarBang e) (effT (VGlobN prelUnit []))
+        contTm <- CLam Expl QW "__u" <$> go (bindCtx "__u" False (VGlobN prelUnit []) c) rest
+        let deferTm = CApp Expl (CGlob prelEffDefer) eTm
+        pure (effBindTm deferTm contTm)
       other -> do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in an Eff-typed do block by this implementation"

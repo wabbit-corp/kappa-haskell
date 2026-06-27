@@ -1,9 +1,14 @@
 module main
 
--- §18.1 algebraic effects must produce identical results under the native
--- backend and the interpreter: a top-level effect with a deep stateful
--- handler, and a scoped multi-shot effect resuming its continuation twice.
+-- §18.1.21/.22 one-shot algebraic-effect handlers as KK_HANDLER prompt frames
+-- (CPS-DESIGN Stage 4a).  Every program here must produce IDENTICAL output on
+-- the interpreter (the differential oracle, src/Kappa/Eval.hs) and the native
+-- backend, which now runs handlers on the kappart2 CK-machine (handle = an
+-- OP_HANDLE prompt; perform = an outward search + Cont-sub-chain capture;
+-- resume = a deliver-splice).  ONE-SHOT only — multi-shot is rejected at
+-- compile time (rt-multishot absent), so no program here resumes twice.
 
+-- ── a state-like handler: perform get/put, resume with a value ──────────────
 effect State =
     1 get : Unit -> Int
     1 put : Int -> Unit
@@ -22,26 +27,65 @@ let stateHandled =
         case get _ k -> k 10
         case put _ k -> k ()
 
-multi : Int
-let multi =
-    block
-        scoped effect Choice =
-            ω choose : Unit -> Bool
-        let comp : Eff <[Choice : Choice]> Int =
-            do
-                let b <- Choice.choose ()
-                if b then 1 else 20
-        let handled =
-            deep handle Choice comp with
-                case return x -> pure x
-                case choose _ k ->
-                    do
-                        let l <- k True
-                        let r <- k False
-                        pure (l + r)
-        runPure handled
+-- ── an exception-like handler: a perform the handler does NOT resume ────────
+-- (an abortive q=0-style clause: the handler returns without invoking k, so
+-- the captured segment is abandoned and the handler's value is the result).
+effect Fail =
+    0 raise : Unit -> Int
+
+failComp : Eff <[Fail : Fail]> Int
+let failComp =
+    do
+        let _ <- Fail.raise ()
+        pure 999            -- unreachable: raise never resumes
+
+let failHandled =
+    deep handle Fail failComp with
+        case return x -> pure x
+        case raise _ k -> pure 42   -- ABANDON the resumption; yield 42
+
+-- ── a reader-like handler ───────────────────────────────────────────────────
+effect Reader =
+    1 ask : Unit -> Int
+
+readerComp : Eff <[Reader : Reader]> Int
+let readerComp =
+    do
+        let x <- Reader.ask ()
+        let y <- Reader.ask ()
+        pure (x * y)
+
+let readerHandled =
+    deep handle Reader readerComp with
+        case return x -> pure x
+        case ask _ k -> k 6
+
+-- ── nested handlers: inner + outer labels on distinct effects ───────────────
+nestedComp : Eff <[State : State, Reader : Reader]> Int
+let nestedComp =
+    do
+        let r <- Reader.ask ()
+        let s <- State.get ()
+        let _ <- State.put 0
+        pure (r + s)
+
+-- outer Reader, inner State (the inner handler eliminates State first, leaving
+-- the Reader op to propagate to the outer handler)
+nestedInner : Eff <[Reader : Reader]> Int
+let nestedInner =
+    deep handle State nestedComp with
+        case return x -> pure x
+        case get _ k -> k 100
+        case put _ k -> k ()
+
+let nestedHandled =
+    deep handle Reader nestedInner with
+        case return x -> pure x
+        case ask _ k -> k 7
 
 main : UIO Unit
 let main = do
-    printlnString (showInt (runPure stateHandled))
-    printlnString (showInt multi)
+    printlnString (showInt (runPure stateHandled))    -- 10 + 10 = 20
+    printlnString (showInt (runPure failHandled))      -- 42 (abandoned)
+    printlnString (showInt (runPure readerHandled))    -- 6 * 6 = 36
+    printlnString (showInt (runPure nestedHandled))    -- 7 + 100 = 107

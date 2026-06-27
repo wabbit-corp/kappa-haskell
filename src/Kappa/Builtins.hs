@@ -133,6 +133,8 @@ module Kappa.Builtins
   , prelEffOp
   , prelEffBind
   , prelHandleEff
+  , prelEffDoscope
+  , prelEffDefer
   , prelEffRowNil
   , prelEffRowCons
   , prelOpenRec
@@ -385,6 +387,11 @@ prelEffOp = gPrel "__EffOp"
 prelEffBind = gPrel "__effBind"
 prelHandleEff = gPrel "__handleEff"
 
+-- §18.7/§32.2.19 Stage-4a Eff-carrier do-scope / exit-action nodes.
+prelEffDoscope, prelEffDefer :: GName
+prelEffDoscope = gPrel "__effDoscope"
+prelEffDefer = gPrel "__effDefer"
+
 prelEffRowNil, prelEffRowCons :: GName
 prelEffRowNil = gPrel "__effRowNil"
 prelEffRowCons = gPrel "__effRowCons"
@@ -616,6 +623,8 @@ wiredInPreludeNames =
     , (prelSizedOf, BKIntrinsic)
     , (prelEffBind, BKIntrinsic)
     , (prelHandleEff, BKIntrinsic)
+    , (prelEffDoscope, BKIntrinsic)
+    , (prelEffDefer, BKIntrinsic)
     , (prelEffRowNil, BKIntrinsic)
     , (prelEffRowCons, BKIntrinsic)
     , (prelOpenRec, BKIntrinsic)

@@ -1,0 +1,28 @@
+--! assertNoErrors
+--! assertEval aborted 42
+
+-- §18.1.21/§32.2.20 Stage 4a: an abortive (q=0) operation whose handler clause
+-- returns WITHOUT resuming abandons the captured segment; the handler's value
+-- becomes the result and the post-op-site body never runs.  The interpreter
+-- result is the differential oracle for the native KK_HANDLER abandonment path
+-- (a perform whose resumption is dropped, routed through the masked finalizer
+-- drain, R1).
+module main
+
+effect Fail =
+    0 raise : Unit -> Int
+
+comp : Eff <[Fail : Fail]> Int
+let comp =
+    do
+        let _ <- Fail.raise ()
+        pure 999            -- unreachable: raise never resumes
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Fail comp with
+        case return x -> pure x
+        case raise _ k -> pure 42
+
+aborted : Int
+let aborted = runPure handled

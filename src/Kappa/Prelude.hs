@@ -571,6 +571,20 @@ builtinState =
       , -- internal: not source-typeable (its applications are built and
         -- typed directly by the elaborator, like a KCore form)
         prim "__handleEff" (tyV (piI Q0 "a" tType (CVar 0)))
+      , -- §18.7/§32.2.19 Stage-4a: exit-action frames for Eff do-blocks, so the
+        -- §32.2.20 abandonment guarantee (a handler clause that does not resume
+        -- runs the captured segment's defers exactly once, masked-LIFO) has
+        -- frames to unwind.  `__effDoscope` delimits a do-scope; `__effDefer`
+        -- registers an exit action.  They lower (Backend/C) to the runtime's
+        -- krt2_doscope / krt2_defer nodes (the same OP_DOSCOPE/OP_DEFER machinery
+        -- the IO do-kernel uses); their interpreter reductions are in
+        -- 'Kappa.Eval.evalEffPrim'.
+        prim "__effDoscope"
+          (tyV (piI Q0 "r" (tcon "EffRow") (piI Q0 "a" tType
+            (effT (CVar 1) (CVar 0) ~> effT (CVar 2) (CVar 1)))))
+      , prim "__effDefer"
+          (tyV (piI Q0 "r" (tcon "EffRow")
+            (effT (CVar 0) tUnit ~> effT (CVar 1) tUnit)))
       , -- §18.1.13: aborted STM alternative (the `empty` action)
         prim "stmAbort" (tyV (forallEA (io (CVar 1) (CVar 0))))
       , -- §18.1.13 STM transactional state. Single-agent semantics: TVars

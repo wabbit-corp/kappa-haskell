@@ -95,6 +95,18 @@ enum {
   OP_WRITE_REF,           /* [ref, val]       writeRef -> Unit                    */
   OP_TRY_EXIT,            /* [fiber]          non-blocking: Option Exit (DONE?)   */
   OP_ATOMICALLY,          /* [stm]            run an STM transaction (§18.1.13)    */
+  /* §18.1.21/.22 algebraic-effect handlers as prompt frames (Stage 4a).  These
+   * run an `Eff` computation ON the scheduler so a handler clause can park —
+   * the unification of the §30.2.2.7 OpCall tree with the CK-machine Cont
+   * chain.  ONE-SHOT only; multi-shot is gated behind rt-multishot (absent). */
+  OP_HANDLE,              /* [deep, label, ret, ops, body]  install a KK_HANDLER
+                           *                  prompt frame and run `body`         */
+  OP_PERFORM,             /* [label, op, payload]  outward-search f->k for the
+                           *                  nearest matching KK_HANDLER, capture
+                           *                  the op-site->handler Cont sub-chain
+                           *                  as the resumption, run the clause    */
+  OP_RESUME,              /* [k, value]       splice the captured sub-chain back
+                           *                  onto f->k and deliver `value`        */
   OP_LAST
 };
 
@@ -128,15 +140,31 @@ typedef enum {
   KK_DOSCOPE,   /* a do-scope boundary: run its exit actions on any way out       */
   KK_FINSEQ,    /* run a do-scope's exit actions LIFO, then resume a saved Reason  */
   KK_LOOP,      /* a loop boundary: break/continue target it                      */
-  KK_RETSCOPE   /* a `return` boundary: RK_RETURN delivers its value here (§18.8)  */
+  KK_RETSCOPE,  /* a `return` boundary: RK_RETURN delivers its value here (§18.8)  */
+  KK_HANDLER    /* §18.1.21 an effect-handler prompt: `perform` searches f->k for
+                 * the nearest matching one; the captured op-site->handler Cont
+                 * sub-chain becomes the resumption (Stage 4a, one-shot)          */
 } KKind;
 struct Cont {
   KKind   kind;
-  KValue *a;    /* KK_BIND/KK_CATCH: closure; KK_LOOP: the loop spec [cond,body]   */
-  void   *aux;  /* KK_DOSCOPE: this scope's ExitStack*; KK_FINSEQ: FinSeq*         */
-  void   *aux2; /* KK_DOSCOPE: the saved (parent) ExitStack* to restore on exit    */
+  KValue *a;    /* KK_BIND/KK_CATCH: closure; KK_LOOP: the loop spec [cond,body];
+                 * KK_HANDLER: the installed effect-label VALUE (matched by id)    */
+  void   *aux;  /* KK_DOSCOPE: this scope's ExitStack*; KK_FINSEQ: FinSeq*;
+                 * KK_HANDLER: this prompt's Handler*                              */
+  void   *aux2; /* KK_DOSCOPE: the saved (parent) ExitStack* to restore on exit;
+                 * KK_HANDLER: the saved cur_exits to reinstate when the prompt is
+                 * removed (the handler clause runs OUTSIDE the body's do-scopes)  */
   Cont   *next;
 };
+
+/* §18.1.21 an installed effect handler: the return clause, the per-op clause
+ * record, and the deep-vs-shallow reinstall flag.  Carried on a KK_HANDLER
+ * Cont frame (the label value itself is Cont.a, matched by ctor-id identity). */
+typedef struct Handler {
+  KValue *ret;   /* the `case return x -> ...` clause (a -> Eff res)               */
+  KValue *ops;   /* the per-operation clause record (op -> payload -> k -> Eff)    */
+  int     deep;  /* 1 = deep (k reinstalls this handler around the resumption)     */
+} Handler;
 
 /* A do-scope's stack of registered exit actions (defer/using/finally), run LIFO
  * on every way out of the scope (§18.7, §32.2.19).  GC_MALLOC'd. */

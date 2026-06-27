@@ -1093,6 +1093,17 @@ evalEffPrim ctx p args = case (p, args) of
       -- Op l op a (\x -> __effBind (cont x) f)
       Just (VCtor g [l, op, a, VLam Expl QW "x" (Closure [f, cont] bindBody)])
     _ -> Nothing
+  -- §18.7/§32.2.19 Eff-carrier do-scope / exit-action nodes (Stage 4a).  In the
+  -- PURE Eff carrier a defer's body is itself a pure `Eff r Unit`, so running it
+  -- produces Unit with no observable effect (pure Eff has no IO/state to mutate)
+  -- — the §32.2.20 abandonment guarantee is therefore unobservable under
+  -- `runPure` and these reduce to identity / pure-Unit, matching the native
+  -- runtime (whose krt2_doscope/krt2_defer run the same pure body harmlessly).
+  -- The OBSERVABLE abandonment case (a defer doing IO) requires eliminating the
+  -- handler into an IO carrier, where the IO do-kernel — not this Eff path —
+  -- carries the exit frames.
+  ("__effDoscope", [c]) -> Just (force ctx c)
+  ("__effDefer", [_a]) -> Just (VCtor prelEffPure [VCtor prelUnit []])
   -- __handleEff deep label ret ops comp (HandleShallow plus the
   -- §18.1.22 deep recursive driver)
   ("__handleEff", [deepV, label, ret, ops, comp]) -> case force ctx comp of

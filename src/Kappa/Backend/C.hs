@@ -31,6 +31,8 @@ module Kappa.Backend.C
   , primEntries
   , primDirect
   , primRegistryDiagnostics
+    -- * §34.3.3 multi-shot backend legality (shared with "Kappa.Backend.LLVM")
+  , multishotLegality
     -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
   , eraseQ0ArgsP
   ) where
@@ -473,9 +475,62 @@ generateC cs mainG ffiPrims hostSyms =
           , gsCollectVars = Set.empty
           }
       final = execState (drainQueue >> emitMain mainG) st0
-   in case reverse (gsErrs final) of
+      -- §18.1.17/§27.6/§34.3.3 Stage-4a backend legality: this native backend's
+      -- KK_HANDLER runtime is ONE-SHOT (it omits `rt-multishot`: no persistent
+      -- copy-on-resume of a captured segment), so a reachable MULTI-SHOT effect
+      -- operation is rejected at compile time rather than miscompiled to
+      -- one-shot semantics.  The interpreter (the differential oracle) supports
+      -- multi-shot, so this gate is backend-local — it does not fire under `run`.
+      multishotErrs = multishotLegality cs (gsEmitted final)
+   in case reverse (gsErrs final) ++ multishotErrs of
         [] -> Right (assemble final)
         errs -> Left errs
+
+-- | Backend legality (§34.3.3): a reachable @__EffOp@ node naming a multi-shot
+-- operation is rejected, because the one-shot KK_HANDLER runtime cannot persist
+-- a captured resumption.  Scans the bodies of the globals actually emitted
+-- (the reachable closure of @main@) for @CCtor __EffOp [_, opName, …]@.  Shared
+-- by the C and LLVM backends (both link the one-shot kappart2 runtime).
+multishotLegality :: CheckState -> Set GName -> [BackendError]
+multishotLegality cs emitted
+  | Set.null multi = []
+  | otherwise =
+      [ BackendError g (Map.findWithDefault noSpan g (csDeclSites cs)) "multi-shot effect operation"
+          ( "the operation '" <> opn
+              <> "' declares a multi-shot resumption (quantity ω / 1+), which requires the 'rt-multishot' runtime capability the native backend does not advertise; declare it one-shot (quantity 1, the default) to resume at most once (§18.1.17, §27.6, §34.3.3)" )
+      | g <- Set.toList emitted
+      , Just body <- [Map.lookup g (csCoreBodies cs)]
+      , opn <- Set.toList (termMultishotOps multi body)
+      ]
+  where
+    multi = csMultishotOps cs
+
+-- | The multi-shot operation names a term performs (an @__EffOp@ ctor whose
+-- second field is a string literal in the multi-shot set).
+termMultishotOps :: Set Text -> Term -> Set Text
+termMultishotOps multi = go
+  where
+    go t = case t of
+      CCtor g _ (_ : CLit (LitStr opn) : _)
+        | g == Builtins.prelEffOp, opn `Set.member` multi ->
+            Set.insert opn (Set.unions (map go (subterms t)))
+      _ -> Set.unions (map go (subterms t))
+    subterms t = case t of
+      CLam _ _ _ b -> [b]
+      CPi _ _ _ _ a b -> [a, b]
+      CApp _ a b -> [a, b]
+      CCtor _ mty as -> maybe [] pure mty ++ as
+      CMatch s mty alts ->
+        [s] ++ maybe [] pure mty
+          ++ concat [maybe [] pure (caGuard a) ++ [caBody a] | a <- alts]
+      CRecordT fs -> map snd fs
+      CRecordV fs -> map snd fs
+      CProj e _ -> [e]
+      CProjAt e _ _ -> [e]
+      CVariantT ts -> ts
+      CLet _ _ ty rhs b -> [ty, rhs, b]
+      CLetRec _ _ ty rhs b -> [ty, rhs, b]
+      _ -> []
 
 -- | Emit globals until the work queue is empty.
 drainQueue :: Gen ()
@@ -1944,10 +1999,18 @@ primEntries = Map.fromList
   -- §12.4.3 first-class borrowed views (runtime borrow = value)
   , ("captureBorrow", PrimEntry "kpf_captureBorrow" 1 False)
   , ("withBorrowView", PrimEntry "kpf_withBorrowView" 2 False)
-  -- §18.1 algebraic-effect tree primitives (pure tree transformations)
-  , ("runPure", PrimEntry "kpf_runPure" 1 False)
-  , ("__effBind", PrimEntry "kpf___effBind" 2 False)
-  , ("__handleEff", PrimEntry "kpf___handleEff" 5 False)
+  -- §18.1.21/.22 algebraic-effect handlers (Stage 4a): lower to the kappart2
+  -- CK-machine nodes so a handler clause runs ON the scheduler and may park —
+  -- `__handleEff` installs a KK_HANDLER prompt (OP_HANDLE), `__effBind` is the
+  -- monadic bind node (OP_BIND), and `runPure` drives the resulting Eff tree to
+  -- its value synchronously (krt2_run_eff).  This replaces the pure free-monad
+  -- prims (kpf___handleEff/kpf___effBind/kpf_runPure, which cannot park).  The
+  -- `__EffOp`/`__EffPure` tree nodes are interpreted directly by fiber_step.
+  , ("runPure", PrimEntry "kpf_run_eff" 1 False)
+  , ("__effBind", PrimEntry "kpf_eff_bind" 2 False)
+  , ("__handleEff", PrimEntry "kpf_rt_handle" 5 False)
+  , ("__effDoscope", PrimEntry "kpf_eff_doscope" 1 False)
+  , ("__effDefer", PrimEntry "kpf_eff_defer" 1 False)
   , ("leInt", PrimEntry "kpf_leInt" 2 False)
   , ("ltByte", PrimEntry "kpf_ltByte" 2 False)
   , ("ltBytes", PrimEntry "kpf_ltBytes" 2 False)
