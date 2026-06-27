@@ -201,11 +201,17 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
  * machinery.  scope_detach broadcasts drain_cv when live hits 0 under a draining
  * scope, so the common case (all daemons interruptible) wakes promptly and exact. */
 void krt2i_scope_drain_bounded(Rt *rt, Scope *sc, uint64_t budget_ns) {
-  /* Snapshot the live children under the lock, mark draining, then interrupt each
+  /* Mark draining and snapshot the live children under the lock, then interrupt each
    * outside the lock (no nested lock with target->lock — same discipline as
-   * krt2i_op_shutdown_scope).  A daemon forked AFTER this snapshot but before the
-   * scope is replaced for the next run is born-interrupted by scope_attach reading
-   * `shutting` under the lock, so none escapes the interrupt. */
+   * krt2i_op_shutdown_scope).  The `shutting` store and the child snapshot happen
+   * under the SAME sc->lock that scope_attach takes to read `shutting`, so this point
+   * is the linearization barrier for daemons forked in the run-boundary window: a
+   * daemon that attached BEFORE we snapshot is in `kids` and interrupted below; one
+   * that attaches AFTER observes `shutting==1` and is born-interrupted by scope_attach
+   * (and is counted in `live`, so the bounded wait neither returns early nor hangs).
+   * This relies on run_main keeping rt->daemon_scope PUBLISHED across this call (fix
+   * D1) — a daemon forked while the scope was already nulled would take neither attach
+   * branch in krt2i_spawn_from and escape the drain entirely (the leak D1 closes). */
   pthread_mutex_lock(&sc->lock);
   atomic_store(&sc->shutting, 1);
   int n = 0;

@@ -1906,16 +1906,28 @@ KValue *krt2_run_main(KValue *action) {
   pthread_mutex_unlock(&rt->done_lock);
 
   /* fix 1 (R2 / §32.2.3): main has terminated; reap this run's daemons best-effort
-   * WITHOUT awaiting them unboundedly.  Stop publishing this scope first so a daemon
-   * forked by the NEXT run never attaches to the now-draining scope, then interrupt
-   * + bounded-drain its children.  Ordinary interruptible daemons (e.g. a parked
-   * sleepFor) deliver the ScopeShutdown interrupt, run their finalizers, and leave
-   * rt->all promptly — so the persistent runtime's live-fiber count stays bounded
-   * (R2).  An uninterruptible daemon that never delivers is LEFT parked when the
-   * budget expires: run_main RETURNS rather than hanging (the regression this fixes).
-   * The budget is generous relative to a finalizer's runtime but finite. */
-  atomic_store_explicit(&rt->daemon_scope, NULL, memory_order_release);
+   * WITHOUT awaiting them unboundedly.  Interrupt + bounded-drain this scope's
+   * children.  Ordinary interruptible daemons (e.g. a parked sleepFor) deliver the
+   * ScopeShutdown interrupt, run their finalizers, and leave rt->all promptly — so
+   * the persistent runtime's live-fiber count stays bounded (R2).  An uninterruptible
+   * daemon that never delivers is LEFT parked when the budget expires: run_main
+   * RETURNS rather than hanging (the regression this fixes).  The budget is generous
+   * relative to a finalizer's runtime but finite.
+   *
+   * fix D1 (daemon-ordering leak): keep rt->daemon_scope PUBLISHED through the drain
+   * and null it only AFTER the drain returns.  Nulling it BEFORE the drain opened a
+   * window: a daemon forked between main_done and the drain's `shutting` store read
+   * daemon_scope==NULL in krt2i_spawn_from, took NEITHER attach branch, and was rooted
+   * only in rt->all — invisible to the drain, so it leaked across persistent runs
+   * (defeating R2 for that window).  With the scope still published,
+   * krt2i_scope_drain_bounded sets sc->shutting=1 UNDER sc->lock FIRST; since
+   * scope_attach also reads `shutting` under the SAME lock, a daemon forked in the
+   * window either lands in the drain's child snapshot or is born-interrupted via the
+   * `shutting` guard (and counted in `live`) — every daemon is reaped, none escapes.
+   * Nulling AFTER the drain still stops a daemon forked by the NEXT run from
+   * attaching to the now-dead scope. */
   krt2i_scope_drain_bounded(rt, daemons, (uint64_t)2 * 1000 * 1000 * 1000 /* 2s */);
+  atomic_store_explicit(&rt->daemon_scope, NULL, memory_order_release);
 
   /* Do NOT shut down: the pool, reactor, loop, and rt->all stay alive for the
    * next run_main (persistence is the default; krt2_shutdown is explicit-only). */
