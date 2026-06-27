@@ -44,15 +44,15 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 
 - [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
 - [x] **No by-name prim dispatch** — codegen lowers to direct `kp_*`/`kpf_*` calls or curried `K_NATIVE`; `prim_fire_pure`/`K_PRIM` removed.
-- [~] **`std.atomic` C11 core written** ([`../atomic.c`](runtime/atomic.c)) — real
-  lock-free `AtomicRef`/CAS, stress-verified at the C level. **⚠️ REGRESSED — NOT
-  WIRED:** the runtime-spec-coverage audit (2026-06-26) found the prelude now
-  lowers `AtomicRef` to a **plain `Ref`** (`atomicLoad=readRef`/`atomicStore=
-  writeRef`/`__atomicRmw=readRef-then-writeRef`, [`Prelude.hs:3045-3131`](src/Kappa/Prelude.hs));
-  `atomic.c` is **dead code** (0 backend hits for `krt2_atomic_*`), so every
-  RMW/CAS races under the nproc-worker runtime and the memory-order args are
-  ignored — `rt-atomics` is over-advertised, not honest. Re-wiring is the §29.1
-  item in the **Runtime spec-coverage gaps** track below.
+- [x] **`std.atomic` — real lock-free `AtomicRef`/CAS, WIRED** ([`../atomic.c`](runtime/atomic.c),
+  commit `67e1d60`). The prelude `AtomicRef` ops lower to `krt2_atomic_load/store/
+  exchange/cas/fetch_*` with the memory-order arg threaded to a real `memory_order_*`
+  (it had been regressed to a plain `Ref` with `atomic.c` dead — fixed). Proven exact
+  under an N×M multi-worker race (`atomic-race.kp` + `atomic_lostproof.c`: the old
+  plain-`Ref` lost 1,193,432 / 1,280,000 updates; the lock-free path loses 0). Two
+  honest in-code caveats: the order is passed as an Integer §29.1 declaration index
+  (ctor tags are global), and the interpreter is the sequential oracle (cannot test
+  the race). `rt-atomics` is now honest.
 - [x] **Single-agent STM from `.kp`** (`TVar`/`atomically` over a cell, matching the interpreter).
 - [x] **CPS Stage 0** — R1 masked finalizer drains, R10 fail-closed `OP_DEFER` (CPS-DESIGN §4, R1/R10).
 - [x] **CPS Stage 1** — real `fork`/`await` suspension from `.kp` (CPS-DESIGN §3.1, Stage 1).
@@ -437,6 +437,47 @@ the real Lint are both impossible without them.
 
 ---
 
+## Track: Memory efficiency & GC/RC ([`MEMORY-EFFICIENCY-RESEARCH.md`](docs/MEMORY-EFFICIENCY-RESEARCH.md), [`ANALYSES-AND-SPEC-BACKPORT.md`](docs/ANALYSES-AND-SPEC-BACKPORT.md))
+
+How to stay memory-efficient — minimal GC churn even in highly-FP code — by
+exploiting Kappa's static guarantees (QTT usage intervals, §12 borrow/region,
+purity ⇒ acyclic inductive data, totality). Theme: *allocation*, not indirection,
+is the dominant cost, and Kappa can prove more reuse statically + more cheaply than
+dynamic-RC languages. Staged so each rung lands real wins without waiting on the
+precise collector. Research 2026-06-27.
+
+- [ ] **Stage 0 — pool the fork/scheduler hot path** (the single biggest lever; =
+      the efficiency-review #1, subsumes the Performance-track pooling item). Per-
+      worker Fiber/Cont/KEnv/RQNode free-lists, intrusive `rq_next` + embedded
+      `Waiter`, a 1-word lock for the 64 B `pthread_mutex`, an inline `{tag,a,b}` OP
+      node — removes the ~832 B/op fork cost (vs Go's ~128 B/op pooled `g`). No
+      type/GC prerequisites; gated only on the persistent-runtime `run_main` fix.
+- [ ] **Stage 1 — static reuse from the usage interval + §12 facts** (P0,
+      "extend-existing", no precise GC needed). The single-use reuse signal is the
+      INFERRED usage count, NOT the declared quantity (unannotated binders are ω,
+      §13156) — and `ucHi==1` is **already computed for every binder**
+      ([`Usage.hs:168-184`](src/Kappa/Usage.hs)); it is merely *gated* (no
+      Optimization purpose, not exported, no backend consumer; `countedQ`/`closeVar`/
+      `sBail` restrict it to checking). Ungate it (an Optimization purpose split,
+      like inhabitance's) → guaranteed in-place field writes on the FIP
+      match-rebuild-same-ctor shape + frame-local/arena alloc of non-escaping acyclic
+      cells under Boehm. Pair with §12.3 region escape (already a typechecked local
+      analysis, exact under purity+totality; `bodyCapturesEnv` ships but is binary —
+      plumb to stack-alloc / ref-elision).
+- [ ] **Stage 2 — full Perceus dup/drop + reuse on the CPS spine** (HARD-GATED on a
+      precise collector). QTT/§12 supply the linearity + the non-atomic/atomic RC
+      split; bridged by the LLVM-coro flat-frame + slot-kind map.
+- [ ] **Stage 3 — RC+GC hybrid.** RC for the acyclic-by-purity majority; tracing /
+      trial-deletion confined to the ONLY cycle sources (`Ref`/`TVar` + recursive-
+      thunk knots).
+- [ ] **Cross-cutting prerequisite — our own precise GC/RC (Boehm is TEMPORARY).**
+      The conservative Boehm collector blocks precise RC (no precise slot/root
+      discrimination) and is the gate for Stages 2–3; the enabling pieces are
+      designed (LLVM-coro flat-frame + slot-kind map, the low-3-bit immediate-tag
+      reservation).
+
+---
+
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
 [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) is the DETAILED single source of truth
@@ -520,10 +561,10 @@ Verified still open against HEAD (the audit post-dates the `fbe787c` Eff-do lift
       inside the handled body **never runs** — a silent resource leak on native.
       Untested by construction (the interp oracle reduces `__effDefer` to Unit).
       The audit's #1 priority.
-- [ ] **`std.atomic` is non-atomic (§29.1)** — see the Done-section caveat above:
-      `AtomicRef` → plain `Ref`, `atomic.c` dead. Data-race on every RMW/CAS under
-      the nproc-worker runtime; memory-order args ignored. The correct impl already
-      exists + is compiled in — purely a prelude→`krt2_atomic_*` wiring fix.
+- [x] **`std.atomic` wired + atomic (§29.1) — FIXED** (commit `67e1d60`). The prelude
+      `AtomicRef` ops now lower to the lock-free `krt2_atomic_*` (was a plain `Ref`);
+      proven exact under the multi-worker race test (the old impl lost ~93% of
+      updates), memory orders threaded to real `memory_order_*`. See the Done section.
 - [ ] **`sleepFor`/`sleepUntil` nonpositive duration parks ~forever (§18.1.6)** —
       `OP_SLEEP` does `(uint64_t)kas_int(...)` ([`rt.c:1061`](runtime/rt.c)); a
       negative ns (a `sleepUntil` of a past `Instant`, [`Prelude.hs:847-848`](src/Kappa/Prelude.hs))
