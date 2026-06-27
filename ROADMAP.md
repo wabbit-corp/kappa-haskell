@@ -478,6 +478,44 @@ precise collector. Research 2026-06-27.
 
 ---
 
+## Track: Record representation ([`RECORD-REP-OPTIMIZATION.md`](docs/RECORD-REP-OPTIMIZATION.md))
+
+Boxed records are heavy: `K_REC = {int n; const char **names; KValue **vals}` is 3 words and
+`krec` ([`kappart.c:384-396`](runtime/kappart.c)) does **two** scanned-heap allocations per
+instance — the box (~4 words) **plus a separate copied `vals` array** (~`n` words) — and records
+**never pack** (a 2-field record allocates, while `Pair(Int,Int)` is 0 B/op). The `names` pointer
+is already a SHARED static literal (zero per-instance bytes); the redundancy is the `names` *word*
+in the box + the `strcmp` scan it enables for open/sealed/dict projection (closed-sorted records
+already project by static index via `CProjAt`→`krec_at`, no `strcmp`). **Closed-record flattening
+is erasure-safe TODAY** — record SHAPE (arity + slot index) is a static elaboration-site fact
+([`Check.hs:5956-5975`](src/Kappa/Check.hs) bakes `CProjAt … i`), so it needs neither typed Core
+nor a coercion the `CRecord`/`CProj` nodes lack (unlike the deferred niche). Research 2026-06-27.
+
+- [ ] **Stage 1 — flatten `K_REC` inline** (cheapest high-payoff first step). Replace the separate
+      `vals` array with a flexible-array-member (`{tag; int n; KValue fields[]}`): **one allocation
+      instead of two** for EVERY record. Only `krec`'s body changes
+      ([`kappart.c:384-396`](runtime/kappart.c)) — codegen still calls `krec(n,names,vals)` and
+      `CProjAt`/`krec_at` just index the inline slot. GC-positive, interpreter-parity-trivial
+      (`VRecordV` is a separate Haskell type), zero typed-Core work, a better Perceus reuse target.
+- [ ] **Stage 2 — drop the per-instance `names` word for closed records.** Extend index-based
+      `CProjAt` to every closed-sorted site + route the three name consumers (`kproj`,
+      `krec_without`, `kvalue_rep_eq`) through a per-type static descriptor: −1 word/instance + no
+      `strcmp` for closed records.
+- [ ] **Stage 3 — shared per-type field-ID descriptor** (Elm-FieldGroup style) + `krec_at_id`, so
+      open/row-polymorphic projection becomes an int search not a `strcmp` scan — unifies closed +
+      open layout (open cost == closed). Fixes the missed `CProjAt` at
+      [`Check.hs:5993-6001`](src/Kappa/Check.hs).
+- [ ] **Stage 4 — pack small records into immediates.** Add a record arm to
+      [`Repr.hs`](src/Kappa/Backend/Repr.hs) + lower 1-2 all-immediate-field closed records to
+      synthetic anonymous ctors through the existing `kctor`/b011 path: zero allocation for the
+      common small record, closing the gap with `Pair(Int,Int)`. Carries the `kis_imm`/`kderef`
+      audit + one reserved tag code (after Stages 1-2).
+- [ ] **DEFERRED — record niche / per-shape specialized structs.** Need typed Core +
+      coercions/monomorphization (the deferred-niche erasure blocker); the flatten+pack line
+      captures the allocation win without the type dependence. Do NOT schedule.
+
+---
+
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
 [`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md) is the DETAILED single source of truth
