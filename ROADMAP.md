@@ -83,10 +83,14 @@ adversarially reviewed, same discipline as the burst above.
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** *(in progress —
    `feat/fp-math-prims`)*. Quick, self-contained, no design risk; unblocks **nbody + spectralnorm**.
    libm math fns + `%.*f` formatting as ordinary prims (both backends + interp, parity-verified).
-2. **Mutable O(1) array** *(design in progress — `MUTABLE-ARRAY-DESIGN.md`)* — the highest-leverage
-   missing data structure. Design-gated: linear/uniqueness vs `IO`/`ST`/`STM` mutable, the runtime
-   rep (flat KValue slots, O(1) get/set, GC/Perceus interaction), bounds/totality (the index
-   discipline). Research → design doc → staged impl.
+2. **Mutable O(1) array** — design **DONE** ([MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md)),
+   impl queued behind the prims merge. **Decided: IO `MutArray` first** (then the spec-mandated ST
+   `runST`/`STArray` §18.6.4; linear deferred — the boxed/Boehm runtime can't witness uniqueness yet).
+   **Element unboxing is first-class**: the backend specializes array ops at the call site, *pre-erasure*,
+   via `Repr.scalarRep` (the scalar-worker's own mechanism) to pick unboxed `double[]`/`int64[]` slabs
+   (atomic-GC'd, no per-element box) for monomorphic scalar elements, boxed `KValue*[]` otherwise
+   (runtime tag-sniffing is unsound — `Array (Maybe Int)` mixes word kinds). Staged A (boxed,
+   unboxing-*ready*) → H (unboxed scalar slabs, gated like the scalar-worker).
 3. **Unlock more benchmarks** — wire up nbody/spectralnorm (from 1) + the array benchmarks (from 2),
    measure vs the reference, fold the numbers into [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md).
 4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends),
