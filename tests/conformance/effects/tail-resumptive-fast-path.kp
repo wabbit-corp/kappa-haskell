@@ -1,0 +1,102 @@
+--! assertNoErrors
+--! assertEval stateResult 20
+--! assertEval readerResult 36
+--! assertEval failResult 42
+--! assertEval loopResult 1000
+
+-- §18.1.22 / §32.2.15: tail-resumptive handler clauses (the resumption `k` used
+-- exactly once, in tail position — `case op a k -> ... k v`) are the Stage-4b
+-- fast-path shape.  Under runPure the interpreter is the differential ORACLE the
+-- native fast path must match observably; these assertions pin those values.  A
+-- deep handler whose every clause is tail-resumptive (State get/put, Reader ask,
+-- the Counter loop) and an ABORTIVE clause (Fail raise, k unused — must NOT be
+-- treated as tail-resumptive) are checked together, so a mis-detection in either
+-- direction breaks an assertion.
+module main
+
+stateResult : Int
+let stateResult : Int =
+    block
+        scoped effect State =
+            1 get : Unit -> Int
+            1 put : Int -> Unit
+
+        let comp : Eff <[State : State]> Int =
+            do
+                let a <- State.get ()
+                let _ <- State.put 5
+                let b <- State.get ()
+                pure (a + b)
+
+        let handled =
+            deep handle State comp with
+                case return x -> pure x
+                case get _ k -> k 10
+                case put _ k -> k ()
+
+        runPure handled
+
+readerResult : Int
+let readerResult : Int =
+    block
+        scoped effect Reader =
+            1 ask : Unit -> Int
+
+        let comp : Eff <[Reader : Reader]> Int =
+            do
+                let x <- Reader.ask ()
+                let y <- Reader.ask ()
+                pure (x * y)
+
+        let handled =
+            deep handle Reader comp with
+                case return x -> pure x
+                case ask _ k -> k 6
+
+        runPure handled
+
+-- an ABORTIVE clause: `raise` never resumes (k unused), so it is NOT
+-- tail-resumptive; the handler yields its own value, abandoning the captured
+-- segment.  This pins that the fast-path detector does not over-fire.
+failResult : Int
+let failResult : Int =
+    block
+        scoped effect Fail =
+            0 raise : Unit -> Int
+
+        let comp : Eff <[Fail : Fail]> Int =
+            do
+                let _ <- Fail.raise ()
+                pure 999
+
+        let handled =
+            deep handle Fail comp with
+                case return x -> pure x
+                case raise _ k -> pure 42
+
+        runPure handled
+
+-- a tail-resumptive handler driven over MANY perform/resume cycles (the §4b
+-- constant-Cont-depth case): the recursion is the effect loop, each tick a
+-- perform/resume through the deep tail-resumptive clause.
+loopResult : Int
+let loopResult : Int =
+    block
+        scoped effect Counter =
+            1 tick : Unit -> Int
+
+        let go : Int -> Int -> Eff <[Counter : Counter]> Int =
+            \n acc ->
+                if leInt n 0 then
+                    pure acc
+                else
+                    do
+                        let r <- Counter.tick ()
+                        go (subInt n 1) (addInt acc r)
+
+        let handled =
+            deep handle Counter (go 1000 0) with
+                case return x -> pure x
+                case tick _ k -> k 1
+
+        runPure handled

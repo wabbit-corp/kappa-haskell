@@ -1,0 +1,60 @@
+module main
+
+-- §4b tail-resumptive fast path, interp == C == LLVM.  The deep State/Reader
+-- handlers below have only `resume v`-in-tail clauses (get/put/ask), so the
+-- runtime takes the constant-Cont-depth fast path on BOTH native backends.  The
+-- abortive `raise` clause (k unused) is NOT optimized and still yields the
+-- handler's value — exercising precise per-op detection.
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+stateComp : Eff <[State : State]> Int
+let stateComp =
+    do
+        let a <- State.get ()
+        let _ <- State.put 5
+        let b <- State.get ()
+        pure (addInt a b)
+
+let stateHandled =
+    deep handle State stateComp with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+effect Reader =
+    1 ask : Unit -> Int
+
+readerComp : Eff <[Reader : Reader]> Int
+let readerComp =
+    do
+        let x <- Reader.ask ()
+        let y <- Reader.ask ()
+        pure (mulInt x y)
+
+let readerHandled =
+    deep handle Reader readerComp with
+        case return x -> pure x
+        case ask _ k -> k 6
+
+effect Fail =
+    0 raise : Unit -> Int
+
+failComp : Eff <[Fail : Fail]> Int
+let failComp =
+    do
+        let _ <- Fail.raise ()
+        pure 999
+
+let failHandled =
+    deep handle Fail failComp with
+        case return x -> pure x
+        case raise _ k -> pure 42
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (runPure stateHandled))   -- 20
+    printlnString (showInt (runPure readerHandled))   -- 36
+    printlnString (showInt (runPure failHandled))     -- 42
