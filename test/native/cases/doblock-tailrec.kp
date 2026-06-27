@@ -1,0 +1,61 @@
+-- REGRESSION (fix/c-doblock-tailrec): a do-block that runs IO/STM actions and
+-- then TAIL-CALLS ITSELF, inside a forked fiber, must trampoline at CONSTANT
+-- native fiber-stack depth — not grow the C stack per round.
+--
+-- The do-block `do { atomically …; atomically …; philosopher … }` CPS-lowers to
+-- a krt2_then/bind action tree.  Before the fix the C backend compiled the TAIL
+-- self-call EAGERLY into that tree (`ktrampoline(kw_philosopher(args))`): each
+-- round built one more level before the CK-machine ever stepped, so the native
+-- fiber stack grew per round and SIGBUS'd at ~7000 rounds (exit 138).  The fix
+-- ('cpsTailAction') DEFERS the tail self-call behind a continuation
+-- (`krt2_bind(krt2_pure(unit), kclo(kdok, env))`) so the CK-machine builds the
+-- next level only when it reaches it — constant fiber-stack depth, like the
+-- equivalent var+while loop.  50_000 rounds is well past the ~7000 overflow
+-- threshold, so a pristine HEAD diverges/138 here and the fix runs it to `done`.
+--
+-- The harness asserts interp == C native; the count `meals` makes the result
+-- deterministic (each round bumps it once), so a silently-wrong trampoline that
+-- dropped or duplicated a round would also be caught.
+module main
+
+acquire : TVar Bool -> TVar Bool -> STM Unit
+let acquire l r = do
+    lf <- readTVar l
+    rf <- readTVar r
+    check (and (lf :: rf :: Nil))
+    writeTVar l False
+    writeTVar r False
+
+release : TVar Bool -> TVar Bool -> STM Unit
+let release l r = do
+    writeTVar l True
+    writeTVar r True
+
+-- Read-modify-write the meal counter in one transaction.
+eat : TVar Int -> STM Unit
+let eat meals = do
+    n <- readTVar meals
+    writeTVar meals (addInt n 1)
+
+-- One round: take both forks, eat (bump the meal counter), drop both forks,
+-- then tail-recurse.  The three `atomically` actions are INTERVENING IO before
+-- the self-tail-call — the shape the eager-tree bug grew the C stack on.
+philosopher : TVar Bool -> TVar Bool -> TVar Int -> Int -> UIO Unit
+let philosopher l r meals rounds decreases rounds =
+    if leInt rounds 0 then pure Unit
+    else do
+        atomically (acquire l r)
+        atomically (eat meals)
+        atomically (release l r)
+        philosopher l r meals (subInt rounds 1)
+
+main : UIO Unit
+let main = do
+    fl <- atomically (newTVar True)
+    fr <- atomically (newTVar True)
+    meals <- atomically (newTVar 0)
+    f <- fork (philosopher fl fr meals 50000)
+    e <- await f
+    total <- atomically (readTVar meals)
+    printlnString (showInt total)        -- 50000
+    printlnString "done"

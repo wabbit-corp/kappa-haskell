@@ -3472,8 +3472,11 @@ compileDoCps items = do
 cpsItems :: [KItem] -> Gen Text
 cpsItems items = case items of
   [] -> pure "krt2_pure(kunit())"
-  [KExpr t] -> cpsActionTerm t
-  [KBind _ _ t] -> cpsActionTerm t
+  -- TAIL position: a self-tail-call / mutual-recursion / call-through-a-value
+  -- here is DEFERRED behind a continuation so the recursion is C-stack-bounded
+  -- (see 'cpsTailAction'); a CPS-node or primitive head is built directly.
+  [KExpr t] -> cpsTailAction t
+  [KBind _ _ t] -> cpsTailAction t
   (KExpr t : rest) -> seqThen t rest
   (KBind _ CPWild t : rest) -> seqThen t rest
   (KBind _ pat t : rest) -> do
@@ -3653,6 +3656,74 @@ withCpsRefRegion act = do
 -- re-run observes the live cell; outside the region this is plain 'compile'.
 cpsActionTerm :: Term -> Gen Text
 cpsActionTerm = cpsNormalizeReads False
+
+-- | Compile a CPS do-block's TAIL action (the last @KExpr@/@KBind@ in the
+-- block) — the position where an IO/STM tail self-call lives.
+--
+-- For a CPS-node head (ioBind/ioThen/atomically/catchIO/… — 'cpsNodeApp') or a
+-- non-application the action IS already the krt2_* node tree the CK-machine
+-- drives, so build it directly ('cpsActionTerm').
+--
+-- BUT for a tail-position call to a non-primitive FUNCTION — a self-tail-call
+-- like @do { atomically (acquire …); atomically (release …); philosopher … }@,
+-- or a mutual-recursion / call-through-a-value — 'cpsActionTerm' would
+-- @compile@ it as a SATURATED native call (@ktrampoline(kw_g(args))@) built
+-- EAGERLY while the enclosing krt2_then/bind tree is constructed.  The callee's
+-- body is itself such a do-block, so each round constructs one more level
+-- before the CK-machine ever steps — the recursion grows the native fiber stack
+-- (SIGBUS at ~7000 rounds), exactly the eager-tree bug.
+--
+-- Defer it instead: emit the call inside a one-shot continuation
+-- @kdok_N(cenv, karg)@ and return @krt2_bind(krt2_pure(unit), kclo(kdok_N,
+-- env))@.  The CK-machine runs the (trivial) @krt2_pure@, then fires KK_BIND,
+-- which @kapp@s the continuation — building the NEXT level only when the machine
+-- reaches it.  The leading actions still run, in order, unchanged; only the tail
+-- self-call's lowering moves from an eager native call to a CK-machine-driven
+-- bounce, so the recursion runs at constant fiber-stack depth and can still park
+-- (STM retry / await) — the CK-machine drives the deferred tree, not the
+-- synchronous krun_io bridge (which is why this is a @krt2_bind@, not @kio_tail@).
+cpsTailAction :: Term -> Gen Text
+cpsTailAction t = do
+  defer <- deferrableTailCall t
+  if not defer
+    then cpsActionTerm t
+    else do
+      fnName <- freshFn "kdok_"
+      (stmts, tree) <- captured "cenv" (cpsActionTerm t)
+      let fn =
+            T.unlines $
+              ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+                ++ map ("  " <>) stmts
+                ++ ["  return " <> tree <> ";", "}"]
+      modify' $ \st ->
+        st
+          { gsTop = fn : gsTop st
+          , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
+          }
+      env <- gets gsEnv
+      pure ("krt2_bind(krt2_pure(kunit()), kclo(" <> fnName <> ", " <> env <> "))")
+
+-- | Whether a CPS tail action should be DEFERRED behind a continuation rather
+-- than compiled eagerly into the action tree ('cpsTailAction').  True for a
+-- saturated/curried call to a non-primitive function — the case 'emitTailApp'
+-- would lower to a @kbounce@ (mutual recursion, a self-tail-call, or a call
+-- through a value): such a call returns a further action tree and must be built
+-- lazily so the recursion is C-stack-bounded.  A CPS-node head ('cpsNodeApp')
+-- or a primitive-headed call already builds a node the CK-machine drives (or a
+-- leaf that cannot recurse), so it is NOT deferred — keeping the tree minimal.
+deferrableTailCall :: Term -> Gen Bool
+deferrableTailCall t = do
+  isCps <- cpsNodeApp t
+  if isCps
+    then pure False
+    else case spineOf t of
+      (hd, args)
+        | any ((== Expl) . fst) args -> case hd of
+            CGlob g -> do
+              mp <- globPrimName g
+              pure (mp == Nothing) -- a non-prim global: a (possibly self-) function call → defer
+            _ -> pure True -- a call THROUGH a value (closure / local let-rec) → defer
+      _ -> pure False -- not an application (a bare value / pure node) → no deferral
 
 -- | §4 R7 var-read normalization (PURE result).  Build an ACTION node whose
 -- stepped result is the VALUE of @term@, hoisting every var read to a RUN-TIME
