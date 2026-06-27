@@ -207,6 +207,31 @@ else
   echo "   FAIL: scalar_doubleloop --emit-c build failed"; cat "$dtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# R2.2-LLVM: the LLVM backend lowers an eligible `var…while` Int loop to an
+# UNBOXED int64 scalar loop (the LLVM analogue of the C-side 'compileScalarWhile'
+# lowering R2.2 asserts for the C backend).  The generated `.ll` must carry the
+# `@kscalarloop_N` helper with native saturating-overflow intrinsics
+# (`llvm.sadd.with.overflow.i64`) and must NOT keep the per-iteration boxed
+# `krt2_while` action (which would mean the loop re-boxed every op + var read —
+# the ~hundreds-of-x-slower path this lowering exists to replace).  Mirrors R2.2,
+# but on the LLVM backend's `.ll` rather than the C backend's `.c`.
+echo "== R2.2-LLVM: an eligible var/while Int loop lowers to a native int64 scalar loop (no krt2_while) =="
+ltmp="$WORK/r22llvm"; mkdir -p "$ltmp"
+lbench="$ROOT/test/native/bench/proposed/scalar_intwhile.kp"
+if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$lbench" --emit-c -o "$ltmp/siw" >"$ltmp/build.log" 2>&1; then
+  llfile="$ROOT/test/native/bench/proposed/scalar_intwhile.kappa.ll"
+  if grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$llfile" \
+     && grep -qE 'call \{i64, i1\} @llvm\.sadd\.with\.overflow\.i64\(' "$llfile" \
+     && ! grep -qE 'call ptr @krt2_while\(' "$llfile"; then
+    echo "   ok (unboxed @kscalarloop_ via llvm.sadd.with.overflow.i64; no boxed krt2_while in the loop)"
+  else
+    echo "   FAIL: LLVM var/while Int loop did not lower to a native int64 scalar loop (R2.2-LLVM regressed)"; fails=$((fails+1))
+  fi
+  rm -f "$llfile"
+else
+  echo "   FAIL: scalar_intwhile (LLVM) --emit-c build failed"; cat "$ltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
 # R3.1 / P1-E: a saturated call to a worker that can NEVER return a K_BOUNCE
 # (its tail positions are all self-loops / values / prim or ctor results) drops
 # the ktrampoline wrapper, since ktrampoline drains only K_BOUNCE.  adtcons's
