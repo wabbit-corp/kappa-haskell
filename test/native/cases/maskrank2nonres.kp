@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "done\n"
+
+-- §18.1.12 RANK-2 `restore`: the regression is NOT narrowly "multiple types" —
+-- it bites whenever `restore` is applied at ANY single type other than the mask's
+-- own result `a`. Here `restore getInt : IO Void Integer` sits inside a body whose
+-- result is `String`, so the one `restore` is instantiated at `Integer` ≠ the
+-- result `String`. Rank-1 (`restore` monomorphised to the mask result) rejects
+-- this at typecheck; rank-2 accepts it. interp == C == LLVM.
+module main
+
+getInt : IO Void Integer
+let getInt = ioPure 7
+
+body : (forall (x : Type). IO Void x -> IO Void x) -> IO Void String
+let body restore = ioBind (restore getInt) (\n -> ioPure "done")
+
+main : UIO Unit
+let main = ioBind (mask body) (\s -> printlnString s)

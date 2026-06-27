@@ -549,19 +549,30 @@ builtinState =
       , -- §18.1.12 `mask f`: run `f` with interruption masked, handing it a
         -- `restore` that re-enables interruption for a selected subcomputation.
         -- Lowered to the OP_MASK node (krt2_mask), which applies `f` to the
-        -- runtime `restore` closure (rt.c). That closure is MONOMORPHIC — a
-        -- one-argument function — so `restore` is typed rank-1 here:
-        --   restore : IO e a -> IO e a
-        -- (the spec's §18.1.12 `forall x. IO e x -> IO e x` is stronger, but the
-        -- runtime restore is a single 1-arg closure; a rank-2 `restore` would emit
-        -- an erased implicit type-application `kappi(restore, ⟨x⟩)` that the 1-arg
-        -- runtime closure consumes AS the action — the "non-function value" crash.
-        -- Monomorphising restore to the mask's result type `a` is what the native
-        -- runtime can honor; `restore` is in practice applied at that one type.)
-        -- forall e a. ((IO e a -> IO e a) -> IO e a) -> IO e a
+        -- runtime `restore` closure (rt.c). That closure is a single 1-arg
+        -- function, but `restore` is typed RANK-2 — exactly as §18.1.12 mandates
+        -- (Spec.md:19063-19066):
+        --   restore : forall (x : Type). IO e x -> IO e x
+        -- so one captured masking capability applies to sub-actions of arbitrary,
+        -- caller-chosen result types within a mask block (the canonical
+        -- bracket/withLock idiom; rank-1 instantiated at the mask result `a` could
+        -- only restore sub-actions whose type equals `a`). The `x` binder is
+        -- RuntimeErased (a type at quantity 0, §1.1.1/§31.2 — types carry no
+        -- runtime representation). The conformance fix is NOT a monomorphisation
+        -- and NOT a closure-ABI change: the runtime restore stays a single
+        -- uniformly-boxed 1-arg function. The surface `mask` (below) wraps that
+        -- raw closure as `\act -> __restoreAt raw act` — a worker-backed rank-2
+        -- value WITH an erased type slot — so a use-site `restore @x act` lands
+        -- its erased type-app on that slot, and the `__restoreAt` PRIM (whose own
+        -- type-arg is dropped, §31.2) lowers to a bare `kapp(raw, act)` onto the
+        -- 1-arg runtime restore. (Interp: the same adapter, peeling restore's
+        -- erased binder before forwarding the action — see Eval.hs vapp / the
+        -- `__restoreAt` case in Interp.hs.)
+        -- forall e a. ((forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a
         prim "__mask"
           (tyV (forallEA
-            ( ( (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))   -- restore : IO e a -> IO e a
+            ( ( piI Q0 "x" tType                                  -- restore : forall (x : Type).
+                  (io (CVar 2) (CVar 0) ~> io (CVar 3) (CVar 1))  --   IO e x -> IO e x
                 ~> io (CVar 2) (CVar 1) )                         -- -> IO e a  (the body f)
               ~> io (CVar 2) (CVar 1) )))                         -- -> IO e a  (mask's result)
       , -- §18.1.12 internal: the action transformer `mask` hands to its body.
@@ -572,6 +583,29 @@ builtinState =
         -- forall e a. IO e a -> IO e a
         prim "__restore"
           (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.12 RANK-2 conformance adapter (the CONFORMANCE-FIX core).
+        -- The runtime `restore` that `krt2_mask` hands the body is a single
+        -- type-erased, uniformly-boxed 1-ARGUMENT closure (rt.c restore_fn): it
+        -- has NO runtime slot for a `forall (x:Type).` type binder. But §18.1.12
+        -- types `restore` rank-2 so it applies at arbitrary result types. The
+        -- surface `mask` therefore does NOT hand its body that raw closure
+        -- directly; it wraps it as `\act -> __restoreAt raw act`, a worker-backed
+        -- rank-2 value WITH a (kunit-filled) type slot, so the use-site type-app
+        -- `kappi(restore, ⟨x⟩)` lands on a real slot rather than the 1-arg
+        -- closure (the old "non-function value" crash). `__restoreAt` is a PRIM,
+        -- so its own erased implicit type-arg `x` is dropped at the spine (the
+        -- §31.2 prim-head erasure); the backends lower `__restoreAt raw act` to a
+        -- bare `kapp(raw, act)` (NO `kappi`), reuniting with the 1-arg runtime
+        -- closure. This is the whole erasure boundary: no monomorphisation, no
+        -- closure-ABI change, no runtime change. (Interp: `raw` is the
+        -- `VPrim "__restore"` head, which already erases its implicit args, so
+        -- the adapter just forwards `act` to it — interp == C == LLVM.)
+        -- forall e x. (forall y. IO e y -> IO e y) -> IO e x -> IO e x
+        prim "__restoreAt"
+          (tyV (forallEA
+            ( piI Q0 "y" tType (io (CVar 2) (CVar 0) ~> io (CVar 3) (CVar 1)) -- raw : forall y. IO e y -> IO e y
+              ~> io (CVar 2) (CVar 1)                                          -- act : IO e x
+              ~> io (CVar 3) (CVar 2) )))                                      -- -> IO e x
       , -- §18.1.8 monitors. forall e a. Fiber e a -> UIO (Monitor e a)
         prim "monitor"
           (tyV (forallEA
@@ -1591,11 +1625,21 @@ preludeSource =
     , ""
     , -- §18.1.12 masking surface. `mask f` runs `f` with interruption masked,
       -- handing it a `restore` that re-enables interruption for a chosen
-      -- subcomputation. `restore` is rank-1 (IO e a -> IO e a) to match the
-      -- runtime's monomorphic restore closure (see `__mask` above); the body
-      -- forwards to the `__mask` prim (OP_MASK), lowered to `krt2_mask`.
-      "mask : forall (e : Type) (a : Type). ((IO e a -> IO e a) -> IO e a) -> IO e a"
-    , "let mask f = __mask f"
+      -- subcomputation. `restore` is RANK-2 — `forall (x : Type). IO e x -> IO e x`
+      -- — exactly as §18.1.12 mandates (Spec.md:19063-19066): the single captured
+      -- masking capability is applied to sub-actions of arbitrary, caller-chosen
+      -- types within one mask block (the canonical bracket/withLock idiom). The
+      -- `x` binder is RuntimeErased (a type at quantity 0), so a `restore @x act`
+      -- use site emits an erased implicit type-application that the lowering DROPS
+      -- before the runtime's single 1-arg `restore` closure — see `__mask` below.
+      -- The body forwards to the `__mask` prim (OP_MASK), lowered to `krt2_mask`.
+      "mask : forall (e : Type) (a : Type). ((forall (x : Type). IO e x -> IO e x) -> IO e a) -> IO e a"
+    , -- The body's rank-2 `restore` is NOT the raw 1-arg runtime closure (which
+      -- carries no type slot — see `__restoreAt`); it is `\act -> __restoreAt raw
+      -- act`, a worker-backed rank-2 wrapper whose erased type slot absorbs the
+      -- use-site `kappi`, with the prim `__restoreAt` dropping its own type-arg
+      -- and lowering to a bare `kapp(raw, act)` onto the 1-arg runtime restore.
+      "let mask f = __mask (\\raw -> f (\\act -> __restoreAt raw act))"
     , ""
     , -- §18.1.4 interruption surface. interrupt/interruptFork use the Requested
       -- tag with no recorded initiator; the *As forms carry explicit metadata.
