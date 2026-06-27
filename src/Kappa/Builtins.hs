@@ -115,6 +115,11 @@ module Kappa.Builtins
   , prelFromComprehensionRaw
   , prelFromComprehensionPlan
   , prelIsTraitWitness
+  , prelIsPropEq
+  , prelIsPropPi
+  , prelIsProp
+  , prelIsSubsingleton
+  , prelIsSet
 
     -- * Prelude functions/helpers consulted by name
   , prelNot
@@ -362,6 +367,20 @@ prelFromComprehensionRaw, prelFromComprehensionPlan, prelIsTraitWitness :: GName
 prelFromComprehensionRaw = gPrel "FromComprehensionRaw"
 prelFromComprehensionPlan = gPrel "FromComprehensionPlan"
 prelIsTraitWitness = gPrel "__isTraitWitness"
+
+-- §11.4/§14.4 h-prop closure lemmas consulted by the compiler-owned
+-- IsProp-under-Pi solver (Kappa.Check): the equality base case 'isPropEq'
+-- (which DEMANDS 'IsSet a' evidence — Kappa v1 equality is intensional, so
+-- @x = y@ is an h-prop only when @a@ is a set, Spec §14.4) and the
+-- dependent-Pi closure step 'isPropPi'; plus the h-prop marker traits 'IsProp'
+-- and 'IsSubsingleton' whose goals the solver is gated to, and 'IsSet' whose
+-- evidence the equality base case must resolve before it may fire.
+prelIsPropEq, prelIsPropPi, prelIsProp, prelIsSubsingleton, prelIsSet :: GName
+prelIsPropEq = gPrel "isPropEq"
+prelIsPropPi = gPrel "isPropPi"
+prelIsProp = gPrel "IsProp"
+prelIsSubsingleton = gPrel "IsSubsingleton"
+prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 

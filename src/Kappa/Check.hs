@@ -2197,7 +2197,21 @@ resolveImplicitQ ctx sp q goal = do
                       mRow <- rowProof g
                       case mRow of
                         Just tm -> pure (Just tm)
-                        Nothing -> isTraitWitness ctx g
+                        Nothing -> do
+                          -- §11.4/§14.4 h-prop closure under Pi: an
+                          -- 'IsProp'/'IsSubsingleton' goal whose argument is a
+                          -- (dependent) function type is discharged
+                          -- structurally — 'IsProp' is closed under Pi,
+                          -- bottoming out at 'IsProp (x = y)', which the
+                          -- solver settles ONLY when 'IsSet a' evidence is in
+                          -- reach (Spec §14.4: Kappa v1 equality is
+                          -- intensional). This lets a forall-quantified
+                          -- equational law over a set be settled through the
+                          -- gated 'unsafeAssertProof' escape.
+                          mProp <- isPropClosure ctx sp g
+                          case mProp of
+                            Just tm -> pure (Just tm)
+                            Nothing -> isTraitWitness ctx g
     unresolved g isTrait isEq = do
       isRow <- isRowGoal g
       if isTrait || isEq || q /= Q0
@@ -2208,6 +2222,247 @@ resolveImplicitQ ctx sp q goal = do
                <> (if isTrait || isEq || isRow then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
           freshMeta
         else freshMeta
+
+-- | §11.4/§14.4 compiler-owned introduction rule for the h-prop marker traits
+-- 'IsProp'/'IsSubsingleton'.  Standard HoTT: an h-prop is closed under
+-- dependent function types (Pi), and a propositional equality @x = y@ is itself
+-- an h-prop /provided its type is a set/.  A goal @IsProp p@ is therefore
+-- discharged by structural recursion on @p@:
+--
+--   * @p = (x : A) -> B x@  (a Pi, of either icity)  →
+--         @isPropPi \@A \@(\\x. B x) (\\x -> <evidence for IsProp (B x)>)@
+--   * @p = (x = y)@         (a propositional equality over @A@)  →
+--         @isPropEq \@A \@x \@y <IsSet A evidence>@
+--
+-- The closure lemmas 'isPropPi'/'isPropEq' are admitted in the prelude (the
+-- true HoTT facts, not derivable here without funext); this solver only wires
+-- them together structurally, so the discharged obligation stays auditable.
+--
+-- SOUNDNESS (Spec §14.4): Kappa v1 equality is intensional and does NOT assume
+-- UIP — @x = y@ is an h-prop only when @IsSet A@ is available.  The equality
+-- base case therefore RESOLVES @IsSet A@ evidence through the ordinary evidence
+-- ladder (local candidates, instance search, supertrait projection) and threads
+-- it into 'isPropEq'.  If no @IsSet A@ evidence is in reach, the base case
+-- FAILS (returns 'Nothing') — it never fabricates set-ness — so the surrounding
+-- 'IsProp' goal stays unresolved and surfaces as 'E_UNSOLVED_IMPLICIT'.
+--
+-- It fires only for 'IsProp'/'IsSubsingleton' heads — every other class still
+-- resolves through the ordinary dictionary ladder.
+isPropClosure :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+isPropClosure ctx sp goal = do
+  g <- forceM goal
+  case g of
+    VGlobN h [(_, pv)]
+      | h == prelIsProp || h == prelIsSubsingleton ->
+          propEvidence ctx [] pv
+    _ -> pure Nothing
+  where
+    -- Build a Core term inhabiting @IsProp p@ for the forced proposition @p@,
+    -- recursing under Pi binders.  All de-Bruijn levels are taken from the
+    -- current context length, and every implicit/value argument is quoted at
+    -- that level, so the returned term is well-scoped at the goal's site.
+    --
+    -- The @[Value]@ accumulator carries the DOMAINS of the Pi binders we have
+    -- descended through, most-recent-first.  For a forall-quantified equational
+    -- law @forall (x … : a). lhs = rhs@ the binders all have type @a@ (the
+    -- carrier), so these domains are the authoritative carrier candidates for
+    -- the equality base case — robust even when the equands are stuck terms
+    -- (e.g. a recursive @listAppend@ on neutral arguments) whose own type
+    -- cannot be read off structurally.
+    propEvidence :: Ctx -> [Value] -> Value -> CheckM (Maybe Term)
+    propEvidence cx doms pv = do
+      ec <- ec_
+      pF <- forceM pv
+      case pF of
+        -- h-props are closed under (dependent) function types.  The original
+        -- binder's icity/quantity are irrelevant to propositionhood; we reuse
+        -- the closure as the motive @P = \\x. cod@ and recurse on @cod@.
+        VPi _ic _q _bw nm dom clo -> do
+          let d = ctxLen cx
+          cod <- clApp clo (VRigid d [])
+          let cx' = bindCtx nm False dom cx
+          mEv <- propEvidence cx' (dom : doms) cod
+          pure $ flip fmap mEv $ \ev ->
+            let aTm = quote ec d dom
+                pTm = quote ec d (VLam Expl Q0 nm clo)
+                -- the hypothesis '(x : a) -> IsProp (p x)' is an EXPLICIT,
+                -- unrestricted function in 'isPropPi'; building it as an
+                -- explicit lambda (not an implicit @0 binder) keeps the
+                -- recursion from introducing implicit-local candidates that
+                -- would make a later same-type implicit goal ambiguous.
+                hypTm = CLam Expl QW nm ev
+             in CApp Expl
+                  (CApp Impl (CApp Impl (CGlob prelIsPropPi) aTm) pTm)
+                  hypTm
+        -- a propositional equality @x = y@ over @a@ is an h-prop — but ONLY
+        -- when @a@ is a set.  Resolve @IsSet a@ evidence through the ordinary
+        -- ladder and thread it into 'isPropEq'; without it, this base case fails
+        -- (Spec §14.4 — no UIP for arbitrary @a@).
+        --
+        -- The @=@ former is @forall (@0 a). a -> a -> Type@, but its implicit
+        -- type slot is unreliable here — the elaborator frequently leaves it
+        -- solved to an EQUAND (or a sub-component of the carrier) rather than to
+        -- the carrier itself, and every other equality consumer in this module
+        -- ignores spine[0] for the same reason.  So we recover the carrier @a@
+        -- from candidate sources, trying each until @IsSet a@ resolves: first
+        -- the lhs equand's own type (authoritative when it can be read), then
+        -- the enclosing law binders' domains.  Threading a wrong @a@ cannot be
+        -- unsound: 'isPropEq @a' then proves @IsProp ((=)\@a x y)@, which fails
+        -- to match the actual goal @IsProp ((=)\@a' x y)@ unless @a = a'@.
+        _ | Just (xV, yV) <- eqSides pF -> do
+          mEq <- equandType cx xV
+          -- Carrier candidates, in priority order: the lhs equand's own type
+          -- (when readable), then the enclosing law-binder domains, then the
+          -- types of the bound variables OCCURRING in the equands (a law binder
+          -- @v@ appearing in @lhs@/@rhs@ has the carrier type — this is the
+          -- fallback that covers stuck equands like a recursive @listAppend@ on
+          -- neutral arguments, whose own type cannot be read structurally).
+          varTys <- rigidVarTypes cx [xV, yV]
+          let cands = maybe id (:) mEq (doms ++ varTys)
+          mPick <- firstCarrierWithSet cands
+          case mPick of
+            Nothing -> pure Nothing
+            Just (aV, setTm) -> do
+              let d = ctxLen cx
+                  aTm = quote ec d aV
+                  xTm = quote ec d xV
+                  yTm = quote ec d yV
+              pure $ Just $
+                CApp Impl
+                  (CApp Impl (CApp Impl (CApp Impl (CGlob prelIsPropEq) aTm) xTm) yTm)
+                  setTm
+        _ -> pure Nothing
+      where
+        -- Try each carrier candidate in turn; return the first for which
+        -- @IsSet a@ evidence resolves, paired with that evidence term.
+        firstCarrierWithSet :: [Value] -> CheckM (Maybe (Value, Term))
+        firstCarrierWithSet [] = pure Nothing
+        firstCarrierWithSet (a : as) = do
+          mSet <- isSetEvidence cx sp a
+          case mSet of
+            Just tm -> pure (Just (a, tm))
+            Nothing -> firstCarrierWithSet as
+
+    -- The two equands of a forced @x = y@ (its last two explicit spine
+    -- elements); the implicit type argument is deliberately not extracted here
+    -- (it is unreliable — see the base case above).
+    eqSides :: Value -> Maybe (Value, Value)
+    eqSides = \case
+      VGlobN eqG spn
+        | eqG == prelEqType
+        , [l, r] <- drop (length expl - 2) expl ->
+            Just (l, r)
+        where expl = [v | (Expl, v) <- spn]
+      VCtor eqG [_, l, r] | eqG == prelEqType -> Just (l, r)
+      _ -> Nothing
+
+-- | Silently resolve @IsSet a@ evidence for the equality base case of the
+-- IsProp-under-Pi solver.  This is the ordinary local-then-non-local evidence
+-- ladder (in-scope implicit candidates, supertrait projection, then registered
+-- instances), but run as a /probe/: it never reports a diagnostic and returns
+-- 'Nothing' when no evidence is in reach, so the caller can honestly fail the
+-- 'IsProp (x = y)' obligation rather than fabricate set-ness (Spec §14.4).
+isSetEvidence :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+isSetEvidence cx sp aV = do
+  let goalV = VGlobN prelIsSet [(Expl, aV)]
+  -- An @a@ still carrying unsolved metavariables is underdetermined; declining
+  -- here keeps instance selection from committing on a flexible head.
+  flex <- goalHasFlex goalV
+  if flex
+    then pure Nothing
+    else do
+      mLoc <- localCandidate cx sp Q0 goalV
+      case mLoc of
+        Just tm -> pure (Just tm)
+        Nothing -> do
+          mSup <- superCandidate cx goalV
+          case mSup of
+            Just tm -> pure (Just tm)
+            Nothing -> instanceSearch cx sp goalV
+
+-- | The TYPE of a neutral equand, used by the IsProp-under-Pi solver to recover
+-- the carrier @a@ of a @x = y@ goal (the @=@ former's own implicit type slot is
+-- unreliable, §isPropClosure).  A neutral is @head spine@; its type is the
+-- head's type with each spine argument applied through the corresponding Pi
+-- codomain.  Heads handled: a bound variable ('VRigid', type read off the
+-- context binder) and a global ('VGlobN', e.g. a trait member or @stringAppend@,
+-- type read off the globals table).  Any other shape (or a spine that outruns
+-- its head's Pi telescope) yields 'Nothing', so the solver fails honestly rather
+-- than guessing a carrier.
+equandType :: Ctx -> Value -> CheckM (Maybe Value)
+equandType cx v = do
+  vf <- forceM v
+  case vf of
+    VRigid lvl spine -> do
+      let idx = ctxLen cx - 1 - lvl
+      case drop idx (ctxEntries cx) of
+        (e : _) -> applySpineType (ceType e) spine
+        [] -> pure Nothing
+    VGlobN g spine -> do
+      mt <- globalType g
+      case mt of
+        Just (_, hty) -> applySpineType hty spine
+        Nothing -> pure Nothing
+    -- a fully/partially applied primitive (e.g. @stringAppend@): a prim is
+    -- registered as a prelude global carrying its declared type, with value
+    -- @VPrim p []@ (see 'Kappa.Prelude.prim'); all its stored args are explicit
+    -- applications.
+    VPrim p args -> do
+      mt <- globalType (GName preludeModule p)
+      case mt of
+        Just (_, hty) -> applySpineType hty [(Expl, a) | a <- args]
+        Nothing -> pure Nothing
+    -- a literal's type is its scalar carrier; only the ones that can appear as
+    -- an equand under these laws are needed, and an unknown literal carrier
+    -- simply declines.
+    _ -> pure Nothing
+  where
+    -- Walk @spine@ through the head type's Pi binders, substituting each
+    -- argument into the codomain to obtain the result type.
+    applySpineType :: Value -> Spine -> CheckM (Maybe Value)
+    applySpineType ty [] = Just <$> forceM ty
+    applySpineType ty ((_, arg) : rest) = do
+      tf <- forceM ty
+      case tf of
+        VPi _ _ _ _ _ clo -> do
+          cod <- clApp clo arg
+          applySpineType cod rest
+        _ -> pure Nothing
+
+-- | The context-binder types of the rigid (bound) variables OCCURRING in the
+-- given values, deduped by binder level, nearest-binder-first.  Used by the
+-- IsProp-under-Pi solver as a carrier-recovery fallback: in an equational law
+-- @lhs = rhs@ over carrier @a@, the law's @forall@ binders are exactly the
+-- rigids appearing in @lhs@/@rhs@ and each has type @a@.  This recovers @a@
+-- even when the equands are stuck terms whose own type cannot be read off
+-- structurally.  The traversal is bounded and covers the value shapes an
+-- equand can take (neutral applications, primitives, constructors, stuck
+-- matches/projections); it deliberately does not descend under binders.
+rigidVarTypes :: Ctx -> [Value] -> CheckM [Value]
+rigidVarTypes cx vs = do
+  lvls <- collectAll vs
+  pure
+    [ ceType e
+    | lvl <- lvls
+    , let idx = ctxLen cx - 1 - lvl
+    , (e : _) <- [drop idx (ctxEntries cx)]
+    ]
+  where
+    collectAll xs = nub . concat <$> mapM (collect (16 :: Int)) xs
+    collect 0 _ = pure []
+    collect fuel v = do
+      vf <- forceM v
+      case vf of
+        VRigid lvl spine -> (lvl :) . concat <$> mapM (collect (fuel - 1) . snd) spine
+        VGlobN _ spine -> concat <$> mapM (collect (fuel - 1) . snd) spine
+        VFlex _ spine -> concat <$> mapM (collect (fuel - 1) . snd) spine
+        VPrim _ args -> concat <$> mapM (collect (fuel - 1)) args
+        VCtor _ args -> concat <$> mapM (collect (fuel - 1)) args
+        VIOAction _ args -> concat <$> mapM (collect (fuel - 1)) args
+        VInject _ v' -> collect (fuel - 1) v'
+        VProjN v' _ -> collect (fuel - 1) v'
+        VMatchN scrut _ _ -> collect (fuel - 1) scrut
+        _ -> pure []
 
 -- | §22.4: a goal of shape @forall xs. IsTrait (tc x)@ is satisfied by
 -- a synthesized witness whenever its head is the builtin 'IsTrait'
@@ -2420,7 +2675,20 @@ flushPendingWith final = do
                                     mRow <- rowProof g
                                     case mRow of
                                       Just tm -> remember tm
-                                      Nothing -> pure Nothing
+                                      -- §11.4/§14.4 h-prop closure under Pi
+                                      -- (mirrors the same step in
+                                      -- 'nonLocalLadder'): a postponed
+                                      -- 'IsProp'/'IsSubsingleton' goal whose
+                                      -- argument resolved to a (dependent)
+                                      -- function type is discharged
+                                      -- structurally once its head is
+                                      -- concrete — still gated on 'IsSet a' at
+                                      -- the equality base case.
+                                      Nothing -> do
+                                        mProp <- isPropClosure ctx sp g
+                                        case mProp of
+                                          Just tm -> remember tm
+                                          Nothing -> pure Nothing
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -5059,6 +5327,45 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
 
 elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp fTm fTy arg rest = do
+  case (arg, fTy) of
+    -- PROVENANCE GATE (§4.2/§14.4): the §28.2 'unsafeAssertProof' escape has
+    -- type @forall (@0 p). (@_ : IsProp p) -> (@0 reason : String) -> p@.  Its
+    -- '@0 reason : String' documentation binder parses as an ERASED IMPLICIT,
+    -- so the ordinary ladder would try to /search/ it from local candidates —
+    -- and inside a forall-quantified law (e.g. a lawful 'Monoid' appendAssoc)
+    -- the law's own 'String'-typed binders are exactly such candidates, two or
+    -- more of which make resolution spuriously ambiguous.  When the user wrote
+    -- the reason explicitly (@unsafeAssertProof "…"@), that explicit string IS
+    -- the intended 'reason': fill the binder with it directly, bypassing the
+    -- candidate search.  This gate is keyed on the CALLEE'S IDENTITY
+    -- ('unsafeAssertProof'/'__unsafeAssertProof'), never on the goal type being
+    -- 'String' — so a genuine 'String' type-former index elsewhere (which is a
+    -- real ambiguity, e.g. a higher-ranked '∀ s:String' coercion) is untouched.
+    (ArgExplicit e, VPi Impl q _ _ dom clo)
+      | isUnsafeAssertProofHead fTm -> do
+          domF <- forceM dom
+          case domF of
+            VGlobN dg [] | dg == prelString -> do
+              aTm <- checkExplicitArg ctx q e dom
+              aV <- evalIn ctx aTm
+              ty' <- clApp clo aV
+              elabSpine ctx sp (CApp Impl fTm aTm) ty' rest
+            _ -> elabSpineArgGeneral ctx sp fTm fTy arg rest
+    _ -> elabSpineArgGeneral ctx sp fTm fTy arg rest
+
+-- | Whether a (possibly applied) callee term is headed by the §28.2
+-- 'unsafeAssertProof' escape or its '__unsafeAssertProof' primitive.  Used to
+-- provenance-gate the special handling of its erased 'reason : String' binder.
+isUnsafeAssertProofHead :: Term -> Bool
+isUnsafeAssertProofHead = go
+  where
+    go = \case
+      CApp _ f _ -> go f
+      CGlob (GName _ n) -> n == "unsafeAssertProof" || n == "__unsafeAssertProof"
+      _ -> False
+
+elabSpineArgGeneral :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
+elabSpineArgGeneral ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
     (ArgImplicit e, VPi Impl _ _ _ dom clo) -> do
       -- §16.1.7.2: the explicit implicit argument's payload is elaborated

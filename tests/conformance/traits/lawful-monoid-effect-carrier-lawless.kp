@@ -1,0 +1,25 @@
+module main
+
+-- §14.4 soundness: the effect carrier `IO e a` is a plain (law-LESS) `Monoid`
+-- but NOT a `LawfulMonoid` — its propositional equality is not an h-prop (no
+-- `IsSet (IO e a)`), so the monoid laws cannot be honestly asserted for it.
+-- A `LawfulMonoid (IO e a)` obligation is therefore unsatisfiable: there is no
+-- such instance, and (correctly) none can be fabricated.  `Monoid (IO e a)`
+-- itself still resolves — it is needed for the §18.1.13 `let?`/STM `empty`
+-- desugaring — which is why the carrier keeps a Monoid but loses the laws.
+
+needLawful : forall (a : Type). (@_ : LawfulMonoid a) -> Unit
+let needLawful = Unit
+
+-- `Monoid (IO e a)` resolves (the law-less base trait is available):
+okMonoid : forall (e : Type) (a : Type). (@_ : Monoid (IO e a)) -> Unit
+let okMonoid = Unit
+
+-- but `LawfulMonoid (IO e a)` does NOT: no instance, and the laws would need a
+-- fabricated `IsSet (IO e a)` that this implementation correctly refuses.
+badLawful : forall (e : Type) (a : Type). Unit
+let badLawful = needLawful @(IO e a)
+
+--! mode check
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+--! assertErrorCount 1

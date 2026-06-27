@@ -1,0 +1,25 @@
+module main
+
+-- §28.2.2/§14.4: the prelude's `LawfulMonoid` marker sub-trait carries the
+-- monoid laws (appendAssoc/appendLeftIdentity/appendRightIdentity) as
+-- propositional equalities.  Because Kappa v1 equality is intensional (Spec
+-- §14.4, no UIP), such a law is an h-prop ONLY over a SET, so `LawfulMonoid`
+-- instances exist exactly for carriers with `IsSet` evidence: `String` and
+-- `List a` (both provided by the prelude), discharged through the §11.4
+-- IsProp-under-Pi closure solver.  The effect carriers `IO e a` / `STM a` are
+-- plain (law-LESS) `Monoid`s with NO `LawfulMonoid` instance — their equality
+-- is not an h-prop and may not be asserted.
+
+-- The set carriers resolve `LawfulMonoid`:
+needLawful : forall (a : Type). (@_ : LawfulMonoid a) -> Unit
+let needLawful = Unit
+
+let lawfulString : Unit = needLawful @String
+let lawfulList : Unit = needLawful @(List Integer)
+
+-- They are also plain `Monoid`s (the supertrait), so `append`/`empty` work:
+let appended : String = append "a" "b"
+let joined : List Integer = append (1 :: Nil) (2 :: Nil)
+
+--! mode check
+--! assertNoErrors
