@@ -138,24 +138,30 @@ Grounded in this session's runtime / effects / atomics / capabilities work, agai
 
 ### Load-bearing decision
 
-**[DECISION-NEEDED] — masking `restore` rank: relax spec to rank-1, or keep rank-2 and fix the impl?**
+**[CONFORMANCE-FIX] — masking `restore` rank: KEEP rank-2, fix the impl** (resolved 2026-06-27,
+[`MASKING-RANK-RATIONALE.md`](MASKING-RANK-RATIONALE.md); was `[DECISION-NEEDED]` — the
+relax-to-rank-1 recommendation is **OVERTURNED**).
 Spec §18.1.12 (Spec.md:19063-19066) mandates **rank-2**:
 `mask : forall e a. ((restore : forall (x:Type). IO e x -> IO e x) -> IO e a) -> IO e a`.
 We shipped **rank-1**: `__mask`'s `restore` is monomorphic `IO e a -> IO e a` (instantiated at
-mask's own result type `a`), `Prelude.hs:551-566`. Rationale: the runtime `restore` is one
-1-arg closure (`krt2_mask` / `OP_RESTORE`); a rank-2 `restore` emits an erased implicit
-type-application `kappi(restore, ⟨x⟩)` that the 1-arg closure consumes *as* the action
-("non-function value" crash).
-**Recommendation — BACKPORT (relax §18.1.12 to rank-1)** with a non-normative note that
-backends MAY provide rank-2 when they have a polymorphic-restore ABI: the rank-2 generality
-is essentially never exercised (restore is applied at the body's result type in idiomatic
-mask/uninterruptible/acquireRelease; §18.1.12's own `acquireRelease`/`ensuring` are
-rank-1-expressible), and monomorphic restore is the only thing kappart2 can honor without a
-polymorphic-closure ABI. **If** the user deems rank-2 essential (e.g. masking a polymorphic
-continuation restored at a different type than the mask result), it becomes a
-**CONFORMANCE-FIX**: lower `restore`-application to drop the `kappi` type-app before the 1-arg
-closure — *not* a monomorphisation. Either way the spec must pick a side; today §18.1.12
-silently mandates rank-2 with no escape hatch, so the impl is non-conformant as written.
+mask's own result type `a`), `Prelude.hs:561-566`. The runtime `restore` is one 1-arg closure
+(`krt2_mask` / `OP_RESTORE`); a rank-2 `restore` emits an erased implicit type-application
+`kappi(restore, ⟨x⟩)` that the 1-arg closure consumes *as* the action ("non-function value" crash).
+**Resolution — keep rank-2, make the impl conformant.** The research established: rank-2 is the
+*universal* `mask` idiom across the GHC (`forall a. IO a -> IO a`) → Cats-Effect (`Poll[F] = F ~> F`)
+→ ZIO (`InterruptibilityRestorer`) lineage Kappa's ZIO-flavored IO descends from, where the `forall`
+is load-bearing (one captured masking capability applied to sub-actions of caller-chosen types). The
+"never exercised" premise is **false going forward**: compiled `kappa check` counterexamples prove
+rank-1 rejects the canonical idiom — `restore getInt` + `restore getStr` into a `P Integer String`
+result gives `E_APPLICATION_ARGUMENT_MISMATCH`, and *even a single* restore at any non-result type is
+rejected (the first non-trivial `mask` body a user writes; cf. Cats-Effect `bracketFull` applying one
+`poll` at both resource type `A` and result type `B`). It holds only for the shipped corpus
+(`bracketM` applies restore once at the result type).
+**The fix:** lower `restore`-application to **drop** the erased `kappi(restore, ⟨x⟩)` type-app before
+the 1-arg closure — NOT a monomorphisation, no ABI/closure rewrite (the runtime restore is already
+type-erased + uniformly boxed). If deferred, ship rank-1 only as a **marked KNOWN RESTRICTION**
+(restore cannot apply where the resource type differs from the mask result, breaking standard
+`bracket`), never justified by the false "never exercised" claim.
 
 ### Effects / handlers / continuations
 
@@ -330,9 +336,12 @@ Independent of A3's "they must agree" rule:
 
 ### Quick index of the most urgent items
 
-- **Most urgent impl gap:** C1 — handler abandonment is structurally broken and now *reachable*
-  (`elabEffDo` was opened to `defer`/`using`). A §32.2.20/.21 MUST.
-- **Load-bearing user decision:** masking `restore` rank-1 vs rank-2 (§18.1.12).
+- **Most urgent impl gap (in progress):** C1 — handler abandonment, structurally broken + now
+  *reachable* (`elabEffDo` opened to `defer`/`using`). The one-shot drain landed (`a374abb`); the
+  nested-abandon (H1), drain-time failure (H2) and §32.2.12 cause-composition (C2) follow-ups are
+  in fix-forward. A §32.2.20/.21 MUST.
+- **Load-bearing decision (RESOLVED):** masking `restore` — **keep rank-2, fix the impl** (drop the
+  erased `kappi` type-app), not relax §18.1.12; see [`MASKING-RANK-RATIONALE.md`](MASKING-RANK-RATIONALE.md).
 - **Biggest conformance gap (quantity area):** `QuantitySatisfies` / quantity-metavariable
   solving (§12.2.1–§12.2.4, §9031) entirely absent.
 - **Highest-payoff optimization (extend-existing):** Perceus-style single-use reuse from the
