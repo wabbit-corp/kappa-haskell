@@ -304,24 +304,23 @@ the real Lint are both impossible without them.
 - [ ] **`atomically`/`retry` real parking** (§18.1.13). Switch the single-agent
       `Ref` STM shim to the journaled `krt2_atomically`/`OP_ATOMICALLY` so
       transactions park + retry across fibers ([`../stm.c`](runtime/stm.c) already implements it).
-- [ ] **Stage 4 — effect-handler unification** (CPS-DESIGN §2, Stage 4).
-      **SCOPED** ([`docs/EFFECT-HANDLER-SCOPING.md`](docs/EFFECT-HANDLER-SCOPING.md),
-      2026-06-26) → **proceed one-shot-first**. Run effects as prompt frames on the
-      one Cont chain (not the separate `__EffPure`/`__EffOp` free-monad rewrite):
-      `handle` installs a `KK_HANDLER` (label→clause table); `perform` searches
-      `f->k` outward + captures the op-site→handler sub-chain as the resumption
-      (generalizes `unwind`'s `KK_CATCH` arm); `resume` splices it back (mirrors
-      `deliver`'s `KK_BIND` arm). **De-risked by the scoping:** R1 is already landed
-      (`begin_finseq`, rt.c:486 — CPS-DESIGN's prose is stale), the multi-shot
-      escape-check is already built (`Usage.hs` `multishotOpCall`/
-      `checkMultishotCapture`/`E_QTT_CONTINUATION_CAPTURE` — just wire to a gate),
-      and the only genuinely new runtime primitive is severing a Cont sub-chain
-      (~20 lines). **Staging:** 4a `KK_HANDLER`+perform/resume one-shot (MODERATE,
-      rt.c/internal.h + LOCKSTEP `elabEffDo` lift since Eff blocks reject
-      defer/using/var/loop today, Check.hs:8027) → diff-test vs `Eval.hs` → 4b
-      tail-resumptive fast path → 4c multi-shot (LARGE, behind a new `rt-multishot`
-      capability). Wildcard: handler-clause **parking** (R11) — put a parking smoke
-      test in 4a so it surfaces early.
+- [~] **Stage 4 — effect-handler unification** (CPS-DESIGN §2, Stage 4). **4a DONE**
+      (merged `1a6ae2f`): one-shot algebraic effect handlers run as `KK_HANDLER`
+      prompt frames on the CK-machine — `handle` installs the frame, `perform`
+      searches `f->k` outward + severs the op-site→handler Cont sub-chain as a
+      one-shot resumption (`do_perform`/`do_resume`, rt.c; the sever is the only new
+      primitive), `resume` splices it back. `__EffPure`/`__EffOp` now run on the one
+      Cont chain (not the pure `kpf___handleEff` rewrite). Deep+shallow; abandonment
+      free via R1. **The parking wildcard (R11) WORKS** (a handler clause that
+      forks/awaits/sleeps on libuv before resuming, interp==C); GC-safe (50k
+      perform/resume under aggressive collection); multi-shot compile-time-rejected
+      via the `Usage.hs` escape-check; differential-tested vs `Eval.hs`
+      (state/abort/reader/nested, interp==C==LLVM). Conformance 1851→1854.
+      *Partial:* `elabEffDo` lifts only `defer` (not `using`/`var`/loop — §32.2.19-21
+      residual). **4b** tail-resumptive fast path + **4c** multi-shot (LARGE, behind a
+      new `rt-multishot` capability) remain. See
+      [`docs/EFFECT-HANDLER-SCOPING.md`](docs/EFFECT-HANDLER-SCOPING.md) for the full
+      design + the 4b/4c plan.
 - [ ] **Stage 5 — LLVM coroutines** (CPS-DESIGN §5). Retarget `kdo_*`/`kdok_*` to
       `coro.id.retcon.once`; seed `CoroSplit` liveness from the `KEnv`.
 
