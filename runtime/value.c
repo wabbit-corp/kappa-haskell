@@ -1,13 +1,13 @@
-/* kappart_value.c — the boxed-value model.
+/* value.c — the boxed-value model.
  *
- * Split out of kappart.c (see kappart_internal.h).  Owns alloc_val /
+ * Split out of kappart.c (see boxed.h).  Owns alloc_val /
  * alloc_val_atomic, the value constructors, the environment, application +
  * the trampoline, deconstruction / matching, literal equality, and the
  * unboxing accessors + refs.  The bignum boundary it escapes to (kmpz_set_i64,
  * kbig_from_mpz, kfrom_mpz, kload_mpz, kint_cmp, krat, as_rat) lives in
- * kappart_bignum.c and is reached through kappart_internal.h. */
+ * bignum.c and is reached through boxed.h. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 
 #include <gmp.h>
 #include <stdint.h>

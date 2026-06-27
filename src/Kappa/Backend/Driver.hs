@@ -241,7 +241,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
               -- The native runtime is kappart2 (the M:N fiber/libuv/STM runtime):
               -- the kappart boxed-value model + Boehm GC + primitives — split into
               -- six cohesive translation units (gc / value / bignum / show /
-              -- unicode / prims; see runtime/kappart_internal.h) — plus the
+              -- unicode / prims; see runtime/boxed.h) — plus the
               -- scheduler/reactor/scope/race/STM translation units, all in
               -- @runtime/@, linked against threaded Boehm + GMP + libuv.  `_GNU_SOURCE`
               -- is required on glibc when libuv is included under `-std=c11`, because
@@ -252,7 +252,7 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
               -- self-contained link modes are in runtime/docs/DEPLOYMENT.md.
               rtCFlags = ["-D_GNU_SOURCE", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources =
-                [runtimeDir </> f | f <- ["kappart_gc.c", "kappart_value.c", "kappart_bignum.c", "kappart_show.c", "kappart_unicode.c", "kappart_prims.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
+                [runtimeDir </> f | f <- ["gc.c", "value.c", "bignum.c", "show.c", "unicode.c", "prims.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
               rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv"]
               args =
                 ccLead

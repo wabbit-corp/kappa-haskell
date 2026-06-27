@@ -156,8 +156,8 @@ fi
 # invariant.  K_DBL/K_CHR/K_BYTE still box on the atomic heap and must stay there.
 echo "== R2.1: pointer-free scalar boxes use the atomic (unscanned) GC heap =="
 # The scalar constructors (kdbl/kchr/kbyte) live in the value-model translation
-# unit after kappart.c was split (see runtime/kappart_internal.h).
-rt="$ROOT/runtime/kappart_value.c"
+# unit after kappart.c was split (see runtime/boxed.h).
+rt="$ROOT/runtime/value.c"
 # The scalar tags K_DBL/K_CHR/K_BYTE are constructed only in kdbl/kchr/kbyte, so
 # keying on the tag argument is an unambiguous, format-robust invariant: each must
 # allocate via alloc_val_atomic and none via the scanned alloc_val.

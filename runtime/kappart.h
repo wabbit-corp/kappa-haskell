@@ -65,7 +65,7 @@ typedef enum {
 /* LR2 constructor tag ids (numeric pattern-match dispatch).  These FIXED ids
  * are shared between the runtime (which builds these builtins) and codegen
  * (which references them as KCT_* in generated matches/constructions), so the
- * two MUST agree — see the _Static_assert in kappart.c.  KCT_OTHER=0 is a
+ * two MUST agree — see the _Static_assert in value.c.  KCT_OTHER=0 is a
  * never-constructed-with sentinel distinct from every real id and from the
  * kctor_tagid() "not a constructor" return of -1.  User constructors get
  * codegen-assigned ids at KCT_USER_BASE and above (so they never collide with

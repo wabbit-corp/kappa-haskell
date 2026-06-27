@@ -1,12 +1,12 @@
-/* kappart_show.c — show / format (Dragon4) + the string builder.
+/* show.c — show / format (Dragon4) + the string builder.
  *
- * Split out of kappart.c (see kappart_internal.h).  Owns show_int_val /
+ * Split out of kappart.c (see boxed.h).  Owns show_int_val /
  * str_append, the show_* literal formatters, the Dragon4 shortest-round-trip
  * Double formatter, and the Double/String/Scalar/Byte kp_* prims + show entry
  * points.  The string builder (sbuf) and utf8_next are inline in
- * kappart_internal.h. */
+ * boxed.h. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 
 #include <gmp.h>
 #include <inttypes.h>

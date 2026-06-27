@@ -47,13 +47,13 @@ LIBS      := $(UV_LIBS) -lgc -lgmp
 
 # The runtime: the kappart boxed-value model + Boehm GC + primitives — split
 # into six cohesive translation units (gc / value / bignum / show / unicode /
-# prims; see kappart_internal.h) — plus the kappart2 scheduler/reactor/
+# prims; see boxed.h) — plus the kappart2 scheduler/reactor/
 # structured-concurrency/race/STM translation units.
-RT_SRC  := kappart_gc.c kappart_value.c kappart_bignum.c kappart_show.c \
-           kappart_unicode.c kappart_prims.c \
+RT_SRC  := gc.c value.c bignum.c show.c \
+           unicode.c prims.c \
            rt.c reactor.c scope.c race.c stm.c atomic.c
 RT_OBJ  := $(RT_SRC:%.c=build/%.o)
-RT_HDRS := kappart.h kappart_internal.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
+RT_HDRS := kappart.h boxed.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
 
 LIB := build/libkappart2.a
 

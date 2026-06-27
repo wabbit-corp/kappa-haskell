@@ -1,14 +1,14 @@
-/* kappart_bignum.c — arbitrary-precision integers (GMP) + Rational.
+/* bignum.c — arbitrary-precision integers (GMP) + Rational.
  *
- * Split out of kappart.c (see kappart_internal.h).  Owns the GMP<->int64
+ * Split out of kappart.c (see boxed.h).  Owns the GMP<->int64
  * boundary (kmpz_*, kfrom_mpz, kbig_from_mpz, kload_mpz, kbigint_str), the
  * Rational ops (krat / as_rat / rat_addsub), the normalizing Int compare
  * (kint_cmp) + kint_binop_mpz / kint_is_zero, the Int kp_* arithmetic prims,
  * and the round-to-nearest-even Integer->Double conversion.  The value
  * constructors it builds on (kint, alloc_val, kdbl, ...) come from
- * kappart_value.c via kappart_internal.h / kappart.h. */
+ * value.c via boxed.h / kappart.h. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 
 #include <gmp.h>
 #include <math.h>

@@ -1,14 +1,14 @@
-/* kappart_unicode.c — std.unicode: the UTF-8 codec + the UCD-table-driven
+/* unicode.c — std.unicode: the UTF-8 codec + the UCD-table-driven
  * algorithms (UAX #15 normalization, UAX #29 grapheme/word segmentation,
  * case folding).
  *
- * Split out of kappart.c (see kappart_internal.h).  This is the ONLY
+ * Split out of kappart.c (see boxed.h).  This is the ONLY
  * translation unit that includes kappa_ucd.h — the generated UCD tables are
  * ~100KB, so including the header anywhere else would duplicate them in every
  * object file.  The code-point buffer (cpbuf) and utf8_next are inline in
- * kappart_internal.h. */
+ * boxed.h. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 #include "kappa_ucd.h" /* §29.4 Unicode tables (generated; see tools/gen-ucd-c.py) */
 
 #include <stdint.h>

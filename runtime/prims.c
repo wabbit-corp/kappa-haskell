@@ -1,15 +1,15 @@
-/* kappart_prims.c — the kpf_* primitive entry points, the IO builtins, the
+/* prims.c — the kpf_* primitive entry points, the IO builtins, the
  * algebraic-effect runtime, and the IO trampoline.
  *
- * Split out of kappart.c (see kappart_internal.h).  Owns the kpf_io_* IO
+ * Split out of kappart.c (see boxed.h).  Owns the kpf_io_* IO
  * builtins, the §18.1 effect runtime (eff_bind_k / kpf___effBind /
  * kpf___handleEff / ...), the bytes/option/hash helpers, kvalue_rep_eq, every
  * kpf_* direct entry, and the IO executor (kdefer_frame + krun_io /
  * krun_io_checked).  The pure kp_* helpers it forwards to live in
- * kappart_bignum.c / kappart_show.c; the unicode helpers come from
- * kappart_unicode.c — all reached through kappart_internal.h / kappart.h. */
+ * bignum.c / show.c; the unicode helpers come from
+ * unicode.c — all reached through boxed.h / kappart.h. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 
 #include <gmp.h>
 #include <math.h>

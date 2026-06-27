@@ -1,8 +1,8 @@
-/* kappart_internal.h — cross-TU surface internal to the kappart runtime.
+/* boxed.h — cross-TU surface internal to the kappart runtime.
  *
- * kappart.c was split into cohesive translation units (kappart_gc.c,
- * kappart_value.c, kappart_bignum.c, kappart_show.c, kappart_unicode.c,
- * kappart_prims.c).  Functions that used to be file-static helpers but are now
+ * kappart.c was split into cohesive translation units (gc.c,
+ * value.c, bignum.c, show.c, unicode.c,
+ * prims.c).  Functions that used to be file-static helpers but are now
  * called across that split need a shared declaration; that is what this header
  * provides.  It is PURELY internal — the public surface (the kp_ and kpf_
  * prims, and the hot immediate/deref inlines like kis_imm/kderef) stays in the
@@ -18,10 +18,10 @@
  *       from another.  These were the in-file forward declarations and statics.
  *
  * kappa_ucd.h (≈100KB of generated UCD tables) is deliberately NOT included
- * here: only kappart_unicode.c includes it, so the tables exist in exactly one
+ * here: only unicode.c includes it, so the tables exist in exactly one
  * object file.  Including it from this header would duplicate them everywhere. */
-#ifndef KAPPART_INTERNAL_H
-#define KAPPART_INTERNAL_H
+#ifndef BOXED_H
+#define BOXED_H
 
 #include "kappart.h"
 #include <gmp.h>
@@ -74,12 +74,12 @@ static inline KValue *knone(void) { return kctor0(KCT_NONE, "std.prelude.None");
 
 /* ── (A) cross-TU prototypes ─────────────────────────────────────────── */
 
-/* The raw value-box allocator (defined in kappart_value.c; kappart_bignum.c
+/* The raw value-box allocator (defined in value.c; bignum.c
  * calls it from kbig_from_mpz).  alloc_val_atomic stays private to
- * kappart_value.c — only its scalar constructors use it. */
+ * value.c — only its scalar constructors use it. */
 KValue *alloc_val(KTag tag);
 
-/* The inline/bignum boundary (kappart_bignum.c).  value↔bignum are mutually
+/* The inline/bignum boundary (bignum.c).  value↔bignum are mutually
  * recursive across the split: kint() (value) escapes to kmpz_set_i64/
  * kbig_from_mpz (bignum), while kfrom_mpz/kload_mpz/krat/as_rat (bignum) build
  * on the value constructors.  Declaring both sides here closes the cycle. */
@@ -94,21 +94,21 @@ KValue *krat(mpz_t num, mpz_t den);
 void as_rat(KValue *r, mpz_t num, mpz_t den);
 KValue *rat_addsub(KValue *x, KValue *y, int sub); /* exact a/b ± c/d (backs addRat/subRat) */
 
-/* Int membership across the inline/bignum boundary (kappart_value.c), used by
+/* Int membership across the inline/bignum boundary (value.c), used by
  * klit_eq (value) and kvalue_rep_eq (prims). */
 int kis_int_any(KValue *v);
 
-/* show / string-builder boundary (kappart_show.c), called by the prims. */
+/* show / string-builder boundary (show.c), called by the prims. */
 KValue *show_int_val(KValue *v);
 KValue *str_append(KValue *a, KValue *b);
 KValue *show_scalar(KValue *v);
 KValue *show_string_lit(KValue *v);
 KValue *show_double(double x);
 
-/* Representation equality (kappart_prims.c), used by atomicCompareExchange. */
+/* Representation equality (prims.c), used by atomicCompareExchange. */
 int kvalue_rep_eq(KValue *a, KValue *b);
 
-/* std.unicode helpers the prims call (kappart_unicode.c).  These are the only
+/* std.unicode helpers the prims call (unicode.c).  These are the only
  * UCD-table consumers, so their definitions stay in the unicode TU; the prims
  * reach them through these declarations. */
 void utf8_encode(uint32_t cp, sbuf *b);
@@ -126,4 +126,4 @@ size_t ku_grapheme_len(const uint32_t *cps, size_t n, size_t start);
 KValue *ku_encode_range(const uint32_t *cps, size_t a, size_t b);
 int ku_is_space(uint32_t c);
 
-#endif /* KAPPART_INTERNAL_H */
+#endif /* BOXED_H */

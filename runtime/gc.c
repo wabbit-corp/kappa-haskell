@@ -1,10 +1,10 @@
-/* kappart_gc.c — GC/GMP boot, the public allocators, and krt_fail.
+/* gc.c — GC/GMP boot, the public allocators, and krt_fail.
  *
- * Split out of kappart.c (see kappart_internal.h).  Owns the Boehm collector +
+ * Split out of kappart.c (see boxed.h).  Owns the Boehm collector +
  * GMP-allocator wiring (krt_init), the immediate-tag alignment contract check,
  * the two public allocators (kgc_alloc / kgc_alloc_atomic), and the fail-stop. */
 #include "kappart.h"
-#include "kappart_internal.h"
+#include "boxed.h"
 
 #include <gc.h>
 #include <stdint.h>
