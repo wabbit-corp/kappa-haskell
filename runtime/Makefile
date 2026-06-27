@@ -15,6 +15,12 @@ CC      ?= cc
 AR      ?= ar
 # -fno-strict-aliasing: the KValue union is type-punned, like kappart itself.
 CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -fno-strict-aliasing -pthread
+# -flto: recover cross-TU inlining of the hot boxed-value ops once kappart.c is
+# split into smaller translation units (so the split costs nothing at runtime).
+# Validated safe against the conservative Boehm collector by the GC-stress
+# harnesses (run_main_persist / abandon_drain / fiberref_promise / stm).
+CFLAGS  += -flto
+LDFLAGS += -flto
 # All sources + headers live flat in this directory.
 CPPFLAGS += -I .
 
