@@ -1783,6 +1783,22 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
           case K_IO: case K_IOTAIL: case K_IOEFFECT: case K_IOFINALLY:
           case K_BOUNCE: case K_NATIVE: case K_FAIL: {
             KValue *r = krun_io(cur);
+            /* fix SP (§32.2.6): a codegen-emitted NATIVE loop inside this synchronous
+             * do-block runs entirely under krun_io — it never re-enters the gate at
+             * the top of this loop, so krt2_safepoint() could only SET safepoint_hit,
+             * not act on it.  Honor it HERE, right after the bridge returns: if the
+             * native loop hit a safe point with a deliverable interrupt, deliver it
+             * now (the bridge's result is discarded — the fiber unwinds).  Masked
+             * suppression already held inside krt2_safepoint (it never sets the flag
+             * when mask_depth>0). */
+            if (f->safepoint_hit
+                && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+                && f->mask_depth == 0) {
+              f->safepoint_hit = 0;
+              if (!deliver_interrupt(rt, f)) return;
+              break;
+            }
+            f->safepoint_hit = 0;
             if (kis_fail(r)) { if (!unwind(rt, f, RK_FAIL, r->as.fail.err, NULL)) return; break; }
             if (!deliver(rt, f, r)) return;
             break;

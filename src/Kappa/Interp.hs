@@ -229,6 +229,35 @@ takePendingIfUnmasked = do
           modifyIORef' pendingInterrupt (Map.delete tid)
           pure (Just c)
 
+-- | §32.2.6 loop-backedge safe point.  A forked fiber runs FULLY MASKED at the
+-- GHC level (spawnExit: uninterruptibleMask_), so a 'throwTo' interrupt lands
+-- only at an 'interruptPoint' — and a tight `while`/`for` loop with NO
+-- await/sleep/cede/poll inside has none, so it would run to completion ignoring a
+-- pending interrupt (the §32.2.6 interruption-observation gap, mirroring the
+-- native backends' in-place CK loop / native scalar loop before fix SP).  Calling
+-- this at each loop back-edge makes the interrupt observable there: if one is
+-- pending AND the fiber is unmasked (mask_depth==0 — 'takePendingIfUnmasked'
+-- returns Nothing when masked, so suppression holds) it is delivered by
+-- re-raising it, exactly like the native KK_LOOP / krt2_safepoint back-edge.
+-- Keeps interp == native for "a tight loop IS interrupted" / "a masked loop is
+-- NOT interrupted mid-loop".
+--
+-- IMPORTANT (async-exception discipline): the request side ('interruptWait' /
+-- '__interruptNoWait') does BOTH recordPending AND throwTo.  The throwTo is an
+-- ASYNC exception deferred by the fiber's uninterruptibleMask_.  If we merely
+-- 'throwIO' the recorded cause here, that deferred async throwTo stays in flight
+-- and later fires at the fiber's next interruptible op (e.g. the tryPutMVar in
+-- spawnExit, OUTSIDE the mask) — AFTER the exit handler — so it escapes uncaught
+-- and the fiber's result MVar is never filled (a waiter then blocks forever).
+-- 'interruptPoint' already handles this exactly: it opens the fiber's unmask
+-- window so the in-flight async throwTo is delivered (caught as Left), records
+-- it, and re-raises once when unmasked (or re-parks when masked — which for a
+-- non-blocking checkpoint just means returning Unit, suppression intact).  So a
+-- loop safe point IS 'interruptPoint (pure unit)': it absorbs the async throwTo
+-- and delivers iff unmasked, never leaving a dangling async exception.
+loopSafepoint :: IO ()
+loopSafepoint = interruptPoint (pure unitV) >> pure ()
+
 -- | A genuine interruption point: run the (parking) blocking @block@ through this
 -- fiber's GHC unmask so a 'throwTo' wake can land, then decide per §32.2.5:
 --
@@ -687,7 +716,10 @@ runScope rt reg0 selfLabel env0 items0 = do
 
       whileLoop env ml cond body mels = loop
         where
-          loop = (asBool <$> evalK rt env cond) >>= \cv -> case cv of
+          -- §32.2.6: a safe point at the loop back-edge — observe a pending
+          -- interrupt here so a tight non-ceding loop is interruptible (interp ==
+          -- native).  Masked => no-op (suppression holds).
+          loop = loopSafepoint >> (asBool <$> evalK rt env cond) >>= \cv -> case cv of
             Just True -> do
               r <- runScope rt reg ml env body
               case r of
@@ -703,7 +735,9 @@ runScope rt reg0 selfLabel env0 items0 = do
         loop (listElems srcV)
         where
           loop [] = runElse env mels
-          loop (x : xs) = case matchPat ec pat x of
+          -- §32.2.6 loop-backedge safe point (see whileLoop): observe a pending
+          -- interrupt before each element so a long `for` is interruptible too.
+          loop (x : xs) = loopSafepoint >> case matchPat ec pat x of
             Nothing -> throwIO (KappaError (VLit (LitStr "for pattern failed")))
             Just bs -> do
               r <- runScope rt reg ml (reverse bs ++ env) body

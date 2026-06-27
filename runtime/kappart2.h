@@ -134,6 +134,16 @@ KValue *krt2_write_ref(KValue *ref, KValue *val);   /* writeRef: Ref a -> a -> I
  * get their safe point + fairness cede inside the runtime, not via this call. */
 int krt2_safepoint(void);
 
+/* How many native scalar-loop iterations between krt2_safepoint() calls (fix SP).
+ * The emitted loop decrements a counter each iteration and only calls
+ * krt2_safepoint when it reaches 0, so the per-iteration cost in the hot unboxed
+ * loop is a register decrement + predictable branch — the function call (and the
+ * interrupt check) is amortized over QUANTUM iterations.  Large enough to be free
+ * in the steady state, small enough that interrupt responsiveness stays bounded. */
+#ifndef KRT2_SP_QUANTUM
+#define KRT2_SP_QUANTUM 65536
+#endif
+
 /* ── fibers (§18.1.4) ──────────────────────────────────────────────────── */
 KValue *krt2_fork(KValue *action);                  /* (IO e a) -> UIO (Fiber e a) */
 KValue *krt2_fork_daemon(KValue *action);
