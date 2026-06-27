@@ -80,9 +80,9 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 (worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
 adversarially reviewed, same discipline as the burst above.
 
-1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** *(in progress —
-   `feat/fp-math-prims`)*. Quick, self-contained, no design risk; unblocks **nbody + spectralnorm**.
-   libm math fns + `%.*f` formatting as ordinary prims (both backends + interp, parity-verified).
+1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
+   (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
+   **nbody + spectralnorm byte-identical to the reference**, parity 115/0.
 2. **Mutable O(1) array** — design **DONE** ([MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md)),
    impl queued behind the prims merge. **Decided: IO `MutArray` first** (then the spec-mandated ST
    `runST`/`STArray` §18.6.4; linear deferred — the boxed/Boehm runtime can't witness uniqueness yet).
@@ -93,14 +93,18 @@ adversarially reviewed, same discipline as the burst above.
    unboxing-*ready*) → H (unboxed scalar slabs, gated like the scalar-worker).
 3. **Unlock more benchmarks** — wire up nbody/spectralnorm (from 1) + the array benchmarks (from 2),
    measure vs the reference, fold the numbers into [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md).
-4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends),
-   the 3 C-backend CPS edges (suspend-in-`for`, STM-self-tail-call stack overflow, `var:Double`
-   helper miscompile), the `kctor` value-box multi-worker race (value.c, TSan), the timing-flaky
-   `race`/`timeout` runtime test, the reactor-shutdown sleep-timer cleanup (reactor.c), and the
-   runtime spec-coverage stubs (blocking, supervisor, fiberId, labels, sandbox).
-5. **Bigger levers**: the LLVM **function** scalar-worker (mandelbrot), **Perceus reuse +
-   value-unboxing** (the alloc multipliers), the LLVM **curried-CK-machine-prim** gap (await/STM/
-   interrupt as values — unblocks Tier-2 on LLVM + the LLVM safepoint delivery test).
+4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends);
+   the C-backend CPS edges — **do-block-tail-call stack overflow** *(in progress, `fix/c-doblock-tailrec`)*,
+   suspend-in-`for`, `var:Double` helper miscompile; the `kctor` value-box multi-worker race (value.c,
+   TSan); the timing-flaky `race`/`timeout` runtime test; ✅ the reactor-shutdown sleep-timer cleanup
+   (reactor.c, done `1162ddc`); and the runtime spec-coverage stubs (blocking, supervisor, fiberId,
+   labels, sandbox).
+5. **Bigger levers**: the LLVM **curried-CK-machine-prim** gap *(in progress, `fix/llvm-curried-ck-prims`
+   — **elevated**: it blocks every agent testing fork/await/STM on LLVM, the Tier-2 benchmarks, and the
+   LLVM safepoint-delivery test)* — fork/await/STM/interrupt as curried CK-machine values, lowered to the
+   `krt2_*` node-builders the runtime already has (mirrors the Milestone-M throwIO/catchIO migration);
+   then the LLVM **function** scalar-worker (mandelbrot); **Perceus reuse + value-unboxing** (the alloc
+   multipliers).
 
 ---
 
