@@ -238,6 +238,16 @@ struct Fiber {
   _Atomic int     interrupt_pending;
   KValue         *interrupt_cause;   /* the InterruptCause value (set under lock) */
   uint32_t        mask_depth;        /* 0 == interruptible                       */
+  /* §32.2.5 interruption-point gate (fix 2).  A pending interrupt becomes
+   * observable only AT an interruption point — a runtime suspension/resume
+   * (sleep/await/STM-retry/cede) or an explicit poll — NOT at a mask-region exit.
+   * Set to 1 each time the fiber (re-)enters fiber_step from the run queue (a fork
+   * resume or a park wake); cleared after the first delivery check of that turn.
+   * So `pending && mask_depth==0 && resumed` is true ONLY on the genuine resume
+   * turn — dropping mask_depth to 0 mid-step (KK_POPMASK/KK_SETMASK) no longer
+   * makes the next non-suspending step a delivery point (the masked-sleep
+   * suppression bug §18.1.12/§32.2.5).  OP_POLL delivers regardless of this flag. */
+  int             resumed;
   ExitStack      *cur_exits;         /* the innermost do-scope's exit-action stack
                                       * (where `defer` registers); NULL outside a
                                       * do-scope.  §18.7 */
@@ -268,6 +278,10 @@ struct Scope {
   _Atomic long    live;         /* count of attached not-DONE children        */
   _Atomic int     shutting;     /* shutdownScope has begun                     */
   Waiter         *drain_waiters;/* fibers parked until live hits 0             */
+  pthread_cond_t  drain_cv;     /* host-side bounded drain wait (fix 1, R2): the
+                                 * run_main thread — NOT a fiber — parks here on
+                                 * the daemon scope, woken when live hits 0 under
+                                 * a draining scope; see krt2i_scope_drain_bounded */
 };
 
 /* A monitor: one-way observation of a target fiber's terminal Exit (§18.1.8).
@@ -394,6 +408,14 @@ Fiber  *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, i
 Scope  *krt2i_scope_new(void);                      /* (scope.c) */
 void    krt2i_scope_attach(Rt *rt, Scope *sc, Fiber *child);/* (scope.c) att_scope+link+live; born-interrupted if sc is draining */
 void    krt2i_scope_detach(Rt *rt, Fiber *child);   /* (scope.c) called from fiber_finish */
+/* fix 1 (R2 / §32.2.3): best-effort daemon teardown at the run boundary.  Mark the
+ * scope draining, interrupt every still-live child (so ordinary INTERRUPTIBLE daemons
+ * self-terminate, run finalizers, and leave rt->all), then park the CALLING HOST
+ * thread (run_main, not a fiber) until live hits 0 OR `budget_ns` elapses.  Unlike
+ * shutdownScope it does NOT await unboundedly: an uninterruptible daemon that never
+ * delivers the interrupt is LEFT parked (leak-and-return) rather than hanging run_main
+ * forever — §32.2.3 does not await unattached daemons at scope close. */
+void    krt2i_scope_drain_bounded(Rt *rt, Scope *sc, uint64_t budget_ns);
 KValue *krt2i_interrupt_cause(const char *tag, KValue *by_opt);
 int     krt2i_interrupt_tag_id(const char *tag);    /* (scope.c) InterruptTag name -> KCT_ id */
 void    krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause);

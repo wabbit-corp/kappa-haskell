@@ -365,6 +365,10 @@ void krt2i_rq_push(Rt *rt, Fiber *f) {
   pthread_mutex_unlock(&rt->rq_lock);
 }
 void krt2i_resume(Rt *rt, Fiber *f) {
+  /* fix 2: this enqueue precedes a fiber_step (initial spawn / cede / re-enqueue),
+   * which is an interruption point — mark it so a pending interrupt is observable
+   * on the first turn.  Published to the popping worker by rq_push's rq_lock. */
+  f->resumed = 1;
   atomic_store_explicit(&f->status, F_RUNNABLE, memory_order_release);
   krt2i_rq_push(rt, f);
 }
@@ -380,6 +384,11 @@ void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
   if (atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNABLE,
                                               memory_order_acq_rel, memory_order_relaxed)) {
     if (resume_val) f->cur = resume_val;
+    /* fix 2: a wake re-enters fiber_step at a genuine resume point (the park this
+     * wakes was a suspension: sleep/await/STM-retry/scope-drain).  Mark it so a
+     * pending interrupt is delivered on the first turn (only the CAS winner runs
+     * this, so there is no torn write; rq_push's rq_lock publishes it). */
+    f->resumed = 1;
     krt2i_rq_push(rt, f);
   }
 }
@@ -418,6 +427,8 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
   f->daemon = 0;
   f->locals = NULL;               /* §18.1.7 FiberRef overrides (lazily allocated) */
   f->all_prev = f->all_next = NULL;
+  f->mask_depth = 0;
+  f->resumed = 0;                 /* fix 2: set on each (re)entry to fiber_step    */
   pthread_mutex_init(&f->lock, NULL);
   return f;
 }
@@ -1245,11 +1256,23 @@ static int deliver_interrupt(Rt *rt, Fiber *f) {
 /* Step `f` until it suspends (parks / cedes) or finishes. */
 static void fiber_step(Rt *rt, Fiber *f) {
   for (;;) {
-    /* §32.2.5 interruption point: every loop turn (i.e. every IO step boundary)
-     * is one.  Outside a masked region a pending request is delivered here. */
-    if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire) && f->mask_depth == 0) {
+    /* §32.2.5 interruption point: a pending request becomes observable only at a
+     * genuine suspension/resume point (sleep/await/STM-retry/cede wake) or an
+     * explicit poll — NOT at a mask-region exit.  `resumed` is set when the fiber
+     * (re-)enters fiber_step from the run queue and is consumed on the first turn,
+     * so this gate fires ONLY on that resume turn.  Without the `resumed` guard,
+     * dropping mask_depth to 0 mid-step (KK_POPMASK/KK_SETMASK) would make the very
+     * next non-suspending step a delivery point and wrongly interrupt a fiber whose
+     * whole body was masked — the §18.1.12/§32.2.5 masked-sleep suppression bug.
+     * OP_POLL delivers independently of this flag (§18.1.12: poll delivers even
+     * when masked). */
+    if (f->resumed
+        && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+        && f->mask_depth == 0) {
+      f->resumed = 0;
       if (!deliver_interrupt(rt, f)) return; /* finished; else fall through to run finalizers */
     }
+    f->resumed = 0;   /* consumed: only the FIRST turn after a resume is a delivery point */
     KValue *cur = f->cur;
     int op = kctor_tagid(cur);
     switch (op) {
@@ -1671,17 +1694,19 @@ KValue *krt2_run_main(KValue *action) {
   Scope *root = krt2i_scope_new();
   KValue *root_h = kfgn(root, KRT2_KIND_SCOPE);
   /* fix 6 (R2): a fresh daemon supervision scope for THIS run.  forkDaemon children
-   * attach here (krt2i_spawn_from) so main's wrapper can interrupt + await them on
-   * exit, instead of leaving a parked daemon pinned in rt->all across persistent
-   * runs.  Shut the daemon scope down AFTER root (LIFO defer order: registered
-   * second => runs first; root drains its structured children, then any lingering
-   * daemons are interrupted and awaited).  Both shutdowns are no-ops when their
-   * scope has no live children, so the common case is unaffected. */
+   * attach here (krt2i_spawn_from) so the run boundary can reap them, instead of
+   * leaving a parked daemon pinned in rt->all across persistent runs.
+   *
+   * fix 1 (regression): main's in-fiber wrapper shuts down ONLY the root scope —
+   * §32.2.3 awaits attached STRUCTURED children at scope close, and that await is
+   * sound because they ARE interruptible-and-awaited.  The daemon scope is NOT
+   * awaited here: §32.2.3 does not await unattached daemons, and a daemon parked
+   * inside `uninterruptible` never delivers the ScopeShutdown interrupt, so an
+   * in-fiber `shutdownScope(daemonScope)` (which blocks on live==0) would hang
+   * run_main forever.  Daemons are instead torn down best-effort + BOUNDED on the
+   * host thread after main_done (krt2i_scope_drain_bounded below). */
   Scope *daemons = krt2i_scope_new();
-  KValue *daemons_h = kfgn(daemons, KRT2_KIND_SCOPE);
-  KValue *shutdown_both =
-      krt2_then(krt2_shutdown_scope(daemons_h), krt2_shutdown_scope(root_h));
-  KValue *wrapped = krt2_ensuring(action, shutdown_both);
+  KValue *wrapped = krt2_ensuring(action, krt2_shutdown_scope(root_h));
 
   Fiber *m = fiber_new(rt, wrapped);
   m->cur_scope = root;
@@ -1707,6 +1732,18 @@ KValue *krt2_run_main(KValue *action) {
   pthread_mutex_lock(&rt->done_lock);
   while (!rt->main_done) pthread_cond_wait(&rt->done_cv, &rt->done_lock);
   pthread_mutex_unlock(&rt->done_lock);
+
+  /* fix 1 (R2 / §32.2.3): main has terminated; reap this run's daemons best-effort
+   * WITHOUT awaiting them unboundedly.  Stop publishing this scope first so a daemon
+   * forked by the NEXT run never attaches to the now-draining scope, then interrupt
+   * + bounded-drain its children.  Ordinary interruptible daemons (e.g. a parked
+   * sleepFor) deliver the ScopeShutdown interrupt, run their finalizers, and leave
+   * rt->all promptly — so the persistent runtime's live-fiber count stays bounded
+   * (R2).  An uninterruptible daemon that never delivers is LEFT parked when the
+   * budget expires: run_main RETURNS rather than hanging (the regression this fixes).
+   * The budget is generous relative to a finalizer's runtime but finite. */
+  atomic_store_explicit(&rt->daemon_scope, NULL, memory_order_release);
+  krt2i_scope_drain_bounded(rt, daemons, (uint64_t)2 * 1000 * 1000 * 1000 /* 2s */);
 
   /* Do NOT shut down: the pool, reactor, loop, and rt->all stay alive for the
    * next run_main (persistence is the default; krt2_shutdown is explicit-only). */
