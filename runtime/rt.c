@@ -452,6 +452,18 @@ static void exitstack_push(ExitStack *s, KValue *action) {
 /* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason. */
 typedef struct { ExitStack *xs; int i; int rkind; KValue *rval; KValue *rlabel; } FinSeq;
 
+/* §32.2.20 KK_ABANDEND state: the clause's saved continuation/exit-state and
+ * original reason, resumed once the RK_DRAIN walk over the abandoned slice has
+ * run all its do-scope exit actions.  `kont` is the clause's post-handler
+ * continuation; `saved_exits` is the cur_exits the clause result resumes under. */
+typedef struct {
+  Cont      *kont;
+  ExitStack *saved_exits;
+  int        rkind;
+  KValue    *rval;
+  KValue    *rlabel;
+} AbandonEnd;
+
 /* §18.1.21 a captured ONE-SHOT resumption.  `head` is the op-site Cont frame;
  * `tail` is the LAST frame of the captured sub-chain (its `next` is severed and
  * points at &g_done at capture time so the slice is self-terminated).  `used`
@@ -746,6 +758,34 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
   return 1;
 }
 
+/* §32.2.20/.21 ABANDONMENT DRAIN.  A general-path (severed) handler clause
+ * completed WITHOUT resuming its captured one-shot resumption, so the severed
+ * op-site→handler slice [r->head .. r->tail] (tail->next == &g_done) — and every
+ * `using` release / `defer` registered in its do-scopes — would otherwise be
+ * dropped GC'd-unrun.  Instead we walk that slice once with RK_DRAIN, running its
+ * KK_DOSCOPE exit actions masked-LIFO via the same begin_finseq machinery as a
+ * normal unwind, then resume the clause's own result (`post_*`) at its saved
+ * continuation `kont`.  We splice a KK_ABANDEND terminal onto the slice's tail so
+ * the RK_DRAIN walk lands there (not on the fiber's &g_done) and hands control
+ * back.  `kont` is the clause's post-handler continuation (already f->k here),
+ * and `f->cur_exits` is the clause's exit-state, both restored after the drain.
+ * This runs only on the GENERAL/abortive path; a tail-resumptive or resumed
+ * clause never reaches here. */
+static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
+                               int post_kind, KValue *post_val, KValue *post_label) {
+  AbandonEnd *ae = (AbandonEnd *)GC_MALLOC(sizeof(AbandonEnd));
+  ae->kont        = f->k;          /* the clause's continuation (after KK_ABANDON) */
+  ae->saved_exits = f->cur_exits;  /* the clause's exit-state, resumed post-drain  */
+  ae->rkind = post_kind; ae->rval = post_val; ae->rlabel = post_label;
+  /* Land the RK_DRAIN walk on KK_ABANDEND rather than the fiber's &g_done.  The
+   * slice was self-terminated at capture (r->tail->next == &g_done); re-point it
+   * at the terminal (its `next` is kont so a stray fall-through is still safe). */
+  r->tail->next = cont_new2(KK_ABANDEND, NULL, ae, NULL, ae->kont);
+  f->k = r->head;                  /* re-root at the op-site frame to drain it     */
+  f->cur_exits = r->cur_exits;     /* under the captured body's exit-action state  */
+  return unwind(rt, f, RK_DRAIN, NULL, NULL);
+}
+
 /* ── §18.1.21/.22 effect handlers (Stage 4a, one-shot) ───────────────────────
  * `perform label.op payload` searches f->k OUTWARD for the nearest KK_HANDLER
  * whose installed label (Cont.a) has the same ctor-id as the op's label — the
@@ -868,6 +908,15 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
         r->label = NULL; r->handler = NULL; r->handler_exits = NULL;
       }
       f->k = c->next;                  /* pop the handler: the clause runs outside  */
+      /* §32.2.20/.21 abandonment guard.  When the clause completes WITHOUT having
+       * resumed, the severed slice [head..prev] (and its `using`/`defer` exit
+       * actions) must still drain.  Sit a KK_ABANDON frame BENEATH the clause
+       * carrying this resumption: on clause completion (deliver/unwind reach it),
+       * an unused `r` triggers begin_abandon_drain; a resumed `r` is transparent.
+       * Only needed when something was actually severed (r->head != NULL); a tail
+       * perform (identity resumption) captured no slice, so there is nothing to
+       * drain and no frame is added. */
+      if (r->head) f->k = cont_new2(KK_ABANDON, NULL, r, NULL, f->k);
       f->cur_exits = handler_exits;    /* under the cur_exits the prompt restores   */
       return run_op_clause(rt, f, clause, payload, kfgn(r, KRT2_KIND_RESUMPTION));
     }
@@ -986,6 +1035,19 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       f->cur = kapp(h->ret, v);            /* `case return x -> ...` (Eff res)     */
       return 1;
     }
+    case KK_ABANDON: {                    /* §32.2.20 clause completed (normal v)  */
+      Resumption *r = (Resumption *)c->aux;
+      f->k = c->next;
+      if (r->used) { f->cur = krt2_pure(v); return 1; } /* resumed: transparent    */
+      /* abandoned: drain the severed slice's exit actions, then deliver v.       */
+      return begin_abandon_drain(rt, f, r, RK_NORMAL, v, NULL);
+    }
+    case KK_ABANDEND: {                   /* §32.2.20 slice drained: resume clause  */
+      AbandonEnd *ae = (AbandonEnd *)c->aux;
+      f->k = ae->kont;
+      f->cur_exits = ae->saved_exits;
+      return apply_reason(rt, f, ae->rkind, ae->rval, ae->rlabel);
+    }
   }
   return 0;
 }
@@ -1003,6 +1065,12 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
           case RK_FAIL:      fiber_finish(rt, f, krt2_failure(krt2_cause_fail(rval))); return 0;
           case RK_INTERRUPT: fiber_finish(rt, f, krt2_failure(krt2_cause_interrupt(rval))); return 0;
           case RK_RERAISE:   fiber_finish(rt, f, krt2_failure(rval)); return 0; /* rval IS the Cause */
+          case RK_DRAIN:     /* §32.2.20 an abandonment drain that reached the
+                              * fiber base instead of its KK_ABANDEND terminal:
+                              * the slice's defers all ran; there is no clause
+                              * result left to resume, so simply stop (do NOT
+                              * finish the fiber — the clause already delivered). */
+            return 0;
           default:           /* break/continue with no enclosing loop (rejected upstream) */
             fiber_finish(rt, f, krt2_failure(krt2_cause_fail(
                 kstr0("internal: break/continue escaped its loop")))); return 0;
@@ -1056,6 +1124,28 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
          * here).  Restore the cur_exits the prompt would reinstate, then drop. */
         f->cur_exits = (ExitStack *)c->aux2;
         f->k = c->next; continue;
+      case KK_ABANDON: {
+        /* §32.2.20 the clause unwound (fail/return/interrupt/break/continue) WITHOUT
+         * having resumed.  Drain the severed slice's exit actions, then continue
+         * the clause's own abnormal propagation.  (An RK_DRAIN can itself pass a
+         * KK_ABANDON — a NESTED abandoned perform — but the inner drain already ran
+         * its slice and its `used` flag is set on resume, so here it is transparent
+         * during a drain.) */
+        Resumption *r = (Resumption *)c->aux;
+        f->k = c->next;
+        if (r->used || rkind == RK_DRAIN) continue;  /* resumed / drain pass-through */
+        return begin_abandon_drain(rt, f, r, rkind, rval, rlabel);
+      }
+      case KK_ABANDEND: {
+        /* §32.2.20 the RK_DRAIN walk reached the slice terminal: the abandoned
+         * segment's defers have all run; restore the clause's continuation and
+         * exit-state and resume its original (saved) reason.  Reached only under
+         * RK_DRAIN; any other reason here would be an internal mis-link. */
+        AbandonEnd *ae = (AbandonEnd *)c->aux;
+        f->k = ae->kont;
+        f->cur_exits = ae->saved_exits;
+        return apply_reason(rt, f, ae->rkind, ae->rval, ae->rlabel);
+      }
     }
     return 0;
   }
@@ -1425,11 +1515,20 @@ static void prepopulate_singletons(void) {
   for (int i = -16; i <= 256; i++) (void)kint(i); /* warms kint_cache */
 }
 
+/* §1 process-exit teardown: with the runtime now PERSISTENT (run_main no longer
+ * shuts down), the worker pool/reactor would otherwise outlive main().  Register
+ * a single atexit hook to join them cleanly on normal process exit, so a
+ * compiled program (one run_main) keeps the old "workers joined before exit"
+ * flush/quiescence guarantee.  Registered AFTER krt_init's atexit(krt_at_exit),
+ * so it runs FIRST (atexit is LIFO) — workers join while the GC is still up. */
+static void krt2_atexit_shutdown(void) { if (g_rt) krt2_shutdown(g_rt); }
+
 Rt *krt2_new(int nworkers) {
   if (g_rt) return g_rt;
   krt_init();                  /* GC_INIT + GMP-through-GC (kappart) */
   GC_allow_register_threads(); /* permit worker/reactor thread registration */
   prepopulate_singletons();
+  atexit(krt2_atexit_shutdown); /* join the persistent pool on process exit (§1) */
 
   Rt *rt = (Rt *)GC_MALLOC(sizeof(Rt));
   rt->nworkers = nworkers > 0 ? nworkers : default_workers();
@@ -1450,6 +1549,7 @@ Rt *krt2_new(int nworkers) {
   rt->main_done = 0;
   rt->rq_idle = 0;
   rt->reactor_started = 0;
+  rt->workers_started = 0;
 
   krt2i_reactor_init(rt);      /* uv_loop_init + uv_async_init (main thread) */
   g_rt = rt;
@@ -1459,6 +1559,24 @@ Rt *krt2_new(int nworkers) {
 Rt *krt2_current(void) { return g_rt; }
 
 int krt2_exit_is_success(KValue *exit) { return kctor_is(exit, "Success"); }
+
+/* §1 PERSISTENT RUNTIME.  Spin up the reactor + worker pool exactly ONCE, the
+ * first time a fiber needs to run, and keep them alive across every subsequent
+ * krt2_run_main.  rq_pop blocks on rq_cv while idle and returns NULL only once
+ * `shutting_down` is set (krt2_shutdown), so an idle pool simply waits for the
+ * next run's main fiber — no per-run thread create/join, no per-run krt_init
+ * side effects, and crucially no shutdown→reinit cycle (the GC under-retention
+ * that crashed repeated run_main at ~call 60-80; see RUNTIME-EFFICIENCY-REVIEW
+ * §1).  The reactor's ref'd uv_async handle keeps its uv_loop alive identically.
+ * Idempotent + thread-safe-by-construction: only ever called from the single
+ * krt2_run_main caller (the runtime is single-entrant at the run_main boundary). */
+static void krt2i_ensure_started(Rt *rt) {
+  if (rt->workers_started) return;
+  krt2i_reactor_start(rt);
+  for (int i = 0; i < rt->nworkers; i++)
+    GC_pthread_create(&rt->workers[i], NULL, worker_main, rt);
+  rt->workers_started = 1;
+}
 
 KValue *krt2_run_main(KValue *action) {
   Rt *rt = g_rt ? g_rt : krt2_new(0);
@@ -1474,31 +1592,48 @@ KValue *krt2_run_main(KValue *action) {
 
   Fiber *m = fiber_new(rt, wrapped);
   m->cur_scope = root;
+
+  /* Per-run state.  The persistent pool/loop and rt->all (which may still hold a
+   * handful of just-finished bookkeeping fibers being GC-reclaimed) are LEFT
+   * INTACT; only the main-fiber completion latch is reset for this run. */
+  pthread_mutex_lock(&rt->done_lock);
+  rt->main_done = 0;
   rt->main_fiber = m;
+  pthread_mutex_unlock(&rt->done_lock);
   krt2i_all_add(rt, m);
 
-  krt2i_reactor_start(rt);
-  for (int i = 0; i < rt->nworkers; i++)
-    GC_pthread_create(&rt->workers[i], NULL, worker_main, rt);
-
+  krt2i_ensure_started(rt);    /* lazily start the pool+reactor ONCE; reuse after */
   krt2i_resume(rt, m);         /* enqueue the main fiber */
 
   pthread_mutex_lock(&rt->done_lock);
   while (!rt->main_done) pthread_cond_wait(&rt->done_cv, &rt->done_lock);
   pthread_mutex_unlock(&rt->done_lock);
 
-  krt2_shutdown(rt);
+  /* Do NOT shut down: the pool, reactor, loop, and rt->all stay alive for the
+   * next run_main (persistence is the default; krt2_shutdown is explicit-only). */
   return m->exit;
 }
 
+/* Explicit FINAL teardown (atexit / process exit).  NOT called per run_main —
+ * persistence is the default (see krt2_run_main).  This sets `shutting_down` so
+ * rq_pop returns NULL and the worker pool drains, joins the workers + reactor,
+ * and clears g_rt so any later krt2_new rebuilds from scratch.  A rebuild after
+ * teardown re-enters the shutdown→reinit cycle the persistent path was written
+ * to avoid, so it must establish quiescence first: this teardown only runs when
+ * the process is exiting (no concurrent run_main), which is the quiescence
+ * barrier — a full GC + pthread_*_destroy of the never-destroyed mutexes/condvars
+ * would be required before a *reinit*, but at process exit the OS reclaims them. */
 void krt2_shutdown(Rt *rt) {
   if (!rt) return;
   atomic_store_explicit(&rt->shutting_down, 1, memory_order_release);
   pthread_mutex_lock(&rt->rq_lock);
   pthread_cond_broadcast(&rt->rq_cv);
   pthread_mutex_unlock(&rt->rq_lock);
-  for (int i = 0; i < rt->nworkers; i++) GC_pthread_join(rt->workers[i], NULL);
-  krt2i_reactor_stop(rt);
+  if (rt->workers_started) {
+    for (int i = 0; i < rt->nworkers; i++) GC_pthread_join(rt->workers[i], NULL);
+    krt2i_reactor_stop(rt);
+    rt->workers_started = 0;
+  }
   /* A shut-down runtime must not remain the active one: clearing g_rt lets a
    * subsequent krt2_run_main / krt2_new build a fresh runtime instead of reusing
    * one with workers joined and shutting_down/main_done still set. */
