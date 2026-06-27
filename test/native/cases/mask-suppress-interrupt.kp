@@ -1,0 +1,72 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "A1:completed-masked\nA2:completed-masked\nB:interrupted\n"
+
+-- §18.1.12 / §32.2.5 masked-interrupt suppression (native parity: interp == C).
+--
+-- A pending interrupt becomes observable only AT an interruption point — a runtime
+-- suspension/resume (sleep/await/STM-retry/cede) or an explicit `poll`. Leaving a
+-- masked region is NOT itself an interruption point: dropping the mask to 0 must
+-- not, by itself, make the next non-suspending step a delivery point. So when the
+-- WHOLE body is masked and there is no interruption point AFTER the region exit,
+-- the pending interrupt is DROPPED and the fiber completes Success.
+--
+-- The `cede`s hand the agent to the child so it parks in `inner`'s `sleepFor`
+-- before main interrupts it; the masked sleep then runs its full duration and the
+-- child completes normally.
+--
+--   Body A1 (uninterruptible whole-body): the interrupt is suppressed for the whole
+--     body and dropped at exit            => Success "completed-masked"
+--   Body A2 (mask whole-body, sleep NOT restore-d): same, via `mask` instead of
+--     `uninterruptible`                    => Success "completed-masked"
+--   Body B (control, sleep run through `restore`): the sleep is interruptible, so
+--     the interrupt IS delivered at that restored suspension and "after" never runs
+--                                          => Failure (interrupted)
+module main
+
+-- the masked work: a 300ms sleep then a value. Under a whole-body mask the sleep
+-- runs full duration (suppression holds) and the value is produced.  (Written with
+-- `ioBind`, not do-notation, so `restore inner` in body B applies `restore` to a
+-- single sub-action of the rank-2 capability, the canonical mask/restore idiom.)
+inner : UIO String
+let inner = ioBind (sleepFor (millis 300)) (\u -> ioPure "completed-masked")
+
+-- A1: the entire body is uninterruptible. No interruption point after the region
+-- exit, so a pending interrupt is dropped => Success.
+childA1 : UIO String
+let childA1 = uninterruptible inner
+
+-- A2: the entire body is masked via `mask`; the sleep is NOT run through `restore`,
+-- so it stays masked — identical suppression to A1.
+maskedWhole : (forall (x : Type). IO Void x -> IO Void x) -> UIO String
+let maskedWhole restore = inner
+childA2 : UIO String
+let childA2 = mask maskedWhole
+
+-- B (control): the sleep IS run through `restore`, re-enabling interruption for
+-- that suspension. The interrupt is delivered there, so "after" never runs and the
+-- child fails. This proves the gate change did NOT make masking swallow interrupts
+-- delivered at a genuine (restored) interruption point.
+maskedRestored : (forall (x : Type). IO Void x -> IO Void x) -> UIO String
+let maskedRestored restore = ioBind (restore inner) (\n -> ioPure "after")
+childB : UIO String
+let childB = mask maskedRestored
+
+-- fork the child, cede twice so it parks in the masked sleep, interrupt it, await
+-- its Exit, and report Success/Failure with the given label.
+runCase : String -> UIO String -> UIO Unit
+let runCase label body = do
+    f <- fork body
+    cede
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+      case Success v -> printlnString (stringAppend label (stringAppend ":" v))
+      case Failure c -> printlnString (stringAppend label ":interrupted")
+
+main : UIO Unit
+let main = do
+    runCase "A1" childA1
+    runCase "A2" childA2
+    runCase "B" childB
