@@ -1,0 +1,45 @@
+--! assertNoErrors
+--! assertEval result 7
+
+-- §19.5/§32.2.19 Stage-4b: an Eff do-block may now carry a `using` resource
+-- scope (the elabEffDo lift).  `using pat <- acquire` binds the resource
+-- (borrowed) and registers its `release` (from the required Releasable (Eff r)
+-- instance) as an exit action, so the whole block is wrapped in __effDoscope
+-- and the release runs masked-LIFO on every exit — the SAME krt2_doscope /
+-- krt2_defer machinery the IO do-kernel + Stage-4a `defer` already use, with no
+-- new runtime primitive.  In the PURE Eff carrier the release body is itself an
+-- Eff op that does not change the result (here a result-neutral State.put), so
+-- the value is unchanged by the release — the test asserts the lift type-checks
+-- and runs identically on the interpreter and the native backends (the native
+-- side runs the release for real; both agree on the result).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (Eff <[State : State]>) Res =
+    let release r = match r case MkRes i -> State.put 99
+
+acquireRes : Int -> Eff <[State : State]> Res
+let acquireRes i = pure (MkRes i)
+
+comp : Eff <[State : State]> Int
+let comp =
+    do
+        using a <- acquireRes 1
+        let _ <- State.put 1
+        let v <- State.get ()
+        pure v
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+result : Int
+let result = runPure handled

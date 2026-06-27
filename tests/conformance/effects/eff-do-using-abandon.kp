@@ -1,0 +1,52 @@
+--! assertNoErrors
+--! assertEval result 0
+
+-- §32.2.20/§32.2.21 Stage-4b: an Eff handler clause that completes WITHOUT
+-- resuming abandons the captured continuation segment.  That segment here holds
+-- both a `using` release obligation and a `defer` (the elabEffDo lift wraps the
+-- block in __effDoscope with two __effDefer exit actions); the §32.2.20
+-- abandonment must unwind those exit actions exactly once, in masked LIFO order,
+-- reusing the SAME runtime KK_FINSEQ / KK_DOSCOPE drain Stage-4a installed for
+-- `defer`.  The `stop` (q=0) clause returns 0 without resuming `k`, so the
+-- post-op-site `pure 999` never runs and the captured segment is abandoned.
+-- The interpreter result is the differential oracle for the native KK_HANDLER
+-- abandonment path; both yield 0 (the handler-clause value), and on the native
+-- side the `using` release and the `defer` run as part of the drain.
+module main
+
+effect Log =
+    1 note : Int -> Unit
+
+effect Abort =
+    0 stop : Unit -> Int
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (Eff <[Log : Log, Abort : Abort]>) Res =
+    let release r = match r case MkRes i -> Log.note i
+
+acquireRes : Int -> Eff <[Log : Log, Abort : Abort]> Res
+let acquireRes i = pure (MkRes i)
+
+comp : Eff <[Log : Log, Abort : Abort]> Int
+let comp =
+    do
+        using a <- acquireRes 5
+        defer (Log.note 9)
+        let _ <- Abort.stop ()
+        pure 999
+
+handledAbort : Eff <[Log : Log]> Int
+let handledAbort =
+    deep handle Abort comp with
+        case return x -> pure x
+        case stop _ k -> pure 0
+
+dropLog : Eff <[Log : Log]> Int -> Eff <[ ]> Int
+let dropLog m =
+    deep handle Log m with
+        case return x -> pure x
+        case note _ k -> k ()
+
+result : Int
+let result = runPure (dropLog handledAbort)

@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n"
+
+-- §19.5/§32.2.19 Stage-4b: an Eff-do `using` whose pattern DESTRUCTURES the
+-- acquired resource.  The lift binds the resource at a stable `__res` binder
+-- (so `release __res` always references the whole resource), registers the
+-- release as an __effDefer exit action, and then matches the surface pattern
+-- against `__res` for the rest of the scope — so a constructor pattern works
+-- identically on the interpreter and the native (C/LLVM) backends.
+module main
+
+effect State =
+    1 get : Unit -> Int
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (Eff <[State : State]>) Res =
+    let release r = match r case MkRes i -> pure ()
+
+acquireRes : Eff <[State : State]> Res
+let acquireRes = pure (MkRes 100)
+
+comp : Eff <[State : State]> Int
+let comp =
+    do
+        using (MkRes i) <- acquireRes
+        let v <- State.get ()
+        pure v
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 3
+
+main : UIO Unit
+let main = printlnString (showInt (runPure handled))
