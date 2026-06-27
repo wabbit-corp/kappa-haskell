@@ -1428,6 +1428,21 @@ static int deliver_interrupt(Rt *rt, Fiber *f) {
 /* Step `f` until it suspends (parks / cedes) or finishes. */
 static void fiber_step(Rt *rt, Fiber *f) {
   for (;;) {
+    /* fix S2 (sleep-timer dedup): a fiber resuming from a sleep park with a pending
+     * interrupt and `cur` STILL the OP_SLEEP node was woken by the INTERRUPT, not by
+     * its timer (the timer would have set cur to pure(Unit) and cleared sleep_armed).
+     * That sleep is now abandoned — masked => the OP_SLEEP below re-arms a fresh FULL
+     * timer; unmasked => the delivery gate unwinds past it.  EITHER way the original
+     * timer must be cancelled so it cannot fire later and CAS-win an unrelated park
+     * (spurious resume).  Route the cancel to the reactor BEFORE the delivery gate so
+     * the unmasked-unwind path cancels too.  (start_sleep also cancels a replaced
+     * timer, but the unwind path never re-runs OP_SLEEP — only this hook covers it.) */
+    if (f->resumed
+        && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+        && atomic_load_explicit(&f->sleep_armed, memory_order_acquire)
+        && kctor_tagid(f->cur) == OP_SLEEP) {
+      krt2i_cancel_sleep(rt, f);
+    }
     /* §32.2.5 interruption point: a pending request becomes observable only at a
      * genuine suspension/resume point (sleep/await/STM-retry/cede wake) or an
      * explicit poll — NOT at a mask-region exit.  `resumed` is set when the fiber
