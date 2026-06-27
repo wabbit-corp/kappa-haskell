@@ -4715,6 +4715,16 @@ compileScalarWhile mlabel cond body = do
     pure (s, ref, snap)
   let flushScalars = ["kref_set(" <> ref <> ", kint(" <> s <> "));" | (s, ref, _) <- snaps]
       flushSnaps = ["kref_set(" <> ref <> ", kint(" <> snap <> "));" | (_, ref, snap) <- snaps]
+  -- §32.2.6 safe point (fix SP): this is a NATIVE loop — the CK-machine is not
+  -- iterating, so a pending interrupt would be ignored until the loop finishes.
+  -- A counter, reloaded to KRT2_SP_QUANTUM, gates a krt2_safepoint() call at the
+  -- back-edge so the hot unboxed loop pays only a register decrement + predictable
+  -- branch per iteration; the real (still cheap) interrupt check runs every
+  -- QUANTUM iterations.  On a deliverable interrupt krt2_safepoint() returns 1 and
+  -- the loop flushes its FINAL scalar values to the ref cells and exits via
+  -- sflushL — control returns to the CK-machine, which delivers at the next step.
+  spCtr <- freshN "spc_"
+  emit ("int64_t " <> spCtr <> " = KRT2_SP_QUANTUM;")
   savedEsc <- gets gsI64Escape
   -- the scalar copy: gsScalarRegion on; an overflow flushes the PRE-iteration
   -- snapshots and jumps to the boxed loop, which re-runs this iteration with
@@ -4737,6 +4747,10 @@ compileScalarWhile mlabel cond body = do
         Just (s, _) -> emit (s <> " = " <> rhse <> ";")
         Nothing -> lr1UnreachableStmt
     _ -> lr1UnreachableStmt
+  -- §32.2.6 back-edge safe point: counter-gated krt2_safepoint().  On a deliverable
+  -- interrupt, flush the FINAL scalar values (a complete-iteration state) and exit
+  -- via sflushL so the CK-machine can deliver.  Otherwise fall through to scontL.
+  emit ("if (--" <> spCtr <> " <= 0) { " <> spCtr <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) goto " <> sflushL <> "; }")
   emit ("goto " <> scontL <> ";")
   -- normal scalar completion: flush every scalar var's FINAL value, skip boxed.
   emit (sflushL <> ": ;")

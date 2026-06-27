@@ -24,19 +24,51 @@ static void sleep_close_cb(uv_handle_t *h) { free(h); }
 
 static void sleep_timer_cb(uv_timer_t *t) {
   SleepTimer *st = (SleepTimer *)t->data;            /* sleepFor returns Unit */
-  krt2i_wake(st->rt, st->f, krt2_pure(krt2i_unit())); /* idempotent: an interrupt
-                                                       * may have woken it first */
+  Fiber *f = st->f;
+  /* This timer fired normally: it is no longer this fiber's pending sleep.  Clear
+   * the reactor-owned pointer + the worker-visible mirror BEFORE the wake so the
+   * resumed fiber never sees a stale-armed timer (fix S2).  start_sleep already
+   * cancels a replaced timer, so a fired one is always the fiber's current one. */
+  if (f->sleep_timer == t) f->sleep_timer = NULL;
+  atomic_store_explicit(&f->sleep_armed, 0, memory_order_release);
+  krt2i_wake(st->rt, f, krt2_pure(krt2i_unit())); /* idempotent: an interrupt
+                                                   * may have woken it first */
   uv_close((uv_handle_t *)t, sleep_close_cb);
 }
 
-/* Runs on the reactor thread (from the async drain). */
+/* Runs on the reactor thread (from the async drain).  fix S2: if the fiber still
+ * has a live timer from an earlier park (a masked re-park whose abandonment-cancel
+ * has not been processed yet — or, defensively, any straggler), stop+close it
+ * FIRST so it cannot fire and orphan-resume.  The fresh timer below re-arms the
+ * FULL `nanos` from now, matching the interpreter's masked-re-park semantics
+ * (Interp.interruptPoint re-runs the whole threadDelay). */
 static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
+  SleepTimer *old = (SleepTimer *)f->sleep_timer;
+  if (old) {
+    f->sleep_timer = NULL;
+    uv_timer_stop(&old->timer);
+    uv_close((uv_handle_t *)&old->timer, sleep_close_cb);
+  }
   SleepTimer *st = (SleepTimer *)malloc(sizeof(SleepTimer));
   st->f = f; st->rt = rt;
   uv_timer_init(&rt->loop, &st->timer);
   st->timer.data = st;
+  f->sleep_timer = st;
   uint64_t ms = (nanos == 0) ? 0 : (nanos + 999999u) / 1000000u; /* round up */
   uv_timer_start(&st->timer, sleep_timer_cb, ms, 0);
+}
+
+/* Runs on the reactor thread.  fix S2: a sleep park was abandoned by an interrupt
+ * (masked re-park or unmasked unwind); cancel the original timer so it cannot fire
+ * later and CAS-win an unrelated park.  Idempotent: NULL if it already fired or was
+ * replaced by start_sleep. */
+static void cancel_sleep(Rt *rt, Fiber *f) {
+  (void)rt;
+  SleepTimer *st = (SleepTimer *)f->sleep_timer;
+  if (!st) return;
+  f->sleep_timer = NULL;
+  uv_timer_stop(&st->timer);
+  uv_close((uv_handle_t *)&st->timer, sleep_close_cb);
 }
 
 /* The async callback: drain the MPSC request queue to empty (handles
@@ -50,7 +82,8 @@ static void reactor_async_cb(uv_async_t *h) {
     pthread_mutex_unlock(&rt->io_lock);
     if (!r) break;
     switch (r->op) {
-      case IO_SLEEP: start_sleep(rt, r->f, r->nanos); break;
+      case IO_SLEEP:        start_sleep(rt, r->f, r->nanos); break;
+      case IO_CANCEL_SLEEP: cancel_sleep(rt, r->f);          break;
     }
   }
   if (atomic_load_explicit(&rt->reactor_stop, memory_order_acquire)) {
@@ -84,6 +117,10 @@ void krt2i_reactor_start(Rt *rt) {
 
 void krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
   atomic_store(&f->status, F_PARKED);     /* f stays GC-live via rt->all */
+  /* fix S2: mark the worker-visible mirror BEFORE enqueuing, so the abandonment
+   * path (fiber_step) knows a timer may be live and routes a cancel.  The reactor
+   * owns the actual SleepTimer* via f->sleep_timer. */
+  atomic_store_explicit(&f->sleep_armed, 1, memory_order_release);
   IoReq *r = (IoReq *)GC_MALLOC(sizeof(IoReq)); /* scanned: keeps f reachable */
   r->op = IO_SLEEP; r->f = f; r->nanos = nanos; r->next = NULL;
   pthread_mutex_lock(&rt->io_lock);
@@ -91,6 +128,21 @@ void krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
   rt->io_tail = r;
   pthread_mutex_unlock(&rt->io_lock);
   uv_async_send(&rt->async);              /* unconditional (coalescing-safe) */
+}
+
+/* fix S2: route a cancel of f's active sleep timer to the reactor (handle ops are
+ * reactor-confined).  Called when an interrupt abandons a sleep park.  Clears the
+ * worker-visible mirror immediately; the reactor stops+closes the real timer. */
+void krt2i_cancel_sleep(Rt *rt, Fiber *f) {
+  if (!atomic_load_explicit(&f->sleep_armed, memory_order_acquire)) return;
+  atomic_store_explicit(&f->sleep_armed, 0, memory_order_release);
+  IoReq *r = (IoReq *)GC_MALLOC(sizeof(IoReq)); /* scanned: keeps f reachable */
+  r->op = IO_CANCEL_SLEEP; r->f = f; r->nanos = 0; r->next = NULL;
+  pthread_mutex_lock(&rt->io_lock);
+  if (rt->io_tail) rt->io_tail->next = r; else rt->io_head = r;
+  rt->io_tail = r;
+  pthread_mutex_unlock(&rt->io_lock);
+  uv_async_send(&rt->async);
 }
 
 void krt2i_reactor_stop(Rt *rt) {

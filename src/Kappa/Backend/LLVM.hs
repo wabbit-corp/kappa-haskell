@@ -3047,6 +3047,13 @@ emitScalarLoopLL plan = do
   modify' $ \g -> g {gsEnv = env0}
   pure r
 
+-- | §32.2.6 native-loop safe-point quantum (fix SP): how many unboxed scalar-loop
+-- iterations between @krt2_safepoint()@ calls.  Matches the C backend's
+-- @KRT2_SP_QUANTUM@ default so both backends poll for interrupts at the same
+-- granularity; large enough that the counter check is free in the hot loop.
+kSpQuantum :: Int
+kSpQuantum = 65536
+
 -- | Emit the @kscalarloop_N(ptr %args)@ helper: an unboxed int64 loop returning
 -- Unit, with an overflow fall-back to a boxed inline loop.
 --
@@ -3083,11 +3090,23 @@ emitScalarLoopFn plan _refs = do
       emit (sl <> " = alloca i64, align 8")
       emit ("store i64 " <> T.pack (show (inits !! j)) <> ", ptr " <> sl <> ", align 8")
       pure (j, sl)
+    -- §32.2.6 safe point (fix SP): a one-i64-slot counter, reloaded to the quantum,
+    -- gates a krt2_safepoint() call at the back-edge so the hot unboxed loop is not
+    -- slowed (mem2reg promotes the slot to an SSA register, so the per-iteration
+    -- cost is a decrement + predictable branch).  On a deliverable interrupt the
+    -- loop flushes its FINAL slot values and exits via flushL → the CK-machine
+    -- delivers at the next step.  This is the LLVM analogue of the C scalar loop's
+    -- counter-gated krt2_safepoint at its `goto kscont`.
+    declRuntime "declare i32 @krt2_safepoint()"
+    spSlot <- freshReg
+    emit (spSlot <> " = alloca i64, align 8")
+    emit ("store i64 " <> T.pack (show kSpQuantum) <> ", ptr " <> spSlot <> ", align 8")
     -- de-Bruijn i → (declaration index k-1-i)'s i64 slot / ref cell.
     let dbSlot i = slotOf Map.! (k - 1 - i)
         dbCell i = cellOf Map.! (k - 1 - i)
     contL <- freshLabel "scont_"
     bodyL <- freshLabel "sbody_"
+    spchkL <- freshLabel "sspchk_"
     flushL <- freshLabel "sflush_"
     boxedL <- freshLabel "sbox_"
     doneL <- freshLabel "sdone_"
@@ -3126,7 +3145,27 @@ emitScalarLoopFn plan _refs = do
       emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
       pure (j, v)
     scalarBodyLL k dbSlot (flushSnapTo (snapAt bodySnaps) boxedL) (sllBody plan)
-    emit ("br label %" <> contL)
+    -- §32.2.6 back-edge safe point: decrement the counter; only when it reaches 0
+    -- reload the quantum and call krt2_safepoint().  On a deliverable interrupt
+    -- (non-zero return) branch to flushL — which commits the FINAL slot values to
+    -- the ref cells and exits — so the CK-machine delivers; otherwise loop.
+    spCur <- freshReg
+    emit (spCur <> " = load i64, ptr " <> spSlot <> ", align 8")
+    spDec <- freshReg
+    emit (spDec <> " = sub i64 " <> spCur <> ", 1")
+    emit ("store i64 " <> spDec <> ", ptr " <> spSlot <> ", align 8")
+    spGate <- freshReg
+    emit (spGate <> " = icmp sle i64 " <> spDec <> ", 0")
+    emit ("br i1 " <> spGate <> ", label %" <> spchkL <> ", label %" <> contL)
+    -- the (amortized) real check: reload the quantum, call the safepoint, abort to
+    -- flushL on a deliverable interrupt.
+    startBlock spchkL
+    emit ("store i64 " <> T.pack (show kSpQuantum) <> ", ptr " <> spSlot <> ", align 8")
+    spRc <- freshReg
+    emit (spRc <> " = call i32 @krt2_safepoint()")
+    spAbort <- freshReg
+    emit (spAbort <> " = icmp ne i32 " <> spRc <> ", 0")
+    emit ("br i1 " <> spAbort <> ", label %" <> flushL <> ", label %" <> contL)
     -- normal completion: commit each var's FINAL slot value to its ref cell.
     startBlock flushL
     forM_ [0 .. k - 1] $ \j -> do

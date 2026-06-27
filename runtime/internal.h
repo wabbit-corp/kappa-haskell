@@ -272,6 +272,27 @@ struct Fiber {
   /* §18.1.7 this fiber's FiberRef overrides (NULL until first setFiberRef);
    * snapshotted into a child at fork so parent/child updates are independent. */
   FiberLocals    *locals;
+  /* §32.2.5 sleep-timer dedup (fix S2): the active uv_timer for THIS fiber's
+   * current sleep park, owned exclusively by the REACTOR thread (start_sleep
+   * sets it; sleep_timer_cb / cancel_sleep clear it) — workers never deref it.
+   * `sleep_armed` is the worker-visible mirror: set when a sleep is submitted,
+   * cleared when the timer fires or the sleep is abandoned, so the abandonment
+   * path can route a cancel without touching libuv.  Without the dedup, a masked
+   * sleep woken by an interrupt re-armed a FRESH timer and orphaned the original,
+   * whose later callback could CAS-win an unrelated park and spuriously resume it. */
+  void           *sleep_timer;       /* reactor-owned: the active SleepTimer*, or NULL */
+  _Atomic int     sleep_armed;       /* worker-visible: a sleep timer may be live      */
+  /* §32.2.6 safe points (fix SP).  A long-running NON-CEDING loop (a CK-machine
+   * KK_LOOP that re-runs `iterate` in place, or a codegen-emitted native scalar
+   * loop) must still (a) observe a pending interrupt and (b) restore fairness —
+   * the spec's loop-backedge safe points.  `safepoint_hit` is set at a back-edge
+   * when a pending interrupt is deliverable (mask_depth==0); the fiber_step gate
+   * then delivers it even though the fiber did not (re-)enter from the run queue
+   * (`resumed`==0).  `backedge_budget` counts back-edges down from a fixed quantum
+   * so a tight loop periodically CEDES (re-enqueues behind other runnables) for
+   * weak fairness without per-iteration scheduler traffic. */
+  int             safepoint_hit;     /* a back-edge observed a deliverable interrupt   */
+  uint32_t        backedge_budget;   /* iterations left before a fairness cede          */
   /* doubly-linked membership in rt->all (the strong GC root set) */
   Fiber          *all_prev, *all_next;
 };
@@ -322,7 +343,11 @@ typedef struct Promise {
 typedef struct RQNode { Fiber *f; struct RQNode *next; } RQNode;
 
 /* ── reactor I/O requests (worker -> reactor, drained on the uv_async cb) ── */
-typedef enum { IO_SLEEP } IoOp;
+/* IO_CANCEL_SLEEP (fix S2): stop+close f's active sleep timer on the reactor
+ * thread (handle ops are reactor-confined).  Submitted when a sleep park is
+ * ABANDONED by an interrupt (masked re-park OR unmasked unwind) so the original
+ * timer cannot fire later and spuriously resume an unrelated park. */
+typedef enum { IO_SLEEP, IO_CANCEL_SLEEP } IoOp;
 typedef struct IoReq { IoOp op; Fiber *f; uint64_t nanos; struct IoReq *next; } IoReq;
 
 /* ── the runtime ────────────────────────────────────────────────────────── */
@@ -397,6 +422,7 @@ void    krt2i_reactor_init(Rt *rt);           /* uv_loop_init + uv_async_init (m
 void    krt2i_reactor_start(Rt *rt);          /* spawn the reactor thread            */
 void    krt2i_reactor_stop(Rt *rt);           /* signal stop + join                  */
 void    krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos); /* park f on a uv_timer */
+void    krt2i_cancel_sleep(Rt *rt, Fiber *f);                 /* fix S2: cancel f's active sleep timer */
 
 /* result-value constructors (Exit / Cause), shared across files */
 KValue *krt2i_success(KValue *v);

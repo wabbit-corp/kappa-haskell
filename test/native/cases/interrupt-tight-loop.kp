@@ -1,0 +1,62 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "spin:interrupted\nmasked:completed\n"
+
+-- §32.2.6 safe points (interp == C): a tight NON-CEDING CPU loop (no
+-- await/sleep/cede/poll inside) MUST still be interruptible — the interrupt is
+-- delivered at an implementation-defined safe point (a loop back-edge).  Both the
+-- interpreter (a loopSafepoint at each `while` back-edge) and the C backend (the
+-- unboxed scalar loop's counter-gated krt2_safepoint, plus the CK-machine KK_LOOP
+-- back-edge for the boxed form) deliver the interrupt and the spinning fiber
+-- terminates with Failure (Interrupt).
+--
+-- Conversely a MASKED tight loop is NOT interrupted mid-loop: suppression holds
+-- through `uninterruptible`, the loop runs to completion, and (with no
+-- interruption point after the masked region) the pending interrupt is dropped —
+-- so the fiber completes Success.  Same observable interp == native.
+module main
+
+-- an unmasked tight loop: counts to a huge bound, interruptible at the back-edge.
+spin : UIO Int
+let spin = do
+    var i = 0
+    while ltInt i 1000000000000 do
+        i = addInt i 1
+    ioPure i
+
+-- a finite tight loop counting a fresh `var` to a bound, returning it.  The
+-- bound is large enough to pass MANY safe points (so a missed suppression would
+-- be observed as an interrupt mid-loop) yet small enough that the INTERPRETER,
+-- which interprets every iteration, finishes it in well under the test timeout.
+spinTo : UIO Int
+let spinTo = do
+    var j = 0
+    while ltInt j 2000000 do
+        j = addInt j 1
+    ioPure j
+
+-- a MASKED finite tight loop: the whole loop is uninterruptible, so a pending
+-- interrupt is suppressed and the loop runs to its (finite) completion.
+maskedSpin : UIO Int
+let maskedSpin = uninterruptible spinTo
+
+main : UIO Unit
+let main = do
+    -- (1) the unmasked spinner IS interrupted at a loop safe point.
+    f <- fork spin
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+    case Success v -> printlnString "spin:completed"
+    case Failure (Interrupt cause) -> printlnString "spin:interrupted"
+    case Failure c -> printlnString "spin:other-failure"
+    -- (2) the MASKED spinner runs to completion (suppression holds mid-loop).
+    g <- fork maskedSpin
+    cede
+    interrupt g
+    ex2 <- await g
+    match ex2
+    case Success v -> printlnString "masked:completed"
+    case Failure (Interrupt cause) -> printlnString "masked:interrupted-WRONG"
+    case Failure c -> printlnString "masked:other-failure"
