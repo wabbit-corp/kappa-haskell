@@ -407,6 +407,33 @@ the real Lint are both impossible without them.
       turns the per-bind/continuation allocation into a reuse/in-place write.
       The endgame for the suspension path; needs the §3.3/unboxing ptr-vs-scalar map.
 - [ ] Keep `make bench` green as a non-regression gate from each stage.
+- [ ] **Cross-language benchmarking** ([`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md))
+      — the external apples-to-apples layer on top of `make bench` (which already
+      carries a Go-goroutine point). Pick suites by what we want to prove: **lead
+      with concurrency** (Kappa's strength: `fork/await ≈ 3.5× a goroutine`), and
+      use allocation-bound programs as an **honesty gate** for the boxing lever.
+      Sequenced:
+      - [ ] **Tier 1 — CLBG numeric set** (n-body, spectral-norm, mandelbrot,
+            fannkuch, pidigits — `pidigits` is GMP-strong) for immediate
+            cross-language numbers (incl. GHC), **plus `binary-trees` wired in
+            next to `make bench` as the standing boxing-lever gate** (it loses
+            until unboxing lands — track the trend, don't market it). Self-contained;
+            hardcode `N` until `getArgs`/stdin exist.
+      - [ ] **Tier 2 — concurrency (the differentiator):** extend the bench's Go
+            comparison into **skynet** (1M-fiber spawn/join) + **thread-ring**, then
+            ~5 **Savina** benchmarks (Ping-Pong, Fork-Join, Thread-Ring,
+            **Bank-Transaction over STM**, Dining Philosophers). All expressible now
+            over `fork`/`TVar`/`Promise`.
+      - [ ] **Tier 1.5 — Are We Fast Yet** (fair cross-impl: Richards/DeltaBlue/
+            Havlak/Json/CD + micros) for the compiler-vs-compiler story; medium port
+            (objects→records/traits).
+      - [ ] **Tier 3 — TechEmpower (TFB), gated/flagship:** showcase the libuv +
+            M:N-fiber runtime under load. **On-ramp = Plaintext + JSON only** (HTTP +
+            JSON encoder over the already-linked libuv, no DB; TFB accepts partial);
+            the DB tests (Single/Multiple Query, Fortunes, Updates) follow a Postgres
+            FFI driver. No HTTP/DB stack exists today → multi-week library work.
+      - nofib is **cherry-pick, not port** (GHC-specific; mine the imaginary/spectral
+            kernels — the vs-GHC number comes free from CLBG).
 
 ---
 
@@ -659,6 +686,11 @@ two implementations compare on a stable key. Three strategies port from
       table in [`Diagnostic.hs`](src/Kappa/Diagnostic.hs)) + run stdout/exit, with a
       small known-divergence allowlist. Two mature impls cross-check; pairs with every
       generator. ~1 day.
+- [ ] **Benchmark ports double as differential fixtures** — every cross-language
+      benchmark with a reference output is also an `interp == C == LLVM` oracle, so the
+      [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md) ports (CLBG
+      numeric set, AWFY) drop into the conformance corpus as correctness checks too —
+      cheap dual-use with the Performance track.
 
 **Force-multiplier — generative fuzzing:**
 - [ ] **Port the fuzzer** (`../kappa/scripts/kappa_fuzz*.py`, ≈4400 LOC, mostly
