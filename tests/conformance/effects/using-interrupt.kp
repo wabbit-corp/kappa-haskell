@@ -1,0 +1,45 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nreleased\ninterrupted\n"
+
+-- §19.5/§18.8.3 `using` finalizer-on-interrupt. A `using pat <- acquire` binds
+-- the resource (borrowed) for the rest of the do-block and attaches its
+-- `release` (from the required Releasable instance) to the protected scope. The
+-- release runs on EVERY exit path — including when the body is INTERRUPTED — so
+-- the resource is never leaked. This is the same protected-scope discipline as
+-- `bracket` (§18.1.12): the acquire-and-register region runs masked, so a fiber
+-- carrying a pending interrupt cannot deliver it before the release is installed
+-- (the interrupt lands inside the body, by which point the finalizer is in
+-- place), and the release therefore RUNS on interrupt.
+--
+-- The `cede`s hand the agent to the child so it reaches the body's `sleepFor`
+-- before the interrupt is requested; the interrupt is taken at that suspension
+-- point and unwinds through the registered release (run masked, §32.2.5).
+module main
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : IO String Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+child : IO String Unit
+let child = do
+    using r <- acquireRes
+    sleepFor (seconds 10)
+    printlnString "body-done"
+
+main : UIO Unit
+let main = do
+    f <- fork child
+    cede
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"

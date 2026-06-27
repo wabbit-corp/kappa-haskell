@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nreleased\ninterrupted\n"
+
+-- §19.5/§18.8.3 `using` finalizer-on-interrupt (native parity: interp == C). A
+-- `using pat <- acquire` in a SUSPENDING do-block lowers through the runtime's
+-- krt2_acquire_release (the bracketM machinery): the acquire-and-register region
+-- runs masked, so the release is installed before any interrupt can land, and it
+-- RUNS on interrupt — the resource is never leaked. The `cede`s hand the agent
+-- to the child so it parks in the body's `sleepFor` before the interrupt.
+module main
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : IO String Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+child : IO String Unit
+let child = do
+    using r <- acquireRes
+    sleepFor (seconds 10)
+    printlnString "body-done"
+
+main : UIO Unit
+let main = do
+    f <- fork child
+    cede
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"

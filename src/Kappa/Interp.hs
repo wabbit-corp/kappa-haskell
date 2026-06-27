@@ -24,6 +24,7 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
+import Control.Monad (unless)
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
@@ -486,14 +487,33 @@ runScope rt reg0 selfLabel env0 items0 = do
           case r of
             CplNormal _ -> go env rest
             other -> leave other
-        -- §19.5: acquire the owned resource, bind `pat` (borrowed) for the
-        -- rest of the scope, and attach `release resource` to this scope's
-        -- exit queue so it runs LIFO on every exit path (like `defer`).
+        -- §19.5/§18.8.3: acquire the owned resource MASKED (uninterruptible, so
+        -- a born-interrupted fiber cannot land its interrupt between `acquire`
+        -- returning and the release being installed — mirroring `bracketM`'s
+        -- masked acquire-and-register region, §18.1.12), bind `pat` (borrowed)
+        -- for the rest of the scope, and attach `release resource` so it runs
+        -- exactly once on EVERY exit path — normal completion, abrupt control,
+        -- typed failure, AND interruption. The normal/abrupt path runs it LIFO
+        -- with `defer`s via the exit queue; the interrupt/error path runs it via
+        -- the exception guard below. A done-flag keeps it exactly-once across
+        -- both paths (§18.7). Unlike `defer`, this owns the quantity-`1` resource
+        -- directly (it is not a source rewrite to `defer`, §19.5).
         KUsing pat acquireT releaseT -> do
-          resource <- runIOValue rt =<< evalK rt env acquireT
+          resource <- CE.uninterruptibleMask_ (runIOValue rt =<< evalK rt env acquireT)
           releaseFn <- evalK rt env releaseT
-          modifyIORef' exitsRef ((() <$ runIOValue rt (vapp ec releaseFn Expl resource)) :)
-          bindOrDie pat resource $ \bs -> go (reverse bs ++ env) rest
+          releasedRef <- newIORef False
+          let release = do
+                done <- readIORef releasedRef
+                unless done $ do
+                  writeIORef releasedRef True
+                  () <$ runIOValue rt (vapp ec releaseFn Expl resource)
+          modifyIORef' exitsRef (release :)
+          -- The continuation may exit by an async interrupt (or any exception)
+          -- that bypasses `leave`/`runExits`; `onException` runs the release in
+          -- that case too. On a normal/abrupt exit `runExits` has already run it
+          -- (so the done-flag makes `onException` — if it also fires — a no-op).
+          bindOrDie pat resource $ \bs ->
+            go (reverse bs ++ env) rest `CE.onException` release
         -- §18.8.3.1: a transparent nested do-scope. It runs as a child scope
         -- (its own exit-action frame and label) sharing the current label
         -- registry @reg@ — so its own `defer` runs at its exit while
