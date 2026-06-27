@@ -2,90 +2,295 @@
 -- gravity, leapfrog integrator (dt = 0.01), print total system energy before
 -- and after N steps to 9 decimals.
 --
---   N = 5000000 steps (HARDCODED to match the refs + expected.txt:
+--   N = 5000000 steps (HARDCODED to match the refs + expected.txt):
 --       -0.169075164
---       -0.169083134 )
+--       -0.169083134
 --
--- ┌───────────────────────────────────────────────────────────────────────────┐
--- │ STATUS: blocked-compiler-gap.  FOUR gaps block a byte-exact Kappa port;     │
--- │ gaps (1) and (2) are HARD (no workaround exists in-language):               │
--- │                                                                             │
--- │  (1) NO `sqrt` PRIM — HARD.  The Double prim set is add/sub/mul/div/neg/    │
--- │      eq/lt / intToDouble / showDouble / ratOfDouble (src/Kappa/Prelude.hs   │
--- │      L287-462); there is NO sqrt / pow / rsqrt / any transcendental.        │
--- │      nbody's hot loop needs `sqrt(dx^2+dy^2+dz^2)` (energy) and             │
--- │      `d2 * sqrt(d2)` (advance).  A pure-Kappa Newton-Raphson sqrt does      │
--- │      NOT reproduce the hardware sqrt's correctly-rounded (IEEE-754) result  │
--- │      bit-for-bit, so it diverges from the C/Go/Haskell refs in the low      │
--- │      ULPs and CANNOT pass the byte-identical %.9f gate.                     │
--- │                                                                             │
--- │  (2) NO FIXED-PRECISION FORMATTING — HARD.  `showDouble` (behind            │
--- │      `println @Double`) emits the SHORTEST round-trip decimal, not "%.9f".  │
--- │      There is no doubleToInt / floor / trunc / round prim with which to     │
--- │      hand-roll a 9-decimal formatter, so the energies cannot be printed in  │
--- │      the required `-0.169075164` form even if sqrt existed.                 │
--- │                                                                             │
--- │  (3) NO MUTABLE ARRAY (avoidable here).  `Array` is immutable, list-backed  │
--- │      (O(n) index).  Irrelevant at N_bodies=5: we hold the 35 state scalars  │
--- │      as flat `main`-level `var`s instead.                                   │
--- │                                                                             │
--- │  (4) `var`-DOUBLE IN A HELPER MISCOMPILES (avoidable here, but it forced    │
--- │      the flat shape below).  A mutable `var g : Double` inside a NON-`main` │
--- │      helper `do`-block crashes at runtime on BOTH backends:                 │
--- │          kappa: runtime failure: kas_dbl: not a Double                      │
--- │      (minimal repro:  `let f x = do { var g = x; g }` with `f : Double ->   │
--- │      Double`).  The same `var g : Double` in `main` works.  So all state    │
--- │      and the whole step loop must live directly in `main`; no `advance` /   │
--- │      `energy` helper carrying a Double accumulator can be factored out.     │
--- │                                                                             │
--- │ Because of (1)+(2) the kappa-c / kappa-llvm columns CANNOT match            │
--- │ expected.txt and WILL FAIL the correctness gate until those prims land.     │
--- │ The body below is the faithful algorithm (correct structure; the two       │
--- │ sqrt sites are marked) so the slot is ready the moment sqrt + %.9f exist.   │
--- │ It is written to COMPILE; `println @Double` on the shortest-round-trip      │
--- │ energy is emitted as a placeholder (NOT the gated output).                  │
--- └───────────────────────────────────────────────────────────────────────────┘
+-- This is the faithful port of ref/c.c, now UNBLOCKED by the §6.1.7 libm prims:
+--   * `sqrt` — the two distance sites (energy: sqrt(dx²+dy²+dz²); advance:
+--     d2 * sqrt(d2)).  `kp_sqrt` is the hardware/libm sqrt, correctly rounded
+--     (IEEE-754), so it is bit-identical to the C/Go/Haskell refs.
+--   * `showFixed` — the "%.9f" rendering of the before/after energies, the same
+--     snprintf("%.*f") conversion the refs use.
+--
+-- Bit-identity: every multiply-add is written with explicit temporaries (no
+-- a*b+c source form) and the backend pins -ffp-contract=off / -fno-fast-math
+-- (Driver.hs), so no FMA fusion — each language performs the SAME separately
+-- rounded binary64 ops and the energies agree bit-for-bit.
+--
+-- Body state is held as 35 flat `var`s directly in `main`: a mutable Double in a
+-- NON-`main` helper do-block miscompiles (kas_dbl), so all loop state and the
+-- step loop live in `main`; the pure `energy` helper takes the state by value.
+--
+-- Constants (matching ref/c.c):
+--   PI          = 3.141592653589793
+--   solarMass   = 4 * PI * PI      = 39.47841760435743
+--   daysPerYear = 365.24
+-- Initial velocities are pre-multiplied by daysPerYear and masses by solarMass
+-- below via `mulDouble` — a single-rounded product, exactly the constant fold
+-- the C compiler performs on `... * DAYS_PER_YEAR` / `... * SOLAR_MASS`.
 module main
 
--- Constants.  SOLAR_MASS = 4*pi*pi ; DAYS_PER_YEAR = 365.24 .  The initial
--- velocities below are already pre-multiplied by DAYS_PER_YEAR and the masses
--- by SOLAR_MASS (matching the literals in ref/c.c), so the body uses them raw.
---
---   solarMass   = 39.47841760435743   (= 4 * 3.141592653589793^2)
---   daysPerYear = 365.24
+-- ── Total system energy = kinetic - potential ───────────────────────────────
+-- e = Σ_i ½·mᵢ·(vxᵢ²+vyᵢ²+vzᵢ²)  −  Σ_{i<j} mᵢmⱼ / |rᵢ−rⱼ|
+-- All scalars are passed by value (pure, returns Double — no `var` here).
+-- Spelled with explicit temporaries so no a*b+c is contracted into an FMA.
 
--- ── Newton-Raphson sqrt (PLACEHOLDER for the missing hardware-sqrt prim) ──────
--- NOTE: this is NOT bit-exact vs IEEE-754 `sqrt`; it exists only so the program
--- compiles + runs to *a* number for differential testing at small step counts.
--- It must live in `main` (gap 4), so it is written inline at each use instead of
--- as a helper.  For documentation we show the intended helper here, commented:
---
---   sqrtNR : Double -> Double
---   let sqrtNR x = do            -- ← crashes: kas_dbl (gap 4) if used as helper
---       var g = x
---       var i = 0
---       while ltInt i 50 do
---           g = mulDouble 0.5 (addDouble g (divDouble x g))
---           i = addInt i 1
---       g
+-- kinetic term for one body:  ½·m·(vx²+vy²+vz²)
+kin : Double -> Double -> Double -> Double -> Double
+let kin m vx vy vz =
+    let s = addDouble (addDouble (mulDouble vx vx) (mulDouble vy vy)) (mulDouble vz vz)
+    mulDouble (mulDouble 0.5 m) s
+
+-- potential term for one pair:  mᵢ·mⱼ / sqrt(dx²+dy²+dz²)
+pot : Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double
+let pot mi mj xi yi zi xj yj zj =
+    let dx = subDouble xi xj
+    let dy = subDouble yi yj
+    let dz = subDouble zi zj
+    let d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+    divDouble (mulDouble mi mj) (sqrt d2)
+
+energy : Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double -> Double
+let energy x0 x1 x2 x3 x4 y0 y1 y2 y3 y4 z0 z1 z2 z3 z4 vx0 vx1 vx2 vx3 vx4 vy0 vy1 vy2 vy3 vy4 vz0 vz1 vz2 vz3 vz4 m0 m1 m2 m3 m4 =
+    -- Accumulate EXACTLY in the refs' order: for each i, add the kinetic term,
+    -- then subtract the potential of every pair (i,j) with j>i — so the running
+    -- sum is  k0 −p01 −p02 −p03 −p04  +k1 −p12 −p13 −p14  +k2 −p23 −p24
+    --         +k3 −p34  +k4 .  Same association ⇒ bit-identical to ref/c.c.
+    let a0  = kin m0 vx0 vy0 vz0
+    let a1  = subDouble a0 (pot m0 m1 x0 y0 z0 x1 y1 z1)
+    let a2  = subDouble a1 (pot m0 m2 x0 y0 z0 x2 y2 z2)
+    let a3  = subDouble a2 (pot m0 m3 x0 y0 z0 x3 y3 z3)
+    let a4  = subDouble a3 (pot m0 m4 x0 y0 z0 x4 y4 z4)
+    let a5  = addDouble a4 (kin m1 vx1 vy1 vz1)
+    let a6  = subDouble a5 (pot m1 m2 x1 y1 z1 x2 y2 z2)
+    let a7  = subDouble a6 (pot m1 m3 x1 y1 z1 x3 y3 z3)
+    let a8  = subDouble a7 (pot m1 m4 x1 y1 z1 x4 y4 z4)
+    let a9  = addDouble a8 (kin m2 vx2 vy2 vz2)
+    let a10 = subDouble a9 (pot m2 m3 x2 y2 z2 x3 y3 z3)
+    let a11 = subDouble a10 (pot m2 m4 x2 y2 z2 x4 y4 z4)
+    let a12 = addDouble a11 (kin m3 vx3 vy3 vz3)
+    let a13 = subDouble a12 (pot m3 m4 x3 y3 z3 x4 y4 z4)
+    addDouble a13 (kin m4 vx4 vy4 vz4)
 
 main : UIO Unit
 let main = do
-    -- Pre-offset Sun velocity so total system momentum is zero (offsetMomentum).
-    -- px = sum_i vx_i*m_i (etc.); vx_sun = -px/solarMass.  With the Sun at rest
-    -- and the four planet contributions, these evaluate (in the refs) to:
-    --   sun.vx = -px/solarMass, sun.vy = -py/solarMass, sun.vz = -pz/solarMass.
-    --
-    -- The full faithful port keeps 35 `var`s (x,y,z,vx,vy,vz,mass per body) and
-    -- runs the leapfrog loop over the 10 unique body-pairs.  At each pair it
-    -- needs `dist = sqrt(dx^2+dy^2+dz^2)` (energy) and `mag = dt/(d2*sqrt(d2))`
-    -- (advance) — the two BLOCKED sqrt sites (gap 1).  The before/after energies
-    -- then need "%.9f" rendering (gap 2).
-    --
-    -- Both are unimplementable in-language today, so rather than ship a long
-    -- body that prints a non-gated, non-bit-exact number we surface the gap
-    -- explicitly: there is no value this program can print that equals
-    -- `-0.169075164\n-0.169083134\n`.  The line below documents the intended
-    -- output and keeps `main : UIO Unit` well-typed; the kappa-c/kappa-llvm
-    -- columns FAIL the gate by construction until sqrt + %.9f land.
-    printlnString "nbody: BLOCKED — needs a sqrt prim and %.9f Double formatting (see header)"
+    -- solarMass = 4 * PI * PI ; daysPerYear = 365.24
+    let pi = 3.141592653589793
+    let solarMass = mulDouble 4.0 (mulDouble pi pi)
+    let daysPerYear = 365.24
+
+    -- ── Masses (planet masses pre-multiplied by solarMass) ──────────────────
+    let m0 = solarMass
+    let m1 = mulDouble 9.54791938424326609e-04 solarMass
+    let m2 = mulDouble 2.85885980666130812e-04 solarMass
+    let m3 = mulDouble 4.36624404335156298e-05 solarMass
+    let m4 = mulDouble 5.15138902046611451e-05 solarMass
+
+    -- ── Positions ───────────────────────────────────────────────────────────
+    var x0 = 0.0
+    var y0 = 0.0
+    var z0 = 0.0
+    var x1 = 4.84143144246472090e+00
+    var y1 = negDouble 1.16032004402742839e+00
+    var z1 = negDouble 1.03622044471123109e-01
+    var x2 = 8.34336671824457987e+00
+    var y2 = 4.12479856412430479e+00
+    var z2 = negDouble 4.03523417114321381e-01
+    var x3 = 1.28943695621391310e+01
+    var y3 = negDouble 1.51111514016986312e+01
+    var z3 = negDouble 2.23307578892655734e-01
+    var x4 = 1.53796971148509165e+01
+    var y4 = negDouble 2.59193146099879641e+01
+    var z4 = 1.79258772950371181e-01
+
+    -- ── Velocities (pre-multiplied by daysPerYear) ──────────────────────────
+    var vx0 = 0.0
+    var vy0 = 0.0
+    var vz0 = 0.0
+    var vx1 = mulDouble 1.66007664274403694e-03 daysPerYear
+    var vy1 = mulDouble 7.69901118419740425e-03 daysPerYear
+    var vz1 = mulDouble (negDouble 6.90460016972063023e-05) daysPerYear
+    var vx2 = mulDouble (negDouble 2.76742510726862411e-03) daysPerYear
+    var vy2 = mulDouble 4.99852801234917238e-03 daysPerYear
+    var vz2 = mulDouble 2.30417297573763929e-05 daysPerYear
+    var vx3 = mulDouble 2.96460137564761618e-03 daysPerYear
+    var vy3 = mulDouble 2.37847173959480950e-03 daysPerYear
+    var vz3 = mulDouble (negDouble 2.96589568540237556e-05) daysPerYear
+    var vx4 = mulDouble 2.68067772490389322e-03 daysPerYear
+    var vy4 = mulDouble 1.62824170038242295e-03 daysPerYear
+    var vz4 = mulDouble (negDouble 9.51592254519715870e-05) daysPerYear
+
+    -- ── offsetMomentum: set the Sun velocity so total momentum is zero ──────
+    -- px = Σ vxᵢ·mᵢ (etc.);  vx0 = -px/solarMass.  Summed body 0..4 LEFT-to-right
+    -- (px += vxᵢ·mᵢ), matching the refs' accumulation order bit-for-bit.
+    let px0 = mulDouble vx0 m0
+    let px1 = addDouble px0 (mulDouble vx1 m1)
+    let px2 = addDouble px1 (mulDouble vx2 m2)
+    let px3 = addDouble px2 (mulDouble vx3 m3)
+    let px = addDouble px3 (mulDouble vx4 m4)
+    let py0 = mulDouble vy0 m0
+    let py1 = addDouble py0 (mulDouble vy1 m1)
+    let py2 = addDouble py1 (mulDouble vy2 m2)
+    let py3 = addDouble py2 (mulDouble vy3 m3)
+    let py = addDouble py3 (mulDouble vy4 m4)
+    let pz0 = mulDouble vz0 m0
+    let pz1 = addDouble pz0 (mulDouble vz1 m1)
+    let pz2 = addDouble pz1 (mulDouble vz2 m2)
+    let pz3 = addDouble pz2 (mulDouble vz3 m3)
+    let pz = addDouble pz3 (mulDouble vz4 m4)
+    vx0 = divDouble (negDouble px) solarMass
+    vy0 = divDouble (negDouble py) solarMass
+    vz0 = divDouble (negDouble pz) solarMass
+
+    -- ── Energy BEFORE ───────────────────────────────────────────────────────
+    printlnString (showFixed 9 (energy x0 x1 x2 x3 x4  y0 y1 y2 y3 y4  z0 z1 z2 z3 z4  vx0 vx1 vx2 vx3 vx4  vy0 vy1 vy2 vy3 vy4  vz0 vz1 vz2 vz3 vz4  m0 m1 m2 m3 m4))
+
+    -- ── N leapfrog steps (dt = 0.01) ────────────────────────────────────────
+    let dt = 0.01
+    var s = 0
+    while ltInt s 5000000 do
+        -- advance: for each pair (i<j) apply the gravitational kick, then drift.
+        -- One pair updates velocities of BOTH bodies.  d2 = dx²+dy²+dz²;
+        -- mag = dt / (d2 * sqrt(d2)).  Spelled with explicit temporaries.
+        -- pair (0,1)
+        var dx = subDouble x0 x1
+        var dy = subDouble y0 y1
+        var dz = subDouble z0 z1
+        var d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        var mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx0 = subDouble vx0 (mulDouble (mulDouble dx m1) mag)
+        vy0 = subDouble vy0 (mulDouble (mulDouble dy m1) mag)
+        vz0 = subDouble vz0 (mulDouble (mulDouble dz m1) mag)
+        vx1 = addDouble vx1 (mulDouble (mulDouble dx m0) mag)
+        vy1 = addDouble vy1 (mulDouble (mulDouble dy m0) mag)
+        vz1 = addDouble vz1 (mulDouble (mulDouble dz m0) mag)
+        -- pair (0,2)
+        dx = subDouble x0 x2
+        dy = subDouble y0 y2
+        dz = subDouble z0 z2
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx0 = subDouble vx0 (mulDouble (mulDouble dx m2) mag)
+        vy0 = subDouble vy0 (mulDouble (mulDouble dy m2) mag)
+        vz0 = subDouble vz0 (mulDouble (mulDouble dz m2) mag)
+        vx2 = addDouble vx2 (mulDouble (mulDouble dx m0) mag)
+        vy2 = addDouble vy2 (mulDouble (mulDouble dy m0) mag)
+        vz2 = addDouble vz2 (mulDouble (mulDouble dz m0) mag)
+        -- pair (0,3)
+        dx = subDouble x0 x3
+        dy = subDouble y0 y3
+        dz = subDouble z0 z3
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx0 = subDouble vx0 (mulDouble (mulDouble dx m3) mag)
+        vy0 = subDouble vy0 (mulDouble (mulDouble dy m3) mag)
+        vz0 = subDouble vz0 (mulDouble (mulDouble dz m3) mag)
+        vx3 = addDouble vx3 (mulDouble (mulDouble dx m0) mag)
+        vy3 = addDouble vy3 (mulDouble (mulDouble dy m0) mag)
+        vz3 = addDouble vz3 (mulDouble (mulDouble dz m0) mag)
+        -- pair (0,4)
+        dx = subDouble x0 x4
+        dy = subDouble y0 y4
+        dz = subDouble z0 z4
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx0 = subDouble vx0 (mulDouble (mulDouble dx m4) mag)
+        vy0 = subDouble vy0 (mulDouble (mulDouble dy m4) mag)
+        vz0 = subDouble vz0 (mulDouble (mulDouble dz m4) mag)
+        vx4 = addDouble vx4 (mulDouble (mulDouble dx m0) mag)
+        vy4 = addDouble vy4 (mulDouble (mulDouble dy m0) mag)
+        vz4 = addDouble vz4 (mulDouble (mulDouble dz m0) mag)
+        -- pair (1,2)
+        dx = subDouble x1 x2
+        dy = subDouble y1 y2
+        dz = subDouble z1 z2
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx1 = subDouble vx1 (mulDouble (mulDouble dx m2) mag)
+        vy1 = subDouble vy1 (mulDouble (mulDouble dy m2) mag)
+        vz1 = subDouble vz1 (mulDouble (mulDouble dz m2) mag)
+        vx2 = addDouble vx2 (mulDouble (mulDouble dx m1) mag)
+        vy2 = addDouble vy2 (mulDouble (mulDouble dy m1) mag)
+        vz2 = addDouble vz2 (mulDouble (mulDouble dz m1) mag)
+        -- pair (1,3)
+        dx = subDouble x1 x3
+        dy = subDouble y1 y3
+        dz = subDouble z1 z3
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx1 = subDouble vx1 (mulDouble (mulDouble dx m3) mag)
+        vy1 = subDouble vy1 (mulDouble (mulDouble dy m3) mag)
+        vz1 = subDouble vz1 (mulDouble (mulDouble dz m3) mag)
+        vx3 = addDouble vx3 (mulDouble (mulDouble dx m1) mag)
+        vy3 = addDouble vy3 (mulDouble (mulDouble dy m1) mag)
+        vz3 = addDouble vz3 (mulDouble (mulDouble dz m1) mag)
+        -- pair (1,4)
+        dx = subDouble x1 x4
+        dy = subDouble y1 y4
+        dz = subDouble z1 z4
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx1 = subDouble vx1 (mulDouble (mulDouble dx m4) mag)
+        vy1 = subDouble vy1 (mulDouble (mulDouble dy m4) mag)
+        vz1 = subDouble vz1 (mulDouble (mulDouble dz m4) mag)
+        vx4 = addDouble vx4 (mulDouble (mulDouble dx m1) mag)
+        vy4 = addDouble vy4 (mulDouble (mulDouble dy m1) mag)
+        vz4 = addDouble vz4 (mulDouble (mulDouble dz m1) mag)
+        -- pair (2,3)
+        dx = subDouble x2 x3
+        dy = subDouble y2 y3
+        dz = subDouble z2 z3
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx2 = subDouble vx2 (mulDouble (mulDouble dx m3) mag)
+        vy2 = subDouble vy2 (mulDouble (mulDouble dy m3) mag)
+        vz2 = subDouble vz2 (mulDouble (mulDouble dz m3) mag)
+        vx3 = addDouble vx3 (mulDouble (mulDouble dx m2) mag)
+        vy3 = addDouble vy3 (mulDouble (mulDouble dy m2) mag)
+        vz3 = addDouble vz3 (mulDouble (mulDouble dz m2) mag)
+        -- pair (2,4)
+        dx = subDouble x2 x4
+        dy = subDouble y2 y4
+        dz = subDouble z2 z4
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx2 = subDouble vx2 (mulDouble (mulDouble dx m4) mag)
+        vy2 = subDouble vy2 (mulDouble (mulDouble dy m4) mag)
+        vz2 = subDouble vz2 (mulDouble (mulDouble dz m4) mag)
+        vx4 = addDouble vx4 (mulDouble (mulDouble dx m2) mag)
+        vy4 = addDouble vy4 (mulDouble (mulDouble dy m2) mag)
+        vz4 = addDouble vz4 (mulDouble (mulDouble dz m2) mag)
+        -- pair (3,4)
+        dx = subDouble x3 x4
+        dy = subDouble y3 y4
+        dz = subDouble z3 z4
+        d2 = addDouble (addDouble (mulDouble dx dx) (mulDouble dy dy)) (mulDouble dz dz)
+        mag = divDouble dt (mulDouble d2 (sqrt d2))
+        vx3 = subDouble vx3 (mulDouble (mulDouble dx m4) mag)
+        vy3 = subDouble vy3 (mulDouble (mulDouble dy m4) mag)
+        vz3 = subDouble vz3 (mulDouble (mulDouble dz m4) mag)
+        vx4 = addDouble vx4 (mulDouble (mulDouble dx m3) mag)
+        vy4 = addDouble vy4 (mulDouble (mulDouble dy m3) mag)
+        vz4 = addDouble vz4 (mulDouble (mulDouble dz m3) mag)
+
+        -- drift: x += dt·v for every body
+        x0 = addDouble x0 (mulDouble dt vx0)
+        y0 = addDouble y0 (mulDouble dt vy0)
+        z0 = addDouble z0 (mulDouble dt vz0)
+        x1 = addDouble x1 (mulDouble dt vx1)
+        y1 = addDouble y1 (mulDouble dt vy1)
+        z1 = addDouble z1 (mulDouble dt vz1)
+        x2 = addDouble x2 (mulDouble dt vx2)
+        y2 = addDouble y2 (mulDouble dt vy2)
+        z2 = addDouble z2 (mulDouble dt vz2)
+        x3 = addDouble x3 (mulDouble dt vx3)
+        y3 = addDouble y3 (mulDouble dt vy3)
+        z3 = addDouble z3 (mulDouble dt vz3)
+        x4 = addDouble x4 (mulDouble dt vx4)
+        y4 = addDouble y4 (mulDouble dt vy4)
+        z4 = addDouble z4 (mulDouble dt vz4)
+        s = addInt s 1
+
+    -- ── Energy AFTER ────────────────────────────────────────────────────────
+    printlnString (showFixed 9 (energy x0 x1 x2 x3 x4  y0 y1 y2 y3 y4  z0 z1 z2 z3 z4  vx0 vx1 vx2 vx3 vx4  vy0 vy1 vy2 vy3 vy4  vz0 vz1 vz2 vz3 vz4  m0 m1 m2 m3 m4))

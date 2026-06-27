@@ -325,6 +325,22 @@ KValue *kpf_floatEq(KValue **a) {
 KValue *kpf_eqDouble(KValue **a) {
   return kp_eqDouble(a[0], a[1]);
 }
+/* §6.1.7 libm Double math — kpf_* wrappers over the kp_* helpers (show.c). */
+KValue *kpf_sqrt(KValue **a)  { return kp_sqrt(a[0]); }
+KValue *kpf_sin(KValue **a)   { return kp_sin(a[0]); }
+KValue *kpf_cos(KValue **a)   { return kp_cos(a[0]); }
+KValue *kpf_tan(KValue **a)   { return kp_tan(a[0]); }
+KValue *kpf_asin(KValue **a)  { return kp_asin(a[0]); }
+KValue *kpf_acos(KValue **a)  { return kp_acos(a[0]); }
+KValue *kpf_atan(KValue **a)  { return kp_atan(a[0]); }
+KValue *kpf_exp(KValue **a)   { return kp_exp(a[0]); }
+KValue *kpf_log(KValue **a)   { return kp_log(a[0]); }
+KValue *kpf_floor(KValue **a) { return kp_floor(a[0]); }
+KValue *kpf_ceil(KValue **a)  { return kp_ceil(a[0]); }
+KValue *kpf_fabs(KValue **a)  { return kp_fabs(a[0]); }
+KValue *kpf_pow(KValue **a)   { return kp_pow(a[0], a[1]); }
+KValue *kpf_atan2(KValue **a) { return kp_atan2(a[0], a[1]); }
+KValue *kpf_showFixed(KValue **a) { return kp_showFixed(a[0], a[1]); }
 KValue *kpf_stringAppend(KValue **a) {
   return kp_stringAppend(a[0], a[1]);
 }

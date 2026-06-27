@@ -371,6 +371,9 @@ basePrims =
       -- double
     , "addDouble", "subDouble", "mulDouble", "divDouble", "negDouble"
     , "eqDouble", "ltDouble", "floatEq"
+      -- §6.1.7 libm floating-point / transcendental math + fixed-precision format
+    , "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "atan2"
+    , "exp", "log", "pow", "floor", "ceil", "fabs", "showFixed"
       -- string / scalar
     , "stringAppend", "eqStr", "ltStr", "eqScalar", "ltScalar"
     , "showInt", "showDouble", "showScalar", "showStringLit"
@@ -2002,9 +2005,15 @@ primEntries = Map.fromList
   , ("__uniScalarValue", PrimEntry "kpf___uniScalarValue" 1 False)
   , ("__utf8Bytes", PrimEntry "kpf___utf8Bytes" 1 False)
   , ("__utf8Valid", PrimEntry "kpf___utf8Valid" 1 False)
+  , ("acos", PrimEntry "kpf_acos" 1 False)
   , ("addDouble", PrimEntry "kpf_addDouble" 2 False)
   , ("addInt", PrimEntry "kpf_addInt" 2 False)
   , ("addRat", PrimEntry "kpf_addRat" 2 False)
+  , ("asin", PrimEntry "kpf_asin" 1 False)
+  , ("atan", PrimEntry "kpf_atan" 1 False)
+  , ("atan2", PrimEntry "kpf_atan2" 2 False)
+  , ("ceil", PrimEntry "kpf_ceil" 1 False)
+  , ("cos", PrimEntry "kpf_cos" 1 False)
   , ("divDouble", PrimEntry "kpf_divDouble" 2 False)
   , ("divInt", PrimEntry "kpf_divInt" 2 False)
   , ("divRat", PrimEntry "kpf_divRat" 2 False)
@@ -2016,7 +2025,10 @@ primEntries = Map.fromList
   , ("eqRat", PrimEntry "kpf_eqRat" 2 False)
   , ("eqScalar", PrimEntry "kpf_eqScalar" 2 False)
   , ("eqStr", PrimEntry "kpf_eqStr" 2 False)
+  , ("exp", PrimEntry "kpf_exp" 1 False)
+  , ("fabs", PrimEntry "kpf_fabs" 1 False)
   , ("floatEq", PrimEntry "kpf_floatEq" 2 False)
+  , ("floor", PrimEntry "kpf_floor" 1 False)
   , ("intToDouble", PrimEntry "kpf_intToDouble" 1 False)
   , ("intToNat", PrimEntry "kpf_intToNat" 1 False)
   , ("ioBind", PrimEntry "kpf_io_ioBind" 2 True)
@@ -2041,6 +2053,7 @@ primEntries = Map.fromList
   , ("__effDoscope", PrimEntry "kpf_eff_doscope" 1 False)
   , ("__effDefer", PrimEntry "kpf_eff_defer" 1 False)
   , ("leInt", PrimEntry "kpf_leInt" 2 False)
+  , ("log", PrimEntry "kpf_log" 1 False)
   , ("ltByte", PrimEntry "kpf_ltByte" 2 False)
   , ("ltBytes", PrimEntry "kpf_ltBytes" 2 False)
   , ("ltDouble", PrimEntry "kpf_ltDouble" 2 False)
@@ -2061,6 +2074,7 @@ primEntries = Map.fromList
   , ("__nowNanos", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
   , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
+  , ("pow", PrimEntry "kpf_pow" 2 False)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
   , ("printString", PrimEntry "kpf_io_printString" 1 True)
   , ("printlnString", PrimEntry "kpf_io_printlnString" 1 True)
@@ -2069,15 +2083,19 @@ primEntries = Map.fromList
   , ("showByte", PrimEntry "kpf_showByte" 1 False)
   , ("showBytes", PrimEntry "kpf_showBytes" 1 False)
   , ("showDouble", PrimEntry "kpf_showDouble" 1 False)
+  , ("showFixed", PrimEntry "kpf_showFixed" 2 False)
   , ("showGrapheme", PrimEntry "kpf_showGrapheme" 1 False)
   , ("showInt", PrimEntry "kpf_showInt" 1 False)
   , ("showRat", PrimEntry "kpf_showRat" 1 False)
   , ("showScalar", PrimEntry "kpf_showScalar" 1 False)
   , ("showStringLit", PrimEntry "kpf_showStringLit" 1 False)
+  , ("sin", PrimEntry "kpf_sin" 1 False)
+  , ("sqrt", PrimEntry "kpf_sqrt" 1 False)
   , ("stringAppend", PrimEntry "kpf_stringAppend" 2 False)
   , ("subDouble", PrimEntry "kpf_subDouble" 2 False)
   , ("subInt", PrimEntry "kpf_subInt" 2 False)
   , ("subRat", PrimEntry "kpf_subRat" 2 False)
+  , ("tan", PrimEntry "kpf_tan" 1 False)
   , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
   , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
   -- §18.1.4/§18.1.6/§18.1.9 concurrency node builders (CPS do-kernel): each
@@ -2178,6 +2196,22 @@ primDirectTable = Map.fromList
   , ("ltDouble", ("kp_ltDouble", 2))
   , ("floatEq", ("kp_floatEq", 2))
   , ("eqDouble", ("kp_eqDouble", 2))
+  -- §6.1.7 libm floating-point / transcendental math + fixed-precision format
+  , ("sqrt", ("kp_sqrt", 1))
+  , ("sin", ("kp_sin", 1))
+  , ("cos", ("kp_cos", 1))
+  , ("tan", ("kp_tan", 1))
+  , ("asin", ("kp_asin", 1))
+  , ("acos", ("kp_acos", 1))
+  , ("atan", ("kp_atan", 1))
+  , ("atan2", ("kp_atan2", 2))
+  , ("exp", ("kp_exp", 1))
+  , ("log", ("kp_log", 1))
+  , ("pow", ("kp_pow", 2))
+  , ("floor", ("kp_floor", 1))
+  , ("ceil", ("kp_ceil", 1))
+  , ("fabs", ("kp_fabs", 1))
+  , ("showFixed", ("kp_showFixed", 2))
   , ("stringAppend", ("kp_stringAppend", 2))
   , ("eqStr", ("kp_eqStr", 2))
   , ("ltStr", ("kp_ltStr", 2))
