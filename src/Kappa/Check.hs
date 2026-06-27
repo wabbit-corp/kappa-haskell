@@ -7974,16 +7974,21 @@ handlerClauseLam ctx q pat ty mkBody = case pat of
 elabEffDo :: Ctx -> Value -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
 elabEffDo ctx0 row aT items0 sp = do
   inner <- go ctx0 items0
-  -- §18.7/§32.2.19 Stage-4a: when the block registers exit actions (defer/using),
-  -- delimit it with a do-scope so those finalizers run masked-LIFO on EVERY way
-  -- out — normal completion AND a handler's §32.2.20 abandonment of the captured
-  -- segment.  A block with no exit actions is left as-is (no needless frame).
+  -- §18.7/§32.2.19 Stage-4a/4b: when the block registers exit actions (defer or
+  -- using), delimit it with a do-scope so those finalizers run masked-LIFO on
+  -- EVERY way out — normal completion AND a handler's §32.2.20 abandonment of
+  -- the captured segment.  Both lower (Backend/C, Backend/LLVM) to the runtime's
+  -- krt2_doscope / krt2_defer nodes (the SAME OP_DOSCOPE/OP_DEFER machinery the
+  -- IO do-kernel uses), and the interpreter reduces them through evalEffPrim — so
+  -- no new runtime primitive is introduced.  A block with no exit actions is
+  -- left as-is (no needless frame).
   let tm
         | any isExitItem items0 = CApp Expl (CGlob prelEffDoscope) inner
         | otherwise = inner
   pure (tm, effTyV row aT)
   where
     isExitItem DoDefer {} = True
+    isExitItem DoUsing {} = True
     isExitItem _ = False
     effT = effTyV row
     go _ [] = do
@@ -8065,9 +8070,65 @@ elabEffDo ctx0 row aT items0 sp = do
         contTm <- CLam Expl QW "__u" <$> go (bindCtx "__u" False (VGlobN prelUnit []) c) rest
         let deferTm = CApp Expl (CGlob prelEffDefer) eTm
         pure (effBindTm deferTm contTm)
+      -- §19.5/§32.2.19 Stage-4b: `using pat <- acquire` in an Eff do-block.  The
+      -- resource is acquired (an Eff action), `pat` is bound (borrowed) for the
+      -- rest of the scope, and its `release` (from the required
+      -- `Releasable (Eff row) a` instance) is registered as an exit action via
+      -- `__effDefer` — so it runs masked-LIFO on EVERY exit, including a handler's
+      -- §32.2.20 abandonment of the captured segment (the block is wrapped in
+      -- `__effDoscope`).  This reuses the SAME krt2_doscope/krt2_defer machinery
+      -- as `defer`, with no new runtime primitive.  Unlike the IO kernel's KUsing
+      -- (which threads krt2_acquire_release for the interruptible-acquire mask),
+      -- the pure Eff carrier has no interruption, so the acquire-then-register is
+      -- already a single uninterruptible step.
+      DoUsing mq pat rhs usp -> do
+        forM_ mq $ \qsp ->
+          errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
+            "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
+        rT <- freshMetaV c
+        acquireTm <- check c (desugarBang rhs) (effT rT)
+        -- Releasable (m := Eff row) (a := rT); `release : a -> m Unit`
+        let mTyV = VGlobN prelEff [(Expl, row)]
+        dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, rT)])
+        let releaseTm = CProj dictTm "release"
+        checkIrrefutable c pat rT usp
+        -- The continuation receives the acquired resource at a STABLE binder
+        -- `__res` (de Bruijn 0), so `release __res` always references the whole
+        -- resource regardless of whether `pat` is a var or a destructuring
+        -- pattern.  We then register `release __res` via `__effDefer` and bind
+        -- `pat` from `__res` for the rest of the scope (under the `\__u`
+        -- continuation of the defer bind), so the rest's de Bruijn indices line
+        -- up past the intervening binders — exactly as the `DoExpr` / `DoDefer`
+        -- continuations above thread `rest`.
+        let cRes = bindCtx "__res" False rT c
+        restAfterDefer <- do
+          -- inside `\__res -> __effBind (__effDefer (release __res)) (\__u -> …)`
+          -- the context has `__res` (db 1 after `__u`); bind `pat` to `__res` so
+          -- the rest sees the surface name, then build the rest.
+          let cU = bindCtx "__u" False (VGlobN prelUnit []) cRes
+          (patC, cBound, _) <- elabPattern cU pat rT
+          restBody <- go cBound rest
+          resTyTm <- quoteIn cU rT
+          -- `__res` sits at db 1 under `\__u`; match `pat` against it.
+          pure (CMatch (CVar 1) (Just resTyTm) [CaseAlt patC Nothing restBody])
+        let releaseAppTm = CApp Expl (shiftTerm 1 0 releaseTm) (CVar 0) -- `release __res`
+            deferTm = CApp Expl (CGlob prelEffDefer) releaseAppTm
+            contTm =
+              CLam Expl Q1 "__res"
+                (effBindTm deferTm (CLam Expl QW "__u" restAfterDefer))
+        pure (effBindTm acquireTm contTm)
+      -- §18.6 mutable cells and the loop family (`var`, `:=`, `while`, `for`,
+      -- `break`, `continue`) are not yet supported in an Eff do-block: an Eff
+      -- carrier elaborates to the §30.2.2.7 free-monad tree (interpreted by
+      -- 'Kappa.Eval.evalEffPrim' as the differential oracle), and a mutable cell
+      -- in that tree would be a runtime `Ref` whose `__runIO` reads do not
+      -- reduce under `runPure` the way the native carrier's `krt2_*` cells do —
+      -- so a naive lift would diverge interpreter-vs-native.  `using` and `defer`
+      -- ARE supported (above): they carry exit-action frames only, with no
+      -- mutable state, so the interpreter and native backends agree.
       other -> do
         unsupportedAt (doItemSpan other)
-          "this do-item form is not supported in an Eff-typed do block by this implementation"
+          "this do-item form (var / assignment / while / for / break / continue) is not yet supported in an Eff-typed do block by this implementation; only let / bind / expression / if / defer / using are (§18.6/§32.2.19)"
         go c rest
     effBindTm m f = CApp Expl (CApp Expl (CGlob prelEffBind) m) f
 

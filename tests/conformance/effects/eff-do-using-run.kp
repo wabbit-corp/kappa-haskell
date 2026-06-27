@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n"
+
+-- §19.5/§32.2.19 Stage-4b (runtime): the Eff-do `using` lift, eliminated to a
+-- value via runPure and observed through stdout.  Exercises the interpreter ==
+-- native (C/LLVM) differential for the `using` resource scope: the block carries
+-- an __effDoscope with a registered __effDefer (the release), and both backends
+-- run it identically (the native side runs the release for real on scope exit).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (Eff <[State : State]>) Res =
+    let release r = match r case MkRes i -> State.put 99
+
+acquireRes : Int -> Eff <[State : State]> Res
+let acquireRes i = pure (MkRes i)
+
+comp : Eff <[State : State]> Int
+let comp =
+    do
+        using a <- acquireRes 1
+        let _ <- State.put 1
+        let v <- State.get ()
+        pure v
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+main : UIO Unit
+let main = printlnString (showInt (runPure handled))
