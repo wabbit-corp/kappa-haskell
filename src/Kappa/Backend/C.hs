@@ -2287,19 +2287,24 @@ compileAppGlob g sargs term = do
               mc <- compileErasableArg m
               nc <- compileErasableArg n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
-        -- catchIO/finallyIO over a may-suspend body must be the CK-machine
-        -- node, not the kpf_io_* bridge — the bridge runs the body via the
-        -- synchronous krun_io, which cannot drive a krt2_bind/await tree (so
-        -- `catchIO (join f) h` would mis-run the join).  Same §3.3 gate.
+        -- §18.1.4 catchIO/finallyIO: ALWAYS the CK-machine node-builder, never
+        -- the kpf_io_* bridge.  finallyIO builds krt2_finally = an OP_DOSCOPE tree
+        -- the synchronous krun_io bridge (krt2_run_op_sync) has NO case for, so it
+        -- returns the node unevaluated and the body never runs (delve rendered
+        -- nothing: a do-tail `finallyIO body cleanup` dropped body + cleanup).
+        -- catchIO is OP_CATCH (which the bridge *can* drive) but is treated
+        -- identically for one uniform path — and unconditionally, so a may-suspend
+        -- body/handler (e.g. `catchIO (join f) h`) is driven on the CK-machine, not
+        -- mis-run on the bridge.  suspendingNames lists both, so any enclosing
+        -- block is force-CPS-lowered (compileDoCps) onto the CK-machine that drives
+        -- these nodes — mirroring onExit/onInterrupt below.
         Just "catchIO"
-          | [body, h] <- [a | (Expl, a) <- sargs]
-          , mayActSuspend susp body -> do
+          | [body, h] <- [a | (Expl, a) <- sargs] -> do
               bc <- compileErasableArg body
               hc <- compileErasableArg h
               pure ("krt2_catch(" <> bc <> ", " <> hc <> ")")
         Just "finallyIO"
-          | [body, fin] <- [a | (Expl, a) <- sargs]
-          , mayActSuspend susp body -> do
+          | [body, fin] <- [a | (Expl, a) <- sargs] -> do
               bc <- compileErasableArg body
               fc <- compileErasableArg fin
               pure ("krt2_finally(" <> bc <> ", " <> fc <> ")")
@@ -2831,8 +2836,16 @@ cpsNodeApp term = do
       pure $ case (mp, [a | (Expl, a) <- sargs]) of
         (Just "ioBind", [m, _]) -> mayActSuspend susp m
         (Just "ioThen", [m, _]) -> mayActSuspend susp m
-        (Just "catchIO", [body, _]) -> mayActSuspend susp body
-        (Just "finallyIO", [body, _]) -> mayActSuspend susp body
+        -- §18.1.4: finallyIO/catchIO ALWAYS lower to the krt2_finally/krt2_catch
+        -- node-builder (an OP_DOSCOPE / OP_CATCH tree), so in tail position the
+        -- node must be RETURNED for the CK-machine to drive — exactly like
+        -- onExit/onInterrupt.  (Unconditional, not gated on `mayActSuspend body`:
+        -- the OP_DOSCOPE that krt2_finally builds is NOT drivable by the
+        -- synchronous krun_io bridge regardless of whether the body suspends, so a
+        -- sequential finallyIO must not silently fall to the bridge — see the
+        -- suspendingNames note for finallyIO/catchIO.)
+        (Just "catchIO", [_, _]) -> True
+        (Just "finallyIO", [_, _]) -> True
         (Just "onExit", [_, _]) -> True
         (Just "onInterrupt", [_, _]) -> True
         (Just "locallyFiberRef", [_, _, _]) -> True
@@ -3216,6 +3229,19 @@ suspendingNames =
     , "atomically", "stmBind" -- §18.1.13 STM: atomically retry-parks; stmBind builds the STM tree
       -- §18.1.4 reason-carrying finalizers (build an OP_DOSCOPE tree the bridge cannot drive)
     , "onExit", "onInterrupt"
+      -- §18.1.4 finallyIO/catchIO: `finallyIO body fin` lowers to krt2_finally =
+      -- krt2_doscope(then(defer fin) body) — an OP_DOSCOPE tree.  The synchronous
+      -- krun_io bridge (krt2_run_op_sync) drives OP_BIND/THEN/CATCH/THROW but has
+      -- NO OP_DOSCOPE case, so it returns the node UNEVALUATED and the body never
+      -- runs (the delve-renders-nothing bug: a do-tail `finallyIO body cleanup`
+      -- over a let-bound body dropped both the body and the cleanup).  Listing
+      -- them here force-CPS-lowers any block whose tail/body uses them onto the
+      -- full CK-machine (which DOES drive OP_DOSCOPE), exactly as onExit/onInterrupt
+      -- — the structurally identical finalizers that were already here.
+      -- (catchIO is OP_CATCH, which the bridge *does* drive, but it is grouped with
+      -- finallyIO for one uniform CK-machine path: its node builder is now
+      -- unconditional too, so a may-suspend handler/body is never mis-run.)
+    , "finallyIO", "catchIO"
       -- §18.1.7 FiberRef ops + §18.11 promise peeks: synchronous OP_* nodes, but
       -- they need the current fiber's state (f->locals / promise cell), which the
       -- synchronous krun_io bridge has no handle to — so a block using them is
@@ -3322,28 +3348,52 @@ mayActSuspend :: Set GName -> Term -> Bool
 mayActSuspend susp t = spineHeadSuspends susp t || spineHeadIsLocal t
 
 -- | Does any action in the block (recursively, including loop/if bodies) reach a
--- suspending operation?  Gates CPS lowering and — when the block is NOT CPS-able
--- — DIAGNOSES it (a hard error, not a silent fall-through to the bridge).
-blockSuspends :: Set GName -> [KItem] -> Bool
-blockSuspends susp = any itemSuspends
+-- suspending operation?  When @incLocal@ is 'True' an OPAQUE HIGHER-ORDER call —
+-- one whose spine head is a local\/param 'CVar' — also counts as may-suspend
+-- (§3.3 / 'spineHeadIsLocal'): the value passed may itself suspend, and — the
+-- decisive case — a `restore`\/`mask`-supplied action transformer ALWAYS builds
+-- an OP_RESTORE\/OP_MASK node that ONLY the CK-machine can drive (the synchronous
+-- krun_io bridge has no OP_RESTORE case, so a legacy do-block binding `restore x`
+-- would run the raw node unevaluated — `x` never runs, the result is the node
+-- itself).  The strict version (@incLocal@ = 'False') gates the FAIL-CLOSED
+-- diagnostic, so a local-headed call there does not newly reject a block; the
+-- may-suspend version gates CPS ELIGIBILITY (a simple block is lowered onto the
+-- CK-machine).  This mirrors 'scalarBodyMaySuspend'/'mayActSuspend', which
+-- already treat a local-headed call as conservatively may-suspend.
+blockSuspendsWith :: Bool -> Set GName -> [KItem] -> Bool
+blockSuspendsWith incLocal susp = any itemSuspends
   where
-    s = spineHeadSuspends susp
+    s t = spineHeadSuspends susp t || (incLocal && spineHeadIsLocal t)
+    recur = blockSuspendsWith incLocal susp
     itemSuspends (KBind _ _ t) = s t
     itemSuspends (KExpr t) = s t
     itemSuspends (KAssign _ True t) = s t
     itemSuspends (KReturn t) = s t
     itemSuspends (KVarItem _ t) = s t
-    itemSuspends (KWhile _ _ b me) = blockSuspends susp b || maybe False (blockSuspends susp) me
-    itemSuspends (KFor _ _ _ b me) = blockSuspends susp b || maybe False (blockSuspends susp) me
-    itemSuspends (KIf alts me) = any (blockSuspends susp . snd) alts || maybe False (blockSuspends susp) me
+    itemSuspends (KWhile _ _ b me) = recur b || maybe False recur me
+    itemSuspends (KFor _ _ _ b me) = recur b || maybe False recur me
+    itemSuspends (KIf alts me) = any (recur . snd) alts || maybe False recur me
     itemSuspends (KUsing _ a _) = s a
     -- a transparent sub-do runs in THIS block's continuation chain, so a
     -- suspending op inside it makes this block suspend too (CPS LOOP FAMILY §4).
-    itemSuspends (KSubDo _ b) = blockSuspends susp b
+    itemSuspends (KSubDo _ b) = recur b
     itemSuspends _ = False
 
+-- | The STRICT suspender test (named-suspender / §3.3-global heads only): gates
+-- the FAIL-CLOSED diagnostic in 'compileDo'.  A local-headed call is NOT counted
+-- here, so this version never newly rejects an otherwise-legacy block.
+blockSuspends :: Set GName -> [KItem] -> Bool
+blockSuspends = blockSuspendsWith False
+
 cpsEligible :: Set GName -> [KItem] -> Bool
-cpsEligible susp items = blockSuspends susp items && all simpleLinear items
+cpsEligible susp items =
+  -- CPS-eligibility counts an opaque higher-order (local-headed) action as
+  -- may-suspend (incLocal = True): a `restore x` / `use r` bind in an otherwise
+  -- SIMPLE block must be CK-lowered (only the CK-machine drives OP_RESTORE).  The
+  -- `all simpleLinear` guard keeps this from ever turning a non-CPS-able block
+  -- into the fail-closed path — a non-simple block with a local-headed call stays
+  -- legacy exactly as before.
+  blockSuspendsWith True susp items && all simpleLinear items
   where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
     -- the runtime's OP_DOSCOPE/OP_DEFER).  Stage 2.5 — the CPS LOOP FAMILY (§4):

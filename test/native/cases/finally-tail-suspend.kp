@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "pre\nbody\nmid\ncleanup\n"
+
+-- §18.1.4 finallyIO as the TAIL of a multi-statement do-block, over a LET-BOUND
+-- body that reaches a suspending op (sleepFor).  This is the delve-renders-
+-- nothing shape: the block's own items (a print + two `let`s) have non-suspending
+-- spine heads, so before the fix the block was NOT CPS-lowered and landed on
+-- compileDoLegacy; the tail `finallyIO body cleanup` lowered to krt2_finally =
+-- an OP_DOSCOPE tree the synchronous krun_io bridge (krt2_run_op_sync) has no
+-- case for, so it returned the node UNEVALUATED — body + cleanup both dropped
+-- (the C backend printed only `pre`).  Listing finallyIO/catchIO in
+-- suspendingNames force-CPS-lowers the block onto the CK-machine (which drives
+-- OP_DOSCOPE), so body and cleanup now run.  interp == C == LLVM.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "pre"
+    let body =
+        do
+            printlnString "body"
+            sleepFor (millis 1)
+            printlnString "mid"
+    let cleanup = printlnString "cleanup"
+    finallyIO body cleanup
