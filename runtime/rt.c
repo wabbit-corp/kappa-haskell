@@ -460,20 +460,40 @@ static void exitstack_push(ExitStack *s, KValue *action) {
   s->items[s->n++] = action;
 }
 
-/* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason. */
-typedef struct { ExitStack *xs; int i; int rkind; KValue *rval; KValue *rlabel; } FinSeq;
-
 /* §32.2.20 KK_ABANDEND state: the clause's saved continuation/exit-state and
  * original reason, resumed once the RK_DRAIN walk over the abandoned slice has
  * run all its do-scope exit actions.  `kont` is the clause's post-handler
- * continuation; `saved_exits` is the cur_exits the clause result resumes under. */
-typedef struct {
+ * continuation; `saved_exits` is the cur_exits the clause result resumes under.
+ * fix 1 (§32.2.21 cause symmetry): `rkind`/`rval` is the RUNNING composed reason
+ * — it starts as the clause result and each abandoned do-scope's failing
+ * finalizer is folded into it LEFT-ASSOCIATIVELY (compose_reason_into) as the
+ * drain walks, so an abandoned-slice exit composes EXACTLY like ordinary scope
+ * exit (Then(Then(clause,ce),cl)) rather than joining the clause late. */
+typedef struct AbandonEnd {
   Cont      *kont;
   ExitStack *saved_exits;
   int        rkind;
   KValue    *rval;
   KValue    *rlabel;
+  /* fix 1: the drain that was active when THIS one began (H1 nesting), restored
+   * into f->drain_ae when this drain's terminal is reached.  NULL at top level. */
+  struct AbandonEnd *prev_drain;
 } AbandonEnd;
+
+/* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason.
+ * `drain_ae` (§32.2.21 cause symmetry, fix 1): NULL for an ordinary scope-exit
+ * finseq; non-NULL when this finseq is draining ONE do-scope of an abandoned
+ * slice (the RK_DRAIN walk).  In that case the finseq's PRIMARY reason is seeded
+ * from the live drain reason (drain_ae->rkind/rval), so a failing finalizer
+ * composes against the clause result left-associatively; on completion the
+ * composed reason is written BACK into drain_ae and the walk CONTINUES as
+ * RK_DRAIN (NOT apply_reason-ed) — RK_DRAIN must stay transparent at every
+ * control frame (KK_CATCH/KK_LOOP/KK_RETSCOPE) and reach the slice's KK_ABANDEND
+ * terminal, which threading the clause reason itself would violate. */
+typedef struct {
+  ExitStack  *xs; int i; int rkind; KValue *rval; KValue *rlabel;
+  AbandonEnd *drain_ae;
+} FinSeq;
 
 /* §18.1.21 a captured ONE-SHOT resumption.  `head` is the op-site Cont frame;
  * `tail` is the LAST frame of the captured sub-chain (its `next` is severed and
@@ -796,9 +816,15 @@ static int apply_reason(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabe
  * (the KK_FINSEQ frame is on the heap continuation — §34.4.1: defer is never a
  * host finalizer). */
 static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
-                        int rkind, KValue *rval, KValue *rlabel) {
+                        int rkind, KValue *rval, KValue *rlabel,
+                        AbandonEnd *drain_ae) {
   f->cur_exits = restore;
-  if (!xs || xs->n == 0) return apply_reason(rt, f, rkind, rval, rlabel);
+  if (!xs || xs->n == 0) {
+    /* No exit actions to run.  A drain do-scope with no defers leaves the running
+     * composed reason (drain_ae->*) untouched and simply continues the walk. */
+    if (drain_ae) return unwind(rt, f, RK_DRAIN, NULL, NULL);
+    return apply_reason(rt, f, rkind, rval, rlabel);
+  }
   /* §32.2.5: finalizers run MASKED.  Push a KK_POPMASK beneath the KK_FINSEQ and
    * raise mask_depth now, so the entire drain — every finalizer body's internal
    * steps AND the sequence itself — is uninterruptible, and mask is restored
@@ -811,7 +837,16 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
   f->k = cont_new(KK_POPMASK, NULL, f->k);
   f->mask_depth++;
   FinSeq *fs = (FinSeq *)GC_MALLOC(sizeof(FinSeq));
-  fs->xs = xs; fs->i = xs->n - 1; fs->rkind = rkind; fs->rval = rval; fs->rlabel = rlabel;
+  fs->xs = xs; fs->i = xs->n - 1; fs->rlabel = rlabel; fs->drain_ae = drain_ae;
+  if (drain_ae) {
+    /* fix 1: seed the finseq PRIMARY with the RUNNING composed drain reason (the
+     * clause result, possibly already carrying earlier abandoned do-scopes'
+     * cleanup failures) so a failing finalizer here folds in left-associatively
+     * — exactly the spine ordinary scope exit builds. */
+    fs->rkind = drain_ae->rkind; fs->rval = drain_ae->rval;
+  } else {
+    fs->rkind = rkind; fs->rval = rval;
+  }
   f->k = cont_new2(KK_FINSEQ, NULL, fs, NULL, f->k);
   f->cur = krt2_pure(kunit());  /* kick: deliver() -> KK_FINSEQ runs xs[n-1] */
   return 1;
@@ -839,10 +874,81 @@ static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
   /* Land the RK_DRAIN walk on KK_ABANDEND rather than the fiber's &g_done.  The
    * slice was self-terminated at capture (r->tail->next == &g_done); re-point it
    * at the terminal (its `next` is kont so a stray fall-through is still safe). */
+  /* fix 1: record the previous drain (for a NESTED H1 recursion) on the terminal
+   * so KK_ABANDEND can restore it, and make THIS drain the active one.  The
+   * abandoned do-scopes' finseqs read f->drain_ae to compose against the running
+   * clause reason left-associatively. */
+  ae->prev_drain = (AbandonEnd *)f->drain_ae;
   r->tail->next = cont_new2(KK_ABANDEND, NULL, ae, NULL, ae->kont);
+  f->drain_ae = ae;
   f->k = r->head;                  /* re-root at the op-site frame to drain it     */
   f->cur_exits = r->cur_exits;     /* under the captured body's exit-action state  */
   return unwind(rt, f, RK_DRAIN, NULL, NULL);
+}
+
+/* §32.2.20/.21 the RK_DRAIN walk reached a slice's KK_ABANDEND terminal frame `c`
+ * with the live reason (live_kind, live_val) — RK_DRAIN normally, or a finalizer
+ * failure that escaped this slice's finseq (e.g. a restoring finalizer interrupted).
+ * `ae->rkind/rval` is the running composed reason (clause result + this slice's
+ * cleanup failures, folded left-associatively by the drained finseqs, fix 1).
+ *
+ * fix 2 (§32.2.20 PERFORM-DURING-DRAIN): the clause reason resumes at the
+ * terminal frame's LIVE successor `c->next`, NOT at the captured-at-install
+ * `ae->kont`.  KK_ABANDEND is a DELIMITED boundary (modelled on KK_RETSCOPE): a
+ * `perform` by an abandoned `defer` searches OUTWARD past it and finds the
+ * enclosing handler in ae->kont, and when that handler RESUMES the drain it
+ * re-splices the captured slice — leaving the live continuation that the clause
+ * result must flow into at `c->next`.  The pre-fix `f->k = ae->kont` hard-
+ * overwrote that resume-spliced continuation, orphaning the performed effect and
+ * delivering the clause's post-value to the intervening handler's return instead.
+ *
+ * The terminal reached can be EITHER the ACTIVE drain's own (the common case, plus
+ * fix 2's resume case where it was re-spliced) OR — when an abandoned `defer`
+ * PERFORMS into a handler whose clause ITSELF abandons — a DIFFERENT (outer)
+ * drain's terminal captured into the inner abandoned slice and re-walked by the
+ * inner drain.  The two are told apart by whether c->aux is the fiber's currently
+ * active drain (f->drain_ae): the inner-capture geometry breaks the LIFO nesting
+ * the prev_drain chain assumes (an OUTER terminal is reached while an INNER drain
+ * is active), so for a FOREIGN terminal we MUST NOT touch the drain_ae stack —
+ * just continue the (foreign) clause's reason at its live successor, exactly the
+ * terminating behavior the pre-drain_ae machinery had.
+ *
+ * For the ACTIVE drain's terminal, two sub-cases:
+ *   - NESTED inside an enclosing one (ae->prev_drain != NULL — the H1 recursion):
+ *     fold the composed inner reason into the ENCLOSING drain and continue the
+ *     OUTER walk as RK_DRAIN, so the inner slice's cleanup failures compose into
+ *     the outer clause result exactly like an ordinary nested scope.
+ *   - top-level: continue the clause's (now composed) reason at c->next. */
+static int finish_abandon_drain(Rt *rt, Fiber *f, Cont *c,
+                                int live_kind, KValue *live_val) {
+  AbandonEnd *ae = (AbandonEnd *)c->aux;
+  int    okind = ae->rkind;
+  KValue *oval = ae->rval;
+  compose_reason_into(&okind, &oval, live_kind, live_val); /* H2: don't swallow it  */
+  f->cur_exits = ae->saved_exits;
+  if (ae != (AbandonEnd *)f->drain_ae) {
+    /* FOREIGN terminal (perform-into-aborting-handler nested capture): an OUTER
+     * drain's terminal was captured into the INNER abandoned slice and re-walked
+     * by the inner drain.  c->next here points INSIDE the still-draining inner
+     * slice, so resuming there would re-execute it (an infinite walk).  The LIFO
+     * prev_drain chain also does not apply.  Escape to the captured-at-install
+     * continuation ae->kont (OUTSIDE the inner slice, past the handler) and leave
+     * f->drain_ae untouched — exactly the terminating behavior of the pre-drain_ae
+     * machinery, which always jumped to ae->kont. */
+    f->k = ae->kont;
+    return apply_reason(rt, f, okind, oval, ae->rlabel);
+  }
+  /* fix 2: the ACTIVE drain's terminal — resume at its LIVE successor c->next so a
+   * perform that RESUMED during this drain (re-splicing the captured slice) keeps
+   * its threaded continuation, rather than having it hard-overwritten by ae->kont. */
+  f->k = c->next;
+  f->drain_ae = ae->prev_drain;        /* pop to the enclosing drain (if any)      */
+  if (ae->prev_drain) {
+    /* fold into the enclosing drain, then keep walking it as a drain */
+    compose_reason_into(&ae->prev_drain->rkind, &ae->prev_drain->rval, okind, oval);
+    return unwind(rt, f, RK_DRAIN, NULL, NULL);
+  }
+  return apply_reason(rt, f, okind, oval, ae->rlabel);
 }
 
 /* ── §18.1.21/.22 effect handlers (Stage 4a, one-shot) ───────────────────────
@@ -1060,7 +1166,7 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       ExitStack *xs = (ExitStack *)c->aux;
       ExitStack *restore = (ExitStack *)c->aux2;
       f->k = c->next;
-      return begin_finseq(rt, f, xs, restore, RK_NORMAL, v, NULL);
+      return begin_finseq(rt, f, xs, restore, RK_NORMAL, v, NULL, NULL);
     }
     case KK_FINSEQ: {                    /* a finalizer completed; run the next */
       FinSeq *fs = (FinSeq *)c->aux;
@@ -1069,13 +1175,19 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
         /* §18.1.4 reason-carrying finalizers: an onExit/onInterrupt item is a
          * MARKER ctor carrying the handler; substitute the handler applied to
          * the reconstructed Exit/cause (so it runs MASKED-LIFO like any defer).
-         * onInterrupt fires only on an interrupt exit; otherwise it is a no-op. */
+         * onInterrupt fires only on an interrupt exit; otherwise it is a no-op.
+         * fix 1: during an abandonment drain (drain_ae set) the finseq PRIMARY is
+         * the running composed clause reason, used as the cause-composition base;
+         * but the Exit handed to an onExit IN the abandoned slice keeps its
+         * pre-fix drain semantics (the slice's body did not terminate normally,
+         * so it is not the clause's exit) — reconstruct from RK_DRAIN there. */
+        int erkind = fs->drain_ae ? RK_DRAIN : fs->rkind;
         int tag = kctor_tagid(e);
         if (tag == OP_ONEXIT_FIN) {
           KValue *handler = kctor_arg(e, 0);
-          e = kapp(handler, exit_of_reason(fs->rkind, fs->rval));
+          e = kapp(handler, exit_of_reason(erkind, fs->rval));
         } else if (tag == OP_ONINT_FIN) {
-          if (fs->rkind == RK_INTERRUPT) {
+          if (erkind == RK_INTERRUPT) {
             KValue *handler = kctor_arg(e, 0);
             e = kapp(handler, fs->rval); /* the InterruptCause */
           } else {
@@ -1085,6 +1197,18 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
         f->cur = e; return 1;
       }
       f->k = c->next;
+      if (fs->drain_ae) {
+        /* fix 1: an abandoned do-scope finished draining.  Persist the running
+         * composed reason (clause result folded with this scope's cleanup
+         * failures, left-associatively) into the drain terminal, then CONTINUE
+         * the slice walk as RK_DRAIN so it stays transparent at every control
+         * frame and reaches the KK_ABANDEND terminal (which reads the final
+         * composed reason).  Do NOT apply_reason fs->rkind here: that would
+         * unwind the clause reason through the rest of the abandoned slice. */
+        fs->drain_ae->rkind = fs->rkind;
+        fs->drain_ae->rval  = fs->rval;
+        return unwind(rt, f, RK_DRAIN, NULL, NULL);
+      }
       return apply_reason(rt, f, fs->rkind, fs->rval, fs->rlabel);
     }
     case KK_HANDLER: {                    /* §18.1.21 body completed: run `return` */
@@ -1101,12 +1225,10 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       /* abandoned: drain the severed slice's exit actions, then deliver v.       */
       return begin_abandon_drain(rt, f, r, RK_NORMAL, v, NULL);
     }
-    case KK_ABANDEND: {                   /* §32.2.20 slice drained: resume clause  */
-      AbandonEnd *ae = (AbandonEnd *)c->aux;
-      f->k = ae->kont;
-      f->cur_exits = ae->saved_exits;
-      return apply_reason(rt, f, ae->rkind, ae->rval, ae->rlabel);
-    }
+    case KK_ABANDEND:                     /* §32.2.20 slice drained: resume clause  */
+      /* Reached via a delivered value (no failure escaped the finseq): the live
+       * reason is RK_NORMAL, which composes to nothing. */
+      return finish_abandon_drain(rt, f, c, RK_NORMAL, v);
   }
   return 0;
 }
@@ -1164,7 +1286,11 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         ExitStack *xs = (ExitStack *)c->aux;
         ExitStack *restore = (ExitStack *)c->aux2;
         f->k = c->next;
-        return begin_finseq(rt, f, xs, restore, rkind, rval, rlabel);
+        /* fix 1: during an abandonment drain (rkind == RK_DRAIN, f->drain_ae set),
+         * thread the active drain terminal so the finseq composes this scope's
+         * cleanup failures against the running clause reason left-associatively. */
+        AbandonEnd *drain_ae = (rkind == RK_DRAIN) ? (AbandonEnd *)f->drain_ae : NULL;
+        return begin_finseq(rt, f, xs, restore, rkind, rval, rlabel, drain_ae);
       }
       case KK_FINSEQ: {
         /* §32.2.12/§18.7 a finalizer itself FAILED mid-drain.  With finalizers now
@@ -1220,24 +1346,19 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         if (r->used) continue;                       /* (1) resumed: transparent     */
         return begin_abandon_drain(rt, f, r, rkind, rval, rlabel); /* (2) drain / (3) */
       }
-      case KK_ABANDEND: {
-        /* §32.2.21 the RK_DRAIN walk reached the slice terminal, but a finalizer in
-         * the abandoned segment FAILED: fix 3 composed that failure into the drain's
-         * reason and propagated it here as a live (rkind,rval) (RK_RERAISE carrying
-         * the cleanup `Cause`, or RK_INTERRUPT if a restoring finalizer was hit).
-         * Per §32.2.21 "the clause failure and cleanup failure are composed according
-         * to the same cause-composition rules that govern ordinary scope exit": the
-         * SAVED clause reason (ae->*) is the PRIMARY and this live drain failure is
-         * the CLEANUP — compose them rather than blindly restoring the clause reason
-         * (which would swallow the abandoned segment's finalizer failure — H2). */
-        AbandonEnd *ae = (AbandonEnd *)c->aux;
-        int    okind = ae->rkind;
-        KValue *oval = ae->rval;
-        compose_reason_into(&okind, &oval, rkind, rval);
-        f->k = ae->kont;
-        f->cur_exits = ae->saved_exits;
-        return apply_reason(rt, f, okind, oval, ae->rlabel);
-      }
+      case KK_ABANDEND:
+        /* §32.2.21 the RK_DRAIN walk reached the slice terminal.  fix 1 already
+         * folded every abandoned do-scope's cleanup failure into ae->rkind/rval
+         * LEFT-ASSOCIATIVELY against the clause result as the drain ran (each
+         * finseq seeded its compose-primary from the running drain reason and
+         * wrote the result back), so ae->* holds the fully composed reason —
+         * exactly the spine ordinary scope exit produces (Then(Then(clause,ce),cl)),
+         * not the old right-leaning Then(clause,Then(ce,cl)).  The live (rkind,rval)
+         * is normally RK_DRAIN (composes to nothing); a finalizer failure that
+         * ESCAPED this slice's finseq (e.g. a restoring finalizer interrupted)
+         * arrives non-RK_DRAIN and finish_abandon_drain composes it in so it is not
+         * swallowed (H2). */
+        return finish_abandon_drain(rt, f, c, rkind, rval);
     }
     return 0;
   }

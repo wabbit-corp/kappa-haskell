@@ -48,6 +48,19 @@ static int is_failure_then(KValue *ex, const char *a, const char *b) {
   if (kctor_tagid(cause) != KCT_THEN || kctor_argc(cause) != 2) return 0;
   return cause_is_fail(kctor_arg(cause, 0), a) && cause_is_fail(kctor_arg(cause, 1), b);
 }
+/* fix 1 (§32.2.21 cause symmetry): the LEFT-associative spine an abandoned-slice
+ * exit with >=2 throwing finalizers must build — Then(Then(Fail a, Fail b), Fail c)
+ * — IDENTICAL to ordinary scope exit, NOT the old right-leaning Then(a,Then(b,c)). */
+static int is_failure_then_left3(KValue *ex, const char *a, const char *b, const char *c) {
+  if (!kctor_is(ex, "Failure") || kctor_argc(ex) != 1) return 0;
+  KValue *cause = kctor_arg(ex, 0);
+  if (kctor_tagid(cause) != KCT_THEN || kctor_argc(cause) != 2) return 0;
+  KValue *left = kctor_arg(cause, 0);
+  if (kctor_tagid(left) != KCT_THEN || kctor_argc(left) != 2) return 0; /* nested LEFT */
+  return cause_is_fail(kctor_arg(left, 0), a) &&
+         cause_is_fail(kctor_arg(left, 1), b) &&
+         cause_is_fail(kctor_arg(cause, 1), c);
+}
 
 /* ── shared abortive clause / return clause builders ────────────────────── */
 /* abortive: \payload -> \k -> pure V   (k IGNORED => abandon).  V is captured. */
@@ -113,6 +126,49 @@ static KValue *scenarioC2(void) {
   KValue *vals[1]      = { kclo(c2_clause, NULL) };
   return krt2_handle(kbool(1), kstr0("E"), kclo(ret_pure, NULL), krec(1, names, vals), c2_body());
 }
+
+/* =========================================================================
+ * fix 1 (§32.2.21 CAUSE-COMPOSITION SYMMETRY): a clause that THROWS "clause", and
+ * an abandoned do-scope with TWO throwing finalizers — LIFO-first "ce", LIFO-last
+ * "cl".  §32.2.21 mandates "the same cause-composition rules that govern ordinary
+ * scope exit", which thread the body/clause failure as the PRIMARY and append each
+ * cleanup left-associatively => Then(Then(Fail clause, Fail ce), Fail cl).  The
+ * pre-fix drain composed the cleanups among THEMSELVES first (FinSeq primary was
+ * RK_DRAIN -> NULL) and joined the clause LATE at KK_ABANDEND, yielding the
+ * right-leaning Then(Fail clause, Then(Fail ce, Fail cl)) — a structurally
+ * DIFFERENT cause an Exit/sandbox/Cause observer can see (Then is a bare data
+ * ctor, no normalization).  A CONTROL scenario runs the SAME two throwing defers
+ * over an ORDINARY (non-abandoned) scope-exit and asserts the IDENTICAL spine.
+ * ====================================================================== */
+static _Atomic int f1_ce = 0, f1_cl = 0;
+static KValue *f1_mark_ce(KEnv *e) { (void)e; atomic_store(&f1_ce, 1); return kunit(); }
+static KValue *f1_mark_cl(KEnv *e) { (void)e; atomic_store(&f1_cl, 1); return kunit(); }
+/* defers: LIFO-first throws "ce" (after marking), LIFO-last throws "cl" (after marking). */
+static KValue *f1_defer_ce(void) { return krt2_then(kio(f1_mark_ce, NULL), krt2_throw(kstr0("ce"))); }
+static KValue *f1_defer_cl(void) { return krt2_then(kio(f1_mark_cl, NULL), krt2_throw(kstr0("cl"))); }
+/* the do-scope body shared by both scenarios, parametrised by what FAILS it: in the
+ * abandoned case the perform's clause throws "clause"; in the control case the body
+ * itself throws "clause" directly (same scope, same two defers, same primary). */
+static KValue *f1_doscope_with(KValue *failing_tail) {
+  return krt2_doscope(
+      krt2_then(krt2_defer(f1_defer_cl()),      /* registered 1st => runs 2nd (LIFO) */
+      krt2_then(krt2_defer(f1_defer_ce()),      /* registered 2nd => runs 1st (LIFO) */
+                failing_tail)));
+}
+/* ABANDONED: the failing tail is `perform E.abort` whose clause throws "clause". */
+static KValue *f1_clause_k(KEnv *e, KValue *k) { (void)e; (void)k; return krt2_throw(kstr0("clause")); }
+static KValue *f1_clause(KEnv *e, KValue *p) { (void)e; (void)p; return kclo(f1_clause_k, NULL); }
+static KValue *f1_abandon_body(void) {
+  KValue *after = krt2_then(krt2_perform(kstr0("E"), kstr0("abort"), kunit()), krt2_pure(kint(0)));
+  return f1_doscope_with(after);
+}
+static KValue *scenarioF1abandon(void) {
+  static const char *names[1] = { "abort" };
+  KValue *vals[1]      = { kclo(f1_clause, NULL) };
+  return krt2_handle(kbool(1), kstr0("E"), kclo(ret_pure, NULL), krec(1, names, vals), f1_abandon_body());
+}
+/* CONTROL: ordinary scope exit — the body itself throws "clause" (no handler). */
+static KValue *scenarioF1control(void) { return f1_doscope_with(krt2_throw(kstr0("clause"))); }
 
 /* =========================================================================
  * fix 1 (H1): nested abandon.  OUTER handler is abortive; INNER handler's clause
@@ -205,6 +261,22 @@ int main(void) {
   CHECK(atomic_load(&c2_early) == 1, "C2: LIFO-first abandoned defer (throwing) ran");
   CHECK(atomic_load(&c2_late)  == 1, "C2: LIFO-last abandoned defer ALSO ran (not dropped)");
   CHECK(is_failure_fail(ec2, "d-early"), "C2: result is the composed cleanup cause");
+
+  /* fix 1 (CAUSE SYMMETRY): abandoned-slice exit with a failing clause + TWO
+   * throwing finalizers builds the SAME left-associative spine as ordinary exit. */
+  KValue *ef1a = krt2_run_main(scenarioF1abandon());
+  CHECK(atomic_load(&f1_ce) == 1, "fix1: LIFO-first abandoned finalizer (ce) ran");
+  CHECK(atomic_load(&f1_cl) == 1, "fix1: LIFO-last abandoned finalizer (cl) ALSO ran");
+  CHECK(is_failure_then_left3(ef1a, "clause", "ce", "cl"),
+        "fix1: abandoned drain composes Failure(Then (Then (Fail clause) (Fail ce)) (Fail cl)) "
+        "— LEFT-associative, clause threaded as the finseq primary (NOT right-leaning)");
+  /* CONTROL: the SAME two throwing defers over an ORDINARY scope exit must yield the
+   * IDENTICAL spine — the §32.2.21 "same rules" the abandoned path must match. */
+  f1_ce = 0; f1_cl = 0;
+  KValue *ef1c = krt2_run_main(scenarioF1control());
+  CHECK(atomic_load(&f1_ce) == 1 && atomic_load(&f1_cl) == 1, "fix1: control defers both ran");
+  CHECK(is_failure_then_left3(ef1c, "clause", "ce", "cl"),
+        "fix1: ORDINARY scope exit yields the same Then(Then(clause,ce),cl) spine");
 
   /* H1: nested abandon — inner unresumed resumption's defer must drain */
   KValue *e1 = krt2_run_main(scenarioH1());
