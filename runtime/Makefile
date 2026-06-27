@@ -15,8 +15,8 @@ CC      ?= cc
 AR      ?= ar
 # -fno-strict-aliasing: the KValue union is type-punned, like kappart itself.
 CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -fno-strict-aliasing -pthread
-# -flto: recover cross-TU inlining of the hot boxed-value ops once kappart.c is
-# split into smaller translation units (so the split costs nothing at runtime).
+# -flto: recover cross-TU inlining of the hot boxed-value ops now that kappart.c
+# is split into smaller translation units (so the split costs nothing at runtime).
 # Validated safe against the conservative Boehm collector by the GC-stress
 # harnesses (run_main_persist / abandon_drain / fiberref_promise / stm).
 CFLAGS  += -flto
@@ -45,11 +45,15 @@ CPPFLAGS  += -DGC_THREADS
 # -pthread (CFLAGS) + libuv's pkg-config -lpthread already cover threads.
 LIBS      := $(UV_LIBS) -lgc -lgmp
 
-# The runtime: kappart.c (the boxed-value model + Boehm GC + primitives) plus
-# the kappart2 scheduler/reactor/structured-concurrency/race/STM translation units.
-RT_SRC  := kappart.c rt.c reactor.c scope.c race.c stm.c atomic.c
+# The runtime: the kappart boxed-value model + Boehm GC + primitives — split
+# into six cohesive translation units (gc / value / bignum / show / unicode /
+# prims; see kappart_internal.h) — plus the kappart2 scheduler/reactor/
+# structured-concurrency/race/STM translation units.
+RT_SRC  := kappart_gc.c kappart_value.c kappart_bignum.c kappart_show.c \
+           kappart_unicode.c kappart_prims.c \
+           rt.c reactor.c scope.c race.c stm.c atomic.c
 RT_OBJ  := $(RT_SRC:%.c=build/%.o)
-RT_HDRS := kappart.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
+RT_HDRS := kappart.h kappart_internal.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
 
 LIB := build/libkappart2.a
 
