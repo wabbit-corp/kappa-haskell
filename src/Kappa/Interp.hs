@@ -775,6 +775,18 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     case Map.lookup tid rs of
       Just (r : _) -> r (runIOValue rt act)
       _ -> runIOValue rt act
+  -- §18.1.12 rank-2 adapter `__restoreAt raw act` (what the surface `mask` hands
+  -- its body, see Prelude `__restoreAt`): forward `act` to the captured raw
+  -- restore. `__mask` pushed `VPrim "__restore" []`, but the elaborator COERCES
+  -- it to the rank-2 type `forall y. IO e y -> IO e y` — i.e. `\{y} -> __restore`
+  -- — so `raw` carries a LEADING ERASED type binder. Peel it with a type
+  -- placeholder (`y` is RuntimeErased, §31.2), then apply the action and run
+  -- (rebuilding `VPrim "__restore" [act]`, which the `__restore` case above
+  -- handles at the per-fiber mask-entry level). This mirrors the native lowering
+  -- (a bare `kapp(raw, act)`, where the kunit type slot was already absorbed by
+  -- the wrapper), keeping interp == C == LLVM.
+  ("__restoreAt", [raw, act]) ->
+    runIOValue rt (vapp ec (vapp ec raw Impl (VSort 0)) Expl act)
   -- §18.1.8 monitors: a non-destructive observer of a fiber's terminal Exit
   -- (the result cell is read, not consumed, so monitoring is independent of
   -- awaiting). demonitor drops the observation.

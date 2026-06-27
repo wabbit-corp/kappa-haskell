@@ -425,6 +425,7 @@ basePrims =
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
+    , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
       -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
@@ -2370,6 +2371,19 @@ compileAppGlob g sargs term = do
           | [f] <- [a | (Expl, a) <- sargs] -> do
               fc <- compileErasableArg f
               pure ("krt2_mask(" <> fc <> ")")
+        -- §18.1.12 rank-2 adapter: `__restoreAt raw act` re-applies the raw 1-arg
+        -- runtime restore closure to `act`. The source rank-2-ness is honored at
+        -- the use site (a kunit-filled type slot on the surrounding wrapper, see
+        -- Prelude `__restoreAt`/`mask`); HERE the prim's own type args are already
+        -- erased from the spine, so the two explicit operands lower to a plain
+        -- `kapp(raw, act)` — NO `kappi` — exactly the 1-arg runtime call. Both
+        -- operands are runtime values (a closure and an IO action), so they are
+        -- compiled, not erased.
+        Just "__restoreAt"
+          | [raw, act] <- [a | (Expl, a) <- sargs] -> do
+              rawc <- compile raw
+              actc <- compile act
+              pure ("kapp(" <> rawc <> ", " <> actc <> ")")
         Just "poll"
           | null [a | (Expl, a) <- sargs] -> pure "krt2_poll()"
         -- §18.1.4 interruption: __interruptWait (request + await termination) and

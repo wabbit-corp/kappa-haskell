@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7/hi\n"
+
+-- §18.1.12 RANK-2 `restore` conformance (Spec.md:19063-19066). The spec mandates
+--   mask : forall e a. ((restore : forall x. IO e x -> IO e x) -> IO e a) -> IO e a
+-- i.e. ONE captured masking capability applied to sub-actions of arbitrary,
+-- caller-chosen result types in a single mask block (the canonical bracket /
+-- withLock idiom). The decisive case: a `mask` body that applies `restore` to
+-- sub-actions whose types DIFFER from each other and from the block result.
+--
+-- `restore getInt : IO Void Integer` and `restore getStr : IO Void String` are
+-- two DIFFERENT instantiations of the same `restore`, and the block result is
+-- `String` (a third). Rank-1 (`restore : IO e a -> IO e a`, monomorphised to the
+-- mask result) REJECTS this at typecheck (E_APPLICATION_ARGUMENT_MISMATCH).
+--
+-- The runtime restore is a single type-erased 1-arg closure with no slot for the
+-- `forall x.` binder; the conformance fix lowers a `restore @x act` use site to a
+-- bare 1-arg call (the erased type-app is dropped), so interp == C == LLVM.
+module main
+
+getInt : IO Void Integer
+let getInt = ioPure 7
+
+getStr : IO Void String
+let getStr = ioPure "hi"
+
+-- the rank-2 body: `restore` is applied at Integer AND String AND the block
+-- result is String — three distinct types through one `restore`.
+body : (forall (x : Type). IO Void x -> IO Void x) -> IO Void String
+let body restore =
+      ioBind (restore getInt) (\n ->
+      ioBind (restore getStr) (\s ->
+      ioPure (stringAppend (showInt n) (stringAppend "/" s))))
+
+main : UIO Unit
+let main = ioBind (mask body) (\s -> printlnString s)

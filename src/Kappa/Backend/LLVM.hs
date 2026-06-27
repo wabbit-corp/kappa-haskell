@@ -534,6 +534,10 @@ basePrims =
     -- `poll` and routes it to 'compilePrimApp' → 'compileIoNode' (krt2_*) rather
     -- than the bare-value path.
     `Set.union` Set.fromList ["uninterruptible", "__mask", "poll"]
+    -- §18.1.12 rank-2 restore adapter: lowered to a bare kapp(raw, act) in
+    -- 'compilePrimApp' (no kpf_* entry, no krt2_* node), so add it here so
+    -- 'globPrimName' recognises a saturated `__restoreAt` rather than rejecting it.
+    `Set.union` Set.fromList ["__restoreAt"]
     -- §18.1.4/§18.1.7 reason-carrying finalizers + locallyFiberRef: krt2_* node
     -- builders ('ioNodeBuilder'), no kpf_* primEntry, so add them here too.
     `Set.union` Set.fromList ["onExit", "onInterrupt", "locallyFiberRef"]
@@ -877,6 +881,7 @@ saturatedPrim pname term =
 -- too; otherwise a saturated `uninterruptible`/`mask`/`poll` would be classed as
 -- a bare value and rejected.
 primArity :: Text -> Maybe Int
+primArity "__restoreAt" = Just 2 -- §18.1.12 rank-2 restore adapter: kapp(raw, act)
 primArity pname = case primNativeEntry pname of
   Just (_, ar, _) -> Just ar
   Nothing -> case ioNodeBuilder pname of
@@ -3252,6 +3257,20 @@ compilePrimApp pname sargs
   -- 'compileAppGlob', and how this backend would otherwise mis-run a do-block
   -- body through the bridge — the M-I divergence).  See 'compileIoNode'.
   | Just r <- ioNodeBuilder pname = compileIoNode pname r sargs
+  -- §18.1.12 rank-2 restore adapter: `__restoreAt raw act` re-applies the raw
+  -- 1-arg runtime restore closure to `act`.  NOT a krt2_* node — it lowers to a
+  -- bare @kapp(raw, act)@ (the prim's own type args are already erased from the
+  -- spine), the exact 1-arg runtime call the same as the C backend emits.  The
+  -- source rank-2-ness is absorbed by the surrounding wrapper's kunit-filled type
+  -- slot (see Prelude `__restoreAt`/`mask`).
+  | pname == "__restoreAt"
+  , [raw, act] <- [a | (Expl, a) <- sargs] = do
+      rawc <- compile raw
+      actc <- compile act
+      declRuntime "declare ptr @kapp(ptr, ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @kapp(ptr " <> rawc <> ", ptr " <> actc <> ")")
+      pure r
 compilePrimApp pname sargs =
   case ioPrimEntry pname of
     Just (cfn, ar) -> compileIoSat pname cfn ar sargs
