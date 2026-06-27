@@ -74,6 +74,32 @@ miscompile).
 
 ---
 
+## Next up — prioritized execution order
+
+The forward plan (Session 2026-06-27), in priority order. Disjoint items run in parallel
+(worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
+adversarially reviewed, same discipline as the burst above.
+
+1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** *(in progress —
+   `feat/fp-math-prims`)*. Quick, self-contained, no design risk; unblocks **nbody + spectralnorm**.
+   libm math fns + `%.*f` formatting as ordinary prims (both backends + interp, parity-verified).
+2. **Mutable O(1) array** *(design in progress — `MUTABLE-ARRAY-DESIGN.md`)* — the highest-leverage
+   missing data structure. Design-gated: linear/uniqueness vs `IO`/`ST`/`STM` mutable, the runtime
+   rep (flat KValue slots, O(1) get/set, GC/Perceus interaction), bounds/totality (the index
+   discipline). Research → design doc → staged impl.
+3. **Unlock more benchmarks** — wire up nbody/spectralnorm (from 1) + the array benchmarks (from 2),
+   measure vs the reference, fold the numbers into [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md).
+4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends),
+   the 3 C-backend CPS edges (suspend-in-`for`, STM-self-tail-call stack overflow, `var:Double`
+   helper miscompile), the `kctor` value-box multi-worker race (value.c, TSan), the timing-flaky
+   `race`/`timeout` runtime test, the reactor-shutdown sleep-timer cleanup (reactor.c), and the
+   runtime spec-coverage stubs (blocking, supervisor, fiberId, labels, sandbox).
+5. **Bigger levers**: the LLVM **function** scalar-worker (mandelbrot), **Perceus reuse +
+   value-unboxing** (the alloc multipliers), the LLVM **curried-CK-machine-prim** gap (await/STM/
+   interrupt as values — unblocks Tier-2 on LLVM + the LLVM safepoint delivery test).
+
+---
+
 ## Done ✅
 
 - [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
