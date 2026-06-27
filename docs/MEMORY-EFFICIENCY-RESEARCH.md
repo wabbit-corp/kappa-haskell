@@ -320,11 +320,30 @@ codegen** (`C.hs`), not trapped in the typechecker.
 
 The gap: today `C.hs` reads `Q` only for *erasure* (`Q0`/kind-domain →
 `kunit()` placeholder) — it does **not** use `Q1/QLe1` for in-place reuse or
-drop elision. Kappa has the exact static information Koka/Lean *synthesize* with
-whole-program borrow/heap-share inference (Perceus §2–3), **already computed and
-type-checked, and currently discarded after erasure.**
+drop elision. For **`Q1`-annotated** code Kappa has the exact static information
+Koka/Lean *synthesize* with whole-program borrow/heap-share inference (Perceus
+§2–3), **already computed and type-checked, and currently discarded after
+erasure.**
 
-Map to the literature precisely:
+**Important caveat — the asset is present only where the quantity is annotated.**
+This is the one place not to overstate. An *unannotated* binder does **not**
+default to a single-use quantity: `qOf Nothing → QW` and `binderQ` returns `QW`
+for the symbolic / borrowed / implicit / unannotated cases alike
+(`src/Kappa/Check.hs:3194-3208`); only an explicit `Just S.QOne` becomes `Q1`.
+And `src/Kappa/Usage.hs` only *checks* quantities (linear-overuse / linear-drop /
+borrow-escape) and *propagates* field-linearity from already-`Q1` sources
+(`mergeFieldQuantities`/`litLinearFields`) — it does **not** *infer* or
+reconstruct `Q1` for a provably-single-use unannotated binder. So for the
+**unannotated majority** there is no `Q1` reuse signal at all; the values land at
+`QW` and the reuse machinery below never fires on them. Recovering that signal
+needs a **single-use / multiplicity inference pass** — exactly what MLKit does
+statically and Perceus does dynamically (`is-unique`) — which Kappa does **not**
+have. That inference is therefore itself Stage-1 work, not a free pre-existing
+asset: the "static linearity Perceus infers" is present for the `Q1`-annotated
+fragment and must be *built* for the rest.
+
+Map to the literature precisely (read every "QTT proves uniqueness" below as
+scoped to the `Q1`-annotated fragment until the inference pass exists):
 
 - QTT quantity `1 = [1,1]` (linear, used-once, *not* droppable per §12.2) **is**
   an *owned* FIP parameter — destructively matchable and reusable in place with
@@ -363,13 +382,20 @@ any future `Ref`/`MVar`/`IORef` — all effect-confined, never inside pure data.
 ## Part 3 — How Kappa does reuse/stack/region with LESS runtime machinery
 
 The unifying observation: **every system in Part 1 is reconstructing
-ownership/lifetime facts Kappa already has statically.** HotSpot/Go spend a
-whole-program points-to analysis to *approximate* what QTT carries in the types;
-Perceus/Koka run borrow inference to *derive* the linearity QTT *proves*; MLKit's
-multiplicity analysis re-derives Kappa's `0/1/ω`. Purity + totality additionally
-close the two worst enemies of all these analyses (hidden store-to-global
-mutation; divergent/exceptional control paths), making Kappa's escape/liveness
-graph *exact* rather than conservative.
+ownership/lifetime facts Kappa already has statically *where the program annotates
+its quantities*.** HotSpot/Go spend a whole-program points-to analysis to
+*approximate* what QTT carries in the types; Perceus/Koka run borrow inference to
+*derive* the linearity QTT *proves* — for an explicitly-`Q1` binding. The honest
+asymmetry (§2.1): on the **unannotated** fragment Kappa is *not* ahead — an
+unannotated binder defaults to `QW`, and Kappa has no single-use inference, so
+for those values it must *build* the very multiplicity inference MLKit/Perceus
+run (MLKit statically, Perceus via the dynamic `is-unique` test). So the
+"Kappa already has it" framing holds for the `Q1`-annotated fragment and is a
+*to-do* (a Stage-1 inference pass) for the rest. Purity + totality do help
+everywhere regardless: they close the two worst enemies of all these analyses
+(hidden store-to-global mutation; divergent/exceptional control paths), making
+Kappa's escape/liveness graph *exact* rather than conservative once a quantity is
+known.
 
 **Reuse (FIP) — target the static guarantee, not dynamic RC.** A `Q1`,
 sole-consumer destructive match that reconstructs a same-arity constructor can be
@@ -536,8 +562,8 @@ Prerequisite-prerequisite: the persistent-runtime fix (review §1) — fixes the
 ### Stage 1 — QTT-driven frame-local allocation + guaranteed in-place (NEAR-TERM; NO precise GC)
 
 Exploit the asset *under Boehm*. Thread the already-present `Q1/QLe1` + §12
-borrow-escape facts from Core into `C.hs` (they are there — stop discarding them
-after erasure). Then:
+borrow-escape facts from Core into `C.hs` (they are there for *annotated* code —
+stop discarding them after erasure). Then:
 
 - For a `Q1`, provably-non-escaping, acyclic ctor/`KEnv` cell: emit arena /
   frame-local allocation that bypasses GC entirely (a frame-local cell never
@@ -549,12 +575,25 @@ after erasure). Then:
 - Realize the already-blessed `runST`/`ST` arena (escape already proven by
   skolem-escape) — the canonical first region win, costing no new theory.
 
+**The hard part of Stage 1, stated honestly (§2.1):** the two reuse bullets above
+fire only where a binder is `Q1`. Today that means **explicitly-annotated code
+only** — an unannotated binder is `QW`, and Kappa has no pass that *infers* `Q1`
+for a provably-single-use unannotated binder. So Stage 1 is really *two* pieces:
+(i) thread + consume the quantities that already exist (cheap, the data is there
+for annotated code), and (ii) **build a single-use / multiplicity inference pass**
+(MLKit-style static, or a Perceus-style `is-unique` dynamic fallback) so reuse
+extends to the unannotated majority. Without (ii), Stage 1 is correct but narrow —
+it only pays off on the hand-annotated linear surface. (ii) is the load-bearing
+new analysis, not a thread-through.
+
 This works under Boehm because frame-local cells never reach GC and QTT-proven
 in-place needs no RC header.
 
-Prerequisites: a small Core→backend `Q`/borrow propagation pass (the data
-already exists), and the immediate-tagging GC/alignment contract (UNBOXING Stage
-0, already partly landed). **Effort: low–moderate. Risk: low–moderate** (the
+Prerequisites: a small Core→backend `Q`/borrow propagation pass (the data already
+exists for annotated code) **plus the single-use inference pass above for the
+unannotated majority**, and the immediate-tagging GC/alignment contract (UNBOXING
+Stage 0, already partly landed). **Effort: low–moderate for the threading,
+moderate for the inference pass. Risk: low–moderate** (the
 in-place write must respect the match-reconstruct shape and Boehm-faithful
 pointer representation). **Payoff: removes allocation on the linear/non-escaping/
 acyclic surface, including much of the CPS continuation churn (source #2) — but
@@ -564,8 +603,10 @@ values.**
 ### Stage 2 — Full Perceus dup/drop + reuse on the CPS spine (MEDIUM-TERM; HARD-GATED on precise GC)
 
 Highest ceiling, hardest prerequisite. Insert Perceus dup/drop + reuse on the
-CPS continuation spine, with **QTT supplying the linearity witness Koka infers**
-(so the front half of Perceus — borrow analysis — is free) and the §12 borrow +
+CPS continuation spine, with **annotated QTT supplying the linearity witness Koka
+infers** (so the front half of Perceus — borrow analysis — is free *for the
+annotated fragment*; for the unannotated majority Stage 1's single-use inference
+pass, or Perceus's own dynamic `is-unique`, supplies it) and the §12 borrow +
 thread-shared-across-fork facts supplying the **non-atomic-vs-atomic RC split**
 (`f->k` is thread-local → non-atomic; fork/promise/`TVar` crossings → atomic).
 Only the back half (drop/reuse insertion) must be built.
@@ -613,15 +654,19 @@ fork-frame shapes — already most of the win.
   type-system or GC work, and is the explicit pre-Perceus band-aid the efficiency
   review already names as finding #1.
 - **Most distinctive Kappa win**: QTT-driven *guaranteed* in-place update +
-  frame-local allocation (Stage 1) — Kappa proves statically what Koka/Lean
-  check dynamically and Go/HotSpot approximate, and the linear/non-escaping/
-  acyclic subset works *under Boehm* with no precise RC.
+  frame-local allocation (Stage 1) — for `Q1`-**annotated** code Kappa proves
+  statically what Koka/Lean check dynamically and Go/HotSpot approximate, and the
+  linear/non-escaping/acyclic subset works *under Boehm* with no precise RC. The
+  honest caveat (§2.1): unannotated binders default to `QW` and Kappa has no
+  single-use inference, so extending this win past the annotated surface requires
+  a **single-use / multiplicity inference pass that Kappa does not yet have** —
+  itself part of Stage-1 work, not free.
 - **Highest ceiling, gated**: full Perceus (Stage 2) is hard-blocked on replacing
-  the conservative collector; but QTT (linearity proven, not inferred) +
-  acyclicity-by-purity (cycles confined to `Ref`/`TVar`/recursive thunks) make
-  the eventual RC dramatically cheaper to build than for any conventional
-  language, and a backup tracer confined to the mutable region means Kappa may
-  never need a *general* cycle collector.
+  the conservative collector; but QTT (linearity proven where annotated, inferable
+  with the Stage-1 pass otherwise) + acyclicity-by-purity (cycles confined to
+  `Ref`/`TVar`/recursive thunks) make the eventual RC dramatically cheaper to
+  build than for any conventional language, and a backup tracer confined to the
+  mutable region means Kappa may never need a *general* cycle collector.
 
 ## Key sources
 
