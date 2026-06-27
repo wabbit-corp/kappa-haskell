@@ -105,6 +105,26 @@ adversarially reviewed, same discipline as the burst above.
    `krt2_*` node-builders the runtime already has (mirrors the Milestone-M throwIO/catchIO migration);
    then the LLVM **function** scalar-worker (mandelbrot); **Perceus reuse + value-unboxing** (the alloc
    multipliers).
+6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
+   Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
+   `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
+   `d01b8a7`) the lazily-committed 8 MiB worker-stack floor. `decreases` is the soundness *license*, not a
+   runtime depth oracle. The accumulator opt is gated on **lawful Monoids** *(redo in progress, `feat/isprop-pi-isset`)*.
+7. **Inhabitance + h-level conformance suite** — [INHABITANCE_TESTS.md](docs/INHABITANCE_TESTS.md). The
+   §30.2.7 inhabitance analysis (`Inhabitance.hs`) is done (`63400fb`); this suite pins its summaries AND
+   the h-level/equality soundness the IsProp/IsSet work rides on (summaries must stay strictly separate
+   from source-level evidence synthesis — §13).
+   - **P1 — equality/UIP tripwire (NOW; the IsProp redo's acceptance criterion).** §6–§8 + the §13
+     red-team invariant: `x=x` is `Unknown` without `IsSet A`; `badK` MUST fail; `goodKWithSet` may pass;
+     the `IsProp`/`IsSet`/`IsNType` synth matrix (`IsProp Bool` fails, `IsSet Bool` passes, arbitrary
+     `IsNType n A` is unsolvable). **These would have caught the reverted `isPropEq`-without-`IsSet` hole
+     at conformance time.** Land them with / right after `feat/isprop-pi-isset`.
+   - **P2 — inhabitance summaries.** §3 algebraic/products/sums/GADT-refinement, §4 completion/enumeration
+     (+ threshold), §5 `impossible` only on exact `Empty` + opaque-≠-empty. Pins `Inhabitance.hs`; needs a
+     `%summary`/`%enumerate` query directive (or translate to `mode check`/`check-fails`).
+   - **P3 — coverage.** §9 trait-evidence (`IsSubsingleton (Eq Bool)` yes, `IsProp` no), §10 `IsSubsingleton`
+     ≠ inhabitance, §12 runtime-shape-vs-source (erased impossible proofs stay `Empty`), §11 optional
+     finite-function strengthening (gated mode; must NOT imply function h-levels).
 
 ---
 
