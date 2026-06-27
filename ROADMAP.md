@@ -304,9 +304,24 @@ the real Lint are both impossible without them.
 - [ ] **`atomically`/`retry` real parking** (§18.1.13). Switch the single-agent
       `Ref` STM shim to the journaled `krt2_atomically`/`OP_ATOMICALLY` so
       transactions park + retry across fibers ([`../stm.c`](runtime/stm.c) already implements it).
-- [ ] **Stage 4 — effect-handler unification** (CPS-DESIGN §2, Stage 4). One
-      `KK_HANDLER` prompt frame; `perform`/`resume` reuse `deliver`/`unwind`.
-      Depends on R1 (done). `rt-multishot` behind the compile-time escape-check.
+- [ ] **Stage 4 — effect-handler unification** (CPS-DESIGN §2, Stage 4).
+      **SCOPED** ([`docs/EFFECT-HANDLER-SCOPING.md`](docs/EFFECT-HANDLER-SCOPING.md),
+      2026-06-26) → **proceed one-shot-first**. Run effects as prompt frames on the
+      one Cont chain (not the separate `__EffPure`/`__EffOp` free-monad rewrite):
+      `handle` installs a `KK_HANDLER` (label→clause table); `perform` searches
+      `f->k` outward + captures the op-site→handler sub-chain as the resumption
+      (generalizes `unwind`'s `KK_CATCH` arm); `resume` splices it back (mirrors
+      `deliver`'s `KK_BIND` arm). **De-risked by the scoping:** R1 is already landed
+      (`begin_finseq`, rt.c:486 — CPS-DESIGN's prose is stale), the multi-shot
+      escape-check is already built (`Usage.hs` `multishotOpCall`/
+      `checkMultishotCapture`/`E_QTT_CONTINUATION_CAPTURE` — just wire to a gate),
+      and the only genuinely new runtime primitive is severing a Cont sub-chain
+      (~20 lines). **Staging:** 4a `KK_HANDLER`+perform/resume one-shot (MODERATE,
+      rt.c/internal.h + LOCKSTEP `elabEffDo` lift since Eff blocks reject
+      defer/using/var/loop today, Check.hs:8027) → diff-test vs `Eval.hs` → 4b
+      tail-resumptive fast path → 4c multi-shot (LARGE, behind a new `rt-multishot`
+      capability). Wildcard: handler-clause **parking** (R11) — put a parking smoke
+      test in 4a so it surfaces early.
 - [ ] **Stage 5 — LLVM coroutines** (CPS-DESIGN §5). Retarget `kdo_*`/`kdok_*` to
       `coro.id.retcon.once`; seed `CoroSplit` liveness from the `KEnv`.
 
