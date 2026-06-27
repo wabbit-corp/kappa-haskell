@@ -246,6 +246,8 @@ registry =
       "An explicit implicit argument '@payload' cannot be elaborated against the selected implicit binder's demanded type or classifier (§16.1.7.2)."
   , ent "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
       "An identifier uses Unicode characters outside the active name profile without the corresponding feature gate enabled."
+  , ent "E_FEATURE_BACKEND_CAPABILITY_MISSING" (Just "kappa.feature.gated")
+      "A reachable multi-shot effect resumption requires the 'rt-multishot' runtime capability, which no targeted backend advertises; the multi-shot operation is rejected at compile time rather than executed with one-shot semantics (§18.1.17, §27.6, §34.3.3)."
   , ent "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved")
       "A typed hole '?' or '_' in expression position was not solved by elaboration; the expected type or value remains unknown."
   , ent "E_HOLE_INCONSISTENT_EXPECTED_TYPE" (Just "kappa.hole.inconsistent")

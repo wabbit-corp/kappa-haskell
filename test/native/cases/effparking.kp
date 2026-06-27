@@ -1,0 +1,37 @@
+module main
+
+-- §18.1.21 R11 PARKING smoke test (CPS-DESIGN Stage 4a, the cross-cutting
+-- wildcard): a handler clause that SUSPENDS on the scheduler — it forks a
+-- fiber, awaits it, and SLEEPS via the libuv reactor — BEFORE resuming the
+-- captured continuation.  Because `handle` here eliminates into the IO carrier
+-- (UIO), the clause runs on the kappart2 CK-machine as the IO do-kernel, so the
+-- fiber genuinely parks/wakes around the resumption splice.  The native output
+-- must match the interpreter exactly (ordering + result).
+
+effect Step =
+    1 step : Int -> Int
+
+comp : Eff <[Step : Step]> Int
+let comp =
+    do
+        let a <- Step.step 1
+        let b <- Step.step 2
+        pure (a + b)
+
+-- the clause parks (fork+await, then sleepFor) between perform and resume.
+runHandled : UIO Int
+let runHandled =
+    deep handle Step comp with
+        case return x -> pure x
+        case step n k ->
+            do
+                child <- fork (pure (n * 10))
+                ex <- await child
+                printlnString (stringAppend "stepped-" (showInt n))
+                _ <- sleepFor (millis 2)
+                k (n * 10)
+
+main : UIO Unit
+let main = do
+    v <- runHandled
+    printlnString (stringAppend "result-" (showInt v))

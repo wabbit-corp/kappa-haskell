@@ -42,7 +42,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
-import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, primDirect, primEntries)
+import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, multishotLegality, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import qualified Kappa.Backend.Repr as Repr
 import Kappa.Builtins (prelRunIO)
@@ -431,7 +431,10 @@ generateLL cs mainG ffiPrims hostSyms =
           , gsHostSyms = hostSyms
           }
       final = execState (drainQueue >> emitMain mainG) st0
-   in case reverse (gsErrs final) of
+      -- §18.1.17/§27.6/§34.3.3 Stage-4a: the LLVM backend links the SAME one-shot
+      -- kappart2 runtime, so it rejects a reachable multi-shot resumption too.
+      multishotErrs = multishotLegality cs (gsEmitted final)
+   in case reverse (gsErrs final) ++ multishotErrs of
         [] -> Right (assembleLL final)
         errs -> Left errs
 

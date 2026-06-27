@@ -159,6 +159,38 @@ KValue *krt2_finally(KValue *body, KValue *fin) {
   return krt2_doscope(krt2_then(krt2_defer(fin), body));
 }
 
+/* ── §18.1.21/.22 effect-handler nodes (Stage 4a, one-shot) ──────────────────
+ * `handle`/`perform`/`resume` lower to these so an `Eff` computation runs ON
+ * the scheduler (a handler clause may park).  See the deliver/unwind arms and
+ * the OP_PERFORM capture-sub-chain primitive below for the operational model. */
+static KValue *op5(int op, const char *n, KValue *a, KValue *b, KValue *c,
+                  KValue *d, KValue *e) {
+  KValue *args[5] = { a, b, c, d, e }; return kctor(op, n, 5, args);
+}
+static KValue *op3(int op, const char *n, KValue *a, KValue *b, KValue *c) {
+  KValue *args[3] = { a, b, c }; return kctor(op, n, 3, args);
+}
+KValue *krt2_handle(KValue *deep, KValue *label, KValue *ret, KValue *ops, KValue *body) {
+  return op5(OP_HANDLE, "rt.handle", deep, label, ret, ops, body);
+}
+KValue *krt2_perform(KValue *label, KValue *op, KValue *payload) {
+  return op3(OP_PERFORM, "rt.perform", label, op, payload);
+}
+KValue *krt2_resume(KValue *k, KValue *v) {
+  return op2(OP_RESUME, "rt.resume", k, v);
+}
+/* kpf shims: the codegen's curried/array prim path calls fn(KValue**). */
+KValue *kpf_rt_handle(KValue **a)  { return krt2_handle(a[0], a[1], a[2], a[3], a[4]); }
+KValue *kpf_rt_perform(KValue **a) { return krt2_perform(a[0], a[1], a[2]); }
+KValue *kpf_rt_resume(KValue **a)  { return krt2_resume(a[0], a[1]); }
+/* __effBind m f -> OP_BIND node (the monadic bind of the Eff carrier). */
+KValue *kpf_eff_bind(KValue **a)   { return krt2_bind(a[0], a[1]); }
+/* §18.7/§32.2.19 Eff-carrier do-scope / exit-action nodes (Stage 4a): reuse the
+ * IO do-kernel's OP_DOSCOPE/OP_DEFER, so an Eff do-block's defers run masked-LIFO
+ * on EVERY way out (normal completion AND a handler's §32.2.20 abandonment). */
+KValue *kpf_eff_doscope(KValue **a) { return krt2_doscope(a[0]); }
+KValue *kpf_eff_defer(KValue **a)   { return krt2_defer(a[0]); }
+
 /* Convenience console builders (raw C strings). */
 KValue *krt2_print_c(const char *s)   { return op1(OP_PRINT, "rt.print", kstr0(s)); }
 KValue *krt2_println_c(const char *s) { return op1(OP_PRINTLN, "rt.println", kstr0(s)); }
@@ -366,6 +398,24 @@ static void exitstack_push(ExitStack *s, KValue *action) {
 /* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason. */
 typedef struct { ExitStack *xs; int i; int rkind; KValue *rval; KValue *rlabel; } FinSeq;
 
+/* §18.1.21 a captured ONE-SHOT resumption.  `head` is the op-site Cont frame;
+ * `tail` is the LAST frame of the captured sub-chain (its `next` is severed and
+ * points at &g_done at capture time so the slice is self-terminated).  `used`
+ * enforces the one-shot discipline at runtime as a defense-in-depth backstop —
+ * the compile-time E_QTT_CONTINUATION_CAPTURE gate already rejects >1 use, so a
+ * second `resume` here is an internal invariant break, not a user error.  The
+ * saved `cur_exits` is reinstated on splice so the resumed body re-enters under
+ * the do-scope/exit-action state that held at capture (§32.2.13). */
+typedef struct Resumption {
+  Cont      *head;       /* op-site frame: the start of the captured sub-chain    */
+  Cont      *tail;       /* last captured frame (tail->next severed to &g_done)   */
+  ExitStack *cur_exits;  /* the fiber's cur_exits at the capture point (body's)   */
+  KValue    *label;      /* §32.2.22 deep reinstall: the handler's installed label */
+  void      *handler;    /* the Handler* to re-push on a deep resume; NULL=shallow */
+  void      *handler_exits; /* the cur_exits the reinstalled handler restores to   */
+  int        used;       /* 0 until resumed; one-shot guard                       */
+} Resumption;
+
 static int deliver(Rt *rt, Fiber *f, KValue *v);  /* normal value path  */
 static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel); /* abnormal */
 
@@ -505,6 +555,144 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
   return 1;
 }
 
+/* ── §18.1.21/.22 effect handlers (Stage 4a, one-shot) ───────────────────────
+ * `perform label.op payload` searches f->k OUTWARD for the nearest KK_HANDLER
+ * whose installed label (Cont.a) has the same ctor-id as the op's label — the
+ * exact structural twin of unwind's KK_CATCH/RK_FAIL search (rt.c §2.3), but
+ * RESUMABLE: instead of dropping the popped frames, it SEVERS the op-site->
+ * handler sub-chain and hands it back as a one-shot resumption.  `resume k v`
+ * re-links that sub-chain onto f->k and delivers v — the splice twin of
+ * deliver's KK_BIND arm (§2.4).  ONE-SHOT only: the splice is a destructive
+ * pointer move, exactly how f->k already works everywhere. */
+
+/* §18.1.18 label identity: the native backend gives each effect label a unique
+ * string token (the label GName's effLabelKey, recorded as the label global's
+ * core body; see Check.elabTopEffect / elabScopedEffect).  Both `handle` and the
+ * `perform` site reference the SAME label global, so identity is string equality
+ * on that token — exactly as the legacy kpf___handleEff eff_label_eq did.  A
+ * ctor-id compare would be WRONG: every label is a K_STR, so kctor_tagid yields
+ * -1 for all of them and distinct effects would falsely match. */
+static int eff_label_same(KValue *a, KValue *b) {
+  return a && b && a->tag == K_STR && b->tag == K_STR &&
+         a->as.str.len == b->as.str.len &&
+         memcmp(a->as.str.p, b->as.str.p, a->as.str.len) == 0;
+}
+
+/* The resumption is handed to the clause as an ORDINARY one-argument function so
+ * that `resume k v` — surface-elaborated to the application `k v` — naturally
+ * produces an OP_RESUME node.  This closure captures the K_FGN resumption box in
+ * env[0] and builds `krt2_resume(box, v)` when applied. */
+static KValue *resume_thunk(KEnv *env, KValue *v) {
+  return krt2_resume(kvar(env, 0), v);
+}
+
+/* Run a handler clause `clause payload kfn`, where kfn is the resumption wrapped
+ * as a function.  The clause body is itself an Eff computation that runs on the
+ * scheduler (so it may park / perform further ops). */
+static int run_op_clause(Rt *rt, Fiber *f, KValue *clause, KValue *payload, KValue *kbox) {
+  KValue *kfn = kclo(resume_thunk, kpush(kbox, NULL));
+  f->cur = kapp(kapp(clause, payload), kfn);
+  return 1;
+}
+
+/* OP_PERFORM: capture op-site -> handler, run the matching clause (§2.3).  Returns
+ * 1 to keep stepping, 0 if the fiber finished (an unhandled op aborts the fiber). */
+static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *payload) {
+  /* Walk outward from the op site for the nearest matching KK_HANDLER.  `prev`
+   * trails one frame behind `c` so we can sever the captured sub-chain's tail. */
+  Cont *head = f->k;        /* the op-site frame begins the captured sub-chain   */
+  Cont *prev = NULL;
+  for (Cont *c = f->k; ; prev = c, c = c->next) {
+    if (c->kind == KK_DONE) {
+      /* no enclosing handler for this label: an escaped operation.  The type
+       * system forbids this (a handled row), so it is an internal mis-lowering;
+       * fail the fiber rather than silently dropping the op. */
+      const char *nm = (op && op->tag == K_STR) ? (const char *)op->as.str.p : "?";
+      char msg[160];
+      snprintf(msg, sizeof msg,
+               "internal: perform '%s' escaped all handlers (unhandled effect op)", nm);
+      return unwind(rt, f, RK_FAIL, kstr0(msg), NULL);
+    }
+    if (c->kind == KK_HANDLER && eff_label_same(c->a, label)) {
+      Handler *h = (Handler *)c->aux;
+      KValue *clause = h->ops ? kproj(h->ops, (const char *)op->as.str.p) : NULL;
+      if (!clause) {
+        char msg[160];
+        snprintf(msg, sizeof msg, "internal: handler has no clause for op '%s'",
+                 (const char *)op->as.str.p);
+        return unwind(rt, f, RK_FAIL, kstr0(msg), NULL);
+      }
+      ExitStack *body_exits = f->cur_exits;       /* the captured body's exits   */
+      ExitStack *handler_exits = (ExitStack *)c->aux2; /* what the prompt restores */
+      /* Build the one-shot resumption from the captured sub-chain [head .. prev].
+       * The captured slice runs from the op site up to (and EXCLUDING) the handler
+       * frame `c` (§2.3).  We POP the handler frame: the clause is the handler's
+       * own code and runs OUTSIDE the prompt (its result flows to c->next, the
+       * handler's own continuation).  The resumption re-splices [head..prev] onto
+       * c->next when invoked; a deep handler additionally re-pushes a fresh copy
+       * of this KK_HANDLER around the resumed body (§32.2.22). */
+      Resumption *r = (Resumption *)GC_MALLOC(sizeof(Resumption));
+      r->cur_exits = body_exits;
+      r->used = 0;
+      if (prev == NULL) {
+        r->head = NULL; r->tail = NULL;  /* tail perform: identity resumption     */
+      } else {
+        prev->next = &g_done;            /* sever op-site..prev from the handler   */
+        r->head = head; r->tail = prev;
+      }
+      /* §32.2.22 deep handlers reinstall themselves around the resumption; a
+       * shallow handler does not.  Carry the reinstall context so the splice path
+       * (do_resume) can re-push the SAME (label, ret, ops) beneath the body. */
+      if (h->deep) {
+        r->label = c->a; r->handler = h; r->handler_exits = handler_exits;
+      } else {
+        r->label = NULL; r->handler = NULL; r->handler_exits = NULL;
+      }
+      f->k = c->next;                  /* pop the handler: the clause runs outside  */
+      f->cur_exits = handler_exits;    /* under the cur_exits the prompt restores   */
+      return run_op_clause(rt, f, clause, payload, kfgn(r, KRT2_KIND_RESUMPTION));
+    }
+  }
+}
+
+/* OP_RESUME: splice the captured sub-chain back onto f->k and deliver `value`
+ * (§2.4 — the twin of deliver's KK_BIND arm).  ONE-SHOT: a destructive pointer
+ * move; the `used` guard is a backstop for the already-enforced compile gate. */
+static int do_resume(Rt *rt, Fiber *f, KValue *kbox, KValue *value) {
+  if (!kbox || kbox->tag != K_FGN) {
+    return unwind(rt, f, RK_FAIL, kstr0("internal: resume of a non-resumption value"), NULL);
+  }
+  Resumption *r = (Resumption *)kas_fgn(kbox);
+  if (r->used) {
+    /* the compile-time E_QTT_CONTINUATION_CAPTURE gate rejects >1 use, so this
+     * is an internal invariant break (rt-multishot is not advertised). */
+    return unwind(rt, f, RK_FAIL,
+                  kstr0("internal: one-shot resumption used more than once (rt-multishot absent)"), NULL);
+  }
+  r->used = 1;
+  /* §32.2.22 deep reinstall: re-push the handler beneath the spliced body so the
+   * resumed computation is re-handled.  do_perform POPPED the handler frame
+   * (f->k advanced to c->next), so f->k now points at the handler's own
+   * continuation; re-pushing a fresh KK_HANDLER here re-delimits the resumed
+   * sub-chain, and a perform inside it finds this fresh handler again — exactly
+   * the §18.1.22 deep recursive driver.  A shallow handler skips this (no
+   * auto-reinstall, §18.1.21). */
+  if (r->handler) {
+    Handler *h = (Handler *)r->handler;
+    f->k = cont_new2(KK_HANDLER, r->label, h, r->handler_exits, f->k);
+  }
+  /* Reinstate the captured body's exit-action state, then splice the sub-chain. */
+  if (r->head) {
+    r->tail->next = f->k;        /* re-link the severed tail onto the live chain  */
+    f->k = r->head;              /* re-root at the op-site frame                  */
+    f->cur_exits = r->cur_exits; /* re-enter under the captured do-scope state    */
+  } else {
+    /* identity resumption: nothing captured, deliver at the (re)installed point   */
+    if (r->handler) f->cur_exits = r->cur_exits;
+  }
+  return deliver(rt, f, value);
+}
+
 /* Normal value path: feed v to the continuation.  Returns 1 to keep stepping,
  * 0 if the fiber finished. */
 static int deliver(Rt *rt, Fiber *f, KValue *v) {
@@ -541,6 +729,13 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       if (fs->i >= 0) { KValue *e = fs->xs->items[fs->i]; fs->i--; f->cur = e; return 1; }
       f->k = c->next;
       return apply_reason(rt, f, fs->rkind, fs->rval, fs->rlabel);
+    }
+    case KK_HANDLER: {                    /* §18.1.21 body completed: run `return` */
+      Handler *h = (Handler *)c->aux;
+      f->k = c->next;
+      f->cur_exits = (ExitStack *)c->aux2; /* leave the handled body's do-scopes  */
+      f->cur = kapp(h->ret, v);            /* `case return x -> ...` (Eff res)     */
+      return 1;
     }
   }
   return 0;
@@ -603,6 +798,14 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
          * finalizer's cause with the primary via §32.2.12 `Then` is a remaining
          * refinement.)  c->next is the begin_finseq KK_POPMASK, so the mask
          * raised for this drain is restored as we continue unwinding. */
+        f->k = c->next; continue;
+      case KK_HANDLER:
+        /* §18.1.21 a handler intercepts `perform`, NOT abrupt control flow: a
+         * fail/return/break/continue/interrupt unwinding through the handled body
+         * propagates past the prompt transparently (the body's captured do-scope
+         * defers already ran on the KK_DOSCOPE frames crossed before reaching
+         * here).  Restore the cur_exits the prompt would reinstate, then drop. */
+        f->cur_exits = (ExitStack *)c->aux2;
         f->k = c->next; continue;
     }
     return 0;
@@ -808,7 +1011,46 @@ static void fiber_step(Rt *rt, Fiber *f) {
       }
       case OP_ATOMICALLY:                       /* run an STM transaction (§18.1.13) */
         if (krt2i_op_atomically(rt, f, kctor_arg(cur, 0))) break; else return;
+      /* ── §18.1.21/.22 effect handlers (Stage 4a, one-shot) ──────────────── */
+      case OP_HANDLE: {                          /* install a KK_HANDLER prompt   */
+        Handler *h = (Handler *)GC_MALLOC(sizeof(Handler));
+        h->deep = (kctor_tagid(kctor_arg(cur, 0)) == KCT_TRUE);
+        h->ret  = kctor_arg(cur, 2);
+        h->ops  = kctor_arg(cur, 3);
+        /* aux2 saves the cur_exits to reinstate when the prompt is removed (the
+         * return clause and op clauses run OUTSIDE the handled body's scopes). */
+        f->k = cont_new2(KK_HANDLER, kctor_arg(cur, 1), h, f->cur_exits, f->k);
+        f->cur = kctor_arg(cur, 4);              /* the handled body (an Eff comp) */
+        break;
+      }
+      case OP_PERFORM:                           /* perform label.op payload      */
+        if (do_perform(rt, f, kctor_arg(cur, 0), kctor_arg(cur, 1), kctor_arg(cur, 2)))
+          break; else return;
+      case OP_RESUME:                            /* resume k value                */
+        if (do_resume(rt, f, kctor_arg(cur, 0), kctor_arg(cur, 1))) break; else return;
       default:
+        /* §18.1.21 UNIFICATION: the §30.2.2.7 OpCall free-monad tree IS the same
+         * algebraic-effect term as a CK-machine Cont chain.  When an Eff node
+         * reaches the scheduler (under a KK_HANDLER prompt installed by OP_HANDLE)
+         * interpret it directly so the handler clause runs on the scheduler and
+         * may park — instead of the pure kpf___handleEff tree rewrite.
+         *
+         * These checks come BEFORE the kis_imm bare-value delivery: an `__EffPure v`
+         * whose v is itself immediate is UNBOXING-packed (b011), so kis_imm(cur) is
+         * true even though it is a constructor we must UNWRAP, not deliver raw.
+         * kctor_tagid decodes a packed immediate correctly. */
+        if (kctor_tagid(cur) == KCT_EFFPURE) {   /* __EffPure v: finished -> v     */
+          if (!deliver(rt, f, kctor_arg(cur, 0))) return;
+          break;
+        }
+        if (kctor_tagid(cur) == KCT_EFFOP) {     /* __EffOp label op payload cont  */
+          /* perform the op; feed its result to `cont` (the captured continuation
+           * carried in the tree node).  cont yields a further Eff node, so bind it
+           * with KK_BIND and step the perform. */
+          f->k = cont_new(KK_BIND, kctor_arg(cur, 3), f->k);
+          f->cur = krt2_perform(kctor_arg(cur, 0), kctor_arg(cur, 1), kctor_arg(cur, 2));
+          break;
+        }
         /* UNBOXING Stage 1: an immediate Int (or any other immediate value) is a
          * bare result, not a krt2_* node or legacy IO action — hand it straight
          * to the continuation, never dereferencing the odd word. */
@@ -836,6 +1078,37 @@ static void fiber_step(Rt *rt, Fiber *f) {
     }
   }
 }
+
+/* §18.1.14 runPure : Eff <[]> a -> a.  Drive a FULLY-HANDLED Eff computation to
+ * its value on a private CK-machine, SYNCHRONOUSLY on the calling thread.  A
+ * pure Eff (empty residual row) has no scheduler effects, so fiber_step never
+ * parks; it steps the OP_HANDLE/OP_PERFORM/OP_RESUME (and __EffOp/__EffPure)
+ * tree to a single delivered value.  This is the unified driver that lets a
+ * handler installed by `handle` run on the CK-machine (so its clause may park)
+ * while `runPure` remains a pure eliminator usable in expression position.
+ *
+ * The private fiber's KK_DONE arm sets f->exit = Success(v); we read it back.
+ * No workers/reactor run — the steps are all synchronous (pure) — so a stray
+ * park would leave f not-DONE and we trap rather than hang. */
+KValue *krt2_run_eff(KValue *comp) {
+  Rt *rt = g_rt ? g_rt : krt2_new(0);
+  Fiber *f = fiber_new(rt, comp);
+  /* keep it GC-reachable for the duration (it holds the live Cont chain);
+   * fiber_finish drops it from rt->all on the KK_DONE arm. */
+  krt2i_all_add(rt, f);
+  atomic_store(&f->status, F_RUNNING);
+  fiber_step(rt, f);
+  if (atomic_load_explicit(&f->status, memory_order_acquire) != F_DONE) {
+    krt_fail("runPure: computation parked (a pure Eff must not reach the scheduler)");
+    return 0;
+  }
+  KValue *ex = f->exit;
+  if (kctor_tagid(ex) == KCT_SUCCESS) return kctor_arg(ex, 0);
+  /* a Failure escaped runPure: surface it (an unhandled op / clause failure). */
+  krt_fail("runPure: computation is not fully handled (an operation escaped its handlers)");
+  return 0;
+}
+KValue *kpf_run_eff(KValue **a) { return krt2_run_eff(a[0]); }
 
 void krt2_safepoint(void) { /* spine: cooperative budget is a perf/fairness TODO (§6.4) */ }
 

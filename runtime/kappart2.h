@@ -59,6 +59,13 @@ typedef struct FiberRef  FiberRef;    /* fiber-local cell (§18.1.7)            
 #define KRT2_KIND_TVAR      "rt.TVar"
 #define KRT2_KIND_ATOMIC    "rt.AtomicRef"
 #define KRT2_KIND_FIBERREF  "rt.FiberRef"
+#define KRT2_KIND_RESUMPTION "rt.Resumption" /* §18.1.21 captured one-shot k */
+
+/* §18.1.21/.22 effect-handler nodes (Stage 4a): build the scheduler actions a
+ * `handle`/`perform`/`resume` lowers to (see rt.c for the operational model). */
+KValue *krt2_handle(KValue *deep, KValue *label, KValue *ret, KValue *ops, KValue *body);
+KValue *krt2_perform(KValue *label, KValue *op, KValue *payload);
+KValue *krt2_resume(KValue *k, KValue *value);
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 

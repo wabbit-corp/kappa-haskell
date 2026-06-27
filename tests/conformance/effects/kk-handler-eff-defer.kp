@@ -1,0 +1,32 @@
+--! assertNoErrors
+--! assertEval deferred 7
+
+-- §18.7/§32.2.19 Stage 4a: an Eff do-block may now carry a `defer` exit action
+-- (the elabEffDo lift), so a handled Eff computation has exit frames for the
+-- §32.2.20 abandonment guarantee to unwind.  In the PURE Eff carrier the defer
+-- body is itself pure (unobservable under runPure), so the result is unchanged
+-- by the defer — the test asserts the lift type-checks and runs (the OBSERVABLE
+-- abandonment case lives on the IO carrier / native side).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+comp : Eff <[State : State]> Int
+let comp =
+    do
+        defer (State.put 99)
+        let _ <- State.put 1
+        let v <- State.get ()
+        pure v
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 7
+        case put _ k -> k ()
+
+deferred : Int
+let deferred = runPure handled

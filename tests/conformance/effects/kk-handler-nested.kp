@@ -1,0 +1,40 @@
+--! assertNoErrors
+--! assertEval nested 107
+
+-- §18.1.21/.22 Stage 4a (KK_HANDLER): nested handlers on distinct labels —
+-- the inner State handler eliminates State first, leaving the outer Reader op
+-- to propagate (label identity, §18.1.18) to the outer handler.  The
+-- interpreter result here is the differential oracle for the native KK_HANDLER
+-- runtime (perform = outward search; resume = deliver-splice).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect Reader =
+    1 ask : Unit -> Int
+
+comp : Eff <[State : State, Reader : Reader]> Int
+let comp =
+    do
+        let r <- Reader.ask ()
+        let s <- State.get ()
+        let _ <- State.put 0
+        pure (r + s)
+
+inner : Eff <[Reader : Reader]> Int
+let inner =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 100
+        case put _ k -> k ()
+
+outer : Eff <[ ]> Int
+let outer =
+    deep handle Reader inner with
+        case return x -> pure x
+        case ask _ k -> k 7
+
+nested : Int
+let nested = runPure outer
