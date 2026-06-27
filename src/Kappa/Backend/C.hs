@@ -120,6 +120,7 @@ data GenState = GenState
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
   , gsDeferLabels :: ![(Text, (Text, Text))] -- ^ §18.7 label ↦ (arr,cnt) frame of each enclosing LABELED do-scope (explicit `do`/loop), innermost first; a `defer@L` registers onto the frame of the scope labeled L (which may be outer) instead of the current scope.
+  , gsUsingReleases :: ![[Text]] -- ^ §19.5/§32.2.6 interrupt-release stack: one list of `using` release C-expressions per currently-open framed synchronous scope, innermost scope first (within a scope, registration order). A §32.2.6 loop-back-edge safe-point ABORT runs these LIFO (innermost release first) — mirroring the interpreter's `using`-via-`onException`, which runs the release on the interrupt-unwind path. Plain `defer`s are NOT here: the interpreter runs them ONLY via the exit queue (normal/abrupt completion), never on async interrupt, so they must NOT run at a safe-point abort.
   , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
   , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
   , gsCpsRefRegion :: !Bool -- ^ CPS loop family (§4 R7): true while building the @cond@/@body@ action trees of a SUSPENDING @while@ (or any CPS re-run scope). A @readRef@ then lowers to the @OP_READ_REF@ action NODE (a RUN-TIME cell access the CK-machine performs each iteration) rather than a build-time @kref_get@ captured once — so a re-run body never reads a stale snapshot, and read-after-write within an iteration is preserved.
@@ -477,6 +478,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsDefer = []
           , gsScopeDefers = []
           , gsDeferLabels = []
+          , gsUsingReleases = []
           , gsScalars = Map.empty
           , gsScalarRegion = False
           , gsCpsRefRegion = False
@@ -3963,10 +3965,10 @@ compileDoLegacy lbl items = do
   -- cannot break out of, nor defer@L into, a do-block VALUE's outer scope),
   -- so reset those for the do-fn body. compileItems sets up this scope's
   -- §18.7 defer frame (tagged with `lbl` for defer@label routing).
-  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g, gsDeferLabels g)
-  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = [], gsDeferLabels = []}
+  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g, gsDeferLabels g, gsUsingReleases g)
+  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = [], gsDeferLabels = [], gsUsingReleases = []}
   (stmts, ()) <- captured "cenv" (compileItems lbl Tail items)
-  modify' $ \g -> let (d, s, l, dl) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l, gsDeferLabels = dl}
+  modify' $ \g -> let (d, s, l, dl, ur) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l, gsDeferLabels = dl, gsUsingReleases = ur}
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
@@ -4101,7 +4103,11 @@ compileItems selfLabel mode items0 = do
         Nested -> modify' $ \g -> g {gsScopeDefers = frame : gsScopeDefers g}
         _ -> modify' $ \g -> g {gsDefer = frame : gsDefer g}
       forM_ selfLabel $ \l -> modify' $ \g -> g {gsDeferLabels = (l, frame) : gsDeferLabels g}
+      -- §32.2.6: open a fresh interrupt-release scope so a `using` in this scope
+      -- registers its release here (run at a safe-point abort, unlike `defer`).
+      modify' $ \g -> g {gsUsingReleases = [] : gsUsingReleases g}
       go items0
+      modify' $ \g -> g {gsUsingReleases = drop 1 (gsUsingReleases g)}
       forM_ selfLabel $ \_ -> modify' $ \g -> g {gsDeferLabels = drop 1 (gsDeferLabels g)}
       case mode of
         Nested -> do flushFramesInline [frame]; modify' $ \g -> g {gsScopeDefers = drop 1 (gsScopeDefers g)}
@@ -4290,7 +4296,15 @@ compileItems selfLabel mode items0 = do
         frame <- gets $ \g -> case mode of
           Nested -> head (gsScopeDefers g)
           _ -> head (gsDefer g)
-        registerDefer frame ("kapp(" <> re <> ", " <> rv <> ")")
+        let releaseExpr = "kapp(" <> re <> ", " <> rv <> ")"
+        registerDefer frame releaseExpr
+        -- §32.2.6: also record the release on this scope's interrupt-release list so
+        -- a loop-back-edge safe-point ABORT runs it (the resource must be freed on
+        -- interrupt — interp runs it via `onException`).  A plain `defer` is NOT
+        -- recorded here, so it runs only on normal/abrupt completion, never on abort.
+        modify' $ \g -> case gsUsingReleases g of
+          (cur : outer) -> g {gsUsingReleases = (releaseExpr : cur) : outer}
+          [] -> g -- defensive: a `using` always sits in a framed scope (counted in ndirect)
         bindAndContinue rv pat
       where
         -- bind an irrefutable do-pattern (with a runtime check for any
@@ -4406,6 +4420,38 @@ emitPropagateFailure v = do
     emit ("  while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
   emit ("  return " <> v <> ";")
   emit "}"
+
+-- | §32.2.6 back-edge safe point for a generated BOXED loop (the general
+-- 'compileLoop' lowering and the scalar loop's deliverable-interrupt exit).
+-- These loops run synchronously under the @krun_io@ K_NATIVE bridge — the
+-- CK-machine is not iterating — so a pending interrupt is only OBSERVED when
+-- @krt2_safepoint()@ is called at the loop's back-edge.  A register counter,
+-- reloaded to @KRT2_SP_QUANTUM@, gates the real (still cheap) check so the loop
+-- pays only a decrement + predictable branch per iteration; every QUANTUM
+-- iterations it calls @krt2_safepoint()@, which sets @safepoint_hit@ and returns
+-- 1 iff @interrupt_pending && mask_depth==0@ (a masked fiber returns 0 —
+-- suppression holds).  On a 1 we UNWIND OUT of the generated do-fn: a boxed loop
+-- has already committed every mutation to its ref cells, so there is NOTHING to
+-- flush for the loop state itself.  We do, however, run the active @using@
+-- interrupt-releases (LIFO, innermost first) — the interpreter runs a @using@
+-- release on the interrupt-unwind path (`onException`, Interp.hs ~697), so the
+-- resource is never leaked.  Plain @defer@s are deliberately NOT run here: the
+-- interpreter runs them ONLY via the exit queue on normal/abrupt completion, never
+-- on an async interrupt at a safe point, so running them would diverge from interp.
+-- We then @return kunit()@; the bridge returns to the post-K_NATIVE gate
+-- (rt.c ~1794), which sees @safepoint_hit@ and delivers the interrupt — the
+-- returned sentinel is discarded as the fiber unwinds.  Returning here (rather
+-- than @goto@-ing past the loop into the continuation) is what skips the
+-- post-loop continuation so native does NOT run side effects the interpreter,
+-- which throws AT the back-edge, never runs (FINDING B's ordering invariant).
+emitSafepointAbort :: Text -> Gen ()
+emitSafepointAbort spc = do
+  -- innermost-scope-first, most-recent-registration-first ⇒ correct LIFO unwind.
+  releases <- gets (concat . gsUsingReleases)
+  emit ("if (--" <> spc <> " <= 0) { " <> spc <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) {")
+  forM_ releases $ \rel -> emit ("  krun_io(" <> rel <> ");")
+  emit "  return kunit();"
+  emit "} }"
 
 -- | Return a do-block's tail IO action, deferring its execution to the
 -- driving @krun_io@ loop so a sequenced IO tail-recursion runs in constant
@@ -4528,6 +4574,16 @@ compileLoop mlabel kind body mels = do
   -- break → endL), so the generated loop has no unused goto labels under
   -- -Wall; contL/normL are always part of the loop's own control flow.
   let usesLabel l = any (T.isInfixOf ("goto " <> l))
+  -- §32.2.6 back-edge safe point (FINDING A): this boxed loop runs under the
+  -- synchronous krun_io bridge with no CK re-entry, so a pending interrupt is
+  -- observed ONLY when we call krt2_safepoint() at the back-edge.  One register
+  -- counter per loop, reloaded to KRT2_SP_QUANTUM, gates the (cheap) check — see
+  -- emitSafepointAbort.  Without this an infinite general `for`/`while` (a
+  -- readRef/writeRef body, any closure — anything outside the scalar fast path)
+  -- would HANG an interrupted fiber, breaking the interp==native invariant (the
+  -- interpreter installs loopSafepoint at every while AND for back-edge).
+  spc <- freshN "spc_"
+  emit ("int64_t " <> spc <> " = KRT2_SP_QUANTUM;")
   bodyBlk <- case kind of
     LoopWhile cond -> do
       (condBlk, ce) <- captured env (compile cond)
@@ -4536,6 +4592,7 @@ compileLoop mlabel kind body mels = do
       forM_ condBlk (emit . ("  " <>))
       emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
       forM_ bb emit
+      emitSafepointAbort spc
       emit ("goto " <> contL <> ";")
       pure bb
     LoopFor pat src -> do
@@ -4555,6 +4612,7 @@ compileLoop mlabel kind body mels = do
       forM_ bb emit
       when (usesLabel advL bb) $ emit (advL <> ": ;")
       emit (it <> " = kctor_arg(" <> it <> ", 1);")
+      emitSafepointAbort spc
       emit ("goto " <> contL <> ";")
       pure bb
   emit (normL <> ": ;")
@@ -4700,6 +4758,7 @@ compileScalarWhile mlabel cond body = do
   n <- freshN "sl_"
   let scontL = "kscont_" <> n
       sflushL = "ksflush_" <> n
+      sabortL = "ksabort_" <> n
       boxedL = "ksbox_" <> n
       afterL = "ksaft_" <> n
   -- A SNAPSHOT int64 local per scalar var holds the var's value at the TOP of
@@ -4721,8 +4780,14 @@ compileScalarWhile mlabel cond body = do
   -- back-edge so the hot unboxed loop pays only a register decrement + predictable
   -- branch per iteration; the real (still cheap) interrupt check runs every
   -- QUANTUM iterations.  On a deliverable interrupt krt2_safepoint() returns 1 and
-  -- the loop flushes its FINAL scalar values to the ref cells and exits via
-  -- sflushL — control returns to the CK-machine, which delivers at the next step.
+  -- the loop flushes its FINAL scalar values to the ref cells and exits via the
+  -- DEDICATED abort label sabortL (NOT sflushL): unlike normal completion, the abort
+  -- path must SKIP the loop's continuation (slRest) — the interpreter throws AT the
+  -- back-edge and never runs the post-loop do-block, so running it here would have
+  -- native emit a side effect interp never does (FINDING B).  sabortL flushes the
+  -- final scalars, runs the active `using` interrupt-releases (NOT plain defers —
+  -- see emitSafepointAbort), and returns out of the do-fn so the post-bridge gate
+  -- (rt.c ~1794) delivers the interrupt before any continuation.
   spCtr <- freshN "spc_"
   emit ("int64_t " <> spCtr <> " = KRT2_SP_QUANTUM;")
   savedEsc <- gets gsI64Escape
@@ -4748,14 +4813,30 @@ compileScalarWhile mlabel cond body = do
         Nothing -> lr1UnreachableStmt
     _ -> lr1UnreachableStmt
   -- §32.2.6 back-edge safe point: counter-gated krt2_safepoint().  On a deliverable
-  -- interrupt, flush the FINAL scalar values (a complete-iteration state) and exit
-  -- via sflushL so the CK-machine can deliver.  Otherwise fall through to scontL.
-  emit ("if (--" <> spCtr <> " <= 0) { " <> spCtr <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) goto " <> sflushL <> "; }")
+  -- interrupt, branch to sabortL (flush FINAL scalars, skip the continuation, return
+  -- so the gate delivers).  Otherwise fall through to scontL.  (FINDING B: the abort
+  -- exit is sabortL, NOT the normal-completion sflushL, so slRest is skipped.)
+  emit ("if (--" <> spCtr <> " <= 0) { " <> spCtr <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) goto " <> sabortL <> "; }")
   emit ("goto " <> scontL <> ";")
-  -- normal scalar completion: flush every scalar var's FINAL value, skip boxed.
+  -- normal scalar completion: flush every scalar var's FINAL value, skip boxed,
+  -- and fall through to afterL → the loop's continuation (slRest) runs normally.
   emit (sflushL <> ": ;")
   forM_ flushScalars emit
   emit ("goto " <> afterL <> ";")
+  -- §32.2.6 safe-point ABORT exit (FINDING B): a deliverable interrupt was observed
+  -- at the back-edge.  Flush the final scalar values to the ref cells (so the fiber
+  -- unwinds with a consistent state), run the active `using` interrupt-releases LIFO
+  -- (the interpreter frees them via `onException`; plain `defer`s do NOT run on an
+  -- async interrupt, so they are NOT run here), then RETURN out of the do-fn — this
+  -- skips slRest so the post-loop continuation does NOT run before the gate
+  -- (rt.c ~1794) delivers the interrupt.  Placed between the two `goto`s above so no
+  -- fall-through (normal completion / boxed completion both reach afterL) enters it;
+  -- the trailing `return` means it cannot fall through into boxedL either.
+  emit (sabortL <> ": ;")
+  forM_ flushScalars emit
+  abortReleases <- gets (concat . gsUsingReleases)
+  forM_ abortReleases $ \rel -> emit ("krun_io(" <> rel <> ");")
+  emit "return kunit();"
   -- boxed continuation (overflow target): the EXISTING boxed lowering, region
   -- off, reading the just-flushed (snapshot) refs and promoting to GMP (§6).
   emit (boxedL <> ": ;")
