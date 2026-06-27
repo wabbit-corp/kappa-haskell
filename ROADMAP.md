@@ -44,7 +44,15 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 
 - [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
 - [x] **No by-name prim dispatch** — codegen lowers to direct `kp_*`/`kpf_*` calls or curried `K_NATIVE`; `prim_fire_pure`/`K_PRIM` removed.
-- [x] **`std.atomic`** ([`../atomic.c`](runtime/atomic.c)) — real C11 lock-free `AtomicRef`, stress-verified; `rt-atomics` honest.
+- [~] **`std.atomic` C11 core written** ([`../atomic.c`](runtime/atomic.c)) — real
+  lock-free `AtomicRef`/CAS, stress-verified at the C level. **⚠️ REGRESSED — NOT
+  WIRED:** the runtime-spec-coverage audit (2026-06-26) found the prelude now
+  lowers `AtomicRef` to a **plain `Ref`** (`atomicLoad=readRef`/`atomicStore=
+  writeRef`/`__atomicRmw=readRef-then-writeRef`, [`Prelude.hs:3045-3131`](src/Kappa/Prelude.hs));
+  `atomic.c` is **dead code** (0 backend hits for `krt2_atomic_*`), so every
+  RMW/CAS races under the nproc-worker runtime and the memory-order args are
+  ignored — `rt-atomics` is over-advertised, not honest. Re-wiring is the §29.1
+  item in the **Runtime spec-coverage gaps** track below.
 - [x] **Single-agent STM from `.kp`** (`TVar`/`atomically` over a cell, matching the interpreter).
 - [x] **CPS Stage 0** — R1 masked finalizer drains, R10 fail-closed `OP_DEFER` (CPS-DESIGN §4, R1/R10).
 - [x] **CPS Stage 1** — real `fork`/`await` suspension from `.kp` (CPS-DESIGN §3.1, Stage 1).
@@ -447,6 +455,167 @@ current code + the `E_*` diagnostic-catalogue coverage.
       `mpz_get_d`). Verified against a GHC oracle over ~276k cases (incl. 10,944
       exact-tie integers, bignums to 2^1000), zero mismatches; corpus 104,
       conformance 1738.
+- [ ] **C-backend delve renders nothing (C-vs-LLVM miscompile)** — surfaced while
+      adversarially exercising delve on the native backends. After the `krun_io`
+      OP-driver fix (`0693103`) delve BUILDS and no longer crashes on C, but the
+      C-built binary renders **0 bytes** and exits 0: `runLoop` renders then
+      `match game.mode case Quit -> exit`, and `game.mode` reads as `Quit` even
+      though `initialMenu` sets `MainMenu` ([`engine.game.kp:1476`](examples/packages/delve/src/delve/engine.game.kp)).
+      The **LLVM-built** delve renders the full title through the identical PTY
+      harness, so it is a genuine C-vs-LLVM divergence, not the harness. Ruled out
+      (all `interp==C==LLVM`): traverse order, 5/15-field record updates, the
+      `initialMenu` shape, catch-over-parameter, stale runtime objects. Most likely
+      suspects: delve's term host-FFI marshalling (`delve_open_terminal2`/
+      `delve_write_all2`/`delve_read_key2`) or a `config.loadDefault` combinator
+      producing a subtly-wrong pack on C. Deferred 2026-06-25 (the native
+      conformance baseline is otherwise green; delve is the only known C holdout).
+      See the `c-backend-delve-render-bug` memory for the exact repro.
+
+---
+
+## Track: Runtime spec-coverage gaps ([`RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md))
+
+The `runtime-spec-coverage-audit` workflow (2026-06-26, `file:line`-grounded,
+commit `93f20af`) mapped the kappart2 runtime against the spec's §18/§29/§32.2/
+§27.6 MUSTs and found **11 normative-MUST gaps + several PARTIAL refinements** —
+**none of which this roadmap tracked**. [`docs/RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md)
+is the detailed map (per-area tables, `file:line` evidence, severity, effort);
+this track is the worklist. The CK-machine core (§32.2 sequential one-shot) and
+the §18.1 structured-concurrency surface are solidly done on C — **these are the
+edges, and several are silent-correctness bugs, not just missing features.**
+Verified still open against HEAD (the audit post-dates the `fbe787c` Eff-do lift).
+
+**Silent-correctness MUST violations (real bugs):**
+- [ ] **Handler abandonment cleanup (§32.2.20/.21)** — a one-shot handler clause
+      that completes WITHOUT resuming severs `[head..prev]` into a `Resumption`
+      ([`rt.c:795-803`](runtime/rt.c)) and pops the prompt; the slice is then GC'd
+      with **no path running `begin_finseq` over `r->head`**, so a `using`/`defer`
+      inside the handled body **never runs** — a silent resource leak on native.
+      Untested by construction (the interp oracle reduces `__effDefer` to Unit).
+      The audit's #1 priority.
+- [ ] **`std.atomic` is non-atomic (§29.1)** — see the Done-section caveat above:
+      `AtomicRef` → plain `Ref`, `atomic.c` dead. Data-race on every RMW/CAS under
+      the nproc-worker runtime; memory-order args ignored. The correct impl already
+      exists + is compiled in — purely a prelude→`krt2_atomic_*` wiring fix.
+- [ ] **`sleepFor`/`sleepUntil` nonpositive duration parks ~forever (§18.1.6)** —
+      `OP_SLEEP` does `(uint64_t)kas_int(...)` ([`rt.c:1061`](runtime/rt.c)); a
+      negative ns (a `sleepUntil` of a past `Instant`, [`Prelude.hs:847-848`](src/Kappa/Prelude.hs))
+      wraps to a huge unsigned and the fiber never wakes. Add a nonpositive guard
+      (return immediately). Small, concrete sign-cast bug.
+- [ ] **`UnhandledChildFailure` swallowed (§18.1.3/.8)** — an attached,
+      never-awaited child that fails is unlinked and its `Exit` discarded
+      (`fiber_finish` rt.c:477-496, `scope_detach` scope.c:119-134, root shutdown
+      rt.c:1394-1423); it is never aggregated into the scope's `Exit` as a Defect,
+      so a failing fork silently vanishes.
+- [ ] **`Alternative STM`/`orElse` drops a branch (§18.1.13)** — runtime
+      `STM_ORELSE` rollback exists (`stm.c:60,130-153`) but no instance binds it;
+      the only STM choice is `Monoid (STM a)` whose `append x y = x` **drops `y`**
+      ([`Prelude.hs:1417`](src/Kappa/Prelude.hs)). `orElse` is unreachable / silently wrong.
+
+**Fairness / blocking MUST gaps:**
+- [ ] **Safe-points are a no-op (§32.2.5/.6)** — `krt2_safepoint` is empty
+      ([`rt.c:1322`](runtime/rt.c)) and codegen emits **zero** calls (incl. the
+      scalar fast-path loop `C.hs:4642-4659`); a compute-bound pure loop ignores
+      pending interruption and monopolizes a worker → violates weak fairness + the
+      interruption-point obligation. (Contract documented in `kappart2.h`; stub empty.)
+- [ ] **`blocking` is identity (§18.1.11 / §18.1.5)** — `krt2_blocking` returns its
+      body inline on a CK worker ([`rt.c:97`](runtime/rt.c)) with no `uv_queue_work`
+      offload lane, no prim/dispatch/gate — yet `rt-blocking` is advertised. N
+      concurrent blocking calls starve/deadlock the nproc-worker scheduler.
+
+**Reachability gaps (runtime half present, no source path):**
+- [ ] **`sandbox`/`unsandbox` no native lowering (§18.1.2)** — declared + in the
+      oracle but 0 backend hits → reachable use hard-fails `E_BACKEND_UNSUPPORTED`.
+- [ ] **`fiberId`/`currentFiberId` unreachable (§18.1.10)** — runtime ops exist
+      (`rt.c:80-81`), no prelude prim, no codegen. (Loosely noted under Spec-coverage §1.4.)
+- [ ] **Fiber labels absent (§18.1.10)** — `get/set/locallyFiberLabel` + the
+      `Fiber.label` field entirely missing.
+- [ ] **`std.supervisor` is a total stub (§29.2)** — `startSupervisor`/`shutdown`/
+      `await` return constants ([`Prelude.hs:3282-3297`](src/Kappa/Prelude.hs)); no
+      restart engine/intensity/strategy/cause. (The Missing-primitives DERIVE item
+      mentions `std.supervisor`; this is the normative-MUST shape of it.)
+
+**Capability declaration + PARTIAL refinements:**
+- [ ] **§27.6 capability decl is self-inconsistent** — `rt.c:17-19`
+      `KRT2_CAPABILITIES` = {rt-core, rt-parallel, rt-shared-stm, rt-blocking,
+      rt-atomics} vs `Capabilities.hs:30` = {rt-core, rt-blocking, rt-atomics};
+      they disagree on `rt-parallel`/`rt-shared-stm`, and the Haskell list (the one
+      actually consumed, `NativeProbe.hs:126`) calls the runtime single-agent
+      though it spawns nproc workers. Reconcile (also settles the `rt-blocking`/
+      `rt-atomics` over-advertisement above).
+- [ ] **PARTIAL refinements** (detail in the doc): §32.2.13 resume does NOT restore
+      the capture-point `mask_depth` (resumed body inherits the clause's mask);
+      §32.2.12 a failing finalizer abandons remaining finalizers + doesn't
+      `Then`-compose the cause, and interrupt/shutdown waits park without raising
+      `mask_depth`; §32.2.3 per-do-block supervision scopes aren't created (fork
+      attaches to a flat per-fiber scope); §29.1 missing `std.ffi` fixed-width
+      `AtomicValue` instances; multi-shot rejection emits `E_BACKEND_UNSUPPORTED`
+      not the mandated `E_FEATURE_BACKEND_CAPABILITY_MISSING`. The STM RUN-phase /
+      torn-read-snapshot SHOULD deviations are self-documented (`stm.c:25-37`).
+
+### Shortcuts & over-claims to review (the "DONE"/"advertised" may not be real)
+
+Cross-cutting the gaps above — and the reason they hid so long — several runtime
+capabilities were implemented as the **easy stub** and then advertised, recorded
+as a capability, or marked DONE. These are not missing features anyone forgot;
+they are shortcuts that *look* finished. **Audit each before trusting it:**
+
+- [ ] **`std.atomic` / "`rt-atomics` honest"** — false: `AtomicRef` is a plain
+      `Ref` and the C11 `atomic.c` is dead code (§29.1 item above). The "Done ✅"
+      claim was stale; corrected.
+- [ ] **`rt-blocking` advertised** — `krt2_blocking` is literally the identity
+      function (`rt.c:97`); the "single-agent runtime ⇒ vacuously fine"
+      justification ([`Capabilities.hs:20-24`](src/Kappa/Capabilities.hs)) is false
+      for the nproc-worker runtime it actually ships.
+- [ ] **`krt2_safepoint`** — the cooperative-fairness contract is *documented* in
+      `kappart2.h` but the body is empty and nothing calls it (§32.2.5/.6 item).
+- [ ] **`std.supervisor`** — every entry returns a constant; the only test
+      exercises empty-children shutdown, so the stub "passes" a green suite.
+- [ ] **`Monoid (STM a)` / `orElse`** — `append x y = x` silently **drops `y`**
+      rather than binding the present `STM_ORELSE` runtime path.
+- [ ] **Unproven parallelism claims** — the C runtime advertises `rt-parallel` /
+      `rt-shared-stm`, yet cross-worker STM commit-serialization (§32.2.9) and
+      cross-fiber happens-before (§32.2.10) have **no stress test** (`rt.c:1350-1352`
+      REVIEW note); the Haskell profile disagrees and calls the runtime
+      single-agent. "Tested" here means single-worker only — re-verify under real
+      parallelism or stop advertising.
+- [ ] **Verification-methodology shortcut — parity-only checks mask silent boxing
+      regressions.** A codegen change can keep `interp==C==LLVM` byte-identical
+      while quietly regressing a scalar worker to the **boxed** path (the result is
+      still correct; only the unboxing win is lost — invisible to a value-parity
+      check). This already happened once (Stage-3 `scalarRep` keyed on the qualified
+      `gKey` → Int/Double silently boxed; caught only by `run-native-tests.sh`'s
+      alloc/scalar-worker gates, **not** `llvm-parity`; fixed `f9e0bf4`/`c776a9c`).
+      Make the native perf gates a **required** check for every codegen change, and
+      re-audit earlier parity-only-verified changes for undetected boxing. See the
+      `backend-verify-native-perf-gates` memory.
+
+---
+
+## Track: De-hardcoding the compiler↔prelude contract (`Kappa.Builtins`)
+
+An ongoing effort (memory `dehardcoding-builtins`) to drive every compiler-hardcoded
+name/fact from a single source of truth ([`src/Kappa/Builtins.hs`](src/Kappa/Builtins.hs))
+validated against the prelude at load. **Stages 0–2 done** (Check/Pipeline/Config/
+Eval/Interp migrated; the 27 runtime ctor-tags + prim registry single-sourced,
+commit `8314f1c`, which is what made the C/LLVM **user-ctor tag-id divergence**
+that the delve LLVM-vs-C debug agent caught — `hostCtorTags` vs `gsCollectCtors`
+disagreeing — impossible by construction: both now go through
+`Repr.assignUserCtorTags`). **Remaining stages** include one with a real latent bug:
+- [ ] **Usage.hs hardcoded per-function FACTS → prelude attributes/lang-items** —
+      the linearity checker dispatches on magic *names*, not signatures, so
+      shadowing/aliasing silently uses wrong demand facts. Flagged by the
+      de-hardcoding audit agent; the sharpest is a **latent linearity-soundness
+      hole**: `resolveFields` hardcodes `Zipper → [("focus",_),("fill",QOne)]`
+      ([`Usage.hs:534`](src/Kappa/Usage.hs)) as a fallback whenever a type named
+      `Zipper` is NOT in `aliases` (e.g. a user/imported `Zipper` with a different
+      field shape the usage pass can't resolve locally), which can admit
+      consumption of fields that shouldn't be consumable. Same name-dispatch smell:
+      `builtinFns`/`escapeKindFor` (fork/forkDaemon/forkIn escape kinds, `Usage.hs:505,738`)
+      and the `pure`/`ioPure`/`return` taint-preservation list (`Usage.hs:1684`).
+- [ ] **Other remaining stages** (low/cleanliness, see the memory): internal markers
+      (`__stuck_app`/`__rp`/`__inst_`), FFI scalar ctors (`NativeFfi.hs`), parser/lexer
+      soft keywords + magic idents, and the bulk `E_*`/`kappa.*` diagnostic-code strings.
 
 ---
 
