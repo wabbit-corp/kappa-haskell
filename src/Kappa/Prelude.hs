@@ -292,6 +292,23 @@ builtinState =
       , prim "eqDouble" (tyV (tDouble ~> tDouble ~> tBool)) -- raw-bit equality (§6.1.3)
       , prim "ltDouble" (tyV (tDouble ~> tDouble ~> tBool))
       , prim "floatEq" (tyV (tDouble ~> tDouble ~> tBool)) -- IEEE numeric equality
+      , -- §6.1.7 libm floating-point / transcendental math (TOTAL Double ops,
+        -- IEEE-754 semantics — sqrt of a negative is NaN; no partiality)
+        prim "sqrt" (tyV (tDouble ~> tDouble))
+      , prim "sin" (tyV (tDouble ~> tDouble))
+      , prim "cos" (tyV (tDouble ~> tDouble))
+      , prim "tan" (tyV (tDouble ~> tDouble))
+      , prim "asin" (tyV (tDouble ~> tDouble))
+      , prim "acos" (tyV (tDouble ~> tDouble))
+      , prim "atan" (tyV (tDouble ~> tDouble))
+      , prim "atan2" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "exp" (tyV (tDouble ~> tDouble))
+      , prim "log" (tyV (tDouble ~> tDouble))
+      , prim "pow" (tyV (tDouble ~> tDouble ~> tDouble))
+      , prim "floor" (tyV (tDouble ~> tDouble))
+      , prim "ceil" (tyV (tDouble ~> tDouble))
+      , prim "fabs" (tyV (tDouble ~> tDouble))
+      , prim "showFixed" (tyV (tNat ~> tDouble ~> tStr)) -- §6.1.7 "%.*f" formatter
       , -- §28.2 Rational exact-ratio arithmetic prims (the surface
         -- instances below delegate to these); '__ratOfInt' builds n/1
         prim "__ratOfInt" (tyV (tInt ~> tRat))

@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 /* ── pure primitives (mirror Kappa.Eval.evalPurePrim for the subset) ── */
 
@@ -283,6 +284,53 @@ KValue *kp_eqDouble(KValue *x, KValue *y) { /* §6.1.3 raw-bit equality */
   double da = kas_dbl(x), db = kas_dbl(y);
   memcpy(&bx, &da, 8); memcpy(&by, &db, 8);
   return kbool(bx == by);
+}
+
+/* ── §6.1.7 floating-point / transcendental math (libm) ────────────────
+ * Each is a TOTAL Double op: it delegates to the platform libm routine and
+ * boxes the binary64 result (kdbl).  IEEE-754 semantics throughout — sqrt of a
+ * negative is NaN, log of 0 is -Infinity, etc.; no partiality is introduced.
+ * The link line pins -ffp-contract=off / -fno-fast-math (Driver.hs), so these
+ * results are bit-identical to the interpreter (Haskell's Prelude over Double,
+ * which is the same libm) and to the LLVM backend (which calls the same kp_*).
+ * Unary Double -> Double: */
+KValue *kp_sqrt(KValue *x)  { return kdbl(sqrt(kas_dbl(x))); }
+KValue *kp_sin(KValue *x)   { return kdbl(sin(kas_dbl(x))); }
+KValue *kp_cos(KValue *x)   { return kdbl(cos(kas_dbl(x))); }
+KValue *kp_tan(KValue *x)   { return kdbl(tan(kas_dbl(x))); }
+KValue *kp_asin(KValue *x)  { return kdbl(asin(kas_dbl(x))); }
+KValue *kp_acos(KValue *x)  { return kdbl(acos(kas_dbl(x))); }
+KValue *kp_atan(KValue *x)  { return kdbl(atan(kas_dbl(x))); }
+KValue *kp_exp(KValue *x)   { return kdbl(exp(kas_dbl(x))); }
+KValue *kp_log(KValue *x)   { return kdbl(log(kas_dbl(x))); }
+KValue *kp_floor(KValue *x) { return kdbl(floor(kas_dbl(x))); }
+KValue *kp_ceil(KValue *x)  { return kdbl(ceil(kas_dbl(x))); }
+KValue *kp_fabs(KValue *x)  { return kdbl(fabs(kas_dbl(x))); }
+/* Binary Double -> Double -> Double: */
+KValue *kp_pow(KValue *x, KValue *y)   { return kdbl(pow(kas_dbl(x), kas_dbl(y))); }
+KValue *kp_atan2(KValue *x, KValue *y) { return kdbl(atan2(kas_dbl(x), kas_dbl(y))); }
+
+/* §6.1.7 fixed-precision formatting: render a Double with `prec` fractional
+ * digits via snprintf("%.*f"), the SAME conversion the C/Go/GHC references use
+ * for the CLBG `%.9f` outputs.  `prec` is a Nat (boxed as a non-negative Int at
+ * runtime); it is clamped to [0, 99] so the snprintf field width is bounded.
+ * The two-call snprintf idiom (size 0 to measure, then format into an exact
+ * stack/heap buffer) keeps the result exact regardless of magnitude. */
+KValue *kp_showFixed(KValue *prec, KValue *x) {
+  int64_t p = kas_int(prec);
+  if (p < 0) p = 0;
+  if (p > 99) p = 99;
+  double d = kas_dbl(x);
+  int n = snprintf(NULL, 0, "%.*f", (int)p, d);
+  if (n < 0) krt_fail("showFixed: snprintf encoding error");
+  /* +1 for the NUL snprintf writes; we hand `len` (== n) to kstr, NUL excluded. */
+  char small[64];
+  char *buf = ((size_t)n + 1 <= sizeof small) ? small : (char *)malloc((size_t)n + 1);
+  if (!buf) krt_fail("showFixed: out of memory");
+  snprintf(buf, (size_t)n + 1, "%.*f", (int)p, d);
+  KValue *r = kstr(buf, (size_t)n);
+  if (buf != small) free(buf);
+  return r;
 }
 KValue *kp_stringAppend(KValue *x, KValue *y) { return str_append(x, y); }
 KValue *kp_eqStr(KValue *x, KValue *y) { return kbool(klit_eq(x, y)); }

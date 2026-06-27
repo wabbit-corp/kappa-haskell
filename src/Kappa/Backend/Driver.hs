@@ -253,7 +253,11 @@ linkExecutable _cs _mainG opts runtimeDir cPath mSidecar base workDir = do
               rtCFlags = ["-D_GNU_SOURCE", "-DGC_THREADS", "-pthread", "-I/opt/homebrew/include"]
               rtSources =
                 [runtimeDir </> f | f <- ["gc.c", "value.c", "bignum.c", "show.c", "unicode.c", "prims.c", "rt.c", "reactor.c", "scope.c", "race.c", "stm.c", "atomic.c"]]
-              rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv"]
+              -- -lm: the libm transcendental Double prims (§6.1.7 sqrt/sin/…).
+              -- On macOS libm lives in libSystem (already linked), but -lm is
+              -- required on Linux/glibc and harmless elsewhere — pin it for
+              -- portability.
+              rtLibs = ["-lgc", "-lgmp", "-L/opt/homebrew/lib", "-luv", "-lm"]
               args =
                 ccLead
                   ++ targetFlags

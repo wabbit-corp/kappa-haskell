@@ -1,3 +1,5 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
+
 -- | Normalization by evaluation and definitional equality (Spec §31.1).
 --
 -- This is the engine the type checker leans on to decide when two types are
@@ -55,7 +57,17 @@ import Kappa.Unicode
   , sentenceChunks
   , wordChunks
   )
-import Numeric (showHex)
+import Numeric (showFFloat, showHex)
+
+-- §6.1.7: the C libm 'atan2', imported so the interpreter produces the EXACT
+-- same binary64 as the C/LLVM backends (which call kp_atan2 over the same
+-- libm).  GHC's own 'Data.atan2'/'RealFloat' 'atan2' can round differently in
+-- the last ULP on some platforms (atan2 1 2 disagrees by 1 ULP), which would
+-- break the interp == C == LLVM byte-for-byte parity; every other libm prim
+-- (sqrt/sin/cos/tan/asin/acos/atan/exp/log/pow) already agrees bit-for-bit, so
+-- only atan2 needs the FFI bridge.
+foreign import ccall unsafe "math.h atan2"
+  c_atan2 :: Double -> Double -> Double
 
 -- | One global definition.
 data GlobalDef = GlobalDef
@@ -610,6 +622,28 @@ evalPurePrim p args = case (p, args) of
   ("eqDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (identicalIEEE a b)
   ("ltDouble", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a < b)
   ("floatEq", [VLit (LitDouble a), VLit (LitDouble b)]) -> bool (a == b)
+  -- §6.1.7 libm floating-point / transcendental math.  GHC's Prelude is backed
+  -- by the SAME platform libm the C/LLVM backends call (kp_sqrt/kp_sin/…), so a
+  -- correctly-rounded IEEE-754 result is bit-identical across all three.  Total:
+  -- sqrt of a negative is NaN, log of a non-positive is NaN/-Infinity, etc.
+  ("sqrt", [VLit (LitDouble a)]) -> dbl (sqrt a)
+  ("sin", [VLit (LitDouble a)]) -> dbl (sin a)
+  ("cos", [VLit (LitDouble a)]) -> dbl (cos a)
+  ("tan", [VLit (LitDouble a)]) -> dbl (tan a)
+  ("asin", [VLit (LitDouble a)]) -> dbl (asin a)
+  ("acos", [VLit (LitDouble a)]) -> dbl (acos a)
+  ("atan", [VLit (LitDouble a)]) -> dbl (atan a)
+  ("atan2", [VLit (LitDouble a), VLit (LitDouble b)]) -> dbl (c_atan2 a b)
+  ("exp", [VLit (LitDouble a)]) -> dbl (exp a)
+  ("log", [VLit (LitDouble a)]) -> dbl (log a)
+  ("pow", [VLit (LitDouble a), VLit (LitDouble b)]) -> dbl (a ** b)
+  ("floor", [VLit (LitDouble a)]) -> dbl (cDoubleFloor a)
+  ("ceil", [VLit (LitDouble a)]) -> dbl (cDoubleCeil a)
+  ("fabs", [VLit (LitDouble a)]) -> dbl (abs a)
+  -- §6.1.7 fixed-precision formatting: render with N fractional digits exactly
+  -- as C's snprintf("%.*f"), so the CLBG %.9f outputs are byte-identical.
+  ("showFixed", [VLit (LitInt p), VLit (LitDouble a)]) ->
+    str (T.pack (showFixedC (fromInteger p) a))
   -- §28.2 Rational: an exact normalized ratio of two Integers with a
   -- positive denominator, represented at runtime by the stuck prim spine
   -- '__rat num den'. '__ratOfInt n' builds n/1; the arithmetic prims
@@ -853,6 +887,27 @@ evalPurePrim p args = case (p, args) of
     int = Just . VLit . LitInt
     dbl = Just . VLit . LitDouble
     str = Just . VLit . LitStr
+    -- §6.1.7 libm floor/ceil as Double -> Double, IEEE semantics preserved:
+    -- floor/ceil of NaN is NaN and of ±Infinity is ±Infinity (Haskell's
+    -- 'floor'/'ceiling' return an Integral and diverge on those, so we guard).
+    cDoubleFloor :: Double -> Double
+    cDoubleFloor a
+      | isNaN a || isInfinite a = a
+      | otherwise = fromInteger (floor a)
+    cDoubleCeil :: Double -> Double
+    cDoubleCeil a
+      | isNaN a || isInfinite a = a
+      | otherwise = fromInteger (ceiling a)
+    -- §6.1.7 render exactly as C's snprintf("%.*f"): 'showFFloat' agrees with C
+    -- on every FINITE value (digits, round-half-to-even, the sign of -0.0); the
+    -- ONLY divergence is the special-value spelling, which C prints lowercase
+    -- (nan / inf / -inf) — so we match that here.  'prec' is clamped to C's
+    -- runtime bound [0, 99].
+    showFixedC :: Int -> Double -> String
+    showFixedC prec a
+      | isNaN a = "nan"
+      | isInfinite a = if a < 0 then "-inf" else "inf"
+      | otherwise = showFFloat (Just (max 0 (min 99 prec))) a ""
     -- a normalized rational n/d (d > 0, gcd 1) as the stuck spine
     -- '__rat (LitInt n) (LitInt d)'
     rat :: Integer -> Integer -> Maybe Value

@@ -1,0 +1,28 @@
+-- §6.1.7 showFixed : Nat -> Double -> String — fixed-precision Double rendering
+-- via snprintf("%.*f").  The interpreter mirrors C's snprintf EXACTLY: identical
+-- digits and round-half-to-even on every finite value, and the lowercase
+-- nan/inf/-inf spelling on the special values.  So the printed strings are
+-- byte-identical across interp == C == LLVM (the parity harness compares full
+-- stdout).  Cases cover several precisions + the edge values (NaN, +inf, -inf,
+-- negative, zero, -0.0, round-half-to-even, very large, very small).
+module main
+
+main : UIO Unit
+let main = do
+    printlnString (showFixed 9 (sqrt 2.0))             -- 1.414213562
+    printlnString (showFixed 0 3.7)                     -- 4
+    printlnString (showFixed 0 2.5)                     -- 2  (round half to even)
+    printlnString (showFixed 1 1.25)                    -- 1.2 (round half to even)
+    printlnString (showFixed 1 1.35)                    -- 1.4
+    printlnString (showFixed 2 (negDouble 3.14159))     -- -3.14
+    printlnString (showFixed 5 0.0)                      -- 0.00000
+    printlnString (showFixed 3 (negDouble 0.0))         -- -0.000
+    printlnString (showFixed 9 (divDouble 1.0 3.0))     -- 0.333333333
+    printlnString (showFixed 9 100000.123456789)        -- 100000.123456789
+    printlnString (showFixed 9 1.0e20)                   -- 100000000000000000000.000000000
+    printlnString (showFixed 9 1.0e-20)                  -- 0.000000000
+    -- special values: lowercase nan / inf / -inf, matching C snprintf
+    printlnString (showFixed 9 (sqrt (negDouble 1.0)))  -- nan
+    printlnString (showFixed 9 (divDouble 1.0 0.0))     -- inf
+    printlnString (showFixed 9 (divDouble (negDouble 1.0) 0.0))  -- -inf
+    printlnString (showFixed 0 (divDouble 1.0 0.0))     -- inf

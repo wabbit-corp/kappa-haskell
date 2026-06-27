@@ -6,37 +6,22 @@
 --
 -- N = 5500 (HARDCODED to match the refs + expected.txt = 1.274224153).
 --
--- ┌───────────────────────────────────────────────────────────────────────────┐
--- │ STATUS: blocked-compiler-gap.  Three gaps block a byte-exact Kappa port:    │
--- │                                                                             │
--- │  1. NO `sqrt` PRIM.  The Double prim set is add/sub/mul/div/neg/eq/lt/      │
--- │     floatEq/intToDouble/showDouble/ratOfDouble (src/Kappa/Prelude.hs        │
--- │     ~L287-462).  There is no sqrt / pow / root / any transcendental, so     │
--- │     the final sqrt(vBv/vv) cannot be computed.  (Newton's method needs an   │
--- │     initial guess that needs frexp/ldexp or a doubleToInt — also absent.)   │
--- │                                                                             │
--- │  2. NO FIXED-PRECISION FORMATTING.  `showDouble` (the prim behind           │
--- │     `println @Double`) emits the SHORTEST round-trip decimal, not a         │
--- │     "%.9f" rendering, and there is no doubleToInt / floor / trunc / round   │
--- │     prim to hand-roll a 9-decimal formatter.  So even the ratio can't be    │
--- │     printed in the required `1.274224153` form.                             │
--- │                                                                             │
--- │  3. NO MUTABLE ARRAY.  `Array` is IMMUTABLE and LIST-BACKED                 │
--- │     (__arrayFromList/__arrayToList; `arrayGet` is O(n) __listIndex).  Each  │
--- │     A·v is O(n^2) indexes × O(n) per index = O(n^3); at N=5500 the power    │
--- │     method is intractable (~hours), independent of gaps 1-2.                │
--- │                                                                             │
--- │ (Aside: `var`/`while` only thread their writes inside a UIO context — in a  │
--- │ *pure*-returning helper the reassignments are silently dropped — so the     │
--- │ mat-vec ops below are UIO actions sequenced with `<-`.)                      │
--- │                                                                             │
--- │ The algorithm below is the FAITHFUL structure and is VERIFIED CORRECT: it   │
--- │ compiles + runs on BOTH backends and its pre-sqrt ratio vBv/vv is           │
--- │ bit-identical to the C ref (e.g. 1.568849932178157 at N=4).  But it cannot  │
--- │ apply sqrt or print `1.274224153`, and at N=5500 the O(n^3) list-indexed    │
--- │ run is ~hours (≈300ms at N=100, ×(55)^3), so the kappa-c/kappa-llvm columns │
--- │ are expected to FAIL the gate until the gaps close.                        │
--- └───────────────────────────────────────────────────────────────────────────┘
+-- UNBLOCKED by §6.1.7 `sqrt` + `showFixed`.  The remaining concern is the
+-- vectors: Kappa's Array is an immutable cons-list with O(n) index, so a naive
+-- `__arrayIndexUnsafe v j` inside the matvec inner loop is O(n) per access =>
+-- O(n^3) overall and intractable at N=5500.  This port instead CONSUMES the
+-- input vector list head-by-head with a running column index (a left fold), so
+-- each output row is a single O(n) pass and a full matvec is O(n^2) — the same
+-- asymptotics as the C/Go/Haskell refs over their flat arrays.
+--
+-- Bit-identity: the inner products accumulate LEFT-to-right from 0.0
+-- (`s = (((0 + t0) + t1) + ...)`), matching the refs' `s += A(i,j)*v[j]` loop
+-- association exactly; the backend pins -ffp-contract=off / -fno-fast-math, so
+-- every language performs the SAME separately rounded binary64 ops.
+--
+-- All matvec helpers are PURE recursion returning `List Double` (a mutable
+-- `var`/`while` accumulator only threads its writes inside `main`, and a `var
+-- Double` in a non-`main` do-block miscompiles), so no `var` appears below main.
 module main
 
 -- A(i,j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
@@ -46,78 +31,100 @@ let matA i j =
     let denom = addInt (divInt (mulInt ij (addInt ij 1)) 2) (addInt i 1)
     divDouble 1.0 (intToDouble denom)
 
--- append to the end of a list (the immutable Array has no in-place write)
-listSnoc : forall (a : Type). List a -> a -> List a
-let listSnoc xs x = listAppend xs (x :: Nil)
+-- reverse a list (no listReverse in the prelude); tail-recursive, O(n).
+revOnto : forall (a : Type). List a -> List a -> List a
+let revOnto acc xs =
+    match xs
+    case Nil -> acc
+    case x :: rest -> revOnto (x :: acc) rest
 
--- NOTE: the loop accumulators below mutate a `var`, which only threads inside
--- a monadic (UIO) context — `var`/`while` in a *pure*-returning helper silently
--- drops the writes — so these matrix-vector ops are written as UIO actions and
--- sequenced with `<-` in `main`.
---
--- w[i] = sum_j A(i,j) * v[j]      (v is an immutable, list-backed Array)
-mulAv : Int -> Array Double -> UIO (Array Double)
-let mulAv n v = do
-    var acc = arrayEmpty
-    var i = 0
-    while ltInt i n do
-        var s = 0.0
-        var j = 0
-        while ltInt j n do
-            s = addDouble s (mulDouble (matA i j) (__arrayIndexUnsafe v j))
-            j = addInt j 1
-        acc = arrayFromList (listSnoc (arrayToList acc) s)
-        i = addInt i 1
-    pure acc
+reverseL : forall (a : Type). List a -> List a
+let reverseL xs = revOnto Nil xs
 
--- w[i] = sum_j A(j,i) * v[j]   (= (A^T v)[i])
-mulAtv : Int -> Array Double -> UIO (Array Double)
-let mulAtv n v = do
-    var acc = arrayEmpty
-    var i = 0
-    while ltInt i n do
-        var s = 0.0
-        var j = 0
-        while ltInt j n do
-            s = addDouble s (mulDouble (matA j i) (__arrayIndexUnsafe v j))
-            j = addInt j 1
-        acc = arrayFromList (listSnoc (arrayToList acc) s)
-        i = addInt i 1
-    pure acc
+-- replicate: n copies of 1.0 as a List Double (the initial u = [1,...,1]).
+-- Tail-recursive with an accumulator so the native stack stays O(1) at N=5500
+-- (a `1.0 :: ones (n-1)` body would build n non-tail frames and overflow).
+onesAcc : Int -> List Double -> List Double
+let onesAcc n acc =
+    if leInt n 0 then acc
+    else onesAcc (subInt n 1) (1.0 :: acc)
 
--- (A^T A) v
-mulAtAv : Int -> Array Double -> UIO (Array Double)
-let mulAtAv n v = do
-    av <- mulAv n v
-    mulAtv n av
+ones : Int -> List Double
+let ones n = onesAcc n Nil
 
--- N = 5500
+-- Inner product of row i with the vector, consumed head-by-head.  `j` is the
+-- running column index, `acc` the running sum.  `matA i j` selects A(i,j) for
+-- `A·v`; `matA j i` selects A(j,i) for `(A^T)·v`.  Left-to-right from acc=0.0.
+rowDotAv : Int -> Int -> Double -> List Double -> Double
+let rowDotAv i j acc v =
+    match v
+    case Nil -> acc
+    case vj :: rest -> rowDotAv i (addInt j 1) (addDouble acc (mulDouble (matA i j) vj)) rest
+
+rowDotAtv : Int -> Int -> Double -> List Double -> Double
+let rowDotAtv i j acc v =
+    match v
+    case Nil -> acc
+    case vj :: rest -> rowDotAtv i (addInt j 1) (addDouble acc (mulDouble (matA j i) vj)) rest
+
+-- w = A·v : rows 0..n-1.  Tail-recursive over `i` with a reversed accumulator
+-- (a `row :: recurse` body would be n non-tail frames and overflow at N=5500),
+-- reversed ONCE at the end so the row order matches the refs.
+mulAvRows : Int -> Int -> List Double -> List Double -> List Double
+let mulAvRows n i v acc =
+    if ltInt i n then mulAvRows n (addInt i 1) v (rowDotAv i 0 0.0 v :: acc)
+    else reverseL acc
+
+mulAv : Int -> List Double -> List Double
+let mulAv n v = mulAvRows n 0 v Nil
+
+-- w = (A^T)·v
+mulAtvRows : Int -> Int -> List Double -> List Double -> List Double
+let mulAtvRows n i v acc =
+    if ltInt i n then mulAtvRows n (addInt i 1) v (rowDotAtv i 0 0.0 v :: acc)
+    else reverseL acc
+
+mulAtv : Int -> List Double -> List Double
+let mulAtv n v = mulAtvRows n 0 v Nil
+
+-- w = (A^T A) v  (two passes; A·v then A^T·that)
+mulAtAv : Int -> List Double -> List Double
+let mulAtAv n v = mulAtv n (mulAv n v)
+
+-- dot products u·v and v·v, accumulated left-to-right from 0.0 (matches the
+-- refs' `vBv += u[i]*v[i]; vv += v[i]*v[i]`).  Walks the two lists in lockstep.
+sumUV : Double -> List Double -> List Double -> Double
+let sumUV acc us vs =
+    match us
+    case Nil -> acc
+    case u :: urest ->
+        match vs
+        case Nil -> acc
+        case vx :: vrest -> sumUV (addDouble acc (mulDouble u vx)) urest vrest
+
+sumVV : Double -> List Double -> Double
+let sumVV acc vs =
+    match vs
+    case Nil -> acc
+    case vx :: vrest -> sumVV (addDouble acc (mulDouble vx vx)) vrest
+
+-- 10 power-method iterations: v = (A^T A) u ; u = (A^T A) v.
+powerIters : Int -> Int -> List Double -> List Double -> (List Double, List Double)
+let powerIters n k u v =
+    if leInt k 0 then (u, v)
+    else
+        let nv = mulAtAv n u
+        let nu = mulAtAv n nv
+        powerIters n (subInt k 1) nu nv
+
 main : UIO Unit
 let main = do
     let n = 5500
-    -- u0 = [1,1,...,1]  (no listReplicate prim; build it by snoc)
-    var u0 = arrayEmpty
-    var b = 0
-    while ltInt b n do
-        u0 = arrayFromList (listSnoc (arrayToList u0) 1.0)
-        b = addInt b 1
-    var u = u0
-    var v = u0
-    var k = 0
-    while ltInt k 10 do
-        nv <- mulAtAv n u
-        v = nv
-        nu <- mulAtAv n nv
-        u = nu
-        k = addInt k 1
-    var vBv = 0.0
-    var vv = 0.0
-    var i = 0
-    while ltInt i n do
-        vBv = addDouble vBv (mulDouble (__arrayIndexUnsafe u i) (__arrayIndexUnsafe v i))
-        vv = addDouble vv (mulDouble (__arrayIndexUnsafe v i) (__arrayIndexUnsafe v i))
-        i = addInt i 1
-    -- GAP: want `printf "%.9f\n" (sqrt (vBv / vv))` == 1.274224153.
-    -- No sqrt and no %.9f formatting, so we can only show the ratio in
-    -- shortest-round-trip form (NOT the gated output):
-    println (divDouble vBv vv : Double)
+    let u0 = ones n
+    -- powerIters returns (u, v) after 10 rounds (u and v swapped each round in
+    -- the refs; we thread both explicitly through the pure recursion).
+    match powerIters n 10 u0 u0
+    case (u, v) ->
+        let vBv = sumUV 0.0 u v
+        let vv = sumVV 0.0 v
+        printlnString (showFixed 9 (sqrt (divDouble vBv vv)))

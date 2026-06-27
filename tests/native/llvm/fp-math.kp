@@ -1,0 +1,33 @@
+-- §6.1.7 libm floating-point / transcendental math (sqrt/sin/cos/tan/asin/acos/
+-- atan/atan2/exp/log/pow/floor/ceil/fabs).  Each lowers to the SAME kp_* libm
+-- call on C and LLVM, and the interpreter evaluates it through GHC's Prelude
+-- over the same platform libm — so a correctly-rounded IEEE-754 result is
+-- bit-identical across interp == C == LLVM.  The parity harness compares full
+-- stdout via showDouble (shortest round-trip), so any ULP divergence fails it.
+-- The link line pins -ffp-contract=off / -fno-fast-math, so no FMA fusion or
+-- fast-math reassociation can relax the result on the native side.
+module main
+
+main : UIO Unit
+let main = do
+    println (sqrt 2.0 : Double)            -- 1.4142135623730951
+    println (sqrt 0.0 : Double)            -- 0.0
+    println (sin 1.0 : Double)
+    println (cos 1.0 : Double)
+    println (tan 1.0 : Double)
+    println (asin 0.5 : Double)
+    println (acos 0.5 : Double)
+    println (atan 1.0 : Double)
+    println (atan2 1.0 2.0 : Double)
+    println (exp 1.0 : Double)             -- 2.718281828459045
+    println (log 2.718281828459045 : Double)
+    println (pow 2.0 10.0 : Double)        -- 1024.0
+    println (pow 2.0 0.5 : Double)
+    println (floor 3.7 : Double)           -- 3.0
+    println (floor (negDouble 3.2) : Double) -- -4.0
+    println (ceil 3.2 : Double)            -- 4.0
+    println (ceil (negDouble 3.7) : Double)  -- -3.0
+    println (fabs (negDouble 4.5) : Double)  -- 4.5
+    println (fabs 4.5 : Double)            -- 4.5
+    -- a fused-looking expression spelled with explicit temporaries
+    println (sqrt (addDouble (mulDouble 3.0 3.0) (mulDouble 4.0 4.0)) : Double)  -- 5.0
