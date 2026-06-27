@@ -101,6 +101,10 @@ builtinState =
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
+      , -- §29.1 the opaque lock-free atomic cell wrapped by AtomicRef. NOT a
+        -- Ref/TVar: it has no readRef/writeRef surface, so atomicity cannot be
+        -- bypassed. Built by __newAtomicRef; consumed by the other __atomic* ops.
+        (prel "__AtomicCell", opaqueTy (tyV (tType ~> tType)))
       , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
         -- labels; rows are encoded as neutral spines
         -- '__effRowCons label iface rest' ending in '__effRowNil'
@@ -259,6 +263,7 @@ builtinState =
     closedCodeT a = CApp Expl (tcon "ClosedCode") a
     effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
+    atomicCellT a = CApp Expl (tcon "__AtomicCell") a -- §29.1 opaque lock-free cell
     listT a = CApp Expl (tcon "List") a
     setT a = CApp Expl (tcon "Set") a
     arrayT a = CApp Expl (tcon "Array") a
@@ -392,6 +397,50 @@ builtinState =
       , prim "__intXor" (tyV (tInt ~> tInt ~> tInt))
       , -- §29.1 representation equality for atomicCompareExchange
         prim "__atomicRepEq" (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tcon "Bool")))
+      , -- §29.1 std.atomic primitive surface — the TRUE lock-free atomic cell.
+        -- Native (C/LLVM): each lowers to a @krt2_atomic_*@ call on a single
+        -- @_Atomic(int64_t)@ cell under the requested C11 @memory_order@, so a
+        -- concurrent fetch-add / CAS across the nproc worker pool conserves every
+        -- update (no torn read-modify-write).  Interpreter: the single agent runs
+        -- fibers cooperatively on one OS thread, so an @IORef@ cell models the
+        -- SAME sequential semantics — it is the oracle for single-fiber use, NOT a
+        -- test of the multi-worker race (which only the native runtime can run).
+        --
+        -- The atomic CELL type @__AtomicCell a@ IS a prelude tcon, so it is named
+        -- concretely here (this pins inference — a fully-erased cell var would be
+        -- ambiguous).  The memory order arrives as a small Integer CODE (the
+        -- §29.1 canonical declaration-order index of the order constructor),
+        -- computed by the std.atomic wrappers — NOT the constructor's tag id,
+        -- which codegen assigns globally and the runtime cannot interpret.  The
+        -- §29.1 CAS does NOT build its CompareExchangeResult here (that type lives
+        -- in source): @__atomicCompareExchange@ returns the WITNESSED old value
+        -- and the wrapper reconstructs Exchanged/NotExchanged in source.
+        -- NOTE De Bruijn: each explicit @~>@ is itself a Pi binder, so every index
+        -- to its RIGHT shifts up by one (see 'newRef' for the same accounting).
+        prim "__newAtomicRef" (tyV (forallEA          -- forall e a.
+          (CVar 0 ~> io (CVar 2) (atomicCellT (CVar 1)))))  -- a -> IO e (__AtomicCell a)
+      , prim "__atomicLoad" (tyV (forallEA            -- forall e a.
+          (tInt ~> atomicCellT (CVar 1) ~> io (CVar 3) (CVar 2))))  -- Int -> __AtomicCell a -> IO e a
+      , prim "__atomicStore" (tyV (forallEA           -- forall e a.
+          (tInt ~> atomicCellT (CVar 1) ~> CVar 2 ~> io (CVar 4) tUnit)))  -- Int -> __AtomicCell a -> a -> IO e Unit
+      , prim "__atomicExchange" (tyV (forallEA        -- forall e a.
+          (tInt ~> atomicCellT (CVar 1) ~> CVar 2 ~> io (CVar 4) (CVar 3))))  -- Int -> __AtomicCell a -> a -> IO e a
+      , prim "__atomicCompareExchange" (tyV (forallEA -- forall e a.  (returns the witnessed old value)
+          -- succCode -> failCode -> __AtomicCell a -> expected -> desired -> IO e a
+          (tInt ~> tInt ~> atomicCellT (CVar 2) ~> CVar 3 ~> CVar 4 ~> io (CVar 6) (CVar 5))))
+      , -- fetch-* are gated to integer cells by the AtomicInteger surface, so the
+        -- cell payload + result are concrete Integer.
+        -- forall e. Int -> __AtomicCell Integer -> Integer -> IO e Integer
+        prim "__atomicFetchAdd" (tyV (forallE
+          (tInt ~> atomicCellT tInt ~> tInt ~> io (CVar 3) tInt)))
+      , prim "__atomicFetchSub" (tyV (forallE
+          (tInt ~> atomicCellT tInt ~> tInt ~> io (CVar 3) tInt)))
+      , prim "__atomicFetchAnd" (tyV (forallE
+          (tInt ~> atomicCellT tInt ~> tInt ~> io (CVar 3) tInt)))
+      , prim "__atomicFetchOr" (tyV (forallE
+          (tInt ~> atomicCellT tInt ~> tInt ~> io (CVar 3) tInt)))
+      , prim "__atomicFetchXor" (tyV (forallE
+          (tInt ~> atomicCellT tInt ~> tInt ~> io (CVar 3) tInt)))
       , -- §29.3 std.hash mixing internals (deterministic within a run)
         prim "__hashMixInt" (tyV (tInt ~> tInt ~> tInt))
       , prim "__hashMixDouble" (tyV (tInt ~> tDouble ~> tInt))
@@ -3034,16 +3083,32 @@ stdFfiCSource =
     , "data CDouble : Type =    MkCDouble (rep : Double)"
     ]
 
--- | Embedded @std.atomic@ source (§29.1): the canonical surface over
--- 'Ref' cells. The interpreter runs fibers cooperatively on one
--- thread, so every memory order is trivially sequentially consistent.
+-- | Embedded @std.atomic@ source (§29.1): the canonical surface over a TRUE
+-- lock-free atomic cell.  An @AtomicRef a@ wraps an opaque @__AtomicCell a@ —
+-- NOT a 'Ref' (§29.1: "not an ordinary var, Ref, TVar, or MonadRef"), so the
+-- cell cannot be 'readRef'/'writeRef'-ed to bypass atomicity.  Every operation
+-- lowers to a @__atomic*@ primitive:
+--
+--   * Native (C/LLVM): a @krt2_atomic_*@ call on a single @_Atomic(int64_t)@
+--     cell, executed under the caller's C11 'memory_order'.  fetch-add / CAS
+--     are real hardware read-modify-writes, so concurrent updates across the
+--     worker pool are conserved exactly (no lost updates).
+--   * Interpreter: the single agent runs fibers cooperatively on one OS thread,
+--     so every memory order is trivially sequentially consistent and the cell
+--     is modelled by a plain mutable IORef.  This is the correct SEQUENTIAL
+--     oracle; it does NOT (and cannot) exercise the multi-worker race the native
+--     runtime guards against.
+--
+-- The memory-order argument is passed THROUGH to the runtime by its numeric tag
+-- id, so each LoadOrder/StoreOrder/RmwOrder/CasFailureOrder maps directly onto a
+-- C11 @memory_order_*@ (see "runtime/atomic.c").
 stdAtomicSource :: Text
 stdAtomicSource =
   T.unlines
     [ "module std.atomic"
     , ""
     , "data AtomicRef (a : Type) : Type ="
-    , "    MkAtomicRef (cell : Ref a)"
+    , "    MkAtomicRef (cell : __AtomicCell a)"
     , ""
     , "data LoadOrder : Type ="
     , "    LoadRelaxed"
@@ -3079,56 +3144,101 @@ stdAtomicSource =
     , "instance AtomicValue Integer"
     , "instance AtomicInteger Integer"
     , ""
+    , "-- The memory order is forwarded to the runtime as a small Integer CODE —"
+    , "-- the §29.1 canonical declaration-order index of the order constructor."
+    , "-- Codegen assigns user-constructor tag ids GLOBALLY, so the runtime cannot"
+    , "-- read an order's tag id directly; these matches give it a stable code that"
+    , "-- maps onto a C11 memory_order (see runtime/atomic.c).  Every order is"
+    , "-- realised faithfully — there is no silent downgrade to a weaker order."
+    , "loadOrderCode : LoadOrder -> Integer"
+    , "let loadOrderCode order ="
+    , "    match order"
+    , "    case LoadRelaxed -> 0"
+    , "    case LoadAcquire -> 1"
+    , "    case LoadSeqCst -> 2"
+    , ""
+    , "storeOrderCode : StoreOrder -> Integer"
+    , "let storeOrderCode order ="
+    , "    match order"
+    , "    case StoreRelaxed -> 0"
+    , "    case StoreRelease -> 1"
+    , "    case StoreSeqCst -> 2"
+    , ""
+    , "rmwOrderCode : RmwOrder -> Integer"
+    , "let rmwOrderCode order ="
+    , "    match order"
+    , "    case RmwRelaxed -> 0"
+    , "    case RmwAcquire -> 1"
+    , "    case RmwRelease -> 2"
+    , "    case RmwAcqRel -> 3"
+    , "    case RmwSeqCst -> 4"
+    , ""
+    , "casFailureOrderCode : CasFailureOrder -> Integer"
+    , "let casFailureOrderCode order ="
+    , "    match order"
+    , "    case CasFailRelaxed -> 0"
+    , "    case CasFailAcquire -> 1"
+    , "    case CasFailSeqCst -> 2"
+    , ""
+    , "-- Each surface op extracts the opaque cell from MkAtomicRef and forwards it"
+    , "-- (with the order code) to the matching __atomic* primitive, which the"
+    , "-- native backends lower to a krt2_atomic_* call and the interpreter models"
+    , "-- with a sequential IORef cell."
     , "newAtomicRef : forall (a : Type). (@_ : AtomicValue a) -> a -> UIO (AtomicRef a)"
     , "let newAtomicRef initial = do"
-    , "    cell <- newRef initial"
+    , "    cell <- __newAtomicRef initial"
     , "    pure (MkAtomicRef cell)"
     , ""
     , "atomicLoad : forall (a : Type). (@_ : AtomicValue a) -> LoadOrder -> AtomicRef a -> UIO a"
     , "let atomicLoad order ref ="
     , "    match ref"
-    , "    case MkAtomicRef cell -> readRef cell"
+    , "    case MkAtomicRef cell -> __atomicLoad (loadOrderCode order) cell"
     , ""
     , "atomicStore : forall (a : Type). (@_ : AtomicValue a) -> StoreOrder -> AtomicRef a -> a -> UIO Unit"
     , "let atomicStore order ref value ="
     , "    match ref"
-    , "    case MkAtomicRef cell -> writeRef cell value"
+    , "    case MkAtomicRef cell -> __atomicStore (storeOrderCode order) cell value"
     , ""
     , "atomicExchange : forall (a : Type). (@_ : AtomicValue a) -> RmwOrder -> AtomicRef a -> a -> UIO a"
     , "let atomicExchange order ref value ="
     , "    match ref"
-    , "    case MkAtomicRef cell -> do"
-    , "        old <- readRef cell"
-    , "        writeRef cell value"
-    , "        pure old"
+    , "    case MkAtomicRef cell -> __atomicExchange (rmwOrderCode order) cell value"
     , ""
+    , "-- Strong CAS: the primitive performs the atomic swap and returns the"
+    , "-- WITNESSED old value.  By the §29.1 strong-CAS contract the exchange"
+    , "-- succeeded iff that witnessed value equals `expected`, so the result"
+    , "-- constructor is rebuilt HERE (in source, where codegen tags it correctly)"
+    , "-- rather than in the runtime.  __atomicRepEq is the same representation"
+    , "-- equality the native CAS used on the scalar cell."
     , "atomicCompareExchange : forall (a : Type). (@_ : AtomicValue a) -> RmwOrder -> CasFailureOrder -> AtomicRef a -> a -> a -> UIO (CompareExchangeResult a)"
     , "let atomicCompareExchange success failure ref expected desired ="
     , "    match ref"
-    , "    case MkAtomicRef cell -> ioBind (readRef cell) (\\current -> if __atomicRepEq current expected then ioBind (writeRef cell desired) (\\ignored -> ioPure (Exchanged current)) else ioPure (NotExchanged current))"
-    , ""
-    , "__atomicRmw : forall (a : Type). (a -> a -> a) -> RmwOrder -> AtomicRef a -> a -> UIO a"
-    , "let __atomicRmw op order ref operand ="
-    , "    match ref"
-    , "    case MkAtomicRef cell -> do"
-    , "        old <- readRef cell"
-    , "        writeRef cell (op old operand)"
-    , "        pure old"
+    , "    case MkAtomicRef cell -> ioBind (__atomicCompareExchange (rmwOrderCode success) (casFailureOrderCode failure) cell expected desired) (\\witnessed -> if __atomicRepEq witnessed expected then ioPure (Exchanged witnessed) else ioPure (NotExchanged witnessed))"
     , ""
     , "atomicFetchAdd : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
-    , "let atomicFetchAdd order ref operand = __atomicRmw addInt order ref operand"
+    , "let atomicFetchAdd order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> __atomicFetchAdd (rmwOrderCode order) cell operand"
     , ""
     , "atomicFetchSub : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
-    , "let atomicFetchSub order ref operand = __atomicRmw subInt order ref operand"
+    , "let atomicFetchSub order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> __atomicFetchSub (rmwOrderCode order) cell operand"
     , ""
     , "atomicFetchAnd : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
-    , "let atomicFetchAnd order ref operand = __atomicRmw __intAnd order ref operand"
+    , "let atomicFetchAnd order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> __atomicFetchAnd (rmwOrderCode order) cell operand"
     , ""
     , "atomicFetchOr : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
-    , "let atomicFetchOr order ref operand = __atomicRmw __intOr order ref operand"
+    , "let atomicFetchOr order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> __atomicFetchOr (rmwOrderCode order) cell operand"
     , ""
     , "atomicFetchXor : RmwOrder -> AtomicRef Integer -> Integer -> UIO Integer"
-    , "let atomicFetchXor order ref operand = __atomicRmw __intXor order ref operand"
+    , "let atomicFetchXor order ref operand ="
+    , "    match ref"
+    , "    case MkAtomicRef cell -> __atomicFetchXor (rmwOrderCode order) cell operand"
     ]
 
 -- | Embedded @std.gradual@ source (§24.9): explicit dynamic values.
