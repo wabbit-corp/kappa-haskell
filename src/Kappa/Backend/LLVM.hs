@@ -534,6 +534,9 @@ basePrims =
     -- `poll` and routes it to 'compilePrimApp' → 'compileIoNode' (krt2_*) rather
     -- than the bare-value path.
     `Set.union` Set.fromList ["uninterruptible", "__mask", "poll"]
+    -- §18.1.4/§18.1.7 reason-carrying finalizers + locallyFiberRef: krt2_* node
+    -- builders ('ioNodeBuilder'), no kpf_* primEntry, so add them here too.
+    `Set.union` Set.fromList ["onExit", "onInterrupt", "locallyFiberRef"]
 
 -- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
 -- node, not the synchronous @knative@/@knative_sat@ bridge: structured
@@ -3301,6 +3304,12 @@ ioNodeBuilder = \case
   "finallyIO" -> Just ("krt2_finally", 2)
   "throwIO" -> Just ("krt2_throw", 1)
   "__reraiseCause" -> Just ("krt2_reraise", 1)
+  -- §18.1.4 reason-carrying finalizers + §18.1.7 locallyFiberRef: the same
+  -- krt2_* node-builders the C backend uses (compileAppGlob); a may-suspend body
+  -- runs on the uniform CK-machine path.
+  "onExit" -> Just ("krt2_on_exit", 2)
+  "onInterrupt" -> Just ("krt2_on_interrupt", 2)
+  "locallyFiberRef" -> Just ("krt2_locally_fiber_ref", 3)
   -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders, the
   -- same lowering as the C backend (compileAppGlob).  `uninterruptible body` and
   -- `__mask f` are 1-arg; `poll` is 0-arg (handled below as a bare value too).

@@ -133,9 +133,10 @@ void krt2i_scope_detach(Rt *rt, Fiber *child) {
   for (; w; w = w->next) krt2i_wake(rt, w->f, krt2_pure(krt2i_unit()));
 }
 
-KValue *krt2i_op_fork_in(Rt *rt, KValue *scope_h, KValue *action) {
+KValue *krt2i_op_fork_in(Rt *rt, Fiber *parent, KValue *scope_h, KValue *action) {
   Scope *sc = (Scope *)kas_fgn(scope_h);
-  return kfgn(krt2i_spawn(rt, action, sc, 0), KRT2_KIND_FIBER);
+  /* §18.1.7: a forkIn child also inherits the parent's FiberRef snapshot. */
+  return kfgn(krt2i_spawn_from(rt, parent, action, sc, 0), KRT2_KIND_FIBER);
 }
 
 /* shutdownScope: mark the scope draining, interrupt every still-live child with

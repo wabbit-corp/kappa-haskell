@@ -1,0 +1,50 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before:None F\nafter:Some 42 T\nfail:Some-Fail T\n"
+
+-- §18.11 Promise.poll / Promise.isDone: a NON-blocking peek.
+--   * before completion: poll = None, isDone = False (and it does NOT park);
+--   * after completion:  poll = Some (Exit …), isDone = True;
+--   * a failing completion is observable as Some (Failure (Fail e)).
+module main
+
+import std.prelude.(type Exit(..), type Cause(..), type Option(..))
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+main : UIO Unit
+let main = do
+    p <- newPromise
+    -- peek BEFORE completion: None / False, without blocking
+    m0 <- pollPromise p
+    d0 <- isDonePromise p
+    let label0 = match m0
+          case None -> "before:None"
+          case Some _ -> "before:Some"
+    printlnString (stringAppend label0 (stringAppend " " (showBool d0)))
+    -- complete with Success 42, then peek again
+    ok <- completePromise p (Success 42)
+    let _ = ok
+    m1 <- pollPromise p
+    d1 <- isDonePromise p
+    let label1 = match m1
+          case None -> "after:None"
+          case Some ex -> match ex
+            case Success v -> stringAppend "after:Some " (showInt v)
+            case Failure _ -> "after:Some-fail"
+    printlnString (stringAppend label1 (stringAppend " " (showBool d1)))
+    -- a failing promise: poll exposes Some (Failure (Fail e))
+    q <- newPromise
+    okq <- completePromise q (Failure (Fail 7))
+    let _ = okq
+    mq <- pollPromise q
+    dq <- isDonePromise q
+    let labelq = match mq
+          case None -> "fail:None"
+          case Some ex -> match ex
+            case Success _ -> "fail:Some-success"
+            case Failure c -> match c
+              case Fail _ -> "fail:Some-Fail"
+              case _ -> "fail:Some-other"
+    printlnString (stringAppend labelq (stringAppend " " (showBool dq)))

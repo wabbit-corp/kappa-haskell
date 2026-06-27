@@ -107,6 +107,25 @@ enum {
                            *                  as the resumption, run the clause    */
   OP_RESUME,              /* [k, value]       splice the captured sub-chain back
                            *                  onto f->k and deliver `value`        */
+  /* §18.1.4 reason-carrying finalizers (ZIO onExit/onInterrupt).  Unlike a plain
+   * `defer`, these run a HANDLER applied to the scope's terminal Exit/cause.  An
+   * OP_ONEXIT_FIN/OP_ONINT_FIN node is REGISTERED on the enclosing do-scope's
+   * ExitStack (it never runs as an ordinary action); when the masked-LIFO
+   * KK_FINSEQ drain reaches it, it reconstructs the Exit from the saved Reason
+   * and substitutes the handler application.  onInterrupt fires ONLY when the
+   * scope exits via interrupt; onExit fires on EVERY exit. */
+  OP_ONEXIT_FIN,          /* [handler]        onExit:      handler : Exit e a -> IO e' Unit */
+  OP_ONINT_FIN,           /* [handler]        onInterrupt: handler : InterruptCause -> IO e' Unit */
+  /* §18.1.7 FiberRef ops (fiber-local cells with copy-on-fork).  newFiberRef
+   * allocates a cell id + records its init; get/set/modify index the current
+   * fiber's FiberRef map (snapshotted into a child at fork). */
+  OP_NEW_FIBER_REF,       /* [init]           newFiberRef -> FiberRef a            */
+  OP_GET_FIBER_REF,       /* [ref]            getFiberRef -> a                     */
+  OP_SET_FIBER_REF,       /* [ref, val]       setFiberRef -> Unit                  */
+  OP_MODIFY_FIBER_REF,    /* [ref, f]         modifyFiberRef: atomic get-apply-set -> b */
+  /* §18.11 Promise non-blocking peek. */
+  OP_POLL_PROMISE,        /* [p]              poll  -> Option (Exit e a)           */
+  OP_IS_DONE_PROMISE,     /* [p]              isDone -> Bool                       */
   OP_LAST
 };
 
@@ -186,6 +205,12 @@ struct Waiter { Fiber *f; int want_exit; Waiter *next; };
 /* A child's membership node in its supervision scope's child set (§32.2.3). */
 struct ScopeLink { Fiber *f; ScopeLink *prev, *next; };
 
+/* §18.1.7 a fiber's private FiberRef overrides: a flat array indexed by cell id
+ * (ids are dense, allocated sequentially by newFiberRef).  vals[id]==NULL means
+ * "no override" (the cell's recorded init value is used).  The whole array is
+ * deep-copied into a child at fork (copy-on-fork independence). */
+typedef struct FiberLocals { KValue **vals; int n; } FiberLocals; /* n = slots allocated */
+
 struct Fiber {
   uint64_t        id;
   _Atomic int     status;       /* FStatus */
@@ -213,6 +238,9 @@ struct Fiber {
   ScopeLink      *att_link;
   /* the scope NEW child forks of this fiber attach to (its current scope). */
   Scope          *cur_scope;
+  /* §18.1.7 this fiber's FiberRef overrides (NULL until first setFiberRef);
+   * snapshotted into a child at fork so parent/child updates are independent. */
+  FiberLocals    *locals;
   /* doubly-linked membership in rt->all (the strong GC root set) */
   Fiber          *all_prev, *all_next;
 };
@@ -327,6 +355,9 @@ KValue *krt2i_try_exit(KValue *fiber);    /* action: non-blocking peek -> Option
 
 /* fiber spawn/attach (rt.c) — used by both fork and forkIn */
 Fiber  *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon);
+/* like krt2i_spawn but the child inherits a snapshot of `parent`'s FiberRef
+ * overrides (§18.1.7 copy-on-fork); `parent` NULL => no inherited locals. */
+Fiber  *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, int daemon);
 Scope  *krt2i_scope_new(void);                      /* (scope.c) */
 void    krt2i_scope_attach(Rt *rt, Scope *sc, Fiber *child);/* (scope.c) att_scope+link+live; born-interrupted if sc is draining */
 void    krt2i_scope_detach(Rt *rt, Fiber *child);   /* (scope.c) called from fiber_finish */
@@ -339,7 +370,7 @@ void    krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause);
  * keep stepping) or 0 when the fiber parked (suspended); a "value" handler
  * returns the boxed result directly. */
 KValue *krt2i_op_new_scope(void);
-KValue *krt2i_op_fork_in(Rt *rt, KValue *scope_h, KValue *action);
+KValue *krt2i_op_fork_in(Rt *rt, Fiber *parent, KValue *scope_h, KValue *action);
 int     krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h);
 int     krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wait);
 KValue *krt2i_op_monitor(KValue *fiber_h);

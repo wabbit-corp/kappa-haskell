@@ -1,0 +1,58 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body-ok\nexit:Success\nnormal-done\nint:Requested\nexit:Interrupt\ninterrupted\n"
+
+-- §18.1.4 onExit / onInterrupt (reason-carrying finalizers):
+--   * onExit runs on EVERY exit, receiving the reconstructed terminal Exit;
+--   * onInterrupt runs ONLY when the scope exits via interrupt, with the cause.
+-- The interrupt path mirrors `using-interrupt.kp`: the `cede`s hand the agent to
+-- the child so it reaches the body's `sleepFor` (finalizers installed) before the
+-- interrupt is requested; the interrupt unwinds through the masked-LIFO drain.
+module main
+
+import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
+
+classifyExit : forall (a : Type). Exit Void a -> String
+let classifyExit ex = match ex
+    case Success _ -> "exit:Success"
+    case Failure c -> match c
+      case Interrupt _ -> "exit:Interrupt"
+      case Fail _ -> "exit:Fail"
+      case _ -> "exit:other"
+
+classifyCause : InterruptCause -> String
+let classifyCause ic = match ic
+    case InterruptCause Requested _ -> "int:Requested"
+    case InterruptCause _ _ -> "int:other"
+
+okBody : UIO Unit
+let okBody = printlnString "body-ok"
+
+-- normal completion: onExit fires with Success; onInterrupt is SKIPPED.
+normalChild : UIO Unit
+let normalChild = onInterrupt (onExit okBody (\ex -> printlnString (classifyExit ex))) (\ic -> printlnString (classifyCause ic))
+
+sleepBody : UIO Unit
+let sleepBody = sleepFor (seconds 10)
+
+-- interrupt path: onInterrupt fires with the cause (inner, LIFO first); onExit
+-- then sees the Interrupt exit (outer).
+sleeper : UIO Unit
+let sleeper = onExit (onInterrupt sleepBody (\ic -> printlnString (classifyCause ic))) (\ex -> printlnString (classifyExit ex))
+
+main : UIO Unit
+let main = do
+    -- 1) normal exit: body-ok, exit:Success; onInterrupt skipped
+    fn <- fork normalChild
+    en <- await fn
+    let _ = en
+    printlnString "normal-done"
+    -- 2) interrupt exit: int:Requested (onInterrupt), exit:Interrupt (onExit)
+    s <- fork sleeper
+    cede
+    cede
+    interrupt s
+    ex <- await s
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"

@@ -1,0 +1,35 @@
+-- §18.1.7 / §18.11 single-fiber surface (no fork/await ⇒ LLVM-buildable):
+-- FiberRef new/get/set/modify and Promise poll/isDone all run on the main fiber.
+-- modifyFiberRef is the atomic get-apply-set; pollPromise/isDonePromise are the
+-- non-blocking peeks (None/False before, Some/True after). Prints "11 7 None F Some T".
+module main
+
+import std.prelude.(type Exit(..), type Option(..))
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+main : UIO Unit
+let main = do
+    ref <- newFiberRef 3
+    setFiberRef ref 7
+    after <- modifyFiberRef ref (\x -> addInt x 4)   -- 7 -> 11, returns 11
+    cur <- getFiberRef ref                            -- 11... wait, reset below
+    -- show the modify result and the value BEFORE the modify via a second cell
+    other <- newFiberRef 7
+    base <- getFiberRef other                         -- 7
+    p <- newPromise
+    m0 <- pollPromise p
+    d0 <- isDonePromise p
+    let before = match m0
+          case None -> "None"
+          case Some _ -> "Some"
+    ok <- completePromise p (Success 1)
+    let _ = ok
+    m1 <- pollPromise p
+    d1 <- isDonePromise p
+    let after1 = match m1
+          case None -> "None"
+          case Some _ -> "Some"
+    let _ = cur
+    printlnString (stringAppend (showInt after) (stringAppend " " (stringAppend (showInt base) (stringAppend " " (stringAppend before (stringAppend " " (stringAppend (showBool d0) (stringAppend " " (stringAppend after1 (stringAppend " " (showBool d1)))))))))))

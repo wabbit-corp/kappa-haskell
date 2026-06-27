@@ -416,17 +416,22 @@ basePrims =
     , "__absurd"
       -- IO
     , "printString", "printlnString", "ioPure", "ioBind", "ioThen", "throwIO", "catchIO", "finallyIO"
+    , "onExit", "onInterrupt" -- §18.1.4 reason-carrying finalizers; lowered to krt2_on_exit/krt2_on_interrupt nodes (compileAppGlob)
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
+      -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
+    , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef"
+    , "locallyFiberRef" -- §18.1.7 lowered to a krt2_locally_fiber_ref bind tree (compileAppGlob)
       -- §18.1.13 STM (single-agent: TVar = cell, `atomically` runs the action)
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "__sleepForNanos"
     , "newPromise", "completePromise", "awaitPromiseExit"
+    , "pollPromise", "isDonePromise" -- §18.11 non-blocking peek; kpf_poll_promise/kpf_is_done_promise shims
       -- §18.1.8 structured scopes + monitors (CPS do-kernel, Stage 3)
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     ]
@@ -2063,6 +2068,13 @@ primEntries = Map.fromList
   , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
   , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
   , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
+  , ("pollPromise", PrimEntry "kpf_poll_promise" 1 False)       -- §18.11 non-blocking peek
+  , ("isDonePromise", PrimEntry "kpf_is_done_promise" 1 False)
+  -- §18.1.7 FiberRef cells: get/set/new/modify lower to OP_*_FIBER_REF nodes.
+  , ("newFiberRef", PrimEntry "kpf_new_fiber_ref" 1 False)
+  , ("getFiberRef", PrimEntry "kpf_get_fiber_ref" 1 False)
+  , ("setFiberRef", PrimEntry "kpf_set_fiber_ref" 2 False)
+  , ("modifyFiberRef", PrimEntry "kpf_modify_fiber_ref" 2 False)
   -- §18.1.8 structured scopes + monitors (Stage 3)
   , ("newScope", PrimEntry "kpf_new_scope" 0 False)
   , ("forkIn", PrimEntry "kpf_fork_in" 2 False)
@@ -2269,6 +2281,30 @@ compileAppGlob g sargs term = do
               bc <- compileErasableArg body
               fc <- compileErasableArg fin
               pure ("krt2_finally(" <> bc <> ", " <> fc <> ")")
+        -- §18.1.4 onExit/onInterrupt: reason-carrying finalizers — run the body,
+        -- then on exit run the handler with the reconstructed Exit (onExit, every
+        -- exit) or InterruptCause (onInterrupt, only on interrupt).  Always the
+        -- CK-machine node (an OP_DOSCOPE tree that krun_io's sync bridge does not
+        -- drive), so the enclosing block is always CPS-lowered (suspendingNames).
+        Just "onExit"
+          | [body, h] <- [a | (Expl, a) <- sargs] -> do
+              bc <- compileErasableArg body
+              hc <- compileErasableArg h
+              pure ("krt2_on_exit(" <> bc <> ", " <> hc <> ")")
+        Just "onInterrupt"
+          | [body, h] <- [a | (Expl, a) <- sargs] -> do
+              bc <- compileErasableArg body
+              hc <- compileErasableArg h
+              pure ("krt2_on_interrupt(" <> bc <> ", " <> hc <> ")")
+        -- §18.1.7 locallyFiberRef: install `val` for the body's dynamic extent,
+        -- restoring on exit (a masked finalizer).  krt2_locally_fiber_ref is a
+        -- get/set/finally bind tree the CK-machine drives.
+        Just "locallyFiberRef"
+          | [ref, val, body] <- [a | (Expl, a) <- sargs] -> do
+              rc <- compileErasableArg ref
+              vc <- compileErasableArg val
+              bc <- compileErasableArg body
+              pure ("krt2_locally_fiber_ref(" <> rc <> ", " <> vc <> ", " <> bc <> ")")
         -- §18.1.4 __reraiseCause: re-raise a captured Cause as-is (the
         -- join/race/timeout failure arms).  A CK-machine OP_RERAISE node (not the
         -- typed-only kfail bridge): catchable iff the cause is a Fail, else it
@@ -2762,6 +2798,9 @@ cpsNodeApp term = do
         (Just "ioThen", [m, _]) -> mayActSuspend susp m
         (Just "catchIO", [body, _]) -> mayActSuspend susp body
         (Just "finallyIO", [body, _]) -> mayActSuspend susp body
+        (Just "onExit", [_, _]) -> True
+        (Just "onInterrupt", [_, _]) -> True
+        (Just "locallyFiberRef", [_, _, _]) -> True
         (Just "__reraiseCause", [_]) -> True
         (Just "__race", [_, _]) -> True
         (Just "__timeout", [_, _]) -> True
@@ -3140,6 +3179,14 @@ suspendingNames =
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     , "atomically", "stmBind" -- §18.1.13 STM: atomically retry-parks; stmBind builds the STM tree
+      -- §18.1.4 reason-carrying finalizers (build an OP_DOSCOPE tree the bridge cannot drive)
+    , "onExit", "onInterrupt"
+      -- §18.1.7 FiberRef ops + §18.11 promise peeks: synchronous OP_* nodes, but
+      -- they need the current fiber's state (f->locals / promise cell), which the
+      -- synchronous krun_io bridge has no handle to — so a block using them is
+      -- CPS-lowered to run on the CK-machine.
+    , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef", "locallyFiberRef"
+    , "pollPromise", "isDonePromise"
     ]
 
 -- | Is g one of the suspending / CK-machine primitive ops, by module + name?

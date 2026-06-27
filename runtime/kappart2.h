@@ -102,6 +102,11 @@ KValue *krt2_catch(KValue *body, KValue *handler);  /* catchIO : IO a -> (e->IO 
 KValue *krt2_finally(KValue *body, KValue *fin);    /* finallyIO : IO a -> IO () -> IO a   */
 KValue *krt2_throw(KValue *err);                    /* throwIO : e -> IO a (typed failure) */
 KValue *krt2_reraise(KValue *cause);                /* __reraiseCause : Cause e -> IO a (re-raise as-is) */
+/* §18.1.4 reason-carrying finalizers (ZIO onExit/onInterrupt): run body, then on
+ * exit apply the handler to the reconstructed Exit (onExit, EVERY exit) or the
+ * InterruptCause (onInterrupt, ONLY on interrupt).  The body's result is kept. */
+KValue *krt2_on_exit(KValue *body, KValue *handler);      /* IO e a -> (Exit e a -> IO e ()) -> IO e a */
+KValue *krt2_on_interrupt(KValue *body, KValue *handler); /* IO e a -> (InterruptCause -> IO e ()) -> IO e a */
 
 /* do-kernel completion channel (§18.7, §18.8): a do-scope whose `defer` actions
  * run on EVERY exit path — normal completion, typed fail, early `return`, loop
@@ -143,10 +148,19 @@ KValue *krt2_sleep_for(KValue *dur);                /* Duration -> UIO Unit     
 KValue *krt2_timeout(KValue *dur, KValue *action);  /* -> IO (TimeoutError|e) a     */
 KValue *krt2_race(KValue *l, KValue *r);            /* -> IO (e|f) (RaceResult a b) */
 
-/* ── one-shot promises (§18.1.9) ───────────────────────────────────────── */
+/* ── one-shot promises (§18.1.9, §18.11) ───────────────────────────────── */
 KValue *krt2_new_promise(void);                     /* UIO (Promise e a)            */
 KValue *krt2_await_promise_exit(KValue *p);         /* Promise e a -> UIO (Exit e a)*/
 KValue *krt2_complete_promise(KValue *p, KValue *exit); /* -> UIO Bool (first wins) */
+KValue *krt2_poll_promise(KValue *p);               /* §18.11 -> UIO (Option (Exit e a)) (non-blocking) */
+KValue *krt2_is_done_promise(KValue *p);            /* §18.11 -> UIO Bool (non-blocking)                */
+
+/* ── fiber-local state (§18.1.7; copy-on-fork at fork) ─────────────────── */
+KValue *krt2_new_fiber_ref(KValue *init);                   /* a -> UIO (FiberRef a)        */
+KValue *krt2_get_fiber_ref(KValue *ref);                    /* FiberRef a -> UIO a          */
+KValue *krt2_set_fiber_ref(KValue *ref, KValue *val);       /* FiberRef a -> a -> UIO Unit  */
+KValue *krt2_modify_fiber_ref(KValue *ref, KValue *fn);     /* FiberRef a -> (a->a) -> UIO a (atomic) */
+KValue *krt2_locally_fiber_ref(KValue *ref, KValue *val, KValue *body); /* install for body's extent */
 
 /* ── explicit scopes and monitors (§18.1.8) ────────────────────────────── */
 KValue *krt2_new_scope(void);                       /* UIO Scope                    */
@@ -168,8 +182,9 @@ KValue *krt2_demonitor(KValue *mon);                /* UIO Unit                 
  * docs/PRIMITIVES.md for the plan:
  *   - krt2_join, krt2_await_promise            (Fiber/Promise -> IO e a: re-raise the Cause)
  *   - krt2_sleep_until                          (Instant -> UIO Unit)
- *   - krt2_new/get/set/locally_fiber_ref        (§18.1.7 + copy-on-fork: PRIMITIVES.md ADD #4)
  *   - krt2_get/set/locally_fiber_label          (§18.1.10: needs a per-fiber label field)
+ * §18.1.7 FiberRef (new/get/set/modify/locally) + copy-on-fork is now IMPLEMENTED
+ * (see the fiber-local-state declarations above; PRIMITIVES.md ADD #4 — DONE).
  *   - krt2_sandbox, krt2_unsandbox              (§18.1.2: expose/absorb the full Cause)
  */
 

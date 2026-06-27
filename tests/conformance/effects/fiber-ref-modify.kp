@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "11\n11\n100\n11\n"
+
+-- §18.1.7 FiberRef.modify + copy-on-fork independence:
+--   * modifyFiberRef is an atomic get-apply-set returning the NEW value;
+--   * a forked child inherits a SNAPSHOT of the parent's value at fork and its
+--     later mutation does NOT change the parent's value (normative independence).
+module main
+
+import std.prelude.(type Exit(..))
+
+-- the child mutates its inherited copy; the parent must not see it.
+child : FiberRef Int -> UIO Int
+let child ref = do
+    inherited <- getFiberRef ref      -- snapshot of the parent's 11
+    _ <- modifyFiberRef ref (\x -> addInt x 89)  -- child cell -> 100
+    seen <- getFiberRef ref
+    ioPure seen                       -- 100
+
+main : UIO Unit
+let main = do
+    ref <- newFiberRef 7
+    -- modify: 7 -> 11, returns the NEW value (atomic get-apply-set)
+    afterMod <- modifyFiberRef ref (\x -> addInt x 4)
+    printlnString (showInt afterMod)            -- 11
+    before <- getFiberRef ref
+    printlnString (showInt before)              -- 11
+    f <- fork (child ref)
+    childSaw <- await f
+    match childSaw
+      case Success v -> printlnString (showInt v)   -- 100 (child's own copy)
+      case Failure c -> printlnString "fail"
+    -- the parent's value is UNCHANGED by the child's modify (copy-on-fork)
+    parentNow <- getFiberRef ref
+    printlnString (showInt parentNow)           -- 11
