@@ -763,6 +763,16 @@ assembleLL st =
 -- non-recursive local @let@ ('CLet').  General application and closures remain
 -- a later milestone.
 compile :: Term -> Gen Text
+-- §18.3 monadic splice (mirrors C.hs:1546): a @__runIO action@ that the do-kernel's
+-- splice-hoister LEFT BEHIND — i.e. one buried inside a @CThunkE@/@CLazyE@/@CLam@/
+-- @CMatch@ body (e.g. the @Thunk Bool@ RHS of @(&&)@/@(||)@), positions
+-- 'liftFirstSplice' never descends into.  Those bodies are RE-EXECUTED each force/
+-- apply, so a build-time @kref_get@ here reads the LIVE cell, exactly as in C's
+-- synchronous-body regime.  The do-kernel's top-level re-run positions (a bare
+-- @while@ condition / loop-body @var@ read) are already hoisted into @krt2_bind@
+-- nodes by 'compileMonadicAs' BEFORE 'compile' is reached, so this guard never
+-- pre-empts them.
+compile term | Just action <- runIOSpliceLL term = compileRunIO action
 compile term = case term of
   CLit l -> compileLit l
   CGlob g -> compileGlob g
@@ -2400,6 +2410,50 @@ hasSpliceLL t
   | Just _ <- runIOSpliceLL t = True
   | Just _ <- liftFirstSplice t = True
   | otherwise = False
+
+-- | Lower a @__runIO action@ splice the hoister left behind (see 'compile''s
+-- guard) by running its IO action INLINE and yielding the result as an ordinary
+-- value.  Mirrors C's 'compileRunIO' (C.hs:2471): a mutable-reference action
+-- (@readRef@ / @writeRef@ / @newRef@, §18.6.1) is lowered DIRECTLY to its
+-- @kref_*@ cell op, skipping the suspend-as-action-then-run path — a @var@
+-- read/write under a thunk is then a single cell access.  Any other action
+-- keeps the general @krun_io_checked@ lowering.  All four runtime symbols
+-- already exist (runtime/kappart.h ~447,541,542,546); no runtime change.
+--
+-- RESIDUAL (matches C): a SUSPENDING action under such a thunked @__runIO@ would
+-- be driven synchronously by @krun_io_checked@ — fine for the cell ops here, but
+-- a fork/await under a thunk is not modelled (the C backend has the same shape).
+compileRunIO :: Term -> Gen Text
+compileRunIO action = do
+  let (hd, sargs) = spineOf action
+      expl = [a | (Expl, a) <- sargs]
+  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
+  case (mp, expl) of
+    (Just "readRef", [r]) -> do
+      re <- compile r
+      declRuntime "declare ptr @kref_get(ptr)"
+      res <- freshReg
+      emit (res <> " = call ptr @kref_get(ptr " <> re <> ")")
+      pure res
+    (Just "writeRef", [r, v]) -> do
+      re <- compile r
+      ve <- compile v
+      declRuntime "declare ptr @kref_set(ptr, ptr)"
+      res <- freshReg
+      emit (res <> " = call ptr @kref_set(ptr " <> re <> ", ptr " <> ve <> ")")
+      pure res
+    (Just "newRef", [v]) -> do
+      ve <- compile v
+      declRuntime "declare ptr @kref_new(ptr)"
+      res <- freshReg
+      emit (res <> " = call ptr @kref_new(ptr " <> ve <> ")")
+      pure res
+    _ -> do
+      ae <- compile action
+      declRuntime "declare ptr @krun_io_checked(ptr)"
+      res <- freshReg
+      emit (res <> " = call ptr @krun_io_checked(ptr " <> ae <> ")")
+      pure res
 
 -- | Compile a value-position term that may carry @__runIO@ monadic splices into
 -- a re-runnable IO ACTION yielding the term's value.  The whole-term splice case
