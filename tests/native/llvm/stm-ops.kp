@@ -1,0 +1,19 @@
+-- LLVM parity: STM node-builders (newTVar/readTVar/writeTVar/atomically) and an
+-- STM do-block (desugars through the Monad STM dictionary's stmBind/stmPure).
+-- Previously E_BACKEND_UNSUPPORTED on the LLVM backend.
+module main
+
+bump : TVar Int -> STM Int
+let bump t = do
+    cur <- readTVar t
+    writeTVar t (addInt cur 100)
+    readTVar t
+
+main : UIO Unit
+let main = do
+    c <- atomically (newTVar 10)
+    atomically (writeTVar c 25)
+    a <- atomically (readTVar c)
+    printlnString (showInt a)
+    v <- atomically (bump c)
+    printlnString (showInt v)

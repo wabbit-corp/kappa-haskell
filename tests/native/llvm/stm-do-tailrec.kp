@@ -1,0 +1,20 @@
+-- LLVM parity: a do-block that runs an STM transaction then TAIL-RECURSES (the
+-- do-tail self-call), driven on the CK machine at constant stack.  The count is
+-- modest so the C backend (no do-tail trampoline at this base) does not overflow;
+-- the LLVM backend is constant-stack by construction (lazy continuation closures).
+module main
+
+loop : TVar Int -> Int -> UIO Unit
+let loop c k decreases k =
+    if leInt k 0 then
+        pure Unit
+    else do
+        atomically (writeTVar c k)
+        loop c (subInt k 1)
+
+main : UIO Unit
+let main = do
+    c <- atomically (newTVar 0)
+    loop c 1000
+    v <- atomically (readTVar c)
+    printlnString (showInt v)

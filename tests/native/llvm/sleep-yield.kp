@@ -1,0 +1,17 @@
+-- LLVM parity: cooperative scheduling — sleepFor (a Duration, single-agent
+-- runtime advances instantly) and cede.  fork/await drive two fibers.
+module main
+
+worker : Int -> UIO Unit
+let worker n = do
+    sleepFor (millis 1)
+    cede
+    printlnString (showInt n)
+
+main : UIO Unit
+let main = do
+    f1 <- fork (worker 1)
+    r1 <- await f1
+    f2 <- fork (worker 2)
+    r2 <- await f2
+    printlnString "done"
