@@ -159,6 +159,59 @@ KValue *krt2_finally(KValue *body, KValue *fin) {
   return krt2_doscope(krt2_then(krt2_defer(fin), body));
 }
 
+/* §18.1.4 onExit/onInterrupt: run `body`, then on exit run `handler` applied to
+ * the scope's terminal Exit (onExit, EVERY exit) or InterruptCause (onInterrupt,
+ * ONLY on interrupt).  Built exactly like `finally` — a do-scope whose first
+ * registered exit-action is a REASON-CARRYING marker node.  The marker carries
+ * the handler; the KK_FINSEQ drain detects it (OP_ONEXIT_FIN/OP_ONINT_FIN),
+ * reconstructs the Exit/cause, and substitutes the handler application.  The
+ * marker itself never runs as an ordinary action.  `body`'s result is preserved
+ * (the do-scope is `ensuring`, not `then`).  */
+KValue *krt2_on_exit(KValue *body, KValue *handler) {
+  KValue *marker = op1(OP_ONEXIT_FIN, "rt.onExitFin", handler);
+  return krt2_doscope(krt2_then(krt2_defer(marker), body));
+}
+KValue *krt2_on_interrupt(KValue *body, KValue *handler) {
+  KValue *marker = op1(OP_ONINT_FIN, "rt.onIntFin", handler);
+  return krt2_doscope(krt2_then(krt2_defer(marker), body));
+}
+KValue *kpf_on_exit(KValue **a)      { return krt2_on_exit(a[0], a[1]); }
+KValue *kpf_on_interrupt(KValue **a) { return krt2_on_interrupt(a[0], a[1]); }
+
+/* §18.1.7 FiberRef node-builders + kpf shims. */
+KValue *krt2_new_fiber_ref(KValue *init)        { return op1(OP_NEW_FIBER_REF, "rt.newFiberRef", init); }
+KValue *krt2_get_fiber_ref(KValue *r)           { return op1(OP_GET_FIBER_REF, "rt.getFiberRef", r); }
+KValue *krt2_set_fiber_ref(KValue *r, KValue *v){ return op2(OP_SET_FIBER_REF, "rt.setFiberRef", r, v); }
+KValue *krt2_modify_fiber_ref(KValue *r, KValue *fn) { return op2(OP_MODIFY_FIBER_REF, "rt.modifyFiberRef", r, fn); }
+KValue *kpf_new_fiber_ref(KValue **a)    { return krt2_new_fiber_ref(a[0]); }
+KValue *kpf_get_fiber_ref(KValue **a)    { return krt2_get_fiber_ref(a[0]); }
+KValue *kpf_set_fiber_ref(KValue **a)    { return krt2_set_fiber_ref(a[0], a[1]); }
+KValue *kpf_modify_fiber_ref(KValue **a) { return krt2_modify_fiber_ref(a[0], a[1]); }
+
+/* §18.11 Promise.poll / Promise.isDone node-builders + kpf shims. */
+KValue *krt2_poll_promise(KValue *p)    { return op1(OP_POLL_PROMISE, "rt.pollP", p); }
+KValue *krt2_is_done_promise(KValue *p) { return op1(OP_IS_DONE_PROMISE, "rt.isDoneP", p); }
+KValue *kpf_poll_promise(KValue **a)    { return krt2_poll_promise(a[0]); }
+KValue *kpf_is_done_promise(KValue **a) { return krt2_is_done_promise(a[0]); }
+
+/* §18.1.7 locallyFiberRef ref val body = install `val` for the dynamic extent of
+ * `body`, restoring the prior value on EVERY exit (a masked finalizer, via the
+ * same doscope/defer machinery as `finally`).  Composed over the get/set/finally
+ * node-builders so the read of the prior value is a CK-machine action (read at
+ * entry, not captured at build time):
+ *   bind(getFiberRef ref, \old -> then(setFiberRef ref val,
+ *                                       finally(body, setFiberRef ref old))) */
+static KValue *locally_with_old(KEnv *env, KValue *old) { /* env = [ref, val, body] */
+  KValue *ref = kvar(env, 0), *val = kvar(env, 1), *body = kvar(env, 2);
+  return krt2_then(krt2_set_fiber_ref(ref, val),
+                   krt2_finally(body, krt2_set_fiber_ref(ref, old)));
+}
+KValue *krt2_locally_fiber_ref(KValue *ref, KValue *val, KValue *body) {
+  return krt2_bind(krt2_get_fiber_ref(ref),
+                   kclo(locally_with_old, kpush(ref, kpush(val, kpush(body, NULL)))));
+}
+KValue *kpf_locally_fiber_ref(KValue **a) { return krt2_locally_fiber_ref(a[0], a[1], a[2]); }
+
 /* ── §18.1.21/.22 effect-handler nodes (Stage 4a, one-shot) ──────────────────
  * `handle`/`perform`/`resume` lower to these so an `Eff` computation runs ON
  * the scheduler (a handler clause may park).  See the deliver/unwind arms and
@@ -363,6 +416,7 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
   f->exit = NULL;
   f->waiters = NULL;
   f->daemon = 0;
+  f->locals = NULL;               /* §18.1.7 FiberRef overrides (lazily allocated) */
   f->all_prev = f->all_next = NULL;
   pthread_mutex_init(&f->lock, NULL);
   return f;
@@ -441,18 +495,89 @@ static void fiber_finish(Rt *rt, Fiber *f, KValue *exitv) {
   }
 }
 
+/* ── §18.1.7 FiberRef cells (fiber-local state with copy-on-fork) ──────────── */
+/* A FiberRef is identified by a dense integer id; the cell's INIT value (the
+ * fallback for fibers that never set it) lives in a single shared, append-only
+ * registry, mirroring the reference interpreter's `fiberRefInit` global.  A
+ * fiber's per-cell OVERRIDES live in its own `f->locals` (FiberLocals), which is
+ * deep-copied into a child at fork so post-fork updates are independent. */
+static pthread_mutex_t g_fref_lock = PTHREAD_MUTEX_INITIALIZER;
+static KValue **g_fref_init = NULL;   /* init value per cell id (scanned: GC root) */
+static int      g_fref_n = 0;         /* number of allocated cells                 */
+static int      g_fref_cap = 0;
+
+/* Allocate a fresh FiberRef id recording `init`; returns the FiberRef handle. */
+static KValue *fiber_ref_new(KValue *init) {
+  pthread_mutex_lock(&g_fref_lock);
+  if (g_fref_n == g_fref_cap) {
+    int nc = g_fref_cap ? g_fref_cap * 2 : 8;
+    KValue **ni = (KValue **)GC_MALLOC(sizeof(KValue *) * nc); /* scanned */
+    for (int i = 0; i < g_fref_n; i++) ni[i] = g_fref_init[i];
+    g_fref_init = ni; g_fref_cap = nc;
+  }
+  int id = g_fref_n++;
+  g_fref_init[id] = init;
+  pthread_mutex_unlock(&g_fref_lock);
+  /* the handle is just the cell id boxed (an immediate int); the id indexes both
+   * the shared init registry and each fiber's override array. */
+  return kint((int64_t)id);
+}
+static KValue *fiber_ref_init_of(int id) {
+  pthread_mutex_lock(&g_fref_lock);
+  KValue *v = (id >= 0 && id < g_fref_n) ? g_fref_init[id] : kunit();
+  pthread_mutex_unlock(&g_fref_lock);
+  return v ? v : kunit();
+}
+/* The current fiber's value for cell `id`: its override if set, else the init. */
+static KValue *fiber_local_get(Fiber *f, int id) {
+  if (f->locals && id >= 0 && id < f->locals->n && f->locals->vals[id])
+    return f->locals->vals[id];
+  return fiber_ref_init_of(id);
+}
+/* Set the current fiber's override for cell `id` (growing its array as needed). */
+static void fiber_local_set(Fiber *f, int id, KValue *v) {
+  if (id < 0) return;
+  if (!f->locals) {
+    f->locals = (FiberLocals *)GC_MALLOC(sizeof(FiberLocals));
+    f->locals->vals = NULL; f->locals->n = 0;
+  }
+  if (id >= f->locals->n) {
+    int nc = f->locals->n ? f->locals->n : 8;
+    while (nc <= id) nc *= 2;
+    KValue **nv = (KValue **)GC_MALLOC(sizeof(KValue *) * nc); /* scanned, zeroed */
+    for (int i = 0; i < f->locals->n; i++) nv[i] = f->locals->vals[i];
+    f->locals->vals = nv; f->locals->n = nc;
+  }
+  f->locals->vals[id] = v;
+}
+/* §18.1.7 copy-on-fork: deep-copy the parent's override array into the child so
+ * the two diverge independently after fork. */
+static FiberLocals *fiber_locals_snapshot(FiberLocals *src) {
+  if (!src || src->n == 0) return NULL;
+  FiberLocals *dst = (FiberLocals *)GC_MALLOC(sizeof(FiberLocals));
+  dst->n = src->n;
+  dst->vals = (KValue **)GC_MALLOC(sizeof(KValue *) * src->n); /* scanned */
+  for (int i = 0; i < src->n; i++) dst->vals[i] = src->vals[i];
+  return dst;
+}
+
 /* Create, attach, root, and enqueue a child fiber.  `attach` is the supervision
  * scope the child is attached to (NULL or daemon => unattached).  The child's
  * own forks attach to `attach` too (flat nesting in v1; per-do-block nested
- * scopes arrive with the do-kernel completion increment). */
-Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
+ * scopes arrive with the do-kernel completion increment).  The child inherits a
+ * SNAPSHOT of `parent`'s FiberRef overrides (§18.1.7); pass NULL for a root. */
+Fiber *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, int daemon) {
   Fiber *child = fiber_new(rt, action);
   child->daemon = daemon;
   child->cur_scope = attach;
+  if (parent) child->locals = fiber_locals_snapshot(parent->locals); /* copy-on-fork */
   if (!daemon && attach) krt2i_scope_attach(rt, attach, child); /* att_scope+link+live++ */
   krt2i_all_add(rt, child);
   krt2i_resume(rt, child);
   return child;
+}
+Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
+  return krt2i_spawn_from(rt, NULL, action, attach, daemon);
 }
 
 /* await: returns 1 if the child is already done (continue stepping with its
@@ -512,12 +637,48 @@ static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
   pthread_mutex_unlock(&p->lock);
   return 0;
 }
+/* §18.11 non-blocking peek: NEVER parks.  poll -> Some Exit iff completed, else
+ * None; isDone -> Bool.  A single acquire-load of the cell's state suffices (the
+ * exit is single-assignment under p->lock, so reading it after observing
+ * completed==1 is a consistent snapshot — REVIEW.md happens-before §35.041). */
+static KValue *promise_poll(KValue *ph) {
+  Promise *p = (Promise *)kas_fgn(ph);
+  pthread_mutex_lock(&p->lock);
+  KValue *r = atomic_load_explicit(&p->completed, memory_order_acquire)
+                  ? krt2i_some(p->exit) : krt2i_none();
+  pthread_mutex_unlock(&p->lock);
+  return r;
+}
+static KValue *promise_is_done(KValue *ph) {
+  Promise *p = (Promise *)kas_fgn(ph);
+  return kbool(atomic_load_explicit(&p->completed, memory_order_acquire) != 0);
+}
 
 /* ── the CK-machine ─────────────────────────────────────────────────────── */
 static void emit_kstr(KValue *s, int newline) {
   /* kas_str returns NUL-terminated bytes of a K_STR. */
   fputs(kas_str(s), stdout);
   if (newline) fputc('\n', stdout);
+}
+
+/* §18.1.4 reconstruct the terminal `Exit e a` a scope is exiting with, from the
+ * saved KK_FINSEQ Reason — the value an `onExit` finalizer receives.  Mirrors
+ * unwind's KK_DONE classification:
+ *   RK_NORMAL / RK_RETURN  -> Success rval
+ *   RK_FAIL                -> Failure (Fail rval)
+ *   RK_INTERRUPT           -> Failure (Interrupt rval)   (rval is the InterruptCause)
+ *   RK_RERAISE             -> Failure rval               (rval IS the Cause)
+ *   RK_BREAK/RK_CONTINUE   -> Success Unit               (loop control, not a real exit)
+ */
+static KValue *exit_of_reason(int rkind, KValue *rval) {
+  switch (rkind) {
+    case RK_NORMAL:    return krt2_success(rval);
+    case RK_RETURN:    return krt2_success(rval ? rval : kunit());
+    case RK_FAIL:      return krt2_failure(krt2_cause_fail(rval));
+    case RK_INTERRUPT: return krt2_failure(krt2_cause_interrupt(rval));
+    case RK_RERAISE:   return krt2_failure(rval);
+    default:           return krt2_success(kunit());
+  }
 }
 
 /* Feed value `v` to the continuation.  Returns 1 to keep stepping, 0 if the
@@ -726,7 +887,26 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
     }
     case KK_FINSEQ: {                    /* a finalizer completed; run the next */
       FinSeq *fs = (FinSeq *)c->aux;
-      if (fs->i >= 0) { KValue *e = fs->xs->items[fs->i]; fs->i--; f->cur = e; return 1; }
+      if (fs->i >= 0) {
+        KValue *e = fs->xs->items[fs->i]; fs->i--;
+        /* §18.1.4 reason-carrying finalizers: an onExit/onInterrupt item is a
+         * MARKER ctor carrying the handler; substitute the handler applied to
+         * the reconstructed Exit/cause (so it runs MASKED-LIFO like any defer).
+         * onInterrupt fires only on an interrupt exit; otherwise it is a no-op. */
+        int tag = kctor_tagid(e);
+        if (tag == OP_ONEXIT_FIN) {
+          KValue *handler = kctor_arg(e, 0);
+          e = kapp(handler, exit_of_reason(fs->rkind, fs->rval));
+        } else if (tag == OP_ONINT_FIN) {
+          if (fs->rkind == RK_INTERRUPT) {
+            KValue *handler = kctor_arg(e, 0);
+            e = kapp(handler, fs->rval); /* the InterruptCause */
+          } else {
+            e = krt2_pure(kunit());      /* not an interrupt: skip the handler */
+          }
+        }
+        f->cur = e; return 1;
+      }
       f->k = c->next;
       return apply_reason(rt, f, fs->rkind, fs->rval, fs->rlabel);
     }
@@ -865,11 +1045,11 @@ static void fiber_step(Rt *rt, Fiber *f) {
         emit_kstr(kctor_arg(cur, 0), 1);
         if (!deliver(rt, f, kunit())) return;
         break;
-      case OP_FORK:
-        if (!deliver(rt, f, kfgn(krt2i_spawn(rt, kctor_arg(cur, 0), f->cur_scope, 0), KRT2_KIND_FIBER))) return;
+      case OP_FORK:                          /* child inherits f's FiberRef snapshot (§18.1.7) */
+        if (!deliver(rt, f, kfgn(krt2i_spawn_from(rt, f, kctor_arg(cur, 0), f->cur_scope, 0), KRT2_KIND_FIBER))) return;
         break;
       case OP_FORK_DAEMON:
-        if (!deliver(rt, f, kfgn(krt2i_spawn(rt, kctor_arg(cur, 0), f->cur_scope, 1), KRT2_KIND_FIBER))) return;
+        if (!deliver(rt, f, kfgn(krt2i_spawn_from(rt, f, kctor_arg(cur, 0), f->cur_scope, 1), KRT2_KIND_FIBER))) return;
         break;
       case OP_AWAIT:
         if (do_await(rt, f, kctor_arg(cur, 0))) break; else return;
@@ -944,7 +1124,7 @@ static void fiber_step(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, krt2i_op_new_scope())) return;
         break;
       case OP_FORK_IN:
-        if (!deliver(rt, f, krt2i_op_fork_in(rt, kctor_arg(cur, 0), kctor_arg(cur, 1)))) return;
+        if (!deliver(rt, f, krt2i_op_fork_in(rt, f, kctor_arg(cur, 0), kctor_arg(cur, 1)))) return;
         break;
       case OP_SHUTDOWN_SCOPE:
         if (krt2i_op_shutdown_scope(rt, f, kctor_arg(cur, 0))) break; else return;
@@ -1009,6 +1189,35 @@ static void fiber_step(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, r)) return;
         break;
       }
+      /* ── §18.1.7 FiberRef (fiber-local cells; copy-on-fork at OP_FORK) ──── */
+      case OP_NEW_FIBER_REF:
+        if (!deliver(rt, f, fiber_ref_new(kctor_arg(cur, 0)))) return;
+        break;
+      case OP_GET_FIBER_REF:
+        if (!deliver(rt, f, fiber_local_get(f, (int)kas_int(kctor_arg(cur, 0))))) return;
+        break;
+      case OP_SET_FIBER_REF:
+        fiber_local_set(f, (int)kas_int(kctor_arg(cur, 0)), kctor_arg(cur, 1));
+        if (!deliver(rt, f, kunit())) return;
+        break;
+      case OP_MODIFY_FIBER_REF: {               /* atomic get-apply-set -> new value */
+        /* A FiberRef cell is private to THIS fiber, which runs single-threaded on
+         * the CK-machine, so the read-modify-write is trivially atomic: no other
+         * agent observes or races the cell.  `fn` is a pure (a -> a). */
+        int id = (int)kas_int(kctor_arg(cur, 0));
+        KValue *old = fiber_local_get(f, id);
+        KValue *nv = kapp(kctor_arg(cur, 1), old);  /* fn old (pure) */
+        fiber_local_set(f, id, nv);
+        if (!deliver(rt, f, nv)) return;
+        break;
+      }
+      /* ── §18.11 Promise non-blocking peek (never parks) ─────────────────── */
+      case OP_POLL_PROMISE:
+        if (!deliver(rt, f, promise_poll(kctor_arg(cur, 0)))) return;
+        break;
+      case OP_IS_DONE_PROMISE:
+        if (!deliver(rt, f, promise_is_done(kctor_arg(cur, 0)))) return;
+        break;
       case OP_ATOMICALLY:                       /* run an STM transaction (§18.1.13) */
         if (krt2i_op_atomically(rt, f, kctor_arg(cur, 0))) break; else return;
       /* ── §18.1.21/.22 effect handlers (Stage 4a, one-shot) ──────────────── */

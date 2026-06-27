@@ -548,6 +548,13 @@ builtinState =
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "b" tType
             (CApp Expl (tcon "FiberRef") (CVar 1) ~> CVar 2
               ~> io (CVar 4) (CVar 2) ~> io (CVar 5) (CVar 3))))))
+      , -- §18.1.7 modifyFiberRef: atomic get-apply-set on the current fiber's
+        -- cell (per-fiber, so the read-modify-write is trivially atomic), then
+        -- return the NEW value. forall a. FiberRef a -> (a -> a) -> UIO a
+        prim "modifyFiberRef"
+          (tyV (piI Q0 "a" tType
+            (CApp Expl (tcon "FiberRef") (CVar 0) ~> (CVar 1 ~> CVar 2)
+              ~> io (tcon "Void") (CVar 2))))
       , prim "throwIO" (tyV (forallEA (CVar 1 ~> io (CVar 2) (CVar 1))))
       , prim "catchIO"
           (tyV (forallEFA
@@ -555,6 +562,23 @@ builtinState =
               ~> (CVar 3 ~> io (CVar 3) (CVar 2))
               ~> io (CVar 3) (CVar 2))))
       , prim "finallyIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) tUnit ~> io (CVar 3) (CVar 2))))
+      , -- §18.1.4 onExit: run the body, then on EVERY exit run the handler with
+        -- the body's reconstructed terminal Exit (a masked finalizer); the body's
+        -- result is preserved.  forall e a. IO e a -> (Exit e a -> IO e Unit) -> IO e a
+        prim "onExit"
+          (tyV (forallEA
+            (io (CVar 1) (CVar 0)                                            -- IO e a (body)
+              ~> ( CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1)     -- Exit e a
+                     ~> io (CVar 3) tUnit )                                  -- -> IO e Unit (handler)
+              ~> io (CVar 3) (CVar 2))))                                     -- -> IO e a
+      , -- §18.1.4 onInterrupt: like onExit but the handler runs ONLY when the
+        -- body exits via interrupt, receiving the InterruptCause.
+        -- forall e a. IO e a -> (InterruptCause -> IO e Unit) -> IO e a
+        prim "onInterrupt"
+          (tyV (forallEA
+            (io (CVar 1) (CVar 0)                                            -- IO e a (body)
+              ~> ( tcon "InterruptCause" ~> io (CVar 3) tUnit )             -- InterruptCause -> IO e Unit
+              ~> io (CVar 3) (CVar 2))))                                     -- -> IO e a
       , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
       , -- §28 IO carrier instances delegate to this bind primitive
         prim "ioBind"
@@ -619,6 +643,17 @@ builtinState =
         prim "completePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
           (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
             ~> CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1) ~> io (tcon "Void") tBool))))
+      , -- §18.11 non-blocking peek: poll returns Some Exit iff the promise is
+        -- completed (None otherwise) WITHOUT parking; isDone returns the Bool.
+        -- pollPromise : forall e a. Promise e a -> UIO (Option (Exit e a))
+        prim "pollPromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0)
+            ~> io (tcon "Void")
+                 (CApp Expl (tcon "Option")
+                   (CApp Expl (CApp Expl (tcon "Exit") (CVar 2)) (CVar 1)))))))
+      , -- isDonePromise : forall e a. Promise e a -> UIO Bool
+        prim "isDonePromise" (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+          (CApp Expl (CApp Expl (tcon "Promise") (CVar 1)) (CVar 0) ~> io (tcon "Void") tBool))))
       , -- §18.1 monotonic time: the ONLY irreducible time primitives — read the
         -- agent clock + sleep — both over raw nanosecond Ints. Duration/Instant
         -- construction + arithmetic + the typed wrappers live in the std.time

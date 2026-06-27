@@ -20,14 +20,14 @@ module Kappa.Interp
   ) where
 
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay, throwTo, yield)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar, tryReadMVar)
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
 import Control.Monad (unless)
 import Data.IORef
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.IO.Unsafe (unsafePerformIO)
 import Data.Text (Text)
@@ -622,6 +622,24 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     case r of
       Right v -> pure v
       Left err -> throwIO err
+  -- §18.1.4 onExit: like finallyIO, but the handler RECEIVES the body's
+  -- reconstructed terminal 'Exit' (Success v on normal completion; Failure
+  -- (Fail e / Interrupt c / Defect …) on the failing paths). Runs on EVERY exit;
+  -- the body's outcome is preserved afterward. The oracle for the runtime's
+  -- OP_ONEXIT_FIN reason-carrying finalizer.
+  ("onExit", [body, handler]) -> do
+    r <- try (runIOValue rt body) :: IO (Either SomeException Value)
+    _ <- runIOValue rt (vapp ec handler Expl (exitOf r))
+    either throwIO pure r
+  -- §18.1.4 onInterrupt: the handler runs ONLY when the body exits via
+  -- interruption, receiving the 'InterruptCause'. Other exits (normal, typed
+  -- failure, defect) skip the handler. The oracle for OP_ONINT_FIN.
+  ("onInterrupt", [body, handler]) -> do
+    r <- try (runIOValue rt body) :: IO (Either SomeException Value)
+    case r of
+      Left e | Just (Interrupt cause) <- fromException e ->
+        runIOValue rt (vapp ec handler Expl cause) >> throwIO e
+      _ -> either throwIO pure r
   ("__runIO", [action]) -> runIOValue rt action
   -- §18.1.4/§18.11: fork spawns a cooperative child fiber (a GHC green thread
   -- on the single OS agent — non-threaded RTS ⇒ no parallelism, weak fairness
@@ -769,6 +787,14 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     pure (VFiberRef rid)
   ("getFiberRef", [VFiberRef rid]) -> getFiberLocal rid
   ("setFiberRef", [VFiberRef rid, v]) -> setFiberLocal rid v >> pure unitV
+  -- §18.1.7 modifyFiberRef: atomic get-apply-set on the current fiber's cell,
+  -- returning the NEW value. A FiberRef is per-fiber, so the read-modify-write
+  -- is trivially atomic on the single agent. The oracle for OP_MODIFY_FIBER_REF.
+  ("modifyFiberRef", [VFiberRef rid, f]) -> do
+    old <- getFiberLocal rid
+    let new = force ec (vapp ec f Expl old)  -- f : a -> a is pure (matches runtime's eager kapp)
+    setFiberLocal rid new
+    pure new
   -- locallyFiberRef installs a value for the dynamic extent of the body and
   -- restores the previous value on every exit (a masked finalizer).
   ("locallyFiberRef", [VFiberRef rid, v, body]) -> do
@@ -810,6 +836,16 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
         VCtor g [e] | g == prelFail -> throwIO (KappaError e)
         _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
       _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
+  -- §18.11 non-blocking peek: pollPromise returns Some Exit iff completed (None
+  -- otherwise) WITHOUT parking; isDonePromise returns the Bool. tryReadMVar
+  -- never blocks. The oracle for OP_POLL_PROMISE / OP_IS_DONE_PROMISE.
+  ("pollPromise", [VMVar mv]) -> do
+    m <- tryReadMVar mv
+    pure $ case m of
+      Just exitV -> VCtor prelSome [exitV]
+      Nothing -> VCtor prelNone []
+  ("isDonePromise", [VMVar mv]) ->
+    (\m -> VCtor (prelBoolV (isJust m)) []) <$> tryReadMVar mv
   -- §18.1 monotonic timers (single agent): nowMonotonic reads the host
   -- monotonic clock; sleepFor/sleepUntil advance instantly (a single agent
   -- has no other fiber to schedule during a sleep).
