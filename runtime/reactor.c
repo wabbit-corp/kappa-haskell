@@ -20,7 +20,19 @@
  * freed in the uv_close callback after the timer fires. */
 typedef struct { uv_timer_t timer; Fiber *f; Rt *rt; } SleepTimer;
 
-static void sleep_close_cb(uv_handle_t *h) { free(h); }
+/* Live-SleepTimer accounting — a test signal: after a clean shutdown this is 0.
+ * Incremented once per malloc in start_sleep, decremented once per close here;
+ * every disposal path (normal fire, cancel, replace, shutdown-walk) frees the
+ * timer through sleep_close_cb, so the count is the number of armed timers. */
+static _Atomic int g_live_sleep_timers = 0;
+int krt2_live_sleep_timers(void) {
+  return atomic_load_explicit(&g_live_sleep_timers, memory_order_relaxed);
+}
+
+static void sleep_close_cb(uv_handle_t *h) {
+  atomic_fetch_sub_explicit(&g_live_sleep_timers, 1, memory_order_relaxed);
+  free(h);
+}
 
 static void sleep_timer_cb(uv_timer_t *t) {
   SleepTimer *st = (SleepTimer *)t->data;            /* sleepFor returns Unit */
@@ -54,6 +66,7 @@ static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
   uv_timer_init(&rt->loop, &st->timer);
   st->timer.data = st;
   f->sleep_timer = st;
+  atomic_fetch_add_explicit(&g_live_sleep_timers, 1, memory_order_relaxed);
   uint64_t ms = (nanos == 0) ? 0 : (nanos + 999999u) / 1000000u; /* round up */
   uv_timer_start(&st->timer, sleep_timer_cb, ms, 0);
 }
@@ -69,6 +82,18 @@ static void cancel_sleep(Rt *rt, Fiber *f) {
   f->sleep_timer = NULL;
   uv_timer_stop(&st->timer);
   uv_close((uv_handle_t *)&st->timer, sleep_close_cb);
+}
+
+/* Shutdown handle-closer (fix S3): uv_close EVERY remaining handle so uv_run
+ * drains the close callbacks and uv_loop_close sees none open.  A still-armed
+ * SleepTimer is freed via sleep_close_cb; the async handle is embedded in Rt, so it
+ * closes with no callback.  Reactor-thread only — no timer can fire concurrently
+ * with the walk. */
+static void reactor_close_walk_cb(uv_handle_t *h, void *arg) {
+  (void)arg;
+  if (uv_is_closing(h)) return;
+  if (h->type == UV_TIMER) uv_close(h, sleep_close_cb); /* free the SleepTimer */
+  else                     uv_close(h, NULL);           /* async: embedded in Rt */
 }
 
 /* The async callback: drain the MPSC request queue to empty (handles
@@ -87,11 +112,12 @@ static void reactor_async_cb(uv_async_t *h) {
     }
   }
   if (atomic_load_explicit(&rt->reactor_stop, memory_order_acquire)) {
-    /* Close our own async handle and stop the loop FROM the reactor thread.
-     * v1 spine: any still-pending sleep timers are abandoned (structured root-
-     * scope shutdown of leftover children is the scopes increment). */
-    uv_close((uv_handle_t *)&rt->async, NULL);
-    uv_stop(&rt->loop);
+    /* fix S3: close ALL remaining handles (the async + any still-armed sleep
+     * timers) from the reactor thread, then let uv_run drain the close callbacks
+     * and return on its own.  NO uv_stop — that stranded the timers' close cbs and
+     * left them open, so uv_loop_close hit UV_EBUSY and the SleepTimers leaked.  The
+     * old path uv_close'd only the async + uv_stop'd, abandoning armed timers. */
+    uv_walk(&rt->loop, reactor_close_walk_cb, NULL);
   }
 }
 
