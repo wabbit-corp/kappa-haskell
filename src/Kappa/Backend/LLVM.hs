@@ -1845,6 +1845,11 @@ firstUnsupportedItem = go
         case go subItems of
           Just bad -> Just bad
           Nothing -> go rest
+      -- §19.5 `using pat <- acquire`: lowered through krt2_acquire_release (the
+      -- bracketM machinery), with the rest of the block as the `use` body — so
+      -- the rest must itself be entirely supported (recurse, like KSubDo/KIf).
+      KUsing _pat _acq _rel ->
+        go rest
       _ -> Just it
 
 -- | Report a do-item this backend cannot yet lower.  Milestone E covered the
@@ -2030,6 +2035,28 @@ cpsItemsLL items = case items of
   (KSubDo _lbl subItems : rest) -> do
     subAct <- cpsItemsLL subItems
     seqActionThen subAct CPWild rest
+  -- §19.5/§18.8.3 `using pat <- acquire`: lower through the runtime's
+  -- krt2_acquire_release (the SAME machinery `bracketM` uses, §18.1.12):
+  --   mask (\restore -> acquire >>= \res -> finally (restore (use res)) (release res))
+  -- with `use res = <bind pat=res; rest>` (the rest of the do-block is the
+  -- resource's protected scope).  The whole acquire-and-finalizer-register region
+  -- runs MASKED, so the release is guaranteed installed before any interrupt can
+  -- land; it then runs on every exit (normal/abrupt/error/interrupt), masked LIFO.
+  -- Mirrors the C backend's KUsing CPS lowering (C.hs) and the interpreter oracle.
+  (KUsing pat acquireT releaseT : rest) -> do
+    acqA <- compileMonadicAction acquireT
+    relV <- compile releaseT
+    -- `use res = (bind pat=res; rest)`: a 1-arg continuation closure over the
+    -- using-site env, reusing the ordinary bind-continuation emitter.
+    useFn <- emitDoCont pat rest
+    capturedEnv <- gets gsEnv
+    declRuntime "declare ptr @kclo(ptr, ptr)"
+    declRuntime "declare ptr @krt2_acquire_release(ptr, ptr, ptr)"
+    useClo <- freshReg
+    emit (useClo <> " = call ptr @kclo(ptr @" <> useFn <> ", ptr " <> capturedEnv <> ")")
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_acquire_release(ptr " <> acqA <> ", ptr " <> relV <> ", ptr " <> useClo <> ")")
+    pure r
   (it : _) -> unsupportedDoItem it
 
 -- | Lower `pat <- action; rest` (or `action; rest` with @pat = CPWild@) as

@@ -3208,11 +3208,14 @@ cpsEligible susp items = blockSuspends susp items && all simpleLinear items
     -- fail-closed.  Scope discipline: the WELL-SCOPED CORE handles the unlabeled
     -- `while` (no else), `var`/`:=` (assign to a `var` cell), unlabeled
     -- `break`/`continue`, `return`, plain `defer`, statement-`if`, and a
-    -- transparent unlabeled sub-do.  Labeled loops, `for`, loop `else`, `using`,
-    -- and `let?` remain fail-closed (DIAGNOSED in 'compileDo', not mis-lowered).
+    -- transparent unlabeled sub-do, and `using` (§19.5 resource scope, lowered
+    -- through krt2_uninterruptible + krt2_finally, reusing the bracketM
+    -- machinery).  Labeled loops, `for`, loop `else`, and `let?` remain
+    -- fail-closed (DIAGNOSED in 'compileDo', not mis-lowered).
     simpleLinear KBind {} = True
     simpleLinear KLet {} = True
     simpleLinear KExpr {} = True
+    simpleLinear KUsing {} = True
     simpleLinear (KDefer Nothing _) = True
     simpleLinear KVarItem {} = True
     simpleLinear (KAssign (CVar _) _ _) = True
@@ -3374,6 +3377,32 @@ cpsItems items = case items of
     de <- compileDeferAction t
     r <- cpsItems rest
     pure ("krt2_then(krt2_defer(" <> de <> "), " <> r <> ")")
+  -- §19.5/§18.8.3 `using pat <- acquire`: lower through the runtime's
+  -- krt2_acquire_release (rt.c) — the SAME machinery `bracketM` uses (§18.1.12):
+  --   mask (\restore -> acquire >>= \res -> finally (restore (use res)) (release res))
+  -- with `use res = <bind pat=res; rest>` (the resource's protected scope is the
+  -- rest of the do-block).  The WHOLE acquire-and-finalizer-register region runs
+  -- MASKED, so a fiber carrying a pending interrupt cannot deliver it between
+  -- `acquire` returning and the `finally` frame being installed — `release` is
+  -- GUARANTEED registered before any interrupt can land (it lands only inside
+  -- `restore (use res)`, by which point the finalizer is in place).  `release
+  -- res` then runs on every exit of the scope (normal/abrupt/error/interrupt),
+  -- masked LIFO — mirroring the interpreter's KUsing.  This is the protected-scope
+  -- discipline of §19.5, NOT a source rewrite to `defer`.
+  (KUsing pat acquireT releaseT : rest) -> do
+    acqA <- cpsActionTerm acquireT
+    -- `release` is the Releasable.release function (it takes the owned resource);
+    -- pass it directly as krt2_acquire_release's `rel` argument.
+    relV <- compile releaseT
+    -- `use res = (bind pat = res; rest)`: a 1-arg closure over the using-site env;
+    -- reuse the ordinary bind-continuation emitter (binds `pat` to its argument,
+    -- then builds the rest as a CPS tree).
+    useFn <- emitCpsCont pat rest
+    env <- gets gsEnv
+    pure
+      ( "krt2_acquire_release(" <> acqA <> ", " <> relV
+          <> ", kclo(" <> useFn <> ", " <> env <> "))"
+      )
   (item : _) ->
     unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
   where

@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nbody-done\nreleased\ncompleted\n"
+
+-- §19.5/§18.8.3 `using` in a SUSPENDING do-block, normal exit (native parity:
+-- interp == C). The protected-scope body suspends (`sleepFor`) then completes;
+-- the resource's `release` runs on the normal-completion exit, after the body.
+-- Exercises the do-kernel `using` CPS lowering surviving a park.
+module main
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : IO String Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+child : IO String Unit
+let child = do
+    using r <- acquireRes
+    sleepFor (millis 1)
+    printlnString "body-done"
+
+main : UIO Unit
+let main = do
+    f <- fork child
+    ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"
