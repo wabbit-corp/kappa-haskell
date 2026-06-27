@@ -40,7 +40,7 @@ import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (forM_, foldM, msum, mplus, replicateM, unless, when, void)
+import Control.Monad (forM, forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
 import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, multishotLegality, primDirect, primEntries)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
@@ -1992,6 +1992,18 @@ cpsItemsLL items = case items of
   [KContinue Nothing] -> continueAction
   [KWhile Nothing cond body Nothing] -> whileAction cond body
   -- ── NON-final imperative items (sequenced with the rest) ──────────
+  -- P0.2 (LLVM): an eligible `var…var; while` group at the HEAD of the items
+  -- lowers to an UNBOXED int64 scalar loop (native arithmetic, an LLVM phi-node
+  -- back-edge, ZERO per-iteration allocation), with the EXISTING boxed loop as
+  -- the §6 overflow continuation — mirroring the C backend's 'scalarLoopPlan' /
+  -- 'compileScalarWhile' decision and lowering exactly (same eligibility, same
+  -- snapshot-and-fall-back-to-boxed semantics), but emitted as one
+  -- `knative_sat` IO-action leaf (the do-kernel's action-tree analogue of C's
+  -- inline goto loop).  When the group is NOT eligible the whole `case` falls
+  -- through to the generic boxed `var`/`while` lowering below — never a
+  -- miscompile, only a slower (boxed) loop.
+  items'@(KVarItem _ _ : _)
+    | Just plan <- scalarLoopPlanLL items' -> emitScalarLoopLL plan
   -- `var x = e` ≡ `x <- newRef e`: the action is a `newRef` IO node (built via
   -- the prim path), bound like a 'KBind' so the slot at de Bruijn 0 holds the
   -- Ref.  A source `readRef x` (already a `__runIO (readRef x)` splice in Core)
@@ -2783,6 +2795,576 @@ compileLoopBody body = do
   a <- cpsItemsLL body
   modify' $ \g -> g {gsEnv = env0}
   pure a
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- P0.2 (LLVM): the unboxed int64 SCALAR `while`-loop.
+--
+-- A `var i = 0; var acc = 0; while leInt i N do { acc = addInt acc i; i = addInt
+-- i 1 }` group at the head of a do-block compiles, on the C backend, to a raw
+-- int64 register loop with ZERO per-iteration allocation, with the existing
+-- boxed loop kept as the §6 (unbounded-Integer) overflow continuation
+-- ('Kappa.Backend.C.scalarLoopPlan' / 'compileScalarWhile').  This is the
+-- single biggest LLVM perf lever — without it the LLVM backend lowers the loop
+-- to a `krt2_while` action whose condition + each body op + each `var` read is a
+-- BOXED `kp_*` / `kref_*` heap-allocating call, ~hundreds-of-x slower.
+--
+-- This mirrors the C decision and lowering EXACTLY (same eligibility predicates,
+-- same snapshot-and-fall-back-to-boxed semantics) but emits the loop as a single
+-- `knative_sat` IO-action leaf: a generated `KNativeFn` (@kscalarloop_N@) whose
+-- @args@ are the k `var` ref cells, doing the whole loop inline with native
+-- arithmetic + an LLVM phi-node back-edge, and committing each var's final
+-- int64 back to its ref cell so the do-block's continuation reads it.  On a
+-- §6 overflow (native add/sub/mul carry) it flushes the PRE-iteration snapshot
+-- to the cells and continues the rest of the loop in a BOXED inline loop
+-- (`kref_get` + `kp_*` + `kas_bool`, which promote to GMP exactly like the C
+-- backend's boxed continuation), so the unbounded-Integer result is bit-identical
+-- to interp == C.  When the group is not eligible the caller falls through to
+-- the generic boxed `var`/`while` lowering — never a miscompile.
+
+-- | The recognized eligible shape (parallels 'Kappa.Backend.C.ScalarLoop').
+data ScalarLoopLL = ScalarLoopLL
+  { sllInits :: ![Integer] -- ^ the k `var` initial Int literals, declaration order
+  , sllCond :: !Term -- ^ the loop condition (an Int compare over loop-exprs)
+  , sllBody :: ![(Int, Term)] -- ^ flat (de-Bruijn index < k, rhs) assignments
+  , sllRest :: ![KItem] -- ^ the do-block continuation after the loop
+  }
+
+-- | In-range for a machine int64 (matches C's 'i64InRange').
+i64InRangeLL :: Integer -> Bool
+i64InRangeLL m = m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int)
+
+-- | A scalar Int arith prim and its (result-is-Int, arg count).  The LLVM
+-- scalar loop scalarizes Int `var`s only, so ONLY the Int arith ops are
+-- admitted (mirroring C's 'arithPrim' restricted to the @KInt64@ result rows,
+-- which is exactly what 'i64LoopExpr' consults).  @divInt@/@modInt@ are admitted
+-- (their INT64_MIN/-1 and zero edges escape to the boxed path), matching C.
+intArithPrimLL :: Text -> Maybe Int
+intArithPrimLL = \case
+  "addInt" -> Just 2
+  "subInt" -> Just 2
+  "mulInt" -> Just 2
+  "divInt" -> Just 2
+  "modInt" -> Just 2
+  "negInt" -> Just 1
+  _ -> Nothing
+
+-- | An Int comparison usable as a loop condition: (LLVM @icmp@ predicate suffix,
+-- arg count).  ONLY the Int compares whose semantics match the runtime prim
+-- exactly (signed compares — `kint_cmp` is a signed total order on the in-range
+-- word path).  Mirrors C's 'cmpPrim' restricted to its @KInt64@ rows.
+intCmpPrimLL :: Text -> Maybe Text
+intCmpPrimLL = \case
+  "eqInt" -> Just "eq"
+  "ltInt" -> Just "slt"
+  "leInt" -> Just "sle"
+  _ -> Nothing
+
+-- | The de Bruijn index of a scalarized-var READ — a `__runIO (readRef (CVar
+-- i))` splice with @0 <= i < k@ (the elaborator auto-derefs a surface `var`
+-- read).  Mirrors C's 'scalarVarReadIdx' (it does not consult 'gsPrims' here —
+-- the splice's @readRef@ is the prelude prim by spelling at this surface, the
+-- same recognition C uses; a non-`readRef` head yields 'Nothing' → ineligible).
+scalarVarReadIdxLL :: Int -> Term -> Maybe Int
+scalarVarReadIdxLL k term = case runIOSpliceLL term of
+  Just action -> case spineOf action of
+    (CGlob (GName _ nm), sargs)
+      | nm == "readRef"
+      , [CVar i] <- [a | (Expl, a) <- sargs]
+      , i >= 0
+      , i < k ->
+          Just i
+    _ -> Nothing
+  Nothing -> Nothing
+
+-- | int64-expressible over scalar-var reads (idx<k), in-range Int literals, and
+-- the Int arith prims — and NOTHING else (an outer-var read, a non-listed prim,
+-- a ctor, a Double op, etc. fails, keeping the loop boxed).  Pure mirror of C's
+-- 'i64LoopExpr'.
+i64LoopExprLL :: Int -> Term -> Bool
+i64LoopExprLL k term = case scalarVarReadIdxLL k term of
+  Just _ -> True
+  Nothing -> case term of
+    CLit (LitInt m) -> i64InRangeLL m
+    _ -> case spineOf term of
+      (CGlob (GName _ nm), sargs) ->
+        let expl = [a | (Expl, a) <- sargs]
+         in case intArithPrimLL nm of
+              Just n | length expl == n -> all (i64LoopExprLL k) expl
+              _ -> False
+      _ -> False
+
+-- | A loop condition: a saturated Int compare over loop-expressible operands.
+-- Mirror of C's 'i64LoopCond'.
+i64LoopCondLL :: Int -> Term -> Bool
+i64LoopCondLL k term = case spineOf term of
+  (CGlob (GName _ nm), sargs) ->
+    let expl = [a | (Expl, a) <- sargs]
+     in case (intCmpPrimLL nm, expl) of
+          (Just _, [_, _]) -> all (i64LoopExprLL k) expl
+          _ -> False
+  _ -> False
+
+-- | Does a term build a closure/thunk/do/letrec that could capture an enclosing
+-- `var` by reference (so the scalarized int64 register would be invisible to the
+-- captured env)?  Mirror of C's 'bodyCapturesEnv', minus the eta-ctor peephole
+-- the LLVM backend does not emit — a conservative @True@ on any @CApp@ over a
+-- ctor's args is fine since the loop corpus never builds ctors anyway.
+bodyCapturesEnvLL :: Term -> Bool
+bodyCapturesEnvLL = go
+  where
+    go t = case t of
+      CLam {} -> True
+      CLetRec {} -> True
+      CDo {} -> True
+      CThunkE {} -> True
+      CLazyE {} -> True
+      CQuote {} -> True
+      CApp _ f a -> go f || go a
+      CCtor _ _ args -> any go args
+      CMatch s _ alts -> go s || any goAlt alts
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CInject _ e -> go e
+      CForceE e -> go e
+      CSealE _ e -> go e
+      CLet _ _ ty rhs body -> go ty || go rhs || go body
+      CIf c th el -> go c || go th || go el
+      CRecordV fs -> any (go . snd) fs
+      CRecordT fs -> any (go . snd) fs
+      CVariantT ts -> any go ts
+      CSigT _ e -> go e
+      CPi _ _ _ _ a b -> go a || go b
+      CVar {} -> False
+      CGlob {} -> False
+      CSort {} -> False
+      CLit {} -> False
+      CMeta {} -> False
+    goAlt (CaseAlt _ mg body) = maybe False go mg || go body
+
+-- | Does any term in this item (recursively) capture the env?  Mirror of C's
+-- 'itemHasClosure'.
+itemHasClosureLL :: KItem -> Bool
+itemHasClosureLL item = case item of
+  KExpr t -> bodyCapturesEnvLL t
+  KBind _ _ t -> bodyCapturesEnvLL t
+  KLet _ _ t -> bodyCapturesEnvLL t
+  KLetQ _ t mels -> bodyCapturesEnvLL t || maybe False (bodyCapturesEnvLL . snd) mels
+  KVarItem _ t -> bodyCapturesEnvLL t
+  KAssign r _ t -> bodyCapturesEnvLL r || bodyCapturesEnvLL t
+  KReturn t -> bodyCapturesEnvLL t
+  KWhile _ c b mels -> bodyCapturesEnvLL c || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
+  KFor _ _ s b mels -> bodyCapturesEnvLL s || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
+  KIf alts mels -> any (\(c, b) -> bodyCapturesEnvLL c || any itemHasClosureLL b) alts || maybe False (any itemHasClosureLL) mels
+  KDefer _ t -> bodyCapturesEnvLL t
+  KUsing _ a r -> bodyCapturesEnvLL a || bodyCapturesEnvLL r
+  KSubDo _ b -> any itemHasClosureLL b
+  KBreak _ -> False
+  KContinue _ -> False
+
+-- | Recognize the eligible scalarizable shape at the head of an item list — the
+-- pure mirror of C's 'scalarLoopPlan': a run of k `var x = <in-range Int lit>`
+-- immediately followed by an UNLABELED, else-less `while` whose condition is an
+-- Int compare over loop-expressible operands and whose body is a NON-EMPTY flat
+-- list of `KAssign (CVar idx) False rhs` (idx<k, Int-arith rhs), with NO closure
+-- anywhere in the loop or the continuation (the escape gate).
+scalarLoopPlanLL :: [KItem] -> Maybe ScalarLoopLL
+scalarLoopPlanLL items =
+  case span isKVar items of
+    (varRun@(_ : _), KWhile Nothing cond body Nothing : rest2)
+      | Just inits <- traverse initLit varRun ->
+          let k = length inits
+              okCond = i64LoopCondLL k cond
+              bodyPairs = traverse (bodyItemOk k) body
+              noClosure = not (any itemHasClosureLL (KWhile Nothing cond body Nothing : rest2))
+           in case bodyPairs of
+                Just pairs
+                  | okCond && not (null body) && noClosure ->
+                      Just (ScalarLoopLL inits cond pairs rest2)
+                _ -> Nothing
+    _ -> Nothing
+  where
+    isKVar (KVarItem _ _) = True
+    isKVar _ = False
+    initLit (KVarItem _ (CLit (LitInt m))) | i64InRangeLL m = Just m
+    initLit _ = Nothing
+    bodyItemOk k (KAssign (CVar idx) False rhs)
+      | idx >= 0, idx < k, i64LoopExprLL k rhs = Just (idx, rhs)
+    bodyItemOk _ _ = Nothing
+
+-- | Lower an eligible scalar `var…while` group.  At the do-block site we (1)
+-- push the k `var` ref cells onto the env (so the loop's continuation reads
+-- them at the right de-Bruijn slots, exactly as the boxed path would), (2)
+-- generate a dedicated `KNativeFn` @kscalarloop_N(args)@ that runs the unboxed
+-- loop over those cells, and (3) emit a `knative_sat` IO action over it, then
+-- sequence the continuation.  The cells are passed by the args array; the ref
+-- de-Bruijn index of the var declared FIRST is the DEEPEST (k-1), matching the
+-- push order (mirrors C's @Map.fromList [(k-1-j, …)]@).
+emitScalarLoopLL :: ScalarLoopLL -> Gen Text
+emitScalarLoopLL plan = do
+  let inits = sllInits plan
+      k = length inits
+  -- (1) Build + push the k ref cells; collect their operands in declaration
+  -- order.  Each is `kref_new(kint(lit))`, then `kpush`ed (value-first) so the
+  -- LAST-declared var is at de Bruijn 0 — the same env shape the generic
+  -- `var x = lit` path produces.
+  declRuntime "declare ptr @kint(i64)"
+  declRuntime "declare ptr @kref_new(ptr)"
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  env0 <- gets gsEnv
+  -- refs in declaration order: refs!!0 is the first-declared var.
+  (refsRev, envK) <-
+    foldM
+      ( \(acc, e) lit -> do
+          boxr <- freshReg
+          emit (boxr <> " = call ptr @kint(i64 " <> T.pack (show lit) <> ")")
+          refr <- freshReg
+          emit (refr <> " = call ptr @kref_new(ptr " <> boxr <> ")")
+          e2 <- freshReg
+          emit (e2 <> " = call ptr @kpush(ptr " <> refr <> ", ptr " <> e <> ")")
+          pure (refr : acc, e2)
+      )
+      ([], env0)
+      inits
+  let refs = reverse refsRev -- declaration order
+  -- (2) Emit the loop helper as a top-level KNativeFn; it reads the cells from
+  -- its args array (args[j] is the j-th declared var's ref cell).
+  fnIdent <- emitScalarLoopFn plan refs
+  -- (3) The args array for knative_sat: refs in declaration order.
+  argv <- freshReg
+  emit (argv <> " = alloca [" <> T.pack (show k) <> " x ptr], align 8")
+  forM_ (zip [0 :: Int ..] refs) $ \(j, refr) -> do
+    slot <- freshReg
+    emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show j))
+    emit ("store ptr " <> refr <> ", ptr " <> slot <> ", align 8")
+  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  loopAct <- freshReg
+  emit (loopAct <> " = call ptr @knative_sat(ptr @" <> fnIdent <> ", i32 " <> T.pack (show k) <> ", ptr " <> argv <> ", i32 1)")
+  -- (4) Sequence the continuation under the env extended by the k pushed cells.
+  -- The loop's normal completion is Unit (like the boxed `while`), so it is
+  -- sequenced as `_ <- loopAct; rest`.
+  modify' $ \g -> g {gsEnv = envK}
+  r <- seqActionThen loopAct CPWild (sllRest plan)
+  modify' $ \g -> g {gsEnv = env0}
+  pure r
+
+-- | Emit the @kscalarloop_N(ptr %args)@ helper: an unboxed int64 loop returning
+-- Unit, with an overflow fall-back to a boxed inline loop.
+--
+-- Each scalar var gets an @i64*@ stack slot (@alloca@); the loop reads/writes
+-- those slots with NATIVE arithmetic (the @llvm.s{add,sub,mul}.with.overflow@
+-- intrinsics).  Clang's @-O2@ @mem2reg@ pass promotes the slots to SSA phi
+-- registers (the standard LLVM frontend idiom), so the hot loop is a raw
+-- register loop with NO per-iteration allocation — exactly the C backend's
+-- @int64_t sv_*@ loop.  On a §6 overflow the slot values (the pre-op snapshot)
+-- are flushed to the ref cells and the boxed continuation re-runs the rest of
+-- the loop with GMP-promoting @kp_*@ prims (bit-identical to interp == C).
+--
+-- The de-Bruijn index i used in the loop body/cond maps to declaration index
+-- (k-1-i): the FIRST-declared var sits at the DEEPEST env slot.  @args[j]@ is
+-- the j-th declared var's ref cell.
+emitScalarLoopFn :: ScalarLoopLL -> [Text] -> Gen Text
+emitScalarLoopFn plan _refs = do
+  fnIdent <- freshLabel "kscalarloop_"
+  let inits = sllInits plan
+      k = length inits
+  (bodyInsns, _end, ()) <- captured "%args" $ do
+    declRuntime "declare ptr @kunit()"
+    declRuntime "declare ptr @kint(i64)"
+    declRuntime "declare ptr @kref_set(ptr, ptr)"
+    -- entry: load each ref cell from args; one i64 stack slot per var, init'd.
+    cellOf <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
+      slot <- freshReg
+      emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr %args, i64 0, i64 " <> T.pack (show j))
+      cell <- freshReg
+      emit (cell <> " = load ptr, ptr " <> slot <> ", align 8")
+      pure (j, cell)
+    slotOf <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
+      sl <- freshReg
+      emit (sl <> " = alloca i64, align 8")
+      emit ("store i64 " <> T.pack (show (inits !! j)) <> ", ptr " <> sl <> ", align 8")
+      pure (j, sl)
+    -- de-Bruijn i → (declaration index k-1-i)'s i64 slot / ref cell.
+    let dbSlot i = slotOf Map.! (k - 1 - i)
+        dbCell i = cellOf Map.! (k - 1 - i)
+    contL <- freshLabel "scont_"
+    bodyL <- freshLabel "sbody_"
+    flushL <- freshLabel "sflush_"
+    boxedL <- freshLabel "sbox_"
+    doneL <- freshLabel "sdone_"
+    -- Flush a SNAPSHOT (declaration-index → iteration-entry i64 operand) to the
+    -- ref cells, then branch to the boxed loop.  Mirrors C's `flushSnaps`: it is
+    -- the PRE-iteration state (NOT the partially-mutated slots), so an
+    -- earlier-committed assignment in the same iteration is NOT double-applied
+    -- when the boxed loop re-runs the iteration from these cells.
+    let flushSnapTo snapOf target = do
+          forM_ [0 .. k - 1] $ \j -> do
+            bx <- freshReg
+            emit (bx <> " = call ptr @kint(i64 " <> snapOf j <> ")")
+            dump <- freshReg
+            emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! j) <> ", ptr " <> bx <> ")")
+          emit ("br label %" <> target)
+    emit ("br label %" <> contL)
+    -- loop header: snapshot each var's iteration-entry value (a register load —
+    -- no allocation), then evaluate the (scalar) condition.  A cond-operand
+    -- overflow flushes THESE snapshots and re-runs boxed.
+    startBlock contL
+    hdrSnaps <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
+      v <- freshReg
+      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
+      pure (j, v)
+    let snapAt m j = m Map.! j
+    condBit <- scalarCondLL k dbSlot (flushSnapTo (snapAt hdrSnaps) boxedL) (sllCond plan)
+    emit ("br i1 " <> condBit <> ", label %" <> bodyL <> ", label %" <> flushL)
+    -- body: snapshot the iteration-entry values again (the body is a distinct
+    -- block, so re-load — same SSA-friendly register snapshot), then each
+    -- assignment computes a native i64 (overflow → flush THESE snapshots + goto
+    -- boxed) and stores it into the var's slot so a later read in the SAME
+    -- iteration sees it (sequential in-place commit, matching C).
+    startBlock bodyL
+    bodySnaps <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
+      v <- freshReg
+      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
+      pure (j, v)
+    scalarBodyLL k dbSlot (flushSnapTo (snapAt bodySnaps) boxedL) (sllBody plan)
+    emit ("br label %" <> contL)
+    -- normal completion: commit each var's FINAL slot value to its ref cell.
+    startBlock flushL
+    forM_ [0 .. k - 1] $ \j -> do
+      v <- freshReg
+      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
+      bx <- freshReg
+      emit (bx <> " = call ptr @kint(i64 " <> v <> ")")
+      dump <- freshReg
+      emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! j) <> ", ptr " <> bx <> ")")
+    emit ("br label %" <> doneL)
+    -- §6 overflow continuation: the boxed loop over the just-flushed cells.
+    startBlock boxedL
+    scalarBoxedLoopLL k dbCell (sllCond plan) (sllBody plan) doneL
+    -- done: return Unit.
+    startBlock doneL
+    u <- freshReg
+    emit (u <> " = call ptr @kunit()")
+    emit ("ret ptr " <> u)
+  let def =
+        T.unlines $
+          ["define internal ptr @" <> fnIdent <> "(ptr %args) {", "build:"]
+            ++ map ("  " <>) bodyInsns
+            ++ ["}"]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+-- | Lower a scalar (i64) loop expression to its native operand, escaping to the
+-- boxed continuation @boxedL@ on any overflow.  @dbSlot i@ is the @i64*@ stack
+-- slot of the scalar var at de-Bruijn index i; @flushAndGoto@ commits the
+-- pre-op snapshot (the current slot values) to the cells and branches to
+-- @boxedL@ when an op overflows.  Mirrors C's 'scalarExpr' for the Int subset.
+scalarI64ExprLL :: Int -> (Int -> Text) -> Gen () -> Term -> Gen Text
+scalarI64ExprLL k dbSlot flushAndGoto = goE
+  where
+    goE term = case scalarVarReadIdxLL k term of
+      Just i -> do
+        r <- freshReg
+        emit (r <> " = load i64, ptr " <> dbSlot i <> ", align 8")
+        pure r
+      Nothing -> case term of
+        CLit (LitInt m) -> pure (T.pack (show m))
+        _ -> case spineOf term of
+          (CGlob (GName _ nm), sargs) ->
+            let expl = [a | (Expl, a) <- sargs]
+             in case (intArithPrimLL nm, expl) of
+                  (Just 2, [a, b]) -> binOp nm a b
+                  (Just 1, [a]) -> negOp a
+                  _ -> escalateScalarLL
+          _ -> escalateScalarLL
+    -- a 2-arg op: add/sub/mul use the overflow intrinsic; div/mod escape on the
+    -- INT64_MIN/-1 and div-by-zero edges (matching the C backend exactly).
+    binOp nm a b = do
+      ae <- goE a
+      be <- goE b
+      case nm of
+        "addInt" -> ovfOp "sadd" ae be
+        "subInt" -> ovfOp "ssub" ae be
+        "mulInt" -> ovfOp "smul" ae be
+        "divInt" -> divModOp True ae be
+        "modInt" -> divModOp False ae be
+        _ -> escalateScalarLL
+    negOp a = do
+      ae <- goE a
+      -- negate via 0 - a so INT64_MIN escapes through the ssub overflow check.
+      ovfOp "ssub" "0" ae
+    -- an overflow-checked op: call @llvm.s{add,sub,mul}.with.overflow.i64@,
+    -- extract the {value, ovf-bit}; on the ovf bit, flush + goto boxed.
+    ovfOp pfx ae be = do
+      declRuntime ("declare {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64, i64)")
+      pair <- freshReg
+      emit (pair <> " = call {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64 " <> ae <> ", i64 " <> be <> ")")
+      val <- freshReg
+      emit (val <> " = extractvalue {i64, i1} " <> pair <> ", 0")
+      ovf <- freshReg
+      emit (ovf <> " = extractvalue {i64, i1} " <> pair <> ", 1")
+      okL <- freshLabel "sok_"
+      escL <- freshLabel "sesc_"
+      emit ("br i1 " <> ovf <> ", label %" <> escL <> ", label %" <> okL)
+      startBlock escL
+      flushAndGoto
+      startBlock okL
+      pure val
+    -- div/mod: zero divisor traps (krt_fail), INT64_MIN/-1 escapes; otherwise a
+    -- native sdiv/srem.  Mirrors C's scalarArith div/mod edges.
+    divModOp isDiv ae be = do
+      declRuntime "declare void @krt_fail(ptr)"
+      -- divisor == 0 → trap.
+      zchk <- freshReg
+      emit (zchk <> " = icmp eq i64 " <> be <> ", 0")
+      trapL <- freshLabel "sdz_"
+      contL <- freshLabel "sdc_"
+      emit ("br i1 " <> zchk <> ", label %" <> trapL <> ", label %" <> contL)
+      startBlock trapL
+      msgG <- internCStr (if isDiv then "divInt: division by zero" else "modInt: division by zero")
+      emit ("call void @krt_fail(ptr " <> msgG <> ")")
+      emit "unreachable"
+      startBlock contL
+      -- INT64_MIN / -1 overflow edge: for div it escapes; for mod the result is 0.
+      minChk <- freshReg
+      emit (minChk <> " = icmp eq i64 " <> ae <> ", -9223372036854775808")
+      negOneChk <- freshReg
+      emit (negOneChk <> " = icmp eq i64 " <> be <> ", -1")
+      edge <- freshReg
+      emit (edge <> " = and i1 " <> minChk <> ", " <> negOneChk)
+      if isDiv
+        then do
+          escL <- freshLabel "sde_"
+          okL <- freshLabel "sdo_"
+          emit ("br i1 " <> edge <> ", label %" <> escL <> ", label %" <> okL)
+          startBlock escL
+          flushAndGoto
+          startBlock okL
+          r <- freshReg
+          emit (r <> " = sdiv i64 " <> ae <> ", " <> be <> "")
+          pure r
+        else do
+          -- modInt INT64_MIN%-1 == 0 (no escape; matches C's `t = 0`).
+          remL <- freshLabel "smr_"
+          joinL <- freshLabel "smj_"
+          curBlk <- gets gsBlock
+          emit ("br i1 " <> edge <> ", label %" <> joinL <> ", label %" <> remL)
+          startBlock remL
+          rr <- freshReg
+          emit (rr <> " = srem i64 " <> ae <> ", " <> be <> "")
+          emit ("br label %" <> joinL)
+          startBlock joinL
+          r <- freshReg
+          emit (r <> " = phi i64 [ 0, %" <> curBlk <> " ], [ " <> rr <> ", %" <> remL <> " ]")
+          pure r
+
+-- | Lower a scalar loop CONDITION to an @i1@ over native i64 operands (an
+-- @icmp@).  The cond operands are loop-exprs lowered through 'scalarI64ExprLL';
+-- an operand arith overflow escapes to the boxed loop via @flushAndGoto@ (the
+-- header's snapshot flush).  Mirror of C's 'scalarCond' for the Int subset.
+scalarCondLL :: Int -> (Int -> Text) -> Gen () -> Term -> Gen Text
+scalarCondLL k dbSlot flushAndGoto term = case spineOf term of
+  (CGlob (GName _ nm), sargs) ->
+    case (intCmpPrimLL nm, [a | (Expl, a) <- sargs]) of
+      (Just pred_, [a, b]) -> do
+        ae <- scalarI64ExprLL k dbSlot flushAndGoto a
+        be <- scalarI64ExprLL k dbSlot flushAndGoto b
+        r <- freshReg
+        emit (r <> " = icmp " <> pred_ <> " i64 " <> ae <> ", " <> be)
+        pure r
+      _ -> escalateScalarLL
+  _ -> escalateScalarLL
+
+-- | A defensive backend error for a term the eligibility analysis should have
+-- excluded (mirror of C's 'lr1Unreachable' — never a silent miscompile).
+escalateScalarLL :: Gen Text
+escalateScalarLL =
+  unsupported
+    "scalar-loop"
+    "an int64-ineligible term reached the LLVM unboxed scalar loop (eligibility invariant violated)"
+
+-- | Lower the loop BODY in the scalar (i64) world: each `KAssign (CVar idx)
+-- False rhs` computes a native i64 (overflow → @flushAndGoto@: flush the
+-- iteration-entry snapshot to the cells and jump to the boxed continuation) and
+-- stores it into the var's i64 slot, so a later read in the SAME iteration sees
+-- the freshly-assigned value (sequential in-place commit, matching C).
+scalarBodyLL :: Int -> (Int -> Text) -> Gen () -> [(Int, Term)] -> Gen ()
+scalarBodyLL k dbSlot flushAndGoto body = forM_ body $ \(idx, rhs) -> do
+  v <- scalarI64ExprLL k dbSlot flushAndGoto rhs
+  emit ("store i64 " <> v <> ", ptr " <> dbSlot idx <> ", align 8")
+
+-- | The §6 BOXED overflow continuation: the same loop, but every value is a
+-- boxed @KValue*@ — the condition via @kp_*@ + @kas_bool@, each assignment via
+-- @kp_*@, each var read/write via @kref_get@/@kref_set@.  These promote to GMP
+-- exactly like the C backend's boxed loop (the result is bit-identical to
+-- interp == C even past int64).  Reads/writes go straight to the ref cells.
+scalarBoxedLoopLL :: Int -> (Int -> Text) -> Term -> [(Int, Term)] -> Text -> Gen ()
+scalarBoxedLoopLL k dbCell cond body doneL = do
+  declRuntime "declare i32 @kas_bool(ptr)"
+  declRuntime "declare ptr @kref_get(ptr)"
+  declRuntime "declare ptr @kref_set(ptr, ptr)"
+  contL <- freshLabel "bxcont_"
+  bodyL <- freshLabel "bxbody_"
+  emit ("br label %" <> contL)
+  startBlock contL
+  cv <- boxedExprLL k dbCell cond
+  bb <- freshReg
+  emit (bb <> " = call i32 @kas_bool(ptr " <> cv <> ")")
+  bit <- freshReg
+  emit (bit <> " = icmp ne i32 " <> bb <> ", 0")
+  emit ("br i1 " <> bit <> ", label %" <> bodyL <> ", label %" <> doneL)
+  startBlock bodyL
+  forM_ body $ \(idx, rhs) -> do
+    rv <- boxedExprLL k dbCell rhs
+    dump <- freshReg
+    emit (dump <> " = call ptr @kref_set(ptr " <> dbCell idx <> ", ptr " <> rv <> ")")
+  emit ("br label %" <> contL)
+
+-- | Lower a loop expression/condition in the BOXED world: a var read is
+-- @kref_get(cell)@, a literal is @kint@, an arith/compare prim is the boxed
+-- @kp_*@ runtime call (so it promotes to GMP and traps/edges exactly like the
+-- prim does in interp == C).
+boxedExprLL :: Int -> (Int -> Text) -> Term -> Gen Text
+boxedExprLL k dbCell = goE
+  where
+    goE term = case scalarVarReadIdxLL k term of
+      Just i -> do
+        declRuntime "declare ptr @kref_get(ptr)"
+        r <- freshReg
+        emit (r <> " = call ptr @kref_get(ptr " <> dbCell i <> ")")
+        pure r
+      Nothing -> case term of
+        CLit (LitInt m)
+          | i64InRangeLL m -> do
+              declRuntime "declare ptr @kint(i64)"
+              r <- freshReg
+              emit (r <> " = call ptr @kint(i64 " <> T.pack (show m) <> ")")
+              pure r
+        _ -> case spineOf term of
+          (CGlob (GName _ nm), sargs)
+            | Just sym <- boxedPrimSymLL nm -> do
+                let expl = [a | (Expl, a) <- sargs]
+                aes <- mapM goE expl
+                declRuntime ("declare ptr @" <> sym <> "(" <> T.intercalate ", " (replicate (length aes) "ptr") <> ")")
+                r <- freshReg
+                emit (r <> " = call ptr @" <> sym <> "(" <> T.intercalate ", " [("ptr " <> a) | a <- aes] <> ")")
+                pure r
+          _ -> escalateScalarLL
+
+-- | The boxed runtime symbol for an admitted Int arith/compare prim (the same
+-- @kp_*@ helpers the generic boxed path uses).  Only the prims the eligibility
+-- admits appear here.
+boxedPrimSymLL :: Text -> Maybe Text
+boxedPrimSymLL = \case
+  "addInt" -> Just "kp_addInt"
+  "subInt" -> Just "kp_subInt"
+  "mulInt" -> Just "kp_mulInt"
+  "divInt" -> Just "kp_divInt"
+  "modInt" -> Just "kp_modInt"
+  "negInt" -> Just "kp_negInt"
+  "eqInt" -> Just "kp_eqInt"
+  "ltInt" -> Just "kp_ltInt"
+  "leInt" -> Just "kp_leInt"
+  _ -> Nothing
 
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
