@@ -429,6 +429,12 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
   f->all_prev = f->all_next = NULL;
   f->mask_depth = 0;
   f->resumed = 0;                 /* fix 2: set on each (re)entry to fiber_step    */
+  /* §32.2.20 abandonment drain: no drain is in progress on a fresh fiber.  This
+   * is the empty drain_ae stack.  GC_MALLOC already zeroes, but making it
+   * explicit keeps the fresh-fiber invariant non-fragile — a drain_ae left
+   * dangling from a previous run/fiber would otherwise be read by the first
+   * begin_abandon_drain as a bogus prev_drain (cf. the foreign-terminal hang). */
+  f->drain_ae = NULL;
   pthread_mutex_init(&f->lock, NULL);
   return f;
 }
@@ -865,8 +871,22 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
  * and `f->cur_exits` is the clause's exit-state, both restored after the drain.
  * This runs only on the GENERAL/abortive path; a tail-resumptive or resumed
  * clause never reaches here. */
+#ifdef KRT2_ABANDON_INSTRUMENT
+/* §32.2.20 test-only instrumentation: count how often the FOREIGN-terminal and
+ * ACTIVE-terminal branches of finish_abandon_drain fire, and how many drains
+ * begin.  Used by tests/abandon_foreign_chain.c to PROVE it exercises the
+ * foreign path.  Compiled in only under -DKRT2_ABANDON_INSTRUMENT (the runtime
+ * Makefile passes it); no effect on production builds. */
+unsigned long g_rt_foreign_hits = 0;   /* finish_abandon_drain FOREIGN branch    */
+unsigned long g_rt_active_hits  = 0;   /* finish_abandon_drain ACTIVE branch      */
+unsigned long g_rt_begin_hits   = 0;   /* begin_abandon_drain entries             */
+#endif
+
 static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
                                int post_kind, KValue *post_val, KValue *post_label) {
+#ifdef KRT2_ABANDON_INSTRUMENT
+  g_rt_begin_hits++;
+#endif
   AbandonEnd *ae = (AbandonEnd *)GC_MALLOC(sizeof(AbandonEnd));
   ae->kont        = f->k;          /* the clause's continuation (after KK_ABANDON) */
   ae->saved_exits = f->cur_exits;  /* the clause's exit-state, resumed post-drain  */
@@ -904,14 +924,23 @@ static int begin_abandon_drain(Rt *rt, Fiber *f, Resumption *r,
  *
  * The terminal reached can be EITHER the ACTIVE drain's own (the common case, plus
  * fix 2's resume case where it was re-spliced) OR — when an abandoned `defer`
- * PERFORMS into a handler whose clause ITSELF abandons — a DIFFERENT (outer)
- * drain's terminal captured into the inner abandoned slice and re-walked by the
- * inner drain.  The two are told apart by whether c->aux is the fiber's currently
- * active drain (f->drain_ae): the inner-capture geometry breaks the LIFO nesting
- * the prev_drain chain assumes (an OUTER terminal is reached while an INNER drain
- * is active), so for a FOREIGN terminal we MUST NOT touch the drain_ae stack —
- * just continue the (foreign) clause's reason at its live successor, exactly the
- * terminating behavior the pre-drain_ae machinery had.
+ * PERFORMS OUTWARD into an ENCLOSING handler whose clause ITSELF abandons — a
+ * DIFFERENT (outer) drain's terminal captured into the inner abandoned slice and
+ * re-walked by the inner drain.  The two are told apart by whether c->aux is the
+ * fiber's currently active drain (f->drain_ae).  For such a FOREIGN terminal the
+ * clause reason cannot resume at the live successor c->next (it points INSIDE the
+ * still-draining inner slice — an infinite re-walk); it escapes to the captured-
+ * at-install ae->kont, OUTSIDE both abandoned slices.
+ *
+ * fix 3 (FOREIGN-terminal drain_ae pop): escaping to ae->kont terminates this
+ * outer drain AND tears down every inner drain layered on top of it, so the
+ * drain_ae stack MUST be popped down to this terminal's prev_drain — exactly the
+ * pop the normal/active branch performs.  Leaving it untouched (the pre-fix
+ * behavior) stranded f->drain_ae at the dead inner AbandonEnd; the next
+ * begin_abandon_drain on the same fiber then inherited that dead pointer as its
+ * prev_drain, wrongly took the nested-fold path at its own KK_ABANDEND, and
+ * RK_DRAIN-walked a slice with no live terminal -> HANG (the single-fiber
+ * foreign-escape-then-drain regression).
  *
  * For the ACTIVE drain's terminal, two sub-cases:
  *   - NESTED inside an enclosing one (ae->prev_drain != NULL — the H1 recursion):
@@ -927,17 +956,39 @@ static int finish_abandon_drain(Rt *rt, Fiber *f, Cont *c,
   compose_reason_into(&okind, &oval, live_kind, live_val); /* H2: don't swallow it  */
   f->cur_exits = ae->saved_exits;
   if (ae != (AbandonEnd *)f->drain_ae) {
-    /* FOREIGN terminal (perform-into-aborting-handler nested capture): an OUTER
-     * drain's terminal was captured into the INNER abandoned slice and re-walked
-     * by the inner drain.  c->next here points INSIDE the still-draining inner
-     * slice, so resuming there would re-execute it (an infinite walk).  The LIFO
-     * prev_drain chain also does not apply.  Escape to the captured-at-install
-     * continuation ae->kont (OUTSIDE the inner slice, past the handler) and leave
-     * f->drain_ae untouched — exactly the terminating behavior of the pre-drain_ae
-     * machinery, which always jumped to ae->kont. */
+#ifdef KRT2_ABANDON_INSTRUMENT
+    g_rt_foreign_hits++;
+#endif
+    /* FOREIGN terminal (perform-into-an-ENCLOSING-aborting-handler nested
+     * capture, §32.2.20).  Geometry: an OUTER drain (`ae`) is active; one of its
+     * abandoned `defer`s performs an op that resolves OUTWARD to an ENCLOSING
+     * handler whose clause ALSO abandons.  That second abandonment opens an INNER
+     * drain (now `f->drain_ae`), and the slice it captured for the inner abort
+     * INCLUDES `ae`'s own KK_ABANDEND terminal — so the inner RK_DRAIN walk
+     * reaches `ae`, a terminal that is NOT the active drain (`ae != f->drain_ae`).
+     *
+     * The drain_ae stack at this point is strictly LIFO (verified):
+     *     f->drain_ae (inner) -> ... -> ae (this outer terminal) -> ae->prev_drain
+     * `ae->kont` is the outer clause's post-handler continuation, captured at
+     * install OUTSIDE both abandoned slices.  Escaping to it terminates `ae`'s
+     * drain AND tears down every inner drain layered on top of it (we jump clean
+     * past all of them), so the next live drain is the one that was active BEFORE
+     * `ae` began: `ae->prev_drain`.
+     *
+     * THE BUG THIS FIXES: the pre-fix branch left `f->drain_ae` UNTOUCHED here,
+     * dangling at the dead inner AbandonEnd.  The next begin_abandon_drain on the
+     * same fiber then read that dead pointer as its `prev_drain`, wrongly took the
+     * nested-fold path at its own KK_ABANDEND, and RK_DRAIN-walked a slice with no
+     * live KK_ABANDEND terminal -> the walk never terminated -> HANG.  Popping the
+     * stack down to `ae->prev_drain` restores the correct pre-outer-drain state,
+     * matching the normal finish_abandon_drain pop discipline. */
     f->k = ae->kont;
+    f->drain_ae = ae->prev_drain;
     return apply_reason(rt, f, okind, oval, ae->rlabel);
   }
+#ifdef KRT2_ABANDON_INSTRUMENT
+  g_rt_active_hits++;
+#endif
   /* fix 2: the ACTIVE drain's terminal — resume at its LIVE successor c->next so a
    * perform that RESUMED during this drain (re-splicing the captured slice) keeps
    * its threaded continuation, rather than having it hard-overwritten by ae->kont. */

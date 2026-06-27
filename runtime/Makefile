@@ -42,6 +42,11 @@ CPPFLAGS  += $(UV_CFLAGS)
 CPPFLAGS  += -D_GNU_SOURCE
 # Boehm needs GC_THREADS for the multicore scheduler (parallel mark + thread regs).
 CPPFLAGS  += -DGC_THREADS
+# §32.2.20 test-only: compile in the abandonment-drain branch hit-counters so
+# tests/abandon_foreign_chain.c can PROVE it exercises the FOREIGN-terminal path.
+# Pure instrumentation (a few unconditional increments); harmless in this
+# standalone test build.  Not defined by the production C/LLVM backend builds.
+CPPFLAGS  += -DKRT2_ABANDON_INSTRUMENT
 # -pthread (CFLAGS) + libuv's pkg-config -lpthread already cover threads.
 LIBS      := $(UV_LIBS) -lgc -lgmp
 
