@@ -1978,11 +1978,37 @@ int krt2_exit_is_success(KValue *exit) { return kctor_is(exit, "Success"); }
  * §1).  The reactor's ref'd uv_async handle keeps its uv_loop alive identically.
  * Idempotent + thread-safe-by-construction: only ever called from the single
  * krt2_run_main caller (the runtime is single-entrant at the run_main boundary). */
+/* The worker + reactor threads host the running fibers' C stacks: a pure deep
+ * recursion in a total program (e.g. repro/native-stack-repro's ~8372 non-tail
+ * `go` frames) runs HERE, not on the 8MB main-thread stack the interpreter uses.
+ * A secondary pthread's default stack is small (512KB on macOS), so even modest
+ * depth overflows — the C backend (a fatter frame per level than LLVM) hit it
+ * first.  Give these threads a stack matching the main thread (default 8 MiB, env
+ * KAPPA_STACK_MB) — lazily committed, so the reservation is virtual (VSZ), not
+ * resident (RSS), until the recursion actually goes deep.  This is a FLOOR: the
+ * principled fix is a tail-call/stack transform (see STACK-SAFETY-DESIGN.md) that
+ * runs the common deep-recursion shapes in constant stack. */
+static size_t krt2i_thread_stack_bytes(void) {
+  const char *e = getenv("KAPPA_STACK_MB");
+  long mb = e ? atol(e) : 8;   /* main-thread parity; lazily committed (VSZ != RSS) */
+  if (mb < 1) mb = 1;
+  return (size_t)mb * 1024u * 1024u;
+}
+
+int krt2i_spawn_thread(pthread_t *t, void *(*fn)(void *), void *arg) {
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, krt2i_thread_stack_bytes());
+  int rc = GC_pthread_create(t, &attr, fn, arg);
+  pthread_attr_destroy(&attr);
+  return rc;
+}
+
 static void krt2i_ensure_started(Rt *rt) {
   if (rt->workers_started) return;
   krt2i_reactor_start(rt);
   for (int i = 0; i < rt->nworkers; i++)
-    GC_pthread_create(&rt->workers[i], NULL, worker_main, rt);
+    krt2i_spawn_thread(&rt->workers[i], worker_main, rt);
   rt->workers_started = 1;
 }
 

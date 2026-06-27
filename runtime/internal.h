@@ -417,6 +417,11 @@ void    krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val);
 void    krt2i_all_add(Rt *rt, Fiber *f);      /* add to strong root set             */
 void    krt2i_all_remove(Rt *rt, Fiber *f);   /* drop from strong root set          */
 
+/* GC-registered thread + fiber-host stack (KAPPA_STACK_MB, default 8 MiB, lazily
+ * committed): the running fibers' C stacks live on these threads, so a deep
+ * non-tail recursion runs here, not on the main-thread stack. */
+int     krt2i_spawn_thread(pthread_t *t, void *(*fn)(void *), void *arg);
+
 /* reactor */
 void    krt2i_reactor_init(Rt *rt);           /* uv_loop_init + uv_async_init (main thr) */
 void    krt2i_reactor_start(Rt *rt);          /* spawn the reactor thread            */

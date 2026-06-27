@@ -137,7 +137,7 @@ static void *reactor_main(void *arg) {
 }
 
 void krt2i_reactor_start(Rt *rt) {
-  GC_pthread_create(&rt->reactor_thr, NULL, reactor_main, rt);
+  krt2i_spawn_thread(&rt->reactor_thr, reactor_main, rt);
   rt->reactor_started = 1;
 }
 
