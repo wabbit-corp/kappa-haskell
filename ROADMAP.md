@@ -40,6 +40,40 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 
 ---
 
+## Recent progress — Session 2026-06-27 (runtime + compiler burst)
+
+A large correctness + perf burst landed on `main`, each piece independently gated AND
+adversarially reviewed. The reviews caught **5 serious bugs past green gates** (a daemon
+hang, a drain leak, a responsiveness regression, a drain-state hang, an abandonment
+FOREIGN-terminal hang) — the adversarial-review-every-merge discipline paid for itself.
+
+**Landed + verified:**
+- **Abandonment** (§32.2.12/.20/.21) — C2 cause composition, the cause-shape asymmetry, the
+  perform-during-drain residual, and the FOREIGN-terminal hang regression.
+- **Masking** — rank-2 `restore` (§18.1.12, scoped `__restoreAt` adapter; [`MASKING-RANK-RATIONALE.md`](docs/MASKING-RANK-RATIONALE.md)) + masked-sleep suppression (§32.2.5).
+- **Daemon teardown** (§32.2.3) — the hang regression (bounded best-effort drain) + the D1
+  drain-window ordering leak.
+- **Interrupt delivery** — orphan sleep-timer (reactor-owned cancel + full-duration re-park)
+  + **safe-points (§32.2.6)** — `krt2_safepoint` made real + emitted on loop back-edges across
+  C/LLVM/interp; a tight CPU loop is interruptible now; no scalar perf regression.
+- **std.atomic** (§29.1) — lock-free, proven exact under an N×M race.
+- **delve renders on C** + `restore`-over-suspending-do-block — both the sync-bridge `OP_*`
+  gap (`finallyIO`/`catchIO`/`OP_RESTORE` returned unrun; fixed in `C.hs suspendingNames`; [[c-backend-delve-render-bug]]).
+- **kappart.c split** (6 prefix-free TUs, `-flto`) + **`__runIO`** curried-value fix.
+- **LLVM Int while-loop scalar-unboxing** — sumloop ~1195× → C parity.
+- **Cross-language benchmark suite** ([`bench/xlang`](bench/xlang), `make xbench`, [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md)) — 13 CLBG/Savina ports; concurrency runs the full suite correct + byte-identical to Go/GHC (the alloc-lever multiplier is not a model defect).
+
+**New open items (still TODO, folded into the tracks below):** the LLVM **curried-CK-machine-prim
+gap** (await/STM/interrupt as curried values — blocks Tier-2 on LLVM + the LLVM safepoint
+*delivery* test); the **`let`-blind + LLVM-function scalar-workers** (the next perf levers;
+mandelbrot stays boxed); a **`kctor` value-box multi-worker data race** (value.c, TSan); and the
+benchmark **prim gaps** — no `sqrt`/FP-transcendental, no fixed-precision (`%.9f`) Double format
+(block nbody/spectralnorm), **no mutable O(1) array** (highest-leverage missing data structure),
++ 3 C-backend CPS edges (suspend-in-`for`, STM-self-tail-call stack overflow, `var:Double` helper
+miscompile).
+
+---
+
 ## Done ✅
 
 - [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
