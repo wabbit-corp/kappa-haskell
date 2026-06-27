@@ -1,0 +1,36 @@
+module main
+
+-- §4b TAIL-RESUMPTIVE constant-depth driver.  A deep, tail-resumptive handler
+-- (`case tick _ k -> k 1`) is driven over MANY perform/resume cycles.  The
+-- clause resumes its continuation exactly once, in tail position, so the runtime
+-- takes the §32.2.15 fast path: the op-site→handler segment stays on f->k (never
+-- severed, never re-boxed, the deep handler reinstated for free), so the Cont
+-- depth is FLAT and there is no per-iteration Cont allocation across the loop.
+-- Native output must match the interpreter (the differential oracle,
+-- src/Kappa/Eval.hs) AND the run must stay within a tight allocation gate
+-- (run-native-tests.sh, mirroring the R12 loop constant-depth check).
+
+effect Counter =
+    1 tick : Int -> Int
+
+-- a recursive Eff computation performing `tick` n times, threading a running
+-- accumulator through the resumption value (each tick resumes with 1).  The
+-- recursion IS the effect loop; every step is one perform/resume cycle through
+-- the deep tail-resumptive clause.
+loop : Int -> Int -> Eff <[Counter : Counter]> Int
+let loop n acc =
+    if leInt n 0 then
+        pure acc
+    else
+        do
+            let r <- Counter.tick 0
+            loop (subInt n 1) (addInt acc r)
+
+let counted =
+    deep handle Counter (loop 100000 0) with
+        case return x -> pure x
+        case tick _ k -> k 1
+
+main : UIO Unit
+let main =
+    printlnString (showInt (runPure counted))

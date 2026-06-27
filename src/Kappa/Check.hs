@@ -109,6 +109,7 @@ import Kappa.SyntaxOps
   )
 import Kappa.Token (QuotedLit (..), StrFragment (..), StringLit (..))
 import Kappa.Unicode (isSingleGrapheme)
+import Kappa.Usage (tailResumptiveClause)
 
 -- ── State ────────────────────────────────────────────────────────────
 
@@ -7751,6 +7752,15 @@ instOpTypes ec ps op =
 effTupleField :: Int -> Text
 effTupleField i = "_" <> T.pack (show (i + 1))
 
+-- | §4b reserved field on a handler's @ops@ record carrying the set of
+-- tail-resumptive operation names (a sub-record @{ opName -> Unit }@). The
+-- runtime @do_perform@ projects it to take the constant-@Cont@-depth fast
+-- path. The @__@ prefix keeps it disjoint from every user operation name
+-- (operations are source identifiers), so @kproj(ops, opName)@ never sees
+-- it; the interpreter's @lookup opn fs@ likewise ignores it.
+tailResumptiveField :: Text
+tailResumptiveField = "__tailResumptive"
+
 -- | An operation selection @label.op@ (§18.1.15): a first-class value of type
 -- @forall params. argTy -> Eff <[label : E params]> resTy@ that builds the
 -- §30.2.2.7 OpCall tree node with the identity continuation. For an
@@ -7937,8 +7947,27 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                     inner <- mkK cArgs
                     tupTyTm <- quoteIn c0 tupTy
                     pure (CLam Expl QW "__payload" (CMatch (CVar 0) (Just tupTyTm) [CaseAlt patC Nothing inner]))
-                pure (Just (eoiName op, lam))
-          let opsRec = CRecordV (sortOn fst clauseTms)
+                -- §4b tail-resumptive detection (Usage.tailResumptiveClause):
+                -- a clause whose only `resume` is `k v` in tail position runs
+                -- IN PLACE — the runtime keeps the op-site→handler segment on
+                -- f->k (no sever, no heap Resumption, constant Cont depth).
+                -- Restricted to DEEP handlers: the fast path leaves this
+                -- KK_HANDLER linked beneath the resumed body, which re-handles
+                -- it (deep semantics); a shallow handler must NOT auto-reinstall,
+                -- so it falls back to the general 4a path (honesty: never
+                -- mis-optimize).  Multi-shot ops (eoiQ ≠ Q1) are likewise never
+                -- tail-resumptive — their k may be used more than once.
+                let isTail = deep && eoiQ op == Q1 && tailResumptiveClause kn body
+                pure (Just (eoiName op, lam, isTail))
+          let opsRec0 = CRecordV (sortOn fst [(nm, lam) | (nm, lam, _) <- clauseTms])
+              -- a reserved field carrying the tail-resumptive op set as a
+              -- record { opName -> Unit }.  do_perform projects it (a NON-op
+              -- key, so it never collides with kproj(ops, opName)) to choose
+              -- the fast path; absent/empty ⇒ every op takes the general path.
+              tailRec = CRecordV [(nm, CCtor prelUnit Nothing []) | (nm, _, True) <- clauseTms]
+              opsRec = case opsRec0 of
+                CRecordV fs -> CRecordV (fs ++ [(tailResumptiveField, tailRec)])
+                other -> other
               deepTm = CCtor (prelBoolV deep) Nothing []
               tm =
                 List.foldl'

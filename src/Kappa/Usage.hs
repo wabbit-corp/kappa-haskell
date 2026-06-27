@@ -58,6 +58,7 @@ module Kappa.Usage
   , coreFnParams
   , moduleUsageSignatures
   , usageDiagnostics
+  , tailResumptiveClause
   ) where
 
 import Control.Monad (forM, forM_, unless, when)
@@ -2093,6 +2094,193 @@ multishotOpCall env = \case
     , q `elem` [QOmega, QAtLeastOne] ->
         Just (nameSpan op, nameText op)
   _ -> Nothing
+
+-- | §4b tail-resumptive detector — the dual of 'multishotOpCall'.
+--
+-- A handler operation clause @case op x₁ … xₙ k -> body@ is
+-- /tail-resumptive/ (§32.2.15, Koka's overwhelmingly common handler
+-- shape) iff its resumption binder @k@ is invoked exactly once, in tail
+-- position, applied to a single explicit value — i.e. the clause's tail
+-- is @resume v@ (surface @k v@) and @k@ occurs nowhere else. For such a
+-- clause the op-site→handler segment is never abandoned and is resumed
+-- in place, so the runtime may skip severing the @Cont@ sub-chain,
+-- heap-boxing the resumption, and re-pushing the handler on resume — the
+-- whole point of Stage 4b (constant @Cont@ depth over an effectful loop).
+--
+-- HONESTY / soundness (the §34.3.9 invariant: never optimize merely
+-- because local control is a jump): this is deliberately conservative —
+-- a clause is reported tail-resumptive ONLY when it is provably so by
+-- this structural check. Any of these forces the general 4a path
+-- (correctness over speed):
+--
+--   * @k@ used more than once anywhere (multi-shot or duplicated use);
+--   * @k@ stored, partially applied, or passed as a non-tail argument
+--     (it escapes — the segment may outlive the clause);
+--   * @k@ NOT in tail position (work happens after the resume);
+--   * @k@ applied to ≠ 1 explicit argument (resume is quantity-1);
+--   * a clause whose tail we cannot statically resolve to @k v@
+--     (e.g. through an unmodelled construct) — left non-tail.
+--
+-- Crucially @k@ is allowed to occur in NON-tail positions of branches
+-- the tail does not take only if it does not occur at all elsewhere:
+-- the occurrence count is global over @body@, so a @k@ inside one arm of
+-- an @if@ whose other arm is the tail @k v@ counts as two occurrences and
+-- correctly forces the general path. Pre-resume work in the clause (e.g.
+-- @let s' = f s in k s'@, @State.put@-style transforms) is fine — only
+-- @k@'s own usage shape is constrained.
+tailResumptiveClause :: Name -> Expr -> Bool
+tailResumptiveClause k body =
+  occursK body == 1 && tailIsResume body
+  where
+    kt = nameText k
+    -- A reference to the resumption binder by name. (Shadowing by an
+    -- inner lambda/let binding the same spelling is conservatively
+    -- treated as a use too — counting it only risks a false NEGATIVE,
+    -- never a false positive, so soundness holds.)
+    isK = \case
+      EVar n -> nameText n == kt
+      _ -> False
+
+    -- Total syntactic occurrences of @k@ anywhere in the clause body.
+    -- One — and only one — is permitted, and it must be the tail
+    -- application's head; any other occurrence (a second resume, a
+    -- capture into a closure, a store) makes the count ≥ 2.
+    occursK :: Expr -> Int
+    occursK e
+      | isK e = 1
+      | otherwise = sum (map occursK (subExprs e))
+
+    -- Is the clause's tail exactly @k v@ for a single explicit @v@?
+    -- We follow the tail through the value-position constructs that
+    -- preserve "the last thing evaluated": let/in, both arms of an if,
+    -- match arms, ascriptions, and the final item of a do-block.
+    tailIsResume :: Expr -> Bool
+    tailIsResume = \case
+      EApp h args
+        | isK h -> length (explicitArgs args) == 1
+        -- a deeper application head (currying) means k is applied to
+        -- ≠1 explicit arg here, or the head is not k → not a tail resume
+        | otherwise -> False
+      ELet _ b _ -> tailIsResume b
+      EAscription e _ _ -> tailIsResume e
+      EIf alts mels _ ->
+        not (null alts)
+          && all (tailIsResume . snd) alts
+          && maybe False tailIsResume mels
+      EMatch _ cases _ ->
+        let bodies = [e | MatchCase _ _ e _ <- cases]
+         in not (null bodies) && all tailIsResume bodies
+      EDo _ items _ -> doTailIsResume items
+      _ -> False
+
+    -- The tail of a do-block is its final item; only a trailing
+    -- expression item (or a trailing statement-if whose suites all tail
+    -- to a resume) qualifies. A trailing bind/let/loop/return etc. means
+    -- the resume is not the block's tail value.
+    doTailIsResume :: [DoItem] -> Bool
+    doTailIsResume items = case reverse items of
+      DoExpr e : _ -> tailIsResume e
+      DoIf alts mels _ : _ ->
+        not (null alts)
+          && all (doTailIsResume . snd) alts
+          && maybe False doTailIsResume mels
+      _ -> False
+
+    explicitArgs = filter isExplicitArg
+    isExplicitArg = \case
+      ArgExplicit _ -> True
+      ArgInout _ _ -> True
+      _ -> False
+
+-- | The expressions of a match arm (its body and any guard); an
+-- @impossible@ arm is unreachable and contributes none.
+matchCaseExprs :: MatchCase -> [Expr]
+matchCaseExprs = \case
+  MatchCase _ mg e _ -> maybeToList mg ++ [e]
+  MatchImpossible _ -> []
+
+-- | The immediate sub-expressions of an expression, for the structural
+-- occurrence count in 'tailResumptiveClause'. Deliberately total over
+-- the surface 'Expr': anything not enumerated contributes its children
+-- via the catch-all, so an unmodelled construct cannot hide a @k@.
+subExprs :: Expr -> [Expr]
+subExprs e0 = case e0 of
+  EApp h args -> h : concatMap argExprs args
+  EDot e _ -> [e]
+  EQDot e _ -> [e]
+  ERecordPatch e items _ -> e : concatMap patchExprs items
+  EReceiverSection _ args _ -> concatMap argExprs args
+  ESectionLeft e _ _ -> [e]
+  ESectionRight _ e _ -> [e]
+  EOpChain elems -> [x | ChainOperand x <- elems]
+  EElvis a b _ -> [a, b]
+  ELambda _ _ b _ -> [b]
+  ELet bs b _ -> map lbExpr bs ++ [b]
+  EBlock _ me _ -> maybeToList me
+  EDo _ items _ -> concatMap doItemExprs items
+  EIf alts mels _ -> concatMap (\(c, t) -> [c, t]) alts ++ maybeToList mels
+  EMatch s cases _ -> s : concatMap matchCaseExprs cases
+  ETry s cases mels _ -> s : concatMap exceptCaseBody cases ++ maybeToList mels
+  ETryMatch s ms cs mels _ ->
+    s : concatMap matchCaseExprs ms ++ concatMap exceptCaseBody cs ++ maybeToList mels
+  EHandle _ lbl scrut cases _ ->
+    lbl : scrut : concatMap handlerCaseExprs cases
+  EIs e _ -> [e]
+  EThunk e _ -> [e]
+  ELazy e _ -> [e]
+  EForce e _ -> [e]
+  ESeal a b _ -> [a, b]
+  EOpenExists e _ _ b _ -> [e, b]
+  ESealExists bs a b _ -> map snd bs ++ [a, b]
+  ETuple es _ -> es
+  ERecordLit items _ -> concatMap recItemExprs items
+  EListLit es _ -> es
+  ESetLit es _ -> es
+  EMapLit kvs _ -> concatMap (\(a, b) -> [a, b]) kvs
+  EAscription e _ _ -> [e]
+  ECaptures e _ _ -> [e]
+  EBang _ e _ -> [e]
+  EQuote e _ -> [e]
+  ESplice e _ -> [e]
+  EStringLit _ parts _ -> map ipExpr parts
+  _ -> []
+  where
+    argExprs = \case
+      ArgExplicit e -> [e]
+      ArgImplicit e -> [e]
+      ArgInout e _ -> [e]
+      ArgNamedBlock fs _ -> [x | (_, Just x) <- fs]
+    patchExprs = \case
+      PatchUpdate _ (PatchValue e) -> [e]
+      PatchExtend _ e -> [e]
+      PatchSection a b -> [a, b]
+      PatchPun _ -> []
+    recItemExprs (RecItem _ _ mv) = maybeToList mv
+    exceptCaseBody (ExceptCase _ mg b _) = maybeToList mg ++ [b]
+    handlerCaseExprs = \case
+      HandlerReturn _ b _ -> [b]
+      HandlerOp _ _ _ b _ -> [b]
+
+-- | The expressions buried in a 'DoItem', for the occurrence count.
+doItemExprs :: DoItem -> [Expr]
+doItemExprs = \case
+  DoBind lb -> [lbExpr lb]
+  DoLet lb -> [lbExpr lb]
+  DoLetQ _ e mels _ -> e : maybe [] (\(_, fe) -> [fe]) mels
+  DoVar _ e _ -> [e]
+  DoAssign _ _ e _ -> [e]
+  DoExpr e -> [e]
+  DoUsing _ _ e _ -> [e]
+  DoDefer _ e _ -> [e]
+  DoReturn _ me _ -> maybeToList me
+  DoBreak {} -> []
+  DoContinue {} -> []
+  DoWhile _ c body mels _ -> c : concatMap doItemExprs body ++ maybe [] (concatMap doItemExprs) mels
+  DoFor _ _ src body mels _ -> src : concatMap doItemExprs body ++ maybe [] (concatMap doItemExprs) mels
+  DoIf alts mels _ ->
+    concatMap (\(c, its) -> c : concatMap doItemExprs its) alts
+      ++ maybe [] (concatMap doItemExprs) mels
+  DoDecl _ -> []
 
 declsToBinds :: [Decl] -> Analysis [LetBind]
 declsToBinds [] = pure []

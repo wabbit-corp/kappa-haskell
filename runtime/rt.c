@@ -414,7 +414,37 @@ typedef struct Resumption {
   void      *handler;    /* the Handler* to re-push on a deep resume; NULL=shallow */
   void      *handler_exits; /* the cur_exits the reinstalled handler restores to   */
   int        used;       /* 0 until resumed; one-shot guard                       */
+  /* §4b tail-resumptive fast path: this resumption was captured WITHOUT severing
+   * the op-site→handler segment (the clause resumes it exactly once, in tail
+   * position, so the segment is never abandoned).  When set, `head` is the live
+   * op-site frame whose `next` chain STILL runs through the installed KK_HANDLER
+   * to the handler's continuation — so do_resume restores it with a single
+   * pointer write (f->k = head): no re-link, no fresh KK_HANDLER, the deep
+   * reinstall is automatic because the prompt was never removed (constant Cont
+   * depth, no per-perform Cont allocation). */
+  int        tail_res;
 } Resumption;
+
+/* A non-failing record projection (kproj krt_fails on a missing field).  Used to
+ * read the §4b reserved "__tailResumptive" marker off a handler's ops record:
+ * absent ⇒ the op takes the general 4a path. */
+static KValue *kproj_opt(KValue *rec, const char *name) {
+  if (!rec || kis_imm(rec) || rec->tag != K_REC) return NULL;
+  for (int i = 0; i < rec->as.rec.n; i++)
+    if (strcmp(rec->as.rec.names[i], name) == 0) return rec->as.rec.vals[i];
+  return NULL;
+}
+
+/* §4b: is operation `opn` (a NUL-terminated op token) tail-resumptive under the
+ * handler `h`?  True iff h->ops carries the reserved "__tailResumptive" record
+ * AND that record names `opn`.  The elaborator (Check.elabHandle) only marks a
+ * clause whose sole `resume` is `k v` in tail position, on a DEEP handler — the
+ * exact shape the fast path preserves observably (Usage.tailResumptiveClause). */
+static int op_is_tail_resumptive(Handler *h, const char *opn) {
+  if (!h || !h->ops) return 0;
+  KValue *tailRec = kproj_opt(h->ops, "__tailResumptive");
+  return tailRec && kproj_opt(tailRec, opn) != NULL;
+}
 
 static int deliver(Rt *rt, Fiber *f, KValue *v);  /* normal value path  */
 static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel); /* abnormal */
@@ -624,16 +654,44 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
       }
       ExitStack *body_exits = f->cur_exits;       /* the captured body's exits   */
       ExitStack *handler_exits = (ExitStack *)c->aux2; /* what the prompt restores */
-      /* Build the one-shot resumption from the captured sub-chain [head .. prev].
+      Resumption *r = (Resumption *)GC_MALLOC(sizeof(Resumption));
+      r->cur_exits = body_exits;
+      r->used = 0;
+      r->tail_res = 0;
+      /* §4b TAIL-RESUMPTIVE FAST PATH.  When the clause resumes its continuation
+       * exactly once, in tail position (Usage.tailResumptiveClause marked this op
+       * on a DEEP handler), the op-site→handler segment is never abandoned and is
+       * resumed in place.  So we DO NOT sever it and we DO NOT pop+later-re-push
+       * the KK_HANDLER: the captured `head` still links — through the UNTOUCHED
+       * frame c (the prompt) — to c->next, so do_resume restores the whole live
+       * chain (handler included) with one pointer write, allocating no Cont and
+       * re-installing the deep handler for free.  The clause itself still runs
+       * OUTSIDE the prompt (f->k = c->next), exactly like the general path, so its
+       * own perform/return observably matches; only the resumption is lighter.
+       * Constant Cont depth + no per-perform Cont allocation across an effect loop
+       * — the whole point of Stage 4b (§32.2.15). */
+      if (h->deep && op_is_tail_resumptive(h, (const char *)op->as.str.p)) {
+        r->tail_res = 1;
+        /* `head` is the op-site frame; its `next` chain is UNTOUCHED and still
+         * runs through this very KK_HANDLER (frame c) to c->next.  Even in the
+         * tail-perform case (prev==NULL) head == c, so re-rooting at head re-enters
+         * the still-installed prompt: do_resume delivers v into KK_HANDLER, which
+         * runs `h->ret` — exactly the general path, without any sever or re-push. */
+        r->head = head;
+        r->tail = NULL;                  /* unused on the fast path (no re-link)    */
+        r->label = NULL; r->handler = NULL; r->handler_exits = NULL;
+        f->k = c->next;                  /* the clause runs outside the prompt      */
+        f->cur_exits = handler_exits;    /* under the cur_exits the prompt restores */
+        return run_op_clause(rt, f, clause, payload, kfgn(r, KRT2_KIND_RESUMPTION));
+      }
+      /* ── general 4a path (sever + re-link + deep re-push) ──────────────────────
+       * Build the one-shot resumption from the captured sub-chain [head .. prev].
        * The captured slice runs from the op site up to (and EXCLUDING) the handler
        * frame `c` (§2.3).  We POP the handler frame: the clause is the handler's
        * own code and runs OUTSIDE the prompt (its result flows to c->next, the
        * handler's own continuation).  The resumption re-splices [head..prev] onto
        * c->next when invoked; a deep handler additionally re-pushes a fresh copy
        * of this KK_HANDLER around the resumed body (§32.2.22). */
-      Resumption *r = (Resumption *)GC_MALLOC(sizeof(Resumption));
-      r->cur_exits = body_exits;
-      r->used = 0;
       if (prev == NULL) {
         r->head = NULL; r->tail = NULL;  /* tail perform: identity resumption     */
       } else {
@@ -670,6 +728,17 @@ static int do_resume(Rt *rt, Fiber *f, KValue *kbox, KValue *value) {
                   kstr0("internal: one-shot resumption used more than once (rt-multishot absent)"), NULL);
   }
   r->used = 1;
+  /* §4b tail-resume: the segment was never severed and the KK_HANDLER was never
+   * removed, so restoring is a single pointer write — f->k = head re-roots the
+   * whole live chain (op-site frames → the still-installed prompt → its
+   * continuation), the deep handler reinstated for free, no Cont allocated.  The
+   * tail-perform case (head == the KK_HANDLER frame itself) re-enters the prompt
+   * directly, so deliver(value) runs `h->ret` — matching the general path. */
+  if (r->tail_res) {
+    f->k = r->head;
+    f->cur_exits = r->cur_exits;
+    return deliver(rt, f, value);
+  }
   /* §32.2.22 deep reinstall: re-push the handler beneath the spliced body so the
    * resumed computation is re-handled.  do_perform POPPED the handler frame
    * (f->k advanced to c->next), so f->k now points at the handler's own

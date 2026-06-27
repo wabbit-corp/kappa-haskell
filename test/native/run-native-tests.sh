@@ -94,7 +94,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds fpbitident await-dbl-acc flatframe flatbinders flatclosure effects effparking borrowview ioerror stm atomic fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout interrupt-cause withscope monitor interrupt masking bracketmask usinginterrupt usingsusp promise timer-duration stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw suspendbreak suspendsubdefer suspendmonassign suspendloop-deep; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds fpbitident await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop borrowview ioerror stm atomic fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout interrupt-cause withscope monitor interrupt masking bracketmask usinginterrupt usingsusp promise timer-duration stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw suspendbreak suspendsubdefer suspendmonassign suspendloop-deep; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
@@ -446,6 +446,54 @@ if timeout 400 bash "$ROOT/test/native/bench/proposed/run-proposed.sh" --gate --
   grep -E '^   ok (adtbuild|scalar_doubleloop|scalar_intloop)' "$WORK/proposed.log" | sed 's/^/  /'
 else
   echo "   FAIL: a landed-wave allocation gate regressed"; grep -iE 'FAIL' "$WORK/proposed.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# §4b TAIL-RESUMPTIVE constant-depth gate (mirrors the R12 loop constant-depth
+# check).  A deep, tail-resumptive effect handler driven over MANY perform/resume
+# cycles must keep CONSTANT Cont depth — the whole point of Stage 4b.  The fast
+# path leaves the op-site→handler segment on f->k (no sever, no heap Resumption,
+# no per-perform Cont, the deep handler reinstated for free), so the steady-state
+# live footprint (Boehm GC_get_heap_size) stays FLAT and N-INDEPENDENT.  We build
+# the same tail-resumptive handler at two wildly different iteration counts and
+# assert (a) correct result at each and (b) heap_size identical and bounded — a
+# per-iteration Cont leak (the regression 4b prevents) would make heap_size grow
+# with N.
+echo "== §4b tail-resumptive handler keeps CONSTANT Cont depth (flat heap over N) =="
+hd_small="" ; hd_big="" ; tl_ok=1
+# small N=1000 and large N=1000000 variants of the tail-resumptive counter loop.
+sed 's/loop 100000 0/loop 1000 0/'    "$CASES/efftailloop.kp" > "$WORK/efftl_small.kp"
+sed 's/loop 100000 0/loop 1000000 0/' "$CASES/efftailloop.kp" > "$WORK/efftl_big.kp"
+if timeout 240 $KAPPA build "$WORK/efftl_small.kp" -o "$WORK/efftl_small" >"$WORK/efftl_small.log" 2>&1 \
+   && timeout 240 $KAPPA build "$WORK/efftl_big.kp" -o "$WORK/efftl_big" >"$WORK/efftl_big.log" 2>&1; then
+  rs="$(timeout 60 "$WORK/efftl_small" 2>/dev/null)"
+  rb="$(timeout 120 "$WORK/efftl_big" 2>/dev/null)"
+  hd_small="$(KAPPA_GC_STATS=1 timeout 60 "$WORK/efftl_small" 2>&1 1>/dev/null | grep -oE 'heap_size=[0-9]+' | cut -d= -f2)"
+  hd_big="$(KAPPA_GC_STATS=1 timeout 120 "$WORK/efftl_big" 2>&1 1>/dev/null | grep -oE 'heap_size=[0-9]+' | cut -d= -f2)"
+  # results must be exact (the loop counts ticks: N ticks -> N)
+  [ "$rs" = "1000" ] || { echo "   FAIL: N=1000 result '$rs' != 1000"; tl_ok=0; }
+  [ "$rb" = "1000000" ] || { echo "   FAIL: N=1000000 result '$rb' != 1000000"; tl_ok=0; }
+  if [ -z "$hd_small" ] || [ -z "$hd_big" ]; then
+    echo "   FAIL: missing heap_size GC statistic; constant-depth gate cannot be evaluated"; tl_ok=0
+  else
+    # CONSTANT DEPTH: 1000x more iterations must NOT grow the steady-state live
+    # footprint.  Allow heap_size to differ by at most 1 Boehm heap block
+    # (heaps grow in chunks) — a real per-iteration Cont leak over 1e6 iters
+    # would be orders of magnitude, not one block.  Also bound it absolutely so
+    # a constant-but-huge footprint cannot pass.
+    if [ "$hd_big" -le 4194304 ] && awk "BEGIN{exit !($hd_big <= $hd_small * 2)}"; then
+      :
+    else
+      echo "   FAIL: heap_size grew with N (N=1e3 -> ${hd_small}B, N=1e6 -> ${hd_big}B) — Cont depth NOT constant (4b fast path regressed)"; tl_ok=0
+    fi
+  fi
+  if [ "$tl_ok" -eq 1 ]; then
+    echo "   ok (N=1e3 -> $rs, N=1e6 -> $rb; heap_size flat: ${hd_small}B == ${hd_big}B over 1000x iterations — constant Cont depth)"
+  else
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: efftailloop constant-depth variants did not build"
+  tail -8 "$WORK/efftl_small.log" "$WORK/efftl_big.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== HTTP + sqlite demo =="
