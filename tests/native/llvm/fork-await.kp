@@ -1,0 +1,13 @@
+-- LLVM parity: fork/await on the M:N runtime, plus the Exit match.  `await`
+-- establishes a happens-before edge so the output is deterministic.
+module main
+
+main : UIO Unit
+let main = do
+    f1 <- fork (printlnString "first")
+    _ <- await f1
+    f2 <- fork (ioPure 42)
+    r <- await f2
+    match r
+    case Success v -> printlnString (showInt v)
+    case Failure c -> printlnString "failed"

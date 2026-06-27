@@ -541,45 +541,68 @@ basePrims =
     -- §18.1.4/§18.1.7 reason-carrying finalizers + locallyFiberRef: krt2_* node
     -- builders ('ioNodeBuilder'), no kpf_* primEntry, so add them here too.
     `Set.union` Set.fromList ["onExit", "onInterrupt", "locallyFiberRef"]
+    -- §18.1.4 __reraiseCause: the @krt2_reraise@ node-builder (the join/race/
+    -- timeout/awaitPromise failure arms re-raise a captured Cause as-is).  It is a
+    -- registered prim with NO kpf_* primEntry (catchIO/finallyIO/throwIO DO have
+    -- one, so they ride the difference above; __reraiseCause does not), so add it
+    -- here so a saturated `__reraiseCause c` routes to 'compileIoNode' (krt2_reraise)
+    -- rather than the unsupported bare-value path — the join/awaitPromise gap.
+    `Set.union` Set.fromList ["__reraiseCause"]
+    -- §18.1.13 STM + §18.1.6/§19.5 race/timeout/withScope + §18.1.4 explicit-cause
+    -- interruption: krt2_* node-builders ('ioNodeBuilder') with no kpf_* primEntry
+    -- (the C backend special-cases them in 'compileAppGlob').  Add them here so
+    -- 'globPrimName' recognises a saturated occurrence and routes it to
+    -- 'compilePrimApp' → 'compileIoNode' (the krt2_* node) rather than the
+    -- unsupported bare-value path.  The STM Monad/Applicative dictionaries
+    -- reference stmBind/stmPure by value, but the ELABORATOR eta-expands a bare
+    -- node-builder prim into nested lambdas whose LEAF is a SATURATED application
+    -- (e.g. `\m k -> stmBind m k`), so 'compileTail' reaches that saturated leaf
+    -- and 'compileIoNode' builds the node — exactly as the C backend lowers the
+    -- same eta-expanded Core (C.hs join/dictionary output: a kfn chain ending in
+    -- `krt2_stm_bind(kvar(cenv,0), arg)`).  A node-builder prim with no kpf_*
+    -- wrapper that is GENUINELY partially applied (hand-written `writeTVar t` by
+    -- value) is rejected on BOTH backends identically ('compilePrimValue' here,
+    -- 'emitPrim' in C) — it does not arise in elaborated programs.
+    `Set.union` Set.fromList
+      [ "stmBind", "stmPure", "newTVar", "readTVar", "writeTVar", "atomically"
+      , "__race", "__timeout", "withScope", "__interruptWait", "__interruptNoWait"
+      ]
 
 -- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
--- node, not the synchronous @knative@/@knative_sat@ bridge: structured
--- concurrency (fork/await/spawn/scope/monitor), STM (atomically/stm*/TVars/
--- retry), cooperative scheduling (sleep/yield/self).  The C backend lowers these
--- via dedicated @krt2_*@ node-builders ('compileAppGlob') or its CPS do-kernel;
--- the LLVM backend implements neither, so the synchronous bridge mis-runs a body
--- that is itself a CK-machine action tree.
+-- node, not the synchronous @knative@/@knative_sat@ bridge.  As of the
+-- curried-CK-prim milestone this blocklist is EMPTY: every CK-machine prim is now
+-- lowered, exactly as the C backend does it, on the uniform CK-machine path —
 --
--- Milestone M closed the EXCEPTION ops (throwIO/catchIO/finallyIO), which used
--- to live here because of a CONCRETE parity divergence (the @ioerror@ native
--- case): @catchIO risky handler@ where @risky@ is a do-block
--- (`printlnString "before"; raise "boom"; …`) lowers @risky@ to a @krt2_*@
--- action tree, but the synchronous @kpf_io_catchIO@ bridge's @krun_io@ cannot
--- drive that tree — it dropped the body's effects and the thrown value
--- (interp/C print @before\\ncaught:boom\\nafter@; the bridge printed only
--- @after@).  The fix mirrors the C backend's do-kernel: 'compilePrimApp' lowers
--- catchIO\/finallyIO\/throwIO to the @krt2_catch@\/@krt2_finally@\/@krt2_throw@
--- node-builders on the UNIFORM CK-machine path (always — no sync bridge), so the
--- before\/caught\/after case is now CK-machine-driven end to end and correct.
+--   * Milestone M closed the EXCEPTION ops (throwIO/catchIO/finallyIO), which
+--     lived here because of a CONCRETE parity divergence (the @ioerror@ native
+--     case): @catchIO risky handler@ where @risky@ is a do-block
+--     (`printlnString "before"; raise "boom"; …`) lowers @risky@ to a @krt2_*@
+--     action tree, but the synchronous @kpf_io_catchIO@ bridge's @krun_io@ could
+--     not drive that tree — it dropped the body's effects and the thrown value
+--     (interp/C print @before\\ncaught:boom\\nafter@; the bridge printed only
+--     @after@).  They became 'ioNodeBuilder' node-builders in 'compilePrimApp'.
+--
+--   * The curried-CK-prim milestone closes the rest.  STM (atomically/stmBind/
+--     stmPure/newTVar/readTVar/writeTVar) and §18.1.6/§19.5 race/timeout/
+--     withScope/explicit-cause interruption have NO @primEntry@ — the C backend
+--     special-cases them in 'compileAppGlob' — so they are added to
+--     'ioNodeBuilder' (the @krt2_stm_*@/@krt2_atomically@/@krt2_race@/… builders).
+--     fork/await/scope/monitor/sleep all reduce to prims that DO have a @kpf_*@
+--     entry in the shared 'primEntries' (@__forkRun@→@kpf_fork@, @__awaitFiber@→
+--     @kpf_await@, @__sleepForNanos@→@kpf_sleep_for@, @newScope@→@kpf_new_scope@,
+--     @forkIn@→@kpf_fork_in@, @monitor@→@kpf_monitor@, @retry@→@kpf_retry@, …);
+--     each @kpf_*@ wrapper itself builds the krt2_* node, so once de-blocklisted
+--     they lower through the ORDINARY 'compilePrimApp'/'compilePrimValue' paths —
+--     a saturated occurrence to @kpf_*(arr)@ and a curried/by-value reference to
+--     @knative(\@kpf_*, …)@ — byte-identical to the C backend (the surface
+--     @fork@/@await@/@sleepFor@/@self@/@spawn@ names are PRELUDE functions, not
+--     prims, so they never needed an entry here at all).
+--
+-- The do-kernel ('compileDo') already lowers every block to a uniform @krt2_*@
+-- action tree with LAZY continuation closures, so a do-block using STM/fork/await
+-- is CK-machine-driven end to end (no sync bridge) and stack-safe by construction.
 ckMachinePrims :: Set Text
-ckMachinePrims =
-  Set.fromList
-    [ -- NOTE: the exception ops (throwIO/catchIO/finallyIO) are NO LONGER here
-      -- (Milestone M).  They are lowered to the @krt2_throw@/@krt2_catch@/
-      -- @krt2_finally@ NODE-BUILDERS in 'compilePrimApp' (the same place
-      -- ioBind/ioThen/ioPure become krt2_bind/then/pure) so the runtime
-      -- CK-machine drives them end to end — NOT the synchronous
-      -- @kpf_io_catchIO@ bridge that produced the M-I before/caught/after
-      -- divergence.  The remaining names below still need the CK-machine node
-      -- the LLVM backend does not yet build, so they stay a clean unsupported.
-      "atomically", "stmBind", "stmPure", "retry"
-    , "newTVar", "readTVar", "writeTVar"
-    , "forkIO", "fork", "spawn", "spawnIn", "spawnLink"
-    , "__awaitFiber", "awaitPromise", "awaitPromiseExit"
-    , "monitor", "awaitMonitor", "demonitor"
-    , "sleepFor", "yieldNow", "self"
-    , "newScope", "forkIn", "scopeJoin", "scopeCancel"
-    ]
+ckMachinePrims = Set.empty
 
 -- | Emit globals until the work queue is empty (mirrors C's 'drainQueue').
 drainQueue :: Gen ()
@@ -4024,6 +4047,29 @@ ioNodeBuilder = \case
   "uninterruptible" -> Just ("krt2_uninterruptible", 1)
   "__mask" -> Just ("krt2_mask", 1)
   "poll" -> Just ("krt2_poll", 0)
+  -- §18.1.13 STM (journaled): newTVar/readTVar/writeTVar/stmBind/stmPure are the
+  -- STM_* tree leaves and `atomically` runs the tree in an OP_ATOMICALLY
+  -- transaction.  These are NODE-BUILDERS with no @primEntry@ (the C backend
+  -- special-cases them in 'compileAppGlob', C.hs:2448-2473); on LLVM they take
+  -- the same uniform CK-machine path as the exception ops above.  (`retry` is a
+  -- 0-arg @kpf_retry@ prim — it stays in 'primEntries', so it is de-blocklisted,
+  -- NOT a node-builder here.)
+  "stmBind" -> Just ("krt2_stm_bind", 2)
+  "stmPure" -> Just ("krt2_stm_pure", 1)
+  "newTVar" -> Just ("krt2_new_tvar", 1)
+  "readTVar" -> Just ("krt2_read_tvar", 1)
+  "writeTVar" -> Just ("krt2_write_tvar", 2)
+  "atomically" -> Just ("krt2_atomically", 1)
+  -- §18.1.6 race/timeout + §19.5 withScope + §18.1.4 explicit-cause interruption:
+  -- node-builders with no @primEntry@ (C special-cases them in 'compileAppGlob',
+  -- C.hs:2386-2441), so the LLVM backend must build the same krt2_* node rather
+  -- than fall through to the unsupported curried path.  The prelude race/timeout/
+  -- withScope bodies apply these saturated, so a saturated spine reaches here.
+  "__race" -> Just ("krt2_race", 2)
+  "__timeout" -> Just ("krt2_timeout", 2)
+  "withScope" -> Just ("krt2_with_scope", 1)
+  "__interruptWait" -> Just ("krt2_interrupt_as", 2)
+  "__interruptNoWait" -> Just ("krt2_interrupt_fork_as", 2)
   _ -> Nothing
 
 -- | Lower a saturated exception op to its @krt2_*@ node-builder

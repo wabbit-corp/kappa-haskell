@@ -1,0 +1,9 @@
+-- LLVM parity: `join` projects a fiber's Exit, whose Failure arm references the
+-- __reraiseCause node-builder (previously unsupported as a value on LLVM).
+module main
+
+main : UIO Unit
+let main = do
+    f <- fork (ioPure 99)
+    v <- join f
+    printlnString (showInt v)
