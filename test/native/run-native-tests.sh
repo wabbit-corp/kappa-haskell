@@ -94,7 +94,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds fpbitident await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop borrowview ioerror stm atomic fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout interrupt-cause withscope monitor interrupt masking bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify on-exit-interrupt timer-duration stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw suspendbreak suspendsubdefer suspendmonassign suspendloop-deep; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds fpbitident await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop borrowview ioerror stm atomic atomic-race fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout interrupt-cause withscope monitor interrupt masking bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify on-exit-interrupt timer-duration stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw suspendbreak suspendsubdefer suspendmonassign suspendloop-deep; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare

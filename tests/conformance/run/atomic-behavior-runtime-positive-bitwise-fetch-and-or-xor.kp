@@ -1,0 +1,26 @@
+module main
+
+-- The §29.1 bitwise read-modify-write atomics return the OLD value and apply the
+-- bit operation to the cell.  Exercises atomicFetchAnd / atomicFetchOr /
+-- atomicFetchXor across the AtomicInteger surface; each returns the pre-op value
+-- and leaves the post-op value in the cell.  Source issues: ponyc#126, inko#398
+-- Spec: §2.7C, §14.8.4A, §17.13
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst)
+import std.atomic.(term newAtomicRef, term atomicLoad)
+import std.atomic.(term atomicFetchOr, term atomicFetchAnd, term atomicFetchXor)
+
+main : UIO Int
+let main = do
+    let cell <- newAtomicRef 12             -- 0b1100
+    let oldOr <- atomicFetchOr RmwSeqCst cell 3   -- old 12; cell -> 0b1111 = 15
+    let afterOr <- atomicLoad LoadSeqCst cell      -- 15
+    let oldAnd <- atomicFetchAnd RmwSeqCst cell 10 -- old 15; cell -> 0b1010 = 10
+    let afterAnd <- atomicLoad LoadSeqCst cell     -- 10
+    let oldXor <- atomicFetchXor RmwSeqCst cell 6  -- old 10; cell -> 0b1100 = 12
+    let afterXor <- atomicLoad LoadSeqCst cell     -- 12
+    -- 12 + 15 + 15 + 10 + 10 + 12 = 74
+    pure (oldOr + afterOr + oldAnd + afterAnd + oldXor + afterXor)
+
+--! assertNoErrors
+--! assertType main UIO Int
+--! assertExecute main 74

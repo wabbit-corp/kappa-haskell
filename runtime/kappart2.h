@@ -208,12 +208,18 @@ KValue *krt2_or_else(KValue *l, KValue *r);         /* STM a -> STM a -> STM a  
 KValue *krt2_atomically(KValue *stm);               /* STM a -> UIO a               */
 
 /* ── atomics (§29.1, rt-atomics) ───────────────────────────────────────── */
-/* `order` args are the §29.1 LoadOrder/StoreOrder/RmwOrder/CasFailureOrder
- * constructors (boxed Kappa values); see atomic.c for the enum mapping. */
+/* Each `order` arg is a small Integer CODE — the §29.1 canonical declaration-
+ * order index of the LoadOrder/StoreOrder/RmwOrder/CasFailureOrder constructor
+ * (computed by the std.atomic prelude, NOT the codegen-assigned ctor tag id);
+ * see atomic.c for the memory_order mapping.  These are wired into both backends
+ * via the kpf_io___atomic* wrappers in atomic.c (knative_sat IO prims). */
 KValue *krt2_new_atomic_ref(KValue *v);             /* a -> UIO (AtomicRef a)       */
 KValue *krt2_atomic_load(KValue *order, KValue *ref);
 KValue *krt2_atomic_store(KValue *order, KValue *ref, KValue *v);
 KValue *krt2_atomic_exchange(KValue *order, KValue *ref, KValue *v);
+/* Returns the WITNESSED old value (== expected on success); the std.atomic
+ * prelude reconstructs Exchanged/NotExchanged from witnessed==expected so the
+ * runtime never stamps a codegen-assigned result-constructor tag. */
 KValue *krt2_atomic_compare_exchange(KValue *succ, KValue *fail,
                                      KValue *ref, KValue *expected, KValue *desired);
 KValue *krt2_atomic_fetch_add(KValue *order, KValue *ref, KValue *v);

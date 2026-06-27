@@ -407,6 +407,10 @@ basePrims =
     , "__stringWords", "__stringSentences"
       -- §29.1 std.atomic bitwise + repr-equality + §29.3 std.hash FNV-1a
     , "__intAnd", "__intOr", "__intXor", "__atomicRepEq"
+      -- §29.1 std.atomic lock-free cell ops -> krt2_atomic_* (runtime/atomic.c)
+    , "__newAtomicRef", "__atomicLoad", "__atomicStore", "__atomicExchange"
+    , "__atomicCompareExchange", "__atomicFetchAdd", "__atomicFetchSub"
+    , "__atomicFetchAnd", "__atomicFetchOr", "__atomicFetchXor"
     , "__hashMixInt", "__hashMixDouble", "__hashMixString", "__hashMixBytes"
       -- §20 collection carriers / §28.2 transport / range enumeration
     , "__queryFromList", "__queryToList", "__setFromList", "__setToList"
@@ -1901,6 +1905,23 @@ primEntries = Map.fromList
   , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__absurd", PrimEntry "kpf___absurd" 1 False)
   , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
+  -- §29.1 std.atomic: TRUE lock-free atomic-cell ops.  Each is an IO prim whose
+  -- entry point (runtime/atomic.c) forwards to a krt2_atomic_* C11 atomic under
+  -- the requested memory_order, so a concurrent fetch-add / CAS across the worker
+  -- pool conserves every update.  isIO=True: a saturated call becomes a
+  -- knative_sat suspended action (the op runs when krun_io fires it); atomics
+  -- never park, so the synchronous bridge is the complete path (no CK-machine
+  -- node).  The arities match the prelude prim types (order + cell + payload).
+  , ("__newAtomicRef", PrimEntry "kpf_io___newAtomicRef" 1 True)
+  , ("__atomicLoad", PrimEntry "kpf_io___atomicLoad" 2 True)
+  , ("__atomicStore", PrimEntry "kpf_io___atomicStore" 3 True)
+  , ("__atomicExchange", PrimEntry "kpf_io___atomicExchange" 3 True)
+  , ("__atomicCompareExchange", PrimEntry "kpf_io___atomicCompareExchange" 5 True)
+  , ("__atomicFetchAdd", PrimEntry "kpf_io___atomicFetchAdd" 3 True)
+  , ("__atomicFetchSub", PrimEntry "kpf_io___atomicFetchSub" 3 True)
+  , ("__atomicFetchAnd", PrimEntry "kpf_io___atomicFetchAnd" 3 True)
+  , ("__atomicFetchOr", PrimEntry "kpf_io___atomicFetchOr" 3 True)
+  , ("__atomicFetchXor", PrimEntry "kpf_io___atomicFetchXor" 3 True)
   , ("__byteLength", PrimEntry "kpf___byteLength" 1 False)
   , ("__byteToNat", PrimEntry "kpf___byteToNat" 1 False)
   , ("__bytesAppend", PrimEntry "kpf___bytesAppend" 2 False)

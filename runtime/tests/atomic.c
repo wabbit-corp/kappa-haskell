@@ -13,13 +13,17 @@
 
 #define NFIBERS 64
 #define NITERS  2000 /* total fetch_adds = NFIBERS * NITERS */
+#define REPS    8    /* re-run each contention round so Boehm GC collects mid-flight */
 
-/* Order constructors, built with the §29.1 canonical tag ids. */
-static KValue *load_relaxed(void)     { return kctor0(0, "LoadRelaxed"); }
-static KValue *store_relaxed(void)    { return kctor0(0, "StoreRelaxed"); }
-static KValue *rmw_relaxed(void)      { return kctor0(0, "RmwRelaxed"); }
-static KValue *rmw_seqcst(void)       { return kctor0(4, "RmwSeqCst"); }
-static KValue *cas_fail_relaxed(void) { return kctor0(0, "CasFailRelaxed"); }
+/* Memory orders are passed as Integer CODES (the §29.1 canonical declaration-
+ * order index of the order constructor) — NOT ctor tag ids.  This mirrors the
+ * std.atomic prelude, which computes the code so the runtime never has to read a
+ * codegen-assigned constructor tag (see runtime/atomic.c). */
+static KValue *load_relaxed(void)     { return kint(0); }  /* LoadRelaxed    */
+static KValue *store_relaxed(void)    { return kint(0); }  /* StoreRelaxed   */
+static KValue *rmw_relaxed(void)      { return kint(0); }  /* RmwRelaxed     */
+static KValue *rmw_seqcst(void)       { return kint(4); }  /* RmwSeqCst      */
+static KValue *cas_fail_relaxed(void) { return kint(0); }  /* CasFailRelaxed */
 
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { fprintf(stderr, "  FAIL: %s\n", msg); fails++; } } while (0)
@@ -40,18 +44,18 @@ static void semantics(void) {
   CHECK(iv(old) == 25, "exchange returns old 25");
   CHECK(iv(krt2_atomic_load(load_relaxed(), r)) == 7, "after exchange == 7");
 
-  /* CAS success: expected 7, desired 99 -> Exchanged 7; cell becomes 99. */
+  /* CAS success: expected 7, desired 99 -> witnessed old 7 (== expected, so the
+   * prelude reports Exchanged); cell becomes 99.  The runtime now returns only
+   * the witnessed value; the Exchanged/NotExchanged shape is reconstructed in
+   * source (see std.atomic), so here we check the witnessed value + the effect. */
   KValue *res = krt2_atomic_compare_exchange(rmw_relaxed(), cas_fail_relaxed(), r, kint(7), kint(99));
-  CHECK(kctor_tagid(res) == 0, "CAS success -> Exchanged (tag 0)");
-  /* Stage 1d: Exchanged(kint(7)) packs into a b011 word — project the field with
-   * the immediate-aware accessor, never a raw ->as.ctor deref of an odd word. */
-  CHECK(iv(kctor_arg(res, 0)) == 7, "CAS success old == 7");
+  CHECK(iv(res) == 7, "CAS success witnessed old == 7 (== expected)");
   CHECK(iv(krt2_atomic_load(load_relaxed(), r)) == 99, "after CAS success == 99");
 
-  /* CAS failure: expected 7 (now 99), desired 0 -> NotExchanged 99; unchanged. */
+  /* CAS failure: expected 7 (now 99), desired 0 -> witnessed 99 (!= expected, so
+   * the prelude reports NotExchanged); cell unchanged. */
   KValue *res2 = krt2_atomic_compare_exchange(rmw_relaxed(), cas_fail_relaxed(), r, kint(7), kint(0));
-  CHECK(kctor_tagid(res2) == 1, "CAS failure -> NotExchanged (tag 1)");
-  CHECK(iv(kctor_arg(res2, 0)) == 99, "CAS failure current == 99");
+  CHECK(iv(res2) == 99, "CAS failure witnessed current == 99 (!= expected)");
   CHECK(iv(krt2_atomic_load(load_relaxed(), r)) == 99, "after CAS failure still 99");
 
   /* fetch-* return the OLD value. */
@@ -76,12 +80,28 @@ static void semantics(void) {
   CHECK(kctor_is(krt2_atomic_load(load_relaxed(), b), "std.prelude.True"), "bool after exchange True");
 }
 
-/* ── Part B: multicore contention ─────────────────────────────────────── */
+/* ── Part B: multicore contention (GC-stressed) ───────────────────────── */
 
-/* env: var0 = shared AtomicRef, var1 = RmwOrder. */
+/* Build a short boxed-cons chain so Boehm GC has scannable garbage to collect
+ * while the contention round runs (the REVIEW gate when a concurrent path is
+ * touched: exercise the op under heavy GC pressure). */
+static KValue *churn_chain(int depth) {
+  KValue *acc = kint(0);
+  for (int i = 0; i < depth; i++) {
+    KValue *args[2] = { kint(i), acc };
+    acc = kctor(KCT_OTHER, "Box", 2, args);
+  }
+  return acc;
+}
+
+/* env: var0 = shared AtomicRef, var1 = RmwOrder code.  Each iteration also
+ * allocates a small heap chain, so collections interleave the fetch-adds. */
 static KValue *worker_io(KEnv *env) {
   KValue *ref = kvar(env, 0), *order = kvar(env, 1);
-  for (int i = 0; i < NITERS; i++) krt2_atomic_fetch_add(order, ref, kint(1));
+  for (int i = 0; i < NITERS; i++) {
+    krt2_atomic_fetch_add(order, ref, kint(1));
+    (void)churn_chain(8);
+  }
   return kunit();
 }
 
@@ -99,14 +119,65 @@ static KValue *spawn_workers(int k, KValue *ref, KValue *order) {
 }
 
 static void contention(void) {
-  KValue *ref = krt2_new_atomic_ref(kint(0));
-  KValue *exitv = krt2_run_main(spawn_workers(NFIBERS, ref, rmw_seqcst()));
-  CHECK(kctor_is(exitv, "Success"), "contention program Exit == Success");
-  int64_t total = iv(krt2_atomic_load(load_relaxed(), ref));
-  if (total != (int64_t)NFIBERS * NITERS) {
-    fprintf(stderr, "  FAIL: total = %lld, expected %lld (lost updates!)\n",
-            (long long)total, (long long)NFIBERS * NITERS);
-    fails++;
+  /* Each rep starts a fresh shared cell and re-forks all workers, so the GC runs
+   * repeatedly across the lifetime of contended atomic cells. */
+  for (int rep = 0; rep < REPS; rep++) {
+    KValue *ref = krt2_new_atomic_ref(kint(0));
+    KValue *exitv = krt2_run_main(spawn_workers(NFIBERS, ref, rmw_seqcst()));
+    CHECK(kctor_is(exitv, "Success"), "contention program Exit == Success");
+    int64_t total = iv(krt2_atomic_load(load_relaxed(), ref));
+    if (total != (int64_t)NFIBERS * NITERS) {
+      fprintf(stderr, "  FAIL[rep %d]: fetch_add total = %lld, expected %lld (lost updates!)\n",
+              rep, (long long)total, (long long)NFIBERS * NITERS);
+      fails++;
+    }
+  }
+}
+
+/* ── Part C: CAS-loop contention ───────────────────────────────────────────
+ * Each fiber increments the shared cell NITERS times with a retrying CAS loop
+ * (load; CAS(old, old+1); retry on contention).  A CAS that is not a real
+ * hardware compare-exchange would let two fibers both read `old` and both store
+ * `old+1`, losing one increment; a true lock-free CAS conserves every one.  The
+ * witnessed value the CAS returns == `expected` exactly when the swap won. */
+static KValue *cas_worker_io(KEnv *env) {
+  KValue *ref = kvar(env, 0), *order = kvar(env, 1), *fail = kvar(env, 2);
+  for (int i = 0; i < NITERS; i++) {
+    for (;;) {
+      KValue *old = krt2_atomic_load(load_relaxed(), ref);
+      KValue *witnessed =
+        krt2_atomic_compare_exchange(order, fail, ref, old, kint(iv(old) + 1));
+      if (iv(witnessed) == iv(old)) break; /* won the CAS (witnessed == expected) */
+    }
+    (void)churn_chain(8); /* GC pressure between increments */
+  }
+  return kunit();
+}
+
+/* env[0]=rest. \f -> do { rest; _ <- await f; pure () } */
+static KValue *cas_cont_after_fork(KEnv *env, KValue *f) {
+  KValue *rest = kvar(env, 0);
+  return krt2_then(rest, krt2_then(krt2_await(f), krt2_pure(kunit())));
+}
+
+static KValue *spawn_cas_workers(int k, KValue *ref, KValue *order, KValue *fail) {
+  if (k == 0) return krt2_pure(kunit());
+  KValue *rest = spawn_cas_workers(k - 1, ref, order, fail);
+  KValue *worker = kio(cas_worker_io, kpush(ref, kpush(order, kpush(fail, NULL))));
+  return krt2_bind(krt2_fork(worker), kclo(cas_cont_after_fork, kpush(rest, NULL)));
+}
+
+static void cas_contention(void) {
+  for (int rep = 0; rep < REPS; rep++) {
+    KValue *ref = krt2_new_atomic_ref(kint(0));
+    KValue *exitv = krt2_run_main(spawn_cas_workers(NFIBERS, ref, rmw_seqcst(), cas_fail_relaxed()));
+    CHECK(kctor_is(exitv, "Success"), "CAS contention program Exit == Success");
+    int64_t total = iv(krt2_atomic_load(load_relaxed(), ref));
+    if (total != (int64_t)NFIBERS * NITERS) {
+      fprintf(stderr, "  FAIL[rep %d]: CAS total = %lld, expected %lld (lost updates!)\n",
+              rep, (long long)total, (long long)NFIBERS * NITERS);
+      fails++;
+    }
   }
 }
 
@@ -114,9 +185,12 @@ int main(void) {
   krt2_new(0); /* one worker per core — true parallelism */
   semantics();
   contention();
+  cas_contention();
   if (fails == 0) {
-    fprintf(stderr, "PASS: atomic (semantics + %d fibers x %d fetch_add conserved = %d)\n",
-            NFIBERS, NITERS, NFIBERS * NITERS);
+    fprintf(stderr,
+            "PASS: atomic (semantics + %d fibers x %d fetch_add + %d fibers x %d CAS-loop"
+            " conserved = %d each)\n",
+            NFIBERS, NITERS, NFIBERS, NITERS, NFIBERS * NITERS);
     return 0;
   }
   fprintf(stderr, "FAIL: atomic (%d checks failed)\n", fails);

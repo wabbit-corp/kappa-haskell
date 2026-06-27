@@ -25,6 +25,7 @@ import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
 import Control.Monad (unless)
+import Data.Bits ((.&.), (.|.), xor)
 import Data.IORef
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -860,6 +861,37 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
+  -- §29.1 std.atomic — the SEQUENTIAL ORACLE.  The interpreter runs all fibers
+  -- cooperatively on one OS thread, so a read-modify-write never interleaves
+  -- with another fiber: a plain mutable cell models the SAME observable result
+  -- the native lock-free atomic produces, and every memory order is trivially
+  -- sequentially consistent (the order argument carries no observable effect
+  -- here).  This is the correct oracle for single-fiber use and for the
+  -- interp==C==LLVM sequential parity case — it does NOT, and cannot, exercise
+  -- the multi-worker race the native runtime guards against (no concurrency to
+  -- lose updates to).  The cell is the same IORef carrier as a Ref; the
+  -- AtomicRef wrapper keeps it opaque so user code cannot readRef/writeRef it.
+  ("__newAtomicRef", [v]) -> VRef <$> newIORef v
+  ("__atomicLoad", [_order, VRef r]) -> readIORef r
+  ("__atomicStore", [_order, VRef r, v]) -> writeIORef r v >> pure unitV
+  ("__atomicExchange", [_order, VRef r, v]) -> atomicModifyIORef' r (\old -> (v, old))
+  -- strong compare-exchange: perform the swap and return the WITNESSED old value
+  -- (the matched expected on success, the actual current on failure).  On the
+  -- single agent the read-compare-write is one indivisible step.  The std.atomic
+  -- wrapper reconstructs Exchanged/NotExchanged from witnessed==expected, exactly
+  -- as the native path does — this keeps the oracle and the runtime identical.
+  -- The order arg is now an Integer code; the single agent ignores it.
+  ("__atomicCompareExchange", [_succ, _fail, VRef r, expected, desired]) -> do
+    current <- readIORef r
+    if convertible ec 0 (force ec current) (force ec expected)
+      then writeIORef r desired >> pure current
+      else pure current
+  -- fetch-* return the OLD value (AtomicInteger gates these to integer cells).
+  ("__atomicFetchAdd", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (+ n)
+  ("__atomicFetchSub", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (subtract n)
+  ("__atomicFetchAnd", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (.&. n)
+  ("__atomicFetchOr",  [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (.|. n)
+  ("__atomicFetchXor", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (`xor` n)
   ("ioBind", [m, k]) -> do
     a <- runIOValue rt m
     runIOValue rt (vapp ec k Expl a)
@@ -878,3 +910,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
         <> " args=" <> T.intercalate " ; " (map (renderTerm . quote ec 0) args)
   where
     ec = rtEC rt
+    -- §29.1 a sequential fetch-modify on the single agent: read the old Integer,
+    -- write the transformed value, return the OLD (matching the native
+    -- fetch-* return convention).  Indivisible here because no other fiber runs.
+    atomicFetchInt r f = do
+      old <- readIORef r
+      case force ec old of
+        VLit (LitInt o) -> writeIORef r (VLit (LitInt (f o))) >> pure (VLit (LitInt o))
+        _ -> throwIO (KappaError (VLit (LitStr "atomicFetch: cell is not an Integer")))
