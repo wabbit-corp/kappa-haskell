@@ -251,6 +251,13 @@ struct Fiber {
   ExitStack      *cur_exits;         /* the innermost do-scope's exit-action stack
                                       * (where `defer` registers); NULL outside a
                                       * do-scope.  §18.7 */
+  /* §32.2.21 cause symmetry (fix 1): the AbandonEnd* of the abandonment drain
+   * currently in progress, or NULL when not draining.  A drained do-scope's
+   * finseq reads it to seed its compose-primary with the running clause reason
+   * (so cleanup failures fold left-associatively, matching ordinary scope exit)
+   * and writes the composed reason back into it.  Saved/restored across NESTED
+   * drains (the H1 recursion) at begin_abandon_drain / KK_ABANDEND. */
+  void           *drain_ae;
   struct TVar   **stm_reads;         /* TVars this fiber is currently retry-parked on;
                                       * unlinked on re-entry to `atomically` so a
                                       * moved-on fiber leaves no stale watchers (STM
