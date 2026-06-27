@@ -264,6 +264,128 @@ Reference: <https://gitlab.haskell.org/ghc/nofib>
 
 ---
 
+# Results — Tier-2-on-LLVM re-run (2026-06-27, commit `2ceea5f`)
+
+Re-run of the full [`bench/xlang`](../bench/xlang) suite **after** the LLVM
+backend learned to lower the concurrency/STM surface (`fork`/`await`/`scope`/
+`sleep`/`atomically`/`newTVar`/`readTVar`/`writeTVar`/`retry`) as `krt2_*`
+node-builders, mirroring the C backend (commit `2ceea5f`). This section is the
+**current** state; the older `# Results — first cross-language run` section
+below is kept as the pre-unlock baseline (where the six Tier-2 ports were all
+`builderr` on LLVM and `nbody`/`spectralnorm` were blocked on `sqrt`). Same
+machine class as before (Apple M-series, macOS Darwin 25.3.0; `go1.26.1`,
+`GHC 9.14.1 -O2`, Apple clang 21 `-O2 -lgmp`).
+
+## What changed since the baseline
+
+- **All six Tier-2 concurrency ports now BUILD on the LLVM backend** —
+  `skynet`, `philosophers`, `forkjoin`, `threadring`, `pingpong`, `bankstm`
+  (every one was `builderr` / `E_BACKEND_UNSUPPORTED` before). **Five of the six
+  also RUN byte-identical on LLVM**; only `bankstm` is intractable-on-LLVM (see
+  below), and that is a data-structure/throughput limit, not a lowering gap.
+- **`nbody` is unblocked.** It was `FAIL — blocked` on the missing `sqrt` prim;
+  it now **builds and runs byte-identical on the C backend** (`-0.169075164` /
+  `-0.169083134`, all 9 decimals) in ≈78 s at the full `N=5 000 000`. On LLVM it
+  builds but a single run is many minutes (uniform-boxed FP), so it is not timed.
+- **`spectralnorm` is no longer blocked on `sqrt` either** — it now builds and
+  runs on **both** backends; it is still *intractable at `N=5500`* because the
+  power method is O(n³) over list-backed vectors (the O(1)-array gap), so it is
+  not timed.
+- **The LLVM integer-loop path collapsed.** Warm `sumloop` (`N=10 000 000`) is
+  **kappa-llvm ≈ 26 ms vs kappa-c ≈ 25 ms** — essentially tied — where the
+  baseline section recorded kappa-llvm at **9077 ms (428×)**. The uniform-boxed
+  blow-up on the tight int loop is gone on LLVM.
+
+## Correctness matrix (does it build + run byte-identical to `expected.txt`?)
+
+`Y` = builds and stdout matches `expected.txt` exactly; `Y(slow)` = builds and
+verified-correct but a full-`N` run is multi-minute; `build-only` = compiles and
+runs without crashing but the gated `N` is intractable on current data
+structures (not verified to completion at full `N`).
+
+| benchmark | tier | C build+correct | LLVM build+correct |
+|---|---|---|---|
+| sumloop | 0 | **Y** | **Y** |
+| binarytrees | 1 | **Y** | **Y** |
+| pidigits | 1 | **Y** | **Y** |
+| nbody | 1 | **Y** (slow, 78 s) | build-only (intractable to time) |
+| mandelbrot | 1 | **Y** (slow, 138 s) | **Y** (slow, ≈388 s, carried) |
+| fannkuch | 1 | **Y** (slow, 260 s) | build-only (≳20 min, carried) |
+| spectralnorm | 1 | build-only (O(n³)) | build-only (O(n³)) |
+| skynet | 2 | **Y** | **Y** ← newly builds on LLVM |
+| forkjoin | 2 | **Y** | **Y** ← newly builds on LLVM |
+| threadring | 2 | **Y** | **Y** ← newly builds on LLVM |
+| pingpong | 2 | **Y** | **Y** ← newly builds on LLVM |
+| philosophers | 2 | **Y** | **Y** ← newly builds on LLVM |
+| bankstm | 2 | **Y** (6.3 s) | build-only ← newly builds; intractable (>300 s) |
+
+**Newly building on LLVM (were `builderr` before):** all six Tier-2 ports —
+`skynet`, `philosophers`, `forkjoin`, `threadring`, `pingpong`, `bankstm`.
+**Still effectively blocked:** none on a *build* basis. The remaining "not at
+full `N`" cells (`nbody`-LLVM, `fannkuch`-LLVM, `bankstm`-LLVM, `spectralnorm`
+both backends) are **performance / data-structure** limits, not the
+variant-injection or unsupported-prim gaps the baseline flagged — every one
+*compiles* on both backends now. No port hit the `timeout`-style
+variant-injection LLVM gap in this run.
+
+## Light timing (warm best-of-3 wall-clock, ms)
+
+One clean warm pass per cell (best of 3 short runs; the multi-minute compute rows
+are a single run, marked `*`). Ratio is vs. the fastest impl in that row. `—` =
+ref not requested for that bench; `n/t` = builds + correct (or, for
+`spectralnorm`, builds) but not timed at full `N`.
+
+| benchmark | tier | kappa-c | kappa-llvm | go | hs | c | fastest |
+|---|---|---|---|---|---|---|---|
+| sumloop | 0 | 25ms 1.25x | 26ms 1.30x | 23ms 1.15x | 35ms 1.75x | **20ms 1.00x** | c |
+| binarytrees | 1 | 1286ms 28.0x | 3203ms 69.6x | 884ms 19.2x | **46ms 1.00x** | 1130ms 24.6x | hs |
+| pidigits | 1 | 3978ms 28.4x | 4421ms 31.6x | 257ms 1.84x | 177ms 1.26x | **140ms 1.00x** | c |
+| nbody | 1 | 78492ms\* 459x | n/t | 212ms 1.24x | 286ms 1.67x | **171ms 1.00x** | c |
+| mandelbrot | 1 | 138050ms\* 152x | ≈388000ms\* (carried) | **909ms 1.00x** | 1848ms 2.03x | 970ms 1.07x | go |
+| fannkuch | 1 | 260286ms\* 163x | ≳20min (carried) | 1693ms 1.06x | 3432ms 2.15x | **1596ms 1.00x** | c |
+| spectralnorm | 1 | n/t (O n³) | n/t (O n³) | 1295ms 1.35x | 1073ms 1.12x | **958ms 1.00x** | c |
+| skynet | 2 | 8902ms 38.0x | 9663ms 41.3x | **234ms 1.00x** | 1604ms 6.85x | — | go |
+| forkjoin | 2 | 634ms 12.7x | 2260ms 45.2x | **50ms 1.00x** | 115ms 2.30x | — | go |
+| threadring | 2 | 4610ms 67.8x | 4754ms 69.9x | 124ms 1.82x | **68ms 1.00x** | — | hs |
+| pingpong | 2 | 11871ms 164x | 11681ms 162x | 191ms 2.65x | **72ms 1.00x** | — | hs |
+| philosophers | 2 | 15039ms 192x | 22308ms 286x | **78ms 1.00x** | 137ms 1.76x | — | go |
+| bankstm | 2 | 6288ms 55.6x | n/t (>300s) | **113ms 1.00x** | 166ms 1.47x | — | go |
+
+Every buildable column that ran to completion **agreed byte-for-byte** with the
+reference (`interp == kappa-c == kappa-llvm == go == hs == c`), so each row still
+doubles as a cross-runtime differential fixture. The headline is the new
+**kappa-llvm** column on the Tier-2 rows: the runtime now executes the entire
+Savina/skynet/thread-ring family on *both* native backends, correctly, where
+before LLVM could not even compile them.
+
+## Gap analysis (one paragraph)
+
+The multipliers are the documented levers, surfaced honestly, and they have not
+fundamentally moved (only the *coverage* did). The two persistent compute gaps
+are **uniform boxing** (every `Int`/`Double`/ctor is a boxed `KValue*` with no
+Perceus reference-counted in-place reuse) and **the absence of an O(1) mutable
+array** (`Array a` is a cons-`List`, so `__arrayIndexUnsafe` is an O(n) walk).
+Together they explain the whole spread: `binarytrees` (pure alloc) is ≈1.1× C on
+kappa-c but ≈2.5× *that* on kappa-llvm because the LLVM backend has **no scalar
+worker** and allocates the most; `nbody`/`mandelbrot`/`fannkuch` are 150–460× the
+C ref on kappa-c because the **scalar-`Double`/`Int` worker does not fire** on the
+recursive monomorphic FP/int helpers (the emitted C keeps boxed
+`kp_mulDouble`/`kp_addDouble`, zero `kwd_` unboxed loops) — **mandelbrot's scalar
+path is pending a separate fix** and is the canonical tracker for it; and the
+STM/message Tier-2 rows (`pingpong` 164×, `philosophers` 192×, `bankstm` 56×) are
+dominated by per-operation fiber park/unpark + per-rendezvous Promise allocation
+on a single runtime agent — again the allocation lever, not a concurrency-model
+defect, compounded for `bankstm` by the O(K) cons-list account index that walks
+1000 accounts per transfer (which is precisely why `bankstm` is *intractable on
+LLVM*: the boxing multiplier × the O(K) walk pushes a single run past 300 s).
+The one genuinely *new* good-news datapoint is that the LLVM **integer-loop**
+path is now on par with C (`sumloop` 26 ms vs 25 ms, down from 9077 ms), showing
+the tight-loop blow-up is removable; the same treatment for `Double` and ctors
+(scalar worker + Perceus + layout, per the `representation-is-llvm-layout` /
+`stage2-layout-staging` tracks) is the headline-collapsing work that remains.
+
+---
+
 # Results — first cross-language run (2026-06-27)
 
 First end-to-end pass of the [`bench/xlang`](../bench/xlang) harness: 12 ports

@@ -2,4 +2,4 @@ name = philosophers
 tier = 2
 N = 20
 refs = go hs
-desc = Savina Dining-Philosophers over STM: 20 philosophers/forks (TVar), atomic two-fork pickup w/ retry, 100000 rounds each, total meals. (kappa-llvm: STM prims unimplemented on LLVM backend — C backend only.)
+desc = Savina Dining-Philosophers over STM: 20 philosophers/forks (TVar), atomic two-fork pickup w/ retry, 100000 rounds each, total meals. As of commit 2ceea5f the LLVM backend lowers the STM surface, so kappa-llvm now builds + runs correctly (was builderr before).
