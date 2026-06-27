@@ -1,0 +1,95 @@
+-- §32.2.20 PERFORM-DURING-DRAIN: an abandoned-slice `defer` that performs an
+-- algebraic op into an INTERVENING enclosing handler must thread its performed
+-- result EXACTLY like ordinary scope exit threads such a defer.  Native (the
+-- kappart2 CK-machine) MUST equal the interpreter (the differential oracle).
+--
+-- The deep-summing TELL handler folds each `tell n` into the SUM of the tells the
+-- rest of the computation performs (return _ -> 0).  The inner abortive ABORT
+-- clause ignores its continuation.  The body's do-scope has `defer (Tell.tell 5)`,
+-- so the only tell that reaches the handler is performed BY THE DRAIN of the
+-- abandoned slice — the value must still be 5 (not 0, the pre-fix orphaned result).
+module main
+
+effect Tell =
+    1 tell : Int -> Unit
+
+effect Abort =
+    0 go : Unit -> Int
+
+-- handle Tell (deep-summing) { ... }  : tell n -> n + (sum of the rest)
+-- the inner Abort body abandons; its captured do-scope's `defer (tell 5)` runs in
+-- the drain and performs into THIS handler.
+
+-- MINIMAL: only the abandoned defer tells (5).  Sound value = 5.
+minimalComp : Eff <[Tell : Tell, Abort : Abort]> Int
+let minimalComp =
+    do
+        defer (Tell.tell 5)
+        let _ <- Abort.go ()
+        pure 7
+
+minimalAbort : Eff <[Tell : Tell]> Int
+let minimalAbort =
+    deep handle Abort minimalComp with
+        case return x -> pure x
+        case go _ k -> pure 0          -- ABANDON: drains the do-scope (runs the defer)
+
+let minimalHandled =
+    deep handle Tell minimalAbort with
+        case return _ -> pure 0
+        case tell n k ->
+            do
+                let rest <- k ()
+                pure (addInt n rest)
+
+-- TWO-TELL: a tell 3 BEFORE the abort deep-sums with the abandoned defer's tell 5.
+-- Sound value = 3 + 5 = 8.
+twoComp : Eff <[Tell : Tell, Abort : Abort]> Int
+let twoComp =
+    do
+        defer (Tell.tell 5)
+        let _ <- Tell.tell 3
+        let _ <- Abort.go ()
+        pure 7
+
+twoAbort : Eff <[Tell : Tell]> Int
+let twoAbort =
+    deep handle Abort twoComp with
+        case return x -> pure x
+        case go _ k -> pure 0
+
+let twoHandled =
+    deep handle Tell twoAbort with
+        case return _ -> pure 0
+        case tell n k ->
+            do
+                let rest <- k ()
+                pure (addInt n rest)
+
+-- CONTROL: the SAME performing defer over an ORDINARY scope exit (no abort).
+-- Sound value = 5 — §32.2.20 "same masked-LIFO semantics as ordinary scope exit".
+controlComp : Eff <[Tell : Tell, Abort : Abort]> Int
+let controlComp =
+    do
+        defer (Tell.tell 5)
+        pure 7
+
+controlAbort : Eff <[Tell : Tell]> Int
+let controlAbort =
+    deep handle Abort controlComp with
+        case return x -> pure x
+        case go _ k -> pure 0
+
+let controlHandled =
+    deep handle Tell controlAbort with
+        case return _ -> pure 0
+        case tell n k ->
+            do
+                let rest <- k ()
+                pure (addInt n rest)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (runPure controlHandled))   -- 5  (ordinary scope exit)
+    printlnString (showInt (runPure minimalHandled))   -- 5  (abandoned drain perform)
+    printlnString (showInt (runPure twoHandled))       -- 8  (deep-sum 3 + 5)
