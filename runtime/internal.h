@@ -282,6 +282,17 @@ struct Fiber {
    * whose later callback could CAS-win an unrelated park and spuriously resume it. */
   void           *sleep_timer;       /* reactor-owned: the active SleepTimer*, or NULL */
   _Atomic int     sleep_armed;       /* worker-visible: a sleep timer may be live      */
+  /* §32.2.6 safe points (fix SP).  A long-running NON-CEDING loop (a CK-machine
+   * KK_LOOP that re-runs `iterate` in place, or a codegen-emitted native scalar
+   * loop) must still (a) observe a pending interrupt and (b) restore fairness —
+   * the spec's loop-backedge safe points.  `safepoint_hit` is set at a back-edge
+   * when a pending interrupt is deliverable (mask_depth==0); the fiber_step gate
+   * then delivers it even though the fiber did not (re-)enter from the run queue
+   * (`resumed`==0).  `backedge_budget` counts back-edges down from a fixed quantum
+   * so a tight loop periodically CEDES (re-enqueues behind other runnables) for
+   * weak fairness without per-iteration scheduler traffic. */
+  int             safepoint_hit;     /* a back-edge observed a deliverable interrupt   */
+  uint32_t        backedge_budget;   /* iterations left before a fairness cede          */
   /* doubly-linked membership in rt->all (the strong GC root set) */
   Fiber          *all_prev, *all_next;
 };

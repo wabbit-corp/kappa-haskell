@@ -124,11 +124,15 @@ KValue *krt2_new_ref(KValue *init);                 /* newRef  : a -> IO (Ref a)
 KValue *krt2_read_ref(KValue *ref);                 /* readRef : Ref a -> IO a      */
 KValue *krt2_write_ref(KValue *ref, KValue *val);   /* writeRef: Ref a -> a -> IO () */
 
-/* A cooperative safe point: decrement the current fiber's reduction budget and
- * yield if it is exhausted (also an interruption-delivery point).  Codegen MUST
- * emit this at loop back-edges and unbounded-recursion entries (§27.5A.4 /
- * DESIGN.md §6.4).  A no-op when not running inside a fiber. */
-void krt2_safepoint(void);
+/* §32.2.6 safe point for a codegen-emitted NATIVE loop.  Returns 1 iff the loop
+ * should ABORT to let the runtime deliver a pending interrupt at this back-edge
+ * (interrupt_pending && mask_depth==0 on the current fiber) — the generated loop
+ * then flushes its var cells and breaks so the CK-machine delivers on the next
+ * step.  Returns 0 when masked (suppression holds) or off any fiber.  Codegen
+ * emits this at native loop back-edges, counter-gated so the hot unboxed loop is
+ * not slowed (§32.2.6 / DESIGN.md §6.4).  In-place CK loops (OP_WHILE/KK_LOOP)
+ * get their safe point + fairness cede inside the runtime, not via this call. */
+int krt2_safepoint(void);
 
 /* ── fibers (§18.1.4) ──────────────────────────────────────────────────── */
 KValue *krt2_fork(KValue *action);                  /* (IO e a) -> UIO (Fiber e a) */

@@ -14,6 +14,20 @@
 
 Rt *g_rt = NULL;
 
+/* §32.2.6 safe points (fix SP): the fiber the calling worker thread is currently
+ * stepping.  Set on entry to fiber_step and cleared on exit, so a codegen-emitted
+ * native loop running ON this worker (inside the synchronous K_NATIVE bridge) can
+ * reach its fiber from a bare `krt2_safepoint()` call with no extra plumbing.  A
+ * worker steps exactly one fiber at a time, so a thread-local is exactly right
+ * (and never shared across workers). */
+static _Thread_local Fiber *g_cur_fiber = NULL;
+
+/* Back-edges between fairness cedes (fix SP).  A power of two so the budget reload
+ * is a single store.  Large enough that the per-iteration check is free in the hot
+ * loop (a register decrement + predictable branch), small enough that a tight loop
+ * yields to other runnables within a bounded number of iterations (weak fairness). */
+#define KRT2_BACKEDGE_QUANTUM 4096u
+
 const char *const KRT2_CAPABILITIES[] = {
   "rt-core", "rt-parallel", "rt-shared-stm", "rt-blocking", "rt-atomics", NULL
 };
@@ -435,6 +449,10 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
    * dangling from a previous run/fiber would otherwise be read by the first
    * begin_abandon_drain as a bogus prev_drain (cf. the foreign-terminal hang). */
   f->drain_ae = NULL;
+  f->sleep_timer = NULL;          /* fix S2: no sleep timer armed yet              */
+  atomic_store(&f->sleep_armed, 0);
+  f->safepoint_hit = 0;           /* fix SP: §32.2.6 loop-backedge safe point      */
+  f->backedge_budget = 0;
   pthread_mutex_init(&f->lock, NULL);
   return f;
 }
@@ -1210,6 +1228,24 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       f->k = c->next; f->cur = krt2_pure(v); return 1;
     case KK_LOOP:                        /* an iteration body completed normally */
       f->cur = c->a;                     /* re-run `iterate`; KEEP the KK_LOOP    */
+      /* fix SP (§32.2.6): this CK loop re-runs `iterate` IN PLACE without
+       * re-entering from the run queue, so a tight non-ceding loop would ignore a
+       * pending interrupt AND starve the worker.  Treat the back-edge as a safe
+       * point: (1) flag a deliverable interrupt so the fiber_step gate delivers it
+       * on the next turn (mask_depth>0 keeps it suppressed — held until mask exit);
+       * (2) spend a fairness quantum and, when it runs out, CEDE — re-enqueue this
+       * fiber behind other runnables and stop stepping (a yield, not a finish; the
+       * `if (!deliver(...)) return;` caller just returns from fiber_step, leaving the
+       * re-enqueued fiber owned by the run queue). */
+      if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+          && f->mask_depth == 0)
+        f->safepoint_hit = 1;
+      if (f->backedge_budget == 0) {
+        f->backedge_budget = KRT2_BACKEDGE_QUANTUM;
+        krt2i_resume(rt, f);             /* fairness cede: re-enqueue + stop stepping */
+        return 0;
+      }
+      f->backedge_budget--;
       return 1;
     case KK_RETSCOPE:                    /* body completed normally: transparent  */
       f->k = c->next; f->cur = krt2_pure(v); return 1;
@@ -1325,7 +1361,21 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         f->k = c->next; continue;       /* return/break/continue/interrupt skip catch */
       case KK_LOOP:
         if (rkind == RK_BREAK)    { f->k = c->next; f->cur = krt2_pure(kunit()); return 1; } /* exit loop */
-        if (rkind == RK_CONTINUE) { f->cur = c->a; return 1; }   /* re-iterate, KEEP KK_LOOP */
+        if (rkind == RK_CONTINUE) {                              /* re-iterate, KEEP KK_LOOP */
+          f->cur = c->a;
+          /* fix SP: a `continue` is a loop back-edge too — same safe point as the
+           * normal KK_LOOP completion (interrupt-observation + fairness cede). */
+          if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+              && f->mask_depth == 0)
+            f->safepoint_hit = 1;
+          if (f->backedge_budget == 0) {
+            f->backedge_budget = KRT2_BACKEDGE_QUANTUM;
+            krt2i_resume(rt, f);
+            return 0;
+          }
+          f->backedge_budget--;
+          return 1;
+        }
         f->k = c->next; continue;       /* return/fail/interrupt pass through the loop */
       case KK_RETSCOPE:
         /* a `return` delimited by this scope: deliver its value HERE as the
@@ -1426,7 +1476,7 @@ static int deliver_interrupt(Rt *rt, Fiber *f) {
 }
 
 /* Step `f` until it suspends (parks / cedes) or finishes. */
-static void fiber_step(Rt *rt, Fiber *f) {
+static void fiber_step_run(Rt *rt, Fiber *f) {
   for (;;) {
     /* fix S2 (sleep-timer dedup): a fiber resuming from a sleep park with a pending
      * interrupt and `cur` STILL the OP_SLEEP node was woken by the INTERRUPT, not by
@@ -1453,13 +1503,22 @@ static void fiber_step(Rt *rt, Fiber *f) {
      * whole body was masked — the §18.1.12/§32.2.5 masked-sleep suppression bug.
      * OP_POLL delivers independently of this flag (§18.1.12: poll delivers even
      * when masked). */
-    if (f->resumed
+    /* fix SP (§32.2.6): a loop back-edge is ALSO an interruption point.  A tight
+     * CK loop (KK_LOOP re-running `iterate` in place) or a codegen native loop
+     * (which sets safepoint_hit via krt2_safepoint) never re-enters from the run
+     * queue, so `resumed` stays 0 — yet the spec requires a pending interrupt to be
+     * observable at such safe points.  Deliver on `safepoint_hit` too.  This does
+     * NOT reintroduce the masked-sleep suppression bug: safepoint_hit is set ONLY at
+     * a genuine back-edge (and only when mask_depth==0), never on a mask-region exit. */
+    if ((f->resumed || f->safepoint_hit)
         && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
         && f->mask_depth == 0) {
       f->resumed = 0;
+      f->safepoint_hit = 0;
       if (!deliver_interrupt(rt, f)) return; /* finished; else fall through to run finalizers */
     }
     f->resumed = 0;   /* consumed: only the FIRST turn after a resume is a delivery point */
+    f->safepoint_hit = 0;
     KValue *cur = f->cur;
     int op = kctor_tagid(cur);
     switch (op) {
@@ -1738,6 +1797,19 @@ static void fiber_step(Rt *rt, Fiber *f) {
   }
 }
 
+/* fix SP: publish the fiber being stepped (g_cur_fiber) for the duration of the
+ * step so a codegen-emitted native loop on THIS worker can reach it from a bare
+ * krt2_safepoint().  Save/restore for re-entrancy: runPure (krt2_run_eff) drives
+ * a private CK-machine via fiber_step, which may itself run a native loop, so the
+ * outer fiber must be restored when the nested step returns. */
+static void fiber_step(Rt *rt, Fiber *f) {
+  Fiber *saved = g_cur_fiber;
+  g_cur_fiber = f;
+  f->backedge_budget = KRT2_BACKEDGE_QUANTUM;   /* fresh fairness quantum per step */
+  fiber_step_run(rt, f);
+  g_cur_fiber = saved;
+}
+
 /* §18.1.14 runPure : Eff <[]> a -> a.  Drive a FULLY-HANDLED Eff computation to
  * its value on a private CK-machine, SYNCHRONOUSLY on the calling thread.  A
  * pure Eff (empty residual row) has no scheduler effects, so fiber_step never
@@ -1769,7 +1841,35 @@ KValue *krt2_run_eff(KValue *comp) {
 }
 KValue *kpf_run_eff(KValue **a) { return krt2_run_eff(a[0]); }
 
-void krt2_safepoint(void) { /* spine: cooperative budget is a perf/fairness TODO (§6.4) */ }
+/* §32.2.6 safe point for a CODEGEN-EMITTED native loop (the unboxed scalar
+ * while-loops the C/LLVM backends emit).  Such a loop runs synchronously on the
+ * worker inside the K_NATIVE bridge — the CK-machine is not iterating, so a
+ * pending interrupt would otherwise be ignored until the whole loop finishes.
+ * The generated loop calls this at its back-edge (cheaply, counter-gated — see the
+ * backends) and, when it returns non-zero, BREAKS out (after flushing its var
+ * cells) so control returns to the CK-machine; the next fiber_step turn then
+ * delivers the pending interrupt via the safepoint_hit gate.
+ *
+ * Returns 1 iff the loop should abort to let the runtime deliver a pending
+ * interrupt at this safe point — i.e. interrupt_pending && mask_depth==0.  A
+ * masked fiber (mask_depth>0) returns 0: suppression holds, the interrupt is
+ * delivered only after the mask exits (an interruption point reached unmasked).
+ * 0 if there is no current fiber (a pure top-level native call off any fiber).
+ *
+ * NOTE: this realizes the interrupt-OBSERVATION half of the safe point for native
+ * loops.  Fairness for in-place CK loops is handled by the KK_LOOP back-edge cede
+ * in fiber_step; a native scalar loop is bounded by its own completion (it cannot
+ * suspend-and-resume mid-loop without re-running from its flushed cells). */
+int krt2_safepoint(void) {
+  Fiber *f = g_cur_fiber;
+  if (!f) return 0;
+  if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+      && f->mask_depth == 0) {
+    f->safepoint_hit = 1;   /* the fiber_step gate delivers on the next turn */
+    return 1;
+  }
+  return 0;
+}
 
 /* ── workers ────────────────────────────────────────────────────────────── */
 static void *worker_main(void *arg) {
