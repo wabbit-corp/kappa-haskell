@@ -143,8 +143,13 @@ enum {
   STM_NEW                   /* [init]         newTVar                             */
 };
 
-/* Reason kinds carried by an abnormal unwind through the continuation. */
-enum { RK_NORMAL, RK_FAIL, RK_RETURN, RK_BREAK, RK_CONTINUE, RK_INTERRUPT, RK_RERAISE };
+/* Reason kinds carried by an abnormal unwind through the continuation.
+ * RK_DRAIN is internal-only (§32.2.20/.21): it walks an ABANDONED captured
+ * resumption slice running its KK_DOSCOPE exit actions masked-LIFO, matching no
+ * KK_CATCH/KK_LOOP/KK_RETSCOPE special arm (so they fall through transparently)
+ * and terminating at the slice's KK_ABANDEND frame instead of finishing the
+ * fiber.  It never originates from user control flow. */
+enum { RK_NORMAL, RK_FAIL, RK_RETURN, RK_BREAK, RK_CONTINUE, RK_INTERRUPT, RK_RERAISE, RK_DRAIN };
 
 /* Constructor-id used for the prelude-shaped result ctors (Success/Failure/...).
  * Pattern matching in harnesses is name-based (kctor_is), so the id is inert. */
@@ -160,9 +165,18 @@ typedef enum {
   KK_FINSEQ,    /* run a do-scope's exit actions LIFO, then resume a saved Reason  */
   KK_LOOP,      /* a loop boundary: break/continue target it                      */
   KK_RETSCOPE,  /* a `return` boundary: RK_RETURN delivers its value here (§18.8)  */
-  KK_HANDLER    /* §18.1.21 an effect-handler prompt: `perform` searches f->k for
+  KK_HANDLER,   /* §18.1.21 an effect-handler prompt: `perform` searches f->k for
                  * the nearest matching one; the captured op-site->handler Cont
                  * sub-chain becomes the resumption (Stage 4a, one-shot)          */
+  KK_ABANDON,   /* §32.2.20 sits BENEATH a general-path handler clause, carrying
+                 * the severed Resumption (Cont.aux).  When the clause completes
+                 * (deliver/unwind reach it) WITHOUT having resumed, it drains the
+                 * severed slice's do-scope exit actions before the clause result
+                 * proceeds; if the clause DID resume it is transparent.          */
+  KK_ABANDEND   /* §32.2.20 terminal frame spliced onto the severed slice's tail:
+                 * when the RK_DRAIN walk reaches it the slice's defers have run,
+                 * so it restores the clause's continuation + cur_exits and resumes
+                 * the clause's original (saved) reason.                          */
 } KKind;
 struct Cont {
   KKind   kind;
@@ -294,6 +308,10 @@ typedef struct IoReq { IoOp op; Fiber *f; uint64_t nanos; struct IoReq *next; } 
 struct Rt {
   int             nworkers;
   pthread_t      *workers;
+  int             workers_started;  /* §1 persistent runtime: the worker pool +
+                                     * reactor are spun up ONCE (first run_main)
+                                     * and kept alive across every subsequent
+                                     * run_main; only krt2_shutdown joins them. */
   pthread_t       reactor_thr;
   int             reactor_started;
 
