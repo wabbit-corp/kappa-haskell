@@ -244,6 +244,9 @@ KValue *krt2_interrupt_cause(const char *tag, KValue *by_opt);
 /* Dump live fibers (id, scope, parent, status, mask, interrupt-pending, wait
  * reason, label, terminal Exit) and per-agent runnable/parked counts to `out`. */
 void krt2_dump(void *out /* FILE* */);
+/* Number of not-yet-DONE fibers in the strong root set (rt->all).  A test uses
+ * this to assert the persistent runtime does not leak fibers across run_main. */
+long krt2_live_fiber_count(void);
 
 /* ── advertised runtime capability set (§27.6) ─────────────────────────── */
 /* NUL-terminated array; the backend's Capabilities.hs must agree once wired.

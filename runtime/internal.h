@@ -327,11 +327,26 @@ struct Rt {
   pthread_mutex_t all_lock;
   _Atomic uint64_t next_id;
 
-  /* main-fiber completion */
-  Fiber          *main_fiber;
+  /* main-fiber completion.  `main_fiber` is written by krt2_run_main (under
+   * done_lock) and read by any worker's fiber_finish to decide whether a finishing
+   * fiber is the run's main one; the persistent runtime keeps workers alive across
+   * runs, so that read races the next run's write unless it is atomic.  Make it
+   * _Atomic with acquire/release so the cross-thread read is well-defined (no UB)
+   * and never observes a torn pointer. */
+  _Atomic(Fiber *) main_fiber;
   pthread_mutex_t done_lock;
   pthread_cond_t  done_cv;
   int             main_done;
+
+  /* fix 6 (R2): the CURRENT run's daemon supervision scope.  forkDaemon children
+   * (§18) are unattached to ordinary structured scopes, but the PERSISTENT runtime
+   * must still reap them at the run boundary — a daemon parked forever otherwise
+   * stays in rt->all (a Boehm root via static g_rt), pinning one fiber + its Cont
+   * chain per run forever.  Each run_main installs a fresh scope here; the spawn
+   * path attaches daemons to it; main's wrapper shuts it down (interrupt + await)
+   * before the run returns.  _Atomic: set once per run (release) before any fiber
+   * that could fork a daemon runs, read (acquire) on the lock-free spawn path. */
+  _Atomic(Scope *) daemon_scope;
 
   /* libuv reactor */
   uv_loop_t       loop;

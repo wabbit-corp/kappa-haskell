@@ -1093,17 +1093,27 @@ evalEffPrim ctx p args = case (p, args) of
       -- Op l op a (\x -> __effBind (cont x) f)
       Just (VCtor g [l, op, a, VLam Expl QW "x" (Closure [f, cont] bindBody)])
     _ -> Nothing
-  -- §18.7/§32.2.19 Eff-carrier do-scope / exit-action nodes (Stage 4a).  In the
-  -- PURE Eff carrier a defer's body is itself a pure `Eff r Unit`, so running it
-  -- produces Unit with no observable effect (pure Eff has no IO/state to mutate)
-  -- — the §32.2.20 abandonment guarantee is therefore unobservable under
-  -- `runPure` and these reduce to identity / pure-Unit, matching the native
-  -- runtime (whose krt2_doscope/krt2_defer run the same pure body harmlessly).
-  -- The OBSERVABLE abandonment case (a defer doing IO) requires eliminating the
-  -- handler into an IO carrier, where the IO do-kernel — not this Eff path —
-  -- carries the exit frames.
+  -- §18.7/§32.2.19 Eff-carrier do-scope / exit-action nodes (Stage 4a).
+  -- `__effDoscope` delimits a do-scope; under `runPure` it is transparent (it adds
+  -- no value, only an exit-action frame the native runtime drains).
   ("__effDoscope", [c]) -> Just (force ctx c)
-  ("__effDefer", [_a]) -> Just (VCtor prelEffPure [VCtor prelUnit []])
+  -- `__effDefer a` registers `a : Eff r Unit` as an exit action.  An EARLIER
+  -- comment reduced this to `pure Unit`, discarding `a` on the premise that a pure
+  -- Eff body has "no observable effect".  That premise is WRONG: handler-threaded
+  -- state under a `runPure`-eliminated handler IS observable — a defer that
+  -- performs `tell`/`get`/... into an enclosing handler this interpreter models
+  -- (__handleEff) contributes to the handler's result.  Discarding the body made
+  -- the interpreter an UNSOUND differential oracle (it disagreed with the native
+  -- runtime, which runs the defer body).  Fix: run the body, yielding its Unit.
+  -- Modelling-limitation note: this runs `a` at the REGISTRATION point rather than
+  -- at masked-LIFO scope exit, so the interpreter does not reproduce defer ORDER
+  -- (or the §32.2.20 not-yet-run-at-this-point timing).  For the carriers this
+  -- oracle is used against — order-insensitive aggregations like a summing `Tell`
+  -- handler, and single-defer cases — the observable VALUE matches the native
+  -- runtime; faithful exit-time ordering is the IO do-kernel's job, not this pure
+  -- Eff path.  (`a` is `Eff r Unit`, so sequencing it via the enclosing __effBind
+  -- threads its perform/return effects and then continues with Unit.)
+  ("__effDefer", [a]) -> Just (force ctx a)
   -- __handleEff deep label ret ops comp (HandleShallow plus the
   -- §18.1.22 deep recursive driver)
   ("__handleEff", [deepV, label, ret, ops, comp]) -> case force ctx comp of

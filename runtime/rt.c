@@ -529,7 +529,10 @@ static void fiber_finish(Rt *rt, Fiber *f, KValue *exitv) {
   krt2i_scope_detach(rt, f);          /* leave att_scope; may drain a shutdownScope */
   krt2i_all_remove(rt, f);            /* DONE: kept now only by a user handle */
 
-  if (f == rt->main_fiber) {
+  /* fix 5: acquire-load the run's main fiber (written release in krt2_run_main).
+   * A worker reaching here on the persistent pool may race the next run's store;
+   * the atomic makes the comparison well-defined and never torn. */
+  if (f == atomic_load_explicit(&rt->main_fiber, memory_order_acquire)) {
     pthread_mutex_lock(&rt->done_lock);
     rt->main_done = 1;
     pthread_cond_signal(&rt->done_cv);
@@ -613,7 +616,19 @@ Fiber *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, in
   child->daemon = daemon;
   child->cur_scope = attach;
   if (parent) child->locals = fiber_locals_snapshot(parent->locals); /* copy-on-fork */
-  if (!daemon && attach) krt2i_scope_attach(rt, attach, child); /* att_scope+link+live++ */
+  Scope *dscope = atomic_load_explicit(&rt->daemon_scope, memory_order_acquire);
+  if (!daemon && attach) {
+    krt2i_scope_attach(rt, attach, child); /* att_scope+link+live++ */
+  } else if (daemon && dscope) {
+    /* fix 6 (R2): a daemon is unattached to ordinary structured scopes (its parent
+     * never awaits it), but the persistent runtime must still reap it at the run
+     * boundary.  Attach it to the run's daemon scope so main's wrapper can interrupt
+     * + await it; without this a parked daemon stays in rt->all (a static-g_rt Boehm
+     * root) forever, growing the live set by one fiber + Cont chain per run.  Its
+     * own forks still use cur_scope (set above), so daemon child semantics are
+     * unchanged — only the daemon itself becomes drainable. */
+    krt2i_scope_attach(rt, dscope, child);
+  }
   krt2i_all_add(rt, child);
   krt2i_resume(rt, child);
   return child;
@@ -721,6 +736,39 @@ static KValue *exit_of_reason(int rkind, KValue *rval) {
     case RK_RERAISE:   return krt2_failure(rval);
     default:           return krt2_success(kunit());
   }
+}
+
+/* §32.2.12 the `Cause` a failing reason carries, or NULL for a NON-failing one
+ * (RK_NORMAL/RK_RETURN/RK_BREAK/RK_CONTINUE/RK_DRAIN — none of which records a
+ * Cause).  Used to compose a finalizer's own failure with the reason the scope
+ * was already exiting with (the §18.7/§32.2.12 `Then` composition). */
+static KValue *reason_to_cause(int rkind, KValue *rval) {
+  switch (rkind) {
+    case RK_FAIL:      return krt2_cause_fail(rval);
+    case RK_INTERRUPT: return krt2_cause_interrupt(rval);
+    case RK_RERAISE:   return rval;          /* rval IS already a Cause           */
+    default:           return NULL;          /* normal/return/break/continue/drain */
+  }
+}
+
+/* §32.2.12 sequential cause composition.  `*io_kind`/`*io_val` carry the PRIMARY
+ * reason (the body/clause result the scope was exiting with); `(c_kind, c_val)`
+ * is a CLEANUP reason that arose while running an exit action.  On return the
+ * primary is updated in place to the composed reason:
+ *   - primary non-failing, cleanup failing  -> the cleanup cause (RK_RERAISE)
+ *   - primary failing,    cleanup failing    -> Then(primary, cleanup) (RK_RERAISE)
+ *   - cleanup non-failing                     -> primary unchanged
+ * The first failure stays leftmost in the `Then` spine (§18.8.3: the primary is
+ * not replaced — later cleanup failures are appended), so an `Exit`/`sandbox`
+ * observer sees `Then primary cleanup` while ordinary `catchError` keeps reading
+ * the leftmost `Fail` branch (§32.2.12). */
+static void compose_reason_into(int *io_kind, KValue **io_val, int c_kind, KValue *c_val) {
+  KValue *cleanup = reason_to_cause(c_kind, c_val);
+  if (!cleanup) return;                       /* cleanup was non-failing: no change */
+  KValue *primary = reason_to_cause(*io_kind, *io_val);
+  KValue *composed = primary ? krt2_cause_then(primary, cleanup) : cleanup;
+  *io_kind = RK_RERAISE;                       /* a raw Cause re-raised as-is        */
+  *io_val  = composed;
 }
 
 /* Feed value `v` to the continuation.  Returns 1 to keep stepping, 0 if the
@@ -1107,15 +1155,26 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         f->k = c->next;
         return begin_finseq(rt, f, xs, restore, rkind, rval, rlabel);
       }
-      case KK_FINSEQ:
-        /* A finalizer itself unwound.  With finalizers now masked (begin_finseq),
-         * an ASYNC interrupt can no longer land mid-finseq, so this is reachable
-         * only from a finalizer that itself fails; we abandon this scope's
-         * remaining finalizers and keep propagating.  (Composing the failing
-         * finalizer's cause with the primary via §32.2.12 `Then` is a remaining
-         * refinement.)  c->next is the begin_finseq KK_POPMASK, so the mask
-         * raised for this drain is restored as we continue unwinding. */
-        f->k = c->next; continue;
+      case KK_FINSEQ: {
+        /* §32.2.12/§18.7 a finalizer itself FAILED mid-drain.  With finalizers now
+         * masked (begin_finseq), an async interrupt can no longer land here, so the
+         * only reachable cause is a finalizer body that failed (or re-raised, or
+         * restored-then-was-interrupted).  We MUST NOT drop this scope's remaining
+         * finalizers (a §18.7 exactly-once violation) and we MUST compose the
+         * failing finalizer's cause with the reason the scope was already exiting
+         * with via §32.2.12 `Then`.  So: fold the live (rkind,rval) into the saved
+         * FinSeq reason, then RE-ENTER the finseq (keep this very KK_FINSEQ frame,
+         * fs->i already points at the next-LIFO finalizer) to run the rest under the
+         * composed reason.  When the sequence completes, apply_reason propagates the
+         * composed cause; the begin_finseq KK_POPMASK below us (c->next) restores the
+         * mask exactly once on that final descent.  A NON-failing escape through a
+         * finalizer (which §18.7 forbids in source, but defend anyway) leaves the
+         * saved reason untouched and simply falls through to the next finalizer. */
+        FinSeq *fs = (FinSeq *)c->aux;
+        compose_reason_into(&fs->rkind, &fs->rval, rkind, rval);
+        f->cur = krt2_pure(kunit());   /* kick: deliver -> KK_FINSEQ runs the next */
+        return 1;                       /* KEEP f->k == c (the KK_FINSEQ frame)     */
+      }
       case KK_HANDLER:
         /* §18.1.21 a handler intercepts `perform`, NOT abrupt control flow: a
          * fail/return/break/continue/interrupt unwinding through the handled body
@@ -1125,26 +1184,48 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
         f->cur_exits = (ExitStack *)c->aux2;
         f->k = c->next; continue;
       case KK_ABANDON: {
-        /* §32.2.20 the clause unwound (fail/return/interrupt/break/continue) WITHOUT
-         * having resumed.  Drain the severed slice's exit actions, then continue
-         * the clause's own abnormal propagation.  (An RK_DRAIN can itself pass a
-         * KK_ABANDON — a NESTED abandoned perform — but the inner drain already ran
-         * its slice and its `used` flag is set on resume, so here it is transparent
-         * during a drain.) */
+        /* §32.2.20 a KK_ABANDON guard frame was reached during an unwind.  Three
+         * cases, distinguished by whether this inner resumption was already used and
+         * whether we are already inside an OUTER abandonment drain:
+         *
+         *  (1) r->used — the inner perform resumed, so its captured slice was spliced
+         *      back and already drained itself; the guard is transparent.  `continue`.
+         *
+         *  (2) !r->used and rkind == RK_DRAIN — an UNRESUMED inner resumption whose
+         *      KK_ABANDON frame lies INSIDE an outer abandoned slice now being walked.
+         *      The inner slice [r->head..r->tail] was severed off this chain at its
+         *      own perform, so the outer RK_DRAIN does NOT traverse it — its do-scope
+         *      `defer`/`using` exit actions would be lost (H1) unless we drain it too.
+         *      Recurse via begin_abandon_drain: run the inner slice's exit actions,
+         *      then (its KK_ABANDEND restores) resume THIS outer RK_DRAIN walk where it
+         *      left off.  The saved reason carried to the inner KK_ABANDEND is the
+         *      outer RK_DRAIN, so the outer walk continues correctly afterward.
+         *
+         *  (3) !r->used and rkind != RK_DRAIN — the clause itself unwound
+         *      (fail/return/interrupt/break/continue) without resuming.  Drain the
+         *      severed slice, then continue the clause's own abnormal propagation. */
         Resumption *r = (Resumption *)c->aux;
         f->k = c->next;
-        if (r->used || rkind == RK_DRAIN) continue;  /* resumed / drain pass-through */
-        return begin_abandon_drain(rt, f, r, rkind, rval, rlabel);
+        if (r->used) continue;                       /* (1) resumed: transparent     */
+        return begin_abandon_drain(rt, f, r, rkind, rval, rlabel); /* (2) drain / (3) */
       }
       case KK_ABANDEND: {
-        /* §32.2.20 the RK_DRAIN walk reached the slice terminal: the abandoned
-         * segment's defers have all run; restore the clause's continuation and
-         * exit-state and resume its original (saved) reason.  Reached only under
-         * RK_DRAIN; any other reason here would be an internal mis-link. */
+        /* §32.2.21 the RK_DRAIN walk reached the slice terminal, but a finalizer in
+         * the abandoned segment FAILED: fix 3 composed that failure into the drain's
+         * reason and propagated it here as a live (rkind,rval) (RK_RERAISE carrying
+         * the cleanup `Cause`, or RK_INTERRUPT if a restoring finalizer was hit).
+         * Per §32.2.21 "the clause failure and cleanup failure are composed according
+         * to the same cause-composition rules that govern ordinary scope exit": the
+         * SAVED clause reason (ae->*) is the PRIMARY and this live drain failure is
+         * the CLEANUP — compose them rather than blindly restoring the clause reason
+         * (which would swallow the abandoned segment's finalizer failure — H2). */
         AbandonEnd *ae = (AbandonEnd *)c->aux;
+        int    okind = ae->rkind;
+        KValue *oval = ae->rval;
+        compose_reason_into(&okind, &oval, rkind, rval);
         f->k = ae->kont;
         f->cur_exits = ae->saved_exits;
-        return apply_reason(rt, f, ae->rkind, ae->rval, ae->rlabel);
+        return apply_reason(rt, f, okind, oval, ae->rlabel);
       }
     }
     return 0;
@@ -1545,7 +1626,8 @@ Rt *krt2_new(int nworkers) {
   rt->rq_head = rt->rq_tail = NULL;
   rt->io_head = rt->io_tail = NULL;
   rt->all = NULL;
-  rt->main_fiber = NULL;
+  atomic_store_explicit(&rt->main_fiber, NULL, memory_order_relaxed);   /* fix 5 */
+  atomic_store_explicit(&rt->daemon_scope, NULL, memory_order_relaxed); /* fix 6 */
   rt->main_done = 0;
   rt->rq_idle = 0;
   rt->reactor_started = 0;
@@ -1588,7 +1670,18 @@ KValue *krt2_run_main(KValue *action) {
    * shutdown is a no-op, so the common case is unaffected. */
   Scope *root = krt2i_scope_new();
   KValue *root_h = kfgn(root, KRT2_KIND_SCOPE);
-  KValue *wrapped = krt2_ensuring(action, krt2_shutdown_scope(root_h));
+  /* fix 6 (R2): a fresh daemon supervision scope for THIS run.  forkDaemon children
+   * attach here (krt2i_spawn_from) so main's wrapper can interrupt + await them on
+   * exit, instead of leaving a parked daemon pinned in rt->all across persistent
+   * runs.  Shut the daemon scope down AFTER root (LIFO defer order: registered
+   * second => runs first; root drains its structured children, then any lingering
+   * daemons are interrupted and awaited).  Both shutdowns are no-ops when their
+   * scope has no live children, so the common case is unaffected. */
+  Scope *daemons = krt2i_scope_new();
+  KValue *daemons_h = kfgn(daemons, KRT2_KIND_SCOPE);
+  KValue *shutdown_both =
+      krt2_then(krt2_shutdown_scope(daemons_h), krt2_shutdown_scope(root_h));
+  KValue *wrapped = krt2_ensuring(action, shutdown_both);
 
   Fiber *m = fiber_new(rt, wrapped);
   m->cur_scope = root;
@@ -1598,7 +1691,13 @@ KValue *krt2_run_main(KValue *action) {
    * INTACT; only the main-fiber completion latch is reset for this run. */
   pthread_mutex_lock(&rt->done_lock);
   rt->main_done = 0;
-  rt->main_fiber = m;
+  /* fix 5: release-store so fiber_finish's acquire-load (outside done_lock) sees a
+   * fully-published pointer; done_lock alone does not order that lock-free read. */
+  atomic_store_explicit(&rt->main_fiber, m, memory_order_release);
+  /* fix 6: publish the daemon scope BEFORE main runs, so a daemon forked during the
+   * run attaches to it (acquire-read in krt2i_spawn_from).  Release-store under
+   * done_lock for the same publication discipline as main_fiber. */
+  atomic_store_explicit(&rt->daemon_scope, daemons, memory_order_release);
   pthread_mutex_unlock(&rt->done_lock);
   krt2i_all_add(rt, m);
 
@@ -1649,4 +1748,18 @@ void krt2_dump(void *out) {
   for (Fiber *f = rt->all; f; f = f->all_next) live++;
   pthread_mutex_unlock(&rt->all_lock);
   fprintf(o, "[kappart2] workers=%d live_fibers=%d\n", rt->nworkers, live);
+}
+
+/* Count fibers currently in the strong root set rt->all (every not-yet-DONE
+ * fiber kept GC-live; a fiber leaves on fiber_finish -> all_remove).  Exposed so
+ * a test can assert the persistent runtime does not accumulate leaked fibers
+ * (e.g. parked daemons) across repeated run_main calls (fix 6 / R2). */
+long krt2_live_fiber_count(void) {
+  Rt *rt = g_rt;
+  if (!rt) return 0;
+  pthread_mutex_lock(&rt->all_lock);
+  long live = 0;
+  for (Fiber *f = rt->all; f; f = f->all_next) live++;
+  pthread_mutex_unlock(&rt->all_lock);
+  return live;
 }
