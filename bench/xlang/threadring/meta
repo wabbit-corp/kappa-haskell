@@ -2,4 +2,4 @@ name = threadring
 tier = 2
 N = 1000000
 refs = go hs
-desc = Thread-ring (CLBG/Savina): 503 fibers in a ring pass a token N=1e6 hops; print holder at 0. HOPS modest vs CLBG 5e7 (each hop = a full STM park/unpark). kappa-llvm BLOCKED: LLVM backend lacks blocking STM/Promise lowering.
+desc = Thread-ring (CLBG/Savina): 503 fibers in a ring pass a token N=1e6 hops; print holder at 0. HOPS modest vs CLBG 5e7 (each hop = a full STM park/unpark). As of commit 2ceea5f the LLVM backend lowers blocking STM/Promise, so kappa-llvm now builds + runs correctly (was builderr before).

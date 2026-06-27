@@ -2,4 +2,4 @@ name = skynet
 tier = 2
 N = 1000000
 refs = go hs
-desc = Skynet: tree of fibers (root forks 10, each forks 10, ... to 1e6 leaves) summing ordinals back up; fork/await concurrency headline vs Go goroutines + GHC forkIO. LLVM backend lacks await/join prims (builderr expected).
+desc = Skynet: tree of fibers (root forks 10, each forks 10, ... to 1e6 leaves) summing ordinals back up; fork/await concurrency headline vs Go goroutines + GHC forkIO. As of commit 2ceea5f the LLVM backend lowers await/join, so kappa-llvm now builds + runs correctly (was builderr before).

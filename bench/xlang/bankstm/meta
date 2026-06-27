@@ -2,4 +2,4 @@ name = bankstm
 tier = 2
 N    = 1000000
 refs = go hs
-desc = Savina Bank-Transaction over STM: K=1000 TVar accounts, M=1e6 concurrent atomic transfers (4 workers), print conserved total. GAP: no O(1) array (accounts are a cons list, O(K) index dominates) + LLVM backend lacks STM prims.
+desc = Savina Bank-Transaction over STM: K=1000 TVar accounts, M=1e6 concurrent atomic transfers (4 workers), print conserved total. As of commit 2ceea5f the LLVM backend lowers the STM surface so kappa-llvm now BUILDS; but it is intractable to time on LLVM (>300s) because the boxing multiplier compounds the residual GAP: no O(1) array (accounts are a cons list, O(K) index dominates each transfer). kappa-c runs correctly (~6s).
