@@ -1,0 +1,5 @@
+name = pingpong
+tier = 2
+N = 1000000
+refs = go hs
+desc = Savina Ping-Pong: two fibers exchange N messages (pairwise latency over Promise/TVar); print N

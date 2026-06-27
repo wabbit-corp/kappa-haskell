@@ -1,0 +1,63 @@
+-- xlang/pingpong — Tier 2 concurrency benchmark (Savina Ping-Pong).
+--
+-- Two fibers exchange N messages and we print N (the count of completed
+-- round-trips). This measures PAIRWISE MESSAGE LATENCY on the kappart2 M:N
+-- fiber runtime: every round suspends and resumes both fibers through the
+-- scheduler, so it is dominated by handoff/wakeup cost, not arithmetic.
+--
+-- Channel model: Kappa one-shot Promises (first completion wins) carried in two
+-- TVar "mailbox" cells. Each side parks on its OWN promise; to send, it (1)
+-- installs a FRESH promise as its next park-slot, then (2) completes the peer's
+-- current promise — waking it. So one round = ping wakes pong, pong wakes ping,
+-- i.e. two scheduler handoffs and (here) two fresh one-shot promises. This is
+-- the faithful one-shot-promise rendezvous; reusing a single promise is
+-- impossible because completion is monotonic (one-shot).
+--
+-- N = 1000000 messages (HARDCODED — getArgs/stdin do not exist yet). Output is
+-- the single line "1000000". Every ref impl prints byte-identically.
+module main
+
+import std.prelude.(type Exit(..))
+
+-- ping owns mailbox `toPing` (it parks here); it sends on `toPong`.
+ping : TVar (Promise Void Int) -> TVar (Promise Void Int) -> Int -> UIO Int
+let ping toPing toPong n decreases n = do
+    if leInt n 0 then
+        ioPure 0
+    else do
+        myNext <- newPromise                       -- fresh slot pong will wake us on
+        atomically (writeTVar toPing myNext)
+        cur <- atomically (readTVar toPong)         -- pong's current park-slot
+        done <- completePromise cur (Success n)     -- wake pong
+        let _ = done
+        _ <- awaitPromise myNext                    -- park until pong replies
+        rest <- ping toPing toPong (subInt n 1)
+        ioPure (addInt rest 1)
+
+-- pong parks on `toPong`, replies on `toPing`.
+pong : TVar (Promise Void Int) -> TVar (Promise Void Int) -> Int -> UIO Int
+let pong toPing toPong n decreases n = do
+    if leInt n 0 then
+        ioPure 0
+    else do
+        cur <- atomically (readTVar toPong)
+        _ <- awaitPromise cur                       -- park until ping pings us
+        myNext <- newPromise                        -- fresh slot for next round
+        atomically (writeTVar toPong myNext)
+        replyTo <- atomically (readTVar toPing)     -- ping's current park-slot
+        done <- completePromise replyTo (Success n) -- wake ping
+        let _ = done
+        pong toPing toPong (subInt n 1)
+
+main : UIO Unit
+let main = do
+    p0 <- newPromise
+    p1 <- newPromise
+    toPing <- atomically (newTVar p0)
+    toPong <- atomically (newTVar p1)
+    -- N = 1000000 (hardcoded; must equal every ref impl + expected.txt)
+    fp <- fork (pong toPing toPong 1000000)
+    r <- ping toPing toPong 1000000
+    ex <- await fp
+    let _ = ex
+    printlnString (showInt r)

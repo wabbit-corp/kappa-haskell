@@ -1,0 +1,98 @@
+-- xlang/threadring — Tier 2 message-passing benchmark (CLBG / Savina thread-ring).
+--
+-- A ring of N fibers passes a token decremented by one each hop; the fiber that
+-- receives the token when it reaches 0 prints its 1-based id. This measures
+-- cross-fiber message-passing latency on the kappart2 M:N runtime.
+--
+-- Each ring node owns a one-slot TVar mailbox (`Option Int`): empty = None, a
+-- pending token = Some n. A node's receive is an STM transaction that BLOCKS via
+-- `retry` while the mailbox is empty, and is woken when the previous node writes
+-- it — the §18.1.5 weak-fairness single-agent scheduler relays the token around.
+--
+-- N and HOPS are HARDCODED (getArgs/stdin do not exist yet) and MUST match every
+-- reference impl + expected.txt:
+--   N    = 503        ring size
+--   HOPS = 1000000    initial token value  (modest vs CLBG's 5e7: each hop is a
+--                     full STM park/unpark on the single agent, so 5e7 takes
+--                     minutes — see meta.desc + the bench report)
+--   winner = (HOPS mod N) + 1 = (1000000 mod 503) + 1 = 37
+--
+-- GAP: this port builds + runs ONLY on the C backend. The LLVM backend does not
+-- yet lower the blocking concurrency primitives (atomically/newTVar/readTVar/
+-- writeTVar, and awaitPromise/awaitPromiseExit) as values, so kappa-llvm reports
+-- a build error here. That is a real, documented LLVM-backend gap, not a port bug.
+module main
+
+import std.prelude.(type Option(..), type Exit(..), type List(..))
+
+-- Block (STM retry) until a token is present, then take it and empty the slot.
+recv : TVar (Option Int) -> STM Int
+let recv box = do
+    m <- readTVar box
+    match m
+      case None   -> retry
+      case Some n -> do
+        writeTVar box None
+        stmPure n
+
+-- Deposit a token into a node's mailbox (wakes a parked receiver).
+send : TVar (Option Int) -> Int -> UIO Unit
+let send box n = atomically (writeTVar box (Some n))
+
+-- One ring node: receive a token; if it has hit 0, record this node's id and
+-- stop; otherwise forward it decremented to the next node and loop.
+worker : Int -> TVar (Option Int) -> TVar (Option Int) -> Promise Void Int -> UIO Unit
+let worker myid inbox next done = do
+    var go = True
+    while go do
+        n <- atomically (recv inbox)
+        if leInt n 0 then do
+            d <- completePromise done (Success myid)
+            let _ = d
+            go = False
+        else do
+            send next (subInt n 1)
+
+-- Allocate `count` fresh empty mailbox TVars.
+makeBoxes : Int -> UIO (List (TVar (Option Int)))
+let makeBoxes count =
+    if leInt count 0 then pure Nil
+    else do
+        b  <- atomically (newTVar None)
+        bs <- makeBoxes (subInt count 1)
+        pure (b :: bs)
+
+-- Fork one worker per mailbox, wiring box i -> box (i+1); the LAST node's `next`
+-- wraps back to `first`, closing the ring.
+spawnRing : Int -> List (TVar (Option Int)) -> TVar (Option Int) -> Promise Void Int -> UIO Unit
+let spawnRing myid boxes first done =
+    match boxes
+      case Nil -> pure ()
+      case b :: rest ->
+        match rest
+          case Nil -> do
+            f <- forkDaemon (worker myid b first done)
+            let _ = f
+            pure ()
+          case nb :: _ -> do
+            f <- forkDaemon (worker myid b nb done)
+            let _ = f
+            spawnRing (addInt myid 1) rest first done
+
+firstBox : List (TVar (Option Int)) -> TVar (Option Int) -> TVar (Option Int)
+let firstBox boxes dflt =
+    match boxes
+      case Nil -> dflt
+      case b :: _ -> b
+
+main : UIO Unit
+let main = do
+    -- N = 503 ring nodes, HOPS = 1000000
+    boxes <- makeBoxes 503
+    dummy <- atomically (newTVar None)
+    let first = firstBox boxes dummy
+    done <- newPromise
+    spawnRing 1 boxes first done
+    send first 1000000
+    winner <- awaitPromise done
+    printlnString (showInt winner)

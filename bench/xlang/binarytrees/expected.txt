@@ -1,0 +1,1 @@
+stretch 1048575 trees 66759344 longlived 524287

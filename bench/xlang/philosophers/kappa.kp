@@ -1,0 +1,105 @@
+-- xlang/philosophers — Tier 2: Savina Dining-Philosophers over STM.
+--
+-- N philosophers seated in a ring, N forks between them. Each fork is a
+-- `TVar Bool` (True = on the table / free). Philosopher i holds left fork i and
+-- right fork (i+1) mod N. Each philosopher runs M rounds; one round is:
+--   1. atomically PICK UP both forks  — read both, `check` both are free, then
+--      mark both taken. This whole pickup is ONE STM transaction, so it is
+--      all-or-nothing: a philosopher can never hold one fork while waiting on
+--      the other, which is exactly what makes the classic deadlock impossible.
+--   2. EAT — bump a shared meal-counter TVar atomically.
+--   3. atomically PUT DOWN both forks.
+-- A philosopher that finds a fork taken `retry`s (STM `check`) and is parked
+-- until a neighbour's release wakes it. The runtime's M:N cooperative scheduler
+-- drives all N fibers; STM provides the contention + composable atomicity.
+--
+-- Total meals = N*M deterministically (every philosopher eats exactly M times),
+-- so the printed count is a stable correctness gate independent of scheduling.
+--
+-- N = 20 philosophers, M = 100000 rounds  =>  total = 20 * 100000 = 2000000.
+module main
+
+-- A ring of n fresh forks, each free (True). Built head-recursively.
+mkForks : Int -> UIO (List (TVar Bool))
+let mkForks n decreases n =
+    if leInt n 0 then
+        pure Nil
+    else do
+        f <- atomically (newTVar True)
+        rest <- mkForks (subInt n 1)
+        pure (f :: rest)
+
+-- 0-based index into the fork ring (the ring is tiny: N entries).
+nthTVar : List (TVar Bool) -> Int -> TVar Bool
+let nthTVar xs i =
+    match xs
+    case Nil -> nthTVar xs i
+    case f :: rest -> if leInt i 0 then f else nthTVar rest (subInt i 1)
+
+-- Atomic two-fork pickup: both must be free, then both become taken. Composed
+-- into a single transaction, so it commits all-or-nothing (deadlock-free).
+acquire : TVar Bool -> TVar Bool -> STM Unit
+let acquire l r = do
+    lf <- readTVar l
+    rf <- readTVar r
+    check (and (lf :: rf :: Nil))
+    writeTVar l False
+    writeTVar r False
+
+release : TVar Bool -> TVar Bool -> STM Unit
+let release l r = do
+    writeTVar l True
+    writeTVar r True
+
+bump : TVar Int -> STM Unit
+let bump meals = do
+    m <- readTVar meals
+    writeTVar meals (addInt m 1)
+
+-- One philosopher: `rounds` eat-cycles on forks (l, r), bumping `meals` each
+-- time. NOTE: this is a `while` loop, not tail recursion. A do-block that does
+-- IO actions (here three `atomically`s) and then tail-calls itself is NOT a flat
+-- trampolined tail call on the C backend — each iteration grows the fiber's
+-- native stack, so a recursive version overflows around ~7000 rounds. The
+-- imperative `var`+`while` loop runs at constant stack depth (same as sumloop),
+-- which is what lets M = 100000 complete. (This is a real codegen sharp edge for
+-- IO-do tail recursion through a fiber, worth noting for the unboxing/CK track.)
+philosopher : TVar Bool -> TVar Bool -> TVar Int -> Int -> UIO Unit
+let philosopher l r meals rounds = do
+    var k = 0
+    while ltInt k rounds do
+        atomically (acquire l r)
+        atomically (bump meals)
+        atomically (release l r)
+        k = addInt k 1
+
+-- Fork philosophers i..n-1, returning their fibers.
+spawnAll : List (TVar Bool) -> TVar Int -> Int -> Int -> Int -> UIO (List (Fiber Void Unit))
+let spawnAll forks meals n i rounds decreases (subInt n i) =
+    if ltInt i n then do
+        let l = nthTVar forks i
+        let r = nthTVar forks (modInt (addInt i 1) n)
+        fib <- fork (philosopher l r meals rounds)
+        rest <- spawnAll forks meals n (addInt i 1) rounds
+        pure (fib :: rest)
+    else
+        pure Nil
+
+awaitAll : List (Fiber Void Unit) -> UIO Unit
+let awaitAll fibs =
+    match fibs
+    case Nil -> pure Unit
+    case f :: rest -> do
+        _ <- await f
+        awaitAll rest
+
+main : UIO Unit
+let main = do
+    let n = 20
+    let rounds = 100000
+    forks <- mkForks n
+    meals <- atomically (newTVar 0)
+    fibs <- spawnAll forks meals n 0 rounds
+    awaitAll fibs
+    total <- atomically (readTVar meals)
+    printlnString (showInt total)

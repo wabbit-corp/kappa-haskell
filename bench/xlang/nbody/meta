@@ -1,0 +1,5 @@
+name = nbody
+tier = 1
+N = 5000000
+refs = go hs c
+desc = N-body (CLBG): Jovian planets under Newtonian gravity, leapfrog integrator, energy before/after to 9 decimals. Kappa port BLOCKED: no sqrt prim + no fixed-decimal formatter (see report).

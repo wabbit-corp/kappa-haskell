@@ -1,0 +1,66 @@
+-- xlang/pidigits — Tier 1 bignum benchmark.
+--
+-- CLBG pidigits: N digits of pi via Gibbons' unbounded spigot, driven as a
+-- stream of linear fractional transformations over a (q,r,t,k,n,l) state in
+-- Kappa's arbitrary-precision Int (which auto-promotes past int64 to the GMP
+-- bignum — this is the GMP-exercising benchmark). Output is the standard CLBG
+-- layout: 10 digits per line, each line tagged "\t:<count>" with the running
+-- digit count.
+--
+-- N is HARDCODED (getArgs/stdin do not exist yet) and must match every ref impl
+-- + expected.txt.  N = 5000 digits  => 500 full lines (5000 is a multiple of 10,
+-- so there is no short final line to pad).
+--
+-- Each spigot step is a PARALLEL assignment: every new value is computed from
+-- the OLD q,r,t,k,n,l.  In the imperative `var`/`while` encoding we therefore
+-- stage the new `n` into `nn` BEFORE overwriting q,r,t — otherwise a later
+-- read would see an already-mutated operand and corrupt the stream.
+module main
+
+main : UIO Unit
+let main = do
+    var q = 1
+    var r = 0
+    var t = 1
+    var k = 1
+    var n = 3
+    var l = 3
+    var digits = 0
+    var col = 0
+    var line = ""          -- accumulates up to 10 digit chars for the current line
+    while ltInt digits 5000 do
+        -- digit-ready test:  4q + r - t  <  n*t
+        let lhs = subInt (addInt (mulInt 4 q) r) t
+        let rhs = mulInt n t
+        if ltInt lhs rhs then do
+            -- emit digit n (always a single 0..9)
+            line = stringAppend line (showInt n)
+            digits = addInt digits 1
+            col = addInt col 1
+            if eqInt col 10 then do
+                printlnString (stringAppend line (stringAppend "\t:" (showInt digits)))
+                line = ""
+                col = 0
+            else
+                Unit
+            -- PARALLEL: q,r,n := 10q, 10(r - n*t), (10*(3q+r))/t - 10*n
+            -- compute new n from the OLD q,r,t,n first (rhs == n*t is reused).
+            let nn = subInt (divInt (mulInt 10 (addInt (mulInt 3 q) r)) t) (mulInt 10 n)
+            q = mulInt 10 q
+            r = mulInt 10 (subInt r rhs)
+            n = nn
+        else do
+            -- PARALLEL: produce next term —
+            --   q,r,t,k,n,l := q*k, (2q+r)*l, t*l, k+1,
+            --                  (q*(7k+2)+r*l)/(t*l), l+2
+            -- compute new n from OLD values first.
+            let tl = mulInt t l
+            let nn = divInt (addInt (mulInt q (addInt (mulInt 7 k) 2)) (mulInt r l)) tl
+            let newr = mulInt (addInt (mulInt 2 q) r) l
+            q = mulInt q k
+            r = newr
+            t = tl
+            k = addInt k 1
+            l = addInt l 2
+            n = nn
+    Unit

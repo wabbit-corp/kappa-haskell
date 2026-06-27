@@ -1,0 +1,97 @@
+-- xlang/bankstm — Tier 2. Savina Bank-Transaction over STM.
+--
+-- K = 1000 accounts as TVars, M = 1000000 concurrent random transfers across
+-- W = 4 worker fibers (`fork`/`await`). Each transfer runs `atomically`,
+-- debiting one account and crediting another in a single transaction — the
+-- kappart2 parallel-STM commit. The moved amount is conserved, so the printed
+-- total is the deterministic invariant K*INIT = 1000*1000 = 1000000 regardless
+-- of interleaving (the Savina conservation assertion). N is HARDCODED to match
+-- every ref impl and expected.txt.
+--
+-- ⚠ COMPILER GAP (documented in the report): Kappa has NO O(1) random-access
+-- array — `Array` is a newtype over a cons `List` and `__arrayIndexUnsafe` is an
+-- O(n) list walk (runtime/prims.c). So the K accounts live in a `List (TVar Int)`
+-- and each transfer does two O(K) `idxTV` walks. With K=1000 and M=1e6 that is
+-- ~2e9 cons-cell visits, which DOMINATES the wall-clock — this benchmark is
+-- currently list-traversal-bound, not STM-throughput-bound. The number is honest
+-- (real parallel STM, conserved total) but is NOT a fair STM-throughput figure
+-- vs the array-backed Go/Haskell refs until a real array primitive lands. The
+-- LLVM backend additionally cannot compile the STM primitives yet (atomically /
+-- newTVar / stmPure are unimplemented as curried values), so kappa-llvm builderr.
+module main
+
+-- Build K TVars (all = initBal) into a cons list (no O(1) array exists).
+buildAccts : Int -> Int -> List (TVar Int) -> UIO (List (TVar Int))
+let buildAccts k initBal acc =
+    if leInt k 0 then pure acc
+    else do
+        tv <- atomically (newTVar initBal)
+        buildAccts (subInt k 1) initBal (tv :: acc)
+
+-- O(K) index into the account list (the gap: no constant-time array).
+idxTV : List (TVar Int) -> Int -> TVar Int -> TVar Int
+let idxTV xs i dflt = match xs
+    case Nil -> dflt
+    case x :: rest -> if leInt i 0 then x else idxTV rest (subInt i 1) dflt
+
+-- A guaranteed-non-empty default for idxTV (accts is never empty here).
+firstTV : List (TVar Int) -> TVar Int -> TVar Int
+let firstTV xs dflt = match xs
+    case Nil -> dflt
+    case x :: rest -> x
+
+-- One atomic transfer: debit a, credit b. Total is conserved for any amt/sign.
+transfer : TVar Int -> TVar Int -> Int -> STM Unit
+let transfer a b amt = do
+    av <- readTVar a
+    writeTVar a (subInt av amt)
+    bv <- readTVar b
+    writeTVar b (addInt bv amt)
+
+-- Park-Miller MINSTD LCG: state in (0, 2^31-1). Bounded so the Int never
+-- bignum-promotes (Kappa Int auto-promotes to GMP on 64-bit overflow). Only
+-- affects WHICH accounts contend, not the conserved output.
+lcg : Int -> Int
+let lcg s = modInt (mulInt s 16807) 2147483647
+
+-- One worker fiber: `n` transfers, picking accounts from its own PRNG stream.
+workerGo : List (TVar Int) -> TVar Int -> Int -> Int -> Int -> UIO Unit
+let workerGo accts h k n s =
+    if leInt n 0 then pure Unit
+    else do
+        let s1 = lcg s
+        let s2 = lcg s1
+        let a = idxTV accts (modInt s1 k) h
+        let b = idxTV accts (modInt s2 k) h
+        atomically (transfer a b 1)
+        workerGo accts h k (subInt n 1) s2
+
+-- Sum every account balance (the conservation check / printed result).
+sumAccts : List (TVar Int) -> Int -> UIO Int
+let sumAccts xs acc = match xs
+    case Nil -> pure acc
+    case x :: rest -> do
+        v <- atomically (readTVar x)
+        sumAccts rest (addInt acc v)
+
+main : UIO Unit
+let main = do
+    -- N = 1000 accounts, 1000000 transfers (4 workers x 250000).
+    let k = 1000
+    seedTv <- atomically (newTVar 0)
+    accts <- buildAccts k 1000 Nil
+    let h = firstTV accts seedTv
+    f1 <- fork (workerGo accts h k 250000 1)
+    f2 <- fork (workerGo accts h k 250000 1000003)
+    f3 <- fork (workerGo accts h k 250000 2000029)
+    f4 <- fork (workerGo accts h k 250000 3000071)
+    e1 <- await f1
+    e2 <- await f2
+    e3 <- await f3
+    e4 <- await f4
+    let _ = e1
+    let _ = e2
+    let _ = e3
+    let _ = e4
+    total <- sumAccts accts 0
+    printlnString (showInt total)

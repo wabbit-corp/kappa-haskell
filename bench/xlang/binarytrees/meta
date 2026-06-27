@@ -1,0 +1,5 @@
+name = binarytrees
+tier = 1
+N = 18
+refs = go hs c
+desc = Binary-trees (CLBG): allocate+traverse many trees up to depth 18, print check sums — the allocation/boxing honesty gate

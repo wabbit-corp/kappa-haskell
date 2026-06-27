@@ -1,0 +1,15 @@
+-- xlang/sumloop — Tier 0 sanity benchmark.
+-- Sum of integers 0..N inclusive via a mutable `while` loop (no allocation in
+-- the hot loop once unboxing lands; pure int64 arithmetic). N is HARDCODED
+-- (getArgs/stdin do not exist yet) and must match every ref impl + expected.txt.
+-- N = 10000000  =>  sum 0..10000000 = 50000005000000.
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    var acc = 0
+    while leInt i 10000000 do
+        acc = addInt acc i
+        i = addInt i 1
+    printlnString (showInt acc)

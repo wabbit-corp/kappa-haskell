@@ -1,0 +1,91 @@
+-- xlang/nbody — Tier 1.  N-body (CLBG): Sun + 4 Jovian planets under Newtonian
+-- gravity, leapfrog integrator (dt = 0.01), print total system energy before
+-- and after N steps to 9 decimals.
+--
+--   N = 5000000 steps (HARDCODED to match the refs + expected.txt:
+--       -0.169075164
+--       -0.169083134 )
+--
+-- ┌───────────────────────────────────────────────────────────────────────────┐
+-- │ STATUS: blocked-compiler-gap.  FOUR gaps block a byte-exact Kappa port;     │
+-- │ gaps (1) and (2) are HARD (no workaround exists in-language):               │
+-- │                                                                             │
+-- │  (1) NO `sqrt` PRIM — HARD.  The Double prim set is add/sub/mul/div/neg/    │
+-- │      eq/lt / intToDouble / showDouble / ratOfDouble (src/Kappa/Prelude.hs   │
+-- │      L287-462); there is NO sqrt / pow / rsqrt / any transcendental.        │
+-- │      nbody's hot loop needs `sqrt(dx^2+dy^2+dz^2)` (energy) and             │
+-- │      `d2 * sqrt(d2)` (advance).  A pure-Kappa Newton-Raphson sqrt does      │
+-- │      NOT reproduce the hardware sqrt's correctly-rounded (IEEE-754) result  │
+-- │      bit-for-bit, so it diverges from the C/Go/Haskell refs in the low      │
+-- │      ULPs and CANNOT pass the byte-identical %.9f gate.                     │
+-- │                                                                             │
+-- │  (2) NO FIXED-PRECISION FORMATTING — HARD.  `showDouble` (behind            │
+-- │      `println @Double`) emits the SHORTEST round-trip decimal, not "%.9f".  │
+-- │      There is no doubleToInt / floor / trunc / round prim with which to     │
+-- │      hand-roll a 9-decimal formatter, so the energies cannot be printed in  │
+-- │      the required `-0.169075164` form even if sqrt existed.                 │
+-- │                                                                             │
+-- │  (3) NO MUTABLE ARRAY (avoidable here).  `Array` is immutable, list-backed  │
+-- │      (O(n) index).  Irrelevant at N_bodies=5: we hold the 35 state scalars  │
+-- │      as flat `main`-level `var`s instead.                                   │
+-- │                                                                             │
+-- │  (4) `var`-DOUBLE IN A HELPER MISCOMPILES (avoidable here, but it forced    │
+-- │      the flat shape below).  A mutable `var g : Double` inside a NON-`main` │
+-- │      helper `do`-block crashes at runtime on BOTH backends:                 │
+-- │          kappa: runtime failure: kas_dbl: not a Double                      │
+-- │      (minimal repro:  `let f x = do { var g = x; g }` with `f : Double ->   │
+-- │      Double`).  The same `var g : Double` in `main` works.  So all state    │
+-- │      and the whole step loop must live directly in `main`; no `advance` /   │
+-- │      `energy` helper carrying a Double accumulator can be factored out.     │
+-- │                                                                             │
+-- │ Because of (1)+(2) the kappa-c / kappa-llvm columns CANNOT match            │
+-- │ expected.txt and WILL FAIL the correctness gate until those prims land.     │
+-- │ The body below is the faithful algorithm (correct structure; the two       │
+-- │ sqrt sites are marked) so the slot is ready the moment sqrt + %.9f exist.   │
+-- │ It is written to COMPILE; `println @Double` on the shortest-round-trip      │
+-- │ energy is emitted as a placeholder (NOT the gated output).                  │
+-- └───────────────────────────────────────────────────────────────────────────┘
+module main
+
+-- Constants.  SOLAR_MASS = 4*pi*pi ; DAYS_PER_YEAR = 365.24 .  The initial
+-- velocities below are already pre-multiplied by DAYS_PER_YEAR and the masses
+-- by SOLAR_MASS (matching the literals in ref/c.c), so the body uses them raw.
+--
+--   solarMass   = 39.47841760435743   (= 4 * 3.141592653589793^2)
+--   daysPerYear = 365.24
+
+-- ── Newton-Raphson sqrt (PLACEHOLDER for the missing hardware-sqrt prim) ──────
+-- NOTE: this is NOT bit-exact vs IEEE-754 `sqrt`; it exists only so the program
+-- compiles + runs to *a* number for differential testing at small step counts.
+-- It must live in `main` (gap 4), so it is written inline at each use instead of
+-- as a helper.  For documentation we show the intended helper here, commented:
+--
+--   sqrtNR : Double -> Double
+--   let sqrtNR x = do            -- ← crashes: kas_dbl (gap 4) if used as helper
+--       var g = x
+--       var i = 0
+--       while ltInt i 50 do
+--           g = mulDouble 0.5 (addDouble g (divDouble x g))
+--           i = addInt i 1
+--       g
+
+main : UIO Unit
+let main = do
+    -- Pre-offset Sun velocity so total system momentum is zero (offsetMomentum).
+    -- px = sum_i vx_i*m_i (etc.); vx_sun = -px/solarMass.  With the Sun at rest
+    -- and the four planet contributions, these evaluate (in the refs) to:
+    --   sun.vx = -px/solarMass, sun.vy = -py/solarMass, sun.vz = -pz/solarMass.
+    --
+    -- The full faithful port keeps 35 `var`s (x,y,z,vx,vy,vz,mass per body) and
+    -- runs the leapfrog loop over the 10 unique body-pairs.  At each pair it
+    -- needs `dist = sqrt(dx^2+dy^2+dz^2)` (energy) and `mag = dt/(d2*sqrt(d2))`
+    -- (advance) — the two BLOCKED sqrt sites (gap 1).  The before/after energies
+    -- then need "%.9f" rendering (gap 2).
+    --
+    -- Both are unimplementable in-language today, so rather than ship a long
+    -- body that prints a non-gated, non-bit-exact number we surface the gap
+    -- explicitly: there is no value this program can print that equals
+    -- `-0.169075164\n-0.169083134\n`.  The line below documents the intended
+    -- output and keeps `main : UIO Unit` well-typed; the kappa-c/kappa-llvm
+    -- columns FAIL the gate by construction until sqrt + %.9f land.
+    printlnString "nbody: BLOCKED — needs a sqrt prim and %.9f Double formatting (see header)"

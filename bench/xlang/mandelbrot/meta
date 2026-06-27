@@ -1,0 +1,5 @@
+name = mandelbrot
+tier = 1
+N = 4000
+refs = go hs c
+desc = CLBG Mandelbrot: NxN PBM bitmap, 8px/byte packed, modular checksum (Double + bit packing)

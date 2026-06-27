@@ -1,0 +1,5 @@
+# kappa build intermediates (emitted next to the source by `kappa build`).
+# The runner builds a copy in a temp work dir, but guard the tree regardless.
+*.kappa.c
+*.kappa.ll
+*.o

@@ -1,0 +1,5 @@
+name = spectralnorm
+tier = 1
+N = 5500
+refs = go hs c
+desc = Spectral norm (CLBG) via the power method; largest eigenvalue of A(i,j)=1/((i+j)(i+j+1)/2+i+1), printed to 9 decimals. BLOCKED on the Kappa side: no sqrt prim and no fixed-precision (9-decimal) Double formatting (showDouble is shortest-round-trip only); also no mutable array (Array is immutable, list-backed, O(n) index). Refs build+run+agree.

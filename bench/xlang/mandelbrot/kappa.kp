@@ -1,0 +1,77 @@
+-- xlang/mandelbrot — Tier 1 benchmark (CLBG Mandelbrot).
+--
+-- Render the NxN portable-bitmap (PBM) of the Mandelbrot set, 8 pixels packed
+-- MSB-first per byte, then fold the packed bytes into a single MODULAR rolling
+-- checksum so the program prints ONE line (we time compute, not I/O).
+--
+-- N = 4000 (HARDCODED — getArgs/stdin do not exist yet), ITER = 50.
+-- Membership for pixel (px,py):  Cr = 2*px/N - 1.5 , Ci = 2*py/N - 1.0 ;
+-- iterate Z <- Z^2 + C for 50 steps; in-set (bit 1) iff Zr*Zr+Zi*Zi <= 4.0.
+--
+-- Bit-identity across kappa/go/hs/c: the iteration is written with explicit
+-- temporaries (no a*b+c) so no backend fuses a single-rounded FMA — every
+-- language performs the SAME separately-rounded IEEE-754 double ops, so the
+-- membership decision (and the checksum) agree bit-for-bit.  The checksum is
+-- reduced mod 2^31-1 because Kappa's `Int` is an arbitrary-precision Integer
+-- (no machine-word wraparound) — the small modulus keeps every value identical
+-- to the C/Go/Haskell int64 results.  See ref/c.c for the full rationale.
+module main
+
+-- One Z <- Z^2 + C iteration step is folded into a tail-recursive worker that
+-- returns Zr*Zr + Zi*Zi after `k` steps.  All temporaries are separate so the
+-- multiply-adds are NOT contracted into an FMA.
+mandMag : Double -> Double -> Double -> Double -> Int -> Double
+let mandMag zr zi cr ci k =
+    if leInt k 0 then
+        addDouble (mulDouble zr zr) (mulDouble zi zi)
+    else
+        let zr2 = mulDouble zr zr
+        let zi2 = mulDouble zi zi
+        let zrzi = mulDouble zr zi
+        let zrNew = addDouble (subDouble zr2 zi2) cr
+        let ziNew = addDouble (addDouble zrzi zrzi) ci   -- 2*zr*zi, no FMA
+        mandMag zrNew ziNew cr ci (subInt k 1)
+
+-- 1 if pixel (px,py) is in the set, else 0.  The membership test is `mag <= 4.0`
+-- with IEEE semantics: it must be FALSE when `mag` is NaN (an escaped pixel can
+-- overflow to +inf, and inf-inf = NaN).  We therefore spell `<=` as
+-- `(mag < 4.0) || (mag == 4.0)` using `floatEq` (IEEE numeric equality), NOT
+-- `not (4.0 < mag)` — the latter wrongly counts NaN as inside, since `4.0 < NaN`
+-- is false.  `nan < 4.0` and `nan == 4.0` are both false, giving bit 0, matching
+-- C/Go/Haskell's `mag <= 4.0`.
+pixelBit : Double -> Double -> Int
+let pixelBit cr ci =
+    let mag = mandMag 0.0 0.0 cr ci 50
+    if ltDouble mag 4.0 || floatEq mag 4.0 then 1 else 0
+
+main : UIO Unit
+let main = do
+    var checksum = 0
+    var py = 0
+    while ltInt py 4000 do
+        -- Ci = 2*py/N - 1.0
+        let ci = subDouble (divDouble (mulDouble 2.0 (intToDouble py)) (intToDouble 4000)) 1.0
+        var px = 0
+        var byteAcc = 0
+        var nbits = 0
+        while ltInt px 4000 do
+            -- Cr = 2*px/N - 1.5
+            let cr = subDouble (divDouble (mulDouble 2.0 (intToDouble px)) (intToDouble 4000)) 1.5
+            let bit = pixelBit cr ci
+            byteAcc = addInt (mulInt byteAcc 2) bit   -- shift-in MSB-first
+            nbits = addInt nbits 1
+            if eqInt nbits 8 then
+                checksum = modInt (addInt (mulInt checksum 1000003) byteAcc) 2147483647
+                byteAcc = 0
+                nbits = 0
+            px = addInt px 1
+        -- Trailing partial byte: only fold when one was actually started
+        -- (nbits != 0).  N=4000 is a multiple of 8 so nbits is 0 here and this
+        -- is skipped — matching the refs' `if nbits != 0` guard exactly.
+        if ltInt 0 nbits then
+            while ltInt nbits 8 do
+                byteAcc = mulInt byteAcc 2
+                nbits = addInt nbits 1
+            checksum = modInt (addInt (mulInt checksum 1000003) byteAcc) 2147483647
+        py = addInt py 1
+    printlnString (showInt checksum)

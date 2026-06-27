@@ -1,0 +1,64 @@
+-- xlang/skynet — Tier 2 concurrency headline (fork/await on the kappart2 M:N
+-- runtime, vs Go goroutines + GHC forkIO).
+--
+-- Classic skynet: a root fiber spawns 10 children, each spawns 10, ... down to
+-- 1_000_000 leaf fibers, each returning its ordinal; the sums fold back up the
+-- tree. Total = sum 0..999999 = 499999500000. N (the leaf count / `size`) is
+-- HARDCODED and must match every ref impl + expected.txt.
+--
+-- STRUCTURE (faithful to skynet's concurrency, within the language as it is):
+-- each non-leaf level FORKS all 10 children FIRST (so they are all runnable /
+-- concurrent — not fork-one-join-one serial), pushing each Fiber onto a list,
+-- THEN folds their joined results. The collect step is a recursive helper
+-- `sumJoin` rather than a `for fb in fibers do … join fb …` loop because that
+-- loop shape — a SUSPENDING op inside a `for` — is not yet CPS-lowered by the
+-- native backend (see the report / runtime/docs/CPS-DESIGN.md Stage 2+). The
+-- fork loop itself is a `while` with a suspending body, which IS lowered (cf.
+-- test/native/cases/suspendloop.kp).
+--
+-- `decreases size` carries the structural-recursion witness for skynet (size
+-- strictly shrinks by /10 each level until the size==1 base case); §15
+-- termination still emits W_TERMINATION_UNVERIFIED (a warning, not an error) —
+-- the definition is accepted and runs.
+--
+-- BACKENDS: the C backend runs this end-to-end. The LLVM backend currently
+-- reports a build error — it does not yet implement the await/join primitives
+-- (__awaitFiber / __reraiseCause) as curried values — so kappa-llvm is expected
+-- to show `builderr` for this concurrency bench until those land. That is the
+-- honest documented LLVM-backend concurrency gap, not a port bug.
+--
+-- N = 1000000  =>  sum 0..999999 = 499999500000.
+module main
+
+-- Collect the joined results of an already-forked batch of fibers. Recursive
+-- (not a `for` loop) to sidestep the suspending-op-in-`for` CPS gap; `decreases
+-- fs` is the obvious structural witness (the list shrinks by one cons per step).
+sumJoin : List (Fiber Void Int) -> Int -> UIO Int
+let sumJoin fs acc decreases fs =
+    match fs
+      case Nil -> pure acc
+      case f :: rest -> do
+          r <- join f
+          sumJoin rest (addInt acc r)
+
+skynet : Int -> Int -> UIO Int
+let skynet num size decreases size =
+    if eqInt size 1 then pure num
+    else do
+        let step = divInt size 10
+        -- Pass 1: fork all 10 children (all become runnable / concurrent).
+        var fibers = (Nil : List (Fiber Void Int))
+        var i = 0
+        while ltInt i 10 do
+            f <- fork (skynet (addInt num (mulInt i step)) step)
+            fibers = f :: fibers
+            i = addInt i 1
+        -- Pass 2: join all 10 and sum their ordinals.
+        total <- sumJoin fibers 0
+        pure total
+
+main : UIO Unit
+let main = do
+    -- N = 1000000 leaf fibers (size), branching factor 10.
+    total <- skynet 0 1000000
+    printlnString (showInt total)

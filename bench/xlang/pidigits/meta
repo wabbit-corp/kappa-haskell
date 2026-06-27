@@ -1,0 +1,5 @@
+name = pidigits
+tier = 1
+N = 5000
+refs = go hs c
+desc = N digits of pi via Gibbons' unbounded spigot (bignum-heavy; exercises the GMP Integer); 10 digits/line with running count

@@ -1,0 +1,5 @@
+name = fannkuch
+tier = 1
+N = 11
+refs = go hs c
+desc = Fannkuch-redux (CLBG): max + checksum of pancake-flip counts over all permutations of 1..N. Int-heavy. KAPPA GAP: no mutable array (Array is list-backed/immutable), so the .kp is a persistent-list port — correct but ~100-200x slower than the mutable-array refs.

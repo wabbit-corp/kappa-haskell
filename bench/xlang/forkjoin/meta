@@ -1,0 +1,5 @@
+name = forkjoin
+tier = 2
+N = 100000
+refs = go hs
+desc = Savina Fork-Join: spawn N fibers each running a small modular-int CPU task, join all, print a checksum (spawn/join throughput). kappa-llvm is a known gap: the LLVM backend does not implement __awaitFiber (E_BACKEND_UNSUPPORTED), so only the C backend runs.

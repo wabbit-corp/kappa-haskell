@@ -1,0 +1,5 @@
+name = sumloop
+tier = 0
+N = 10000000
+refs = go hs c
+desc = Sum of integers 0..N inclusive (int64 arithmetic loop, no allocation)

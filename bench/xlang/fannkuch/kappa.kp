@@ -1,0 +1,165 @@
+-- xlang/fannkuch — Tier 1 benchmark, Kappa port.
+--
+-- Fannkuch-redux (CLBG): over every permutation of 0..N-1, count the prefix-
+-- reversals ("pancake flips") needed to bring 0 to the front; report the max
+-- flip count and a checksum (sum of (+flips) for even-indexed permutations and
+-- (-flips) for odd-indexed ones). N is HARDCODED = 11 (getArgs/stdin do not
+-- exist yet) and must match every ref impl + expected.txt.
+--
+-- Reference answer for N=11: checksum 556355, Pfannkuchen(11) = 51.
+--
+-- LANGUAGE-GAP NOTE: Kappa has NO mutable array. `Array a` is list-backed and
+-- immutable; there is no in-place swap nor O(1) indexed update. Fannkuch is the
+-- archetypal in-place-int-array benchmark, so this port is necessarily a
+-- PERSISTENT-LIST formulation: every "array write" rebuilds a list (O(n)), and
+-- the ~11! = 39,916,800 permutations make this orders of magnitude slower than
+-- the mutable-array references. It is correct, not fast — an honest datapoint
+-- for "no mutable arrays yet" rather than a like-for-like array port.
+module main
+
+-- ---------------------------------------------------------------------------
+-- Persistent-list helpers over List Int (self-contained).
+-- ---------------------------------------------------------------------------
+
+-- Indexed read (caller guarantees in-bounds). Returns 0 if out of range.
+listGet : List Int -> Int -> Int
+let listGet xs i decreases xs =
+    match xs
+    case Nil -> 0
+    case y :: ys -> if leInt i 0 then y else listGet ys (subInt i 1)
+
+-- reverse via accumulator.
+revAcc : List Int -> List Int -> List Int
+let revAcc xs acc decreases xs =
+    match xs
+    case Nil -> acc
+    case y :: ys -> revAcc ys (y :: acc)
+
+-- append.
+appendL : List Int -> List Int -> List Int
+let appendL xs ys decreases xs =
+    match xs
+    case Nil -> ys
+    case z :: zs -> z :: appendL zs ys
+
+-- take first n.
+takeL : Int -> List Int -> List Int
+let takeL n xs decreases xs =
+    match xs
+    case Nil -> Nil
+    case y :: ys -> if leInt n 0 then Nil else y :: takeL (subInt n 1) ys
+
+-- drop first n.
+dropL : Int -> List Int -> List Int
+let dropL n xs decreases xs =
+    match xs
+    case Nil -> Nil
+    case y :: ys -> if leInt n 0 then xs else dropL (subInt n 1) ys
+
+-- Reverse the first (k+1) elements (positions 0..k inclusive); keep the rest.
+reverseHeadK : List Int -> Int -> List Int
+let reverseHeadK xs k =
+    appendL (revAcc (takeL (addInt k 1) xs) Nil) (dropL (addInt k 1) xs)
+
+-- Count pancake flips: while head /= 0, reverse the first (head+1) elements.
+-- `fuel` bounds recursion for the totality checker (N elements need at most N-1
+-- flips; N=11, so 64 is ample headroom).
+countFlips : List Int -> Int -> Int
+let countFlips xs fuel decreases fuel =
+    match xs
+    case Nil -> 0
+    case k :: rest ->
+        if leInt fuel 0 then 0
+        else if leInt k 0 then 0
+        else addInt 1 (countFlips (reverseHeadK xs k) (subInt fuel 1))
+
+-- Rotate the first (r+1) elements left by one: head moves to position r.
+rotatePrefix : List Int -> Int -> List Int
+let rotatePrefix xs r =
+    let prefix = takeL (addInt r 1) xs in
+        let suffix = dropL (addInt r 1) xs in
+            match prefix
+            case Nil -> xs
+            case h :: t -> appendL (appendL t (h :: Nil)) suffix
+
+-- Functional update: set position i of xs to v.
+listSet : List Int -> Int -> Int -> List Int
+let listSet xs i v decreases xs =
+    match xs
+    case Nil -> Nil
+    case y :: ys ->
+        if leInt i 0 then v :: ys
+        else y :: listSet ys (subInt i 1) v
+
+-- max of two ints.
+maxI : Int -> Int -> Int
+let maxI a b = if leInt a b then b else a
+
+-- 0..n-1 as a list (identity permutation).
+identityPerm : Int -> List Int
+let identityPerm n decreases n =
+    if leInt n 0 then Nil else appendL (identityPerm (subInt n 1)) (subInt n 1 :: Nil)
+
+-- ---------------------------------------------------------------------------
+-- settle: while k /= 1, set count[k-1] = k, k--. Returns the updated counters.
+-- (The level r always settles back to 1, so we only need the counter list.)
+-- ---------------------------------------------------------------------------
+settle : List Int -> Int -> List Int
+let settle c k decreases k =
+    if leInt k 1 then c
+    else settle (listSet c (subInt k 1) k) (subInt k 1)
+
+-- ---------------------------------------------------------------------------
+-- advance: starting at level k, rotate prefixes / tick counters until one
+-- counter stays positive. Returns (perm1', count', rNew, done).
+--   done = True  => enumeration finished (k reached n)
+-- `fuel` bounds the inner loop for totality; it can iterate at most n times.
+-- ---------------------------------------------------------------------------
+advance : Int -> List Int -> List Int -> Int -> Int -> (List Int, List Int, Int, Bool)
+let advance n p c k fuel decreases fuel =
+    if leInt fuel 0 then (p, c, k, True)
+    else if eqInt k n then (p, c, k, True)
+    else
+        let p2 = rotatePrefix p k in
+            let cval = subInt (listGet c k) 1 in
+                let c2 = listSet c k cval in
+                    if leInt cval 0 then advance n p2 c2 (addInt k 1) (subInt fuel 1)
+                    else (p2, c2, k, False)
+
+-- ---------------------------------------------------------------------------
+-- step: the main tail-recursive driver. Settles, scores the current
+-- permutation, advances, recurses. Returns (checksum, maxflips).
+--   bigFuel bounds the loop for totality; 11! = 39_916_800, so 40_000_000 is
+--   exact-enough headroom and the loop returns early when advance reports done.
+-- ---------------------------------------------------------------------------
+-- Signed contribution of `flips` to the checksum at permutation index permcount.
+signedFlips : Int -> Int -> Int
+let signedFlips permcount flips =
+    if eqInt (modInt permcount 2) 0 then flips else negInt flips
+
+step : Int -> List Int -> List Int -> Int -> Int -> Int -> Int -> Int -> (Int, Int)
+let step n perm1 count r checksum maxflips permcount bigFuel decreases bigFuel =
+    if leInt bigFuel 0 then (checksum, maxflips)
+    else
+        let flips = countFlips perm1 64 in
+            let checksum2 = addInt checksum (signedFlips permcount flips) in
+                let maxflips2 = maxI maxflips flips in
+                    match advance n perm1 (settle count r) 1 (addInt n 1)
+                    case (perm1b, count3, rNew, done) ->
+                        if done then (checksum2, maxflips2)
+                        else step n perm1b count3 rNew checksum2 maxflips2 (addInt permcount 1) (subInt bigFuel 1)
+
+run : Int -> (Int, Int)
+let run n =
+    step n (identityPerm n) (identityPerm n) n 0 0 0 40000000
+
+-- Print one result of the (checksum, maxflips) pair.
+report : (Int, Int) -> UIO Unit
+let report result =
+    match result
+    case (cs, mf) -> do
+        printlnString (showInt cs)
+        printlnString (stringAppend "Pfannkuchen(11) = " (showInt mf))
+
+main : UIO Unit
+let main = report (run 11)   -- N = 11

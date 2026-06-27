@@ -1,0 +1,76 @@
+-- xlang/binarytrees — Tier 1 (the allocation / boxing honesty gate).
+--
+-- Binary-trees (CLBG-style): allocate + traverse many binary trees up to a
+-- given depth and print the check sums. THE allocation/boxing benchmark — until
+-- value-unboxing + Perceus reuse land, every `Node`/`Leaf` is a boxed heap
+-- K_CTOR, so Kappa is EXPECTED to lose here; this slot tracks the alloc/time
+-- TREND, it is not a headline number.
+--
+-- N = depth = 18 HARDCODED (getArgs/stdin do not exist yet); must match every
+-- ref impl + expected.txt. minDepth = 4, maxDepth = 18, stretchDepth = 19.
+--
+-- Single-line output (compute+alloc, not I/O):
+--   stretch 1048575 trees 66759344 longlived 524287
+-- where
+--   stretch  = itemCheck of the stretch tree (depth 19)
+--   trees    = sum over depths d in {4,6,...,18} of the total itemCheck across
+--              all 2^(18-d+4) trees built at that depth
+--   longlived= itemCheck of the long-lived tree (depth 18)
+module main
+
+-- A binary tree node. `Leaf` is a depth-0 node (both children absent); `Node`
+-- carries two subtrees. Every constructor is, today, a boxed heap allocation —
+-- which is exactly what this benchmark stresses.
+data Tree : Type =
+    Leaf
+    Node (left : Tree) (right : Tree)
+
+-- Build a fully-populated tree of the given depth. Recurses on `depth`, so it
+-- needs a `decreases depth` totality witness. depth 0 => a Leaf.
+bottomUpTree : Int -> Tree
+let bottomUpTree depth decreases depth =
+    if leInt depth 0 then Leaf else Node (bottomUpTree (subInt depth 1)) (bottomUpTree (subInt depth 1))
+
+-- Walk the whole tree, counting nodes (a Leaf counts as 1, matching the C/Go
+-- NULL-child == check-1 convention and the Haskell `Node Nil _ = 1`). Recurses
+-- structurally on the tree, so it `decreases t`.
+itemCheck : Tree -> Int
+let itemCheck t decreases t =
+    match t
+    case Leaf -> 1
+    case Node l r -> addInt 1 (addInt (itemCheck l) (itemCheck r))
+
+main : UIO Unit
+let main = do
+    -- stretch tree of depth maxDepth+1 = 19, built and checked once.
+    let stretchCheck = itemCheck (bottomUpTree 19)
+
+    -- long-lived tree of depth maxDepth = 18, built first, checked last.
+    let longLived = bottomUpTree 18
+
+    -- For each depth d = 4,6,...,18 build 2^(18-d+4) trees and sum their checks.
+    var treesTotal = 0
+    var depth = 4
+    while leInt depth 18 do
+        -- iterations = 2^(maxDepth - depth + minDepth), via repeated doubling
+        -- (no shift-left prim is exposed to user code).
+        var iterations = 1
+        var e = subInt (addInt (subInt 18 depth) 4) 0
+        while ltInt 0 e do
+            iterations = addInt iterations iterations
+            e = subInt e 1
+        -- build `iterations` trees of this depth, accumulating their checks.
+        var i = 0
+        var check = 0
+        while ltInt i iterations do
+            check = addInt check (itemCheck (bottomUpTree depth))
+            i = addInt i 1
+        treesTotal = addInt treesTotal check
+        depth = addInt depth 2
+
+    let longLivedCheck = itemCheck longLived
+
+    printlnString (stringAppend (stringAppend (stringAppend (stringAppend (stringAppend
+        "stretch " (showInt stretchCheck))
+        " trees ") (showInt treesTotal))
+        " longlived ") (showInt longLivedCheck))

@@ -1,0 +1,123 @@
+-- xlang/spectralnorm — Tier 1.  Spectral norm (CLBG) via the power method.
+--
+--   A(i,j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
+--   u = [1..1];  repeat 10x: v = (A^T A) u; u = (A^T A) v
+--   answer = sqrt( (u . v) / (v . v) )   printed to 9 decimals.
+--
+-- N = 5500 (HARDCODED to match the refs + expected.txt = 1.274224153).
+--
+-- ┌───────────────────────────────────────────────────────────────────────────┐
+-- │ STATUS: blocked-compiler-gap.  Three gaps block a byte-exact Kappa port:    │
+-- │                                                                             │
+-- │  1. NO `sqrt` PRIM.  The Double prim set is add/sub/mul/div/neg/eq/lt/      │
+-- │     floatEq/intToDouble/showDouble/ratOfDouble (src/Kappa/Prelude.hs        │
+-- │     ~L287-462).  There is no sqrt / pow / root / any transcendental, so     │
+-- │     the final sqrt(vBv/vv) cannot be computed.  (Newton's method needs an   │
+-- │     initial guess that needs frexp/ldexp or a doubleToInt — also absent.)   │
+-- │                                                                             │
+-- │  2. NO FIXED-PRECISION FORMATTING.  `showDouble` (the prim behind           │
+-- │     `println @Double`) emits the SHORTEST round-trip decimal, not a         │
+-- │     "%.9f" rendering, and there is no doubleToInt / floor / trunc / round   │
+-- │     prim to hand-roll a 9-decimal formatter.  So even the ratio can't be    │
+-- │     printed in the required `1.274224153` form.                             │
+-- │                                                                             │
+-- │  3. NO MUTABLE ARRAY.  `Array` is IMMUTABLE and LIST-BACKED                 │
+-- │     (__arrayFromList/__arrayToList; `arrayGet` is O(n) __listIndex).  Each  │
+-- │     A·v is O(n^2) indexes × O(n) per index = O(n^3); at N=5500 the power    │
+-- │     method is intractable (~hours), independent of gaps 1-2.                │
+-- │                                                                             │
+-- │ (Aside: `var`/`while` only thread their writes inside a UIO context — in a  │
+-- │ *pure*-returning helper the reassignments are silently dropped — so the     │
+-- │ mat-vec ops below are UIO actions sequenced with `<-`.)                      │
+-- │                                                                             │
+-- │ The algorithm below is the FAITHFUL structure and is VERIFIED CORRECT: it   │
+-- │ compiles + runs on BOTH backends and its pre-sqrt ratio vBv/vv is           │
+-- │ bit-identical to the C ref (e.g. 1.568849932178157 at N=4).  But it cannot  │
+-- │ apply sqrt or print `1.274224153`, and at N=5500 the O(n^3) list-indexed    │
+-- │ run is ~hours (≈300ms at N=100, ×(55)^3), so the kappa-c/kappa-llvm columns │
+-- │ are expected to FAIL the gate until the gaps close.                        │
+-- └───────────────────────────────────────────────────────────────────────────┘
+module main
+
+-- A(i,j) = 1 / ((i+j)(i+j+1)/2 + i + 1)
+matA : Int -> Int -> Double
+let matA i j =
+    let ij = addInt i j
+    let denom = addInt (divInt (mulInt ij (addInt ij 1)) 2) (addInt i 1)
+    divDouble 1.0 (intToDouble denom)
+
+-- append to the end of a list (the immutable Array has no in-place write)
+listSnoc : forall (a : Type). List a -> a -> List a
+let listSnoc xs x = listAppend xs (x :: Nil)
+
+-- NOTE: the loop accumulators below mutate a `var`, which only threads inside
+-- a monadic (UIO) context — `var`/`while` in a *pure*-returning helper silently
+-- drops the writes — so these matrix-vector ops are written as UIO actions and
+-- sequenced with `<-` in `main`.
+--
+-- w[i] = sum_j A(i,j) * v[j]      (v is an immutable, list-backed Array)
+mulAv : Int -> Array Double -> UIO (Array Double)
+let mulAv n v = do
+    var acc = arrayEmpty
+    var i = 0
+    while ltInt i n do
+        var s = 0.0
+        var j = 0
+        while ltInt j n do
+            s = addDouble s (mulDouble (matA i j) (__arrayIndexUnsafe v j))
+            j = addInt j 1
+        acc = arrayFromList (listSnoc (arrayToList acc) s)
+        i = addInt i 1
+    pure acc
+
+-- w[i] = sum_j A(j,i) * v[j]   (= (A^T v)[i])
+mulAtv : Int -> Array Double -> UIO (Array Double)
+let mulAtv n v = do
+    var acc = arrayEmpty
+    var i = 0
+    while ltInt i n do
+        var s = 0.0
+        var j = 0
+        while ltInt j n do
+            s = addDouble s (mulDouble (matA j i) (__arrayIndexUnsafe v j))
+            j = addInt j 1
+        acc = arrayFromList (listSnoc (arrayToList acc) s)
+        i = addInt i 1
+    pure acc
+
+-- (A^T A) v
+mulAtAv : Int -> Array Double -> UIO (Array Double)
+let mulAtAv n v = do
+    av <- mulAv n v
+    mulAtv n av
+
+-- N = 5500
+main : UIO Unit
+let main = do
+    let n = 5500
+    -- u0 = [1,1,...,1]  (no listReplicate prim; build it by snoc)
+    var u0 = arrayEmpty
+    var b = 0
+    while ltInt b n do
+        u0 = arrayFromList (listSnoc (arrayToList u0) 1.0)
+        b = addInt b 1
+    var u = u0
+    var v = u0
+    var k = 0
+    while ltInt k 10 do
+        nv <- mulAtAv n u
+        v = nv
+        nu <- mulAtAv n nv
+        u = nu
+        k = addInt k 1
+    var vBv = 0.0
+    var vv = 0.0
+    var i = 0
+    while ltInt i n do
+        vBv = addDouble vBv (mulDouble (__arrayIndexUnsafe u i) (__arrayIndexUnsafe v i))
+        vv = addDouble vv (mulDouble (__arrayIndexUnsafe v i) (__arrayIndexUnsafe v i))
+        i = addInt i 1
+    -- GAP: want `printf "%.9f\n" (sqrt (vBv / vv))` == 1.274224153.
+    -- No sqrt and no %.9f formatting, so we can only show the ratio in
+    -- shortest-round-trip form (NOT the gated output):
+    println (divDouble vBv vv : Double)
