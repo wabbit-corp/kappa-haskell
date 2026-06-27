@@ -1,0 +1,19 @@
+-- finallyIO as the TAIL of a multi-statement do-block, over a let-bound body
+-- that reaches a suspending op (sleepFor).  Before the fix the C backend left
+-- this block on compileDoLegacy, where the tail krt2_finally (an OP_DOSCOPE
+-- tree) ran on the synchronous krun_io bridge that has no OP_DOSCOPE case — the
+-- node came back unevaluated and body + cleanup were both dropped (C printed
+-- only `pre`).  finallyIO/catchIO in suspendingNames force-CPS-lower the block
+-- onto the CK-machine.  Expected stdout: pre / body / mid / cleanup.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "pre"
+    let body =
+        do
+            printlnString "body"
+            sleepFor (millis 1)
+            printlnString "mid"
+    let cleanup = printlnString "cleanup"
+    finallyIO body cleanup

@@ -1,0 +1,28 @@
+-- `restore` applied to a multi-statement suspending do-block inside a `mask`.
+-- Applying the local `restore` parameter builds an OP_RESTORE node only the
+-- CK-machine drives.  Before the fix the mask body's do-block was not CPS-
+-- lowered (its `x <- restore inner` bind has a local/opaque spine head the
+-- strict suspender test ignored), so `restore inner` ran on the synchronous
+-- bridge, which returned the raw OP_RESTORE node unevaluated — inner never ran
+-- and `x` was the node itself (showInt failed).  Counting a local-headed action
+-- as may-suspend for CPS-eligibility routes the body onto the CK-machine.
+-- Expected stdout: INNER / 1.
+module main
+
+inner : IO Void Integer
+let inner =
+    do
+        printlnString "INNER"
+        sleepFor (millis 1)
+        ioPure 1
+
+body : (forall (x : Type). IO Void x -> IO Void x) -> IO Void Integer
+let body restore =
+    do
+        x <- restore inner
+        ioPure x
+
+main : UIO Unit
+let main = do
+    r <- mask body
+    printlnString (showInt r)

@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "INNER\n1\n"
+
+-- §18.1.12 `restore` applied to a multi-statement SUSPENDING do-block inside a
+-- `mask`.  The surface `restore` is `\act -> __restoreAt raw act`, and applying
+-- it builds an OP_RESTORE node that ONLY the CK-machine drives (the synchronous
+-- krun_io bridge has no OP_RESTORE case).  In the mask body the bind
+-- `x <- restore inner` has spine head = the local `restore` PARAMETER (an opaque
+-- higher-order CVar), which the strict suspender test did not count — so the
+-- body do-block was NOT CPS-lowered and ran `restore inner` on the bridge, which
+-- returned the raw OP_RESTORE node unevaluated (inner never ran; `x` was the node
+-- itself, so `showInt x` failed with "not an Int").  Counting a local-headed
+-- action as may-suspend for CPS-eligibility (mirroring scalarBodyMaySuspend /
+-- mayActSuspend) routes the body onto the CK-machine.  interp == C == LLVM.
+module main
+
+inner : IO Void Integer
+let inner =
+    do
+        printlnString "INNER"
+        sleepFor (millis 1)
+        ioPure 1
+
+body : (forall (x : Type). IO Void x -> IO Void x) -> IO Void Integer
+let body restore =
+    do
+        x <- restore inner
+        ioPure x
+
+main : UIO Unit
+let main = do
+    r <- mask body
+    printlnString (showInt r)
