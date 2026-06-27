@@ -3149,6 +3149,20 @@ emitScalarLoopFn plan _refs = do
     -- reload the quantum and call krt2_safepoint().  On a deliverable interrupt
     -- (non-zero return) branch to flushL — which commits the FINAL slot values to
     -- the ref cells and exits — so the CK-machine delivers; otherwise loop.
+    --
+    -- FINDING B (the scalar-loop continuation must not run before delivery): unlike
+    -- the C backend — where the scalar loop AND its continuation (`slRest`) are
+    -- emitted INLINE in the SAME krun_io-driven function, so a fall-through past the
+    -- loop would run the continuation before the post-bridge gate fires, requiring a
+    -- dedicated skip-continuation abort exit (C's `ksabort_`) — the LLVM scalar loop
+    -- is its OWN `knative_sat` (K_NATIVE) leaf, and the continuation is sequenced as
+    -- a SEPARATE CK bind (`seqActionThen` → krt2_bind, see emitScalarLoopFn's
+    -- caller).  When this K_NATIVE returns with safepoint_hit set, the post-K_NATIVE
+    -- delivery gate (rt.c ~1794) fires BEFORE the bind's continuation closure runs,
+    -- so the continuation NEVER observes a side effect before delivery.  Both the
+    -- abort exit and normal completion may therefore share flushL → doneL → ret here
+    -- WITHOUT a separate skip-continuation path: the CK bind boundary already gives
+    -- LLVM the ordering the C backend has to engineer explicitly.
     spCur <- freshReg
     emit (spCur <> " = load i64, ptr " <> spSlot <> ", align 8")
     spDec <- freshReg

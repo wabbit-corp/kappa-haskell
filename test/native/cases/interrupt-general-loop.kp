@@ -1,0 +1,117 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nreleased\nspin:interrupted\nmasked:completed\ndefer-done\n"
+
+-- §32.2.6 safe points for the GENERAL (non-scalar) loop lowering (interp == C).
+-- The scalar fast path (a `var i; while … do i = addInt i 1` with a pure-int64
+-- body) has its own counter-gated krt2_safepoint; this case covers the loops the
+-- scalar path does NOT recognize — here a `while` whose body is a `readRef`/
+-- `writeRef` do-bind (so it is NOT the flat scalar shape and routes to the general
+-- `compileLoop` lowering; a `for` routes there unconditionally too and is covered
+-- for normal completion by loops.kp / control.kp / dokernel.kp).
+--
+-- On the C backend the general loop lowers to a raw goto loop driven synchronously
+-- under the krun_io bridge; WITHOUT a back-edge krt2_safepoint() such an infinite
+-- loop would NEVER observe a pending interrupt and would HANG the fiber (RC 124,
+-- the timeout fires).  Both the interpreter (a loopSafepoint at every `while` AND
+-- `for` back-edge) and the C backend MUST deliver the interrupt at the back-edge
+-- and terminate the spinning fiber with Failure (Interrupt).
+--
+-- FINALIZER SEMANTICS on the safe-point abort (interp == native):
+--   * a `using` resource held across the loop IS released on interrupt (the
+--     interpreter runs the release via `onException`; the C backend runs the
+--     scope's recorded using-release at the safe-point abort) — `released` prints;
+--   * a plain `defer` is NOT run on the async interrupt (the interpreter runs
+--     defers only via the exit queue on normal/abrupt completion) — its action is
+--     NOT emitted by EITHER interp or native here.
+--
+-- FINDING B (ordering): the interpreter throws AT the back-edge, so the post-loop
+-- continuation NEVER runs.  The spinner loops forever, so normal completion is
+-- impossible — the post-loop `printlnString "spin:after-loop-WRONG"` must NOT
+-- appear on EITHER interp or native.  If native ran the continuation before the
+-- post-bridge delivery gate (rt.c ~1794) fired, it would emit that line and both
+-- the exact-stdout assertion and interp == native would fail.  (The `using`
+-- release runs at the abort, but the continuation — the do-block statements PAST
+-- the loop — does not.)
+--
+-- A MASKED general loop is NOT interrupted mid-loop: suppression holds, the loop
+-- runs to its finite completion, and (no interruption point after the masked
+-- region) the pending interrupt is dropped — the fiber completes Success.
+module main
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : IO Void Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+-- an UNMASKED infinite `while True` whose body is a readRef/writeRef do-bind (NOT
+-- the flat scalar shape), so it lowers to the general boxed loop — interruptible
+-- only at the back-edge safe point.  It holds a `using` resource (released on
+-- interrupt) and registers a `defer` (NOT run on interrupt).  After the
+-- (unreachable) loop it would print a marker; the interrupt must abort BEFORE that
+-- continuation runs (FINDING B) yet AFTER running the using-release.
+spin : UIO Int
+let spin = do
+    using res <- acquireRes
+    defer (printlnString "defer-WRONG")
+    r <- newRef 0
+    while True do
+        v <- readRef r
+        writeRef r (addInt v 1)
+    -- unreachable on interrupt; must NOT be emitted before delivery (FINDING B)
+    printlnString "spin:after-loop-WRONG"
+    readRef r
+
+-- a finite general loop: a `var i` counter `while` whose body is a readRef/writeRef
+-- do-bind (so it is the GENERAL loop, not the scalar fast path).  The bound is
+-- large enough that the fiber is still looping when the interrupt is posted (so a
+-- missed masked suppression would be observed as a mid-loop interrupt) yet small
+-- enough that the interpreter — which boxes every iteration — finishes well within
+-- the suite timeout.  A trailing `defer` proves normal completion still runs it.
+loopTo : UIO Int
+let loopTo = do
+    r <- newRef 0
+    var i = 0
+    while ltInt i 1000000 do
+        v <- readRef r
+        writeRef r (addInt v 1)
+        i = addInt i 1
+    readRef r
+
+-- the MASKED finite general loop: the whole loop is uninterruptible, so a pending
+-- interrupt is suppressed and the loop runs to completion.
+maskedLoopTo : UIO Int
+let maskedLoopTo = uninterruptible loopTo
+
+main : UIO Unit
+let main = do
+    -- (1) the unmasked general `while` spinner IS interrupted at a back-edge safe
+    --     point: its `using` release runs (`released`), its `defer` does NOT
+    --     (`defer-WRONG` absent), and its post-loop continuation does NOT run
+    --     (`spin:after-loop-WRONG` absent) — all before delivery (FINDING B).
+    f <- fork spin
+    cede
+    interrupt f
+    ex <- await f
+    match ex
+    case Success v -> printlnString "spin:completed-WRONG"
+    case Failure (Interrupt cause) -> printlnString "spin:interrupted"
+    case Failure c -> printlnString "spin:other-failure"
+    -- a defer in main's own (normal-completing) scope DOES run at main's exit (so
+    -- `defer-done` prints LAST) — a control that the defer machinery is alive and
+    -- that only the interrupt path (the spinner above) skips its defer.
+    defer (printlnString "defer-done")
+    -- (2) the MASKED finite general loop runs to completion (suppression holds).
+    h <- fork maskedLoopTo
+    cede
+    interrupt h
+    ex3 <- await h
+    match ex3
+    case Success v -> printlnString "masked:completed"
+    case Failure (Interrupt cause) -> printlnString "masked:interrupted-WRONG"
+    case Failure c -> printlnString "masked:other-failure"
