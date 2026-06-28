@@ -113,6 +113,18 @@ typedef KValue *(*KIOFn)(KEnv *env);
 
 struct KValue {
   KTag tag;
+  /* Perceus RC Stage S0 (PERCEUS-RC-DESIGN §2/§7): a 32-bit reference count
+   * occupying the previously-free 4-byte hole at offset 4 — `tag` is a 4-byte
+   * KTag at offset 0 and the union is 8-aligned starting at offset 8, so this
+   * field fills the padding with ZERO struct growth (sizeof stays 48; asserted
+   * below).  Every heap allocation initializes it to 1 (alloc_val /
+   * alloc_val_atomic in value.c).  IMMEDIATES (kis_imm: b001 Int, b010 nullary
+   * ctor, b011 packed ctor) are NOT heap objects — they carry no header and so
+   * no rc.  This field is RESERVED + INITIALIZED ONLY at S0: Boehm remains the
+   * collector, there is no dup/drop and no RC reclamation yet.  Later stages
+   * ride the sign of this word for the thread-shared flag (Koka's negative-rc
+   * trick, §5). */
+  uint32_t rc;
   union {
     int64_t  i;
     double   d;
@@ -155,6 +167,12 @@ struct KValue {
     struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; int is_io; } native;
   } as;
 };
+
+/* Perceus RC Stage S0: the `rc` word MUST fill the existing offset-4 padding —
+ * no struct growth.  If this trips, the rc field changed the layout (e.g. the
+ * union alignment moved) and the "zero behavior change" S0 invariant is broken. */
+_Static_assert(sizeof(KValue) == 48, "Perceus S0: KValue must stay 48 bytes (rc fills the offset-4 hole)");
+_Static_assert(offsetof(KValue, rc) == 4, "Perceus S0: rc must occupy the free 4-byte hole at offset 4");
 
 /* §27.1.1 native action body: receives the accumulated argument array and
  * returns the (boxed) result.  Emitted per manifest symbol by the backend. */

@@ -63,6 +63,7 @@ import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
+import Kappa.Ownership (OwnInfo)
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
 
@@ -108,6 +109,7 @@ data GenState = GenState
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBodies :: !(Map GName Term)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
+  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC Stage S1.0 (see "Kappa.Ownership"): the per-definition ownership side-table (owned/borrowed/last-use), carried verbatim from @csOwnership@ beside 'gsSuspenders'. At S1.0 it is the EMPTY map and NO consumer reads it — observe-only plumbing, exactly like the Stage-0 'CCtor'/'CMatch' annotations, so codegen is byte-identical.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -472,6 +474,7 @@ generateC cs mainG ffiPrims hostSyms =
           , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
           , gsBodies = csCoreBodies cs
           , gsSuspenders = suspenderGlobals (csCoreBodies cs)
+          , gsOwnership = csOwnership cs
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)

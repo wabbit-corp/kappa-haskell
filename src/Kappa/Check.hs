@@ -91,6 +91,7 @@ import Kappa.Inhabitance
   , inhabitanceSummary
   , isEmpty
   )
+import Kappa.Ownership (OwnInfo)
 import Kappa.Pretty (renderTerm)
 import Kappa.Parser (parseExprText)
 import Kappa.Source
@@ -337,6 +338,15 @@ data CheckState = CheckState
   -- 'let'/argument bindings (quote drops the captured environment), so we
   -- keep the real elaborator output. Used only by the native backend; the
   -- interpreter path ignores it.
+  , csOwnership :: !(Map GName OwnInfo)
+  -- ^ Perceus RC Stage S1.0 (see "Kappa.Ownership"): the per-definition
+  -- ownership side-table (owned\/borrowed\/last-use facts) keyed by stable
+  -- Core identities, paralleling 'csCoreBodies'. Populated in
+  -- "Kappa.Pipeline" right after the core bodies are finalized, beside the
+  -- @lintCoreBodies@ call, and carried to the native backend as @gsOwnership@.
+  -- At S1.0 this is the EMPTY map ('annotateOwnership' returns no entries): the
+  -- plumbing exists and threads, but no consumer reads it, so codegen and
+  -- interp\/C\/LLVM parity are byte-identical.
   , csTerminationNames :: !(Set GName)
   -- ^ Signature-governed top-level functions in the current module.  An
   -- edge to one of these names is potentially part of a recursive SCC until
@@ -530,6 +540,7 @@ initCheckState =
     , csScopeNameCache = Nothing
     , csBackendIntrinsics = Map.empty
     , csCoreBodies = Map.empty
+    , csOwnership = Map.empty
     , csTerminationNames = Set.empty
     , csTerminationDecls = Map.empty
     , csModEffLabels = Map.empty

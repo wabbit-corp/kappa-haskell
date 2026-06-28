@@ -16,6 +16,8 @@
 KValue *alloc_val(KTag tag) {
   KValue *v = (KValue *)kgc_alloc(sizeof(KValue));
   v->tag = tag;
+  v->rc = 1;   /* Perceus RC Stage S0: every heap KValue is born with one owner.
+                * Reserved + initialized only — Boehm still frees; no dup/drop. */
   return v;
 }
 
@@ -39,6 +41,8 @@ KValue *alloc_val(KTag tag) {
 static KValue *alloc_val_atomic(KTag tag) {
   KValue *v = (KValue *)kgc_alloc_atomic(sizeof(KValue));
   v->tag = tag;
+  v->rc = 1;   /* Perceus RC Stage S0: born with one owner (see alloc_val).
+                * GC_MALLOC_ATOMIC does not zero, so set rc explicitly here. */
   return v;
 }
 

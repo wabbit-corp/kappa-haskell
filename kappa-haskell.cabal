@@ -62,6 +62,7 @@ library
         Kappa.Inhabitance
         Kappa.Interp
         Kappa.Lexer
+        Kappa.Ownership
         Kappa.Parser
         Kappa.Parser.Monad
         Kappa.Pipeline
