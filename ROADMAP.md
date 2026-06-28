@@ -80,6 +80,14 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 (worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
 adversarially reviewed, same discipline as the burst above.
 
+**🔄 In flight (2026-06-28) — six worktree-isolated agents:** `fix/unsafe-intrinsics-gate` (gate
+`__eqProof`/`__transport`/`__absurd` from user code + `@AllowUnsafeIntrinsics` — a CRITICAL pre-existing
+unsoundness: any user module could `let bogus : (=) True False = __eqProof`) · `feat/monoid-lawful` (#8) ·
+`feat/mut-array` (#2, boxed first) · `feat/disconnect` (PRIMITIVES #5, verify-first) ·
+`feat/scalar-fn-worker-v2` (#5 — LLVM function scalar-worker) · `test/inhabitance-suite` (#7, P1).
+**Recently landed:** IsProp-under-Π soundness + honest List monoid proofs (`d45480f`, four holes closed under
+a six-review audit); or-pattern existential-binding fix; concurrency prims #2/#3/#4 verified already-done (`284d6eb`).
+
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
    (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
    **nbody + spectralnorm byte-identical to the reference**, parity 115/0.
@@ -91,8 +99,9 @@ adversarially reviewed, same discipline as the burst above.
    (atomic-GC'd, no per-element box) for monomorphic scalar elements, boxed `KValue*[]` otherwise
    (runtime tag-sniffing is unsound — `Array (Maybe Int)` mixes word kinds). Staged A (boxed,
    unboxing-*ready*) → H (unboxed scalar slabs, gated like the scalar-worker).
-3. **Unlock more benchmarks** — wire up nbody/spectralnorm (from 1) + the array benchmarks (from 2),
-   measure vs the reference, fold the numbers into [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md).
+3. **Unlock more benchmarks** — ✅ **DONE** (`5a96969`): the Tier-2 concurrency suite now builds on LLVM
+   (5/6 byte-identical), nbody/spectralnorm unblocked by the FP prims; numbers folded into
+   [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md). (Array benchmarks pending the `feat/mut-array` impl.)
 4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends);
    the C-backend CPS edges — **do-block-tail-call stack overflow** *(in progress, `fix/c-doblock-tailrec`)*,
    suspend-in-`for`, `var:Double` helper miscompile; the `kctor` value-box multi-worker race (value.c,
@@ -511,7 +520,7 @@ the real Lint are both impossible without them.
       turns the per-bind/continuation allocation into a reuse/in-place write.
       The endgame for the suspension path; needs the §3.3/unboxing ptr-vs-scalar map.
 - [ ] Keep `make bench` green as a non-regression gate from each stage.
-- [ ] **Cross-language benchmarking** ([`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md))
+- [x] **Cross-language benchmarking** ([`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md)) — done `5a96969` (Tier-2 on LLVM)
       — the external apples-to-apples layer on top of `make bench` (which already
       carries a Go-goroutine point). Pick suites by what we want to prove: **lead
       with concurrency** (Kappa's strength: `fork/await ≈ 3.5× a goroutine`), and
