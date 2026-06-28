@@ -82,6 +82,7 @@ data GenState = GenState
   , gsCtorSet :: !(Set GName) -- ^ Milestone D: every declared constructor's gname. An IMPLICIT application whose head is a constructor erases its implicit arg (§31.2); 'isErasedHead' consults this (mirrors C's 'gsCtors' membership test).
   , gsDataSet :: !(Set GName) -- ^ Milestone D: declared data-type / trait gnames — a reference to one in argument position is computationally erased ('isTypeGlob'); mirrors C's @gsDatas@ ∪ @gsTraits@.
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ Milestone L (§27.1.1/§36.28): each provided @host.native.*@ member ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings. A reference to such a member is lowered like a PRIM over the codegen-emitted C-wrapper symbol ('wrapperCName') — a saturated reference to a @knative_sat@ over the wrapper, a curried/bare reference to a @knative@ closure — and the wrapper is compiled+linked from a sidecar @.c@ the Driver emits ('hostFfiSidecar'). Mirrors C's @gsHostSyms@; recognised at the REFERENCE so a host member is NEVER enqueued as a no-core-body CAF.
+  , gsScalarHelpers :: !(Set Text) -- ^ names of scalar-worker helper @define@s already emitted (the @.ll@-local arg-unbox @kunbox_i64_ll@/@kunbox_dbl_ll@), so each is emitted exactly once.
   }
 
 type Gen = State GenState
@@ -429,6 +430,7 @@ generateLL cs mainG ffiPrims hostSyms =
           , gsCtorSet = Map.keysSet (csCtors cs)
           , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
           , gsHostSyms = hostSyms
+          , gsScalarHelpers = Set.empty
           }
       final = execState (drainQueue >> emitMain mainG) st0
       -- §18.1.17/§27.6/§34.3.3 Stage-4a: the LLVM backend links the SAME one-shot
@@ -662,6 +664,17 @@ emitGlobal g = do
       -- position and keeps 'compileTail'.
       (insns, endBlock, operand) <- captured "null" (compile tm)
       emitArity0Accessor ident insns endBlock operand
+      -- Scalar function worker: if @g@ is a monomorphic first-order Int/Double
+      -- function with a scalar-expressible body, ALSO emit the typed unboxed
+      -- worker (@kwi_@/@kwd_@) beside the boxed curried-closure accessor.  A
+      -- saturated direct call ('compileApp') then takes the unboxed fast path
+      -- (with a boxed escape).  Mirrors the C backend's 'emitGlobal' tail.
+      mplan <- scalarFnPlanLL g
+      case mplan of
+        Just (pks, ret) -> do
+          let (_, inner) = funcArity tm
+          compileScalarFnWorkerLL g pks ret inner
+        Nothing -> pure ()
 
 -- | The leading-lambda arity of a term and the body beneath those binders
 -- (mirrors C's 'funcArity').
@@ -3442,6 +3455,665 @@ boxedPrimSymLL = \case
   "leInt" -> Just "kp_leInt"
   _ -> Nothing
 
+-- ── Function scalar worker (the LLVM @kwi_@/@kwd_@ analog) ────────────
+--
+-- A faithful port of the C backend's function scalar-worker
+-- ('Kappa.Backend.C.compileScalarWorker' / 'compileScalarCall' /
+-- 'scalarPlan'): a monomorphic FIRST-ORDER scalar function — every relevant
+-- explicit parameter and the result an @Int@ ('RepInt' ⇒ @i64@) or @Double@
+-- ('RepDouble' ⇒ @double@) — with a scalar-EXPRESSIBLE body gets an auxiliary
+-- UNBOXED worker beside the boxed curried-closure path.  A saturated direct call
+-- unboxes each argument by its kind, calls the worker, and ESCAPES to the boxed
+-- path (the curried @kg_@/@kapp@/@ktrampoline@ chain over the ORIGINAL boxed
+-- args) on a wrong-tag argument or an int64 overflow — so the boxed/GMP result
+-- is always the reference (the unbox tag-check is the soundness net: even a
+-- mis-derived kind escapes to boxed, never miscompiles).
+--
+-- This is the LLVM analogue of the C function worker (the while-loop scalarizer
+-- '@kscalarloop_' already mirrors C's @var/while@ loop; THIS mirrors C's typed
+-- function worker).  The body grammar is the SAME conservative allowlist as C's
+-- 'scalarEligTail'/'scalarKindOf' (scalar literal, scalar param/let var, the
+-- int+double arith prims, @intToDouble@, the safe compares as an @if@ condition,
+-- @if@/@let@ in tail or value position, and saturated self-calls) — which admits
+-- NO suspending or IO form, so a worker body is suspension-free BY CONSTRUCTION
+-- (the §7 Stage 1.5 witness the C backend spells out is implied here by the
+-- narrow grammar — there is no admitted leaf at which a fiber could park, so no
+-- raw-scalar SSA value is ever live across a suspension point).
+
+-- | The scalar kind of a worker param/result: an unboxed @i64@ or @double@.
+data ScalarKindLL = KInt64L | KDoubleL deriving (Eq)
+
+-- | A worker parameter slot: an unboxed scalar or a boxed @ptr@ pass-through.
+-- (The LLVM port today only emits ALL-scalar workers — the mixed @kwm_@ record
+-- slice is C-only; a body that reads a boxed-param field is left to the boxed
+-- path.  'PBoxedLL' is kept for parity of the analysis shape.)
+data ParamKindLL = PScalarLL !ScalarKindLL | PBoxedLL deriving (Eq)
+
+-- | The LLVM type text for a scalar kind.
+llScalarTy :: ScalarKindLL -> Text
+llScalarTy KInt64L = "i64"
+llScalarTy KDoubleL = "double"
+
+-- | The LLVM type text for a parameter slot (an all-scalar worker never has a
+-- boxed slot; default to @i64@ defensively).
+pkTyLL :: ParamKindLL -> Text
+pkTyLL = maybe "i64" llScalarTy . paramSKLL
+
+-- | The scalar kind of a slot, or 'Nothing' for a boxed slot.
+paramSKLL :: ParamKindLL -> Maybe ScalarKindLL
+paramSKLL (PScalarLL k) = Just k
+paramSKLL PBoxedLL = Nothing
+
+-- | The 'Repr.Rep' → 'ScalarKindLL' projection (mirror of C's 'repScalarKind').
+repScalarKindLL :: Repr.Rep -> Maybe ScalarKindLL
+repScalarKindLL = \case
+  Repr.RepInt -> Just KInt64L
+  Repr.RepDouble -> Just KDoubleL
+  _ -> Nothing
+
+-- | A scalar arith prim and its (result kind, argument kinds) — the FULL Int +
+-- Double set (mirror of C's 'arithPrim').  @intToDouble@ is the one cross-kind
+-- coercion (Int → Double).
+arithPrimLL2 :: Text -> Maybe (ScalarKindLL, [ScalarKindLL])
+arithPrimLL2 = \case
+  "addInt" -> Just (KInt64L, [KInt64L, KInt64L])
+  "subInt" -> Just (KInt64L, [KInt64L, KInt64L])
+  "mulInt" -> Just (KInt64L, [KInt64L, KInt64L])
+  "divInt" -> Just (KInt64L, [KInt64L, KInt64L])
+  "modInt" -> Just (KInt64L, [KInt64L, KInt64L])
+  "negInt" -> Just (KInt64L, [KInt64L])
+  "addDouble" -> Just (KDoubleL, [KDoubleL, KDoubleL])
+  "subDouble" -> Just (KDoubleL, [KDoubleL, KDoubleL])
+  "mulDouble" -> Just (KDoubleL, [KDoubleL, KDoubleL])
+  "divDouble" -> Just (KDoubleL, [KDoubleL, KDoubleL])
+  "negDouble" -> Just (KDoubleL, [KDoubleL])
+  "intToDouble" -> Just (KDoubleL, [KInt64L])
+  _ -> Nothing
+
+-- | A scalar comparison usable as an @if@ condition: (LLVM compare op-class +
+-- predicate, operand kind).  ONLY comparisons whose semantics match the runtime
+-- prim EXACTLY — the int compares (@icmp@), @ltDouble@ (IEEE @<@ ⇒ @fcmp olt@)
+-- and @floatEq@ (IEEE @==@ ⇒ @fcmp oeq@).  @eqDouble@ (§6.1.3 raw-bit equality)
+-- and @leDouble@ (no runtime prim) are excluded — same exclusions as C's
+-- 'cmpPrim'.  The first component is "icmp <pred>" or "fcmp <pred>".
+cmpPrimLL2 :: Text -> Maybe (Text, ScalarKindLL)
+cmpPrimLL2 = \case
+  "eqInt" -> Just ("icmp eq", KInt64L)
+  "ltInt" -> Just ("icmp slt", KInt64L)
+  "leInt" -> Just ("icmp sle", KInt64L)
+  "ltDouble" -> Just ("fcmp olt", KDoubleL)
+  "floatEq" -> Just ("fcmp oeq", KDoubleL)
+  _ -> Nothing
+
+-- | A saturated self-call: spine head is the worker's own global @self@ with
+-- exactly @n@ explicit args (mirror of C's 'lr1SelfArgs').
+lr1SelfArgsLL :: GName -> Int -> Term -> Maybe [Term]
+lr1SelfArgsLL self n term = case spineOf term of
+  (CGlob g, sargs)
+    | g == self, expl <- [a | (Expl, a) <- sargs], length expl == n -> Just expl
+  _ -> Nothing
+
+-- | The kind of de Bruijn variable @i@ against a de-Bruijn-ordered local-kind
+-- context @dks@ (index 0 = innermost; a 'CLet' prepends).  Mirror of C's
+-- 'varParamKind' (post-§let widening).
+varKindLL :: [ParamKindLL] -> Int -> Maybe ParamKindLL
+varKindLL dks i = if i >= 0 && i < length dks then Just (dks !! i) else Nothing
+
+-- | The per-parameter scalar kinds + (scalar) result kind of @g@ IF it is
+-- eligible for an unboxed worker: ≥1 explicit relevant binder, a scalar type
+-- telescope matching the binder count + a scalar result, at least one unboxed
+-- scalar param, and a scalar-expressible body.  @Nothing@ ⇒ boxed-only (never a
+-- miscompile).  Faithful port of C's 'scalarPlan' + 'typeScalarKinds'.
+scalarFnPlanLL :: GName -> Gen (Maybe ([ParamKindLL], ScalarKindLL))
+scalarFnPlanLL g = do
+  bodies <- gets gsBodies
+  case Map.lookup g bodies of
+    Nothing -> pure Nothing
+    Just body -> do
+      let (binders, inner) = stripLamsQLL body
+          n = length binders
+      -- all binders explicit + relevant: an implicit/erased binder is passed the
+      -- unit placeholder, which a scalar worker must never read.
+      if n >= 1 && all (\(ic, q) -> ic == Expl && q /= Q0) binders
+        then do
+          mkinds <- typeScalarKindsLL g n
+          case mkinds of
+            -- require at least one unboxed scalar param + an ALL-scalar slot set
+            -- (the LLVM port does not emit the mixed @kwm_@ boxed-slot worker;
+            -- any boxed slot ⇒ stay on the boxed path).
+            Just (pks, ret)
+              | any (/= PBoxedLL) pks
+              , all (/= PBoxedLL) pks -> do
+                  ok <- scalarEligTailLL g pks (reverse pks) ret inner
+                  pure (if ok then Just (pks, ret) else Nothing)
+            _ -> pure Nothing
+        else pure Nothing
+
+-- | Read @g@'s per-parameter + result scalar kinds from its elaborated type via
+-- the shared 'Repr.repSelect' (the SAME authority the C backend's
+-- 'typeScalarKinds' uses).  The result must be scalar; a count mismatch against
+-- the body's binder count yields 'Nothing' (so a kind is never assigned to the
+-- wrong binder).  Mirror of C's 'typeScalarKinds'.
+typeScalarKindsLL :: GName -> Int -> Gen (Maybe ([ParamKindLL], ScalarKindLL))
+typeScalarKindsLL g n = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure $ case Map.lookup g globals of
+    Nothing -> Nothing
+    Just gd -> do
+      (paramReps, retRep) <- Repr.repSelect ctx (gdType gd)
+      ret <- repScalarKindLL retRep
+      let pks = map (\r -> maybe PBoxedLL PScalarLL (repScalarKindLL r)) paramReps
+      if length pks == n then Just (pks, ret) else Nothing
+
+-- | Strip leading lambdas, recording each binder's (icity, quantity) (mirror of
+-- C's 'stripLamsQ' — the LLVM 'funcArity' discards them).
+stripLamsQLL :: Term -> ([(Icit, Q)], Term)
+stripLamsQLL = go []
+  where
+    go acc (CLam ic q _ b) = go ((ic, q) : acc) b
+    go acc t = (reverse acc, t)
+
+-- | Eligibility of a tail-position term (mirror of C's 'scalarEligTail',
+-- including the §let widening): @if@ (eligible condition + branches), @let@ with
+-- a scalar RHS (binder pushed onto @dks@), saturated self-call, or a leaf value
+-- of the return kind.
+scalarEligTailLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen Bool
+scalarEligTailLL g pks dks ret term = case term of
+  CIf c t e ->
+    andMLL
+      [ scalarEligCondLL g pks dks ret c
+      , scalarEligTailLL g pks dks ret t
+      , scalarEligTailLL g pks dks ret e
+      ]
+  CLet _ _ _ rhs body -> do
+    mk <- scalarKindOfLL g pks dks ret rhs
+    case mk of
+      Just k -> scalarEligTailLL g pks (PScalarLL k : dks) ret body
+      Nothing -> pure False
+  _
+    | Just args <- lr1SelfArgsLL g (length pks) term ->
+        andMLL (zipWith (selfArgEligLL g pks dks ret) pks args)
+    | otherwise -> scalarHasKindLL g pks dks ret ret term
+
+-- | A self-call argument is eligible: a scalar slot wants a value of that scalar
+-- kind (a boxed slot never arises — the plan rejects any 'PBoxedLL').  Mirror of
+-- C's 'selfArgElig' restricted to the all-scalar worker.
+selfArgEligLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> ParamKindLL -> Term -> Gen Bool
+selfArgEligLL g pks dks ret pk arg = case pk of
+  PScalarLL k -> scalarHasKindLL g pks dks ret k arg
+  PBoxedLL -> pure False
+
+-- | Does the value-position @term@ have scalar kind @k@?  (Mirror of C's
+-- 'scalarHasKind'; the boxed-field-projection coercion is C-only — there are no
+-- boxed slots in an LLVM worker.)
+scalarHasKindLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> ScalarKindLL -> Term -> Gen Bool
+scalarHasKindLL g pks dks ret k term = do
+  mk <- scalarKindOfLL g pks dks ret term
+  pure (mk == Just k)
+
+-- | The scalar kind of a value-position expression, or 'Nothing' if not
+-- scalar-expressible (every prim arg must match the prim's expected kind; a
+-- self-call's result is the return kind; a scalar-RHS @let@ binds a scalar
+-- binder for its body).  Mirror of C's 'scalarKindOf' (with the §let case).
+scalarKindOfLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen (Maybe ScalarKindLL)
+scalarKindOfLL g pks dks ret term = case term of
+  CLit (LitInt m)
+    | i64InRangeLL m -> pure (Just KInt64L)
+    | otherwise -> pure Nothing
+  CLit (LitDouble _) -> pure (Just KDoubleL)
+  CVar i -> pure (varKindLL dks i >>= paramSKLL)
+  CLet _ _ _ rhs body -> do
+    mk <- scalarKindOfLL g pks dks ret rhs
+    case mk of
+      Just k -> scalarKindOfLL g pks (PScalarLL k : dks) ret body
+      Nothing -> pure Nothing
+  _ -> case spineOf term of
+    (CGlob h, sargs) -> do
+      let expl = [a | (Expl, a) <- sargs]
+      mp <- globPrimName h
+      case mp of
+        Just p | Just (rk, argks) <- arithPrimLL2 p, length expl == length argks -> do
+          oks <- sequence (zipWith (scalarHasKindLL g pks dks ret) argks expl)
+          pure (if and oks then Just rk else Nothing)
+        _
+          | Just args <- lr1SelfArgsLL g (length pks) term -> do
+              oks <- sequence (zipWith (selfArgEligLL g pks dks ret) pks args)
+              pure (if and oks then Just ret else Nothing)
+          | otherwise -> pure Nothing
+    _ -> pure Nothing
+
+-- | Eligibility of an @if@ condition: a saturated safe scalar compare whose
+-- operands have the comparison's operand kind.  Mirror of C's 'scalarEligCond'.
+scalarEligCondLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen Bool
+scalarEligCondLL g pks dks ret term = case spineOf term of
+  (CGlob h, sargs) -> do
+    let expl = [a | (Expl, a) <- sargs]
+    mp <- globPrimName h
+    case (mp >>= cmpPrimLL2, expl) of
+      (Just (_, opk), [a, b]) ->
+        andMLL [scalarHasKindLL g pks dks ret opk a, scalarHasKindLL g pks dks ret opk b]
+      _ -> pure False
+  _ -> pure False
+
+andMLL :: [Gen Bool] -> Gen Bool
+andMLL = foldr (\m acc -> do b <- m; if b then acc else pure False) (pure True)
+
+-- | The unboxed worker symbol: @kwi_@ for an all-@i64@ worker, @kwd_@ for one
+-- with any @double@ slot/result (mirror of C's 'scalarWorkerName', minus the
+-- mixed @kwm_@ case the LLVM port does not emit).
+scalarFnWorkerNameLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Text
+scalarFnWorkerNameLL g pks ret
+  | all (== PScalarLL KInt64L) pks && ret == KInt64L = "kwi_" <> mangle (gKey g)
+  | otherwise = "kwd_" <> mangle (gKey g)
+
+-- | Emit the unboxed worker @define internal <retTy> \@kw{i,d}_g(<scalar
+-- params>, ptr %kovf)@ (mirror of C's 'compileScalarWorker').  Each param gets
+-- an @i64@/@double@ stack slot (clang's mem2reg promotes them to SSA), the loop
+-- body runs in tail position over those slots, a tail self-call stores the new
+-- arg values and branches back to the loop header, a leaf returns the value, and
+-- an int64 overflow sets @*%kovf = 1@ and returns a zero placeholder.
+compileScalarFnWorkerLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen ()
+compileScalarFnWorkerLL g pks ret inner = do
+  let n = length pks
+      worker = scalarFnWorkerNameLL g pks ret
+      retTy = llScalarTy ret
+      paramDecl =
+        T.intercalate ", " (zipWith (\k i -> pkTyLL k <> " %p" <> T.pack (show i)) pks [0 .. n - 1] ++ ["ptr %kovf"])
+  (bodyInsns, _end, ()) <- captured "null" $ do
+    -- one stack slot per param, initialised from the incoming param register.
+    slots <- forM (zip [0 :: Int ..] pks) $ \(i, k) -> do
+      sl <- freshReg
+      emit (sl <> " = alloca " <> pkTyLL k <> ", align 8")
+      emit ("store " <> pkTyLL k <> " %p" <> T.pack (show i) <> ", ptr " <> sl <> ", align 8")
+      pure sl
+    -- de-Bruijn slot/kind context: index 0 = innermost = LAST param (so @reverse@
+    -- both the slot list and the kind list), parallel to C's @env = reverse ps@.
+    let dslots = reverse slots
+        dks = reverse pks
+    loopL <- freshLabel "kwloop_"
+    emit ("br label %" <> loopL)
+    startBlock loopL
+    scalarFnTailLL g pks ret loopL dslots dks ret inner
+  let def =
+        T.unlines $
+          ["define internal " <> retTy <> " @" <> worker <> "(" <> paramDecl <> ") {", "build:"]
+            ++ map ("  " <>) bodyInsns
+            ++ ["}"]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+
+-- | A zero placeholder operand of the worker's return type (the value returned
+-- after an overflow sets @*%kovf@ — the caller ignores it and re-runs boxed).
+scalarZeroLL :: ScalarKindLL -> Text
+scalarZeroLL KInt64L = "0"
+scalarZeroLL KDoubleL = "0.0"
+
+-- | Compile the worker body in TAIL position over the de-Bruijn slot/kind
+-- context (@dslots@ : @ptr@ stack slots, @dks@ : their kinds — kept in
+-- lock-step; a 'CLet' prepends to both).  Mirror of C's 'scalarTail' + its §let
+-- case, lowered to LLVM blocks.
+scalarFnTailLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Text -> [Text] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen ()
+scalarFnTailLL g pks ret loopHdr dslots dks loopRet term = case term of
+  CIf c t e -> do
+    cond <- scalarFnCondLL g pks ret dslots dks c
+    thenL <- freshLabel "kwthen_"
+    elseL <- freshLabel "kwelse_"
+    emit ("br i1 " <> cond <> ", label %" <> thenL <> ", label %" <> elseL)
+    startBlock thenL
+    scalarFnTailLL g pks ret loopHdr dslots dks loopRet t
+    startBlock elseL
+    scalarFnTailLL g pks ret loopHdr dslots dks loopRet e
+  CLet _ _ _ rhs body -> do
+    k <- letScalarKindLL g pks dks ret rhs
+    e <- scalarFnExprLL g pks ret dslots dks k rhs
+    sl <- freshReg
+    emit (sl <> " = alloca " <> llScalarTy k <> ", align 8")
+    emit ("store " <> llScalarTy k <> " " <> e <> ", ptr " <> sl <> ", align 8")
+    scalarFnTailLL g pks ret loopHdr (sl : dslots) (PScalarLL k : dks) loopRet body
+  _
+    | Just args <- lr1SelfArgsLL g (length pks) term -> do
+        -- tail self-call: evaluate the new args into registers FIRST (they may
+        -- read the current slots), THEN overwrite the param slots and loop.
+        let n = length pks
+            -- the param slots are the LAST n entries of @dslots@ (any lets are
+            -- prepended at the front, so @drop (len-n)@ leaves exactly the params
+            -- in de-Bruijn order param_{n-1}..param_0); @reverse@ puts them back in
+            -- SOURCE order param_0..param_{n-1} to align with @pks@ / the args.
+            paramSlots = reverse (drop (length dslots - n) dslots)
+        newVals <- forM (zip pks args) $ \(pk, a) -> case pk of
+          PScalarLL k -> scalarFnExprLL g pks ret dslots dks k a
+          PBoxedLL -> escalateScalarLL
+        forM_ (zip3 paramSlots pks newVals) $ \(sl, pk, v) ->
+          emit ("store " <> maybe "i64" llScalarTy (paramSKLL pk) <> " " <> v <> ", ptr " <> sl <> ", align 8")
+        emit ("br label %" <> loopHdr)
+    | otherwise -> do
+        e <- scalarFnExprLL g pks ret dslots dks loopRet term
+        emit ("ret " <> llScalarTy loopRet <> " " <> e)
+
+-- | The scalar kind a let-RHS evaluates to (for the slot type), re-derived at
+-- codegen.  Eligibility proved it 'Just'; default to @ret@ on the impossible
+-- 'Nothing' (mirror of C's 'letScalarKind').
+letScalarKindLL :: GName -> [ParamKindLL] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen ScalarKindLL
+letScalarKindLL g pks dks ret rhs = do
+  mk <- scalarKindOfLL g pks dks ret rhs
+  pure (maybe ret id mk)
+
+-- | Compile a scalar-expressible value to a native @i64@/@double@ register: a
+-- literal, a slot read, an arith op, or a (non-tail) self-call (whose @%kovf@ is
+-- checked immediately).  @dk@ is the demanded kind (only consulted to type a
+-- literal/zero defensively; everything else is determined bottom-up).  Mirror of
+-- C's 'scalarExpr'/'scalarExprBody'.
+scalarFnExprLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [Text] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen Text
+scalarFnExprLL g pks ret dslots dks dk term = case term of
+  CLit (LitInt m) -> pure (T.pack (show m))
+  CLit (LitDouble d) -> pure ("0x" <> doubleBitsHex d)
+  CVar i ->
+    case (varKindLL dks i, drop i dslots) of
+      (Just pk, sl : _) -> do
+        let k = maybe ret id (paramSKLL pk)
+        r <- freshReg
+        emit (r <> " = load " <> llScalarTy k <> ", ptr " <> sl <> ", align 8")
+        pure r
+      _ -> escalateScalarLL
+  CLet _ _ _ rhs body -> do
+    k <- letScalarKindLL g pks dks ret rhs
+    e <- scalarFnExprLL g pks ret dslots dks k rhs
+    sl <- freshReg
+    emit (sl <> " = alloca " <> llScalarTy k <> ", align 8")
+    emit ("store " <> llScalarTy k <> " " <> e <> ", ptr " <> sl <> ", align 8")
+    scalarFnExprLL g pks ret (sl : dslots) (PScalarLL k : dks) dk body
+  _ -> case spineOf term of
+    (CGlob h, sargs) -> do
+      let expl = [a | (Expl, a) <- sargs]
+      mp <- globPrimName h
+      case mp of
+        Just p | Just (_, argks) <- arithPrimLL2 p, length expl == length argks ->
+          scalarFnArithLL g pks ret dslots dks p (zip argks expl)
+        _
+          | Just args <- lr1SelfArgsLL g (length pks) term -> do
+              aes <- forM (zip pks args) $ \(pk, a) -> case pk of
+                PScalarLL k -> scalarFnExprLL g pks ret dslots dks k a
+                PBoxedLL -> escalateScalarLL
+              let worker = scalarFnWorkerNameLL g pks ret
+                  callArgs =
+                    T.intercalate ", " (zipWith (\pk a -> maybe "i64" llScalarTy (paramSKLL pk) <> " " <> a) pks aes ++ ["ptr %kovf"])
+              r <- freshReg
+              emit (r <> " = call " <> llScalarTy ret <> " @" <> worker <> "(" <> callArgs <> ")")
+              -- propagate %kovf immediately: on overflow, return the placeholder.
+              ovf <- freshReg
+              emit (ovf <> " = load i32, ptr %kovf, align 4")
+              ob <- freshReg
+              emit (ob <> " = icmp ne i32 " <> ovf <> ", 0")
+              escL <- freshLabel "kwcesc_"
+              okL <- freshLabel "kwcok_"
+              emit ("br i1 " <> ob <> ", label %" <> escL <> ", label %" <> okL)
+              startBlock escL
+              emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
+              startBlock okL
+              pure r
+          | otherwise -> escalateScalarLL
+    _ -> escalateScalarLL
+
+-- | Lower one scalar arith op to a native @i64@/@double@ register.  Int ops use
+-- the @llvm.s{add,sub,mul}.with.overflow.i64@ intrinsics (overflow sets @*%kovf@
+-- and returns the placeholder — the §6 GMP escape); div/mod trap on zero and
+-- escape on the INT64_MIN/-1 edge; double ops are plain IEEE (@fadd@/@fmul@/…,
+-- no escape — they wrap to ±inf/NaN exactly like the boxed prim); @intToDouble@
+-- is @sitofp@.  Mirror of C's 'scalarArith' (same per-op rounding — each op is
+-- its own SSA instruction, never fused into an FMA).
+scalarFnArithLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [Text] -> [ParamKindLL] -> Text -> [(ScalarKindLL, Term)] -> Gen Text
+scalarFnArithLL g pks ret dslots dks p argspec = do
+  aes <- forM argspec $ \(k, a) -> scalarFnExprLL g pks ret dslots dks k a
+  case (p, aes) of
+    ("addInt", [a, b]) -> ovfOp "sadd" a b
+    ("subInt", [a, b]) -> ovfOp "ssub" a b
+    ("mulInt", [a, b]) -> ovfOp "smul" a b
+    ("negInt", [a]) -> ovfOp "ssub" "0" a
+    ("divInt", [a, b]) -> divModOpLL True a b
+    ("modInt", [a, b]) -> divModOpLL False a b
+    ("addDouble", [a, b]) -> fpOp "fadd" a b
+    ("subDouble", [a, b]) -> fpOp "fsub" a b
+    ("mulDouble", [a, b]) -> fpOp "fmul" a b
+    ("divDouble", [a, b]) -> fpOp "fdiv" a b
+    ("negDouble", [a]) -> do
+      r <- freshReg
+      emit (r <> " = fneg double " <> a)
+      pure r
+    ("intToDouble", [a]) -> do
+      r <- freshReg
+      emit (r <> " = sitofp i64 " <> a <> " to double")
+      pure r
+    _ -> escalateScalarLL
+  where
+    fpOp op a b = do
+      r <- freshReg
+      emit (r <> " = " <> op <> " double " <> a <> ", " <> b)
+      pure r
+    -- an overflow-checked int op: on the overflow bit, set *%kovf and return the
+    -- placeholder (the worker bails — the call site re-runs boxed).
+    ovfOp pfx a b = do
+      declRuntime ("declare {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64, i64)")
+      pair <- freshReg
+      emit (pair <> " = call {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64 " <> a <> ", i64 " <> b <> ")")
+      val <- freshReg
+      emit (val <> " = extractvalue {i64, i1} " <> pair <> ", 0")
+      ovf <- freshReg
+      emit (ovf <> " = extractvalue {i64, i1} " <> pair <> ", 1")
+      escL <- freshLabel "kwoesc_"
+      okL <- freshLabel "kwook_"
+      emit ("br i1 " <> ovf <> ", label %" <> escL <> ", label %" <> okL)
+      startBlock escL
+      emit "store i32 1, ptr %kovf, align 4"
+      emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
+      startBlock okL
+      pure val
+    divModOpLL isDiv a b = do
+      declRuntime "declare void @krt_fail(ptr)"
+      zchk <- freshReg
+      emit (zchk <> " = icmp eq i64 " <> b <> ", 0")
+      trapL <- freshLabel "kwdz_"
+      contL <- freshLabel "kwdc_"
+      emit ("br i1 " <> zchk <> ", label %" <> trapL <> ", label %" <> contL)
+      startBlock trapL
+      msgG <- internCStr (if isDiv then "divInt: division by zero" else "modInt: division by zero")
+      emit ("call void @krt_fail(ptr " <> msgG <> ")")
+      emit "unreachable"
+      startBlock contL
+      minChk <- freshReg
+      emit (minChk <> " = icmp eq i64 " <> a <> ", -9223372036854775808")
+      negOneChk <- freshReg
+      emit (negOneChk <> " = icmp eq i64 " <> b <> ", -1")
+      edge <- freshReg
+      emit (edge <> " = and i1 " <> minChk <> ", " <> negOneChk)
+      if isDiv
+        then do
+          escL <- freshLabel "kwde_"
+          okL <- freshLabel "kwdo_"
+          emit ("br i1 " <> edge <> ", label %" <> escL <> ", label %" <> okL)
+          startBlock escL
+          emit "store i32 1, ptr %kovf, align 4"
+          emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
+          startBlock okL
+          r <- freshReg
+          emit (r <> " = sdiv i64 " <> a <> ", " <> b)
+          pure r
+        else do
+          remL <- freshLabel "kwmr_"
+          joinL <- freshLabel "kwmj_"
+          curBlk <- gets gsBlock
+          emit ("br i1 " <> edge <> ", label %" <> joinL <> ", label %" <> remL)
+          startBlock remL
+          rr <- freshReg
+          emit (rr <> " = srem i64 " <> a <> ", " <> b)
+          emit ("br label %" <> joinL)
+          startBlock joinL
+          r <- freshReg
+          emit (r <> " = phi i64 [ 0, %" <> curBlk <> " ], [ " <> rr <> ", %" <> remL <> " ]")
+          pure r
+
+-- | Compile an @if@ condition (a saturated safe scalar compare) to an @i1@.  The
+-- compare op-class + predicate come from 'cmpPrimLL2' (icmp for Int, fcmp for the
+-- two admitted Double compares).  Mirror of C's 'scalarCond'.
+scalarFnCondLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [Text] -> [ParamKindLL] -> Term -> Gen Text
+scalarFnCondLL g pks ret dslots dks term = case spineOf term of
+  (CGlob h, sargs) -> do
+    let expl = [a | (Expl, a) <- sargs]
+    mp <- globPrimName h
+    case (mp >>= cmpPrimLL2, expl) of
+      (Just (cmpOp, opk), [a, b]) -> do
+        ae <- scalarFnExprLL g pks ret dslots dks opk a
+        be <- scalarFnExprLL g pks ret dslots dks opk b
+        r <- freshReg
+        emit (r <> " = " <> cmpOp <> " " <> llScalarTy opk <> " " <> ae <> ", " <> be)
+        pure r
+      _ -> escalateScalarLL >> pure "0"
+  _ -> escalateScalarLL >> pure "0"
+
+-- | Emit (once per module) the @.ll@-local tag-checked arg-unbox helpers, the
+-- LLVM analogue of the C runtime's @kunbox_i64@/@kunbox_dbl@ — which are
+-- @static inline@ in @kappart.h@ (so they have NO linkable symbol the @.ll@
+-- could call).  We therefore SYNTHESISE them in IR using only LINKABLE runtime
+-- functions, with the SAME tag-checked escape semantics, so an out-of-range Int
+-- argument falls back to the boxed/GMP path exactly as the C worker does (no
+-- abort, no divergence):
+--
+--   * @kunbox_i64_ll(v, ovf)@: an Int that fits i64 returns its value; anything
+--     else sets @*ovf@.  Fit is decided WITHOUT aborting: @kas_u64@ never traps
+--     (it wraps a bignum to its low 64 bits), so reboxing those bits with @kint@
+--     and comparing to the original via @klit_eq@ is true IFF the value already
+--     fit i64 (a non-fitting K_BIGINT reboxes to a DIFFERENT number ⇒ escape).
+--     @kis_int_any@ first rejects any non-Int (a defensive guard; a type-checked
+--     Int param never hits it).
+--   * @kunbox_dbl_ll(v, ovf)@: a Double is always K_DBL for a type-checked
+--     Double argument, so @kas_dbl@ is exact and never traps; the @ovf@ slot is
+--     unused (kept for a uniform two-helper signature).
+emitScalarUnboxHelpersLL :: Gen ()
+emitScalarUnboxHelpersLL = do
+  done <- gets gsScalarHelpers
+  unless ("kunbox_i64_ll" `Set.member` done) $ do
+    modify' $ \st -> st {gsScalarHelpers = Set.insert "kunbox_i64_ll" (gsScalarHelpers st)}
+    declRuntime "declare i32 @kis_int_any(ptr)"
+    declRuntime "declare i64 @kas_u64(ptr)"
+    declRuntime "declare ptr @kint(i64)"
+    declRuntime "declare i32 @klit_eq(ptr, ptr)"
+    declRuntime "declare double @kas_dbl(ptr)"
+    let i64Helper =
+          T.unlines
+            [ "define internal i64 @kunbox_i64_ll(ptr %v, ptr %ovf) {"
+            , "entry:"
+            , "  %isint = call i32 @kis_int_any(ptr %v)"
+            , "  %notint = icmp eq i32 %isint, 0"
+            , "  br i1 %notint, label %esc, label %chk"
+            , "chk:"
+            , "  %u = call i64 @kas_u64(ptr %v)"
+            , "  %rebox = call ptr @kint(i64 %u)"
+            , "  %same = call i32 @klit_eq(ptr %v, ptr %rebox)"
+            , "  %bad = icmp eq i32 %same, 0"
+            , "  br i1 %bad, label %esc, label %ok"
+            , "ok:"
+            , "  ret i64 %u"
+            , "esc:"
+            , "  store i32 1, ptr %ovf, align 4"
+            , "  ret i64 0"
+            , "}"
+            ]
+        dblHelper =
+          T.unlines
+            [ "define internal double @kunbox_dbl_ll(ptr %v, ptr %ovf) {"
+            , "entry:"
+            , "  %d = call double @kas_dbl(ptr %v)"
+            , "  ret double %d"
+            , "}"
+            ]
+    modify' $ \st -> st {gsTop = dblHelper : i64Helper : gsTop st}
+
+-- | The saturated fast path at a call site (mirror of C's 'compileScalarCall'):
+-- unbox each arg by its scalar kind (a wrong tag sets @ovf@), call the unboxed
+-- worker, and select the boxed result (the curried @kg_@/@kapp@/@ktrampoline@
+-- chain over the ORIGINAL boxed args) on a wrong-tag arg OR an int64 overflow,
+-- else re-box the worker's scalar result.
+compileScalarFnCallLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [(Icit, Term)] -> Gen Text
+compileScalarFnCallLL g pks ret sargs = do
+  emitScalarUnboxHelpersLL
+  let worker = scalarFnWorkerNameLL g pks ret
+  -- compile the boxed args once (used to unbox AND as the boxed-escape inputs).
+  boxed <- mapM (compileErasableArg . snd) sargs
+  -- a stack i32 for the unbox/overflow flag.
+  ovfSlot <- freshReg
+  emit (ovfSlot <> " = alloca i32, align 4")
+  emit ("store i32 0, ptr " <> ovfSlot <> ", align 4")
+  -- unbox each scalar slot via the @.ll@-local tag-checked helper (sets *ovfSlot
+  -- on a wrong/out-of-range arg — the soundness net, mirroring C's @kunbox_*@).
+  uvs <- forM (zip pks boxed) $ \(pk, bx) -> case pk of
+    PScalarLL KInt64L -> do
+      r <- freshReg
+      emit (r <> " = call i64 @kunbox_i64_ll(ptr " <> bx <> ", ptr " <> ovfSlot <> ")")
+      pure r
+    PScalarLL KDoubleL -> do
+      r <- freshReg
+      emit (r <> " = call double @kunbox_dbl_ll(ptr " <> bx <> ", ptr " <> ovfSlot <> ")")
+      pure r
+    PBoxedLL -> pure bx -- never happens (plan rejects boxed slots)
+  -- the boxed escape: kapp the original boxed args onto the curried global, then
+  -- drive any tail-call bounce to a value.  (Computed lazily as a block only on
+  -- the escape path so the common fast path does not build the closure chain.)
+  -- A wrong-tag arg short-circuits to boxed WITHOUT calling the worker.
+  preOvf <- freshReg
+  emit (preOvf <> " = load i32, ptr " <> ovfSlot <> ", align 4")
+  preBad <- freshReg
+  emit (preBad <> " = icmp ne i32 " <> preOvf <> ", 0")
+  fastL <- freshLabel "kwfast_"
+  boxedL <- freshLabel "kwboxed_"
+  joinL <- freshLabel "kwjoin_"
+  emit ("br i1 " <> preBad <> ", label %" <> boxedL <> ", label %" <> fastL)
+  -- fast path: call the unboxed worker; on overflow fall through to boxed.
+  startBlock fastL
+  let callArgs =
+        T.intercalate ", " (zipWith (\pk v -> maybe "i64" llScalarTy (paramSKLL pk) <> " " <> v) pks uvs ++ ["ptr " <> ovfSlot])
+  wres <- freshReg
+  emit (wres <> " = call " <> llScalarTy ret <> " @" <> worker <> "(" <> callArgs <> ")")
+  postOvf <- freshReg
+  emit (postOvf <> " = load i32, ptr " <> ovfSlot <> ", align 4")
+  postBad <- freshReg
+  emit (postBad <> " = icmp ne i32 " <> postOvf <> ", 0")
+  reboxL <- freshLabel "kwrebox_"
+  emit ("br i1 " <> postBad <> ", label %" <> boxedL <> ", label %" <> reboxL)
+  -- re-box the worker's scalar result.
+  startBlock reboxL
+  boxedRes <- case ret of
+    KInt64L -> do
+      declRuntime "declare ptr @kint(i64)"
+      r <- freshReg
+      emit (r <> " = call ptr @kint(i64 " <> wres <> ")")
+      pure r
+    KDoubleL -> do
+      declRuntime "declare ptr @kdbl(double)"
+      r <- freshReg
+      emit (r <> " = call ptr @kdbl(double " <> wres <> ")")
+      pure r
+  reboxBlk <- gets gsBlock
+  emit ("br label %" <> joinL)
+  -- boxed escape: the curried global applied to the ORIGINAL boxed args, driven
+  -- to a value through ktrampoline.  Reached from a wrong-tag arg (preFastBlk)
+  -- and from a worker overflow (fastL).
+  startBlock boxedL
+  gv <- compileGlob g
+  applied <- foldM (\acc bx -> do
+      declRuntime "declare ptr @kapp(ptr, ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @kapp(ptr " <> acc <> ", ptr " <> bx <> ")")
+      pure r) gv boxed
+  declRuntime "declare ptr @ktrampoline(ptr)"
+  boxedDriven <- freshReg
+  emit (boxedDriven <> " = call ptr @ktrampoline(ptr " <> applied <> ")")
+  boxedBlk <- gets gsBlock
+  emit ("br label %" <> joinL)
+  -- join: the boxed-escape value or the re-boxed worker result.
+  startBlock joinL
+  r <- freshReg
+  emit (r <> " = phi ptr [ " <> boxedDriven <> ", %" <> boxedBlk <> " ], [ " <> boxedRes <> ", %" <> reboxBlk <> " ]")
+  pure r
+
 -- | A short name for the unsupported construct (for the diagnostic detail).
 constructName :: Term -> Text
 constructName = \case
@@ -3765,7 +4437,20 @@ compileApp term0 = do
             -- to the general @kapp@ chain, where the bare prim is a curried
             -- native closure ('compilePrimValue').
             Just pname | saturatedPrim pname term -> compilePrimApp pname sargs
-            _ -> compileAppDefault term
+            _ -> do
+              -- Scalar function worker fast path: an EXACTLY-saturated call to a
+              -- scalar-eligible global (Int/Double params + scalar result) unboxes
+              -- its args and calls the @kwi_@/@kwd_@ worker, escaping to the boxed
+              -- curried chain on a wrong-tag arg or overflow.  Surplus/partial
+              -- calls keep the boxed path.  Mirrors C's 'compileDirectCall'.
+              mplan <- scalarFnPlanLL g
+              case mplan of
+                Just (pks, ret)
+                  | let explCount = length [() | (Expl, _) <- sargs]
+                  , explCount == length pks
+                  , length sargs == length pks ->
+                      compileScalarFnCallLL g pks ret sargs
+                _ -> compileAppDefault term
     _ -> compileAppDefault term
 
 -- | Milestone L (§27.1.1): lower a saturated host-member application to a direct
