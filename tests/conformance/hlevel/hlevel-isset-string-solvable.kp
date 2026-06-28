@@ -1,0 +1,16 @@
+module main
+
+-- §8 h-level — the one base h-level fact this implementation actually carries.
+--
+-- 'String' is a genuine set: a sequence of unicode scalars with decidable
+-- structural equality (Hedberg ⇒ UIP).  The prelude provides exactly one
+-- h-level instance, 'instance IsSet String', so this evidence resolves where
+-- all the others (IsSet Bool, IsContr Unit, IsSubsingleton Void/Unit, …) do not.
+-- This is the lone positive base-h-level test; the doc's other "pass"
+-- expectations require compiler-owned intrinsic h-level rules that this
+-- implementation does not provide (see hlevel-no-intrinsic-synthesis.kp).
+
+let strIsSet = summon (IsSet String)
+
+--! mode check
+--! assertNoErrors

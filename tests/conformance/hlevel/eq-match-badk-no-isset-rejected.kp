@@ -1,0 +1,29 @@
+module main
+
+-- §7 (the anti-UIP smoke alarm), §13 red-team invariant: "badK must fail".
+--
+-- A proof that every self-equality proof equals 'refl' — i.e. axiom K / UIP —
+-- must NOT be derivable for an arbitrary carrier 'a'.  Kappa v1 equality is
+-- intensional and does not assume UIP (Spec §14.4): '(=) p refl' (an equality
+-- between two PROOFS of '(=) x x') is an h-prop only when its carrier '(=) x x'
+-- is a set, which needs evidence this context does not provide.
+--
+-- This implementation does NOT realize K through 'match p case refl' (matching
+-- on 'refl' performs no path-induction refinement of the goal; see
+-- 'eq-match-transport-deferred' notes).  Equality is instead eliminated through
+-- the prelude combinators, and an h-prop is collapsed through the gated
+-- 'unsafeAssertProof'.  So the faithful 'badK' asserts '(=) p refl' with the
+-- 'unsafeAssertProof' escape and NO set/prop evidence: the §11.4 IsProp-under-Pi
+-- solver reaches 'IsProp ((=) p refl)', finds no 'IsSet ((=) x x)' evidence,
+-- refuses to fabricate set-ness, and the obligation is left UNSOLVED.
+--
+-- Were this accepted, 'subst' over a discriminator type family would transport
+-- a true proposition into a false one and inhabit 'Void' — the §14.4 soundness
+-- catastrophe.  This test pins the obligation closed.
+
+badK : forall (@0 a : Type) (@0 x : a). (p : (=) x x) -> (=) p refl
+let badK p = unsafeAssertProof "spec-forbidden: K/UIP without set evidence"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT

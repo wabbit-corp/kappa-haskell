@@ -1,0 +1,22 @@
+module main
+
+-- §8 h-level — there is NO compiler-owned intrinsic h-level synthesis.
+--
+-- The doc assumes "compiler-owned intrinsic rules for the usual prelude types"
+-- so that e.g. 'IsSet Bool', 'IsContr Unit', 'IsSubsingleton Void' synthesize.
+-- THIS IMPLEMENTATION DOES NOT: the h-level traits (IsContr/IsSubsingleton/
+-- IsProp/IsSet/IsGroupoid) are deliberately surfaced as bare nameable markers
+-- (their proof-producing members cannot be synthesized for neutral terms), and
+-- the only h-level instance in the prelude is 'instance IsSet String'.  So
+-- 'IsSet Bool' is UNSOLVED — a sound under-derivation (a conservative analysis
+-- may always answer "unknown"), not a soundness bug.
+--
+-- (Pinned with 'IsSet Bool' specifically because the doc lists it as a "pass";
+-- it does not pass here.  IsContr/IsSubsingleton/IsProp goals over Unit/Void
+-- behave identically — all unsolvable.)  The intrinsic-synthesis PASS cases are
+-- DEFERRED to P2 pending the compiler-owned h-level rules.
+
+let probe = summon (IsSet Bool)
+
+--! mode check
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
