@@ -42,7 +42,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (forM, forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
-import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, multishotLegality, primDirect, primEntries)
+import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, multishotLegality, primDirect, primEntries, resultIsProofP)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import qualified Kappa.Backend.Repr as Repr
 import Kappa.Builtins (prelRunIO)
@@ -653,28 +653,41 @@ emitGlobal g = do
             ("'" <> gKey g <> "' has no recorded core body and is not a type-level "
               <> "global, so it cannot be lowered (no-core-body)")
     Just tm -> do
-      -- A CAF accessor's value is consumed DIRECTLY (cached + returned to a plain
-      -- caller), so it must be a real value/closure — NOT a tail position.  Using
-      -- 'compile' (not 'compileTail') drains any final application through @kapp@
-      -- immediately; otherwise the cache would store an undrained @K_BOUNCE@ (a
-      -- deferred tail call only the trampoline inside @kapp@ knows how to run), and
-      -- a later 'kapp(op, …)' / 'showInt op' would see a non-value.  A function-shaped
-      -- global is unaffected: its body is a 'CLam', a value in both paths.  Only the
-      -- lifted @kfn_N@ FUNCTION body (invoked through @kapp@'s trampoline) is tail
-      -- position and keeps 'compileTail'.
-      (insns, endBlock, operand) <- captured "null" (compile tm)
-      emitArity0Accessor ident insns endBlock operand
-      -- Scalar function worker: if @g@ is a monomorphic first-order Int/Double
-      -- function with a scalar-expressible body, ALSO emit the typed unboxed
-      -- worker (@kwi_@/@kwd_@) beside the boxed curried-closure accessor.  A
-      -- saturated direct call ('compileApp') then takes the unboxed fast path
-      -- (with a boxed escape).  Mirrors the C backend's 'emitGlobal' tail.
-      mplan <- scalarFnPlanLL g
-      case mplan of
-        Just (pks, ret) -> do
-          let (_, inner) = funcArity tm
-          compileScalarFnWorkerLL g pks ret inner
-        Nothing -> pure ()
+      -- §12.2/§31.2/§14.4: a definition whose RESULT TYPE is a RuntimeErased proof
+      -- (a propositional equality / h-prop evidence — e.g. the prelude lemmas
+      -- 'isPropEq'/'unsafeAssertProof'/'cong' reached via lawful-by-default
+      -- 'Monoid') is computationally irrelevant: its body is the ADMIT primitive
+      -- '__eqProof'/'__unsafeAssertProof' the LLVM runtime cannot lower, so its
+      -- accessor is the unit placeholder and its body is NOT compiled (no scalar
+      -- worker either).  Mirrors the C backend's 'emitGlobal'; see 'resultIsProofP'.
+      proof <- resultIsProof g
+      if proof
+        then do
+          (insns, endBlock, operand) <- captured "null" compileUnit
+          emitArity0Accessor ident insns endBlock operand
+        else do
+          -- A CAF accessor's value is consumed DIRECTLY (cached + returned to a plain
+          -- caller), so it must be a real value/closure — NOT a tail position.  Using
+          -- 'compile' (not 'compileTail') drains any final application through @kapp@
+          -- immediately; otherwise the cache would store an undrained @K_BOUNCE@ (a
+          -- deferred tail call only the trampoline inside @kapp@ knows how to run), and
+          -- a later 'kapp(op, …)' / 'showInt op' would see a non-value.  A function-shaped
+          -- global is unaffected: its body is a 'CLam', a value in both paths.  Only the
+          -- lifted @kfn_N@ FUNCTION body (invoked through @kapp@'s trampoline) is tail
+          -- position and keeps 'compileTail'.
+          (insns, endBlock, operand) <- captured "null" (compile tm)
+          emitArity0Accessor ident insns endBlock operand
+          -- Scalar function worker: if @g@ is a monomorphic first-order Int/Double
+          -- function with a scalar-expressible body, ALSO emit the typed unboxed
+          -- worker (@kwi_@/@kwd_@) beside the boxed curried-closure accessor.  A
+          -- saturated direct call ('compileApp') then takes the unboxed fast path
+          -- (with a boxed escape).  Mirrors the C backend's 'emitGlobal' tail.
+          mplan <- scalarFnPlanLL g
+          case mplan of
+            Just (pks, ret) -> do
+              let (_, inner) = funcArity tm
+              compileScalarFnWorkerLL g pks ret inner
+            Nothing -> pure ()
 
 -- | The leading-lambda arity of a term and the body beneath those binders
 -- (mirrors C's 'funcArity').
@@ -809,7 +822,21 @@ compile :: Term -> Gen Text
 -- nodes by 'compileMonadicAs' BEFORE 'compile' is reached, so this guard never
 -- pre-empts them.
 compile term | Just action <- runIOSpliceLL term = compileRunIO action
-compile term = case term of
+compile term = do
+  -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global (a
+  -- propositional-equality / h-prop lemma such as 'isPropEq' /
+  -- 'unsafeAssertProof' / 'cong', reached via lawful-by-default 'Monoid' law
+  -- members) is RuntimeErased — erase the WHOLE maximal spine to the unit
+  -- placeholder so the ADMIT primitives '__eqProof'/'__unsafeAssertProof' beneath
+  -- those lemmas are never reached.  Mirrors the C backend's 'compile' proof
+  -- guard (C.hs); see 'resultIsProofP' for the soundness argument.
+  proofSpine <- case headGlob term of
+    Just g -> resultIsProof g
+    Nothing -> pure False
+  if proofSpine then compileUnit else compileTerm term
+
+compileTerm :: Term -> Gen Text
+compileTerm term = case term of
   CLit l -> compileLit l
   CGlob g -> compileGlob g
   CApp {} -> compileApp term
@@ -4591,6 +4618,16 @@ isTypeGlob g = do
         Just gd -> isTypeKindTerm (quote ctx 0 (gdType gd))
         Nothing -> False
   pure (g `Set.member` datas || sortish)
+
+-- | Does @g@'s RESULT type force to a RuntimeErased PROOF (propositional
+-- equality / h-prop evidence)?  Shares the C backend's pure verdict
+-- ('resultIsProofP') so both backends erase the identical set of proof lemmas
+-- (§12.2/§31.2/§14.4) — see its Haddock for the soundness argument.
+resultIsProof :: GName -> Gen Bool
+resultIsProof g = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure (resultIsProofP globals ctx g)
 
 -- | Whether a (quoted) type Term is sort-kinded — a sort, or a Pi telescope ending
 -- in a sort.  Mirrors the C backend's 'isTypeKindTerm' (C.hs:1599).

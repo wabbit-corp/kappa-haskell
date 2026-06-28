@@ -35,6 +35,7 @@ module Kappa.Backend.C
   , multishotLegality
     -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
   , eraseQ0ArgsP
+  , resultIsProofP
   ) where
 
 import Data.ByteString (ByteString)
@@ -601,7 +602,17 @@ emitGlobal g = do
       -- interpreter's value for it is never inspected at runtime.  This is
       -- the by-name counterpart of the erasure that 'compileErasableArg'
       -- applies to inline type-level/quote arguments.
-      erasable <- isErasableArg tm
+      --
+      -- ALSO erase a definition whose RESULT TYPE is a RuntimeErased proof — a
+      -- propositional equality or h-prop evidence (e.g. the prelude lemmas
+      -- 'isPropEq'/'unsafeAssertProof'/'cong', reached via lawful-by-default
+      -- 'Monoid').  Their bodies are the ADMIT primitives '__eqProof' /
+      -- '__unsafeAssertProof' the native runtime does not implement; the proof
+      -- is runtime-irrelevant (§12.2/§31.2/§14.4) so its accessor is the unit
+      -- placeholder and its body is NOT compiled — keeping those primitives off
+      -- the reachable native closure.  See 'resultIsProofP'.
+      proof <- resultIsProof g
+      erasable <- (proof ||) <$> isErasableArg tm
       if erasable
         then do
           (stmts, _) <- captured "0" (pure ())
@@ -1102,6 +1113,94 @@ eraseQ0ArgsP globals ctx g term =
       go [] rest = rest -- spine longer than the telescope: leave the tail as-is
       sargs' = go flags sargs
    in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
+
+-- | Is @g@'s RESULT type a RuntimeErased PROOF — a propositional equality
+-- (@(=) x y@ / the §21.6 @CoreEq@), or h-prop evidence (@IsProp@ / @IsSubsingleton@
+-- / @IsSet@ / @IsContr@ / @IsGroupoid@)?  Such a definition is computationally
+-- irrelevant (Spec §12.2/§31.2/§14.4: a proof of an h-prop carries no runtime
+-- content), so its accessor is the unit placeholder and its BODY is NOT compiled.
+--
+-- WHY this exists: 'Monoid' is now lawful-by-default — every instance carries the
+-- equational laws @appendAssoc@/@append*Identity@, whose discharge reaches the
+-- prelude proof lemmas @isPropEq@/@unsafeAssertProof@/@cong@, whose bodies are the
+-- ADMIT primitives @__eqProof@/@__unsafeAssertProof@ the native runtime does not
+-- implement.  Erasing the proof-typed lemmas keeps those primitives off the
+-- reachable native closure.  This is the by-RESULT-type counterpart of the
+-- by-ARGUMENT erasure 'erasedSpinePositionsP' applies (a 'Q0'/kind-domain proof
+-- ARGUMENT is already erased; a proof RESULT was not).
+--
+-- SOUNDNESS: erases ONLY genuine proofs.  The result-head set is exactly the
+-- prelude's propositional-equality and h-prop marker traits — none of which has a
+-- runtime-relevant inhabitant (their members are all erased proofs, §14.4).  A def
+-- whose result is a real runtime value (an @Int@, a dictionary, an @IO@ action …)
+-- has a non-proof head and is left untouched.  FAIL-SAFE like
+-- 'erasedSpinePositionsP': an unknown global / a 'gdType' that does not 'force' to
+-- a recognisable telescope yields @False@ (compile for real — never erase on doubt).
+--
+-- The @forall (@0 p : Type). (@_ : IsProp p) -> … -> p@ shape (i.e.
+-- 'unsafeAssertProof') has a result that is a bound VARIABLE @p@, not a proof head;
+-- it is recognised by the @IsProp p@ / @IsSubsingleton p@ HYPOTHESIS that pins the
+-- SAME binder as the result (compared by absolute de Bruijn level).
+--
+-- Exported so "Kappa.Backend.LLVM" shares the identical verdict (mirrors
+-- 'erasedSpinePositionsP').
+resultIsProofP :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
+resultIsProofP globals ctx g =
+  case Map.lookup g globals of
+    Nothing -> False
+    Just gd -> walk 0 [] (quote ctx 0 (gdType gd))
+  where
+    -- @lvl@ is the telescope DEPTH so far (number of binders in scope = the
+    -- absolute de Bruijn level of the next binder).  @propLvls@ collects the
+    -- absolute levels of binders pinned by an @IsProp _@ / @IsSubsingleton _@
+    -- hypothesis somewhere earlier in the telescope.
+    walk lvl propLvls ty = case ty of
+      CPi _ _ _ _ dom cod ->
+        -- A domain @IsProp (CVar j)@ / @IsSubsingleton (CVar j)@ at depth @lvl@
+        -- pins the binder at absolute level @lvl-1-j@ as proof-typed.
+        let propLvls' = case hypProofVarLevel lvl dom of
+              Just l -> l : propLvls
+              Nothing -> propLvls
+         in walk (lvl + 1) propLvls' cod
+      r -> resultIsProof' lvl propLvls r
+    -- The result type @r@ sits at depth @lvl@.  It is a proof when its head is a
+    -- propositional-equality / h-prop marker, OR it is a bound variable that a
+    -- prior hypothesis pinned as proof-typed.
+    resultIsProof' lvl propLvls r =
+      case headGlob r of
+        Just h | h `Set.member` proofHeads -> True
+        _ -> case r of
+          CVar i -> (lvl - 1 - i) `elem` propLvls
+          _ -> False
+    -- For a domain term at depth @lvl@, if it is @IsProp (CVar j)@ /
+    -- @IsSubsingleton (CVar j)@ return the absolute level of the pinned binder.
+    hypProofVarLevel lvl dom =
+      case spineOf dom of
+        (CGlob h, [(_, CVar j)])
+          | h == Builtins.prelIsProp || h == Builtins.prelIsSubsingleton ->
+              Just (lvl - 1 - j)
+        _ -> Nothing
+    -- The prelude's propositional-equality type and h-prop marker traits.  Every
+    -- inhabitant of one of these is a RuntimeErased proof (§14.4) — no runtime
+    -- content — so a definition producing one is computationally erased.
+    proofHeads =
+      Set.fromList
+        [ Builtins.prelEqType
+        , Builtins.prelIsProp
+        , Builtins.prelIsSubsingleton
+        , Builtins.prelIsSet
+        , Builtins.gPrel "IsContr"
+        , Builtins.gPrel "IsGroupoid"
+        , Builtins.gPrel "CoreEq"
+        ]
+
+-- | 'resultIsProofP' in 'Gen' (this backend's monad), reading the shared
+-- 'gsGlobals' / 'gsEvalCtx'.
+resultIsProof :: GName -> Gen Bool
+resultIsProof g = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure (resultIsProofP globals ctx g)
 
 -- KBackendIR Stage 3: the head-type → scalar-representation discriminator is
 -- 'Repr.scalarRep' / 'Repr.repSelect' (the shared rep table); this backend's
@@ -1610,7 +1709,25 @@ compile term
   -- §18.3 monadic splice: `__runIO e` runs the embedded IO action inline
   -- and yields its result as an ordinary value (matches runSplices).
   | Just action <- runIOSplice term = compileRunIO action
-compile term = case term of
+compile term = do
+  -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global — a
+  -- propositional-equality / h-prop lemma like 'isPropEq' / 'unsafeAssertProof'
+  -- / 'cong' (reached via lawful-by-default 'Monoid' law members) — is
+  -- RuntimeErased.  Erase the WHOLE maximal spine to the unit placeholder so the
+  -- ADMIT primitives '__eqProof'/'__unsafeAssertProof' beneath those lemmas are
+  -- never reached at runtime.  A proof is inert (never eliminated/applied), and a
+  -- proof ARGUMENT to anything is itself erased ('eraseQ0Args' /
+  -- 'compileErasableArg'), so the spine never feeds a live continuation — erasing
+  -- the maximal spine cannot drop a runtime-relevant computation.  See
+  -- 'resultIsProofP'.  ('subst'/'pathInd', whose result is a motive-typed VALUE,
+  -- are correctly NOT proof-typed and fall through to the real compile path.)
+  proofSpine <- case headGlob term of
+    Just g -> resultIsProof g
+    Nothing -> pure False
+  if proofSpine then pure "kunit()" else compileTerm term
+
+compileTerm :: Term -> Gen Text
+compileTerm term = case term of
   CVar i -> do
     -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
     -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
