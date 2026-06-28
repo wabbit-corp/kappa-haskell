@@ -65,6 +65,7 @@ library
         Kappa.Ownership
         Kappa.Parser
         Kappa.Parser.Monad
+        Kappa.PathScheme
         Kappa.Pipeline
         Kappa.Prelude
         Kappa.Pretty

@@ -247,6 +247,62 @@ static inline intptr_t kimm_payload(const KValue *v) {
   return (intptr_t)(uintptr_t)v >> 3;
 }
 
+/* ── Perceus RC Stage S2.0: dup / drop (PERCEUS-RC-DESIGN §2/§7, S2-PLAN (a)) ──
+ *
+ * The two rc-maintenance primitives the S2 codegen will emit, landed here under
+ * the BOEHM DIFFERENTIAL BACKSTOP: `kdrop` NEVER frees — Boehm still owns
+ * reclamation — so a wrong dup/drop placement is a LEAK (missed drop) or an
+ * rc-UNDERFLOW assert (extra drop / missed dup), never a use-after-free.  S3 is
+ * what flips `kdrop` to free-on-zero; until then these only maintain + assert
+ * the `rc` word `alloc_val` initialised to 1.
+ *
+ * IMMEDIATES (kis_imm: b001 Int, b010 nullary ctor, b011 packed ctor) are not
+ * heap objects — they carry no header and so no `rc` — so both ops skip them via
+ * the single `kis_imm` guard.
+ *
+ * Nothing CALLS these at S2.0 (they are uncalled inline functions, so the output
+ * is byte-identical); S2.2/S2.3 begin emitting them from the C backend. */
+
+#ifndef NDEBUG
+/* DEBUG-only running totals (defined in value.c).  Behind NDEBUG so a release
+ * build stays byte-identical in cost — no counter loads/stores in kdup/kdrop. */
+extern unsigned long long k_dups_total;
+extern unsigned long long k_drops_total;
+#endif
+
+/* Increment the reference count of a heap value and RETURN it, so a dup can be
+ * spliced inside an expression: `f(kdup(x), x)` shares `x` across both args.
+ * An immediate is value-copied (no rc), so it is returned unchanged. */
+static inline KValue *kdup(KValue *v) {
+  if (kis_imm(v)) return v;
+#ifndef NDEBUG
+  k_dups_total++;
+#endif
+  v->rc++;
+  return v;
+}
+
+/* Decrement the reference count of a heap value.  EXPLICITLY DOES NOT FREE: S3
+ * flips free-on-zero; S2 is maintain+assert only, Boehm owns reclamation.  The
+ * DEBUG assert is the primary S2 differential-backstop check — a missed dup /
+ * double drop drives rc below the Boehm-proven-live floor and trips HERE, before
+ * any use-after-free is possible (nothing is freed).  Under NDEBUG the assert
+ * compiles out but `rc--` stays, so the count is correct and ready for S3. */
+static inline void kdrop(KValue *v) {
+  if (kis_imm(v)) return;
+#ifndef NDEBUG
+  assert(v->rc > 0 && "kdrop: rc underflow (double-drop / missed-dup)");
+  k_drops_total++;
+#endif
+  v->rc--;
+  /* NO free-on-zero here — see the function comment. */
+}
+
+/* DEBUG leak-trend probe: print the dup/drop totals and their net (drops - dups).
+ * A net that drifts negative across a corpus is a missed-drop trend (PERCEUS-S2-
+ * PLAN (c) secondary check).  A no-op under NDEBUG (the counters do not exist). */
+void krc_report(void);
+
 /* ── Stage 1: immediate-Int encoding (b001) ─────────────────────────────────
  * A small Int rides INSIDE the KValue*-sized word as (value << 3) | KIMM_INT — a
  * 61-bit signed Int (research rec 1: the 3-bit tag, not OCaml's 1-bit, leaves

@@ -46,6 +46,24 @@ static KValue *alloc_val_atomic(KTag tag) {
   return v;
 }
 
+/* ── Perceus RC Stage S2.0: dup/drop counters + report ──────────────────────
+ * The DEBUG-only running totals `kdup`/`kdrop` (kappart.h) bump, plus the
+ * `krc_report` leak-trend probe.  Behind NDEBUG so release builds carry no
+ * counter storage and stay byte-identical in cost.  `krc_report` is always
+ * defined (a no-op under NDEBUG) so the symbol resolves regardless of build. */
+#ifndef NDEBUG
+unsigned long long k_dups_total = 0;
+unsigned long long k_drops_total = 0;
+#endif
+
+void krc_report(void) {
+#ifndef NDEBUG
+  fprintf(stderr, "krc_report: dups=%llu drops=%llu net=%lld\n",
+          k_dups_total, k_drops_total,
+          (long long)k_drops_total - (long long)k_dups_total);
+#endif
+}
+
 /* ── value constructors ────────────────────────────────────────────── */
 
 /* UNBOXING Stage 1 (§5.2 / research rec 2): an in-range Int is a CANONICAL b001

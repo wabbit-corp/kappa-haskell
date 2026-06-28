@@ -116,6 +116,7 @@ import Kappa.Core
   )
 import Kappa.CoreOps (patBindersC, spineOfTerm)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
+import qualified Kappa.PathScheme as P
 
 -- | A stable identity for a binder within a definition's elaborated Core.
 --
@@ -384,7 +385,7 @@ walk tele owner path depth scopes term liveOut acc = case term of
         bid = BinderId owner (reverse path)
         sc = Scope depth (Just bid) borrowed
         acc0 = addBinder bid declQ borrowed acc
-        (acc1, liveB) = walk tele' owner (3 : path) (depth + 1) (sc : scopes) b liveOut acc0
+        (acc1, liveB) = walk tele' owner (P.lamBodyPos : path) (depth + 1) (sc : scopes) b liveOut acc0
      in (acc1, dropLevel depth liveB)
 
   CPi _ _q _borrowed _nm dom cod ->
@@ -393,9 +394,9 @@ walk tele owner path depth scopes term liveOut acc = case term of
     -- type-valued top-level body is a bare 'CPi'), pushing an UNTRACKED scope so
     -- de Bruijn indices stay aligned, but record no binder fact and treat any
     -- codomain reference to it as a non-runtime (type-level) reference.
-    let (acc1, liveDom) = walk [] owner (4 : path) depth scopes dom liveOut acc
+    let (acc1, liveDom) = walk [] owner (P.piDomPos : path) depth scopes dom liveOut acc
         sc = Scope depth Nothing False
-        (acc2, liveCod) = walk [] owner (5 : path) (depth + 1) (sc : scopes) cod liveDom acc1
+        (acc2, liveCod) = walk [] owner (P.piCodPos : path) (depth + 1) (sc : scopes) cod liveDom acc1
      in (acc2, dropLevel depth liveCod)
 
   CLet q _nm _ty rhs b ->
@@ -405,9 +406,9 @@ walk tele owner path depth scopes term liveOut acc = case term of
     let bid = BinderId owner (reverse path)
         acc0 = addBinder bid q False acc
         sc = Scope depth (Just bid) False
-        (acc1, liveBody) = walk [] owner (3 : path) (depth + 1) (sc : scopes) b liveOut acc0
+        (acc1, liveBody) = walk [] owner (P.letBodyPos : path) (depth + 1) (sc : scopes) b liveOut acc0
         liveBody' = dropLevel depth liveBody
-        (acc2, liveRhs) = walk [] owner (2 : path) depth scopes rhs liveBody' acc1
+        (acc2, liveRhs) = walk [] owner (P.letRhsPos : path) depth scopes rhs liveBody' acc1
      in (acc2, liveRhs)
 
   CLetRec q _nm _ty rhs b ->
@@ -415,8 +416,8 @@ walk tele owner path depth scopes term liveOut acc = case term of
     let bid = BinderId owner (reverse path)
         acc0 = addBinder bid q False acc
         sc = Scope depth (Just bid) False
-        (acc1, liveBody) = walk [] owner (3 : path) (depth + 1) (sc : scopes) b liveOut acc0
-        (acc2, liveRhs) = walk [] owner (2 : path) (depth + 1) (sc : scopes) rhs liveBody acc1
+        (acc1, liveBody) = walk [] owner (P.letBodyPos : path) (depth + 1) (sc : scopes) b liveOut acc0
+        (acc2, liveRhs) = walk [] owner (P.letRhsPos : path) (depth + 1) (sc : scopes) rhs liveBody acc1
      in (acc2, dropLevel depth liveRhs)
 
   -- Branching: each arm is its own completion path -------------------------
@@ -426,15 +427,15 @@ walk tele owner path depth scopes term liveOut acc = case term of
     -- binds, or an outer binder; an outer binder used in one arm but not
     -- another is dropped on the arms that omit it (its absence = a drop point),
     -- which falls out of computing each arm against the SAME @liveOut@.
-    let (acc1, liveArms) = walkAlts owner (2 : path) depth scopes alts liveOut acc 0
-        (acc2, liveS) = walk [] owner (1 : path) depth scopes s liveArms acc1
+    let (acc1, liveArms) = walkAlts owner (P.matchArmsPos : path) depth scopes alts liveOut acc 0
+        (acc2, liveS) = walk [] owner (P.matchScrutPos : path) depth scopes s liveArms acc1
      in (acc2, liveS)
 
   CIf c t e ->
-    let (acc1, liveT) = walk [] owner (2 : path) depth scopes t liveOut acc
-        (acc2, liveE) = walk [] owner (3 : path) depth scopes e liveOut acc1
+    let (acc1, liveT) = walk [] owner (P.ifThenPos : path) depth scopes t liveOut acc
+        (acc2, liveE) = walk [] owner (P.ifElsePos : path) depth scopes e liveOut acc1
         liveBranches = Set.union liveT liveE
-        (acc3, liveC) = walk [] owner (1 : path) depth scopes c liveBranches acc2
+        (acc3, liveC) = walk [] owner (P.ifCondPos : path) depth scopes c liveBranches acc2
      in (acc3, liveC)
 
   -- Sequential, multi-child nodes ------------------------------------------
@@ -442,21 +443,21 @@ walk tele owner path depth scopes term liveOut acc = case term of
     -- Evaluation order: function head then argument. Liveness flows backward —
     -- the argument's live-out is @liveOut@; the head's live-out includes
     -- everything live in the argument.
-    let (acc1, liveA) = walk [] owner (2 : path) depth scopes a liveOut acc
-        (acc2, liveF) = walk [] owner (1 : path) depth scopes f liveA acc1
+    let (acc1, liveA) = walk [] owner (P.appArgPos : path) depth scopes a liveOut acc
+        (acc2, liveF) = walk [] owner (P.appHeadPos : path) depth scopes f liveA acc1
      in (acc2, liveF)
 
   CCtor _ _ann args ->
-    seqChildren owner path depth scopes [(i + 3, x) | (i, x) <- zip [0 ..] args] liveOut acc
+    seqChildren owner path depth scopes [(P.ctorArgPos i, x) | (i, x) <- zip [0 ..] args] liveOut acc
 
   CRecordT fs ->
-    seqChildren owner path depth scopes [(i, snd f) | (i, f) <- zip [1 ..] fs] liveOut acc
+    seqChildren owner path depth scopes [(P.recordFieldPos i, snd f) | (i, f) <- zip [0 ..] fs] liveOut acc
   CRecordV fs ->
-    seqChildren owner path depth scopes [(i, snd f) | (i, f) <- zip [1 ..] fs] liveOut acc
+    seqChildren owner path depth scopes [(P.recordFieldPos i, snd f) | (i, f) <- zip [0 ..] fs] liveOut acc
   CVariantT ms ->
-    seqChildren owner path depth scopes [(i, m) | (i, m) <- zip [1 ..] ms] liveOut acc
+    seqChildren owner path depth scopes [(P.variantMemberPos i, m) | (i, m) <- zip [0 ..] ms] liveOut acc
   CQuote _ slots ->
-    seqChildren owner path depth scopes [(i, sl) | (i, sl) <- zip [1 ..] slots] liveOut acc
+    seqChildren owner path depth scopes [(P.quoteSlotPos i, sl) | (i, sl) <- zip [0 ..] slots] liveOut acc
 
   -- Single-child nodes -----------------------------------------------------
   CProj e _ -> descend1 owner path depth scopes e liveOut acc
@@ -481,7 +482,7 @@ walk tele owner path depth scopes term liveOut acc = case term of
 -- | Walk a single child at child-position @c@.
 descend1 :: GName -> [Int] -> Int -> [Scope] -> Term -> Set Int -> Acc -> (Acc, Set Int)
 descend1 owner path depth scopes e liveOut acc =
-  walk [] owner (1 : path) depth scopes e liveOut acc
+  walk [] owner (P.childPos : path) depth scopes e liveOut acc
 
 -- | Walk a sequence of children (left-to-right evaluation order) at the given
 -- child-positions, threading liveness backward through them. Each entry is
@@ -504,7 +505,7 @@ walkAlts
   :: GName -> [Int] -> Int -> [Scope] -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
 walkAlts _owner _path _depth _scopes [] _liveOut acc _ai = (acc, Set.empty)
 walkAlts owner path depth scopes (alt : rest) liveOut acc ai =
-  let (acc1, liveAlt) = walkAlt owner (ai : path) depth scopes alt liveOut acc
+  let (acc1, liveAlt) = walkAlt owner (P.matchArmPos ai : path) depth scopes alt liveOut acc
       (acc2, liveRest) = walkAlts owner path depth scopes rest liveOut acc1 (ai + 1)
    in (acc2, Set.union liveAlt liveRest)
 
@@ -527,7 +528,7 @@ walkAlt owner path depth scopes (CaseAlt pat mguard body) liveOut acc =
       -- We register them under the arm path with a slot-position suffix so each
       -- has a distinct, stable BinderId.
       newScopes =
-        [ Scope (depth + n - 1 - k) (Just (BinderId owner (reverse (negate (k + 1) : path)))) False
+        [ Scope (depth + n - 1 - k) (Just (BinderId owner (reverse (P.patSlotPos k : path)))) False
         | k <- [0 .. n - 1]
         ]
       acc0 =
@@ -538,10 +539,10 @@ walkAlt owner path depth scopes (CaseAlt pat mguard body) liveOut acc =
       depth' = depth + n
       scopes' = newScopes ++ scopes
       -- guard (if any) runs before the body; both are under the pattern binders
-      (acc1, liveBody) = walk [] owner (1 : path) depth' scopes' body liveOut acc0
+      (acc1, liveBody) = walk [] owner (P.altBodyPos : path) depth' scopes' body liveOut acc0
       (acc2, liveArm) = case mguard of
         Nothing -> (acc1, liveBody)
-        Just g -> walk [] owner (0 : path) depth' scopes' g liveBody acc1
+        Just g -> walk [] owner (P.altGuardPos : path) depth' scopes' g liveBody acc1
       -- drop the pattern-bound levels: they are local to the arm
       liveArm' = foldr Set.delete liveArm [depth .. depth + n - 1]
    in (acc2, liveArm')
@@ -714,55 +715,55 @@ usageIntervals owner body = snd (count 0 [] [] body)
 
       CLam _ _ _ b ->
         let bid = BinderId owner (reverse path)
-            (uses, sub) = count (depth + 1) ((depth, Just bid, False) : scopes) (3 : path) b
+            (uses, sub) = count (depth + 1) ((depth, Just bid, False) : scopes) (P.lamBodyPos : path) b
          in (Map.delete bid uses, recordSelf bid uses sub)
 
       CPi _ _ _ _ dom cod ->
-        let (uDom, sDom) = count depth scopes (4 : path) dom
-            (uCod, sCod) = count (depth + 1) ((depth, Nothing, False) : scopes) (5 : path) cod
+        let (uDom, sDom) = count depth scopes (P.piDomPos : path) dom
+            (uCod, sCod) = count (depth + 1) ((depth, Nothing, False) : scopes) (P.piCodPos : path) cod
          in (addUses uDom uCod, Map.union sDom sCod)
 
       CLet _ _ _ rhs b ->
         let bid = BinderId owner (reverse path)
-            (uRhs, sRhs) = count depth scopes (2 : path) rhs
-            (uB, sB) = count (depth + 1) ((depth, Just bid, False) : scopes) (3 : path) b
+            (uRhs, sRhs) = count depth scopes (P.letRhsPos : path) rhs
+            (uB, sB) = count (depth + 1) ((depth, Just bid, False) : scopes) (P.letBodyPos : path) b
             body' = Map.delete bid uB
          in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB))
 
       CLetRec _ _ _ rhs b ->
         let bid = BinderId owner (reverse path)
             scopes' = (depth, Just bid, False) : scopes
-            (uRhs, sRhs) = count (depth + 1) scopes' (2 : path) rhs
-            (uB, sB) = count (depth + 1) scopes' (3 : path) b
+            (uRhs, sRhs) = count (depth + 1) scopes' (P.letRhsPos : path) rhs
+            (uB, sB) = count (depth + 1) scopes' (P.letBodyPos : path) b
             combined = addUses uRhs uB
          in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB))
 
       CMatch s _ alts ->
-        let (uAlts, sAlts) = countAlts depth scopes (2 : path) alts 0
-            (uS, sS) = count depth scopes (1 : path) s
+        let (uAlts, sAlts) = countAlts depth scopes (P.matchArmsPos : path) alts 0
+            (uS, sS) = count depth scopes (P.matchScrutPos : path) s
          in (addUses uS uAlts, Map.union sS sAlts)
 
       CIf c t e ->
-        let (uT, sT) = count depth scopes (2 : path) t
-            (uE, sE) = count depth scopes (3 : path) e
-            (uC, sC) = count depth scopes (1 : path) c
+        let (uT, sT) = count depth scopes (P.ifThenPos : path) t
+            (uE, sE) = count depth scopes (P.ifElsePos : path) e
+            (uC, sC) = count depth scopes (P.ifCondPos : path) c
          in (addUses uC (joinUses uT uE), Map.unions [sC, sT, sE])
 
-      CApp _ f a -> seqK depth scopes path [(1, f), (2, a)]
-      CCtor _ _ args -> seqK depth scopes path (zip [3 ..] args)
-      CRecordT fs -> seqK depth scopes path (zip [1 ..] (map snd fs))
-      CRecordV fs -> seqK depth scopes path (zip [1 ..] (map snd fs))
-      CVariantT ms -> seqK depth scopes path (zip [1 ..] ms)
-      CQuote _ slots -> seqK depth scopes path (zip [1 ..] slots)
+      CApp _ f a -> seqK depth scopes path [(P.appHeadPos, f), (P.appArgPos, a)]
+      CCtor _ _ args -> seqK depth scopes path [(P.ctorArgPos i, x) | (i, x) <- zip [0 ..] args]
+      CRecordT fs -> seqK depth scopes path [(P.recordFieldPos i, x) | (i, x) <- zip [0 ..] (map snd fs)]
+      CRecordV fs -> seqK depth scopes path [(P.recordFieldPos i, x) | (i, x) <- zip [0 ..] (map snd fs)]
+      CVariantT ms -> seqK depth scopes path [(P.variantMemberPos i, x) | (i, x) <- zip [0 ..] ms]
+      CQuote _ slots -> seqK depth scopes path [(P.quoteSlotPos i, x) | (i, x) <- zip [0 ..] slots]
 
-      CProj e _ -> count depth scopes (1 : path) e
-      CProjAt e _ _ -> count depth scopes (1 : path) e
-      CInject _ e -> count depth scopes (1 : path) e
-      CSealE _ e -> count depth scopes (1 : path) e
-      CSigT _ e -> count depth scopes (1 : path) e
-      CThunkE e -> count depth scopes (1 : path) e
-      CLazyE e -> count depth scopes (1 : path) e
-      CForceE e -> count depth scopes (1 : path) e
+      CProj e _ -> count depth scopes (P.childPos : path) e
+      CProjAt e _ _ -> count depth scopes (P.childPos : path) e
+      CInject _ e -> count depth scopes (P.childPos : path) e
+      CSealE _ e -> count depth scopes (P.childPos : path) e
+      CSigT _ e -> count depth scopes (P.childPos : path) e
+      CThunkE e -> count depth scopes (P.childPos : path) e
+      CLazyE e -> count depth scopes (P.childPos : path) e
+      CForceE e -> count depth scopes (P.childPos : path) e
 
       CGlob _ -> (Map.empty, Map.empty)
       CSort _ -> (Map.empty, Map.empty)
@@ -784,23 +785,23 @@ usageIntervals owner body = snd (count 0 [] [] body)
 
     countAlts _depth _scopes _path [] _ai = (Map.empty, Map.empty)
     countAlts depth scopes path (alt : rest) ai =
-      let (uAlt, sAlt) = countAlt depth scopes (ai : path) alt
+      let (uAlt, sAlt) = countAlt depth scopes (P.matchArmPos ai : path) alt
           (uRest, sRest) = countAlts depth scopes path rest (ai + 1)
        in (joinUses uAlt uRest, Map.union sAlt sRest)
 
     countAlt depth scopes path (CaseAlt pat mguard b) =
       let n = patBindersC pat
           newScopes =
-            [ (depth + n - 1 - k, Just (BinderId owner (reverse (negate (k + 1) : path))), False)
+            [ (depth + n - 1 - k, Just (BinderId owner (reverse (P.patSlotPos k : path))), False)
             | k <- [0 .. n - 1]
             ]
           depth' = depth + n
           scopes' = newScopes ++ scopes
-          (uB, sB) = count depth' scopes' (1 : path) b
+          (uB, sB) = count depth' scopes' (P.altBodyPos : path) b
           (uArm, sArm) = case mguard of
             Nothing -> (uB, sB)
             Just gd ->
-              let (uG, sG) = count depth' scopes' (0 : path) gd
+              let (uG, sG) = count depth' scopes' (P.altGuardPos : path) gd
                in (addUses uG uB, Map.union sG sB)
           -- the arm's pattern binders are local: record their own intervals and
           -- drop them from the outward-facing use map.

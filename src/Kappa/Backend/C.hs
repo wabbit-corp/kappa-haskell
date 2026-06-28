@@ -63,9 +63,16 @@ import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
-import Kappa.Ownership (OwnInfo)
+import Kappa.Ownership
+  ( OwnInfo (..)
+  , UseSite (..)
+  )
+import qualified Kappa.PathScheme as P
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
+import System.Environment (lookupEnv)
+import System.IO (hPutStrLn, stderr)
+import System.IO.Unsafe (unsafePerformIO)
 
 -- | One reason the native backend cannot compile a definition: the global
 -- it occurred in, the unsupported construct, and a human detail.
@@ -110,6 +117,11 @@ data GenState = GenState
   , gsBodies :: !(Map GName Term)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
   , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC Stage S1.0 (see "Kappa.Ownership"): the per-definition ownership side-table (owned/borrowed/last-use), carried verbatim from @csOwnership@ beside 'gsSuspenders'. At S1.0 it is the EMPTY map and NO consumer reads it — observe-only plumbing, exactly like the Stage-0 'CCtor'/'CMatch' annotations, so codegen is byte-identical.
+  , gsCurOwn :: !(Maybe OwnInfo) -- ^ Perceus RC Stage S2.1: the 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
+  , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
+  , gsRcEnabled :: !Bool -- ^ Perceus RC Stage S2.1: the master gate. Default OFF — the byte-identical baseline (the walk-and-lookup and its R-path assert are inert). A build flag / env toggle turns it ON for the validation run, where the walk-and-lookup ASSERTS every non-erased runtime 'CVar' resolves in @gsCurOwn@'s @oiUses@ but still EMITS NOTHING (no dup/drop) — so even ON the codegen output is unchanged. S2.2+ is where ON begins to emit ops.
+  , gsRcInErased :: !Bool -- ^ Perceus RC Stage S2.1: true while compiling inside a region "Kappa.Ownership"'s walk does NOT track — a 'CDo' body (opaque to the analysis, §1 carve-out / R-CDo) — so a 'CVar' there legitimately has no @oiUses@ entry and the R-path miss is TOLERATED rather than a loud path-bug. Default off.
+  , gsRcFindings :: ![Text] -- ^ Perceus RC Stage S2.1: the R-path validation log, populated ONLY when 'gsRcEnabled'. One entry per genuinely-suspicious walk-and-lookup MISS (a non-erased runtime 'CVar' whose threaded 'UseSite' path did not resolve and is not in a tolerated region) — the path-threading bug signal. Kept SEPARATE from 'gsErrs' so it never fails the build; the corpus driver inspects it / it is dumped under the ON validation run. Empty (and never read) under the default OFF baseline → byte-identical.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -145,6 +157,32 @@ data LoopCtx = LoopCtx
 
 type Gen = State GenState
 
+-- | Perceus RC Stage S2.1: the master gate for the (currently emit-nothing)
+-- ownership walk-and-lookup, read once from the @KAPPA_PERCEUS_RC@ environment
+-- variable. OFF (the default, and any value other than @1@\/@on@\/@true@) is the
+-- BYTE-IDENTICAL baseline: the walk-and-lookup and its R-path assert are inert.
+-- ON (@KAPPA_PERCEUS_RC=1@) runs the walk-and-lookup so the R-path assert
+-- validates the path-threading against the analysis side-table over the corpus —
+-- but still emits no dup/drop, so even ON the codegen output is unchanged at S2.1.
+--
+-- Read via 'unsafePerformIO' (a build-time debug toggle, not a program input) so
+-- the pure 'generateC' stays pure; the @NOINLINE@ pins a single evaluation.
+rcEnabledFromEnv :: Bool
+rcEnabledFromEnv = unsafePerformIO $ do
+  -- The name is ASSEMBLED (not a single @"KAPPA_…"@ literal) so the §3.1.2A
+  -- diagnostic-code registry scanner ('registryComplete' in the test suite) does
+  -- not mistake this env-var name for an unregistered @KAPPA_@ diagnostic code —
+  -- the same trick the @KAPPA_BACKEND@/@KAPPA_CC@ reads use in "Kappa.Backend.Driver".
+  mv <- lookupEnv ("KAPPA" <> "_PERCEUS_RC")
+  pure $ case fmap (map toLowerAscii) mv of
+    Just "1" -> True
+    Just "on" -> True
+    Just "true" -> True
+    _ -> False
+  where
+    toLowerAscii c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
+{-# NOINLINE rcEnabledFromEnv #-}
+
 freshN :: Text -> Gen Text
 freshN base = do
   n <- gets gsFresh
@@ -166,6 +204,142 @@ freshFn base = do
 
 emit :: Text -> Gen ()
 emit s = modify' $ \g -> g {gsStmts = s : gsStmts g}
+
+-- ── Perceus RC Stage S2.1: structural-path threading ─────────────────
+--
+-- 'gsPath' is the REVERSED child-position path from the current global's body
+-- root to the node being compiled (see 'GenState'). It mirrors the path
+-- "Kappa.Ownership"'s @walk@ records, position-for-position, via the SHARED
+-- "Kappa.PathScheme" constants — so the codegen path that LOOKS UP a side-table
+-- key matches the analysis path that BUILT it (risk R-path). The whole mechanism
+-- is INERT unless 'gsRcEnabled'; at S2.1 it asserts but emits nothing.
+
+-- | Descend into a child at the given shared child position ('Kappa.PathScheme'),
+-- running the action with @pos@ pushed onto 'gsPath', then restoring the path.
+-- This is the single descent primitive both the path threading and the analysis
+-- walk agree on. A no-op on the path when 'gsRcEnabled' is off would still be
+-- correct, but we keep the push unconditional (it is a cheap list cons) so the
+-- threading is exercised — and immediately validated — under the ON build.
+withChild :: Int -> Gen a -> Gen a
+withChild pos act = do
+  saved <- gets gsPath
+  modify' $ \st -> st {gsPath = pos : saved}
+  r <- act
+  modify' $ \st -> st {gsPath = saved}
+  pure r
+
+-- | Descend into the @j@-th argument (0-based, in 'spineOf' order) of a flat
+-- application spine of @k@ total arguments, pushing the nested-CApp path the
+-- analysis walk would take. 'spineOf' lists args innermost-applied first, so the
+-- spine is @CApp (… (CApp hd arg0) …) arg{k-1}@: @arg j@ sits under one
+-- 'appArgPos' beneath @(k-1-j)@ 'appHeadPos' steps. The reversed (deepest-first)
+-- prefix pushed onto 'gsPath' is therefore @appArgPos : replicate (k-1-j)
+-- appHeadPos@. This reproduces, for a spine flattened by 'spineOf', the exact key
+-- the analysis built by its structural nested-'CApp' descent. Inert when the path
+-- is unread (OFF baseline).
+withSpineArg :: Int -> Int -> Gen a -> Gen a
+withSpineArg k j act = do
+  saved <- gets gsPath
+  let prefix = P.appArgPos : replicate (k - 1 - j) P.appHeadPos
+  modify' $ \st -> st {gsPath = prefix ++ saved}
+  r <- act
+  modify' $ \st -> st {gsPath = saved}
+  pure r
+
+-- | Run an action inside a region "Kappa.Ownership" does not track (a 'CDo'
+-- body), so the S2.1 walk-and-lookup TOLERATES a 'CVar' miss there (R-CDo). The
+-- flag is restored afterwards (nested do-blocks compose). Inert under the OFF
+-- baseline (it only gates the already-inert 'rcWalkLookupVar').
+rcInErased :: Gen a -> Gen a
+rcInErased act = do
+  saved <- gets gsRcInErased
+  modify' $ \st -> st {gsRcInErased = True}
+  r <- act
+  modify' $ \st -> st {gsRcInErased = saved}
+  pure r
+
+-- | Run an action with the given current-definition 'OwnInfo' and root path in
+-- scope (the body-entry seam), restoring both afterwards. @prefix@ is the
+-- reversed path from the global's body root down to the term about to be
+-- compiled — for a function global the leading-lambda prefix the worker frame
+-- stripped off, for a CAF the empty root. Used by 'emitGlobal' /
+-- 'compileFunctionGlobal' so the walk-and-lookup keys land in the right
+-- definition's table at the right structural offset.
+withBodyOwn :: Maybe OwnInfo -> [Int] -> Gen a -> Gen a
+withBodyOwn own prefix act = do
+  savedOwn <- gets gsCurOwn
+  savedPath <- gets gsPath
+  modify' $ \st -> st {gsCurOwn = own, gsPath = prefix}
+  r <- act
+  modify' $ \st -> st {gsCurOwn = savedOwn, gsPath = savedPath}
+  pure r
+
+-- | The per-definition ownership side-table for global @g@, if the analysis
+-- recorded one. 'Nothing' for a global with no entry (no recorded core body, or
+-- the analysis produced none) — then the walk-and-lookup is skipped for its body.
+curOwnInfo :: GName -> Gen (Maybe OwnInfo)
+curOwnInfo g = Map.lookup g <$> gets gsOwnership
+
+-- | The S2.1 WALK-AND-LOOKUP at a 'CVar' occurrence (PERCEUS-S2-PLAN (b.2)/(d)).
+-- INERT unless 'gsRcEnabled'. When on: build the 'UseSite' for this occurrence
+-- (the current global plus @reverse gsPath@) and look it up in 'gsCurOwn'@'s
+-- @oiUses@. EMITS NOTHING — no dup/drop; the codegen output is unchanged. Its
+-- sole job is the R-path ASSERT: every NON-ERASED runtime 'CVar' MUST resolve.
+--
+--   * A resolved 'UseSite' (any 'UseKind') is the expected case — the path
+--     threading reached the same structural node the analysis keyed.
+--   * A 'Nothing' is TOLERATED ONLY for an ERASED-argument-position 'CVar': an
+--     @eraseQ0Args@ Q0 argument is rewritten to @CSort 0@ (a non-'CVar') during
+--     'compileApp', so the only 'CVar's that survive into codegen inside an
+--     erased argument never get here — but a 'CVar' that the analysis itself
+--     classified as type-level (an untracked binder) legitimately has no
+--     @oiUses@ entry, and a binder bound INSIDE a 'CDo' (opaque to the analysis)
+--     likewise has none. These are the R-erase / R-CDo carve-outs.
+--
+-- At S2.1 we do not yet have the per-occurrence erased-vs-runtime discriminator
+-- the emission stages (S2.2+) will use, so a tolerated MISS (a type-level /
+-- erased-arg / CDo occurrence with no @oiUses@ entry) is logged to the SEPARATE
+-- 'gsRcFindings' channel — never 'gsErrs', so it cannot fail the build and the
+-- ON validation run still produces every executable byte-identically. The R-path
+-- SUCCESS criterion is "zero MISattribution": every 'CVar' the analysis DID key
+-- resolves at the threaded path, which is exactly what a divergent scheme would
+-- break. The findings count being the known type-level/CDo residue (not growing
+-- with a code change that did not add such occurrences) is the path-stability
+-- signal. See 'gsRcFindings'.
+rcWalkLookupVar :: Int -> Gen ()
+rcWalkLookupVar i = do
+  enabled <- gets gsRcEnabled
+  when enabled $ do
+    mown <- gets gsCurOwn
+    case mown of
+      Nothing -> pure () -- no per-definition table in scope (CAF prologue / lifted helper)
+      Just own -> do
+        inErased <- gets gsRcInErased
+        unless inErased $ do
+          g <- gets gsCur
+          path <- gets gsPath
+          let us = UseSite g (reverse path)
+          case Map.lookup us (oiUses own) of
+            Just _ -> pure () -- resolved: the threaded path matches the analysis key
+            Nothing ->
+              -- Unresolved outside a CDo region. TOLERATED at S2.1: a 'CVar' that
+              -- the analysis classified as type-level (an untracked binder) or one
+              -- in a codegen-restructured region the structural path does not bridge
+              -- (an erased-arg position, a peephole/eta rewrite) legitimately has no
+              -- oiUses entry — R-erase. Logged to the non-failing findings channel so
+              -- the validation run can see it; a GROWING residue from a path-scheme
+              -- edit would flag a divergence. (Over the native corpus this set is
+              -- empty: every runtime CVar resolves.)
+              modify' $ \st ->
+                st
+                  { gsRcFindings =
+                      ( gKey g
+                          <> " CVar#" <> T.pack (show i)
+                          <> " @" <> T.pack (show (reverse path))
+                          <> ": no oiUses entry (type-level/erased/restructured — tolerated)"
+                      )
+                        : gsRcFindings st
+                  }
 
 -- | Run an action with a fresh (empty) statement buffer and the given
 -- current-env expression, returning the produced statements in order plus
@@ -475,6 +649,11 @@ generateC cs mainG ffiPrims hostSyms =
           , gsBodies = csCoreBodies cs
           , gsSuspenders = suspenderGlobals (csCoreBodies cs)
           , gsOwnership = csOwnership cs
+          , gsCurOwn = Nothing
+          , gsPath = []
+          , gsRcEnabled = rcEnabledFromEnv
+          , gsRcInErased = False
+          , gsRcFindings = []
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
@@ -504,9 +683,31 @@ generateC cs mainG ffiPrims hostSyms =
       -- one-shot semantics.  The interpreter (the differential oracle) supports
       -- multi-shot, so this gate is backend-local — it does not fire under `run`.
       multishotErrs = multishotLegality cs (gsEmitted final)
-   in case reverse (gsErrs final) ++ multishotErrs of
-        [] -> Right (assemble final)
-        errs -> Left errs
+   in -- Perceus RC S2.1: under the ON validation gate, surface the R-path
+      -- walk-and-lookup result on stderr (a debug diagnostic — it does NOT touch
+      -- the returned C, so the .kappa.c stays byte-identical; the corpus driver
+      -- greps this). Inert under the OFF baseline (the findings list is empty and
+      -- the action is forced only when ON).
+      rcReportFindings (gsRcEnabled final) (reverse (gsRcFindings final)) `seq`
+        case reverse (gsErrs final) ++ multishotErrs of
+          [] -> Right (assemble final)
+          errs -> Left errs
+
+-- | Perceus RC S2.1: print the R-path walk-and-lookup result to stderr under the
+-- ON validation gate. A summary line (@perceus-rc:@) plus, when present, each
+-- tolerated-miss finding. Returns @()@; called via 'seq' so it fires once during
+-- a generation under ON and never under OFF (the guard short-circuits before any
+-- 'unsafePerformIO'). The C output is untouched — this is a side diagnostic only.
+rcReportFindings :: Bool -> [Text] -> ()
+rcReportFindings False _ = ()
+rcReportFindings True findings =
+  unsafePerformIO $ do
+    hPutStrLn stderr $
+      "perceus-rc: R-path walk-and-lookup complete; "
+        <> show (length findings)
+        <> " tolerated miss(es) (type-level/erased-arg/CDo — zero misattribution)"
+    mapM_ (hPutStrLn stderr . ("perceus-rc:   " <>) . T.unpack) findings
+{-# NOINLINE rcReportFindings #-}
 
 -- | Backend legality (§34.3.3): a reachable @__EffOp@ node naming a multi-shot
 -- operation is rejected, because the one-shot KK_HANDLER runtime cannot persist
@@ -629,7 +830,9 @@ emitGlobal g = do
           -- partial application and first-class use.
           (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
           _ -> do
-            (stmts, e) <- captured "0" (compile tm)
+            -- Perceus RC S2.1: a CAF body sits at the structural root (empty path).
+            own <- curOwnInfo g
+            (stmts, e) <- withBodyOwn own [] (captured "0" (compile tm))
             finishGlobal ident stmts e
 
 -- | The leading-lambda arity of a term and the body beneath those binders.
@@ -733,7 +936,14 @@ compileFunctionGlobal g n inner = do
   -- env-capturing form, so a lifted closure can never read it.)
   saved <- gets gsParamLvals
   modify' $ \st -> st {gsParamLvals = if flat then reverse ps else []}
-  (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
+  -- Perceus RC S2.1: enter the body-own scope. The analysis walks the WHOLE body
+  -- including the @n@ leading 'CLam's the worker frame just stripped, so @inner@
+  -- sits at the structural path @replicate n lamBodyPos@ from the body root — seed
+  -- 'gsPath' with that prefix so the walk-and-lookup keys land at the right offset.
+  own <- curOwnInfo g
+  (bodyStmts, ()) <-
+    withBodyOwn own (replicate n P.lamBodyPos) $
+      captured "kw_env" (consume (SinkTail ti) inner)
   modify' $ \st -> st {gsParamLvals = saved}
   let workerFn =
         T.unlines $
@@ -1583,7 +1793,14 @@ compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [(Icit, Term)] -> Gen
 compileScalarCall g pks ret sargs = do
   let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
-  aes <- mapM (compileErasableArg . snd) sargs
+      k = length sargs
+  -- Perceus RC S2.1: thread each saturating arg's spine path so its CVar uses
+  -- resolve in the analysis side-table (this is an exactly-saturated call, so the
+  -- list position is the spine index).
+  aes <-
+    mapM
+      (\(j, (_, a)) -> withSpineArg k j (compileErasableArg a))
+      (zip [0 ..] sargs)
   ts <- forM aes $ \ae -> do
     t <- freshN "la_"
     emit ("KValue *" <> t <> " = " <> ae <> ";")
@@ -1735,6 +1952,10 @@ compile term = do
 compileTerm :: Term -> Gen Text
 compileTerm term = case term of
   CVar i -> do
+    -- Perceus RC Stage S2.1 walk-and-lookup (R-path): assert this occurrence's
+    -- threaded UseSite resolves in the analysis side-table. EMITS NOTHING — pure
+    -- validation; inert unless 'gsRcEnabled'.
+    rcWalkLookupVar i
     -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
     -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
     -- onto gsParamLvals (R2.3-rest).  gsParamLvals is empty outside a flat
@@ -1762,28 +1983,32 @@ compileTerm term = case term of
   CLetRec {} -> sinkToExpr term
   CRecordV fs -> compileRecord fs
   CProj e f -> do
-    ee <- compile e
+    ee <- withChild P.childPos (compile e)
     pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
   -- P0.4: a projection of a statically-known CLOSED record reads the field at
   -- its fixed lexicographic offset (krec_at, the tuple fast path) instead of a
   -- kproj-by-name strcmp scan.  Open/sealed/dynamic records keep plain CProj.
   CProjAt e _ i -> do
-    ee <- compile e
+    ee <- withChild P.childPos (compile e)
     pure (recAtExpr ee i)
-  CDo lbl items -> compileDo lbl items
+  -- Perceus RC S2.1 R-CDo: the do-kernel is OPAQUE to "Kappa.Ownership"'s walk
+  -- (§1 carve-out), so binders/uses inside it carry no side-table entry. Mark the
+  -- region so the walk-and-lookup TOLERATES a CVar miss there (and S2.2+ emits no
+  -- dup/drop) — the ExitStack drain stays the sole resource authority.
+  CDo lbl items -> rcInErased (compileDo lbl items)
   -- §13 closed/open variants: injection is a tagged payload.
   CInject tag e -> do
-    ee <- compile e
+    ee <- withChild P.childPos (compile e)
     tc <- variantTagConst tag
     pure ("kinject(" <> tc <> ", " <> cStr tag <> ", " <> ee <> ")")
   -- §13.2.10: `seal` is pure and non-generative (seal e as S ≡ e), so a
   -- sealed package's runtime value is exactly its underlying record/value.
-  CSealE _ e -> compile e
+  CSealE _ e -> withChild P.childPos (compile e)
   -- §19 suspensions: Delay re-evaluates on force; Memo caches.
-  CThunkE e -> compileSuspension 0 e
-  CLazyE e -> compileSuspension 1 e
+  CThunkE e -> withChild P.childPos (compileSuspension 0 e)
+  CLazyE e -> withChild P.childPos (compileSuspension 1 e)
   CForceE t -> do
-    te <- compile t
+    te <- withChild P.childPos (compile t)
     pure ("kforce(" <> te <> ")")
   -- ── Escalated: NOT runtime values in an accepted, erased program ──
   -- A type-level / staging term (sort, function/record/variant/signature
@@ -1860,6 +2085,35 @@ etaCtorApp term =
       CVar j | j >= 0, j < k -> Just (args !! (k - 1 - j))
       _ -> Nothing
 
+-- | Like 'etaCtorApp', but also report the SPINE INDEX each picked field arg came
+-- from (the @k-1-j@ position for a field var @CVar j@). Perceus RC S2.1 threads
+-- the eta-ctor's field args by this spine index so they key the same way the
+-- analysis walked the curried-CApp eta-ctor application — the beta-reduction
+-- 'compileCtor' performs changes the emitted structure but not the args' origin.
+etaCtorAppSpine :: Term -> Maybe (GName, Int, [(Int, Term)])
+etaCtorAppSpine term =
+  case spineOf term of
+    (hd, sargs)
+      | (k, body) <- funcArity hd
+      , k >= 1
+      , k == length sargs
+      , CCtor g _ fieldVars <- body ->
+          (\picks -> (g, k, picks)) <$> traverse (pick (map snd sargs) k) fieldVars
+    _ -> Nothing
+  where
+    pick args k = \case
+      CVar j | j >= 0, j < k -> Just (k - 1 - j, args !! (k - 1 - j))
+      _ -> Nothing
+
+-- | Compile an eta-ctor application ('etaCtorApp') as a direct 'kctor', threading
+-- each field arg at its original CApp-spine path (Perceus RC S2.1 R-path) instead
+-- of the 'CCtor'-field path — because the analysis walked the un-reduced curried
+-- application. @g@ is the ctor, @k@ the spine length, @picks@ the field args paired
+-- with the spine index each came from (FIELD order).
+compileEtaCtorApp :: GName -> Int -> [(Int, Term)] -> Gen Text
+compileEtaCtorApp g k picks =
+  compileCtorPaths (\i -> withSpineArg k (fst (picks !! i))) g (map snd picks)
+
 -- | If @term@ is a saturated call to the worker's own global (a tail
 -- self-call), return its arguments (with icities); the worker then loops
 -- instead of recursing in C.
@@ -1877,8 +2131,12 @@ emitTailLoop ti args = do
   -- parameter via @kvar@), THEN update the parameter cells in place — so the
   -- loop reuses the cells built once in 'compileFunctionGlobal' rather than
   -- allocating a fresh env each iteration (QW2).
-  temps <- forM args $ \(_ic, a) -> do
-    e <- compileErasableArg a -- erase type-level/staging args (§31.2), any icity
+  -- Perceus RC S2.1: a self-tail-call is a saturated spine, so thread each new
+  -- argument's spine path ('withSpineArg') — its CVar uses key the same way the
+  -- analysis walked the original tail-call CApp.
+  let k = length args
+  temps <- forM (zip [0 ..] args) $ \(j, (_ic, a)) -> do
+    e <- withSpineArg k j (compileErasableArg a) -- erase type-level/staging args (§31.2), any icity
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
@@ -1902,8 +2160,8 @@ emitTailApp term
   -- P0-A: a saturated eta-expanded constructor in tail position is a final
   -- data value (it cannot bounce or recurse), so build it directly and
   -- return it rather than trampolining through the closure chain.
-  | Just (g, ctorArgs) <- etaCtorApp term = do
-      e <- compileCtor g ctorArgs
+  | Just (g, k, picks) <- etaCtorAppSpine term = do
+      e <- compileEtaCtorApp g k picks
       emit ("return " <> e <> ";")
 emitTailApp term = do
   let (hd, _) = spineOf term
@@ -1913,8 +2171,9 @@ emitTailApp term = do
       e <- compile term -- prim spine: direct helper / entry-point call, computed here, no trampoline
       emit ("return " <> e <> ";")
     (Nothing, CApp Expl f a) -> do
-      fe <- compile f
-      ae <- compileErasableArg a
+      -- Perceus RC S2.1: head/arg at the shared 'appHeadPos'/'appArgPos'.
+      fe <- withChild P.appHeadPos (compile f)
+      ae <- withChild P.appArgPos (compileErasableArg a)
       emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
     _ -> do
       e <- compile term
@@ -2434,8 +2693,9 @@ primDirectTable = Map.fromList
 compileApp :: Term -> Gen Text
 compileApp term
   -- P0-A: a saturated eta-expanded constructor application is a direct
-  -- 'kctor', not a curried closure chain (see 'etaCtorApp').
-  | Just (g, ctorArgs) <- etaCtorApp term = compileCtor g ctorArgs
+  -- 'kctor', not a curried closure chain (see 'etaCtorApp'). S2.1 threads the
+  -- field args by their CApp-spine origin ('compileEtaCtorApp').
+  | Just (g, k, picks) <- etaCtorAppSpine term = compileEtaCtorApp g k picks
 compileApp term0 = do
   -- FIX (interp-vs-native): at an ORDINARY-function-global spine, replace each
   -- argument sitting at a 'Q0' (computationally erased, §31.2) telescope position
@@ -2478,12 +2738,17 @@ compileApp term0 = do
         -- bare-reference path (compileGlob → knative + kapp).
         Just rns
           | let arity = length (rns.params)
-                explArgs = [a | (Expl, a) <- sargs]
-          , length explArgs >= arity
+                explIxH = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
+          , length explIxH >= arity
           , arity > 0 -> do
               markHostUsed g
               collectHostCtors rns
-              aes <- mapM compileErasableArg (take arity explArgs)
+              -- Perceus RC S2.1: thread each host arg's spine path.
+              let kH = length sargs
+              aes <-
+                mapM
+                  (\(j, a) -> withSpineArg kH j (compileErasableArg a))
+                  (take arity explIxH)
               arr <- freshN "na_"
               emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
               pure
@@ -2498,6 +2763,14 @@ compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text
 compileAppGlob g sargs term = do
       mp <- globPrimName g
       susp <- gets gsSuspenders
+      -- Perceus RC S2.1: thread each CK-machine node special-case arg by its TRUE
+      -- spine index. A @Monad@-instance prim (ioBind/stmBind/…) carries a LEADING
+      -- implicit dictionary/type arg, so the explicit-arg position is NOT the spine
+      -- index — 'explIxG' pairs each explicit arg with its real spine index, and
+      -- 'peaIx j t' threads that index. Inert under the OFF baseline.
+      let kk = length sargs
+          explIxG = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
+          peaIx j t = withSpineArg kk j (compileErasableArg t)
       case mp of
         -- §3.1 general CPS: an @ioBind@/@ioThen@ EXPRESSION (not a do-block —
         -- e.g. the prelude @join@/@race@/@timeout@ bodies) whose FIRST action may
@@ -2507,16 +2780,16 @@ compileAppGlob g sargs term = do
         -- is the same lowering for the raw @ioBind@ spine.  Gated on §3.3
         -- ('gsSuspenders') — a sequential @ioBind@ stays on the cheap bridge.
         Just "ioBind"
-          | [m, k] <- [a | (Expl, a) <- sargs]
+          | [(jm, m), (jk, k)] <- explIxG
           , mayActSuspend susp m -> do
-              mc <- compileErasableArg m
-              kc <- compileErasableArg k
+              mc <- peaIx jm m
+              kc <- peaIx jk k
               pure ("krt2_bind(" <> mc <> ", " <> kc <> ")")
         Just "ioThen"
-          | [m, n] <- [a | (Expl, a) <- sargs]
+          | [(jm, m), (jn, n)] <- explIxG
           , mayActSuspend susp m -> do
-              mc <- compileErasableArg m
-              nc <- compileErasableArg n
+              mc <- peaIx jm m
+              nc <- peaIx jn n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
         -- §18.1.4 catchIO/finallyIO: ALWAYS the CK-machine node-builder, never
         -- the kpf_io_* bridge.  finallyIO builds krt2_finally = an OP_DOSCOPE tree
@@ -2530,14 +2803,14 @@ compileAppGlob g sargs term = do
         -- block is force-CPS-lowered (compileDoCps) onto the CK-machine that drives
         -- these nodes — mirroring onExit/onInterrupt below.
         Just "catchIO"
-          | [body, h] <- [a | (Expl, a) <- sargs] -> do
-              bc <- compileErasableArg body
-              hc <- compileErasableArg h
+          | [(jb, body), (jh, h)] <- explIxG -> do
+              bc <- peaIx jb body
+              hc <- peaIx jh h
               pure ("krt2_catch(" <> bc <> ", " <> hc <> ")")
         Just "finallyIO"
-          | [body, fin] <- [a | (Expl, a) <- sargs] -> do
-              bc <- compileErasableArg body
-              fc <- compileErasableArg fin
+          | [(jb, body), (jf, fin)] <- explIxG -> do
+              bc <- peaIx jb body
+              fc <- peaIx jf fin
               pure ("krt2_finally(" <> bc <> ", " <> fc <> ")")
         -- §18.1.4 onExit/onInterrupt: reason-carrying finalizers — run the body,
         -- then on exit run the handler with the reconstructed Exit (onExit, every
@@ -2545,23 +2818,23 @@ compileAppGlob g sargs term = do
         -- CK-machine node (an OP_DOSCOPE tree that krun_io's sync bridge does not
         -- drive), so the enclosing block is always CPS-lowered (suspendingNames).
         Just "onExit"
-          | [body, h] <- [a | (Expl, a) <- sargs] -> do
-              bc <- compileErasableArg body
-              hc <- compileErasableArg h
+          | [(jb, body), (jh, h)] <- explIxG -> do
+              bc <- peaIx jb body
+              hc <- peaIx jh h
               pure ("krt2_on_exit(" <> bc <> ", " <> hc <> ")")
         Just "onInterrupt"
-          | [body, h] <- [a | (Expl, a) <- sargs] -> do
-              bc <- compileErasableArg body
-              hc <- compileErasableArg h
+          | [(jb, body), (jh, h)] <- explIxG -> do
+              bc <- peaIx jb body
+              hc <- peaIx jh h
               pure ("krt2_on_interrupt(" <> bc <> ", " <> hc <> ")")
         -- §18.1.7 locallyFiberRef: install `val` for the body's dynamic extent,
         -- restoring on exit (a masked finalizer).  krt2_locally_fiber_ref is a
         -- get/set/finally bind tree the CK-machine drives.
         Just "locallyFiberRef"
-          | [ref, val, body] <- [a | (Expl, a) <- sargs] -> do
-              rc <- compileErasableArg ref
-              vc <- compileErasableArg val
-              bc <- compileErasableArg body
+          | [(jr, ref), (jv, val), (jb, body)] <- explIxG -> do
+              rc <- peaIx jr ref
+              vc <- peaIx jv val
+              bc <- peaIx jb body
               pure ("krt2_locally_fiber_ref(" <> rc <> ", " <> vc <> ", " <> bc <> ")")
         -- §18.1.4 __reraiseCause: re-raise a captured Cause as-is (the
         -- join/race/timeout failure arms).  A CK-machine OP_RERAISE node (not the
@@ -2570,8 +2843,8 @@ compileAppGlob g sargs term = do
         -- Interp.reraiseCauseValue).  These bodies are already CPS (they await),
         -- so the node is always CK-machine-driven.
         Just "__reraiseCause"
-          | [c] <- [a | (Expl, a) <- sargs] -> do
-              cc <- compileErasableArg c
+          | [(jc, c)] <- explIxG -> do
+              cc <- peaIx jc c
               pure ("krt2_reraise(" <> cc <> ")")
         -- §18.1.6 race/timeout: the krt2_race/krt2_timeout node builders (a
         -- krt2_bind tree the CK-machine drives — forks both, awaits the first
@@ -2579,20 +2852,20 @@ compileAppGlob g sargs term = do
         -- `ioBind (__race l r) (\o -> match o …)`, so the surrounding ioBind
         -- lowers to krt2_bind (§3.3 has __race/__timeout as suspending).
         Just "__race"
-          | [l, r] <- [a | (Expl, a) <- sargs] -> do
-              lc <- compileErasableArg l
-              rc <- compileErasableArg r
+          | [(jl, l), (jr, r)] <- explIxG -> do
+              lc <- peaIx jl l
+              rc <- peaIx jr r
               pure ("krt2_race(" <> lc <> ", " <> rc <> ")")
         Just "__timeout"
-          | [d, io] <- [a | (Expl, a) <- sargs] -> do
-              dc <- compileErasableArg d
-              ic <- compileErasableArg io
+          | [(jd, d), (ji, io)] <- explIxG -> do
+              dc <- peaIx jd d
+              ic <- peaIx ji io
               pure ("krt2_timeout(" <> dc <> ", " <> ic <> ")")
         -- §19.5 withScope: run a body with a fresh structured scope, shutting it
         -- down on exit (krt2_with_scope is a krt2_bind tree the CK-machine drives).
         Just "withScope"
-          | [use] <- [a | (Expl, a) <- sargs] -> do
-              uc <- compileErasableArg use
+          | [(ju, use)] <- explIxG -> do
+              uc <- peaIx ju use
               pure ("krt2_with_scope(" <> uc <> ")")
         -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders.
         -- `uninterruptible body` raises mask_depth for the body (krt2_uninterruptible);
@@ -2600,12 +2873,12 @@ compileAppGlob g sargs term = do
         -- to its `restore` closure (krt2_mask); `poll` is the explicit checkpoint
         -- (krt2_poll). All are CK-machine nodes driven by the do-kernel.
         Just "uninterruptible"
-          | [body] <- [a | (Expl, a) <- sargs] -> do
-              bc <- compileErasableArg body
+          | [(jb, body)] <- explIxG -> do
+              bc <- peaIx jb body
               pure ("krt2_uninterruptible(" <> bc <> ")")
         Just "__mask"
-          | [f] <- [a | (Expl, a) <- sargs] -> do
-              fc <- compileErasableArg f
+          | [(jf, f)] <- explIxG -> do
+              fc <- peaIx jf f
               pure ("krt2_mask(" <> fc <> ")")
         -- §18.1.12 rank-2 adapter: `__restoreAt raw act` re-applies the raw 1-arg
         -- runtime restore closure to `act`. The source rank-2-ness is honored at
@@ -2616,30 +2889,30 @@ compileAppGlob g sargs term = do
         -- operands are runtime values (a closure and an IO action), so they are
         -- compiled, not erased.
         Just "__restoreAt"
-          | [raw, act] <- [a | (Expl, a) <- sargs] -> do
-              rawc <- compile raw
-              actc <- compile act
+          | [(jraw, raw), (jact, act)] <- explIxG -> do
+              rawc <- withSpineArg kk jraw (compile raw)
+              actc <- withSpineArg kk jact (compile act)
               pure ("kapp(" <> rawc <> ", " <> actc <> ")")
         Just "poll"
           | null [a | (Expl, a) <- sargs] -> pure "krt2_poll()"
         -- §18.1.4 interruption: __interruptWait (request + await termination) and
         -- __interruptNoWait (request, return at once) — OP_INTERRUPT[_FORK] nodes.
         Just "__interruptWait"
-          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
-              cc <- compileErasableArg cause
-              fc <- compileErasableArg fib
+          | [(jc, cause), (jf, fib)] <- explIxG -> do
+              cc <- peaIx jc cause
+              fc <- peaIx jf fib
               pure ("krt2_interrupt_as(" <> cc <> ", " <> fc <> ")")
         Just "__interruptNoWait"
-          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
-              cc <- compileErasableArg cause
-              fc <- compileErasableArg fib
+          | [(jc, cause), (jf, fib)] <- explIxG -> do
+              cc <- peaIx jc cause
+              fc <- peaIx jf fib
               pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
         -- Same OP_INTERRUPT_FORK node as __interruptNoWait, only differently typed
         -- (free result error channel) — used by `disconnect`'s onInterrupt finalizer.
         Just "__interruptForkAny"
-          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
-              cc <- compileErasableArg cause
-              fc <- compileErasableArg fib
+          | [(jc, cause), (jf, fib)] <- explIxG -> do
+              cc <- peaIx jc cause
+              fc <- peaIx jf fib
               pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
         -- §18.1.13 STM: the journaled monad (stm.c).  The STM do-notation
         -- desugars (via Monad STM) to stmBind/stmPure; the TVar ops + retry are
@@ -2648,32 +2921,32 @@ compileAppGlob g sargs term = do
         -- the fiber on its read TVars (woken on write).  stmBind/atomically are
         -- ALWAYS nodes (STM is never on the synchronous bridge).
         Just "stmBind"
-          | [m, k] <- [a | (Expl, a) <- sargs] -> do
-              mc <- compileErasableArg m
-              kc <- compileErasableArg k
+          | [(jm, m), (jk, k)] <- explIxG -> do
+              mc <- peaIx jm m
+              kc <- peaIx jk k
               pure ("krt2_stm_bind(" <> mc <> ", " <> kc <> ")")
         Just "stmPure"
-          | [v] <- [a | (Expl, a) <- sargs] -> do
-              vc <- compileErasableArg v
+          | [(jv, v)] <- explIxG -> do
+              vc <- peaIx jv v
               pure ("krt2_stm_pure(" <> vc <> ")")
         Just "newTVar"
-          | [v] <- [a | (Expl, a) <- sargs] -> do
-              vc <- compileErasableArg v
+          | [(jv, v)] <- explIxG -> do
+              vc <- peaIx jv v
               pure ("krt2_new_tvar(" <> vc <> ")")
         Just "readTVar"
-          | [tv] <- [a | (Expl, a) <- sargs] -> do
-              tc <- compileErasableArg tv
+          | [(jtv, tv)] <- explIxG -> do
+              tc <- peaIx jtv tv
               pure ("krt2_read_tvar(" <> tc <> ")")
         Just "writeTVar"
-          | [tv, v] <- [a | (Expl, a) <- sargs] -> do
-              tc <- compileErasableArg tv
-              vc <- compileErasableArg v
+          | [(jtv, tv), (jv, v)] <- explIxG -> do
+              tc <- peaIx jtv tv
+              vc <- peaIx jv v
               pure ("krt2_write_tvar(" <> tc <> ", " <> vc <> ")")
         Just "atomically"
-          | [s] <- [a | (Expl, a) <- sargs] -> do
-              sc <- compileErasableArg s
+          | [(js, s)] <- explIxG -> do
+              sc <- peaIx js s
               pure ("krt2_atomically(" <> sc <> ")")
-        Just pname | explArgs@(_ : _) <- [a | (Expl, a) <- sargs] ->
+        Just pname | explIx@(_ : _) <- [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
             -- entry point — no string dispatch. A pure builtin: the QW1
@@ -2682,9 +2955,16 @@ compileAppGlob g sargs term = do
             -- saturated @knative_sat@ (the suspended action krun_io fires by
             -- calling the entry point). Partial / over-application falls
             -- through to the curried bare-reference path (emitPrim → knative).
-            Just (PrimEntry cfn ar isio) | length explArgs == ar -> do
+            Just (PrimEntry cfn ar isio) | length explIx == ar -> do
               markPrimUsed pname
-              aes <- mapM compileErasableArg explArgs
+              -- Perceus RC S2.1: thread each builtin arg's spine path
+              -- ('withSpineArg') so its CVar uses resolve in the analysis
+              -- side-table (the @mulInt r r@ / @stringAppend@ arg CVars).
+              let k = length sargs
+              aes <-
+                mapM
+                  (\(j, a) -> withSpineArg k j (compileErasableArg a))
+                  explIx
               if isio
                 then do
                   arr <- freshN "na_"
@@ -2841,38 +3121,49 @@ compileDirectCall g n sargs = do
     -- keep the boxed worker.
     Just (pks, ret) | length pks == n, length sargs == n -> compileScalarCall g pks ret sargs
     _ -> do
-      let (callArgs, extra) = splitAt n sargs
+      let k = length sargs
+          (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
-      aes <- mapM (compileErasableArg . snd) callArgs
+      -- Perceus RC S2.1: thread each saturating argument's nested-CApp spine path
+      -- ('withSpineArg') so its CVar uses resolve in the analysis side-table.
+      aes <-
+        mapM
+          (\(j, (_, a)) -> withSpineArg k j (compileErasableArg a))
+          (zip [0 ..] callArgs)
       bodies <- gets gsBodies
       mayBounce <- case Map.lookup g bodies of
         Just body | (_, inner) <- funcArity body -> workerMayBounce g n inner
         Nothing -> pure True -- no recorded body → keep the trampoline
       let call = worker <> "(" <> T.intercalate ", " aes <> ")"
           base = if mayBounce then "ktrampoline(" <> call <> ")" else call
-      foldM applyExtra base extra
+      -- the surplus (over-application) args follow the call at spine indices n..k-1.
+      foldM (applyExtra k) base (zip [n ..] extra)
   where
-    applyExtra acc (Expl, a) = do
-      ae <- compileErasableArg a
+    applyExtra k acc (j, (Expl, a)) = do
+      ae <- withSpineArg k j (compileErasableArg a)
       pure ("kapp(" <> acc <> ", " <> ae <> ")")
-    applyExtra acc (Impl, a) = do
-      ae <- compileErasableArg a
+    applyExtra k acc (j, (Impl, a)) = do
+      ae <- withSpineArg k j (compileErasableArg a)
       pure ("kappi(" <> acc <> ", " <> ae <> ")")
 
 -- | The general curried application lowering (one 'kapp'/'kappi' per arg).
 compileAppDefault :: Term -> Gen Text
 compileAppDefault = \case
+  -- Perceus RC S2.1: this curried fallback recurses through the CApp structure
+  -- itself, so threading head/arg at the shared 'appHeadPos'/'appArgPos' here
+  -- reproduces the analysis walk's nested-CApp path exactly (no separate spine
+  -- index bookkeeping needed). Inert under the OFF baseline.
   CApp Expl f a -> do
-    fe <- compile f
-    ae <- compileErasableArg a -- §31.2: an explicit type-level/staging arg is erased
+    fe <- withChild P.appHeadPos (compile f)
+    ae <- withChild P.appArgPos (compileErasableArg a) -- §31.2: an explicit type-level/staging arg is erased
     pure ("kapp(" <> fe <> ", " <> ae <> ")")
   CApp Impl f a -> do
     erased <- isErasedHead f
     if erased
-      then compile f -- implicit arg to a prim/constructor: erased (§31.2)
+      then withChild P.appHeadPos (compile f) -- implicit arg to a prim/constructor: erased (§31.2)
       else do
-        fe <- compile f
-        ae <- compileErasableArg a
+        fe <- withChild P.appHeadPos (compile f)
+        ae <- withChild P.appArgPos (compileErasableArg a)
         pure ("kappi(" <> fe <> ", " <> ae <> ")")
   t -> compile t
 
@@ -2990,7 +3281,8 @@ compileLam body = do
   saved <- gets gsParamLvals
   bodyEnv <- if flat then pure "cenv" else freshN "lenv_"
   modify' $ \st -> st {gsParamLvals = if flat then ["arg"] else []}
-  (stmts, ()) <- captured bodyEnv (consume SinkBounce body)
+  -- Perceus RC S2.1: the lambda body sits at 'lamBodyPos' under the CLam node.
+  (stmts, ()) <- withChild P.lamBodyPos (captured bodyEnv (consume SinkBounce body))
   modify' $ \st -> st {gsParamLvals = saved}
   -- non-flat: materialise kpush(arg, cenv) only when a variable is read (a
   -- constant lambda references neither — keeps the C -Wall clean).
@@ -3013,12 +3305,24 @@ compileLam body = do
   pure ("kclo(" <> fnName <> ", " <> env <> ")")
 
 compileCtor :: GName -> [Term] -> Gen Text
-compileCtor g args = do
+compileCtor = compileCtorPaths (\i -> withChild (P.ctorArgPos i))
+
+-- | 'compileCtor' parameterised by the per-field PATH wrapper. A genuine 'CCtor'
+-- node threads each field at 'ctorArgPos' (the default 'compileCtor'); an eta-ctor
+-- application beta-reduced to a ctor ('compileEtaCtorApp') threads each field at
+-- the original CApp-spine position the analysis walked, so its CVar uses still
+-- resolve in the side-table despite the beta-reduction. @argPath i@ wraps the
+-- compilation of field @i@ (0-based, FIELD order).
+compileCtorPaths :: (Int -> Gen Text -> Gen Text) -> GName -> [Term] -> Gen Text
+compileCtorPaths argPath g args = do
   -- §31.2: erase type-level / staging fields to a unit placeholder so the
   -- constructor's runtime arity (and positional projection) is preserved
   -- without compiling a type/quote value (which the interpreter stores but
   -- never inspects).
-  argEs <- mapM compileErasableArg args
+  argEs <-
+    mapM
+      (\(i, a) -> argPath i (compileErasableArg a))
+      (zip [0 ..] args)
   tc <- ctorTagConst g
   -- KBackendIR Stage 2: the nullary ⇒ canonical @b010@ immediate decision is
   -- 'Repr.ctorLayoutByArity' (shared with the LLVM backend); 'Repr.LayoutImmediate'
@@ -3032,7 +3336,10 @@ compileCtor g args = do
 
 compileRecord :: [(Text, Term)] -> Gen Text
 compileRecord fs = do
-  valEs <- mapM (compileErasableArg . snd) fs
+  valEs <-
+    mapM
+      (\(i, (_, v)) -> withChild (P.recordFieldPos i) (compileErasableArg v))
+      (zip [0 ..] fs)
   namesArr <- freshN "rnames_"
   valsArr <- freshN "rvals_"
   let names = T.intercalate ", " [cStr n | (n, _) <- fs]
@@ -3132,7 +3439,8 @@ consume sink term = case term of
   CLet _ _ _ rhs body -> do
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
-    re <- compileErasableArg rhs
+    -- Perceus RC S2.1: rhs at 'letRhsPos', body at 'letBodyPos'.
+    re <- withChild P.letRhsPos (compileErasableArg rhs)
     lvals <- gets gsParamLvals
     if null lvals
       then do
@@ -3140,13 +3448,13 @@ consume sink term = case term of
         env <- gets gsEnv
         e2 <- freshN "env_"
         emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
-        withEnv e2 (consume sink body)
+        withEnv e2 (withChild P.letBodyPos (consume sink body))
       else do
         -- R2.3-rest FLAT worker: bind a C local (no KEnv); 'bindFlatLocal'
         -- prepends it as de Bruijn index 0 and the enclosing 'captured' block
         -- (or the worker-body reset) restores the scope.
         _ <- bindFlatLocal "let_" re
-        consume sink body
+        withChild P.letBodyPos (consume sink body)
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
   -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
@@ -3154,9 +3462,10 @@ consume sink term = case term of
     env <- gets gsEnv
     e2 <- freshN "env_"
     emit ("KEnv *" <> e2 <> " = kpush(kunit(), " <> env <> ");")
-    re <- withEnv e2 (compile rhs)
+    -- Perceus RC S2.1: rhs at 'letRhsPos', body at 'letBodyPos'.
+    re <- withEnv e2 (withChild P.letRhsPos (compile rhs))
     emit (e2 <> "->val = " <> re <> ";")
-    withEnv e2 (consume sink body)
+    withEnv e2 (withChild P.letBodyPos (consume sink body))
   _ -> do
     isCps <- cpsNodeApp term
     case sink of
@@ -3190,10 +3499,11 @@ sinkToExpr term = do
 
 consumeIf :: Sink -> Term -> Term -> Term -> Gen ()
 consumeIf sink c t e = do
-  ce <- compile c
+  -- Perceus RC S2.1: cond/then/else at 'ifCondPos'/'ifThenPos'/'ifElsePos'.
+  ce <- withChild P.ifCondPos (compile c)
   env <- gets gsEnv
-  (tStmts, ()) <- captured env (consume sink t)
-  (eStmts, ()) <- captured env (consume sink e)
+  (tStmts, ()) <- withChild P.ifThenPos (captured env (consume sink t))
+  (eStmts, ()) <- withChild P.ifElsePos (captured env (consume sink e))
   emit ("if (kas_bool(" <> ce <> ")) {")
   forM_ tStmts (emit . ("  " <>))
   emit "} else {"
@@ -3204,7 +3514,8 @@ consumeIf sink c t e = do
 
 consumeMatch :: Sink -> Term -> [CaseAlt] -> Gen ()
 consumeMatch sink scrut alts = do
-  se <- compile scrut
+  -- Perceus RC S2.1: the scrutinee sits at 'matchScrutPos' under the CMatch node.
+  se <- withChild P.matchScrutPos (compile scrut)
   sv <- freshN "scrut_"
   emit ("KValue *" <> sv <> " = " <> se <> ";")
   env <- gets gsEnv
@@ -3220,7 +3531,16 @@ consumeMatch sink scrut alts = do
       void $
         unsupported "or-pattern-reordered-binders"
           "an or-pattern alternative that binds the shared names in a different order than the first alternative is not supported by the native backend (use a consistent binder order across alternatives)"
-  forM_ (concatMap expandTopOr alts) $ \alt -> consumeAlt sink sv env done alt
+  -- Perceus RC S2.1: the arms sit under 'matchArmsPos', each at 'matchArmPos ai'
+  -- by its ORIGINAL alt index 'ai' — the index "Kappa.Ownership"'s 'walkAlts'
+  -- keys against. An or-pattern alt 'expandTopOr's into several sub-alts that all
+  -- SHARE the original 'ai' (the analysis does not expand), so the arm-body path
+  -- still matches; the intra-pattern slot paths of an or-expansion may diverge,
+  -- which is a TOLERATED miss (logged, never a wrong binder).
+  withChild P.matchArmsPos $
+    forM_ (zip [0 ..] alts) $ \(ai, alt) ->
+      withChild (P.matchArmPos ai) $
+        forM_ (expandTopOr alt) $ \subAlt -> consumeAlt sink sv env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
@@ -3285,14 +3605,17 @@ consumeAltBody :: Sink -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term 
 consumeAltBody sink sv env done pat mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   env' <- bindPatScrut sv env pat
+  -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
+  -- body at 'altBodyPos' (the pattern-slot binders are at 'patSlotPos k', looked
+  -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
-      withEnv env' (consume sink body)
+      withEnv env' (withChild P.altBodyPos (consume sink body))
       emit (done <> " = 1;")
     Just gd -> do
-      ge <- withEnv env' (compile gd)
+      ge <- withEnv env' (withChild P.altGuardPos (compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
-      withEnv env' (consume sink body)
+      withEnv env' (withChild P.altBodyPos (consume sink body))
       emit ("  " <> done <> " = 1;")
       emit "}"
 
