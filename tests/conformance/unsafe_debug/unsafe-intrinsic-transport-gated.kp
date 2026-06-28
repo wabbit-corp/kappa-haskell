@@ -1,0 +1,12 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE): '__transport' is a raw-admit prelude intrinsic of
+-- type 'forall (@0 from to : Type). from -> to' — it transmutes a value of any
+-- type to any other type. The prelude uses it to admit 'subst'/'pathInd' (the
+-- identity on a proof-irrelevantly equal payload); ordinary user code naming it
+-- could transport 'Unit : Unit' into 'Void'. A plain user module is rejected.
+
+t : Unit -> Unit
+let t x = __transport @Unit @Unit x
+
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

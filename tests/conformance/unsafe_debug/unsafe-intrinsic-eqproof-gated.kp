@@ -1,0 +1,14 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE): '__eqProof' is a raw-admit prelude intrinsic of
+-- type 'forall (@0 t : Type). t' — it inhabits ANY proposition from nothing.
+-- If ordinary user code could name it, 'let bogus : (=) True False = __eqProof'
+-- would type-check, and 'subst' over a discriminator family would then inhabit
+-- 'Void': total logical unsoundness. The intrinsic resolves only inside the
+-- prelude (which uses it to admit cong/sym/trans/isPropEq) or in a module
+-- marked '@AllowUnsafeIntrinsics'. A plain user module naming it is rejected.
+
+bogus : (=) True False
+let bogus = __eqProof
+
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

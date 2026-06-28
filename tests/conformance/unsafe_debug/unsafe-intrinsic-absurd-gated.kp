@@ -1,0 +1,12 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE): '__absurd' is a raw-admit prelude intrinsic of
+-- type 'forall (@0 a : Type). Void -> a'. The prelude uses it to admit the
+-- 'absurd' eliminator; ordinary user code must reach Void-elimination through
+-- the checked 'absurd' helper, never the raw primitive. A plain user module
+-- naming '__absurd' is rejected.
+
+absurdIt : forall (a : Type). Void -> a
+let absurdIt v = __absurd v
+
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

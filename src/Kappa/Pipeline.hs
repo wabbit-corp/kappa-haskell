@@ -564,6 +564,11 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                   , csScopeAmbig = ieAmbig ie
                   , csModuleAliases = ieAliases ie
                   , csPreludeDisabled = not preludeEnabled
+                  , -- §4.5 soundness escape: this module may name the
+                    -- raw-admit proof intrinsics only if it carries the
+                    -- @AllowUnsafeIntrinsics attribute (the prelude is always
+                    -- permitted, independently of this flag).
+                    csAllowUnsafeIntrinsics = moduleHasAttr "AllowUnsafeIntrinsics" m'
                   , csDiags = []
                   , -- §5.5.1: bare `(op)` is ambiguous when more than one
                     -- callable fixity for `op` is in scope (e.g. `-`)

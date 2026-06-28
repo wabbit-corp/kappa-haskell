@@ -1,0 +1,21 @@
+@AllowUnsafeIntrinsics module main
+
+-- §4.5 (POSITIVE): the '@AllowUnsafeIntrinsics' module attribute is the
+-- explicit, audited escape hatch (for tests/bootstrapping). A module that
+-- carries it MAY name the raw-admit proof intrinsics that are otherwise
+-- gated out of ordinary user code.
+--
+-- '__eqProof' (forall (@0 t : Type). t) and '__handleEff' (forall (@0 a :
+-- Type). a) both inhabit an arbitrary proposition; the SAME 'bogusEq' /
+-- 'bogusHandle' bindings are REJECTED with E_UNSAFE_INTRINSIC_GATED in a
+-- plain module (see unsafe-intrinsic-eqproof-gated.kp /
+-- unsafe-intrinsic-handleeff-gated.kp). Here the attribute lifts the gate
+-- and the module checks cleanly.
+
+bogusEq : (=) True False
+let bogusEq = __eqProof
+
+bogusHandle : (=) True False
+let bogusHandle = __handleEff
+
+--! assertNoErrors

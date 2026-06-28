@@ -391,6 +391,8 @@ registry =
       "A member access names a member that the receiver's type, trait, or module does not provide."
   , ent "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
       "A name is not in scope: no declaration, import, or prelude binding provides it."
+  , ent "E_UNSAFE_INTRINSIC_GATED" (Just "kappa.feature.gated")
+      "Ordinary user code named a raw-admit proof intrinsic (such as '__eqProof', '__transport', '__absurd', or '__handleEff'). These prelude primitives inhabit an arbitrary proposition from nothing, so naming one outside the prelude would forge false proofs and break logical soundness. Use the checked proof helpers, or mark the module '@AllowUnsafeIntrinsics' to opt in (§4.5)."
   , ent "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
       "The construct is recognized but not supported by this implementation (outside the implemented portable profile). Portable alias: E_UNSUPPORTED_DETERMINISTIC (§2.1, §3.3)."
   , ent "E_UNSUPPORTED_DETERMINISTIC" (Just "kappa.unsupported.deterministic")

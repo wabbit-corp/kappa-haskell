@@ -289,6 +289,14 @@ data CheckState = CheckState
   -- ^ §28.1 effective module setting: the implicit prelude import and
   -- fixed constructor subset are disabled for the module currently being
   -- checked, either by build configuration or @NoPrelude.
+  , csAllowUnsafeIntrinsics :: !Bool
+  -- ^ §4.5 soundness escape: the module currently being checked carries the
+  -- @AllowUnsafeIntrinsics module attribute, so it may name the raw-admit
+  -- proof intrinsics (@__eqProof@, @__transport@, @__absurd@, @__handleEff@)
+  -- that otherwise resolve only inside the prelude. These intrinsics inhabit
+  -- an arbitrary proposition from nothing, so naming one from ordinary user
+  -- code is a total-unsoundness hole; the attribute is an explicit, audited
+  -- opt-out reserved for testing/bootstrapping. Defaults to 'False'.
   , csAuditLedger :: ![AuditRecord]
   -- ^ §4.7 unsafe/debug audit ledger: one record per accepted use of an
   -- unsafe/debug facility, in source order.
@@ -502,6 +510,7 @@ initCheckState =
     , csMultiFixOps = Set.empty
     , csUnsafe = defaultUnsafeConfig
     , csPreludeDisabled = False
+    , csAllowUnsafeIntrinsics = False
     , csAuditLedger = []
     , csScopeNameCache = Nothing
     , csBackendIntrinsics = Map.empty
@@ -1849,6 +1858,7 @@ resolveName ctx (Name n sp) =
           case mg of
             Just g -> do
               gateUnsafeAssertProof g sp
+              gateUnsafeIntrinsic g sp
               mt <- globalTerm g
               case mt of
                 Just r -> pure r
@@ -13513,6 +13523,43 @@ gateUnsafeAssertProof (GName gm nm) sp
         if allowUnsafeAssertProof cfg
           then recordAudit "unsafeAssertProof" nm "allow_unsafe_assert_proof" sp Nothing
           else gateUnsafe "unsafeAssertProof" "allow_unsafe_assert_proof" sp ""
+  | otherwise = pure ()
+
+-- | §4.5 soundness gate: the raw-admit proof intrinsics. Each of these
+-- prelude primitives inhabits an ARBITRARY proposition from nothing but a
+-- @Type@ (or transmutes one value to any type), so naming one from ordinary
+-- user code is a total-unsoundness hole — e.g.
+-- @let bogus : (=) True False = __eqProof@ type-checks, and @subst@ over a
+-- discriminator family then inhabits @Void@. They exist only so the prelude
+-- can admit the proof helpers (cong/sym/trans/subst/pathInd/isPropEq/… and
+-- the §11.4 List-monoid laws) and so the elaborator can build @__handleEff@
+-- applications. The prelude module is therefore always permitted, and an
+-- ordinary user module may opt in with the @AllowUnsafeIntrinsics module
+-- attribute (for tests/bootstrapping). Every other module is rejected when
+-- it tries to NAME the intrinsic, before any term is built — there is no
+-- path by which user code reaches the raw admit.
+gatedUnsafeIntrinsics :: [Text]
+gatedUnsafeIntrinsics = ["__eqProof", "__transport", "__absurd", "__handleEff"]
+
+gateUnsafeIntrinsic :: GName -> Span -> CheckM ()
+gateUnsafeIntrinsic (GName gm nm) sp
+  | gm == preludeModule, nm `elem` gatedUnsafeIntrinsics = do
+      cur <- gets csModule
+      allowed <- gets csAllowUnsafeIntrinsics
+      when (cur /= preludeModule && not allowed) $
+        report $
+          withPayload
+            ( withPayloadField "name" nm $
+                payloadKind "unsafe-intrinsic-gated"
+            ) $
+            withRelated (related RoleUseSite sp ("'" <> nm <> "' named here")) $
+              diag SevError StageElaborate "E_UNSAFE_INTRINSIC_GATED" (Just "kappa.feature.gated") sp
+                ( "the raw-admit proof intrinsic '" <> nm
+                    <> "' inhabits an arbitrary proposition and is not nameable from ordinary"
+                    <> " user code; it would forge false proofs and break soundness."
+                    <> " Use the checked proof helpers (refl/cong/subst/…) instead, or mark the"
+                    <> " module '@AllowUnsafeIntrinsics' to opt in for testing (Spec §4.5)"
+                )
   | otherwise = pure ()
 
 -- | An active-pattern declaration (§17.3.1) elaborates as an ordinary

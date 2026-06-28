@@ -1,0 +1,12 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE): '__handleEff' is a raw-admit prelude intrinsic of
+-- type 'forall (@0 a : Type). a' (the elaborator builds its applications with a
+-- precise type; the bare primitive admits any proposition just like
+-- '__eqProof'). Ordinary user code naming it could forge 'let bogus :
+-- (=) True False = __handleEff', so a plain user module is rejected.
+
+bogus : (=) True False
+let bogus = __handleEff
+
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED
