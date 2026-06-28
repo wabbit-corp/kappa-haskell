@@ -125,6 +125,14 @@ adversarially reviewed, same discipline as the burst above.
    - **P3 — coverage.** §9 trait-evidence (`IsSubsingleton (Eq Bool)` yes, `IsProp` no), §10 `IsSubsingleton`
      ≠ inhabitance, §12 runtime-shape-vs-source (erased impossible proofs stay `Empty`), §11 optional
      finite-function strengthening (gated mode; must NOT imply function h-levels).
+8. **Spec-conformant Monoid laws** *(follow-up to the IsProp/lawful-Monoid soundness fix, `feat/isprop-pi-isset`)* —
+   the spec (Spec.md:29828-29842) puts `appendAssoc`/`appendLeftIdentity`/`appendRightIdentity` IN the base
+   `Monoid` trait: **every `Monoid` is lawful**. The soundness fix keeps a separate `LawfulMonoid` sub-trait —
+   *sound but non-conformant* — taken because the effect carriers `IO e a`/`STM a` (equality not an h-prop, laws
+   undischargeable) must stay law-less. Conformant shape: fold the three laws into `Monoid`; move `IO`/`STM` off
+   `Monoid` onto a minimal identity-providing trait (e.g. `Pointed`/`Unital`, exactly what the §18.1.13
+   `let?`/STM-`empty` desugaring consumes). The honest `List` induction proofs + the `String` IsSet-asserted laws
+   carry over to `Monoid (List a)`/`Monoid String` unchanged — no proof work wasted by deferring.
 
 ---
 
