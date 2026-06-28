@@ -1,0 +1,23 @@
+module main
+
+-- §17.2.3 (soundness companion to patterns-or-existential-positive-binders):
+-- the existential-skolem perm fix must NOT make `CPOr` over-permissive. Two
+-- GADT alternatives that each bind a leading existential but bind DIFFERENT
+-- field NAMES (`a` vs `b`) still violate the "alternatives bind the same set of
+-- names" rule and must be rejected — the placeholder offset must not paper over
+-- a genuine binder-set mismatch.
+data N : Type =
+    Z
+    S N
+
+data Ex : Type =
+    P1 : forall (s : N). (a : N) -> Ex
+    P2 : forall (s : N). (b : N) -> Ex
+
+let bad e =
+    match e
+    case P1 a | P2 b -> a
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_OR_PATTERN_BINDER_MISMATCH

@@ -9260,6 +9260,24 @@ elabPattern ctx0 pat0 ty0 = do
       -- or-pattern alternatives bind the same names; count one side
       CPOr (p : _) _ -> corePatNames p
       _ -> []
+    -- §17.2.3/§17.1: the FULL ordered binder layout that 'matchPat' actually
+    -- returns for a pattern, with @Nothing@ for an erased existential-skolem
+    -- placeholder slot and @Just name@ for a real named binder. This must match
+    -- 'matchPat' / 'patBindersC' exactly: for @CPCtor _ nEx ps@ the @nEx@
+    -- placeholders come FIRST, then the field binders. Or-pattern perms are
+    -- built over THIS list (not the name-only 'corePatNames'), so they index
+    -- the same slots 'matchPat' produces — including the leading placeholders.
+    corePatBinderSlots :: CorePat -> [Maybe Text]
+    corePatBinderSlots = \case
+      CPVar n -> [Just n]
+      CPAs n p -> Just n : corePatBinderSlots p
+      CPCtor _ nEx ps -> replicate nEx Nothing ++ concatMap corePatBinderSlots ps
+      CPTuple ps -> concatMap corePatBinderSlots ps
+      CPRecord fs mr -> concatMap (corePatBinderSlots . snd) fs ++ [Just nm | Just nm <- [mr], not (T.null nm)]
+      CPInject _ p -> corePatBinderSlots p
+      CPInjectRest _ -> [Nothing]
+      CPOr (p : _) _ -> corePatBinderSlots p
+      _ -> []
     go ctx pat tyIn = do
       ty <- forceM tyIn
       case pat of
@@ -9325,8 +9343,34 @@ elabPattern ctx0 pat0 ty0 = do
               -- structural binder order to canonical, so a reordered binding
               -- (e.g. `A p q | B q p`) still resolves correctly at runtime.
               let canonical = corePatNames p1
-                  n = length canonical
                   structNames (p, _) = corePatNames p
+                  -- Full binder layout (placeholders included) for perm building.
+                  canonSlots = corePatBinderSlots p1
+                  nSlots = length canonSlots
+                  -- Map a canonical full-binder position @j@ to the matching
+                  -- slot index in alternative @r@'s OWN full binder list.
+                  --   * a named slot maps to the alternative's slot with the
+                  --     same name (alternatives bind the same name set);
+                  --   * an erased placeholder slot maps positionally to the
+                  --     alternative's k-th placeholder (any erased unit is fine,
+                  --     but positional keeps a stable, total mapping even when
+                  --     alternatives carry differing existential arities).
+                  permFor r =
+                    let altSlots = corePatBinderSlots (fst r)
+                        altPlaceholders = [i | (i, Nothing) <- zip [0 ..] altSlots]
+                        -- canonical-placeholder ordinal among canonical Nothings
+                        canonPlaceholderOrd j =
+                          length [() | (k, Nothing) <- zip [0 ..] canonSlots, k < j]
+                     in [ case canonSlots !! j of
+                            Just nm ->
+                              fromMaybe j (elemIndex (Just nm) altSlots)
+                            Nothing ->
+                              let o = canonPlaceholderOrd j
+                               in if o < length altPlaceholders
+                                    then altPlaceholders !! o
+                                    else j
+                        | j <- [0 .. nSlots - 1]
+                        ]
                   typesOf (_, c) =
                     [ (ceName e, ceType e)
                     | e <- take (ctxLen c - ctxLen ctx) (ctxEntries c)
@@ -9336,7 +9380,7 @@ elabPattern ctx0 pat0 ty0 = do
                 then do
                   errAt sp "E_OR_PATTERN_BINDER_MISMATCH" (Just "kappa-hs.pattern.or-bindings")
                     "all alternatives of an or-pattern must bind the same set of names (§17.2.3)"
-                  pure (CPOr pats (map (const [0 .. n - 1]) rs), ctx1)
+                  pure (CPOr pats (map (const [0 .. nSlots - 1]) rs), ctx1)
                 else do
                   -- §17.2.3 binder-type agreement (best-effort at the scrutinee
                   -- context depth; catches e.g. `I (n:Integer) | S (s:String)`)
@@ -9351,10 +9395,7 @@ elabPattern ctx0 pat0 ty0 = do
                               ( "or-pattern binder '" <> nm
                                   <> "' has incompatible types across alternatives (§17.2.3)")
                         _ -> pure ()
-                  let perms =
-                        [ [fromMaybe 0 (elemIndex (canonical !! j) (structNames r)) | j <- [0 .. n - 1]]
-                        | r <- rs
-                        ]
+                  let perms = map permFor rs
                   pure (CPOr pats perms, ctx1)
         PVariant mn mtyE isWild mrest _ -> case ty of
           VVariantT members -> case (mn, mtyE, mrest) of
