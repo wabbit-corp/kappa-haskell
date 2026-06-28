@@ -129,11 +129,12 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    replaces Boehm, reuses Kappa's **quantity/borrow system as the ownership substrate** (owned `1` / borrowed
    `&` / shared `ω` + path-sensitive last-use already computed — erased before KBackendIR, so it must be
    *threaded* as IR metadata). Staged:
-   - **S0 — reconcile + header.** ✅ reconcile done (`8775aec`, tag-budget vs TAGGING-RESEARCH). Add the
-     `rc`+`shared` word to the free `KValue` header hole (offset 4, zero struct growth).
-   - **S1 — thread ownership onto KBackendIR.** Carry the elaborated owned/borrowed/last-use decisions (+ the
-     tighter-than-declared whole-program usage refinement, §3a, static-link only) onto the IR the backend
-     lowers; give `CCtor`/`CMatch` the type/size reuse needs. *The foundational multi-week item.*
+   - **S0 — reconcile + header.** ✅ **done** (`71e6639`): the reconcile (`8775aec`) + the `rc` word in the
+     free `KValue` header hole (offset 4, `sizeof` unchanged at 48, init=1 at heap alloc, immediates skip).
+   - **S1 — thread ownership onto KBackendIR** — plan [PERCEUS-S1-PLAN.md](runtime/docs/PERCEUS-S1-PLAN.md).
+     A side-table (`Ownership.hs`), NOT new `Term` fields; owned/borrowed is already in `CPi`, only last-use
+     is erased. **S1.0 plumbing ✅** (`71e6639`, inert); **S1.1** (last-use over Core, the R1 de-Bruijn risk)
+     next → S1.2 dump+cross-check / S1.3 ctor layout / S1.4 §3a refinement / S1.5 backend accessor.
    - **S2 — dup/drop, Boehm differential backstop.** Perceus dup/drop on the strict core; Boehm still frees
      while a debug mode asserts `rc` counts against the collector (de-risks the use-after-free failure mode).
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
