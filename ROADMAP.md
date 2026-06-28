@@ -80,45 +80,54 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 (worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
 adversarially reviewed, same discipline as the burst above.
 
-**🔄 In flight (2026-06-28) — six worktree-isolated agents:** `fix/unsafe-intrinsics-gate` (gate
-`__eqProof`/`__transport`/`__absurd` from user code + `@AllowUnsafeIntrinsics` — a CRITICAL pre-existing
-unsoundness: any user module could `let bogus : (=) True False = __eqProof`) · `feat/monoid-lawful` (#8) ·
-`feat/mut-array` (#2, boxed first) · `feat/disconnect` (PRIMITIVES #5, verify-first) ·
-`feat/scalar-fn-worker-v2` (#5 — LLVM function scalar-worker) · `test/inhabitance-suite` (#7, P1).
-**Recently landed:** IsProp-under-Π soundness + honest List monoid proofs (`d45480f`, four holes closed under
-a six-review audit); or-pattern existential-binding fix; concurrency prims #2/#3/#4 verified already-done (`284d6eb`).
+**✅ Landed (2026-06-28 parallel batch) — main `e4f3378`, conformance 1888/0, parity 121/0:** Monoid
+lawful-by-default + `Pointed` for IO/STM (`5efbe3d`, #8); IO `MutArray` boxed (`e4f3378`, #2; unboxing
+deferred); `disconnect` (`8ea9f58`, PRIMITIVES #5); LLVM function scalar-worker (`555f50b`, #5); P1
+inhabitance/UIP suite (`93fbccf`, #7); runtime bugs — sleepFor-nonpositive + fiberId/currentFiberId
+(`339b8f7`, #4); the native backend now erases proof-typed defs (`b917f73` — the proper proof-system
+completion that lawful-by-default exposed); `__arrayIndexUnsafe` de-Bruijn fix (`07cda19`). Foundations
+earlier this session: IsProp-under-Π soundness + honest List proofs (`d45480f`, 4 holes closed under a
+6-review audit), or-pattern existential fix (`b846acb`).
+
+**🔄 Gating merge — `fix/unsafe-intrinsics-gate`:** gate the raw-admit intrinsics (`__eqProof`/`__transport`/
+`__absurd`/`__handleEff`/`__debugInspect`/`__debugCompare`/`__unsafeAssertProof`/`failNow`) from user code
+behind `@AllowUnsafeIntrinsics` — a CRITICAL pre-existing TOTAL unsoundness (any module could
+`let bogus : (=) True False = __eqProof` → Void). FIVE holes found+closed across three multi-model review
+rounds (Codex + Claude adversarial workflows); a final fix (the sister gate + `failNow`) + a 4th re-review
+are pending before it merges.
 
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
    (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
    **nbody + spectralnorm byte-identical to the reference**, parity 115/0.
-2. **Mutable O(1) array** — design **DONE** ([MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md)),
-   impl queued behind the prims merge. **Decided: IO `MutArray` first** (then the spec-mandated ST
-   `runST`/`STArray` §18.6.4; linear deferred — the boxed/Boehm runtime can't witness uniqueness yet).
-   **Element unboxing is first-class**: the backend specializes array ops at the call site, *pre-erasure*,
-   via `Repr.scalarRep` (the scalar-worker's own mechanism) to pick unboxed `double[]`/`int64[]` slabs
-   (atomic-GC'd, no per-element box) for monomorphic scalar elements, boxed `KValue*[]` otherwise
-   (runtime tag-sniffing is unsound — `Array (Maybe Int)` mixes word kinds). Staged A (boxed,
-   unboxing-*ready*) → H (unboxed scalar slabs, gated like the scalar-worker).
+2. **Mutable O(1) array** — ✅ **Stage A DONE** (`e4f3378`): IO `MutArray` (boxed), one `K_ARRAY` object with
+   the `elemkind`/`element_size` unboxing seam, 3-tier total indexing; design [MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md).
+   **OPEN — Stages B→H (element unboxing):** the backend specializes array ops at the call site *pre-erasure*
+   via `Repr.scalarRep` to pick unboxed `double[]`/`int64[]` slabs (atomic-GC'd, no per-element box) for
+   monomorphic scalar elements, boxed `KValue*[]` otherwise (runtime tag-sniffing is unsound — `Array (Maybe
+   Int)` mixes word kinds). Couples with the value-unboxing lever (#5). ST `runST`/`STArray` §18.6.4 and
+   linear `LinArray` also deferred (the boxed/Boehm runtime can't witness uniqueness yet).
 3. **Unlock more benchmarks** — ✅ **DONE** (`5a96969`): the Tier-2 concurrency suite now builds on LLVM
    (5/6 byte-identical), nbody/spectralnorm unblocked by the FP prims; numbers folded into
    [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md). (Array benchmarks pending the `feat/mut-array` impl.)
-4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends);
-   the C-backend CPS edges — **do-block-tail-call stack overflow** *(in progress, `fix/c-doblock-tailrec`)*,
-   suspend-in-`for`, `var:Double` helper miscompile; the `kctor` value-box multi-worker race (value.c,
-   TSan); the timing-flaky `race`/`timeout` runtime test; ✅ the reactor-shutdown sleep-timer cleanup
-   (reactor.c, done `1162ddc`); and the runtime spec-coverage stubs (blocking, supervisor, fiberId,
-   labels, sandbox).
-5. **Bigger levers**: the LLVM **curried-CK-machine-prim** gap *(in progress, `fix/llvm-curried-ck-prims`
-   — **elevated**: it blocks every agent testing fork/await/STM on LLVM, the Tier-2 benchmarks, and the
-   LLVM safepoint-delivery test)* — fork/await/STM/interrupt as curried CK-machine values, lowered to the
-   `krt2_*` node-builders the runtime already has (mirrors the Milestone-M throwIO/catchIO migration);
-   then the LLVM **function** scalar-worker (mandelbrot); **Perceus reuse + value-unboxing** (the alloc
-   multipliers).
+4. **Smaller issues** — ✅ done: the `let`-blind scalar-worker (both backends, `555f50b`); do-block-tail-call
+   stack overflow (`997323a`); `sleepFor`/`sleepUntil` nonpositive (`339b8f7`); `fiberId`/`currentFiberId`
+   wired (`339b8f7`); `__arrayIndexUnsafe` de-Bruijn (`07cda19`); reactor-shutdown sleep-timer cleanup
+   (`1162ddc`). **OPEN:** the C-backend CPS edges (suspend-in-`for`, `var:Double` helper miscompile); the
+   `kctor` value-box multi-worker race (value.c, TSan); the timing-flaky `race`/`timeout` test; **the native
+   test harness is not concurrency-safe** (`run-native-tests.sh` shares `/tmp/kserver` + the frag dir + a
+   fixed port → false failures under parallel agents — needs a per-run temp dir + dynamic port); the
+   remaining runtime spec-coverage stubs (blocking, supervisor, labels, sandbox).
+5. **Bigger levers** — ✅ done: the LLVM **curried-CK-machine-prim** gap (`2ceea5f`); the LLVM **function**
+   scalar-worker (`555f50b`, mandelbrot). **OPEN — the marquee perf lever: Perceus reuse + value-unboxing**
+   (the alloc multipliers the benchmarks quantified — kappa runs 10-250× off the leaders, dominated by
+   uniform boxing). Couples with the array element-unboxing (#2 Stages B→H) and the pointer-tagging research
+   (3-bit GC-safe tag); needs the typed-Core rep map. The single highest-impact remaining performance item.
 6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
    Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
    `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
    `d01b8a7`) the lazily-committed 8 MiB worker-stack floor. `decreases` is the soundness *license*, not a
-   runtime depth oracle. The accumulator opt is gated on **lawful Monoids** *(redo in progress, `feat/isprop-pi-isset`)*.
+   runtime depth oracle. The accumulator opt's prerequisite — **lawful Monoids** — is ✅ done (`5efbe3d`, #8);
+   the L1 TRMC and L2 CK-machine impl remain **OPEN**.
 7. **Inhabitance + h-level conformance suite** — [INHABITANCE_TESTS.md](docs/INHABITANCE_TESTS.md). The
    §30.2.7 inhabitance analysis (`Inhabitance.hs`) is done (`63400fb`); this suite pins its summaries AND
    the h-level/equality soundness the IsProp/IsSet work rides on (summaries must stay strictly separate
@@ -139,14 +148,12 @@ a six-review audit); or-pattern existential-binding fix; concurrency prims #2/#3
    - **P3 — coverage.** §9 trait-evidence (`IsSubsingleton (Eq Bool)` yes, `IsProp` no), §10 `IsSubsingleton`
      ≠ inhabitance, §12 runtime-shape-vs-source (erased impossible proofs stay `Empty`), §11 optional
      finite-function strengthening (gated mode; must NOT imply function h-levels).
-8. **Spec-conformant Monoid laws** *(follow-up to the IsProp/lawful-Monoid soundness fix, `feat/isprop-pi-isset`)* —
-   the spec (Spec.md:29828-29842) puts `appendAssoc`/`appendLeftIdentity`/`appendRightIdentity` IN the base
-   `Monoid` trait: **every `Monoid` is lawful**. The soundness fix keeps a separate `LawfulMonoid` sub-trait —
-   *sound but non-conformant* — taken because the effect carriers `IO e a`/`STM a` (equality not an h-prop, laws
-   undischargeable) must stay law-less. Conformant shape: fold the three laws into `Monoid`; move `IO`/`STM` off
-   `Monoid` onto a minimal identity-providing trait (e.g. `Pointed`/`Unital`, exactly what the §18.1.13
-   `let?`/STM-`empty` desugaring consumes). The honest `List` induction proofs + the `String` IsSet-asserted laws
-   carry over to `Monoid (List a)`/`Monoid String` unchanged — no proof work wasted by deferring.
+8. **Spec-conformant Monoid laws** — ✅ **DONE** (`5efbe3d`): the three laws (`appendAssoc`/`appendLeftIdentity`/
+   `appendRightIdentity`) are folded into the base `Monoid` trait (Spec.md:29828-29842 — every `Monoid` is
+   lawful); `IO e a`/`STM a` moved off `Monoid` onto a minimal `Pointed` trait (`empty` only, for the §18.1.13
+   `let?`/STM-`empty` desugaring); the separate `LawfulMonoid` is removed. List laws by induction, String
+   asserted via `IsSet String`. NB: a *custom* user `Monoid` now must discharge the three laws (by real proof
+   or behind `@AllowUnsafeIntrinsics`) — a `derive`-style law-by-`Eq`-reflection helper could ease this later.
 9. **Intrinsic h-level solver** *(IMPLEMENTATION, not spec work — surfaced by item 7's P1)* — the spec
    DEFINES `intrinsic trait IsNType (level : Nat) (a : Type)` (Spec.md:9250/14703) plus `IsContr`/`IsProp`/
    `IsSet`/`IsGroupoid`, with evidence "introduced by compiler-owned solvers" (9303), the `IsNType n`
