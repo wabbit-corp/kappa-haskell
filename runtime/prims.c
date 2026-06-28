@@ -58,6 +58,18 @@ KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
 KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
 KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
 
+/* Mutable array IO ops (MUTABLE-ARRAY-DESIGN §4.1).  Each sees ONLY value args
+ * — the `forall (a : Type)` element type is Q0-erased before codegen and never
+ * reaches here (the §6/§8.3 erasure-safety contract: no Type/dict/proof ever
+ * reaches a kpf_* symbol).  The index is a plain Int word (natToInt at the
+ * surface), read with kas_int; the array carries its own length, so the prim
+ * itself is the bounds-checking IO floor (krt_fail on OOB, §6 tier 3). */
+KValue *kpf_io___newArray(KValue **a) { return karr_new(kas_int(a[0]), a[1]); }
+KValue *kpf_io___arrayRead(KValue **a) { return karr_get(a[0], kas_int(a[1])); }
+KValue *kpf_io___arrayWrite(KValue **a) { return karr_set(a[0], kas_int(a[1]), a[2]); }
+/* arrayLen is PURE (not IO): O(1) read of the stored length. */
+KValue *kpf___arrayLen(KValue **a) { return kint(karr_len(a[0])); }
+
 /* §18.1.13 STM, single-agent semantics — matching the reference interpreter
  * (Kappa.Interp.stmAtomically, which runs an STM action through the very same
  * IO runner): a TVar is a mutable cell and `atomically` runs the transaction

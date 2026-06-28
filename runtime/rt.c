@@ -120,6 +120,10 @@ KValue *kpf_fork_daemon(KValue **a)        { return krt2_fork_daemon(a[0]); }
 KValue *kpf_await(KValue **a)              { return krt2_await(a[0]); }
 KValue *kpf_cede(KValue **a)               { (void)a; return krt2_cede(); }
 KValue *kpf_sleep_for(KValue **a)          { return krt2_sleep_for(a[0]); }
+/* §18.1.10 fiber identity: build the OP_CURRENT_FIBER_ID / OP_FIBER_ID nodes;
+ * the CK-machine delivers the running/target fiber's integer id (rt.c case). */
+KValue *kpf_current_fiber_id(KValue **a)   { (void)a; return krt2_current_fiber_id(); }
+KValue *kpf_fiber_id(KValue **a)           { return krt2_fiber_id(a[0]); }
 KValue *kpf_new_promise(KValue **a)        { (void)a; return krt2_new_promise(); }
 KValue *kpf_complete_promise(KValue **a)   { return krt2_complete_promise(a[0], a[1]); }
 KValue *kpf_await_promise_exit(KValue **a) { return krt2_await_promise_exit(a[0]); }
@@ -1566,9 +1570,20 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         f->cur = krt2_pure(kunit());
         krt2i_resume(rt, f);           /* re-enqueue behind other runnables  */
         return;
-      case OP_SLEEP:
-        krt2i_submit_sleep(rt, f, (uint64_t)kas_int(kctor_arg(cur, 0)));
+      case OP_SLEEP: {
+        /* §18.1.6: read the duration as a SIGNED int.  A nonpositive ns —
+         * notably `sleepUntil` of a PAST Instant, whose `instantDiff` is
+         * negative — must complete immediately.  Without this guard the
+         * `(uint64_t)` cast wrapped a negative value to a huge unsigned and
+         * the fiber parked ~forever (never woken). */
+        int64_t ns = kas_int(kctor_arg(cur, 0));
+        if (ns <= 0) {
+          if (!deliver(rt, f, kunit())) return;  /* sleepFor returns Unit */
+          break;
+        }
+        krt2i_submit_sleep(rt, f, (uint64_t)ns);
         return;                        /* parked; reactor resumes it          */
+      }
       case OP_NOW:
         if (!deliver(rt, f, kint((int64_t)uv_hrtime()))) return;
         break;

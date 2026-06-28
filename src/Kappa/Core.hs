@@ -53,6 +53,7 @@ module Kappa.Core
 import Control.Concurrent (ThreadId)
 import Control.Concurrent.MVar (MVar)
 import Control.Concurrent.STM (TVar)
+import Data.Array.IO (IOArray)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef)
 import Data.Text (Text)
@@ -346,6 +347,7 @@ data Value
   | VIfN !Value !Closure !Closure -- ^ stuck if
   | VPrim !Text ![Value] -- ^ builtin primitive, partially applied
   | VRef !(IORef Value) -- ^ runtime mutable cell (MonadRef, §18.6.1)
+  | VArr !Int !(IOArray Int Value) -- ^ MUTABLE-ARRAY-DESIGN: boxed mutable O(1) array (K_ARRAY oracle); fixed length (cached, so arrayLen is pure) + in-place get/set
   | VMVar !(MVar Value) -- ^ §18.11 one-shot-promise cell (blocking read parks the fiber)
   | VFiber !ThreadId !(MVar Value) -- ^ §18.1.4 fiber handle: interrupt target (ThreadId) + terminal-Exit cell
   | VScope !(IORef [Value]) -- ^ §18.1.8 explicit supervision scope: registry of attached fibers

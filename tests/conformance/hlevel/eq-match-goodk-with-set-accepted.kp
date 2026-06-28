@@ -1,0 +1,22 @@
+module main
+
+-- §7 / §13: "goodKWithSet may pass".  The companion to
+-- 'eq-match-badk-no-isset-rejected.kp'.
+--
+-- With h-level evidence that the path space '(=) x x' is itself a SET
+-- ('@_ : IsSet ((=) x x)'), the §11.4 IsProp-under-Pi solver's equality base
+-- case resolves 'IsProp ((=) p refl)' — two proofs of '(=) x x' are then equal —
+-- and the gated 'unsafeAssertProof' may collapse '(=) p refl'.  This is the
+-- honest realization of "K holds on a set" through the combinator surface this
+-- implementation actually offers (there is no path-induction-via-match here).
+--
+-- The negative control 'eq-match-goodk-foreign-set-rejected.kp' shows the
+-- evidence is genuinely load-bearing: a set of an UNRELATED carrier does NOT
+-- discharge this goal.
+
+goodKWithSet : forall (@0 a : Type) (@0 x : a) (@_ : IsSet ((=) x x)). (p : (=) x x) -> (=) p refl
+let goodKWithSet p = unsafeAssertProof "K: proofs over a set-of-paths are unique"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertNoErrors

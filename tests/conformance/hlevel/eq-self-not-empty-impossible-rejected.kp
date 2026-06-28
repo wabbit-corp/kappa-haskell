@@ -1,0 +1,22 @@
+module main
+
+-- §6 / §13 red-team invariant: "x = x for x : A is Unknown without IsSet A".
+--
+-- A self-equality '(=) x x' over an abstract 'x : a' is INHABITED — by 'refl' —
+-- so it is NOT empty.  Treating it as empty (e.g. by accepting '-> impossible'
+-- on the 'refl' arm) would be smuggling a contradiction in through inhabitance.
+-- The 'refl' arm here refines without contradiction (its endpoints already
+-- agree), so the arm is reachable and '-> impossible' is correctly REJECTED
+-- as not-provably-unreachable (§17.1.4).
+--
+-- This is the inhabitance-side companion to the §7 'badK' tripwire: neither the
+-- match path nor the inhabitance analysis may conclude anything about '(=) x x'
+-- beyond "it has 'refl'".
+
+selfEqNotEmpty : forall (a : Type) (x : a). (=) x x -> Void
+let selfEqNotEmpty p =
+    match p
+    case refl -> impossible
+
+--! mode check
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE

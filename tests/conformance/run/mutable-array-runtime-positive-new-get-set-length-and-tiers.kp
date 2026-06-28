@@ -1,0 +1,58 @@
+module main
+
+-- MUTABLE-ARRAY-DESIGN §4.2/§6: the IO MutArray front-end (boxed elements).
+-- One K_ARRAY runtime slab exercised end-to-end through:
+--   * newArray + init and the O(1) PURE arrayLen (the stored header length);
+--   * the tier-2 ergonomic indexing — arrayWriteOk / arrayReadOpt — where
+--     Option/Bool TOTALLY absorb out-of-bounds (None / False), never a trap.
+--
+-- (The tier-1 proof-carrying arrayRead/arrayWrite require a statically known
+-- length to discharge the (i < arrayLen arr) = True obligation — a SizedArray-
+-- style use, not a runtime array — so they are covered by the type-level shape,
+-- not driven here.  The tier-3 IO floor is the prim's own krt_fail on OOB.)
+--
+-- The whole computation reduces to a single Int the harness asserts, so the
+-- interpreter oracle and both native backends must agree.
+import std.array.mutable.(term newArray, term arrayLen)
+import std.array.mutable.(term arrayReadOpt, term arrayWriteOk)
+
+optOr : Option Int -> Int -> Int
+let optOr o d =
+    match o
+      case Some n -> n
+      case None -> d
+
+boolBit : Bool -> Int
+let boolBit b = if b then 1 else 0
+
+main : UIO Int
+let main = do
+    -- length is the O(1) pure header read
+    let arr <- newArray 5 0
+    let len = natToInt (arrayLen arr)              -- 5
+
+    -- tier 2: in-bounds writes/reads via the Bool/Option ergonomic tier
+    let okA <- arrayWriteOk arr 0 100              -- True
+    let okB <- arrayWriteOk arr 2 30               -- True
+    let r0 <- arrayReadOpt arr 0                   -- Some 100
+    let r2 <- arrayReadOpt arr 2                   -- Some 30
+    let got0 = optOr r0 (-1)                       -- 100
+    let got2 = optOr r2 (-1)                       -- 30
+
+    -- overwrite slot 0, observe the in-place mutation
+    let okC <- arrayWriteOk arr 0 1               -- True
+    let r0b <- arrayReadOpt arr 0                  -- Some 1
+    let got0b = optOr r0b (-1)                     -- 1
+
+    -- tier 2: out-of-bounds is absorbed (False / None), NOT a trap
+    let okOob <- arrayWriteOk arr 9 999            -- False (no write)
+    let rOob <- arrayReadOpt arr 9                 -- None
+    let gotOob = optOr rOob 7                       -- 7
+    let bits = boolBit okA + boolBit okB + boolBit okC + boolBit okOob  -- 1+1+1+0 = 3
+
+    -- 5 + 100 + 30 + 1 + 7 + 3 = 146
+    pure (len + got0 + got2 + got0b + gotOob + bits)
+
+--! assertNoErrors
+--! assertType main UIO Int
+--! assertExecute main 146

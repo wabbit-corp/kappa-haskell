@@ -162,6 +162,7 @@ module Kappa.Builtins
   , modFfi
   , modFfiC
   , modAtomic
+  , modArrayMutable
   , modGradual
   , modBridge
   , modSupervisor
@@ -448,6 +449,10 @@ modFfi = ModuleName ["std", "ffi"]
 modFfiC = ModuleName ["std", "ffi", "c"]
 modAtomic = ModuleName ["std", "atomic"]
 modGradual = ModuleName ["std", "gradual"]
+
+-- | MUTABLE-ARRAY-DESIGN §4.2: the IO MutArray front-end module.
+modArrayMutable :: ModuleName
+modArrayMutable = ModuleName ["std", "array", "mutable"]
 modBridge = ModuleName ["std", "bridge"]
 modSupervisor = ModuleName ["std", "supervisor"]
 

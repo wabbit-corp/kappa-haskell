@@ -26,7 +26,9 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar, tryRea
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
-import Control.Monad (unless)
+import Control.Monad (unless, when)
+import Data.Array.IO (IOArray)
+import qualified Data.Array.IO as IOA
 import Data.Bits ((.&.), (.|.), xor)
 import Data.IORef
 import qualified Data.Map.Strict as Map
@@ -128,6 +130,31 @@ fiberRefInit = unsafePerformIO (newIORef Map.empty)
 {-# NOINLINE fiberLocals #-}
 fiberLocals :: IORef (Map.Map ThreadId (Map.Map Int Value))
 fiberLocals = unsafePerformIO (newIORef Map.empty)
+
+-- | §18.1.10 fiber identity. The interpreter keys every per-fiber registry by
+-- 'ThreadId'; for a source-visible integer id we assign one lazily on first
+-- request (a counter + a 'ThreadId'->'Integer' map). This guarantees the spec's
+-- two properties: each fiber gets a unique id for the program run, and the id is
+-- STABLE — so @currentFiberId@ (keyed by the running thread) and @fiberId fib@
+-- (keyed by the fiber's ThreadId) return the same value for the same fiber. The
+-- exact numbering need not match the native runtime's spawn-order ids; only
+-- uniqueness + agreement are required (§18.1.10).
+{-# NOINLINE fiberIds #-}
+fiberIds :: IORef (Map.Map ThreadId Integer)
+fiberIds = unsafePerformIO (newIORef Map.empty)
+
+-- | The stable integer id for a fiber's ThreadId, assigning a fresh one on first
+-- request. 'atomicModifyIORef'' makes the assign-or-reuse a single atomic step so
+-- two fibers racing on the SAME ThreadId can never get distinct ids.
+fiberIdOf :: ThreadId -> IO Integer
+fiberIdOf tid =
+  atomicModifyIORef' fiberIds $ \m -> case Map.lookup tid m of
+    Just i -> (m, i)
+    Nothing ->
+      -- next id = current map size + 1 (ids start at 1, matching the native
+      -- runtime's `next_id + 1`); unique because the map only ever grows.
+      let i = fromIntegral (Map.size m) + 1
+       in (Map.insert tid i m, i)
 
 -- | §18.1.12 masking: a per-fiber stack of the mask-ENTRY explicit depths recorded
 -- by enclosing 'mask' calls. The head is the depth that held just before the
@@ -854,6 +881,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     -- races the target into a park still finds the flag at the next point.
     recordPending tid cause
     throwTo tid (Interrupt cause) >> pure unitV
+  -- Same as __interruptNoWait, only differently typed (free result channel); used
+  -- by `disconnect`'s onInterrupt finalizer (PRIMITIVES #5).
+  ("__interruptForkAny", [cause, VFiber tid _]) -> do
+    recordPending tid cause
+    throwTo tid (Interrupt cause) >> pure unitV
   -- §18.1.5 cede: yield to the scheduler (also an interruption point — GHC
   -- delivers any pending throwTo at the yield).
   -- §18.1.5 cede yields to the scheduler and is an interruption point: after the
@@ -1078,6 +1110,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- §18.1 the two irreducible time prims take/return raw ns Ints; the typed
   -- Duration/Instant wrappers (incl. sleepUntil) are the std.time .kp fragment.
   ("__nowNanos", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
+  -- §18.1.10 fiber identity. The raw integer id is delivered here; the FiberId
+  -- (MkFiberId) wrapper is the std.prelude surface (cf. nowMonotonic/Instant).
+  -- currentFiberId reports the running fiber's id; fiberId reports a target's.
+  ("__currentFiberId", _) -> (VLit . LitInt) <$> (myThreadId >>= fiberIdOf)
+  ("__fiberId", [VFiber tid _]) -> (VLit . LitInt) <$> fiberIdOf tid
   -- §18.1.6 sleep parks ONLY the current fiber (interruptible threadDelay on
   -- a non-threaded RTS yields to other runnable fibers — it does not block the
   -- agent; a throwTo wakes it as an interruption point). Nonpositive returns now.
@@ -1092,6 +1129,29 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
+  -- MUTABLE-ARRAY-DESIGN: the SEQUENTIAL ORACLE for the boxed mutable array.
+  -- A fixed-length IOArray of boxed Values is the interpreter analogue of the
+  -- runtime's K_ARRAY slab: O(1) in-place get/set, length stored in the bounds.
+  -- The forall (e a) element type is erased, so the prim sees only value args;
+  -- the index/size arrive as plain Int literals (the surface passes natToInt).
+  -- Out-of-bounds traps via KappaError — the runtime floor (§6 tier 3), the same
+  -- Defect channel the native krt_fail raises; the proof-carrying surface op
+  -- never hits it, and the Option surface op guards it.
+  ("__newArray", [VLit (LitInt n), initv]) -> do
+    let len = fromInteger n :: Int
+    when (len < 0) (throwIO (KappaError (VLit (LitStr "__newArray: negative length"))))
+    arr <- IOA.newArray (0, len - 1) initv :: IO (IOArray Int Value)
+    pure (VArr len arr)
+  ("__arrayRead", [VArr len arr, VLit (LitInt i)]) -> do
+    let ix = fromInteger i :: Int
+    if ix < 0 || ix >= len
+      then throwIO (KappaError (VLit (LitStr "__arrayRead: index out of range")))
+      else IOA.readArray arr ix
+  ("__arrayWrite", [VArr len arr, VLit (LitInt i), v]) -> do
+    let ix = fromInteger i :: Int
+    if ix < 0 || ix >= len
+      then throwIO (KappaError (VLit (LitStr "__arrayWrite: index out of range")))
+      else IOA.writeArray arr ix v >> pure unitV
   -- §29.1 std.atomic — the SEQUENTIAL ORACLE.  The interpreter runs all fibers
   -- cooperatively on one OS thread, so a read-modify-write never interleaves
   -- with another fiber: a plain mutable cell models the SAME observable result

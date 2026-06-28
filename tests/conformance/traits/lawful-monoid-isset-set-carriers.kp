@@ -1,23 +1,25 @@
 module main
 
--- §28.2.2/§14.4: the prelude's `LawfulMonoid` marker sub-trait carries the
--- monoid laws (appendAssoc/appendLeftIdentity/appendRightIdentity) as
--- propositional equalities.  Because Kappa v1 equality is intensional (Spec
--- §14.4, no UIP), such a law is an h-prop ONLY over a SET, so `LawfulMonoid`
--- instances exist exactly for carriers with `IsSet` evidence: `String` and
--- `List a` (both provided by the prelude), discharged through the §11.4
--- IsProp-under-Pi closure solver.  The effect carriers `IO e a` / `STM a` are
--- plain (law-LESS) `Monoid`s with NO `LawfulMonoid` instance — their equality
--- is not an h-prop and may not be asserted.
+-- §28.2.2/§14.4: the prelude's `Monoid` is LAWFUL BY DEFAULT — the trait
+-- carries the monoid laws (appendAssoc/appendLeftIdentity/appendRightIdentity)
+-- as mandatory members, surfaced as propositional equalities.  Because Kappa v1
+-- equality is intensional (Spec §14.4, no UIP), such a law is an h-prop ONLY
+-- over a SET, so a `Monoid` instance exists exactly for carriers that can
+-- discharge those laws: `String` (its laws asserted through the gated escape via
+-- `instance IsSet String`) and `List a` (its laws PROVEN by honest structural
+-- induction, element-agnostic).  The effect carriers `IO e a` / `STM a` are NOT
+-- `Monoid`s — their equality is not an h-prop, so the laws cannot be asserted;
+-- they carry the law-less `Pointed` trait instead (see
+-- lawful-monoid-effect-carrier-lawless.kp).
 
--- The set carriers resolve `LawfulMonoid`:
-needLawful : forall (a : Type). (@_ : LawfulMonoid a) -> Unit
-let needLawful = Unit
+-- The set carriers resolve the (lawful) `Monoid`:
+needMonoid : forall (a : Type). (@_ : Monoid a) -> Unit
+let needMonoid = Unit
 
-let lawfulString : Unit = needLawful @String
-let lawfulList : Unit = needLawful @(List Integer)
+let lawfulString : Unit = needMonoid @String
+let lawfulList : Unit = needMonoid @(List Integer)
 
--- They are also plain `Monoid`s (the supertrait), so `append`/`empty` work:
+-- `append`/`empty` work (the operation members of the lawful trait):
 let appended : String = append "a" "b"
 let joined : List Integer = append (1 :: Nil) (2 :: Nil)
 

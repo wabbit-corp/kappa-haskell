@@ -80,59 +80,92 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 (worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
 adversarially reviewed, same discipline as the burst above.
 
+**✅ Landed (2026-06-28 parallel batch) — main `e4f3378`, conformance 1888/0, parity 121/0:** Monoid
+lawful-by-default + `Pointed` for IO/STM (`5efbe3d`, #8); IO `MutArray` boxed (`e4f3378`, #2; unboxing
+deferred); `disconnect` (`8ea9f58`, PRIMITIVES #5); LLVM function scalar-worker (`555f50b`, #5); P1
+inhabitance/UIP suite (`93fbccf`, #7); runtime bugs — sleepFor-nonpositive + fiberId/currentFiberId
+(`339b8f7`, #4); the native backend now erases proof-typed defs (`b917f73` — the proper proof-system
+completion that lawful-by-default exposed); `__arrayIndexUnsafe` de-Bruijn fix (`07cda19`). Foundations
+earlier this session: IsProp-under-Π soundness + honest List proofs (`d45480f`, 4 holes closed under a
+6-review audit), or-pattern existential fix (`b846acb`).
+
+**🔄 Gating merge — `fix/unsafe-intrinsics-gate`:** gate the raw-admit intrinsics (`__eqProof`/`__transport`/
+`__absurd`/`__handleEff`/`__debugInspect`/`__debugCompare`/`__unsafeAssertProof`/`failNow`) from user code
+behind `@AllowUnsafeIntrinsics` — a CRITICAL pre-existing TOTAL unsoundness (any module could
+`let bogus : (=) True False = __eqProof` → Void). FIVE holes found+closed across three multi-model review
+rounds (Codex + Claude adversarial workflows); a final fix (the sister gate + `failNow`) + a 4th re-review
+are pending before it merges.
+
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
    (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
    **nbody + spectralnorm byte-identical to the reference**, parity 115/0.
-2. **Mutable O(1) array** — design **DONE** ([MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md)),
-   impl queued behind the prims merge. **Decided: IO `MutArray` first** (then the spec-mandated ST
-   `runST`/`STArray` §18.6.4; linear deferred — the boxed/Boehm runtime can't witness uniqueness yet).
-   **Element unboxing is first-class**: the backend specializes array ops at the call site, *pre-erasure*,
-   via `Repr.scalarRep` (the scalar-worker's own mechanism) to pick unboxed `double[]`/`int64[]` slabs
-   (atomic-GC'd, no per-element box) for monomorphic scalar elements, boxed `KValue*[]` otherwise
-   (runtime tag-sniffing is unsound — `Array (Maybe Int)` mixes word kinds). Staged A (boxed,
-   unboxing-*ready*) → H (unboxed scalar slabs, gated like the scalar-worker).
-3. **Unlock more benchmarks** — wire up nbody/spectralnorm (from 1) + the array benchmarks (from 2),
-   measure vs the reference, fold the numbers into [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md).
-4. **Smaller issues** (parallelize the disjoint ones): the `let`-blind scalar-worker (both backends);
-   the C-backend CPS edges — **do-block-tail-call stack overflow** *(in progress, `fix/c-doblock-tailrec`)*,
-   suspend-in-`for`, `var:Double` helper miscompile; the `kctor` value-box multi-worker race (value.c,
-   TSan); the timing-flaky `race`/`timeout` runtime test; ✅ the reactor-shutdown sleep-timer cleanup
-   (reactor.c, done `1162ddc`); and the runtime spec-coverage stubs (blocking, supervisor, fiberId,
-   labels, sandbox).
-5. **Bigger levers**: the LLVM **curried-CK-machine-prim** gap *(in progress, `fix/llvm-curried-ck-prims`
-   — **elevated**: it blocks every agent testing fork/await/STM on LLVM, the Tier-2 benchmarks, and the
-   LLVM safepoint-delivery test)* — fork/await/STM/interrupt as curried CK-machine values, lowered to the
-   `krt2_*` node-builders the runtime already has (mirrors the Milestone-M throwIO/catchIO migration);
-   then the LLVM **function** scalar-worker (mandelbrot); **Perceus reuse + value-unboxing** (the alloc
-   multipliers).
+2. **Mutable O(1) array** — ✅ **Stage A DONE** (`e4f3378`): IO `MutArray` (boxed), one `K_ARRAY` object with
+   the `elemkind`/`element_size` unboxing seam, 3-tier total indexing; design [MUTABLE-ARRAY-DESIGN.md](runtime/docs/MUTABLE-ARRAY-DESIGN.md).
+   **OPEN — Stages B→H (element unboxing):** the backend specializes array ops at the call site *pre-erasure*
+   via `Repr.scalarRep` to pick unboxed `double[]`/`int64[]` slabs (atomic-GC'd, no per-element box) for
+   monomorphic scalar elements, boxed `KValue*[]` otherwise (runtime tag-sniffing is unsound — `Array (Maybe
+   Int)` mixes word kinds). Couples with the value-unboxing lever (#5). ST `runST`/`STArray` §18.6.4 and
+   linear `LinArray` also deferred (the boxed/Boehm runtime can't witness uniqueness yet).
+3. **Unlock more benchmarks** — ✅ **DONE** (`5a96969`): the Tier-2 concurrency suite now builds on LLVM
+   (5/6 byte-identical), nbody/spectralnorm unblocked by the FP prims; numbers folded into
+   [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md). (Array benchmarks pending the `feat/mut-array` impl.)
+4. **Smaller issues** — ✅ done: the `let`-blind scalar-worker (both backends, `555f50b`); do-block-tail-call
+   stack overflow (`997323a`); `sleepFor`/`sleepUntil` nonpositive (`339b8f7`); `fiberId`/`currentFiberId`
+   wired (`339b8f7`); `__arrayIndexUnsafe` de-Bruijn (`07cda19`); reactor-shutdown sleep-timer cleanup
+   (`1162ddc`). **OPEN:** the C-backend CPS edges (suspend-in-`for`, `var:Double` helper miscompile); the
+   `kctor` value-box multi-worker race (value.c, TSan); the timing-flaky `race`/`timeout` test; **the native
+   test harness is not concurrency-safe** (`run-native-tests.sh` shares `/tmp/kserver` + the frag dir + a
+   fixed port → false failures under parallel agents — needs a per-run temp dir + dynamic port); the
+   remaining runtime spec-coverage stubs (blocking, supervisor, labels, sandbox).
+5. **Bigger levers** — ✅ done: the LLVM **curried-CK-machine-prim** gap (`2ceea5f`); the LLVM **function**
+   scalar-worker (`555f50b`, mandelbrot). **OPEN — the marquee perf lever: Perceus reuse + value-unboxing**
+   (the alloc multipliers the benchmarks quantified — kappa runs 10-250× off the leaders, dominated by
+   uniform boxing). Couples with the array element-unboxing (#2 Stages B→H) and the pointer-tagging research
+   (3-bit GC-safe tag); needs the typed-Core rep map. The single highest-impact remaining performance item.
 6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
    Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
    `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
    `d01b8a7`) the lazily-committed 8 MiB worker-stack floor. `decreases` is the soundness *license*, not a
-   runtime depth oracle. The accumulator opt is gated on **lawful Monoids** *(redo in progress, `feat/isprop-pi-isset`)*.
+   runtime depth oracle. The accumulator opt's prerequisite — **lawful Monoids** — is ✅ done (`5efbe3d`, #8);
+   the L1 TRMC and L2 CK-machine impl remain **OPEN**.
 7. **Inhabitance + h-level conformance suite** — [INHABITANCE_TESTS.md](docs/INHABITANCE_TESTS.md). The
    §30.2.7 inhabitance analysis (`Inhabitance.hs`) is done (`63400fb`); this suite pins its summaries AND
    the h-level/equality soundness the IsProp/IsSet work rides on (summaries must stay strictly separate
    from source-level evidence synthesis — §13).
-   - **P1 — equality/UIP tripwire (NOW; the IsProp redo's acceptance criterion).** §6–§8 + the §13
-     red-team invariant: `x=x` is `Unknown` without `IsSet A`; `badK` MUST fail; `goodKWithSet` may pass;
-     the `IsProp`/`IsSet`/`IsNType` synth matrix (`IsProp Bool` fails, `IsSet Bool` passes, arbitrary
-     `IsNType n A` is unsolvable). **These would have caught the reverted `isPropEq`-without-`IsSet` hole
-     at conformance time.** Land them with / right after `feat/isprop-pi-isset`.
+   - **P1 — equality/UIP tripwire — ✅ PARTIAL** (merged `93fbccf`, `tests/conformance/hlevel/`, 10 tests).
+     The directly-testable subset, translated to the compiler's ACTUAL surface (the IsProp-under-Pi solver
+     + gated `unsafeAssertProof` — NB the compiler has **no match-based path induction** and **no intrinsic
+     h-level rules**): `badK` rejected (`E_UNSOLVED_IMPLICIT`); `goodKWithSet` accepted with `IsSet ((=) x x)`;
+     no-confusion Empty; **nominal type disequality is NOT empty** (univalence-critical); `IsProp Bool` /
+     abstract `IsSet a` unsolvable (no unbounded search). **DEFERRED within P1 — needs a compiler-owned
+     intrinsic h-level solver (the compiler has NONE; only `instance IsSet String` resolves):** the §8
+     synth-PASS matrix (`IsSet Bool`, `IsContr Unit`, `IsSubsingleton Void`, …) and the entire `IsNType n A`
+     family (no `IsNType` trait exists). **Building that intrinsic h-level solver is the real remaining §8
+     work** — a genuine feature, not a test.
    - **P2 — inhabitance summaries.** §3 algebraic/products/sums/GADT-refinement, §4 completion/enumeration
      (+ threshold), §5 `impossible` only on exact `Empty` + opaque-≠-empty. Pins `Inhabitance.hs`; needs a
      `%summary`/`%enumerate` query directive (or translate to `mode check`/`check-fails`).
    - **P3 — coverage.** §9 trait-evidence (`IsSubsingleton (Eq Bool)` yes, `IsProp` no), §10 `IsSubsingleton`
      ≠ inhabitance, §12 runtime-shape-vs-source (erased impossible proofs stay `Empty`), §11 optional
      finite-function strengthening (gated mode; must NOT imply function h-levels).
-8. **Spec-conformant Monoid laws** *(follow-up to the IsProp/lawful-Monoid soundness fix, `feat/isprop-pi-isset`)* —
-   the spec (Spec.md:29828-29842) puts `appendAssoc`/`appendLeftIdentity`/`appendRightIdentity` IN the base
-   `Monoid` trait: **every `Monoid` is lawful**. The soundness fix keeps a separate `LawfulMonoid` sub-trait —
-   *sound but non-conformant* — taken because the effect carriers `IO e a`/`STM a` (equality not an h-prop, laws
-   undischargeable) must stay law-less. Conformant shape: fold the three laws into `Monoid`; move `IO`/`STM` off
-   `Monoid` onto a minimal identity-providing trait (e.g. `Pointed`/`Unital`, exactly what the §18.1.13
-   `let?`/STM-`empty` desugaring consumes). The honest `List` induction proofs + the `String` IsSet-asserted laws
-   carry over to `Monoid (List a)`/`Monoid String` unchanged — no proof work wasted by deferring.
+8. **Spec-conformant Monoid laws** — ✅ **DONE** (`5efbe3d`): the three laws (`appendAssoc`/`appendLeftIdentity`/
+   `appendRightIdentity`) are folded into the base `Monoid` trait (Spec.md:29828-29842 — every `Monoid` is
+   lawful); `IO e a`/`STM a` moved off `Monoid` onto a minimal `Pointed` trait (`empty` only, for the §18.1.13
+   `let?`/STM-`empty` desugaring); the separate `LawfulMonoid` is removed. List laws by induction, String
+   asserted via `IsSet String`. NB: a *custom* user `Monoid` now must discharge the three laws (by real proof
+   or behind `@AllowUnsafeIntrinsics`) — a `derive`-style law-by-`Eq`-reflection helper could ease this later.
+9. **Intrinsic h-level solver** *(IMPLEMENTATION, not spec work — surfaced by item 7's P1)* — the spec
+   DEFINES `intrinsic trait IsNType (level : Nat) (a : Type)` (Spec.md:9250/14703) plus `IsContr`/`IsProp`/
+   `IsSet`/`IsGroupoid`, with evidence "introduced by compiler-owned solvers" (9303), the `IsNType n`
+   interpretation (14717-14722: 0=Contr, 1=Prop, 2=Set, 3=Groupoid, n+1 ⇔ all equalities are `IsNType n`),
+   and the hard rule (14735-14736): **MUST NOT solve `IsNType n A` by unbounded search — only deterministic,
+   terminating, specified intrinsic rules.** The compiler implements NONE of this (only the bare
+   `instance IsSet String` marker; no `IsNType` trait). Build the compiler-owned h-level solver: the
+   structural intrinsic rules (`IsSet` of finite / decidable-equality ADTs via Hedberg; `IsContr` of records
+   of contractibles; `IsProp`/`IsSubsingleton`; the `IsNType` level lattice) consistent with the §30.2.7
+   `Inhabitance.hs` summaries. Unblocks INHABITANCE_TESTS.md §8's synth-PASS matrix (item 7). Cross-ref the
+   exact inhabitant-counter (`../datatron`) for the conservative rule-set; any precise-MUST-set ambiguity is
+   minor spec-clarification pinned during impl.
 
 ---
 
@@ -511,33 +544,30 @@ the real Lint are both impossible without them.
       turns the per-bind/continuation allocation into a reuse/in-place write.
       The endgame for the suspension path; needs the §3.3/unboxing ptr-vs-scalar map.
 - [ ] Keep `make bench` green as a non-regression gate from each stage.
-- [ ] **Cross-language benchmarking** ([`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md))
-      — the external apples-to-apples layer on top of `make bench` (which already
-      carries a Go-goroutine point). Pick suites by what we want to prove: **lead
-      with concurrency** (Kappa's strength: `fork/await ≈ 3.5× a goroutine`), and
-      use allocation-bound programs as an **honesty gate** for the boxing lever.
-      Sequenced:
-      - [ ] **Tier 1 — CLBG numeric set** (n-body, spectral-norm, mandelbrot,
-            fannkuch, pidigits — `pidigits` is GMP-strong) for immediate
-            cross-language numbers (incl. GHC), **plus `binary-trees` wired in
-            next to `make bench` as the standing boxing-lever gate** (it loses
-            until unboxing lands — track the trend, don't market it). Self-contained;
-            hardcode `N` until `getArgs`/stdin exist.
-      - [ ] **Tier 2 — concurrency (the differentiator):** extend the bench's Go
-            comparison into **skynet** (1M-fiber spawn/join) + **thread-ring**, then
-            ~5 **Savina** benchmarks (Ping-Pong, Fork-Join, Thread-Ring,
-            **Bank-Transaction over STM**, Dining Philosophers). All expressible now
-            over `fork`/`TVar`/`Promise`.
-      - [ ] **Tier 1.5 — Are We Fast Yet** (fair cross-impl: Richards/DeltaBlue/
-            Havlak/Json/CD + micros) for the compiler-vs-compiler story; medium port
-            (objects→records/traits).
-      - [ ] **Tier 3 — TechEmpower (TFB), gated/flagship:** showcase the libuv +
-            M:N-fiber runtime under load. **On-ramp = Plaintext + JSON only** (HTTP +
-            JSON encoder over the already-linked libuv, no DB; TFB accepts partial);
-            the DB tests (Single/Multiple Query, Fortunes, Updates) follow a Postgres
-            FFI driver. No HTTP/DB stack exists today → multi-week library work.
-      - nofib is **cherry-pick, not port** (GHC-specific; mine the imaginary/spectral
-            kernels — the vs-GHC number comes free from CLBG).
+- **Cross-language benchmarking** ([`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md))
+      — the external apples-to-apples layer on top of `make bench` (which carries a Go-goroutine point).
+      Strategy: **lead with concurrency** (Kappa's strength: `fork/await ≈ 3.5× a goroutine`); use
+      allocation-bound programs as an **honesty gate** for the boxing lever. **Status: Tiers 1 + 2 imported
+      & measured; 1.5 + 3 planned; nofib declined.**
+   - **✅ Imported + measured** (`5a96969`, suites under [`bench/xlang/`](bench/xlang)):
+      - [x] **Tier 1 — CLBG numeric:** `nbody`, `spectralnorm`, `mandelbrot`, `fannkuch`, `pidigits`
+            (GMP-strong), `binarytrees` (the standing boxing-lever gate — loses until unboxing lands; track
+            the trend, don't market it), + `sumloop`. Reference impls present; `N` hardcoded (no `getArgs`/stdin yet).
+      - [x] **Tier 2 — concurrency (the differentiator):** `skynet` (1M-fiber spawn/join), `threadring`,
+            + the Savina set `pingpong` / `forkjoin` / `bankstm` (Bank-Transaction over STM) / `philosophers`.
+            All over `fork`/`TVar`/`Promise`; build on LLVM, 5/6 byte-identical to the reference.
+   - **⬜ Planned, not yet imported:**
+      - [ ] **Tier 1.5 — Are We Fast Yet** (Richards / DeltaBlue / Havlak / Json / CD + micros) — the fair
+            compiler-vs-compiler story; medium port (objects → records/traits). No runtime blocker — doable now.
+      - [ ] **Tier 3 — TechEmpower (TFB), flagship** — gated on an HTTP/JSON framework that **does not exist
+            yet**. On-ramp = Plaintext + JSON over the already-linked libuv (TFB accepts partial); the DB tests
+            (Single/Multiple Query, Fortunes, Updates) then need a Postgres FFI driver. **We DO want this**
+            (the libuv + M:N-fiber runtime is exactly what should shine under load) — **revisit once the
+            runtime is feature-complete**; it's multi-week library work, not a benchmark port.
+   - **🚫 Won't import wholesale** (justified):
+      - **nofib (Haskell)** — GHC-specific harness + idioms; a whole port has low marginal value because the
+            vs-GHC number already comes free from CLBG (GHC is a CLBG entrant). Cherry-pick a single
+            imaginary/spectral kernel ONLY if a specific GC/laziness question ever needs it.
 
 ---
 

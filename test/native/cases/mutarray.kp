@@ -1,0 +1,51 @@
+-- MUTABLE-ARRAY-DESIGN: the IO MutArray front-end (boxed elements) on the
+-- native runtime.  The std.array.mutable module is implemented in Kappa over a
+-- K_ARRAY runtime slab (O(1) get/set/length), so this must print identically
+-- under the interpreter, the C backend, and the LLVM backend.
+--
+-- Exercises: newArray + init, arrayLen (O(1) pure), arrayWriteOk / arrayReadOpt
+-- (the Option/Bool ergonomic tier), both in- and out-of-bounds, with NO trap on
+-- the out-of-bounds path (Option/Bool absorb the partiality).
+module main
+
+import std.array.mutable.(term newArray, term arrayLen)
+import std.array.mutable.(term arrayReadOpt, term arrayWriteOk)
+
+boolStr : Bool -> String
+let boolStr b = if b then "True" else "False"
+
+-- Print an Option Int as "Some n" / "None".
+showOptInt : Option Int -> String
+let showOptInt o =
+    match o
+      case Some n -> stringAppend "Some " (showInt n)
+      case None -> "None"
+
+main : UIO Unit
+let main = do
+    -- a 4-element array, every slot initialised to 0
+    let arr <- newArray 4 0
+    printlnString (showInt (natToInt (arrayLen arr)))   -- 4
+
+    -- in-bounds writes via the Bool tier (each returns True)
+    let ok0 <- arrayWriteOk arr 0 10
+    let ok1 <- arrayWriteOk arr 1 20
+    let ok2 <- arrayWriteOk arr 2 30
+    let ok3 <- arrayWriteOk arr 3 40
+    printlnString (boolStr ok0)                          -- True
+    -- out-of-bounds write is rejected (False), no trap
+    let okOob <- arrayWriteOk arr 4 99
+    printlnString (boolStr okOob)                        -- False
+
+    -- in-bounds reads via the Option tier
+    let r0 <- arrayReadOpt arr 0
+    let r2 <- arrayReadOpt arr 2
+    printlnString (showOptInt r0)                        -- Some 10
+    printlnString (showOptInt r2)                        -- Some 30
+    -- mutate slot 1 again, then read it back
+    let okW <- arrayWriteOk arr 1 21
+    let r1 <- arrayReadOpt arr 1
+    printlnString (showOptInt r1)                        -- Some 21
+    -- out-of-bounds read returns None, no trap
+    let rOob <- arrayReadOpt arr 7
+    printlnString (showOptInt rOob)                      -- None

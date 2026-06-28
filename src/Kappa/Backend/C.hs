@@ -35,6 +35,7 @@ module Kappa.Backend.C
   , multishotLegality
     -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
   , eraseQ0ArgsP
+  , resultIsProofP
   ) where
 
 import Data.ByteString (ByteString)
@@ -427,11 +428,13 @@ basePrims =
     , "onExit", "onInterrupt" -- §18.1.4 reason-carrying finalizers; lowered to krt2_on_exit/krt2_on_interrupt nodes (compileAppGlob)
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
-    , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
+    , "withScope", "__interruptWait", "__interruptNoWait", "__interruptForkAny" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
+      -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array (kpf_io___newArray/...)
+    , "__newArray", "__arrayRead", "__arrayWrite", "__arrayLen"
       -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
     , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef"
     , "locallyFiberRef" -- §18.1.7 lowered to a krt2_locally_fiber_ref bind tree (compileAppGlob)
@@ -439,6 +442,7 @@ basePrims =
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "__sleepForNanos"
+    , "__currentFiberId", "__fiberId" -- §18.1.10 fiber identity; kpf_current_fiber_id/kpf_fiber_id shims
     , "newPromise", "completePromise", "awaitPromiseExit"
     , "pollPromise", "isDonePromise" -- §18.11 non-blocking peek; kpf_poll_promise/kpf_is_done_promise shims
       -- §18.1.8 structured scopes + monitors (CPS do-kernel, Stage 3)
@@ -601,7 +605,17 @@ emitGlobal g = do
       -- interpreter's value for it is never inspected at runtime.  This is
       -- the by-name counterpart of the erasure that 'compileErasableArg'
       -- applies to inline type-level/quote arguments.
-      erasable <- isErasableArg tm
+      --
+      -- ALSO erase a definition whose RESULT TYPE is a RuntimeErased proof — a
+      -- propositional equality or h-prop evidence (e.g. the prelude lemmas
+      -- 'isPropEq'/'unsafeAssertProof'/'cong', reached via lawful-by-default
+      -- 'Monoid').  Their bodies are the ADMIT primitives '__eqProof' /
+      -- '__unsafeAssertProof' the native runtime does not implement; the proof
+      -- is runtime-irrelevant (§12.2/§31.2/§14.4) so its accessor is the unit
+      -- placeholder and its body is NOT compiled — keeping those primitives off
+      -- the reachable native closure.  See 'resultIsProofP'.
+      proof <- resultIsProof g
+      erasable <- (proof ||) <$> isErasableArg tm
       if erasable
         then do
           (stmts, _) <- captured "0" (pure ())
@@ -965,7 +979,7 @@ scalarPlan g = do
               -- Gates on BOTH the global's own transitive suspender membership
               -- (g ∈ gsSuspenders) and a per-body walk for an inlined/opaque
               -- suspending sub-term, so it stays sound once locals widen.
-              ok <- scalarEligTail g pks ret inner
+              ok <- scalarEligTail g pks (reverse pks) ret inner
               let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp inner
               pure (if ok && not mayParK then Just (pks, ret) else Nothing)
             _ -> pure Nothing
@@ -1103,6 +1117,94 @@ eraseQ0ArgsP globals ctx g term =
       sargs' = go flags sargs
    in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
 
+-- | Is @g@'s RESULT type a RuntimeErased PROOF — a propositional equality
+-- (@(=) x y@ / the §21.6 @CoreEq@), or h-prop evidence (@IsProp@ / @IsSubsingleton@
+-- / @IsSet@ / @IsContr@ / @IsGroupoid@)?  Such a definition is computationally
+-- irrelevant (Spec §12.2/§31.2/§14.4: a proof of an h-prop carries no runtime
+-- content), so its accessor is the unit placeholder and its BODY is NOT compiled.
+--
+-- WHY this exists: 'Monoid' is now lawful-by-default — every instance carries the
+-- equational laws @appendAssoc@/@append*Identity@, whose discharge reaches the
+-- prelude proof lemmas @isPropEq@/@unsafeAssertProof@/@cong@, whose bodies are the
+-- ADMIT primitives @__eqProof@/@__unsafeAssertProof@ the native runtime does not
+-- implement.  Erasing the proof-typed lemmas keeps those primitives off the
+-- reachable native closure.  This is the by-RESULT-type counterpart of the
+-- by-ARGUMENT erasure 'erasedSpinePositionsP' applies (a 'Q0'/kind-domain proof
+-- ARGUMENT is already erased; a proof RESULT was not).
+--
+-- SOUNDNESS: erases ONLY genuine proofs.  The result-head set is exactly the
+-- prelude's propositional-equality and h-prop marker traits — none of which has a
+-- runtime-relevant inhabitant (their members are all erased proofs, §14.4).  A def
+-- whose result is a real runtime value (an @Int@, a dictionary, an @IO@ action …)
+-- has a non-proof head and is left untouched.  FAIL-SAFE like
+-- 'erasedSpinePositionsP': an unknown global / a 'gdType' that does not 'force' to
+-- a recognisable telescope yields @False@ (compile for real — never erase on doubt).
+--
+-- The @forall (@0 p : Type). (@_ : IsProp p) -> … -> p@ shape (i.e.
+-- 'unsafeAssertProof') has a result that is a bound VARIABLE @p@, not a proof head;
+-- it is recognised by the @IsProp p@ / @IsSubsingleton p@ HYPOTHESIS that pins the
+-- SAME binder as the result (compared by absolute de Bruijn level).
+--
+-- Exported so "Kappa.Backend.LLVM" shares the identical verdict (mirrors
+-- 'erasedSpinePositionsP').
+resultIsProofP :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
+resultIsProofP globals ctx g =
+  case Map.lookup g globals of
+    Nothing -> False
+    Just gd -> walk 0 [] (quote ctx 0 (gdType gd))
+  where
+    -- @lvl@ is the telescope DEPTH so far (number of binders in scope = the
+    -- absolute de Bruijn level of the next binder).  @propLvls@ collects the
+    -- absolute levels of binders pinned by an @IsProp _@ / @IsSubsingleton _@
+    -- hypothesis somewhere earlier in the telescope.
+    walk lvl propLvls ty = case ty of
+      CPi _ _ _ _ dom cod ->
+        -- A domain @IsProp (CVar j)@ / @IsSubsingleton (CVar j)@ at depth @lvl@
+        -- pins the binder at absolute level @lvl-1-j@ as proof-typed.
+        let propLvls' = case hypProofVarLevel lvl dom of
+              Just l -> l : propLvls
+              Nothing -> propLvls
+         in walk (lvl + 1) propLvls' cod
+      r -> resultIsProof' lvl propLvls r
+    -- The result type @r@ sits at depth @lvl@.  It is a proof when its head is a
+    -- propositional-equality / h-prop marker, OR it is a bound variable that a
+    -- prior hypothesis pinned as proof-typed.
+    resultIsProof' lvl propLvls r =
+      case headGlob r of
+        Just h | h `Set.member` proofHeads -> True
+        _ -> case r of
+          CVar i -> (lvl - 1 - i) `elem` propLvls
+          _ -> False
+    -- For a domain term at depth @lvl@, if it is @IsProp (CVar j)@ /
+    -- @IsSubsingleton (CVar j)@ return the absolute level of the pinned binder.
+    hypProofVarLevel lvl dom =
+      case spineOf dom of
+        (CGlob h, [(_, CVar j)])
+          | h == Builtins.prelIsProp || h == Builtins.prelIsSubsingleton ->
+              Just (lvl - 1 - j)
+        _ -> Nothing
+    -- The prelude's propositional-equality type and h-prop marker traits.  Every
+    -- inhabitant of one of these is a RuntimeErased proof (§14.4) — no runtime
+    -- content — so a definition producing one is computationally erased.
+    proofHeads =
+      Set.fromList
+        [ Builtins.prelEqType
+        , Builtins.prelIsProp
+        , Builtins.prelIsSubsingleton
+        , Builtins.prelIsSet
+        , Builtins.gPrel "IsContr"
+        , Builtins.gPrel "IsGroupoid"
+        , Builtins.gPrel "CoreEq"
+        ]
+
+-- | 'resultIsProofP' in 'Gen' (this backend's monad), reading the shared
+-- 'gsGlobals' / 'gsEvalCtx'.
+resultIsProof :: GName -> Gen Bool
+resultIsProof g = do
+  globals <- gets gsGlobals
+  ctx <- gets gsEvalCtx
+  pure (resultIsProofP globals ctx g)
+
 -- KBackendIR Stage 3: the head-type → scalar-representation discriminator is
 -- 'Repr.scalarRep' / 'Repr.repSelect' (the shared rep table); this backend's
 -- @ScalarKind@ is the @RepInt@/@RepDouble@ projection of it ('repScalarKind').
@@ -1111,28 +1213,44 @@ eraseQ0ArgsP globals ctx g term =
 -- was the param/result classification now derived from the shared rep plan.
 
 -- | Eligibility of a tail-position term against the worker's return kind: an
--- @if@ (safe-compare condition, eligible branches), a saturated self-call
--- (each arg checks against the corresponding PARAM kind), or a leaf value
--- whose kind equals the return kind.
-scalarEligTail :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
-scalarEligTail g pks ret term = case term of
-  CIf c t e -> andM [scalarEligCond g pks ret c, scalarEligTail g pks ret t, scalarEligTail g pks ret e]
+-- @if@ (safe-compare condition, eligible branches), a @let@ whose RHS is a
+-- scalar (Int/Double) sub-expression (the binder is then in scope, scalar, for
+-- the body — so a hot loop with a let temporary, e.g. mandelbrot's FMA
+-- temporaries, stays scalar-eligible instead of boxing), a saturated self-call
+-- (each arg checks against the corresponding PARAM kind), or a leaf value whose
+-- kind equals the return kind.  @dks@ is the DE-BRUIJN-ORDERED local-kind
+-- context (innermost binder first; initially @reverse pks@) — every let-binder
+-- prepends to it (see 'varParamKind'); @pks@ stays the source-order PARAM kinds
+-- for self-call arity ('lr1SelfArgs') and per-slot arg checking.
+scalarEligTail :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligTail g pks dks ret term = case term of
+  CIf c t e -> andM [scalarEligCond g pks dks ret c, scalarEligTail g pks dks ret t, scalarEligTail g pks dks ret e]
+  -- §let: a let-bound scalar keeps the body scalar-eligible.  The RHS must be a
+  -- scalar value (Int/Double); its kind is prepended to @dks@ as a 'PScalar'
+  -- slot so the body reads the binder at de Bruijn 0.  A non-scalar RHS makes
+  -- the whole body ineligible (→ boxed), never miscompiled.  (CLetRec stays
+  -- unhandled: a local fixpoint is not a scalar value.)
+  CLet _ _ _ rhs body -> do
+    mk <- scalarKindOf g pks dks ret rhs
+    case mk of
+      Just k -> scalarEligTail g pks (PScalar k : dks) ret body
+      Nothing -> pure False
   _
-    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (selfArgElig g pks ret) pks args)
-    | otherwise -> scalarHasKind g pks ret ret term
+    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (selfArgElig g pks dks ret) pks args)
+    | otherwise -> scalarHasKind g pks dks ret ret term
 
 -- | A self-call argument is eligible iff: for a scalar param slot, the arg is a
 -- value of that scalar kind; for a boxed param slot, the arg is a PASS-THROUGH
 -- of a boxed param (a bare @CVar@ of a boxed slot) — the only boxed value the
 -- mixed worker can supply without unboxing/rebuilding (R2.4 slice).
-selfArgElig :: GName -> [ParamKind] -> ScalarKind -> ParamKind -> Term -> Gen Bool
-selfArgElig g pks ret pk arg = case pk of
-  PScalar k -> scalarHasKind g pks ret k arg
+selfArgElig :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ParamKind -> Term -> Gen Bool
+selfArgElig g pks dks ret pk arg = case pk of
+  PScalar k -> scalarHasKind g pks dks ret k arg
   -- any boxed CVar into a boxed slot is fine: source type-checking already
   -- guarantees the self-call arg's type matches the param, and the runtime
   -- representation of every boxed slot is the uniform @KValue *@.
   PBoxed -> pure $ case arg of
-    CVar j -> varParamKind pks j == Just PBoxed
+    CVar j -> varParamKind dks j == Just PBoxed
     _ -> False
 
 -- | Is @term@ a FIXED-OFFSET projection of a BOXED param (@krec_at(boxed,i)@)?
@@ -1144,63 +1262,74 @@ selfArgElig g pks ret pk arg = case pk of
 -- ineligible here (→ boxed worker) rather than reach the worker and escalate
 -- on a valid program.
 isBoxedProj :: [ParamKind] -> Term -> Bool
-isBoxedProj pks term = case term of
-  CProjAt (CVar j) _ _ -> varParamKind pks j == Just PBoxed
+isBoxedProj dks term = case term of
+  CProjAt (CVar j) _ _ -> varParamKind dks j == Just PBoxed
   _ -> False
 
 -- | Does the value-position @term@ have scalar kind @k@?  A projection of a
 -- boxed param is coercible to any @k@ (a tag-checked unbox at codegen).
-scalarHasKind :: GName -> [ParamKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
-scalarHasKind g pks ret k term
-  | isBoxedProj pks term = pure True
+scalarHasKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
+scalarHasKind g pks dks ret k term
+  | isBoxedProj dks term = pure True
   | otherwise = do
-      mk <- scalarKindOf g pks ret term
+      mk <- scalarKindOf g pks dks ret term
       pure (mk == Just k)
 
 -- | The scalar kind of a value-position expression, or @Nothing@ if it is not
 -- scalar-expressible (every prim arg must match the prim's expected kind, so a
 -- mixed-kind misuse such as @addInt acc n@ with @acc:Double@ is rejected, never
--- miscompiled).  A self-call's result is the worker's return kind.  A bare
--- @CVar@ of a BOXED param is NOT a scalar value (it is only usable as a
+-- miscompiled).  A self-call's result is the worker's return kind.  A @let@
+-- whose RHS is scalar binds a scalar binder for its body (so a value-position
+-- @let@ — e.g. a nested FMA temporary — is scalar-expressible, not @Nothing@).
+-- A bare @CVar@ of a BOXED param is NOT a scalar value (it is only usable as a
 -- projection base — see 'isBoxedProj'), so it is @Nothing@ here.
-scalarKindOf :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
-scalarKindOf g pks ret term = case term of
+scalarKindOf :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
+scalarKindOf g pks dks ret term = case term of
   CLit (LitInt m)
     | m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int) -> pure (Just KInt64)
     | otherwise -> pure Nothing
   CLit (LitDouble _) -> pure (Just KDouble)
-  CVar i -> pure (varParamKind pks i >>= paramSK)
+  CVar i -> pure (varParamKind dks i >>= paramSK)
+  CLet _ _ _ rhs body -> do
+    mk <- scalarKindOf g pks dks ret rhs
+    case mk of
+      Just k -> scalarKindOf g pks (PScalar k : dks) ret body
+      Nothing -> pure Nothing
   _ -> case spineOf term of
     (CGlob h, sargs) -> do
       let expl = [a | (Expl, a) <- sargs]
       mp <- globPrimName h
       case mp of
         Just p | Just (rk, argks) <- arithPrim p, length expl == length argks -> do
-          oks <- sequence (zipWith (scalarHasKind g pks ret) argks expl)
+          oks <- sequence (zipWith (scalarHasKind g pks dks ret) argks expl)
           pure (if and oks then Just rk else Nothing)
         _
           | Just args <- lr1SelfArgs g (length pks) term -> do
-              oks <- sequence (zipWith (selfArgElig g pks ret) pks args)
+              oks <- sequence (zipWith (selfArgElig g pks dks ret) pks args)
               pure (if and oks then Just ret else Nothing)
           | otherwise -> pure Nothing
     _ -> pure Nothing
 
--- | The kind of de Bruijn variable @i@ (env order: 0 = innermost = LAST
--- param), i.e. source param @n-1-i@; out of range ⇒ Nothing.
+-- | The kind of de Bruijn variable @i@ against a DE-BRUIJN-ORDERED local-kind
+-- context @dks@ (index 0 = innermost binder).  The worker body's initial @dks@
+-- is @reverse pks@ (so de Bruijn 0 is the LAST param); a 'CLet' PREPENDS its
+-- binder's kind, so a let-bound scalar is read at index 0 with the params
+-- shifted up by one.  Out of range ⇒ Nothing.  (The §let widening replaced the
+-- old params-only @varParamKind pks i = pks !! (n-1-i)@ — the de-Bruijn list IS
+-- @reverse pks@ extended with lets, so the index is direct.)
 varParamKind :: [ParamKind] -> Int -> Maybe ParamKind
-varParamKind pks i =
-  let n = length pks
-   in if i >= 0 && i < n then Just (pks !! (n - 1 - i)) else Nothing
+varParamKind dks i =
+  if i >= 0 && i < length dks then Just (dks !! i) else Nothing
 
 -- | Eligibility of an @if@ condition: a saturated SAFE scalar compare whose
 -- operands have the comparison's operand kind.
-scalarEligCond :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
-scalarEligCond g pks ret term = case spineOf term of
+scalarEligCond :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligCond g pks dks ret term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
     mp <- globPrimName h
     case (mp >>= cmpPrim, expl) of
-      (Just (_, opk), [a, b]) -> andM [scalarHasKind g pks ret opk a, scalarHasKind g pks ret opk b]
+      (Just (_, opk), [a, b]) -> andM [scalarHasKind g pks dks ret opk a, scalarHasKind g pks dks ret opk b]
       _ -> pure False
   _ -> pure False
 
@@ -1222,8 +1351,9 @@ compileScalarWorker g pks ret inner = do
       worker = scalarWorkerName g pks ret
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       env = reverse ps -- de Bruijn 0 = innermost binder = the LAST param
+      dks = reverse pks -- de-Bruijn-ordered slot kinds, parallel to @env@
       paramDecls = T.intercalate ", " (zipWith (\k p -> cParamTy k <> " " <> p) pks ps ++ ["int *kovf"])
-  (bodyStmts, ()) <- captured "0" (scalarTail g pks ret ps env inner)
+  (bodyStmts, ()) <- captured "0" (scalarTail g pks ret ps env dks inner)
   let fn =
         T.unlines $
           [ "static " <> cScalarTy ret <> " " <> worker <> "(" <> paramDecls <> ") {"
@@ -1238,42 +1368,65 @@ compileScalarWorker g pks ret inner = do
 -- | The C expression and type for one self-call argument: a scalar slot is
 -- compiled to its scalar kind; a boxed slot is a pass-through of the boxed C
 -- param (eligibility guarantees the arg is a bare @CVar@ of a boxed slot).
-scalarSelfArg :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ParamKind -> Term -> Gen (Text, Text)
-scalarSelfArg g pks ret env pk a = case pk of
-  PScalar k -> do e <- scalarExpr g pks ret env k a; pure (cScalarTy k, e)
+scalarSelfArg :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ParamKind -> Term -> Gen (Text, Text)
+scalarSelfArg g pks ret env dks pk a = case pk of
+  PScalar k -> do e <- scalarExpr g pks ret env dks k a; pure (cScalarTy k, e)
   PBoxed -> case a of
     CVar j -> pure ("KValue *", env !! j)
     _ -> do e <- lr1Unreachable; pure ("KValue *", e)
 
--- | Compile the body in TAIL position: @if@ branches recurse in tail; a
--- saturated self-call reassigns the params (each temp typed by its slot kind)
--- and @continue@s (an in-place loop — no @KEnv@); any other (leaf, scalar)
--- expr is returned.
-scalarTail :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [Text] -> Term -> Gen ()
-scalarTail g pks ret ps env term = case term of
+-- | Compile the body in TAIL position: @if@ branches recurse in tail; a @let@
+-- emits its scalar RHS into a fresh typed C local and recurses on the body with
+-- that local pushed at de Bruijn 0 (so a let temporary in a hot loop stays in a
+-- register — no boxing); a saturated self-call reassigns the params (each temp
+-- typed by its slot kind) and @continue@s (an in-place loop — no @KEnv@); any
+-- other (leaf, scalar) expr is returned.  @env@/@dks@ are kept in lock-step (the
+-- C-local name and its scalar kind at each de-Bruijn slot).
+scalarTail :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [Text] -> [ParamKind] -> Term -> Gen ()
+scalarTail g pks ret ps env dks term = case term of
   CIf c t e -> do
-    cond <- scalarCond g pks ret env c
-    (tb, ()) <- captured "0" (scalarTail g pks ret ps env t)
-    (eb, ()) <- captured "0" (scalarTail g pks ret ps env e)
+    cond <- scalarCond g pks ret env dks c
+    (tb, ()) <- captured "0" (scalarTail g pks ret ps env dks t)
+    (eb, ()) <- captured "0" (scalarTail g pks ret ps env dks e)
     emit ("if (" <> cond <> ") {")
     forM_ tb (emit . ("  " <>))
     emit "} else {"
     forM_ eb (emit . ("  " <>))
     emit "}"
+  -- §let: bind the scalar RHS in a fresh typed C local and recurse on the body
+  -- with (local, kind) pushed at de Bruijn 0.  Its kind is the RHS's bottom-up
+  -- scalar kind (eligibility already proved it scalar); a let in a SELF-call
+  -- branch correctly reads the param values via the shifted env.
+  CLet _ _ _ rhs body -> do
+    k <- letScalarKind g pks dks ret rhs
+    e <- scalarExpr g pks ret env dks k rhs
+    t <- freshN "lt_"
+    emit (cScalarTy k <> " " <> t <> " = " <> e <> ";")
+    scalarTail g pks ret ps (t : env) (PScalar k : dks) body
   _
     | Just args <- lr1SelfArgs g (length pks) term -> do
         -- tail self-call: evaluate new args into typed temps FIRST (they may
         -- read current params), then reassign params and loop.
         temps <- forM (zip pks args) $ \(pk, a) -> do
-          (cty, ae) <- scalarSelfArg g pks ret env pk a
+          (cty, ae) <- scalarSelfArg g pks ret env dks pk a
           t <- freshN "ti_"
           emit (cty <> " " <> t <> " = " <> ae <> ";")
           pure t
         forM_ (zip ps temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
         emit "continue;"
     | otherwise -> do
-        e <- scalarExpr g pks ret env ret term
+        e <- scalarExpr g pks ret env dks ret term
         emit ("return " <> e <> ";")
+
+-- | The scalar kind a let-RHS evaluates to, recomputed at codegen for the C
+-- local's type.  Eligibility ('scalarKindOf') already proved it 'Just'; this
+-- re-derivation keeps the C-local declaration in sync with that verdict (a
+-- 'Nothing' here is the same invariant break the 'lr1Unreachable' guards catch,
+-- so default to the worker's return kind rather than miscompile).
+letScalarKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen ScalarKind
+letScalarKind g pks dks ret rhs = do
+  mk <- scalarKindOf g pks dks ret rhs
+  pure (maybe ret id mk)
 
 -- | P0.2: if @term@ is a read of a scalarized var (@__runIO (readRef <var>)@,
 -- the elaborator's auto-deref) while emitting the scalar loop region, the
@@ -1313,19 +1466,19 @@ unboxWorker KDouble fb = "kunbox_dbl(" <> fb <> ", kovf)"
 -- a literal, a (scalar) param var, an arith op, or a (non-tail) self-call.
 -- @dk@ is only consulted for the boxed-field coercion; everything else is
 -- determined bottom-up (so all-scalar output is unaffected).
-scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ScalarKind -> Term -> Gen Text
-scalarExpr g pks ret env dk term = do
+scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
+scalarExpr g pks ret env dks dk term = do
   msc <- scalarReadOf term
   case msc of
     Just sloc -> pure sloc
-    Nothing -> scalarExprBody g pks ret env dk term
+    Nothing -> scalarExprBody g pks ret env dks dk term
 
-scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> ScalarKind -> Term -> Gen Text
-scalarExprBody g pks ret env dk term
+scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
+scalarExprBody g pks ret env dks dk term
   -- R2.4: a record-field read of a BOXED param yields a boxed value; coerce it
   -- to the demanded scalar kind with a tag-checked unbox that escapes to the
   -- boxed worker on a wrong tag (so a non-Int/Double field never miscompiles).
-  | CProjAt (CVar j) _ off <- term, isBoxedProj pks term = do
+  | CProjAt (CVar j) _ off <- term, isBoxedProj dks term = do
       fb <- freshN "fb_"
       emit ("KValue *" <> fb <> " = krec_at(" <> (env !! j) <> ", " <> T.pack (show off) <> ");")
       t <- freshN "ti_"
@@ -1336,15 +1489,25 @@ scalarExprBody g pks ret env dk term
       CLit (LitInt m) -> pure (cIntLit m)
       CLit (LitDouble d) -> pure (cDblLit d)
       CVar i -> pure (env !! i)
+      -- §let in value position: emit the scalar RHS into a fresh typed local and
+      -- evaluate the body with it pushed at de Bruijn 0 (the value-position twin
+      -- of 'scalarTail's let case — e.g. an inner FMA temporary used by a leaf
+      -- return expression).
+      CLet _ _ _ rhs body -> do
+        k <- letScalarKind g pks dks ret rhs
+        e <- scalarExpr g pks ret env dks k rhs
+        t <- freshN "lt_"
+        emit (cScalarTy k <> " " <> t <> " = " <> e <> ";")
+        scalarExpr g pks ret (t : env) (PScalar k : dks) dk body
       _ -> case spineOf term of
         (CGlob h, sargs) -> do
           let expl = [a | (Expl, a) <- sargs]
           mp <- globPrimName h
           case mp of
-            Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env p expl
+            Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env dks p expl
             _
               | Just args <- lr1SelfArgs g (length pks) term -> do
-                  aes <- mapM (\(pk, a) -> snd <$> scalarSelfArg g pks ret env pk a) (zip pks args)
+                  aes <- mapM (\(pk, a) -> snd <$> scalarSelfArg g pks ret env dks pk a) (zip pks args)
                   t <- freshN "ti_"
                   emit (cScalarTy ret <> " " <> t <> " = " <> scalarWorkerName g pks ret <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
                   emit "if (*kovf) return 0;"
@@ -1361,12 +1524,12 @@ scalarExprBody g pks ret env dk term
 -- (Driver.hs), so the compiler cannot fuse a @mul@-then-@add@ into a
 -- single-rounding FMA at any @-O@ level.  @intToDouble@ is a C cast (== the
 -- prim's @(double)i@).
-scalarArith :: GName -> [ParamKind] -> ScalarKind -> [Text] -> Text -> [Term] -> Gen Text
-scalarArith g pks ret env p expl = do
+scalarArith :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> Text -> [Term] -> Gen Text
+scalarArith g pks ret env dks p expl = do
   -- each arg is compiled for the prim's expected kind (so a boxed-field arg is
   -- coerced to the right scalar kind); arithPrim p is Just by the caller.
   let argks = maybe [] snd (arithPrim p)
-  aes <- sequence (zipWith (\k a -> scalarExpr g pks ret env k a) argks expl)
+  aes <- sequence (zipWith (\k a -> scalarExpr g pks ret env dks k a) argks expl)
   t <- freshN "ti_"
   esc <- gets gsI64Escape -- worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
   case (p, aes) of
@@ -1388,15 +1551,15 @@ scalarArith g pks ret env p expl = do
 -- | Compile an @if@ condition (a saturated safe scalar compare) to a C boolean
 -- expr.  The C operator comes from 'cmpPrim', which admits only comparisons
 -- whose C operator matches the runtime prim exactly.
-scalarCond :: GName -> [ParamKind] -> ScalarKind -> [Text] -> Term -> Gen Text
-scalarCond g pks ret env term = case spineOf term of
+scalarCond :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> Term -> Gen Text
+scalarCond g pks ret env dks term = case spineOf term of
   (CGlob h, sargs) -> do
     let expl = [a | (Expl, a) <- sargs]
     mp <- globPrimName h
     case (mp >>= cmpPrim, expl) of
       (Just (op, opk), [a, b]) -> do
-        ae <- scalarExpr g pks ret env opk a
-        be <- scalarExpr g pks ret env opk b
+        ae <- scalarExpr g pks ret env dks opk a
+        be <- scalarExpr g pks ret env dks opk b
         pure ("(" <> ae <> " " <> op <> " " <> be <> ")")
       _ -> lr1Unreachable
   _ -> lr1Unreachable
@@ -1549,7 +1712,25 @@ compile term
   -- §18.3 monadic splice: `__runIO e` runs the embedded IO action inline
   -- and yields its result as an ordinary value (matches runSplices).
   | Just action <- runIOSplice term = compileRunIO action
-compile term = case term of
+compile term = do
+  -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global — a
+  -- propositional-equality / h-prop lemma like 'isPropEq' / 'unsafeAssertProof'
+  -- / 'cong' (reached via lawful-by-default 'Monoid' law members) — is
+  -- RuntimeErased.  Erase the WHOLE maximal spine to the unit placeholder so the
+  -- ADMIT primitives '__eqProof'/'__unsafeAssertProof' beneath those lemmas are
+  -- never reached at runtime.  A proof is inert (never eliminated/applied), and a
+  -- proof ARGUMENT to anything is itself erased ('eraseQ0Args' /
+  -- 'compileErasableArg'), so the spine never feeds a live continuation — erasing
+  -- the maximal spine cannot drop a runtime-relevant computation.  See
+  -- 'resultIsProofP'.  ('subst'/'pathInd', whose result is a motive-typed VALUE,
+  -- are correctly NOT proof-typed and fall through to the real compile path.)
+  proofSpine <- case headGlob term of
+    Just g -> resultIsProof g
+    Nothing -> pure False
+  if proofSpine then pure "kunit()" else compileTerm term
+
+compileTerm :: Term -> Gen Text
+compileTerm term = case term of
   CVar i -> do
     -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
     -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
@@ -1908,6 +2089,13 @@ primEntries :: Map Text PrimEntry
 primEntries = Map.fromList
   [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
+  -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array.  The forall (e a) is Q0 and
+  -- dropped by eraseQ0ArgsP before codegen, so the entry sees only value args.
+  -- __arrayLen is PURE (isIO=False); the three mutators are IO (isIO=True).
+  , ("__newArray", PrimEntry "kpf_io___newArray" 2 True)
+  , ("__arrayRead", PrimEntry "kpf_io___arrayRead" 2 True)
+  , ("__arrayWrite", PrimEntry "kpf_io___arrayWrite" 3 True)
+  , ("__arrayLen", PrimEntry "kpf___arrayLen" 1 False)
   , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__absurd", PrimEntry "kpf___absurd" 1 False)
   , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
@@ -2107,6 +2295,10 @@ primEntries = Map.fromList
   , ("__awaitFiber", PrimEntry "kpf_await" 1 False)
   , ("cede", PrimEntry "kpf_cede" 0 False)
   , ("__sleepForNanos", PrimEntry "kpf_sleep_for" 1 False)
+  -- §18.1.10 fiber identity: OP_CURRENT_FIBER_ID / OP_FIBER_ID node builders
+  -- (need the running fiber's state, so CK-machine driven — see suspendingNames).
+  , ("__currentFiberId", PrimEntry "kpf_current_fiber_id" 0 False)
+  , ("__fiberId", PrimEntry "kpf_fiber_id" 1 False)
   , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
   , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
   , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
@@ -2439,6 +2631,13 @@ compileAppGlob g sargs term = do
               cc <- compileErasableArg cause
               fc <- compileErasableArg fib
               pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
+        -- Same OP_INTERRUPT_FORK node as __interruptNoWait, only differently typed
+        -- (free result error channel) — used by `disconnect`'s onInterrupt finalizer.
+        Just "__interruptForkAny"
+          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
+              cc <- compileErasableArg cause
+              fc <- compileErasableArg fib
+              pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
         -- §18.1.13 STM: the journaled monad (stm.c).  The STM do-notation
         -- desugars (via Monad STM) to stmBind/stmPure; the TVar ops + retry are
         -- STM_* tree leaves; `atomically` runs the tree in a transaction
@@ -2525,6 +2724,24 @@ compileRunIO action = do
     (Just "newRef", [v]) -> do
       ve <- compile v
       pure ("kref_new(" <> ve <> ")")
+    -- MUTABLE-ARRAY-DESIGN §7 Stage C: inline an array op run directly under
+    -- __runIO to a bare karr_* call (no K_NATIVE node alloc + krun_io dispatch),
+    -- mirroring the readRef/writeRef/newRef peephole above.  The boxed slab is
+    -- correct; this is the perf delta the general IO-prim path would otherwise
+    -- miss.  The index is an Int KValue*, decoded with kas_int for karr_get/set.
+    (Just "__newArray", [n, v]) -> do
+      ne <- compile n
+      ve <- compile v
+      pure ("karr_new(kas_int(" <> ne <> "), " <> ve <> ")")
+    (Just "__arrayRead", [buf, i]) -> do
+      be <- compile buf
+      ie <- compile i
+      pure ("karr_get(" <> be <> ", kas_int(" <> ie <> "))")
+    (Just "__arrayWrite", [buf, i, v]) -> do
+      be <- compile buf
+      ie <- compile i
+      ve <- compile v
+      pure ("karr_set(" <> be <> ", kas_int(" <> ie <> "), " <> ve <> ")")
     _ -> do
       ae <- compile action
       pure ("krun_io_checked(" <> ae <> ")")
@@ -2894,6 +3111,7 @@ cpsNodeApp term = do
         (Just "poll", []) -> True
         (Just "__interruptWait", [_, _]) -> True
         (Just "__interruptNoWait", [_, _]) -> True
+        (Just "__interruptForkAny", [_, _]) -> True
         (Just "atomically", [_]) -> True
         (Just "stmBind", [_, _]) -> True
         _ -> False
@@ -3284,6 +3502,11 @@ suspendingNames =
       -- CPS-lowered to run on the CK-machine.
     , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef", "locallyFiberRef"
     , "pollPromise", "isDonePromise"
+      -- §18.1.10 fiber identity: OP_CURRENT_FIBER_ID/OP_FIBER_ID read the running
+      -- fiber's state (f->id), which the synchronous krun_io bridge has no handle
+      -- to — so a block using them is CPS-lowered to run on the CK-machine.
+    , "currentFiberId", "fiberId" -- surface (std.prelude)
+    , "__currentFiberId", "__fiberId" -- prims (__prim)
     ]
 
 -- | Is g one of the suspending / CK-machine primitive ops, by module + name?
@@ -4908,11 +5131,11 @@ compileScalarWhile mlabel cond body = do
   -- snapshot BEFORE the condition test (so even a condition-overflow flushes a
   -- valid pre-iteration state, never an uninitialized snapshot).
   forM_ snaps $ \(s, _, snap) -> emit (snap <> " = " <> s <> ";")
-  ce <- scalarCond cur [] KInt64 [] cond
+  ce <- scalarCond cur [] KInt64 [] [] cond
   emit ("if (!" <> ce <> ") goto " <> sflushL <> ";")
   forM_ body $ \item -> case item of
     KAssign (CVar idx) False rhs -> do
-      rhse <- scalarExpr cur [] KInt64 [] KInt64 rhs
+      rhse <- scalarExpr cur [] KInt64 [] [] KInt64 rhs
       case Map.lookup idx scs of
         Just (s, _) -> emit (s <> " = " <> rhse <> ";")
         Nothing -> lr1UnreachableStmt

@@ -6,28 +6,23 @@ module main
 -- table (the `(::) (++) : infix right 50` row) requires the prelude to provide
 -- it. With the fixity in place, `++` parses as a right-associative infix
 -- operator and resolves its `Monoid` constraint normally.
+--
+-- The carrier is `String`, a prelude-provided LAWFUL `Monoid` (§28.2.2 Monoid
+-- is lawful by default: every instance discharges appendAssoc/leftId/rightId;
+-- `String` discharges them through the gated escape via `instance IsSet
+-- String`). A three-operand chain `a ++ b ++ c` exercises the right-associative
+-- parse; `append` is associative, so the value is the same either grouping.
 
-data Sum : Type =
-    Sum Int
+-- Right-associative: parses as "a" ++ ("bb" ++ "ccc").
+joined : String
+let joined = "a" ++ "bb" ++ "ccc"
 
-instance Monoid Sum =
-    let empty = Sum 0
-    let append a b =
-        match a
-          case Sum x ->
-              match b
-                case Sum y -> Sum (x + y)
-
-unwrap : Sum -> Int
-let unwrap s =
-    match s
-      case Sum n -> n
-
--- Right-associative: parses as (Sum 1) ++ ((Sum 20) ++ (Sum 21)).
-total : Int
-let total = unwrap ((Sum 1) ++ (Sum 20) ++ (Sum 21))
+-- empty is the left/right identity of the String monoid.
+withEmpty : String
+let withEmpty = "" ++ joined ++ ""
 
 --! mode check
 --! assertNoErrors
---! assertType total Int
---! assertEval total 42
+--! assertType joined String
+--! assertEval joined "abbccc"
+--! assertEval withEmpty "abbccc"

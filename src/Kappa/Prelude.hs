@@ -13,6 +13,7 @@ module Kappa.Prelude
   , stdFfiSource
   , stdFfiCSource
   , stdAtomicSource
+  , stdArrayMutableSource
   , stdGradualSource
   , stdBridgeSource
   , stdSupervisorSource
@@ -122,6 +123,10 @@ builtinState =
         -- Ref/TVar: it has no readRef/writeRef surface, so atomicity cannot be
         -- bypassed. Built by __newAtomicRef; consumed by the other __atomic* ops.
         (prel "__AtomicCell", opaqueTy (tyV (tType ~> tType)))
+      , -- MUTABLE-ARRAY-DESIGN §4.1: the opaque mutable-array buffer wrapped by
+        -- MutArray. The element type is a Q0-erased parameter that never reaches
+        -- the runtime. Built by __newArray; consumed by __arrayRead/Write/Len.
+        (prel "__ArrayBuf", opaqueTy (tyV (tType ~> tType)))
       , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
         -- labels; rows are encoded as neutral spines
         -- '__effRowCons label iface rest' ending in '__effRowNil'
@@ -281,6 +286,7 @@ builtinState =
     effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
     atomicCellT a = CApp Expl (tcon "__AtomicCell") a -- §29.1 opaque lock-free cell
+    arrayBufT a = CApp Expl (tcon "__ArrayBuf") a -- MUTABLE-ARRAY-DESIGN §4.1 buffer
     listT a = CApp Expl (tcon "List") a
     setT a = CApp Expl (tcon "Set") a
     arrayT a = CApp Expl (tcon "Array") a
@@ -528,6 +534,15 @@ builtinState =
       , prim "__interruptNoWait"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType
             (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (tcon "Void") tUnit))))
+      , -- Same OP_INTERRUPT_FORK node as `__interruptNoWait`, but with a FREE
+        -- result error channel `g` (the no-wait interrupt cannot itself fail, so
+        -- its result channel is unconstrained — cf. `__reraiseCause`/`__timeout`).
+        -- Used only by `disconnect` so its `onInterrupt` finalizer, which must be
+        -- `IO e Unit` for the body's polymorphic `e`, type-checks without forcing a
+        -- `IO Void -> IO e` transport.  forall e a g. InterruptCause -> Fiber e a -> IO g Unit
+        prim "__interruptForkAny"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "g" tType
+            (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 3)) (CVar 2) ~> io (CVar 2) tUnit)))))
       , -- §18.1.5 scheduler yield / interruption point.
         prim "cede" (tyV (io (tcon "Void") tUnit))
       , -- §18.1.2 sandbox/unsandbox: expose / re-hide the full terminal Cause.
@@ -777,6 +792,14 @@ builtinState =
         -- prelude fragment below (ordinary Kappa over Int). sleepUntil is derived.
         prim "__nowNanos" (tyV (io (tcon "Void") tInt))
       , prim "__sleepForNanos" (tyV (tInt ~> io (tcon "Void") tUnit))
+      , -- §18.1.10 fiber identity: the runtime delivers the fiber's stable
+        -- integer id; the FiberId wrapper (MkFiberId) is applied in the
+        -- std.prelude fragment below, exactly as Instant wraps __nowNanos.
+        -- __currentFiberId : UIO Integer. __fiberId : forall e a. Fiber e a -> UIO Integer.
+        prim "__currentFiberId" (tyV (io (tcon "Void") tInt))
+      , prim "__fiberId"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (CApp Expl (CApp Expl (tcon "Fiber") (CVar 1)) (CVar 0) ~> io (tcon "Void") tInt))))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime
@@ -792,8 +815,11 @@ builtinState =
       , prim "__setToList" (tyV (piI Q0 "a" tType (setT (CVar 0) ~> listT (CVar 1))))
       , prim "__arrayFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> arrayT (CVar 1))))
       , prim "__arrayToList" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> listT (CVar 1))))
-      , -- §28.2 total in-bounds index: traps at runtime if out of bounds
-        prim "__arrayIndexUnsafe" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> tInt ~> CVar 1)))
+      , -- §28.2 total in-bounds index: traps at runtime if out of bounds.
+        -- Codomain 'CVar 2' = the element type 'a': the two '~>' arrows (Array a,
+        -- Int) each introduce a binder, so 'a' (bound by 'piI') sits at index 2 in
+        -- the codomain — 'CVar 1' would wrongly name the Int-argument binder.
+        prim "__arrayIndexUnsafe" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> tInt ~> CVar 2)))
       , -- §28.2 unsafeAssertProof escape hatch: an opaque inhabitant of
         -- the asserted proposition (erased; never inspected at runtime)
         prim "__unsafeAssertProof" (tyV (piI Q0 "p" tType (CVar 0)))
@@ -812,6 +838,15 @@ builtinState =
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
+      , -- MUTABLE-ARRAY-DESIGN §4.1: the boxed mutable-array primitives. The
+        -- element type @a@ is a Q0-erased @forall@ slot, dropped before codegen,
+        -- so it NEVER reaches the kpf_* symbol (the erasure-safety contract).
+        -- The index is a plain Int (the surface passes @natToInt i@); the array
+        -- carries its own length.  __arrayLen is PURE (no IO).
+        prim "__newArray" (tyV (forallEA (tNat ~> CVar 1 ~> io (CVar 3) (arrayBufT (CVar 2)))))  -- Nat -> a -> IO e (__ArrayBuf a)
+      , prim "__arrayRead" (tyV (forallEA (arrayBufT (CVar 0) ~> tInt ~> io (CVar 3) (CVar 2))))  -- __ArrayBuf a -> Int -> IO e a
+      , prim "__arrayWrite" (tyV (forallEA (arrayBufT (CVar 0) ~> tInt ~> CVar 2 ~> io (CVar 4) tUnit)))  -- __ArrayBuf a -> Int -> a -> IO e Unit
+      , prim "__arrayLen" (tyV (piI Q0 "a" tType (arrayBufT (CVar 0) ~> tNat)))  -- __ArrayBuf a -> Nat (pure)
       , -- §21.5/§21.9 elaboration-time reflection and diagnostics
         -- (interpreted by the elaborator's §21.8 Elab runner; stuck as
         -- values everywhere else)
@@ -1105,37 +1140,51 @@ preludeSource =
     , "trait Lift (a : Type) =" -- §23.3 lift-based cross-stage persistence
     , "    liftCode : a -> Code a"
     , ""
-    , -- §28.2.2 Monoid. The base trait carries only the OPERATIONS; the §28.2.2
-      -- LAWS (appendAssoc/appendLeftIdentity/appendRightIdentity) are surfaced
-      -- as a separate 'LawfulMonoid' marker sub-trait below (NOT as mandatory
-      -- 'Monoid' members), for a soundness reason (Spec §14.4): the laws are
-      -- propositional EQUALITIES, and Kappa v1 equality is intensional — '(=) x
-      -- y' is an h-prop only over a SET ('IsSet a'). The §11.4 IsProp-under-Pi
-      -- closure solver (which lets a forall law be discharged through the gated
-      -- 'unsafeAssertProof' escape) therefore REQUIRES 'IsSet a' and FAILS
-      -- without it. Folding the laws into 'Monoid' would force the effect-carrier
-      -- instances 'IO e a' / 'STM a' to discharge them too — impossible honestly
-      -- (their equality is not an h-prop), and fabricating 'IsSet (IO e a)' is
-      -- exactly the unsoundness this design avoids. So those carriers stay
-      -- law-LESS plain 'Monoid's (needed for the §18.1.13 'let?'/STM 'empty'
-      -- desugaring) and simply get no 'LawfulMonoid' instance.
-      "trait Monoid (a : Type) =" -- §28.2.2
+    , -- §18.1.13 Pointed: the minimal carrier of a distinguished 'empty'
+      -- element, with NONE of the monoid laws. It is the supertrait of 'Monoid'
+      -- (so every 'Monoid' supplies 'empty' through it), AND it is what the
+      -- effect carriers 'IO e a' / 'STM a' carry on their OWN — their equality is
+      -- not an h-prop, so they cannot be lawful 'Monoid's, but they still need an
+      -- 'empty' for the §18.1.13 'let?'/STM 'empty' desugaring (the
+      -- refutable-miss continuation, and STM's aborted alternative). The
+      -- desugarer emits a bare 'empty' reference whose implicit dictionary
+      -- resolves through 'Pointed'.
+      --
+      -- 'empty' lives in EXACTLY ONE trait. A second value member named 'empty'
+      -- (e.g. duplicating it in 'Monoid') would overwrite this bare-name global
+      -- and mis-route every 'empty' use to the wrong trait's dictionary; so
+      -- 'Monoid' INHERITS 'empty' from 'Pointed' rather than re-declaring it.
+      "trait Pointed (a : Type) ="
     , "    empty : a"
-    , "    append : a -> a -> a"
     , ""
-    , -- §28.2.2 monoid laws as a marker sub-trait. The 'append'/'empty' in each
-      -- law come from the supertrait 'Monoid a' (NO explicit '(@_ : Monoid a) ->'
-      -- dict parameter): the elaborator threads the instance's own dictionary, so
-      -- inside e.g. 'instance LawfulMonoid (List a)' they reduce to the concrete
-      -- 'listAppend'/'Nil' and the proofs can COMPUTE. (A redundant explicit dict
-      -- param would bind an ABSTRACT 'Monoid a' that never reduces, leaving
-      -- 'append'/'empty' stuck — '__stuck_app @0.append' — so no proof closes.)
-      -- The equalities are written in prefix '(=)' form (an infix '(x = y)' in
-      -- member position mis-parses as a binder group). 'x y z' are implicit
-      -- 'forall'-bound, so honest proofs reference top-level recursive lemmas
-      -- (see 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
+    , -- §28.2.2 Monoid. The spec's 'Monoid' is LAWFUL BY DEFAULT: it carries
+      -- 'append' AND the three monoid LAWS
+      -- (appendAssoc/appendLeftIdentity/appendRightIdentity) as mandatory
+      -- members, and inherits 'empty' from its 'Pointed' supertrait. Every
+      -- 'Monoid' instance therefore DISCHARGES the laws — 'String' through the
+      -- gated 'unsafeAssertProof' escape ('instance IsSet String' makes each law
+      -- an h-prop), 'List a' through the HONEST structural induction lemmas
+      -- ('listAppendAssoc'/'listAppendRightIdentity', sound for every element
+      -- type). Each carrier provides its 'empty' via a sibling 'instance Pointed'.
+      --
+      -- The laws are written in prefix '(=)' form (an infix '(x = y)' in member
+      -- position mis-parses as a binder group). 'append' comes from THIS trait
+      -- and 'empty' from the 'Pointed' supertrait (NO explicit dict parameters):
+      -- the elaborator threads the instance's own dictionary (and the supertrait
+      -- 'this.__super0' field for 'empty'), so inside e.g. 'instance Monoid
+      -- (List a)' they reduce to the concrete 'listAppend'/'Nil' and the proofs
+      -- can COMPUTE. 'x y z' are implicit 'forall'-bound, so honest proofs
+      -- reference top-level recursive lemmas (see
+      -- 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
       -- EXPLICITLY and recurse; an instance body does not re-bind 'x y z'.
-      "trait Monoid a => LawfulMonoid (a : Type) ="
+      --
+      -- SOUNDNESS / effect carriers: because the laws are MANDATORY, a type can
+      -- be a 'Monoid' only if it can honestly discharge them. 'IO e a' / 'STM a'
+      -- CANNOT — their propositional equality is not an h-prop (no 'IsSet (IO e
+      -- a)'), and fabricating one is exactly the unsoundness this avoids. They
+      -- are therefore 'Pointed' but NOT 'Monoid'.
+      "trait Pointed a => Monoid (a : Type) =" -- §28.2.2
+    , "    append : a -> a -> a"
     , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
     , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
     , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
@@ -1264,7 +1313,7 @@ preludeSource =
       -- primitive with no spine to induct over, so its laws are asserted, not
       -- proven. This is a marker (the trait has no members here).
       -- NOTE: there is deliberately NO 'instance IsSet (List a)'. List's monoid
-      -- laws are PROVEN honestly by induction (see 'instance LawfulMonoid
+      -- laws are PROVEN honestly by induction (see 'instance Monoid
       -- (List a)' below) and need no set-ness. An unconditional 'IsSet (List a)'
       -- would be FALSE ('List a' is a set only when 'a' is) and would let
       -- 'unsafeAssertProof' forge a '(=) xs ys' at abstract 'a', inhabiting
@@ -1571,17 +1620,18 @@ preludeSource =
       "check : Bool -> STM Unit"
     , "let check c = if c then stmPure Unit else retry"
     , ""
-    , -- §18.1.13: `empty` (the aborted alternative) resolves through
-      -- Monoid, so STM-shaped do-scopes can sequence it as an action
-      "instance Monoid (IO e a) ="
+    , -- §18.1.13: `empty` (the aborted alternative) resolves through the
+      -- law-less `Pointed` trait (NOT `Monoid`, whose mandatory laws this
+      -- carrier cannot honestly discharge — its equality is not an h-prop), so
+      -- IO-shaped do-scopes can sequence it as an action.
+      "instance Pointed (IO e a) ="
     , "    let empty = stmAbort"
-    , "    let append x y = catchIO x (\\err -> y)"
     , ""
-    , -- §18.1.13 STM alternative: `empty` retries the transaction; `append`
-      -- is left-biased over retry. Lets `let?`/refutable forms desugar in STM.
-      "instance Monoid (STM a) ="
+    , -- §18.1.13 STM alternative: `empty` retries the transaction. Lets
+      -- `let?`/refutable forms desugar in STM. `Pointed`, not `Monoid`: STM
+      -- equality is not an h-prop, so the monoid laws cannot be asserted.
+      "instance Pointed (STM a) ="
     , "    let empty = retry"
-    , "    let append x y = x"
     , ""
     , -- RC4 / §28: the mandated `IO e` error-handling instances.  Their
       -- members ARE the §18.1.25 / §19.1 surface operations, delegating to
@@ -1685,6 +1735,15 @@ preludeSource =
       "forkDaemon : forall (e : Type) (a : Type). (IO e a captures ()) -> UIO (Fiber e a)"
     , "let forkDaemon action = __forkDaemon action"
     , ""
+    , -- §18.1.10 fiber identity: every created fiber has a unique FiberId for one
+      -- program execution. `currentFiberId` reports the running fiber's id;
+      -- `fiberId fib` reports a given fiber's. The runtime delivers a raw integer;
+      -- the MkFiberId wrapper is applied here (cf. nowMonotonic over __nowNanos).
+      "currentFiberId : UIO FiberId"
+    , "let currentFiberId = ioBind __currentFiberId (\\n -> ioPure (MkFiberId n))"
+    , "fiberId : forall (e : Type) (a : Type). Fiber e a -> UIO FiberId"
+    , "let fiberId fib = ioBind (__fiberId fib) (\\n -> ioPure (MkFiberId n))"
+    , ""
     , -- §18.1.4 join: await a fiber and project its outcome into the caller —
       -- success returns the value, typed failure re-fails, and any non-typed
       -- runtime cause (interruption/defect) terminates the caller likewise.
@@ -1738,6 +1797,25 @@ preludeSource =
     , ""
     , "interruptFork : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
     , "let interruptFork fib = __interruptNoWait (InterruptCause Requested None) fib"
+    , ""
+    , -- §18.1.4 / PRIMITIVES #5 disconnect (ZIO): detached interruption. Run the
+      -- action on its own forked fiber and `join` it, so success/failure pass
+      -- through transparently; but if the *caller* of `disconnect action` is
+      -- interrupted while it is joined, the `onInterrupt` finalizer issues a
+      -- NON-waiting interrupt (`interruptFork`) to the child. The caller then
+      -- unwinds IMMEDIATELY — it does not block on the child's finalizers — while
+      -- the child finalizes in the background (the §18.1.4 fork-interrupt edge).
+      -- This is the only difference from running `action` inline, where the
+      -- caller's interrupt waits for the action's finalizers (the default
+      -- structured "wait for finalizers"). It is a pure derivation over
+      -- fork/join/onInterrupt/interruptFork — NOT a new runtime primitive
+      -- (`forkDaemon` detaches scope ATTACHMENT, a different axis: it does not
+      -- change the caller's interrupt-wait edge, so it does not subsume this).
+      "disconnect : forall (e : Type) (a : Type). (IO e a captures ()) -> IO e a"
+    , "let disconnect action ="
+    , "    ioBind (fork action) (\\fib ->"
+    , "      onInterrupt (join fib) (\\ic ->"
+    , "        __interruptForkAny (InterruptCause Requested None) fib))"
     , ""
     , -- §18.1.6 race result + the typed timeout error.
       "data RaceResult (a : Type) (b : Type) : Type ="
@@ -2054,35 +2132,41 @@ preludeSource =
     , ""
     , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
       -- under raw-bit Eq. They keep only the operation traits above.
-      "instance Monoid String ="
+      --
+      -- The 'empty' element of each lawful 'Monoid' lives in its sibling
+      -- 'Pointed' instance (the 'Monoid' supertrait), separate from the 'append'
+      -- + laws below. 'String'/'List a' supply both halves here.
+      "instance Pointed String ="
     , "    let empty = \"\""
-    , "    let append x y = stringAppend x y"
     , ""
-    , "instance Monoid (List a) ="
+    , "instance Pointed (List a) ="
     , "    let empty = Nil"
-    , "    let append x y = listAppend x y"
     , ""
-    , -- LAWFUL: 'String' is a set ('instance IsSet String'), so its equational
-      -- laws are honestly h-props and discharge through the gated escape; the
-      -- §11.4 IsProp-under-Pi solver resolves the 'IsProp (forall xs. l = r)'
-      -- obligation by recovering the carrier 'String' and threading its 'IsSet'.
-      "instance LawfulMonoid String ="
-    , "    let appendAssoc = unsafeAssertProof \"LawfulMonoid String: append is associative\""
-    , "    let appendLeftIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a left identity\""
-    , "    let appendRightIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a right identity\""
+    , -- LAWFUL Monoid: 'String' is a set ('instance IsSet String'), so its
+      -- equational laws are honestly h-props and discharge through the gated
+      -- 'unsafeAssertProof' escape; the §11.4 IsProp-under-Pi solver resolves the
+      -- 'IsProp (forall xs. l = r)' obligation by recovering the carrier 'String'
+      -- and threading its 'IsSet'. 'empty' comes from the 'Pointed String'
+      -- supertrait above.
+      "instance Monoid String ="
+    , "    let append x y = stringAppend x y"
+    , "    let appendAssoc = unsafeAssertProof \"Monoid String: append is associative\""
+    , "    let appendLeftIdentity = unsafeAssertProof \"Monoid String: empty is a left identity\""
+    , "    let appendRightIdentity = unsafeAssertProof \"Monoid String: empty is a right identity\""
     , ""
-    , -- LAWFUL: List's monoid laws are PROVEN by structural induction (the
+    , -- LAWFUL Monoid: List's monoid laws are PROVEN by structural induction (the
       -- lemmas 'listAppendRightIdentity'/'listAppendAssoc' are defined further
       -- below, AFTER 'cong'/'subst', whose values they consume — a forward
       -- reference to 'cong' leaves its value unelaborated and mis-resolves the
       -- proof's implicit equality endpoints), so this instance holds for EVERY
       -- element type 'a' and needs no 'IsSet' and no 'unsafeAssertProof'. The
       -- law params are IMPLICIT ('forall (x y z : a).'), bound here with the
-      -- '@'-implicit binder form; 'append'/'empty' reduce to the concrete
-      -- 'listAppend'/'Nil' (the supertrait dict threads through), so each alias
-      -- typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
+      -- '@'-implicit binder form; 'append' reduces to the concrete 'listAppend'
+      -- and 'empty' to 'Nil' (from the 'Pointed (List a)' supertrait), so each
+      -- proof typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
       -- listAppend Nil x ≡ x'), hence 'refl'.
-      "instance LawfulMonoid (List a) ="
+      "instance Monoid (List a) ="
+    , "    let append x y = listAppend x y"
     , "    let appendLeftIdentity @x = refl"
     , "    let appendRightIdentity @x = listAppendRightIdentity x"
     , "    let appendAssoc @x @y @z = listAppendAssoc x y z"
@@ -2332,7 +2416,7 @@ preludeSource =
     , -- The two non-definitional List monoid laws, PROVEN by structural
       -- induction on the spine — sound for EVERY element type 'a', needing no
       -- 'IsSet' and no 'unsafeAssertProof' (they discharge the §28.2.2
-      -- 'LawfulMonoid (List a)' laws above). Top-level recursive lemmas take
+      -- 'Monoid (List a)' laws above). Top-level recursive lemmas take
       -- the spine EXPLICITLY so the body may 'match' and recurse; the cons step
       -- lifts the inductive hypothesis through '(h ::)' via 'consCong' (its
       -- signature pins both list endpoints, so 'cong' resolves with no
@@ -3444,6 +3528,94 @@ stdAtomicSource =
     , "let atomicFetchXor order ref operand ="
     , "    match ref"
     , "    case MkAtomicRef cell -> __atomicFetchXor (rmwOrderCode order) cell operand"
+    ]
+
+-- | Embedded @std.array.mutable@ source (MUTABLE-ARRAY-DESIGN §4.2): the IO
+-- @MutArray@ front-end — the design's FIRST front-end, boxed elements only.
+--
+-- A @MutArray a@ wraps an opaque @__ArrayBuf a@ exactly as @AtomicRef@ wraps an
+-- @__AtomicCell a@ (the §4.1 AtomicRef precedent): each surface op @match@-
+-- unwraps the buffer and forwards ONLY values to a @__array*@ primitive.  The
+-- element type @a@ is a @forall@ = Q0-erased parameter that NEVER reaches the
+-- prim (the erasure-safety contract; the same class of bug as the prior native
+-- IO crash, avoided here because nothing type-shaped is emitted).
+--
+-- Three-tier TOTAL indexing (MUTABLE-ARRAY-DESIGN §6):
+--   1. PROOF-CARRYING (primary): 'arrayRead'/'arrayWrite' take an ERASED
+--      @(i < arrayLen arr) = True@ witness (the §28.2 'arrayIndex' shape).  The
+--      proof erases to nothing, so the op lowers to a bare O(1) load/store with
+--      no runtime bounds check — totality is proven, not paid for.
+--   2. OPTION/BOOL (ergonomic, proof-free): 'arrayReadOpt' returns @None@ out of
+--      bounds; 'arrayWriteOk' returns @False@.  Total because Option/Bool absorb
+--      the partiality (the §29 'arrayGet' discipline).
+--   3. IO FLOOR (runtime trap): the @__array*@ prim itself bounds-checks and
+--      raises a Defect in the IO channel on OOB (krt_fail / a thrown KappaError
+--      — a §18.1.2 IO effect, never pure partiality).  Reached only if a caller
+--      bypasses tiers 1-2; the proof path and the Option path never hit it.
+--
+-- ELEMENT UNBOXING (the design's §5.3 scalar-slab path) is DEFERRED to a later
+-- stage and is the clean seam left for the parallel scalar-rep rework: every
+-- array is born BOXED today (elemkind == KARR_BOXED in the runtime); the
+-- @element_size@/@elemkind@ field and the @__array*@ symbol family are shaped so
+-- the INT64/DOUBLE slabs land as a NEW prim family + a new dispatch arm with no
+-- @K_ARRAY@ redesign and no change to this surface.  ST 'STArray', the linear
+-- 'LinArray', the concurrent 'TArray', and 'freeze'/'thaw' are likewise deferred.
+stdArrayMutableSource :: Text
+stdArrayMutableSource =
+  T.unlines
+    [ "module std.array.mutable"
+    , ""
+    , "-- The opaque handle: a one-field data wrapping the runtime buffer, exactly"
+    , "-- as MkAtomicRef wraps an __AtomicCell.  The element type is erased."
+    , "data MutArray (a : Type) : Type ="
+    , "    MkMutArray (buf : __ArrayBuf a)"
+    , ""
+    , "-- Allocate an n-element array, every slot initialised to `init`.  Total for"
+    , "-- all n: a Nat is non-negative, so the length is well-formed by construction."
+    , "newArray : forall (a : Type). (n : Nat) -> a -> UIO (MutArray a)"
+    , "let newArray n init ="
+    , "    ioBind (__newArray n init) (\\buf -> ioPure (MkMutArray buf))"
+    , ""
+    , "-- O(1), PURE, total: the length is stored in the buffer header."
+    , "arrayLen : forall (a : Type). MutArray a -> Nat"
+    , "let arrayLen arr ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayLen buf"
+    , ""
+    , "-- TIER 1 — proof-carrying total read.  The (i < arrayLen arr) = True witness"
+    , "-- is ERASED, so this lowers to a bare O(1) load with NO bounds check."
+    , "arrayRead : forall (a : Type). (arr : MutArray a) -> (i : Nat) -> (@_ : (i < arrayLen arr) = True) -> UIO a"
+    , "let arrayRead arr i ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayRead buf (natToInt i)"
+    , ""
+    , "-- TIER 1 — proof-carrying total write (mirror of arrayRead).  The erased"
+    , "-- witness is the LAST argument (after the value) so the value binds cleanly,"
+    , "-- matching the §28.2 arrayIndex convention of a tail proof obligation."
+    , "arrayWrite : forall (a : Type). (arr : MutArray a) -> (i : Nat) -> a -> (@_ : (i < arrayLen arr) = True) -> UIO Unit"
+    , "let arrayWrite arr i v ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayWrite buf (natToInt i) v"
+    , ""
+    , "-- TIER 2 — ergonomic, proof-free read: None out of bounds.  Total because"
+    , "-- Option absorbs the partiality (the §29 arrayGet discipline)."
+    , "arrayReadOpt : forall (a : Type). MutArray a -> Nat -> UIO (Option a)"
+    , "let arrayReadOpt arr i ="
+    , "    match arr"
+    , "    case MkMutArray buf ->"
+    , "        if ltInt (natToInt i) (natToInt (__arrayLen buf))"
+    , "        then ioBind (__arrayRead buf (natToInt i)) (\\x -> ioPure (Some x))"
+    , "        else ioPure None"
+    , ""
+    , "-- TIER 2 — ergonomic, proof-free write: False (no write) out of bounds,"
+    , "-- True on success."
+    , "arrayWriteOk : forall (a : Type). MutArray a -> Nat -> a -> UIO Bool"
+    , "let arrayWriteOk arr i v ="
+    , "    match arr"
+    , "    case MkMutArray buf ->"
+    , "        if ltInt (natToInt i) (natToInt (__arrayLen buf))"
+    , "        then ioBind (__arrayWrite buf (natToInt i) v) (\\_ -> ioPure True)"
+    , "        else ioPure False"
     ]
 
 -- | Embedded @std.gradual@ source (§24.9): explicit dynamic values.
