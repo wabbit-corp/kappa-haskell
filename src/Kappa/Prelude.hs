@@ -511,6 +511,15 @@ builtinState =
       , prim "__interruptNoWait"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType
             (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 2)) (CVar 1) ~> io (tcon "Void") tUnit))))
+      , -- Same OP_INTERRUPT_FORK node as `__interruptNoWait`, but with a FREE
+        -- result error channel `g` (the no-wait interrupt cannot itself fail, so
+        -- its result channel is unconstrained — cf. `__reraiseCause`/`__timeout`).
+        -- Used only by `disconnect` so its `onInterrupt` finalizer, which must be
+        -- `IO e Unit` for the body's polymorphic `e`, type-checks without forcing a
+        -- `IO Void -> IO e` transport.  forall e a g. InterruptCause -> Fiber e a -> IO g Unit
+        prim "__interruptForkAny"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "g" tType
+            (tcon "InterruptCause" ~> CApp Expl (CApp Expl (tcon "Fiber") (CVar 3)) (CVar 2) ~> io (CVar 2) tUnit)))))
       , -- §18.1.5 scheduler yield / interruption point.
         prim "cede" (tyV (io (tcon "Void") tUnit))
       , -- §18.1.2 sandbox/unsandbox: expose / re-hide the full terminal Cause.
@@ -1721,6 +1730,25 @@ preludeSource =
     , ""
     , "interruptFork : forall (e : Type) (a : Type). Fiber e a -> UIO Unit"
     , "let interruptFork fib = __interruptNoWait (InterruptCause Requested None) fib"
+    , ""
+    , -- §18.1.4 / PRIMITIVES #5 disconnect (ZIO): detached interruption. Run the
+      -- action on its own forked fiber and `join` it, so success/failure pass
+      -- through transparently; but if the *caller* of `disconnect action` is
+      -- interrupted while it is joined, the `onInterrupt` finalizer issues a
+      -- NON-waiting interrupt (`interruptFork`) to the child. The caller then
+      -- unwinds IMMEDIATELY — it does not block on the child's finalizers — while
+      -- the child finalizes in the background (the §18.1.4 fork-interrupt edge).
+      -- This is the only difference from running `action` inline, where the
+      -- caller's interrupt waits for the action's finalizers (the default
+      -- structured "wait for finalizers"). It is a pure derivation over
+      -- fork/join/onInterrupt/interruptFork — NOT a new runtime primitive
+      -- (`forkDaemon` detaches scope ATTACHMENT, a different axis: it does not
+      -- change the caller's interrupt-wait edge, so it does not subsume this).
+      "disconnect : forall (e : Type) (a : Type). (IO e a captures ()) -> IO e a"
+    , "let disconnect action ="
+    , "    ioBind (fork action) (\\fib ->"
+    , "      onInterrupt (join fib) (\\ic ->"
+    , "        __interruptForkAny (InterruptCause Requested None) fib))"
     , ""
     , -- §18.1.6 race result + the typed timeout error.
       "data RaceResult (a : Type) (b : Type) : Type ="

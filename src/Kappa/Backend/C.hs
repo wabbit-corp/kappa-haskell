@@ -427,7 +427,7 @@ basePrims =
     , "onExit", "onInterrupt" -- §18.1.4 reason-carrying finalizers; lowered to krt2_on_exit/krt2_on_interrupt nodes (compileAppGlob)
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
-    , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
+    , "withScope", "__interruptWait", "__interruptNoWait", "__interruptForkAny" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
@@ -2439,6 +2439,13 @@ compileAppGlob g sargs term = do
               cc <- compileErasableArg cause
               fc <- compileErasableArg fib
               pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
+        -- Same OP_INTERRUPT_FORK node as __interruptNoWait, only differently typed
+        -- (free result error channel) — used by `disconnect`'s onInterrupt finalizer.
+        Just "__interruptForkAny"
+          | [cause, fib] <- [a | (Expl, a) <- sargs] -> do
+              cc <- compileErasableArg cause
+              fc <- compileErasableArg fib
+              pure ("krt2_interrupt_fork_as(" <> cc <> ", " <> fc <> ")")
         -- §18.1.13 STM: the journaled monad (stm.c).  The STM do-notation
         -- desugars (via Monad STM) to stmBind/stmPure; the TVar ops + retry are
         -- STM_* tree leaves; `atomically` runs the tree in a transaction
@@ -2894,6 +2901,7 @@ cpsNodeApp term = do
         (Just "poll", []) -> True
         (Just "__interruptWait", [_, _]) -> True
         (Just "__interruptNoWait", [_, _]) -> True
+        (Just "__interruptForkAny", [_, _]) -> True
         (Just "atomically", [_]) -> True
         (Just "stmBind", [_, _]) -> True
         _ -> False
