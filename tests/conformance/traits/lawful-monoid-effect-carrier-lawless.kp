@@ -1,24 +1,28 @@
 module main
 
--- §14.4 soundness: the effect carrier `IO e a` is a plain (law-LESS) `Monoid`
--- but NOT a `LawfulMonoid` — its propositional equality is not an h-prop (no
--- `IsSet (IO e a)`), so the monoid laws cannot be honestly asserted for it.
--- A `LawfulMonoid (IO e a)` obligation is therefore unsatisfiable: there is no
--- such instance, and (correctly) none can be fabricated.  `Monoid (IO e a)`
--- itself still resolves — it is needed for the §18.1.13 `let?`/STM `empty`
--- desugaring — which is why the carrier keeps a Monoid but loses the laws.
+-- §14.4 soundness: the prelude's `Monoid` is LAWFUL BY DEFAULT (it carries the
+-- monoid laws as mandatory members).  The effect carrier `IO e a` CANNOT
+-- discharge those laws — its propositional equality is not an h-prop (no
+-- `IsSet (IO e a)`), and fabricating one is exactly the unsoundness this avoids.
+-- So `IO e a` is NOT a `Monoid`: a `Monoid (IO e a)` obligation is unsatisfiable
+-- (no such instance, and none can be fabricated).  It still needs an `empty` for
+-- the §18.1.13 `let?`/STM `empty` desugaring, which it gets from the minimal,
+-- law-LESS `Pointed` trait instead.
 
-needLawful : forall (a : Type). (@_ : LawfulMonoid a) -> Unit
-let needLawful = Unit
+needMonoid : forall (a : Type). (@_ : Monoid a) -> Unit
+let needMonoid = Unit
 
--- `Monoid (IO e a)` resolves (the law-less base trait is available):
-okMonoid : forall (e : Type) (a : Type). (@_ : Monoid (IO e a)) -> Unit
-let okMonoid = Unit
+needPointed : forall (a : Type). (@_ : Pointed a) -> Unit
+let needPointed = Unit
 
--- but `LawfulMonoid (IO e a)` does NOT: no instance, and the laws would need a
+-- `Pointed (IO e a)` resolves (the law-less `empty`-only trait is available):
+okPointed : forall (e : Type) (a : Type). (@_ : Pointed (IO e a)) -> Unit
+let okPointed = Unit
+
+-- but `Monoid (IO e a)` does NOT: no instance, and the laws would need a
 -- fabricated `IsSet (IO e a)` that this implementation correctly refuses.
-badLawful : forall (e : Type) (a : Type). Unit
-let badLawful = needLawful @(IO e a)
+badMonoid : forall (e : Type) (a : Type). Unit
+let badMonoid = needMonoid @(IO e a)
 
 --! mode check
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
