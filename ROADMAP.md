@@ -120,11 +120,27 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    test harness is not concurrency-safe** (`run-native-tests.sh` shares `/tmp/kserver` + the frag dir + a
    fixed port → false failures under parallel agents — needs a per-run temp dir + dynamic port); the
    remaining runtime spec-coverage stubs (blocking, supervisor, labels, sandbox).
-5. **Bigger levers** — ✅ done: the LLVM **curried-CK-machine-prim** gap (`2ceea5f`); the LLVM **function**
-   scalar-worker (`555f50b`, mandelbrot). **OPEN — the marquee perf lever: Perceus reuse + value-unboxing**
-   (the alloc multipliers the benchmarks quantified — kappa runs 10-250× off the leaders, dominated by
-   uniform boxing). Couples with the array element-unboxing (#2 Stages B→H) and the pointer-tagging research
-   (3-bit GC-safe tag); needs the typed-Core rep map. The single highest-impact remaining performance item.
+5. **Bigger levers** — ✅ done: LLVM **curried-CK-machine-prim** gap (`2ceea5f`); LLVM **function**
+   scalar-worker (`555f50b`); **value-unboxing largely landed** — immediate tagging (Int `b001` + nullary
+   `b010` + packed 1/2-field `b011` ctors, all active in `value.c`), the suspendability gate (Stage 1.5),
+   the F64 Double worker (Stage 2b). **OPEN — the marquee: Perceus precise RC** — design **DONE**
+   ([PERCEUS-RC-DESIGN.md](runtime/docs/PERCEUS-RC-DESIGN.md)). The only path to the *dominant residual*
+   allocation that tagging cannot touch (n-ary ctor per-field box indirection + the 832 B/fork frame);
+   replaces Boehm, reuses Kappa's **quantity/borrow system as the ownership substrate** (owned `1` / borrowed
+   `&` / shared `ω` + path-sensitive last-use already computed — erased before KBackendIR, so it must be
+   *threaded* as IR metadata). Staged:
+   - **S0 — reconcile + header.** ✅ reconcile done (`8775aec`, tag-budget vs TAGGING-RESEARCH). Add the
+     `rc`+`shared` word to the free `KValue` header hole (offset 4, zero struct growth).
+   - **S1 — thread ownership onto KBackendIR.** Carry the elaborated owned/borrowed/last-use decisions (+ the
+     tighter-than-declared whole-program usage refinement, §3a, static-link only) onto the IR the backend
+     lowers; give `CCtor`/`CMatch` the type/size reuse needs. *The foundational multi-week item.*
+   - **S2 — dup/drop, Boehm differential backstop.** Perceus dup/drop on the strict core; Boehm still frees
+     while a debug mode asserts `rc` counts against the collector (de-risks the use-after-free failure mode).
+   - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
+   - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
+   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
+   - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
+   Couples with the array element-unboxing (#2 Stages B→H) and the [lazy-data note](docs/kappa_lazy_data_semantics_note.md) (the lazy+RC boundary).
 6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
    Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
    `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
