@@ -125,6 +125,24 @@ explicit-control-flow core
 - Perceus is **garbage-free** (Thm 4) on the strict core — at every step every heap object is reachable
   from the erased program, i.e. no float-ing garbage between a last-use and its drop.
 
+### 3a. Tighter-than-declared usage refinement (whole-program; static-link only)
+
+A declared quantity is the **upper bound** the programmer committed to in the signature; the program's
+*actual* usage may be tighter. `foo : ω Foo -> Bar` whose body — and, across the visible call graph, whose
+callers — use the `Foo` exactly once supports refining the effective range to `[1,1]`. That lets the RC
+(a) treat the parameter as **owned**, so it can **drop/reuse** the `Foo`'s storage instead of conservatively
+treating it as shared, and (b) **elide the `dup`** a conservative `ω` would force at a use that looks shared.
+The refinement only ever **tightens** a declared range, never widens it, so it can never violate the source
+contract — it just unlocks reuse where the program proves it safe.
+
+This is a **whole-program optimization**: it needs the full call graph, so it is sound **only within a
+statically-linked compilation unit**. Across a **dynamic-link boundary the declared signature is the
+contract** — a separately-compiled caller may use the value differently — so refinement there is unsound and
+the RC must fall back to the declared quantity. Mechanism: compute the refined per-binding usage interval
+during the same whole-program pass that threads ownership to KBackendIR (S1, §7); store it as IR metadata
+for statically-linked consumers; honor the declared quantity at every dynamic/separately-compiled boundary.
+It folds into the S1 ownership threading — the same data, just tighter.
+
 ---
 
 ## 4. Cycles — totality is the asset

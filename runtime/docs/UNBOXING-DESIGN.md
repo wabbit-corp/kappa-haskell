@@ -71,7 +71,7 @@ monomorphization, and changing the shared 40-byte `KValue` layout.
 | **Effect-typed trait polymorphism, possibly unbounded/dependent instantiation** | No whole-program monomorphization. The uniform boxed `KValue` stays the single calling convention for all polymorphic code (compile once over pointers). Unboxing is a *per-monomorphic-instantiation, per-call-site* backend decision. A polymorphic position stays boxed *by construction* — a type variable presents as a non-scalar head in `scalarHeadKindV` and falls through to `PBoxed`, the safe default. |
 | **Boxed `KValue` shared with the interpreter** | Unboxing is a **native-backend overlay only** for *codegen*. The 40-byte box layout (`kappart.h`, K_CTOR/K_REC/K_CLO/K_NATIVE union) never changes, so the interpreter's boxed model is unaffected. Immediate tagging reinterprets the native `KValue*` *word* but the runtime's deref discipline must be made tag-safe at all 299+ sites (§5.1). |
 | **CPS do-kernel + values-across-suspension (`KEnv`)** | Tagged immediates fit the `KValue*` `KEnv` slot → they cross a park natively (Stage 1's biggest *structural* win, though second-order in bytes against the 832 B/fork frame, §8). Worker/wrapper unboxed scalars live in C locals (`gsScalars`/`gsParamLvals`), are *lost across a park* (CPS-DESIGN R5), so they stay gated to provably suspension-free regions; at a real safepoint they re-box into the `KEnv`. |
-| **Future Perceus precise RC + LLVM** | The layout kind / low-bit tag is exactly the per-slot ptr-vs-scalar map RC needs: `dup`/`drop` adjust only boxed pointers (LSB 0), skip immediates (LSB 1) and scalar-typed slots. **Stage 1 reserves the full low 3 bits** (not just 1, §5.4) so the future borrow/thread-shared discriminator is not boxed in. |
+| **Future Perceus precise RC + LLVM** | The layout kind / low-bit tag is exactly the per-slot ptr-vs-scalar map RC needs: `dup`/`drop` adjust only boxed pointers (LSB 0), skip immediates (LSB 1) and scalar-typed slots. **Stage 1 reserves the full low 3 bits** (not just 1, §5.4) for immediate KINDS; the Perceus RC count + borrow/thread-shared discriminator live in the heap-object header, NOT the tag (§5.4 correction / TAGGING-RESEARCH / PERCEUS-RC-DESIGN §2). |
 | **`emitScalarLoop` precedent** | Stage 2 is the generalization of it: replace the syntactic prim-name/shape gate with the type-directed `scalarHeadKindV`-over-`gdType` decision the backend *already computes*; reuse `kunbox_i64`/`kunbox_dbl`/`*ovf` as the escape net. The new eligibility must *independently* re-prove suspension-freedom via §3.3, because the prim-name allowlist previously guaranteed that implicitly (§7, Stage 2a). |
 | **Portable `Int = int64 + GMP`** | The overflow-escape (`__builtin_*_overflow` → `K_BIGINT`/GMP) is preserved in both stages. Stage 1's immediate is a 63-bit int with an overflow check to the existing boxed bignum path; Stage 2's int64 worker has the identical escape. This is OCaml/Zarith's exact shape — *with the added obligation* that Int equality/match normalizes across the inline/bignum boundary (§5.3). |
 
@@ -293,11 +293,17 @@ range becomes a **false interior root** (leak); the scheme also assumes aligned-
 - Add `_Static_assert(alignof(max_align_t) >= 8, ...)` and a runtime check that `kgc_alloc`
   and `gmp_gc_alloc` (`kappart.c:21,46`, both `GC_MALLOC`) return 8-aligned pointers (sample
   a few allocations at init, assert LSB-3 == 0).
-- **Reserve all low 3 bits**, documenting the tag-space budget so the future Perceus
-  discriminator (borrow / thread-shared splits) is not boxed in by a 1-bit convention baked
-  into ~299 sites. Proposed budget: `b001` immediate-Int, `b010` immediate-ctor
-  (Bool/Unit/Nil/None, tag id in the payload), `b000` pointer; `b011`/`b1xx` reserved for
-  Perceus.
+- **Reserve all low 3 bits** for immediate KINDS, documenting the tag-space budget so a future
+  immediate kind is not boxed in by a 1-bit convention baked into ~299 sites. Budget (as
+  implemented): `b000` pointer, `b001` immediate-Int, `b010` immediate nullary-ctor (tag id in
+  the payload), `b011` packed 1/2-field ctor; `b1xx` reserved for further immediate kinds (e.g.
+  immediate Char). **CORRECTION (supersedes the earlier "reserved for Perceus" framing, per
+  [TAGGING-RESEARCH](TAGGING-RESEARCH.md):29-41): the Perceus RC count + borrow/thread-shared
+  discriminator do NOT live in these tag bits.** An immediate is value-copied and never
+  reference-counted, and a tag-bit RC discriminator would *alias* — the same heap object reached
+  via a borrowed vs an owned reference would carry different tags. The RC count + discriminator
+  live in the heap-object header (the free 4-byte hole at `KValue` offset 4); see
+  [PERCEUS-RC-DESIGN §2/§9](PERCEUS-RC-DESIGN.md).
 
 ### 5.5 Floating-point semantics for the F64 worker (Stage 2b)
 
@@ -397,7 +403,7 @@ and is the artifact both stages produce.
   last reference).
 - A scalar **captured across `fork`** crosses a thread boundary; classify it distinctly
   (thread-shared) so that if it ever needs boxing it gets atomic RC — matching Perceus's
-  borrow/thread-shared split. (This is part of why §5.4 reserves 3 bits.)
+  borrow/thread-shared split — the thread-shared bit is a heap-header field, not a tag code (§5.4 correction / PERCEUS-RC-DESIGN §2/§5).
 
 ---
 
@@ -578,7 +584,7 @@ time per stage; do not assume negligible.
 | R8 | **`let`/`match`-local re-inference** is a new untyped-Core analysis — a soundness minefield, larger than the worker codegen. | High | Break out as **Stage 2a-pre** with its own soundness review; err-to-`Boxed` on every ambiguity (§7). |
 | R9 | **FP contraction / raw-bit compare** on the F64 worker diverges from the interpreter (`a*b+c` FMA; `NaN`/signed-zero). | Medium | `-ffp-contract=off`, no `-ffast-math` on worker TUs; keep `eqDouble`/`leDouble` out of the unboxed allowlist with a regression guard (§5.5). |
 | R10 | **FixedFFI unbox** naively reuses `kunbox_i64` and wrongly escapes every `U64 ≥ 2^63`. | Medium | Carrier-specific unbox replicating `kas_u64`/`mpz_export`; interpreter-consistent re-box; round-trip test at `0xFFFFFFFFFFFFFFFF` (§5.6). |
-| R11 | **One-way door**: Stage 1's tag convention becomes load-bearing for unbuilt Perceus; a later 2-bit discriminator would be boxed in. | Low | Reserve all low 3 bits now and document the budget (§5.4). |
+| R11 | **One-way door** (RESOLVED): the Perceus RC discriminator does NOT live in the tag — it is a heap-header field (TAGGING-RESEARCH / PERCEUS-RC-DESIGN §2), so the low 3 bits being load-bearing for immediate kinds boxes nothing in for Perceus. | Low | Reserve the low 3 bits for immediate kinds; the RC discriminator is a header field, not a tag code (§5.4). |
 | R12 | **Worker fan-out** inflates compile time / i-cache. | Low | Bounded to ~4 layout classes; measure emitted-C LOC + compile-time delta per stage (§8). |
 
 ---
@@ -607,8 +613,9 @@ time per stage; do not assume negligible.
   monomorphic types, as today; the calling-convention rule is "unknown layout ⇒ boxed" (§4).
 - **Swift-style value-witness tables.** Overkill: Perceus handles value lifecycle and the boxed
   fallback already covers unknown-layout copy/move (§4).
-- **Stealing only 1 tag bit.** Rejected for forward-compat: reserve all low 3 so Perceus's
-  borrow/thread-shared discriminator is not boxed in by a convention baked into ~299 sites
+- **Stealing only 1 tag bit.** Rejected for forward-compat: reserve all low 3 for additional immediate KINDS,
+  not boxed in by a convention baked into ~299 sites (the Perceus discriminator is a header
+  field, not a tag — TAGGING-RESEARCH)
   (§5.4, R11).
 
 ---
