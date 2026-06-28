@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\nzero\nnegative\npast\nafter\n"
+
+-- §18.1.6: a nonpositive sleep duration must complete IMMEDIATELY, not park
+-- forever.  The native runtime read the OP_SLEEP duration through a
+-- `(uint64_t)` cast, so a NEGATIVE ns — notably `sleepUntil` of an already-past
+-- `Instant`, whose `instantDiff` is negative — wrapped to a huge unsigned and
+-- the fiber parked ~forever (never woken).  Each sleep below would HANG on a
+-- regression; the suite's per-case timeout turns that into a visible failure
+-- rather than reaching the final "after" line.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    -- sleepFor 0: a zero duration must return at once.
+    sleepFor (nanos 0)
+    printlnString "zero"
+    -- sleepFor of a NEGATIVE duration must also return at once.
+    sleepFor (nanos (negInt 1000000000))
+    printlnString "negative"
+    -- sleepUntil of an instant in the PAST: `instantDiff past now` is negative,
+    -- the exact path that wrapped to a near-infinite park.
+    now <- nowMonotonic
+    let past = instantAdd now (nanos (negInt 1000000000))
+    sleepUntil past
+    printlnString "past"
+    printlnString "after"

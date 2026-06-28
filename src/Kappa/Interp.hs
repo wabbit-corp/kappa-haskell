@@ -129,6 +129,31 @@ fiberRefInit = unsafePerformIO (newIORef Map.empty)
 fiberLocals :: IORef (Map.Map ThreadId (Map.Map Int Value))
 fiberLocals = unsafePerformIO (newIORef Map.empty)
 
+-- | §18.1.10 fiber identity. The interpreter keys every per-fiber registry by
+-- 'ThreadId'; for a source-visible integer id we assign one lazily on first
+-- request (a counter + a 'ThreadId'->'Integer' map). This guarantees the spec's
+-- two properties: each fiber gets a unique id for the program run, and the id is
+-- STABLE — so @currentFiberId@ (keyed by the running thread) and @fiberId fib@
+-- (keyed by the fiber's ThreadId) return the same value for the same fiber. The
+-- exact numbering need not match the native runtime's spawn-order ids; only
+-- uniqueness + agreement are required (§18.1.10).
+{-# NOINLINE fiberIds #-}
+fiberIds :: IORef (Map.Map ThreadId Integer)
+fiberIds = unsafePerformIO (newIORef Map.empty)
+
+-- | The stable integer id for a fiber's ThreadId, assigning a fresh one on first
+-- request. 'atomicModifyIORef'' makes the assign-or-reuse a single atomic step so
+-- two fibers racing on the SAME ThreadId can never get distinct ids.
+fiberIdOf :: ThreadId -> IO Integer
+fiberIdOf tid =
+  atomicModifyIORef' fiberIds $ \m -> case Map.lookup tid m of
+    Just i -> (m, i)
+    Nothing ->
+      -- next id = current map size + 1 (ids start at 1, matching the native
+      -- runtime's `next_id + 1`); unique because the map only ever grows.
+      let i = fromIntegral (Map.size m) + 1
+       in (Map.insert tid i m, i)
+
 -- | §18.1.12 masking: a per-fiber stack of the mask-ENTRY explicit depths recorded
 -- by enclosing 'mask' calls. The head is the depth that held just before the
 -- innermost active 'mask' raised it. The internal '__restore' primitive — which a
@@ -1078,6 +1103,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- §18.1 the two irreducible time prims take/return raw ns Ints; the typed
   -- Duration/Instant wrappers (incl. sleepUntil) are the std.time .kp fragment.
   ("__nowNanos", _) -> (VLit . LitInt . fromIntegral) <$> getMonotonicTimeNSec
+  -- §18.1.10 fiber identity. The raw integer id is delivered here; the FiberId
+  -- (MkFiberId) wrapper is the std.prelude surface (cf. nowMonotonic/Instant).
+  -- currentFiberId reports the running fiber's id; fiberId reports a target's.
+  ("__currentFiberId", _) -> (VLit . LitInt) <$> (myThreadId >>= fiberIdOf)
+  ("__fiberId", [VFiber tid _]) -> (VLit . LitInt) <$> fiberIdOf tid
   -- §18.1.6 sleep parks ONLY the current fiber (interruptible threadDelay on
   -- a non-threaded RTS yields to other runnable fibers — it does not block the
   -- agent; a throwTo wakes it as an interruption point). Nonpositive returns now.
