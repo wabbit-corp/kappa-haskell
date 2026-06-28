@@ -2325,27 +2325,22 @@ isPropClosure ctx sp goal = do
         -- ladder and thread it into 'isPropEq'; without it, this base case fails
         -- (Spec §14.4 — no UIP for arbitrary @a@).
         --
-        -- The @=@ former is @forall (@0 a). a -> a -> Type@, but its implicit
-        -- type slot is unreliable here — the elaborator frequently leaves it
-        -- solved to an EQUAND (or a sub-component of the carrier) rather than to
-        -- the carrier itself, and every other equality consumer in this module
-        -- ignores spine[0] for the same reason.  So we recover the carrier @a@
-        -- from candidate sources, trying each until @IsSet a@ resolves: first
-        -- the lhs equand's own type (authoritative when it can be read), then
-        -- the enclosing law binders' domains.  Threading a wrong @a@ cannot be
-        -- unsound: 'isPropEq @a' then proves @IsProp ((=)\@a x y)@, which fails
-        -- to match the actual goal @IsProp ((=)\@a' x y)@ unless @a = a'@.
+        -- The carrier @a@ is the equands' OWN homogeneous type — @x, y : a@ —
+        -- recovered by 'equandType', and we require @IsSet@ of THAT carrier and
+        -- nothing else.  An earlier version also tried the enclosing binder
+        -- domains and the types of any rigid merely OCCURRING in a stuck equand;
+        -- that was UNSOUND.  The evidence ladder ('resolveImplicitQ' ->
+        -- 'elabSpineArg') advances the goal by the resolved term's VALUE and
+        -- never checks its TYPE against the goal, so threading @isPropEq \@aFake@
+        -- is NOT rejected when @aFake \= a@.  A set-typed rigid merely occurring
+        -- in a stuck equand (e.g. a @String@ @s@ in the @Bool@ equality
+        -- @eqStr s s = False@) would then certify a non-h-prop and let
+        -- 'unsafeAssertProof' forge a false equality, inhabiting @Void@.  So we
+        -- never guess a carrier the equands do not actually have: if 'equandType'
+        -- cannot read it, or it is not a set, the obligation fails honestly.
         _ | Just (xV, yV) <- eqSides pF -> do
           mEq <- equandType cx xV
-          -- Carrier candidates, in priority order: the lhs equand's own type
-          -- (when readable), then the enclosing law-binder domains, then the
-          -- types of the bound variables OCCURRING in the equands (a law binder
-          -- @v@ appearing in @lhs@/@rhs@ has the carrier type — this is the
-          -- fallback that covers stuck equands like a recursive @listAppend@ on
-          -- neutral arguments, whose own type cannot be read structurally).
-          varTys <- rigidVarTypes cx [xV, yV]
-          let cands = maybe id (:) mEq (doms ++ varTys)
-          mPick <- firstCarrierWithSet cands
+          mPick <- firstCarrierWithSet (maybe [] pure mEq)
           case mPick of
             Nothing -> pure Nothing
             Just (aV, setTm) -> do
@@ -2455,40 +2450,17 @@ equandType cx v = do
           applySpineType cod rest
         _ -> pure Nothing
 
--- | The context-binder types of the rigid (bound) variables OCCURRING in the
--- given values, deduped by binder level, nearest-binder-first.  Used by the
--- IsProp-under-Pi solver as a carrier-recovery fallback: in an equational law
--- @lhs = rhs@ over carrier @a@, the law's @forall@ binders are exactly the
--- rigids appearing in @lhs@/@rhs@ and each has type @a@.  This recovers @a@
--- even when the equands are stuck terms whose own type cannot be read off
--- structurally.  The traversal is bounded and covers the value shapes an
--- equand can take (neutral applications, primitives, constructors, stuck
--- matches/projections); it deliberately does not descend under binders.
-rigidVarTypes :: Ctx -> [Value] -> CheckM [Value]
-rigidVarTypes cx vs = do
-  lvls <- collectAll vs
-  pure
-    [ ceType e
-    | lvl <- lvls
-    , let idx = ctxLen cx - 1 - lvl
-    , (e : _) <- [drop idx (ctxEntries cx)]
-    ]
-  where
-    collectAll xs = nub . concat <$> mapM (collect (16 :: Int)) xs
-    collect 0 _ = pure []
-    collect fuel v = do
-      vf <- forceM v
-      case vf of
-        VRigid lvl spine -> (lvl :) . concat <$> mapM (collect (fuel - 1) . snd) spine
-        VGlobN _ spine -> concat <$> mapM (collect (fuel - 1) . snd) spine
-        VFlex _ spine -> concat <$> mapM (collect (fuel - 1) . snd) spine
-        VPrim _ args -> concat <$> mapM (collect (fuel - 1)) args
-        VCtor _ args -> concat <$> mapM (collect (fuel - 1)) args
-        VIOAction _ args -> concat <$> mapM (collect (fuel - 1)) args
-        VInject _ v' -> collect (fuel - 1) v'
-        VProjN v' _ -> collect (fuel - 1) v'
-        VMatchN scrut _ _ -> collect (fuel - 1) scrut
-        _ -> pure []
+-- NOTE: a 'rigidVarTypes' carrier-recovery fallback used to live here, feeding
+-- the IsProp-under-Pi solver's equality base case extra carrier candidates — the
+-- types of rigid variables merely OCCURRING in the equands. It was REMOVED as
+-- UNSOUND: it let the solver grab a set-typed carrier FOREIGN to the equality
+-- (e.g. 'IsSet String' from a 'String' rigid 's' inside the 'Bool' equality
+-- 'eqStr s s = False'), and the evidence ladder ('resolveImplicitQ' ->
+-- 'elabSpineArg') never type-checks the threaded 'isPropEq @aForeign' against
+-- the goal, so 'unsafeAssertProof' could then forge a false equality, inhabiting
+-- 'Void'. The equality base case now uses ONLY the equands' own homogeneous type
+-- ('equandType'). Regression:
+-- tests/conformance/equality/isprop-eq-foreign-carrier-rigid-rejected.kp.
 
 -- | §22.4: a goal of shape @forall xs. IsTrait (tc x)@ is satisfied by
 -- a synthesized witness whenever its head is the builtin 'IsTrait'
