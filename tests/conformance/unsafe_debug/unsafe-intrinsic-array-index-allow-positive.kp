@@ -1,0 +1,14 @@
+@AllowUnsafeIntrinsics module main
+
+-- §4.5 (POSITIVE): the '@AllowUnsafeIntrinsics' module attribute lifts the
+-- raw-admit gate. The SAME 'bad' binding is REJECTED with
+-- E_UNSAFE_INTRINSIC_GATED in a plain module (see
+-- unsafe-intrinsic-array-index-gated.kp). '__arrayIndexUnsafe (__arrayFromList
+-- []) 0' is the array form of the 6th soundness hole — an empty 'Array (free
+-- a)' indexed to extract an arbitrary 'a' purely. Under the attribute the gate
+-- is lifted and the module checks cleanly.
+
+bad : (=) True False
+let bad = __arrayIndexUnsafe (__arrayFromList []) 0
+
+--! assertNoErrors

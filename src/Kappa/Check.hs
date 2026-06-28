@@ -3823,6 +3823,21 @@ infer ctx expr = case expr of
                 (CRecordT (sortOn fst fields))
             , VSort lvl
             )
+  -- §18.3 compiler-synthesized monadic splice: the desugarer ('desugarBang')
+  -- emits @EVar runIOSpliceName@ (a name the lexer cannot produce) as the head
+  -- of an @__runIO action@ eliminator. Resolve the head DIRECTLY to the prelude
+  -- @__runIO@ global — bypassing 'resolveName' and so its raw-admit gate — then
+  -- elaborate the spine exactly as the generic application path would. The bare
+  -- user-written @__runIO@ remains gated (it is an @unsafePerformIO@ that, over
+  -- the free-`a` @throwIO@, forges false proofs); only this internal splice is
+  -- exempt, mirroring 'derefVar' / the monadic-@while@ condition which already
+  -- build the @CGlob prelRunIO@ eliminator directly.
+  EApp (EVar qn) args
+    | nameText qn == runIOSpliceName -> do
+        mrt <- globalTerm prelRunIO
+        case mrt of
+          Just (rtTm, rtTy) -> elabSpine ctx (nameSpan qn) rtTm rtTy args
+          Nothing -> resolveName ctx qn -- unreachable: prelude always defines __runIO
   -- §21.6 convenience reflection queries in ordinary (non-Elab)
   -- positions run at the call site ('elabReflQuery')
   EApp (EVar qn) args
@@ -10672,11 +10687,28 @@ markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
           }
    in after {ctxEntries = map mark new ++ old}
 
+-- | The COMPILER-SYNTHESIZED splice head (§18.3). A `!e` (and the §18.6.1
+-- var-deref / §18.6 monadic-`while`-condition splices) wraps the spliced
+-- action in an @__runIO@ eliminator. The bare prelude @__runIO@ is a gated
+-- raw-admit (it discards the IO error channel — an @unsafePerformIO@ that,
+-- composed with the free-`a` @throwIO : forall e a. e -> IO e a@, would forge
+-- @__runIO (throwIO Unit) : (=) True False@; see 'gatedUnsafeIntrinsics').
+-- The desugarer therefore does NOT emit @EVar "__runIO"@ (which would route
+-- through 'resolveName' and trip its own gate); it emits this sentinel head,
+-- which the 'EApp' elaborator ('elabRunIOSplice') turns directly into a
+-- @CGlob prelRunIO@ application — exactly as 'derefVar' and the monadic
+-- @while@ condition already build the eliminator term directly, bypassing
+-- user name resolution. The @!@ sigil is not a legal source identifier char
+-- (the lexer admits only @[A-Za-z0-9_]@ and non-ASCII letters), so a user
+-- can never write this name to forge an ungated @__runIO@.
+runIOSpliceName :: Text
+runIOSpliceName = "__runIO!"
+
 -- `!e` splicing inside do items (§18.3): rewritten to runIO marker the
 -- interpreter understands; typing treats !e : a where e : IO err a.
 desugarBang :: Expr -> Expr
 desugarBang = \case
-  EBang _ e sp -> EApp (EVar (Name "__runIO" sp)) [ArgExplicit (desugarBang e)]
+  EBang _ e sp -> EApp (EVar (Name runIOSpliceName sp)) [ArgExplicit (desugarBang e)]
   -- §18.3.1 immediate-application splice: an /open/ `!f x y` is sugar for
   -- `!(f x y)`, i.e. the entire maximal application spine is the splice
   -- operand. The parser produces `EApp (EBang False f) [x, y]`, so when
@@ -10685,7 +10717,7 @@ desugarBang = \case
   -- `(!f) x` (explicitly parenthesised) splices `f` first and then applies
   -- the result to `x`, so it falls through to the ordinary EApp rule.
   EApp (EBang False f bsp) args ->
-    EApp (EVar (Name "__runIO" bsp))
+    EApp (EVar (Name runIOSpliceName bsp))
       [ArgExplicit (EApp (desugarBang f) (map mapArg args))]
   EApp f args -> EApp (desugarBang f) (map mapArg args)
   EIf alts mels sp ->
@@ -13667,21 +13699,47 @@ gateUnsafeAssertProof (GName gm nm) sp
 -- (unqualified, module-aliased, fully-qualified, and reified-module-member),
 -- so there is no path by which ordinary user code reaches the raw admit.
 -- Each accepted opt-in use is recorded in the §4.7 audit ledger.
--- The complete set of user-nameable prelude prims whose RESULT type is a
--- free, unpinned variable (it is bound by the prim's telescope but appears
--- in no argument, so it unifies with any target type). Each therefore
--- inhabits an arbitrary proposition and is a raw admit. A full prelude scan
--- (§4.5) found exactly these six: the four proof intrinsics plus the two
--- @std.debug@ introspection prims @__debugInspect@/@__debugCompare@, whose
--- result @r@ is pinned only by the std.debug wrappers one module up but is
--- free at the bare-prim level — @let bogus : (=) True False = __debugInspect 0@
--- type-checks. @__debugRender@ is deliberately NOT here: its result is pinned
--- (@-> String@), so it is not exploitable, and a §11.4 positive test names it
--- from a plain module to exercise carrier recovery through a primitive equand
--- (isprop-eq-string-prim-carrier-positive.kp) — gating it would break that
--- legitimate use for no soundness gain. (@__runIO@/@__arrayIndexUnsafe@/
--- @__codeEscape@/@__rowExtend@ all have pinned results; @__unsafeAssertProof@
--- is gated separately by 'gateUnsafeAssertProof'.)
+-- The complete set of user-nameable prelude prims that inhabit an arbitrary
+-- proposition, in two classes:
+--
+--   (a) RESULT type a free, unpinned variable — bound by the prim's telescope
+--       but appearing in no argument, so it unifies with any target type. A
+--       full prelude scan (§4.5) found these six: the four proof intrinsics
+--       plus the two @std.debug@ introspection prims @__debugInspect@/
+--       @__debugCompare@, whose result @r@ is pinned only by the std.debug
+--       wrappers one module up but is free at the bare-prim level —
+--       @let bogus : (=) True False = __debugInspect 0@ type-checks.
+--
+--   (b) An eliminator whose result is pinned to a FREE argument variable that
+--       a SOUND producer can supply unconstrained — a composition hole. The
+--       6th hole: @__runIO : forall e a. IO e a -> a@ extracts the result of
+--       an @IO e a@ PURELY, discarding the error channel (it is
+--       @unsafePerformIO@). Its result @a@ is pinned to the argument, so the
+--       original free-RESULT survey excluded it; but @throwIO : forall e a.
+--       e -> IO e a@ produces @IO e a@ with a FREE @a@ (sound — the value
+--       never yields an @a@), and @__runIO (throwIO Unit) : (=) True False@
+--       then type-checks. So @__runIO@ is gated too. The program entry does
+--       NOT need it (the runtime drives @main@; see 'runIOSpliceName'), and
+--       compiler-synthesized splices bypass the gate by building the
+--       eliminator term directly.
+--
+-- @__debugRender@ is deliberately NOT gated: its result is pinned to @String@
+-- (no free variable, no producer can liberate it), so it is not exploitable,
+-- and a §11.4 positive test names it from a plain module to exercise carrier
+-- recovery through a primitive equand (isprop-eq-string-prim-carrier-positive.kp)
+-- — gating it would break that legitimate use for no soundness gain. The
+-- §28.5 STEP-3 composition survey checked every remaining pinned-result
+-- eliminator for a free-variable producer: @__codeEscape : Code t -> t@ has no
+-- way to build a @Code (free t)@ (the only code producer, @.<e>.@, requires a
+-- well-typed @e : t@); @runPure : Eff __effRowNil a -> a@ has no @Eff (free a)@
+-- producer (@throwIO@/@stmAbort@ produce @IO@, not @Eff@, and a fully-handled
+-- @__effRowNil@ row cannot be reached with a free result); and @atomically :
+-- STM a -> IO Void a@ / @runCode : ClosedCode t -> IO Void t@ wrap (not extract)
+-- the result. The two that DID have a sound free-variable producer —
+-- @__runIO@ (via @throwIO@/@stmAbort@) and @__arrayIndexUnsafe@ (via
+-- @__arrayFromList []@) — are gated above. @__bytesIndexUnsafe@/@__rowExtend@
+-- have concrete results (@Byte@ / a row), no free variable to liberate.
+-- @__unsafeAssertProof@ is gated separately by 'gateUnsafeAssertProof'.
 --
 -- @std.testing.failNow@ (type @forall (@0 a : Type). String -> a@) has the same
 -- raw-admit shape — its result @a@ is free — and, unlike the six prelude prims,
@@ -13703,6 +13761,39 @@ gatedUnsafeIntrinsics =
         , "__handleEff"
         , "__debugInspect"
         , "__debugCompare"
+        , -- §4.5 (6th hole): @__runIO : forall e a. IO e a -> a@ is an
+          -- @unsafePerformIO@ — it DISCARDS the IO error channel and extracts
+          -- the result @a@ PURELY. Its OWN result is pinned (the @a@ also
+          -- appears in the @IO e a@ argument), which is why the original
+          -- free-RESULT door-survey excluded it. But composition liberates the
+          -- variable: @throwIO : forall e a. e -> IO e a@ has a FREE @a@ in its
+          -- result (sound — the IO value never produces an @a@), so a plain
+          -- module could write @let bad : (=) True False = __runIO (throwIO Unit)@
+          -- (type-checks), then @subst@ over a discriminator family inhabits
+          -- @Void@: total unsoundness. The program ENTRY does not need this
+          -- name — both native backends and the interpreter drive @main@'s IO
+          -- value through the runtime (@krt2_run_main@ / @runIOValue@), never a
+          -- synthesized @__runIO main@ term — and the compiler-synthesized @!e@
+          -- / var-deref / monadic-@while@ splices build the eliminator directly
+          -- (see 'runIOSpliceName' / 'derefVar'), bypassing this gate. So only a
+          -- USER-direct @__runIO@ reaches here, and it is correctly gated.
+          "__runIO"
+        , -- §4.5 (same 6th-hole composition class): @__arrayIndexUnsafe :
+          -- forall a. Array a -> Int -> a@ extracts an element PURELY, and its
+          -- result @a@ is pinned to the @Array a@ argument — so, like @__runIO@,
+          -- the original free-RESULT survey passed it over. But @__arrayFromList
+          -- : forall a. List a -> Array a@ applied to the empty list @[]@ builds
+          -- an @Array (free a)@ with NO element (a genuinely empty array — the
+          -- producer is sound), and indexing it liberates the free @a@:
+          -- @let bad : (=) True False = __arrayIndexUnsafe (__arrayFromList []) 0@
+          -- type-checks. Users have the safe @arrayIndex@/@Array.get@ wrappers
+          -- (which return @Option@/trap), and the embedded prelude's own
+          -- @arrayIndex@ definition uses this prim under the
+          -- 'csAllowUnsafeIntrinsics' exemption, so gating the bare prim costs
+          -- ordinary code nothing. (@__bytesIndexUnsafe : Bytes -> Nat -> Byte@
+          -- is NOT gated: its result @Byte@ is concrete — no free variable to
+          -- liberate.)
+          "__arrayIndexUnsafe"
         ]
     ]
       ++ [GName modTesting "failNow"]

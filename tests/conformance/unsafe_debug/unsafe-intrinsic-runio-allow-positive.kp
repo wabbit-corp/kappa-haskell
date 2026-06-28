@@ -1,0 +1,15 @@
+@AllowUnsafeIntrinsics module main
+
+-- §4.5 (POSITIVE): the '@AllowUnsafeIntrinsics' module attribute lifts the
+-- raw-admit gate. The SAME 'bad' binding is REJECTED with
+-- E_UNSAFE_INTRINSIC_GATED in a plain module (see
+-- unsafe-intrinsic-runio-gated.kp). '__runIO (throwIO Unit)' is the 6th
+-- soundness hole — '__runIO' is an 'unsafePerformIO' that discards the IO
+-- error channel and, composed with the free-'a' 'throwIO', extracts an
+-- arbitrary 'a' purely. Under the attribute the gate is lifted and the module
+-- checks cleanly.
+
+bad : (=) True False
+let bad = __runIO (throwIO Unit)
+
+--! assertNoErrors
