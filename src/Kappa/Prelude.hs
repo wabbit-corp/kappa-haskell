@@ -13,6 +13,7 @@ module Kappa.Prelude
   , stdFfiSource
   , stdFfiCSource
   , stdAtomicSource
+  , stdArrayMutableSource
   , stdGradualSource
   , stdBridgeSource
   , stdSupervisorSource
@@ -105,6 +106,10 @@ builtinState =
         -- Ref/TVar: it has no readRef/writeRef surface, so atomicity cannot be
         -- bypassed. Built by __newAtomicRef; consumed by the other __atomic* ops.
         (prel "__AtomicCell", opaqueTy (tyV (tType ~> tType)))
+      , -- MUTABLE-ARRAY-DESIGN §4.1: the opaque mutable-array buffer wrapped by
+        -- MutArray. The element type is a Q0-erased parameter that never reaches
+        -- the runtime. Built by __newArray; consumed by __arrayRead/Write/Len.
+        (prel "__ArrayBuf", opaqueTy (tyV (tType ~> tType)))
       , -- §18.1.14 algebraic effects: the Eff carrier, effect rows and
         -- labels; rows are encoded as neutral spines
         -- '__effRowCons label iface rest' ending in '__effRowNil'
@@ -264,6 +269,7 @@ builtinState =
     effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
     atomicCellT a = CApp Expl (tcon "__AtomicCell") a -- §29.1 opaque lock-free cell
+    arrayBufT a = CApp Expl (tcon "__ArrayBuf") a -- MUTABLE-ARRAY-DESIGN §4.1 buffer
     listT a = CApp Expl (tcon "List") a
     setT a = CApp Expl (tcon "Set") a
     arrayT a = CApp Expl (tcon "Array") a
@@ -795,6 +801,15 @@ builtinState =
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
+      , -- MUTABLE-ARRAY-DESIGN §4.1: the boxed mutable-array primitives. The
+        -- element type @a@ is a Q0-erased @forall@ slot, dropped before codegen,
+        -- so it NEVER reaches the kpf_* symbol (the erasure-safety contract).
+        -- The index is a plain Int (the surface passes @natToInt i@); the array
+        -- carries its own length.  __arrayLen is PURE (no IO).
+        prim "__newArray" (tyV (forallEA (tNat ~> CVar 1 ~> io (CVar 3) (arrayBufT (CVar 2)))))  -- Nat -> a -> IO e (__ArrayBuf a)
+      , prim "__arrayRead" (tyV (forallEA (arrayBufT (CVar 0) ~> tInt ~> io (CVar 3) (CVar 2))))  -- __ArrayBuf a -> Int -> IO e a
+      , prim "__arrayWrite" (tyV (forallEA (arrayBufT (CVar 0) ~> tInt ~> CVar 2 ~> io (CVar 4) tUnit)))  -- __ArrayBuf a -> Int -> a -> IO e Unit
+      , prim "__arrayLen" (tyV (piI Q0 "a" tType (arrayBufT (CVar 0) ~> tNat)))  -- __ArrayBuf a -> Nat (pure)
       , -- §21.5/§21.9 elaboration-time reflection and diagnostics
         -- (interpreted by the elaborator's §21.8 Elab runner; stuck as
         -- values everywhere else)
@@ -3427,6 +3442,94 @@ stdAtomicSource =
     , "let atomicFetchXor order ref operand ="
     , "    match ref"
     , "    case MkAtomicRef cell -> __atomicFetchXor (rmwOrderCode order) cell operand"
+    ]
+
+-- | Embedded @std.array.mutable@ source (MUTABLE-ARRAY-DESIGN §4.2): the IO
+-- @MutArray@ front-end — the design's FIRST front-end, boxed elements only.
+--
+-- A @MutArray a@ wraps an opaque @__ArrayBuf a@ exactly as @AtomicRef@ wraps an
+-- @__AtomicCell a@ (the §4.1 AtomicRef precedent): each surface op @match@-
+-- unwraps the buffer and forwards ONLY values to a @__array*@ primitive.  The
+-- element type @a@ is a @forall@ = Q0-erased parameter that NEVER reaches the
+-- prim (the erasure-safety contract; the same class of bug as the prior native
+-- IO crash, avoided here because nothing type-shaped is emitted).
+--
+-- Three-tier TOTAL indexing (MUTABLE-ARRAY-DESIGN §6):
+--   1. PROOF-CARRYING (primary): 'arrayRead'/'arrayWrite' take an ERASED
+--      @(i < arrayLen arr) = True@ witness (the §28.2 'arrayIndex' shape).  The
+--      proof erases to nothing, so the op lowers to a bare O(1) load/store with
+--      no runtime bounds check — totality is proven, not paid for.
+--   2. OPTION/BOOL (ergonomic, proof-free): 'arrayReadOpt' returns @None@ out of
+--      bounds; 'arrayWriteOk' returns @False@.  Total because Option/Bool absorb
+--      the partiality (the §29 'arrayGet' discipline).
+--   3. IO FLOOR (runtime trap): the @__array*@ prim itself bounds-checks and
+--      raises a Defect in the IO channel on OOB (krt_fail / a thrown KappaError
+--      — a §18.1.2 IO effect, never pure partiality).  Reached only if a caller
+--      bypasses tiers 1-2; the proof path and the Option path never hit it.
+--
+-- ELEMENT UNBOXING (the design's §5.3 scalar-slab path) is DEFERRED to a later
+-- stage and is the clean seam left for the parallel scalar-rep rework: every
+-- array is born BOXED today (elemkind == KARR_BOXED in the runtime); the
+-- @element_size@/@elemkind@ field and the @__array*@ symbol family are shaped so
+-- the INT64/DOUBLE slabs land as a NEW prim family + a new dispatch arm with no
+-- @K_ARRAY@ redesign and no change to this surface.  ST 'STArray', the linear
+-- 'LinArray', the concurrent 'TArray', and 'freeze'/'thaw' are likewise deferred.
+stdArrayMutableSource :: Text
+stdArrayMutableSource =
+  T.unlines
+    [ "module std.array.mutable"
+    , ""
+    , "-- The opaque handle: a one-field data wrapping the runtime buffer, exactly"
+    , "-- as MkAtomicRef wraps an __AtomicCell.  The element type is erased."
+    , "data MutArray (a : Type) : Type ="
+    , "    MkMutArray (buf : __ArrayBuf a)"
+    , ""
+    , "-- Allocate an n-element array, every slot initialised to `init`.  Total for"
+    , "-- all n: a Nat is non-negative, so the length is well-formed by construction."
+    , "newArray : forall (a : Type). (n : Nat) -> a -> UIO (MutArray a)"
+    , "let newArray n init ="
+    , "    ioBind (__newArray n init) (\\buf -> ioPure (MkMutArray buf))"
+    , ""
+    , "-- O(1), PURE, total: the length is stored in the buffer header."
+    , "arrayLen : forall (a : Type). MutArray a -> Nat"
+    , "let arrayLen arr ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayLen buf"
+    , ""
+    , "-- TIER 1 — proof-carrying total read.  The (i < arrayLen arr) = True witness"
+    , "-- is ERASED, so this lowers to a bare O(1) load with NO bounds check."
+    , "arrayRead : forall (a : Type). (arr : MutArray a) -> (i : Nat) -> (@_ : (i < arrayLen arr) = True) -> UIO a"
+    , "let arrayRead arr i ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayRead buf (natToInt i)"
+    , ""
+    , "-- TIER 1 — proof-carrying total write (mirror of arrayRead).  The erased"
+    , "-- witness is the LAST argument (after the value) so the value binds cleanly,"
+    , "-- matching the §28.2 arrayIndex convention of a tail proof obligation."
+    , "arrayWrite : forall (a : Type). (arr : MutArray a) -> (i : Nat) -> a -> (@_ : (i < arrayLen arr) = True) -> UIO Unit"
+    , "let arrayWrite arr i v ="
+    , "    match arr"
+    , "    case MkMutArray buf -> __arrayWrite buf (natToInt i) v"
+    , ""
+    , "-- TIER 2 — ergonomic, proof-free read: None out of bounds.  Total because"
+    , "-- Option absorbs the partiality (the §29 arrayGet discipline)."
+    , "arrayReadOpt : forall (a : Type). MutArray a -> Nat -> UIO (Option a)"
+    , "let arrayReadOpt arr i ="
+    , "    match arr"
+    , "    case MkMutArray buf ->"
+    , "        if ltInt (natToInt i) (natToInt (__arrayLen buf))"
+    , "        then ioBind (__arrayRead buf (natToInt i)) (\\x -> ioPure (Some x))"
+    , "        else ioPure None"
+    , ""
+    , "-- TIER 2 — ergonomic, proof-free write: False (no write) out of bounds,"
+    , "-- True on success."
+    , "arrayWriteOk : forall (a : Type). MutArray a -> Nat -> a -> UIO Bool"
+    , "let arrayWriteOk arr i v ="
+    , "    match arr"
+    , "    case MkMutArray buf ->"
+    , "        if ltInt (natToInt i) (natToInt (__arrayLen buf))"
+    , "        then ioBind (__arrayWrite buf (natToInt i) v) (\\_ -> ioPure True)"
+    , "        else ioPure False"
     ]
 
 -- | Embedded @std.gradual@ source (§24.9): explicit dynamic values.

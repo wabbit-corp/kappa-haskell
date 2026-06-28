@@ -35,6 +35,11 @@ typedef enum {
   K_CLO,   /* closure: arity-1 function pointer + captured environment   */
   K_IO,    /* suspended IO action (do-block / sequencing)                */
   K_REF,   /* mutable cell (var / MonadRef, §18.6.1)                     */
+  K_ARRAY, /* mutable O(1) array: length-prefixed slab; K_REF widened to  */
+           /* N cells (MUTABLE-ARRAY-DESIGN §5.1).  `elemkind`/`element_  */
+           /* size` pick the slab rep — boxed today (every element a      */
+           /* b000 KValue*); the field exists so the unboxed INT64/DOUBLE  */
+           /* scalar slabs are a later additive change, NOT a reshape.     */
   K_FGN,   /* opaque foreign/host pointer (FFI: socket fd, sqlite3*, …)   */
   K_VARIANT, /* variant injection: member-identity tag + payload (§13)   */
   K_THUNK,  /* suspended pure computation (Delay/Memo, §19)              */
@@ -122,6 +127,16 @@ struct KValue {
     struct { KFn fn; KEnv *env; } clo;
     struct { KIOFn fn; KEnv *env; } io;
     struct { KValue **cell; } ref;             /* cell[0] is the contents */
+    /* K_ARRAY (MUTABLE-ARRAY-DESIGN §5.1): `elems` is ONE allocation —
+     * the boxed slab is a kgc_alloc(len*sizeof(KValue*)) SCANNED block, exactly
+     * like K_CTOR's args.  `len` makes arrayLen O(1) and pure; `cap` is the
+     * growth seed (cap == len today).  `elemkind`/`element_size` are the slab-
+     * rep discriminator and the GC-alloc selector: BOXED (==8) scanned today;
+     * INT64/DOUBLE atomic slabs slot in later with NO struct change.  `elems`
+     * is `void *` (not `KValue **`) precisely so the same box later holds an
+     * int64_t[]/double[] without reinterpretation. */
+    struct { void *elems; int64_t len; int64_t cap;
+             uint8_t elemkind; uint8_t element_size; } arr;
     struct { void *p; const char *kind; } fgn;
     /* LR2: `tagid` is the variant injection's numeric identity (codegen-
      * assigned, 0-based — variants are never built by the runtime).  `tag`
@@ -445,6 +460,18 @@ KValue *kio(KIOFn fn, KEnv *env);
 KValue *kfail(KValue *err);
 int     kis_fail(KValue *v);
 KValue *kref_new(KValue *init);
+/* K_ARRAY elemkind discriminator (MUTABLE-ARRAY-DESIGN §5.1/§5.3.3).  ONLY the
+ * boxed kind is produced today; the scalar kinds reserve their values so the
+ * later INT64/DOUBLE slabs slot in beside the boxed ops with no renumbering. */
+enum { KARR_BOXED = 0, KARR_INT64 = 1, KARR_DOUBLE = 2 };
+/* Boxed mutable array (MUTABLE-ARRAY-DESIGN §5.1): N-cell generalization of
+ * K_REF.  `karr_new(n, init)` allocates a SCANNED n-slot KValue* slab filled
+ * with `init`; get/set/len are O(1).  Index out of range / wrong tag traps via
+ * krt_fail (the runtime floor, §6 tier 3). */
+KValue *karr_new(int64_t n, KValue *init);
+KValue *karr_get(KValue *arr, int64_t i);
+KValue *karr_set(KValue *arr, int64_t i, KValue *v);  /* returns Unit */
+int64_t karr_len(KValue *arr);
 KValue *kfgn(void *p, const char *kind);
 KValue *kinject(int tagid, const char *tag, KValue *payload); /* §13 variant injection */
 KValue *kthunk(KIOFn fn, KEnv *env, int memo);       /* §19 Delay(0)/Memo(1)  */

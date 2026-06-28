@@ -2483,6 +2483,42 @@ compileRunIO action = do
       res <- freshReg
       emit (res <> " = call ptr @kref_new(ptr " <> ve <> ")")
       pure res
+    -- MUTABLE-ARRAY-DESIGN §7 Stage D: mirror the C backend's array peephole so
+    -- both backends lower an array op run under __runIO to a bare karr_* call.
+    -- The index is an Int KValue* (ptr); kas_int decodes it to the i64 the
+    -- karr_get/set entry points expect.  The boxed slab is correct; this is the
+    -- perf-only delta — the default IO-prim path already gives correctness.
+    (Just "__newArray", [n, v]) -> do
+      ne <- compile n
+      ve <- compile v
+      declRuntime "declare i64 @kas_int(ptr)"
+      declRuntime "declare ptr @karr_new(i64, ptr)"
+      ni <- freshReg
+      emit (ni <> " = call i64 @kas_int(ptr " <> ne <> ")")
+      res <- freshReg
+      emit (res <> " = call ptr @karr_new(i64 " <> ni <> ", ptr " <> ve <> ")")
+      pure res
+    (Just "__arrayRead", [buf, i]) -> do
+      be <- compile buf
+      ie <- compile i
+      declRuntime "declare i64 @kas_int(ptr)"
+      declRuntime "declare ptr @karr_get(ptr, i64)"
+      ii <- freshReg
+      emit (ii <> " = call i64 @kas_int(ptr " <> ie <> ")")
+      res <- freshReg
+      emit (res <> " = call ptr @karr_get(ptr " <> be <> ", i64 " <> ii <> ")")
+      pure res
+    (Just "__arrayWrite", [buf, i, v]) -> do
+      be <- compile buf
+      ie <- compile i
+      ve <- compile v
+      declRuntime "declare i64 @kas_int(ptr)"
+      declRuntime "declare ptr @karr_set(ptr, i64, ptr)"
+      ii <- freshReg
+      emit (ii <> " = call i64 @kas_int(ptr " <> ie <> ")")
+      res <- freshReg
+      emit (res <> " = call ptr @karr_set(ptr " <> be <> ", i64 " <> ii <> ", ptr " <> ve <> ")")
+      pure res
     _ -> do
       ae <- compile action
       declRuntime "declare ptr @krun_io_checked(ptr)"
