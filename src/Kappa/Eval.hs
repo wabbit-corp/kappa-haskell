@@ -503,6 +503,7 @@ quote ctx lvl v = case forceQ ctx v of
   VPrim p args -> foldl (\f a -> CApp Expl f (quote ctx lvl a)) (CGlob (GName primModule p)) args
   -- runtime-only values; never legitimately quoted, render opaquely
   VRef _ -> CGlob (GName primModule "__ref")
+  VArr _ _ -> CGlob (GName primModule "__array")
   VMVar _ -> CGlob (GName primModule "__mvar")
   VFiber _ _ -> CGlob (GName primModule "__fiber")
   VScope _ -> CGlob (GName primModule "__scope")
@@ -902,6 +903,11 @@ evalPurePrim p args = case (p, args) of
   -- §28.2 total in-bounds index over the list-backed array; the in-bounds
   -- proof guarantees the element exists, so out-of-bounds traps (stuck).
   ("__arrayIndexUnsafe", [xs, VLit (LitInt i)]) -> indexList xs i
+  -- MUTABLE-ARRAY-DESIGN §4.1: arrayLen is PURE — an O(1) read of the length
+  -- cached in the runtime array value (mirrors the native karr_len reading the
+  -- stored K_ARRAY.len field, no IO).  Returns the count as an Int (the Nat
+  -- surface re-wraps it via natOfInt).
+  ("__arrayLen", [VArr n _]) -> int (fromIntegral n)
   -- §28.2 subst/pathInd transport is the identity on the runtime payload
   -- (the equality witness is erased and proof-irrelevant)
   ("__transport", [v]) -> Just v
@@ -1093,6 +1099,7 @@ debugOpaqueReason = \case
   VThunkV {} -> Just "FunctionValue"
   VLazyV {} -> Just "FunctionValue"
   VRef {} -> Just "ForeignValue"
+  VArr {} -> Just "ForeignValue"
   VMVar {} -> Just "ForeignValue"
   VFiber {} -> Just "ForeignValue"
   VScope {} -> Just "ForeignValue"

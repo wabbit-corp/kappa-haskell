@@ -57,6 +57,7 @@ import Kappa.Prelude
   ( builtinState
   , preludeSource
   , stdAtomicSource
+  , stdArrayMutableSource
   , stdBridgeSource
   , stdFfiCSource
   , stdFfiSource
@@ -106,6 +107,7 @@ preludeState =
             , (modFfi, "<std.ffi>", stdFfiSource)
             , (modFfiC, "<std.ffi.c>", stdFfiCSource)
             , (modAtomic, "<std.atomic>", stdAtomicSource)
+            , (modArrayMutable, "<std.array.mutable>", stdArrayMutableSource)
             , (modGradual, "<std.gradual>", stdGradualSource)
             , (modBridge, "<std.bridge>", stdBridgeSource) -- after std.gradual
             , (modSupervisor, "<std.supervisor>", stdSupervisorSource)

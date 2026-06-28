@@ -231,6 +231,43 @@ KValue *kref_new(KValue *init) {
   return r;
 }
 
+/* ── mutable arrays (MUTABLE-ARRAY-DESIGN §5.1) ─────────────────────────────
+ * K_REF generalized from 1 cell to N, as a SINGLE object.  The boxed slab is a
+ * non-atomic (SCANNED) kgc_alloc block of `n` base KValue* — every slot is a
+ * pointer the collector must trace, exactly like K_CTOR's args (§5.2 rule 1).
+ * Allocating it atomic would let Boehm collect live elements out from under the
+ * array, so the boxed kind MUST be scanned.  `len` is stored, so karr_len is
+ * O(1) and pure; index is `base[i]`, never an interior pointer (§5.2 rule 2). */
+KValue *karr_new(int64_t n, KValue *init) {
+  if (n < 0) krt_fail("karr_new: negative length");
+  KValue *r = alloc_val(K_ARRAY);
+  /* SCANNED: the slab holds base KValue* pointers (boxed kind).  kgc_alloc of 0
+   * bytes is avoided (request at least one slot) so `elems` is a valid base. */
+  KValue **slab = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n > 0 ? n : 1));
+  for (int64_t i = 0; i < n; i++) slab[i] = init;
+  r->as.arr.elems = (void *)slab;
+  r->as.arr.len = n;
+  r->as.arr.cap = n;
+  r->as.arr.elemkind = KARR_BOXED;
+  r->as.arr.element_size = 8;
+  return r;
+}
+KValue *karr_get(KValue *arr, int64_t i) {
+  if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_get: not an array");
+  if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_get: index out of range");
+  return ((KValue **)arr->as.arr.elems)[i];
+}
+KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
+  if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_set: not an array");
+  if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_set: index out of range");
+  ((KValue **)arr->as.arr.elems)[i] = v;
+  return kunit();
+}
+int64_t karr_len(KValue *arr) {
+  if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_len: not an array");
+  return arr->as.arr.len;
+}
+
 KValue *kfgn(void *p, const char *kind) {
   KValue *r = alloc_val(K_FGN);
   r->as.fgn.p = p;

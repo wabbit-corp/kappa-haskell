@@ -26,7 +26,9 @@ import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, tryPutMVar, tryRea
 import qualified Control.Concurrent.STM as STM
 import Control.Exception (AsyncException (..), Exception, SomeException, fromException, throwIO, try)
 import qualified Control.Exception as CE
-import Control.Monad (unless)
+import Control.Monad (unless, when)
+import Data.Array.IO (IOArray)
+import qualified Data.Array.IO as IOA
 import Data.Bits ((.&.), (.|.), xor)
 import Data.IORef
 import qualified Data.Map.Strict as Map
@@ -1127,6 +1129,29 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
+  -- MUTABLE-ARRAY-DESIGN: the SEQUENTIAL ORACLE for the boxed mutable array.
+  -- A fixed-length IOArray of boxed Values is the interpreter analogue of the
+  -- runtime's K_ARRAY slab: O(1) in-place get/set, length stored in the bounds.
+  -- The forall (e a) element type is erased, so the prim sees only value args;
+  -- the index/size arrive as plain Int literals (the surface passes natToInt).
+  -- Out-of-bounds traps via KappaError — the runtime floor (§6 tier 3), the same
+  -- Defect channel the native krt_fail raises; the proof-carrying surface op
+  -- never hits it, and the Option surface op guards it.
+  ("__newArray", [VLit (LitInt n), initv]) -> do
+    let len = fromInteger n :: Int
+    when (len < 0) (throwIO (KappaError (VLit (LitStr "__newArray: negative length"))))
+    arr <- IOA.newArray (0, len - 1) initv :: IO (IOArray Int Value)
+    pure (VArr len arr)
+  ("__arrayRead", [VArr len arr, VLit (LitInt i)]) -> do
+    let ix = fromInteger i :: Int
+    if ix < 0 || ix >= len
+      then throwIO (KappaError (VLit (LitStr "__arrayRead: index out of range")))
+      else IOA.readArray arr ix
+  ("__arrayWrite", [VArr len arr, VLit (LitInt i), v]) -> do
+    let ix = fromInteger i :: Int
+    if ix < 0 || ix >= len
+      then throwIO (KappaError (VLit (LitStr "__arrayWrite: index out of range")))
+      else IOA.writeArray arr ix v >> pure unitV
   -- §29.1 std.atomic — the SEQUENTIAL ORACLE.  The interpreter runs all fibers
   -- cooperatively on one OS thread, so a read-modify-write never interleaves
   -- with another fiber: a plain mutable cell models the SAME observable result

@@ -1260,6 +1260,7 @@ metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
       VIfN c t f -> goV (next n) seen c || goClosure (next n) seen t || goClosure (next n) seen f
       VPrim _ args -> any (goV (next n) seen) args
       VRef _ -> False
+      VArr _ _ -> False
       VMVar _ -> False
       VFiber _ _ -> False
       VScope _ -> False
@@ -1417,6 +1418,7 @@ metaOccursInValueShallow target = goV 512
           VIfN c t f -> goV (next n) c || goClosure (next n) t || goClosure (next n) f
           VPrim _ args -> any (goV (next n)) args
           VRef _ -> False
+          VArr _ _ -> False
           VMVar _ -> False
           VFiber _ _ -> False
           VScope _ -> False

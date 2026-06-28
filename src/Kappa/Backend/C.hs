@@ -433,6 +433,8 @@ basePrims =
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
     , "newRef", "readRef", "writeRef"
+      -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array (kpf_io___newArray/...)
+    , "__newArray", "__arrayRead", "__arrayWrite", "__arrayLen"
       -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
     , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef"
     , "locallyFiberRef" -- §18.1.7 lowered to a krt2_locally_fiber_ref bind tree (compileAppGlob)
@@ -2087,6 +2089,13 @@ primEntries :: Map Text PrimEntry
 primEntries = Map.fromList
   [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
+  -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array.  The forall (e a) is Q0 and
+  -- dropped by eraseQ0ArgsP before codegen, so the entry sees only value args.
+  -- __arrayLen is PURE (isIO=False); the three mutators are IO (isIO=True).
+  , ("__newArray", PrimEntry "kpf_io___newArray" 2 True)
+  , ("__arrayRead", PrimEntry "kpf_io___arrayRead" 2 True)
+  , ("__arrayWrite", PrimEntry "kpf_io___arrayWrite" 3 True)
+  , ("__arrayLen", PrimEntry "kpf___arrayLen" 1 False)
   , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__absurd", PrimEntry "kpf___absurd" 1 False)
   , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
@@ -2715,6 +2724,24 @@ compileRunIO action = do
     (Just "newRef", [v]) -> do
       ve <- compile v
       pure ("kref_new(" <> ve <> ")")
+    -- MUTABLE-ARRAY-DESIGN §7 Stage C: inline an array op run directly under
+    -- __runIO to a bare karr_* call (no K_NATIVE node alloc + krun_io dispatch),
+    -- mirroring the readRef/writeRef/newRef peephole above.  The boxed slab is
+    -- correct; this is the perf delta the general IO-prim path would otherwise
+    -- miss.  The index is an Int KValue*, decoded with kas_int for karr_get/set.
+    (Just "__newArray", [n, v]) -> do
+      ne <- compile n
+      ve <- compile v
+      pure ("karr_new(kas_int(" <> ne <> "), " <> ve <> ")")
+    (Just "__arrayRead", [buf, i]) -> do
+      be <- compile buf
+      ie <- compile i
+      pure ("karr_get(" <> be <> ", kas_int(" <> ie <> "))")
+    (Just "__arrayWrite", [buf, i, v]) -> do
+      be <- compile buf
+      ie <- compile i
+      ve <- compile v
+      pure ("karr_set(" <> be <> ", kas_int(" <> ie <> "), " <> ve <> ")")
     _ -> do
       ae <- compile action
       pure ("krun_io_checked(" <> ae <> ")")
