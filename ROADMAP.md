@@ -80,7 +80,7 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 (worktree-isolated); same-file items are sequenced to avoid merge churn. Each lands gated +
 adversarially reviewed, same discipline as the burst above.
 
-**✅ Landed (2026-06-28 parallel batch) — main `e4f3378`, conformance 1888/0, parity 121/0:** Monoid
+**✅ Landed (2026-06-28) — main `6756af1`, conformance 1916/0, parity 121/0:** Monoid
 lawful-by-default + `Pointed` for IO/STM (`5efbe3d`, #8); IO `MutArray` boxed (`e4f3378`, #2; unboxing
 deferred); `disconnect` (`8ea9f58`, PRIMITIVES #5); LLVM function scalar-worker (`555f50b`, #5); P1
 inhabitance/UIP suite (`93fbccf`, #7); runtime bugs — sleepFor-nonpositive + fiberId/currentFiberId
@@ -89,12 +89,15 @@ completion that lawful-by-default exposed); `__arrayIndexUnsafe` de-Bruijn fix (
 earlier this session: IsProp-under-Π soundness + honest List proofs (`d45480f`, 4 holes closed under a
 6-review audit), or-pattern existential fix (`b846acb`).
 
-**🔄 Gating merge — `fix/unsafe-intrinsics-gate`:** gate the raw-admit intrinsics (`__eqProof`/`__transport`/
-`__absurd`/`__handleEff`/`__debugInspect`/`__debugCompare`/`__unsafeAssertProof`/`failNow`) from user code
-behind `@AllowUnsafeIntrinsics` — a CRITICAL pre-existing TOTAL unsoundness (any module could
-`let bogus : (=) True False = __eqProof` → Void). FIVE holes found+closed across three multi-model review
-rounds (Codex + Claude adversarial workflows); a final fix (the sister gate + `failNow`) + a 4th re-review
-are pending before it merges.
+**✅ Landed (`6756af1`) — unsafe-intrinsics gate + the `!e` desugaring fix:** the raw-admit intrinsics
+(`__eqProof`/`__transport`/`__absurd`/`__handleEff`/`__debugInspect`/`__debugCompare`/`__unsafeAssertProof`/
+`failNow`/`__runIO`/`__arrayIndexUnsafe`) are restricted to `@AllowUnsafeIntrinsics` modules — closing a
+CRITICAL pre-existing TOTAL unsoundness (any module could `let bogus : (=) True False = __eqProof` → `Void`).
+The decisive find: the `!e` bang-splice was desugaring to a pure `__runIO` extraction; per **Spec §18.3.1** it
+must be a monadic **bind** (`tmp <- x; f tmp`) — fixing the desugaring closed both `__runIO` forges + a
+backtick-spellable sentinel bypass at the root, and a sibling pure-result-`do` extraction was closed too.
+~10 holes found + closed across multi-model adversarial review (Claude workflows + Codex xhigh). Lesson
+logged: read the **spec** first, not the buggy code. Conformance 1916/1916, parity 121/0.
 
 1. **Numeric prims — FP/sqrt/transcendental + fixed-precision Double formatting** — ✅ **DONE**
    (merged `6ae3ff4`). libm math fns + `%.*f` formatting as ordinary prims (both backends + interp);
