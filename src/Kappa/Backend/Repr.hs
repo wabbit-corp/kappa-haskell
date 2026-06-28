@@ -436,11 +436,29 @@ data CtorLayoutInfo = CtorLayoutInfo
 -- which is the conservative no-reuse contract S5 relies on (PERCEUS-S1-PLAN
 -- (c): \"@Nothing ⇒ conservatively skip reuse@\" — sound, just slower). A
 -- present annotation is the constructor's instantiated type as a quoted Core
--- type term; this evaluates it and walks the Pi telescope EXACTLY as 'repSelect'
--- does — every EXPLICIT, runtime-relevant (non-'Q0') parameter domain
--- contributes its 'scalarRep' as one field; implicit\/erased binders are
--- skipped (they carry no runtime field). The arity and field reps drive the
--- 'ctorLayout' packing verdict.
+-- type term; this evaluates it and walks the Pi telescope counting each runtime
+-- field by the __RUNTIME__ field rule ('ctorFieldReps').
+--
+-- == Why NOT 'repSelect' (the §S1.3 evidence-field bug)
+--
+-- The runtime field set a constructor is actually BUILT with is 'etaCtor's
+-- @runtimeField@ ("Kappa.Check") = @compileCtor@'s argument list
+-- ("Kappa.Backend.C"): @Expl _ -> True@; @Impl q -> q \/= Q0@. It KEEPS an
+-- implicit, non-'Q0' binder — an EVIDENCE\/DICTIONARY field, e.g. the
+-- @Show a =>@ obligation of @MkShowable : forall (a:Type). Show a => a ->
+-- Showable@ (the @Show a =>@ elaborates to a 'CPi' @Impl@ @QW@ existential
+-- dictionary). 'repSelect', by contrast, gates on @ic == Expl && q \/= Q0@ and
+-- DROPS such fields — correct for the scalar-worker plan it serves (a worker
+-- never reads a dictionary slot as a scalar), but WRONG for the ctor's runtime
+-- arity. So the layout must count by the runtime rule, not 'repSelect''s
+-- explicit-only one; otherwise an S5 FBIP reuse would rebuild a same-tag node
+-- with too few fields (a miscompile). 'repSelect' itself is left unchanged
+-- (the scalar-worker callers rely on its explicit-only semantics); the runtime
+-- walk lives in 'ctorFieldReps'.
+--
+-- Every runtime field contributes its 'scalarRep'; a dictionary field's domain
+-- head is a trait type, which is not a scalar primitive, so it classifies as
+-- 'RepBoxed' — exactly the boxed slot the runtime stores it in.
 --
 -- An annotation that does NOT force to a Pi telescope (e.g. a bare data-head
 -- type, as the record-patch construct site records) walks to zero fields and
@@ -451,15 +469,55 @@ data CtorLayoutInfo = CtorLayoutInfo
 ctorLayoutOf :: EvalCtx -> Maybe Term -> Maybe CtorLayoutInfo
 ctorLayoutOf _ Nothing = Nothing
 ctorLayoutOf ctx (Just ty) =
-  case repSelect ctx (eval ctx [] ty) of
+  case ctorFieldReps ctx (eval ctx [] ty) of
     Nothing -> Nothing
-    Just (fieldReps, _resultRep) ->
+    Just fieldReps ->
       Just
         CtorLayoutInfo
           { clArity = length fieldReps
           , clLayoutClass = ctorLayout fieldReps
           , clFieldReps = fieldReps
           }
+
+-- | Walk a constructor's (whnf-forced) type telescope and return the 'scalarRep'
+-- of every __RUNTIME__ field, in field order — the field set the backend
+-- actually builds the node with.
+--
+-- This is the RUNTIME-rule counterpart to 'repSelect''s explicit-only walk: a
+-- field counts iff it is @Expl _@ OR @Impl q@ with @q \/= Q0@, EXACTLY matching
+-- 'etaCtor's @runtimeField@ ("Kappa.Check") and @compileCtor@'s argument list
+-- ("Kappa.Backend.C"). The crucial difference from 'repSelect' is the @Impl@,
+-- non-'Q0' case: that is an evidence\/dictionary field (an elaborated @C a =>@
+-- trait obligation), which the runtime DOES store as a (boxed) field but
+-- 'repSelect' drops. A 'Q0'-erased binder (of either icity) is skipped — it is
+-- erased before the backend and occupies no runtime slot.
+--
+-- @Nothing@ is returned for the same unwalkable-codomain shape 'repSelect'
+-- rejects (a codomain closure escaping its environment); a non-Pi head ends the
+-- walk with the fields gathered so far.
+ctorFieldReps :: EvalCtx -> Value -> Maybe [Rep]
+ctorFieldReps ctx = walk 0 []
+  where
+    walk lvl acc ty =
+      case force ctx ty of
+        VPi ic q _ _ dom clo@(Closure env body) ->
+          if not (closureHasBoundEnv env body)
+            then Nothing
+            else
+              let x = VRigid lvl []
+                  cod = closApplyV x clo
+                  acc' = if runtimeField ic q then scalarRep dom : acc else acc
+               in walk (lvl + 1) acc' cod
+        _ -> Just (reverse acc)
+    closApplyV v (Closure env body) = eval ctx (v : env) body
+    closureHasBoundEnv env body = maxVar body < length env + 1
+    -- the RUNTIME field rule, copied VERBATIM from 'etaCtor's @runtimeField@
+    -- ("Kappa.Check") which feeds @compileCtor@'s argument list
+    -- ("Kappa.Backend.C"): an EXPLICIT field always counts (even a 'Q0' one — it
+    -- still occupies a positional slot, erased to a @kunit()@ placeholder); an
+    -- IMPLICIT field counts iff it is non-'Q0' (an evidence\/dictionary field).
+    runtimeField Expl _ = True
+    runtimeField Impl q = q /= Q0
 
 -- ── Constructor tag ids (the single authority) ───────────────────────
 --

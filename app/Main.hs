@@ -30,7 +30,6 @@ import Kappa.Ownership
   ( argConvBodies
   , crossCheckBodies
   , emptyOwnInfo
-  , exportedGlobals
   , renderOwnInfo
   )
 import Kappa.Diagnostic
@@ -167,13 +166,13 @@ cmdDumpOwnership cfg path = do
   forM_ userGs $ \g ->
     TIO.putStr (renderOwnInfo g (Map.findWithDefault emptyOwnInfo g own))
   -- self-check: validate the dumped globals against their declared quantities
-  -- (S1.1) and the §3a refinement boundary (S1.4). The export-boundary set is
-  -- computed over the whole unit (not just the user module) so the R4 gate sees
-  -- every separately-compilable signature.
+  -- (S1.1) and the §3a refinement boundary (S1.4). The export/re-export boundary
+  -- is computed over the whole unit (not just the user module) so the R4 gate
+  -- sees every separately-compilable signature, including §8.4 re-exports.
   let userBodies = Map.filterWithKey (\(GName m _) _ -> m == userMod) bodies
       ownCtx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-      exports = exportedGlobals (csModuleExports st) bodies
-      mismatches = crossCheckBodies exports ownCtx userBodies own
+      mismatches =
+        crossCheckBodies (csModuleExports st) (csReExports st) ownCtx userBodies own
       -- S1.3: the constructor layout 'Repr.ctorLayoutOf' resolves from each
       -- 'CCtor' head-type annotation in the user code (observe-only — consumed
       -- by S5 FBIP reuse, not by any current codegen).

@@ -736,7 +736,8 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- (S1.1) records per-binder ownership facts and per-occurrence last-use;
       -- 'refineOwnership' (S1.4 §3a) then TIGHTENS each binder's @boRefined@ to
       -- its whole-program usage interval where the visible call graph proves it,
-      -- keeping it 'Nothing' at the export boundary ('csModuleExports'; R4). It
+      -- keeping it 'Nothing' at the export/re-export boundary ('csModuleExports'
+      -- + 'csReExports'; R4). It
       -- is observe-only — no consumer reads it, so codegen stays byte-identical;
       -- this only threads the metadata. The 'EvalCtx' is the same shape the lint
       -- and other post-finalization consumers build.
@@ -747,7 +748,10 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           False
           (csFacts finalSt'0)
       ownExports =
-        exportedGlobals (csModuleExports finalSt'0) (csCoreBodies finalSt'0)
+        exportedGlobals
+          (csModuleExports finalSt'0)
+          (csReExports finalSt'0)
+          (csCoreBodies finalSt'0)
       finalSt' =
         finalSt'0
           { csOwnership =

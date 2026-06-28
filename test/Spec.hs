@@ -10,7 +10,12 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
-import Kappa.Backend.Repr (Rep (..), scalarRep)
+import Kappa.Backend.Repr
+  ( CtorLayoutInfo (..)
+  , Rep (..)
+  , ctorLayoutOf
+  , scalarRep
+  )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
 import Kappa.Builtins (prelDouble, prelInt, prelUnit)
 import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
@@ -22,10 +27,16 @@ import Kappa.Core
   , Value (..)
   )
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval, quote)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
-import Kappa.Ownership (argConvBodies, crossCheckBodies, exportedGlobals)
-import Kappa.Pipeline (CompiledUnit (..), compileSourceWithPrelude)
+import Kappa.Ownership
+  ( BinderId (..)
+  , BinderOwn (..)
+  , OwnInfo (..)
+  , argConvBodies
+  , crossCheckBodies
+  )
+import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
 import Kappa.Source (ModuleName (..))
 import Kappa.TestHarness
   ( Outcome (..)
@@ -57,7 +68,11 @@ main = do
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
   ownOk <- ownershipCrossCheckClean
-  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk && ownOk
+  ctorLayoutOk <- ctorLayoutEvidenceFields
+  reExportOk <- reExportBoundaryRefinement
+  let regOk =
+        regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
+          && ownOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -171,9 +186,16 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "fixture.kp" src
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-            exports = exportedGlobals (csModuleExports st) (csCoreBodies st)
-            -- S1.1 last-use + S1.4 §3a refinement (incl. the R4 boundary gate)
-            xc = crossCheckBodies exports ctx (csCoreBodies st) (csOwnership st)
+            -- S1.1 last-use + S1.4 §3a refinement (incl. the R4 export/re-export
+            -- boundary gate, computed independently of the refiner from
+            -- 'csModuleExports' + 'csReExports').
+            xc =
+              crossCheckBodies
+                (csModuleExports st)
+                (csReExports st)
+                ctx
+                (csCoreBodies st)
+                (csOwnership st)
             -- S1.5 owned/borrowed call-site classification: every global-headed
             -- call site must classify each of its arguments.
             ac = argConvBodies ctx (csCoreBodies st)
@@ -183,6 +205,196 @@ ownershipCrossCheckClean = do
     putStrLn ("ownershipCrossCheckClean FAILED: " <> show (length mismatches) <> " mismatch(es)")
     mapM_ (putStrLn . ("  " <>)) (take 20 mismatches)
   pure (null mismatches)
+
+-- | Perceus S1.3 regression: 'Kappa.Backend.Repr.ctorLayoutOf' must count a
+-- constructor's RUNTIME fields — the field set the backend actually builds the
+-- node with ('Kappa.Check.etaCtor' / 'Kappa.Backend.C.compileCtor': an explicit
+-- field always counts, an implicit non-'Q0' field — an EVIDENCE\/DICTIONARY
+-- field — counts too). The earlier implementation delegated to 'repSelect',
+-- whose explicit-only gate DROPPED the dictionary field of an existential
+-- constructor (@MkShowable : forall (a:Type). Show a => a -> Showable@, whose
+-- @Show a =>@ is an implicit 'QW' dictionary): it reported arity 1 while the
+-- runtime builds arity 2 @[dict, value]@. An S5 FBIP reuse reading that layout
+-- would rebuild a same-tag node with the wrong field count (a miscompile).
+--
+-- This pins, for an EXISTENTIAL-DICTIONARY constructor, that
+-- 'ctorLayoutOf''s @(arity, fieldReps)@ matches the runtime arity computed by an
+-- INDEPENDENT walk of the constructor type's leading 'CPi' telescope under the
+-- runtime field rule ('runtimeCtorArity', which does NOT call 'ctorLayoutOf'),
+-- with the dictionary field surfaced as 'RepBoxed'; and that the existing
+-- non-evidence cases (nullary, single boxed, scalar 'Int', a 2-field pair) are
+-- unchanged.
+ctorLayoutEvidenceFields :: IO Bool
+ctorLayoutEvidenceFields = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "trait Show (a : Type) ="
+          , "    show : a -> String"
+          , "trait Eqt (a : Type) ="
+          , "    eqt : a -> a -> Bool"
+          , -- existential dictionary constructors (the bug's target)
+            "data Showable : Type ="
+          , "    MkShowable : forall (a : Type). Show a => a -> Showable"
+          , "data Eqd : Type ="
+          , "    MkEqd : forall (a : Type). Eqt a => a -> a -> Eqd"
+          , -- the previously-correct cases that must stay unchanged
+            "data MyUnit : Type ="
+          , "    MkMyUnit"
+          , "data MyBox (a : Type) : Type ="
+          , "    MkMyBox (val : a)"
+          , "data IntBox : Type ="
+          , "    MkIntBox (v : Int)"
+          , "data MyPair (a : Type) (b : Type) : Type ="
+          , "    MkMyPair (fst : a) (snd : b)"
+          ]
+      cu = compileSourceWithPrelude "ctorlayout.kp" src
+      st = cuState cu
+      ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      m = ModuleName [T.pack "main"]
+      -- the INDEPENDENT runtime-arity oracle: walk the constructor type's
+      -- leading CPi telescope under the SAME runtime field rule etaCtor uses
+      -- (Expl _ -> True; Impl q -> q /= Q0), without consulting ctorLayoutOf.
+      runtimeCtorArity :: Term -> Int
+      runtimeCtorArity = goCount . quote ctx 0 . eval ctx []
+        where
+          goCount = \case
+            CPi ic q _ _ _ cod ->
+              (if runtimeField ic q then 1 else 0) + goCount cod
+            _ -> 0
+          runtimeField Expl _ = True
+          runtimeField Impl q = q /= Q0
+      look cname = Map.lookup (GName m (T.pack cname)) (csCtors st)
+      -- (ctorLayoutOf-arity, ctorLayoutOf-fieldReps, runtime-oracle-arity)
+      probe cname = case look cname of
+        Nothing -> Nothing
+        Just ci ->
+          case ctorLayoutOf ctx (Just (ciType ci)) of
+            Nothing -> Nothing
+            Just info -> Just (clArity info, clFieldReps info, runtimeCtorArity (ciType ci))
+      -- every existential-dictionary ctor: layout arity == runtime arity, and
+      -- the dictionary field is RepBoxed.
+      evidenceOK cname expectArity =
+        case probe cname of
+          Just (a, reps, oracle) ->
+            a == expectArity
+              && a == oracle
+              && length reps == expectArity
+              && all (== RepBoxed) reps
+          Nothing -> False
+      -- a known-good case: exact (arity, fieldReps) tuple.
+      exactOK cname want =
+        case probe cname of
+          Just (a, reps, oracle) -> (a, reps) == want && a == oracle
+          Nothing -> False
+      checks =
+        [ ("MkShowable evidence", evidenceOK "MkShowable" 2, probe "MkShowable") -- [Show dict, a]
+        , ("MkEqd evidence", evidenceOK "MkEqd" 3, probe "MkEqd") -- [Eqt dict, a, a]
+        , ("MkMyUnit nullary", exactOK "MkMyUnit" (0, []), probe "MkMyUnit")
+        , ("MkMyBox single boxed", exactOK "MkMyBox" (1, [RepBoxed]), probe "MkMyBox")
+        , ("MkIntBox scalar", exactOK "MkIntBox" (1, [RepInt]), probe "MkIntBox")
+        , ("MkMyPair pair boxed", exactOK "MkMyPair" (2, [RepBoxed, RepBoxed]), probe "MkMyPair")
+        ]
+      failed = [(name, p) | (name, ok, p) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "ctorLayoutEvidenceFields FAILED:"
+    mapM_ (\(name, p) -> putStrLn ("  " <> name <> ": got " <> show p)) failed
+  pure (null failed)
+
+-- | Perceus S1.4 R4 regression: the §3a usage refinement must keep
+-- 'boRefined' = 'Nothing' for any parameter that flows out across the
+-- dynamic-link boundary — including a §8.4 RE-EXPORT (@export lib.(secret as
+-- reSecret)@) of an ORIGIN-PRIVATE global. The earlier 'exportedGlobals'
+-- consulted only 'csModuleExports', so a re-exported-but-origin-private global
+-- (absent from its own module's export list) was wrongly refined — a future S2
+-- would then drop a still-live value a separately-compiled consumer holds (a
+-- use-after-free). This pins:
+--
+--   * a directly-EXPORTED single-use ω param stays @boRefined = Nothing@;
+--   * a RE-EXPORTED (origin-private) single-use ω param ALSO stays 'Nothing';
+--   * a genuinely-PRIVATE single-use ω param still refines to @[1,1]@;
+--   * the cross-check FIRES if a re-exported param is force-refined (the
+--     INDEPENDENT R4 boundary in 'crossCheckBodies' catches the hole even
+--     though the refiner left the param 'Nothing').
+reExportBoundaryRefinement :: IO Bool
+reExportBoundaryRefinement = do
+  let libSrc =
+        T.unlines
+          [ "module lib"
+          , -- exported, single-use ω (would naively refine to [1,1])
+            "pub : (ω a : Int) -> Int"
+          , "let pub (ω a : Int) = a"
+          , -- private, single-use ω → eligible to refine to [1,1]
+            "private priv : (ω b : Int) -> Int"
+          , "let priv (ω b : Int) = b"
+          , -- private in lib, but re-exported by app below
+            "private reExported : (ω c : Int) -> Int"
+          , "let reExported (ω c : Int) = c"
+          ]
+      appSrc =
+        T.unlines
+          [ "module app"
+          , "export lib.(reExported as reExp)"
+          , "appVal : Int"
+          , "let appVal = 7"
+          ]
+      cu = compileFiles [("lib.kp", libSrc), ("app.kp", appSrc)]
+      st = cuState cu
+      ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      lib = ModuleName [T.pack "lib"]
+      -- the single leading ω parameter of each one-arg body sits at biPath [].
+      refinedOf cname =
+        case Map.lookup (GName lib (T.pack cname)) (csOwnership st) of
+          Nothing -> Left ("no OwnInfo for " <> cname)
+          Just oi ->
+            case Map.lookup (BinderId (GName lib (T.pack cname)) []) (oiBinders oi) of
+              Nothing -> Left ("no param binder for " <> cname)
+              Just bo -> Right (boRefined bo)
+      -- force-refine the re-exported param, then confirm the cross-check fires.
+      forced =
+        Map.adjust
+          ( \oi ->
+              oi
+                { oiBinders =
+                    Map.adjust
+                      (\bo -> bo {boRefined = Just (1, Just 1)})
+                      (BinderId (GName lib (T.pack "reExported")) [])
+                      (oiBinders oi)
+                }
+          )
+          (GName lib (T.pack "reExported"))
+          (csOwnership st)
+      xcClean =
+        crossCheckBodies
+          (csModuleExports st)
+          (csReExports st)
+          ctx
+          (csCoreBodies st)
+          (csOwnership st)
+      xcForced =
+        crossCheckBodies
+          (csModuleExports st)
+          (csReExports st)
+          ctx
+          (csCoreBodies st)
+          forced
+      results =
+        [ ("exported pub stays Nothing", refinedOf "pub" == Right Nothing)
+        , ("re-exported stays Nothing", refinedOf "reExported" == Right Nothing)
+        , ("private refines to [1,1]", refinedOf "priv" == Right (Just (1, Just 1)))
+        , ("cross-check clean on honest refinement", null xcClean)
+        , ("cross-check FIRES on force-refined re-export", not (null xcForced))
+        ]
+      failed = [name | (name, ok) <- results, not ok]
+  unless (null failed) $ do
+    putStrLn "reExportBoundaryRefinement FAILED:"
+    mapM_ (putStrLn . ("  " <>)) failed
+    putStrLn ("  pub=" <> show (refinedOf "pub"))
+    putStrLn ("  reExported=" <> show (refinedOf "reExported"))
+    putStrLn ("  priv=" <> show (refinedOf "priv"))
+    putStrLn ("  xcClean=" <> show xcClean)
+    putStrLn ("  xcForced=" <> show xcForced)
+  pure (null failed)
 
 -- | Appendix-T harness-faithfulness mirrors (gaps G32–G35). Each fixed
 -- requirement is pinned here as an expected 'Outcome' over a crafted
