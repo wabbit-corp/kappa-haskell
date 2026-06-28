@@ -527,6 +527,20 @@ convertible ctx = go (200 :: Int)
   where
     go :: Int -> Int -> Value -> Value -> Bool
     go 0 _ _ _ = False
+    -- §15.1: before δ-unfolding, a reducible recursive global applied to the
+    -- same convertible spine on both sides is convertible WITHOUT unfolding.
+    -- Unfolding here would loop forever on a recursion stuck on a neutral
+    -- argument (e.g. 'listAppend t Nil' vs itself, whose cons branch
+    -- re-introduces 'listAppend r Nil' under a fresh binder). This mirrors the
+    -- post-force VGlobN rule below, but fires first so the structural match
+    -- short-circuits the divergent unfold.
+    go fuel lvl v1 v2
+      | VGlobN g1 sp1 <- forceQ ctx v1
+      , VGlobN g2 sp2 <- forceQ ctx v2
+      , g1 == g2
+      , length sp1 == length sp2
+      , and (zipWith (\(_, a) (_, b) -> go (fuel - 1) lvl a b) sp1 sp2) =
+          True
     go fuel lvl v1 v2 = case (force ctx v1, force ctx v2) of
       (VSort a, VSort b) -> a == b
       (VLit a, VLit b) -> a == b
@@ -582,8 +596,45 @@ convertible ctx = go (200 :: Int)
       -- §21.1 syntax values: conservative payload comparison
       (VQuote q1 s1, VQuote q2 s2) ->
         q1 == q2 && length s1 == length s2 && and (zipWith (go (fuel - 1) lvl) s1 s2)
+      -- Two stuck matches: a recursive function applied to a NEUTRAL argument
+      -- δ-unfolds to a 'match' stuck on that argument, so an honest inductive
+      -- proof must compare such matches. They are convertible when the
+      -- scrutinees are convertible and, alternative-for-alternative, the
+      -- patterns coincide and the branch bodies are convertible under their
+      -- own pattern binders (modelled by fresh rigids, one per binder).
+      -- Guarded alternatives are compared conservatively: identical guard
+      -- terms required (a stuck guard cannot have fired, so the surrounding
+      -- match is genuinely neutral). This is the §7.4.1 neutral-eliminator
+      -- rule for 'match', mirroring the existing 'VProjN'/'VIfN' cases.
+      (VMatchN s1 alts1 e1, VMatchN s2 alts2 e2)
+        | length alts1 == length alts2
+        , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts1
+        , all (\(CaseAlt _ g _) -> maybe True (const False) g) alts2
+        , go (fuel - 1) lvl s1 s2 ->
+            and
+              [ pat1 == pat2
+                  && let n = patBinders pat1
+                         xs = [VRigid (lvl + i) [] | i <- [0 .. n - 1]]
+                         env1' = reverse xs ++ e1
+                         env2' = reverse xs ++ e2
+                      in go (fuel - 1) (lvl + n) (eval ctx env1' b1) (eval ctx env2' b2)
+              | (CaseAlt pat1 _ b1, CaseAlt pat2 _ b2) <- zip alts1 alts2
+              ]
       _ -> False
       where
+        patBinders = \case
+          CPWild -> 0
+          CPVar _ -> 1
+          CPLit _ -> 0
+          CPCtor _ nEx ps -> nEx + sum (map patBinders ps)
+          CPTuple ps -> sum (map patBinders ps)
+          CPRecord fs rest ->
+            sum (map (patBinders . snd) fs)
+              + case rest of Just nm | not (T.null nm) -> 1; _ -> 0
+          CPInject _ p -> patBinders p
+          CPInjectRest _ -> 1
+          CPOr ps _ -> case ps of p : _ -> patBinders p; [] -> 0
+          CPAs _ p -> 1 + patBinders p
         closRun (Closure env body) = eval ctx env body
         goClos fl l c1 c2 =
           let x = VRigid l []

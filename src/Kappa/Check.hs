@@ -219,6 +219,13 @@ data CheckState = CheckState
   , csThis :: !(Maybe ThisMode)
   -- ^ §13.2.1 sibling-reference scope: what @this@ denotes inside a
   -- dependent record type, literal, or update being elaborated
+  , csTraitSupers :: ![(Text, Value)]
+  -- ^ §14.1.4: while elaborating a trait member's TYPE, the current
+  -- trait's supertrait premises as @(\@field, premise-value)@ pairs. A
+  -- supertrait operation appearing in the member type (e.g. 'append' in a
+  -- 'LawfulMonoid' law) resolves its dictionary implicit to the matching
+  -- 'this.__superN' projection — without introducing a context binder that
+  -- would perturb the operation's other implicit (carrier) inference.
   , csArgIndexRetag :: !Bool
   -- ^ §16.1.8: inside explicit-argument checking, a same-head indexed
   -- type mismatch reports E_APPLICATION_ARGUMENT_MISMATCH (a failed
@@ -479,6 +486,7 @@ initCheckState =
     , csProjections = Map.empty
     , csDemand = DemandRead
     , csThis = Nothing
+    , csTraitSupers = []
     , csArgIndexRetag = False
     , csReceivers = Map.empty
     , csExpansions = Map.empty
@@ -2131,26 +2139,44 @@ resolveImplicitQ ctx sp q goal = do
       isEq <- isEqGoal g
       isRow <- isRowGoal g
       flexed <- goalHasFlex g
-      if (isTrait || isEq || isRow) && flexed
-        then do
-          -- postpone resolution until explicit arguments solve the head
-          -- metavariables (§16.1.7.1 spine order); committing to a local
-          -- candidate now could wrongly solve the metas
-          mid <- freshMetaId
-          bfs <- gets csBoolFacts
-          modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
-          pure (CMeta mid)
-        else do
-          -- a flex-headed goal type is not searchable evidence: its
-          -- value is inferred by unification at the use site (§16.3.3)
-          gIsFlex <- do
-            gF <- forceM g
-            pure $ case gF of
-              VFlex {} -> True
-              _ -> False
-          if gIsFlex && not (isTrait || isEq)
-            then freshMeta
-            else resolveLadder g isTrait isEq
+      -- §14.1.4: while elaborating a trait member's TYPE, a TRAIT goal that the
+      -- current trait's supertrait premises satisfy (e.g. the 'Monoid a'
+      -- dictionary of an 'append' inside a 'LawfulMonoid' law) is resolved to
+      -- the matching 'this.__superN' projection. When the goal's carrier is
+      -- already concrete (NON-flex), resolve eagerly. When it is still flex
+      -- (the carrier will be pinned by the operation's later explicit args),
+      -- POSTPONE — solving the carrier here off the supertrait premise would
+      -- mis-quote the rigid into the stored member type. The postponed goal
+      -- is then resolved to the SAME closed projection at flush, after the
+      -- args have pinned the carrier. 'csTraitSupers' is empty outside
+      -- trait-member elaboration, so user code is unaffected.
+      eagerSuper <-
+        if isTrait && not flexed
+          then superThisCandidate ctx g
+          else pure Nothing
+      case eagerSuper of
+        Just tm -> pure tm
+        Nothing ->
+          if (isTrait || isEq || isRow) && flexed
+            then do
+              -- postpone resolution until explicit arguments solve the head
+              -- metavariables (§16.1.7.1 spine order); committing to a local
+              -- candidate now could wrongly solve the metas
+              mid <- freshMetaId
+              bfs <- gets csBoolFacts
+              modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
+              pure (CMeta mid)
+            else do
+              -- a flex-headed goal type is not searchable evidence: its
+              -- value is inferred by unification at the use site (§16.3.3)
+              gIsFlex <- do
+                gF <- forceM g
+                pure $ case gF of
+                  VFlex {} -> True
+                  _ -> False
+              if gIsFlex && not (isTrait || isEq)
+                then freshMeta
+                else resolveLadder g isTrait isEq
   where
     resolveLadder g isTrait isEq = do
       -- §16.3.3 step 1: the local implicit context goes first.
@@ -2498,6 +2524,28 @@ isKindLike lvl v = do
       isKindLike (lvl + 1) cod
     _ -> pure False
 
+-- | §14.1.4: resolve a trait goal raised while elaborating a trait member's
+-- TYPE against the current trait's supertrait premises ('csTraitSupers'). On a
+-- successful unify (which pins any flex carrier in the goal to the supertrait
+-- premise's carrier) the dictionary is the corresponding 'this.__superN'
+-- projection from the trait evidence — a CLOSED term, so it introduces no
+-- context binder that could perturb the operation's other implicits. Returns
+-- the first matching premise. Inert outside trait-member elaboration
+-- ('csTraitSupers' empty), so user code is unaffected.
+superThisCandidate :: Ctx -> Value -> CheckM (Maybe Term)
+superThisCandidate ctx goal = do
+  supers <- gets csTraitSupers
+  go supers
+  where
+    -- The premise value's free rigids are the trait parameters at levels
+    -- 0.. ; they remain valid at any deeper context (levels are absolute),
+    -- so no shifting of the value is needed before unifying with the goal.
+    go [] = pure Nothing
+    go ((fld, premV) : rest) = do
+      st0 <- get
+      ok <- unify ctx premV goal
+      if ok then pure (Just (CProj (CGlob thisG) fld)) else put st0 >> go rest
+
 localCandidate :: Ctx -> Span -> Q -> Value -> CheckM (Maybe Term)
 localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
   where
@@ -2626,7 +2674,14 @@ flushPendingWith final = do
           then modify' $ \s -> s {csPending = (mid, goal, sp, ctx, bfs) : csPending s}
           else do
             mLoc <- localCandidate ctx sp Q0 g
-            r <- case mLoc of
+            -- §14.1.4: a postponed supertrait-operation dictionary (its
+            -- carrier now pinned by the operation's args) resolves to the
+            -- 'this.__superN' projection. Re-enter the goal's captured
+            -- 'csTraitSupers' so the lookup sees the right trait's premises.
+            mSuperThis <- do
+              isTrait0 <- isTraitGoal g
+              if isTrait0 then superThisCandidate ctx g else pure Nothing
+            r <- case mLoc <|> mSuperThis of
               Just tm -> pure (Just tm)
               Nothing -> do
                 cached <- lookupClosedEvidence ctx g
@@ -8938,8 +8993,34 @@ checkMatchPlain ctx scrut cases sp resT = do
           let ctx'' = case (scrut, patC) of
                 (EVar n, CPCtor g _ _) -> refineCtx [(nameText n, [g])] ctx'
                 _ -> ctx'
-          let fact = case patC of
+          -- §7.4.1 dependent-match value refinement: in this arm the
+          -- scrutinee equals its constructor pattern, so substitute that
+          -- value for the scrutinee rigid via 'FactIs'. A nullary
+          -- constructor refines to 'VCtor g []'. A NON-nullary constructor
+          -- whose fields are all plain binders (no GADT skolems, no nested
+          -- patterns, no wildcards) refines to 'VCtor g [field rigids]':
+          -- the fields were bound by 'elabPattern' at consecutive levels
+          -- from 'ctxLen ctx' (implicit type args are not stored in a
+          -- 'VCtor', so only the explicit field rigids appear). This lets a
+          -- dependent return type mentioning the scrutinee (e.g. an
+          -- inductive proof's '(=) (f xs) xs') reduce in the arm. The
+          -- reconstruction is conservative: anything outside this shape
+          -- records no positive fact (only the 'FactNot' lacks-fact), which
+          -- is always sound — it just forgoes the refinement.
+          let ctorFieldsFact g nEx ps
+                | nEx == 0
+                , all isPlainVar ps =
+                    let base = ctxLen ctx
+                        fieldVals = [VRigid (base + i) [] | i <- [0 .. length ps - 1]]
+                     in Just (FactIs (VCtor g fieldVals))
+                | otherwise = Nothing
+              isPlainVar = \case CPVar _ -> True; _ -> False
+              fact = case patC of
                 CPCtor g _ [] -> Just (FactIs (VCtor g []))
+                CPCtor g nEx ps@(_ : _) -> case ctorFieldsFact g nEx ps of
+                  Just f -> Just f
+                  Nothing | not (null prior) -> Just (FactNot prior)
+                  Nothing -> Nothing
                 _ | not (null prior) -> Just (FactNot prior)
                 _ -> Nothing
           oldFacts <- gets csFacts
@@ -13036,6 +13117,20 @@ headerTrait (TraitDecl supers n params members) sp = do
         nub $
           [nameText mn | TraitSig mn _ _ <- members]
             ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- members]
+      -- §14.1.4: a member signature may name a SUPERTRAIT operation (e.g.
+      -- a 'LawfulMonoid' law mentions 'append'/'empty' from the supertrait
+      -- 'Monoid'). Such an operation's implicit dictionary argument is the
+      -- current trait evidence's supertrait field. During member-type
+      -- elaboration we stash the supertrait premises in 'csTraitSupers'; the
+      -- implicit solver ('superThisCandidate') then resolves that dictionary
+      -- to a 'this.__superN' projection — a closed term that, after the
+      -- 'substThisTm' in the member-projection construction, reads correctly
+      -- both as a sibling field of the dictionary record type and as a
+      -- projection from the member projection's '__d' binder. Because the
+      -- dictionary is a closed projection (not a context binder), the
+      -- operation's OTHER implicits — notably its carrier — keep their
+      -- ordinary inference, so the member type is sound. Inert when the
+      -- member names no supertrait operation.
       elabMemberTy acc mtyE = do
         fvs <-
           filterM
@@ -13043,7 +13138,23 @@ headerTrait (TraitDecl supers n params members) sp = do
             (nub (freeLower mtyE))
         kvs <- mapM (const (freshMetaV pctx)) fvs
         let mctx = foldl (\c (v, k) -> bindCtx v False k c) pctx (zip fvs kvs)
-        (mtyTm0, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        superVals <- forM supPairs $ \(fld, sTm) -> (,) fld <$> evalIn pctx sTm
+        oldSupers <- gets csTraitSupers
+        modify' $ \st -> st {csTraitSupers = superVals}
+        (mtyTm0raw, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        -- Resolve any POSTPONED supertrait-operation dictionaries now, while
+        -- 'csTraitSupers' is still in scope and the operations' explicit args
+        -- have pinned their carriers, so each commits to its 'this.__superN'
+        -- projection (see 'flushPendingWith'/'superThisCandidate').
+        unless (null supPairs) flushPending
+        modify' $ \st -> st {csTraitSupers = oldSupers}
+        -- Zonk from the member context's depth: a dictionary implicit solved
+        -- to a trait-parameter rigid (the supertrait-operation case) must be
+        -- requoted at 'ctxLen mctx', not 0, or its de Bruijn index lands one
+        -- binder short for every enclosing forall — yielding a member type
+        -- whose carrier points at a forall value binder instead of the trait
+        -- parameter (§14.1.4).
+        mtyTm0 <- zonkTermM (ctxLen mctx) mtyTm0raw
         kTms <- forM kvs $ \kv -> do
           kv' <- forceM kv
           case kv' of
