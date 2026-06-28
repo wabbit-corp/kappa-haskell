@@ -1,0 +1,49 @@
+module main
+
+-- §11.4/§14.4/§4.7: a forall-quantified equational law over a SET is a
+-- proposition (h-prop) — a propositional equality is an h-prop WHEN its carrier
+-- is a set, and h-props are closed under (dependent) function types (Pi).  The
+-- compiler-owned IsProp-under-Pi closure solver discharges the
+-- `IsProp (forall xs. l = r)` obligation that `unsafeAssertProof` raises, so a
+-- lawful trait can settle its law through the gated, auditable escape rather
+-- than the non-auditable `__eqProof` — but ONLY because `IsSet a` evidence is
+-- in reach (Spec §14.4: Kappa v1 equality is intensional, no UIP).
+--
+-- The carrier here is `String`, for which the prelude provides `instance IsSet
+-- String`.  The solver recovers the carrier `String` at its equality base case
+-- and threads that `IsSet` evidence into `isPropEq`.  Three uses of
+-- `unsafeAssertProof` are recorded in the §4.7 audit ledger, in source order.
+--
+-- Equalities are written in prefix `(=)` form: the infix `(x = y)` inside an
+-- argument/member position mis-parses as a binder group.
+
+trait LawfulSemigroup (a : Type) =
+    combine : a -> a -> a
+    -- a THREE-binder forall law: exercises the Pi recursion of the closure
+    -- solver down to the `IsProp ((=) lhs rhs)` base case, where `IsSet String`
+    -- must be resolved and threaded.
+    combineAssoc :
+        forall (x : a) (y : a) (z : a).
+        (=) (combine (combine x y) z) (combine x (combine y z))
+    combineLeftId :
+        forall (x : a).
+        (=) (combine x x) (combine x x)
+    combineRightId :
+        forall (x : a).
+        (=) x x
+
+-- `String` is a set (`instance IsSet String`), so every law discharges.  The
+-- law binders `x y z` have type `String`, the same type as the erased
+-- `reason : String` documentation parameter of `unsafeAssertProof`; the
+-- provenance-gated reason handling keeps that erased binder from clashing with
+-- the law binders (which WOULD be a spurious ambiguity).
+instance LawfulSemigroup String =
+    let combine p q = stringAppend p q
+    let combineAssoc = unsafeAssertProof "String.combine is associative"
+    let combineLeftId = unsafeAssertProof "String.combine left"
+    let combineRightId = unsafeAssertProof "String reflexivity"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertAuditLedger unsafeAssertProof unsafeAssertProof unsafeAssertProof

@@ -1088,9 +1088,40 @@ preludeSource =
     , "trait Lift (a : Type) =" -- §23.3 lift-based cross-stage persistence
     , "    liftCode : a -> Code a"
     , ""
-    , "trait Monoid (a : Type) =" -- §28.2.2
+    , -- §28.2.2 Monoid. The base trait carries only the OPERATIONS; the §28.2.2
+      -- LAWS (appendAssoc/appendLeftIdentity/appendRightIdentity) are surfaced
+      -- as a separate 'LawfulMonoid' marker sub-trait below (NOT as mandatory
+      -- 'Monoid' members), for a soundness reason (Spec §14.4): the laws are
+      -- propositional EQUALITIES, and Kappa v1 equality is intensional — '(=) x
+      -- y' is an h-prop only over a SET ('IsSet a'). The §11.4 IsProp-under-Pi
+      -- closure solver (which lets a forall law be discharged through the gated
+      -- 'unsafeAssertProof' escape) therefore REQUIRES 'IsSet a' and FAILS
+      -- without it. Folding the laws into 'Monoid' would force the effect-carrier
+      -- instances 'IO e a' / 'STM a' to discharge them too — impossible honestly
+      -- (their equality is not an h-prop), and fabricating 'IsSet (IO e a)' is
+      -- exactly the unsoundness this design avoids. So those carriers stay
+      -- law-LESS plain 'Monoid's (needed for the §18.1.13 'let?'/STM 'empty'
+      -- desugaring) and simply get no 'LawfulMonoid' instance.
+      "trait Monoid (a : Type) =" -- §28.2.2
     , "    empty : a"
     , "    append : a -> a -> a"
+    , ""
+    , -- §28.2.2 monoid laws as a marker sub-trait. The 'append'/'empty' in each
+      -- law come from the supertrait 'Monoid a' (NO explicit '(@_ : Monoid a) ->'
+      -- dict parameter): the elaborator threads the instance's own dictionary, so
+      -- inside e.g. 'instance LawfulMonoid (List a)' they reduce to the concrete
+      -- 'listAppend'/'Nil' and the proofs can COMPUTE. (A redundant explicit dict
+      -- param would bind an ABSTRACT 'Monoid a' that never reduces, leaving
+      -- 'append'/'empty' stuck — '__stuck_app @0.append' — so no proof closes.)
+      -- The equalities are written in prefix '(=)' form (an infix '(x = y)' in
+      -- member position mis-parses as a binder group). 'x y z' are implicit
+      -- 'forall'-bound, so honest proofs reference top-level recursive lemmas
+      -- (see 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
+      -- EXPLICITLY and recurse; an instance body does not re-bind 'x y z'.
+      "trait Monoid a => LawfulMonoid (a : Type) ="
+    , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
+    , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
+    , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
     , ""
     , "trait Functor (f : Type -> Type) =" -- §28.2.2 containers
     , "    map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b"
@@ -1205,6 +1236,25 @@ preludeSource =
     , "trait IsSet (a : Type)"
     , ""
     , "trait IsGroupoid (a : Type)"
+    , ""
+    , -- §14.4 set-truncation witness. 'IsSet a' states that every equality
+      -- '(=) x y' over 'a' is an h-prop (the §14.4 'IsSet.pathIsProp' content).
+      -- 'String' genuinely IS a set: a sequence of unicode scalars with
+      -- decidable structural equality, hence (Hedberg) UIP. The compiler-owned
+      -- IsProp-under-Pi solver consults this instance at its equality base
+      -- case, so the forall-quantified monoid laws over 'String' may be
+      -- discharged through the gated 'unsafeAssertProof' — 'String' is a
+      -- primitive with no spine to induct over, so its laws are asserted, not
+      -- proven. This is a marker (the trait has no members here).
+      -- NOTE: there is deliberately NO 'instance IsSet (List a)'. List's monoid
+      -- laws are PROVEN honestly by induction (see 'instance LawfulMonoid
+      -- (List a)' below) and need no set-ness. An unconditional 'IsSet (List a)'
+      -- would be FALSE ('List a' is a set only when 'a' is) and would let
+      -- 'unsafeAssertProof' forge a '(=) xs ys' at abstract 'a', inhabiting
+      -- 'Void'. Carriers without 'IsSet' (Bool, Integer, 'IO e a', 'STM a',
+      -- abstract 'a') cannot have their equalities asserted — correct, those
+      -- propositions are not h-props.
+      "instance IsSet String"
     , ""
     , -- §28.2/§15.11 termination: WellFounded/Acc carriers and the
       -- well-founded-relation trait.  The well-foundedness witness is an
@@ -1995,6 +2045,31 @@ preludeSource =
     , "    let empty = Nil"
     , "    let append x y = listAppend x y"
     , ""
+    , -- LAWFUL: 'String' is a set ('instance IsSet String'), so its equational
+      -- laws are honestly h-props and discharge through the gated escape; the
+      -- §11.4 IsProp-under-Pi solver resolves the 'IsProp (forall xs. l = r)'
+      -- obligation by recovering the carrier 'String' and threading its 'IsSet'.
+      "instance LawfulMonoid String ="
+    , "    let appendAssoc = unsafeAssertProof \"LawfulMonoid String: append is associative\""
+    , "    let appendLeftIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a left identity\""
+    , "    let appendRightIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a right identity\""
+    , ""
+    , -- LAWFUL: List's monoid laws are PROVEN by structural induction (the
+      -- lemmas 'listAppendRightIdentity'/'listAppendAssoc' are defined further
+      -- below, AFTER 'cong'/'subst', whose values they consume — a forward
+      -- reference to 'cong' leaves its value unelaborated and mis-resolves the
+      -- proof's implicit equality endpoints), so this instance holds for EVERY
+      -- element type 'a' and needs no 'IsSet' and no 'unsafeAssertProof'. The
+      -- law params are IMPLICIT ('forall (x y z : a).'), bound here with the
+      -- '@'-implicit binder form; 'append'/'empty' reduce to the concrete
+      -- 'listAppend'/'Nil' (the supertrait dict threads through), so each alias
+      -- typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
+      -- listAppend Nil x ≡ x'), hence 'refl'.
+      "instance LawfulMonoid (List a) ="
+    , "    let appendLeftIdentity @x = refl"
+    , "    let appendRightIdentity @x = listAppendRightIdentity x"
+    , "    let appendAssoc @x @y @z = listAppendAssoc x y z"
+    , ""
     , "instance Functor List ="
     , "    let map f xs ="
     , "        match xs"
@@ -2237,6 +2312,33 @@ preludeSource =
     , "cong : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@0 y : a). (f : a -> b) -> x = y -> f x = f y"
     , "let cong f eq = __eqProof"
     , ""
+    , -- The two non-definitional List monoid laws, PROVEN by structural
+      -- induction on the spine — sound for EVERY element type 'a', needing no
+      -- 'IsSet' and no 'unsafeAssertProof' (they discharge the §28.2.2
+      -- 'LawfulMonoid (List a)' laws above). Top-level recursive lemmas take
+      -- the spine EXPLICITLY so the body may 'match' and recurse; the cons step
+      -- lifts the inductive hypothesis through '(h ::)' via 'consCong' (its
+      -- signature pins both list endpoints, so 'cong' resolves with no
+      -- inference ambiguity). They sit here, AFTER 'cong'/'subst', because a
+      -- proof that consumed those operations through a forward reference (their
+      -- value still unelaborated) mis-resolves its implicit equality endpoints.
+      -- Each 'h :: t' arm's dependent goal reduces because the §7.4.1
+      -- dependent-match refinement substitutes the scrutinee by its cons.
+      "consCong : forall (a : Type) (xs : List a) (ys : List a). (h : a) -> (=) xs ys -> (=) (h :: xs) (h :: ys)"
+    , "let consCong h eq = cong (\\rest -> h :: rest) eq"
+    , ""
+    , "listAppendRightIdentity : forall (a : Type). (xs : List a) -> (=) (listAppend xs Nil) xs"
+    , "let listAppendRightIdentity xs ="
+    , "    match xs"
+    , "    case Nil -> refl"
+    , "    case h :: t -> consCong h (listAppendRightIdentity t)"
+    , ""
+    , "listAppendAssoc : forall (a : Type). (xs : List a) -> (ys : List a) -> (zs : List a) -> (=) (listAppend (listAppend xs ys) zs) (listAppend xs (listAppend ys zs))"
+    , "let listAppendAssoc xs ys zs ="
+    , "    match xs"
+    , "    case Nil -> refl"
+    , "    case h :: t -> consCong h (listAppendAssoc t ys zs)"
+    , ""
     , -- §21.6 semantic-reflection witness algebra (compile-time/erased).
       -- Bodies use '__eqProof', the same magic-inhabitant mechanism as
       -- sym/trans/cong, so the elaborator builds the dependent signatures.
@@ -2254,6 +2356,31 @@ preludeSource =
       -- case is transported to the (proof-irrelevantly identical) goal.
       "pathInd : forall (@0 a : Type) (@0 x : a) (@0 c : forall (@0 y : a). (@0 pp : x = y) -> Type). c x refl -> forall (@0 y : a). (p : x = y) -> c y p"
     , "let pathInd base y p = __transport base"
+    , ""
+    , -- §11.4/§14.4 h-prop closure lemmas (admitted via '__eqProof', the same
+      -- magic-inhabitant mechanism as sym/trans/cong). These are the TRUE
+      -- HoTT closure facts, not derivable here without funext, so they are
+      -- admitted as primitives; the compiler-owned IsProp-under-Pi solver
+      -- (Kappa.Check) constructs evidence structurally out of these, so the
+      -- derivation built on them stays auditable. The solver discharges
+      -- 'IsProp (forall xs. l = r)' goals (e.g. a forall-quantified equational
+      -- trait law) so they can be settled through the gated 'unsafeAssertProof'
+      -- escape rather than raw '__eqProof'.
+      --
+      -- CRITICAL (Spec §14.4): Kappa v1 equality is INTENSIONAL and does NOT
+      -- assume UIP. For arbitrary 'a', '(=) x y' is NOT an h-prop. It is one
+      -- exactly when 'IsSet a' is available (that IS the content of
+      -- 'IsSet.pathIsProp'). So 'isPropEq' DEMANDS an 'IsSet a' hypothesis; the
+      -- solver must resolve that evidence and thread it, and FAIL when it is
+      -- absent — never fabricate UIP. (Closure under Pi, by contrast, is
+      -- unconditional, so 'isPropPi' needs no such hypothesis.)
+      -- NB: the equality is written in prefix form '(=) x y'; the infix
+      -- '(x = y)' inside an argument position mis-parses as a binder group.
+      "isPropEq : forall (@0 a : Type) (@0 x : a) (@0 y : a). (@_ : IsSet a) -> IsProp ((=) x y)"
+    , "let isPropEq = __eqProof"
+    , ""
+    , "isPropPi : forall (@0 a : Type) (@0 p : a -> Type). ((x : a) -> IsProp (p x)) -> IsProp (forall (@0 x : a). p x)"
+    , "let isPropPi h = __eqProof"
     , ""
     , -- §28.2 escape hatch: an unchecked proof of a proposition.
       "unsafeAssertProof : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p"

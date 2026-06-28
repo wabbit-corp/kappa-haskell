@@ -1,0 +1,24 @@
+module test
+
+-- §16.3.3 soundness (NEGATIVE): an erased `@0 s : String` binder whose identity
+-- is a genuine TYPE-FORMER INDEX (here a region/place label `&[s]`) must keep
+-- its ambiguity report.  Coercing `OneStr` to `TwoStr` instantiates the single
+-- `@0 s : String` of `OneStr` from the two erased `@0 s`, `@0 t : String`
+-- binders of `TwoStr`; both satisfy the goal, so resolution is genuinely
+-- AMBIGUOUS and the coercion is REJECTED.
+--
+-- This pins the narrow provenance gate used for `unsafeAssertProof`'s erased
+-- `reason : String` documentation parameter: that gate is keyed on the CALLEE
+-- IDENTITY, never on the goal type being `String`, so a real `String`-typed
+-- type index like the one below is NOT suppressed.  Suppressing it (the broad
+-- goal-type-based gate) would silently accept this unsound higher-ranked
+-- coercion.
+
+type OneStr = forall (@0 s : String). (&[s] _ : Unit) -> (&[s] _ : Unit) -> Unit
+type TwoStr = forall (@0 s : String)(@0 t : String). (&[s] _ : Unit) -> (&[t] _ : Unit) -> Unit
+
+oneToTwo : OneStr -> TwoStr
+let oneToTwo f = f
+
+--! mode check
+--! assertDiagnostic error E_IMPLICIT_AMBIGUOUS

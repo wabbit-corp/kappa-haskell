@@ -1,0 +1,28 @@
+module main
+
+-- §11.4/§14.4 soundness (NEGATIVE): there is deliberately NO
+-- `instance IsSet (List a)` (it would be FALSE — `List a` is a set only when
+-- `a` is). So an equational law over the PARAMETRIC carrier `List b` with an
+-- ABSTRACT element type cannot be discharged through `unsafeAssertProof`: the
+-- IsProp-under-Pi closure solver reaches `IsProp ((=) lhs rhs)` over carrier
+-- `List b`, finds no `IsSet (List b)` evidence, refuses to fabricate set-ness,
+-- and the assertion is REJECTED. (List's monoid laws are instead PROVEN by
+-- honest structural induction; see `listAppendAssoc` in the prelude.)
+--
+-- This pins the soundness hole closed: were `IsSet (List a)` reinstated,
+-- `unsafeAssertProof` could forge `(=) xs ys` at abstract `a` and, via
+-- `subst`, inhabit `Void`.
+
+trait LawfulSemigroup (a : Type) =
+    combine : a -> a -> a
+    combineAssoc :
+        forall (x : a) (y : a) (z : a).
+        (=) (combine (combine x y) z) (combine x (combine y z))
+
+instance LawfulSemigroup (List b) =
+    let combine p q = listAppend p q
+    let combineAssoc = unsafeAssertProof "List.combine is associative"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT

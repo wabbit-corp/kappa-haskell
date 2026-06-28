@@ -219,6 +219,13 @@ data CheckState = CheckState
   , csThis :: !(Maybe ThisMode)
   -- ^ §13.2.1 sibling-reference scope: what @this@ denotes inside a
   -- dependent record type, literal, or update being elaborated
+  , csTraitSupers :: ![(Text, Value)]
+  -- ^ §14.1.4: while elaborating a trait member's TYPE, the current
+  -- trait's supertrait premises as @(\@field, premise-value)@ pairs. A
+  -- supertrait operation appearing in the member type (e.g. 'append' in a
+  -- 'LawfulMonoid' law) resolves its dictionary implicit to the matching
+  -- 'this.__superN' projection — without introducing a context binder that
+  -- would perturb the operation's other implicit (carrier) inference.
   , csArgIndexRetag :: !Bool
   -- ^ §16.1.8: inside explicit-argument checking, a same-head indexed
   -- type mismatch reports E_APPLICATION_ARGUMENT_MISMATCH (a failed
@@ -479,6 +486,7 @@ initCheckState =
     , csProjections = Map.empty
     , csDemand = DemandRead
     , csThis = Nothing
+    , csTraitSupers = []
     , csArgIndexRetag = False
     , csReceivers = Map.empty
     , csExpansions = Map.empty
@@ -2131,26 +2139,44 @@ resolveImplicitQ ctx sp q goal = do
       isEq <- isEqGoal g
       isRow <- isRowGoal g
       flexed <- goalHasFlex g
-      if (isTrait || isEq || isRow) && flexed
-        then do
-          -- postpone resolution until explicit arguments solve the head
-          -- metavariables (§16.1.7.1 spine order); committing to a local
-          -- candidate now could wrongly solve the metas
-          mid <- freshMetaId
-          bfs <- gets csBoolFacts
-          modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
-          pure (CMeta mid)
-        else do
-          -- a flex-headed goal type is not searchable evidence: its
-          -- value is inferred by unification at the use site (§16.3.3)
-          gIsFlex <- do
-            gF <- forceM g
-            pure $ case gF of
-              VFlex {} -> True
-              _ -> False
-          if gIsFlex && not (isTrait || isEq)
-            then freshMeta
-            else resolveLadder g isTrait isEq
+      -- §14.1.4: while elaborating a trait member's TYPE, a TRAIT goal that the
+      -- current trait's supertrait premises satisfy (e.g. the 'Monoid a'
+      -- dictionary of an 'append' inside a 'LawfulMonoid' law) is resolved to
+      -- the matching 'this.__superN' projection. When the goal's carrier is
+      -- already concrete (NON-flex), resolve eagerly. When it is still flex
+      -- (the carrier will be pinned by the operation's later explicit args),
+      -- POSTPONE — solving the carrier here off the supertrait premise would
+      -- mis-quote the rigid into the stored member type. The postponed goal
+      -- is then resolved to the SAME closed projection at flush, after the
+      -- args have pinned the carrier. 'csTraitSupers' is empty outside
+      -- trait-member elaboration, so user code is unaffected.
+      eagerSuper <-
+        if isTrait && not flexed
+          then superThisCandidate ctx g
+          else pure Nothing
+      case eagerSuper of
+        Just tm -> pure tm
+        Nothing ->
+          if (isTrait || isEq || isRow) && flexed
+            then do
+              -- postpone resolution until explicit arguments solve the head
+              -- metavariables (§16.1.7.1 spine order); committing to a local
+              -- candidate now could wrongly solve the metas
+              mid <- freshMetaId
+              bfs <- gets csBoolFacts
+              modify' $ \st -> st {csPending = (mid, g, sp, ctx, bfs) : csPending st}
+              pure (CMeta mid)
+            else do
+              -- a flex-headed goal type is not searchable evidence: its
+              -- value is inferred by unification at the use site (§16.3.3)
+              gIsFlex <- do
+                gF <- forceM g
+                pure $ case gF of
+                  VFlex {} -> True
+                  _ -> False
+              if gIsFlex && not (isTrait || isEq)
+                then freshMeta
+                else resolveLadder g isTrait isEq
   where
     resolveLadder g isTrait isEq = do
       -- §16.3.3 step 1: the local implicit context goes first.
@@ -2197,7 +2223,21 @@ resolveImplicitQ ctx sp q goal = do
                       mRow <- rowProof g
                       case mRow of
                         Just tm -> pure (Just tm)
-                        Nothing -> isTraitWitness ctx g
+                        Nothing -> do
+                          -- §11.4/§14.4 h-prop closure under Pi: an
+                          -- 'IsProp'/'IsSubsingleton' goal whose argument is a
+                          -- (dependent) function type is discharged
+                          -- structurally — 'IsProp' is closed under Pi,
+                          -- bottoming out at 'IsProp (x = y)', which the
+                          -- solver settles ONLY when 'IsSet a' evidence is in
+                          -- reach (Spec §14.4: Kappa v1 equality is
+                          -- intensional). This lets a forall-quantified
+                          -- equational law over a set be settled through the
+                          -- gated 'unsafeAssertProof' escape.
+                          mProp <- isPropClosure ctx sp g
+                          case mProp of
+                            Just tm -> pure (Just tm)
+                            Nothing -> isTraitWitness ctx g
     unresolved g isTrait isEq = do
       isRow <- isRowGoal g
       if isTrait || isEq || q /= Q0
@@ -2208,6 +2248,219 @@ resolveImplicitQ ctx sp q goal = do
                <> (if isTrait || isEq || isRow then "" else "; a runtime implicit binder requires an implicit local candidate in scope (§16.3.3), and top-level terms are not candidates"))
           freshMeta
         else freshMeta
+
+-- | §11.4/§14.4 compiler-owned introduction rule for the h-prop marker traits
+-- 'IsProp'/'IsSubsingleton'.  Standard HoTT: an h-prop is closed under
+-- dependent function types (Pi), and a propositional equality @x = y@ is itself
+-- an h-prop /provided its type is a set/.  A goal @IsProp p@ is therefore
+-- discharged by structural recursion on @p@:
+--
+--   * @p = (x : A) -> B x@  (a Pi, of either icity)  →
+--         @isPropPi \@A \@(\\x. B x) (\\x -> <evidence for IsProp (B x)>)@
+--   * @p = (x = y)@         (a propositional equality over @A@)  →
+--         @isPropEq \@A \@x \@y <IsSet A evidence>@
+--
+-- The closure lemmas 'isPropPi'/'isPropEq' are admitted in the prelude (the
+-- true HoTT facts, not derivable here without funext); this solver only wires
+-- them together structurally, so the discharged obligation stays auditable.
+--
+-- SOUNDNESS (Spec §14.4): Kappa v1 equality is intensional and does NOT assume
+-- UIP — @x = y@ is an h-prop only when @IsSet A@ is available.  The equality
+-- base case therefore RESOLVES @IsSet A@ evidence through the ordinary evidence
+-- ladder (local candidates, instance search, supertrait projection) and threads
+-- it into 'isPropEq'.  If no @IsSet A@ evidence is in reach, the base case
+-- FAILS (returns 'Nothing') — it never fabricates set-ness — so the surrounding
+-- 'IsProp' goal stays unresolved and surfaces as 'E_UNSOLVED_IMPLICIT'.
+--
+-- It fires only for 'IsProp'/'IsSubsingleton' heads — every other class still
+-- resolves through the ordinary dictionary ladder.
+isPropClosure :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+isPropClosure ctx sp goal = do
+  g <- forceM goal
+  case g of
+    VGlobN h [(_, pv)]
+      | h == prelIsProp || h == prelIsSubsingleton ->
+          propEvidence ctx [] pv
+    _ -> pure Nothing
+  where
+    -- Build a Core term inhabiting @IsProp p@ for the forced proposition @p@,
+    -- recursing under Pi binders.  All de-Bruijn levels are taken from the
+    -- current context length, and every implicit/value argument is quoted at
+    -- that level, so the returned term is well-scoped at the goal's site.
+    --
+    -- The @[Value]@ accumulator carries the DOMAINS of the Pi binders we have
+    -- descended through, most-recent-first.  For a forall-quantified equational
+    -- law @forall (x … : a). lhs = rhs@ the binders all have type @a@ (the
+    -- carrier), so these domains are the authoritative carrier candidates for
+    -- the equality base case — robust even when the equands are stuck terms
+    -- (e.g. a recursive @listAppend@ on neutral arguments) whose own type
+    -- cannot be read off structurally.
+    propEvidence :: Ctx -> [Value] -> Value -> CheckM (Maybe Term)
+    propEvidence cx doms pv = do
+      ec <- ec_
+      pF <- forceM pv
+      case pF of
+        -- h-props are closed under (dependent) function types.  The original
+        -- binder's icity/quantity are irrelevant to propositionhood; we reuse
+        -- the closure as the motive @P = \\x. cod@ and recurse on @cod@.
+        VPi _ic _q _bw nm dom clo -> do
+          let d = ctxLen cx
+          cod <- clApp clo (VRigid d [])
+          let cx' = bindCtx nm False dom cx
+          mEv <- propEvidence cx' (dom : doms) cod
+          pure $ flip fmap mEv $ \ev ->
+            let aTm = quote ec d dom
+                pTm = quote ec d (VLam Expl Q0 nm clo)
+                -- the hypothesis '(x : a) -> IsProp (p x)' is an EXPLICIT,
+                -- unrestricted function in 'isPropPi'; building it as an
+                -- explicit lambda (not an implicit @0 binder) keeps the
+                -- recursion from introducing implicit-local candidates that
+                -- would make a later same-type implicit goal ambiguous.
+                hypTm = CLam Expl QW nm ev
+             in CApp Expl
+                  (CApp Impl (CApp Impl (CGlob prelIsPropPi) aTm) pTm)
+                  hypTm
+        -- a propositional equality @x = y@ over @a@ is an h-prop — but ONLY
+        -- when @a@ is a set.  Resolve @IsSet a@ evidence through the ordinary
+        -- ladder and thread it into 'isPropEq'; without it, this base case fails
+        -- (Spec §14.4 — no UIP for arbitrary @a@).
+        --
+        -- The carrier @a@ is the equands' OWN homogeneous type — @x, y : a@ —
+        -- recovered by 'equandType', and we require @IsSet@ of THAT carrier and
+        -- nothing else.  An earlier version also tried the enclosing binder
+        -- domains and the types of any rigid merely OCCURRING in a stuck equand;
+        -- that was UNSOUND.  The evidence ladder ('resolveImplicitQ' ->
+        -- 'elabSpineArg') advances the goal by the resolved term's VALUE and
+        -- never checks its TYPE against the goal, so threading @isPropEq \@aFake@
+        -- is NOT rejected when @aFake \= a@.  A set-typed rigid merely occurring
+        -- in a stuck equand (e.g. a @String@ @s@ in the @Bool@ equality
+        -- @eqStr s s = False@) would then certify a non-h-prop and let
+        -- 'unsafeAssertProof' forge a false equality, inhabiting @Void@.  So we
+        -- never guess a carrier the equands do not actually have: if 'equandType'
+        -- cannot read it, or it is not a set, the obligation fails honestly.
+        _ | Just (xV, yV) <- eqSides pF -> do
+          mEq <- equandType cx xV
+          mPick <- firstCarrierWithSet (maybe [] pure mEq)
+          case mPick of
+            Nothing -> pure Nothing
+            Just (aV, setTm) -> do
+              let d = ctxLen cx
+                  aTm = quote ec d aV
+                  xTm = quote ec d xV
+                  yTm = quote ec d yV
+              pure $ Just $
+                CApp Impl
+                  (CApp Impl (CApp Impl (CApp Impl (CGlob prelIsPropEq) aTm) xTm) yTm)
+                  setTm
+        _ -> pure Nothing
+      where
+        -- Try each carrier candidate in turn; return the first for which
+        -- @IsSet a@ evidence resolves, paired with that evidence term.
+        firstCarrierWithSet :: [Value] -> CheckM (Maybe (Value, Term))
+        firstCarrierWithSet [] = pure Nothing
+        firstCarrierWithSet (a : as) = do
+          mSet <- isSetEvidence cx sp a
+          case mSet of
+            Just tm -> pure (Just (a, tm))
+            Nothing -> firstCarrierWithSet as
+
+    -- The two equands of a forced @x = y@ (its last two explicit spine
+    -- elements); the implicit type argument is deliberately not extracted here
+    -- (it is unreliable — see the base case above).
+    eqSides :: Value -> Maybe (Value, Value)
+    eqSides = \case
+      VGlobN eqG spn
+        | eqG == prelEqType
+        , [l, r] <- drop (length expl - 2) expl ->
+            Just (l, r)
+        where expl = [v | (Expl, v) <- spn]
+      VCtor eqG [_, l, r] | eqG == prelEqType -> Just (l, r)
+      _ -> Nothing
+
+-- | Silently resolve @IsSet a@ evidence for the equality base case of the
+-- IsProp-under-Pi solver.  This is the ordinary local-then-non-local evidence
+-- ladder (in-scope implicit candidates, supertrait projection, then registered
+-- instances), but run as a /probe/: it never reports a diagnostic and returns
+-- 'Nothing' when no evidence is in reach, so the caller can honestly fail the
+-- 'IsProp (x = y)' obligation rather than fabricate set-ness (Spec §14.4).
+isSetEvidence :: Ctx -> Span -> Value -> CheckM (Maybe Term)
+isSetEvidence cx sp aV = do
+  let goalV = VGlobN prelIsSet [(Expl, aV)]
+  -- An @a@ still carrying unsolved metavariables is underdetermined; declining
+  -- here keeps instance selection from committing on a flexible head.
+  flex <- goalHasFlex goalV
+  if flex
+    then pure Nothing
+    else do
+      mLoc <- localCandidate cx sp Q0 goalV
+      case mLoc of
+        Just tm -> pure (Just tm)
+        Nothing -> do
+          mSup <- superCandidate cx goalV
+          case mSup of
+            Just tm -> pure (Just tm)
+            Nothing -> instanceSearch cx sp goalV
+
+-- | The TYPE of a neutral equand, used by the IsProp-under-Pi solver to recover
+-- the carrier @a@ of a @x = y@ goal (the @=@ former's own implicit type slot is
+-- unreliable, §isPropClosure).  A neutral is @head spine@; its type is the
+-- head's type with each spine argument applied through the corresponding Pi
+-- codomain.  Heads handled: a bound variable ('VRigid', type read off the
+-- context binder) and a global ('VGlobN', e.g. a trait member or @stringAppend@,
+-- type read off the globals table).  Any other shape (or a spine that outruns
+-- its head's Pi telescope) yields 'Nothing', so the solver fails honestly rather
+-- than guessing a carrier.
+equandType :: Ctx -> Value -> CheckM (Maybe Value)
+equandType cx v = do
+  vf <- forceM v
+  case vf of
+    VRigid lvl spine -> do
+      let idx = ctxLen cx - 1 - lvl
+      case drop idx (ctxEntries cx) of
+        (e : _) -> applySpineType (ceType e) spine
+        [] -> pure Nothing
+    VGlobN g spine -> do
+      mt <- globalType g
+      case mt of
+        Just (_, hty) -> applySpineType hty spine
+        Nothing -> pure Nothing
+    -- a fully/partially applied primitive (e.g. @stringAppend@): a prim is
+    -- registered as a prelude global carrying its declared type, with value
+    -- @VPrim p []@ (see 'Kappa.Prelude.prim'); all its stored args are explicit
+    -- applications.
+    VPrim p args -> do
+      mt <- globalType (GName preludeModule p)
+      case mt of
+        Just (_, hty) -> applySpineType hty [(Expl, a) | a <- args]
+        Nothing -> pure Nothing
+    -- a literal's type is its scalar carrier; only the ones that can appear as
+    -- an equand under these laws are needed, and an unknown literal carrier
+    -- simply declines.
+    _ -> pure Nothing
+  where
+    -- Walk @spine@ through the head type's Pi binders, substituting each
+    -- argument into the codomain to obtain the result type.
+    applySpineType :: Value -> Spine -> CheckM (Maybe Value)
+    applySpineType ty [] = Just <$> forceM ty
+    applySpineType ty ((_, arg) : rest) = do
+      tf <- forceM ty
+      case tf of
+        VPi _ _ _ _ _ clo -> do
+          cod <- clApp clo arg
+          applySpineType cod rest
+        _ -> pure Nothing
+
+-- NOTE: a 'rigidVarTypes' carrier-recovery fallback used to live here, feeding
+-- the IsProp-under-Pi solver's equality base case extra carrier candidates — the
+-- types of rigid variables merely OCCURRING in the equands. It was REMOVED as
+-- UNSOUND: it let the solver grab a set-typed carrier FOREIGN to the equality
+-- (e.g. 'IsSet String' from a 'String' rigid 's' inside the 'Bool' equality
+-- 'eqStr s s = False'), and the evidence ladder ('resolveImplicitQ' ->
+-- 'elabSpineArg') never type-checks the threaded 'isPropEq @aForeign' against
+-- the goal, so 'unsafeAssertProof' could then forge a false equality, inhabiting
+-- 'Void'. The equality base case now uses ONLY the equands' own homogeneous type
+-- ('equandType'). Regression:
+-- tests/conformance/equality/isprop-eq-foreign-carrier-rigid-rejected.kp.
 
 -- | §22.4: a goal of shape @forall xs. IsTrait (tc x)@ is satisfied by
 -- a synthesized witness whenever its head is the builtin 'IsTrait'
@@ -2242,6 +2495,28 @@ isKindLike lvl v = do
       cod <- clApp clo (VRigid lvl [])
       isKindLike (lvl + 1) cod
     _ -> pure False
+
+-- | §14.1.4: resolve a trait goal raised while elaborating a trait member's
+-- TYPE against the current trait's supertrait premises ('csTraitSupers'). On a
+-- successful unify (which pins any flex carrier in the goal to the supertrait
+-- premise's carrier) the dictionary is the corresponding 'this.__superN'
+-- projection from the trait evidence — a CLOSED term, so it introduces no
+-- context binder that could perturb the operation's other implicits. Returns
+-- the first matching premise. Inert outside trait-member elaboration
+-- ('csTraitSupers' empty), so user code is unaffected.
+superThisCandidate :: Ctx -> Value -> CheckM (Maybe Term)
+superThisCandidate ctx goal = do
+  supers <- gets csTraitSupers
+  go supers
+  where
+    -- The premise value's free rigids are the trait parameters at levels
+    -- 0.. ; they remain valid at any deeper context (levels are absolute),
+    -- so no shifting of the value is needed before unifying with the goal.
+    go [] = pure Nothing
+    go ((fld, premV) : rest) = do
+      st0 <- get
+      ok <- unify ctx premV goal
+      if ok then pure (Just (CProj (CGlob thisG) fld)) else put st0 >> go rest
 
 localCandidate :: Ctx -> Span -> Q -> Value -> CheckM (Maybe Term)
 localCandidate ctx sp q goal = go 0 [] (ctxEntries ctx)
@@ -2371,7 +2646,14 @@ flushPendingWith final = do
           then modify' $ \s -> s {csPending = (mid, goal, sp, ctx, bfs) : csPending s}
           else do
             mLoc <- localCandidate ctx sp Q0 g
-            r <- case mLoc of
+            -- §14.1.4: a postponed supertrait-operation dictionary (its
+            -- carrier now pinned by the operation's args) resolves to the
+            -- 'this.__superN' projection. Re-enter the goal's captured
+            -- 'csTraitSupers' so the lookup sees the right trait's premises.
+            mSuperThis <- do
+              isTrait0 <- isTraitGoal g
+              if isTrait0 then superThisCandidate ctx g else pure Nothing
+            r <- case mLoc <|> mSuperThis of
               Just tm -> pure (Just tm)
               Nothing -> do
                 cached <- lookupClosedEvidence ctx g
@@ -2420,7 +2702,20 @@ flushPendingWith final = do
                                     mRow <- rowProof g
                                     case mRow of
                                       Just tm -> remember tm
-                                      Nothing -> pure Nothing
+                                      -- §11.4/§14.4 h-prop closure under Pi
+                                      -- (mirrors the same step in
+                                      -- 'nonLocalLadder'): a postponed
+                                      -- 'IsProp'/'IsSubsingleton' goal whose
+                                      -- argument resolved to a (dependent)
+                                      -- function type is discharged
+                                      -- structurally once its head is
+                                      -- concrete — still gated on 'IsSet a' at
+                                      -- the equality base case.
+                                      Nothing -> do
+                                        mProp <- isPropClosure ctx sp g
+                                        case mProp of
+                                          Just tm -> remember tm
+                                          Nothing -> pure Nothing
             case r of
               Just tm -> do
                 v <- evalIn ctx tm
@@ -5059,6 +5354,45 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
 
 elabSpineArg :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArg ctx sp fTm fTy arg rest = do
+  case (arg, fTy) of
+    -- PROVENANCE GATE (§4.2/§14.4): the §28.2 'unsafeAssertProof' escape has
+    -- type @forall (@0 p). (@_ : IsProp p) -> (@0 reason : String) -> p@.  Its
+    -- '@0 reason : String' documentation binder parses as an ERASED IMPLICIT,
+    -- so the ordinary ladder would try to /search/ it from local candidates —
+    -- and inside a forall-quantified law (e.g. a lawful 'Monoid' appendAssoc)
+    -- the law's own 'String'-typed binders are exactly such candidates, two or
+    -- more of which make resolution spuriously ambiguous.  When the user wrote
+    -- the reason explicitly (@unsafeAssertProof "…"@), that explicit string IS
+    -- the intended 'reason': fill the binder with it directly, bypassing the
+    -- candidate search.  This gate is keyed on the CALLEE'S IDENTITY
+    -- ('unsafeAssertProof'/'__unsafeAssertProof'), never on the goal type being
+    -- 'String' — so a genuine 'String' type-former index elsewhere (which is a
+    -- real ambiguity, e.g. a higher-ranked '∀ s:String' coercion) is untouched.
+    (ArgExplicit e, VPi Impl q _ _ dom clo)
+      | isUnsafeAssertProofHead fTm -> do
+          domF <- forceM dom
+          case domF of
+            VGlobN dg [] | dg == prelString -> do
+              aTm <- checkExplicitArg ctx q e dom
+              aV <- evalIn ctx aTm
+              ty' <- clApp clo aV
+              elabSpine ctx sp (CApp Impl fTm aTm) ty' rest
+            _ -> elabSpineArgGeneral ctx sp fTm fTy arg rest
+    _ -> elabSpineArgGeneral ctx sp fTm fTy arg rest
+
+-- | Whether a (possibly applied) callee term is headed by the §28.2
+-- 'unsafeAssertProof' escape or its '__unsafeAssertProof' primitive.  Used to
+-- provenance-gate the special handling of its erased 'reason : String' binder.
+isUnsafeAssertProofHead :: Term -> Bool
+isUnsafeAssertProofHead = go
+  where
+    go = \case
+      CApp _ f _ -> go f
+      CGlob (GName _ n) -> n == "unsafeAssertProof" || n == "__unsafeAssertProof"
+      _ -> False
+
+elabSpineArgGeneral :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
+elabSpineArgGeneral ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
     (ArgImplicit e, VPi Impl _ _ _ dom clo) -> do
       -- §16.1.7.2: the explicit implicit argument's payload is elaborated
@@ -8631,8 +8965,34 @@ checkMatchPlain ctx scrut cases sp resT = do
           let ctx'' = case (scrut, patC) of
                 (EVar n, CPCtor g _ _) -> refineCtx [(nameText n, [g])] ctx'
                 _ -> ctx'
-          let fact = case patC of
+          -- §7.4.1 dependent-match value refinement: in this arm the
+          -- scrutinee equals its constructor pattern, so substitute that
+          -- value for the scrutinee rigid via 'FactIs'. A nullary
+          -- constructor refines to 'VCtor g []'. A NON-nullary constructor
+          -- whose fields are all plain binders (no GADT skolems, no nested
+          -- patterns, no wildcards) refines to 'VCtor g [field rigids]':
+          -- the fields were bound by 'elabPattern' at consecutive levels
+          -- from 'ctxLen ctx' (implicit type args are not stored in a
+          -- 'VCtor', so only the explicit field rigids appear). This lets a
+          -- dependent return type mentioning the scrutinee (e.g. an
+          -- inductive proof's '(=) (f xs) xs') reduce in the arm. The
+          -- reconstruction is conservative: anything outside this shape
+          -- records no positive fact (only the 'FactNot' lacks-fact), which
+          -- is always sound — it just forgoes the refinement.
+          let ctorFieldsFact g nEx ps
+                | nEx == 0
+                , all isPlainVar ps =
+                    let base = ctxLen ctx
+                        fieldVals = [VRigid (base + i) [] | i <- [0 .. length ps - 1]]
+                     in Just (FactIs (VCtor g fieldVals))
+                | otherwise = Nothing
+              isPlainVar = \case CPVar _ -> True; _ -> False
+              fact = case patC of
                 CPCtor g _ [] -> Just (FactIs (VCtor g []))
+                CPCtor g nEx ps@(_ : _) -> case ctorFieldsFact g nEx ps of
+                  Just f -> Just f
+                  Nothing | not (null prior) -> Just (FactNot prior)
+                  Nothing -> Nothing
                 _ | not (null prior) -> Just (FactNot prior)
                 _ -> Nothing
           oldFacts <- gets csFacts
@@ -12729,6 +13089,20 @@ headerTrait (TraitDecl supers n params members) sp = do
         nub $
           [nameText mn | TraitSig mn _ _ <- members]
             ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- members]
+      -- §14.1.4: a member signature may name a SUPERTRAIT operation (e.g.
+      -- a 'LawfulMonoid' law mentions 'append'/'empty' from the supertrait
+      -- 'Monoid'). Such an operation's implicit dictionary argument is the
+      -- current trait evidence's supertrait field. During member-type
+      -- elaboration we stash the supertrait premises in 'csTraitSupers'; the
+      -- implicit solver ('superThisCandidate') then resolves that dictionary
+      -- to a 'this.__superN' projection — a closed term that, after the
+      -- 'substThisTm' in the member-projection construction, reads correctly
+      -- both as a sibling field of the dictionary record type and as a
+      -- projection from the member projection's '__d' binder. Because the
+      -- dictionary is a closed projection (not a context binder), the
+      -- operation's OTHER implicits — notably its carrier — keep their
+      -- ordinary inference, so the member type is sound. Inert when the
+      -- member names no supertrait operation.
       elabMemberTy acc mtyE = do
         fvs <-
           filterM
@@ -12736,7 +13110,23 @@ headerTrait (TraitDecl supers n params members) sp = do
             (nub (freeLower mtyE))
         kvs <- mapM (const (freshMetaV pctx)) fvs
         let mctx = foldl (\c (v, k) -> bindCtx v False k c) pctx (zip fvs kvs)
-        (mtyTm0, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        superVals <- forM supPairs $ \(fld, sTm) -> (,) fld <$> evalIn pctx sTm
+        oldSupers <- gets csTraitSupers
+        modify' $ \st -> st {csTraitSupers = superVals}
+        (mtyTm0raw, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        -- Resolve any POSTPONED supertrait-operation dictionaries now, while
+        -- 'csTraitSupers' is still in scope and the operations' explicit args
+        -- have pinned their carriers, so each commits to its 'this.__superN'
+        -- projection (see 'flushPendingWith'/'superThisCandidate').
+        unless (null supPairs) flushPending
+        modify' $ \st -> st {csTraitSupers = oldSupers}
+        -- Zonk from the member context's depth: a dictionary implicit solved
+        -- to a trait-parameter rigid (the supertrait-operation case) must be
+        -- requoted at 'ctxLen mctx', not 0, or its de Bruijn index lands one
+        -- binder short for every enclosing forall — yielding a member type
+        -- whose carrier points at a forall value binder instead of the trait
+        -- parameter (§14.1.4).
+        mtyTm0 <- zonkTermM (ctxLen mctx) mtyTm0raw
         kTms <- forM kvs $ \kv -> do
           kv' <- forceM kv
           case kv' of

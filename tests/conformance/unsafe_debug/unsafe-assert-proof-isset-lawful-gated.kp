@@ -1,0 +1,21 @@
+module main
+
+-- §4.5: discharging a forall-quantified law over a SET through
+-- `unsafeAssertProof` is still gated by `allow_unsafe_assert_proof`.  The
+-- §11.4/§14.4 IsProp-under-Pi closure solver (with `IsSet String` available)
+-- makes the `IsProp (forall xs. l = r)` obligation RESOLVABLE, but the
+-- reference to `unsafeAssertProof` itself remains a compile-time error when the
+-- build setting is disabled (the package-mode default).
+
+trait LawfulSemigroup (a : Type) =
+    combine : a -> a -> a
+    combineAssoc :
+        forall (x : a) (y : a) (z : a).
+        (=) (combine (combine x y) z) (combine x (combine y z))
+
+instance LawfulSemigroup String =
+    let combine p q = stringAppend p q
+    let combineAssoc = unsafeAssertProof "String.combine is associative"
+
+--! mode check
+--! assertDiagnosticFamily error kappa.feature.gated
