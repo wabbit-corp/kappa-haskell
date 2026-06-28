@@ -1792,7 +1792,13 @@ etaCtor ec g cty = build 0 [] (eval ec [] cty)
         CLam ic q ("x" <> T.pack (show n)) $
           build (n + 1) ((ic, q, n) : acc) (evalClosure clo (VRigid n []))
       _ ->
-        CCtor g Nothing [CVar (n - 1 - i) | (ic, q, i) <- reverse acc, runtimeField ic q]
+        -- KBackendIR Stage 0 / Perceus S1.3: annotate the saturated 'CCtor'
+        -- with the constructor's TYPE telescope ('cty', a closed top-level term)
+        -- so the S5 FBIP reuse pass can recover the field count/layout via
+        -- 'Repr.ctorLayoutOf' (the runtime fields are this telescope's explicit
+        -- non-Q0 domains). Observe-only metadata: 'Eq Term' ignores it and no
+        -- backend reads it, so it cannot change tag ids, codegen, or evaluation.
+        CCtor g (Just cty) [CVar (n - 1 - i) | (ic, q, i) <- reverse acc, runtimeField ic q]
     runtimeField Expl _ = True
     runtimeField Impl q = q /= Q0
     evalClosure (Closure env body) v = eval ec (v : env) body

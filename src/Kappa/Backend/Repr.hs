@@ -50,10 +50,18 @@ module Kappa.Backend.Repr
     -- * Function rep/worker-plan selection (the single authority)
   , repSelect
 
+    -- * S1.5 owned/borrowed calling convention (telescope-derived; observe-only)
+  , ArgConv (..)
+  , argConvSelect
+
     -- * Static constructor layout
   , CtorLayout (..)
   , ctorLayout
   , ctorLayoutByArity
+
+    -- * S1.3 ctor layout authority (observe-only; consumed by S5 FBIP reuse)
+  , CtorLayoutInfo (..)
+  , ctorLayoutOf
 
     -- * Constructor tag ids (the single authority)
   , tagId
@@ -199,6 +207,88 @@ repSelect ctx = walk 0 []
     -- shape this static walk cannot instantiate, so the whole plan is rejected.
     closureHasBoundEnv env body = maxVar body < length env + 1
 
+-- ── S1.5 owned/borrowed calling convention (telescope-derived) ────────
+--
+-- Perceus's dup/drop pass (PERCEUS-RC-DESIGN §3, stage S2) reads the
+-- owned/borrowed PARAMETER convention at each 'Kappa.Core.CApp': it is already
+-- in the IR (the callee's 'CPi'\/'VPi' telescope carries each binder's quantity
+-- 'Q' and borrow marker 'Bool'), so the convention needs NO new metadata — only
+-- a backend that ACTS on what is already there (PERCEUS-S1-PLAN finding 2 / (d)).
+-- This is the accessor that surfaces it, mirroring 'repSelect' (same telescope
+-- walk, same implicit\/'Q0' skip rules) so the rep PLAN and the ownership PLAN
+-- agree argument-for-argument.
+--
+-- __Observe-only in S1__: a future S2 consumes it to decide, per argument,
+-- whether the caller transfers ownership (no post-call drop) or retains it; no
+-- current codegen reads it, so call shapes are byte-identical. The S1.5 deliverable
+-- is the debug assert (test\/lint path) that every call site CAN classify each
+-- argument — i.e. 'argConvSelect' yields a verdict for every runtime arg.
+
+-- | The owned\/borrowed convention of one runtime argument position, per
+-- Perceus's parameter convention (PERCEUS-RC-DESIGN §3).
+data ArgConv
+  = -- | An OWNED parameter (declared @1@\/@≥1@): the callee CONSUMES it (drops
+    -- or reuses its storage), so the caller TRANSFERS ownership and emits no
+    -- post-call drop. The §12.2.6 non-droppable quantities.
+    ArgOwned
+  | -- | A BORROWED (@&@) parameter: the callee reads (and may @dup@) but NEVER
+    -- drops it; the CALLER retains ownership across the call. The borrow marker
+    -- on the 'CPi'\/'VPi' binder.
+    ArgBorrowed
+  | -- | A SHARED parameter (declared @ω@\/@≤1@, non-borrowed): a duplicable\/
+    -- droppable value the callee may @dup@ or @drop@ freely; the caller passes a
+    -- shareable reference. (S1.4's §3a refinement may TIGHTEN such a parameter
+    -- to effectively 'ArgOwned' within a statically-linked unit, but the
+    -- declared convention surfaced here stays 'ArgShared' — the contract at any
+    -- separately-compilable boundary.)
+    ArgShared
+  deriving stock (Eq, Show)
+
+-- | Walk a callee's (whnf-forced) type telescope and return the owned\/borrowed
+-- 'ArgConv' of every EXPLICIT, runtime-relevant (non-'Q0') parameter, in
+-- telescope order — exactly the positions 'repSelect' returns a 'Rep' for, so
+-- the two zip argument-for-argument. The borrow marker takes precedence (a
+-- borrowed parameter is 'ArgBorrowed' regardless of its quantity); otherwise the
+-- quantity decides owned (@1@\/@≥1@) vs shared (@ω@\/@≤1@). Implicit and
+-- 'Q0'-erased binders carry no runtime argument and are skipped.
+--
+-- @Nothing@ is returned for the same unwalkable-codomain shape 'repSelect'
+-- rejects (a codomain closure escaping its environment) — the caller then has no
+-- per-arg convention and (in S2) must fall back to the conservative
+-- treat-as-shared default, never a miscompile.
+argConvSelect :: EvalCtx -> Value -> Maybe [ArgConv]
+argConvSelect ctx = walk 0 []
+  where
+    walk lvl acc ty =
+      case force ctx ty of
+        VPi ic q borrowed _ _dom (Closure env body) ->
+          if not (closureHasBoundEnv env body)
+            then Nothing
+            else
+              let x = VRigid lvl []
+                  cod = eval ctx (x : env) body
+                  acc' =
+                    if ic == Expl && q /= Q0
+                      then argConv q borrowed : acc
+                      else acc
+               in walk (lvl + 1) acc' cod
+        _ -> Just (reverse acc)
+    closureHasBoundEnv env body = maxVar body < length env + 1
+
+-- | The owned\/borrowed verdict for one explicit runtime parameter from its
+-- declared quantity and borrow marker. Borrow wins; then quantity: @1@\/@≥1@ are
+-- owned (non-droppable, must be consumed — §12.2.6), @ω@\/@≤1@ are shared
+-- (droppable). @0@ never reaches here (it is skipped as a non-runtime binder).
+argConv :: Q -> Bool -> ArgConv
+argConv q borrowed
+  | borrowed = ArgBorrowed
+  | otherwise = case q of
+      Q1 -> ArgOwned
+      QGe1 -> ArgOwned
+      QW -> ArgShared
+      QLe1 -> ArgShared
+      Q0 -> ArgShared -- unreachable (Q0 is skipped); shared is the safe default
+
 -- | The largest de-Bruijn INDEX a 'Term' references relative to its own top
 -- (a @CVar i@ contributes @i@; entering a binder subtracts one from the body's
 -- count, so a fully closed term reports @-1@).  Used by 'repSelect' to reject a
@@ -307,6 +397,69 @@ ctorLayout fieldReps = case fieldReps of
 ctorLayoutByArity :: Int -> CtorLayout
 ctorLayoutByArity 0 = LayoutImmediate
 ctorLayoutByArity _ = LayoutBoxed
+
+-- ── S1.3 ctor layout authority (observe-only; consumed by S5 FBIP reuse) ──
+--
+-- Perceus drop-guided reuse (PERCEUS-RC-DESIGN §3, stage S5) needs the
+-- field count and per-field representation of the constructor at every
+-- @CCtor@ construct site and every @CMatch@ arm so a unique k-field node can
+-- be rebuilt IN PLACE (the @drop-reuse@ token + same-size constructor write).
+-- That layout is statically knowable from the constructor's instantiated type
+-- telescope, but it is ERASED before the backend lowers the term (§31.2), so
+-- the @CCtor@\/@CMatch@ /head-type annotation/ channel ('Kappa.Core.CCtor's
+-- @Maybe Term@) re-attaches it. This function reads that annotation back into a
+-- layout verdict.
+--
+-- __It is observe-only in S1__ — populated alongside the annotation
+-- (PERCEUS-S1-PLAN (c)), consumed by the S5 reuse pass, NOT by any current
+-- codegen. So it changes no tag id, no call shape, and nothing about parity.
+
+-- | The full static layout of a constructor at a construct\/match site: its
+-- runtime arity, its 'CtorLayout' packing class, and the per-field 'Rep' list
+-- (in field order). 'clLayoutClass' is exactly the 'ctorLayout' verdict over
+-- 'clFieldReps', surfaced here so an S5 consumer reads one record rather than
+-- recomputing it.
+data CtorLayoutInfo = CtorLayoutInfo
+  { clArity :: !Int
+  -- ^ The constructor's runtime arity (the number of explicit, non-'Q0'
+  -- parameter slots in its type telescope) = @length clFieldReps@.
+  , clLayoutClass :: !CtorLayout
+  -- ^ The static packing class ('ctorLayout' over 'clFieldReps').
+  , clFieldReps :: ![Rep]
+  -- ^ The 'scalarRep' of each runtime field's domain head, in field order.
+  }
+  deriving stock (Eq, Show)
+
+-- | Resolve the @CCtor@\/@CMatch@ head-type annotation into a 'CtorLayoutInfo'.
+--
+-- __TOTAL with @Nothing ⇒ Nothing@__: an absent annotation yields no layout,
+-- which is the conservative no-reuse contract S5 relies on (PERCEUS-S1-PLAN
+-- (c): \"@Nothing ⇒ conservatively skip reuse@\" — sound, just slower). A
+-- present annotation is the constructor's instantiated type as a quoted Core
+-- type term; this evaluates it and walks the Pi telescope EXACTLY as 'repSelect'
+-- does — every EXPLICIT, runtime-relevant (non-'Q0') parameter domain
+-- contributes its 'scalarRep' as one field; implicit\/erased binders are
+-- skipped (they carry no runtime field). The arity and field reps drive the
+-- 'ctorLayout' packing verdict.
+--
+-- An annotation that does NOT force to a Pi telescope (e.g. a bare data-head
+-- type, as the record-patch construct site records) walks to zero fields and
+-- reports the nullary 'LayoutImmediate' class — a sound conservative reading
+-- (no fields known ⇒ no reuse claimed), never a wrong-arity miscompile, because
+-- nothing in S1 acts on it. A telescope whose codomain closure escapes its
+-- environment (the same shape 'repSelect' rejects) yields 'Nothing'.
+ctorLayoutOf :: EvalCtx -> Maybe Term -> Maybe CtorLayoutInfo
+ctorLayoutOf _ Nothing = Nothing
+ctorLayoutOf ctx (Just ty) =
+  case repSelect ctx (eval ctx [] ty) of
+    Nothing -> Nothing
+    Just (fieldReps, _resultRep) ->
+      Just
+        CtorLayoutInfo
+          { clArity = length fieldReps
+          , clLayoutClass = ctorLayout fieldReps
+          , clFieldReps = fieldReps
+          }
 
 -- ── Constructor tag ids (the single authority) ───────────────────────
 --

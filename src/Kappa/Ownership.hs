@@ -85,9 +85,15 @@ module Kappa.Ownership
   , emptyOwnInfo
     -- * The annotation pass
   , annotateOwnership
+    -- * S1.4 §3a whole-program usage refinement
+  , refineOwnership
+  , exportedGlobals
     -- * S1.2 cross-check against the declared quantities
   , crossCheckOwnInfo
   , crossCheckBodies
+    -- * S1.5 backend owned/borrowed accessor (call-site classification assert)
+  , argConvFindings
+  , argConvBodies
     -- * Dump rendering (the @dump-ownership@ CLI surface)
   , renderOwnInfo
   ) where
@@ -100,15 +106,18 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
+import Kappa.Backend.Repr (argConvSelect)
 import Kappa.Core
   ( CaseAlt (..)
-  , GName
+  , GName (..)
+  , Icit (..)
   , Q (..)
   , Term (..)
   , gKey
   )
-import Kappa.CoreOps (patBindersC)
+import Kappa.CoreOps (patBindersC, spineOfTerm)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
+import Kappa.Source (ModuleName)
 
 -- | A stable identity for a binder within a definition's elaborated Core.
 --
@@ -550,6 +559,316 @@ lookupLevel lvl = go
 dropLevel :: Int -> Set Int -> Set Int
 dropLevel = Set.delete
 
+-- ── S1.4 §3a whole-program usage refinement ──────────────────────────
+--
+-- A declared quantity is the UPPER BOUND the programmer committed to in the
+-- signature; the program's ACTUAL usage may be tighter (PERCEUS-RC-DESIGN §3a).
+-- @foo : ω Foo -> Bar@ whose body uses the @Foo@ exactly once supports refining
+-- the effective range to @[1,1]@ — which lets a future S2 treat the parameter as
+-- OWNED (drop\/reuse its storage instead of conservatively sharing it) and ELIDE
+-- the @dup@ a conservative @ω@ would force. The refinement only ever TIGHTENS a
+-- declared range, never widens it, so it can never violate the source contract.
+--
+-- == The whole-program closure and the R4 boundary (THE soundness constraint)
+--
+-- This is a whole-program optimization: it needs the full visible call graph, so
+-- it is sound ONLY within the statically-linked compilation unit. Across a
+-- DYNAMIC-LINK boundary the declared signature is the contract — a separately-
+-- compiled caller may use the value differently — so refinement there is
+-- unsound: it would let S2 drop\/reuse a value a separately-compiled caller still
+-- holds (a use-after-free). The boundary set is 'csModuleExports' (every member
+-- a module exports). 'boRefined' therefore stays 'Nothing' for any binder that
+-- FLOWS OUT through an exported signature — concretely, every TOP-LEVEL PARAMETER
+-- of an exported global. An exported global's INTERNAL binders (locals, match-arm
+-- vars) do not cross the boundary and remain eligible; a non-exported global is
+-- only callable within this unit, so its parameters are eligible too.
+--
+-- __S1.4 is observe-only__ (no codegen reads 'boRefined' yet), but the boundary
+-- gate is enforced now so S2 can trust it: the cross-check ('crossCheckBodies')
+-- asserts (1) every 'boRefined' is @<=@ its 'boDeclQ' (only ever tightens) and
+-- (2) 'boRefined' is 'Nothing' at every export-boundary parameter.
+
+-- | The set of globals a build exports — the dynamic-link boundary. A global
+-- @GName m nm@ is exported iff @nm@ is in module @m@'s export list. Restricted
+-- to the globals actually present in @present@ (the body map) so the result is
+-- exactly the exported subset of the unit under compilation.
+exportedGlobals :: Map ModuleName [Text] -> Map GName a -> Set GName
+exportedGlobals modExports present =
+  Set.fromList
+    [ g
+    | g@(GName m nm) <- Map.keys present
+    , nm `elem` Map.findWithDefault [] m modExports
+    ]
+
+-- | Stage S1.4 §3a refinement. Given the export-boundary global set, the bodies,
+-- and the S1.1 'OwnInfo' table, TIGHTEN each eligible binder's 'boRefined' to its
+-- actual whole-program usage interval where the visible call graph proves it
+-- narrower than the declared 'boDeclQ'. A binder that flows out through an
+-- exported signature (a top-level parameter of an exported global) keeps
+-- 'boRefined' = 'Nothing' (R4). The refinement only ever tightens.
+--
+-- The actual per-binder usage interval is the precise abstract count of CONSUMING
+-- (non-borrowed) occurrences over the binder's scope ('usageIntervals'): summed
+-- in sequence, joined (min\/max) across branches. It is intersected with the
+-- declared interval, and recorded only when STRICTLY tighter than the declared
+-- one (otherwise the declared quantity already says everything).
+refineOwnership
+  :: Set GName -> Map GName Term -> Map GName OwnInfo -> Map GName OwnInfo
+refineOwnership exports bodies =
+  Map.mapWithKey refineOne
+  where
+    refineOne g oi =
+      case Map.lookup g bodies of
+        Nothing -> oi
+        Just body ->
+          let intervals = usageIntervals g body
+              isExported = g `Set.member` exports
+              paramPaths = leadingParamPaths body
+           in oi
+                { oiBinders =
+                    Map.mapWithKey
+                      (refineBinder isExported paramPaths intervals)
+                      (oiBinders oi)
+                }
+
+    refineBinder isExported paramPaths intervals bid bo
+      -- R4: a parameter that flows out through an exported signature keeps the
+      -- declared quantity as its contract — never refined.
+      | isExported && biPath bid `Set.member` paramPaths = bo {boRefined = Nothing}
+      -- a borrowed binder is governed by the borrow convention, not the
+      -- consuming-use interval; leave it unrefined.
+      | boBorrowed bo = bo {boRefined = Nothing}
+      | otherwise =
+          case Map.lookup bid intervals of
+            Nothing -> bo {boRefined = Nothing}
+            Just actual ->
+              let declared = declInterval (boDeclQ bo)
+                  tightened = intersectInterval declared actual
+               in if strictlyTighter tightened declared
+                    then bo {boRefined = Just tightened}
+                    else bo {boRefined = Nothing}
+
+-- | The set of leading top-level parameter paths of a body: a curried chain of
+-- @CLam@s at the body root, each at child-position @3@ (the @CLam@ body), so the
+-- @i@-th parameter sits at path @replicate i 3@. These are exactly the binders
+-- the elaborated signature telescope corresponds to — the ones that flow through
+-- an exported boundary. A non-leading lambda (one reached through an application,
+-- a let, or a match arm) is NOT a signature parameter and is not included.
+leadingParamPaths :: Term -> Set [Int]
+leadingParamPaths = go 0
+  where
+    go i = \case
+      CLam _ _ _ b -> Set.insert (replicate i 3) (go (i + 1) b)
+      _ -> Set.empty
+
+-- | The declared quantity as a usage interval @(lo, hi)@ with @hi == Nothing@
+-- meaning unbounded above.
+declInterval :: Q -> (Int, Maybe Int)
+declInterval = \case
+  Q0 -> (0, Just 0)
+  Q1 -> (1, Just 1)
+  QW -> (0, Nothing)
+  QLe1 -> (0, Just 1)
+  QGe1 -> (1, Nothing)
+
+-- | Intersect two intervals (the tighter of the two bounds on each side). The
+-- declared interval is always the wider one here (the actual usage cannot exceed
+-- what the quantity admits on a well-typed program), so this never produces an
+-- empty interval; @max@ on the lower bound and the @minHi@ on the upper keep the
+-- result a sub-interval of both.
+intersectInterval :: (Int, Maybe Int) -> (Int, Maybe Int) -> (Int, Maybe Int)
+intersectInterval (lo1, hi1) (lo2, hi2) = (max lo1 lo2, minHi hi1 hi2)
+  where
+    minHi Nothing h = h
+    minHi h Nothing = h
+    minHi (Just a) (Just b) = Just (min a b)
+
+-- | Is the first interval STRICTLY tighter than (a proper sub-interval of) the
+-- second? True iff it is contained in the second AND differs from it. Used so a
+-- refinement is recorded only when it actually narrows the declared range.
+strictlyTighter :: (Int, Maybe Int) -> (Int, Maybe Int) -> Bool
+strictlyTighter inner outer = subInterval inner outer && inner /= outer
+
+-- | Is the first interval contained in the second (@inner ⊆ outer@)? An open
+-- upper bound ('Nothing') is @+∞@: it contains any @Just@ and is contained only
+-- by another 'Nothing'.
+subInterval :: (Int, Maybe Int) -> (Int, Maybe Int) -> Bool
+subInterval (lo1, hi1) (lo2, hi2) = lo1 >= lo2 && hiLe hi1 hi2
+  where
+    hiLe _ Nothing = True
+    hiLe Nothing (Just _) = False
+    hiLe (Just a) (Just b) = a <= b
+
+-- | The precise per-binder CONSUMING-use interval over a whole body, keyed by the
+-- same 'BinderId's 'annotateOwnership' records. The interval @(lo, hi)@ counts how
+-- many times the binder is consumingly used (a borrowed occurrence does NOT
+-- count) along a completion path: @lo@ over the path that uses it least, @hi@ over
+-- the path that uses it most (@Nothing@ = unbounded, which never arises for a
+-- finite term but is carried for totality). Sequential composition ADDS the
+-- per-binder intervals; a branch ('CMatch'\/'CIf') JOINS them (min lower, max
+-- upper) since each arm is its own path.
+--
+-- This mirrors the structure of the 'walk' liveness pass but tracks counts rather
+-- than last-use, so the two stay independent (a bug in one cannot silently mask
+-- the other). It returns intervals for value binders only; an untracked
+-- (type-level) binder records none.
+usageIntervals :: GName -> Term -> Map BinderId (Int, Maybe Int)
+usageIntervals owner body = snd (count 0 [] [] body)
+  where
+    -- @count depth scopes path term@ → (per-binder interval over @term@, accum of
+    -- binders introduced under @term@). @scopes@ resolves a 'CVar' index to its
+    -- binder (innermost first); @path@ is the reversed child path (for keys).
+    count
+      :: Int
+      -> [(Int, Maybe BinderId, Bool)] -- (level, binderId?, borrowed?)
+      -> [Int]
+      -> Term
+      -> (Map BinderId (Int, Maybe Int), Map BinderId (Int, Maybe Int))
+    count depth scopes path term = case term of
+      CVar i ->
+        let lvl = depth - 1 - i
+         in case resolve lvl scopes of
+              Just (Just bid, borrowed)
+                | not borrowed -> (Map.singleton bid (1, Just 1), Map.empty)
+              _ -> (Map.empty, Map.empty)
+
+      CLam _ _ _ b ->
+        let bid = BinderId owner (reverse path)
+            (uses, sub) = count (depth + 1) ((depth, Just bid, False) : scopes) (3 : path) b
+         in (Map.delete bid uses, recordSelf bid uses sub)
+
+      CPi _ _ _ _ dom cod ->
+        let (uDom, sDom) = count depth scopes (4 : path) dom
+            (uCod, sCod) = count (depth + 1) ((depth, Nothing, False) : scopes) (5 : path) cod
+         in (addUses uDom uCod, Map.union sDom sCod)
+
+      CLet _ _ _ rhs b ->
+        let bid = BinderId owner (reverse path)
+            (uRhs, sRhs) = count depth scopes (2 : path) rhs
+            (uB, sB) = count (depth + 1) ((depth, Just bid, False) : scopes) (3 : path) b
+            body' = Map.delete bid uB
+         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB))
+
+      CLetRec _ _ _ rhs b ->
+        let bid = BinderId owner (reverse path)
+            scopes' = (depth, Just bid, False) : scopes
+            (uRhs, sRhs) = count (depth + 1) scopes' (2 : path) rhs
+            (uB, sB) = count (depth + 1) scopes' (3 : path) b
+            combined = addUses uRhs uB
+         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB))
+
+      CMatch s _ alts ->
+        let (uAlts, sAlts) = countAlts depth scopes (2 : path) alts 0
+            (uS, sS) = count depth scopes (1 : path) s
+         in (addUses uS uAlts, Map.union sS sAlts)
+
+      CIf c t e ->
+        let (uT, sT) = count depth scopes (2 : path) t
+            (uE, sE) = count depth scopes (3 : path) e
+            (uC, sC) = count depth scopes (1 : path) c
+         in (addUses uC (joinUses uT uE), Map.unions [sC, sT, sE])
+
+      CApp _ f a -> seqK depth scopes path [(1, f), (2, a)]
+      CCtor _ _ args -> seqK depth scopes path (zip [3 ..] args)
+      CRecordT fs -> seqK depth scopes path (zip [1 ..] (map snd fs))
+      CRecordV fs -> seqK depth scopes path (zip [1 ..] (map snd fs))
+      CVariantT ms -> seqK depth scopes path (zip [1 ..] ms)
+      CQuote _ slots -> seqK depth scopes path (zip [1 ..] slots)
+
+      CProj e _ -> count depth scopes (1 : path) e
+      CProjAt e _ _ -> count depth scopes (1 : path) e
+      CInject _ e -> count depth scopes (1 : path) e
+      CSealE _ e -> count depth scopes (1 : path) e
+      CSigT _ e -> count depth scopes (1 : path) e
+      CThunkE e -> count depth scopes (1 : path) e
+      CLazyE e -> count depth scopes (1 : path) e
+      CForceE e -> count depth scopes (1 : path) e
+
+      CGlob _ -> (Map.empty, Map.empty)
+      CSort _ -> (Map.empty, Map.empty)
+      CLit _ -> (Map.empty, Map.empty)
+      CMeta _ -> (Map.empty, Map.empty)
+      CDo _ _ -> (Map.empty, Map.empty)
+
+    -- record a freshly-bound binder's own interval (its scope is the subterm just
+    -- walked) into the accumulator alongside any deeper binders.
+    recordSelf bid uses sub =
+      Map.insert bid (Map.findWithDefault (0, Just 0) bid uses) sub
+
+    -- a sequence of children evaluated in order: ADD per-binder counts.
+    seqK depth scopes path children =
+      let results = [count depth scopes (c : path) t | (c, t) <- children]
+          uses = foldr addUses Map.empty (map fst results)
+          subs = Map.unions (map snd results)
+       in (uses, subs)
+
+    countAlts _depth _scopes _path [] _ai = (Map.empty, Map.empty)
+    countAlts depth scopes path (alt : rest) ai =
+      let (uAlt, sAlt) = countAlt depth scopes (ai : path) alt
+          (uRest, sRest) = countAlts depth scopes path rest (ai + 1)
+       in (joinUses uAlt uRest, Map.union sAlt sRest)
+
+    countAlt depth scopes path (CaseAlt pat mguard b) =
+      let n = patBindersC pat
+          newScopes =
+            [ (depth + n - 1 - k, Just (BinderId owner (reverse (negate (k + 1) : path))), False)
+            | k <- [0 .. n - 1]
+            ]
+          depth' = depth + n
+          scopes' = newScopes ++ scopes
+          (uB, sB) = count depth' scopes' (1 : path) b
+          (uArm, sArm) = case mguard of
+            Nothing -> (uB, sB)
+            Just gd ->
+              let (uG, sG) = count depth' scopes' (0 : path) gd
+               in (addUses uG uB, Map.union sG sB)
+          -- the arm's pattern binders are local: record their own intervals and
+          -- drop them from the outward-facing use map.
+          bids = [bid | (_, Just bid, _) <- newScopes]
+          selfRecorded = foldr (\bid m -> Map.insert bid (Map.findWithDefault (0, Just 0) bid uArm) m) sArm bids
+          outward = foldr Map.delete uArm bids
+       in (outward, selfRecorded)
+
+    resolve lvl = go
+      where
+        go [] = Nothing
+        go ((l, mbid, brw) : rest)
+          | l == lvl = Just (mbid, brw)
+          | otherwise = go rest
+
+-- | Add two per-binder consuming-use maps componentwise (SEQUENTIAL composition:
+-- a binder used in both subterms is used the sum of the two counts on a path that
+-- runs through both). A binder absent on one side counts as @(0,0)@ there.
+addUses
+  :: Map BinderId (Int, Maybe Int)
+  -> Map BinderId (Int, Maybe Int)
+  -> Map BinderId (Int, Maybe Int)
+addUses = Map.unionWith addInterval
+  where
+    addInterval (lo1, hi1) (lo2, hi2) = (lo1 + lo2, addHi hi1 hi2)
+    addHi (Just a) (Just b) = Just (a + b)
+    addHi _ _ = Nothing
+
+-- | Join two per-binder consuming-use maps (a BRANCH: each is its own completion
+-- path, so a binder's interval is the min lower bound and max upper bound across
+-- the arms). A binder used in only one arm is dropped (count @0@) on the other,
+-- so its lower bound becomes @0@ — exactly the @[0,1]@-style \"used on some paths\"
+-- refinement.
+joinUses
+  :: Map BinderId (Int, Maybe Int)
+  -> Map BinderId (Int, Maybe Int)
+  -> Map BinderId (Int, Maybe Int)
+joinUses a b =
+  Map.unionWith joinInterval (fillZero a b) (fillZero b a)
+  where
+    -- ensure every key present on either side appears on both, defaulting a
+    -- missing arm to @(0, Just 0)@ (the binder is unused on that path).
+    fillZero x other = Map.union x (Map.map (const (0, Just 0)) other)
+    joinInterval (lo1, hi1) (lo2, hi2) = (min lo1 lo2, maxHi hi1 hi2)
+    maxHi Nothing _ = Nothing
+    maxHi _ Nothing = Nothing
+    maxHi (Just x) (Just y) = Just (max x y)
+
 -- ── S1.2 cross-check ─────────────────────────────────────────────────
 
 -- | Validate one definition's 'OwnInfo' against the declared quantities already
@@ -580,22 +899,31 @@ dropLevel = Set.delete
 -- + std library + crafted fixtures), NOT as a crash inside 'annotateOwnership'
 -- on every compilation (which would fire on the intentionally-ill-typed
 -- fixtures). See 'crossCheckBodies'.
-crossCheckOwnInfo :: EvalCtx -> GName -> Term -> OwnInfo -> [String]
-crossCheckOwnInfo ctx owner body oi =
+crossCheckOwnInfo :: Set GName -> EvalCtx -> GName -> Term -> OwnInfo -> [String]
+crossCheckOwnInfo exports ctx owner body oi =
   let (_, assoc) = analyzeBodyFull (paramTelescope ctx owner) owner body
-   in checkAll owner oi assoc
+   in checkAll exports owner body oi assoc
 
 -- | Run the cross-check over a whole set of WELL-TYPED bodies and their
 -- 'OwnInfo'. Returns a flat list of mismatch messages (empty ⇒ clean). This is
 -- the test-suite gate: a non-empty result fails the build, so a wrong last-use
--- analysis is caught rather than allowed to drift.
+-- analysis (S1.1) or an unsound refinement (S1.4) is caught rather than allowed
+-- to drift.
 --
--- The binder↔occurrence association the per-binder invariants need comes from
--- the same single walk 'annotateOwnership' runs ('analyzeBodyFull'), so the
+-- The binder↔occurrence association the per-binder S1.1 invariants need comes
+-- from the same single walk 'annotateOwnership' runs ('analyzeBodyFull'), so the
 -- check validates EXACTLY the classification that was recorded — there is no
 -- second, drift-prone traversal.
-crossCheckBodies :: EvalCtx -> Map GName Term -> Map GName OwnInfo -> [String]
-crossCheckBodies ctx bodies own =
+--
+-- It ALSO validates the S1.4 §3a refinement against the export-boundary set
+-- @exports@ ('exportedGlobals'): (1) every @boRefined@ is @<=@ its @boDeclQ@ as
+-- an interval (refinement only ever tightens, never widens — the source-contract
+-- guarantee), and (2) @boRefined@ is 'Nothing' at every export-boundary
+-- parameter (R4: refining a value that flows out through a separately-compilable
+-- signature is unsound). A violation of either is an internal-invariant error,
+-- exactly like an S1.1 mismatch.
+crossCheckBodies :: Set GName -> EvalCtx -> Map GName Term -> Map GName OwnInfo -> [String]
+crossCheckBodies exports ctx bodies own =
   concatMap one (Map.toList bodies)
   where
     one (g, body) =
@@ -604,17 +932,50 @@ crossCheckBodies ctx bodies own =
           -- pipeline) but fall back to the freshly-walked one; they are equal
           -- by construction (same walk), so this only guards a missing entry.
           oi = Map.findWithDefault oiWalk g own
-       in checkAll g oi assoc
+       in checkAll exports g body oi assoc
 
--- | Check the declared-quantity invariants for one body, given the
--- binder→kinds association.
-checkAll :: GName -> OwnInfo -> Map BinderId [UseKind] -> [String]
-checkAll g oi perBinder =
+-- | Check the declared-quantity invariants (S1.1) AND the §3a refinement
+-- invariants (S1.4) for one body, given the binder→kinds association.
+checkAll :: Set GName -> GName -> Term -> OwnInfo -> Map BinderId [UseKind] -> [String]
+checkAll exports g body oi perBinder =
   concatMap checkOne (Map.toList (oiBinders oi))
   where
+    isExported = g `Set.member` exports
+    paramPaths = leadingParamPaths body
     checkOne (bid, bo) =
       let ks = Map.findWithDefault [] bid perBinder
        in checkKinds g bid bo ks
+            ++ checkRefined isExported paramPaths g bid bo
+
+-- | The S1.4 §3a refinement invariants for one binder (R4 — THE soundness
+-- constraint).
+--
+--   1. @boRefined@ only ever TIGHTENS: its interval must be @<=@ (a
+--      sub-interval of) the declared @boDeclQ@'s interval. A refinement that
+--      widened the declared bound would let S2 drop\/reuse a value the contract
+--      says is shared — a use-after-free.
+--   2. @boRefined@ is 'Nothing' at every EXPORT-BOUNDARY parameter: a top-level
+--      parameter of an exported global flows out through a separately-
+--      compilable signature, where the declared quantity is the binding
+--      contract, so it must never be refined.
+checkRefined :: Bool -> Set [Int] -> GName -> BinderId -> BinderOwn -> [String]
+checkRefined isExported paramPaths g bid bo =
+  case boRefined bo of
+    Nothing -> []
+    Just refined ->
+      [ msg
+          ( "refinement " <> showI refined <> " WIDENS the declared "
+              <> showI (declInterval (boDeclQ bo)) <> " (must only tighten)"
+          )
+      | not (subInterval refined (declInterval (boDeclQ bo)))
+      ]
+        ++ [ msg "export-boundary parameter must not be refined (R4)"
+           | isExported && biPath bid `Set.member` paramPaths
+           ]
+  where
+    msg s = T.unpack (gKey g) <> " @" <> show (biPath bid) <> ": " <> s
+    showI (lo, Just hi) = "[" <> show lo <> "," <> show hi <> "]"
+    showI (lo, Nothing) = "[" <> show lo <> ",ω]"
 
 -- | The per-binder declared-quantity invariant (§12.2.5\/§12.2.6).
 --
@@ -653,6 +1014,104 @@ checkKinds g bid bo ks
   where
     msg s =
       T.unpack (gKey g) <> " @" <> show (biPath bid) <> ": " <> s
+
+-- ── S1.5 call-site classification assert ─────────────────────────────
+--
+-- The S1.5 deliverable (PERCEUS-S1-PLAN (d)\/(e)) is the OBSERVE-ONLY debug
+-- assert that every call site CAN classify each of its arguments under the
+-- owned\/borrowed convention 'Kappa.Backend.Repr.argConvSelect' derives from the
+-- callee telescope — the exact lookup a future S2 dup\/drop pass performs at each
+-- 'CApp'. NO codegen changes; this only checks that the data S2 will need is
+-- recoverable at every statically-resolvable call site.
+--
+-- \"Statically resolvable\" = a call spine whose head is a known GLOBAL
+-- ('CGlob') — the case S2 resolves via the callee 'CPi' telescope (PERCEUS-RC-
+-- DESIGN §3 / PERCEUS-S1-PLAN (d): \"at each 'CApp', resolve the callee 'CPi'
+-- telescope (already done by 'repSelect')\"). For such a spine, 'argConvSelect'
+-- on the callee's type MUST SUCCEED — the telescope is walkable — so S2 has a
+-- per-parameter owned\/borrowed convention list to zip against the spine. A
+-- non-global head (a local variable\/lambda\/partial application) carries no
+-- statically-known global telescope here and is not asserted — S2 classifies it
+-- from the local binder's type, outside this side-table.
+--
+-- NOTE on what is NOT asserted: the assert deliberately does NOT compare the
+-- per-arg convention COUNT against the spine's explicit-argument count. The two
+-- do not align position-for-position at the Core level — an erased ('Q0') or
+-- type-valued argument (e.g. a trait dictionary's @Type@ index, or a proof) is
+-- supplied EXPLICITLY on the spine but is 'Q0'\/implicit in the telescope, so
+-- 'argConvSelect' (correctly) skips it. Matching spine arguments to telescope
+-- parameters — skipping the erased ones — is the lockstep zip S2 itself performs;
+-- the S1.5 deliverable is only that the convention list EXISTS at every such site.
+
+-- | Walk a whole corpus and return every call-site classification finding (empty
+-- ⇒ every statically-resolvable call site can classify each argument). The
+-- test-suite\/lint gate for S1.5.
+argConvBodies :: EvalCtx -> Map GName Term -> [String]
+argConvBodies ctx = concatMap (\(g, body) -> argConvFindings ctx g body) . Map.toList
+
+-- | Call-site classification findings for one body: for every application spine
+-- with a 'CGlob' head, check 'argConvSelect' classifies each supplied explicit
+-- argument. Returns a list of human-readable findings (empty ⇒ clean).
+argConvFindings :: EvalCtx -> GName -> Term -> [String]
+argConvFindings ctx owner = goTerm
+  where
+    -- A bespoke spine-aware walk: at a 'CApp' we decompose the FULL spine once
+    -- ('spineOfTerm') so an intermediate spine 'CApp' is not re-checked on a
+    -- partial argument list, then recurse only into the arguments (and a
+    -- non-global head), never back into the spine's inner 'CApp's.
+    goTerm t = case t of
+      CApp {} ->
+        let (hd, args) = spineOfTerm t
+            here = case hd of
+              CGlob g -> checkCall g args
+              _ -> goTerm hd
+         in here ++ concatMap (goTerm . snd) args
+      CLam _ _ _ b -> goTerm b
+      CPi _ _ _ _ a b -> goTerm a ++ goTerm b
+      CCtor _ _ as -> concatMap goTerm as
+      CMatch s _ alts ->
+        goTerm s ++ concatMap (\(CaseAlt _ gd b) -> maybe [] goTerm gd ++ goTerm b) alts
+      CRecordT fs -> concatMap (goTerm . snd) fs
+      CRecordV fs -> concatMap (goTerm . snd) fs
+      CProj e _ -> goTerm e
+      CProjAt e _ _ -> goTerm e
+      CVariantT ms -> concatMap goTerm ms
+      CInject _ e -> goTerm e
+      CLet _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CLetRec _ _ ty rhs b -> goTerm ty ++ goTerm rhs ++ goTerm b
+      CSealE _ e -> goTerm e
+      CSigT _ e -> goTerm e
+      CThunkE e -> goTerm e
+      CLazyE e -> goTerm e
+      CForceE e -> goTerm e
+      CIf c th el -> goTerm c ++ goTerm th ++ goTerm el
+      CQuote _ slots -> concatMap goTerm slots
+      -- leaves and opaque-do
+      CVar _ -> []
+      CGlob _ -> []
+      CSort _ -> []
+      CLit _ -> []
+      CMeta _ -> []
+      CDo _ _ -> []
+
+    -- assert the callee telescope is WALKABLE so S2 has a per-parameter
+    -- convention list. Only fired when the spine actually supplies an explicit
+    -- argument (a bare 'CGlob' with no args is not a consuming call site).
+    checkCall g args =
+      case Map.lookup g (globalsMap (ecGlobals ctx)) of
+        -- an unknown global (e.g. a runtime prim with no recorded type) cannot be
+        -- classified here; that is not a failure of the accessor — skip it.
+        Nothing -> []
+        Just gd ->
+          let hasExpl = not (null [() | (Expl, _) <- args])
+              walkable = case argConvSelect ctx (gdType gd) of
+                Just _ -> True
+                Nothing -> False
+           in [ T.unpack (gKey owner) <> " → " <> T.unpack (gKey g)
+                  <> ": callee telescope is not walkable (argConvSelect = Nothing)"
+              | hasExpl
+              , not walkable
+              ]
 
 -- ── Dump rendering ───────────────────────────────────────────────────
 

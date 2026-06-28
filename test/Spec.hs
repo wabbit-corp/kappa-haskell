@@ -24,7 +24,7 @@ import Kappa.Core
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
-import Kappa.Ownership (crossCheckBodies)
+import Kappa.Ownership (argConvBodies, crossCheckBodies, exportedGlobals)
 import Kappa.Pipeline (CompiledUnit (..), compileSourceWithPrelude)
 import Kappa.Source (ModuleName (..))
 import Kappa.TestHarness
@@ -150,6 +150,20 @@ ownershipCrossCheckClean = do
             , "    case Some v -> v"
             , "    case None -> 0"
             ]
+        , -- S1.4 §3a + R4: a PRIVATE (non-exported) single-use ω parameter is
+          -- refined to [1,1]; an EXPORTED single-use ω parameter is NOT (the
+          -- declared quantity is the separately-compilable contract). The
+          -- cross-check asserts boRefined <= boDeclQ and Nothing-at-boundary, so
+          -- a wrong refinement (a widen, or a refined export param) fails here.
+          T.unlines
+            [ "module main"
+            , "share : (ω x : Int) -> Int"
+            , "let share (ω x : Int) = x"
+            , "private dup1 : (ω y : Int) -> Int"
+            , "let dup1 (ω y : Int) = y"
+            , "private useTwice : (ω z : Int) -> Int"
+            , "let useTwice (ω z : Int) = addInt z z"
+            ]
         ]
       -- compile each fixture WITH the implicit prelude+std, so the cross-check
       -- sees the whole well-typed corpus plus the fixture's own definitions.
@@ -157,7 +171,13 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "fixture.kp" src
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-         in crossCheckBodies ctx (csCoreBodies st) (csOwnership st)
+            exports = exportedGlobals (csModuleExports st) (csCoreBodies st)
+            -- S1.1 last-use + S1.4 §3a refinement (incl. the R4 boundary gate)
+            xc = crossCheckBodies exports ctx (csCoreBodies st) (csOwnership st)
+            -- S1.5 owned/borrowed call-site classification: every global-headed
+            -- call site must classify each of its arguments.
+            ac = argConvBodies ctx (csCoreBodies st)
+         in xc ++ ac
       mismatches = concatMap check fixtures
   unless (null mismatches) $ do
     putStrLn ("ownershipCrossCheckClean FAILED: " <> show (length mismatches) <> " mismatch(es)")

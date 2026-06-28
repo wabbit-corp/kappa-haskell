@@ -52,7 +52,7 @@ import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
-import Kappa.Ownership (annotateOwnership)
+import Kappa.Ownership (annotateOwnership, exportedGlobals, refineOwnership)
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
   ( builtinState
@@ -730,21 +730,31 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                 (\tm -> evalState (zonkTermM 0 tm) finalSt)
                 (csCoreBodies finalSt)
           }
-      -- Perceus RC Stage S1.0: populate the ownership side-table right after
-      -- 'csCoreBodies' is finalized (mirroring the @gsSuspenders@ precedent,
-      -- which derives from the same core bodies). At S1.0 'annotateOwnership'
-      -- is the EMPTY pass, so 'csOwnership' is the empty map and nothing in
-      -- codegen changes; this only threads the plumbing. The 'EvalCtx' is the
-      -- same shape the lint and other post-finalization consumers build.
+      -- Perceus RC Stage S1.1/S1.4: populate the ownership side-table right
+      -- after 'csCoreBodies' is finalized (mirroring the @gsSuspenders@
+      -- precedent, which derives from the same core bodies). 'annotateOwnership'
+      -- (S1.1) records per-binder ownership facts and per-occurrence last-use;
+      -- 'refineOwnership' (S1.4 §3a) then TIGHTENS each binder's @boRefined@ to
+      -- its whole-program usage interval where the visible call graph proves it,
+      -- keeping it 'Nothing' at the export boundary ('csModuleExports'; R4). It
+      -- is observe-only — no consumer reads it, so codegen stays byte-identical;
+      -- this only threads the metadata. The 'EvalCtx' is the same shape the lint
+      -- and other post-finalization consumers build.
       ownCtx =
         EvalCtx
           (Globals (csGlobals finalSt'0))
           (csMetas finalSt'0)
           False
           (csFacts finalSt'0)
+      ownExports =
+        exportedGlobals (csModuleExports finalSt'0) (csCoreBodies finalSt'0)
       finalSt' =
         finalSt'0
-          { csOwnership = annotateOwnership ownCtx (csCoreBodies finalSt'0)
+          { csOwnership =
+              refineOwnership
+                ownExports
+                (csCoreBodies finalSt'0)
+                (annotateOwnership ownCtx (csCoreBodies finalSt'0))
           }
       -- KBackendIR Stage 0: an OBSERVE-ONLY lint over the elaborated,
       -- zonked Core. It only appends 'SevWarning' diagnostics — it never

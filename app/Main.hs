@@ -22,9 +22,17 @@ import Kappa.Build.Plan (ResolvedExe (..), resolveExecutable, resolveTestTarget)
 import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
+import Kappa.Backend.Repr (CtorLayout (..), CtorLayoutInfo (..), ctorLayoutOf)
 import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), defaultUnsafeConfig)
-import Kappa.Core (GName (..))
-import Kappa.Ownership (crossCheckBodies, emptyOwnInfo, renderOwnInfo)
+import Kappa.Core (GName (..), Term (..), gKey)
+import Kappa.CoreOps (foldTermWithDepth)
+import Kappa.Ownership
+  ( argConvBodies
+  , crossCheckBodies
+  , emptyOwnInfo
+  , exportedGlobals
+  , renderOwnInfo
+  )
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..))
 import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
@@ -158,10 +166,44 @@ cmdDumpOwnership cfg path = do
       userGs = [g | g@(GName m _) <- Map.keys own, m == userMod]
   forM_ userGs $ \g ->
     TIO.putStr (renderOwnInfo g (Map.findWithDefault emptyOwnInfo g own))
-  -- self-check: validate the dumped globals against their declared quantities.
+  -- self-check: validate the dumped globals against their declared quantities
+  -- (S1.1) and the §3a refinement boundary (S1.4). The export-boundary set is
+  -- computed over the whole unit (not just the user module) so the R4 gate sees
+  -- every separately-compilable signature.
   let userBodies = Map.filterWithKey (\(GName m _) _ -> m == userMod) bodies
       ownCtx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-      mismatches = crossCheckBodies ownCtx userBodies own
+      exports = exportedGlobals (csModuleExports st) bodies
+      mismatches = crossCheckBodies exports ownCtx userBodies own
+      -- S1.3: the constructor layout 'Repr.ctorLayoutOf' resolves from each
+      -- 'CCtor' head-type annotation in the user code (observe-only — consumed
+      -- by S5 FBIP reuse, not by any current codegen).
+      ctorSites t = case t of
+        CCtor cg ann _ -> [(cg, ctorLayoutOf ownCtx ann)]
+        _ -> []
+      renderLayout = \case
+        Nothing -> "Nothing (no annotation ⇒ skip reuse)"
+        Just info ->
+          "arity=" <> show (clArity info)
+            <> " class=" <> showClass (clLayoutClass info)
+            <> " fieldReps=" <> show (clFieldReps info)
+      showClass = \case
+        LayoutImmediate -> "Immediate"
+        LayoutMayPack -> "MayPack"
+        LayoutBoxed -> "Boxed"
+  forM_ (Map.toList userBodies) $ \(g, body) ->
+    forM_ (foldTermWithDepth (\_ t -> ctorSites t) 0 body) $ \(cg, info) ->
+      putStrLn
+        ( "-- ctor-layout " <> T.unpack (gKey g) <> " → " <> T.unpack (gKey cg)
+            <> ": " <> renderLayout info
+        )
+  -- S1.5: the owned/borrowed call-site classification assert (observe-only) —
+  -- every statically-resolvable (global-headed) call site must classify each arg.
+  let argConvFails = argConvBodies ownCtx userBodies
+  if null argConvFails
+    then putStrLn "-- arg-conv: OK"
+    else do
+      putStrLn ("-- arg-conv: " <> show (length argConvFails) <> " UNCLASSIFIED")
+      forM_ argConvFails (putStrLn . ("--   " <>))
   if null mismatches
     then putStrLn "-- cross-check: OK"
     else do
