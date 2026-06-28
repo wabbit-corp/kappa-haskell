@@ -1,0 +1,28 @@
+module main
+
+-- §11.4/§14.4 (POSITIVE) — carrier recovery through a primitive equand. The
+-- IsProp-under-Pi closure solver discharges 'IsProp (forall xs. l = r)' only
+-- when it can recover the equands' OWN carrier and that carrier is a set.
+--
+-- Here an equand is '__debugRender 1' (the rendering primitive), whose result
+-- type is 'String'. The carrier-recovery walk ('equandType') must read 'String'
+-- off a primitive equand and thread the prelude's 'instance IsSet String' into
+-- 'isPropEq'. An earlier walk under-applied the primitive's declared Pi
+-- telescope — dropping its erased implicit '@0 a : Type' parameter and returning
+-- a stuck/partial codomain — so it falsely DECLINED this true String carrier
+-- (a conservative false negative; soundness-safe but incomplete). With the
+-- telescope walked correctly the obligation discharges.
+--
+-- The dual soundness guards stay closed: a FALSE 'Bool' equality (Bool is not a
+-- set) is still REJECTED, and a foreign set-typed rigid merely occurring in a
+-- stuck equand is still never grabbed as the carrier — see
+-- isprop-eq-foreign-carrier-rigid-rejected.kp and
+-- isprop-eq-requires-isset-bool-subst-rejected.kp.
+
+descrLaw : (=) String (__debugRender 1) ""
+let descrLaw = unsafeAssertProof "a String law over a primitive equand"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertAuditLedger unsafeAssertProof

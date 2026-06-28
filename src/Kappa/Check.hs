@@ -2436,18 +2436,52 @@ equandType cx v = do
         Nothing -> pure Nothing
     -- a fully/partially applied primitive (e.g. @stringAppend@): a prim is
     -- registered as a prelude global carrying its declared type, with value
-    -- @VPrim p []@ (see 'Kappa.Prelude.prim'); all its stored args are explicit
-    -- applications.
+    -- @VPrim p []@ (see 'Kappa.Prelude.prim'). Unlike a 'VGlobN' spine — which
+    -- carries every argument WITH its icity — a 'VPrim' stores ONLY its explicit
+    -- arguments: an implicit (type) argument to a stuck prim is erased on
+    -- application (see 'Kappa.Eval.evalApp', the @ic == Impl -> VPrim p args@
+    -- case). So we must NOT walk the declared Pi telescope one-binder-per-stored-
+    -- arg (that would consume an explicit value against an implicit binder and
+    -- misalign the whole spine, leaving a stuck/partial codomain and falsely
+    -- declining a true carrier). 'applyPrimTelescope' walks the telescope by
+    -- binder icity instead, threading the explicit args and reconstructing the
+    -- erased implicits from the explicit arguments' types.
     VPrim p args -> do
       mt <- globalType (GName preludeModule p)
       case mt of
-        Just (_, hty) -> applySpineType hty [(Expl, a) | a <- args]
+        Just (_, hty) -> do
+          -- The telescope walk solves fresh metas (and may speculatively touch
+          -- pre-existing ones) to reconstruct the erased implicits. Carrier
+          -- recovery is a read-only QUERY, so we run it transactionally: snapshot
+          -- the meta state, recover and deeply zonk the carrier, then restore the
+          -- snapshot. Zonking bakes any recovered implicit into the returned
+          -- value, so it survives the restore; no meta solution leaks back into
+          -- the surrounding elaboration.
+          st0 <- get
+          r <- applyPrimTelescope hty args
+          r' <- traverse (zonkValue (ctxLen cx)) r
+          modify' $ \st -> st {csMetas = csMetas st0}
+          pure r'
         Nothing -> pure Nothing
-    -- a literal's type is its scalar carrier; only the ones that can appear as
-    -- an equand under these laws are needed, and an unknown literal carrier
-    -- simply declines.
+    -- A literal's carrier is its (unique) type. The only one that arises as an
+    -- equand under these laws is the String literal — e.g. @render@/
+    -- @__debugRender@ reduce a concrete argument to a @String@ literal, and a
+    -- forall-law over such a value is an h-prop because @String@ is a set. A
+    -- 'LitInt' is intentionally NOT handled: its representation is shared by
+    -- @Nat@/@Int@/@Integer@ (see 'Kappa.Core.Literal'), so its carrier is
+    -- ambiguous and guessing one would be unsound. Other literals decline.
+    VLit (LitStr _) -> pure (Just (VGlobN prelString []))
     _ -> pure Nothing
   where
+    -- Deeply resolve all solved metavariables in a value by quoting it, zonking
+    -- the term, and re-evaluating. Used to snapshot the recovered carrier before
+    -- the transactional meta-state restore in the 'VPrim' case.
+    zonkValue :: Int -> Value -> CheckM Value
+    zonkValue d val = do
+      ec <- ec_
+      tz <- zonkTermM d (quote ec d val)
+      evalIn cx tz
+
     -- Walk @spine@ through the head type's Pi binders, substituting each
     -- argument into the codomain to obtain the result type.
     applySpineType :: Value -> Spine -> CheckM (Maybe Value)
@@ -2459,6 +2493,47 @@ equandType cx v = do
           cod <- clApp clo arg
           applySpineType cod rest
         _ -> pure Nothing
+
+    -- Walk a primitive's declared type telescope to recover the type of a
+    -- (possibly partial) @VPrim p args@ application. @args@ holds ONLY the
+    -- explicit arguments (the erased implicits were dropped on application), so
+    -- we descend the telescope by binder icity:
+    --
+    --   * an IMPLICIT binder has no stored argument — apply a fresh metavariable
+    --     and continue. The meta is pinned below by unifying the recovered type
+    --     of a later explicit argument against that argument's declared domain
+    --     (which mentions this implicit). If nothing pins it, the meta stays
+    --     flexible and the recovered carrier is a metavariable for which the
+    --     downstream @IsSet@ search declines — never a concrete (possibly wrong)
+    --     carrier, so this is soundness-safe.
+    --
+    --   * an EXPLICIT binder consumes the next stored argument; before applying
+    --     it we recover the argument's own type and unify it with the binder's
+    --     domain, which solves any implicit metas the domain mentions. For a prim
+    --     like @__arrayIndexUnsafe : forall (@0 a). Array a -> Int -> a@ the array
+    --     argument's type @Array Integer@ pins the erased @a := Integer@.
+    applyPrimTelescope :: Value -> [Value] -> CheckM (Maybe Value)
+    applyPrimTelescope ty args = do
+      tf <- forceM ty
+      case tf of
+        VPi Impl _ _ _ _ clo -> do
+          mv <- freshMetaV cx
+          cod <- clApp clo mv
+          applyPrimTelescope cod args
+        VPi Expl _ _ _ dom clo -> case args of
+          (a : rest) -> do
+            mArgTy <- equandType cx a
+            forM_ mArgTy $ \argTy -> void (unify cx dom argTy)
+            cod <- clApp clo a
+            applyPrimTelescope cod rest
+          -- a partially applied prim: no more explicit args to consume, so the
+          -- equand's type is the remaining (function) type — return it as-is.
+          [] -> Just <$> forceM tf
+        -- the telescope is exhausted; any leftover stored args would indicate a
+        -- mis-registered prim type, so decline rather than guess.
+        _ -> case args of
+          [] -> Just <$> forceM tf
+          _ -> pure Nothing
 
 -- NOTE: a 'rigidVarTypes' carrier-recovery fallback used to live here, feeding
 -- the IsProp-under-Pi solver's equality base case extra carrier candidates — the

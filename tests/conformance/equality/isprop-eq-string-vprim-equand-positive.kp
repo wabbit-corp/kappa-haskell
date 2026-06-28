@@ -1,0 +1,23 @@
+module main
+
+-- §11.4/§14.4 (POSITIVE) — carrier recovery through a STUCK primitive equand.
+-- The law's equands are 'stringAppend x y' on neutral 'String' binders, which
+-- stay stuck as a primitive application ('VPrim'). 'equandType' must walk the
+-- primitive's declared Pi telescope to recover the result type 'String' and
+-- thread 'instance IsSet String' into 'isPropEq', so the forall-law is proved a
+-- proposition and the obligation discharges.
+
+trait CatLaw (a : Type) =
+    cat : String -> String -> String
+    catAssoc :
+        forall (x : String) (y : String) (z : String).
+        (=) (cat (cat x y) z) (cat x (cat y z))
+
+instance CatLaw Integer =
+    let cat p q = stringAppend p q
+    let catAssoc = unsafeAssertProof "String append is associative"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertAuditLedger unsafeAssertProof
