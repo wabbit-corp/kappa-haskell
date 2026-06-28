@@ -1,0 +1,16 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE 1 — incomplete gated set): '__debugInspect'
+-- is a raw-admit prelude prim of type 'forall (@0 a)(@0 r). a -> r'. Its result
+-- 'r' is bound by the telescope but appears in no argument, so it unifies with
+-- ANY target type — exactly the free-result admit shape of '__eqProof'. Before
+-- this fix '__debugInspect'/'__debugCompare' were absent from the gated set, so
+-- a plain user module could forge 'let bogus : (=) True False = __debugInspect 0'
+-- and then inhabit Void via subst over a discriminator family. A plain user
+-- module naming '__debugInspect' is now rejected.
+
+bogus : (=) True False
+let bogus = __debugInspect 0
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

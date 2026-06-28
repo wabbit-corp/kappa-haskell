@@ -290,13 +290,26 @@ data CheckState = CheckState
   -- fixed constructor subset are disabled for the module currently being
   -- checked, either by build configuration or @NoPrelude.
   , csAllowUnsafeIntrinsics :: !Bool
-  -- ^ §4.5 soundness escape: the module currently being checked carries the
-  -- @AllowUnsafeIntrinsics module attribute, so it may name the raw-admit
-  -- proof intrinsics (@__eqProof@, @__transport@, @__absurd@, @__handleEff@)
-  -- that otherwise resolve only inside the prelude. These intrinsics inhabit
-  -- an arbitrary proposition from nothing, so naming one from ordinary user
-  -- code is a total-unsoundness hole; the attribute is an explicit, audited
-  -- opt-out reserved for testing/bootstrapping. Defaults to 'False'.
+  -- ^ §4.5 soundness escape: the module currently being checked may name the
+  -- raw-admit proof intrinsics (@__eqProof@, @__transport@, @__absurd@,
+  -- @__handleEff@, and the @__debug*@ introspection prims) that otherwise
+  -- resolve only inside the prelude. These intrinsics inhabit an arbitrary
+  -- proposition from nothing, so naming one from ordinary user code is a
+  -- total-unsoundness hole. This flag is the SOLE exemption (see
+  -- 'gateUnsafeIntrinsic'): it is set by the prelude loader for the genuine
+  -- embedded prelude/std-lib, and by the pipeline for a user module carrying
+  -- the @AllowUnsafeIntrinsics attribute (an explicit, audited opt-out for
+  -- tests/bootstrapping). Defaults to 'False'.
+  , csEmbeddedLoad :: !Bool
+  -- ^ §4.7 audit hygiene: 'True' only while elaborating the genuine embedded
+  -- prelude and the embedded standard-library modules (set by the prelude
+  -- loader, cleared by the pipeline for every user module). The embedded
+  -- modules admit the proof helpers internally as implementation machinery,
+  -- not as a user opt-in, so 'gateUnsafeIntrinsic' does NOT record those uses
+  -- in the audit ledger when this flag is set; an ordinary @AllowUnsafeIntrinsics
+  -- user module (where the flag is 'False') IS recorded. This is an
+  -- audit-only distinction with no bearing on the soundness exemption above.
+  -- Defaults to 'False'.
   , csAuditLedger :: ![AuditRecord]
   -- ^ §4.7 unsafe/debug audit ledger: one record per accepted use of an
   -- unsafe/debug facility, in source order.
@@ -511,6 +524,7 @@ initCheckState =
     , csUnsafe = defaultUnsafeConfig
     , csPreludeDisabled = False
     , csAllowUnsafeIntrinsics = False
+    , csEmbeddedLoad = False
     , csAuditLedger = []
     , csScopeNameCache = Nothing
     , csBackendIntrinsics = Map.empty
@@ -1857,8 +1871,7 @@ resolveName ctx (Name n sp) =
           mg <- lookupGlobalName n
           case mg of
             Just g -> do
-              gateUnsafeAssertProof g sp
-              gateUnsafeIntrinsic g sp
+              gateUnsafeResolved g sp
               mt <- globalTerm g
               case mt of
                 Just r -> pure r
@@ -6054,7 +6067,12 @@ elabDotOrdinary ctx e member mname = do
           st <- get
           if (Map.member g (csGlobals st) || Map.member g (csCtors st))
             && memberVisible st mn (nameText mname)
-            then globalTerm g
+            then do
+              -- §4.5: a bare fully-qualified reference (@std.prelude.__eqProof@)
+              -- resolves straight to 'globalTerm'; gate the raw-admit
+              -- intrinsics here so it cannot bypass the soundness gate.
+              gateUnsafeResolved g (nameSpan mname)
+              globalTerm g
             else pure Nothing
         _ -> pure Nothing
       case mPath of
@@ -6231,6 +6249,9 @@ moduleMember :: Ctx -> ModuleName -> Name -> CheckM (Term, Value)
 moduleMember ctx modName mname = do
   st <- get
   let g = GName modName (nameText mname)
+  -- §4.5: a reified module-object member resolves straight to 'globalTerm';
+  -- gate the raw-admit intrinsics here too so this path cannot bypass it.
+  gateUnsafeResolved g (nameSpan mname)
   mt <-
     if memberVisible st modName (nameText mname)
       then case (Map.member g (csDatas st), Map.lookup g (csGlobals st)) of
@@ -6272,6 +6293,10 @@ elabDotUnqualified ctx e member mname = do
           case Map.lookup base (csModuleAliases st) of
             Just modName -> do
               let g = GName modName (nameText mname)
+              -- §4.5: an aliased qualified reference (@import std.prelude as P@,
+              -- then @P.__eqProof@) resolves straight to 'globalTerm'; gate the
+              -- raw-admit intrinsics here so it cannot bypass the soundness gate.
+              gateUnsafeResolved g (nameSpan mname)
               mt <-
                 if memberVisible st modName (nameText mname)
                   then globalTerm g
@@ -13608,34 +13633,95 @@ gateUnsafeAssertProof (GName gm nm) sp
 -- discriminator family then inhabits @Void@. They exist only so the prelude
 -- can admit the proof helpers (cong/sym/trans/subst/pathInd/isPropEq/… and
 -- the §11.4 List-monoid laws) and so the elaborator can build @__handleEff@
--- applications. The prelude module is therefore always permitted, and an
--- ordinary user module may opt in with the @AllowUnsafeIntrinsics module
--- attribute (for tests/bootstrapping). Every other module is rejected when
--- it tries to NAME the intrinsic, before any term is built — there is no
--- path by which user code reaches the raw admit.
+-- applications. The exemption is the 'csAllowUnsafeIntrinsics' flag ALONE:
+-- it is set by the prelude loader when elaborating the genuine embedded
+-- prelude/std-lib (so those admit the proof helpers), and by the pipeline
+-- for any user module that carries the @AllowUnsafeIntrinsics attribute
+-- (for tests/bootstrapping). The exemption is deliberately NOT name-based
+-- on @cur == preludeModule@ — a user file literally named @module std.prelude@
+-- never goes through the embedded-prelude load and so never gets the flag,
+-- and is rejected like any other module. Every gated name is rejected when
+-- the flag is off, before any term is built, on every resolution path
+-- (unqualified, module-aliased, fully-qualified, and reified-module-member),
+-- so there is no path by which ordinary user code reaches the raw admit.
+-- Each accepted opt-in use is recorded in the §4.7 audit ledger.
+-- The complete set of user-nameable prelude prims whose RESULT type is a
+-- free, unpinned variable (it is bound by the prim's telescope but appears
+-- in no argument, so it unifies with any target type). Each therefore
+-- inhabits an arbitrary proposition and is a raw admit. A full prelude scan
+-- (§4.5) found exactly these six: the four proof intrinsics plus the two
+-- @std.debug@ introspection prims @__debugInspect@/@__debugCompare@, whose
+-- result @r@ is pinned only by the std.debug wrappers one module up but is
+-- free at the bare-prim level — @let bogus : (=) True False = __debugInspect 0@
+-- type-checks. @__debugRender@ is deliberately NOT here: its result is pinned
+-- (@-> String@), so it is not exploitable, and a §11.4 positive test names it
+-- from a plain module to exercise carrier recovery through a primitive equand
+-- (isprop-eq-string-prim-carrier-positive.kp) — gating it would break that
+-- legitimate use for no soundness gain. (@__runIO@/@__arrayIndexUnsafe@/
+-- @__codeEscape@/@__rowExtend@ all have pinned results; @__unsafeAssertProof@
+-- is gated separately by 'gateUnsafeAssertProof'; @failNow@ is unreachable.)
 gatedUnsafeIntrinsics :: [Text]
-gatedUnsafeIntrinsics = ["__eqProof", "__transport", "__absurd", "__handleEff"]
+gatedUnsafeIntrinsics =
+  [ "__eqProof"
+  , "__transport"
+  , "__absurd"
+  , "__handleEff"
+  , "__debugInspect"
+  , "__debugCompare"
+  ]
 
 gateUnsafeIntrinsic :: GName -> Span -> CheckM ()
 gateUnsafeIntrinsic (GName gm nm) sp
   | gm == preludeModule, nm `elem` gatedUnsafeIntrinsics = do
-      cur <- gets csModule
+      -- §4.5: exemption is the 'csAllowUnsafeIntrinsics' flag ALONE (set
+      -- for the embedded prelude/std-lib by the loader, and for a user
+      -- module carrying @AllowUnsafeIntrinsics). A user file merely named
+      -- 'module std.prelude' does NOT get the flag and is rejected.
       allowed <- gets csAllowUnsafeIntrinsics
-      when (cur /= preludeModule && not allowed) $
-        report $
-          withPayload
-            ( withPayloadField "name" nm $
-                payloadKind "unsafe-intrinsic-gated"
-            ) $
-            withRelated (related RoleUseSite sp ("'" <> nm <> "' named here")) $
-              diag SevError StageElaborate "E_UNSAFE_INTRINSIC_GATED" (Just "kappa.feature.gated") sp
-                ( "the raw-admit proof intrinsic '" <> nm
-                    <> "' inhabits an arbitrary proposition and is not nameable from ordinary"
-                    <> " user code; it would forge false proofs and break soundness."
-                    <> " Use the checked proof helpers (refl/cong/subst/…) instead, or mark the"
-                    <> " module '@AllowUnsafeIntrinsics' to opt in for testing (Spec §4.5)"
-                )
+      embedded <- gets csEmbeddedLoad
+      if allowed
+        then -- §4.7: record each accepted opt-in use in the audit ledger so the
+             -- soundness escape shows in the audit trail (mirrors how
+             -- 'gateUnsafeAssertProof' records 'unsafeAssertProof'). The genuine
+             -- embedded prelude/std-lib admits the proof helpers and wraps the
+             -- debug prims internally — implementation machinery, not a user
+             -- opt-in — so those uses are NOT ledgered (they would otherwise
+             -- pollute every downstream module's ledger, since the base ledger
+             -- carries forward). Every NON-embedded module reaching here did so
+             -- via the @AllowUnsafeIntrinsics flag, so the use is recorded.
+          when (not embedded) $
+            recordAudit "unsafeIntrinsic" nm "allow_unsafe_intrinsics" sp Nothing
+        else
+          report $
+            withPayload
+              ( withPayloadField "name" nm $
+                  payloadKind "unsafe-intrinsic-gated"
+              ) $
+              withRelated (related RoleUseSite sp ("'" <> nm <> "' named here")) $
+                diag SevError StageElaborate "E_UNSAFE_INTRINSIC_GATED" (Just "kappa.feature.gated") sp
+                  ( "the raw-admit proof intrinsic '" <> nm
+                      <> "' inhabits an arbitrary proposition and is not nameable from ordinary"
+                      <> " user code; it would forge false proofs and break soundness."
+                      <> " Use the checked proof helpers (refl/cong/subst/…) instead, or mark the"
+                      <> " module '@AllowUnsafeIntrinsics' to opt in for testing (Spec §4.5)"
+                  )
   | otherwise = pure ()
+
+-- | §4.5 soundness gate at every name/member resolution path. The two
+-- escapes ('gateUnsafeAssertProof' and 'gateUnsafeIntrinsic') were
+-- originally invoked only from the unqualified 'resolveName' path, which
+-- a QUALIFIED reference bypasses: @import std.prelude as P@ then
+-- @P.__eqProof@ (the module-alias branch of 'elabDotUnqualified'), a bare
+-- fully-qualified @std.prelude.__eqProof@ ('elabDotOrdinary'), or a reified
+-- module-object member ('moduleMember') each resolve straight to the
+-- prelude 'globalTerm' with no gate. This helper runs BOTH gates and is
+-- threaded through every such path, so a qualified reference is gated
+-- identically to a bare one and the @AllowUnsafeIntrinsics flag is the only
+-- way user code can name a gated intrinsic.
+gateUnsafeResolved :: GName -> Span -> CheckM ()
+gateUnsafeResolved g sp = do
+  gateUnsafeAssertProof g sp
+  gateUnsafeIntrinsic g sp
 
 -- | An active-pattern declaration (§17.3.1) elaborates as an ordinary
 -- function definition (the pattern name is also a first-class value)

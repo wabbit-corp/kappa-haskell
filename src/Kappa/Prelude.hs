@@ -48,6 +48,23 @@ builtinState :: CheckState
 builtinState =
   initCheckState
     { csModule = preludeModule
+    , -- §4.5 soundness escape: the genuine embedded prelude and the embedded
+      -- standard-library modules built on top of it (std.debug etc.) admit the
+      -- proof helpers (cong/sym/trans/subst/…) and wrap the debug introspection
+      -- prims via the raw-admit intrinsics. The exemption is THIS flag alone
+      -- (see 'gateUnsafeIntrinsic'): set it here, on the genuine embedded load,
+      -- so those modules are permitted. A user file merely NAMED 'module
+      -- std.prelude' never goes through this loader, so it does not get the
+      -- flag and is gated like any other module. 'stdModule' inherits this flag
+      -- (it does not reset it), so the embedded std-lib is covered too; the
+      -- user-module pipeline (Kappa.Pipeline) sets it explicitly per module
+      -- from the @AllowUnsafeIntrinsics attribute, overriding this base value.
+      csAllowUnsafeIntrinsics = True
+    , -- §4.7 audit hygiene: mark this as the genuine embedded load so the
+      -- prelude's internal proof admits and the std-lib's debug-prim wrappers
+      -- are NOT written to the audit ledger (they would otherwise carry into
+      -- every user module's ledger). The pipeline clears this for user modules.
+      csEmbeddedLoad = True
     , csGlobals = Map.fromList (types ++ prims ++ testingPrims)
     , csCtors = Map.fromList ctors
     , csDatas = Map.fromList datas

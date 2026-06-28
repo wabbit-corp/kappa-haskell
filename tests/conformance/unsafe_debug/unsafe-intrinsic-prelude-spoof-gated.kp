@@ -1,0 +1,17 @@
+module std.prelude
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE 3 — prelude-name spoof): the gate's exemption
+-- was originally name-based ('cur == preludeModule'). A user file literally
+-- named 'module std.prelude' is NOT the genuine embedded prelude — it never
+-- goes through the embedded-prelude loader and carries no @AllowUnsafeIntrinsics
+-- attribute — yet the name-based check exempted it, letting it forge
+-- 'let bogus : (=) True False = __eqProof'. The exemption is now the internal
+-- 'csAllowUnsafeIntrinsics' flag ALONE, set only by the embedded loader (and by
+-- the @AllowUnsafeIntrinsics attribute). A user 'module std.prelude' gets no
+-- flag and is rejected like any other module.
+
+bogus : (=) True False
+let bogus = __eqProof
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

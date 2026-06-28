@@ -1,0 +1,17 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE 2 — qualified-name bypass): the soundness gate
+-- was originally invoked only on the UNQUALIFIED name-resolution path. A
+-- QUALIFIED/aliased reference bypassed it: 'import std.prelude as P' then
+-- 'P.__eqProof' resolved straight to the prelude global with no gate, so a plain
+-- user module could forge 'let bogus : (=) True False = P.__eqProof'. The gate
+-- now runs on the module-alias resolution path too, so the aliased reference is
+-- rejected identically to the bare one.
+
+import std.prelude as P
+
+bogus : (=) True False
+let bogus = P.__eqProof
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

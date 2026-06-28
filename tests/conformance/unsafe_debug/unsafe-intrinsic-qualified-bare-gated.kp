@@ -1,0 +1,13 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE 2 — qualified-name bypass, bare form): a bare
+-- fully-qualified reference 'std.prelude.__eqProof' resolves through a different
+-- code path than the alias form (the fully-qualified module-path branch), which
+-- also reached the prelude global with no gate. The gate now runs on that path
+-- too, so the bare-qualified reference is rejected like the unqualified one.
+
+bogus : (=) True False
+let bogus = std.prelude.__eqProof
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

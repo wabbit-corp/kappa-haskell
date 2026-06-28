@@ -117,13 +117,21 @@ preludeState =
               (modConfig, "<std.config>", stdConfigSource)
             , (modBuild, "<std.build>", stdBuildSource)
             ]
-          (st', sdiags) =
+          (stStd, sdiags) =
             foldl
               (\(stAcc, dsAcc) (mn, path, src) ->
                  let (stNext, ds) = stdModule mn path src stAcc
                   in (stNext, dsAcc ++ ds))
               (st, [])
               stdSources
+          -- §4.5/§4.7 fail-safe: the embedded prelude/std-lib elaborated with
+          -- the unsafe-intrinsic exemption ON (so they could admit the proof
+          -- helpers and wrap the debug prims). Clear it in the base state handed
+          -- to every downstream consumer (the user pipeline, config-mode, the
+          -- assertType probe), so the SAFE default is "gated": a consumer that
+          -- forgets to reset the flag inherits 'False', not the exemption. Only
+          -- a user module with @AllowUnsafeIntrinsics re-enables it.
+          st' = stStd {csAllowUnsafeIntrinsics = False, csEmbeddedLoad = False}
        in (st', recovered ++ rdiags ++ diags ++ sdiags ++ builtinContractDiags st')
 
 -- | §28: the prelude must define every name the compiler wires in (see
@@ -569,6 +577,10 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                     -- @AllowUnsafeIntrinsics attribute (the prelude is always
                     -- permitted, independently of this flag).
                     csAllowUnsafeIntrinsics = moduleHasAttr "AllowUnsafeIntrinsics" m'
+                  , -- §4.7: this is a user module, not the genuine embedded
+                    -- load, so its accepted intrinsic uses ARE recorded in the
+                    -- audit ledger (the embedded base set this 'True').
+                    csEmbeddedLoad = False
                   , csDiags = []
                   , -- §5.5.1: bare `(op)` is ambiguous when more than one
                     -- callable fixity for `op` is in scope (e.g. `-`)

@@ -1,0 +1,13 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE 1 — incomplete gated set): '__debugCompare'
+-- is a raw-admit prelude prim of type 'forall (@0 a)(@0 r). a -> a -> r'. Its
+-- result 'r' appears in no argument, so it unifies with any target type — the
+-- same free-result admit shape as '__eqProof'. A plain user module naming
+-- '__debugCompare' is rejected (it was nameable before this fix).
+
+bogus : (=) True False
+let bogus = __debugCompare 0 1
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED
