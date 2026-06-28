@@ -568,6 +568,7 @@ basePrims =
     `Set.union` Set.fromList
       [ "stmBind", "stmPure", "newTVar", "readTVar", "writeTVar", "atomically"
       , "__race", "__timeout", "withScope", "__interruptWait", "__interruptNoWait"
+      , "__interruptForkAny"
       ]
 
 -- | The prims kept OUT of LLVM coverage because their meaning is the CK-machine
@@ -4792,6 +4793,8 @@ ioNodeBuilder = \case
   "withScope" -> Just ("krt2_with_scope", 1)
   "__interruptWait" -> Just ("krt2_interrupt_as", 2)
   "__interruptNoWait" -> Just ("krt2_interrupt_fork_as", 2)
+  -- same node as __interruptNoWait, free result channel (used by `disconnect`)
+  "__interruptForkAny" -> Just ("krt2_interrupt_fork_as", 2)
   _ -> Nothing
 
 -- | Lower a saturated exception op to its @krt2_*@ node-builder

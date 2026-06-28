@@ -879,6 +879,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     -- races the target into a park still finds the flag at the next point.
     recordPending tid cause
     throwTo tid (Interrupt cause) >> pure unitV
+  -- Same as __interruptNoWait, only differently typed (free result channel); used
+  -- by `disconnect`'s onInterrupt finalizer (PRIMITIVES #5).
+  ("__interruptForkAny", [cause, VFiber tid _]) -> do
+    recordPending tid cause
+    throwTo tid (Interrupt cause) >> pure unitV
   -- §18.1.5 cede: yield to the scheduler (also an interruption point — GHC
   -- delivers any pending throwTo at the yield).
   -- §18.1.5 cede yields to the scheduler and is an interruption point: after the
