@@ -87,7 +87,6 @@ module Kappa.Ownership
   , annotateOwnership
     -- * S1.4 §3a whole-program usage refinement
   , refineOwnership
-  , exportedGlobals
     -- * S1.2 cross-check against the declared quantities
   , crossCheckOwnInfo
   , crossCheckBodies
@@ -117,7 +116,6 @@ import Kappa.Core
   )
 import Kappa.CoreOps (patBindersC, spineOfTerm)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
-import Kappa.Source (ModuleName)
 
 -- | A stable identity for a binder within a definition's elaborated Core.
 --
@@ -177,10 +175,12 @@ data BinderOwn = BinderOwn
   -- visible call graph proves the binder is used more narrowly than 'boDeclQ'
   -- allows: @Just (lo, hi)@ with @hi == Nothing@ meaning unbounded above.
   -- 'Nothing' means no refinement (fall back to the declared quantity — the
-  -- mandatory choice at any dynamic-link boundary). Refinement only ever
-  -- /tightens/, never widens, so it can never violate the source contract.
-  -- S1.1 always leaves this 'Nothing'; the §3a whole-program pass (S1.4) fills
-  -- it in.
+  -- mandatory choice for any binder reachable through a separately-compiled
+  -- interface, which is EMPTY in the current whole-program-static compile, so
+  -- in practice 'Nothing' here means only \"usage was not strictly tighter than
+  -- declared\"). Refinement only ever /tightens/, never widens, so it can never
+  -- violate the source contract. S1.1 always leaves this 'Nothing'; the §3a
+  -- whole-program pass (S1.4) fills it in.
   , boBorrowed :: !Bool
   -- ^ Whether the binder is a borrowed (@&@) parameter: the callee reads (and
   -- may @dup@) but never @drop@s it; the caller retains ownership.
@@ -569,66 +569,43 @@ dropLevel = Set.delete
 -- the @dup@ a conservative @ω@ would force. The refinement only ever TIGHTENS a
 -- declared range, never widens it, so it can never violate the source contract.
 --
--- == The whole-program closure and the R4 boundary (THE soundness constraint)
+-- == Whole-program soundness and the (currently empty) refinement boundary
 --
--- This is a whole-program optimization: it needs the full visible call graph, so
--- it is sound ONLY within the statically-linked compilation unit. Across a
--- DYNAMIC-LINK boundary the declared signature is the contract — a separately-
--- compiled caller may use the value differently — so refinement there is
--- unsound: it would let S2 drop\/reuse a value a separately-compiled caller still
--- holds (a use-after-free). The boundary set is 'csModuleExports' (every member
--- a module exports). 'boRefined' therefore stays 'Nothing' for any binder that
--- FLOWS OUT through an exported signature — concretely, every TOP-LEVEL PARAMETER
--- of an exported global. An exported global's INTERNAL binders (locals, match-arm
--- vars) do not cross the boundary and remain eligible; a non-exported global is
--- only callable within this unit, so its parameters are eligible too.
+-- The refinement is SOUND whenever the analysis sees ALL uses of a binder: a
+-- tightened interval is the exact count of consuming occurrences over the
+-- binder's whole scope, so if every consumer is visible the tightened bound
+-- cannot be wrong. Kappa's current compile is WHOLE-PROGRAM STATIC — there is no
+-- dynamic linking and no separate compilation — so the analysis ALWAYS sees
+-- every use, and EVERY provably-single-use binder is refinable, EXPORTED,
+-- RE-EXPORTED, and internal alike. The earlier module-export\/re-export gating
+-- (the 'csModuleExports'\/'csReExports' boundary suppression) was premature
+-- conservatism: it suppressed sound cross-module refinements for a boundary that
+-- does not yet exist. It is removed.
 --
--- __S1.4 is observe-only__ (no codegen reads 'boRefined' yet), but the boundary
--- gate is enforced now so S2 can trust it: the cross-check ('crossCheckBodies')
--- asserts (1) every 'boRefined' is @<=@ its 'boDeclQ' (only ever tightens) and
--- (2) 'boRefined' is 'Nothing' at every export-boundary parameter.
+-- The boundary that genuinely gates §3a is the DYNAMIC-LINK \/ SEPARATELY-
+-- COMPILED interface — the one place the analysis CANNOT see all uses (a
+-- separately-compiled caller may use the value differently → an S2
+-- use-after-free if S2 dropped\/reused it). That interface is EMPTY right now.
+--
+-- TODO — DYNAMIC LINKING \/ SEPARATE COMPILATION (a hard prerequisite before S2
+-- ships under it): when a separately-compiled boundary exists, §3a MUST fall
+-- back to the DECLARED quantity ('boRefined' = 'Nothing') for any binder
+-- reachable through that interface. Re-add the gate then, keyed on the REAL
+-- separate-compilation interface (NOT on module exports\/re-exports, which were
+-- only a premature proxy for it).
+--
+-- __S1.4 is observe-only__ (no codegen reads 'boRefined' yet). The cross-check
+-- ('crossCheckBodies') still asserts the tighten-only invariant: every
+-- 'boRefined' is @<=@ its 'boDeclQ' as an interval (it never widens the declared
+-- bound). The export-boundary assertion is gone — the boundary is empty in the
+-- whole-program-static model.
 
--- | The set of globals a build surfaces across the dynamic-link boundary — the
--- set the §3a refinement ('refineOwnership') treats as the contract surface. A
--- global @GName m nm@ is on the boundary iff EITHER:
---
---   * @nm@ is in module @m@'s own export list (@modExports@ = @csModuleExports@) — a
---     direct export; OR
---   * it is the ORIGIN of some module's re-export (@reExports@ = @csReExports@):
---     a §8.4 @export lib.(secret as reSecret)@ surfaces the @lib@-owned global
---     @secret@ through another module's public interface. Crucially this holds
---     EVEN IF @secret@ is PRIVATE in @lib@ (so @nm@ is NOT in
---     @modExports[lib]@): a separately-compiled consumer can call it through the
---     re-exporting module, so its signature is still a separately-compilable
---     contract and its parameters must NOT be refined (R4). Omitting this was
---     the latent S1.4 use-after-free this set closes.
---
--- Restricted to the globals actually present in @present@ (the body map) so the
--- result is exactly the boundary subset of the unit under compilation.
-exportedGlobals
-  :: Map ModuleName [Text] -> Map ModuleName (Map Text GName) -> Map GName a -> Set GName
-exportedGlobals modExports reExports present =
-  Set.intersection (Map.keysSet present) (Set.union directExports reExportOrigins)
-  where
-    directExports =
-      Set.fromList
-        [ g
-        | g@(GName m nm) <- Map.keys present
-        , nm `elem` Map.findWithDefault [] m modExports
-        ]
-    -- every ORIGIN GName appearing in ANY module's re-export value-set: the
-    -- value side of @csReExports@ is the originating declaration (Pipeline §8.4),
-    -- so these are precisely the globals surfaced through a re-export, regardless
-    -- of whether they are also directly exported by their owning module.
-    reExportOrigins =
-      Set.fromList (concatMap Map.elems (Map.elems reExports))
-
--- | Stage S1.4 §3a refinement. Given the export-boundary global set, the bodies,
--- and the S1.1 'OwnInfo' table, TIGHTEN each eligible binder's 'boRefined' to its
--- actual whole-program usage interval where the visible call graph proves it
--- narrower than the declared 'boDeclQ'. A binder that flows out through an
--- exported signature (a top-level parameter of an exported global) keeps
--- 'boRefined' = 'Nothing' (R4). The refinement only ever tightens.
+-- | Stage S1.4 §3a refinement. Given the bodies and the S1.1 'OwnInfo' table,
+-- TIGHTEN each binder's 'boRefined' to its actual whole-program usage interval
+-- where it is strictly narrower than the declared 'boDeclQ'. EVERY binder is
+-- eligible — exported, re-exported, and internal alike — because the compile is
+-- whole-program static, so the analysis sees all uses (see the section note). The
+-- refinement only ever tightens.
 --
 -- The actual per-binder usage interval is the precise abstract count of CONSUMING
 -- (non-borrowed) occurrences over the binder's scope ('usageIntervals'): summed
@@ -636,8 +613,8 @@ exportedGlobals modExports reExports present =
 -- declared interval, and recorded only when STRICTLY tighter than the declared
 -- one (otherwise the declared quantity already says everything).
 refineOwnership
-  :: Set GName -> Map GName Term -> Map GName OwnInfo -> Map GName OwnInfo
-refineOwnership exports bodies =
+  :: Map GName Term -> Map GName OwnInfo -> Map GName OwnInfo
+refineOwnership bodies =
   Map.mapWithKey refineOne
   where
     refineOne g oi =
@@ -645,19 +622,12 @@ refineOwnership exports bodies =
         Nothing -> oi
         Just body ->
           let intervals = usageIntervals g body
-              isExported = g `Set.member` exports
-              paramPaths = leadingParamPaths body
            in oi
                 { oiBinders =
-                    Map.mapWithKey
-                      (refineBinder isExported paramPaths intervals)
-                      (oiBinders oi)
+                    Map.mapWithKey (refineBinder intervals) (oiBinders oi)
                 }
 
-    refineBinder isExported paramPaths intervals bid bo
-      -- R4: a parameter that flows out through an exported signature keeps the
-      -- declared quantity as its contract — never refined.
-      | isExported && biPath bid `Set.member` paramPaths = bo {boRefined = Nothing}
+    refineBinder intervals bid bo
       -- a borrowed binder is governed by the borrow convention, not the
       -- consuming-use interval; leave it unrefined.
       | boBorrowed bo = bo {boRefined = Nothing}
@@ -670,19 +640,6 @@ refineOwnership exports bodies =
                in if strictlyTighter tightened declared
                     then bo {boRefined = Just tightened}
                     else bo {boRefined = Nothing}
-
--- | The set of leading top-level parameter paths of a body: a curried chain of
--- @CLam@s at the body root, each at child-position @3@ (the @CLam@ body), so the
--- @i@-th parameter sits at path @replicate i 3@. These are exactly the binders
--- the elaborated signature telescope corresponds to — the ones that flow through
--- an exported boundary. A non-leading lambda (one reached through an application,
--- a let, or a match arm) is NOT a signature parameter and is not included.
-leadingParamPaths :: Term -> Set [Int]
-leadingParamPaths = go 0
-  where
-    go i = \case
-      CLam _ _ _ b -> Set.insert (replicate i 3) (go (i + 1) b)
-      _ -> Set.empty
 
 -- | The declared quantity as a usage interval @(lo, hi)@ with @hi == Nothing@
 -- meaning unbounded above.
@@ -923,17 +880,14 @@ joinUses a b =
 -- on every compilation (which would fire on the intentionally-ill-typed
 -- fixtures). See 'crossCheckBodies'.
 crossCheckOwnInfo
-  :: Map ModuleName [Text]
-  -> Map ModuleName (Map Text GName)
-  -> EvalCtx
+  :: EvalCtx
   -> GName
   -> Term
   -> OwnInfo
   -> [String]
-crossCheckOwnInfo modExports reExports ctx owner body oi =
+crossCheckOwnInfo ctx owner body oi =
   let (_, assoc) = analyzeBodyFull (paramTelescope ctx owner) owner body
-      boundary = boundaryBinders modExports reExports (Map.singleton owner body)
-   in checkAll boundary owner body oi assoc
+   in checkAll owner body oi assoc
 
 -- | Run the cross-check over a whole set of WELL-TYPED bodies and their
 -- 'OwnInfo'. Returns a flat list of mismatch messages (empty ⇒ clean). This is
@@ -946,127 +900,65 @@ crossCheckOwnInfo modExports reExports ctx owner body oi =
 -- check validates EXACTLY the classification that was recorded — there is no
 -- second, drift-prone traversal.
 --
--- It ALSO validates the S1.4 §3a refinement against an INDEPENDENTLY-computed
--- boundary-binder set ('boundaryBinders'): (1) every @boRefined@ is @<=@ its
--- @boDeclQ@ as an interval (refinement only ever tightens, never widens — the
--- source-contract guarantee), and (2) @boRefined@ is 'Nothing' at every
--- boundary-exposed parameter (R4: refining a value that flows out through a
--- separately-compilable export OR re-export signature is unsound). A violation
--- of either is an internal-invariant error, exactly like an S1.1 mismatch.
+-- It ALSO validates the S1.4 §3a refinement: every @boRefined@ is @<=@ its
+-- @boDeclQ@ as an interval (refinement only ever TIGHTENS, never widens — the
+-- source-contract guarantee). A violation is an internal-invariant error,
+-- exactly like an S1.1 mismatch.
 --
--- == Why the checker takes the raw export maps, not the refiner's @exports@ set
+-- == No export-boundary assertion (the corrected whole-program-static model)
 --
--- The R4 gate is computed by a SEPARATE means from 'refineOwnership''s own
--- boundary predicate (which gates per-binder on @g \`Set.member\` exportedGlobals
--- && biPath \`Set.member\` leadingParamPaths@). A gate that reused the refiner's
--- boundary predicate could not catch a HOLE in that predicate's boundary
--- DEFINITION — which is exactly how the §8.4 re-export hole (a re-exported,
--- origin-private global whose params were wrongly refined) slipped past the
--- earlier gate. So the checker derives the boundary INDEPENDENTLY from
--- @csModuleExports@ + @csReExports@ + the bodies ('boundaryBinders'), and a
--- disagreement between the two computations surfaces as a fired assertion.
+-- The earlier gate ALSO asserted @boRefined@ was 'Nothing' at every
+-- export\/re-export boundary parameter, on the theory that refining an exported
+-- signature was unsound. That was premature: the §3a refinement is whole-program
+-- SOUND (the analysis sees all uses), and its genuine gating boundary is the
+-- DYNAMIC-LINK \/ separately-compiled interface, which is EMPTY in the current
+-- whole-program-static compile. So exported and re-exported binders are now
+-- legitimately refined, and the boundary assertion (with its independent
+-- @csModuleExports@\/@csReExports@ boundary recomputation) is removed. The
+-- tighten-only invariant alone is the soundness gate. Re-add a boundary
+-- assertion when a real separate-compilation interface lands (see the §3a
+-- section note above).
 crossCheckBodies
-  :: Map ModuleName [Text]
-  -> Map ModuleName (Map Text GName)
-  -> EvalCtx
+  :: EvalCtx
   -> Map GName Term
   -> Map GName OwnInfo
   -> [String]
-crossCheckBodies modExports reExports ctx bodies own =
+crossCheckBodies ctx bodies own =
   concatMap one (Map.toList bodies)
   where
-    boundary = boundaryBinders modExports reExports bodies
     one (g, body) =
       let (oiWalk, assoc) = analyzeBodyFull (paramTelescope ctx g) g body
           -- prefer the supplied 'OwnInfo' (the one threaded through the
           -- pipeline) but fall back to the freshly-walked one; they are equal
           -- by construction (same walk), so this only guards a missing entry.
           oi = Map.findWithDefault oiWalk g own
-       in checkAll boundary g body oi assoc
-
--- | The INDEPENDENT R4 boundary computation (PERCEUS-S1-PLAN R4, the §8.4
--- re-export soundness gate). Returns the set of 'BinderId's that are exposed
--- across the dynamic-link boundary — the binders whose declared quantity is a
--- separately-compilable contract and so must never carry a @boRefined@.
---
--- This deliberately does NOT call 'exportedGlobals' or 'leadingParamPaths' (the
--- refiner's own predicate): it recomputes both the interface-reachable global
--- set and each interface global's exposed parameter binders by separate means,
--- so a hole in the refiner's boundary DEFINITION shows up as a mismatch here
--- rather than being masked by shared structure.
---
--- A global is interface-reachable iff it is directly exported (@nm@ in its
--- module's @csModuleExports@) OR it is the ORIGIN of some module's re-export
--- (a value in @csReExports@ — a §8.4 @export lib.(secret as reSecret)@, which
--- surfaces @secret@ even when it is private in @lib@). For each such global
--- present in @bodies@, every LEADING top-level lambda parameter is boundary-
--- exposed; its 'BinderId' path is the @i@-th leading-lambda position. The
--- leading-lambda positions are recomputed here by a direct count of the
--- top-level @CLam@ chain (independent of 'leadingParamPaths').
-boundaryBinders
-  :: Map ModuleName [Text]
-  -> Map ModuleName (Map Text GName)
-  -> Map GName Term
-  -> Set BinderId
-boundaryBinders modExports reExports bodies =
-  Set.fromList
-    [ BinderId g (paramPath i)
-    | g <- Set.toList interfaceGlobals
-    , Just body <- [Map.lookup g bodies]
-    , i <- [0 .. countLeadingLams body - 1]
-    ]
-  where
-    -- interface-reachable globals, recomputed independently of 'exportedGlobals'.
-    interfaceGlobals =
-      Set.intersection
-        (Map.keysSet bodies)
-        (Set.union directlyExported reExportOrigins)
-    directlyExported =
-      Set.fromList
-        [ g
-        | g@(GName m nm) <- Map.keys bodies
-        , nm `elem` Map.findWithDefault [] m modExports
-        ]
-    reExportOrigins = Set.fromList (concatMap Map.elems (Map.elems reExports))
-    -- the path of the @i@-th leading parameter: a chain of @CLam@ bodies, each
-    -- at child-position 3. Recomputed here rather than via 'leadingParamPaths'.
-    paramPath i = replicate i 3
-    -- count the leading top-level lambda chain by a direct recursion (the body's
-    -- signature parameters), independent of 'leadingParamPaths'.
-    countLeadingLams = go 0
-      where
-        go n = \case
-          CLam _ _ _ b -> go (n + 1) b
-          _ -> n
+       in checkAll g body oi assoc
 
 -- | Check the declared-quantity invariants (S1.1) AND the §3a refinement
--- invariants (S1.4) for one body, given the binder→kinds association. @boundary@
--- is the INDEPENDENTLY-computed set of boundary-exposed 'BinderId's
--- ('boundaryBinders') the R4 gate consults.
-checkAll :: Set BinderId -> GName -> Term -> OwnInfo -> Map BinderId [UseKind] -> [String]
-checkAll boundary g _body oi perBinder =
+-- invariant (S1.4 — tighten-only) for one body, given the binder→kinds
+-- association.
+checkAll :: GName -> Term -> OwnInfo -> Map BinderId [UseKind] -> [String]
+checkAll g _body oi perBinder =
   concatMap checkOne (Map.toList (oiBinders oi))
   where
     checkOne (bid, bo) =
       let ks = Map.findWithDefault [] bid perBinder
        in checkKinds g bid bo ks
-            ++ checkRefined boundary g bid bo
+            ++ checkRefined g bid bo
 
--- | The S1.4 §3a refinement invariants for one binder (R4 — THE soundness
--- constraint).
+-- | The S1.4 §3a refinement invariant for one binder: @boRefined@ only ever
+-- TIGHTENS — its interval must be @<=@ (a sub-interval of) the declared
+-- @boDeclQ@'s interval. A refinement that WIDENED the declared bound would let
+-- S2 drop\/reuse a value the contract says is shared (a use-after-free), so a
+-- widen is an internal-invariant error.
 --
---   1. @boRefined@ only ever TIGHTENS: its interval must be @<=@ (a
---      sub-interval of) the declared @boDeclQ@'s interval. A refinement that
---      widened the declared bound would let S2 drop\/reuse a value the contract
---      says is shared — a use-after-free.
---   2. @boRefined@ is 'Nothing' at every BOUNDARY-EXPOSED parameter: a top-level
---      parameter of a global reachable through any export OR re-export interface
---      flows out through a separately-compilable signature, where the declared
---      quantity is the binding contract, so it must never be refined. Boundary
---      membership is read from the independently-computed @boundary@ set
---      ('boundaryBinders'), NOT re-derived from the refiner's own predicate.
-checkRefined :: Set BinderId -> GName -> BinderId -> BinderOwn -> [String]
-checkRefined boundary g bid bo =
+-- There is NO export-boundary assertion: the §3a refinement is whole-program
+-- sound, and its genuine gating boundary (the dynamic-link \/ separately-
+-- compiled interface) is EMPTY in the current whole-program-static compile, so
+-- exported and re-exported binders are legitimately refined. See the §3a section
+-- note for the TODO to re-add a boundary check when separate compilation lands.
+checkRefined :: GName -> BinderId -> BinderOwn -> [String]
+checkRefined g bid bo =
   case boRefined bo of
     Nothing -> []
     Just refined ->
@@ -1076,9 +968,6 @@ checkRefined boundary g bid bo =
           )
       | not (subInterval refined (declInterval (boDeclQ bo)))
       ]
-        ++ [ msg "export/re-export boundary parameter must not be refined (R4)"
-           | bid `Set.member` boundary
-           ]
   where
     msg s = T.unpack (gKey g) <> " @" <> show (biPath bid) <> ": " <> s
     showI (lo, Just hi) = "[" <> show lo <> "," <> show hi <> "]"

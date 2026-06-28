@@ -125,7 +125,7 @@ explicit-control-flow core
 - Perceus is **garbage-free** (Thm 4) on the strict core — at every step every heap object is reachable
   from the erased program, i.e. no float-ing garbage between a last-use and its drop.
 
-### 3a. Tighter-than-declared usage refinement (whole-program; static-link only)
+### 3a. Tighter-than-declared usage refinement (whole-program; sound while there is no separate compilation)
 
 A declared quantity is the **upper bound** the programmer committed to in the signature; the program's
 *actual* usage may be tighter. `foo : ω Foo -> Bar` whose body — and, across the visible call graph, whose
@@ -135,13 +135,22 @@ treating it as shared, and (b) **elide the `dup`** a conservative `ω` would for
 The refinement only ever **tightens** a declared range, never widens it, so it can never violate the source
 contract — it just unlocks reuse where the program proves it safe.
 
-This is a **whole-program optimization**: it needs the full call graph, so it is sound **only within a
-statically-linked compilation unit**. Across a **dynamic-link boundary the declared signature is the
-contract** — a separately-compiled caller may use the value differently — so refinement there is unsound and
-the RC must fall back to the declared quantity. Mechanism: compute the refined per-binding usage interval
-during the same whole-program pass that threads ownership to KBackendIR (S1, §7); store it as IR metadata
-for statically-linked consumers; honor the declared quantity at every dynamic/separately-compiled boundary.
-It folds into the S1 ownership threading — the same data, just tighter.
+This refinement is **whole-program sound** whenever the analysis sees **all** uses of a binder — which it
+always does in Kappa's current **whole-program-static** compile (there is no dynamic linking and no separate
+compilation yet). So **every** provably-single-use binder is refined: exported, re-exported (§8.4), and
+internal binders are all eligible. Mechanism: compute the refined per-binding usage interval during the same
+whole-program pass that threads ownership to KBackendIR (S1, §7); store it as IR metadata; the refinement
+only tightens, so it folds into the S1 ownership threading — the same data, just tighter.
+
+The genuine gating boundary for §3a is the **dynamic-link / separately-compiled interface** — the one place
+the analysis *cannot* see all uses (a separately-compiled caller may use the value differently → an S2
+use-after-free if S2 dropped/reused it). That interface is **empty right now**.
+
+> **TODO — DYNAMIC LINKING / SEPARATE COMPILATION (a hard prerequisite before S2 ships under it).** When a
+> separately-compiled boundary exists, §3a **must** fall back to the **declared** quantity (`boRefined =
+> Nothing`) for any binder reachable through that interface. The earlier module-export/re-export gating was a
+> premature proxy for this boundary and has been removed; re-add the gate then, keyed on the **real**
+> separate-compilation interface (not on module exports/re-exports).
 
 ---
 

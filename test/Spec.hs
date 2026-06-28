@@ -165,11 +165,12 @@ ownershipCrossCheckClean = do
             , "    case Some v -> v"
             , "    case None -> 0"
             ]
-        , -- S1.4 §3a + R4: a PRIVATE (non-exported) single-use ω parameter is
-          -- refined to [1,1]; an EXPORTED single-use ω parameter is NOT (the
-          -- declared quantity is the separately-compilable contract). The
-          -- cross-check asserts boRefined <= boDeclQ and Nothing-at-boundary, so
-          -- a wrong refinement (a widen, or a refined export param) fails here.
+        , -- S1.4 §3a (corrected whole-program-static model): EVERY provably
+          -- single-use ω parameter is refined to [1,1] — exported and private
+          -- alike — because the analysis sees all uses (no separate compilation
+          -- yet). A binder used TWICE stays unrefined. The cross-check asserts
+          -- the tighten-only invariant boRefined <= boDeclQ, so a wrong
+          -- refinement (a widen) fails here.
           T.unlines
             [ "module main"
             , "share : (ω x : Int) -> Int"
@@ -186,13 +187,9 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "fixture.kp" src
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
-            -- S1.1 last-use + S1.4 §3a refinement (incl. the R4 export/re-export
-            -- boundary gate, computed independently of the refiner from
-            -- 'csModuleExports' + 'csReExports').
+            -- S1.1 last-use + S1.4 §3a refinement tighten-only invariant.
             xc =
               crossCheckBodies
-                (csModuleExports st)
-                (csReExports st)
                 ctx
                 (csCoreBodies st)
                 (csOwnership st)
@@ -301,33 +298,32 @@ ctorLayoutEvidenceFields = do
     mapM_ (\(name, p) -> putStrLn ("  " <> name <> ": got " <> show p)) failed
   pure (null failed)
 
--- | Perceus S1.4 R4 regression: the §3a usage refinement must keep
--- 'boRefined' = 'Nothing' for any parameter that flows out across the
--- dynamic-link boundary — including a §8.4 RE-EXPORT (@export lib.(secret as
--- reSecret)@) of an ORIGIN-PRIVATE global. The earlier 'exportedGlobals'
--- consulted only 'csModuleExports', so a re-exported-but-origin-private global
--- (absent from its own module's export list) was wrongly refined — a future S2
--- would then drop a still-live value a separately-compiled consumer holds (a
--- use-after-free). This pins:
+-- | Perceus S1.4 §3a regression for the CORRECTED whole-program-static model.
+-- The refinement is whole-program SOUND (the analysis sees every use), and its
+-- genuine gating boundary — the dynamic-link \/ separately-compiled interface —
+-- is EMPTY in the current compile. So the earlier module-export\/re-export
+-- gating (which kept exported and §8.4 re-exported params unrefined) was
+-- premature conservatism and is removed. This pins the corrected behaviour:
 --
---   * a directly-EXPORTED single-use ω param stays @boRefined = Nothing@;
---   * a RE-EXPORTED (origin-private) single-use ω param ALSO stays 'Nothing';
---   * a genuinely-PRIVATE single-use ω param still refines to @[1,1]@;
---   * the cross-check FIRES if a re-exported param is force-refined (the
---     INDEPENDENT R4 boundary in 'crossCheckBodies' catches the hole even
---     though the refiner left the param 'Nothing').
+--   * a directly-EXPORTED single-use ω param NOW refines to @[1,1]@;
+--   * a §8.4 RE-EXPORTED (origin-private) single-use ω param ALSO refines to
+--     @[1,1]@;
+--   * a genuinely-PRIVATE single-use ω param refines to @[1,1]@;
+--   * the cross-check stays clean on these honest refinements, AND still FIRES
+--     if a binder is force-WIDENED past its declared quantity (the tighten-only
+--     invariant — the soundness gate that survives).
 reExportBoundaryRefinement :: IO Bool
 reExportBoundaryRefinement = do
   let libSrc =
         T.unlines
           [ "module lib"
-          , -- exported, single-use ω (would naively refine to [1,1])
+          , -- exported, single-use ω → now refines to [1,1]
             "pub : (ω a : Int) -> Int"
           , "let pub (ω a : Int) = a"
-          , -- private, single-use ω → eligible to refine to [1,1]
+          , -- private, single-use ω → refines to [1,1]
             "private priv : (ω b : Int) -> Int"
           , "let priv (ω b : Int) = b"
-          , -- private in lib, but re-exported by app below
+          , -- private in lib, but re-exported by app below → now refines to [1,1]
             "private reExported : (ω c : Int) -> Int"
           , "let reExported (ω c : Int) = c"
           ]
@@ -350,40 +346,41 @@ reExportBoundaryRefinement = do
             case Map.lookup (BinderId (GName lib (T.pack cname)) []) (oiBinders oi) of
               Nothing -> Left ("no param binder for " <> cname)
               Just bo -> Right (boRefined bo)
-      -- force-refine the re-exported param, then confirm the cross-check fires.
-      forced =
+      xcClean =
+        crossCheckBodies
+          ctx
+          (csCoreBodies st)
+          (csOwnership st)
+      -- The surviving soundness gate is tighten-only: a 'boRefined' interval must
+      -- be contained in its declared 'boDeclQ' interval. Exercise it by forcing a
+      -- WIDEN. Declared ω = [0,ω] is the widest interval, so first narrow a
+      -- param's declared quantity to the bounded Q1 = [1,1], then set its
+      -- 'boRefined' to [1,ω] = (1, Nothing) — not a sub-interval of [1,1] — so the
+      -- cross-check must fire.
+      forcedWiden =
         Map.adjust
           ( \oi ->
               oi
                 { oiBinders =
                     Map.adjust
-                      (\bo -> bo {boRefined = Just (1, Just 1)})
-                      (BinderId (GName lib (T.pack "reExported")) [])
+                      (\bo -> bo {boDeclQ = Q1, boRefined = Just (1, Nothing)})
+                      (BinderId (GName lib (T.pack "priv")) [])
                       (oiBinders oi)
                 }
           )
-          (GName lib (T.pack "reExported"))
-          (csOwnership st)
-      xcClean =
-        crossCheckBodies
-          (csModuleExports st)
-          (csReExports st)
-          ctx
-          (csCoreBodies st)
+          (GName lib (T.pack "priv"))
           (csOwnership st)
       xcForced =
         crossCheckBodies
-          (csModuleExports st)
-          (csReExports st)
           ctx
           (csCoreBodies st)
-          forced
+          forcedWiden
       results =
-        [ ("exported pub stays Nothing", refinedOf "pub" == Right Nothing)
-        , ("re-exported stays Nothing", refinedOf "reExported" == Right Nothing)
+        [ ("exported pub refines to [1,1]", refinedOf "pub" == Right (Just (1, Just 1)))
+        , ("re-exported refines to [1,1]", refinedOf "reExported" == Right (Just (1, Just 1)))
         , ("private refines to [1,1]", refinedOf "priv" == Right (Just (1, Just 1)))
         , ("cross-check clean on honest refinement", null xcClean)
-        , ("cross-check FIRES on force-refined re-export", not (null xcForced))
+        , ("cross-check FIRES on force-widened binder", not (null xcForced))
         ]
       failed = [name | (name, ok) <- results, not ok]
   unless (null failed) $ do

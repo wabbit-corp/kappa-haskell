@@ -38,10 +38,14 @@ data OwnInfo = OwnInfo
 
 `UseKind` is the directly-consumable form for S2's drop-after-last-use / dup-before-non-last rule.
 `boDroppable` reads straight from §12.2.6 (Spec.md:11403). `boRefined` (§3a) only ever *narrows* the
-declared bound and is populated **only** for binders whose every consumer is inside the statically-linked
-unit; at any dynamic/exported boundary (`csModuleExports`, `Pipeline.hs:661`) it stays `Nothing` and the
-consumer falls back to `boDeclQ` — fail-safe by construction (R4). The owned/borrowed *param* convention
-(A3) is sourced from the `CPi` telescope, NOT a side table — avoids a second source of truth.
+declared bound. The refinement is **whole-program sound** whenever the analysis sees every use of a binder,
+which it always does in Kappa's current **whole-program-static** compile (no dynamic linking / separate
+compilation). So `boRefined` is populated for **every** provably-single-use binder — exported, re-exported,
+and internal alike; the genuine §3a gating boundary is the **dynamic-link / separately-compiled interface**,
+which is **empty right now**. (**TODO — separate compilation:** once that boundary exists, fall back to
+`boDeclQ` for any binder reachable through it; the earlier `csModuleExports`/`csReExports` gating was a
+premature proxy for it and has been removed — see R4.) The owned/borrowed *param* convention (A3) is sourced
+from the `CPi` telescope, NOT a side table — avoids a second source of truth.
 
 ## (b) Where it lives — a post-elaboration side-table (NOT new Term fields)
 
@@ -90,7 +94,7 @@ consumer lands.
 | **S1.1** | last-use computation over Core (port the `Usage.hs` lattice to `Term`) | ✅ `32bb984` |
 | **S1.2** | `kappa dump-ownership` + the **declared-Q cross-check gate** (validatable deliverable) | ✅ folded into `32bb984` |
 | **S1.3** | populate `CCtor` annotations + `Repr.ctorLayoutOf` (observe-only) | (parallel to 1.1) |
-| **S1.4** | §3a whole-program refinement (call-graph over `csGlobals`, gated on `csModuleExports`) | (after 1.1) |
+| **S1.4** | §3a whole-program refinement (call-graph over `csGlobals`; whole-program-static ⇒ no export gate, every single-use binder refined) | (after 1.1) |
 | **S1.5** | backend owned/borrowed accessor (telescope-derived, observe-only) | (parallel to 1.1) |
 
 Ordering: S1.0 → S1.1 → S1.2 gates everything (the audit trail must exist + be validated before S2 trusts
@@ -103,7 +107,12 @@ non-runtime). **R2 — §31.2 erasure**: keep `OwnInfo` strictly out of `Term`; 
 `verify-kbackendir` legality check. **R3 — surface/Core last-use divergence** (partially-consumed records,
 §13.2.4): the S1.2 differential assert; start with whole-binder last-use, defer per-field path-sensitivity
 (treat partially-consumed as non-reusable — sound, leaves S5 wins on the table). **R4 — §3a boundary
-soundness**: `boRefined = Nothing` default; populate only when provably whole-program-closed — fail-safe.
+soundness**: the refinement is whole-program sound while the analysis sees all uses, which the current
+whole-program-static compile guarantees, so every provably-single-use binder is refined (no export gate).
+**TODO — separate compilation (hard prerequisite before S2 ships under it):** when a dynamic-link /
+separately-compiled interface exists, fall back to `boDeclQ` (`boRefined = Nothing`) for any binder reachable
+through it — re-add the gate keyed on that real interface, NOT on `csModuleExports`/`csReExports` (a premature
+proxy, now removed). The surviving cross-check invariant is tighten-only (`boRefined ⊆ boDeclQ`).
 
 ## (f) Incremental validation (Boehm untouched, zero codegen change through all of S1)
 

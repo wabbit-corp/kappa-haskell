@@ -52,7 +52,7 @@ import Kappa.Core (GName (..), Term, gnameText)
 import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
-import Kappa.Ownership (annotateOwnership, exportedGlobals, refineOwnership)
+import Kappa.Ownership (annotateOwnership, refineOwnership)
 import Kappa.Parser (parseModule)
 import Kappa.Prelude
   ( builtinState
@@ -735,9 +735,12 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- precedent, which derives from the same core bodies). 'annotateOwnership'
       -- (S1.1) records per-binder ownership facts and per-occurrence last-use;
       -- 'refineOwnership' (S1.4 §3a) then TIGHTENS each binder's @boRefined@ to
-      -- its whole-program usage interval where the visible call graph proves it,
-      -- keeping it 'Nothing' at the export/re-export boundary ('csModuleExports'
-      -- + 'csReExports'; R4). It
+      -- its whole-program usage interval wherever it is strictly narrower than
+      -- the declared quantity. The compile is whole-program static (no dynamic
+      -- linking / separate compilation), so the analysis sees ALL uses and EVERY
+      -- provably-single-use binder is refined — exported, re-exported, and
+      -- internal alike; the §3a gating boundary (the separately-compiled
+      -- interface) is empty right now. It
       -- is observe-only — no consumer reads it, so codegen stays byte-identical;
       -- this only threads the metadata. The 'EvalCtx' is the same shape the lint
       -- and other post-finalization consumers build.
@@ -747,16 +750,10 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           (csMetas finalSt'0)
           False
           (csFacts finalSt'0)
-      ownExports =
-        exportedGlobals
-          (csModuleExports finalSt'0)
-          (csReExports finalSt'0)
-          (csCoreBodies finalSt'0)
       finalSt' =
         finalSt'0
           { csOwnership =
               refineOwnership
-                ownExports
                 (csCoreBodies finalSt'0)
                 (annotateOwnership ownCtx (csCoreBodies finalSt'0))
           }
