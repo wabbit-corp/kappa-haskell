@@ -1,0 +1,21 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE B — std.testing.failNow forge, alias form):
+-- 'std.testing.failNow' has type 'forall (@0 a : Type). String -> a'. Its
+-- result 'a' is free, so it is a raw admit (same shape as the prelude proof
+-- intrinsics) — it just lives in 'std.testing', not 'std.prelude'. The
+-- original intrinsic gate guarded on 'gm == preludeModule', which excludes
+-- std.testing, so the gate never fired and a plain user module could forge
+-- 'let bogus : (=) True False = T.failNow "x"' (subst over a discriminator
+-- family then inhabits Void). The gate is now keyed on the full (module, name)
+-- pair, so the aliased reference is rejected. std.testing's OWN use stays fine:
+-- it is part of the embedded std-lib, loaded with the csAllowUnsafeIntrinsics
+-- flag.
+
+import std.testing as T
+
+bogus : (=) True False
+let bogus = T.failNow "forge"
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED

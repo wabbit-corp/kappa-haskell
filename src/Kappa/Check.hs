@@ -13609,20 +13609,42 @@ recordAudit facility affected setting sp reason = do
   modify' $ \st -> st {csAuditLedger = csAuditLedger st ++ [rec']}
 
 -- | §4.5: gate a reference to the unchecked-proof escape
--- @unsafeAssertProof@ (and its primitive @__unsafeAssertProof@). It is a
--- compile-time error unless the build enables @allow_unsafe_assert_proof@.
--- The prelude itself defines these names, so a reference from inside the
--- prelude module is not gated. Each accepted use is recorded in the §4.7
--- ledger.
+-- @unsafeAssertProof@ (and its primitive @__unsafeAssertProof@, whose type
+-- @forall (@0 p : Type). p@ is a raw admit — it inhabits ANY proposition from
+-- a @Type@ alone, so naming it from ordinary user code forges false proofs).
+--
+-- There are exactly two doors, neither of them name-based:
+--
+--   * the 'csAllowUnsafeIntrinsics' flag — set by the prelude loader for the
+--     genuine embedded prelude/std-lib (so the prelude can define and use
+--     these admits), and by the pipeline for any user module that carries the
+--     @AllowUnsafeIntrinsics attribute; and
+--   * the @allow_unsafe_assert_proof@ build setting — the explicit, audited
+--     per-build opt-in used by the lawful-trait escape (§11.4/§14.4).
+--
+-- The exemption is deliberately NOT name-based on @cur == preludeModule@. The
+-- previous gate skipped its whole body whenever @cur == preludeModule@, so a
+-- user file literally named @module std.prelude@ — which never goes through
+-- the embedded-prelude loader and so never gets the flag — could forge
+-- @let bogus : (=) True False = __unsafeAssertProof@ and inhabit Void. The
+-- flag, not the module name, now decides the embedded exemption, exactly as
+-- 'gateUnsafeIntrinsic' does, so the spoof module is rejected like any other.
+-- Each accepted use is recorded in the §4.7 ledger (except the genuine
+-- embedded prelude's own internal admits, which would otherwise pollute every
+-- downstream module's carried-forward ledger).
 gateUnsafeAssertProof :: GName -> Span -> CheckM ()
 gateUnsafeAssertProof (GName gm nm) sp
-  | nm `elem` ["unsafeAssertProof", "__unsafeAssertProof"] = do
-      cur <- gets csModule
-      when (gm == preludeModule && cur /= preludeModule) $ do
-        cfg <- gets csUnsafe
-        if allowUnsafeAssertProof cfg
-          then recordAudit "unsafeAssertProof" nm "allow_unsafe_assert_proof" sp Nothing
-          else gateUnsafe "unsafeAssertProof" "allow_unsafe_assert_proof" sp ""
+  | gm == preludeModule, nm `elem` ["unsafeAssertProof", "__unsafeAssertProof"] = do
+      allowed <- gets csAllowUnsafeIntrinsics
+      embedded <- gets csEmbeddedLoad
+      cfg <- gets csUnsafe
+      if allowed
+        then when (not embedded) $
+          recordAudit "unsafeAssertProof" nm "allow_unsafe_intrinsics" sp Nothing
+        else
+          if allowUnsafeAssertProof cfg
+            then recordAudit "unsafeAssertProof" nm "allow_unsafe_assert_proof" sp Nothing
+            else gateUnsafe "unsafeAssertProof" "allow_unsafe_assert_proof" sp ""
   | otherwise = pure ()
 
 -- | §4.5 soundness gate: the raw-admit proof intrinsics. Each of these
@@ -13659,20 +13681,35 @@ gateUnsafeAssertProof (GName gm nm) sp
 -- (isprop-eq-string-prim-carrier-positive.kp) — gating it would break that
 -- legitimate use for no soundness gain. (@__runIO@/@__arrayIndexUnsafe@/
 -- @__codeEscape@/@__rowExtend@ all have pinned results; @__unsafeAssertProof@
--- is gated separately by 'gateUnsafeAssertProof'; @failNow@ is unreachable.)
-gatedUnsafeIntrinsics :: [Text]
+-- is gated separately by 'gateUnsafeAssertProof'.)
+--
+-- @std.testing.failNow@ (type @forall (@0 a : Type). String -> a@) has the same
+-- raw-admit shape — its result @a@ is free — and, unlike the six prelude prims,
+-- it lives in @std.testing@ and is reachable from a plain user module via
+-- @import std.testing as T; T.failNow@ or a bare @std.testing.failNow@. A guard
+-- keyed on @gm == preludeModule@ would never fire for it, so the gate is keyed
+-- on the full @(module, name)@ pair below. @std.testing@ itself is loaded with
+-- the 'csAllowUnsafeIntrinsics' flag (it is part of the embedded std-lib), so
+-- its own definitions are exempt; only a NON-exempt module naming @failNow@ is
+-- gated.
+gatedUnsafeIntrinsics :: Set.Set GName
 gatedUnsafeIntrinsics =
-  [ "__eqProof"
-  , "__transport"
-  , "__absurd"
-  , "__handleEff"
-  , "__debugInspect"
-  , "__debugCompare"
-  ]
+  Set.fromList $
+    [ GName preludeModule n
+    | n <-
+        [ "__eqProof"
+        , "__transport"
+        , "__absurd"
+        , "__handleEff"
+        , "__debugInspect"
+        , "__debugCompare"
+        ]
+    ]
+      ++ [GName modTesting "failNow"]
 
 gateUnsafeIntrinsic :: GName -> Span -> CheckM ()
-gateUnsafeIntrinsic (GName gm nm) sp
-  | gm == preludeModule, nm `elem` gatedUnsafeIntrinsics = do
+gateUnsafeIntrinsic g@(GName _ nm) sp
+  | g `Set.member` gatedUnsafeIntrinsics = do
       -- §4.5: exemption is the 'csAllowUnsafeIntrinsics' flag ALONE (set
       -- for the embedded prelude/std-lib by the loader, and for a user
       -- module carrying @AllowUnsafeIntrinsics). A user file merely named

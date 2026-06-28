@@ -1,0 +1,20 @@
+module std.prelude
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE A — prelude-name spoof of the assert-proof
+-- gate): 'gateUnsafeAssertProof' originally skipped its whole body whenever
+-- 'cur == preludeModule' (the 'cur /= preludeModule' guard). A user file
+-- literally named 'module std.prelude' is NOT the genuine embedded prelude —
+-- it never goes through the embedded-prelude loader and carries no
+-- @AllowUnsafeIntrinsics attribute — yet the name-based check exempted it,
+-- letting it forge 'let bogus : (=) True False = __unsafeAssertProof'
+-- ('__unsafeAssertProof : forall (@0 p : Type). p' is a raw admit; 'subst'
+-- over a discriminator family then inhabits Void). The exemption is now the
+-- internal 'csAllowUnsafeIntrinsics' flag (or the explicit
+-- 'allow_unsafe_assert_proof' build setting) — NEVER the module name — so a
+-- user 'module std.prelude' with neither is rejected like any other module.
+
+bogus : (=) True False
+let bogus = __unsafeAssertProof
+
+--! mode check
+--! assertDiagnostic error E_FEATURE_INACTIVE

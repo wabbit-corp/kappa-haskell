@@ -1,0 +1,16 @@
+module main
+
+-- §4.5 SOUNDNESS (NEGATIVE, HOLE B — std.testing.failNow forge, bare form): a
+-- bare fully-qualified 'std.testing.failNow' resolves through the
+-- fully-qualified module-path branch, a different code path than the alias
+-- form. 'failNow : forall (@0 a : Type). String -> a' is a raw admit (free
+-- result 'a'); the original intrinsic gate guarded on 'gm == preludeModule'
+-- and so never fired for std.testing. The gate is now keyed on the full
+-- (module, name) pair and runs on every resolution path, so this bare-qualified
+-- forge is rejected like the unqualified/aliased ones.
+
+bogus : (=) True False
+let bogus = std.testing.failNow "forge"
+
+--! mode check
+--! assertDiagnostic error E_UNSAFE_INTRINSIC_GATED
