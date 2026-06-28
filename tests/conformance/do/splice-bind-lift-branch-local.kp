@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "TAKEN\n42\n7\n"
+
+-- §18.3.1 POSITIVE (branch-locality): the splice translation is
+--   Splice_m[if c then t else f] = Splice_m[c] >>= \c' ->
+--      if c' then Splice_m[t] else Splice_m[f]
+-- so a `!` inside an UNTAKEN branch must NOT execute (it is a bind local to its
+-- branch, not hoisted above the conditional). Here:
+--   * the `if` takes the THEN branch, whose `!runStep` runs (prints "TAKEN", 42);
+--   * the `else` branch's `!boom` is NEVER run (no "BOOM" in the output);
+--   * the `match` takes case 1 (a pure 7), and the catch-all's `!boom` is also
+--     never run.
+-- If the bind-lift hoisted branch bangs above the conditional (running both
+-- branches' effects), "BOOM" would appear — it does not.
+
+runStep : Int -> UIO Int
+let runStep = \v -> do
+    printlnString "TAKEN"
+    ioPure v
+
+boom : UIO Int
+let boom = do
+    printlnString "BOOM"
+    ioPure 999
+
+main : UIO Unit
+let main = do
+    let cond = True
+    let x = if cond then !(runStep 42) else !boom
+    printlnString (showInt x)
+    let y = match 1
+            case 1 -> 7
+            case _ -> !boom
+    printlnString (showInt y)

@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "01\n6\n3\n"
+
+-- §18.3.1 POSITIVE: the monadic splice `!` desugars to a monadic BIND lifted
+-- left-to-right into the enclosing do-block (Splice_m[-]), so legitimate IO
+-- programs sequence correctly — and the OUTPUT here DEPENDS on the bang order,
+-- proving the lift preserves left-to-right effect sequencing (not just types):
+--
+--   * `stringAppend !(step r) !(step r)` — two spliced steps in ONE expression.
+--     `step` returns the counter's current value then increments it, so a
+--     left-to-right lift prints "01"; any other order would differ.
+--   * `var` / pure-`Bool` `while` — the imperative loop sums 1+2+3 = 6.
+--   * a `!`-spliced MONADIC (`m Bool`) `while` condition, re-run each iteration,
+--     counts to 3.
+
+step : Ref Int -> UIO String
+let step = \r -> do
+    let n = !readRef r
+    writeRef r (n + 1)
+    ioPure (showInt n)
+
+main : UIO Unit
+let main = do
+    r <- newRef 0
+    let s = stringAppend !(step r) !(step r)
+    printlnString s
+
+    var i = 0
+    var acc = 0
+    while (i < 3) do
+        i = i + 1
+        acc = acc + i
+    printlnString (showInt acc)
+
+    c <- newRef 0
+    while (ioPure (!(readRef c) < 3)) do
+        writeRef c (!(readRef c) + 1)
+    printlnString (showInt (!(readRef c)))

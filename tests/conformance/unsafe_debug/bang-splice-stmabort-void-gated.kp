@@ -1,0 +1,13 @@
+module main
+
+-- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): `stmAbort` (like `throwIO`) is a
+-- free-result aborting action — it never yields a value. Splicing it cannot
+-- forge a pure result: `!stmAbort` lifts to `tmp <- stmAbort`, keeping the item
+-- monadic, so a `do { !stmAbort } : Void` block is an `IO _ _ ≠ Void` type
+-- error in a plain module.
+
+dead : Void
+let dead = do
+  !stmAbort
+
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

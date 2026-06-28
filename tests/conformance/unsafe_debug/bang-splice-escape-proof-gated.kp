@@ -1,0 +1,14 @@
+module main
+
+-- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): the "escaping" variant — bind the splice
+-- to a let at a PROOF type, then return it. With the spec-correct bind-lift the
+-- splice `!(throwIO Unit)` becomes `tmp <- throwIO Unit`, so `tmp : IO Unit _`;
+-- the `let b : (=) True False = tmp` binding then fails (an IO action is not a
+-- proof of `True = False`). The forge is killed at the binding, not deferred.
+
+bogus : (=) True False
+let bogus = do
+  let b : (=) True False = !(throwIO Unit)
+  pure b
+
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

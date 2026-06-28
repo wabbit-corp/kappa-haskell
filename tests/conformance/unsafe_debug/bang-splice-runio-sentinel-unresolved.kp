@@ -1,0 +1,15 @@
+module main
+
+-- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): the prior implementation desugared `!e`
+-- to an internal `__runIO!` splice-head whose name the lexer "could not
+-- produce". But backtick-quoted identifiers (Lexer §) accept an ARBITRARY
+-- payload, so `` `__runIO!` `` IS source-spellable, and an infer special-case
+-- resolved that head DIRECTLY to the ungated prelude `__runIO` — a clean bypass
+-- of 'gateUnsafeIntrinsic'. The spec-correct bind-lift removes the sentinel
+-- mechanism ENTIRELY: there is no `__runIO!` global anywhere, so the name now
+-- resolves to NOTHING (E_NAME_UNRESOLVED), with no route to the gated `__runIO`.
+
+dead : Void
+let dead = `__runIO!` (throwIO Unit)
+
+--! assertDiagnostic error E_NAME_UNRESOLVED

@@ -1,0 +1,17 @@
+module main
+
+-- §18.8 / §4.5 SOUNDNESS (NEGATIVE): a `do` block ascribed a KNOWN non-IO,
+-- non-STM, non-flex type is a PURE-result block (corpus accommodation) — it
+-- sequences pure statements and its value IS the final pure tail. It is NOT a
+-- monadic carrier, so a final IO action `IO errT a` must NOT be accepted at the
+-- pure result type by `unsafePerformIO`-style extraction. Otherwise the
+-- free-result `throwIO` forges a pure inhabitant of `Void` with no `!`-splice at
+-- all: `do { throwIO Unit } : Void`. (This is the same §4.5 `__runIO` hole the
+-- `!`-splice route exposed; both are now closed — the IO-wrap acceptance is off
+-- in pure-result mode.)
+
+dead : Void
+let dead = do
+  throwIO Unit
+
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

@@ -10,9 +10,10 @@ module main
 -- ANY proposition: 'let bad : (=) True False = __runIO (throwIO Unit)' forges a
 -- false equation, and 'subst' over a discriminator family then inhabits 'Void':
 -- total logical unsoundness. The program ENTRY does not need '__runIO' (the
--- runtime drives 'main' directly), and the compiler-synthesized '!e'/var-deref
--- splices build the eliminator internally (bypassing this gate), so gating the
--- USER-direct name is sound. A plain module naming '__runIO' is rejected.
+-- runtime drives 'main' directly), and the §18.3.1 monadic splice '!e' desugars
+-- to a monadic BIND ('tmp <- e'), NOT a '__runIO e' extraction — so no
+-- synthesized '__runIO' term reaches this gate. Gating the USER-direct name is
+-- therefore sound: a plain module naming '__runIO' is rejected.
 
 bad : (=) True False
 let bad = __runIO (throwIO Unit)

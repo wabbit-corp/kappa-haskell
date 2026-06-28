@@ -1,0 +1,12 @@
+module main
+
+-- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): `atomically retry` is another
+-- free-result aborting action. Splicing it lifts to `tmp <- atomically retry`,
+-- so `do { !(atomically retry) } : Void` stays monadic (`IO Void _`) and fails
+-- the pure `Void` demand — no pure inhabitant of `Void` is forged.
+
+dead : Void
+let dead = do
+  !(atomically retry)
+
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH

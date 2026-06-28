@@ -3823,21 +3823,6 @@ infer ctx expr = case expr of
                 (CRecordT (sortOn fst fields))
             , VSort lvl
             )
-  -- §18.3 compiler-synthesized monadic splice: the desugarer ('desugarBang')
-  -- emits @EVar runIOSpliceName@ (a name the lexer cannot produce) as the head
-  -- of an @__runIO action@ eliminator. Resolve the head DIRECTLY to the prelude
-  -- @__runIO@ global — bypassing 'resolveName' and so its raw-admit gate — then
-  -- elaborate the spine exactly as the generic application path would. The bare
-  -- user-written @__runIO@ remains gated (it is an @unsafePerformIO@ that, over
-  -- the free-`a` @throwIO@, forges false proofs); only this internal splice is
-  -- exempt, mirroring 'derefVar' / the monadic-@while@ condition which already
-  -- build the @CGlob prelRunIO@ eliminator directly.
-  EApp (EVar qn) args
-    | nameText qn == runIOSpliceName -> do
-        mrt <- globalTerm prelRunIO
-        case mrt of
-          Just (rtTm, rtTy) -> elabSpine ctx (nameSpan qn) rtTm rtTy args
-          Nothing -> resolveName ctx qn -- unreachable: prelude always defines __runIO
   -- §21.6 convenience reflection queries in ordinary (non-Elab)
   -- positions run at the call site ('elabReflQuery')
   EApp (EVar qn) args
@@ -8486,7 +8471,7 @@ elabEffDo ctx0 row aT items0 sp = do
     go c [DoExpr e] = do
       -- final item: an Eff computation of the result type, or (corpus
       -- accommodation, as in the IO kernel) a pure result value
-      let eD = desugarBang e
+      let eD = e
       st0 <- get
       n0 <- gets (length . csDiags)
       tm0 <- check c eD (effT aT)
@@ -8507,7 +8492,7 @@ elabEffDo ctx0 row aT items0 sp = do
     go c (item : rest) = case item of
       DoExpr e -> do
         bT <- freshMetaV c
-        tm <- check c (desugarBang e) (effT bT)
+        tm <- check c (e) (effT bT)
         contTm <- CLam Expl QW "__u" <$> go (bindCtx "__u" False bT c) rest
         pure (effBindTm tm contTm)
       DoBind (LetBind _ _ pat mty rhs bsp) -> do
@@ -8516,7 +8501,7 @@ elabEffDo ctx0 row aT items0 sp = do
             (tyTm, _) <- inferType c tyE
             evalIn c tyTm
           Nothing -> freshMetaV c
-        rhsTm <- check c (desugarBang rhs) (effT bT)
+        rhsTm <- check c (rhs) (effT bT)
         checkIrrefutable c pat bT bsp
         contTm <- handlerClauseLam c Q1 pat bT (\c' -> go c' rest)
         pure (effBindTm rhsTm contTm)
@@ -8524,7 +8509,7 @@ elabEffDo ctx0 row aT items0 sp = do
         -- §18.3.1: a `let` RHS inside a do block may contain `!`; desugar
         -- it like the DoBind branch above so it is not rejected as a bare
         -- splice (E_SPLICE_OUTSIDE_DO).
-        let rhsD = desugarBang rhs
+        let rhsD = rhs
         (rhsTm, rhsTy) <- case mty of
           Just tyE -> do
             (tyTm, _) <- inferType c tyE
@@ -8554,7 +8539,7 @@ elabEffDo ctx0 row aT items0 sp = do
       -- every exit — including a handler's §32.2.20 abandonment.  Only a bare
       -- `defer` (no @L label) is supported here in the minimal lift.
       DoDefer Nothing e _ -> do
-        eTm <- check c (desugarBang e) (effT (VGlobN prelUnit []))
+        eTm <- check c (e) (effT (VGlobN prelUnit []))
         contTm <- CLam Expl QW "__u" <$> go (bindCtx "__u" False (VGlobN prelUnit []) c) rest
         let deferTm = CApp Expl (CGlob prelEffDefer) eTm
         pure (effBindTm deferTm contTm)
@@ -8574,7 +8559,7 @@ elabEffDo ctx0 row aT items0 sp = do
           errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
             "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
         rT <- freshMetaV c
-        acquireTm <- check c (desugarBang rhs) (effT rT)
+        acquireTm <- check c (rhs) (effT rT)
         -- Releasable (m := Eff row) (a := rT); `release : a -> m Unit`
         let mTyV = VGlobN prelEff [(Expl, row)]
         dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, rT)])
@@ -8654,15 +8639,15 @@ elabMonadDo ctx me items0 sp = do
       errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
         "a do block must end with an expression item (§18.2)"
       pure (EVar (Name "__u" sp))
-    desugar [DoExpr e] = pure (desugarBang e)
+    desugar [DoExpr e] = pure (e)
     desugar [DoIf alts mels isp] = pure (ifToExpr alts mels isp)
     desugar (item : rest) = case item of
-      DoExpr e -> mkBind (PWild sp) (desugarBang e) <$> desugar rest
-      DoBind (LetBind _ _ pat _ rhs _) -> mkBind pat (desugarBang rhs) <$> desugar rest
+      DoExpr e -> mkBind (PWild sp) (e) <$> desugar rest
+      DoBind (LetBind _ _ pat _ rhs _) -> mkBind pat (rhs) <$> desugar rest
       -- a bare `x <- act` (monadic flag True) is the same monadic bind as
       -- `let x <- act`; `x = e` (False) is an imperative reassignment with
       -- no meaning in a pure monad and is rejected below.
-      DoAssign n True rhs _ -> mkBind (PVar n) (desugarBang rhs) <$> desugar rest
+      DoAssign n True rhs _ -> mkBind (PVar n) (rhs) <$> desugar rest
       DoLet lb@(LetBind _ _ _ _ _ bsp) -> (\r -> ELet [lb] r bsp) <$> desugar rest
       DoIf alts mels isp -> mkBind (PWild sp) (ifToExpr alts mels isp) <$> desugar rest
       -- a refutable `let? p = rhs [else rp -> fe]` is a match over the pure rhs:
@@ -8674,7 +8659,7 @@ elabMonadDo ctx me items0 sp = do
         let elseArm = case mElse of
               Just (rp, fe) -> MatchCase rp Nothing fe dsp
               Nothing -> MatchCase (PWild dsp) Nothing (EVar (Name "empty" dsp)) dsp
-        pure (EMatch (desugarBang rhs) [MatchCase pat Nothing rest' dsp, elseArm] dsp)
+        pure (EMatch (rhs) [MatchCase pat Nothing rest' dsp, elseArm] dsp)
       other -> do
         unsupportedAt (doItemSpan other)
           "this do-item form is not supported in a user-monad do block by this implementation (§18.8)"
@@ -10160,9 +10145,16 @@ elabTry ctx body excepts mfin sp = do
 -- itself is not in scope as a target there. Each do-expression starts a
 -- fresh scope: targets never cross a first-class do-value boundary.
 elabDo :: Ctx -> Maybe Name -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
-elabDo ctx0 mlabel items _sp mexpected = do
+elabDo ctx0 mlabel items0 _sp mexpected = do
   -- §18.9.3: '~' inout markers are admissible within this do elaboration
   let ctx = ctx0 {ctxInDo = True}
+  -- §18.3.1: lift every monadic splice `!` in this do-scope (and its nested
+  -- loop/if suites) to a preceding `tmp <- act` bind BEFORE dispatching to a
+  -- kernel.  After this no kernel ever sees a raw 'EBang' as an item subterm,
+  -- so all three carriers (IO/STM, Eff, user-monad) get the spec-correct
+  -- monadic-bind semantics uniformly, and no synthesized `__runIO` splice-head
+  -- exists to bypass 'gateUnsafeIntrinsic'.
+  items <- liftDoItems items0
   me <- traverse forceM mexpected
   case me of
     -- an Eff-typed do sequences algebraic-effect computations
@@ -10223,6 +10215,24 @@ elabDoIOItems mlabel _sp ctx mexp items = do
     isStmExpected :: Maybe Value -> Bool
     isStmExpected (Just (VGlobN (GName _ "STM") _)) = True
     isStmExpected _ = False
+    -- §18.8 pure-result do (corpus accommodation): a do-block elaborated at a
+    -- KNOWN non-IO, non-STM, non-flex type sequences PURE statements (lets and a
+    -- final pure expression) — the block's value IS that pure result.  Crucially
+    -- this is NOT a monadic carrier: there is no bind, no effect sequencing.  So
+    -- a statement here must be checked at the BARE pure type, never the
+    -- IO-wrapped type.  Otherwise an IO action @IO errT a@ would unify with the
+    -- pure result @resT@ (a := resT) and the whole block would be handed back at
+    -- the pure type @resT@ — exactly the §4.5 forge: a plain module's
+    -- @do { throwIO Unit } : Void@ (or the desugared @do { tmp <- throwIO Unit;
+    -- tmp } : Void@ from a @!@-splice) extracting a pure inhabitant of @Void@.
+    -- 'pureResult' gates the IO-wrap acceptance off and rejects monadic binds in
+    -- this mode (§18.3.1 / §18.2: a monadic bind requires a monadic carrier).
+    pureResult :: Bool
+    pureResult = case mexp of
+      Just (VGlobN (GName _ "IO") _) -> False
+      Just (VGlobN (GName _ "STM") _) -> False
+      Just expd -> not (isFlexHead expd)
+      Nothing -> False
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
     goItems loops c errT resT (item : rest) = do
@@ -10243,9 +10253,23 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               subItems <- goItems loops c errT aT innerItems
               ks <- goItems loops c errT resT rest
               pure (KSubDo (nameText <$> innerLbl) subItems : ks)
+        DoExpr e | pureResult -> do
+          -- §18.8 pure-result do: statements are PURE values, not IO actions.
+          -- The final statement IS the block's result (checked at the pure
+          -- 'resT'); a non-final statement is a discarded pure value.  No
+          -- IO-wrap acceptance here — that is what closes the §4.5 forge
+          -- (@do { throwIO Unit } : Void@ / a @!@-splice's lifted bind), since an
+          -- @IO errT _@ action no longer unifies with the pure result.
+          tm <-
+            if lastItem
+              then check c e resT
+              else do
+                aT <- freshMetaV c
+                check c e aT
+          (KExpr tm :) <$> goItems loops c errT resT rest
         DoExpr e -> do
           aT <- if lastItem then pure resT else freshMetaV c
-          let eD = desugarBang e
+          let eD = e
               ioT = wrapTy errT aT
           -- statements are IO actions (§18.2); the corpus also
           -- sequences pure expressions as statements, and the §18.8
@@ -10286,10 +10310,18 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               (tyTm, _) <- inferType c tyE
               evalIn c tyTm
             Nothing -> freshMetaV c
-          let rhsD = desugarBang rhs
+          let rhsD = rhs
+          -- §18.8 pure-result do: there is no monadic carrier, so the IO-wrap
+          -- acceptance of the bind RHS is OFF (an @IO errT _@ action must NOT
+          -- satisfy a bind in a pure block — that was the §4.5 forge route:
+          -- @do { tmp <- throwIO Unit; tmp } : Void@).  Only the genuine
+          -- container bind (a non-IO container shape, below) remains valid here;
+          -- a bare IO action falls through to the container probe, fails the
+          -- @h /= "IO"@ guard, and is rejected.
+              bindRhsTy = if pureResult then aT else wrapTy errT aT
           st0 <- get
           n0 <- gets (length . csDiags)
-          rhsTm0 <- check c rhsD (wrapTy errT aT)
+          rhsTm0 <- check c rhsD bindRhsTy
           n1 <- gets (length . csDiags)
           rhsTm <-
             if n1 == n0
@@ -10310,7 +10342,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   _ -> do
                     -- not container-shaped: restore the IO/STM diagnosis
                     put st0
-                    check c rhsD (wrapTy errT aT)
+                    check c rhsD bindRhsTy
           checkIrrefutable c pat aT bsp
           (patC, cBound, _) <- elabPattern c pat aT
           let c' = markImplicitLocal bsp implocal prefix c cBound
@@ -10322,7 +10354,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           -- to its value; desugar `!` here exactly as the bind/expr items
           -- do, so it does not reach `infer`/`check` as a bare splice
           -- (E_SPLICE_OUTSIDE_DO). The KLet runtime runs splices via evalK.
-          let rhsD = desugarBang rhs
+          let rhsD = rhs
           (rhsTm, rhsTy) <- case mty of
             Just tyE -> do
               (tyTm, _) <- inferType c tyE
@@ -10369,8 +10401,8 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                 VGlobN (GName _ "Ref") [(_, a)] -> do
                   rhsTm <-
                     if monadic
-                      then check c (desugarBang rhs) (ioType errT a)
-                      else check c (desugarBang rhs) a
+                      then check c (rhs) (ioType errT a)
+                      else check c (rhs) a
                   ks <- goItems loops c errT resT rest
                   pure (KAssign (CVar i) monadic rhsTm : ks)
                 _ -> do
@@ -10412,14 +10444,14 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               -- accepted (e.g. `if c then pure () else do return 0`)
               st0 <- get
               n0 <- gets (length . csDiags)
-              tm0 <- check c (desugarBang e) resT
+              tm0 <- check c (e) resT
               n1 <- gets (length . csDiags)
               if n1 == n0
                 then pure tm0
                 else do
                   put st0
                   retT <- freshMetaV c
-                  check c (desugarBang e) retT
+                  check c (e) retT
             Nothing -> do
               expectType c rsp (VGlobN prelUnit []) resT
               pure (CCtor prelUnit Nothing [])
@@ -10442,7 +10474,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           -- form is attempted first; only if it produces a type error is
           -- the monadic form tried, which keeps the common pure path and
           -- its refinement facts unchanged.
-          let condD = desugarBang cond
+          let condD = cond
           st0 <- get
           n0 <- gets (length . csDiags)
           pureTm <- check c condD (VGlobN prelBool [])
@@ -10475,7 +10507,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           -- side-effect-free probe of the inferred source type and
           -- materialized to the element list via the matching prelude
           -- conversion.
-          let src' = desugarBang src
+          let src' = src
           elemT <- freshMetaV c
           srcKind <- probeForSrcKind c src'
           let listSrc = case srcKind of
@@ -10525,7 +10557,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                 -- complement refinements accumulated from earlier conditions
                 refs <- condRefines accCtx cond
                 let cR = refineCtx refs accCtx
-                condTm <- check cR (desugarBang cond) (VGlobN prelBool [])
+                condTm <- check cR (cond) (VGlobN prelBool [])
                 -- this suite runs with `c_k` True and every earlier `c_i`
                 -- False, so both kinds of fact hold (§3.2.3 proof source)
                 oldBool <- gets csBoolFacts
@@ -10582,7 +10614,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
                 ("defer@" <> nameText l
                    <> " does not target an enclosing labeled do-scope (explicit 'do' or loop) of this do-scope (§18.7)")
-          eTm <- check c (desugarBang e) (ioType errT (VGlobN prelUnit []))
+          eTm <- check c (e) (ioType errT (VGlobN prelUnit []))
           ks <- goItems loops c errT resT rest
           pure (KDefer (nameText <$> ml) eTm : ks)
         DoUsing mq pat rhs usp -> do
@@ -10600,7 +10632,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           -- exit machinery (KUsing), not a source rewrite to `defer` (which
           -- would move the resource before the borrowed use, §19.5).
           aT <- freshMetaV c
-          acquireTm <- check c (desugarBang rhs) (ioType errT aT)
+          acquireTm <- check c (rhs) (ioType errT aT)
           -- Releasable (m := IO errT) (a := aT); `release : a -> m Unit`
           let mTyV = VGlobN prelIO [(Expl, errT)]
           dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, aT)])
@@ -10687,57 +10719,273 @@ markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
           }
    in after {ctxEntries = map mark new ++ old}
 
--- | The COMPILER-SYNTHESIZED splice head (§18.3). A `!e` (and the §18.6.1
--- var-deref / §18.6 monadic-`while`-condition splices) wraps the spliced
--- action in an @__runIO@ eliminator. The bare prelude @__runIO@ is a gated
--- raw-admit (it discards the IO error channel — an @unsafePerformIO@ that,
--- composed with the free-`a` @throwIO : forall e a. e -> IO e a@, would forge
--- @__runIO (throwIO Unit) : (=) True False@; see 'gatedUnsafeIntrinsics').
--- The desugarer therefore does NOT emit @EVar "__runIO"@ (which would route
--- through 'resolveName' and trip its own gate); it emits this sentinel head,
--- which the 'EApp' elaborator ('elabRunIOSplice') turns directly into a
--- @CGlob prelRunIO@ application — exactly as 'derefVar' and the monadic
--- @while@ condition already build the eliminator term directly, bypassing
--- user name resolution. The @!@ sigil is not a legal source identifier char
--- (the lexer admits only @[A-Za-z0-9_]@ and non-ASCII letters), so a user
--- can never write this name to forge an ungated @__runIO@.
-runIOSpliceName :: Text
-runIOSpliceName = "__runIO!"
+-- | Spec §18.3.1 monadic splice (`!`).  The normative elaboration of `!e` is
+-- the translation @Splice_m[-]@: a `!e` occurring in a do-item is LIFTED to a
+-- monadic bind @tmp <- e@ in the nearest enclosing do-block, and the occurrence
+-- is replaced by @tmp@ (`Splice_m[!e] = e`).  Because the lift is a real bind,
+-- the spliced result stays MONADIC-typed and left-to-right effect order is
+-- preserved.
+--
+-- This is NOT a pure @__runIO@ extraction.  Extracting `!e` purely (the prior
+-- implementation: @!e ↦ __runIO e@) was unsound: @__runIO : forall e a. IO e a
+-- -> a@ discards the IO error channel, so composed with @throwIO : forall e a. e
+-- -> IO e a@ it forges a pure inhabitant of the free @a@ — e.g. from a PLAIN
+-- module @do { !(throwIO Unit) } : Void@ type-checked (the splice handed back
+-- @__runIO (throwIO Unit) : Void@).  The bind-lift dissolves this: a bind keeps
+-- the item monadic, so @do { !(throwIO Unit) }@ has type @IO _ _@ which is not
+-- @Void@ — a plain type error.  It also removes the synthesized @__runIO@
+-- splice-head entirely, so there is no sentinel name a user could spell (via
+-- backticks) to route around 'gateUnsafeIntrinsic'.
+--
+-- 'liftBangsExpr' realizes @Splice_m[-]@ for a single expression: it returns the
+-- ordered list of @tmp <- operand@ binds that must be sequenced BEFORE the
+-- expression, together with the bang-free residual.  The do-kernels splice those
+-- binds in via 'liftDoItems' (the per-do-scope pre-pass).
+--
+-- Branch-locality (§18.3.1): @Splice_m[if c then t else f] = Splice_m[c] >>= \\c'
+-- -> if c' then Splice_m[t] else Splice_m[f]@ — bangs in an /untaken/ branch must
+-- NOT run.  So a bang inside an @if@/@match@ branch is NOT hoisted above the
+-- conditional; instead the whole conditional is rebuilt with each branch wrapped
+-- as a nested @do@ (its own monadic scope) and the conditional itself is bound to
+-- a fresh temp.  Only the scrutinee/condition bangs (evaluated unconditionally)
+-- are hoisted ahead.
 
--- `!e` splicing inside do items (§18.3): rewritten to runIO marker the
--- interpreter understands; typing treats !e : a where e : IO err a.
-desugarBang :: Expr -> Expr
-desugarBang = \case
-  EBang _ e sp -> EApp (EVar (Name runIOSpliceName sp)) [ArgExplicit (desugarBang e)]
-  -- §18.3.1 immediate-application splice: an /open/ `!f x y` is sugar for
-  -- `!(f x y)`, i.e. the entire maximal application spine is the splice
-  -- operand. The parser produces `EApp (EBang False f) [x, y]`, so when
-  -- the head of an application is an open bang, the whole application is
-  -- the spliced computation rather than `(!f) x y`. A /closed/ bang
-  -- `(!f) x` (explicitly parenthesised) splices `f` first and then applies
-  -- the result to `x`, so it falls through to the ordinary EApp rule.
-  EApp (EBang False f bsp) args ->
-    EApp (EVar (Name runIOSpliceName bsp))
-      [ArgExplicit (EApp (desugarBang f) (map mapArg args))]
-  EApp f args -> EApp (desugarBang f) (map mapArg args)
-  EIf alts mels sp ->
-    EIf [(desugarBang c, desugarBang t) | (c, t) <- alts] (fmap desugarBang mels) sp
-  EMatch scrut cases sp ->
-    EMatch (desugarBang scrut)
-      [case mc of
-         MatchCase p g b csp -> MatchCase p (fmap desugarBang g) (desugarBang b) csp
-         other -> other
-      | mc <- cases]
-      sp
-  EAscription e t sp -> EAscription (desugarBang e) t sp
-  ETuple es sp -> ETuple (map desugarBang es) sp
-  EDot e m -> EDot (desugarBang e) m
-  e -> e
+-- | @liftBangsExpr sp e@ = @(binds, residual)@ where @binds@ are @tmp <- act@
+-- do-items to sequence before the expression (left-to-right) and @residual@ is
+-- @e@ with every (unconditional) splice replaced by its bound temp.  Realizes
+-- @Splice_m[-]@.
+liftBangsExpr :: Span -> Expr -> CheckM ([DoItem], Expr)
+liftBangsExpr sp = go
   where
-    mapArg = \case
-      ArgExplicit e -> ArgExplicit (desugarBang e)
-      ArgImplicit e -> ArgImplicit (desugarBang e)
-      a -> a
+    -- bind a (residual) computation to a fresh temp and yield the temp
+    bindTo :: Span -> Expr -> CheckM ([DoItem], Expr)
+    bindTo bsp act = do
+      t <- freshNameM "__bang"
+      let tn = Name t bsp
+      pure ([DoBind (LetBind False emptyPrefix (PVar tn) Nothing act bsp)], EVar tn)
+
+    go :: Expr -> CheckM ([DoItem], Expr)
+    go = \case
+      -- §18.3.1 splice: `!e` lifts to `tmp <- e`, occurrence becomes `tmp`.
+      EBang _ e bsp -> do
+        (bs, e') <- go e
+        (bs2, t) <- bindTo bsp e'
+        pure (bs ++ bs2, t)
+      -- §18.3.1 immediate-application splice: an /open/ `!f x y` is sugar for
+      -- `!(f x y)` — the whole maximal application spine is the splice operand.
+      -- The parser yields @EApp (EBang False f) args@; bind the whole
+      -- application `f x y` as the computation.  A /closed/ `(!f) x`
+      -- (EBang True) falls through to the ordinary EApp rule below, so `f` is
+      -- spliced first and the result applied to `x`.
+      EApp (EBang False f bsp) args -> do
+        (bsF, f') <- go f
+        (bsA, args') <- goArgs args
+        (bs2, t) <- bindTo bsp (EApp f' args')
+        pure (bsF ++ bsA ++ bs2, t)
+      EApp f args -> do
+        (bsF, f') <- go f
+        (bsA, args') <- goArgs args
+        pure (bsF ++ bsA, EApp f' args')
+      -- §18.3.1 conditional: branch-local.  Hoist condition bangs; recurse into
+      -- each branch as its own monadic scope.  If NO branch contains a bang the
+      -- conditional is left as a pure residual (only its conditions are lifted).
+      EIf alts mels esp
+        | any branchHasBang alts || maybe False exprHasBang mels -> do
+            (bsC, alts', mels') <- goIfBranches alts mels
+            (bs2, t) <- bindTo esp (EIf alts' mels' esp)
+            pure (bsC ++ bs2, t)
+        | otherwise -> do
+            (bsC, alts') <- goConds alts
+            pure (bsC, EIf alts' mels esp)
+      EMatch scrut cases msp
+        | any caseHasBang cases -> do
+            (bsS, scrut') <- go scrut
+            cases' <- traverse wrapCaseDo cases
+            (bs2, t) <- bindTo msp (EMatch scrut' cases' msp)
+            pure (bsS ++ bs2, t)
+        | otherwise -> do
+            (bsS, scrut') <- go scrut
+            pure (bsS, EMatch scrut' cases msp)
+      EAscription e t asp -> do
+        (bs, e') <- go e
+        pure (bs, EAscription e' t asp)
+      ETuple es tsp -> do
+        (bs, es') <- goList es
+        pure (bs, ETuple es' tsp)
+      EListLit es lsp -> do
+        (bs, es') <- goList es
+        pure (bs, EListLit es' lsp)
+      ESetLit es ssp -> do
+        (bs, es') <- goList es
+        pure (bs, ESetLit es' ssp)
+      EDot e m -> do
+        (bs, e') <- go e
+        pure (bs, EDot e' m)
+      -- any other form: no bang extraction here.  A bang surviving inside an
+      -- unsupported form reaches 'infer'/'check' as a bare 'EBang' and is
+      -- rejected by the centralized E_SPLICE_OUTSIDE_DO check (§18.3.1: a bang
+      -- outside a monadic do-context is ill-formed).
+      e -> pure ([], e)
+
+    goArgs :: [Arg] -> CheckM ([DoItem], [Arg])
+    goArgs = fmap (\(bs, as) -> (concat bs, as)) . fmap unzip . traverse goArg
+
+    goArg :: Arg -> CheckM ([DoItem], Arg)
+    goArg = \case
+      ArgExplicit e -> do (bs, e') <- go e; pure (bs, ArgExplicit e')
+      ArgImplicit e -> do (bs, e') <- go e; pure (bs, ArgImplicit e')
+      a -> pure ([], a)
+
+    goList :: [Expr] -> CheckM ([DoItem], [Expr])
+    goList es = do
+      rs <- traverse go es
+      pure (concatMap fst rs, map snd rs)
+
+    -- conditions are evaluated unconditionally (left-to-right), so their bangs
+    -- hoist ahead; branch bodies are NOT touched here.
+    goConds :: [(Expr, Expr)] -> CheckM ([DoItem], [(Expr, Expr)])
+    goConds alts = do
+      rs <- traverse (\(c, t) -> do (bs, c') <- go c; pure (bs, (c', t))) alts
+      pure (concatMap fst rs, map snd rs)
+
+    -- when a branch contains a bang the whole conditional is hoisted: lift each
+    -- condition ahead, and wrap each branch (and final else) as a nested `do`
+    -- so its bangs become binds local to the taken branch only.
+    goIfBranches :: [(Expr, Expr)] -> Maybe Expr -> CheckM ([DoItem], [(Expr, Expr)], Maybe Expr)
+    goIfBranches alts mels = do
+      rs <- traverse
+        (\(c, t) -> do
+            (bs, c') <- go c
+            pure (bs, (c', wrapBranchDo t)))
+        alts
+      let mels' = wrapBranchDo <$> mels
+      pure (concatMap fst rs, map snd rs, mels')
+
+    -- wrap a branch result expression as a single-item `do` so 'liftDoItems'
+    -- (run over the nested suite later) sequences its bangs in that branch's
+    -- own monadic scope.  A bang-free branch is wrapped too; the trivial
+    -- one-item do `do { e }` elaborates identically to `e` in the monad.
+    wrapBranchDo :: Expr -> Expr
+    wrapBranchDo e = EDo Nothing [DoExpr e] (exprSpan e)
+
+    wrapCaseDo :: MatchCase -> CheckM MatchCase
+    wrapCaseDo = \case
+      MatchCase p g b csp -> pure (MatchCase p g (wrapBranchDo b) csp)
+      other -> pure other
+
+    branchHasBang (_, t) = exprHasBang t
+    caseHasBang = \case
+      MatchCase _ _ b _ -> exprHasBang b
+      _ -> False
+
+-- | Does an expression contain a monadic splice `!` that 'liftBangsExpr' would
+-- lift in the CURRENT do-scope?  Used to decide whether an @if@/@match@ branch
+-- must be hoisted (branch-local sequencing).  It does NOT descend into nested
+-- `do`-blocks or lambdas: a `!` there belongs to that inner monadic scope, not
+-- this one (§18.3.1: `!` does not cross lambda/do/quote/type boundaries).
+exprHasBang :: Expr -> Bool
+exprHasBang = go
+  where
+    go = \case
+      EBang {} -> True
+      EApp f as -> go f || any goA as
+      EIf alts mels _ -> any (\(c, t) -> go c || go t) alts || maybe False go mels
+      EMatch s cs _ -> go s || or [go b | MatchCase _ _ b _ <- cs]
+      EAscription e _ _ -> go e
+      ETuple es _ -> any go es
+      EListLit es _ -> any go es
+      ESetLit es _ -> any go es
+      EDot e _ -> go e
+      -- a `!` under a lambda / nested do / quote belongs to that inner scope.
+      _ -> False
+    goA = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      _ -> False
+
+-- | Spec §18.3.1 pre-pass: lift every monadic splice `!` in a do-scope's item
+-- list to a preceding @tmp <- act@ bind.  Run once per do-scope (each kernel,
+-- below) so that no 'EBang' reaches term elaboration except one that is genuinely
+-- outside a monadic context (rejected by E_SPLICE_OUTSIDE_DO).
+--
+-- Each item's bang-binds are spliced in immediately before the item, in
+-- left-to-right operand order.  Nested do-suites carried inside @while@/@for@/
+-- statement-@if@ are RE-LIFTED in their own scope (so a bang inside a loop body
+-- runs each iteration, not once before the loop).
+liftDoItems :: [DoItem] -> CheckM [DoItem]
+liftDoItems = fmap concat . traverse liftOne
+  where
+    -- lift one item: `pre ++ [item']` where `pre` are the hoisted binds.
+    liftOne :: DoItem -> CheckM [DoItem]
+    liftOne item = case item of
+      DoExpr e -> withPre e $ \e' -> pure [DoExpr e']
+      DoBind (LetBind im pf pat ty rhs bsp) ->
+        withPre rhs $ \rhs' -> pure [DoBind (LetBind im pf pat ty rhs' bsp)]
+      DoLet (LetBind im pf pat ty rhs bsp) ->
+        withPre rhs $ \rhs' -> pure [DoLet (LetBind im pf pat ty rhs' bsp)]
+      DoLetQ pat rhs mElse dsp ->
+        withPre rhs $ \rhs' -> pure [DoLetQ pat rhs' mElse dsp]
+      DoAssign n monadic rhs asp ->
+        withPre rhs $ \rhs' -> pure [DoAssign n monadic rhs' asp]
+      DoVar n rhs vsp ->
+        withPre rhs $ \rhs' -> pure [DoVar n rhs' vsp]
+      DoDefer ml e dsp ->
+        withPre e $ \e' -> pure [DoDefer ml e' dsp]
+      DoUsing mq pat rhs usp ->
+        withPre rhs $ \rhs' -> pure [DoUsing mq pat rhs' usp]
+      DoReturn ml (Just e) rsp ->
+        withPre e $ \e' -> pure [DoReturn ml (Just e') rsp]
+      DoReturn ml Nothing rsp -> pure [DoReturn ml Nothing rsp]
+      -- the condition is evaluated each iteration; lift it INSIDE a fresh nested
+      -- scope only if it carries a bang (so the splice re-runs per iteration),
+      -- otherwise keep it as-is.  Body and else suites are their own scopes.
+      DoWhile ml cond body mels wsp -> do
+        cond' <- liftWhileCond cond
+        body' <- liftDoItems body
+        mels' <- traverse liftDoItems mels
+        pure [DoWhile ml cond' body' mels' wsp]
+      DoFor ml pat src body mels fsp ->
+        withPre src $ \src' -> do
+          body' <- liftDoItems body
+          mels' <- traverse liftDoItems mels
+          pure [DoFor ml pat src' body' mels' fsp]
+      DoIf alts mels isp -> do
+        -- statement-if conditions are evaluated unconditionally in order; lift
+        -- their bangs ahead.  Each suite is its own nested do-scope.
+        (preAll, alts') <- goStmtIfConds alts
+        alts'' <- traverse (\(c, b) -> (,) c <$> liftDoItems b) alts'
+        mels' <- traverse liftDoItems mels
+        pure (preAll ++ [DoIf alts'' mels' isp])
+      -- items with no expression subterm to lift
+      _ -> pure [item]
+
+    -- run the lift over an expression and feed the residual to a continuation;
+    -- the hoisted binds are prepended to whatever items the continuation yields.
+    withPre :: Expr -> (Expr -> CheckM [DoItem]) -> CheckM [DoItem]
+    withPre e k = do
+      (pre, e') <- liftBangsExpr (exprSpan e) e
+      rest <- k e'
+      pure (pre ++ rest)
+
+    goStmtIfConds :: [(Expr, [DoItem])] -> CheckM ([DoItem], [(Expr, [DoItem])])
+    goStmtIfConds alts = do
+      rs <- traverse
+        (\(c, b) -> do
+            (pre, c') <- liftBangsExpr (exprSpan c) c
+            pure (pre, (c', b)))
+        alts
+      pure (concatMap fst rs, map snd rs)
+
+    -- A `while` condition may be pure `Bool` or monadic `m Bool` (§18.6).  A
+    -- bang there must re-run each iteration, so wrap the lifted condition as a
+    -- fresh `do` whose final value is the (residual) boolean — keeping the
+    -- splice binds inside the per-iteration scope.  No bang: leave it unchanged.
+    liftWhileCond :: Expr -> CheckM Expr
+    liftWhileCond cond
+      | exprHasBang cond = do
+          (pre, cond') <- liftBangsExpr (exprSpan cond) cond
+          pure (EDo Nothing (pre ++ [DoExpr cond']) (exprSpan cond))
+      | otherwise = pure cond
 
 -- ── §21 Syntax, macros, and Elab ─────────────────────────────────────
 --
@@ -11315,12 +11563,12 @@ elabElabDo ctx0 aTy items0 sp = do
         errAt sp "E_ELAB_DO_FORM" (Just "kappa-hs.do.elab")
           "an 'Elab' do block must end with an expression of the block's Elab type (§21.9)"
         freshMeta
-      [DoExpr e] -> check ctx (desugarBang e) (elabTV aTy)
+      [DoExpr e] -> check ctx (e) (elabTV aTy)
       [item] -> badForm ctx (doItemSpan item) []
       (item : rest) -> case item of
         DoExpr e -> do
           bTy <- freshMetaV ctx
-          mTm <- check ctx (desugarBang e) (elabTV bTy)
+          mTm <- check ctx (e) (elabTV bTy)
           restTm <- go (bindCtx "_" False bTy ctx) rest
           pure (bindPrim mTm (CLam Expl QW "_" restTm))
         DoBind (LetBind _ _ pat mty rhs bsp) -> bindItem ctx pat mty rhs bsp rest
@@ -11341,14 +11589,14 @@ elabElabDo ctx0 aTy items0 sp = do
           (tyTm, _) <- inferType ctx tyE
           evalIn ctx tyTm
         Nothing -> freshMetaV ctx
-      rhsTm <- check ctx (desugarBang rhs) (elabTV bTy)
+      rhsTm <- check ctx (rhs) (elabTV bTy)
       nm <- patBinder bsp pat
       restTm <- go (bindCtx nm False bTy ctx) rest
       pure (bindPrim rhsTm (CLam Expl QW nm restTm))
     letItem ctx pat mty rhs bsp rest = do
       -- §18.3.1: a `let` RHS inside a do block may contain `!`; desugar it
       -- like bindItem so it is not rejected as a bare splice.
-      let rhsD = desugarBang rhs
+      let rhsD = rhs
       (rhsTm, rhsTy) <- case mty of
         Just tyE -> do
           (tyTm, _) <- inferType ctx tyE
@@ -13719,9 +13967,9 @@ gateUnsafeAssertProof (GName gm nm) sp
 --       e -> IO e a@ produces @IO e a@ with a FREE @a@ (sound — the value
 --       never yields an @a@), and @__runIO (throwIO Unit) : (=) True False@
 --       then type-checks. So @__runIO@ is gated too. The program entry does
---       NOT need it (the runtime drives @main@; see 'runIOSpliceName'), and
---       compiler-synthesized splices bypass the gate by building the
---       eliminator term directly.
+--       NOT need it (the runtime drives @main@), and the monadic splice @!e@
+--       desugars to a monadic BIND (§18.3.1 'liftDoItems'), not a @__runIO@
+--       extraction — so no synthesized @__runIO@ term reaches this gate.
 --
 -- @__debugRender@ is deliberately NOT gated: its result is pinned to @String@
 -- (no free variable, no producer can liberate it), so it is not exploitable,
@@ -13773,10 +14021,15 @@ gatedUnsafeIntrinsics =
           -- @Void@: total unsoundness. The program ENTRY does not need this
           -- name — both native backends and the interpreter drive @main@'s IO
           -- value through the runtime (@krt2_run_main@ / @runIOValue@), never a
-          -- synthesized @__runIO main@ term — and the compiler-synthesized @!e@
-          -- / var-deref / monadic-@while@ splices build the eliminator directly
-          -- (see 'runIOSpliceName' / 'derefVar'), bypassing this gate. So only a
-          -- USER-direct @__runIO@ reaches here, and it is correctly gated.
+          -- synthesized @__runIO main@ term. The §18.3.1 monadic splice @!e@
+          -- desugars to a monadic BIND @tmp <- e@ ('liftDoItems'), NOT a
+          -- @__runIO e@ extraction, so the splice keeps its result monadic-typed
+          -- (the forge above is a plain @IO _ _ ≠ Void@ type error) and emits no
+          -- @__runIO@ term to bypass this gate. (@var@-deref / monadic-@while@
+          -- read the cell / re-run the boolean condition; their @__runIO@ results
+          -- are pinned to the cell-content type / @Bool@ — concrete, no free
+          -- variable a producer can liberate, verified by probe — so they cannot
+          -- forge.) Thus only a USER-direct @__runIO@ reaches here, correctly gated.
           "__runIO"
         , -- §4.5 (same 6th-hole composition class): @__arrayIndexUnsafe :
           -- forall a. Array a -> Int -> a@ extracts an element PURELY, and its

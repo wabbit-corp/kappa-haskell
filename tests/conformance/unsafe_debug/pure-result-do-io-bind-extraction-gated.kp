@@ -1,0 +1,15 @@
+module main
+
+-- §18.8 / §4.5 SOUNDNESS (NEGATIVE): the bind variant of the pure-result-do
+-- extraction. `let tmp <- throwIO Unit` in a pure block binds `tmp` to the
+-- ACTION (`IO Unit _`), not a run result (there is no monadic carrier here), so
+-- the final `tmp` cannot satisfy the pure `Void` demand. This is the desugared
+-- shape a `!`-splice produces (`do { !(throwIO Unit) }`), confirmed sound
+-- whether written with `!` or by hand.
+
+dead : Void
+let dead = do
+  let tmp <- throwIO Unit
+  tmp
+
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
