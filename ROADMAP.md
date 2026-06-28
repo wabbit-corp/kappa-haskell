@@ -147,6 +147,18 @@ a six-review audit); or-pattern existential-binding fix; concurrency prims #2/#3
    `Monoid` onto a minimal identity-providing trait (e.g. `Pointed`/`Unital`, exactly what the §18.1.13
    `let?`/STM-`empty` desugaring consumes). The honest `List` induction proofs + the `String` IsSet-asserted laws
    carry over to `Monoid (List a)`/`Monoid String` unchanged — no proof work wasted by deferring.
+9. **Intrinsic h-level solver** *(IMPLEMENTATION, not spec work — surfaced by item 7's P1)* — the spec
+   DEFINES `intrinsic trait IsNType (level : Nat) (a : Type)` (Spec.md:9250/14703) plus `IsContr`/`IsProp`/
+   `IsSet`/`IsGroupoid`, with evidence "introduced by compiler-owned solvers" (9303), the `IsNType n`
+   interpretation (14717-14722: 0=Contr, 1=Prop, 2=Set, 3=Groupoid, n+1 ⇔ all equalities are `IsNType n`),
+   and the hard rule (14735-14736): **MUST NOT solve `IsNType n A` by unbounded search — only deterministic,
+   terminating, specified intrinsic rules.** The compiler implements NONE of this (only the bare
+   `instance IsSet String` marker; no `IsNType` trait). Build the compiler-owned h-level solver: the
+   structural intrinsic rules (`IsSet` of finite / decidable-equality ADTs via Hedberg; `IsContr` of records
+   of contractibles; `IsProp`/`IsSubsingleton`; the `IsNType` level lattice) consistent with the §30.2.7
+   `Inhabitance.hs` summaries. Unblocks INHABITANCE_TESTS.md §8's synth-PASS matrix (item 7). Cross-ref the
+   exact inhabitant-counter (`../datatron`) for the conservative rule-set; any precise-MUST-set ambiguity is
+   minor spec-clarification pinned during impl.
 
 ---
 
