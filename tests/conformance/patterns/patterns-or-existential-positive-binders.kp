@@ -1,0 +1,93 @@
+--! mode check
+--! assertNoErrors
+
+-- §17.2.3 / §17.1: or-pattern alternatives whose constructors bind EXISTENTIAL
+-- index skolems (GADT-style `forall (s : N). ...`) must still bind their REAL
+-- field arguments at the right de Bruijn slots.
+--
+-- Regression: `matchPat`'s `CPOr` case applied the alternative's permutation to
+-- the binder list `replicate nEx placeholder ++ fieldBinds`, but the permutation
+-- (built from name-only `corePatNames`, which ignores the @nEx@ leading
+-- existential placeholders) indexed the placeholder slots instead of the fields.
+-- So `unpack (P1 (S Z))` reduced to the erased unit `()` rather than `S Z`, and
+-- the `refl` below was wrongly rejected with `actual: = N () ()`. The perm is now
+-- built over the FULL binder layout (placeholders included), so it selects the
+-- real field bindings. (Soundness-safe: the bug only ever REJECTED a true
+-- equality; the fix must not start accepting a false one — see the negative
+-- companion test.)
+module main
+
+data N : Type =
+    Z
+    S N
+
+data Ex : Type =
+    P1 : forall (s : N). (a : N) -> Ex
+    P2 : forall (s : N). (a : N) -> Ex
+
+-- 1) The core repro: the bound field flows through the body unchanged.
+unpack : Ex -> N
+let unpack e =
+    match e
+    case P1 a | P2 a -> a
+
+check1 : unpack (P1 (S Z)) = S Z
+let check1 = refl
+
+check2 : unpack (P2 (S (S Z))) = S (S Z)
+let check2 = refl
+
+-- 2) The bound variable is actually USED (wrapped) in the body, so a wrong
+--    slot would surface as a different normal form.
+wrap : Ex -> N
+let wrap e =
+    match e
+    case P1 a | P2 a -> S a
+
+checkWrap : wrap (P1 (S Z)) = S (S Z)
+let checkWrap = refl
+
+-- 3) Alternatives with MULTIPLE — and DIFFERING — numbers of existentials.
+data Ex2 : Type =
+    Q1 : forall (s : N) (t : N). (a : N) -> Ex2
+    Q2 : forall (u : N) (v : N) (w : N). (a : N) -> Ex2
+
+unpack2 : Ex2 -> N
+let unpack2 e =
+    match e
+    case Q1 a | Q2 a -> a
+
+checkQ1 : unpack2 (Q1 (S (S Z))) = S (S Z)
+let checkQ1 = refl
+
+checkQ2 : unpack2 (Q2 (S Z)) = S Z
+let checkQ2 = refl
+
+-- 4) Two existential-binding fields, REORDERED across alternatives
+--    (`A p q | B q p`). This is the strong check: the perm must reorder the
+--    fields per-alternative AND skip the leading existential placeholder.
+data Two : Type =
+    A : forall (s : N). (p : N) -> (q : N) -> Two
+    B : forall (s : N). (q : N) -> (p : N) -> Two
+
+getP : Two -> N
+let getP t =
+    match t
+    case A p q | B q p -> p
+
+getQ : Two -> N
+let getQ t =
+    match t
+    case A p q | B q p -> q
+
+checkAP : getP (A (S Z) Z) = S Z
+let checkAP = refl
+
+checkAQ : getQ (A (S Z) Z) = Z
+let checkAQ = refl
+
+checkBP : getP (B Z (S Z)) = S Z
+let checkBP = refl
+
+checkBQ : getQ (B Z (S Z)) = Z
+let checkBQ = refl
