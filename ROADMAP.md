@@ -123,11 +123,16 @@ a six-review audit); or-pattern existential-binding fix; concurrency prims #2/#3
    §30.2.7 inhabitance analysis (`Inhabitance.hs`) is done (`63400fb`); this suite pins its summaries AND
    the h-level/equality soundness the IsProp/IsSet work rides on (summaries must stay strictly separate
    from source-level evidence synthesis — §13).
-   - **P1 — equality/UIP tripwire (NOW; the IsProp redo's acceptance criterion).** §6–§8 + the §13
-     red-team invariant: `x=x` is `Unknown` without `IsSet A`; `badK` MUST fail; `goodKWithSet` may pass;
-     the `IsProp`/`IsSet`/`IsNType` synth matrix (`IsProp Bool` fails, `IsSet Bool` passes, arbitrary
-     `IsNType n A` is unsolvable). **These would have caught the reverted `isPropEq`-without-`IsSet` hole
-     at conformance time.** Land them with / right after `feat/isprop-pi-isset`.
+   - **P1 — equality/UIP tripwire — ✅ PARTIAL** (merged `93fbccf`, `tests/conformance/hlevel/`, 10 tests).
+     The directly-testable subset, translated to the compiler's ACTUAL surface (the IsProp-under-Pi solver
+     + gated `unsafeAssertProof` — NB the compiler has **no match-based path induction** and **no intrinsic
+     h-level rules**): `badK` rejected (`E_UNSOLVED_IMPLICIT`); `goodKWithSet` accepted with `IsSet ((=) x x)`;
+     no-confusion Empty; **nominal type disequality is NOT empty** (univalence-critical); `IsProp Bool` /
+     abstract `IsSet a` unsolvable (no unbounded search). **DEFERRED within P1 — needs a compiler-owned
+     intrinsic h-level solver (the compiler has NONE; only `instance IsSet String` resolves):** the §8
+     synth-PASS matrix (`IsSet Bool`, `IsContr Unit`, `IsSubsingleton Void`, …) and the entire `IsNType n A`
+     family (no `IsNType` trait exists). **Building that intrinsic h-level solver is the real remaining §8
+     work** — a genuine feature, not a test.
    - **P2 — inhabitance summaries.** §3 algebraic/products/sums/GADT-refinement, §4 completion/enumeration
      (+ threshold), §5 `impossible` only on exact `Empty` + opaque-≠-empty. Pins `Inhabitance.hs`; needs a
      `%summary`/`%enumerate` query directive (or translate to `mode check`/`check-fails`).
