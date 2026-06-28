@@ -94,7 +94,14 @@ a pure Kappa library.
   `AtomicValue` instances for `Bool` + fixed/pointer-width ints. **Only flip the
   `rt-atomics` capability flag to "real" once this lands** (§28.305).
 
-### 2. `onInterrupt` / `onExit` (interruption finalizers that receive the exit reason)
+### 2. `onInterrupt` / `onExit` (interruption finalizers that receive the exit reason) — ✅ DONE
+- **Status:** ✅ landed end-to-end. Runtime markers `OP_ONEXIT_FIN`/`OP_ONINT_FIN`
+  registered on the enclosing do-scope; the masked-LIFO `KK_FINSEQ` drain
+  (`rt.c`) substitutes the handler applied to `exit_of_reason(rkind, rval)` (onExit,
+  every exit) or the `InterruptCause` (onInterrupt, only on `RK_INTERRUPT`).
+  `krt2_on_exit`/`krt2_on_interrupt` build `doscope(then(defer(marker), body))`.
+  Wired across `Prelude.hs`, both backends, and `Interp.hs`; test
+  `tests/conformance/effects/on-exit-interrupt.kp` (interp == C == LLVM).
 - **Ref:** ZIO `onExit` / `onInterrupt`; composes the §18.1.12 finalizer model.
 - **Why a primitive (extension, not new entity):** unlike `ensuring`/`finally`, the
   finalizer must *receive the terminal `Exit`/`Reason`* (run-only-on-interrupt, or
@@ -106,7 +113,12 @@ a pure Kappa library.
   handler to the reconstructed `Exit`/`InterruptCause` before resuming.
   `onInterrupt` = the same, guarded to fire only when `rkind` is the interrupt tag.
 
-### 3. `Promise.poll` / `Promise.isDone` (non-blocking peek)
+### 3. `Promise.poll` / `Promise.isDone` (non-blocking peek) — ✅ DONE
+- **Status:** ✅ landed end-to-end. `promise_poll`/`promise_is_done` (`rt.c`) read the
+  cell under its lock without ever parking; `OP_POLL_PROMISE`/`OP_IS_DONE_PROMISE`
+  dispatch them; surfaced as `pollPromise`/`isDonePromise` across `Prelude.hs`, both
+  backends, and `Interp.hs`. Test `tests/conformance/effects/promise-poll.kp`
+  (interp == C == LLVM).
 - **Ref:** ZIO PromiseSpec `poll`/`isDone`; CE `Deferred.tryGet`. (`krt2_poll` is the
   *fiber* interruption checkpoint — a different thing.)
 - **Why a primitive:** must atomically read the promise cell's state without
@@ -115,12 +127,17 @@ a pure Kappa library.
 - **Approach:** `krt2_poll_promise(p) -> UIO (Option (Exit e a))` and
   `krt2_is_done_promise(p) -> UIO Bool` reading the existing cell non-blockingly.
 
-### 4. `FiberRef.modify` + copy-on-fork inheritance
+### 4. `FiberRef.modify` + copy-on-fork inheritance — ✅ DONE
 - **Spec ref:** §18.1.7 ("the child inherits a snapshot copy of the parent's
   currently visible `FiberRef` values; after fork, parent and child updates are
   independent").
-- **Status:** `get`/`set`/`locally` exist; `modify` and the copy-on-fork snapshot
-  are **not wired**.
+- **Status:** ✅ landed. Per-fiber `FiberLocals` (id-indexed override array) on the
+  `Fiber` + a shared append-only init registry; `new`/`get`/`set`/`modify` dispatch
+  `OP_*_FIBER_REF` (`modify` is an atomic get-apply-set, the cell being fiber-private).
+  `krt2i_spawn_from` deep-copies the parent's overrides into the child at fork
+  (`OP_FORK`/`OP_FORK_DAEMON`/`forkIn`) so post-fork updates are independent.
+  Tests: `tests/conformance/effects/fiber-ref-modify.kp` and
+  `runtime/tests/fiberref_promise.c` (256 children × 20 reps, GC-stressed).
 - **Why a primitive:** the per-fiber FiberRef map lives in runtime fiber state;
   `modify` must be an atomic get-apply-set against it, and the fork-time snapshot
   copy must happen inside `krt2_fork`/`fork_daemon`/`fork_in` at fiber creation.
@@ -198,13 +215,12 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
 1. ~~**`std.atomic` (`atomic.c`) — ADD #1.**~~ ✅ DONE — `atomic.c` backs the
    `rt-atomics` capability with real C11 atomics, stress-verified under 12-core
    contention. (The `.kp` surface module remains.)
-2. **`FiberRef.modify` + copy-on-fork — ADD #4.** Completes a half-built §18.1.7
-   primitive; the fork-snapshot is a *semantic conformance* gap (parent/child
-   independence is normative). Unblocks the FiberRef test column and `std.supervisor`.
-3. **`onInterrupt` / `onExit` — ADD #2.** Smallest change (extend `KK_FINSEQ`,
-   which already carries the Reason) for the largest ZIO-parity payoff.
-4. **`Promise.poll` / `isDone` — ADD #3.** Tiny; unblocks Memoize/Deferred-style
-   derivations and non-blocking-peek tests.
+2. ~~**`FiberRef.modify` + copy-on-fork — ADD #4.**~~ ✅ DONE — per-fiber
+   `FiberLocals` + fork-time deep copy; parent/child independence verified.
+3. ~~**`onInterrupt` / `onExit` — ADD #2.**~~ ✅ DONE — `OP_ONEXIT_FIN`/`OP_ONINT_FIN`
+   markers detected by the `KK_FINSEQ` drain (reused the carried Reason).
+4. ~~**`Promise.poll` / `isDone` — ADD #3.**~~ ✅ DONE — `OP_POLL_PROMISE`/
+   `OP_IS_DONE_PROMISE` read the cell non-blockingly.
 5. **`disconnect` — ADD #5 (verify-then-add).** Confirm it isn't already
    expressible via forkDaemon + detached-interrupt before adding a primitive.
 6. **Derive the library layer** (zipPar/foreachPar/raceWith/raceAll/timeoutTo,
@@ -215,13 +231,12 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
    — last.** Observability, not semantics; `krt2_dump` covers the immediate need.
 
 **Key load-bearing facts:**
-- There is no `atomic.c`; `krt2_atomic_*` are declared-only in `kappart2.h`. This
-  is the single biggest gap.
-- The `FinSeq` struct in `rt.c` already carries `rkind`/`rval`/`rlabel` — so
-  onInterrupt/onExit is a genuinely small extension.
+- `atomic.c` now exists and backs `krt2_atomic_*` with real C11 atomics (ADD #1).
+- The `FinSeq` struct in `rt.c` carries `rkind`/`rval`/`rlabel`; onInterrupt/onExit
+  (ADD #2) reuses it via `OP_ONEXIT_FIN`/`OP_ONINT_FIN` in the `KK_FINSEQ` drain — DONE.
 - STM's journaled multi-fiber engine is fully done (`stm.c`, reviewed, two bugs
   fixed); the native `.kp` surface currently uses single-agent cell semantics
   pending the do-kernel CPS rewrite.
-- The reference interpreter (`Interp.hs` `runPrimIO'`) also lacks
-  onInterrupt/onExit/disconnect/modifyFiberRef/atomics — add them to the
-  interpreter in lockstep to keep the authoritative set aligned.
+- The reference interpreter (`Interp.hs` `runPrimIO'`) is now in lockstep for
+  onInterrupt/onExit, Promise.poll/isDone, and modifyFiberRef (ADD #2/#3/#4);
+  `disconnect` (#5) remains, and atomics still need their `.kp` surface module.

@@ -479,17 +479,25 @@ the real Lint are both impossible without them.
 
 ## Track: Missing primitives ([`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md))
 
-- [ ] **`onInterrupt`/`onExit`** — finalizer receiving the exit Reason; small
+- [x] **`onInterrupt`/`onExit`** — finalizer receiving the exit Reason; small
       extension of `KK_FINSEQ` (which already carries the Reason). PRIMITIVES #2.
-- [ ] **`FiberRef.modify` + copy-on-fork** — §18.1.7 parent/child independence
-      (normative conformance gap). PRIMITIVES #4 / ADD #4.
-- [ ] **`Promise.poll`/`isDone`** — non-blocking peek. PRIMITIVES #3.
+      Landed end-to-end (runtime `OP_ONEXIT_FIN`/`OP_ONINT_FIN` + both backends +
+      interp); test `tests/conformance/effects/on-exit-interrupt.kp`.
+- [x] **`FiberRef.modify` + copy-on-fork** — §18.1.7 parent/child independence
+      (normative conformance gap). PRIMITIVES #4 / ADD #4. Landed (per-fiber
+      `FiberLocals` + fork-time deep copy); test `…/fiber-ref-modify.kp` +
+      `runtime/tests/fiberref_promise.c`.
+- [x] **`Promise.poll`/`isDone`** — non-blocking peek. PRIMITIVES #3. Landed
+      (runtime `OP_POLL_PROMISE`/`OP_IS_DONE_PROMISE` + both backends + interp);
+      test `tests/conformance/effects/promise-poll.kp`.
 - [ ] **`disconnect`** — detached interruption (verify forkDaemon doesn't already
       cover it). PRIMITIVES #5.
 - [ ] **DERIVE as `.kp` library** — `zipPar`/`foreachPar`/`raceAll`/`timeoutTo`,
       `Cause` projections (pure folds), `std.supervisor`, memoize, semaphores/
       queues over `TVar`+`Promise`. Gated on the general-CPS lowering above.
 - [ ] Keep the interpreter (`src/Kappa/Interp.hs`) in lockstep for the ADD items.
+      (Done for onExit/onInterrupt, Promise.poll/isDone, FiberRef.modify; remaining
+      for `disconnect` and any future ADD items.)
 
 ---
 
