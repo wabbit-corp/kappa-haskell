@@ -222,8 +222,9 @@ data CheckState = CheckState
   , csTraitSupers :: ![(Text, Value)]
   -- ^ §14.1.4: while elaborating a trait member's TYPE, the current
   -- trait's supertrait premises as @(\@field, premise-value)@ pairs. A
-  -- supertrait operation appearing in the member type (e.g. 'append' in a
-  -- 'LawfulMonoid' law) resolves its dictionary implicit to the matching
+  -- supertrait operation appearing in the member type (e.g. an 'Eq'
+  -- operation referenced by a member of a 'C => D' subtrait) resolves its
+  -- dictionary implicit to the matching
   -- 'this.__superN' projection — without introducing a context binder that
   -- would perturb the operation's other implicit (carrier) inference.
   , csArgIndexRetag :: !Bool
@@ -2140,8 +2141,9 @@ resolveImplicitQ ctx sp q goal = do
       isRow <- isRowGoal g
       flexed <- goalHasFlex g
       -- §14.1.4: while elaborating a trait member's TYPE, a TRAIT goal that the
-      -- current trait's supertrait premises satisfy (e.g. the 'Monoid a'
-      -- dictionary of an 'append' inside a 'LawfulMonoid' law) is resolved to
+      -- current trait's supertrait premises satisfy (e.g. the 'Eq a'
+      -- dictionary of an operation referenced inside a 'C => D' subtrait member)
+      -- is resolved to
       -- the matching 'this.__superN' projection. When the goal's carrier is
       -- already concrete (NON-flex), resolve eagerly. When it is still flex
       -- (the carrier will be pinned by the operation's later explicit args),
@@ -6337,11 +6339,20 @@ elabDotUnqualified ctx e member mname = do
         -- trait-dictionary member projection d.(==) (§14.2.1)
         VGlobN headG spine -> do
           st <- get
+          -- a member INHERITED from a supertrait (e.g. 'mon.empty' where
+          -- 'empty' lives in the 'Pointed' supertrait of 'Monoid') is reached
+          -- through the dictionary's '__superN' evidence fields.
+          msuper <-
+            case Map.lookup headG (csTraits st) of
+              Just ti | nameText mn0 `notElem` tiMembers ti ->
+                supertraitMemberProject ctx 8 headG (map snd spine) tm1 (nameText mn0)
+              _ -> pure Nothing
           case Map.lookup headG (csTraits st) of
             Just ti
               | nameText mn0 `elem` tiMembers ti -> do
                   memberTy <- memberTypeOf ctx headG (nameText mn0) (map snd spine) tm1
                   pure (CProj tm1 (nameText mn0), memberTy)
+            _ | Just hit <- msuper -> pure hit
             _ ->
               -- named-field projection on single-constructor data
               -- (§10.2), or on a §7.4.1 flow-refined subset of the
@@ -6514,6 +6525,46 @@ memberTypeOf ctx traitG member args dictTm = do
 
 memberGlobal :: GName -> Text -> GName
 memberGlobal (GName m t) member = GName m (t <> "." <> member)
+
+-- §14.2.1 / §14.1.4: project a member that a trait INHERITS from a
+-- (transitive) supertrait. Given evidence 'evTm' of trait 'headG' applied
+-- to 'spineArgs' whose own 'tiMembers' lack 'member', search the trait's
+-- supertrait premises ('tiSupers') for one whose dictionary carries
+-- 'member' (directly or further up the chain) and build the projection
+-- chain through the '__superN' evidence fields, e.g. 'mon.empty' on a
+-- 'Monoid m' dictionary becomes 'mon.__super0.empty' (the 'Pointed m'
+-- dict). Depth-bounded to match 'supertraitProject'. Returns the
+-- projection term and the member's instantiated type.
+supertraitMemberProject ::
+  Ctx -> Int -> GName -> [Value] -> Term -> Text -> CheckM (Maybe (Term, Value))
+supertraitMemberProject _ 0 _ _ _ _ = pure Nothing
+supertraitMemberProject ctx depth headG spineArgs evTm member = do
+  st <- get
+  case Map.lookup headG (csTraits st) of
+    Nothing -> pure Nothing
+    Just ti -> anyPath (tiSupers ti)
+      where
+        anyPath [] = pure Nothing
+        anyPath ((fn, supClosed) : rest) = do
+          ec <- ec_
+          supF <- evalIn ctx supClosed
+          supV <- forceM (evalApp ec supF [(Expl, a) | a <- spineArgs])
+          case supV of
+            VGlobN supG supSpine -> do
+              let supArgs = map snd supSpine
+                  evTm' = CProj evTm fn
+              msti <- gets (Map.lookup supG . csTraits)
+              case msti of
+                Just sti
+                  | member `elem` tiMembers sti -> do
+                      memberTy <- memberTypeOf ctx supG member supArgs evTm'
+                      pure (Just (CProj evTm' member, memberTy))
+                _ -> do
+                  found <- supertraitMemberProject ctx (depth - 1) supG supArgs evTm' member
+                  case found of
+                    Just hit -> pure (Just hit)
+                    Nothing -> anyPath rest
+            _ -> anyPath rest
 
 -- Elvis `l ?: r` (§16.1.2): unwrap an Option left operand, with the
 -- right operand as the None fallback.
@@ -13131,8 +13182,8 @@ headerTrait (TraitDecl supers n params members) sp = do
           [nameText mn | TraitSig mn _ _ <- members]
             ++ [nameText mn | TraitDefault (LetDef (Just mn) _ _ _ _ _ _ _) _ <- members]
       -- §14.1.4: a member signature may name a SUPERTRAIT operation (e.g.
-      -- a 'LawfulMonoid' law mentions 'append'/'empty' from the supertrait
-      -- 'Monoid'). Such an operation's implicit dictionary argument is the
+      -- a member of a 'C => D' subtrait mentions an operation from the
+      -- supertrait 'C'). Such an operation's implicit dictionary argument is the
       -- current trait evidence's supertrait field. During member-type
       -- elaboration we stash the supertrait premises in 'csTraitSupers'; the
       -- implicit solver ('superThisCandidate') then resolves that dictionary

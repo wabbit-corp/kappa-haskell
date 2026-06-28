@@ -1088,37 +1088,51 @@ preludeSource =
     , "trait Lift (a : Type) =" -- §23.3 lift-based cross-stage persistence
     , "    liftCode : a -> Code a"
     , ""
-    , -- §28.2.2 Monoid. The base trait carries only the OPERATIONS; the §28.2.2
-      -- LAWS (appendAssoc/appendLeftIdentity/appendRightIdentity) are surfaced
-      -- as a separate 'LawfulMonoid' marker sub-trait below (NOT as mandatory
-      -- 'Monoid' members), for a soundness reason (Spec §14.4): the laws are
-      -- propositional EQUALITIES, and Kappa v1 equality is intensional — '(=) x
-      -- y' is an h-prop only over a SET ('IsSet a'). The §11.4 IsProp-under-Pi
-      -- closure solver (which lets a forall law be discharged through the gated
-      -- 'unsafeAssertProof' escape) therefore REQUIRES 'IsSet a' and FAILS
-      -- without it. Folding the laws into 'Monoid' would force the effect-carrier
-      -- instances 'IO e a' / 'STM a' to discharge them too — impossible honestly
-      -- (their equality is not an h-prop), and fabricating 'IsSet (IO e a)' is
-      -- exactly the unsoundness this design avoids. So those carriers stay
-      -- law-LESS plain 'Monoid's (needed for the §18.1.13 'let?'/STM 'empty'
-      -- desugaring) and simply get no 'LawfulMonoid' instance.
-      "trait Monoid (a : Type) =" -- §28.2.2
+    , -- §18.1.13 Pointed: the minimal carrier of a distinguished 'empty'
+      -- element, with NONE of the monoid laws. It is the supertrait of 'Monoid'
+      -- (so every 'Monoid' supplies 'empty' through it), AND it is what the
+      -- effect carriers 'IO e a' / 'STM a' carry on their OWN — their equality is
+      -- not an h-prop, so they cannot be lawful 'Monoid's, but they still need an
+      -- 'empty' for the §18.1.13 'let?'/STM 'empty' desugaring (the
+      -- refutable-miss continuation, and STM's aborted alternative). The
+      -- desugarer emits a bare 'empty' reference whose implicit dictionary
+      -- resolves through 'Pointed'.
+      --
+      -- 'empty' lives in EXACTLY ONE trait. A second value member named 'empty'
+      -- (e.g. duplicating it in 'Monoid') would overwrite this bare-name global
+      -- and mis-route every 'empty' use to the wrong trait's dictionary; so
+      -- 'Monoid' INHERITS 'empty' from 'Pointed' rather than re-declaring it.
+      "trait Pointed (a : Type) ="
     , "    empty : a"
-    , "    append : a -> a -> a"
     , ""
-    , -- §28.2.2 monoid laws as a marker sub-trait. The 'append'/'empty' in each
-      -- law come from the supertrait 'Monoid a' (NO explicit '(@_ : Monoid a) ->'
-      -- dict parameter): the elaborator threads the instance's own dictionary, so
-      -- inside e.g. 'instance LawfulMonoid (List a)' they reduce to the concrete
-      -- 'listAppend'/'Nil' and the proofs can COMPUTE. (A redundant explicit dict
-      -- param would bind an ABSTRACT 'Monoid a' that never reduces, leaving
-      -- 'append'/'empty' stuck — '__stuck_app @0.append' — so no proof closes.)
-      -- The equalities are written in prefix '(=)' form (an infix '(x = y)' in
-      -- member position mis-parses as a binder group). 'x y z' are implicit
-      -- 'forall'-bound, so honest proofs reference top-level recursive lemmas
-      -- (see 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
+    , -- §28.2.2 Monoid. The spec's 'Monoid' is LAWFUL BY DEFAULT: it carries
+      -- 'append' AND the three monoid LAWS
+      -- (appendAssoc/appendLeftIdentity/appendRightIdentity) as mandatory
+      -- members, and inherits 'empty' from its 'Pointed' supertrait. Every
+      -- 'Monoid' instance therefore DISCHARGES the laws — 'String' through the
+      -- gated 'unsafeAssertProof' escape ('instance IsSet String' makes each law
+      -- an h-prop), 'List a' through the HONEST structural induction lemmas
+      -- ('listAppendAssoc'/'listAppendRightIdentity', sound for every element
+      -- type). Each carrier provides its 'empty' via a sibling 'instance Pointed'.
+      --
+      -- The laws are written in prefix '(=)' form (an infix '(x = y)' in member
+      -- position mis-parses as a binder group). 'append' comes from THIS trait
+      -- and 'empty' from the 'Pointed' supertrait (NO explicit dict parameters):
+      -- the elaborator threads the instance's own dictionary (and the supertrait
+      -- 'this.__super0' field for 'empty'), so inside e.g. 'instance Monoid
+      -- (List a)' they reduce to the concrete 'listAppend'/'Nil' and the proofs
+      -- can COMPUTE. 'x y z' are implicit 'forall'-bound, so honest proofs
+      -- reference top-level recursive lemmas (see
+      -- 'listAppendRightIdentity'/'listAppendAssoc') that take the spine
       -- EXPLICITLY and recurse; an instance body does not re-bind 'x y z'.
-      "trait Monoid a => LawfulMonoid (a : Type) ="
+      --
+      -- SOUNDNESS / effect carriers: because the laws are MANDATORY, a type can
+      -- be a 'Monoid' only if it can honestly discharge them. 'IO e a' / 'STM a'
+      -- CANNOT — their propositional equality is not an h-prop (no 'IsSet (IO e
+      -- a)'), and fabricating one is exactly the unsoundness this avoids. They
+      -- are therefore 'Pointed' but NOT 'Monoid'.
+      "trait Pointed a => Monoid (a : Type) =" -- §28.2.2
+    , "    append : a -> a -> a"
     , "    appendAssoc : forall (x : a) (y : a) (z : a). (=) (append (append x y) z) (append x (append y z))"
     , "    appendLeftIdentity : forall (x : a). (=) (append empty x) x"
     , "    appendRightIdentity : forall (x : a). (=) (append x empty) x"
@@ -1247,7 +1261,7 @@ preludeSource =
       -- primitive with no spine to induct over, so its laws are asserted, not
       -- proven. This is a marker (the trait has no members here).
       -- NOTE: there is deliberately NO 'instance IsSet (List a)'. List's monoid
-      -- laws are PROVEN honestly by induction (see 'instance LawfulMonoid
+      -- laws are PROVEN honestly by induction (see 'instance Monoid
       -- (List a)' below) and need no set-ness. An unconditional 'IsSet (List a)'
       -- would be FALSE ('List a' is a set only when 'a' is) and would let
       -- 'unsafeAssertProof' forge a '(=) xs ys' at abstract 'a', inhabiting
@@ -1554,17 +1568,18 @@ preludeSource =
       "check : Bool -> STM Unit"
     , "let check c = if c then stmPure Unit else retry"
     , ""
-    , -- §18.1.13: `empty` (the aborted alternative) resolves through
-      -- Monoid, so STM-shaped do-scopes can sequence it as an action
-      "instance Monoid (IO e a) ="
+    , -- §18.1.13: `empty` (the aborted alternative) resolves through the
+      -- law-less `Pointed` trait (NOT `Monoid`, whose mandatory laws this
+      -- carrier cannot honestly discharge — its equality is not an h-prop), so
+      -- IO-shaped do-scopes can sequence it as an action.
+      "instance Pointed (IO e a) ="
     , "    let empty = stmAbort"
-    , "    let append x y = catchIO x (\\err -> y)"
     , ""
-    , -- §18.1.13 STM alternative: `empty` retries the transaction; `append`
-      -- is left-biased over retry. Lets `let?`/refutable forms desugar in STM.
-      "instance Monoid (STM a) ="
+    , -- §18.1.13 STM alternative: `empty` retries the transaction. Lets
+      -- `let?`/refutable forms desugar in STM. `Pointed`, not `Monoid`: STM
+      -- equality is not an h-prop, so the monoid laws cannot be asserted.
+      "instance Pointed (STM a) ="
     , "    let empty = retry"
-    , "    let append x y = x"
     , ""
     , -- RC4 / §28: the mandated `IO e` error-handling instances.  Their
       -- members ARE the §18.1.25 / §19.1 surface operations, delegating to
@@ -2037,35 +2052,41 @@ preludeSource =
     , ""
     , -- §28.2.2: Float/Double MUST NOT receive Semiring/Ring/FieldLike
       -- under raw-bit Eq. They keep only the operation traits above.
-      "instance Monoid String ="
+      --
+      -- The 'empty' element of each lawful 'Monoid' lives in its sibling
+      -- 'Pointed' instance (the 'Monoid' supertrait), separate from the 'append'
+      -- + laws below. 'String'/'List a' supply both halves here.
+      "instance Pointed String ="
     , "    let empty = \"\""
-    , "    let append x y = stringAppend x y"
     , ""
-    , "instance Monoid (List a) ="
+    , "instance Pointed (List a) ="
     , "    let empty = Nil"
-    , "    let append x y = listAppend x y"
     , ""
-    , -- LAWFUL: 'String' is a set ('instance IsSet String'), so its equational
-      -- laws are honestly h-props and discharge through the gated escape; the
-      -- §11.4 IsProp-under-Pi solver resolves the 'IsProp (forall xs. l = r)'
-      -- obligation by recovering the carrier 'String' and threading its 'IsSet'.
-      "instance LawfulMonoid String ="
-    , "    let appendAssoc = unsafeAssertProof \"LawfulMonoid String: append is associative\""
-    , "    let appendLeftIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a left identity\""
-    , "    let appendRightIdentity = unsafeAssertProof \"LawfulMonoid String: empty is a right identity\""
+    , -- LAWFUL Monoid: 'String' is a set ('instance IsSet String'), so its
+      -- equational laws are honestly h-props and discharge through the gated
+      -- 'unsafeAssertProof' escape; the §11.4 IsProp-under-Pi solver resolves the
+      -- 'IsProp (forall xs. l = r)' obligation by recovering the carrier 'String'
+      -- and threading its 'IsSet'. 'empty' comes from the 'Pointed String'
+      -- supertrait above.
+      "instance Monoid String ="
+    , "    let append x y = stringAppend x y"
+    , "    let appendAssoc = unsafeAssertProof \"Monoid String: append is associative\""
+    , "    let appendLeftIdentity = unsafeAssertProof \"Monoid String: empty is a left identity\""
+    , "    let appendRightIdentity = unsafeAssertProof \"Monoid String: empty is a right identity\""
     , ""
-    , -- LAWFUL: List's monoid laws are PROVEN by structural induction (the
+    , -- LAWFUL Monoid: List's monoid laws are PROVEN by structural induction (the
       -- lemmas 'listAppendRightIdentity'/'listAppendAssoc' are defined further
       -- below, AFTER 'cong'/'subst', whose values they consume — a forward
       -- reference to 'cong' leaves its value unelaborated and mis-resolves the
       -- proof's implicit equality endpoints), so this instance holds for EVERY
       -- element type 'a' and needs no 'IsSet' and no 'unsafeAssertProof'. The
       -- law params are IMPLICIT ('forall (x y z : a).'), bound here with the
-      -- '@'-implicit binder form; 'append'/'empty' reduce to the concrete
-      -- 'listAppend'/'Nil' (the supertrait dict threads through), so each alias
-      -- typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
+      -- '@'-implicit binder form; 'append' reduces to the concrete 'listAppend'
+      -- and 'empty' to 'Nil' (from the 'Pointed (List a)' supertrait), so each
+      -- proof typechecks. 'appendLeftIdentity' is definitional ('append empty x ≡
       -- listAppend Nil x ≡ x'), hence 'refl'.
-      "instance LawfulMonoid (List a) ="
+      "instance Monoid (List a) ="
+    , "    let append x y = listAppend x y"
     , "    let appendLeftIdentity @x = refl"
     , "    let appendRightIdentity @x = listAppendRightIdentity x"
     , "    let appendAssoc @x @y @z = listAppendAssoc x y z"
@@ -2315,7 +2336,7 @@ preludeSource =
     , -- The two non-definitional List monoid laws, PROVEN by structural
       -- induction on the spine — sound for EVERY element type 'a', needing no
       -- 'IsSet' and no 'unsafeAssertProof' (they discharge the §28.2.2
-      -- 'LawfulMonoid (List a)' laws above). Top-level recursive lemmas take
+      -- 'Monoid (List a)' laws above). Top-level recursive lemmas take
       -- the spine EXPLICITLY so the body may 'match' and recurse; the cons step
       -- lifts the inductive hypothesis through '(h ::)' via 'consCong' (its
       -- signature pins both list endpoints, so 'cong' resolves with no

@@ -9,16 +9,13 @@
 -- skip/take on an ordered pipeline, group by with Monoid aggregation,
 -- and an inner join.
 
-data SumW : Type =
-    SumW (total : Int)
-
-instance Monoid SumW =
-    let empty = SumW 0
-    let append a b =
-        match a
-        case SumW x ->
-            match b
-            case SumW y -> SumW (x + y)
+-- §28.2.2: `Monoid` is LAWFUL BY DEFAULT — every instance discharges
+-- appendAssoc/appendLeftIdentity/appendRightIdentity. The group-by aggregation
+-- therefore folds over a LAWFUL `Monoid`; here `Monoid (List a)` (laws proven
+-- by honest structural induction in the prelude). Each group's rows are
+-- collected (as singleton lists, concatenated by the List monoid) and summed
+-- per group, then the per-group sums are summed — same total the bespoke
+-- integer-sum monoid produced, but with a genuinely lawful carrier.
 
 sumList : List Int -> Int
 let sumList xs =
@@ -62,8 +59,8 @@ grouped : Int
 let grouped =
     sumList [
         for x in [1, 2, 3, 40]
-        group by (if x < 10 then 0 else 1) { total = x using SumW } into g
-        yield g.total
+        group by (if x < 10 then 0 else 1) { items = (x :: Nil) } into g
+        yield sumList g.items
     ]
 
 joined : Int
