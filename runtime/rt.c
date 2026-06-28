@@ -1566,9 +1566,20 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         f->cur = krt2_pure(kunit());
         krt2i_resume(rt, f);           /* re-enqueue behind other runnables  */
         return;
-      case OP_SLEEP:
-        krt2i_submit_sleep(rt, f, (uint64_t)kas_int(kctor_arg(cur, 0)));
+      case OP_SLEEP: {
+        /* §18.1.6: read the duration as a SIGNED int.  A nonpositive ns —
+         * notably `sleepUntil` of a PAST Instant, whose `instantDiff` is
+         * negative — must complete immediately.  Without this guard the
+         * `(uint64_t)` cast wrapped a negative value to a huge unsigned and
+         * the fiber parked ~forever (never woken). */
+        int64_t ns = kas_int(kctor_arg(cur, 0));
+        if (ns <= 0) {
+          if (!deliver(rt, f, kunit())) return;  /* sleepFor returns Unit */
+          break;
+        }
+        krt2i_submit_sleep(rt, f, (uint64_t)ns);
         return;                        /* parked; reactor resumes it          */
+      }
       case OP_NOW:
         if (!deliver(rt, f, kint((int64_t)uv_hrtime()))) return;
         break;
