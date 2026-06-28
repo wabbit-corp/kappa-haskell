@@ -775,8 +775,11 @@ builtinState =
       , prim "__setToList" (tyV (piI Q0 "a" tType (setT (CVar 0) ~> listT (CVar 1))))
       , prim "__arrayFromList" (tyV (piI Q0 "a" tType (listT (CVar 0) ~> arrayT (CVar 1))))
       , prim "__arrayToList" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> listT (CVar 1))))
-      , -- §28.2 total in-bounds index: traps at runtime if out of bounds
-        prim "__arrayIndexUnsafe" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> tInt ~> CVar 1)))
+      , -- §28.2 total in-bounds index: traps at runtime if out of bounds.
+        -- Codomain 'CVar 2' = the element type 'a': the two '~>' arrows (Array a,
+        -- Int) each introduce a binder, so 'a' (bound by 'piI') sits at index 2 in
+        -- the codomain — 'CVar 1' would wrongly name the Int-argument binder.
+        prim "__arrayIndexUnsafe" (tyV (piI Q0 "a" tType (arrayT (CVar 0) ~> tInt ~> CVar 2)))
       , -- §28.2 unsafeAssertProof escape hatch: an opaque inhabitant of
         -- the asserted proposition (erased; never inspected at runtime)
         prim "__unsafeAssertProof" (tyV (piI Q0 "p" tType (CVar 0)))
