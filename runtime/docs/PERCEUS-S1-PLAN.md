@@ -1,6 +1,7 @@
 # Perceus Stage S1 — Implementation Plan: Threading Ownership onto the Backend IR
 
-Status: **S0 + S1.0 LANDED** (`71e6639`, conformance 1916/0, parity 121/0, inert). S1.1 next.
+Status: **S1 COMPLETE** (`71e6639`→`b26ef7c`; conformance 1916/0, parity 121/0; the full ownership-analysis
+layer, fully observe-only, Boehm untouched). **S2 (dup/drop — the first *consuming* stage) is next.**
 Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc) — this is the detailed S1 blueprint.
 
 ## The framing that drives every decision
@@ -93,9 +94,9 @@ consumer lands.
 | **S1.0** | `OwnInfo` type + empty pass + `csOwnership`/`gsOwnership` plumbing | ✅ `71e6639` |
 | **S1.1** | last-use computation over Core (port the `Usage.hs` lattice to `Term`) | ✅ `32bb984` |
 | **S1.2** | `kappa dump-ownership` + the **declared-Q cross-check gate** (validatable deliverable) | ✅ folded into `32bb984` |
-| **S1.3** | populate `CCtor` annotations + `Repr.ctorLayoutOf` (observe-only) | (parallel to 1.1) |
-| **S1.4** | §3a whole-program refinement (call-graph over `csGlobals`; whole-program-static ⇒ no export gate, every single-use binder refined) | (after 1.1) |
-| **S1.5** | backend owned/borrowed accessor (telescope-derived, observe-only) | (parallel to 1.1) |
+| **S1.3** | populate `CCtor` annotations + `Repr.ctorLayoutOf` (evidence-field-correct) | ✅ `e63c768`/`bd2f5f5` |
+| **S1.4** | §3a whole-program refinement (whole-program-static ⇒ no export gate; every single-use binder refined; dynamic-link gate = TODO) | ✅ `e63c768`→`b26ef7c` |
+| **S1.5** | backend owned/borrowed accessor (telescope-derived, observe-only) | ✅ `e63c768` |
 
 Ordering: S1.0 → S1.1 → S1.2 gates everything (the audit trail must exist + be validated before S2 trusts
 it). S1.3/S1.5 are telescope-derived, independent of S1.1. S1.4 depends on S1.1.
