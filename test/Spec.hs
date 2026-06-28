@@ -13,7 +13,7 @@ import Control.Monad (unless)
 import Kappa.Backend.Repr (Rep (..), scalarRep)
 import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
 import Kappa.Builtins (prelDouble, prelInt, prelUnit)
-import Kappa.Check (CtorInfo (..), DataInfo (..))
+import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
 import Kappa.Core
   ( GName (..)
   , Icit (..)
@@ -24,6 +24,8 @@ import Kappa.Core
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
+import Kappa.Ownership (crossCheckBodies)
+import Kappa.Pipeline (CompiledUnit (..), compileSourceWithPrelude)
 import Kappa.Source (ModuleName (..))
 import Kappa.TestHarness
   ( Outcome (..)
@@ -54,7 +56,8 @@ main = do
   jsonOk <- jsonEncoderSound
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
-  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
+  ownOk <- ownershipCrossCheckClean
+  let regOk = regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk && ownOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -101,6 +104,65 @@ reprScalarIdentity = do
           ++ " (a user type spelling 'Double' must NOT unbox)"
       )
   pure ok
+
+-- | Perceus RC Stage S1.2 gate: the ownership last-use analysis
+-- ("Kappa.Ownership") must be consistent with the declared quantities already
+-- on the Core binder nodes, across the whole WELL-TYPED corpus.
+--
+-- 'crossCheckBodies' asserts, for every binder: a linear (@1@) binder has
+-- EXACTLY ONE 'LastUse' and no 'NonLast'; a borrowed (@&@) binder has no
+-- consuming use. A non-empty result means the last-use analysis is WRONG (it
+-- drifted from the quantities the checker validated), and this gate fails the
+-- build — the analysis must be fixed, not the check weakened.
+--
+-- The corpus is the full implicit prelude + std library (hundreds of well-typed
+-- globals exercising linear @let@s, borrowed params, and match arms) plus a few
+-- crafted fixtures (a linear let, a borrowed param, a one-arm match). It is run
+-- here, over WELL-TYPED code only, rather than as a crash inside
+-- 'annotateOwnership' on every compilation — the conformance tree intentionally
+-- contains quantity-violating programs whose Core legitimately breaks "linear ⇒
+-- one last use", which is not an analysis bug.
+ownershipCrossCheckClean :: IO Bool
+ownershipCrossCheckClean = do
+  let fixtures =
+        [ -- a linear let: the binder must be consumed exactly once
+          T.unlines
+            [ "module main"
+            , "consume : (1 x : Int) -> Int"
+            , "let consume x = x"
+            , "linUse : Int -> Int"
+            , "let linUse n ="
+            , "    let 1 y = n"
+            , "    consume y"
+            ]
+        , -- a borrowed parameter: its uses are non-consuming
+          T.unlines
+            [ "module main"
+            , "peek : (& x : Int) -> Int"
+            , "let peek x = addInt x x"
+            ]
+        , -- a binder used in one match arm only (dropped on the other)
+          T.unlines
+            [ "module main"
+            , "pick : Option Int -> Int"
+            , "let pick o ="
+            , "    match o"
+            , "    case Some v -> v"
+            , "    case None -> 0"
+            ]
+        ]
+      -- compile each fixture WITH the implicit prelude+std, so the cross-check
+      -- sees the whole well-typed corpus plus the fixture's own definitions.
+      check src =
+        let cu = compileSourceWithPrelude "fixture.kp" src
+            st = cuState cu
+            ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+         in crossCheckBodies ctx (csCoreBodies st) (csOwnership st)
+      mismatches = concatMap check fixtures
+  unless (null mismatches) $ do
+    putStrLn ("ownershipCrossCheckClean FAILED: " <> show (length mismatches) <> " mismatch(es)")
+    mapM_ (putStrLn . ("  " <>)) (take 20 mismatches)
+  pure (null mismatches)
 
 -- | Appendix-T harness-faithfulness mirrors (gaps G32–G35). Each fixed
 -- requirement is pinned here as an expected 'Outcome' over a crafted

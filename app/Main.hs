@@ -24,8 +24,9 @@ import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
 import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), defaultUnsafeConfig)
 import Kappa.Core (GName (..))
+import Kappa.Ownership (crossCheckBodies, emptyOwnInfo, renderOwnInfo)
 import Kappa.Diagnostic
-import Kappa.Eval (Globals (..))
+import Kappa.Eval (EvalCtx (..), Globals (..))
 import Kappa.Explain (lookupCode, lookupFamily, renderEntry, renderFamily)
 import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
@@ -58,6 +59,8 @@ main = do
     ["verify-kbackendir", "--no-implicit-prelude", path] -> cmdVerify noImplicitPreludeConfig Human path
     ["verify-kbackendir", "--json", "--no-implicit-prelude", path] -> cmdVerify noImplicitPreludeConfig Json path
     ["verify-kbackendir", "--no-implicit-prelude", "--json", path] -> cmdVerify noImplicitPreludeConfig Json path
+    ["dump-ownership", path] -> cmdDumpOwnership defaultUnsafeConfig path
+    ["dump-ownership", "--no-implicit-prelude", path] -> cmdDumpOwnership noImplicitPreludeConfig path
     ["explain", code] -> cmdExplain (T.pack code)
     ["audit", path] -> cmdAudit path
     ("build" : rest) -> cmdBuild rest
@@ -65,6 +68,7 @@ main = do
       hPutStrLn stderr $
         "usage: kappa (check|run [--json]|test [--suite]|audit) PATH"
           <> " | kappa (check|run|verify-kbackendir) [--json] [--no-implicit-prelude] PATH"
+          <> " | kappa dump-ownership [--no-implicit-prelude] PATH"
           <> " | kappa build [--emit-c] [--no-implicit-prelude] [-o OUT] [--cc DRIVER] FILE"
           <> " | kappa build --manifest [PATH|DIR] [--check] [--provenance] [--locked] [--update] [--no-implicit-prelude] [--target NAME] [-o OUT] [--emit-c] [--cc DRIVER]"
           <> " | kappa explain CODE-OR-FAMILY"
@@ -126,6 +130,44 @@ cmdVerify cfg fmt path = do
   let verifyDiags = verifyUnit (verifyInputs (cuState cu))
   emitDiags fmt verifyDiags
   if any isError verifyDiags then exitFailure else exitSuccess
+
+-- | Perceus RC Stage S1.2: the user-invokable ownership side-table dump
+-- (mirrors 'cmdVerify' / @verify-kbackendir@). It compiles the file through the
+-- ordinary pipeline (so it sees the same elaborated, zonked Core the backend
+-- lowers, with @csOwnership@ populated by 'annotateOwnership'), then renders the
+-- 'OwnInfo' for each global defined in the file's own module(s): per binder its
+-- @(declQ, refined, borrowed, droppable)@ and per 'CVar' occurrence its
+-- @LastUse|NonLast|Borrowed@ classification.
+--
+-- It also runs the S1.2 declared-quantity cross-check over the dumped globals
+-- and prints any mismatch (a wrong last-use analysis), so the dump is
+-- self-validating. Observe-only: it builds nothing and changes no codegen.
+cmdDumpOwnership :: UnsafeConfig -> FilePath -> IO ()
+cmdDumpOwnership cfg path = do
+  (src, preDiags) <- loadSourceFile path
+  let cu0 = compileFilesWithConfig cfg False "." [(path, src)]
+      cu = cu0 {cuDiags = preDiags ++ cuDiags cu0}
+  emitDiags Human (cuDiags cu)
+  when (hasErrors (cuDiags cu)) exitFailure
+  let st = cuState cu
+      -- focus on globals defined in the file's own module (the user code),
+      -- not the implicitly-imported prelude/std library.
+      userMod = cuModule cu
+      own = csOwnership st
+      bodies = csCoreBodies st
+      userGs = [g | g@(GName m _) <- Map.keys own, m == userMod]
+  forM_ userGs $ \g ->
+    TIO.putStr (renderOwnInfo g (Map.findWithDefault emptyOwnInfo g own))
+  -- self-check: validate the dumped globals against their declared quantities.
+  let userBodies = Map.filterWithKey (\(GName m _) _ -> m == userMod) bodies
+      ownCtx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      mismatches = crossCheckBodies ownCtx userBodies own
+  if null mismatches
+    then putStrLn "-- cross-check: OK"
+    else do
+      putStrLn ("-- cross-check: " <> show (length mismatches) <> " MISMATCH(es)")
+      forM_ mismatches (putStrLn . ("--   " <>))
+      exitFailure
 
 cmdRun :: UnsafeConfig -> DiagFormat -> FilePath -> IO ()
 cmdRun cfg fmt path = do
