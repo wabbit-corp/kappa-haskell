@@ -760,6 +760,14 @@ builtinState =
         -- prelude fragment below (ordinary Kappa over Int). sleepUntil is derived.
         prim "__nowNanos" (tyV (io (tcon "Void") tInt))
       , prim "__sleepForNanos" (tyV (tInt ~> io (tcon "Void") tUnit))
+      , -- §18.1.10 fiber identity: the runtime delivers the fiber's stable
+        -- integer id; the FiberId wrapper (MkFiberId) is applied in the
+        -- std.prelude fragment below, exactly as Instant wraps __nowNanos.
+        -- __currentFiberId : UIO Integer. __fiberId : forall e a. Fiber e a -> UIO Integer.
+        prim "__currentFiberId" (tyV (io (tcon "Void") tInt))
+      , prim "__fiberId"
+          (tyV (piI Q0 "e" tType (piI Q0 "a" tType
+            (CApp Expl (CApp Expl (tcon "Fiber") (CVar 1)) (CVar 0) ~> io (tcon "Void") tInt))))
       , -- §20.2 range enumeration: '__rangeEnum lo hi exclusive' lists the
         -- elements of a range in ascending order (empty when lo > hi).
         -- Reduces for the §28.2.3 Rangeable element types whose runtime
@@ -1667,6 +1675,15 @@ preludeSource =
     , -- §18.1.4 forkDaemon: an unattached child fiber.
       "forkDaemon : forall (e : Type) (a : Type). (IO e a captures ()) -> UIO (Fiber e a)"
     , "let forkDaemon action = __forkDaemon action"
+    , ""
+    , -- §18.1.10 fiber identity: every created fiber has a unique FiberId for one
+      -- program execution. `currentFiberId` reports the running fiber's id;
+      -- `fiberId fib` reports a given fiber's. The runtime delivers a raw integer;
+      -- the MkFiberId wrapper is applied here (cf. nowMonotonic over __nowNanos).
+      "currentFiberId : UIO FiberId"
+    , "let currentFiberId = ioBind __currentFiberId (\\n -> ioPure (MkFiberId n))"
+    , "fiberId : forall (e : Type) (a : Type). Fiber e a -> UIO FiberId"
+    , "let fiberId fib = ioBind (__fiberId fib) (\\n -> ioPure (MkFiberId n))"
     , ""
     , -- §18.1.4 join: await a fiber and project its outcome into the caller —
       -- success returns the value, typed failure re-fails, and any non-typed

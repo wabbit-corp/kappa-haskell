@@ -120,6 +120,10 @@ KValue *kpf_fork_daemon(KValue **a)        { return krt2_fork_daemon(a[0]); }
 KValue *kpf_await(KValue **a)              { return krt2_await(a[0]); }
 KValue *kpf_cede(KValue **a)               { (void)a; return krt2_cede(); }
 KValue *kpf_sleep_for(KValue **a)          { return krt2_sleep_for(a[0]); }
+/* §18.1.10 fiber identity: build the OP_CURRENT_FIBER_ID / OP_FIBER_ID nodes;
+ * the CK-machine delivers the running/target fiber's integer id (rt.c case). */
+KValue *kpf_current_fiber_id(KValue **a)   { (void)a; return krt2_current_fiber_id(); }
+KValue *kpf_fiber_id(KValue **a)           { return krt2_fiber_id(a[0]); }
 KValue *kpf_new_promise(KValue **a)        { (void)a; return krt2_new_promise(); }
 KValue *kpf_complete_promise(KValue **a)   { return krt2_complete_promise(a[0], a[1]); }
 KValue *kpf_await_promise_exit(KValue **a) { return krt2_await_promise_exit(a[0]); }

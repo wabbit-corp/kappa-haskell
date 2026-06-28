@@ -439,6 +439,7 @@ basePrims =
     , "newTVar", "readTVar", "writeTVar", "atomically", "retry", "stmBind", "stmPure"
       -- §18.1.4/.6/.9 concurrency node builders (CPS do-kernel)
     , "__forkRun", "__forkDaemon", "__awaitFiber", "cede", "__sleepForNanos"
+    , "__currentFiberId", "__fiberId" -- §18.1.10 fiber identity; kpf_current_fiber_id/kpf_fiber_id shims
     , "newPromise", "completePromise", "awaitPromiseExit"
     , "pollPromise", "isDonePromise" -- §18.11 non-blocking peek; kpf_poll_promise/kpf_is_done_promise shims
       -- §18.1.8 structured scopes + monitors (CPS do-kernel, Stage 3)
@@ -2107,6 +2108,10 @@ primEntries = Map.fromList
   , ("__awaitFiber", PrimEntry "kpf_await" 1 False)
   , ("cede", PrimEntry "kpf_cede" 0 False)
   , ("__sleepForNanos", PrimEntry "kpf_sleep_for" 1 False)
+  -- §18.1.10 fiber identity: OP_CURRENT_FIBER_ID / OP_FIBER_ID node builders
+  -- (need the running fiber's state, so CK-machine driven — see suspendingNames).
+  , ("__currentFiberId", PrimEntry "kpf_current_fiber_id" 0 False)
+  , ("__fiberId", PrimEntry "kpf_fiber_id" 1 False)
   , ("newPromise", PrimEntry "kpf_new_promise" 0 False)
   , ("completePromise", PrimEntry "kpf_complete_promise" 2 False)
   , ("awaitPromiseExit", PrimEntry "kpf_await_promise_exit" 1 False)
@@ -3284,6 +3289,11 @@ suspendingNames =
       -- CPS-lowered to run on the CK-machine.
     , "newFiberRef", "getFiberRef", "setFiberRef", "modifyFiberRef", "locallyFiberRef"
     , "pollPromise", "isDonePromise"
+      -- §18.1.10 fiber identity: OP_CURRENT_FIBER_ID/OP_FIBER_ID read the running
+      -- fiber's state (f->id), which the synchronous krun_io bridge has no handle
+      -- to — so a block using them is CPS-lowered to run on the CK-machine.
+    , "currentFiberId", "fiberId" -- surface (std.prelude)
+    , "__currentFiberId", "__fiberId" -- prims (__prim)
     ]
 
 -- | Is g one of the suspending / CK-machine primitive ops, by module + name?

@@ -1,0 +1,46 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "main-has-id true\ndistinct true\nagree true\n"
+
+-- §18.1.10 fiber identity: `currentFiberId` reports the running fiber's id and
+-- `fiberId fib` reports a given fiber's. The test asserts the spec PROPERTIES
+-- (not concrete numbering, which the interpreter and native runtime need not
+-- share): the main fiber has an id, two forked fibers get DISTINCT ids, and the
+-- id observed from inside a fiber AGREES with `fiberId` of its handle.
+module main
+
+-- project a FiberId back to its raw Integer for comparison/printing
+let fidInt f =
+    match f
+      case MkFiberId n -> n
+
+let showBool b = if b then "true" else "false"
+
+-- a worker that reports its OWN current fiber id as the result Integer
+selfId : UIO Integer
+let selfId = do
+    me <- currentFiberId
+    pure (fidInt me)
+
+main : UIO Unit
+let main = do
+    -- the main fiber has an id (every fiber does; ids start at 1, so > 0)
+    self <- currentFiberId
+    printlnString (stringAppend "main-has-id " (showBool (ltInt 0 (fidInt self))))
+    -- two forked fibers must get distinct ids
+    fa <- fork selfId
+    fb <- fork selfId
+    fida <- fiberId fa
+    fidb <- fiberId fb
+    let ida = fidInt fida
+    let idb = fidInt fidb
+    printlnString (stringAppend "distinct " (showBool (not (eqInt ida idb))))
+    -- the id seen from INSIDE a fiber agrees with fiberId of its handle
+    exa <- await fa
+    match exa
+      case Success innerA ->
+        printlnString (stringAppend "agree " (showBool (eqInt innerA ida)))
+      case Failure _ -> printlnString "agree false"
+    -- drain the second fiber so the program ends cleanly
+    _ <- await fb
+    pure ()
