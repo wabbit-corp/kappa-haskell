@@ -75,13 +75,20 @@ No `Term` arity change.
   RC-to-zero). S1 records per-binder whether it carries `K_FGN`/resource state (via `Repr` head type).
 - Placement precedent: the `gsSuspenders` threading (`C.hs:110/474`, consulted at `:935/983/2497`).
 
+**S2 consumption discipline (from the S1.1 R1 review).** The `OwnInfo` keys are structural child-position
+paths. S2 must consume them by **walking the lowered term and looking up each node's path** (visit node →
+compute its path → query the table), NOT by iterating the table. A stale key naming an erased subterm
+resolves to a `CSort 0` childless leaf (safe — it addresses nothing, never a wrong binder), but
+walk-and-lookup never queries a deleted key at all. Pin this with an explicit assertion when the S2 dup/drop
+consumer lands.
+
 ## (e) Sub-stages, ordering, risks
 
 | stage | what | status |
 |---|---|---|
 | **S1.0** | `OwnInfo` type + empty pass + `csOwnership`/`gsOwnership` plumbing | ✅ `71e6639` |
-| **S1.1** | last-use computation over Core (port the `Usage.hs` lattice to `Term`) | next |
-| **S1.2** | `kappa dump-ownership` + cross-check vs `Usage.hs` (the validatable deliverable) | |
+| **S1.1** | last-use computation over Core (port the `Usage.hs` lattice to `Term`) | ✅ `32bb984` |
+| **S1.2** | `kappa dump-ownership` + the **declared-Q cross-check gate** (validatable deliverable) | ✅ folded into `32bb984` |
 | **S1.3** | populate `CCtor` annotations + `Repr.ctorLayoutOf` (observe-only) | (parallel to 1.1) |
 | **S1.4** | §3a whole-program refinement (call-graph over `csGlobals`, gated on `csModuleExports`) | (after 1.1) |
 | **S1.5** | backend owned/borrowed accessor (telescope-derived, observe-only) | (parallel to 1.1) |

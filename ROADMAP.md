@@ -133,8 +133,10 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      free `KValue` header hole (offset 4, `sizeof` unchanged at 48, init=1 at heap alloc, immediates skip).
    - **S1 — thread ownership onto KBackendIR** — plan [PERCEUS-S1-PLAN.md](runtime/docs/PERCEUS-S1-PLAN.md).
      A side-table (`Ownership.hs`), NOT new `Term` fields; owned/borrowed is already in `CPi`, only last-use
-     is erased. **S1.0 plumbing ✅** (`71e6639`, inert); **S1.1** (last-use over Core, the R1 de-Bruijn risk)
-     next → S1.2 dump+cross-check / S1.3 ctor layout / S1.4 §3a refinement / S1.5 backend accessor.
+     is erased. **S1.0 + S1.1 + S1.2 ✅** (`71e6639`, `32bb984` — last-use over Core + the declared-Q
+     cross-check gate over 665 globals + `dump-ownership`, all inert/parity-identical); **S1.3** (ctor
+     layout) / **S1.4** (§3a refinement) / **S1.5** (backend accessor) remain → then **S2** (dup/drop, the
+     first stage that *consumes* the metadata and changes codegen).
    - **S2 — dup/drop, Boehm differential backstop.** Perceus dup/drop on the strict core; Boehm still frees
      while a debug mode asserts `rc` counts against the collector (de-risks the use-after-free failure mode).
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
