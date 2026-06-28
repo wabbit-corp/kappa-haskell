@@ -193,11 +193,12 @@ struct KEnv {
  *                    immediate is value-copied and never reference-counted.  See
  *                    docs/TAGGING-RESEARCH.md.
  *
- * Stage 0 installs ONLY this discriminator API + the GC/alignment contract; NO
- * value is an immediate yet (every KValue is still a b000 pointer), so kis_imm()
- * is always false today and kderef()'s debug assert pins that invariant across
- * the runtime ahead of the Stage-1 deref audit (the 299 raw ->tag/->as.* sites
- * are routed through kderef() then). */
+ * Stage 0 installed this discriminator API + the GC/alignment contract; Stage 1
+ * then ACTIVATED tagging: small Int (b001), every nullary ctor (b010), and packed
+ * 1/2-field ctors (b011) are now PRODUCED as immediates (see value.c: kint, kbool,
+ * kunit, the kctor builder), so kis_imm() is true for them.  Every ->tag/->as.*
+ * deref routes through kderef(), whose debug assert traps any raw deref of a
+ * tagged word (an odd word would segfault/misread otherwise). */
 _Static_assert(_Alignof(max_align_t) >= 8,
                "UNBOXING: immediate tagging needs >= 8-byte heap alignment (low 3 bits free)");
 
@@ -207,8 +208,10 @@ _Static_assert(_Alignof(max_align_t) >= 8,
 #define KIMM_CTOR     ((uintptr_t)0x2)   /* b010: immediate ctor */
 #define KIMM_PACKED   ((uintptr_t)0x3)   /* b011: packed single-field ctor */
 
-/* Is this word a tagged immediate (not a heap pointer)?  Stage 1 makes it true
- * for small Int in the 61-bit range; every other value is still a b000 pointer. */
+/* Is this word a tagged immediate (not a heap pointer)?  True for a small Int
+ * (b001, 61-bit range), a nullary ctor (b010), and a packed 1/2-field ctor
+ * (b011); n-ary ctors, out-of-range Int, Double, String, closures, refs etc.
+ * stay b000 heap pointers. */
 static inline int kis_imm(const KValue *v) {
   return ((uintptr_t)v & KIMM_TAG_MASK) != KIMM_PTR;
 }
