@@ -1,0 +1,18 @@
+module main
+
+-- §7 / §13 negative control for 'eq-match-goodk-with-set-accepted.kp'.
+--
+-- The acceptance of 'goodKWithSet' must come from the RELEVANT path-set
+-- evidence 'IsSet ((=) x x)', not from 'unsafeAssertProof' rubber-stamping any
+-- goal.  Here the only set evidence in scope is for an unrelated carrier 'b';
+-- the §11.4 IsProp-under-Pi solver's equality base case uses ONLY the equands'
+-- own homogeneous carrier ('(=) x x'), refuses the foreign witness, and the
+-- 'IsProp ((=) p refl)' obligation stays UNSOLVED (cf.
+-- 'equality/isprop-eq-foreign-carrier-rigid-rejected.kp').
+
+ctrl : forall (@0 a : Type) (@0 b : Type) (@0 x : a) (@_ : IsSet b). (p : (=) x x) -> (=) p refl
+let ctrl p = unsafeAssertProof "foreign set evidence must not license K"
+
+--! mode check
+--! allow_unsafe_assert_proof
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT

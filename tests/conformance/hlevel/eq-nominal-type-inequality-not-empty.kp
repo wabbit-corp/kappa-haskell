@@ -1,0 +1,33 @@
+module main
+
+-- §6 / §13 soundness tripwire — nominal type inequality must NOT imply Empty.
+--
+-- The doc's illustrative '(=) Unit Bool' is written here as '(=) Apple Pear'
+-- because 'Unit' is also a nullary CONSTRUCTOR, so the bare token 'Unit' in a
+-- value position elaborates as the constructor rather than the type; 'Apple'
+-- and 'Pear' are unambiguous distinct nominal type heads.
+--
+-- An equality of two TYPES whose normalized heads are different nominal
+-- declarations must be 'Unknown', NOT 'Empty': Spec §30.2.7 explicitly refuses
+-- to conclude two inhabitants of 'Type' are unequal merely because their heads
+-- differ, preserving room for future univalence / cubical paths.  So the 'refl'
+-- arm is NOT contradicted (the no-confusion rule is for distinct VALUE
+-- constructors of one type, not distinct type heads), the arm is reachable, and
+-- '-> impossible' is correctly REJECTED.
+--
+-- If this ever began to PASS, the compiler would be deciding type disequality
+-- by head inequality — a univalence-hostile soundness regression.
+
+data Apple : Type =
+    MkApple
+
+data Pear : Type =
+    MkPear
+
+typeNeqImpossible : (=) Apple Pear -> Void
+let typeNeqImpossible p =
+    match p
+    case refl -> impossible
+
+--! mode check
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE

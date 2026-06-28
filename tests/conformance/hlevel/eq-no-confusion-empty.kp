@@ -1,0 +1,30 @@
+module main
+
+-- §6 equality inhabitance — no-confusion gives 'Empty'.
+--
+-- An equality between two DISTINCT visible constructors of the same type is
+-- uninhabited (Spec §30.2.7 no-confusion; §13 "equality emptiness via supported
+-- no-confusion: distinct visible constructors, primitive distinct literals").
+--
+-- The source-level manifestation: the 'refl : (=) a x x' arm, refined against
+-- the demanded ground index ('(=) Bool False True' / '(=) Two TwoA TwoB'),
+-- cannot unify its endpoints, so its constructor fiber is Empty (§17.1.2) and a
+-- '-> impossible' body is licensed (§17.1.4).  Both an ADT and a primitive
+-- 'Bool' literal pair are exercised.
+
+data Two : Type =
+    TwoA
+    TwoB
+
+twoNoConf : (=) TwoA TwoB -> Void
+let twoNoConf p =
+    match p
+    case refl -> impossible
+
+boolNoConf : (=) False True -> Void
+let boolNoConf p =
+    match p
+    case refl -> impossible
+
+--! mode check
+--! assertNoErrors
