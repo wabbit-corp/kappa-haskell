@@ -461,6 +461,58 @@ rcPatSlotDroppableHere k = do
 rcEmitDrop :: Text -> Gen ()
 rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
 
+-- | Perceus RC S2.3a (§a) — the MATCH-DESTRUCTURE cell-drop DECISION.
+--
+-- A @match@'s arms read their scrutinee's fields out via BORROWING projections
+-- (@kctor_arg@\/@kproj@\/@krec_at@\/@kvariant_payload@ all return the field
+-- without an incref), so once the bound fields are dup'd-out the scrutinee CELL
+-- itself is leaked unless the match drops it. This decides, from the SCRUTINEE
+-- shape and (for a 'CVar' scrutinee) its 'UseKind' at the 'matchScrutPos' seam,
+-- whether the match owns a reference to the cell that it must discharge with a
+-- @kdrop(sv)@:
+--
+--   * a __'CVar'__ scrutinee — look up its 'UseKind' at @matchScrutPos : gsPath@
+--     (the exact key "Kappa.Ownership"'s walk records for the scrutinee
+--     occurrence). Drop for 'LastUse' (the binder's only owning reference moved
+--     INTO the match — the match now owns it) and for 'NonLast' (the occurrence
+--     was already @kdup@'d at its 'CVar' site, so the match consumes the freshly
+--     incremented reference it received). NEVER drop for 'Borrowed' — the caller
+--     still owns the value (§1\/§3 borrow invariant), and a @kdrop@ here would be
+--     the decrement-below-floor the underflow assert exists to catch.
+--   * a __'CCtor'__\/__'CApp'__ scrutinee — a FRESH owning value (@mkPair a b@,
+--     a call result): rc==1, no other owner, dies at the match ⇒ ALWAYS drop.
+--   * any __other__ shape (a 'CProj'\/'CForceE'\/… whose head is a borrowing
+--     projection returning a non-owned reference, or an unresolvable 'CVar') —
+--     do NOT drop: dropping a borrowed-out reference would underflow. A soft leak
+--     Boehm reclaims; tighten later once the projection-result ownership flag
+--     (S2.3b §c) lands.
+--
+-- Inert under the OFF baseline and inside a 'CDo' region (§1 carve-out — a
+-- K_FGN\/resource scrutinee reachable from a live ExitStack must never be
+-- cell-dropped; the ExitStack drain owns its lifetime), so codegen is
+-- byte-identical there.
+rcScrutDropDecision :: Term -> Gen Bool
+rcScrutDropDecision scrut = do
+  enabled <- gets gsRcEnabled
+  inErased <- gets gsRcInErased
+  if not enabled || inErased
+    then pure False
+    else case scrut of
+      CVar _ -> do
+        -- the scrutinee occurrence sits at 'matchScrutPos' under this match node;
+        -- look up exactly that 'UseSite' (a non-'Borrowed', resolved verdict drops).
+        mk <- withChild P.matchScrutPos rcUseKindHere
+        pure $ case mk of
+          Just LastUse -> True
+          Just NonLast -> True
+          _ -> False
+      -- a fresh owning allocation / call result: rc==1, dies at the match.
+      CCtor {} -> pure True
+      CApp {} -> pure True
+      -- a borrowing projection (kproj/kctor_arg/…) or any other non-owning shape:
+      -- the value is borrowed from a parent, never owned here — do not drop.
+      _ -> pure False
+
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
 -- head: read the callee's owned\/borrowed\/shared parameter convention from its
 -- declared type ('Repr.argConvSelect', the S1.5-validated accessor). In S2 this is
@@ -3703,6 +3755,12 @@ consumeIf sink c t e = do
 
 consumeMatch :: Sink -> Term -> [CaseAlt] -> Gen ()
 consumeMatch sink scrut alts = do
+  -- Perceus RC S2.3a (§a): decide whether the match owns a reference to the
+  -- scrutinee CELL that it must discharge with a per-arm @kdrop(sv)@. Computed
+  -- BEFORE compiling the scrutinee (so 'rcUseKindHere' for a 'CVar' scrutinee
+  -- reads the same 'matchScrutPos' key the analysis recorded, and so the verdict
+  -- is fixed once for every arm). Inert under OFF / inside a 'CDo' (§1 carve-out).
+  dropCell <- rcScrutDropDecision scrut
   -- Perceus RC S2.1: the scrutinee sits at 'matchScrutPos' under the CMatch node.
   se <- withChild P.matchScrutPos (compile scrut)
   sv <- freshN "scrut_"
@@ -3729,7 +3787,7 @@ consumeMatch sink scrut alts = do
   withChild P.matchArmsPos $
     forM_ (zip [0 ..] alts) $ \(ai, alt) ->
       withChild (P.matchArmPos ai) $
-        forM_ (expandTopOr alt) $ \subAlt -> consumeAlt sink sv env done subAlt
+        forM_ (expandTopOr alt) $ \subAlt -> consumeAlt sink sv dropCell env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
@@ -3771,17 +3829,17 @@ distributePat = \case
   CPAs n p -> [CPAs n q | q <- distributePat p]
   p -> [p] -- CPWild / CPVar / CPLit / CPInjectRest: no nested or
 
-consumeAlt :: Sink -> Text -> Text -> Text -> CaseAlt -> Gen ()
-consumeAlt sink sv env done (CaseAlt pat mguard body) = do
+consumeAlt :: Sink -> Text -> Bool -> Text -> Text -> CaseAlt -> Gen ()
+consumeAlt sink sv dropCell env done (CaseAlt pat mguard body) = do
   emit ("if (!" <> done <> ") {")
   -- pattern test + bindings produced as a nested block
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> consumeAltBody sink sv env done pat mguard body
+      Nothing -> consumeAltBody sink sv dropCell env done pat mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        consumeAltBody sink sv env done pat mguard body
+        consumeAltBody sink sv dropCell env done pat mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
@@ -3790,10 +3848,21 @@ consumeAlt sink sv env done (CaseAlt pat mguard body) = do
 -- match consume the body into the sink (and mark @done@; for a 'SinkTail'
 -- body the @done@ store is dead — the body has returned/looped — but
 -- harmless).
-consumeAltBody :: Sink -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
-consumeAltBody sink sv env done pat mguard body = do
+consumeAltBody :: Sink -> Text -> Bool -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
+consumeAltBody sink sv dropCell env done pat mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
-  env' <- bindPatScrut sv env pat
+  -- Perceus RC S2.3a (§a): the cell-drop fires for THIS arm only when the match
+  -- owns the scrutinee cell ('dropCell') AND control falls through to a continuing
+  -- result var ('SinkVar') — a returning 'SinkTail'/'SinkBounce' arm skips it (a
+  -- soft leak Boehm reclaims; the trailing drop would be dead after the return).
+  -- The kept-field DUP and the cell @kdrop@ are an ATOMIC PAIR: a field projected
+  -- via a borrowing 'kctor_arg'/'kproj' (no incref) is dup'd so it survives the
+  -- following @kdrop(sv)@ (which on a unique cell recursively frees the fields).
+  -- So the field-dup must fire IFF the cell-drop does — dupping a kept field on an
+  -- arm that then skips the cell-drop would be an UNPAIRED dup (a permanent rc
+  -- inflation / leak, never balanced). Hence both key on the single 'dropHere'.
+  let dropHere = dropCell && isSinkVar sink
+  env' <- bindPatScrutDup dropHere sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
   -- binders HERE (gsPath = the arm path, so 'patSlotPos k' keys each slot), against
   -- the bound flat C locals (R-flat). The slot's de Bruijn index @k@ is its
@@ -3810,13 +3879,17 @@ consumeAltBody sink sv env done pat mguard body = do
   case mguard of
     Nothing -> do
       withEnv env' (withChild P.altBodyPos (consume sink body))
-      when (isSinkVar sink) (mapM_ rcEmitDrop patDrops)
+      when (isSinkVar sink) $ do
+        mapM_ rcEmitDrop patDrops
+        when dropHere (rcEmitDrop sv)
       emit (done <> " = 1;")
     Just gd -> do
       ge <- withEnv env' (withChild P.altGuardPos (compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
       withEnv env' (withChild P.altBodyPos (consume sink body))
-      when (isSinkVar sink) (mapM_ rcEmitDrop patDrops)
+      when (isSinkVar sink) $ do
+        mapM_ rcEmitDrop patDrops
+        when dropHere (rcEmitDrop sv)
       emit ("  " <> done <> " = 1;")
       emit "}"
 
@@ -5350,20 +5423,35 @@ registerDefer (arr, cnt) te = emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
 -- | Like 'bindPat' but threads the concrete scrutinee C-expression
 -- through the binding projections.
 bindPatScrut :: Text -> Text -> CorePat -> Gen Text
-bindPatScrut sv env pat = do
+bindPatScrut = bindPatScrutDup False
+
+-- | Perceus RC S2.3a (§a): 'bindPatScrut' with an optional kept-field @kdup@.
+-- When @dupFields@ is 'True' (the arm both owns the scrutinee cell and will drop
+-- it at its 'SinkVar' seam — the 'dropHere' in 'consumeAltBody'), each bound field
+-- projection @kctor_arg(sv,…)@ is wrapped in @kdup(…)@ so the surviving field
+-- keeps a reference of its own before the following @kdrop(sv)@ that — on a unique
+-- cell — would recursively free it. @kdup@ skips immediates, so an immediate field
+-- is a runtime no-op. With @dupFields@ 'False' this is exactly the old
+-- 'bindPatScrut' (byte-identical), so every non-match-destructure caller (the
+-- do-kernel\/closure-arg\/let-pattern paths) and every returning-arm match is
+-- unchanged.
+bindPatScrutDup :: Bool -> Text -> Text -> CorePat -> Gen Text
+bindPatScrutDup dupFields sv env pat = do
   lvals <- gets gsParamLvals
+  let wrap valExpr = if dupFields then "kdup(" <> valExpr <> ")" else valExpr
   if null lvals
     then foldM push env (patBindings sv pat) -- boxed: kpush each onto the KEnv
     else do
       -- R2.3-rest FLAT worker: bind each pattern variable to a C local via
       -- 'bindFlatLocal' (the LAST binding becomes de Bruijn index 0, matching
       -- the kpush order); the scope is restored by the enclosing 'captured'.
-      forM_ (patBindings sv pat) (bindFlatLocal "pat_")
+      forM_ (patBindings sv pat) (bindFlatLocal "pat_" . wrap)
       gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
     push e valExpr = do
       n <- freshN "env_"
-      emit ("KEnv *" <> n <> " = kpush(" <> valExpr <> ", " <> e <> ");")
+      let v = if dupFields then "kdup(" <> valExpr <> ")" else valExpr
+      emit ("KEnv *" <> n <> " = kpush(" <> v <> ", " <> e <> ");")
       pure n
 
 -- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
