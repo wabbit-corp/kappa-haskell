@@ -61,10 +61,14 @@ import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
+import Kappa.CoreOps (patBindersC)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Ownership
-  ( OwnInfo (..)
+  ( BinderId (..)
+  , BinderOwn (..)
+  , OwnInfo (..)
+  , UseKind (..)
   , UseSite (..)
   )
 import qualified Kappa.PathScheme as P
@@ -340,6 +344,163 @@ rcWalkLookupVar i = do
                       )
                         : gsRcFindings st
                   }
+
+-- | The S2.2 emission decision at a 'CVar' occurrence: the 'UseKind' the analysis
+-- assigned to THIS occurrence (keyed by 'gsCur' + @reverse gsPath@), or 'Nothing'
+-- when RC is off / no table is in scope / the occurrence is inside a 'CDo' region
+-- (the §1 carve-out — never dup/drop there) / the path does not resolve (a
+-- type-level / erased / restructured occurrence, the tolerated R-erase residue).
+-- A 'NonLast' verdict is the sole trigger for a @kdup@ wrap (the value is shared
+-- downstream); 'LastUse' is a move (no dup), 'Borrowed' is a non-consuming read
+-- (no dup). Inert under the OFF baseline (returns 'Nothing' without a lookup).
+rcUseKindHere :: Gen (Maybe UseKind)
+rcUseKindHere = do
+  enabled <- gets gsRcEnabled
+  if not enabled
+    then pure Nothing
+    else do
+      mown <- gets gsCurOwn
+      inErased <- gets gsRcInErased
+      case mown of
+        Just own | not inErased -> do
+          g <- gets gsCur
+          path <- gets gsPath
+          pure (Map.lookup (UseSite g (reverse path)) (oiUses own))
+        _ -> pure Nothing
+
+-- | Wrap a 'CVar' use-expression in @kdup(...)@ when the analysis classified the
+-- occurrence as 'NonLast' (S2.2 / b.2): the value is used again downstream, so it
+-- is SHARED here and its rc must be incremented. 'kdup' skips immediates (its
+-- @kis_imm@ guard), so an immediate-valued binder wrap is a runtime no-op. Every
+-- other verdict ('LastUse' = move, 'Borrowed' = read, 'Nothing' = off/erased/CDo)
+-- leaves the bare expression. Under the Boehm differential backstop the increment
+-- maintains rc but frees nothing, so program OUTPUT is byte-identical.
+rcDupVarUse :: Text -> Gen Text
+rcDupVarUse e = do
+  mk <- rcUseKindHere
+  pure $ case mk of
+    Just NonLast -> "kdup(" <> e <> ")"
+    _ -> e
+
+-- | The S2.3 drop DECISION for a binder introduced at the CURRENT 'gsPath' (its
+-- 'BinderId' is @gsCur@ + @reverse gsPath@) — the seam where the binder node is
+-- compiled, BEFORE descending into its body/arm. Returns 'True' iff a @kdrop@
+-- against the binder's bound C local should be emitted at that scope's close
+-- (b.4):
+--
+--   * the binder is 'boDroppable' (@0@\/@≤1@\/@ω@ — carries no consumption
+--     obligation) and NOT 'boBorrowed' (a borrowed value is the caller's; the
+--     callee never drops it — §1\/§3); AND
+--   * the binder has NO 'LastUse' occurrence anywhere in its scope ('oiBinderUses'
+--     holds only 'NonLast'\/'Borrowed', or the binder is unused). A 'LastUse'
+--     MOVES the binder's owning reference to a consumer, so the binder no longer
+--     holds it — dropping there is the DOUBLE-COUNT the underflow assert catches.
+--     This is the self-balancing core: a no-'LastUse' binder still holds exactly
+--     the one reference its allocation\/NonLast-dups account for, and the single
+--     drop returns it. (Conservative on a branch that OMITS a binder some sibling
+--     branch consumes at 'LastUse': we do NOT drop — a soft leak Boehm reclaims —
+--     rather than risk an underflow on the consuming branch. The per-arm seam in
+--     'consumeAlt' still catches the binder dropped on arms that never use it.)
+--
+-- Inert under the OFF baseline (returns 'False' without a lookup), so codegen is
+-- byte-identical. 'Nothing' table / a 'CDo' region (§1 carve-out) also yields
+-- 'False' (no drop inside an opaque do-block — the ExitStack drain owns those).
+rcBinderDroppableHere :: Gen Bool
+rcBinderDroppableHere = do
+  enabled <- gets gsRcEnabled
+  if not enabled
+    then pure False
+    else do
+      mown <- gets gsCurOwn
+      inErased <- gets gsRcInErased
+      case mown of
+        Just own | not inErased -> do
+          g <- gets gsCur
+          path <- gets gsPath
+          let bid = BinderId g (reverse path)
+          pure $ case Map.lookup bid (oiBinders own) of
+            Just bo
+              | boDroppable bo
+              , not (boBorrowed bo)
+              , not (any (== LastUse) (Map.findWithDefault [] bid (oiBinderUses own))) ->
+                  True
+            _ -> False
+        _ -> pure False
+
+-- | Like 'rcBinderDroppableHere' but for a pattern-slot binder at slot @k@ of the
+-- match arm currently being compiled (its 'BinderId' is @gsCur@ +
+-- @reverse (patSlotPos k : gsPath)@ — the same key 'Kappa.Ownership.walkAlt'
+-- records). Used to decide whether the per-arm @kdrop@ of a destructured field
+-- local fires (b.4, per-arm completion path in 'consumeAlt').
+rcPatSlotDroppableHere :: Int -> Gen Bool
+rcPatSlotDroppableHere k = do
+  enabled <- gets gsRcEnabled
+  if not enabled
+    then pure False
+    else do
+      mown <- gets gsCurOwn
+      inErased <- gets gsRcInErased
+      case mown of
+        Just own | not inErased -> do
+          g <- gets gsCur
+          path <- gets gsPath
+          let bid = BinderId g (reverse (P.patSlotPos k : path))
+          pure $ case Map.lookup bid (oiBinders own) of
+            Just bo
+              | boDroppable bo
+              , not (boBorrowed bo)
+              , not (any (== LastUse) (Map.findWithDefault [] bid (oiBinderUses own))) ->
+                  True
+            _ -> False
+        _ -> pure False
+
+-- | Emit a @kdrop(<lval>)@ statement against a bound C LOCAL (b.4 / R-flat:
+-- ALWAYS the bound local, never a fresh @kvar(env,i)@ rvalue re-read). A runtime
+-- rc decrement that frees nothing under the Boehm backstop; the @kdrop@ assert is
+-- the primary S2 differential check (it trips on an underflow before any UAF).
+rcEmitDrop :: Text -> Gen ()
+rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
+
+-- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
+-- head: read the callee's owned\/borrowed\/shared parameter convention from its
+-- declared type ('Repr.argConvSelect', the S1.5-validated accessor). In S2 this is
+-- OBSERVE-ONLY and emits NOTHING: every verdict resolves to NO caller-side
+-- post-call drop —
+--
+--   * 'Repr.ArgOwned' — the caller TRANSFERS ownership; the callee consumes
+--     (drops\/reuses) it. No caller drop.
+--   * 'Repr.ArgShared' — a conservative transfer (the callee may dup\/drop). No
+--     caller drop.
+--   * 'Repr.ArgBorrowed' — the callee NEVER drops; the value stays the caller's
+--     and is reclaimed at the caller's OWN binder seam (b.4), NEVER post-call.
+--     This is the §1\/§3 borrow invariant — a borrowed value (e.g. one reachable
+--     from a live ExitStack) is never dropped by the callee.
+--
+-- The argument's own dup\/move is already decided per-occurrence at its 'CVar'
+-- (a 'Borrowed' use is neither dup'd nor the binder's consuming 'LastUse'), and
+-- the drop discipline (b.4) never drops a @boBorrowed@ binder — so the convention
+-- is honoured WITHOUT any extra emission here. We still evaluate
+-- 'Repr.argConvSelect' on the ON path (forcing it) so the S1.5-validated accessor
+-- is exercised over the corpus and a regression in it would surface; a non-'CGlob'
+-- head, or an unwalkable codomain ('Nothing'), is the all-shared fallback (still
+-- no drop). 'boRefined' (§3a) is observe-only and NOT consulted (that is S3+).
+-- Inert under the OFF baseline. (Deliberately does NOT write 'gsRcFindings' — that
+-- channel is the R-path miss signal; per-call boundary noise would corrupt its
+-- \"zero misattribution\" count.)
+rcClassifyCallBoundary :: GName -> Gen ()
+rcClassifyCallBoundary g = do
+  enabled <- gets gsRcEnabled
+  inErased <- gets gsRcInErased
+  when (enabled && not inErased) $ do
+    globals <- gets gsGlobals
+    ctx <- gets gsEvalCtx
+    let convs = case Map.lookup g globals of
+          Just gd -> Repr.argConvSelect ctx (gdType gd)
+          Nothing -> Nothing -- unknown global → all-shared fallback
+    -- Force the accessor so it is genuinely exercised on the ON path (a regression
+    -- in the S1.5-validated convention walk would surface here); the verdict is
+    -- otherwise unused in S2 (observe-only).
+    length (show convs) `seq` pure ()
 
 -- | Run an action with a fresh (empty) statement buffer and the given
 -- current-env expression, returning the produced statements in order plus
@@ -1961,17 +2122,22 @@ compileTerm term = case term of
     -- onto gsParamLvals (R2.3-rest).  gsParamLvals is empty outside a flat
     -- body; the kvar fallback is the general (boxed-KEnv) path.
     lvals <- gets gsParamLvals
-    if not (null lvals) && i >= 0 && i < length lvals
-      then pure (lvals !! i)
-      else do
-        -- R3.2: in a FLAT CLOSURE the flat prefix (the param + any let/match
-        -- locals, 'gsParamLvals') covers the innermost de Bruijn indices and
-        -- the captured env @cenv@ covers the rest, so a captured-var index is
-        -- shifted PAST the flat prefix.  For a worker this branch is never
-        -- taken (all indices are flat); for the boxed path @lvals@ is empty so
-        -- the shift is 0 (unchanged @kvar(env,i)@).
-        env <- gets gsEnv
-        pure ("kvar(" <> env <> ", " <> T.pack (show (i - length lvals)) <> ")")
+    e <-
+      if not (null lvals) && i >= 0 && i < length lvals
+        then pure (lvals !! i)
+        else do
+          -- R3.2: in a FLAT CLOSURE the flat prefix (the param + any let/match
+          -- locals, 'gsParamLvals') covers the innermost de Bruijn indices and
+          -- the captured env @cenv@ covers the rest, so a captured-var index is
+          -- shifted PAST the flat prefix.  For a worker this branch is never
+          -- taken (all indices are flat); for the boxed path @lvals@ is empty so
+          -- the shift is 0 (unchanged @kvar(env,i)@).
+          env <- gets gsEnv
+          pure ("kvar(" <> env <> ", " <> T.pack (show (i - length lvals)) <> ")")
+    -- Perceus RC S2.2 (b.2): a 'NonLast' occurrence is SHARED downstream → wrap in
+    -- @kdup@ (rc increment, immediates skipped). Inert under the OFF baseline and a
+    -- runtime no-op while Boehm frees, so program output is byte-identical.
+    rcDupVarUse e
   CGlob g -> compileGlob g
   CLit l -> compileLit l
   CApp {} -> compileApp term
@@ -2729,6 +2895,11 @@ compileApp term0 = do
   let (hd, sargs) = spineOf term
   case hd of
     CGlob g -> do
+      -- Perceus RC S2.3 (b.3): classify the callee's owned/borrowed/shared
+      -- parameter convention at this CGlob head (observe-only in S2 — every
+      -- verdict resolves to NO caller-side post-call drop; the arg's own dup/move
+      -- is decided per-occurrence at its CVar).
+      rcClassifyCallBoundary g
       hostSyms <- gets gsHostSyms
       case Map.lookup g hostSyms of
         -- §27.1.1: a saturated host-member application is a DIRECT native
@@ -3379,6 +3550,15 @@ data TailInfo = TailInfo
 -- stack, §27.5A.3 — there are no worker params to loop on).
 data Sink = SinkVar !Text | SinkTail !TailInfo | SinkBounce
 
+-- | Whether a sink's continuation is reachable after the consumed term — i.e. the
+-- value flows into a C variable and control FALLS THROUGH ('SinkVar'), rather than
+-- leaving the worker via @return@/@continue@ ('SinkTail'/'SinkBounce'). Perceus
+-- RC S2.3 emits a trailing @kdrop@ only at a 'SinkVar' seam, where the drop is
+-- actually reached (a drop after a @return@ is dead code).
+isSinkVar :: Sink -> Bool
+isSinkVar (SinkVar _) = True
+isSinkVar _ = False
+
 sinkResult :: Sink -> Text -> Gen ()
 sinkResult (SinkVar r) e = emit (r <> " = " <> e <> ";")
 sinkResult (SinkTail _) e = emit ("return " <> e <> ";")
@@ -3453,8 +3633,17 @@ consume sink term = case term of
         -- R2.3-rest FLAT worker: bind a C local (no KEnv); 'bindFlatLocal'
         -- prepends it as de Bruijn index 0 and the enclosing 'captured' block
         -- (or the worker-body reset) restores the scope.
-        _ <- bindFlatLocal "let_" re
+        -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken at the
+        -- CLet node (gsPath = the let path → the binder's BinderId), against the
+        -- bound C LOCAL (R-flat). Emitted at the body's NORMAL completion — i.e.
+        -- only when the body sinks into a continuing result var ('SinkVar'); in a
+        -- 'SinkTail'/'SinkBounce' body the value 'return's, so a trailing drop is
+        -- unreachable (and the worker frame is reclaimed by Boehm) — we skip it
+        -- there rather than emit dead code.
+        drp <- rcBinderDroppableHere
+        lv <- bindFlatLocal "let_" re
         withChild P.letBodyPos (consume sink body)
+        when (drp && isSinkVar sink) (rcEmitDrop lv)
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
   -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
@@ -3605,19 +3794,49 @@ consumeAltBody :: Sink -> Text -> Text -> Text -> CorePat -> Maybe Term -> Term 
 consumeAltBody sink sv env done pat mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   env' <- bindPatScrut sv env pat
+  -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
+  -- binders HERE (gsPath = the arm path, so 'patSlotPos k' keys each slot), against
+  -- the bound flat C locals (R-flat). The slot's de Bruijn index @k@ is its
+  -- 'gsParamLvals' index right after binding (the LAST patBinding is index 0,
+  -- matching the analysis's @depth+n-1-k@ levels). Computed BEFORE descending into
+  -- the body so the lookup key is the arm path; emitted AFTER the body, only at a
+  -- continuing 'SinkVar' seam (a 'SinkTail'/'SinkBounce' arm body returns — a
+  -- trailing drop would be dead). Boxed (KEnv) arms have empty 'gsParamLvals' →
+  -- no flat local → no drop (left to Boehm).
+  patDrops <- rcPatSlotDropLvals pat
   -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
   -- body at 'altBodyPos' (the pattern-slot binders are at 'patSlotPos k', looked
   -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
       withEnv env' (withChild P.altBodyPos (consume sink body))
+      when (isSinkVar sink) (mapM_ rcEmitDrop patDrops)
       emit (done <> " = 1;")
     Just gd -> do
       ge <- withEnv env' (withChild P.altGuardPos (compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
       withEnv env' (withChild P.altBodyPos (consume sink body))
+      when (isSinkVar sink) (mapM_ rcEmitDrop patDrops)
       emit ("  " <> done <> " = 1;")
       emit "}"
+
+-- | Perceus RC S2.3: the bound flat C locals to @kdrop@ for the pattern-slot
+-- binders of @pat@ that the analysis says are droppable with no 'LastUse' (b.4).
+-- The slot's de Bruijn index @k@ (0 = innermost, the LAST 'patBindings' entry) is
+-- its 'gsParamLvals' index in the just-bound arm scope. Returns @[]@ under the OFF
+-- baseline, in a boxed arm (empty 'gsParamLvals' — no flat local to drop against),
+-- or for any slot the analysis did not mark droppable-with-no-LastUse.
+rcPatSlotDropLvals :: CorePat -> Gen [Text]
+rcPatSlotDropLvals pat = do
+  enabled <- gets gsRcEnabled
+  lvals <- gets gsParamLvals
+  if not enabled || null lvals
+    then pure []
+    else do
+      let n = patBindersC pat
+      fmap concat $ forM [0 .. n - 1] $ \k -> do
+        drp <- rcPatSlotDroppableHere k
+        pure [lvals !! k | drp && k < length lvals]
 
 -- | A C boolean expression that is true iff @pat@ matches the value @v@
 -- (a pure expression; no side effects, no bindings).  'Nothing' means the

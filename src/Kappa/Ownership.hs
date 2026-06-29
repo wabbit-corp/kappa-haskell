@@ -197,12 +197,26 @@ data BinderOwn = BinderOwn
 data OwnInfo = OwnInfo
   { oiBinders :: !(Map BinderId BinderOwn)
   , oiUses :: !(Map UseSite UseKind)
+  , oiBinderUses :: !(Map BinderId [UseKind])
+  -- ^ Perceus RC Stage S2.3: the per-binder MULTISET of use classifications its
+  -- occurrences resolved to (the @accAssoc@ the cross-check S1.2 already
+  -- computes, surfaced here for the backend). The S2.3 drop discipline (b.4)
+  -- needs ONE fact per binder that @oiUses@ (keyed by occurrence, not binder)
+  -- cannot answer without the binder↔occurrence link: \"does this binder have a
+  -- 'LastUse'?\". A binder whose owning reference was MOVED at a 'LastUse' must
+  -- NOT be dropped at scope close (its reference is already consumed — a drop
+  -- there is the double-count the underflow assert exists to catch); a binder
+  -- with NO 'LastUse' (all uses 'NonLast'\/'Borrowed', or unused) still holds its
+  -- owning reference and IS dropped once. Derivable from @oiUses@ + the body, but
+  -- accumulated during the single analysis walk so the backend needs no re-walk.
+  -- (Additive field; the S1.2 cross-check reads @oiBinders@\/@oiUses@ and the
+  -- separately-returned association, so this does not perturb it.)
   }
   deriving stock (Eq, Show)
 
 -- | The empty side-table — no binders, no uses.
 emptyOwnInfo :: OwnInfo
-emptyOwnInfo = OwnInfo Map.empty Map.empty
+emptyOwnInfo = OwnInfo Map.empty Map.empty Map.empty
 
 -- | §12.2.6 droppability: @0@\/@≤1@\/@ω@ are droppable (may be silently
 -- decref-freed when dead); @1@\/@≥1@ carry a consumption obligation and are not
@@ -290,7 +304,7 @@ emptyAcc = Acc Map.empty Map.empty Map.empty
 analyzeBodyFull :: [(Q, Bool)] -> GName -> Term -> (OwnInfo, Map BinderId [UseKind])
 analyzeBodyFull tele owner body =
   let (acc, _live) = walk tele owner [] 0 [] body Set.empty emptyAcc
-   in (OwnInfo (accBinders acc) (accUses acc), accAssoc acc)
+   in (OwnInfo (accBinders acc) (accUses acc) (accAssoc acc), accAssoc acc)
 
 -- | Analyze one top-level body into its 'OwnInfo'.
 analyzeBody :: [(Q, Bool)] -> GName -> Term -> OwnInfo

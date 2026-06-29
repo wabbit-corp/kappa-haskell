@@ -58,6 +58,12 @@ void krt_init(void) {
   krt_assert_gc_alignment();
   mp_set_memory_functions(gmp_gc_alloc, gmp_gc_realloc, gmp_gc_free);
   atexit(krt_at_exit);
+  /* Perceus RC Stage S2.3 (PERCEUS-S2-PLAN (c) secondary): the SOFT leak-trend
+   * probe.  When KAPPA_RC_REPORT is set in the environment, print the dup/drop
+   * totals + net (drops - dups) at process exit — a missed drop shows as a
+   * newly-positive net.  GATED so the default run prints NOTHING (byte-identical
+   * output preserved); the env var is read once here, not a program input. */
+  if (getenv("KAPPA_RC_REPORT")) atexit(krc_report);
 }
 
 void *kgc_alloc(size_t n) {
