@@ -16,7 +16,7 @@ let firstLineBytes req =
 
 parseRequestLine : String -> ReqLine
 let parseRequestLine req =
-    let line = firstLineBytes req in
+    let ω line = firstLineBytes req in
       match bytes.bytesBreakOn (bytes.singletonByte b' ') line
       case None -> ReqLine { method = "GET", path = "/" }
       case Some m ->

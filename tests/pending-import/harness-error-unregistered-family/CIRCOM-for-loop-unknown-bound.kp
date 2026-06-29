@@ -25,16 +25,16 @@ let loopLen = 10
 let sumToConst : IO e Int = do
     var acc = 0
     for i in 0 ..< loopLen do
-        acc = !(readRef acc) + i
-    readRef acc
+        acc = acc + i
+    pure acc
 
 -- POSITIVE: runtime lower bound with a pure body is accepted (no 0-quantity
 -- obligation inside the body, so the runtime bound causes no violation).
 let sumFromStart (start : Int) : IO e Int = do
     var acc = 0
     for i in start .. 10 do
-        acc = !(readRef acc) + i
-    readRef acc
+        acc = acc + i
+    pure acc
 
 
 -- NEGATIVE: runtime upper bound n with a 0-quantity body obligation.
@@ -44,7 +44,7 @@ let badLoopBound (n : Int) : IO e Int = do
     var acc = 0
     for i in 0 ..< n do
         let (0 _) = i * 2        --!! kappa.quantity.satisfies
-        acc = !(readRef acc) + i
-    readRef acc
+        acc = acc + i
+    pure acc
 
 --! assertDiagnosticFamily error kappa.quantity.satisfies

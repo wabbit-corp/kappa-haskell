@@ -1,0 +1,10 @@
+module main
+
+badReadFacet : UIO Unit
+let badReadFacet = do
+    var x = 1
+    let _ <- readRef (x : Ref Int)
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_REF_REQUIRED

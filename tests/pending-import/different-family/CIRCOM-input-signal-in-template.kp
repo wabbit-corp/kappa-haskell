@@ -4,11 +4,10 @@
 -- Spec: compiler.frontir.standard_diagnostic_families.type_equality
 --       (family kappa.type.mismatch).
 -- Kappa spec rule (§SA-CIRCOM-07):
---   "A function parameter is not a mutable reference cell. Attempting to use
---    the `do`-block assignment sugar (`x = val`, sugar for `writeRef x val`) on
---    a parameter of plain type `Int` (not `Ref Int`) must produce
---    kappa.type.mismatch, because `writeRef` requires its first argument to
---    be of type `Ref a`, not `a`."
+--   "A function parameter is not a mutable binding. Attempting to use
+--    do-block assignment (`x = val`) on a parameter of plain type `Int` must
+--    produce kappa.type.mismatch because only surface `var` bindings have an
+--    assignment-target facet (§18.6.1)."
 
 --! mode check
 
@@ -20,8 +19,8 @@ let validRead2 (a : Int) (b : Int) : Int = a + b
 
 
 -- NEGATIVE: applying do-block assignment sugar to a non-Ref parameter.
--- `inSig = 99` in a do block desugars to `writeRef inSig 99`, but inSig : Int,
--- not Ref Int, so the first argument of writeRef has the wrong type.
+-- `inSig = 99` in a do block attempts to select the assignment-target facet of
+-- a plain Int parameter, not a mutable binding.
 let badAssignToParam (inSig : Int) : IO e Unit = do
     inSig = 99    --!! kappa.type.mismatch
     pure ()

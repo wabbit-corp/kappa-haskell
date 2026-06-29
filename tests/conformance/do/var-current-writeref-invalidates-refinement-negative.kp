@@ -1,0 +1,24 @@
+module main
+
+-- §18.6.2 NEGATIVE: direct recognized writeRef (ref x) advances the current
+-- version just like surface assignment. The old Full fact must not justify the
+-- later Full-only match.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        writeRef (ref cell) Empty
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

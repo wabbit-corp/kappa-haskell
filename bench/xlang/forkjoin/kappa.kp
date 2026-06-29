@@ -39,7 +39,7 @@ let task acc k =
 worker : AtomicRef Integer -> Integer -> UIO Unit
 let worker cell i = do
     let v = task (addInt i 1) 200
-    old <- atomicFetchAdd RmwSeqCst cell v
+    let old <- atomicFetchAdd RmwSeqCst cell v
     pure ()
 
 -- fork fibers [i, n): fork i, recurse to fork the rest, then await i.  Forking
@@ -49,14 +49,14 @@ spawnAll : AtomicRef Integer -> Integer -> Integer -> UIO Unit
 let spawnAll cell i n =
     if leInt n i then pure ()
     else do
-        f <- fork (worker cell i)
+        let f <- fork (worker cell i)
         spawnAll cell (addInt i 1) n
-        r <- await f
+        let r <- await f
         pure ()
 
 main : UIO Unit
 let main = do
-    cell <- newAtomicRef 0
+    let cell <- newAtomicRef 0
     spawnAll cell 0 100000             -- N HARDCODED = 100000
-    total <- atomicLoad LoadSeqCst cell
+    let total <- atomicLoad LoadSeqCst cell
     printlnString (showInt total)      -- 107372465295244, exactly, no lost updates

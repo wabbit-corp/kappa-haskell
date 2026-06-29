@@ -16,8 +16,8 @@ let child2 = printlnString "second"
 
 main : UIO Unit
 let main = do
-    f1 <- fork child1
-    r1 <- await f1            -- waits for child1: "first" precedes everything below
-    f2 <- fork child2
-    r2 <- await f2            -- waits for child2: "second" precedes "third"
+    let f1 <- fork child1
+    let r1 <- await f1            -- waits for child1: "first" precedes everything below
+    let f2 <- fork child2
+    let r2 <- await f2            -- waits for child2: "second" precedes "third"
     printlnString "third"

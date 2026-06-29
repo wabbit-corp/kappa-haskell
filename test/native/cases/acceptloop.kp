@@ -18,12 +18,12 @@ let main = do
     var next = 0
     while running do
         -- "accept": a forked fiber yields the next connection id; await it.
-        af <- fork (ioPure next)
-        ec <- await af
+        let af <- fork (ioPure next)
+        let ec <- await af
         match ec
           case Success c -> do
-            hf <- fork (handle c)
-            _ <- await hf
+            let hf <- fork (handle c)
+            let _ <- await hf
           case Failure _ -> printlnString "accept failed"
         next = addInt next 1
         if leInt next 3 then

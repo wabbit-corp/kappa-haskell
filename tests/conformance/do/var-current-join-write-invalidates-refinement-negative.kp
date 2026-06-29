@@ -1,0 +1,30 @@
+module main
+
+-- §18.6.2 NEGATIVE: a fact that survives a postdominating guard must still be
+-- discarded at a later control-flow join if any reachable branch writes the
+-- tracked cell.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : Bool -> UIO Unit
+let bad flag = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        printlnString "full"
+    else
+        return ()
+
+    if flag then
+        cell = Empty
+    else
+        printlnString "kept"
+
+    let n =
+        match cell
+        case Full v -> v
+    printlnString (showInt n)

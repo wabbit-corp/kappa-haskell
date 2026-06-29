@@ -1,0 +1,10 @@
+module main
+
+import lib.types
+
+bad : UIO Unit
+let bad = do
+    var box = lib.types.Empty
+    lib.types.replace ~box
+    let snapshot = box
+    pure ()

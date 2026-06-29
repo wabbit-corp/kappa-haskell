@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE

@@ -17,7 +17,7 @@ let main = do
     var i = 1
     while leInt i 5 do
         total = addInt total i        -- write
-        f <- fork (obs total)         -- read-after-write THIS iteration (the live cell)
-        _ <- await f
+        let f <- fork (obs total)         -- read-after-write THIS iteration (the live cell)
+        let _ <- await f
         i = addInt i 1
     printlnString (stringAppend "total " (showInt total))  -- post-loop read sees all mutations

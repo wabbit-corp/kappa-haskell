@@ -16,7 +16,7 @@ let translate e =
 open : IO GameError Terminal
 let open =
     do
-        result <- Raw.delve_open_terminal ()
+        let result <- Raw.delve_open_terminal ()
         match result
         case Err e -> raise (translate e)
         case Ok h -> pure (Terminal h)
@@ -26,7 +26,7 @@ let close terminal =
     match terminal
     case Terminal h ->
         do
-            result <- Raw.delve_close_terminal h
+            let result <- Raw.delve_close_terminal h
             match result
             case Err e -> raise (translate e)
             case Ok _ -> pure ()
@@ -36,7 +36,7 @@ let readKey terminal =
     match terminal
     case Terminal h ->
         do
-            result <- Raw.delve_read_key h
+            let result <- Raw.delve_read_key h
             match result
             case Err e -> raise (translate e)
             case Ok code -> pure (decodeKey code)
@@ -46,7 +46,7 @@ let write terminal text =
     match terminal
     case Terminal h ->
         do
-            result <- Raw.delve_write_all h text
+            let result <- Raw.delve_write_all h text
             match result
             case Err e -> raise (translate e)
             case Ok _ -> pure ()
@@ -56,7 +56,7 @@ let size terminal =
     match terminal
     case Terminal h ->
         do
-            result <- Raw.delve_get_size h
+            let result <- Raw.delve_get_size h
             match result
             case Err e -> raise (translate e)
             case Ok s -> pure (Size s.cols s.rows)

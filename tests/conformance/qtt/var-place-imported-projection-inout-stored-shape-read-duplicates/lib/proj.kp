@@ -1,0 +1,18 @@
+module lib.proj
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+type Cell : Type =
+    (value : Box)
+
+projection cellValue (place this : Cell) : Box =
+    yield this.value
+
+replace : (inout b : Box) -> UIO (1 b : Box)
+let replace (inout b : Box) : UIO (1 b : Box) =
+    pure (b = Full Token)

@@ -1,0 +1,17 @@
+module main
+
+risky : IO String Unit
+let risky = raise "boom"
+
+main : UIO Unit
+let main = do
+    var handleIt = True
+    try risky
+    except _ if handleIt ->
+        printlnString "handled"
+    except _ ->
+        printlnString "miss"
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "handled\n"

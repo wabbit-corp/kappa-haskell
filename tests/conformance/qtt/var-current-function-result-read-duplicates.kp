@@ -1,0 +1,20 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+mkBox : (1 tok : Token) -> Box
+let mkBox tok =
+    Full tok
+
+bad : UIO Unit
+let bad = do
+    var box = mkBox Token
+    let snapshot = box
+    pure ()

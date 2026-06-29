@@ -41,16 +41,23 @@ KValue *krt2i_interrupt_cause(const char *tag, KValue *by_opt) {
 }
 
 /* Record a pending interruption on `target` (first request wins, §18.1.12) and,
- * if it is parked, wake it so it reaches an interruption point and delivers. */
+ * if it is interruptibly parked, wake it so it reaches an interruption point and
+ * delivers. A fiber parked in a non-cancellable blocking native call is not
+ * woken by the request; the call's completion wakes it, and the pending
+ * interrupt is observed at that resume point. */
 void krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause) {
+  int wake_now;
   pthread_mutex_lock(&target->lock);
   if (!atomic_load(&target->interrupt_pending)) {
     target->interrupt_cause = cause;
     atomic_store_explicit(&target->interrupt_pending, 1, memory_order_release);
   }
+  wake_now = !target->blocking_armed;
   pthread_mutex_unlock(&target->lock);
-  krt2i_wake(rt, target, NULL); /* no-op if RUNNING/DONE; the running fiber
-                                 * observes the flag at its next step */
+  if (wake_now) {
+    krt2i_wake(rt, target, NULL); /* no-op if RUNNING/DONE; the running fiber
+                                   * observes the flag at its next step */
+  }
 }
 
 /* interrupt / interruptFork.  wait=1 also parks the caller until the target has
@@ -58,9 +65,11 @@ void krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause) {
  * Returns 1 if the caller may continue (result Unit placed in f->cur on the wait
  * path), 0 if the caller parked. */
 int krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wait) {
-  Fiber *target = (Fiber *)kas_fgn(target_h);
+  Fiber *target = (Fiber *)kas_fgn_kind(target_h, KRT2_KIND_FIBER);
   krt2i_interrupt_request(rt, target, cause);
   if (!wait) return 1;
+  int dp = krt2i_deliver_pending_before_park(rt, f);
+  if (dp != 0) return dp > 0 ? 1 : 0;
   pthread_mutex_lock(&target->lock);
   if (atomic_load_explicit(&target->status, memory_order_acquire) == F_DONE) {
     pthread_mutex_unlock(&target->lock);
@@ -143,7 +152,7 @@ void krt2i_scope_detach(Rt *rt, Fiber *child) {
 }
 
 KValue *krt2i_op_fork_in(Rt *rt, Fiber *parent, KValue *scope_h, KValue *action) {
-  Scope *sc = (Scope *)kas_fgn(scope_h);
+  Scope *sc = (Scope *)kas_fgn_kind(scope_h, KRT2_KIND_SCOPE);
   /* §18.1.7: a forkIn child also inherits the parent's FiberRef snapshot. */
   return kfgn(krt2i_spawn_from(rt, parent, action, sc, 0), KRT2_KIND_FIBER);
 }
@@ -154,7 +163,7 @@ KValue *krt2i_op_fork_in(Rt *rt, Fiber *parent, KValue *scope_h, KValue *action)
  * live children returns immediately.  Returns 1 (continue, Unit in f->cur) when
  * already drained, 0 when the caller parked. */
 int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
-  Scope *sc = (Scope *)kas_fgn(scope_h);
+  Scope *sc = (Scope *)kas_fgn_kind(scope_h, KRT2_KIND_SCOPE);
 
   pthread_mutex_lock(&sc->lock);
   atomic_store(&sc->shutting, 1);
@@ -248,14 +257,16 @@ void krt2i_scope_drain_bounded(Rt *rt, Scope *sc, uint64_t budget_ns) {
 
 KValue *krt2i_op_monitor(KValue *fiber_h) {
   Monitor *m = (Monitor *)GC_MALLOC(sizeof(Monitor));
-  m->target = (Fiber *)kas_fgn(fiber_h);
+  m->target = (Fiber *)kas_fgn_kind(fiber_h, KRT2_KIND_FIBER);
   return kfgn(m, KRT2_KIND_MONITOR);
 }
 
 int krt2i_op_await_monitor(Rt *rt, Fiber *f, KValue *mon_h) {
   (void)rt;
-  Monitor *m = (Monitor *)kas_fgn(mon_h);
+  Monitor *m = (Monitor *)kas_fgn_kind(mon_h, KRT2_KIND_MONITOR);
   Fiber *t = m->target;
+  int dp = krt2i_deliver_pending_before_park(rt, f);
+  if (dp != 0) return dp > 0 ? 1 : 0;
   pthread_mutex_lock(&t->lock);
   if (atomic_load_explicit(&t->status, memory_order_acquire) == F_DONE) {
     KValue *ex = t->exit;

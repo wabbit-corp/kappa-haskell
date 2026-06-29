@@ -22,7 +22,7 @@ let step = \r -> do
 
 main : UIO Unit
 let main = do
-    r <- newRef 0
+    let r <- newRef 0
     let s = stringAppend !(step r) !(step r)
     printlnString s
 
@@ -33,7 +33,7 @@ let main = do
         acc = acc + i
     printlnString (showInt acc)
 
-    c <- newRef 0
+    let c <- newRef 0
     while (ioPure (!(readRef c) < 3)) do
         writeRef c (!(readRef c) + 1)
     printlnString (showInt (!(readRef c)))

@@ -1,0 +1,8 @@
+-- LLVM parity for §18.1.11 source-level blocking over a timer suspension.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    blocking (sleepFor (millis 1))
+    printlnString "after"

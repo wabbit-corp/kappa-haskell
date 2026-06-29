@@ -1,0 +1,20 @@
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+makeFull : UIO Cell
+let makeFull =
+    pure (Full Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Empty
+    cell <- makeFull
+    pure ()

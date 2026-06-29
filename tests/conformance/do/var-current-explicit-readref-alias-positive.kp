@@ -1,0 +1,24 @@
+module main
+
+-- §18.6.2 POSITIVE: a direct recognized low-level read into a simple local
+-- identifier aliases VarCurrent(x,n). A later generated current-value read of
+-- the same version may use the branch-local fact.
+--! mode run
+--! assertNoErrors
+--! assertStdout "11\n"
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+main : UIO Unit
+let main = do
+    var cell : Cell = Full 11
+    let y <- readRef (ref cell)
+    if y is Full then
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

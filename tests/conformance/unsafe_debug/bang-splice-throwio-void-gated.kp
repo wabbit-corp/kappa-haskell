@@ -2,12 +2,10 @@ module main
 
 -- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): the monadic splice `!e` desugars to a
 -- monadic BIND `tmp <- e` in the nearest enclosing do-block (Splice_m[!e] = e),
--- NOT to a pure `__runIO e` extraction. The bind keeps the spliced result
+-- NOT to a pure IO-result extraction. The bind keeps the spliced result
 -- MONADIC-typed, so `do { !(throwIO Unit) }` has type `IO _ _`, which is NOT
--- `Void`. (Were `!` a pure `__runIO` extraction, the splice would hand back
--- `__runIO (throwIO Unit) : Void` — a pure inhabitant of `Void`, total
--- unsoundness — because `throwIO : forall e a. e -> IO e a` has a FREE result
--- `a` that `__runIO` would liberate by discarding the IO error channel.)
+-- `Void`. A pure extraction would hand back a pure inhabitant of `Void` because
+-- `throwIO : forall e a. e -> IO e a` has a FREE result `a`.
 -- A plain module (no @AllowUnsafeIntrinsics) must REJECT this.
 
 dead : Void

@@ -217,6 +217,8 @@ data VariantArm = VariantArm
 data Expr
   = -- Atoms: variables, holes, and literals -------------------------------
     EVar !Name
+  | ERefFacet !Name !Span -- ^ @ref x@: mutable-binding reference facet (§18.6.1)
+  | EVarRead !Name !Span -- ^ internal: generated current-value read action for @var@ (§18.3.1)
   | EHole !(Maybe Name) !Span -- ^ @_@ (expression position) or @?name@
   | EIntLit !Integer !(Maybe Name) !Span
   | EFloatLit !Double !(Maybe Name) !Span
@@ -349,7 +351,7 @@ data DoItem
   = DoBind !LetBind -- ^ @let pat <- e@ (lbExpr is the action)
   | DoLet !LetBind -- ^ @let pat = e@
   | DoLetQ !Pattern !Expr !(Maybe (Pattern, Expr)) !Span -- ^ @let? p = e [else rp -> fe]@
-  | DoVar !Name !Expr !Span -- ^ @var x = e@
+  | DoVar !Name !(Maybe Expr) !Expr !Span -- ^ @var x [: T] = e@
   | DoAssign !Name !Bool !Expr !Span -- ^ @x = e@ \/ @x <- e@ (monadic?)
   | DoExpr !Expr
   | DoUsing !(Maybe Span) !Pattern !Expr !Span
@@ -739,6 +741,8 @@ projYieldPlaces = go
 exprSpan :: Expr -> Span
 exprSpan = \case
   EVar n -> nameSpan n
+  ERefFacet _ sp -> sp
+  EVarRead _ sp -> sp
   EHole _ sp -> sp
   EIntLit _ _ sp -> sp
   EFloatLit _ _ sp -> sp

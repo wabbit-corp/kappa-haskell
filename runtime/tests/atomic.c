@@ -1,10 +1,10 @@
-/* atomic.c — §29.1 AtomicRef: single-thread semantics + multicore lock-free
+/* atomic.c — §29.1 AtomicRef: single-thread semantics + multicore atomic
  * contention.  Part A exercises every operation's return value and effect on a
  * single thread (atomic ops do not suspend, so they are called directly).  Part
  * B forks NFIBERS fibers across the worker pool, each doing NITERS atomic
- * fetch_add(1) on one shared cell; if the cell is truly lock-free the total is
- * conserved exactly (a non-atomic increment would lose updates under real
- * 12-core contention).
+ * fetch_add(1) on one shared cell; if the cell operation is truly indivisible
+ * the total is conserved exactly (a non-atomic increment would lose updates
+ * under real 12-core contention).
  */
 #include "kappart2.h"
 #include "kappart2_harness.h"
@@ -31,6 +31,7 @@ static int fails = 0;
 /* UNBOXING Stage 1: an Int value may be a b001 immediate, not a heap K_INT box —
  * read it through kas_int (immediate-safe), never a raw v->as.i deref. */
 static int64_t iv(KValue *v) { return kas_int(v); }
+static int eqi(KValue *a, KValue *b) { return kas_bool(kp_eqInt(a, b)); }
 
 /* ── Part A: single-thread semantics ──────────────────────────────────── */
 static void semantics(void) {
@@ -78,6 +79,22 @@ static void semantics(void) {
   KValue *bold = krt2_atomic_exchange(rmw_relaxed(), b, kbool(1));
   CHECK(!kctor_is(bold, "std.prelude.True"), "bool exchange old False");
   CHECK(kctor_is(krt2_atomic_load(load_relaxed(), b), "std.prelude.True"), "bool after exchange True");
+
+  /* §6 Integer is arbitrary precision.  AtomicRef must preserve boxed bigints
+   * rather than narrowing through int64_t. */
+  KValue *huge = kbigint_str("1234567890123456789012345678901234567890");
+  KValue *huge2 = kp_addInt(huge, kint(5));
+  KValue *huge3 = kp_addInt(huge2, kint(1));
+  KValue *big = krt2_new_atomic_ref(huge);
+  CHECK(eqi(krt2_atomic_load(load_relaxed(), big), huge), "big Integer load preserves value");
+  CHECK(eqi(krt2_atomic_exchange(rmw_relaxed(), big, huge2), huge), "big Integer exchange returns old");
+  CHECK(eqi(krt2_atomic_load(load_relaxed(), big), huge2), "big Integer exchange writes desired");
+  CHECK(eqi(krt2_atomic_compare_exchange(rmw_relaxed(), cas_fail_relaxed(), big, huge2, huge3), huge2),
+        "big Integer CAS success witnessed expected");
+  CHECK(eqi(krt2_atomic_load(load_relaxed(), big), huge3), "big Integer CAS writes desired");
+  CHECK(eqi(krt2_atomic_fetch_add(rmw_relaxed(), big, kint(9)), huge3), "big Integer fetch_add returns old");
+  CHECK(eqi(krt2_atomic_load(load_relaxed(), big), kp_addInt(huge3, kint(9))),
+        "big Integer fetch_add preserves arbitrary precision");
 }
 
 /* ── Part B: multicore contention (GC-stressed) ───────────────────────── */
@@ -137,8 +154,8 @@ static void contention(void) {
 /* ── Part C: CAS-loop contention ───────────────────────────────────────────
  * Each fiber increments the shared cell NITERS times with a retrying CAS loop
  * (load; CAS(old, old+1); retry on contention).  A CAS that is not a real
- * hardware compare-exchange would let two fibers both read `old` and both store
- * `old+1`, losing one increment; a true lock-free CAS conserves every one.  The
+ * indivisible compare-exchange would let two fibers both read `old` and both store
+ * `old+1`, losing one increment; a true atomic CAS conserves every one.  The
  * witnessed value the CAS returns == `expected` exactly when the swap won. */
 static KValue *cas_worker_io(KEnv *env) {
   KValue *ref = kvar(env, 0), *order = kvar(env, 1), *fail = kvar(env, 2);

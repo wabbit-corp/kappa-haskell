@@ -1,10 +1,9 @@
 -- §18.6.2 SOUNDNESS PIN: a condition that reads a tracked local `var` cell
--- (`x`, via `readRef x`) does NOT yield a usable branch fact in the `else`
--- suite — exactly as the then-suite already declines for `var` reads, because
--- a `var`'s current value has no stable representative here (the §18.6.2
--- `VarCurrent(x,n)` versioning that would make it sound is deliberately not
--- implemented for do-kernel condition facts). The negation of a `var`-read
--- condition is therefore NOT pushed as a discharging fact, so `subDefined x y`
+-- (`x`, via its current-value facet) does NOT yield a usable proof-level branch
+-- fact in the `else` suite. Var-current flow facts are storage/usage facts, not
+-- stable pure proposition representatives for implicit proof discharge across a
+-- mutable read. The negation of a `var`-read condition is therefore NOT pushed
+-- as a discharging fact, so `subDefined x y`
 -- stays REQUIRED. Over-rejection is safe; an unsound discharge would be a bug.
 --! assertDiagnostic error E_UNSOLVED_IMPLICIT
 

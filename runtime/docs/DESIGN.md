@@ -1,22 +1,25 @@
 # Kappa Runtime (`kappart2`) — Design
 
 > A real concurrency + async-I/O runtime for Kappa's native backend: M:N
-> work-stealing fibers, structured-concurrency supervision, a libuv reactor,
+> fibers on a global FIFO run queue, structured-concurrency supervision, a libuv reactor,
 > parallel STM, atomics, interruption/masking, and algebraic-effect handlers —
 > implementing the observable behavior mandated by Spec §18 and §32.
 >
-> **Status:** design + standalone core. Not yet wired into `Kappa.Backend.C`
-> (that is the documented integration milestone, §17 below). The runtime is
-> built and exercised on its own via C harnesses that construct `KValue` IO
-> actions and drive them on the real scheduler.
+> **Status:** compiler-wired runtime core. The C and LLVM backends link
+> `kappart2` and use its CK-machine builders for generated do-kernel paths such
+> as scopes, loops, mutable refs, finalizers, early return, and fiber primitives.
+> Legacy `krun_io` bridge paths still exist for older boxed IO producers.
+> `rt-blocking` is wired for source-level `blocking` and classified native calls through an off-worker lane;
+> per-worker work-stealing deques remain future work.
 >
 > **This design was hardened by an 8-lens adversarial review — see
 > [`REVIEW.md`](REVIEW.md).** The architecture below is the validated one
 > ("proceed with fixes; keep the design"). Where REVIEW.md records a correction,
-> the body here reflects it. Two consequences are load-bearing: (1) v1 advertises
-> **five** capabilities — `rt-core`, `rt-parallel`, `rt-shared-stm`,
-> `rt-blocking`, `rt-atomics` — and **stages `rt-multishot-effects` to v2** behind
-> a real gate (REVIEW.md "Capability staging"); (2) making *already-compiled*
+> the body here reflects it. Two consequences are load-bearing: (1) the C runtime
+> contains machinery for parallel workers, shared STM, `rt-blocking`, and atomics,
+> while the Haskell native backend advertises only the binding-relevant verified
+> profile `rt-core`, `rt-blocking`, `rt-atomics`; `rt-multishot-effects` remains
+> staged to a later gate (REVIEW.md "Capability staging"); (2) making *already-compiled*
 > do-blocks suspend at every IO boundary needs a `C.hs` codegen rewrite (v2, §17)
 > — the v1 runtime is proven by C harnesses that build the same CK-machine action
 > trees that rewrite will emit.
@@ -31,14 +34,18 @@
    structured concurrency, timers, promises, fiber-local state, interruption,
    masking, STM) and §32.2 (the abstract runtime state machine and its
    observable transitions) — *not a subset*.
-2. Advertise the **complete** capability set (Spec §27.6):
-   `rt-core`, `rt-parallel`, `rt-shared-stm`, `rt-blocking`, `rt-atomics`,
-   `rt-multishot-effects`. A flag is advertised only when the runtime actually
-   backs it — advertising a syntactic surface while weakening semantics is
+2. Keep the Spec §27.6 capability story authoritative at each layer: the C
+   runtime documents the implementation machinery it contains, while the Haskell
+   native build profile advertises only capabilities wired end-to-end through
+   compiler lowering and conformance gates. Today that profile is `rt-core`,
+   `rt-blocking`, and `rt-atomics`; `rt-parallel`, `rt-shared-stm`, and
+   `rt-multishot-effects` are advertised there only after their gates are
+   actually backed. Advertising a syntactic surface while weakening semantics is
    itself non-conforming (§27.6).
-3. **True multicore**: runnable fibers execute on more than one host thread at a
-   time (`rt-parallel`), with cross-worker STM (`rt-shared-stm`) and hardware
-   atomics (`rt-atomics`).
+3. **True multicore substrate**: the C runtime can execute runnable fibers on
+   more than one host thread at a time and contains cross-worker STM and hardware
+   atomics. The build profile exposes the corresponding capability tokens only
+   when the compiler/backend profile treats those semantics as authoritative.
 4. Reuse the existing boxed `KValue` model and Boehm GC unchanged, so the
    runtime is a *layer over* `runtime/kappart.{c,h}`, not a fork of it.
 5. Be a clean, documented C ABI the native backend can target (§17), and a
@@ -54,8 +61,9 @@
 - Signal-based asynchronous preemption. Cooperative **reduction-budget safe
   points** satisfy §32.2.6 fairness; async preemption is an optional latency
   optimization documented as future work (§6.4).
-- Replacing the compiler's `Kappa.Backend.C` lowering. v1 ships the runtime and
-  the ABI seam; rewiring codegen to emit scheduler calls is milestone §17.
+- Replacing every legacy `krun_io` producer in one step. Compiler-generated
+  do-kernel paths target `kappart2` today; older boxed IO/library paths may still
+  enter through the bridge until they are retired incrementally.
 - Distribution / multi-node. `FiberId` and STM are single-program-execution
   (§32.2.8, §32.2.9). No remote fibers.
 
@@ -63,8 +71,9 @@
 
 ## 2. What already exists, and the gap
 
-`runtime/kappart.c` (the bundled native runtime) is a **single-threaded,
-boxed-value, Boehm-GC trampoline**:
+The old bundled native runtime was a **single-threaded, boxed-value,
+Boehm-GC trampoline**. Its boxed-value pieces now live in the split
+`gc.c`/`value.c`/`bignum.c`/`show.c`/`unicode.c`/`prims.c` files:
 
 - Every value is a uniformly boxed `KValue` on the GC heap (`kappart.h`).
 - An IO action is a *suspended* `KValue` (a saturated `K_PRIM`/`K_NATIVE`, or a
@@ -93,7 +102,7 @@ our executable oracle: every conformance test that runs `main` and checks stdout
 **The crux:** `krun_io`'s recursion captures a fiber's continuation only as a C
 return address. To suspend a fiber on I/O, a promise, a timer, an STM retry, or
 `cede`, the continuation must become a **heap object the scheduler can re-enter**.
-The suspension sites are well-localized (verified against `kappart.c`): the
+The suspension sites are well-localized (verified against the split boxed-runtime TUs):
 non-tail leg of `ioBind`/`ioThen`, the `catchIO`/`finallyIO` body, the per-defer
 run in `krun_finish`, and the saturated `K_NATIVE` fire site. We convert exactly
 those into a continuation-stack machine (§5).
@@ -105,18 +114,18 @@ those into a continuation-stack machine (§5).
 | Capability              | Meaning (§27.6)                                            | How `kappart2` backs it                                                        |
 |-------------------------|------------------------------------------------------------|-------------------------------------------------------------------------------|
 | `rt-core`               | Full IO/fiber/scheduler/STM/timer/promise/supervision      | §5–§12: the whole runtime                                                      |
-| `rt-parallel`           | Runnable fibers on >1 host thread simultaneously           | §6: M:N work-stealing over N worker threads                                   |
+| `rt-parallel`           | Runnable fibers on >1 host thread simultaneously           | §6: M:N workers over a global FIFO run queue                                  |
 | `rt-shared-stm`         | TVars valid across parallel workers                        | §11: GHC-style optimistic STM with per-TVar versions, commit lock, wait-sets  |
-| `rt-blocking`           | `blocking` combinator + blocking foreign-call bridge       | §7.4: libuv threadpool offload lane                                           |
+| `rt-blocking`           | `blocking` combinator + blocking foreign-call bridge       | §7.4: fiber parks; blocking native call runs off-worker                       |
 | `rt-atomics`            | `std.atomic`: ordered atomic cells                         | §10: C11 `<stdatomic.h>`, enum→`memory_order_*`                               |
-| `rt-multishot-effects`  | Persistent multi-shot resumptions, segment cloning (§32.2.16) | §13: immutable heap-reified continuation segments, logical clone-on-resume |
+| `rt-multishot-effects`  | Persistent multi-shot resumptions, segment cloning (§32.2.16) | **withheld today**; staged behind escape checks and persistent continuations |
 
-> **`Capabilities.hs` correction.** `src/Kappa/Backend/Capabilities.hs` currently
-> advertises only `["rt-core","rt-blocking","rt-atomics"]`. Per the user, omitting
-> `rt-parallel` (and the others) was an expedient under-claim. The target is the
-> full six. The flip is part of milestone §17: we advertise a flag only once
-> `kappart2` is wired in and backs it, because §27.6 makes advertising an unbacked
-> capability non-conforming.
+> **Backend profile boundary.** `src/Kappa/Backend/Capabilities.hs` advertises the
+> binding-relevant native profile `["rt-core","rt-blocking","rt-atomics"]`.
+> Blocking-classified native calls are accepted because the backend preserves the
+> classification into blocking `K_NATIVE` actions; source-level `blocking` builds
+> the same lane's OP_BLOCKING node. Both route off-worker. `blocking-cancellable` remains rejected until a cancellation-aware
+> bridge exists.
 
 ---
 
@@ -129,7 +138,7 @@ realize it directly:
 |-----------------------------------|-----------------------------------------------------------------------|
 | runtime agents                    | the runtime `Rt` (one per program); workers are *not* separate agents  |
 | a fiber table                     | `Fiber` objects, GC-kept while reachable; an id→fiber weak map for trace|
-| runnable queues per agent         | per-worker Chase–Lev deque + a global injection queue (`runq.c`)       |
+| runnable queues per agent         | one mutex-protected global FIFO run queue today; per-worker Chase-Lev deques are a future performance path |
 | supervision scopes                | `Scope` objects forming a tree; each holds its attached-children set    |
 | timer registrations               | a libuv `uv_timer_t` per sleeping fiber / one min-heap timer wheel      |
 | promise cells                     | `Promise` objects: a single-assignment `Exit` slot + a waiter list      |
@@ -168,7 +177,6 @@ typedef struct Fiber {
   KValue       *interrupt_cause;     // the structured InterruptCause (§18.1.2)
   ExitFrame    *exits;         // per-fiber defer/using stack (heap, LIFO)
   FiberRefMap  *locals;        // copy-on-fork fiber-local map (§18.1.7)
-  KValue       *label;         // Option String diagnostic label (§18.1.10)
   KValue       *exit;          // terminal Exit, once F_DONE (§18.8)
   WaiterList    waiters;       // fibers parked in await/join on this one
   struct Worker*home;          // last worker (scheduling hint; not affinity)
@@ -203,14 +211,15 @@ typedef struct Cont {
   KValue      *a;     // payload: the k closure / next action / handler / exit action
   KValue      *b;     // secondary payload (e.g. handler return clause)
   void        *aux;   // structure pointer (Scope* for UNSCOPE, ExitFrame* for POPEXIT…)
-  struct Cont *next;  // the rest of the stack (immutable; sharing enables multi-shot)
+  struct Cont *next;  // the rest of the stack
 } Cont;
 ```
 
-`Cont` cells are **immutable and shared**. Pushing a frame allocates a new cell
-whose `next` points at the existing stack. This immutability is the foundation
-of multi-shot resumption (§13): a captured continuation segment is just a `Cont*`,
-and resuming it twice re-runs forward from the same shared structure.
+Current native continuations are heap allocated, but the implemented effect
+runtime is **one-shot**. Captured continuation segments may be severed and
+spliced during resume; `rt-multishot-effects` is not advertised. Multi-shot
+requires persistent/cloned continuation segments plus independent exit-action
+obligations, and remains future work.
 
 ### 5.3 The step loop
 
@@ -247,44 +256,41 @@ frame. This is the refactor that makes suspension possible.
 ### 5.4 Where blocking native calls go
 
 A saturated `is_io` `K_NATIVE` whose binding is classified `nonblocking`
-(§26.1.4) runs **inline** on the worker (it does not block). One classified
-`blocking` is **not** run inline: the fiber parks and the call is dispatched to
-the blocking lane (§7.4), which resumes the fiber with the result. This is the
-direct realization of §32.2.6 ("blocking foreign work MUST NOT monopolize
-scheduler resources") and of `blocking` requiring `rt-blocking`.
+(§26.1.4) runs **inline** on the worker (it does not block). A classified
+`blocking` native binding lowers to a blocking `K_NATIVE`; the CK-machine parks
+the fiber, dispatches the host call off the scheduler worker, and resumes the
+fiber with the result. A binding classified `blocking-cancellable` still requires
+a safe cancellation mechanism and is rejected by the native profile today.
 
 ---
 
-## 6. The scheduler (M:N, work-stealing)
+## 6. The scheduler (M:N, global FIFO today)
 
 ### 6.1 Workers
 
 `N` worker threads (default `min(ncpu, RT_MAX_WORKERS)`, override via
 `KAPPA_RT_WORKERS`), each an OS thread registered with Boehm (`GC_register_my_thread`).
-A worker is Go's `P`+`M` fused, GHC's HEC, a BEAM scheduler. Each worker owns a
-**Chase–Lev work-stealing deque** of runnable fibers (`push`/`pop` at the bottom
-by the owner; `steal` from the top by thieves — the classic lock-free deque).
+A worker steps one runnable fiber at a time. Today workers draw from one
+mutex-protected global FIFO run queue; per-worker Chase-Lev work-stealing deques
+are the future performance path, not the current implementation.
 
 ### 6.2 Queues and load balancing
 
-- **Local deque** (per worker): LIFO for the owner (cache-friendly, like Go),
-  stealable FIFO-ish from the top.
-- **Global injection queue** (MPMC, lock + ring or a Michael–Scott queue): newly
-  forked fibers and reactor/cross-thread wakeups land here or are pushed to a
-  chosen worker; periodically polled to prevent global-queue starvation
-  (Go's `schedtick % 61` trick).
-- **Steal**: an idle worker scans peers in random order and steals half (BEAM/Go).
+- **Global FIFO queue**: newly forked fibers, yields, reactor wakeups, and
+  cross-thread wakeups are pushed here.
+- **No stealing yet**: an idle worker waits on the global queue condition
+  variable. Sharded/per-worker deques can be added later without changing the
+  fiber semantics.
 - **Park**: a worker with nothing to run and nothing to steal parks on a futex/
   condvar; it is woken when work is injected (`signal`) or by the reactor.
 
 ### 6.3 Fairness (§32.2.6)
 
-Weak fairness is guaranteed by: (a) a continuously-runnable fiber re-enters a
+Weak fairness is guaranteed by: (a) a continuously-runnable fiber re-enters the
 run queue every time its **reduction budget** (`QUANTUM`) is exhausted (§6.4),
-so it cannot monopolize a worker; (b) `cede` immediately reschedules behind other
-runnable fibers; (c) the global-queue poll prevents local-deque favoritism from
-starving injected work. With N>1 workers, one CPU-bound fiber cannot starve the
-others at all (they run elsewhere and steal).
+so it cannot monopolize a worker; and (b) `cede` immediately reschedules behind
+other runnable fibers. The FIFO queue is a simple correctness baseline; work
+stealing is a throughput optimization.
 
 ### 6.4 Safe points and reduction budgets (BEAM/Tokio coop/Go)
 
@@ -335,13 +341,15 @@ established by the queue's release/acquire (§12).
 
 ### 7.4 The blocking lane (`rt-blocking`)
 
-`blocking body` and `blocking`-classified foreign calls run on libuv's worker
-threadpool via `uv_queue_work` (configurable size, `UV_THREADPOOL_SIZE`). The
-fiber parks; the work runs on a pool thread (registered with Boehm); the
-`after_work` callback on the reactor wakes the fiber. This is Tokio
-`spawn_blocking` / BEAM dirty schedulers / JVM virtual-thread carrier offload. A
-program that uses `blocking` without `rt-blocking` is rejected (§27.6) — but the
-native profile advertises it, so this is the supported path.
+The runtime routes a blocking `K_NATIVE` or `krt2_blocking body` by parking the
+fiber and running the action on a GC-registered off-worker pthread. Completion
+wakes the parked fiber through the normal `krt2i_wake` path with the exact result
+value, including typed failure or re-raise nodes. Interruption of a plain
+`blocking` call is non-cancellable: the request is recorded, but the parked fiber
+is not woken until the host call returns; the pending interrupt is then observed
+at that resume point. This is a correctness lane, not the final throughput
+design: a bounded pool or libuv-backed work queue can replace the thread-per-call
+implementation without changing the observable contract.
 
 ### 7.5 Idle and shutdown
 
@@ -423,8 +431,11 @@ restart sequencing (BEAM) are reproduced; cause composition uses `Both`/`Then`.
 ## 10. Atomics (`rt-atomics`, §29.1)
 
 `AtomicRef a` is a **distinct cell kind** (not `Ref`/`TVar`/`var`), holding a
-single GC-pointer slot operated on with C11 atomics. The memory-order enums map
-directly:
+boxed `KValue *` slot protected by a per-cell mutex. This preserves the current
+surface instances (`Bool` and arbitrary-precision `Integer`) exactly. The
+memory-order enums are validated at the runtime boundary and map to the
+corresponding C11 order values, but the current implementation does not promise
+lock-free hardware atomics:
 
 | Kappa order            | C11                       |
 |------------------------|---------------------------|
@@ -492,7 +503,7 @@ fiber ref ordering is preserved (we never reorder same-fiber operations).
 
 ---
 
-## 13. Algebraic-effect handlers and multi-shot resumptions (`rt-multishot-effects`, §32.2.13–.20)
+## 13. Algebraic-effect handlers and resumptions (§32.2.13–.20)
 
 The existing `KCT_EFFPURE`/`KCT_EFFOP` effect tree already reifies resumptions as
 GC closures, but purely. We unify it with the IO CK-machine:
@@ -502,17 +513,17 @@ GC closures, but purely. We unify it with the IO CK-machine:
   the operation clauses.
 - `label.op args` walks `f->k` to the nearest matching `KK_HANDLE` (skipping other
   labels), **capturing the `Cont` suffix** from the op site to that handler as the
-  resumption segment `r` (§32.2.13). Because `Cont` cells are immutable and shared
-  (§5.2), `r` is just the captured `Cont*` plus the captured mask state.
+  resumption segment `r` (§32.2.13). In the current native runtime this is a
+  one-shot segment.
 - Resuming `r v` re-enters that suffix with `v` (§32.2.13–.18). The captured env's
   heap objects stay **shared** (§32.2.18): a `var`/`newRef` allocated before the
   op site is the *same* object across resumption uses; pre-op effects are not
   rolled back; post-resumption effects occur anew on each use.
-- **Multi-shot** (`rt-multishot-effects`): resuming `r` more than once is sound
-  because re-entering an immutable `Cont*` re-runs forward without mutating the
-  segment. Each use gets **independent exit-action obligations** (§32.2.16/.19):
-  the `KK_POPEXIT` frames in the segment fire once *per use*. (Captured `var`s are
-  shared per §32.2.18; the *control* obligations clone.)
+- **Multi-shot** (`rt-multishot-effects`) is not implemented by the native
+  runtime and the capability is not advertised. Reachable multi-shot programs are
+  rejected by the native backends. The future implementation must clone or
+  otherwise persist captured control obligations so each resume gets independent
+  exit-action obligations (§32.2.16/.19).
 - **Abortive** (quantity-0) clauses MUST still unwind the captured segment's
   `defer`/`using` exactly once in masked LIFO order (§32.2.17/.20) — we do not
   drop the segment silently. A resumption whose captured segment carries pending
@@ -599,31 +610,32 @@ channel; `unsandbox` re-raises it.
 
 ## 17. The integration seam (native backend → `kappart2`)
 
-The runtime is usable standalone *now* (C harnesses build `KValue` IO actions and
-call `krt2_run_main`). Wiring it into the compiler is a separate, well-defined
-milestone:
+The runtime is usable both from standalone C harnesses and from compiler-generated
+C/LLVM do-kernel paths. Remaining integration work is incremental:
 
-1. **Driver:** `Kappa.Backend.Driver` links `kappart2` (and `kappart`) and
-   `-luv`/`pkg-config libuv` instead of the bare `kappart.c`.
-2. **`main`:** `Kappa.Backend.C` emits `krt2_run_main(<main_action>)` instead of
-   `krun_io_checked(...)` — the runtime owns the top-level loop.
-3. **Scheduler primitives:** the prelude `expect term`s `fork`, `forkDaemon`,
+1. **Driver/main:** `Kappa.Backend.Driver` links `kappart2` and generated native
+   mains enter through the `krt2_run_main` path for `kappart2` do-kernel actions.
+2. **Scheduler primitives:** the prelude `expect term`s `fork`, `forkDaemon`,
    `await`, `join`, `interrupt*`, `cede`, `sleepFor`, `sleepUntil`, `timeout`,
    `race`, `newScope`, `forkIn`, `shutdownScope`, `withScope`, `monitor`,
    `newPromise`, `completePromise`, `awaitPromise*`, `newFiberRef`/`get`/`set`/
    `locally`, `newTVar`/`readTVar`/`writeTVar`/`atomically`/`retry`/`check`,
    `newAtomicRef`/`atomic*`, `blocking`, `mask`/`uninterruptible`/`poll`,
-   `acquireRelease`/`ensuring` lower to the corresponding `krt2_*` entry points
-   (a table in `C.hs`, parallel to the existing `kpf_io_*` table). Their C ABI is
-   `include/kappart2.h` (§ the header).
-4. **IO driver:** `ioBind`/`ioThen`/`catchIO`/`finallyIO`/`defer` codegen targets
+   `acquireRelease`/`ensuring` lower through the protected-scope CK-machine
+   builders (`krt2_finally`, `krt2_mask`, and `krt2_acquire_release` where the
+   compiler emits the resource kernel). Their C ABI is `include/kappart2.h`
+   (§ the header).
+3. **IO driver:** `ioBind`/`ioThen`/`catchIO`/`finallyIO`/`defer` codegen targets
    the CK-machine builders (`krt2_bind`/`krt2_then`/`krt2_catch`/`krt2_finally`/
    `krt2_defer`) so the non-tail legs become `Cont` frames, not nested
    `krun_io`. The existing `K_IOTAIL`/`K_BOUNCE` markers keep meaning "continue
    this fiber's step loop."
-5. **Safe points:** `C.hs` emits `krt2_safepoint()` at loop back-edges (§6.4).
-6. **Capabilities:** flip `Capabilities.hs` to the full six once 1–5 land and
-   the conformance suite passes natively.
+4. **Safe points:** C and LLVM codegen emit `krt2_safepoint()` at generated loop
+   back-edges (§6.4).
+5. **Capabilities:** advertise additional capabilities only after the corresponding
+   backend path is wired and verified. `rt-blocking` is now wired for
+   source-level `blocking` and classified native calls; `rt-multishot-effects`
+   remains withheld.
 
 Until then, the runtime keeps the `KValue`/`KTag`/`krun_io` ABI **stable** and
 **adds no `KTag`** (REVIEW.md M22): scheduler ops are reserved *primitive names*
@@ -648,18 +660,18 @@ threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` an
 
 | Idea                                                | Borrowed from           | Where (§)        |
 |-----------------------------------------------------|-------------------------|------------------|
-| M:N work-stealing, per-worker LIFO deque + global Q | Go (P/M), GHC HECs, BEAM | §6               |
-| Chase–Lev lock-free work-stealing deque             | Go, JVM ForkJoinPool    | §6.1             |
+| M:N worker scheduler, global FIFO baseline          | Go (P/M), GHC HECs, BEAM | §6               |
+| Future Chase–Lev work-stealing deque                | Go, JVM ForkJoinPool    | §6.1             |
 | Reduction-budget cooperative safe points            | BEAM reductions, Tokio coop, Go | §6.4     |
 | Heap-reified return stack (stackless continuations)  | GHC RTS / STG           | §5               |
-| Reactor/executor split; Waker wakeups; spawn_blocking | Tokio                   | §7               |
-| Single event-loop reactor + threadpool offload      | libuv / Node, BEAM dirty schedulers | §7   |
+| Reactor/executor split; Waker wakeups               | Tokio                   | §7               |
+| Future blocking-work offload lane                   | libuv / Node, BEAM dirty schedulers | §7   |
 | Async-exception masking + finalizers-before-observe | GHC RTS                 | §8               |
 | Supervision trees = scopes; OTP restart strategies  | Erlang/BEAM             | §9               |
 | StructuredTaskScope / structured concurrency        | JVM Loom, Trio, Kotlin  | §9               |
 | Optimistic STM (read/write-set, version validation)  | GHC STM                 | §11              |
 | JMM/C++ happens-before edge catalog                 | JVM JMM, C++ MM         | §12              |
-| C11 atomics + memory orders                         | C++11/LLVM atomics      | §10              |
+| Atomic modification orders + memory-order validation | C++11/LLVM atomics      | §10              |
 | Delimited continuations as heap data; multi-shot    | OCaml 5 / multicore effects, GHC | §13     |
 | Safepoints for cooperative preemption               | JVM/CLR safepoints      | §6.4             |
 | Parallel-mark conservative GC (start), gen-nursery (later) | Boehm; GHC/Go (future) | §16        |
@@ -668,13 +680,15 @@ threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` an
 
 ## 19. Roadmap
 
-- **v1 (this work):** standalone runtime: scheduler, fibers, libuv reactor +
-  blocking lane, timers/sleep/timeout/race, promises, scopes/structured shutdown,
-  monitors, fiber-local state, interruption/masking, STM, atomics, effect
-  handlers (incl. multi-shot); C test harnesses; build via `kappa.build.kp` +
-  Makefile; `rt.supervisor` library.
-- **v2:** backend integration (§17); native conformance suite green; flip
-  `Capabilities.hs`.
+- **v1 (this work):** standalone runtime and compiler-wired native profile:
+  scheduler, fibers, libuv reactor + blocking lane, timers/sleep/timeout/race,
+  promises, scopes/structured shutdown, monitors, fiber-local state,
+  interruption/masking, STM core, boxed atomic cells, one-shot handler substrate,
+  abandonment drain, C test harnesses, and build via `kappa.build.kp` + Makefile.
+  The Haskell native backend advertises `rt-core`, `rt-blocking`, and `rt-atomics`.
+- **v2:** remaining runtime surface gaps: supervisor library semantics, fiber
+  labels, STM `orElse`, sandbox/unsandbox lowering, child-failure aggregation,
+  and any capability-profile reconciliation for `rt-parallel` / `rt-shared-stm`.
 - **v3 perf:** per-worker libuv loops (multi-reactor, handle-affinity) for I/O
   scalability; generational per-worker-nursery GC; fine-grained STM commit locks;
   Go-1.14-style async preemption for tail-latency.
@@ -683,16 +697,16 @@ threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` an
 
 ## 20. File map
 
-The runtime lives in `runtime/`, flat alongside `kappart.c` (the boxed-value
-model it layers over). The scheduler is consolidated into a handful of
+The runtime lives in `runtime/`, flat alongside the split boxed-value runtime TUs
+(`gc.c`, `value.c`, `bignum.c`, `show.c`, `unicode.c`, and `prims.c`). The scheduler is consolidated into a handful of
 translation units rather than the finer-grained split this design originally
 sketched (`sched.c`/`fiber.c`/`runq.c`/`timer.c`/`promise.c`/`interrupt.c`/
 `cause.c`/`fiberlocal.c` all fold into `rt.c`/`reactor.c`/`scope.c`; `atomic.c`
-is not yet built — see [`PRIMITIVES.md`](PRIMITIVES.md)).
+owns the boxed atomic cells — see [`PRIMITIVES.md`](PRIMITIVES.md)).
 
 ```
 runtime/
-  kappart.c            the boxed-value model: KValue, Boehm GC, pure + IO primitives
+  gc.c/value.c/...     the boxed-value model: KValue, Boehm GC, pure + IO primitives
   kappart.h            its public header (KValue/KTag, kint/kctor/kapp/krun_io, …)
   kappa_ucd.h          Unicode tables used by the string primitives
   kappart2.h           the public C ABI: Fiber/Scope/Promise/TVar/AtomicRef + all krt2_* entry points
@@ -704,6 +718,7 @@ runtime/
   scope.c              supervision scopes, structured shutdown, monitors, interrupt delivery/unwind
   race.c               race/timeout, composed from fork + promise + interrupt
   stm.c                TVars, optimistic transactions, commit/retry/orElse, wait-sets
+  atomic.c             AtomicRef cells, C11 memory orders, CAS/fetch operations
   Makefile             standalone build of the runtime lib + C harnesses (no compiler needed)
   docs/                DESIGN.md (this), README, REVIEW, RESEARCH, COVERAGE, DEPLOYMENT, INTEGRATION, PRIMITIVES
   tests/               C harnesses: spine, parallel, scopes, completion, race, cancel, stm, stm_retry, stm_orelse

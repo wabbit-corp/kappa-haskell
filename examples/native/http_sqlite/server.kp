@@ -31,18 +31,18 @@ let dbPath = "/tmp/kappa_http_demo.db"
 
 main : UIO Unit
 let main = do
-    database <- sql.sqliteOpen dbPath
+    let database <- sql.sqliteOpen dbPath
     sql.sqliteExec database "CREATE TABLE IF NOT EXISTS counter (hits INTEGER)"
     sql.sqliteExec database "DELETE FROM counter"
     sql.sqliteExec database "INSERT INTO counter (hits) VALUES (0)"
-    listener <- net.tcpListen 8088
+    let listener <- net.tcpListen 8088
     printlnString "listening on :8088"
     var served = 0
     while ltInt served 3 do
-        conn <- net.tcpAccept listener
+        let conn <- net.tcpAccept listener
         net.connRead conn
         sql.sqliteExec database "UPDATE counter SET hits = hits + 1"
-        count <- sql.sqliteQueryInt database "SELECT hits FROM counter"
+        let count <- sql.sqliteQueryInt database "SELECT hits FROM counter"
         net.connWrite conn (httpResponse (stringAppend "hits=" (showInt (i64Value count))))
         net.connClose conn
         served = addInt served 1

@@ -1,0 +1,12 @@
+module main
+
+data Cell : Type = Empty | Full (>=1 n : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell = Empty
+    let () <- writeRef (ref cell) (Full 1)
+    pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP

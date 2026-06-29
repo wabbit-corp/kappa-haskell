@@ -8,27 +8,30 @@ set is the reference interpreter (`src/Kappa/Interp.hs`, `runPrimIO'`), which th
 native runtime must eventually match.
 
 **Headline:** the cancellation core is already complete and matches ZIO's hard
-cases. The remaining gaps are a handful of small scheduler/continuation-touching
-primitives (`onInterrupt`/`onExit`, `disconnect`, `Promise.poll`/`isDone`,
-`FiberRef.modify` + copy-on-fork); everything else is a derivable library.
+cases. The remaining gaps are a handful of scheduler/continuation-touching
+primitives and library surfaces (`disconnect`, fiber labels, `std.supervisor`,
+fixed-width atomic instances once fixed-width integer types are surfaced, and
+broader polymorphic `std.atomic` coverage); everything else is either wired or
+derivable library code.
 
-> **UPDATE — #1 (`std.atomic`) is DONE.** [`../atomic.c`](../atomic.c) now
-> implements the full `krt2_atomic_*` ABI with real C11 atomics: an `AtomicRef`
-> is an `_Atomic(int64_t)` cell (covering the required `Bool` + fixed/pointer-width
-> integer `AtomicValue` instances), memory orders map from the boxed §29.1 order
-> constructors by numeric tag id, and `atomicCompareExchange` is a true hardware
-> CAS with exact value semantics. Verified by [`../tests/atomic.c`](../tests/atomic.c):
-> every op's single-thread semantics, plus 64 fibers × 2000 `fetchAdd` conserving
-> 128 000 exactly under 12-core contention (stress-clean ×30). `rt-atomics` in
-> `KRT2_CAPABILITIES` is now honest. (Reaching it from `.kp` still needs the
-> `std.atomic` stdlib module + backend prim wiring, paralleling STM.)
+> **UPDATE — #1 (`std.atomic`) runtime cell is DONE.** [`../atomic.c`](../atomic.c)
+> implements the `krt2_atomic_*` ABI with a boxed `AtomicRef` cell protected by a
+> per-cell mutex. The cell preserves full `KValue *` semantics, so portable
+> `Integer` remains arbitrary precision instead of being narrowed to a fixed-width
+> scalar atomic. Memory-order constructor codes are validated and each
+> operation is indivisible; the current representation intentionally makes no
+> lock-free hardware-CAS promise. Verified by [`../tests/atomic.c`](../tests/atomic.c):
+> every op's single-thread semantics, arbitrary-precision integer preservation,
+> plus 64 fibers × 2000 `fetchAdd` conserving 128 000 exactly under 12-core
+> contention (stress-clean ×30). The `.kp` `std.atomic` surface lowers to the
+> `krt2_atomic_*` entry points through the native backend; fixed-width and broader
+> polymorphic `AtomicValue`/`AtomicInteger` coverage is tracked in
+> `docs/RUNTIME-SPEC-COVERAGE.md`.
 
-> Status note (single-agent STM): the native backend now lowers
-> `newTVar`/`readTVar`/`writeTVar`/`atomically` to single-agent cell semantics
-> (matching the reference interpreter) via the IO do-kernel — see `kpf_io_*TVar`
-> in [`../kappart.c`](../kappart.c). The journaled multi-fiber STM in
-> [`../stm.c`](../stm.c) becomes reachable from `.kp` once the do-kernel is
-> CPS-lowered (see [`INTEGRATION.md`](INTEGRATION.md)).
+> Status note (STM): the native backend has both legacy cell-style TVar helpers
+> and the journaled multi-fiber STM runtime in [`../stm.c`](../stm.c). The current
+> surface is partially wired; remaining STM gaps such as `Alternative STM` are
+> tracked in `docs/RUNTIME-SPEC-COVERAGE.md`.
 
 ---
 
@@ -37,8 +40,7 @@ primitives (`onInterrupt`/`onExit`, `disconnect`, `Promise.poll`/`isDone`,
 These `krt2_*` entry points cover the corresponding spec §18.1 / §28 `expect
 term`s and the ZIO/CE primitive core. **Note (C ABI vs. Kappa surface):** a few
 spec primitives are reached today via the Kappa-level prelude over lower
-primitives (e.g. `join`/`awaitPromise` over `await` + a `match`; single-agent
-`FiberRef` over `Ref`) and do **not** yet have a dedicated `krt2_*` C
+primitives (e.g. `join`/`awaitPromise` over `await` + a `match`) and do **not** yet have a dedicated `krt2_*` C
 definition — those land with the do-kernel CPS rewrite + per-fiber state and are
 marked *(prelude-derived; no C ABI yet)* below. The unbacked declarations were
 removed from `kappart2.h` (see its "Planned ABI" note) so no advertised symbol
@@ -51,11 +53,11 @@ is a link-fail trap.
 | `interrupt` / `interruptFork` / `interruptAs` / `interruptForkAs` (§18.1.4) | `krt2_interrupt` / `krt2_interrupt_fork` / `krt2_interrupt_as` / `krt2_interrupt_fork_as` |
 | `cede` (§18.1.5) | `krt2_cede` (+ `krt2_safepoint` for loop back-edges) |
 | `nowMonotonic` / `sleepFor` / `timeout` / `race` (§18.1.6); `sleepUntil` *(prelude-derived; no C ABI yet)* | `krt2_now_monotonic` / `krt2_sleep_for` / `krt2_timeout` / `krt2_race` |
-| `newFiberRef` / `getFiberRef` / `setFiberRef` / `locallyFiberRef` (§18.1.7) | *(single-agent over `Ref` in the prelude; no `krt2_*` C ABI yet — ADD #4)* |
+| `newFiberRef` / `getFiberRef` / `setFiberRef` / `locallyFiberRef` (§18.1.7) | `krt2_new_fiber_ref` / `get_fiber_ref` / `set_fiber_ref` / `locally_fiber_ref` |
 | `newScope` / `withScope` / `forkIn` / `shutdownScope` / `monitor` / `awaitMonitor` / `demonitor` (§18.1.8) | `krt2_new_scope` / `with_scope` / `fork_in` / `shutdown_scope` / `monitor` / `await_monitor` / `demonitor` |
 | `newPromise` / `awaitPromiseExit` / `completePromise` (§18.1.9); `awaitPromise` *(prelude-derived; no C ABI yet)* | `krt2_new_promise` / `await_promise_exit` / `complete_promise` (**poll/isDone missing — ADD #3**) |
 | `fiberId` / `currentFiberId` (§18.1.10); labels *(no C ABI yet — needs a per-fiber label field)* | `krt2_fiber_id` / `krt2_current_fiber_id` |
-| `blocking` (§18.1.11) | `krt2_blocking` (identity v1; uv_queue_work offload lane is TODO) |
+| `blocking` (§18.1.11) | `krt2_blocking` / blocking `K_NATIVE`: park fiber, run action on off-worker lane, wake with exact result |
 | `poll` / `uninterruptible` / `mask`+restore / `ensuring` / `acquireRelease` (§18.1.12) | `krt2_poll` / `uninterruptible` / `mask` / `ensuring` / `acquire_release` |
 | `sandbox` / `unsandbox` (§18.1.2) | *(prelude-derived; no `krt2_*` C ABI yet)* |
 | STM: `newTVar` / `readTVar` / `writeTVar` / `retry` / `check` / `atomically` / `orElse` + `stm_pure`/`stm_bind` (§18.1.13) | `krt2_new_tvar` / `read_tvar` / `write_tvar` / `retry` / `check` / `atomically` / `or_else` — implemented in `stm.c`, adversarially reviewed |
@@ -79,20 +81,21 @@ a pure Kappa library.
 ### 1. `std.atomic` — the entire atomics module (§29.1, `rt-atomics`) — ✅ DONE
 - **Spec ref:** §29.1; capability gate §27.6 (`rt-atomics`, listed in `KRT2_CAPABILITIES`).
 - **Status:** ✅ implemented in [`../atomic.c`](../atomic.c) (see the headline note);
-  the `krt2_atomic_*` ABI is now backed by real C11 atomics and stress-verified.
-  Remaining: the `.kp`-level `std.atomic` stdlib module + `AtomicValue`/`AtomicInteger`
-  instances + backend prim wiring (the surface, paralleling the STM `.kp` wiring).
+  the `krt2_atomic_*` ABI is now backed by boxed, mutex-protected atomic cells and
+  stress-verified. The `.kp`-level `std.atomic` module and backend prim wiring are
+  present for `Bool` and `Integer`; fixed-width instances remain deferred until
+  fixed-width integer types are exposed in the surface.
 - **Why a primitive:** `AtomicRef` is a distinct cell kind (§29.1: "not an ordinary
-  `var`, `Ref`, `TVar`, or `MonadRef`"), and the operations must lower to C11
-  `atomic_*` with the exact `LoadOrder`/`StoreOrder`/`RmwOrder`/`CasFailureOrder`
-  memory-order mapping and the cross-fiber happens-before contract. No pure Kappa
-  expression can produce a `memory_order_acquire` load.
-- **Approach:** add `atomic.c`: `AtomicRef` as a `K_FGN` box wrapping a C11
-  `_Atomic` word; map the boxed order constructors to `memory_order_*`;
-  `compare_exchange` returns the `CompareExchangeResult` (`Exchanged old` /
-  `NotExchanged current`) ADT; fetch-ops return the old value. Provide
-  `AtomicValue` instances for `Bool` + fixed/pointer-width ints. **Only flip the
-  `rt-atomics` capability flag to "real" once this lands** (§28.305).
+  `var`, `Ref`, `TVar`, or `MonadRef`"), and the operations must be indivisible
+  with the selected `LoadOrder`/`StoreOrder`/`RmwOrder`/`CasFailureOrder` checked at
+  the runtime boundary. No pure Kappa expression can provide a cross-fiber atomic
+  modification order.
+- **Approach:** `atomic.c` represents `AtomicRef` as a `K_FGN` box wrapping a
+  mutex-protected `KValue *` cell. The source-level wrapper reconstructs
+  `CompareExchangeResult` (`Exchanged old` / `NotExchanged current`) from the
+  witnessed old value; fetch-ops return the old value. Provide `AtomicValue`
+  instances for `Bool` and `Integer`, and `AtomicInteger Integer`; add fixed-width
+  instances when the fixed-width integer surface lands.
 
 ### 2. `onInterrupt` / `onExit` (interruption finalizers that receive the exit reason) — ✅ DONE
 - **Status:** ✅ landed end-to-end. Runtime markers `OP_ONEXIT_FIN`/`OP_ONINT_FIN`
@@ -213,8 +216,9 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
 ## Recommended priority order
 
 1. ~~**`std.atomic` (`atomic.c`) — ADD #1.**~~ ✅ DONE — `atomic.c` backs the
-   `rt-atomics` capability with real C11 atomics, stress-verified under 12-core
-   contention. (The `.kp` surface module remains.)
+   `rt-atomics` capability with boxed, mutex-protected atomic cells,
+   stress-verified under 12-core contention. The `.kp` surface is wired for
+   `Bool` and `Integer`; fixed-width instances remain future surface work.
 2. ~~**`FiberRef.modify` + copy-on-fork — ADD #4.**~~ ✅ DONE — per-fiber
    `FiberLocals` + fork-time deep copy; parent/child independence verified.
 3. ~~**`onInterrupt` / `onExit` — ADD #2.**~~ ✅ DONE — `OP_ONEXIT_FIN`/`OP_ONINT_FIN`
@@ -231,12 +235,13 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
    — last.** Observability, not semantics; `krt2_dump` covers the immediate need.
 
 **Key load-bearing facts:**
-- `atomic.c` now exists and backs `krt2_atomic_*` with real C11 atomics (ADD #1).
+- `atomic.c` now exists and backs `krt2_atomic_*` with boxed, mutex-protected
+  `KValue *` atomic cells (ADD #1).
 - The `FinSeq` struct in `rt.c` carries `rkind`/`rval`/`rlabel`; onInterrupt/onExit
   (ADD #2) reuses it via `OP_ONEXIT_FIN`/`OP_ONINT_FIN` in the `KK_FINSEQ` drain — DONE.
-- STM's journaled multi-fiber engine is fully done (`stm.c`, reviewed, two bugs
-  fixed); the native `.kp` surface currently uses single-agent cell semantics
-  pending the do-kernel CPS rewrite.
+- STM's journaled multi-fiber engine is present (`stm.c`, reviewed, two bugs
+  fixed); remaining source-level gaps are tracked in `docs/RUNTIME-SPEC-COVERAGE.md`.
 - The reference interpreter (`Interp.hs` `runPrimIO'`) is now in lockstep for
-  onInterrupt/onExit, Promise.poll/isDone, and modifyFiberRef (ADD #2/#3/#4);
-  `disconnect` (#5) remains, and atomics still need their `.kp` surface module.
+  onInterrupt/onExit, Promise.poll/isDone, modifyFiberRef, and `std.atomic`
+  `Bool`/`Integer` operations (ADD #1/#2/#3/#4); `disconnect` (#5) remains, and
+  atomics still need fixed-width/polymorphic surface completion.

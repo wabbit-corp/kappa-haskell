@@ -1,0 +1,11 @@
+module main
+
+main : UIO Int
+let main = do
+    var x = 42
+    var y = 0
+    writeRef (ref y) x
+    pure y
+
+--! assertNoErrors
+--! assertExecute main 42

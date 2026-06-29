@@ -1,0 +1,17 @@
+module main
+
+risky : Ref Int -> UIO Unit
+let risky r = do
+    writeRef r 1
+    pure ()
+
+main : UIO Unit
+let main = do
+    var x = 0
+    try risky (ref x)
+    finally ->
+        printlnString (showInt x)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"

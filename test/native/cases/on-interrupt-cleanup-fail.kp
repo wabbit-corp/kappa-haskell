@@ -1,0 +1,42 @@
+-- Native/runtime regression: onInterrupt is keyed to the original scope exit
+-- reason, not to the mutable cleanup-composed reason. If an inner cleanup fails
+-- while an interrupt is unwinding, the outer onInterrupt marker must still run.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..), type InterruptCause(..), type InterruptTag(..))
+
+failCleanup : IO String Unit
+let failCleanup = do
+    printlnString "defer-fail"
+    throwIO "defer"
+
+-- UIO is IO Void. This explicitly weakens the impossible error channel; ordinary
+-- do-items do not implicitly coerce IO Void a to IO e a.
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
+
+body : IO String Unit
+let body = do
+    defer failCleanup
+    weakenVoidIO (sleepFor (seconds 10))
+
+classifyCause : Cause String -> String
+let classifyCause c = match c
+    case Then (Interrupt cause) (Fail e) -> "exit:then:" ++ e
+    case Interrupt cause -> "exit:interrupt"
+    case Fail e -> "exit:fail:" ++ e
+    case _ -> "exit:other"
+
+child : IO String Unit
+let child = onInterrupt body (\ic -> printlnString "on-interrupt")
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure c -> printlnString (classifyCause c)

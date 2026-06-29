@@ -1,0 +1,12 @@
+--! noPrelude
+--! assertNoErrors
+--! assertNoWarnings
+
+@NoPrelude module borrowview_local_type_not_prelude_positive
+
+data Unit = Unit
+data BorrowView = FakeBorrowView
+
+mkReader : BorrowView -> Unit -> BorrowView
+let mkReader (view : BorrowView) : Unit -> BorrowView =
+    \(_ : Unit) -> view

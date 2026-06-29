@@ -1,0 +1,16 @@
+-- LLVM scalar-loop eligibility must use primitive identity, not spelling. This
+-- module shadows `addInt` with subtraction; a string-name scalarizer would treat
+-- it as primitive addition and print 3 instead of -3.
+module main
+
+addInt : Int -> Int -> Int
+let addInt x y = subInt x y
+
+main : UIO Unit
+let main = do
+    var i = 0
+    var acc = 0
+    while ltInt i 3 do
+        acc = addInt acc i
+        i = subInt i (0 - 1)
+    printlnString (showInt acc)

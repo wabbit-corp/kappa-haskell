@@ -1,0 +1,13 @@
+module main
+
+compute : Int -> Int
+let compute n =
+    let next = addInt n 1 in
+    let total = addInt next 2 in
+    total
+
+main : UIO Unit
+let main = printlnString (showInt (compute 39))
+
+--! mode run
+--! assertStdout "42\n"

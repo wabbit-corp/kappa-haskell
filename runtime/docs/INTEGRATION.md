@@ -65,11 +65,11 @@ not a one-liner.
 | `KExpr t` (non-tail)          | `emitRunIODiscard`               | `krt2_then(t, <cont>)`                                  |
 | `KBind pat t` (non-tail)      | `emitRunIOValue` + bind          | `krt2_bind(t, kclo(cont_fn, env))`, cont pushes+matches |
 | `KLet pat t`                  | inline C local + `kpush`         | unchanged (pure; no suspension) — stays inline in cont  |
-| `KVarItem` / `KAssign`        | `kref_new`/`kref_set`            | unchanged (refs are synchronous)                        |
+| `KVarItem` / `KAssign`        | raw ref helpers in legacy paths  | selected `MonadRef` actions (`newRef`/`writeRef`); optimized only when evidence-preserving |
 | `KReturn t`                   | `emitTailReturn` + defer flush   | a `Return` completion node (needs the completion channel)|
 | `KBreak`/`KContinue`          | `goto` + inline defer flush      | `Break`/`Continue` completion nodes (completion channel) |
 | `KDefer` / `KUsing`           | GC array + `flushFramesInline`   | `krt2_defer` onto the enclosing `KK_DOSCOPE` exit stack |
-| `KWhile`/`KFor`               | C `for`/`while` + `goto` labels  | a recursive IO loop over `krt2_bind`, `cede` at back-edge|
+| `KWhile`/`KFor`               | C `for`/`while` + `goto` labels  | `krt2_while`/CK loop; body action is built per iteration |
 | `KIf`                         | C `if` + tail/nested branches    | `krt2_bind`/`krt2_then` per branch                      |
 
 The prelude scheduler primitives lower to the `krt2_*` builders instead of the
@@ -87,13 +87,13 @@ corresponding `krt2_*`.
   (`C.hs:1245`). The runtime owns the top-level loop and returns the terminal
   `Exit`; the process exit code is derived from it (Success → 0, Failure → 1 with
   a diagnostic).
-- **`linkExecutable`** (`Driver.hs:232-243`) currently compiles `runtimeDir/
-  kappart.c` and links `-lgc -lgmp`. For a kappart2 target it additionally:
+- **`linkExecutable`** (`Driver.hs:232-243`) currently compiles the split boxed
+  runtime TUs and links `-lgc -lgmp`. For a kappart2 target it additionally:
   - adds `-I <kappart2>/include`,
   - compiles/links the kappart2 TUs (or links the prebuilt `libkappart2.a`),
   - adds libuv via `pkg-config --cflags/--libs libuv` (Driver-owned, like the
     binding pkg-config path),
-  - adds `-D_GNU_SOURCE -DGC_THREADS -pthread` to **both** `kappart.c` and the kappart2 TUs
+  - adds `-D_GNU_SOURCE -DGC_THREADS -pthread` to the boxed-runtime and kappart2 TUs
     (REVIEW.md M15 — a mismatch is undefined; enforce with a `_Static_assert`).
   The runtime cannot be a `hostBinding`/`pkgConfig` manifest entry (its symbols
   are codegen intrinsics, not FFI; REVIEW.md M14), so this is Driver-owned.
@@ -111,7 +111,7 @@ branch on it. With the flag off, output is byte-identical to today.
 1. **Linear core (no scopes/completion needed).** CPS-lower
    `KExpr`/`KBind`/`KLet`/`KVarItem`/`KAssign` + `ioPure`/`ioBind`/`ioThen`/
    `print`/`throwIO`/`catchIO` + `fork`/`await`/`cede`/`sleepFor`/promises/`now`.
-   This already covers `do { f <- fork child; r <- await f; printlnString (show r) }`
+   This already covers `do { let f <- fork child; let r <- await f; printlnString (show r) }`
    — a real concurrent program runs on the scheduler. *Depends only on the v1
    spine, which is done.* First target: a `fork`+`await`+`sleep` `.kp` compiled
    with `--runtime kappart2` producing the same stdout as the interpreter

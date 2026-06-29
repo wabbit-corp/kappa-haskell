@@ -15,19 +15,19 @@ let showBool b = if b then "T" else "F"
 
 main : UIO Unit
 let main = do
-    p <- newPromise
+    let p <- newPromise
     -- peek BEFORE completion: None / False, without blocking
-    m0 <- pollPromise p
-    d0 <- isDonePromise p
+    let m0 <- pollPromise p
+    let d0 <- isDonePromise p
     let label0 = match m0
           case None -> "before:None"
           case Some _ -> "before:Some"
     printlnString (stringAppend label0 (stringAppend " " (showBool d0)))
     -- complete with Success 42, then peek again
-    ok <- completePromise p (Success 42)
+    let ok <- completePromise p (Success 42)
     let _ = ok
-    m1 <- pollPromise p
-    d1 <- isDonePromise p
+    let m1 <- pollPromise p
+    let d1 <- isDonePromise p
     let label1 = match m1
           case None -> "after:None"
           case Some ex -> match ex
@@ -35,11 +35,11 @@ let main = do
             case Failure _ -> "after:Some-fail"
     printlnString (stringAppend label1 (stringAppend " " (showBool d1)))
     -- a failing promise: poll exposes Some (Failure (Fail e))
-    q <- newPromise
-    okq <- completePromise q (Failure (Fail 7))
+    let q <- newPromise
+    let okq <- completePromise q (Failure (Fail 7))
     let _ = okq
-    mq <- pollPromise q
-    dq <- isDonePromise q
+    let mq <- pollPromise q
+    let dq <- isDonePromise q
     let labelq = match mq
           case None -> "fail:None"
           case Some ex -> match ex

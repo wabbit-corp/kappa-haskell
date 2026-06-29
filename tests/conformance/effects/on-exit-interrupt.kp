@@ -43,16 +43,16 @@ let sleeper = onExit (onInterrupt sleepBody (\ic -> printlnString (classifyCause
 main : UIO Unit
 let main = do
     -- 1) normal exit: body-ok, exit:Success; onInterrupt skipped
-    fn <- fork normalChild
-    en <- await fn
+    let fn <- fork normalChild
+    let en <- await fn
     let _ = en
     printlnString "normal-done"
     -- 2) interrupt exit: int:Requested (onInterrupt), exit:Interrupt (onExit)
-    s <- fork sleeper
+    let s <- fork sleeper
     cede
     cede
     interrupt s
-    ex <- await s
+    let ex <- await s
     match ex
       case Success v -> printlnString "completed"
       case Failure c -> printlnString "interrupted"

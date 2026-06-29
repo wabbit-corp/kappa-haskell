@@ -1,0 +1,11 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n4\n"
+
+main : UIO Unit
+let main = do
+    var x = 1
+    let before <- readRef (ref x)
+    printlnString (showInt before)
+    writeRef (ref x) 4
+    printlnString (showInt x)

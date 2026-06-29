@@ -38,13 +38,13 @@ let branchBind n = do
 
 main : UIO Unit
 let main = do
-    a <- findEven (1 :: 3 :: 4 :: 5 :: Nil)
+    let ω a <- findEven (1 :: 3 :: 4 :: 5 :: Nil)
     printlnString a
-    b <- findEven (1 :: 3 :: 5 :: Nil)
+    let ω b <- findEven (1 :: 3 :: 5 :: Nil)
     printlnString b
-    s <- sumOdds (1 :: 2 :: 3 :: 4 :: 5 :: Nil)
+    let ω s <- sumOdds (1 :: 2 :: 3 :: 4 :: 5 :: Nil)
     printlnString (showInt s)
-    p <- branchBind 3
+    let ω p <- branchBind 3
     printlnString p
-    q <- branchBind 9
+    let ω q <- branchBind 9
     printlnString q

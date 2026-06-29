@@ -13,13 +13,13 @@ data Expr : Type =
 
 deriveTag : forall (@0 a : Type). Syntax Type -> Syntax a -> Elab (Syntax String)
 let deriveTag @a target value = do
-    shape <- inspectAdt @a target
+    let shape <- inspectAdt @a target
     matchAdt shape value \ctor fields ->
         stringSyntax ctor.renderName
 
 deriveSame : forall (@0 a : Type). Syntax Type -> Syntax a -> Syntax a -> Elab (Syntax Bool)
 let deriveSame @a target left right = do
-    shape <- inspectAdt @a target
+    let shape <- inspectAdt @a target
     matchAdt2 shape left right (\ctor fieldPairs -> boolSyntax True) (\leftCtor rightCtor -> boolSyntax False)
 
 tagName : Expr -> String

@@ -1,0 +1,16 @@
+module main
+
+setTo : Ref Int -> Int -> Int -> UIO Int
+let setTo r next out = do
+    writeRef r next
+    pure out
+
+main : UIO Int
+let main = do
+    var x = 42
+    let before = addInt x !(setTo (ref x) 10 1)
+    let after = addInt !(setTo (ref x) 20 2) x
+    pure (addInt before after)
+
+--! assertNoErrors
+--! assertExecute main 65

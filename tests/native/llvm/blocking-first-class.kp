@@ -1,0 +1,11 @@
+-- LLVM parity for first-class §18.1.11 `blocking`.
+module main
+
+withBridge : (UIO Unit -> UIO Unit) -> UIO Unit
+let withBridge bridge = bridge (printlnString "inside")
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    withBridge blocking
+    printlnString "after"

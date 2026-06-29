@@ -1,0 +1,21 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "20\n30\n"
+
+main : UIO Unit
+let main = do
+    var x = 1
+    let a =
+        match True
+        case True if x == 2 -> 10
+        case True -> 20
+        case False -> 0
+    printlnString (showInt a)
+
+    x = 2
+    let b =
+        match True
+        case True if x == 2 -> 30
+        case True -> 40
+        case False -> 0
+    printlnString (showInt b)

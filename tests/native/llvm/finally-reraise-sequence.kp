@@ -1,0 +1,17 @@
+module main
+
+import std.prelude.(type Cause(..), type Exit(..), type InterruptCause(..), type InterruptTag(..))
+
+childBody : UIO Unit
+let childBody = do
+    finallyIO (__reraiseCause (Interrupt (InterruptCause Requested None))) (printlnString "cleanup")
+    printlnString "unreachable"
+
+main : UIO Unit
+let main = do
+    let f <- fork childBody
+    let ex <- await f
+    match ex
+    case Success _ -> printlnString "success"
+    case Failure (Interrupt (InterruptCause Requested _)) -> printlnString "interrupt"
+    case Failure _ -> printlnString "other"

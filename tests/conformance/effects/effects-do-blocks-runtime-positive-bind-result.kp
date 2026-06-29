@@ -2,7 +2,7 @@ module main
 
 main : IO Int
 let main = do
-    value <- pure 40
+    let value <- pure 40
     pure (value + 2)
 
 --! assertNoErrors

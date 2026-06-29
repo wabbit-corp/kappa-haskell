@@ -1,0 +1,8 @@
+module main
+
+main : UIO Unit
+let main = do
+    outer@do
+        sleepFor (millis 1)
+        printlnString "inner"
+    printlnString "outer"

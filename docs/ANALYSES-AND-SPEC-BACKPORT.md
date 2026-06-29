@@ -190,18 +190,16 @@ predicate over the §32.2.13 captured segment precisely, and cross-reference tha
 §18.1.20's rule, so a conformance test can be written. Coupled CONFORMANCE-FIX: add the actual
 escape check (see C1).
 
-**[BACKPORT] B3 — bless the one-shot-default + `rt-multishot` gate as normative (only a
-name/witness nit).** GOOD NEWS: the gating is **already normative** — §18.1.17
+**[BACKPORT] B3 — bless the one-shot-default + `rt-multishot-effects` gate as normative.**
+GOOD NEWS: the gating is **already normative** — §18.1.17
 (Spec.md:19311-19327), §27.6 (Spec.md:28539-28562), §34.3.9 (Spec.md:38071-38073) — and our
 impl conforms (`Check.hs:7604` records `csMultishotOps`; `Backend/C.hs:498-513`
-`multishotLegality` scans main's reachable closure and rejects). **Do not relax.** The one
-correction: the spec capability is spelled `rt-multishot-effects` (Spec.md:28499, 28539) but
-our runtime/diagnostics/docs use the short `rt-multishot` (`rt.c:887-889`, `internal.h:101`,
-`Backend/C.hs:509`). All five other capabilities match the spec verbatim — **rename the impl to
-`rt-multishot-effects`** (this is the CONFORMANCE-FIX route, recommended) or add `rt-multishot`
-as an accepted short name (BACKPORT route). Also confirm/bless our backend-closure scan as
-equivalent to the §34.3.4 KBackendIR multi-shot witness, or treat the missing witness as a
-small CONFORMANCE-FIX.
+`multishotLegality` scans main's reachable closure and rejects). **Do not relax.** The
+implementation now uses the spec spelling `rt-multishot-effects` in diagnostics,
+runtime backstops, and current docs; no backport alias for the old short spelling is
+needed. Still confirm/bless our backend-closure scan as equivalent to the §34.3.4
+KBackendIR multi-shot witness, or treat the missing witness as a small
+CONFORMANCE-FIX.
 
 **[BACKPORT] B4 — bless the deep-vs-shallow reinstall-frame realization (no semantic change).**
 §18.1.22 (Spec.md:19721-19735) desugars `deep handle` to a shallow handler + recursive `__go`
@@ -258,11 +256,12 @@ without resuming. Couple with B2 so the §32.2.21 worked example becomes an auth
 (both `using` release and `defer` run exactly once masked-LIFO before `pure 0`;
 `useResource r` NOT run).
 
-**[CONFORMANCE-FIX] C2 — §32.2.12 failing-finalizer cause composition on the abandonment path.**
+**[CONFORMANCE-FIX] C2 — §32.2.12 failing-finalizer cause composition is implemented for ordinary drains; verify it on handler abandonment.**
 §32.2.12 (Spec.md:35191-35213): a finalizer that itself fails composes via `Then` and remaining
-finalizers still run. Our runtime abandons remaining finalizers and does not `Then`-compose on
-the failing path (`rt.c:973-981`, self-admitted; `RUNTIME-SPEC-COVERAGE.md:175,203`). Spec is
-adequate; impl is the gap. Lands on the same abandonment drain as C1 — fix together.
+finalizers still run. The ordinary `KK_FINSEQ` path now does this: cleanup failures are composed
+into the saved reason and the drain continues through remaining finalizers. The remaining
+handler-abandonment work in C1 must reuse that same drain rather than adding a second cleanup
+path that could regress `Then` composition.
 
 ### Concurrency / runtime / atomics / capabilities
 
@@ -293,16 +292,17 @@ with no spec home).**
 **[BACKPORT] A3 — §27.6 single-source capability obligation.** §27.6 (Spec.md:28490) says every
 backend profile MUST declare a capability set, but not that within one implementation every
 internal representation of that set MUST agree. We have **two disagreeing copies**:
-`rt.c:17-19` `KRT2_CAPABILITIES = {rt-core, rt-parallel, rt-shared-stm, rt-blocking,
-rt-atomics}` vs `Capabilities.hs:30` `nativeRuntimeCapabilities = {rt-core, rt-blocking,
-rt-atomics}` (only the Haskell list is consumed; the C list is dead, `kappart2.h:250`). Add a
+`rt.c` `KRT2_CAPABILITIES = {rt-core, rt-parallel, rt-blocking, rt-shared-stm, rt-atomics}`
+vs `Capabilities.hs` `nativeRuntimeCapabilities = {rt-core, rt-blocking, rt-atomics}` (only
+the Haskell list is consumed by build planning; the C list is runtime metadata).
+Add a
 MUST that the capability set is single-authoritative and any secondary copy MUST be derived from
 or checked against it. (Which list is *correct* is the separate CONFORMANCE question C3.)
 
 **[BACKPORT — optional micro-notes] A4 — three areas the spec already covers; no change needed.**
 - **Multi-shot withhold-and-reject** is already correct: §27.6 names `rt-multishot-effects`
   (Spec.md:28499,28539-28542); §18.1.17/§34.3.3 already mandate rejecting reachable multi-shot
-  (Spec.md:19322-19325). **No backport** — only the token spelling is wrong (C1-cap below).
+  (Spec.md:19322-19325). **No backport**; the implementation now uses the spec token.
 - **`run_main` re-entrancy / persistent-runtime** is impl latitude: §40 models runtime-init and
   process-exit as profile-recorded fields (Spec.md:40777-40781, 40808-40815) and enumerates
   entrypoint kinds (40783-40796) without mandating a `run_main` shape. **No backport** unless
@@ -312,25 +312,28 @@ or checked against it. (Which list is *correct* is the separate CONFORMANCE ques
   our deep-copy conforms (`internal.h:208-243`). Optional micro-note only: state that the value
   bindings are copied but the bound values themselves are shared.
 
-**[CONFORMANCE-FIX] C-cap-1 — multi-shot capability token spelling.** Code/diagnostics use
-`rt-multishot` (`Explain.hs:250`, `C.hs:505`, `rt.c:829/887`, `internal.h:101`); the spec token
-is `rt-multishot-effects` (Spec.md:28499). Behavior is correct; only the string is wrong.
-(Same item as B3's correction, viewed from the impl side.)
+**[CONFORMANCE-FIX] C-cap-1 — multi-shot capability token spelling.** DONE: code,
+diagnostics, runtime backstops, and current docs use the spec token
+`rt-multishot-effects` (Spec.md:28499). Historical references to the old short
+token are not accepted aliases.
 
-**[CONFORMANCE-FIX] C-cap-2 — multi-shot rejection diagnostic code/family.** We emit
-`E_BACKEND_UNSUPPORTED` / `kappa-hs.backend.unsupported`; §18.1.17 mandates code
-`E_FEATURE_BACKEND_CAPABILITY_MISSING`, family `kappa.feature.gated` (Spec.md:19337-19338).
+**[CONFORMANCE-FIX] C-cap-2 — multi-shot rejection diagnostic code/family.** DONE:
+native multi-shot rejection emits `E_FEATURE_BACKEND_CAPABILITY_MISSING` in
+family `kappa.feature.gated`, as required by §18.1.17.
 
 **[CONFORMANCE-FIX] C-cap-3 — capability *content* mismatch (over/under-advertising).**
 Independent of A3's "they must agree" rule:
 - `rt.c` advertises `rt-parallel`/`rt-shared-stm` (backed by real `nproc` OS-thread workers,
-  `rt.c:1341-1413`) but `Capabilities.hs:30` does not, and its comment falsely calls the runtime
-  "single-agent and synchronous" (`Capabilities.hs:19-24`) — **under-advertised**.
-- `rt-blocking` is advertised by both, but `krt2_blocking` is identity (`rt.c:91-97`, no
-  `uv_queue_work` offload) — **over-advertised** vs §26.1.4:26664-26665 (MUST NOT starve
-  unrelated fibers) and §27.6:28527-28530.
-- `rt-atomics` is over-advertised: RMW/CAS are lowered to non-atomic `readRef`/`writeRef`
-  (`atomic.c` dead) vs §29.1:30886-30888 (MUST). All us-behind-spec; the spec is already correct.
+  `rt.c:1341-1413`) but `Capabilities.hs` does not. This is still a profile-boundary
+  reconciliation item, not a `rt-blocking` bug.
+- `rt-blocking` is now backed for source-level `blocking` and classified native calls in both
+  the native build profile and `KRT2_CAPABILITIES`: codegen emits OP_BLOCKING / blocking
+  `K_NATIVE` nodes and the runtime parks the fiber while the call runs off-worker. The
+  remaining split is `rt-parallel`/`rt-shared-stm`.
+- `rt-atomics` is now wired to the runtime atomic cell and `krt2_atomic_*` native path.
+  Remaining §29.1 work is fixed-width/polymorphic instance coverage and documenting the
+  backend-private memory-order ABI encoding above; the old dead-`atomic.c` capability
+  honesty bug is closed.
 
 ---
 

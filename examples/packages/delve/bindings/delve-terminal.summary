@@ -12,7 +12,7 @@ target:
 blocking-classification:
   delve_open_terminal: blocking
   delve_close_terminal: blocking
-  delve_read_key: blocking-cancellable via poll/read interruption
+  delve_read_key: blocking
   delve_write_all: blocking
   delve_get_size: nonblocking
   delve_monotonic_seed: nonblocking

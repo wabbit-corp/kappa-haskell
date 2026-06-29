@@ -163,8 +163,9 @@ struct KValue {
     struct { const unsigned char *p; size_t len; } bytes;
     /* K_NATIVE: `fn` is the codegen-emitted direct wrapper, `arity` the
      * declared param count, `argc` the args accumulated so far, `kind` a
-     * label for diagnostics only (NEVER used for dispatch). */
-    struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; int is_io; } native;
+     * label for diagnostics only (NEVER used for dispatch), and `blocking`
+     * selects the rt-blocking lane for classified foreign work. */
+    struct { KValue *(*fn)(KValue **args); int arity; int argc; KValue **args; const char *kind; int is_io; int blocking; } native;
   } as;
 };
 
@@ -572,6 +573,8 @@ KValue *kp_mulInt(KValue *, KValue *);   KValue *kp_divInt(KValue *, KValue *);
 KValue *kp_modInt(KValue *, KValue *);   KValue *kp_negInt(KValue *);
 KValue *kp_eqInt(KValue *, KValue *);    KValue *kp_ltInt(KValue *, KValue *);
 KValue *kp_leInt(KValue *, KValue *);
+KValue *kp_intAnd(KValue *, KValue *);   KValue *kp_intOr(KValue *, KValue *);
+KValue *kp_intXor(KValue *, KValue *);
 KValue *kp_addDouble(KValue *, KValue *); KValue *kp_subDouble(KValue *, KValue *);
 KValue *kp_mulDouble(KValue *, KValue *); KValue *kp_divDouble(KValue *, KValue *);
 KValue *kp_negDouble(KValue *);           KValue *kp_ltDouble(KValue *, KValue *);
@@ -590,8 +593,6 @@ KValue *kp_showInt(KValue *);   KValue *kp_showDouble(KValue *);
 KValue *kp_showScalar(KValue *); KValue *kp_showStringLit(KValue *);
 KValue *kp_intToDouble(KValue *);
 KValue *kp_eqByte(KValue *, KValue *); KValue *kp_ltByte(KValue *, KValue *);
-KValue *kp_intAnd(KValue *, KValue *); KValue *kp_intOr(KValue *, KValue *);
-KValue *kp_intXor(KValue *, KValue *);
 
 /* LR1: unbox a K_INT to int64 for the typed unboxed Int workers (kwi_*).  A
  * non-K_INT value (a K_BIGINT that does not fit, or any non-Int box) sets the
@@ -643,8 +644,10 @@ int      klit_eq(KValue *a, KValue *b);          /* literal equality for CPLit *
 int64_t  kas_int(KValue *v);
 double   kas_dbl(KValue *v);
 int      kas_bool(KValue *v);
+int      kis_int_any(KValue *v);
 const char *kas_str(KValue *v);   /* NUL-terminated bytes of a K_STR (§26 CtString) */
 void    *kas_fgn(KValue *v);      /* opaque pointer of a K_FGN (§26 CtHandle/CtRawPtr) */
+void    *kas_fgn_kind(KValue *v, const char *kind);
 uint64_t kas_u64(KValue *v);      /* Integer as unsigned 64-bit (§26 U64/Usize) */
 KValue  *ku64(uint64_t u);        /* box an unsigned 64-bit as a non-negative Integer */
 
@@ -656,6 +659,9 @@ KValue  *kref_set(KValue *r, KValue *v);         /* returns Unit          */
 KValue  *krun_io(KValue *action);    /* run an IO action to a result      */
 KValue  *krun_io_checked(KValue *action); /* run IO; abort on uncaught typed failure */
 KValue  *krt2_run_op_sync(KValue *action); /* drive a non-suspending krt2_* OP node on the synchronous bridge (rt.c) */
+KValue  *krt2_run_legacy_finalizers(KValue *primary, KValue **defers, int *count);
+KValue  *krt2_finally(KValue *body, KValue *fin);
+int      krt2_is_reraise_action(KValue *v); /* raw OP_RERAISE value returned through legacy bridges */
 
 /* list helpers for `for` loops and FFI glue (Cons "::" / Nil) */
 KValue  *knil(void);
@@ -670,9 +676,12 @@ void     krt_fail(const char *msg) __attribute__((noreturn));
  * backend for a manifest-declared symbol — there is no name table and no
  * strcmp dispatch.  `knative` builds the curried (argc=0) action value;
  * `kapp` accumulates args and a saturated action is the suspended UIO
- * action that `krun_io` runs by calling `fn`.  `knative_sat` is the
- * saturated fast path the backend emits for an exactly-applied call. */
+ * action that `krun_io` runs by calling `fn`.  The `_blocking` variants carry
+ * the §26.1.4 classification through partial application so the CK-machine can
+ * park the fiber and run the host call off-worker. */
 KValue  *knative(KNativeFn fn, int arity, const char *kind, int is_io);
 KValue  *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io);
+KValue  *knative_blocking(KNativeFn fn, int arity, const char *kind, int is_io);
+KValue  *knative_sat_blocking(KNativeFn fn, int arity, KValue **args, int is_io);
 
 #endif /* KAPPART_H */

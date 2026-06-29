@@ -1,0 +1,10 @@
+module main
+
+badWriteFacet : UIO Unit
+let badWriteFacet = do
+    var x = 1
+    writeRef x 2
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_REF_REQUIRED

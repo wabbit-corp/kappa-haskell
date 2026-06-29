@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "value=5\n5\n9\n7\n"
+
+-- §18.3.1: Splice_m recurses through runtime child expressions such as
+-- interpolation parts, record literals, record patches, and map literals.
+
+main : UIO Unit
+let main = do
+    let r <- newRef 5
+    printlnString f"value=${showInt !(readRef r)}"
+
+    let rec = (value = !(readRef r), other = 2)
+    printlnString (showInt rec.value)
+
+    writeRef r 7
+    let patched = rec.{ value = !(readRef r) + 2 }
+    printlnString (showInt patched.value)
+
+    let m : Map String Int = { "k": !(readRef r) }
+    match mapLookup "k" m
+        case Some v -> printlnString (showInt v)
+        case None -> printlnString "missing"

@@ -1,0 +1,18 @@
+module test
+
+-- Recursive constructor payloads must not make Usage's stored-value fact
+-- discovery diverge while analyzing a signature-checked lambda binder.
+
+--! mode check
+
+data Peano : Type =
+    PZ
+    PS Peano
+
+idPeano : Peano -> Peano
+let idPeano = \x -> x
+
+use : Peano
+let use = idPeano (PS PZ)
+
+--! assertNoErrors

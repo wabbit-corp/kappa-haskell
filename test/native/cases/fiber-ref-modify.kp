@@ -13,24 +13,24 @@ import std.prelude.(type Exit(..))
 -- the child mutates its inherited copy; the parent must not see it.
 child : FiberRef Int -> UIO Int
 let child ref = do
-    inherited <- getFiberRef ref      -- snapshot of the parent's 11
-    _ <- modifyFiberRef ref (\x -> addInt x 89)  -- child cell -> 100
-    seen <- getFiberRef ref
+    let inherited <- getFiberRef ref      -- snapshot of the parent's 11
+    let _ <- modifyFiberRef ref (\x -> addInt x 89)  -- child cell -> 100
+    let seen <- getFiberRef ref
     ioPure seen                       -- 100
 
 main : UIO Unit
 let main = do
-    ref <- newFiberRef 7
+    let ref <- newFiberRef 7
     -- modify: 7 -> 11, returns the NEW value (atomic get-apply-set)
-    afterMod <- modifyFiberRef ref (\x -> addInt x 4)
+    let afterMod <- modifyFiberRef ref (\x -> addInt x 4)
     printlnString (showInt afterMod)            -- 11
-    before <- getFiberRef ref
+    let before <- getFiberRef ref
     printlnString (showInt before)              -- 11
-    f <- fork (child ref)
-    childSaw <- await f
+    let f <- fork (child ref)
+    let childSaw <- await f
     match childSaw
       case Success v -> printlnString (showInt v)   -- 100 (child's own copy)
       case Failure c -> printlnString "fail"
     -- the parent's value is UNCHANGED by the child's modify (copy-on-fork)
-    parentNow <- getFiberRef ref
+    let parentNow <- getFiberRef ref
     printlnString (showInt parentNow)           -- 11

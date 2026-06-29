@@ -1,0 +1,14 @@
+module test
+
+-- Recursive record-shaped data must not make Usage's nested field-path
+-- discovery diverge.
+
+--! mode check
+
+data Node : Type =
+    Node (next : Node)
+
+idNode : Node -> Node
+let idNode = \x -> x
+
+--! assertNoErrors

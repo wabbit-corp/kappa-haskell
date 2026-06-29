@@ -20,7 +20,7 @@ let worker cell m =
     if leInt m 0
     then pure ()
     else do
-        oldValue <- atomicFetchAdd RmwSeqCst cell 1
+        let oldValue <- atomicFetchAdd RmwSeqCst cell 1
         worker cell (subInt m 1)
 
 -- Fork `n` workers (each doing `m` increments), then await them all.  Forking
@@ -31,14 +31,14 @@ let spawnAll cell n m =
     if leInt n 0
     then pure ()
     else do
-        f <- fork (worker cell m)
+        let f <- fork (worker cell m)
         spawnAll cell (subInt n 1) m
-        result <- await f
+        let result <- await f
         pure ()
 
 main : UIO Unit
 let main = do
-    cell <- newAtomicRef 0
+    let cell <- newAtomicRef 0
     spawnAll cell 16 4000
-    total <- atomicLoad LoadSeqCst cell
+    let total <- atomicLoad LoadSeqCst cell
     printlnString (showInt total)        -- 64000, exactly, with no lost updates

@@ -21,5 +21,5 @@ expect term tcpListen : Int -> UIO OpaqueHandle
 
 main : UIO Unit
 let main = do
-    _ <- tcpListen 8080
+    let _ <- tcpListen 8080
     printlnString "unreachable"

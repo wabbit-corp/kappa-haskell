@@ -1,0 +1,14 @@
+--! assertNoErrors
+--! assertExecute main 3
+
+module main
+
+loop : STM Int
+let loop = do
+    var x = 0
+    while ltInt x 3 do
+        x = addInt x 1
+    x
+
+main : UIO Int
+let main = atomically loop

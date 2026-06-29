@@ -1,17 +1,9 @@
 -- Bench: scalar_intwhile
--- Purpose: the LLVM-backend unboxed-Int while-loop anchor (the C-side
---   equivalent is the scalar var+while lowering, 'compileScalarWhile').  A
---   `var i; var acc; while leInt i N do { acc += i; i += 1 }` mutable Int loop
---   is the shape the LLVM backend lowers to a native int64 register loop
---   (`@kscalarloop_N` with `llvm.sadd.with.overflow.i64` + a phi/back-edge),
---   instead of a per-iteration boxed `krt2_while` action over `kp_addInt` /
---   `kref_*` heap allocs.  If THIS regresses on the LLVM backend the unboxed
---   scalar-loop path broke (visible as the `krt2_while` action reappearing and
---   a ~hundreds-of-x slowdown).
--- Expected LLVM lowering: a `define internal ptr @kscalarloop_N(ptr %args)`
---   with native int64 arithmetic + the saturating-overflow intrinsics and a
---   boxed `kp_*`/`kref_*` continuation ONLY on the §6 overflow escape; ZERO
---   `krt2_while` in the generated `.ll`.
+-- Purpose: the LLVM-backend mutable-var while-loop anchor. Under S2.3b the old
+--   unboxed var-loop scalarizer is suspended because it bypassed selected
+--   MonadRef evidence; this benchmark now guards the safe generic path.
+-- Expected LLVM lowering: no mutable-var scalar worker; the loop is a `krt2_while`
+--   do-kernel action using the checker-selected MonadRef read/write actions.
 -- Result must equal: sum 0..10000000 inclusive = 50000005000000.
 module main
 

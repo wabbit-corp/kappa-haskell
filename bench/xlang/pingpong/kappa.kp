@@ -25,13 +25,13 @@ let ping toPing toPong n decreases n = do
     if leInt n 0 then
         ioPure 0
     else do
-        myNext <- newPromise                       -- fresh slot pong will wake us on
+        let myNext <- newPromise                       -- fresh slot pong will wake us on
         atomically (writeTVar toPing myNext)
-        cur <- atomically (readTVar toPong)         -- pong's current park-slot
-        done <- completePromise cur (Success n)     -- wake pong
+        let cur <- atomically (readTVar toPong)         -- pong's current park-slot
+        let done <- completePromise cur (Success n)     -- wake pong
         let _ = done
-        _ <- awaitPromise myNext                    -- park until pong replies
-        rest <- ping toPing toPong (subInt n 1)
+        let _ <- awaitPromise myNext                    -- park until pong replies
+        let rest <- ping toPing toPong (subInt n 1)
         ioPure (addInt rest 1)
 
 -- pong parks on `toPong`, replies on `toPing`.
@@ -40,24 +40,24 @@ let pong toPing toPong n decreases n = do
     if leInt n 0 then
         ioPure 0
     else do
-        cur <- atomically (readTVar toPong)
-        _ <- awaitPromise cur                       -- park until ping pings us
-        myNext <- newPromise                        -- fresh slot for next round
+        let cur <- atomically (readTVar toPong)
+        let _ <- awaitPromise cur                       -- park until ping pings us
+        let myNext <- newPromise                        -- fresh slot for next round
         atomically (writeTVar toPong myNext)
-        replyTo <- atomically (readTVar toPing)     -- ping's current park-slot
-        done <- completePromise replyTo (Success n) -- wake ping
+        let replyTo <- atomically (readTVar toPing)     -- ping's current park-slot
+        let done <- completePromise replyTo (Success n) -- wake ping
         let _ = done
         pong toPing toPong (subInt n 1)
 
 main : UIO Unit
 let main = do
-    p0 <- newPromise
-    p1 <- newPromise
-    toPing <- atomically (newTVar p0)
-    toPong <- atomically (newTVar p1)
+    let p0 <- newPromise
+    let p1 <- newPromise
+    let toPing <- atomically (newTVar p0)
+    let toPong <- atomically (newTVar p1)
     -- N = 1000000 (hardcoded; must equal every ref impl + expected.txt)
-    fp <- fork (pong toPing toPong 1000000)
-    r <- ping toPing toPong 1000000
-    ex <- await fp
+    let fp <- fork (pong toPing toPong 1000000)
+    let r <- ping toPing toPong 1000000
+    let ex <- await fp
     let _ = ex
     printlnString (showInt r)

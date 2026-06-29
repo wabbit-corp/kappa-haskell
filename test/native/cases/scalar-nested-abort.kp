@@ -1,0 +1,35 @@
+-- Native-only regression for §32.2.6 scalar-worker safe-point aborts.
+--
+-- `spin` is scalar-worker eligible and tail-recursive. `wrap` calls it from a
+-- pure helper, and `child` has an observable effect after that pure let. When the
+-- parent interrupts the child, the scalar worker must transfer control back to
+-- the runtime before the generated do-frame can run the following print.
+--
+-- The old `KRT2_SCALAR_ABORT -> return Unit` path printed AFTER-SCALAR-RAN and
+-- only then delivered the interrupt at the post-bridge gate.
+module main
+
+spin : Int -> Int -> Int
+let spin acc n =
+    if leInt n 0
+    then acc
+    else spin (addInt acc 1) (subInt n 1)
+
+wrap : Int -> Int
+let wrap n = addInt (spin 0 n) 1
+
+child : UIO Unit
+let child = do
+    let x = wrap 1000000000000
+    printlnString "AFTER-SCALAR-RAN"
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

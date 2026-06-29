@@ -1,0 +1,16 @@
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-start
+--! assertDiagnosticRelated error kappa.borrow.overlap borrow-conflict
+
+module main
+
+step2 : (inout a : Int) -> (inout b : Int) -> UIO (1 a : Int, 1 b : Int)
+let step2 (inout a : Int) (inout b : Int) : UIO (1 a : Int, 1 b : Int) =
+    pure (a = b, b = a)
+
+bad : UIO Unit
+let bad = do
+    var x = 1
+    step2 ~x ~x
+    pure ()

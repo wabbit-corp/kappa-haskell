@@ -1,0 +1,18 @@
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+import std.prelude
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full Token
+    std.prelude.writeRef (ref cell) Empty
+    pure ()

@@ -1,0 +1,8 @@
+module lib.tokens
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)

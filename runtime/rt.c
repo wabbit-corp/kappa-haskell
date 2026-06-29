@@ -7,6 +7,7 @@
 #include "internal.h"
 
 #include <gc.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,10 @@ Rt *g_rt = NULL;
  * worker steps exactly one fiber at a time, so a thread-local is exactly right
  * (and never shared across workers). */
 static _Thread_local Fiber *g_cur_fiber = NULL;
+static _Thread_local Rt    *g_cur_rt = NULL;
+static _Thread_local jmp_buf *g_scalar_abort_jmp = NULL;
+static _Thread_local int g_safepoint_yielding = 0;
+static _Thread_local int g_on_blocking_lane = 0;
 
 /* Back-edges between fairness cedes (fix SP).  A power of two so the budget reload
  * is a single store.  Large enough that the per-iteration check is free in the hot
@@ -29,7 +34,7 @@ static _Thread_local Fiber *g_cur_fiber = NULL;
 #define KRT2_BACKEDGE_QUANTUM 4096u
 
 const char *const KRT2_CAPABILITIES[] = {
-  "rt-core", "rt-parallel", "rt-shared-stm", "rt-blocking", "rt-atomics", NULL
+  "rt-core", "rt-parallel", "rt-blocking", "rt-shared-stm", "rt-atomics", NULL
 };
 
 /* ── Exit / Cause / outcome constructors (§28 shapes) ───────────────────────
@@ -102,13 +107,7 @@ KValue *krt2_uninterruptible(KValue *b)   { return op1(OP_UNINTERRUPTIBLE, "rt.u
 KValue *krt2_poll(void)                   { return op0(OP_POLL, "rt.poll"); }
 KValue *krt2_mask(KValue *f)              { return op1(OP_MASK, "rt.mask", f); }
 KValue *krt2_ensuring(KValue *body, KValue *fin) { return krt2_finally(body, fin); } /* = finally */
-/* §18.1.11 blocking (rt-blocking): run a potentially-blocking action.  v1 runs it
- * inline on the current worker — semantically faithful (the action runs and its
- * result/failure propagate).  The dedicated offload lane (uv_queue_work, so a
- * blocking syscall does not occupy a scheduler worker) is the future increment;
- * see reactor.c.  Implemented as identity so the advertised rt-blocking
- * capability is actually backed, not just declared. */
-KValue *krt2_blocking(KValue *body)       { return body; }
+KValue *krt2_blocking(KValue *body)       { return op1(OP_BLOCKING, "rt.blocking", body); }
 
 /* §34.5.3 do-kernel CPS wrappers.  The codegen's curried/array path calls a prim
  * via fn(KValue**), but the krt2_* node builders take individual args; these
@@ -120,6 +119,7 @@ KValue *kpf_fork_daemon(KValue **a)        { return krt2_fork_daemon(a[0]); }
 KValue *kpf_await(KValue **a)              { return krt2_await(a[0]); }
 KValue *kpf_cede(KValue **a)               { (void)a; return krt2_cede(); }
 KValue *kpf_sleep_for(KValue **a)          { return krt2_sleep_for(a[0]); }
+KValue *kpf_blocking(KValue **a)           { return krt2_blocking(a[0]); }
 /* §18.1.10 fiber identity: build the OP_CURRENT_FIBER_ID / OP_FIBER_ID nodes;
  * the CK-machine delivers the running/target fiber's integer id (rt.c case). */
 KValue *kpf_current_fiber_id(KValue **a)   { (void)a; return krt2_current_fiber_id(); }
@@ -266,6 +266,22 @@ KValue *kpf_eff_defer(KValue **a)   { return krt2_defer(a[0]); }
 KValue *krt2_print_c(const char *s)   { return op1(OP_PRINT, "rt.print", kstr0(s)); }
 KValue *krt2_println_c(const char *s) { return op1(OP_PRINTLN, "rt.println", kstr0(s)); }
 
+static ExitStack *exitstack_new(void);
+static void exitstack_push(ExitStack *s, KValue *action);
+static KValue *exit_of_reason(int rkind, KValue *rval);
+static void compose_reason_into(int *io_kind, KValue **io_val, int c_kind, KValue *c_val);
+static void emit_kstr(KValue *s, int newline);
+static KValue *abort_exit_take(KValue *token);
+static ExitStack *abort_exit_drain_stack(Fiber *f);
+static KValue *abort_exit_scope_finalizer(KValue *exit_action);
+static KValue *finalizer_action_for_reason(KValue *fin, int erkind, KValue *rval);
+static KValue *interrupt_cause_of_reason(int rkind, KValue *rval);
+static int deliver_interrupt(Rt *rt, Fiber *f);
+
+int krt2_is_reraise_action(KValue *v) {
+  return v && !kis_imm(v) && kctor_tagid(v) == OP_RERAISE;
+}
+
 /* ── synchronous bridge for CK-machine action nodes ─────────────────────────
  * A do-bind whose action is an IO combinator that BUILDS a krt2_* node — e.g.
  * the prelude's `liftA2 f a b = ioBind a (\x -> ioBind b (\y -> ioPure (f x y)))`,
@@ -277,49 +293,379 @@ KValue *krt2_println_c(const char *s) { return op1(OP_PRINTLN, "rt.println", kst
  * `default` arm and bind the raw NODE (e.g. `r <- liftA2 f a b` gave a wrong-typed
  * value: the `traverse`/delve crash, and the C != interp baseline gap).
  *
- * Drive the NON-suspending OPs here with exactly the legacy bridge's semantics
- * (krun_io recursion for sub-actions; the kpf_io_catchIO fail/handler shape),
- * trampolining bind/then/catch so a straight chain stays flat.  A genuinely
- * suspending node (OP_FORK/OP_AWAIT/…) never reaches the bridge — those blocks
- * are CPS-lowered onto the CK-machine — and a non-OP value (a data ctor, a
- * `return`ed result) is returned unchanged.  (This is also why `catchIO (do …)`
- * over a non-suspending do-block body now runs correctly on the bridge: its
- * kpf_io_catchIO body runs through krun_io, which drives the krt2_* tree here.) */
-KValue *krt2_run_op_sync(KValue *action) {
+ * Drive the NON-suspending OPs here with exactly the legacy bridge's semantics:
+ * krun_io recursion for sub-actions; OP_BIND/OP_THEN/OP_CATCH trampolined so a
+ * straight chain stays flat; and OP_DOSCOPE/OP_DEFER using a local ExitStack so
+ * lazy deferred actions that build a `finallyIO` tree still use the same
+ * language-level do-kernel nodes.  A genuinely suspending node
+ * (OP_FORK/OP_AWAIT/…) never reaches the bridge — those blocks are CPS-lowered
+ * onto the CK-machine — and a non-OP value (a data ctor, a `return`ed result) is
+ * returned unchanged. */
+static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *control);
+
+static KValue *krt2_run_sync_operand(KValue *action, ExitStack *scope, int *control) {
+  if (kis_imm(action) && kctor_tagid(action) < KRT2_OP_BASE) return action;
+  return krt2_run_op_sync_ret(action, scope, control);
+}
+
+static void krt2_sync_reason(KValue *r, int control, int *rkind, KValue **rval) {
+  if (control == RK_RETURN) {
+    *rkind = RK_RETURN;
+    *rval = r;
+  } else if (control == RK_BREAK) {
+    *rkind = RK_BREAK;
+    *rval = NULL;
+  } else if (control == RK_CONTINUE) {
+    *rkind = RK_CONTINUE;
+    *rval = NULL;
+  } else if (control == RK_RERAISE) {
+    *rkind = RK_RERAISE;
+    *rval = r;
+  } else if (krt2_is_reraise_action(r)) {
+    *rkind = RK_RERAISE;
+    *rval = kctor_arg(r, 0);
+  } else if (kis_fail(r)) {
+    *rkind = RK_FAIL;
+    *rval = r->as.fail.err;
+  } else {
+    *rkind = RK_NORMAL;
+    *rval = r;
+  }
+}
+
+static KValue *krt2_sync_apply_reason(int rkind, KValue *rval, int *control) {
+  switch (rkind) {
+    case RK_NORMAL:
+      return rval;
+    case RK_RETURN:
+      *control = RK_RETURN;
+      return rval;
+    case RK_BREAK:
+      *control = RK_BREAK;
+      return kunit();
+    case RK_CONTINUE:
+      *control = RK_CONTINUE;
+      return kunit();
+    case RK_FAIL:
+      return kfail(rval);
+    case RK_RERAISE:
+      if (!kis_imm(rval) && kctor_tagid(rval) == KCT_FAIL) return kfail(kctor_arg(rval, 0));
+      *control = RK_RERAISE;
+      return rval;
+    default:
+      krt_fail("internal: abrupt control escaped synchronous IO bridge");
+      return 0;
+  }
+}
+
+static KValue *krt2_sync_reify_reason(int rkind, KValue *rval) {
+  int control = RK_NORMAL;
+  KValue *r = krt2_sync_apply_reason(rkind, rval, &control);
+  if (control == RK_RERAISE) return krt2_reraise(r);
+  return r;
+}
+
+static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *control) {
   for (;;) {
+    if (kis_imm(action)) {
+      if (kctor_tagid(action) < KRT2_OP_BASE) return action;
+    } else {
+      switch (action->tag) {
+        case K_IOTAIL:
+          action = action->as.bounce.fn;
+          continue;
+        case K_IO: {
+          KValue *r = action->as.io.fn(action->as.io.env);
+          if (kis_imm(r)) {
+            if (kctor_tagid(r) < KRT2_OP_BASE) return r;
+            action = r;
+            continue;
+          }
+          if (r->tag == K_IOTAIL) { action = r->as.bounce.fn; continue; }
+          if (r->tag == K_IOEFFECT || r->tag == K_IOFINALLY) {
+            KValue *rr = krun_io(r);
+            if (krt2_is_reraise_action(rr)) {
+              *control = RK_RERAISE;
+              return kctor_arg(rr, 0);
+            }
+            return rr;
+          }
+          if (krt2_is_reraise_action(r)) {
+            *control = RK_RERAISE;
+            return kctor_arg(r, 0);
+          }
+          return r;
+        }
+        case K_NATIVE:
+          if (action->as.native.argc < action->as.native.arity)
+            krt_fail("internal: native action run before saturation");
+          {
+            KValue *r = action->as.native.fn(action->as.native.args);
+            if (krt2_is_reraise_action(r)) {
+              *control = RK_RERAISE;
+              return kctor_arg(r, 0);
+            }
+            return r;
+          }
+        case K_FAIL:
+          return action;
+        default:
+          break;
+      }
+    }
     switch (kctor_tagid(action)) {
       case OP_PURE:
         return kctor_arg(action, 0);
       case OP_BIND: {
-        KValue *r = krun_io(kctor_arg(action, 0));
+        int sub_control = RK_NORMAL;
+        KValue *r = krt2_run_sync_operand(kctor_arg(action, 0), scope, &sub_control);
+        if (sub_control != RK_NORMAL) { *control = sub_control; return r; }
         if (kis_fail(r)) return r;
         action = kapp(kctor_arg(action, 1), r);
-        if (kctor_tagid(action) >= KRT2_OP_BASE) continue; /* another OP tree: trampoline */
-        return krun_io(action);                            /* legacy node / value: run it */
+        continue;
       }
       case OP_THEN: {
-        KValue *r = krun_io(kctor_arg(action, 0));
+        int sub_control = RK_NORMAL;
+        KValue *r = krt2_run_sync_operand(kctor_arg(action, 0), scope, &sub_control);
+        if (sub_control != RK_NORMAL) { *control = sub_control; return r; }
         if (kis_fail(r)) return r;
         action = kctor_arg(action, 1);
-        if (kctor_tagid(action) >= KRT2_OP_BASE) continue;
-        return krun_io(action);
+        continue;
       }
       case OP_CATCH: {
-        KValue *r = krun_io(kctor_arg(action, 0));
+        int sub_control = RK_NORMAL;
+        KValue *r = krt2_run_sync_operand(kctor_arg(action, 0), scope, &sub_control);
+        if (sub_control != RK_NORMAL) { *control = sub_control; return r; }
         if (!kis_fail(r)) return r;
         action = kapp(kctor_arg(action, 1), r->as.fail.err); /* run handler on the error */
-        if (kctor_tagid(action) >= KRT2_OP_BASE) continue;
-        return krun_io(action);
+        continue;
       }
       case OP_THROW:
         return kfail(kctor_arg(action, 0));
+      case OP_PRINT:
+        emit_kstr(kctor_arg(action, 0), 0);
+        return kunit();
+      case OP_PRINTLN:
+        emit_kstr(kctor_arg(action, 0), 1);
+        return kunit();
+      case OP_RERAISE: {
+        KValue *cause = kctor_arg(action, 0);
+        if (!kis_imm(cause) && kctor_tagid(cause) == KCT_FAIL) return kfail(kctor_arg(cause, 0));
+        *control = RK_RERAISE;
+        return cause;
+      }
+      case OP_RETURN:
+        *control = RK_RETURN;
+        return kctor_arg(action, 0);
+      case OP_RETSCOPE: {
+        int body_control = RK_NORMAL;
+        KValue *r = krt2_run_sync_operand(kctor_arg(action, 0), scope, &body_control);
+        if (kis_fail(r)) return r;
+        if (body_control == RK_RERAISE) {
+          *control = RK_RERAISE;
+          return r;
+        }
+        if (body_control == RK_BREAK || body_control == RK_CONTINUE) {
+          *control = body_control;
+          return r;
+        }
+        return r; /* catch OP_RETURN here; normal completion is transparent. */
+      }
+      case OP_DOSCOPE: {
+        ExitStack *xs = exitstack_new();
+        int body_control = RK_NORMAL;
+        KValue *r = krt2_run_sync_operand(kctor_arg(action, 0), xs, &body_control);
+        int rkind = RK_NORMAL;
+        KValue *rval = NULL;
+        krt2_sync_reason(r, body_control, &rkind, &rval);
+        int origin_kind = rkind;
+        KValue *origin_val = rval;
+        Fiber *masked_fiber = g_cur_fiber;
+        if (masked_fiber) masked_fiber->mask_depth++;
+        for (int i = xs->n - 1; i >= 0; i--) {
+          KValue *fin = finalizer_action_for_reason(xs->items[i], origin_kind, origin_val);
+          int fin_control = RK_NORMAL;
+          KValue *fr = krt2_run_sync_operand(fin, scope, &fin_control);
+          int ckind = RK_NORMAL;
+          KValue *cval = NULL;
+          krt2_sync_reason(fr, fin_control, &ckind, &cval);
+          compose_reason_into(&rkind, &rval, ckind, cval);
+        }
+        if (masked_fiber && masked_fiber->mask_depth > 0) masked_fiber->mask_depth--;
+        return krt2_sync_apply_reason(rkind, rval, control);
+      }
+      case OP_DEFER:
+        if (!scope) krt_fail("internal: defer outside any do-scope (mis-lowered §18.7 defer)");
+        exitstack_push(scope, abort_exit_scope_finalizer(kctor_arg(action, 0)));
+        return kunit();
+      case OP_ABORT_EXIT_FIN: {
+        KValue *exit_action = abort_exit_take(kctor_arg(action, 0));
+        if (!exit_action) return kunit();
+        return krt2_run_sync_operand(exit_action, scope, control);
+      }
+      case OP_WHILE: {
+        KValue *cond = kctor_arg(action, 0);
+        KValue *body = kctor_arg(action, 1);
+        uint32_t spc = KRT2_SP_QUANTUM;
+        for (;;) {
+          int cond_control = RK_NORMAL;
+          KValue *c = krt2_run_sync_operand(cond, scope, &cond_control);
+          if (cond_control != RK_NORMAL) { *control = cond_control; return c; }
+          if (kis_fail(c)) return c;
+          if (!kas_bool(c)) return kunit();
+
+          int body_control = RK_NORMAL;
+          KValue *r = krt2_run_sync_operand(krt2_doscope(body), scope, &body_control);
+          if (kis_fail(r)) return r;
+          if (body_control == RK_BREAK) return kunit();
+          if (--spc == 0) {
+            spc = KRT2_SP_QUANTUM;
+            if (krt2_safepoint()) krt2_scalar_abort();
+          }
+          if (body_control == RK_CONTINUE) continue;
+          if (body_control != RK_NORMAL) { *control = body_control; return r; }
+        }
+      }
+      case OP_BREAK:
+        *control = RK_BREAK;
+        return kunit();
+      case OP_CONTINUE:
+        *control = RK_CONTINUE;
+        return kunit();
+      case OP_NEW_REF:
+        return kref_new(kctor_arg(action, 0));
+      case OP_READ_REF:
+        return kref_get(kctor_arg(action, 0));
+      case OP_WRITE_REF:
+        kref_set(kctor_arg(action, 0), kctor_arg(action, 1));
+        return kunit();
       default:
-        /* not a non-suspending OP node: a value / data ctor (returned as-is), or
-         * a node the synchronous bridge does not drive (never a codegen-reachable
-         * suspending OP — those are CPS-lowered onto the CK-machine). */
+        if (!kis_imm(action) && kctor_tagid(action) >= KRT2_OP_BASE)
+          krt_fail("internal: unsupported OP reached synchronous IO bridge; block must be CPS-lowered");
+        /* not an OP node: a value / data ctor, returned as-is. */
         return action;
     }
   }
+}
+
+KValue *krt2_run_op_sync(KValue *action) {
+  int control = RK_NORMAL;
+  KValue *r = krt2_run_sync_operand(action, NULL, &control);
+  if (control == RK_RETURN) return krt2_return(r);
+  if (control == RK_RERAISE) return krt2_sync_reify_reason(RK_RERAISE, r);
+  if (control == RK_BREAK || control == RK_CONTINUE)
+    krt_fail("internal: loop control escaped synchronous IO bridge");
+  return r;
+}
+
+typedef struct BlockingReq {
+  Rt *rt;
+  Fiber *fiber;
+  KValue *action;
+  int resume_existing;
+} BlockingReq;
+
+static void fiber_step(Rt *rt, Fiber *f);
+
+static void *blocking_worker_main(void *arg) {
+  BlockingReq *req = (BlockingReq *)arg;
+  Fiber *f = req->fiber;
+
+  /* Source-level `blocking body` accepts arbitrary IO (§18.1.11), not just the
+   * legacy sync-bridge subset.  Once the off-worker thread owns the parked
+   * fiber, run the ordinary CK machine on that same fiber.  If the body parks
+   * (sleep/await/STM/etc.) or cedes, those operations publish the next status
+   * and enqueue/wake through the normal scheduler paths; if it completes or
+   * fails, deliver/unwind/finalizers run here exactly as they would on a worker. */
+  pthread_mutex_lock(&f->lock);
+  if (!req->resume_existing) f->cur = req->action;
+  f->blocking_armed = 0;
+  atomic_store_explicit(&f->status, F_RUNNING, memory_order_release);
+  pthread_mutex_unlock(&f->lock);
+
+  int saved_blocking_lane = g_on_blocking_lane;
+  g_on_blocking_lane = 1;
+  if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+      && f->mask_depth == 0) {
+    if (deliver_interrupt(req->rt, f)) fiber_step(req->rt, f);
+  } else {
+    fiber_step(req->rt, f);
+  }
+  g_on_blocking_lane = saved_blocking_lane;
+  GC_FREE(req);
+  return NULL;
+}
+
+static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
+  BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
+  if (!req) return 0;
+  req->rt = rt;
+  req->fiber = f;
+  req->action = action;
+  req->resume_existing = 0;
+  pthread_mutex_lock(&f->lock);
+  f->blocking_armed = 1;
+  atomic_store_explicit(&f->status, F_PARKED, memory_order_release);
+  pthread_mutex_unlock(&f->lock);
+  pthread_t t;
+  if (krt2i_spawn_thread(&t, blocking_worker_main, req) != 0) {
+    pthread_mutex_lock(&f->lock);
+    f->blocking_armed = 0;
+    atomic_store_explicit(&f->status, F_RUNNING, memory_order_release);
+    pthread_mutex_unlock(&f->lock);
+    GC_FREE(req);
+    return 0;
+  }
+  (void)pthread_detach(t);
+  return 1;
+}
+
+static void krt2i_resume_blocking_lane(Rt *rt, Fiber *f) {
+  BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
+  if (!req) krt_fail("rt.blocking: failed to allocate blocking resume request");
+  req->rt = rt;
+  req->fiber = f;
+  req->action = NULL;
+  req->resume_existing = 1;
+  pthread_t t;
+  if (krt2i_spawn_thread(&t, blocking_worker_main, req) != 0) {
+    GC_FREE(req);
+    krt_fail("rt.blocking: failed to resume blocking worker");
+  }
+  (void)pthread_detach(t);
+}
+
+static void enter_blocking_region(Fiber *f) {
+  atomic_fetch_add_explicit(&f->blocking_depth, 1, memory_order_acq_rel);
+}
+
+static void leave_blocking_region(Fiber *f) {
+  int old = atomic_fetch_sub_explicit(&f->blocking_depth, 1, memory_order_acq_rel);
+  if (old <= 0) krt_fail("internal: source blocking delimiter underflow");
+}
+
+KValue *krt2_run_legacy_finalizers(KValue *primary, KValue **defers, int *count) {
+  int rkind = RK_NORMAL;
+  KValue *rval = NULL;
+  krt2_sync_reason(primary, RK_NORMAL, &rkind, &rval);
+  int origin_kind = rkind;
+  KValue *origin_val = rval;
+
+  Fiber *masked_fiber = g_cur_fiber;
+  if (masked_fiber) masked_fiber->mask_depth++;
+  while (*count > 0) {
+    KValue *fin = defers[--(*count)];
+    fin = finalizer_action_for_reason(fin, origin_kind, origin_val);
+    int fin_control = RK_NORMAL;
+    KValue *fr = krt2_run_sync_operand(fin, NULL, &fin_control);
+    int ckind = RK_NORMAL;
+    KValue *cval = NULL;
+    krt2_sync_reason(fr, fin_control, &ckind, &cval);
+    compose_reason_into(&rkind, &rval, ckind, cval);
+  }
+  if (masked_fiber && masked_fiber->mask_depth > 0) masked_fiber->mask_depth--;
+
+  return krt2_sync_reify_reason(rkind, rval);
 }
 
 /* The while-loop's per-iteration branch: \cond_result ->
@@ -338,13 +684,128 @@ static KValue *restore_fn(KEnv *env, KValue *act) {
   return op2(OP_RESTORE, "rt.restore", act, kvar(env, 0));  /* [act, outerDepth] */
 }
 
+/* §18.7/§19.5/§32.2.6 abort-exit tokens for legacy native do-scopes.
+ *
+ * Generated synchronous C can be interrupted at a scalar/boxed-loop safe point
+ * while pure helper frames are still on the C stack. A lexical cleanup at the
+ * scalar call site is insufficient because the scalar worker may be inside a
+ * helper called from a scope with active defers/releases. The active exit
+ * actions therefore live on the Fiber. Normal finalization and safe-point abort
+ * both mark the same token inactive, so each action runs at most once. */
+#define KRT2_KIND_ABORT_EXIT "krt2.abortExit"
+
+static AbortExit *abort_exit_from_token(KValue *token) {
+  if (!token || kis_imm(token) || token->tag != K_FGN) {
+    krt_fail("internal: invalid abort-exit token");
+    return NULL;
+  }
+  if (strcmp(token->as.fgn.kind, KRT2_KIND_ABORT_EXIT) != 0) {
+    krt_fail("internal: wrong foreign token kind for abort-exit finalizer");
+    return NULL;
+  }
+  return (AbortExit *)token->as.fgn.p;
+}
+
+static void abort_exit_remove(Fiber *f, AbortExit *target) {
+  if (!f || !target) return;
+  AbortExit **p = &f->abort_exits;
+  while (*p) {
+    if (*p == target) {
+      *p = target->next;
+      target->next = NULL;
+      return;
+    }
+    p = &(*p)->next;
+  }
+}
+
+KValue *krt2_abort_exit_push(KValue *exit_action) {
+  AbortExit *ae = (AbortExit *)GC_MALLOC(sizeof(AbortExit));
+  ae->action = exit_action;
+  ae->active = 1;
+  Fiber *f = g_cur_fiber;
+  if (f) {
+    ae->next = f->abort_exits;
+    f->abort_exits = ae;
+  } else {
+    ae->next = NULL;
+  }
+  return kfgn(ae, KRT2_KIND_ABORT_EXIT);
+}
+
+static KValue *abort_exit_take(KValue *token) {
+  AbortExit *ae = abort_exit_from_token(token);
+  if (!ae || !ae->active) return NULL;
+  ae->active = 0;
+  abort_exit_remove(g_cur_fiber, ae);
+  return ae->action;
+}
+
+KValue *krt2_abort_exit_finalizer(KValue *token) {
+  return op1(OP_ABORT_EXIT_FIN, "rt.abortExitFin", token);
+}
+
+static KValue *abort_exit_scope_finalizer(KValue *exit_action) {
+  if (kctor_tagid(exit_action) == OP_ABORT_EXIT_FIN) {
+    return exit_action;
+  }
+  KValue *exit_token = krt2_abort_exit_push(exit_action);
+  return krt2_abort_exit_finalizer(exit_token);
+}
+
+static KValue *finalizer_action_for_reason(KValue *fin, int erkind, KValue *rval) {
+  int tag = kctor_tagid(fin);
+  if (tag == OP_ABORT_EXIT_FIN) {
+    fin = abort_exit_take(kctor_arg(fin, 0));
+    if (!fin) return krt2_pure(kunit());
+    tag = kctor_tagid(fin);
+  }
+  if (tag == OP_ONEXIT_FIN) {
+    return kapp(kctor_arg(fin, 0), exit_of_reason(erkind, rval));
+  }
+  if (tag == OP_ONINT_FIN) {
+    KValue *cause = interrupt_cause_of_reason(erkind, rval);
+    if (cause) return kapp(kctor_arg(fin, 0), cause);
+    return krt2_pure(kunit());
+  }
+  return fin;
+}
+
+static ExitStack *abort_exit_drain_stack(Fiber *f) {
+  if (!f || !f->abort_exits) return NULL;
+  ExitStack *xs = exitstack_new();
+  for (;;) {
+    AbortExit *ae = f->abort_exits;
+    if (!ae) break;
+    f->abort_exits = ae->next;
+    ae->next = NULL;
+    if (!ae->active) continue;
+    ae->active = 0;
+    exitstack_push(xs, ae->action);
+  }
+  /* abort_exits is newest-first; begin_finseq runs from the end. */
+  for (int i = 0, j = xs->n - 1; i < j; i++, j--) {
+    KValue *tmp = xs->items[i];
+    xs->items[i] = xs->items[j];
+    xs->items[j] = tmp;
+  }
+  return xs;
+}
+
 /* acquireRelease (§18.1.12 / §19.5) as a composition over mask+finally+bind:
- *   mask (\restore -> acquire >>= \r -> finally (restore (use r)) (release r))
+ *   mask (\restore -> acquire >>= \r -> finally (restore (pure r >>= use)) (release r))
  * acquire runs uninterruptibly (under the mask), `use r` is restored
- * (interruptible), and `release r` is a finalizer (runs masked, on every exit). */
+ * (interruptible), and `release r` is a finalizer (runs masked, on every exit).
+ * The `pure r >>= use` shape is load-bearing: calling `use r` here would build
+ * the use action while still masked, which can evaluate pure lets in the
+ * generated continuation (including scalar workers) before `restore` takes
+ * effect. */
 static KValue *ar_with_r(KEnv *env, KValue *r) {     /* env = [release, use, restore] */
   KValue *release = kvar(env, 0), *use = kvar(env, 1), *restore = kvar(env, 2);
-  return krt2_finally(kapp(restore, kapp(use, r)), kapp(release, r));
+  KValue *release_action = kapp(release, r);
+  KValue *release_token = krt2_abort_exit_push(release_action);
+  KValue *use_action = krt2_bind(krt2_pure(r), use);
+  return krt2_finally(kapp(restore, use_action), krt2_abort_exit_finalizer(release_token));
 }
 static KValue *ar_masked(KEnv *env, KValue *restore) { /* env = [acquire, release, use] */
   KValue *acq = kvar(env, 0), *rel = kvar(env, 1), *use = kvar(env, 2);
@@ -407,7 +868,10 @@ void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
      * pending interrupt is delivered on the first turn (only the CAS winner runs
      * this, so there is no torn write; rq_push's rq_lock publishes it). */
     f->resumed = 1;
-    krt2i_rq_push(rt, f);
+    if (atomic_load_explicit(&f->blocking_depth, memory_order_acquire) > 0)
+      krt2i_resume_blocking_lane(rt, f);
+    else
+      krt2i_rq_push(rt, f);
   }
 }
 /* Block until a runnable fiber is available, or NULL when shutting down. */
@@ -429,6 +893,28 @@ static Fiber *rq_pop(Rt *rt) {
     pthread_cond_wait(&rt->rq_cv, &rt->rq_lock);
     rt->rq_idle--;
   }
+}
+
+/* Non-blocking run-queue poll used by native-loop safe points.  A scalar worker
+ * cannot park and later resume from a saved continuation because its live state is
+ * in C locals, not in f->k/KEnv.  Instead, the safe point briefly lends this OS
+ * worker to one already-runnable sibling fiber, then returns to the scalar loop
+ * with those locals intact. */
+static Fiber *rq_try_pop(Rt *rt) {
+  pthread_mutex_lock(&rt->rq_lock);
+  if (atomic_load_explicit(&rt->shutting_down, memory_order_acquire)) {
+    pthread_mutex_unlock(&rt->rq_lock);
+    return NULL;
+  }
+  RQNode *n = rt->rq_head;
+  if (!n) {
+    pthread_mutex_unlock(&rt->rq_lock);
+    return NULL;
+  }
+  rt->rq_head = n->next;
+  if (!rt->rq_head) rt->rq_tail = NULL;
+  pthread_mutex_unlock(&rt->rq_lock);
+  return n->f;
 }
 
 /* ── fibers ─────────────────────────────────────────────────────────────── */
@@ -455,8 +941,11 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
   f->drain_ae = NULL;
   f->sleep_timer = NULL;          /* fix S2: no sleep timer armed yet              */
   atomic_store(&f->sleep_armed, 0);
+  f->blocking_armed = 0;
+  atomic_store(&f->blocking_depth, 0);
   f->safepoint_hit = 0;           /* fix SP: §32.2.6 loop-backedge safe point      */
   f->backedge_budget = 0;
+  f->abort_exits = NULL;
   pthread_mutex_init(&f->lock, NULL);
   return f;
 }
@@ -520,6 +1009,7 @@ typedef struct AbandonEnd {
  * terminal, which threading the clause reason itself would violate. */
 typedef struct {
   ExitStack  *xs; int i; int rkind; KValue *rval; KValue *rlabel;
+  int origin_kind; KValue *origin_val;
   AbandonEnd *drain_ae;
 } FinSeq;
 
@@ -700,7 +1190,7 @@ Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
  * Exit), 0 if `f` parked onto the child's waiter list (suspended). */
 static int do_await(Rt *rt, Fiber *f, KValue *handle) {
   (void)rt;
-  Fiber *child = (Fiber *)kas_fgn(handle);
+  Fiber *child = (Fiber *)kas_fgn_kind(handle, KRT2_KIND_FIBER);
   pthread_mutex_lock(&child->lock);
   if (atomic_load_explicit(&child->status, memory_order_acquire) == F_DONE) {
     KValue *ex = child->exit;
@@ -724,7 +1214,7 @@ static KValue *promise_new(void) {
   return kfgn(p, KRT2_KIND_PROMISE);
 }
 static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
-  Promise *p = (Promise *)kas_fgn(ph);
+  Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   pthread_mutex_lock(&p->lock);
   int first = !atomic_load(&p->completed);
   Waiter *w = NULL;
@@ -739,7 +1229,7 @@ static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
 }
 static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
   (void)rt;
-  Promise *p = (Promise *)kas_fgn(ph);
+  Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   pthread_mutex_lock(&p->lock);
   if (atomic_load_explicit(&p->completed, memory_order_acquire)) {
     KValue *ex = p->exit;
@@ -758,7 +1248,7 @@ static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
  * exit is single-assignment under p->lock, so reading it after observing
  * completed==1 is a consistent snapshot — REVIEW.md happens-before §35.041). */
 static KValue *promise_poll(KValue *ph) {
-  Promise *p = (Promise *)kas_fgn(ph);
+  Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   pthread_mutex_lock(&p->lock);
   KValue *r = atomic_load_explicit(&p->completed, memory_order_acquire)
                   ? krt2i_some(p->exit) : krt2i_none();
@@ -766,7 +1256,7 @@ static KValue *promise_poll(KValue *ph) {
   return r;
 }
 static KValue *promise_is_done(KValue *ph) {
-  Promise *p = (Promise *)kas_fgn(ph);
+  Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   return kbool(atomic_load_explicit(&p->completed, memory_order_acquire) != 0);
 }
 
@@ -830,6 +1320,35 @@ static void compose_reason_into(int *io_kind, KValue **io_val, int c_kind, KValu
   *io_val  = composed;
 }
 
+static KValue *interrupt_cause_of_cause(KValue *cause) {
+  if (!cause || kis_imm(cause)) return NULL;
+  switch (kctor_tagid(cause)) {
+    case KCT_INTERRUPT:
+      return kctor_arg(cause, 0);
+    case KCT_THEN:
+      /* Then(primary, cleanup): onInterrupt is keyed to the body's terminal
+       * interruption, not to later cleanup failures appended to the cause. */
+      return interrupt_cause_of_cause(kctor_arg(cause, 0));
+    case KCT_BOTH: {
+      KValue *left = interrupt_cause_of_cause(kctor_arg(cause, 0));
+      return left ? left : interrupt_cause_of_cause(kctor_arg(cause, 1));
+    }
+    default:
+      return NULL;
+  }
+}
+
+static KValue *interrupt_cause_of_reason(int rkind, KValue *rval) {
+  switch (rkind) {
+    case RK_INTERRUPT:
+      return rval;
+    case RK_RERAISE:
+      return interrupt_cause_of_cause(rval);
+    default:
+      return NULL;
+  }
+}
+
 /* Feed value `v` to the continuation.  Returns 1 to keep stepping, 0 if the
  * fiber finished. */
 /* Apply a saved Reason (from KK_FINSEQ, once a scope's finalizers have run). */
@@ -866,6 +1385,8 @@ static int begin_finseq(Rt *rt, Fiber *f, ExitStack *xs, ExitStack *restore,
   f->mask_depth++;
   FinSeq *fs = (FinSeq *)GC_MALLOC(sizeof(FinSeq));
   fs->xs = xs; fs->i = xs->n - 1; fs->rlabel = rlabel; fs->drain_ae = drain_ae;
+  fs->origin_kind = drain_ae ? RK_DRAIN : rkind;
+  fs->origin_val = drain_ae ? NULL : rval;
   if (drain_ae) {
     /* fix 1: seed the finseq PRIMARY with the RUNNING composed drain reason (the
      * clause result, possibly already carrying earlier abandoned do-scopes'
@@ -1168,12 +1689,12 @@ static int do_resume(Rt *rt, Fiber *f, KValue *kbox, KValue *value) {
   if (!kbox || kbox->tag != K_FGN) {
     return unwind(rt, f, RK_FAIL, kstr0("internal: resume of a non-resumption value"), NULL);
   }
-  Resumption *r = (Resumption *)kas_fgn(kbox);
+  Resumption *r = (Resumption *)kas_fgn_kind(kbox, KRT2_KIND_RESUMPTION);
   if (r->used) {
     /* the compile-time E_QTT_CONTINUATION_CAPTURE gate rejects >1 use, so this
-     * is an internal invariant break (rt-multishot is not advertised). */
+     * is an internal invariant break (rt-multishot-effects is not advertised). */
     return unwind(rt, f, RK_FAIL,
-                  kstr0("internal: one-shot resumption used more than once (rt-multishot absent)"), NULL);
+                  kstr0("internal: one-shot resumption used more than once (rt-multishot-effects absent)"), NULL);
   }
   r->used = 1;
   /* §4b tail-resume: the segment was never severed and the KK_HANDLER was never
@@ -1272,19 +1793,7 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
          * but the Exit handed to an onExit IN the abandoned slice keeps its
          * pre-fix drain semantics (the slice's body did not terminate normally,
          * so it is not the clause's exit) — reconstruct from RK_DRAIN there. */
-        int erkind = fs->drain_ae ? RK_DRAIN : fs->rkind;
-        int tag = kctor_tagid(e);
-        if (tag == OP_ONEXIT_FIN) {
-          KValue *handler = kctor_arg(e, 0);
-          e = kapp(handler, exit_of_reason(erkind, fs->rval));
-        } else if (tag == OP_ONINT_FIN) {
-          if (erkind == RK_INTERRUPT) {
-            KValue *handler = kctor_arg(e, 0);
-            e = kapp(handler, fs->rval); /* the InterruptCause */
-          } else {
-            e = krt2_pure(kunit());      /* not an interrupt: skip the handler */
-          }
-        }
+        e = finalizer_action_for_reason(e, fs->origin_kind, fs->origin_val);
         f->cur = e; return 1;
       }
       f->k = c->next;
@@ -1309,6 +1818,11 @@ static int deliver(Rt *rt, Fiber *f, KValue *v) {
       f->cur = kapp(h->ret, v);            /* `case return x -> ...` (Eff res)     */
       return 1;
     }
+    case KK_BLOCKING:
+      leave_blocking_region(f);
+      f->k = c->next;
+      f->cur = krt2_pure(v);
+      return 1;
     case KK_ABANDON: {                    /* §32.2.20 clause completed (normal v)  */
       Resumption *r = (Resumption *)c->aux;
       f->k = c->next;
@@ -1425,6 +1939,9 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
          * here).  Restore the cur_exits the prompt would reinstate, then drop. */
         f->cur_exits = (ExitStack *)c->aux2;
         f->k = c->next; continue;
+      case KK_BLOCKING:
+        leave_blocking_region(f);
+        f->k = c->next; continue;
       case KK_ABANDON: {
         /* §32.2.20 a KK_ABANDON guard frame was reached during an unwind.  Three
          * cases, distinguished by whether this inner resumption was already used and
@@ -1479,9 +1996,19 @@ static int deliver_interrupt(Rt *rt, Fiber *f) {
   return unwind(rt, f, RK_INTERRUPT, f->interrupt_cause, NULL);
 }
 
+int krt2i_deliver_pending_before_park(Rt *rt, Fiber *f) {
+  if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+      && f->mask_depth == 0) {
+    return deliver_interrupt(rt, f) ? 1 : -1;
+  }
+  return 0;
+}
+
 /* Step `f` until it suspends (parks / cedes) or finishes. */
 static void fiber_step_run(Rt *rt, Fiber *f) {
   for (;;) {
+    KValue *cur = f->cur;
+    int op = kctor_tagid(cur);
     /* fix S2 (sleep-timer dedup): a fiber resuming from a sleep park with a pending
      * interrupt and `cur` STILL the OP_SLEEP node was woken by the INTERRUPT, not by
      * its timer (the timer would have set cur to pure(Unit) and cleared sleep_armed).
@@ -1494,7 +2021,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
     if (f->resumed
         && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
         && atomic_load_explicit(&f->sleep_armed, memory_order_acquire)
-        && kctor_tagid(f->cur) == OP_SLEEP) {
+        && op == OP_SLEEP) {
       krt2i_cancel_sleep(rt, f);
     }
     /* §32.2.5 interruption point: a pending request becomes observable only at a
@@ -1506,7 +2033,9 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
      * next non-suspending step a delivery point and wrongly interrupt a fiber whose
      * whole body was masked — the §18.1.12/§32.2.5 masked-sleep suppression bug.
      * OP_POLL delivers independently of this flag (§18.1.12: poll delivers even
-     * when masked). */
+     * when masked).  Entering OP_UNINTERRUPTIBLE/OP_MASK is not itself an
+     * unmasked interruption point: install the mask first, then let the body (or
+     * an explicit poll/restore) decide where the pending request is observable. */
     /* fix SP (§32.2.6): a loop back-edge is ALSO an interruption point.  A tight
      * CK loop (KK_LOOP re-running `iterate` in place) or a codegen native loop
      * (which sets safepoint_hit via krt2_safepoint) never re-enters from the run
@@ -1514,17 +2043,18 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
      * observable at such safe points.  Deliver on `safepoint_hit` too.  This does
      * NOT reintroduce the masked-sleep suppression bug: safepoint_hit is set ONLY at
      * a genuine back-edge (and only when mask_depth==0), never on a mask-region exit. */
-    if ((f->resumed || f->safepoint_hit)
+    int entering_mask = (op == OP_UNINTERRUPTIBLE || op == OP_MASK);
+    if (!entering_mask
+        && (f->resumed || f->safepoint_hit)
         && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
         && f->mask_depth == 0) {
       f->resumed = 0;
       f->safepoint_hit = 0;
-      if (!deliver_interrupt(rt, f)) return; /* finished; else fall through to run finalizers */
+      if (!deliver_interrupt(rt, f)) return; /* finished */
+      continue;                              /* run the action installed by unwind */
     }
     f->resumed = 0;   /* consumed: only the FIRST turn after a resume is a delivery point */
     f->safepoint_hit = 0;
-    KValue *cur = f->cur;
-    int op = kctor_tagid(cur);
     switch (op) {
       case OP_PURE:
         if (!deliver(rt, f, kctor_arg(cur, 0))) return;
@@ -1564,12 +2094,20 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
       case OP_FORK_DAEMON:
         if (!deliver(rt, f, kfgn(krt2i_spawn_from(rt, f, kctor_arg(cur, 0), f->cur_scope, 1), KRT2_KIND_FIBER))) return;
         break;
-      case OP_AWAIT:
+      case OP_AWAIT: {
+        int dp = krt2i_deliver_pending_before_park(rt, f);
+        if (dp < 0) return;
+        if (dp > 0) break;
         if (do_await(rt, f, kctor_arg(cur, 0))) break; else return;
-      case OP_CEDE:
+      }
+      case OP_CEDE: {
+        int dp = krt2i_deliver_pending_before_park(rt, f);
+        if (dp < 0) return;
+        if (dp > 0) break;
         f->cur = krt2_pure(kunit());
         krt2i_resume(rt, f);           /* re-enqueue behind other runnables  */
         return;
+      }
       case OP_SLEEP: {
         /* §18.1.6: read the duration as a SIGNED int.  A nonpositive ns —
          * notably `sleepUntil` of a PAST Instant, whose `instantDiff` is
@@ -1581,6 +2119,9 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
           if (!deliver(rt, f, kunit())) return;  /* sleepFor returns Unit */
           break;
         }
+        int dp = krt2i_deliver_pending_before_park(rt, f);
+        if (dp < 0) return;
+        if (dp > 0) break;
         krt2i_submit_sleep(rt, f, (uint64_t)ns);
         return;                        /* parked; reactor resumes it          */
       }
@@ -1593,13 +2134,17 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
       case OP_COMPLETE_PROMISE:
         if (!deliver(rt, f, promise_complete(rt, kctor_arg(cur, 0), kctor_arg(cur, 1)))) return;
         break;
-      case OP_AWAIT_PROMISE_EXIT:
+      case OP_AWAIT_PROMISE_EXIT: {
+        int dp = krt2i_deliver_pending_before_park(rt, f);
+        if (dp < 0) return;
+        if (dp > 0) break;
         if (do_await_promise(rt, f, kctor_arg(cur, 0))) break; else return;
+      }
       case OP_CURRENT_FIBER_ID:
         if (!deliver(rt, f, kint((int64_t)f->id))) return;
         break;
       case OP_FIBER_ID: {
-        Fiber *tf = (Fiber *)kas_fgn(kctor_arg(cur, 0));
+        Fiber *tf = (Fiber *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_FIBER);
         if (!deliver(rt, f, kint((int64_t)tf->id))) return;
         break;
       }
@@ -1641,6 +2186,13 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         f->mask_depth = (uint32_t)kas_int(kctor_arg(cur, 1));
         f->k = cont_new2(KK_SETMASK, NULL, (void *)(uintptr_t)saved, NULL, f->k);
         f->cur = kctor_arg(cur, 0);
+        /* `restore` re-enters an action at the mask-entry interruptibility level.
+         * If that level is interruptible and a request is already pending, the
+         * restored action itself is the interruption point; otherwise an already
+         * pending interrupt can be missed until the restored action later parks. */
+        if (atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+            && f->mask_depth == 0)
+          f->safepoint_hit = 1;
         break;
       }
       /* ── structured concurrency ─────────────────────────────────────── */
@@ -1655,8 +2207,12 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
       case OP_MONITOR:
         if (!deliver(rt, f, krt2i_op_monitor(kctor_arg(cur, 0)))) return;
         break;
-      case OP_AWAIT_MONITOR:
+      case OP_AWAIT_MONITOR: {
+        int dp = krt2i_deliver_pending_before_park(rt, f);
+        if (dp < 0) return;
+        if (dp > 0) break;
         if (krt2i_op_await_monitor(rt, f, kctor_arg(cur, 0))) break; else return;
+      }
       /* ── do-kernel completion channel ───────────────────────────────── */
       case OP_DOSCOPE: {
         ExitStack *xs = exitstack_new();
@@ -1669,11 +2225,22 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         /* §18.7: a defer must run exactly once on every exit, so it must land on
          * an enclosing do-scope's ExitStack.  A defer with no current scope is a
          * mis-lowering; silently skipping it (the old behavior) fails OPEN —
-         * trap so a mis-lowered defer is a diagnosed error, not a dropped action. */
+         * trap so a mis-lowered defer is a diagnosed error, not a dropped action.
+         *
+         * Register the action with the abort-exit stack too.  A generated C scalar
+         * worker or boxed-loop safe point can longjmp out while this CK do-scope is
+         * active but before the ordinary KK_DOSCOPE frame is reached again; the
+         * abort-exit finalizer makes normal scope exit and scalar-abort unwinding
+         * share the same exactly-once action. */
         if (!f->cur_exits) krt_fail("internal: defer outside any do-scope (mis-lowered §18.7 defer)");
-        exitstack_push(f->cur_exits, kctor_arg(cur, 0));
+        exitstack_push(f->cur_exits, abort_exit_scope_finalizer(kctor_arg(cur, 0)));
         if (!deliver(rt, f, kunit())) return;
         break;
+      case OP_ABORT_EXIT_FIN: {
+        KValue *exit_action = abort_exit_take(kctor_arg(cur, 0));
+        f->cur = exit_action ? exit_action : krt2_pure(kunit());
+        break;
+      }
       case OP_RETURN:
         if (!unwind(rt, f, RK_RETURN, kctor_arg(cur, 0), NULL)) return;
         break;
@@ -1705,7 +2272,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, kunit())) return;
         break;
       case OP_TRY_EXIT: {                       /* non-blocking: Some Exit iff DONE */
-        Fiber *tf = (Fiber *)kas_fgn(kctor_arg(cur, 0));
+        Fiber *tf = (Fiber *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_FIBER);
         pthread_mutex_lock(&tf->lock);
         KValue *r = (atomic_load_explicit(&tf->status, memory_order_acquire) == F_DONE)
                         ? krt2i_some(tf->exit) : krt2i_none();
@@ -1741,6 +2308,19 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         break;
       case OP_IS_DONE_PROMISE:
         if (!deliver(rt, f, promise_is_done(kctor_arg(cur, 0)))) return;
+        break;
+      case OP_BLOCKING:
+        {
+          int dp = krt2i_deliver_pending_before_park(rt, f);
+          if (dp < 0) return;
+          if (dp > 0) break;
+        }
+        enter_blocking_region(f);
+        f->k = cont_new(KK_BLOCKING, NULL, f->k);
+        if (krt2i_submit_blocking(rt, f, kctor_arg(cur, 0))) return;
+        leave_blocking_region(f);
+        f->k = f->k->next;
+        if (!unwind(rt, f, RK_FAIL, kstr0("rt.blocking: failed to start blocking worker"), NULL)) return;
         break;
       case OP_ATOMICALLY:                       /* run an STM transaction (§18.1.13) */
         if (krt2i_op_atomically(rt, f, kctor_arg(cur, 0))) break; else return;
@@ -1797,7 +2377,23 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
            * (INTEGRATION.md).  A typed K_FAIL propagates as RK_FAIL. */
           case K_IO: case K_IOTAIL: case K_IOEFFECT: case K_IOFINALLY:
           case K_BOUNCE: case K_NATIVE: case K_FAIL: {
+            if (cur->tag == K_NATIVE && cur->as.native.blocking && !g_on_blocking_lane) {
+              int dp = krt2i_deliver_pending_before_park(rt, f);
+              if (dp < 0) return;
+              if (dp > 0) break;
+              if (krt2i_submit_blocking(rt, f, cur)) return;
+              if (!unwind(rt, f, RK_FAIL, kstr0("rt.blocking: failed to start blocking worker"), NULL)) return;
+              break;
+            }
+            int completed_blocking_native =
+              (cur->tag == K_NATIVE && cur->as.native.blocking && g_on_blocking_lane);
             KValue *r = krun_io(cur);
+            if (completed_blocking_native
+                && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+                && f->mask_depth == 0) {
+              if (!deliver_interrupt(rt, f)) return;
+              break;
+            }
             /* fix SP (§32.2.6): a codegen-emitted NATIVE loop inside this synchronous
              * do-block runs entirely under krun_io — it never re-enters the gate at
              * the top of this loop, so krt2_safepoint() could only SET safepoint_hit,
@@ -1810,10 +2406,24 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
                 && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
                 && f->mask_depth == 0) {
               f->safepoint_hit = 0;
-              if (!deliver_interrupt(rt, f)) return;
+              if (kis_fail(r)) {
+                KValue *primary = krt2_cause_interrupt(f->interrupt_cause);
+                KValue *cleanup = krt2_cause_fail(r->as.fail.err);
+                atomic_store_explicit(&f->interrupt_pending, 0, memory_order_relaxed);
+                if (!unwind(rt, f, RK_RERAISE, krt2_cause_then(primary, cleanup), NULL)) return;
+              } else if (krt2_is_reraise_action(r)) {
+                KValue *primary = krt2_cause_interrupt(f->interrupt_cause);
+                KValue *cleanup = kctor_arg(r, 0);
+                atomic_store_explicit(&f->interrupt_pending, 0, memory_order_relaxed);
+                if (!unwind(rt, f, RK_RERAISE, krt2_cause_then(primary, cleanup), NULL)) return;
+              } else if (!deliver_interrupt(rt, f)) return;
               break;
             }
             f->safepoint_hit = 0;
+            if (krt2_is_reraise_action(r)) {
+              if (!unwind(rt, f, RK_RERAISE, kctor_arg(r, 0), NULL)) return;
+              break;
+            }
             if (kis_fail(r)) { if (!unwind(rt, f, RK_FAIL, r->as.fail.err, NULL)) return; break; }
             if (!deliver(rt, f, r)) return;
             break;
@@ -1835,9 +2445,36 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
  * outer fiber must be restored when the nested step returns. */
 static void fiber_step(Rt *rt, Fiber *f) {
   Fiber *saved = g_cur_fiber;
+  Rt *saved_rt = g_cur_rt;
+  jmp_buf *saved_scalar_abort_jmp = g_scalar_abort_jmp;
+  jmp_buf scalar_abort_jmp;
   g_cur_fiber = f;
+  g_cur_rt = rt;
+  g_scalar_abort_jmp = &scalar_abort_jmp;
   f->backedge_budget = KRT2_BACKEDGE_QUANTUM;   /* fresh fairness quantum per step */
-  fiber_step_run(rt, f);
+  if (setjmp(scalar_abort_jmp) == 0) {
+    fiber_step_run(rt, f);
+  } else {
+    if (f->safepoint_hit
+        && atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+        && f->mask_depth == 0) {
+      f->resumed = 0;
+      f->safepoint_hit = 0;
+      atomic_store_explicit(&f->interrupt_pending, 0, memory_order_relaxed);
+      ExitStack *xs = abort_exit_drain_stack(f);
+      int keep_stepping =
+        (xs && xs->n > 0)
+          ? begin_finseq(rt, f, xs, f->cur_exits, RK_INTERRUPT, f->interrupt_cause, NULL, NULL)
+          : unwind(rt, f, RK_INTERRUPT, f->interrupt_cause, NULL);
+      if (keep_stepping) {
+        fiber_step_run(rt, f);
+      }
+    } else {
+      krt_fail("internal: scalar-worker abort reached runtime without a deliverable interrupt");
+    }
+  }
+  g_scalar_abort_jmp = saved_scalar_abort_jmp;
+  g_cur_rt = saved_rt;
   g_cur_fiber = saved;
 }
 
@@ -1877,9 +2514,11 @@ KValue *kpf_run_eff(KValue **a) { return krt2_run_eff(a[0]); }
  * worker inside the K_NATIVE bridge — the CK-machine is not iterating, so a
  * pending interrupt would otherwise be ignored until the whole loop finishes.
  * The generated loop calls this at its back-edge (cheaply, counter-gated — see the
- * backends) and, when it returns non-zero, BREAKS out (after flushing its var
- * cells) so control returns to the CK-machine; the next fiber_step turn then
- * delivers the pending interrupt via the safepoint_hit gate.
+ * backends).  If an interrupt is deliverable, it returns non-zero so generated
+ * code can break/abort back to the CK-machine; the next fiber_step turn then
+ * delivers via the safepoint_hit gate.  If no interrupt is deliverable but a
+ * sibling fiber is runnable, this function briefly runs that sibling on the same
+ * worker and then returns 0, preserving the current scalar loop's C-local state.
  *
  * Returns 1 iff the loop should abort to let the runtime deliver a pending
  * interrupt at this safe point — i.e. interrupt_pending && mask_depth==0.  A
@@ -1887,10 +2526,10 @@ KValue *kpf_run_eff(KValue **a) { return krt2_run_eff(a[0]); }
  * delivered only after the mask exits (an interruption point reached unmasked).
  * 0 if there is no current fiber (a pure top-level native call off any fiber).
  *
- * NOTE: this realizes the interrupt-OBSERVATION half of the safe point for native
- * loops.  Fairness for in-place CK loops is handled by the KK_LOOP back-edge cede
- * in fiber_step; a native scalar loop is bounded by its own completion (it cannot
- * suspend-and-resume mid-loop without re-running from its flushed cells). */
+ * This is a cooperative safe point, not a suspension of the current fiber: native
+ * scalar workers keep live state in C locals, so a true park/resume would require
+ * a different worker ABI.  Running one queued sibling inline provides weak
+ * fairness without losing those locals. */
 int krt2_safepoint(void) {
   Fiber *f = g_cur_fiber;
   if (!f) return 0;
@@ -1899,7 +2538,27 @@ int krt2_safepoint(void) {
     f->safepoint_hit = 1;   /* the fiber_step gate delivers on the next turn */
     return 1;
   }
+  Rt *rt = g_cur_rt ? g_cur_rt : g_rt;
+  if (rt && !g_safepoint_yielding) {
+    Fiber *other = rq_try_pop(rt);
+    if (other && other != f) {
+      atomic_store(&other->status, F_RUNNING);
+      g_safepoint_yielding++;
+      fiber_step(rt, other);
+      g_safepoint_yielding--;
+    } else if (other == f) {
+      krt2i_rq_push(rt, other);
+    }
+  }
   return 0;
+}
+
+void krt2_scalar_abort(void) {
+  Fiber *f = g_cur_fiber;
+  if (f && f->safepoint_hit && g_scalar_abort_jmp) {
+    longjmp(*g_scalar_abort_jmp, 1);
+  }
+  krt_fail("internal: scalar-worker abort without an active runtime safe-point");
 }
 
 /* ── workers ────────────────────────────────────────────────────────────── */

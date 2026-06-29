@@ -1,10 +1,11 @@
 -- Milestone G: a counter `while` loop over a mutable `var`.  `var i = 0`
 -- lowers to `i <- newRef 0` (a `knative_sat(kpf_io_newRef,…)` IO action bound at
 -- de Bruijn 0); the condition `ltInt i 3` is a re-runnable action that re-reads
--- `i` each iteration (its `__runIO (readRef i)` splice is hoisted into a
--- `krt2_bind`); the body prints `i` and increments it via `KAssign` (a
--- `writeRef` action).  `krt2_while(condIO, bodyIO)` is CK-machine-driven, so the
--- read re-evaluates for free.  Expected stdout: `0\n1\n2\nsum 3\n`.
+-- `i` each iteration (its current-value occurrence is lifted into a MonadRef
+-- read action inside the condition); the body prints `i` and increments it via
+-- `KAssign` (a `writeRef` action).  `krt2_while(condIO, bodyIO)` is
+-- CK-machine-driven, so the read re-evaluates for free.  Expected stdout:
+-- `0\n1\n2\nsum 3\n`.
 module main
 
 main : UIO Unit

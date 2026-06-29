@@ -25,8 +25,8 @@ let mkForks n decreases n =
     if leInt n 0 then
         pure Nil
     else do
-        f <- atomically (newTVar True)
-        rest <- mkForks (subInt n 1)
+        let f <- atomically (newTVar True)
+        let rest <- mkForks (subInt n 1)
         pure (f :: rest)
 
 -- 0-based index into the fork ring (the ring is tiny: N entries).
@@ -40,8 +40,8 @@ let nthTVar xs i =
 -- into a single transaction, so it commits all-or-nothing (deadlock-free).
 acquire : TVar Bool -> TVar Bool -> STM Unit
 let acquire l r = do
-    lf <- readTVar l
-    rf <- readTVar r
+    let lf <- readTVar l
+    let rf <- readTVar r
     check (and (lf :: rf :: Nil))
     writeTVar l False
     writeTVar r False
@@ -53,7 +53,7 @@ let release l r = do
 
 bump : TVar Int -> STM Unit
 let bump meals = do
-    m <- readTVar meals
+    let m <- readTVar meals
     writeTVar meals (addInt m 1)
 
 -- One philosopher: `rounds` eat-cycles on forks (l, r), bumping `meals` each
@@ -79,8 +79,8 @@ let spawnAll forks meals n i rounds decreases (subInt n i) =
     if ltInt i n then do
         let l = nthTVar forks i
         let r = nthTVar forks (modInt (addInt i 1) n)
-        fib <- fork (philosopher l r meals rounds)
-        rest <- spawnAll forks meals n (addInt i 1) rounds
+        let fib <- fork (philosopher l r meals rounds)
+        let rest <- spawnAll forks meals n (addInt i 1) rounds
         pure (fib :: rest)
     else
         pure Nil
@@ -90,16 +90,16 @@ let awaitAll fibs =
     match fibs
     case Nil -> pure Unit
     case f :: rest -> do
-        _ <- await f
+        let _ <- await f
         awaitAll rest
 
 main : UIO Unit
 let main = do
     let n = 20
     let rounds = 100000
-    forks <- mkForks n
-    meals <- atomically (newTVar 0)
-    fibs <- spawnAll forks meals n 0 rounds
+    let forks <- mkForks n
+    let meals <- atomically (newTVar 0)
+    let fibs <- spawnAll forks meals n 0 rounds
     awaitAll fibs
-    total <- atomically (readTVar meals)
+    let total <- atomically (readTVar meals)
     printlnString (showInt total)

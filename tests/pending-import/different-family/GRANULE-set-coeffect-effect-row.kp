@@ -25,7 +25,7 @@ let hello = io.stdout 42
 -- under the same label.
 echo : Eff <[io : IOE]> Unit
 let echo = do
-    n <- io.stdin ()
+    let n <- io.stdin ()
     io.stdout n
 
 

@@ -1,0 +1,11 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\nafter\n"
+
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    blocking cede
+    printlnString "after"

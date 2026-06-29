@@ -5,11 +5,11 @@
 module main
 main : UIO Unit
 let main = do
-    s <- newScope
-    p <- newPromise
-    f <- forkIn s (awaitPromiseExit p)
+    let s <- newScope
+    let p <- newPromise
+    let f <- forkIn s (awaitPromiseExit p)
     shutdownScope s
-    ex <- await f
+    let ex <- await f
     match ex
     case Success v -> printlnString "success"
     case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"

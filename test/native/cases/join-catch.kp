@@ -4,6 +4,6 @@
 module main
 main : UIO Unit
 let main = do
-    f <- fork (throwIO 99)
-    r <- catchIO (join f) (\e -> ioPure (addInt e 1))
+    let f <- fork (throwIO 99)
+    let r <- catchIO (join f) (\e -> ioPure (addInt e 1))
     printlnString (showInt r)

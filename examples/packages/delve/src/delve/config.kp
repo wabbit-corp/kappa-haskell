@@ -18,84 +18,84 @@ let loadDefault = loadPack defaultPackFile
 decodeRecipe : json.JsonValue -> IO GameError RecipeDef
 let decodeRecipe value =
     do
-        id <- stringField "id" value
-        label <- stringField "label" value
-        inputName <- stringField "input" value
-        input <- decodeItemKind inputName
-        outputName <- stringField "output" value
-        output <- decodeItemKind outputName
-        toolName <- stringField "tool" value
-        tool <- decodeItemClass toolName
-        skill <- stringField "skill" value
-        minLevel <- intField "min_level" value
+        let id <- stringField "id" value
+        let label <- stringField "label" value
+        let inputName <- stringField "input" value
+        let input <- decodeItemKind inputName
+        let outputName <- stringField "output" value
+        let output <- decodeItemKind outputName
+        let toolName <- stringField "tool" value
+        let tool <- decodeItemClass toolName
+        let skill <- stringField "skill" value
+        let minLevel <- intField "min_level" value
         pure (RecipeDef id label input output tool skill minLevel)
 
 loadRecipes : String -> IO GameError (List RecipeDef)
 let loadRecipes path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "recipes" root
+        let root <- readJsonFile path
+        let xs <- arrayField "recipes" root
         traverse decodeRecipe xs
 
 decodeRarity : json.JsonValue -> IO GameError RarityDef
 let decodeRarity value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        color <- stringField "color" value
-        weight <- intField "weight" value
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let color <- stringField "color" value
+        let weight <- intField "weight" value
         pure (RarityDef id name color weight)
 
 loadRarities : String -> IO GameError (List RarityDef)
 let loadRarities path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "rarities" root
+        let root <- readJsonFile path
+        let xs <- arrayField "rarities" root
         traverse decodeRarity xs
 
 loadPack : String -> IO GameError ContentPack
 let loadPack packPath =
     do
-        packJson <- readJsonFile packPath
-        filesObject <- objectField "files" packJson
-        saveObject <- objectField "save" packJson
-        rulesObject <- objectField "rules" packJson
-        revealObject <- objectField "reveal" packJson
-        packId <- stringField "pack_id" packJson
-        version <- stringField "version" packJson
-        worldPath <- filePath "worldgen" filesObject
-        itemPath <- filePath "items" filesObject
-        actorPath <- filePath "actors" filesObject
-        systemPath <- filePath "systems" filesObject
-        spawnPath <- filePath "spawns" filesObject
-        lorePath <- filePath "lore" filesObject
-        recipePath <- filePath "recipes" filesObject
-        rarityPath <- filePath "rarities" filesObject
-        colorPath <- filePath "colors" filesObject
-        skillsPath <- filePath "skills" filesObject
-        spellsPath <- filePath "spells" filesObject
-        statusPath <- filePath "status_effects" filesObject
-        tuningPath <- filePath "tuning" filesObject
-        tilesPath <- filePath "tiles" filesObject
-        world <- loadWorldGen worldPath
-        branches <- loadBranches worldPath
-        items <- loadItems itemPath
-        affixes <- loadAffixes itemPath
-        actors <- loadActors actorPath
-        systems <- loadSystems systemPath
-        spawns <- loadSpawns spawnPath
-        lore <- loadLore lorePath
-        recipes <- loadRecipes recipePath
-        rarities <- loadRarities rarityPath
-        colors <- loadColors colorPath
-        skills <- loadSkills skillsPath
-        spells <- loadSpells spellsPath
-        statuses <- loadStatuses statusPath
-        tuning <- loadTuning tuningPath
-        tileEffects <- loadTileEffects tilesPath
-        save <- decodeSave saveObject
-        rules <- decodeRules rulesObject
-        reveal <- decodeReveal revealObject
+        let packJson <- readJsonFile packPath
+        let filesObject <- objectField "files" packJson
+        let saveObject <- objectField "save" packJson
+        let rulesObject <- objectField "rules" packJson
+        let revealObject <- objectField "reveal" packJson
+        let packId <- stringField "pack_id" packJson
+        let version <- stringField "version" packJson
+        let worldPath <- filePath "worldgen" filesObject
+        let itemPath <- filePath "items" filesObject
+        let actorPath <- filePath "actors" filesObject
+        let systemPath <- filePath "systems" filesObject
+        let spawnPath <- filePath "spawns" filesObject
+        let lorePath <- filePath "lore" filesObject
+        let recipePath <- filePath "recipes" filesObject
+        let rarityPath <- filePath "rarities" filesObject
+        let colorPath <- filePath "colors" filesObject
+        let skillsPath <- filePath "skills" filesObject
+        let spellsPath <- filePath "spells" filesObject
+        let statusPath <- filePath "status_effects" filesObject
+        let tuningPath <- filePath "tuning" filesObject
+        let tilesPath <- filePath "tiles" filesObject
+        let world <- loadWorldGen worldPath
+        let branches <- loadBranches worldPath
+        let items <- loadItems itemPath
+        let affixes <- loadAffixes itemPath
+        let actors <- loadActors actorPath
+        let systems <- loadSystems systemPath
+        let spawns <- loadSpawns spawnPath
+        let lore <- loadLore lorePath
+        let recipes <- loadRecipes recipePath
+        let rarities <- loadRarities rarityPath
+        let colors <- loadColors colorPath
+        let skills <- loadSkills skillsPath
+        let spells <- loadSpells spellsPath
+        let statuses <- loadStatuses statusPath
+        let tuning <- loadTuning tuningPath
+        let tileEffects <- loadTileEffects tilesPath
+        let save <- decodeSave saveObject
+        let rules <- decodeRules rulesObject
+        let reveal <- decodeReveal revealObject
         let pack =
             ContentPack {
                 packId = packId,
@@ -131,7 +131,7 @@ let loadPack packPath =
 readJsonFile : String -> IO GameError json.JsonValue
 let readJsonFile path =
     do
-        text <- files.readText path
+        let text <- files.readText path
         match json.parse text
         case Ok value -> pure value
         case Err e -> raise e
@@ -226,51 +226,51 @@ let decodeStatKind s =
 decodeSimpleEffect : json.JsonValue -> IO GameError Effect
 let decodeSimpleEffect value =
     do
-        kind <- stringField "kind" value
+        let kind <- stringField "kind" value
         if kind == "deal_damage" then
             do
-                elemName <- stringField "element" value
-                dt <- decodeDamageType elemName
-                amount <- intField "amount" value
+                let elemName <- stringField "element" value
+                let dt <- decodeDamageType elemName
+                let amount <- intField "amount" value
                 pure (DealDamage dt amount)
         elif kind == "heal" then
             do
-                amount <- intField "amount" value
-                clear <- boolField "clear_wounds" value
+                let amount <- intField "amount" value
+                let clear <- boolField "clear_wounds" value
                 pure (Heal amount clear)
         elif kind == "corrupt" then
             do
-                amount <- intField "amount" value
+                let amount <- intField "amount" value
                 pure (Corrupt amount)
         elif kind == "add_corruption" then
             do
-                amount <- intField "amount" value
+                let amount <- intField "amount" value
                 pure (AddCorruption amount)
         elif kind == "gain_mutation" then pure GainMutation
         elif kind == "boost_stat" then
             do
-                statName <- stringField "stat" value
-                sk <- decodeStatKind statName
-                n <- intField "n" value
+                let statName <- stringField "stat" value
+                let sk <- decodeStatKind statName
+                let n <- intField "n" value
                 pure (BoostStat sk n)
         elif kind == "nourish" then
             do
-                amount <- intField "amount" value
+                let amount <- intField "amount" value
                 pure (Nourish amount)
         elif kind == "grant_species_resist" then pure GrantSpeciesResist
         elif kind == "douse_tile" then pure DouseTile
         elif kind == "reveal_area" then
             do
-                radius <- intField "radius" value
+                let radius <- intField "radius" value
                 pure (RevealArea radius)
         elif kind == "reveal_map" then pure RevealMap
         elif kind == "make_noise" then
             do
-                loudness <- intField "loudness" value
+                let loudness <- intField "loudness" value
                 pure (MakeNoise loudness)
         elif kind == "spawn_phantom" then
             do
-                turns <- intField "turns" value
+                let turns <- intField "turns" value
                 pure (SpawnPhantom turns)
         elif kind == "ward_tile" then pure WardTile
         elif kind == "identify_inventory" then pure IdentifyInventory
@@ -278,23 +278,23 @@ let decodeSimpleEffect value =
         elif kind == "cleanse_corruption" then pure CleanseCorruption
         elif kind == "inflict" then
             do
-                elemName <- stringField "element" value
-                dt <- decodeDamageType elemName
-                magnitude <- intField "magnitude" value
+                let elemName <- stringField "element" value
+                let dt <- decodeDamageType elemName
+                let magnitude <- intField "magnitude" value
                 pure (Inflict dt magnitude)
         elif kind == "set_attitude" then
             do
-                attName <- stringField "attitude" value
-                att <- decodeAttitude attName
+                let attName <- stringField "attitude" value
+                let att <- decodeAttitude attName
                 pure (SetAttitude att)
         elif kind == "set_faction" then
             do
-                facName <- stringField "faction" value
-                fac <- decodeFaction facName
+                let facName <- stringField "faction" value
+                let fac <- decodeFaction facName
                 pure (SetFaction fac)
         elif kind == "message" then
             do
-                text <- stringField "text" value
+                let text <- stringField "text" value
                 pure (Message text)
         elif kind == "noop" then pure Noop
         else raise (ConfigError ("unknown effect kind: " ++ kind))
@@ -302,12 +302,12 @@ let decodeSimpleEffect value =
 decodeEffect : json.JsonValue -> IO GameError Effect
 let decodeEffect value =
     do
-        kind <- stringField "kind" value
+        let kind <- stringField "kind" value
         if kind == "chance" then
             do
-                pct <- intField "pct" value
-                subVals <- arrayField "effects" value
-                fxs <- traverse decodeSimpleEffect subVals
+                let pct <- intField "pct" value
+                let subVals <- arrayField "effects" value
+                let fxs <- traverse decodeSimpleEffect subVals
                 pure (Chance pct fxs)
         else decodeSimpleEffect value
 
@@ -331,17 +331,17 @@ let decodeTileKindName s =
 decodeTileEffect : json.JsonValue -> IO GameError TileEffectDef
 let decodeTileEffect value =
     do
-        kindName <- stringField "kind" value
-        kind <- decodeTileKindName kindName
-        onEnter <- decodeEffectsField "on_enter" value
-        perTurn <- decodeEffectsField "per_turn" value
+        let kindName <- stringField "kind" value
+        let kind <- decodeTileKindName kindName
+        let onEnter <- decodeEffectsField "on_enter" value
+        let perTurn <- decodeEffectsField "per_turn" value
         pure (TileEffectDef kind onEnter perTurn)
 
 loadTileEffects : String -> IO GameError (List TileEffectDef)
 let loadTileEffects path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "tiles" root
+        let root <- readJsonFile path
+        let xs <- arrayField "tiles" root
         traverse decodeTileEffect xs
 
 optDamageType : String -> json.JsonValue -> IO GameError DamageType
@@ -362,7 +362,7 @@ let optDamageTypes name obj =
         case Err e -> raise e
         case Ok xs ->
             do
-                strs <- traverse decodeStringFromJson xs
+                let strs <- traverse decodeStringFromJson xs
                 traverse decodeDamageType strs
 
 optDamageTypeOption : String -> json.JsonValue -> IO GameError (Option DamageType)
@@ -373,62 +373,62 @@ let optDamageTypeOption name obj =
         match json.asString v
         case Ok s ->
             do
-                dt <- decodeDamageType s
+                let dt <- decodeDamageType s
                 pure (Some dt)
         case Err e -> raise e
 
 decodeColor : json.JsonValue -> IO GameError ColorDef
 let decodeColor value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        r <- intField "r" value
-        g <- intField "g" value
-        b <- intField "b" value
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let r <- intField "r" value
+        let g <- intField "g" value
+        let b <- intField "b" value
         pure (ColorDef id name r g b)
 
 loadColors : String -> IO GameError (List ColorDef)
 let loadColors path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "colors" root
+        let root <- readJsonFile path
+        let xs <- arrayField "colors" root
         traverse decodeColor xs
 
 decodeSpell : json.JsonValue -> IO GameError SpellDef
 let decodeSpell value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        manaCost <- intField "mana_cost" value
-        skillRequired <- stringField "skill_required" value
-        skillMinLevel <- intField "skill_min_level" value
-        needsTarget <- boolField "needs_target" value
-        flavor <- optStringField "" "flavor" value
-        effects <- decodeEffectsField "effects" value
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let manaCost <- intField "mana_cost" value
+        let skillRequired <- stringField "skill_required" value
+        let skillMinLevel <- intField "skill_min_level" value
+        let needsTarget <- boolField "needs_target" value
+        let flavor <- optStringField "" "flavor" value
+        let effects <- decodeEffectsField "effects" value
         pure (SpellDef id name manaCost skillRequired skillMinLevel needsTarget flavor effects)
 
 loadSpells : String -> IO GameError (List SpellDef)
 let loadSpells path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "spells" root
+        let root <- readJsonFile path
+        let xs <- arrayField "spells" root
         traverse decodeSpell xs
 
 decodeStatus : json.JsonValue -> IO GameError StatusDef
 let decodeStatus value =
     do
-        elementName <- stringField "element" value
-        dt <- decodeDamageType elementName
-        chance <- intField "chance" value
-        magnitude <- intField "magnitude" value
-        perTurn <- intField "per_turn" value
+        let elementName <- stringField "element" value
+        let dt <- decodeDamageType elementName
+        let chance <- intField "chance" value
+        let magnitude <- intField "magnitude" value
+        let perTurn <- intField "per_turn" value
         pure (StatusDef dt chance magnitude perTurn)
 
 loadStatuses : String -> IO GameError (List StatusDef)
 let loadStatuses path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "statuses" root
+        let root <- readJsonFile path
+        let xs <- arrayField "statuses" root
         traverse decodeStatus xs
 
 hasStatusElement : List StatusDef -> DamageType -> Bool
@@ -440,36 +440,36 @@ let hasStatusElement xs dt decreases listLength xs =
 decodeTuning : json.JsonValue -> IO GameError TuningConfig
 let decodeTuning value =
     do
-        attackDie <- intField "attack_die" value
-        defenseBase <- intField "defense_base" value
-        damageSpread <- intField "damage_spread" value
-        stunThreshold <- intField "stun_threshold" value
-        stunTurns <- intField "stun_turns" value
-        headBonus <- intField "head_bonus" value
-        legBleedSeverity <- intField "leg_bleed_severity" value
-        armBruiseSeverity <- intField "arm_bruise_severity" value
-        torsoBruiseSeverity <- intField "torso_bruise_severity" value
-        crippledPenalty <- intField "crippled_penalty" value
-        bleedSurcharge <- intField "bleed_surcharge" value
-        xpFactor <- intField "xp_factor" value
-        levelHpGain <- intField "level_hp_gain" value
-        levelStrGain <- intField "level_str_gain" value
-        levelLoyaltyGain <- intField "level_loyalty_gain" value
-        trapDamage <- intField "trap_damage" value
-        lavaDamage <- intField "lava_damage" value
-        chaosVentCorruption <- intField "chaos_vent_corruption" value
-        starvationDamage <- intField "starvation_damage" value
-        emberlanceDamage <- intField "emberlance_damage" value
-        manaRegen <- intField "mana_regen" value
-        poolHealBand <- intField "pool_heal_band" value
-        poolPoisonBand <- intField "pool_poison_band" value
-        poolNothingBand <- intField "pool_nothing_band" value
-        poolCorruptBand <- intField "pool_corrupt_band" value
-        poolHealAmount <- intField "pool_heal_amount" value
-        poolPoisonAmount <- intField "pool_poison_amount" value
-        poolCorruptAmount <- intField "pool_corrupt_amount" value
-        feedTameBand <- intField "feed_tame_band" value
-        feedPacifyBand <- intField "feed_pacify_band" value
+        let attackDie <- intField "attack_die" value
+        let defenseBase <- intField "defense_base" value
+        let damageSpread <- intField "damage_spread" value
+        let stunThreshold <- intField "stun_threshold" value
+        let stunTurns <- intField "stun_turns" value
+        let headBonus <- intField "head_bonus" value
+        let legBleedSeverity <- intField "leg_bleed_severity" value
+        let armBruiseSeverity <- intField "arm_bruise_severity" value
+        let torsoBruiseSeverity <- intField "torso_bruise_severity" value
+        let crippledPenalty <- intField "crippled_penalty" value
+        let bleedSurcharge <- intField "bleed_surcharge" value
+        let xpFactor <- intField "xp_factor" value
+        let levelHpGain <- intField "level_hp_gain" value
+        let levelStrGain <- intField "level_str_gain" value
+        let levelLoyaltyGain <- intField "level_loyalty_gain" value
+        let trapDamage <- intField "trap_damage" value
+        let lavaDamage <- intField "lava_damage" value
+        let chaosVentCorruption <- intField "chaos_vent_corruption" value
+        let starvationDamage <- intField "starvation_damage" value
+        let emberlanceDamage <- intField "emberlance_damage" value
+        let manaRegen <- intField "mana_regen" value
+        let poolHealBand <- intField "pool_heal_band" value
+        let poolPoisonBand <- intField "pool_poison_band" value
+        let poolNothingBand <- intField "pool_nothing_band" value
+        let poolCorruptBand <- intField "pool_corrupt_band" value
+        let poolHealAmount <- intField "pool_heal_amount" value
+        let poolPoisonAmount <- intField "pool_poison_amount" value
+        let poolCorruptAmount <- intField "pool_corrupt_amount" value
+        let feedTameBand <- intField "feed_tame_band" value
+        let feedPacifyBand <- intField "feed_pacify_band" value
         pure (TuningConfig {
             attackDie = attackDie,
             defenseBase = defenseBase,
@@ -506,62 +506,62 @@ let decodeTuning value =
 loadTuning : String -> IO GameError TuningConfig
 let loadTuning path =
     do
-        root <- readJsonFile path
+        let root <- readJsonFile path
         decodeTuning root
 
 decodeSkill : json.JsonValue -> IO GameError SkillDef
 let decodeSkill value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        maxLevel <- intField "max_level" value
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let maxLevel <- intField "max_level" value
         pure (SkillDef id name maxLevel)
 
 loadSkills : String -> IO GameError (List SkillDef)
 let loadSkills path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "skills" root
+        let root <- readJsonFile path
+        let xs <- arrayField "skills" root
         traverse decodeSkill xs
 
 decodeReveal : json.JsonValue -> IO GameError RevealConfig
 let decodeReveal value =
     do
-        vagueAt <- intField "vague_at" value
-        approxAt <- intField "approx_at" value
-        knownAt <- intField "known_at" value
-        vagueTough <- stringField "vague_tough" value
-        vagueWeak <- stringField "vague_weak" value
-        vagueNeutral <- stringField "vague_neutral" value
+        let vagueAt <- intField "vague_at" value
+        let approxAt <- intField "approx_at" value
+        let knownAt <- intField "known_at" value
+        let vagueTough <- stringField "vague_tough" value
+        let vagueWeak <- stringField "vague_weak" value
+        let vagueNeutral <- stringField "vague_neutral" value
         pure (RevealConfig vagueAt approxAt knownAt vagueTough vagueWeak vagueNeutral)
 
 loadWorldGen : String -> IO GameError WorldGenConfig
 let loadWorldGen path =
     do
-        root <- readJsonFile path
-        wg <- objectField "worldgen" root
-        map <- objectField "map" wg
-        room <- objectField "room" wg
-        spawn <- objectField "spawn" wg
-        features <- objectField "features" wg
-        minWidth <- intField "min_width" map
-        maxWidth <- intField "max_width" map
-        minHeight <- intField "min_height" map
-        maxHeight <- intField "max_height" map
-        minSize <- intField "min_size" room
-        maxSize <- intField "max_size" room
-        attempts <- intField "attempts" room
-        monsterBase <- intField "monster_base_chance" spawn
-        monsterPerDepth <- intField "monster_chance_per_depth" spawn
-        itemChance <- intField "item_chance" spawn
-        altarChance <- intField "altar_chance" features
-        loreChance <- intField "lore_stone_chance" features
-        trapBase <- intField "trap_base_chance" features
-        trapDepth <- intField "trap_chance_per_depth" features
-        chaosBase <- intField "chaos_vent_base_chance" features
-        chaosDepth <- intField "chaos_vent_chance_per_depth" features
-        chaosSpread <- intField "chaos_vent_spread_chance" features
-        poolChance <- intField "pool_chance" features
+        let root <- readJsonFile path
+        let wg <- objectField "worldgen" root
+        let map <- objectField "map" wg
+        let room <- objectField "room" wg
+        let spawn <- objectField "spawn" wg
+        let features <- objectField "features" wg
+        let minWidth <- intField "min_width" map
+        let maxWidth <- intField "max_width" map
+        let minHeight <- intField "min_height" map
+        let maxHeight <- intField "max_height" map
+        let minSize <- intField "min_size" room
+        let maxSize <- intField "max_size" room
+        let attempts <- intField "attempts" room
+        let monsterBase <- intField "monster_base_chance" spawn
+        let monsterPerDepth <- intField "monster_chance_per_depth" spawn
+        let itemChance <- intField "item_chance" spawn
+        let altarChance <- intField "altar_chance" features
+        let loreChance <- intField "lore_stone_chance" features
+        let trapBase <- intField "trap_base_chance" features
+        let trapDepth <- intField "trap_chance_per_depth" features
+        let chaosBase <- intField "chaos_vent_base_chance" features
+        let chaosDepth <- intField "chaos_vent_chance_per_depth" features
+        let chaosSpread <- intField "chaos_vent_spread_chance" features
+        let poolChance <- intField "pool_chance" features
         if minWidth < 20 || maxWidth < minWidth || minHeight < 10 || maxHeight < minHeight then
             raise (ConfigError "worldgen map size limits are invalid")
         elif minSize < 3 || maxSize < minSize then
@@ -576,18 +576,18 @@ let loadWorldGen path =
 decodeBranch : json.JsonValue -> IO GameError BranchDef
 let decodeBranch value =
     do
-        id <- intField "id" value
-        name <- stringField "name" value
-        entranceDepth <- intField "entrance_depth" value
-        floors <- intField "floors" value
-        bossName <- stringField "boss" value
-        boss <- decodeSpecies bossName
+        let id <- intField "id" value
+        let name <- stringField "name" value
+        let entranceDepth <- intField "entrance_depth" value
+        let floors <- intField "floors" value
+        let bossName <- stringField "boss" value
+        let boss <- decodeSpecies bossName
         pure (BranchDef id name entranceDepth floors boss)
 
 loadBranches : String -> IO GameError (List BranchDef)
 let loadBranches path =
     do
-        root <- readJsonFile path
+        let root <- readJsonFile path
         match json.objectField "branches" root
         case None -> pure Nil
         case Some arrv ->
@@ -598,31 +598,31 @@ let loadBranches path =
 loadItems : String -> IO GameError (List ItemDef)
 let loadItems path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "items" root
+        let root <- readJsonFile path
+        let xs <- arrayField "items" root
         traverse decodeItem xs
 
 decodeItem : json.JsonValue -> IO GameError ItemDef
 let decodeItem value =
     do
-        id <- stringField "id" value
-        kindName <- stringField "kind" value
-        kind <- decodeItemKind kindName
-        name <- stringField "name" value
-        trueName <- stringField "true_name" value
-        glyph <- stringField "glyph" value
-        className <- stringField "class" value
-        cls <- decodeItemClass className
-        stackable <- boolField "stackable" value
-        power <- intField "power" value
-        charges <- intField "charges" value
-        identified <- boolField "starts_identified" value
-        beatitudeKnown <- boolField "beatitude_known" value
-        flammable <- boolField "flammable" value
-        damageType <- optDamageType "damage_type" value
-        baseUse <- decodeEffectsField "use_effects" value
-        blessedRaw <- decodeEffectsField "use_effects_blessed" value
-        cursedRaw <- decodeEffectsField "use_effects_cursed" value
+        let id <- stringField "id" value
+        let kindName <- stringField "kind" value
+        let kind <- decodeItemKind kindName
+        let name <- stringField "name" value
+        let trueName <- stringField "true_name" value
+        let glyph <- stringField "glyph" value
+        let className <- stringField "class" value
+        let cls <- decodeItemClass className
+        let stackable <- boolField "stackable" value
+        let power <- intField "power" value
+        let charges <- intField "charges" value
+        let identified <- boolField "starts_identified" value
+        let beatitudeKnown <- boolField "beatitude_known" value
+        let flammable <- boolField "flammable" value
+        let damageType <- optDamageType "damage_type" value
+        let baseUse <- decodeEffectsField "use_effects" value
+        let blessedRaw <- decodeEffectsField "use_effects_blessed" value
+        let cursedRaw <- decodeEffectsField "use_effects_cursed" value
         let useBlessed = if listLength blessedRaw == 0 then baseUse else blessedRaw
         let useCursed = if listLength cursedRaw == 0 then baseUse else cursedRaw
         pure (ItemDef id kind name trueName glyph cls stackable power charges identified beatitudeKnown flammable damageType useBlessed baseUse useCursed)
@@ -630,32 +630,32 @@ let decodeItem value =
 decodeAffix : json.JsonValue -> IO GameError ItemAffix
 let decodeAffix value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        className <- stringField "class" value
-        cls <- decodeItemClass className
-        powerBonus <- intField "power_bonus" value
-        weight <- intField "weight" value
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let className <- stringField "class" value
+        let cls <- decodeItemClass className
+        let powerBonus <- intField "power_bonus" value
+        let weight <- intField "weight" value
         pure (ItemAffix id name cls powerBonus weight)
 
 loadAffixes : String -> IO GameError (List ItemAffix)
 let loadAffixes path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "affixes" root
+        let root <- readJsonFile path
+        let xs <- arrayField "affixes" root
         traverse decodeAffix xs
 
 loadActors : String -> IO GameError (List ActorDef)
 let loadActors path =
     do
-        root <- readJsonFile path
-        xs <- arrayField "actors" root
+        let root <- readJsonFile path
+        let xs <- arrayField "actors" root
         traverse decodeActor xs
 
 abilityWith : (Int -> Ability) -> String -> json.JsonValue -> IO GameError Ability
 let abilityWith mk fieldName value =
     do
-        n <- intField fieldName value
+        let n <- intField fieldName value
         pure (mk n)
 
 decodeAbilityKind : String -> json.JsonValue -> IO GameError Ability
@@ -668,101 +668,101 @@ let decodeAbilityKind kind value =
 decodeAbility : json.JsonValue -> IO GameError Ability
 let decodeAbility value =
     do
-        kind <- stringField "kind" value
+        let kind <- stringField "kind" value
         decodeAbilityKind kind value
 
 decodeActor : json.JsonValue -> IO GameError ActorDef
 let decodeActor value =
     do
-        id <- stringField "id" value
-        speciesName <- stringField "species" value
-        species <- decodeSpecies speciesName
-        name <- stringField "name" value
-        glyph <- stringField "glyph" value
-        factionName <- stringField "faction" value
-        faction <- decodeFaction factionName
-        attitudeName <- stringField "attitude" value
-        attitude <- decodeAttitude attitudeName
-        statsJson <- objectField "stats" value
-        stats <- decodeStats statsJson
-        morale <- intField "morale" value
-        loyalty <- intField "loyalty" value
-        invJson <- arrayField "inventory" value
-        inv <- traverse decodeItemKindFromJson invJson
-        tagJson <- arrayField "tags" value
-        tags <- traverse decodeStringFromJson tagJson
-        abilityJson <- arrayField "abilities" value
-        abilities <- traverse decodeAbility abilityJson
-        description <- stringField "description" value
-        sightRange <- intField "sight_range" value
-        hearing <- intField "hearing" value
-        language <- stringField "language" value
-        corpseNutrition <- intField "corpse_nutrition" value
-        resistances <- optDamageTypes "resistances" value
-        vulnerabilities <- optDamageTypes "vulnerabilities" value
-        rangedElement <- optDamageType "ranged_element" value
-        corpseEffects <- decodeEffectsField "corpse_effects" value
+        let id <- stringField "id" value
+        let speciesName <- stringField "species" value
+        let species <- decodeSpecies speciesName
+        let name <- stringField "name" value
+        let glyph <- stringField "glyph" value
+        let factionName <- stringField "faction" value
+        let faction <- decodeFaction factionName
+        let attitudeName <- stringField "attitude" value
+        let attitude <- decodeAttitude attitudeName
+        let statsJson <- objectField "stats" value
+        let stats <- decodeStats statsJson
+        let morale <- intField "morale" value
+        let loyalty <- intField "loyalty" value
+        let invJson <- arrayField "inventory" value
+        let inv <- traverse decodeItemKindFromJson invJson
+        let tagJson <- arrayField "tags" value
+        let tags <- traverse decodeStringFromJson tagJson
+        let abilityJson <- arrayField "abilities" value
+        let abilities <- traverse decodeAbility abilityJson
+        let description <- stringField "description" value
+        let sightRange <- intField "sight_range" value
+        let hearing <- intField "hearing" value
+        let language <- stringField "language" value
+        let corpseNutrition <- intField "corpse_nutrition" value
+        let resistances <- optDamageTypes "resistances" value
+        let vulnerabilities <- optDamageTypes "vulnerabilities" value
+        let rangedElement <- optDamageType "ranged_element" value
+        let corpseEffects <- decodeEffectsField "corpse_effects" value
         pure (ActorDef id species name glyph stats attitude faction morale loyalty inv tags abilities description sightRange hearing language corpseNutrition resistances vulnerabilities rangedElement corpseEffects)
 
 decodeStats : json.JsonValue -> IO GameError Stats
 let decodeStats value =
     do
-        hp <- intField "hp" value
-        maxHp <- intField "max_hp" value
-        mp <- intField "mp" value
-        maxMp <- intField "max_mp" value
-        strength <- intField "str" value
-        dex <- intField "dex" value
-        defense <- intField "def" value
-        xp <- intField "xp" value
-        level <- intField "level" value
+        let hp <- intField "hp" value
+        let maxHp <- intField "max_hp" value
+        let mp <- intField "mp" value
+        let maxMp <- intField "max_mp" value
+        let strength <- intField "str" value
+        let dex <- intField "dex" value
+        let defense <- intField "def" value
+        let xp <- intField "xp" value
+        let level <- intField "level" value
         pure (Stats hp maxHp mp maxMp strength dex defense xp level)
 
 loadSpawns : String -> IO GameError (monsters : List SpawnRule, items : List SpawnRule, structures : List StructureDef)
 let loadSpawns path =
     do
-        root <- readJsonFile path
-        monsterJson <- arrayField "monster_spawns" root
-        itemJson <- arrayField "item_spawns" root
-        structureJson <- arrayField "structures" root
-        monsters <- traverse decodeSpawn monsterJson
-        items <- traverse decodeSpawn itemJson
-        structures <- traverse decodeStructure structureJson
+        let root <- readJsonFile path
+        let monsterJson <- arrayField "monster_spawns" root
+        let itemJson <- arrayField "item_spawns" root
+        let structureJson <- arrayField "structures" root
+        let monsters <- traverse decodeSpawn monsterJson
+        let items <- traverse decodeSpawn itemJson
+        let structures <- traverse decodeStructure structureJson
         pure (monsters = monsters, items = items, structures = structures)
 
 decodeStructureMember : json.JsonValue -> IO GameError StructureMember
 let decodeStructureMember value =
     do
-        speciesName <- stringField "species" value
-        species <- decodeSpecies speciesName
-        minCount <- intField "min" value
-        maxCount <- intField "max" value
+        let speciesName <- stringField "species" value
+        let species <- decodeSpecies speciesName
+        let minCount <- intField "min" value
+        let maxCount <- intField "max" value
         pure (StructureMember species minCount maxCount)
 
 decodeStructure : json.JsonValue -> IO GameError StructureDef
 let decodeStructure value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        branch <- optionalIntField 0 "branch" value
-        minDepth <- intField "min_depth" value
-        maxDepth <- intField "max_depth" value
-        weight <- intField "weight" value
-        fire <- boolField "fire" value
-        memberJson <- arrayField "members" value
-        members <- traverse decodeStructureMember memberJson
-        lootJson <- arrayField "loot" value
-        loot <- traverse decodeItemKindFromJson lootJson
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let branch <- optionalIntField 0 "branch" value
+        let minDepth <- intField "min_depth" value
+        let maxDepth <- intField "max_depth" value
+        let weight <- intField "weight" value
+        let fire <- boolField "fire" value
+        let memberJson <- arrayField "members" value
+        let members <- traverse decodeStructureMember memberJson
+        let lootJson <- arrayField "loot" value
+        let loot <- traverse decodeItemKindFromJson lootJson
         pure (StructureDef id name branch minDepth maxDepth weight fire members loot)
 
 decodeSpawn : json.JsonValue -> IO GameError SpawnRule
 let decodeSpawn value =
     do
-        id <- stringField "id" value
-        minDepth <- intField "min_depth" value
-        maxDepth <- intField "max_depth" value
-        weight <- intField "weight" value
-        branch <- optionalIntField 0 "branch" value
+        let id <- stringField "id" value
+        let minDepth <- intField "min_depth" value
+        let maxDepth <- intField "max_depth" value
+        let weight <- intField "weight" value
+        let branch <- optionalIntField 0 "branch" value
         if minDepth < 1 || maxDepth < minDepth || weight < 1 then
             raise (ConfigError ("invalid spawn rule for " ++ id))
         else pure (SpawnRule id minDepth maxDepth weight branch)
@@ -770,114 +770,114 @@ let decodeSpawn value =
 loadSystems : String -> IO GameError (tactics : List TacticDef, starSigns : List StarSignDef, mutations : List MutationDef, faiths : List FaithDef, languages : List LanguageDef)
 let loadSystems path =
     do
-        root <- readJsonFile path
-        tacticJson <- arrayField "tactics" root
-        signJson <- arrayField "star_signs" root
-        mutationJson <- arrayField "mutations" root
-        faithJson <- arrayField "faiths" root
-        languageJson <- arrayField "languages" root
-        tactics <- traverse decodeTactic tacticJson
-        signs <- traverse decodeStarSign signJson
-        mutations <- traverse decodeMutation mutationJson
-        faiths <- traverse decodeFaith faithJson
-        languages <- traverse decodeLanguage languageJson
+        let root <- readJsonFile path
+        let tacticJson <- arrayField "tactics" root
+        let signJson <- arrayField "star_signs" root
+        let mutationJson <- arrayField "mutations" root
+        let faithJson <- arrayField "faiths" root
+        let languageJson <- arrayField "languages" root
+        let tactics <- traverse decodeTactic tacticJson
+        let signs <- traverse decodeStarSign signJson
+        let mutations <- traverse decodeMutation mutationJson
+        let faiths <- traverse decodeFaith faithJson
+        let languages <- traverse decodeLanguage languageJson
         pure (tactics = tactics, starSigns = signs, mutations = mutations, faiths = faiths, languages = languages)
 
 decodeLexEntry : json.JsonValue -> IO GameError LexEntry
 let decodeLexEntry value =
     do
-        key <- stringField "key" value
-        word <- stringField "word" value
+        let key <- stringField "key" value
+        let word <- stringField "word" value
         pure (LexEntry key word)
 
 decodeLanguage : json.JsonValue -> IO GameError LanguageDef
 let decodeLanguage value =
     do
-        id <- stringField "id" value
-        name <- stringField "name" value
-        sylJson <- arrayField "syllables" value
-        syllables <- traverse decodeStringFromJson sylJson
-        lexJson <- arrayField "lexicon" value
-        lexicon <- traverse decodeLexEntry lexJson
+        let id <- stringField "id" value
+        let name <- stringField "name" value
+        let sylJson <- arrayField "syllables" value
+        let syllables <- traverse decodeStringFromJson sylJson
+        let lexJson <- arrayField "lexicon" value
+        let lexicon <- traverse decodeLexEntry lexJson
         pure (LanguageDef id name syllables lexicon)
 
 decodeTactic : json.JsonValue -> IO GameError TacticDef
 let decodeTactic value =
     do
-        id <- stringField "id" value
-        tactic <- decodeTacticId id
-        name <- stringField "name" value
-        attack <- intField "attack" value
-        damage <- intField "damage" value
-        defense <- intField "defense" value
-        hunger <- intField "hunger" value
-        description <- stringField "description" value
+        let id <- stringField "id" value
+        let tactic <- decodeTacticId id
+        let name <- stringField "name" value
+        let attack <- intField "attack" value
+        let damage <- intField "damage" value
+        let defense <- intField "defense" value
+        let hunger <- intField "hunger" value
+        let description <- stringField "description" value
         pure (TacticDef tactic name attack damage defense hunger description)
 
 decodeStarSign : json.JsonValue -> IO GameError StarSignDef
 let decodeStarSign value =
     do
-        id <- stringField "id" value
-        sign <- decodeStarSignId id
-        name <- stringField "name" value
-        description <- stringField "description" value
-        hp <- optionalIntField 0 "hp_bonus" value
-        mp <- optionalIntField 0 "mp_bonus" value
-        strength <- optionalIntField 0 "str_bonus" value
-        dex <- optionalIntField 0 "dex_bonus" value
-        defense <- optionalIntField 0 "def_bonus" value
-        hunger <- optionalIntField 0 "hunger_bonus" value
-        resistance <- intField "corruption_resistance" value
+        let id <- stringField "id" value
+        let sign <- decodeStarSignId id
+        let name <- stringField "name" value
+        let description <- stringField "description" value
+        let hp <- optionalIntField 0 "hp_bonus" value
+        let mp <- optionalIntField 0 "mp_bonus" value
+        let strength <- optionalIntField 0 "str_bonus" value
+        let dex <- optionalIntField 0 "dex_bonus" value
+        let defense <- optionalIntField 0 "def_bonus" value
+        let hunger <- optionalIntField 0 "hunger_bonus" value
+        let resistance <- intField "corruption_resistance" value
         pure (StarSignDef sign name description hp mp strength dex defense hunger resistance)
 
 decodeMutation : json.JsonValue -> IO GameError MutationDef
 let decodeMutation value =
     do
-        id <- stringField "id" value
-        mutation <- decodeMutationId id
-        name <- stringField "name" value
-        hp <- optionalIntField 0 "hp_bonus" value
-        mp <- optionalIntField 0 "mp_bonus" value
-        strength <- optionalIntField 0 "str_bonus" value
-        dex <- optionalIntField 0 "dex_bonus" value
-        defense <- optionalIntField 0 "def_bonus" value
-        hunger <- intField "hunger_tax" value
-        description <- stringField "description" value
-        dealsDamageType <- optDamageTypeOption "damage_type" value
+        let id <- stringField "id" value
+        let mutation <- decodeMutationId id
+        let name <- stringField "name" value
+        let hp <- optionalIntField 0 "hp_bonus" value
+        let mp <- optionalIntField 0 "mp_bonus" value
+        let strength <- optionalIntField 0 "str_bonus" value
+        let dex <- optionalIntField 0 "dex_bonus" value
+        let defense <- optionalIntField 0 "def_bonus" value
+        let hunger <- intField "hunger_tax" value
+        let description <- stringField "description" value
+        let dealsDamageType <- optDamageTypeOption "damage_type" value
         pure (MutationDef mutation name hp mp strength dex defense hunger description dealsDamageType)
 
 decodeFaith : json.JsonValue -> IO GameError FaithDef
 let decodeFaith value =
     do
-        id <- stringField "id" value
-        faith <- decodeFaithId id
-        name <- stringField "name" value
-        alignment <- stringField "alignment" value
+        let id <- stringField "id" value
+        let faith <- decodeFaithId id
+        let name <- stringField "name" value
+        let alignment <- stringField "alignment" value
         pure (FaithDef faith name alignment)
 
 loadLore : String -> IO GameError (List Rumor)
 let loadLore path =
     do
-        root <- readJsonFile path
-        rumorJson <- arrayField "rumors" root
-        texts <- traverse decodeStringFromJson rumorJson
+        let root <- readJsonFile path
+        let rumorJson <- arrayField "rumors" root
+        let texts <- traverse decodeStringFromJson rumorJson
         pure (map Rumor texts)
 
 decodeSave : json.JsonValue -> IO GameError SaveConfig
 let decodeSave value =
     do
-        directory <- stringField "directory" value
-        path <- stringField "path" value
-        version <- intField "format_version" value
-        autosave <- boolField "autosave_on_quit" value
+        let directory <- stringField "directory" value
+        let path <- stringField "path" value
+        let version <- intField "format_version" value
+        let autosave <- boolField "autosave_on_quit" value
         pure (SaveConfig directory path version autosave)
 
 
 decodeRules : json.JsonValue -> IO GameError RulesConfig
 let decodeRules value =
     do
-        hunger <- intField "starting_hunger" value
-        limit <- intField "message_limit" value
+        let hunger <- intField "starting_hunger" value
+        let limit <- intField "message_limit" value
         if hunger <= 0 then raise (ConfigError "starting_hunger must be positive")
         elif limit <= 0 then raise (ConfigError "message_limit must be positive")
         else pure (RulesConfig hunger (intToNat limit))
@@ -892,7 +892,7 @@ let decodeStringFromJson value =
 decodeItemKindFromJson : json.JsonValue -> IO GameError ItemKind
 let decodeItemKindFromJson value =
     do
-        text <- decodeStringFromJson value
+        let text <- decodeStringFromJson value
         decodeItemKind text
 
 decodeItemKind : String -> IO GameError ItemKind

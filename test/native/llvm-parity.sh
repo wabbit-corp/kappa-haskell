@@ -17,8 +17,51 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
 KAPPA=${KAPPA:-"cabal run -v0 kappa --"}
+PARITY_TIMEOUT=${KAPPA_LLVM_PARITY_TIMEOUT:-30}
+BUILD_TIMEOUT=${KAPPA_LLVM_PARITY_BUILD_TIMEOUT:-240}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+raw = sys.argv[1]
+if raw.endswith('s'):
+    raw = raw[:-1]
+seconds = float(raw)
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  }
+fi
+
+perceus_rc_enabled() {
+  case "${KAPPA_PERCEUS_RC:-}" in
+    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+check_perceus_rc_log() {
+  local log="$1"
+  if perceus_rc_enabled; then
+    if ! grep -q "perceus-rc: R-path walk-and-lookup complete; 0 validation miss(es)" "$log"; then
+      echo "[FAIL] Perceus RC C-backend build did not report zero validation misses"
+      sed -n '/perceus-rc:/p' "$log" | sed 's/^/    /'
+      return 1
+    fi
+  fi
+  return 0
+}
+
+cleanup_generated_for_source() {
+  local src="$1"
+  rm -f "${src%.kp}.kappa.c" "${src%.kp}.kappa.ll"
+}
 
 # Built-in corpus grows as milestones land.  With no args, run every program in
 # tests/native/llvm/ (M0 hello, M1 arithmetic/show + bigint, M2 cross-CAFs),
@@ -36,6 +79,24 @@ KP
   for kp in tests/native/llvm/*.kp; do
     [ -e "$kp" ] && CORPUS+=("$kp")
   done
+  # §32.2.6: LLVM-supported tight loops must observe safe-point interrupts.
+  CORPUS+=("test/native/cases/interrupt-tight-loop.kp")
+  CORPUS+=("test/native/cases/adv-boxed-loop-tail.kp")
+  CORPUS+=("test/native/cases/adv-loop-tail-effect.kp")
+  CORPUS+=("test/native/cases/adv-loop-tail-read.kp")
+  # §18.5/§18.6 through the CK machine: suspending loops with break,
+  # continue, and return must scope return to the do-block value.
+  CORPUS+=("test/native/cases/suspendbreak.kp")
+  # §32.2.6: scalar-worker safe-point aborts must agree with the interpreter,
+  # including active release/finalizer scopes.
+  CORPUS+=("test/native/cases/scalar-nested-abort.kp")
+  CORPUS+=("test/native/cases/scalar-nested-abort-using.kp")
+  CORPUS+=("test/native/cases/scalar-nested-abort-using-defer.kp")
+  CORPUS+=("test/native/cases/scalar-nested-abort-defer-before-pure.kp")
+  CORPUS+=("test/native/cases/scalar-nested-abort-onexit.kp")
+  CORPUS+=("test/native/cases/scalar-nested-abort-cleanup-failure.kp")
+  CORPUS+=("test/native/cases/defer-sleep.kp")
+  CORPUS+=("test/native/cases/monadref-user-evidence.kp")
 fi
 
 pass=0; fail=0
@@ -43,17 +104,54 @@ for kp in "${CORPUS[@]}"; do
   name=$(basename "$kp" .kp)
   cbin="$TMP/${name}_c"; lbin="$TMP/${name}_llvm"
 
-  interp_out=$(timeout 30 $KAPPA run "$kp" 2>/dev/null); interp_rc=$?
+  interp_out=$(timeout "$PARITY_TIMEOUT" $KAPPA run "$kp" 2>/dev/null); interp_rc=$?
+  if [ "$interp_rc" -eq 124 ]; then
+    echo "[FAIL] $name — interpreter timed out after ${PARITY_TIMEOUT}s"
+    fail=$((fail+1))
+    continue
+  fi
 
-  if ! $KAPPA build "$kp" -o "$cbin" >/dev/null 2>"$TMP/cbuild.err"; then
+  cleanup_generated_for_source "$kp"
+  timeout "$BUILD_TIMEOUT" $KAPPA build "$kp" -o "$cbin" >/dev/null 2>"$TMP/cbuild.err"; cbuild_rc=$?
+  cleanup_generated_for_source "$kp"
+  if [ "$cbuild_rc" -eq 124 ]; then
+    echo "[FAIL] $name — C backend build timed out after ${BUILD_TIMEOUT}s"
+    fail=$((fail+1))
+    continue
+  fi
+  if [ "$cbuild_rc" -ne 0 ]; then
     echo "[FAIL] $name — C backend build error"; sed 's/^/    /' "$TMP/cbuild.err" | head -5; fail=$((fail+1)); continue
   fi
-  c_out=$(timeout 30 "$cbin" 2>/dev/null); c_rc=$?
+  if ! check_perceus_rc_log "$TMP/cbuild.err"; then
+    fail=$((fail+1)); continue
+  fi
+  c_out=$(timeout "$PARITY_TIMEOUT" "$cbin" 2>/dev/null); c_rc=$?
+  if [ "$c_rc" -eq 124 ]; then
+    echo "[FAIL] $name — C binary timed out after ${PARITY_TIMEOUT}s"
+    fail=$((fail+1))
+    continue
+  fi
 
-  if ! KAPPA_BACKEND=llvm $KAPPA build "$kp" -o "$lbin" >/dev/null 2>"$TMP/lbuild.err"; then
+  cleanup_generated_for_source "$kp"
+  KAPPA_BACKEND=llvm timeout "$BUILD_TIMEOUT" $KAPPA build "$kp" -o "$lbin" >/dev/null 2>"$TMP/lbuild.err"; lbuild_rc=$?
+  cleanup_generated_for_source "$kp"
+  if [ "$lbuild_rc" -eq 124 ]; then
+    echo "[FAIL] $name — LLVM backend build timed out after ${BUILD_TIMEOUT}s"
+    fail=$((fail+1))
+    continue
+  fi
+  if [ "$lbuild_rc" -ne 0 ]; then
     echo "[FAIL] $name — LLVM backend build error"; sed 's/^/    /' "$TMP/lbuild.err" | head -8; fail=$((fail+1)); continue
   fi
-  l_out=$(timeout 30 "$lbin" 2>/dev/null); l_rc=$?
+  if ! check_perceus_rc_log "$TMP/lbuild.err"; then
+    fail=$((fail+1)); continue
+  fi
+  l_out=$(timeout "$PARITY_TIMEOUT" "$lbin" 2>/dev/null); l_rc=$?
+  if [ "$l_rc" -eq 124 ]; then
+    echo "[FAIL] $name — LLVM binary timed out after ${PARITY_TIMEOUT}s"
+    fail=$((fail+1))
+    continue
+  fi
 
   if [ "$l_out" = "$c_out" ] && [ "$l_rc" = "$c_rc" ] && \
      [ "$c_out" = "$interp_out" ] && [ "$c_rc" = "$interp_rc" ]; then

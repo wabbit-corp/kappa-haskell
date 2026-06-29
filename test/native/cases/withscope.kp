@@ -16,21 +16,21 @@ let three = ioPure 3
 
 useScope : Scope -> UIO Int
 let useScope sc = do
-    f <- forkIn sc three
-    ex <- await f
+    let f <- forkIn sc three
+    let ex <- await f
     match ex
       case Success v -> ioPure v
       case Failure c -> ioPure 0
 
 main : UIO Unit
 let main = do
-    sc <- newScope
-    f <- forkIn sc sleeper
+    let sc <- newScope
+    let f <- forkIn sc sleeper
     shutdownScope sc
-    ex <- await f
+    let ex <- await f
     match ex
     case Success v -> printlnString "completed"
     case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
     case Failure c -> printlnString "other"
-    r <- withScope useScope
+    let r <- withScope useScope
     printlnString (showInt r)

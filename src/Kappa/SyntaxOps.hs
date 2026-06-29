@@ -88,6 +88,8 @@ renameVarOccurrences :: Map Text Text -> Expr -> Expr
 renameVarOccurrences m = transformExprs $ \case
   EVar (Name t sp)
     | Just t' <- Map.lookup t m -> EVar (Name t' sp)
+  ERefFacet (Name t sp) rsp
+    | Just t' <- Map.lookup t m -> ERefFacet (Name t' sp) rsp
   e -> e
 
 -- | Every variable occurrence in expression position (not entering
@@ -96,6 +98,7 @@ renameVarOccurrences m = transformExprs $ \case
 freeVarOccurrences :: Expr -> [Name]
 freeVarOccurrences = queryExprs $ \case
   EVar n -> ([n], False)
+  ERefFacet n _ -> ([n], False)
   _ -> ([], True)
 
 -- | Every name bound anywhere inside the payload (patterns, binders,
@@ -131,7 +134,7 @@ boundNamesIn e0 = nub (goAll e0)
         map nameText (maybeToList mb ++ maybeToList mrest)
       _ -> []
     doBinds = \case
-      DoVar n _ _ -> [nameText n]
+      DoVar n _ _ _ -> [nameText n]
       DoAssign n _ _ _ -> [nameText n]
       _ -> []
     clauseBinds = \case
@@ -149,6 +152,8 @@ renderExprSrc = render
   where
     render = \case
       EVar n -> nameText n
+      ERefFacet n _ -> "ref " <> nameText n
+      EVarRead n _ -> "readRef (ref " <> nameText n <> ")"
       EHole Nothing _ -> "_"
       EHole (Just n) _ -> "?" <> nameText n
       EIntLit v _ _ -> T.pack (show v)
@@ -185,6 +190,8 @@ renderExprSrc = render
       ArgNamedBlock _ _ -> "{ ... }"
     atom e = case e of
       EVar {} -> render e
+      ERefFacet {} -> render e
+      EVarRead {} -> render e
       EIntLit {} -> render e
       EUnit {} -> render e
       EStringLit {} -> render e

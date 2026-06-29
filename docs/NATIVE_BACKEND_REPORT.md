@@ -57,13 +57,14 @@ optimization reviewer").
   per-iteration defer, defer-before-break, labelled-break LIFO across two
   scopes, early-return unwinding.
 - **Lazy `defer` evaluation (§18.7)** — the deferred action is lifted into a
-  suspended `kio` thunk (`compileDeferAction`) that captures the current
+  CK-machine action (`compileDeferAction`) that captures the current
   environment and is *evaluated and run at scope exit*, not eagerly at the
   registration site. So a deferred body observes state mutated between
-  registration and the flush (reading the flush-time `var` value), and a
-  sub-expression that would fault only with the registration-time value does
-  not fault early — matching the interpreter (`evalK env t` run from the exit
-  list). The earlier eager lowering snapshotted the body at registration (a
+  registration and the flush (reading the flush-time `var` value), can suspend
+  during finalizer drain, and a sub-expression that would fault only with the
+  registration-time value does not fault early — matching the interpreter
+  (`evalK env t` run from the exit list). The earlier eager lowering snapshotted
+  the body at registration (a
   silent divergence); now native ≡ interpreter for the running-accumulator and
   guarded-faulting-defer patterns.
 - **Nested binding or-patterns (§17.2.3)** — `case Ctor (A y | B y) -> y`
@@ -121,7 +122,7 @@ oracle.
 Genuinely non-tail recursion is bounded by the C stack (the interpreter is
 also O(n) stack here, and `ulimit -s` raises the bound; never a wrong
 answer): a recursive call in the **bound leg** of `bindIO`/`ioThen` /
-left-nested `>>=`; a deeply-recursive `!`-splice; an `if`-branch recursion
+left-nested `>>=`; a deeply nested splice-lifted bind tree; an `if`-branch recursion
 that is not the do-block's last item. Multi-argument **mutual** recursion
 trampolines through the curried closure (1 closure allocation per step;
 self- and arity-1 recursion are allocation-free) — correct and

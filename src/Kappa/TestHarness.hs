@@ -1773,7 +1773,7 @@ assertDoItemDescriptors path src nm expected =
       DoBind lb -> "let " <> prefixedHead (lbPrefix lb) (lbPattern lb)
       DoLet lb -> "let " <> prefixedHead (lbPrefix lb) (lbPattern lb)
       DoLetQ p _ _ _ -> "let? " <> patHeadText p
-      DoVar n _ _ -> "var " <> nameText n
+      DoVar n _ _ _ -> "var " <> nameText n
       DoAssign n _ _ _ -> "assign " <> nameText n
       DoExpr _ -> "expression"
       DoUsing _ p _ _ -> "using " <> patHeadText p

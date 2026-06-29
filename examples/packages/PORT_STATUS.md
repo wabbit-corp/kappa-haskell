@@ -199,15 +199,12 @@ package-owned adapter was added:
 
 Two front-end realities forced behavior-preserving surface changes (documented
 honestly, not hidden):
-- **The native backend does not implement the exception primitives**
-  (`throwIO`/`catchIO`/`__absurd`): a `raise`/`try…except`-based `IO GameError`
-  terminal surface typechecks but fails native codegen (`E_BACKEND_UNSUPPORTED`).
-  The facade was therefore changed from `IO GameError` to **`UIO`** (no error
-  channel); the overlay maps an errno failure to a benign in-band default
-  (`open` always yields a handle, `readKey` error → `KeyUnknown`, `size` error →
-  `80×24`) instead of raising. On a real TTY — the only environment that runs the
-  game — the success path is identical; only the process-terminating
-  raise-on-failure path (which never occurs in normal play) is replaced.
+- **The terminal overlay keeps a total public surface**: native exception
+  primitives are now implemented, but the conservative terminal adapter still maps
+  errno failures to benign in-band defaults (`open` always yields a handle,
+  `readKey` error → `KeyUnknown`, `size` error → `80×24`). On a real TTY — the
+  only environment that runs the game — the success path is identical; the public
+  terminal API remains `UIO` so callers do not need to handle host errno details.
 - **Cross-module `&`-borrow parameters are not tracked like local borrows**: a
   same-module *recursive* (or local) borrow of a path that was previously passed
   to an *imported* `&`-parameter function is reported `E_QTT_PATH_CONSUMED`
@@ -247,11 +244,10 @@ Reaching green required only behavior-preserving source adaptation (named-arg �
 brace constructor application; guarded `Nat` arithmetic; conservative-overlay
 terminal fragment + a thin C adapter; record-patch → reconstruction; written-out
 `Eq` instances; an iterative loop in place of a cross-module borrowing recursion;
-a `UIO` terminal surface because the native backend has no exception primitives)
+a total `UIO` terminal surface over the errno-reporting native adapter)
 plus this implementation's manifest/fragment mechanisms — no stubs or faked
 results; every test really runs the game logic. The jvm/dotnet targets in the
 original `build.kp` files are spec-optional and remain unrealized (kept for
 provenance). Remaining front-end gaps surfaced honestly above: no proof inference
 for checked `Nat` `%`/`/`/`-`; no trusted-summary `Result` surface refinement;
-cross-module `&`-borrows are not tracked like local borrows; the native backend
-does not implement `throwIO`/`catchIO`/`__absurd`.
+cross-module `&`-borrows are not tracked like local borrows.

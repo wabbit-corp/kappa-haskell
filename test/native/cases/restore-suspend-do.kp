@@ -25,10 +25,10 @@ let inner =
 body : (forall (x : Type). IO Void x -> IO Void x) -> IO Void Integer
 let body restore =
     do
-        x <- restore inner
+        let x <- restore inner
         ioPure x
 
 main : UIO Unit
 let main = do
-    r <- mask body
+    let r <- mask body
     printlnString (showInt r)

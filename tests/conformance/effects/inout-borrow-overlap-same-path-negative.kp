@@ -1,0 +1,17 @@
+module main
+
+type Pair = (left : Int, right : Int)
+
+useBoth : (inout a : Int) -> (& b : Int) -> UIO (1 a : Int)
+let useBoth (inout a : Int) (& b : Int) : UIO (1 a : Int) =
+    pure (a = addInt a b)
+
+bad : (1 pair : Pair) -> UIO Unit
+let bad (1 pair : Pair) : UIO Unit =
+    do
+        useBoth ~pair.left pair.left
+        pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_BORROW_OVERLAP
+

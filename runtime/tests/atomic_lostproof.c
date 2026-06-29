@@ -1,5 +1,5 @@
 /* atomic_lostproof.c — proof that the OLD plain-Ref std.atomic lowering loses
- * updates under the real nproc-worker scheduler, while the NEW lock-free
+ * updates under the real nproc-worker scheduler, while the NEW atomic
  * krt2_atomic_fetch_add does not.
  *
  * The OLD prelude lowered atomicFetchAdd to `old <- readRef cell; writeRef cell
@@ -37,7 +37,7 @@ static KValue *old_worker_io(KEnv *env) {
   return kunit();
 }
 
-/* ── NEW lowering: lock-free fetch_add on an atomic cell ───────────────────
+/* ── NEW lowering: atomic fetch_add on an atomic cell ──────────────────────
  * env[0] = shared AtomicRef, env[1] = RmwOrder code (Int). */
 static KValue *new_worker_io(KEnv *env) {
   KValue *ref = kvar(env, 0), *order = kvar(env, 1);
@@ -67,7 +67,7 @@ int main(void) {
   krt2_run_main(spawn(NFIBERS, old_worker_io, kpush(cell, NULL)));
   int64_t oldTotal = iv(kref_get(cell));
 
-  /* NEW: lock-free atomic fetch_add. */
+  /* NEW: indivisible atomic fetch_add. */
   KValue *ref = krt2_new_atomic_ref(kint(0));
   krt2_run_main(spawn(NFIBERS, new_worker_io, kpush(ref, kpush(kint(4 /*RmwSeqCst*/), NULL))));
   int64_t newTotal = iv(krt2_atomic_load(kint(0 /*LoadRelaxed*/), ref));
@@ -75,7 +75,7 @@ int main(void) {
   fprintf(stderr, "expected = %lld\n", (long long)expected);
   fprintf(stderr, "OLD plain-Ref  total = %lld  (lost %lld updates)\n",
           (long long)oldTotal, (long long)(expected - oldTotal));
-  fprintf(stderr, "NEW lock-free  total = %lld  (lost %lld updates)\n",
+  fprintf(stderr, "NEW atomic     total = %lld  (lost %lld updates)\n",
           (long long)newTotal, (long long)(expected - newTotal));
 
   int newExact = (newTotal == expected);
@@ -85,7 +85,7 @@ int main(void) {
     return 0;
   }
   if (!newExact)
-    fprintf(stderr, "FAIL: NEW lock-free path lost updates — atomicity is broken\n");
+    fprintf(stderr, "FAIL: NEW atomic path lost updates — atomicity is broken\n");
   if (!oldRaced)
     fprintf(stderr, "NOTE: OLD path did not lose updates this run (race not observed on this box)\n");
   return newExact ? 0 : 1;

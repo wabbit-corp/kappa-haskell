@@ -1,0 +1,25 @@
+@PrivateByDefault module main
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+type Outer = (sized : Sized, tag : Int)
+
+data NatBox : Type =
+    NatBox (1 n : Nat)
+
+consumeNat : (1 n : Nat) -> NatBox
+let consumeNat (1 n : Nat) : NatBox = NatBox n
+
+projection outerBuffer (place this : Outer) : Array this.sized.len Byte =
+    yield this.sized.buffer
+
+bad : (1 outer : Outer) -> NatBox
+let bad (1 outer : Outer) : NatBox =
+    block
+        let & b = outerBuffer outer
+        consumeNat outer.sized.len
+
+--! mode check
+--! assertDiagnostic error E_QTT_BORROW_OVERLAP

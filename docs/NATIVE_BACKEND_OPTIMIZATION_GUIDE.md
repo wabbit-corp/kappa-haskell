@@ -28,9 +28,9 @@ older performance docs have been deleted and consolidated here (§11).
 
 ## 1. What is true today (one-paragraph verdict)
 
-The backend is genuinely **near raw C for first-order monomorphic `Int` scalar/loop code** and
+The backend is genuinely **near raw C for first-order monomorphic scalar-worker code** and
 nothing else yet. The fast island is real and well-engineered: unboxed `int64` workers (LR1),
-scalarized `Int` `var` loops (P0.2), fixed-offset closed-record projection (P0.4), and — landed
+fixed-offset closed-record projection (P0.4), and — landed
 during this study — **integer-tag constructor/variant pattern matching (LR2)**, which removed the
 `strcmp` dispatch the earlier reviews complained about — and, landed after it, **direct lowering of
 saturated constructor applications (R1.1/P0-A)**, which removed the eta-expanded closure storm that
@@ -59,7 +59,7 @@ Every Kappa value is a heap-boxed `KValue { KTag tag; union { … } }` (`runtime
 ~48 bytes on LP64, traced by a conservative Boehm GC. Functions are curried arity-1 closures
 (`K_CLO`); multi-argument application is a chain of `kapp`. The de Bruijn environment is a
 linked list of `KEnv` nodes (`kpush`/`kvar`). A small-int cache covers `[-16, 256]`
-(`runtime/kappart.c`). `kbool` returns cached `the_true`/`the_false` singletons (so `Bool`-
+(`runtime/value.c`). `kbool` returns cached `the_true`/`the_false` singletons (so `Bool`-
 returning comparisons allocate nothing). Pointer-free string/byte *payloads* use
 `GC_MALLOC_ATOMIC`, but scalar boxes (`kint`/`kdbl`/`kchr`/`kbyte`) are allocated on the scanned
 path. This is the uniform representation the optimization work selectively escapes.
@@ -77,7 +77,7 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 | QW3 — source-faithful generated names + span comments | **DONE** | `kw_main_2e_range`, `kfn_main_2e_range_8`, `kmatch_*` |
 | QW4 — benchmark + allocation/GC gates | **DONE** | `test/native/bench.sh` (total_bytes + raw-C ratio gates) |
 | LR1 — unboxed `int64` `Int` workers (overflow escape to boxed/GMP) | **DONE (Int)** | `tailsum`: 193 MB → **368 B**, ≈**1.03× `cc -O2`**; scalar `kwi_*` worker, no `KEnv`/`kvar` |
-| P0.2 — scalarize non-escaping `Int` `var` while-loops to `int64` C locals | **DONE (Int)** | `arithloop`: 145 MB → **704 B**, ≈4× `cc -O2` (gated ≤5×); the boxed loop is a dead overflow-escape fallback |
+| P0.2 — scalarize non-escaping `Int` `var` while-loops to `int64` C locals | **SUSPENDED** | Disabled for S2.3b correctness: the old peephole bypassed checker-selected `MonadRef` evidence and rebuilt raw backend refs. Surface `var` loops use the generic boxed `MonadRef` path until an optimizer proves evidence-preserving equivalence. |
 | P0.4 — fixed-offset closed-record projection (`krec_at`, no `kproj` strcmp) | **DONE (proj)** | named records + tuples <10; tuples ≥10 / open / sealed / dict stay `kproj` |
 | **LR2 — numeric ctor/variant pattern-match tags** | **DONE (match dispatch)** | `patTest` emits `kctor_tagid(v) == KCT_*` / `kvariant_tagid(v) == KT_*` **integer** compares; `kctor_is`/`strcmp` gone from the match path. **`switch`/jump-table shape deferred** (linear int-compare chain kept). Record-field-label tags for record *patterns* not done. |
 | **R1.1/P0-A — direct lowering of saturated constructor applications** | **DONE** | `etaCtorApp` (C.hs) beta-reduces a saturated eta-expanded ctor (`CApp…(CLam…(CCtor g …))`) to a direct `CCtor`; `compileApp`/`emitTailApp` emit `kctor(…)` with no `kclo`/`kapp`/`kappi`. Gated by `adtcons` (interpreter-equivalence) + a codegen-shape assertion (`kctor(KCT_CONS,` present, no `kappi(kclo(`). |
@@ -96,7 +96,7 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 The historical `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` defined five P0 blockers; current
 state:
 - **P0.1** monomorphic numeric boxed → scalar workers: **MET for `Int`** (LR1) **and `Double`/mixed** (R2.2); `Bool` open (low value — cached singletons).
-- **P0.2** `var` loops are heap-ref loops: **MET for non-escaping `Int` var loops**; effectful/escaping/non-`Int`/else/nested/for loops still boxed.
+- **P0.2** `var` loops are heap-ref loops: **NOT MET in the current S2.3b implementation**. The former non-escaping `Int` scalarizer is suspended because it bypassed `MonadRef` evidence; all surface `var` loops stay boxed until a replacement proves equivalence.
 - **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1/R2.2 scalar workers** (scalar locals) **and for ALL capture-free boxed workers** (R2.3 + R2.3-rest — params AND `let`/`match`-bound locals read as flat C locals, no `kvar`/`kpush`, no `KEnv`); only env-capturing (closure/thunk/do) workers still use `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
 - **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls drop `ktrampoline` when the callee provably cannot bounce (R3.1/P1-E); only a callee with a tail-call bounce effect is still trampolined.
@@ -165,7 +165,7 @@ implication recorded in §7 (a per-function tail-call/bounce effect bit).
 
 **P1-F — Scalar boxes are GC-scanned, not `GC_MALLOC_ATOMIC`. RESOLVED (R2.1, this study).**
 `kint`/`kdbl`/`kchr`/`kbyte` have pointer-free payloads but allocated on the scanned path. **Fix:**
-a new `alloc_val_atomic` (runtime `kappart.c`) allocates these four boxes via `GC_MALLOC_ATOMIC`,
+a new `alloc_val_atomic` (runtime `gc.c`/`value.c`) allocates these four boxes via `GC_MALLOC_ATOMIC`,
 so the collector skips them during mark and they are no longer conservative-GC false-pointer
 sources. Sound because the payloads are genuinely pointer-free, the boxes are immutable / never
 re-tagged, and all readers dispatch on `tag` (so `GC_MALLOC_ATOMIC`'s non-zeroed inactive union
@@ -484,7 +484,7 @@ an explicit lowered-IR requirement — see the header.)
 
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
-| ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
+| ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop; arithloop is report-only while P0.2 is suspended — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
@@ -516,8 +516,8 @@ adopt full region inference.
 
 ## 8. Raw-C expectations & measurement gates
 
-**Expectation by code class:** first-order monomorphic `Int` scalar/loop code — small constant
-factor of C (LR1 reports ≈1.03× `cc -O2` for `tailsum`; P0.2 ≈4× for `arithloop`, gated ≤5×; these
+**Expectation by code class:** first-order monomorphic scalar-worker code — small constant
+factor of C (LR1 reports ≈1.03× `cc -O2` for `tailsum`; these
 are single-config internal measurements reproducible via the live `test/native/bench.sh` (and
 originally recorded in the now-deleted performance plan, in git history per §11), subject to the
 §5.5 caveats and to be re-measured with CIs). ADT/record/closure/polymorphic code —
@@ -530,15 +530,15 @@ review; re-measure under §5.5 before citing as proof):
 
 | Bench | Native time / alloc | Raw-C time | Note |
 |---|---|---|---|
-| `arithloop` 2e6 | 704 B (was 145 MB) | 0.0021 s | P0.2 scalar `int64` var loop; ≈4×, gated ≤5× |
+| `arithloop` 2e6 | historical 704 B (was 145 MB) | 0.0021 s | Historical pre-S2.3b P0.2 scalar `int64` var-loop result; not a current correctness gate while the scalarizer is suspended. |
 | `tailsum` 2e6 | 368 B (was 193 MB) | 0.0023 s | LR1 unboxed `Int` worker; ≈1.03× |
 | `recproj` 1e6 | **544 B / 0.02 s** (was 96.8 MB) | 0.0014 s | R2.4 mixed worker: unboxed `Int` counter/acc + tag-checked field coercion; zero `kint`/iter (gated ≤1 MB) |
 | `listfold` 1e6 | **240 MB / 0.68 s** (was 544 MB / 2.0 s) | 0.050 s | R1.1 removed the eta-ctor closure storm (P0-A); residual = cons cells + `kint` boxing (P0-D) |
 | `adtbuild` 2e6 | **480 MB / ~240 B/iter** (was ~1.09 GB) | 0.14 s | R1.1 direct `kctor`; the P0-A probe — now data-representation-bound |
 
 **Current gates (`test/native/bench.sh`, P1.1/P1.2 DONE):** native + raw-C built at `-O2`;
-`total_bytes` allocation bounds (`arithloop`/`tailsum` ≤1 MB, `recproj` ≤140 MB, `listfold`
-≤620 MB); raw-C ratio gates `tailsum` and `arithloop` ≤5×. Gates are on cumulative `total_bytes`
+`total_bytes` allocation bounds (`tailsum`/`recproj` ≤1 MB, `listfold`
+≤620 MB); raw-C ratio gates include `tailsum` ≤5×. `arithloop` is report-only while P0.2 is suspended. Gates are on cumulative `total_bytes`
 (not `heap_size`, which is insensitive to per-iteration churn). **Methodology gap (P1-I):** single
 timed run, no CIs/repetition, no setup randomization, narrow coverage — a regression gate, not a
 raw-C proof.
@@ -577,10 +577,10 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
   reassigned C params, reads via `kvar`, when the body captures the env (closure/thunk/do). The
   old QW2 in-place `kw_c`-cell mode is subsumed by FLAT (no `KEnv` at all). Never describe a
   capture-free worker (binder-bearing or not) as walking `kvar`/`kpush` — that is the pre-R2.3 state.
-- **LR1/P0.2 = `Int`; R2.2 adds `Double` + mixed `Int`/`Double` scalar workers.** The unboxed
+- **LR1 = `Int`; R2.2 adds `Double` + mixed `Int`/`Double` scalar workers.** The unboxed
   worker is `kwi_` when all-`int64` (golden-stable), `kwd_` when any `double`. `Bool` and
-  record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer stays
-  `Int`-only. Never describe a monomorphic `Double` arithmetic loop as `kdbl`-per-iteration — that
+  record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer is suspended
+  until it can preserve selected `MonadRef` evidence. Never describe a monomorphic `Double` arithmetic loop as `kdbl`-per-iteration — that
   is the pre-R2.2 state.
 - **P0.4 = projection only**, and only for sorted/closed layouts (named records, tuples <10);
   ctor/record-*pattern* field access and tuples ≥10 still use name-based paths.
@@ -656,7 +656,7 @@ in extended form, in the research workspace (`research/cluster{1..4}-*.md`, `sum
 | `FUNCTIONAL_NATIVE_BACKEND_OPTIMIZATION_RESEARCH.md` (research survey, ~40 cited sources, folklore/measured tags) | §5 (findings by theme) + §6 (full citation list) + §10 (provenance/tag corrections). Extended per-cluster notes remain in `research/cluster{1..4}-*.md`. |
 | `KAPPA_NATIVE_BACKEND_IMPLEMENTATION_GAP_ANALYSIS.md` (gaps P0-A…P2-M vs HEAD, answers to concerns) | §3 (status scorecard) + §4 (remaining issues, same IDs) + §1 (verdict / "approaches raw C") + §9 (invariants). |
 | `KAPPA_NATIVE_BACKEND_OPTIMIZATION_ROADMAP.md` (waves R0–R4, impact/complexity/risk) | §7 (priority table + rationale). |
-| `NATIVE_BACKEND_PERFORMANCE_PLAN.md` (QW1–QW4 + LR1/LR2/P0.2/P0.4 status, adversarial perf review) | §3 (scorecard, LR2-current — supersedes the plan's internally-inconsistent LR2 status) + §8 (numbers/gates) + the raw-C P0.x reconciliation in §3. |
+| `NATIVE_BACKEND_PERFORMANCE_PLAN.md` (QW1–QW4 + LR1/LR2/P0.2/P0.4 status, adversarial perf review) | §3 (scorecard, LR2-current, and current P0.2 suspension — supersedes the plan's internally-inconsistent status) + §8 (numbers/gates) + the raw-C P0.x reconciliation in §3. |
 | `NATIVE_BACKEND_PERFORMANCE_REVIEW_NOTES.md` (original harsh review: string dispatch, boxing, KEnv, names, FFI) | §2 (representation) + §4 (P0-A/D, P1-C/E/F/G/H, names & FFI notes) — its §1 string-dispatch objection is recorded as RESOLVED (QW1 + LR2). |
 | `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` (raw-C bar, P0.1–P0.5 blockers, gate proposals) | §3 (P0.1–P0.5 reconciliation) + §8 (raw-C expectations, numbers, gates) + §1 (verdict). |
 

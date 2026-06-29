@@ -1,0 +1,31 @@
+-- Native/C backend regression: legacy-only finalizer draining must propagate
+-- composed Cause values, not collapse or reject Then(primary, cleanup).
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+
+cleanup : IO String Unit
+let cleanup = do
+    printlnString "cleanup"
+    throwIO "cleanup"
+
+child : IO String Unit
+let child = do
+    for i in 1 :: Nil do
+        defer cleanup
+        throwIO "body"
+    printlnString "unreachable"
+
+classify : Cause String -> String
+let classify c = match c
+    case Then (Fail a) (Fail b) -> "exit:then:" ++ a ++ ":" ++ b
+    case Fail e -> "exit:fail:" ++ e
+    case _ -> "exit:other"
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure c -> printlnString (classify c)

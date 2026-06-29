@@ -34,25 +34,24 @@ KValue *kpf_io_ioPure(KValue **a) { return a[0]; }
 KValue *kpf_io_ioBind(KValue **a) {
   KValue *r = krun_io(a[0]);
   if (kis_fail(r)) return r;
+  if (krt2_is_reraise_action(r)) return r;
   return krun_io(kapp(a[1], r));
 }
 KValue *kpf_io_ioThen(KValue **a) {
   KValue *r = krun_io(a[0]);
   if (kis_fail(r)) return r;
+  if (krt2_is_reraise_action(r)) return r;
   return krun_io(a[1]);
 }
 KValue *kpf_io_throwIO(KValue **a) { return kfail(a[0]); }
 KValue *kpf_io_catchIO(KValue **a) {
   KValue *r = krun_io(a[0]);
+  if (krt2_is_reraise_action(r)) return r;
   if (kis_fail(r)) return krun_io(kapp(a[1], r->as.fail.err));
   return r;
 }
 KValue *kpf_io_finallyIO(KValue **a) {
-  KValue *r = krun_io(a[0]);
-  KValue *fr = krun_io(a[1]);
-  if (kis_fail(r)) return r;
-  if (kis_fail(fr)) return fr;
-  return r;
+  return krt2_run_op_sync(krt2_finally(a[0], a[1]));
 }
 KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
 KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
@@ -850,16 +849,16 @@ struct kdefer_frame { KValue **defers; int n; struct kdefer_frame *next; };
 
 /* Run the accumulated finalizers LIFO (innermost scope first, last-
  * registered first within a scope) once a tail recursion reaches a value,
- * then return that value (or Unit when a K_IOEFFECT discarded it). */
+ * then return that value (or Unit when a K_IOEFFECT discarded it).  The frame
+ * drain is shared with the CK finalizer reason logic, so a failing cleanup
+ * cannot skip sibling finalizers. */
 static KValue *krun_finish(KValue *v, int discard, struct kdefer_frame *fr) {
   KValue *result = v;
   for (; fr; fr = fr->next) {
-    for (int i = fr->n - 1; i >= 0; i--) {
-      KValue *dr = krun_io(fr->defers[i]);
-      if (!kis_fail(result) && kis_fail(dr)) result = dr;
-    }
+    result = krt2_run_legacy_finalizers(result, fr->defers, &fr->n);
   }
   if (kis_fail(result)) return result;
+  if (krt2_is_reraise_action(result)) return result;
   return discard ? kunit() : result;
 }
 
@@ -930,6 +929,6 @@ KValue *krun_io(KValue *action) {
 
 KValue *krun_io_checked(KValue *action) {
   KValue *result = krun_io(action);
-  if (kis_fail(result)) krt_fail("__runIO: uncaught typed IO failure");
+  if (kis_fail(result)) krt_fail("krun_io_checked: uncaught typed IO failure");
   return result;
 }

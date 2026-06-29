@@ -15,16 +15,16 @@ let producer tv = do
 
 consumer : TVar Int -> STM Int
 let consumer tv = do
-    v <- readTVar tv
+    let v <- readTVar tv
     check (v > 0)
     readTVar tv
 
 main : UIO Unit
 let main = do
-    tv <- atomically (newTVar 0)
-    c <- fork (atomically (consumer tv))
-    p <- fork (producer tv)
-    ec <- await c
+    let tv <- atomically (newTVar 0)
+    let c <- fork (atomically (consumer tv))
+    let p <- fork (producer tv)
+    let ec <- await c
     match ec
       case Success v -> printlnString (showInt v)
       case Failure _ -> printlnString "failed"

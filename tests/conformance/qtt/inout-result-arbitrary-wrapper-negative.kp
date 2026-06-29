@@ -1,0 +1,14 @@
+--! mode check
+--! assertDiagnostic error E_QTT_INOUT_THREADED_FIELD_MISSING
+
+module main
+
+data Cell : Type =
+    Cell
+
+data Wrap (a : Type) =
+    Wrap (value : a)
+
+bad : (inout cell : Cell) -> Wrap (1 cell : Cell)
+let bad (inout cell : Cell) : Wrap (1 cell : Cell) =
+    Wrap (cell = cell)

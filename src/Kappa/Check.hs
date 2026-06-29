@@ -214,6 +214,22 @@ data CheckState = CheckState
   , csProjections :: !(Map GName ProjInfo)
   -- ^ §9.1.1 projection definitions: binder structure for the
   -- projection facet at application sites
+  , csInoutParams :: !(Map GName [Maybe InoutParamInfo])
+  -- ^ §18.9 named-callable inout metadata, indexed by global and explicit
+  -- parameter position.  It is elaboration-only interface data; the core term
+  -- remains ordinary linear state threading.
+  , csAllowInoutBinderContext :: !Bool
+  -- ^ True only while elaborating a named callable signature whose leading
+  -- explicit parameter chain may carry §18.9 `inout` metadata. Ordinary Pi
+  -- types, lambdas, constructors, and nested function types reject it.
+  , csMutableBindingFields :: !(Map Span [(Text, Text)])
+  -- ^ §18.6.1 mutable-binding diagnostic payload fields captured while the
+  -- checker still has selected MonadRef evidence. Usage consumes these for
+  -- storage-fact diagnostics that originate after elaboration.
+  , csRecognizedRefOps :: !(Map Span Text)
+  -- ^ Explicit @readRef (ref x)@ / @writeRef (ref x)@ occurrences accepted by
+  -- checker after overload and MonadRef-evidence equality. Usage consumes these
+  -- by the @ref x@ span instead of re-inferring dictionary projections.
   , csDemand :: !PlaceDemand
   -- ^ surrounding place demand of the expression being elaborated
   -- (selects the §16.1.5/§16.1.6 eliminator and accessor capability)
@@ -362,7 +378,7 @@ data CheckState = CheckState
   -- ^ §18.1.16/§18.1.17 the operation NAMES declared MULTI-SHOT (resumption
   -- quantity ω or 1+) across BOTH top-level @effect@ and §9.3.1.1 block-local
   -- @scoped effect@ declarations.  Recorded at effect-declaration time so the
-  -- §34.3.3 native-backend capability gate (rt-multishot absent) can reject a
+  -- §34.3.3 native-backend capability gate (rt-multishot-effects absent) can reject a
   -- reachable multi-shot resumption even for scoped effects (whose labels do
   -- not live in 'csModEffLabels').
   , csAssertReducible :: !(Set GName)
@@ -461,6 +477,16 @@ data ProjInfo = ProjInfo
   , pjYields :: ![(Text, [Text])] -- ^ selector yield places: root binder, path
   }
 
+-- | §18.9 callable-interface metadata for one explicit parameter position.
+-- The surface form `(inout x : A)` records the formal parameter and the
+-- successor record field to restore at call sites.  The current surface syntax
+-- uses the same spelling for both.
+data InoutParamInfo = InoutParamInfo
+  { iopFormal :: !Text
+  , iopSuccessor :: !Text
+  }
+  deriving stock (Eq, Show)
+
 -- | Active-pattern result classification (§17.3.1).
 data APResult = APOption | APMatch | APTotal
   deriving stock (Eq, Show)
@@ -516,6 +542,10 @@ initCheckState =
     , csActive = Map.empty
     , csFacts = Map.empty
     , csProjections = Map.empty
+    , csInoutParams = Map.empty
+    , csAllowInoutBinderContext = False
+    , csMutableBindingFields = Map.empty
+    , csRecognizedRefOps = Map.empty
     , csDemand = DemandRead
     , csThis = Nothing
     , csTraitSupers = []
@@ -569,6 +599,18 @@ unresolvedBuiltins st =
 
 type CheckM = State CheckState
 
+data VarRefInfo = VarRefInfo
+  { vriStoredType :: !Value
+  , vriStoredTypeTerm :: !Term
+  , vriMonadRefDict :: !Term
+  , vriMonadType :: !Value
+  , vriErrorType :: !Value
+  }
+
+data VarReadBlock
+  = VarReadCrossesBoundary
+  | VarReadStaticPosition
+
 -- | One entry in the local typing context: a variable in scope, with its
 -- type and the quantity\/borrow\/origin metadata the usage and diagnostic
 -- machinery needs. The list of these (innermost first) /is/ the scope.
@@ -576,8 +618,14 @@ data CtxEntry = CtxEntry
   { ceName :: !Text
   , ceType :: !Value
   , ceImplicitLocal :: !Bool
-  , ceVarBind :: !Bool
-  -- ^ Introduced by @var@ (§18.6.1): reads auto-dereference.
+  , ceVarInfo :: !(Maybe VarRefInfo)
+  -- ^ Introduced by @var@ (§18.6.1): ordinary value occurrences select the
+  -- current-value facet during do-item lifting; @ref x@ and assignments use the
+  -- same MonadRef evidence that created the hidden cell.
+  , ceProjInfo :: !(Maybe ProjInfo)
+  -- ^ Local alias of a projection declaration. This carries the projection's
+  -- symbol-backed footprint through ordinary let bindings, so inout rewriting
+  -- can reason about @~(proj x)@ without inspecting source spellings.
   , ceQ :: !(Maybe S.Quantity)
   -- ^ Quantity prefix of an implicit local binder (§16.3.3).
   , ceBorrow :: !Bool
@@ -588,6 +636,9 @@ data CtxEntry = CtxEntry
   -- introduction site. 'noSpan' when the introduction is untracked for
   -- this binder kind.
   }
+
+ceVarBind :: CtxEntry -> Bool
+ceVarBind = isJust . ceVarInfo
 
 -- | The elaboration context threaded through 'infer'\/'check': everything
 -- that depends on /where/ in the program we are. 'ctxEntries' is the scope
@@ -601,6 +652,10 @@ data Ctx = Ctx
   -- ^ §7.4.1 flow refinement: variable → possible constructors.
   , ctxAliases :: !(Map Text Text)
   -- ^ §7.4.3 stable aliases: @let q = p@ makes q transport p's refinement.
+  , ctxVarCurrentVersions :: !(Map Text Int)
+  -- ^ §18.6.2 tracked local mutable-cell current-value versions.
+  , ctxVarCurrentEscaped :: !(Set Text)
+  -- ^ §18.6.2 mutable cells whose @ref x@ has escaped flow tracking.
   , ctxBarriers :: ![Int]
   -- ^ Context lengths at which lambda bodies began (closure
   -- boundaries for §16.3.3 borrow-escape and scope grouping).
@@ -608,6 +663,9 @@ data Ctx = Ctx
   -- ^ Lexically scoped effect labels (§9.3.1.1 @scoped effect@).
   , ctxInDo :: !Bool
   -- ^ Inside a @do@ elaboration: gates the §18.9.3 @~@ marker.
+  , ctxVarReadBlock :: !(Maybe VarReadBlock)
+  -- ^ Why a surface @var@ current-value occurrence cannot be lifted in
+  -- this context, for the §18.3.1/§18.6.1 diagnostic split.
   , ctxHyg :: !(Map Text (Int, Value))
   -- ^ §21.4 hygienic capture references in spliced syntax: fresh
   -- spelling ↦ (binding LEVEL in this context, binder type).
@@ -654,7 +712,7 @@ data EffOpInfo = EffOpInfo
   }
 
 emptyCtx :: Ctx
-emptyCtx = Ctx [] [] Map.empty Map.empty [] Map.empty False Map.empty Map.empty 0 Nothing
+emptyCtx = Ctx [] [] Map.empty Map.empty Map.empty Set.empty [] Map.empty False Nothing Map.empty Map.empty 0 Nothing
 
 ctxLen :: Ctx -> Int
 ctxLen = length . ctxEntries
@@ -662,6 +720,9 @@ ctxLen = length . ctxEntries
 -- | Mark a closure boundary: entries below it are captured (§16.2.1).
 pushCtxBarrier :: Ctx -> Ctx
 pushCtxBarrier ctx = ctx {ctxBarriers = ctxLen ctx : ctxBarriers ctx}
+
+withVarReadBlock :: VarReadBlock -> Ctx -> Ctx
+withVarReadBlock block ctx = ctx {ctxVarReadBlock = Just block}
 
 -- | Shared binder scaffold: prepend @entry@, push @v@ onto the
 -- environment, and drop any prior flow-refinement/alias facts about the
@@ -674,22 +735,34 @@ bindEntry entry v ctx =
     , ctxEnv = v : ctxEnv ctx
     , ctxRefines = Map.delete (ceName entry) (ctxRefines ctx)
     , ctxAliases = Map.delete (ceName entry) (ctxAliases ctx)
+    , ctxVarCurrentVersions = Map.delete (ceName entry) (ctxVarCurrentVersions ctx)
+    , ctxVarCurrentEscaped = Set.delete (ceName entry) (ctxVarCurrentEscaped ctx)
     }
 
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty ctx =
-  bindEntry (CtxEntry n ty implocal False Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
+  bindEntry (CtxEntry n ty implocal Nothing Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
 bindCtxLet :: Text -> Bool -> Value -> Value -> Ctx -> Ctx
 bindCtxLet n implocal ty v ctx =
-  bindEntry (CtxEntry n ty implocal False Nothing False noSpan) v ctx
+  bindCtxLetProj n implocal ty v Nothing ctx
 
--- | Bind a @var@ cell (type @Ref a@); uses read through it (§18.6.1).
-bindCtxVar :: Text -> Value -> Ctx -> Ctx
-bindCtxVar n ty ctx =
-  bindEntry (CtxEntry n ty False True Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
+bindCtxLetProj :: Text -> Bool -> Value -> Value -> Maybe ProjInfo -> Ctx -> Ctx
+bindCtxLetProj n implocal ty v mpj ctx =
+  bindEntry (CtxEntry n ty implocal Nothing mpj Nothing False noSpan) v ctx
+
+-- | Bind a @var@ cell; the name denotes the cell itself (§18.6.1).
+bindCtxVar :: Text -> Value -> VarRefInfo -> Ctx -> Ctx
+bindCtxVar n ty info ctx =
+  let ctx' = bindEntry (CtxEntry n ty False (Just info) Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
+   in ctx' {ctxVarCurrentVersions = Map.insert n 0 (ctxVarCurrentVersions ctx')}
+
+kCondTerm :: KCond -> Term
+kCondTerm = \case
+  KCondPure t -> t
+  KCondAction t -> t
 
 -- | Record the implicit binder prefix on the most recent entry
 -- (quantity and borrow marker, §16.3.3). @binderSp@ is the binder's
@@ -733,6 +806,31 @@ addCtxAlias q p ctx = ctx {ctxAliases = Map.insert q p (ctxAliases ctx)}
 -- | Current refinement of a variable, through its alias root.
 ctxRefinementOf :: Ctx -> Text -> Maybe [GName]
 ctxRefinementOf ctx n = Map.lookup (refineRoot ctx n) (ctxRefines ctx)
+
+varCurrentKey :: Text -> Int -> Text
+varCurrentKey n v = "$var-current:" <> n <> ":" <> T.pack (show v)
+
+varCurrentRootOf :: Ctx -> Text -> Maybe Text
+varCurrentRootOf ctx n = do
+  (_, entry) <- lookupCtx n ctx
+  _ <- ceVarInfo entry
+  version <- Map.lookup n (ctxVarCurrentVersions ctx)
+  if n `Set.member` ctxVarCurrentEscaped ctx
+    then Nothing
+    else Just (varCurrentKey n version)
+
+addVarCurrentAlias :: Text -> Text -> Ctx -> Ctx
+addVarCurrentAlias alias root ctx =
+  ctx {ctxAliases = Map.insert alias root (ctxAliases ctx)}
+
+invalidateVarCurrent :: Text -> Ctx -> Ctx
+invalidateVarCurrent n ctx =
+  ctx {ctxVarCurrentVersions = Map.adjust (+ 1) n (ctxVarCurrentVersions ctx)}
+
+escapeVarCurrent :: Text -> Ctx -> Ctx
+escapeVarCurrent n ctx =
+  let ctx' = invalidateVarCurrent n ctx
+   in ctx' {ctxVarCurrentEscaped = Set.insert n (ctxVarCurrentEscaped ctx')}
 
 lookupCtx :: Text -> Ctx -> Maybe (Int, CtxEntry)
 lookupCtx n ctx = go 0 (ctxEntries ctx)
@@ -887,6 +985,78 @@ errOncePerSpan sp code fam msg = do
 
 errAt :: Span -> DiagnosticCode -> Maybe DiagnosticFamily -> Text -> CheckM ()
 errAt sp code fam msg = report (diag SevError StageElaborate code fam sp msg)
+
+mutableBindingPayload :: Text -> Text -> [(Text, Text)] -> Payload
+mutableBindingPayload binding selectedFacet fields =
+  foldl
+    (\p (k, v) -> withPayloadField k v p)
+    ( withPayloadField "selectedFacet" selectedFacet $
+        withPayloadField "binding" binding $
+          payloadKind "mutable-binding"
+    )
+    fields
+
+errMutableBinding :: Span -> DiagnosticCode -> Text -> Text -> [(Text, Text)] -> Text -> CheckM ()
+errMutableBinding sp code binding selectedFacet fields msg =
+  report $
+    withPayload (mutableBindingPayload binding selectedFacet fields) $
+      diag SevError StageElaborate code (Just "kappa.var.mutable-binding") sp msg
+
+mutableBindingInfoFields :: Ctx -> Int -> CtxEntry -> VarRefInfo -> Text -> CheckM [(Text, Text)]
+mutableBindingInfoFields ctx i entry info occurrence = do
+  hiddenRef <- renderPayloadValue ctx (ceType entry)
+  stored <- renderPayloadValue ctx (vriStoredType info)
+  monadTy <- renderPayloadValue ctx (vriMonadType info)
+  evidenceTy <- renderPayloadValue ctx (VGlobN prelMonadRef [(Expl, vriMonadType info)])
+  evidence <- renderPayloadTerm ctx (shiftTerm (i + 1) 0 (vriMonadRefDict info))
+  pure
+    [ ("hiddenReferenceType", hiddenRef)
+    , ("storedValueType", stored)
+    , ("enclosingMonad", monadTy)
+    , ("enclosingDoBlock", "nearest")
+    , ("monadRefEvidence", evidence)
+    , ("monadRefEvidenceType", evidenceTy)
+    , ("occurrence", occurrence)
+    ]
+
+mutableBindingLookupFields :: Ctx -> Name -> Text -> CheckM [(Text, Text)]
+mutableBindingLookupFields ctx n occurrence =
+  case lookupCtx (nameText n) ctx of
+    Just (i, entry)
+      | Just info <- ceVarInfo entry -> mutableBindingInfoFields ctx i entry info occurrence
+    _ -> pure []
+
+recordMutableBindingFields :: Ctx -> Span -> Value -> VarRefInfo -> CheckM ()
+recordMutableBindingFields ctx sp hiddenRefTy info = do
+  hiddenRef <- renderPayloadValue ctx hiddenRefTy
+  stored <- renderPayloadValue ctx (vriStoredType info)
+  monadTy <- renderPayloadValue ctx (vriMonadType info)
+  evidenceTy <- renderPayloadValue ctx (VGlobN prelMonadRef [(Expl, vriMonadType info)])
+  evidence <- renderPayloadTerm ctx (vriMonadRefDict info)
+  let fields =
+        [ ("hiddenReferenceType", hiddenRef)
+        , ("storedValueType", stored)
+        , ("enclosingMonad", monadTy)
+        , ("enclosingDoBlock", "nearest")
+        , ("monadRefEvidence", evidence)
+        , ("monadRefEvidenceType", evidenceTy)
+        ]
+  modify' $ \st -> st {csMutableBindingFields = Map.insert sp fields (csMutableBindingFields st)}
+
+recordRecognizedRefOp :: Span -> Text -> CheckM ()
+recordRecognizedRefOp sp op =
+  modify' $ \st -> st {csRecognizedRefOps = Map.insert sp op (csRecognizedRefOps st)}
+
+renderPayloadValue :: Ctx -> Value -> CheckM Text
+renderPayloadValue ctx v = do
+  tm <- quoteIn ctx v
+  tm' <- zonkTermM (ctxLen ctx) tm >>= normalizeTermAt (ctxLen ctx)
+  pure (renderTerm tm')
+
+renderPayloadTerm :: Ctx -> Term -> CheckM Text
+renderPayloadTerm ctx tm = do
+  tm' <- zonkTermM (ctxLen ctx) tm
+  pure (renderTerm tm')
 
 -- | §3 @kappa.unsupported.deterministic@ payload: the family REQUIRES the
 -- diagnostic to carry the unsupported action, the selected language profile,
@@ -1316,13 +1486,16 @@ metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
       KLet _ _ t -> metaOccursInTerm metas (next n) seen target t
       KLetQ _ t m -> metaOccursInTerm metas (next n) seen target t || maybe False (metaOccursInTerm metas (next n) seen target . snd) m
       KExpr t -> metaOccursInTerm metas (next n) seen target t
-      KVarItem _ t -> metaOccursInTerm metas (next n) seen target t
-      KAssign lhs _ rhs -> metaOccursInTerm metas (next n) seen target lhs || metaOccursInTerm metas (next n) seen target rhs
+      KVarItem _ initT actT -> metaOccursInTerm metas (next n) seen target initT || metaOccursInTerm metas (next n) seen target actT
+      KAssign lhs _ rhs actT ->
+        metaOccursInTerm metas (next n) seen target lhs
+          || metaOccursInTerm metas (next n) seen target rhs
+          || metaOccursInTerm metas (next n) seen target actT
       KReturn t -> metaOccursInTerm metas (next n) seen target t
       KBreak _ -> False
       KContinue _ -> False
       KWhile _ c b e ->
-        metaOccursInTerm metas (next n) seen target c
+        metaOccursInTerm metas (next n) seen target (kCondTerm c)
           || any (goK (next n) seen) b
           || maybe False (any (goK (next n) seen)) e
       KFor _ _ src b e ->
@@ -1355,12 +1528,12 @@ metaOccursInTerm metas fuel0 seen target = go fuel0
       KLet _ _ t -> go (next n) t
       KLetQ _ t m -> go (next n) t || maybe False (go (next n) . snd) m
       KExpr t -> go (next n) t
-      KVarItem _ t -> go (next n) t
-      KAssign lhs _ rhs -> go (next n) lhs || go (next n) rhs
+      KVarItem _ initT actT -> go (next n) initT || go (next n) actT
+      KAssign lhs _ rhs actT -> go (next n) lhs || go (next n) rhs || go (next n) actT
       KReturn t -> go (next n) t
       KBreak _ -> False
       KContinue _ -> False
-      KWhile _ c b e -> go (next n) c || any (goK (next n)) b || maybe False (any (goK (next n))) e
+      KWhile _ c b e -> go (next n) (kCondTerm c) || any (goK (next n)) b || maybe False (any (goK (next n))) e
       KFor _ _ src b e -> go (next n) src || any (goK (next n)) b || maybe False (any (goK (next n))) e
       KIf alts e ->
         any (\(c, b) -> go (next n) c || any (goK (next n)) b) alts
@@ -1476,15 +1649,18 @@ metaOccursInValueShallow target = goV 512
             metaOccursInTermShallowFuel (next n) target t
               || maybe False (metaOccursInTermShallowFuel (next n) target . snd) m
           KExpr t -> metaOccursInTermShallowFuel (next n) target t
-          KVarItem _ t -> metaOccursInTermShallowFuel (next n) target t
-          KAssign lhs _ rhs ->
+          KVarItem _ initT actT ->
+            metaOccursInTermShallowFuel (next n) target initT
+              || metaOccursInTermShallowFuel (next n) target actT
+          KAssign lhs _ rhs actT ->
             metaOccursInTermShallowFuel (next n) target lhs
               || metaOccursInTermShallowFuel (next n) target rhs
+              || metaOccursInTermShallowFuel (next n) target actT
           KReturn t -> metaOccursInTermShallowFuel (next n) target t
           KBreak _ -> False
           KContinue _ -> False
           KWhile _ c b e ->
-            metaOccursInTermShallowFuel (next n) target c
+            metaOccursInTermShallowFuel (next n) target (kCondTerm c)
               || any (goK (next n)) b
               || maybe False (any (goK (next n))) e
           KFor _ _ src b e ->
@@ -1526,7 +1702,9 @@ tryEffRowSubsume ctx actual expected = do
   aF <- forceM actual
   eF <- forceM expected
   case (aF, eF) of
-    (VGlobN (GName _ "Eff") [(_, aRow), (_, aRes)], VGlobN (GName _ "Eff") [(_, eRow), (_, eRes)]) -> do
+    (VGlobN ag [(_, aRow), (_, aRes)], VGlobN eg [(_, eRow), (_, eRes)])
+      | ag == prelEff
+      , eg == prelEff -> do
       st0 <- get
       resOk <- unify ctx aRes eRes
       aEs <- rowEntriesV aRow
@@ -1854,9 +2032,7 @@ editDistance a b = last (foldl transform [0 .. length a] b)
 resolveName :: Ctx -> Name -> CheckM (Term, Value)
 resolveName ctx (Name n sp) =
   case lookupCtx n ctx of
-    Just (i, e)
-      | ceVarBind e -> derefVar ctx i (ceType e)
-      | otherwise -> pure (CVar i, ceType e)
+    Just (i, e) -> pure (CVar i, ceType e)
     Nothing -> do
       st <- get
       case Map.lookup n (csScopeAmbig st) of
@@ -1958,6 +2134,79 @@ resolveName ctx (Name n sp) =
           else Set.toList (Set.fromList (locals ++ modLevel))
     emptyCtxDummy = ctx
 
+inferRefFacet :: Ctx -> Name -> Span -> CheckM (Term, Value)
+inferRefFacet ctx n sp =
+  case lookupCtx (nameText n) ctx of
+    Just (i, e)
+      | Just _ <- ceVarInfo e ->
+          pure (CVar i, ceType e)
+      | otherwise -> do
+          errMutableBinding sp "E_VAR_REF_REQUIRED" (nameText n) "reference" [("sourceOperation", "ref")]
+            ("'ref " <> nameText n <> "' requires '" <> nameText n <> "' to be a mutable var binding introduced by 'var' (§18.6.1)")
+          anyHole ctx
+    Nothing -> do
+      errAt (nameSpan n) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+        ("unresolved mutable var binding '" <> nameText n <> "' in 'ref " <> nameText n <> "'")
+      anyHole ctx
+
+inferVarRead :: Ctx -> Name -> Span -> CheckM (Term, Value)
+inferVarRead ctx n sp =
+  case lookupCtx (nameText n) ctx of
+    Just (i, e)
+      | Just info <- ceVarInfo e -> do
+          let evidenceShift = i + 1
+              refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
+              aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
+              refTm = CVar i
+          case monadResultType (vriMonadType info) (vriStoredType info) of
+            Just actionTy ->
+              pure
+                ( monadRefReadAction refDict aTm refTm
+                , actionTy
+                )
+            Nothing -> do
+              errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+                ("mutable variable '" <> nameText n <> "' uses a higher-order monad shape this implementation cannot apply for generated reads (§18.6.1)")
+              anyHole ctx
+      | otherwise -> do
+          errMutableBinding sp "E_VAR_READ_OUTSIDE_DO" (nameText n) "current-value" [("sourceOperation", "generated read")]
+            ("internal current-value read for '" <> nameText n <> "' does not refer to a mutable var binding (§18.6.1)")
+          anyHole ctx
+    Nothing -> do
+      errAt (nameSpan n) "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+        ("unresolved mutable var binding '" <> nameText n <> "' in generated current-value read")
+      anyHole ctx
+
+varReadBlocked :: Ctx -> Name -> Span -> CheckM (Term, Value)
+varReadBlocked ctx n sp = do
+  let (code, blockedBy, msg) = case ctxVarReadBlock ctx of
+        Just VarReadCrossesBoundary ->
+          ( "E_VAR_READ_CROSSES_BOUNDARY"
+          , "expression-lifting-boundary"
+          , "mutable variable '" <> nameText n
+              <> "' is a current-value occurrence here, but elaborating the generated read would cross a user-written lambda, local function, quote, type, or delayed-evaluation boundary; bind a snapshot before the boundary, use an inner do block, or write 'ref "
+              <> nameText n <> "' to select the reference cell (§18.3.1, §18.6.1)"
+          )
+        Just VarReadStaticPosition ->
+          ( "E_VAR_IN_STATIC_POSITION"
+          , "static-position"
+          , "mutable variable '" <> nameText n
+              <> "' is a current-value occurrence in a type, static, erased, implicit-search, or elaboration-time position that cannot perform object-phase reads; bind a snapshot first or write 'ref "
+              <> nameText n <> "' where a reference cell is required (§18.3.1, §18.6.1)"
+          )
+        _ ->
+          ( "E_VAR_READ_OUTSIDE_DO"
+          , "outside-do"
+          , "mutable variable '" <> nameText n
+              <> "' is a current-value occurrence here, but this expression is not in a do-item lifting position; use 'ref "
+              <> nameText n <> "' to select the reference cell, or bind a snapshot inside an explicit do (§18.3.1, §18.6.1)"
+          )
+  infoFields <- mutableBindingLookupFields ctx n "user-written"
+  errMutableBinding sp code (nameText n) "current-value"
+    (infoFields ++ [("sourceOperation", "current read"), ("repair", "ref " <> nameText n), ("blockedBy", blockedBy)])
+    msg
+  anyHole ctx
+
 -- | §3.2.2 typo-suggestion candidate index, bucketed by spelling length:
 -- the import scope plus this module's own globals. A single dropped
 -- import can leave thousands of references unresolved, each raising a
@@ -2005,20 +2254,6 @@ prefixResolves ctx n =
       mg <- lookupGlobalName n
       pure (maybe False (const True) mg)
 
--- | A read of a @var@-bound name (§18.6.1): elaborate to a splice that
--- reads the cell, @__runIO (readRef x)@, typed at the element type.
-derefVar :: Ctx -> Int -> Value -> CheckM (Term, Value)
-derefVar ctx i refTy = do
-  elemTy <-
-    forceM refTy >>= \case
-      VGlobN (GName _ "Ref") [(_, a)] -> pure a
-      _ -> freshMetaV ctx
-  e <- freshMeta
-  aTm <- quoteIn ctx elemTy
-  let rd = CApp Expl (CApp Impl (CApp Impl (CGlob prelReadRef) e) aTm) (CVar i)
-      run = CApp Expl (CApp Impl (CApp Impl (CGlob prelRunIO) e) aTm) rd
-  pure (run, elemTy)
-
 -- universe spellings: Type, Type0, Type1, ..., and '*' (§11.1)
 sortName :: Text -> Maybe Int
 sortName t
@@ -2031,6 +2266,11 @@ sortName t
     T.length rest <= 9 =
       Just (read (T.unpack rest))
   | otherwise = Nothing
+
+isBareTypeExpr :: Expr -> Bool
+isBareTypeExpr = \case
+  EVar n -> nameText n == "Type"
+  _ -> False
 
 anyHole :: Ctx -> CheckM (Term, Value)
 anyHole ctx = do
@@ -3713,7 +3953,11 @@ infer ctx expr = case expr of
               Just _ -> resolveName ctx n
               Nothing -> pure (CSort lvl, VSort (lvl + 1))
           else pure (CSort lvl, VSort (lvl + 1))
+    | Just (_, e) <- lookupCtx (nameText n) ctx
+    , Just _ <- ceVarInfo e -> varReadBlocked ctx n (nameSpan n)
     | otherwise -> resolveName ctx n
+  ERefFacet n sp -> inferRefFacet ctx n sp
+  EVarRead n sp -> inferVarRead ctx n sp
   EHole mn sp -> do
     -- §16.3.2 inference direction: no expected type is known here, so the
     -- hole's type is a fresh meta (shared across occurrences for a named
@@ -3805,7 +4049,7 @@ infer ctx expr = case expr of
         -- field types (a `(ty : Type)` field forces Type1, not Type0).
         let lvl = maximum (0 : [l | (_, _, l) <- fields])
         finish lvl [(nameText (rtfName f), t) | (f, t, _) <- fields]
-    where
+     where
       goDep _ [] = pure []
       goDep done (f : rest) = do
         -- §13.2.1: a record field's type sees earlier fields through
@@ -3865,25 +4109,28 @@ infer ctx expr = case expr of
             (fTm, fTy) <- infer ctx f
             elabSpine ctx (exprSpan f) fTm fTy args
   EApp f args -> do
-    mproj <- projectionHead ctx f
-    mRecvProj <- maybe (projRecvApp ctx f args) (const (pure Nothing)) mproj
-    case (mproj, mRecvProj) of
-      (_, Just r) -> pure r
-      (Just (g, pj), _) -> elabProjApp ctx (exprSpan f) g pj args
-      _ -> do
-        n0 <- gets (length . csDiags)
-        (fTm, fTy) <- infer ctx f
-        headUnresolved <- case f of
-          EVar {} -> do
-            ds <- gets csDiags
-            pure (any ((== "E_NAME_UNRESOLVED") . dCode) (take (length ds - n0) ds))
-          _ -> pure False
-        if headUnresolved
-          -- recovery (§3.1.14): an application whose head does not
-          -- resolve reports the head once; the arguments cannot be
-          -- meaningfully typed against an unknown callee
-          then anyHole ctx
-          else withArgFlatFor f (elabSpine ctx (exprSpan f) fTm fTy args)
+    explicitRefFacetApp ctx f args >>= \case
+      Just r -> pure r
+      Nothing -> do
+        mproj <- projectionHead ctx f
+        mRecvProj <- maybe (projRecvApp ctx f args) (const (pure Nothing)) mproj
+        case (mproj, mRecvProj) of
+          (_, Just r) -> pure r
+          (Just (g, pj), _) -> elabProjApp ctx (exprSpan f) g pj args
+          _ -> do
+            n0 <- gets (length . csDiags)
+            (fTm, fTy) <- infer ctx f
+            headUnresolved <- case f of
+              EVar {} -> do
+                ds <- gets csDiags
+                pure (any ((== "E_NAME_UNRESOLVED") . dCode) (take (length ds - n0) ds))
+              _ -> pure False
+            if headUnresolved
+              -- recovery (§3.1.14): an application whose head does not
+              -- resolve reports the head once; the arguments cannot be
+              -- meaningfully typed against an unknown callee
+              then anyHole ctx
+              else withArgFlatFor f (elabSpine ctx (exprSpan f) fTm fTy args)
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -3894,6 +4141,9 @@ infer ctx expr = case expr of
     tm <- check ctx e tyV
     pure (tm, tyV)
   EArrow b body -> do
+    allowInout <- gets csAllowInoutBinderContext
+    unless allowInout $
+      rejectInoutBinderContext "anonymous function type" b
     domE <- case binderTypeExpr b of
       Just t -> pure t
       Nothing -> pure (EUnit (bSpan b))
@@ -3960,13 +4210,13 @@ infer ctx expr = case expr of
     | Just _ <- lookupCtx "thunk" ctx ->
         infer ctx (EApp (EVar (Name "thunk" sp)) [ArgExplicit e])
     | otherwise -> do
-        (tm, ty) <- infer ctx e
+        (tm, ty) <- infer (withVarReadBlock VarReadCrossesBoundary ctx) e
         pure (CThunkE tm, VGlobN prelThunk [(Expl, ty)])
   ELazy e sp
     | Just _ <- lookupCtx "lazy" ctx ->
         infer ctx (EApp (EVar (Name "lazy" sp)) [ArgExplicit e])
     | otherwise -> do
-        (tm, ty) <- infer ctx e
+        (tm, ty) <- infer (withVarReadBlock VarReadCrossesBoundary ctx) e
         pure (CLazyE tm, VGlobN prelNeed [(Expl, ty)])
   EForce e sp | Just _ <- lookupCtx "force" ctx ->
     infer ctx (EApp (EVar (Name "force" sp)) [ArgExplicit e])
@@ -4200,17 +4450,18 @@ check ctx expr expected0 = do
     -- §18.1.14: Eff r is a monadic carrier, so 'pure' in an Eff-typed
     -- position injects via the Eff kernel (the prelude 'pure' is the IO
     -- instance; carrier-polymorphic 'pure' is not modelled)
-    (EApp (EVar pn) [ArgExplicit pa], VGlobN (GName _ "Eff") [(_, _), (_, aT)])
-      | nameText pn == "pure"
+    (EApp (EVar pn) [ArgExplicit pa], VGlobN g [(_, _), (_, aT)])
+      | g == prelEff
+      , nameText pn == "pure"
       , Nothing <- lookupCtx "pure" ctx -> do
           tm <- check ctx pa aT
           pure (CCtor prelEffPure Nothing [tm])
     -- §21.9: 'pure' in an Elab-typed position lifts a meta-phase value
     -- through the elaboration-time Applicative (the prelude 'pure' is
     -- the IO instance; carrier-polymorphic 'pure' is not modelled)
-    (EApp (EVar pn) [ArgExplicit pa], VGlobN (GName pm "Elab") [(_, aT)])
+    (EApp (EVar pn) [ArgExplicit pa], VGlobN g [(_, aT)])
       | nameText pn == "pure"
-      , pm == preludeModule
+      , g == prelElab
       , Nothing <- lookupCtx "pure" ctx -> do
           tm <- check ctx pa aT
           pure (CApp Expl (CGlob (GName primModule "__elabPure")) tm)
@@ -4295,8 +4546,8 @@ check ctx expr expected0 = do
                   _ -> EApp base args
         )
         expected
-    (EThunk e _, VGlobN (GName _ "Thunk") [(_, a)]) -> CThunkE <$> check ctx e a
-    (ELazy e _, VGlobN (GName _ "Need") [(_, a)]) -> CLazyE <$> check ctx e a
+    (EThunk e _, VGlobN (GName _ "Thunk") [(_, a)]) -> CThunkE <$> check (withVarReadBlock VarReadCrossesBoundary ctx) e a
+    (ELazy e _, VGlobN (GName _ "Need") [(_, a)]) -> CLazyE <$> check (withVarReadBlock VarReadCrossesBoundary ctx) e a
     (_, VGlobN (GName _ "Thunk") [(_, a)]) -> suspendOrInfer CThunkE expected a
     (_, VGlobN (GName _ "Need") [(_, a)]) -> suspendOrInfer CLazyE expected a
     -- expected-type-directed injection (§13.1.3) must see literals too
@@ -4627,7 +4878,7 @@ inferType :: Ctx -> Expr -> CheckM (Term, Int)
 -- a match in type position selects the type facet in its arms
 -- (dependent-match types, §17.1.4)
 inferType ctx (EMatch scrut cases msp) = do
-  tm <- checkMatch ctx scrut cases msp (VSort 0)
+  tm <- checkMatch (withVarReadBlock VarReadStaticPosition ctx) scrut cases msp (VSort 0)
   pure (tm, 0)
 inferType ctx e = do
   (tm, ty) <- inferT ctx e
@@ -4696,7 +4947,7 @@ inferTypeBoolProp' ctx e = do
 
 -- type-position inference: prefer the type facet for head names (§7.2).
 inferT :: Ctx -> Expr -> CheckM (Term, Value)
-inferT ctx e = case e of
+inferT ctx0 e = case e of
   -- in type position a universe spelling (incl. '*') is the universe
   EVar n
     | Nothing <- lookupCtx (nameText n) ctx
@@ -4796,6 +5047,7 @@ inferT ctx e = case e of
         pure (CRecordT [(nameText n, t)], VSort lvl)
   _ -> infer ctx e
   where
+    ctx = withVarReadBlock VarReadStaticPosition ctx0
     isLowerName t = case T.uncons t of
       Just (c, _) -> c >= 'a' && c <= 'z'
       Nothing -> False
@@ -5004,7 +5256,11 @@ checkExplicitArg :: Ctx -> Q -> Expr -> Value -> CheckM Term
 checkExplicitArg ctx q e dom = do
   domF <- forceM dom
   nBefore <- gets (length . csDiags)
-  aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx e dom))
+  let ctx' =
+        if q == Q0
+          then withVarReadBlock VarReadStaticPosition ctx
+          else ctx
+  aTm <- withArgIndexRetag (withDemand (demandOfQ q) (check ctx' e dom))
   case domF of
     VSort _ -> retagNewMismatches nBefore
     _ -> pure ()
@@ -5186,7 +5442,7 @@ retagNewMismatches nBefore = retagNew nBefore $ \d ->
 -- happens to be) is replaced rather than special-cased on its spelling.
 retagExplicitImplicitFailure :: Int -> CheckM ()
 retagExplicitImplicitFailure nBefore = retagNew nBefore $ \d ->
-  if isError d
+  if isError d && dFamily d /= Just "kappa.var.mutable-binding"
     then
       d
         { dCode = "E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH"
@@ -5198,16 +5454,64 @@ retagExplicitImplicitFailure nBefore = retagNew nBefore $ \d ->
 
 -- | Resolve an application head to a projection facet, if any.
 projectionHead :: Ctx -> Expr -> CheckM (Maybe (GName, ProjInfo))
-projectionHead ctx = \case
-  EVar hn
-    | Nothing <- lookupCtx (nameText hn) ctx -> do
+projectionHead ctx e = do
+  mg <- staticGlobalExpr ctx e
+  st <- get
+  pure $ do
+    g <- mg
+    pj <- Map.lookup g (csProjections st)
+    pure (g, pj)
+
+projectionInfoOfExpr :: Ctx -> Expr -> CheckM (Maybe ProjInfo)
+projectionInfoOfExpr ctx = \case
+  EVar hn ->
+    case lookupCtx (nameText hn) ctx of
+      Just (_, e) -> pure (ceProjInfo e)
+      Nothing -> do
         mg <- lookupGlobalName (nameText hn)
         st <- get
-        pure $ do
-          g <- mg
-          pj <- Map.lookup g (csProjections st)
-          pure (g, pj)
+        pure $ mg >>= (`Map.lookup` csProjections st)
+  e@EDot {} -> do
+    mg <- staticGlobalExpr ctx e
+    st <- get
+    pure $ mg >>= (`Map.lookup` csProjections st)
+  EAscription e _ _ -> projectionInfoOfExpr ctx e
   _ -> pure Nothing
+
+-- | Resolve a source expression only when it is a static global path:
+-- an unshadowed name, an import alias member, or a fully-qualified module path.
+-- This is used by semantic recognizers such as projection facets; ordinary
+-- field selection remains in 'elabDot'.
+staticGlobalExpr :: Ctx -> Expr -> CheckM (Maybe GName)
+staticGlobalExpr ctx = \case
+  EVar hn
+    | Nothing <- lookupCtx (nameText hn) ctx ->
+        lookupGlobalName (nameText hn)
+  EDot base (DotName member) -> do
+    st <- get
+    case base of
+      EVar (Name alias _)
+        | Nothing <- lookupCtx alias ctx
+        , Just mn <- Map.lookup alias (csModuleAliases st) ->
+            pure (visibleMember st mn member)
+      _ -> case modulePathOf base of
+        Just segs@(firstSeg : _)
+          | Nothing <- lookupCtx firstSeg ctx ->
+              pure (visibleMember st (ModuleName segs) member)
+        _ -> pure Nothing
+  EAscription e _ _ -> staticGlobalExpr ctx e
+  _ -> pure Nothing
+  where
+    visibleMember st mn member =
+      let g = GName mn (nameText member)
+       in if memberVisible st mn (nameText member)
+            && (Map.member g (csGlobals st) || Map.member g (csCtors st) || Map.member g (csProjections st))
+            then Just g
+            else Nothing
+    modulePathOf = \case
+      EVar (Name s _) -> Just [s]
+      EDot inner (DotName (Name s _)) -> (++ [s]) <$> modulePathOf inner
+      _ -> Nothing
 
 -- | Does a projection-head application supply every declared binder?
 projFullApp :: ProjInfo -> [Arg] -> Bool
@@ -5432,6 +5736,12 @@ elabRootsSupply ctx _sp rootsV supply = do
 -- (§12.4.1) of the root field's type.
 elabPlaceArg :: Ctx -> Expr -> Value -> CheckM Term
 elabPlaceArg ctx e fty
+  | Just root <- mutableVarPlaceRoot ctx e = do
+      infoFields <- mutableBindingLookupFields ctx root "user-written"
+      errMutableBinding (exprSpan e) "E_UNSUPPORTED" (nameText root) "var-place"
+        (infoFields ++ [("sourceOperation", "~"), ("repair", "use '~' only at an inout do-item rewrite site")])
+        "mutable var-place arguments such as '~x' or '~x.f' require read/modify/write elaboration over the hidden cell; this implementation rejects raw projection-root use rather than elaborating it as a current-value read (§18.6.1, §18.9)"
+      fst <$> anyHole ctx
   | stablePlaceExpr e = withDemand DemandRead (check ctx e fty)
   | otherwise = do
       errAt (exprSpan e) "E_PROJECTION_ROOT_INVALID" (Just "kappa-hs.projection.roots")
@@ -5448,6 +5758,16 @@ stablePlaceExpr = \case
   EAscription e _ _ -> stablePlaceExpr e
   _ -> False
 
+mutableVarPlaceRoot :: Ctx -> Expr -> Maybe Name
+mutableVarPlaceRoot ctx = \case
+  EVar n ->
+    if maybe False (isJust . ceVarInfo . snd) (lookupCtx (nameText n) ctx)
+      then Just n
+      else Nothing
+  EDot e (DotName _) -> mutableVarPlaceRoot ctx e
+  EAscription e _ _ -> mutableVarPlaceRoot ctx e
+  _ -> Nothing
+
 elabSpine :: Ctx -> Span -> Term -> Value -> [Arg] -> CheckM (Term, Value)
 elabSpine _ _ fTm fTy [] = pure (fTm, fTy)
 elabSpine ctx sp fTm fTy0 (arg : rest) = do
@@ -5462,10 +5782,12 @@ elabSpine ctx sp fTm fTy0 (arg : rest) = do
       anyHole ctx
     _ -> do
       -- §16.1.5/§16.1.6: a descriptor-typed callee consumes its roots
-      -- argument in place-pack mode
+      -- argument in place-pack mode. A raw '~' marker is deliberately not
+      -- accepted here: §18.9 gives '~' meaning only to the do-item inout
+      -- rewrite after resolving InoutParam metadata. That rewrite strips the
+      -- marker before ordinary descriptor application is checked.
       mdesc <- case arg of
         ArgExplicit e -> descriptorApp ctx sp fTm fTy e Nothing
-        ArgInout e _ -> descriptorApp ctx sp fTm fTy e (Just DemandOpen)
         _ -> pure Nothing
       case mdesc of
         Just (tm', ty') -> elabSpine ctx sp tm' ty' rest
@@ -5513,7 +5835,7 @@ isUnsafeAssertProofHead = go
 elabSpineArgGeneral :: Ctx -> Span -> Term -> Value -> Arg -> [Arg] -> CheckM (Term, Value)
 elabSpineArgGeneral ctx sp fTm fTy arg rest = do
   case (arg, fTy) of
-    (ArgImplicit e, VPi Impl _ _ _ dom clo) -> do
+    (ArgImplicit e, VPi Impl q _ _ dom clo) -> do
       -- §16.1.7.2: the explicit implicit argument's payload is elaborated
       -- against the selected implicit binder's demanded type 'dom'. If
       -- that elaboration fails, §3.1.4 mandates the portable
@@ -5521,7 +5843,7 @@ elabSpineArgGeneral ctx sp fTm fTy arg rest = do
       -- payload-internal diagnostic 'check' raised (a general rewrite,
       -- not a per-kind special case).
       n0 <- gets (length . csDiags)
-      aTm <- check ctx e dom
+      aTm <- checkExplicitArg ctx q e dom
       retagExplicitImplicitFailure n0
       aV <- evalIn ctx aTm
       ty' <- clApp clo aV
@@ -5571,12 +5893,19 @@ elabSpineArgGeneral ctx sp fTm fTy arg rest = do
       ty' <- clApp clo aV
       elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
     -- a '~place' marker against a callable parameter: the place value
-    -- is demanded in open mode (§18.9.3, §16.1.6)
-    (ArgInout e _, VPi Expl _ _ _ dom clo) -> do
-      aTm <- withDemand DemandOpen (check ctx e dom)
-      aV <- evalIn ctx aTm
-      ty' <- clApp clo aV
-      elabSpine ctx sp (CApp Expl fTm aTm) ty' rest
+    -- is not an ordinary argument form.  §18.9.3 gives '~' meaning only
+    -- through the do-item inout rewrite after resolving InoutParam metadata.
+    (ArgInout e msp, VPi Expl _ _ _ _ _)
+      | Just root <- mutableVarPlaceRoot ctx e -> do
+          infoFields <- mutableBindingLookupFields ctx root "user-written"
+          errMutableBinding msp "E_QTT_INOUT_MARKER_UNEXPECTED" (nameText root) "var-place"
+            (infoFields ++ [("sourceOperation", "~"), ("repair", "use '~' only at a resolved inout do-item rewrite site")])
+            "call-site '~' marker requires resolved inout-parameter metadata at this argument position (§18.9.3)"
+          anyHole ctx
+    (ArgInout _ msp, VPi Expl _ _ _ _ _) -> do
+      errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
+        "call-site '~' marker requires resolved inout-parameter metadata at this argument position (§18.9.3)"
+      anyHole ctx
     (ArgExplicit e, VFlex m []) -> do
       dom <- freshMetaV ctx
       codM <- freshMeta
@@ -5585,9 +5914,11 @@ elabSpineArgGeneral ctx sp fTm fTy arg rest = do
       solveMeta m piV
       elabSpine ctx sp fTm piV (ArgExplicit e : rest)
     (ArgNamedBlock items bsp, _) -> elabNamedBlock ctx fTm fTy items bsp rest
-    -- a '~place' call-site marker elaborates as the place expression;
-    -- marker/parameter agreement is judged by the §18.9.3 usage analysis
-    (ArgInout e _, _) -> elabSpine ctx sp fTm fTy (ArgExplicit e : rest)
+    -- §18.9.3: '~' has no fallback term-level meaning.
+    (ArgInout _ msp, _) -> do
+      errAt msp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
+        "call-site '~' marker requires resolved inout-parameter metadata at this argument position (§18.9.3)"
+      anyHole ctx
     (ArgImplicit e, _) -> do
       errAt (exprSpan e) "E_APPLICATION_ARGUMENT_MISMATCH" (Just "kappa.application.argument-mismatch")
         "an explicit implicit argument was supplied, but the callee has no implicit parameter here (§16.1.7.1)"
@@ -5978,8 +6309,8 @@ elabPrefixHandler ctx sl parts sp p = do
   (hTm1, hTy1) <- insertAllImplicits ctx sp hTm hTy
   hTyF <- forceM hTy1
   case hTyF of
-    VGlobN (GName pm "Elab") [(_, inner)]
-      | pm == preludeModule -> do
+    VGlobN g [(_, inner)]
+      | g == prelElab -> do
           innerF <- forceM inner
           case innerF of
             VGlobN (GName pm2 "InterpolatedMacro") [(_, tV)]
@@ -6703,7 +7034,8 @@ elabElvis ctx l r sp = do
   (lTm1, lTy1) <- insertAllImplicits ctx (exprSpan l) lTm lTy
   t <- forceM lTy1
   case t of
-    VGlobN (GName _ "Option") [(_, payloadTy)] -> do
+    VGlobN g [(_, payloadTy)]
+      | g == prelOption -> do
       rTm <- check ctx r payloadTy
       let alts =
             [ CaseAlt (CPCtor prelSome 0 [CPVar "__elvis"]) Nothing (CVar 0)
@@ -6727,14 +7059,15 @@ elabSafeNav ctx e member = do
   (pTm1, pTy1) <- insertAllImplicits ctx (exprSpan e) pTm pTy
   t <- forceM pTy1
   case t of
-    VGlobN (GName _ "Option") [(_, payloadTy)] -> do
+    VGlobN g [(_, payloadTy)]
+      | g == prelOption -> do
       -- bind __x : payload, elaborate body member access
       let nm = "__nav"
           ctx' = bindCtx nm False payloadTy ctx
       (bodyTm, bodyTy) <- elabDot ctx' (EVar (Name nm (memberSpan member))) member
       bodyT <- forceM bodyTy
       (wrapTm, resTy) <- case bodyT of
-        VGlobN (GName _ "Option") [(_, u)] -> pure (bodyTm, u)
+        VGlobN g [(_, u)] | g == prelOption -> pure (bodyTm, u)
         VFlex {} -> do
           errAt (memberSpan member) "E_SAFE_NAVIGATION_AMBIGUOUS" (Just "kappa.type.mismatch")
             "the result type of '?.' is undetermined; annotate the member type (§16.1.1.2)"
@@ -7115,35 +7448,40 @@ elabOpenPatch ctx tm1 rowV fs items sp = do
 -- @set@; the update rebuilds the root.
 elabSectionUpdate :: Ctx -> Expr -> Expr -> Expr -> Span -> CheckM (Term, Value)
 elabSectionUpdate ctx baseE recv rhs sp = case recv of
-  EReceiverSection (DotName mn : _) sArgs _ -> do
+  EReceiverSection members sArgs _ -> do
     (baseTm, baseTy0) <- infer ctx baseE
     baseTy <- forceM baseTy0
-    mg <- lookupGlobalName (nameText mn)
-    st <- get
-    let mpj = (\g -> (,) g <$> Map.lookup g (csProjections st)) =<< mg
-    case (baseTy, mpj) of
+    let mHead = receiverHeadExpr members
+    mpj <- case mHead of
+      Just headE -> projectionInfoOfExpr ctx headE
+      Nothing -> pure Nothing
+    case (baseTy, members, mpj) of
       -- a plain stable field: FillPlace, i.e. the ordinary update
-      (VRecordT fs, _)
+      (VRecordT fs, [DotName mn], _)
         | nameText mn `elem` map fst fs, null sArgs ->
             elabPatchWith False ctx baseE [PatchUpdate [(False, mn)] (PatchValue rhs)] sp
-      (_, Just (g, pj))
+      (_, _, Just pj)
         | pjSelector pj ->
             case (sArgs, nub (pjYields pj)) of
-              -- unique static leaf: FillProjector ≡ nested field update
+              -- unique static leaf: FillProjector equiv nested field update
               ([], [(_, path@(_ : _))]) ->
-                elabPatchWith False ctx baseE
-                  [PatchUpdate [(False, Name seg (nameSpan mn)) | seg <- path] (PatchValue rhs)] sp
-              -- whole-root leaf: filling replaces the root
+                case members of
+                  [DotName mn] ->
+                    elabPatchWith False ctx baseE
+                      [PatchUpdate [(False, Name seg (nameSpan mn)) | seg <- path] (PatchValue rhs)] sp
+                  _ -> unsupportedTarget (baseTm, baseTy)
               ([], [(_, [])]) -> do
                 rhsTm <- check ctx rhs baseTy
                 pure (rhsTm, baseTy)
               _ -> unsupportedTarget (baseTm, baseTy)
         | otherwise -> do
-            mt <- globalTerm g
-            case mt of
+            mDesc <- case mHead of
+              Just headE -> Just <$> infer ctx headE
+              Nothing -> pure Nothing
+            case mDesc of
               Nothing -> unsupportedTarget (baseTm, baseTy)
-              Just (dTm, dTy) -> do
-                (dTm1, dTy1) <- elabSpine ctx sp dTm dTy sArgs
+              Just (dTm0, dTy0) -> do
+                (dTm1, dTy1) <- elabSpine ctx sp dTm0 dTy0 sArgs
                 dTyF <- forceM dTy1
                 mcaps <- case dTyF of
                   VRecordT capFs -> bundleCapsM capFs
@@ -7162,6 +7500,11 @@ elabSectionUpdate ctx baseE recv rhs sp = case recv of
     (baseTm, baseTy) <- infer ctx baseE
     unsupportedTarget (baseTm, baseTy)
   where
+    receiverHeadExpr = \case
+      [] -> Nothing
+      DotName n : rest -> Just (foldl (\acc m -> EDot acc m) (EVar n) rest)
+      DotOperator {} : _ -> Nothing
+
     unsupportedTarget (baseTm, baseTy) = do
       errAt sp "E_PROJECTION_UPDATE_TARGET_UNSUPPORTED" (Just "kappa-hs.projection.update")
         "the projection-section update target must resolve to a stable place, a selector projection, or an accessor bundle providing 'set' (§13.2.5, §30.2.2.4)"
@@ -7718,15 +8061,29 @@ elabVariant ctx arms mtail sp mexpected = do
 -- ── Lambdas, lets, blocks ────────────────────────────────────────────
 
 elabLambda :: Ctx -> [Binder] -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
-elabLambda ctx0 bs0 body sp mexpected =
+elabLambda = elabLambdaWith False
+
+elabNamedDeclLambda :: Ctx -> [Binder] -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
+elabNamedDeclLambda = elabLambdaWith True
+
+elabLambdaWith :: Bool -> Ctx -> [Binder] -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
+elabLambdaWith allowInoutBinders ctx0 bs0 body0 sp mexpected = do
+  unless allowInoutBinders $
+    forM_ bs0 (rejectInoutBinderContext "lambda or anonymous function")
+  -- Wrong-facet repairs such as `readRef x` -> `readRef (ref x)` must be
+  -- diagnosed before the closure boundary turns the same source occurrence into
+  -- a generic current-read-crosses-boundary error.  Keep only repairs that do
+  -- not lift any current reads out of the lambda.
+  (pre, body1) <- liftCurrentReadsExpr ctx0 (exprSpan body0) body0
+  let body = if null pre then body1 else body0
   -- the lambda is a closure boundary: borrowed implicit locals from
   -- the surrounding scope may not be captured into it (§16.3.3)
-  go (pushCtxBarrier ctx0) bs0 mexpected
+  go body (pushCtxBarrier (withVarReadBlock VarReadCrossesBoundary ctx0)) bs0 mexpected
   where
     -- §18.5.1: the lambda body do IS the labeled lambda's completion
     -- boundary, so elaborate an EDo body directly with ctxReturnTarget
     -- preserved (the generic EDo path resets it as a nested do).
-    go ctx [] mexp = case (body, mexp) of
+    go body ctx [] mexp = case (body, mexp) of
       (EDo mlbl items isp, Just t) -> do
         (tm, ty') <- elabDo ctx mlbl items isp (Just t)
         expectType ctx isp ty' t
@@ -7740,7 +8097,7 @@ elabLambda ctx0 bs0 body sp mexpected =
       (_, Nothing) -> do
         (tm, ty) <- infer ctx body
         insertAllImplicits ctx (exprSpan body) tm ty
-    go ctx (b : rest) mexp = do
+    go body ctx (b : rest) mexp = do
       mexp' <- traverse forceM mexp
       case mexp' of
         Just expectedPi@(VPi ic q _ nm dom clo)
@@ -7753,7 +8110,7 @@ elabLambda ctx0 bs0 body sp mexpected =
               let bn = binderName b nm
                   ctx' = bindCtx bn (bImplicit b) dom ctx
               cod <- clApp clo (VRigid (ctxLen ctx) [])
-              (inner, _) <- go ctx' rest (Just cod)
+              (inner, _) <- go body ctx' rest (Just cod)
               pure (CLam ic q bn inner, expectedPi)
         _ -> do
           domV <- case binderTypeExpr b of
@@ -7767,7 +8124,7 @@ elabLambda ctx0 bs0 body sp mexpected =
               ic = if bImplicit b then Impl else Expl
               q = binderQ b
               ctx' = bindCtx bn (bImplicit b) domV ctx
-          (inner, innerTy) <- go ctx' rest Nothing
+          (inner, innerTy) <- go body ctx' rest Nothing
           domTm <- quoteIn ctx domV
           innerTyTm <- quoteIn ctx' innerTy
           piV <- evalIn ctx (CPi ic q False bn domTm innerTyTm)
@@ -7862,8 +8219,9 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
         PVar n -> do
           rhsTyTm <- quoteIn ctx rhsTy
           rhsV <- evalIn ctx rhsTm
+          mPj <- if implocal then pure Nothing else projectionInfoOfExpr ctx rhs
           let q = qOf (bpQuantity prefix)
-              ctx0' = bindCtxLet (nameText n) implocal rhsTy rhsV ctx
+              ctx0' = bindCtxLetProj (nameText n) implocal rhsTy rhsV mPj ctx
               ctx1 = if implocal then setTopPrefix sp prefix ctx0' else ctx0'
               -- §7.4.3 stable alias: `let q = p` transports refinement
               ctx' = case rhs of
@@ -7972,9 +8330,11 @@ elabBlock ctx0 ds0 mfin sp = do
       DLet _ (LetDef Nothing imp (Just p) prefix [] mty Nothing rhs) _ ->
         (LetBind imp prefix p mty rhs sp :) <$> goDecls sigs rest
       -- a local type alias is a type-level let binding (§9.3.1, §10.2)
-      DTypeAlias _ n params _ (Just rhs) dsp ->
+      DTypeAlias _ n params mkind (Just rhs) dsp ->
         let (body, ann) = case params of
-              [] -> (rhs, Just (EVar (Name "Type" dsp)))
+              [] -> (rhs, case mkind of
+                Just kindE | not (isBareTypeExpr kindE) -> Just kindE
+                _ -> Just (EVar (Name "Type" dsp)))
               bs -> (ELambda Nothing bs rhs dsp, Nothing)
          in (LetBind False emptyPrefix (PVar n) ann body sp :) <$> goDecls sigs rest
       _ -> do
@@ -8109,7 +8469,7 @@ elabEffInterface ctx eff = do
 
 -- | §18.1.16/§18.1.17: record the MULTI-SHOT operation names (resumption
 -- quantity ω or 1+) of an effect declaration, for the §34.3.3 native-backend
--- capability gate (rt-multishot absent).  Called for both scoped and top-level
+-- capability gate (rt-multishot-effects absent).  Called for both scoped and top-level
 -- effect declarations so scoped-effect multi-shot ops are covered too.
 recordMultishotOps :: [EffOpInfo] -> CheckM ()
 recordMultishotOps ops =
@@ -8360,7 +8720,8 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
       (scrutTm, scrutTy1) <- insertAllImplicits ctx (exprSpan scrutE) scrutTm0 scrutTy0
       scrutTy <- forceM scrutTy1
       case scrutTy of
-        VGlobN (GName _ "Eff") [(_, row), (_, aT)] -> do
+        VGlobN g [(_, row), (_, aT)]
+          | g == prelEff -> do
           msplit <- splitEffRow (eliLabel eli) row
           -- the matched interface fixes the effect's type parameters (§18.1.15):
           -- @<[l : State Int]>@ gives @State Int@, so the parameters are @[Int]@.
@@ -8399,7 +8760,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
             Just t -> do
               tf <- forceM t
               case tf of
-                VGlobN (GName _ "Eff") _ -> pure (effTyV residual bT)
+                VGlobN g _ | g == prelEff -> pure (effTyV residual bT)
                 _ -> pure tf
             Nothing -> pure (effTyV residual bT)
           -- exactly one return clause (§18.1.21)
@@ -8663,10 +9024,12 @@ elabEffDo ctx0 row aT items0 sp = do
       -- §18.6 mutable cells and the loop family (`var`, `:=`, `while`, `for`,
       -- `break`, `continue`) are not yet supported in an Eff do-block: an Eff
       -- carrier elaborates to the §30.2.2.7 free-monad tree (interpreted by
-      -- 'Kappa.Eval.evalEffPrim' as the differential oracle), and a mutable cell
-      -- in that tree would be a runtime `Ref` whose `__runIO` reads do not
-      -- reduce under `runPure` the way the native carrier's `krt2_*` cells do —
-      -- so a naive lift would diverge interpreter-vs-native.  `using` and `defer`
+      -- 'Kappa.Eval.evalEffPrim' as the differential oracle), and this
+      -- Eff carrier. Mutable cells are handled by the do-kernel carriers that
+      -- provide lawful MonadRef evidence; lifting them into the §30.2.2.7 Eff
+      -- free-monad tree would need a separate Eff-level reference operation and
+      -- would otherwise diverge interpreter-vs-native.
+      -- `using` and `defer`
       -- ARE supported (above): they carry exit-action frames only, with no
       -- mutable state, so the interpreter and native backends agree.
       other -> do
@@ -8686,11 +9049,19 @@ elabEffDo ctx0 row aT items0 sp = do
 -- control-flow items (which would need the §18.8 completion protocol
 -- realized over @m@) are rejected here, exactly as in an Eff-typed do.
 elabMonadDo :: Ctx -> Value -> [DoItem] -> Span -> CheckM (Term, Value)
-elabMonadDo ctx me items0 sp = do
-  e <- desugar items0
-  tm <- check ctx e me
-  pure (tm, me)
+elabMonadDo ctx me items0 sp
+  | monadDoNeedsMutable items0 = do
+      tm <- direct items0
+      pure (tm, me)
+  | otherwise = do
+      e <- desugar items0
+      tm <- check ctx e me
+      pure (tm, me)
   where
+    (mTy, resT) = case splitExpectedMonadValue me of
+      Just r -> r
+      Nothing -> (me, me)
+
     bindOp = EVar (Name ">>=" sp)
     mkLam pat body = case pat of
       PVar n -> ELambda Nothing [simpleBinder n] body sp
@@ -8714,10 +9085,11 @@ elabMonadDo ctx me items0 sp = do
     desugar (item : rest) = case item of
       DoExpr e -> mkBind (PWild sp) (e) <$> desugar rest
       DoBind (LetBind _ _ pat _ rhs _) -> mkBind pat (rhs) <$> desugar rest
-      -- a bare `x <- act` (monadic flag True) is the same monadic bind as
-      -- `let x <- act`; `x = e` (False) is an imperative reassignment with
-      -- no meaning in a pure monad and is rejected below.
-      DoAssign n True rhs _ -> mkBind (PVar n) (rhs) <$> desugar rest
+      DoAssign n True _ asp -> do
+        errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+          ("'" <> nameText n <> " <- ...' is mutable-var assignment syntax; use 'let "
+             <> nameText n <> " <- ...' for monadic bind (§18.2)")
+        desugar rest
       DoLet lb@(LetBind _ _ _ _ _ bsp) -> (\r -> ELet [lb] r bsp) <$> desugar rest
       DoIf alts mels isp -> mkBind (PWild sp) (ifToExpr alts mels isp) <$> desugar rest
       -- a refutable `let? p = rhs [else rp -> fe]` is a match over the pure rhs:
@@ -8735,12 +9107,303 @@ elabMonadDo ctx me items0 sp = do
           "this do-item form is not supported in a user-monad do block by this implementation (§18.8)"
         desugar rest
 
+    monadDoNeedsMutable = any go
+      where
+        exprNeedsLift e = exprHasCurrentRead ctx e || exprHasBang e || exprHasGeneratedVarRead e
+        exprHasGeneratedVarRead = \case
+          EVarRead {} -> True
+          _ -> False
+        go = \case
+          DoVar {} -> True
+          DoWhile {} -> True
+          DoFor _ _ src body mels _ ->
+            exprNeedsLift src || any go body || maybe False (any go) mels
+          DoIf alts mels _ ->
+            any (\(cnd, body) -> exprNeedsLift cnd || any go body) alts
+              || maybe False (any go) mels
+          DoExpr e -> exprNeedsLift e
+          DoBind lb -> exprNeedsLift (lbExpr lb)
+          DoLet lb -> exprNeedsLift (lbExpr lb)
+          DoLetQ _ rhs mElse _ -> exprNeedsLift rhs || maybe False (exprNeedsLift . snd) mElse
+          DoAssign _ _ rhs _ -> exprNeedsLift rhs
+          DoUsing _ _ rhs _ -> exprNeedsLift rhs
+          DoDefer _ e _ -> exprNeedsLift e
+          _ -> False
+
+    actionTy a =
+      case monadResultType mTy a of
+        Just ty -> pure ty
+        Nothing -> do
+          errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+            "this user-monad do block has a higher-order monad shape this implementation cannot apply (§18.8)"
+          pure me
+
+    monadBind c a b act lam = do
+      aTm <- quoteIn c a
+      bTm <- quoteIn c b
+      monadDict <- resolveImplicit c sp (VGlobN prelMonad [(Expl, mTy)])
+      pure $
+        CApp Expl
+          (CApp Expl (CApp Impl (CApp Impl (CProj monadDict ">>=") aTm) bTm) act)
+          lam
+
+    monadPure c a val = do
+      aTm <- quoteIn c a
+      appDict <- resolveImplicit c sp (VGlobN prelApplicative [(Expl, mTy)])
+      pure $ CApp Expl (CApp Impl (CProj appDict "pureA") aTm) val
+
+    bindDiscard target c a act rest = do
+      body <- directGo target (bindCtx "__u" False a c) rest
+      monadBind c a target act (CLam Expl QW "__u" body)
+
+    bindPattern target c pat a act rest = do
+      checkIrrefutable c pat a (patternSpan pat)
+      lam <- handlerClauseLam c Q1 pat a (\c' -> directGo target c' rest)
+      monadBind c a target act lam
+
+    direct = directGo resT ctx
+
+    directGo target c [] = do
+      forceM target >>= \case
+        VGlobN g [] | g == prelUnit ->
+          monadPure c target (CCtor prelUnit Nothing [])
+        _ -> do
+          errAt sp "E_DO_EMPTY" (Just "kappa-hs.do.empty")
+            "a do block must end with an expression item (§18.2)"
+          fst <$> anyHole c
+    directGo target c [DoIf alts mels isp] = directGo target c [DoExpr (ifToExpr alts mels isp)]
+    directGo target c [DoExpr e0] = do
+      rewriteVarInoutStatement c e0 >>= \case
+        Just items -> directGo target c items
+        Nothing -> do
+          (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
+          if not (null pre)
+            then directGo target c (pre ++ [DoExpr e])
+            else do
+              actT <- actionTy target
+              st0 <- get
+              n0 <- gets (length . csDiags)
+              tm0 <- check c e actT
+              n1 <- gets (length . csDiags)
+              if n1 == n0
+                then pure tm0
+                else do
+                  put st0
+                  valTm <- check c e target
+                  monadPure c target valTm
+    directGo target c (item : rest) = case item of
+      DoExpr e0 -> do
+        rewriteVarInoutStatement c e0 >>= \case
+          Just items -> directGo target c (items ++ rest)
+          Nothing -> do
+            (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
+            if not (null pre)
+              then directGo target c (pre ++ DoExpr e : rest)
+              else do
+                a <- freshMetaV c
+                actT <- actionTy a
+                tm <- check c e actT
+                bindDiscard target c a tm rest
+      DoBind (LetBind implocal prefix pat mty rhs0 bsp) -> do
+        rewritten <-
+          if isNothing mty && not implocal && prefix == emptyPrefix
+            then rewriteVarInoutBind VarInoutMonadic c pat rhs0
+            else pure Nothing
+        case rewritten of
+          Just items -> directGo target c (items ++ rest)
+          Nothing -> do
+            (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+            if not (null pre)
+              then directGo target c (pre ++ DoBind (LetBind implocal prefix pat mty rhs bsp) : rest)
+              else do
+                a <- case mty of
+                  Just tyE -> do
+                    (tyTm, _) <- inferType c tyE
+                    evalIn c tyTm
+                  Nothing -> freshMetaV c
+                actT <- actionTy a
+                rhsTm <- check c rhs actT
+                bindPattern target c pat a rhsTm rest
+      DoLet (LetBind implocal prefix pat mty rhs0 bsp) -> do
+        rewritten <-
+          if isNothing mty && not implocal && prefix == emptyPrefix
+            then rewriteVarInoutBind VarInoutPure c pat rhs0
+            else pure Nothing
+        case rewritten of
+          Just items -> directGo target c (items ++ rest)
+          Nothing -> do
+            (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+            if not (null pre)
+              then directGo target c (pre ++ DoLet (LetBind implocal prefix pat mty rhs bsp) : rest)
+              else do
+                (rhsTm, rhsTy) <- case mty of
+                  Just tyE -> do
+                    (tyTm, _) <- inferType c tyE
+                    tyV <- evalIn c tyTm
+                    tm <- check c rhs tyV
+                    pure (tm, tyV)
+                  Nothing -> do
+                    (tm0, ty0) <- infer c rhs
+                    insertAllImplicits c bsp tm0 ty0
+                checkIrrefutable c pat rhsTy bsp
+                rhsTyTm <- quoteIn c rhsTy
+                case pat of
+                  PVar qn -> do
+                    rhsV <- evalIn c rhsTm
+                    mPj <- if implocal then pure Nothing else projectionInfoOfExpr c rhs
+                    let cDef = bindCtxLetProj (nameText qn) implocal rhsTy rhsV mPj c
+                        cMarked = markImplicitLocal bsp implocal prefix c cDef
+                    CLet (qOf (bpQuantity prefix)) (nameText qn) rhsTyTm rhsTm <$> directGo target cMarked rest
+                  _ -> do
+                    let c0 = bindCtx "__b" False rhsTy c
+                    (patC, cPat, _) <- elabPattern c0 pat rhsTy
+                    body <- directGo target cPat rest
+                    sTyTm <- quoteIn c0 rhsTy
+                    pure (CLet (qOf (bpQuantity prefix)) "__b" rhsTyTm rhsTm (CMatch (CVar 0) (Just sTyTm) [CaseAlt patC Nothing body]))
+      DoVar n mty rhs0 vsp -> do
+        (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+        if not (null pre)
+          then directGo target c (pre ++ DoVar n mty rhs vsp : rest)
+          else do
+            refDict <- requireMonadRef c (nameSpan n) mTy
+            (rhsTm, rhsTy) <- case mty of
+              Just tyE -> do
+                (tyTm, _) <- inferType c tyE
+                tyV <- evalIn c tyTm
+                tm <- check c rhs tyV
+                pure (tm, tyV)
+              Nothing -> do
+                (tm0, ty0) <- infer c rhs
+                insertAllImplicits c (nameSpan n) tm0 ty0
+            rhsTyTm <- quoteIn c rhsTy
+            refTy <- monadRefRefType c refDict rhsTyTm
+            let newAct = monadRefNewAction refDict rhsTyTm rhsTm
+                refInfo = VarRefInfo rhsTy rhsTyTm refDict mTy (VGlobN (GName preludeModule "Void") [])
+                cVar = bindCtxVar (nameText n) refTy refInfo c
+            recordMutableBindingFields c (nameSpan n) refTy refInfo
+            body <- directGo target cVar rest
+            monadBind c refTy target newAct (CLam Expl QW (nameText n) body)
+      DoAssign n True rhs asp ->
+        case lookupCtx (nameText n) c of
+          Just (_, entry) | isJust (ceVarInfo entry) ->
+            directAssign target c n True rhs asp rest
+          _ -> directAssign target c n True rhs asp rest
+      DoAssign n False rhs asp ->
+        directAssign target c n False rhs asp rest
+      DoIf alts mels isp ->
+        directGo target c (DoExpr (ifToExpr alts mels isp) : rest)
+      DoWhile ml cond0 body mels wsp ->
+        directWhile target c ml cond0 body mels wsp rest
+      other -> do
+        unsupportedAt (doItemSpan other)
+          "this do-item form is not supported in a mutable user-monad do block by this implementation (§18.8)"
+        directGo target c rest
+
+    directAssign target c n monadic rhs0 asp rest = do
+      (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+      if not (null pre)
+        then directGo target c (pre ++ DoAssign n monadic rhs asp : rest)
+        else case lookupCtx (nameText n) c of
+          Just (i, entry)
+            | Just info <- ceVarInfo entry -> do
+                let evidenceShift = i + 1
+                    refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
+                    aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
+                    a = vriStoredType info
+                    refTm = CVar i
+                rhsActTy <- actionTy a
+                rhsTm <- if monadic then check c rhs rhsActTy else check c rhs a
+                if monadic
+                  then do
+                    let cAssign = bindCtx "__assign" False a c
+                        refTm' = shiftTerm 1 0 refTm
+                        aTm' = shiftTerm 1 0 aTm
+                        refDict' = shiftTerm 1 0 refDict
+                        writeAct = monadRefWriteAction refDict' aTm' refTm' (CVar 0)
+                    writeThen <- bindDiscard target cAssign (VGlobN prelUnit []) writeAct rest
+                    monadBind c a target rhsTm (CLam Expl QW "__assign" writeThen)
+                  else do
+                    let writeAct = monadRefWriteAction refDict aTm refTm rhsTm
+                    bindDiscard target c (VGlobN prelUnit []) writeAct rest
+          Just _ -> do
+            errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+              ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
+            directGo target c rest
+          Nothing -> do
+            if monadic
+              then
+                errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+                  ("'" <> nameText n <> " <- ...' is mutable-var assignment syntax; use 'let "
+                     <> nameText n <> " <- ...' for monadic bind (§18.2)")
+              else
+                errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+                  ("unresolved name '" <> nameText n <> "'")
+            directGo target c rest
+
+    directWhile target c _ml cond0 body mels _wsp rest = do
+      when (any isAbruptLoopItem body || maybe False (any isAbruptLoopItem) mels) $
+        unsupportedAt (exprSpan cond0)
+          "break/continue/return inside a user-monad while body requires the §18.8 completion protocol and is not part of this direct MonadRef lowering"
+      let boolT = VGlobN prelBool []
+          unitT = VGlobN prelUnit []
+      (pre, cond') <- liftCurrentReadsExpr c (exprSpan cond0) cond0
+      let condD =
+            if null pre
+              then cond'
+              else EDo Nothing (pre ++ [DoExpr cond']) (exprSpan cond0)
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      pureCond <- check c condD boolT
+      n1 <- gets (length . csDiags)
+      condEither <-
+        if n1 == n0
+          then pure (Left pureCond)
+          else do
+            put st0
+            condActTy <- actionTy boolT
+            Right <$> check c condD condActTy
+      bodyAct <- directGo unitT c body
+      elseAct <- case mels of
+        Just els -> directGo unitT c els
+        Nothing -> monadPure c unitT (CCtor prelUnit Nothing [])
+      loopTy <- actionTy unitT
+      loopTyTm <- quoteIn c loopTy
+      loopName <- freshNameM "__loop"
+      let cLoop = bindCtx loopName False loopTy c
+          shiftTo c' = shiftTerm (ctxLen c' - ctxLen c) 0
+          seqBodyThenLoop c' loopIx =
+            monadBind c' unitT unitT (shiftTo c' bodyAct) (CLam Expl QW "__u" (CVar (loopIx + 1)))
+      loopRhs <- case condEither of
+        Left condTm -> do
+          thenAct <- seqBodyThenLoop cLoop 0
+          pure (CIf (shiftTo cLoop condTm) thenAct (shiftTo cLoop elseAct))
+        Right condAct -> do
+          let cCond = bindCtx "__cond" False boolT cLoop
+          thenAct <- seqBodyThenLoop cCond 1
+          let branch = CIf (CVar 0) thenAct (shiftTo cCond elseAct)
+          monadBind cLoop boolT unitT (shiftTo cLoop condAct) (CLam Expl QW "__cond" branch)
+      after <- bindDiscard target cLoop unitT (CVar 0) rest
+      pure (CLetRec QW loopName loopTyTm loopRhs after)
+
+    isAbruptLoopItem = \case
+      DoBreak {} -> True
+      DoContinue {} -> True
+      DoReturn {} -> True
+      DoIf alts mels _ ->
+        any (any isAbruptLoopItem . snd) alts || maybe False (any isAbruptLoopItem) mels
+      DoWhile _ _ body mels _ ->
+        any isAbruptLoopItem body || maybe False (any isAbruptLoopItem) mels
+      DoFor _ _ _ body mels _ ->
+        any isAbruptLoopItem body || maybe False (any isAbruptLoopItem) mels
+      DoExpr (EDo _ body _) -> any isAbruptLoopItem body
+      _ -> False
+
 doItemSpan :: DoItem -> Span
 doItemSpan = \case
   DoBind lb -> lbSpan lb
   DoLet lb -> lbSpan lb
   DoLetQ _ _ _ s -> s
-  DoVar _ _ s -> s
+  DoVar _ _ _ s -> s
   DoAssign _ _ _ s -> s
   DoExpr e -> exprSpan e
   DoUsing _ _ _ s -> s
@@ -10164,6 +10827,281 @@ ctorFieldTypesCtx ctx _ ci scrutTy _ = do
 ioType :: Value -> Value -> Value
 ioType e a = VGlobN prelIO [(Expl, e), (Expl, a)]
 
+monadResultType :: Value -> Value -> Maybe Value
+monadResultType mTy a = case mTy of
+  VGlobN g args -> Just (VGlobN g (args ++ [(Expl, a)]))
+  VFlex m args -> Just (VFlex m (args ++ [(Expl, a)]))
+  VRigid l args -> Just (VRigid l (args ++ [(Expl, a)]))
+  _ -> Nothing
+
+requireMonadRef :: Ctx -> Span -> Value -> CheckM Term
+requireMonadRef ctx sp mTyV =
+  resolveImplicit ctx sp (VGlobN prelMonadRef [(Expl, mTyV)])
+
+monadRefRefType :: Ctx -> Term -> Term -> CheckM Value
+monadRefRefType ctx dictTm aTm =
+  evalIn ctx (CApp Expl (CProj dictTm "Ref") aTm)
+
+monadRefNewAction :: Term -> Term -> Term -> Term
+monadRefNewAction dictTm aTm initTm =
+  CApp Expl (CApp Impl (CProj dictTm "newRef") aTm) initTm
+
+monadRefReadAction :: Term -> Term -> Term -> Term
+monadRefReadAction dictTm aTm refTm =
+  CApp Expl (CApp Impl (CProj dictTm "readRef") aTm) refTm
+
+monadRefWriteAction :: Term -> Term -> Term -> Term -> Term
+monadRefWriteAction dictTm aTm refTm rhsTm =
+  CApp Expl (CApp Expl (CApp Impl (CProj dictTm "writeRef") aTm) refTm) rhsTm
+
+data ExplicitRefOp = ExplicitRefRead | ExplicitRefWrite
+  deriving (Eq)
+
+refOpOfTerm :: Term -> Maybe (ExplicitRefOp, Maybe Term)
+refOpOfTerm = \case
+  CApp _ f _ -> refOpOfTerm f
+  CGlob g | g == prelReadRef -> Just (ExplicitRefRead, Nothing)
+  CGlob g | g == prelWriteRef -> Just (ExplicitRefWrite, Nothing)
+  CProj dict "readRef" -> Just (ExplicitRefRead, Just dict)
+  CProj dict "writeRef" -> Just (ExplicitRefWrite, Just dict)
+  CProjAt dict "readRef" _ -> Just (ExplicitRefRead, Just dict)
+  CProjAt dict "writeRef" _ -> Just (ExplicitRefWrite, Just dict)
+  _ -> Nothing
+
+explicitArgExprs :: [Arg] -> [Expr]
+explicitArgExprs = mapMaybe $ \case
+  ArgExplicit e -> Just e
+  _ -> Nothing
+
+refFacetReadArg :: [Arg] -> Maybe (Name, Span)
+refFacetReadArg args =
+  case explicitArgExprs args of
+    [ERefFacet n sp] -> Just (n, sp)
+    [EAscription (ERefFacet n sp) _ _] -> Just (n, sp)
+    _ -> Nothing
+
+refFacetWriteArgs :: [Arg] -> Maybe (Name, Expr, Span)
+refFacetWriteArgs args =
+  case explicitArgExprs args of
+    [ERefFacet n sp, rhs] -> Just (n, rhs, sp)
+    [EAscription (ERefFacet n sp) _ _, rhs] -> Just (n, rhs, sp)
+    _ -> Nothing
+
+explicitRefFacetApp :: Ctx -> Expr -> [Arg] -> CheckM (Maybe (Term, Value))
+explicitRefFacetApp ctx f args = do
+  mop <- resolvedRefOp
+  case mop of
+    Just (ExplicitRefRead, mdict)
+      | Just (n, sp) <- refFacetReadArg args ->
+          withVar n sp mdict $ \_i info refDict aTm refTm -> do
+            case monadResultType (vriMonadType info) (vriStoredType info) of
+              Just actionTy -> do
+                recordRecognizedRefOp sp "readRef"
+                pure (Just (monadRefReadAction refDict aTm refTm, actionTy))
+              Nothing -> unsupportedRefFacet ctx n sp
+    Just (ExplicitRefWrite, mdict)
+      | Just (n, rhs, sp) <- refFacetWriteArgs args ->
+          withVar n sp mdict $ \_i info refDict aTm refTm -> do
+            rhsTm <- check ctx rhs (vriStoredType info)
+            case monadResultType (vriMonadType info) (VGlobN prelUnit []) of
+              Just actionTy -> do
+                recordRecognizedRefOp sp "writeRef"
+                pure (Just (monadRefWriteAction refDict aTm refTm rhsTm, actionTy))
+              Nothing -> unsupportedRefFacet ctx n sp
+    _ -> pure Nothing
+  where
+    resolvedRefOp = do
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      r <- do
+        (tm, _) <- infer ctx f
+        pure (refOpOfTerm tm)
+      n1 <- gets (length . csDiags)
+      put st0
+      pure (if n1 == n0 then r else Nothing)
+    withVar n _sp mdict k =
+      case lookupCtx (nameText n) ctx of
+        Just (i, entry)
+          | Just info <- ceVarInfo entry -> do
+              let evidenceShift = i + 1
+                  refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
+                  aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
+                  refTm = CVar i
+              matches <- maybe (pure True) (refDictMatches refDict) mdict
+              if matches
+                then k i info refDict aTm refTm
+                else pure Nothing
+        _ -> pure Nothing
+      where
+        refDictMatches expected0 actual0 = do
+          let d = ctxLen ctx
+          actualV <- forceM =<< evalIn ctx actual0
+          expectedV <- forceM =<< evalIn ctx expected0
+          actual <- quoteIn ctx actualV >>= zonkTermM d
+          expected <- quoteIn ctx expectedV >>= zonkTermM d
+          if actual == expected
+            then pure True
+            else do
+              actualN <- normalizeTermAt d actual
+              expectedN <- normalizeTermAt d expected
+              pure (actualN == expectedN)
+
+recognizedRefReadRoot :: Ctx -> Expr -> CheckM (Maybe Text)
+recognizedRefReadRoot ctx = \case
+  EVarRead n _ -> pure (varCurrentRootOf ctx (nameText n))
+  EAscription e _ _ -> recognizedRefReadRoot ctx e
+  EApp f args
+    | Just (n, _) <- refFacetReadArg args -> do
+        mop <- resolvedRefOpExpr ctx f
+        case mop of
+          Just (ExplicitRefRead, mdict) -> do
+            ok <- refOpMatchesMutable ctx n mdict
+            pure (if ok then varCurrentRootOf ctx (nameText n) else Nothing)
+          _ -> pure Nothing
+  _ -> pure Nothing
+
+recognizedRefWriteName :: Ctx -> Expr -> CheckM (Maybe Text)
+recognizedRefWriteName ctx = \case
+  EAscription e _ _ -> recognizedRefWriteName ctx e
+  EApp f args
+    | Just (n, _, _) <- refFacetWriteArgs args -> do
+        mop <- resolvedRefOpExpr ctx f
+        case mop of
+          Just (ExplicitRefWrite, mdict) -> do
+            ok <- refOpMatchesMutable ctx n mdict
+            pure (if ok then Just (nameText n) else Nothing)
+          _ -> pure Nothing
+  _ -> pure Nothing
+
+resolvedRefOpExpr :: Ctx -> Expr -> CheckM (Maybe (ExplicitRefOp, Maybe Term))
+resolvedRefOpExpr ctx f = do
+  st0 <- get
+  n0 <- gets (length . csDiags)
+  r <- do
+    (tm, _) <- infer ctx f
+    pure (refOpOfTerm tm)
+  n1 <- gets (length . csDiags)
+  put st0
+  pure (if n1 == n0 then r else Nothing)
+
+refOpMatchesMutable :: Ctx -> Name -> Maybe Term -> CheckM Bool
+refOpMatchesMutable _ _ Nothing = pure True
+refOpMatchesMutable ctx n (Just actual0) =
+  case lookupCtx (nameText n) ctx of
+    Just (i, entry)
+      | Just info <- ceVarInfo entry -> do
+          let expected0 = shiftTerm (i + 1) 0 (vriMonadRefDict info)
+              d = ctxLen ctx
+          actualV <- forceM =<< evalIn ctx actual0
+          expectedV <- forceM =<< evalIn ctx expected0
+          actual <- quoteIn ctx actualV >>= zonkTermM d
+          expected <- quoteIn ctx expectedV >>= zonkTermM d
+          if actual == expected
+            then pure True
+            else do
+              actualN <- normalizeTermAt d actual
+              expectedN <- normalizeTermAt d expected
+              pure (actualN == expectedN)
+    _ -> pure False
+
+aliasCurrentReadPattern :: Ctx -> Pattern -> Expr -> Ctx -> CheckM Ctx
+aliasCurrentReadPattern before pat rhs after =
+  case pat of
+    PVar qn -> do
+      mroot <- recognizedRefReadRoot before rhs
+      pure $ maybe after (\root -> addVarCurrentAlias (nameText qn) root after) mroot
+    _ -> pure after
+
+unsupportedRefFacet :: Ctx -> Name -> Span -> CheckM (Maybe (Term, Value))
+unsupportedRefFacet ctx n sp = do
+  errAt sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+    ("mutable variable '" <> nameText n <> "' uses a higher-order monad shape this implementation cannot apply for explicit ref-facet operations (§18.6.1)")
+  Just <$> anyHole ctx
+
+escapedRefFacetsExpr :: Ctx -> Expr -> CheckM (Set Text)
+escapedRefFacetsExpr ctx e = do
+  mRead <- recognizedRefReadRoot ctx e
+  mWrite <- recognizedRefWriteName ctx e
+  if isJust mRead || isJust mWrite
+    then pure Set.empty
+    else pure (collectRefFacets e)
+
+collectRefFacets :: Data a => a -> Set Text
+collectRefFacets x =
+  case (cast x :: Maybe Expr) of
+    Just (ERefFacet n _) -> Set.singleton (nameText n)
+    _ -> Set.unions (gmapQ collectRefFacets x)
+
+doItemsVarWrites :: Ctx -> [DoItem] -> CheckM (Set Text)
+doItemsVarWrites ctx = foldM go Set.empty
+  where
+    addExpr acc e = do
+      mw <- recognizedRefWriteName ctx e
+      pure $ maybe acc (`Set.insert` acc) mw
+    go acc = \case
+      DoAssign n _ _ _ -> pure (Set.insert (nameText n) acc)
+      DoExpr e -> addExpr acc e
+      DoBind lb -> addExpr acc (lbExpr lb)
+      DoLet lb -> addExpr acc (lbExpr lb)
+      DoLetQ _ rhs mElse _ -> do
+        acc1 <- addExpr acc rhs
+        maybe (pure acc1) (addExpr acc1 . snd) mElse
+      DoIf alts mels _ -> do
+        branchWrites <- foldM (\s (_, body) -> Set.union s <$> doItemsVarWrites ctx body) Set.empty alts
+        elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
+        pure (Set.unions [acc, branchWrites, elseWrites])
+      DoWhile _ cond body mels _ -> do
+        acc1 <- addExpr acc cond
+        bodyWrites <- doItemsVarWrites ctx body
+        elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
+        pure (Set.unions [acc1, bodyWrites, elseWrites])
+      DoFor _ _ src body mels _ -> do
+        acc1 <- addExpr acc src
+        bodyWrites <- doItemsVarWrites ctx body
+        elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
+        pure (Set.unions [acc1, bodyWrites, elseWrites])
+      DoUsing _ _ rhs _ -> addExpr acc rhs
+      DoDefer _ e _ -> addExpr acc e
+      DoReturn _ me _ -> maybe (pure acc) (addExpr acc) me
+      DoDecl _ -> pure acc
+      DoBreak {} -> pure acc
+      DoContinue {} -> pure acc
+      DoVar {} -> pure acc
+
+doItemsVarEscapes :: Ctx -> [DoItem] -> CheckM (Set Text)
+doItemsVarEscapes ctx = foldM go Set.empty
+  where
+    addExpr acc e = Set.union acc <$> escapedRefFacetsExpr ctx e
+    go acc = \case
+      DoAssign _ _ rhs _ -> addExpr acc rhs
+      DoExpr e -> addExpr acc e
+      DoBind lb -> addExpr acc (lbExpr lb)
+      DoLet lb -> addExpr acc (lbExpr lb)
+      DoLetQ _ rhs mElse _ -> do
+        acc1 <- addExpr acc rhs
+        maybe (pure acc1) (addExpr acc1 . snd) mElse
+      DoIf alts mels _ -> do
+        branchEscapes <- foldM (\s (_, body) -> Set.union s <$> doItemsVarEscapes ctx body) Set.empty alts
+        elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
+        pure (Set.unions [acc, branchEscapes, elseEscapes])
+      DoWhile _ cond body mels _ -> do
+        acc1 <- addExpr acc cond
+        bodyEscapes <- doItemsVarEscapes ctx body
+        elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
+        pure (Set.unions [acc1, bodyEscapes, elseEscapes])
+      DoFor _ _ src body mels _ -> do
+        acc1 <- addExpr acc src
+        bodyEscapes <- doItemsVarEscapes ctx body
+        elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
+        pure (Set.unions [acc1, bodyEscapes, elseEscapes])
+      DoUsing _ _ rhs _ -> addExpr acc rhs
+      DoDefer _ e _ -> addExpr acc e
+      DoReturn _ me _ -> maybe (pure acc) (addExpr acc) me
+      DoDecl _ -> pure acc
+      DoBreak {} -> pure acc
+      DoContinue {} -> pure acc
+      DoVar _ _ rhs _ -> addExpr acc rhs
+
 elabTry :: Ctx -> Expr -> [ExceptCase] -> Maybe Expr -> Span -> CheckM (Term, Value)
 elabTry ctx body excepts mfin sp = do
   errT <- freshMetaV ctx
@@ -10178,24 +11116,30 @@ elabTry ctx body excepts mfin sp = do
       then pure bodyTm
       else do
         -- \err -> match err cases
+        --
+        -- The handler body is elaborated as an ordinary expression in the
+        -- handler context rather than by directly building Core 'CaseAlt's.
+        -- That is important for §18.6.1 current-value reads in exception
+        -- guards: a guarded handler lowers to the same branch-local
+        -- expression shape as a guarded match, so a guard such as
+        -- `except e if flag -> ...` gets a normal nearest-do lifting point
+        -- inside the handler action.  Directly checking the guard as a pure
+        -- CaseAlt guard would incorrectly reject the mutable current read.
         let nm = "__err"
+            errN = Name nm sp
             ctx' = bindCtx nm False errT' ctx
-        alts <- forM excepts $ \(ExceptCase pat mguard hbody _) -> do
-          (patC, ctx'', _) <- elabPattern ctx' pat errT'
-          gTm <- traverse (\g -> check ctx'' g (VGlobN prelBool [])) mguard
-          -- §17.1.9: a guarded exception handler's guard holds while
-          -- checking its body, so push it as boolean evidence (the same
-          -- §3.2.3 proof source as the plain-match arm and if-expression
-          -- paths); scoped per handler so it does not leak to siblings.
-          oldBool <- gets csBoolFacts
-          forM_ gTm $ \gt ->
-            modify' $ \st -> st {csBoolFacts = (gt, True) : csBoolFacts st}
-          hTm <- check ctx'' hbody (ioType outErr resT)
-          modify' $ \st -> st {csBoolFacts = oldBool}
-          pure (CaseAlt patC gTm hTm)
-        checkExhaustive ctx sp errT' Nothing [(p, g) | CaseAlt p g _ <- alts]
-        errTyTm <- quoteIn ctx' errT'
-        let handlerTm = CLam Expl QW nm (CMatch (CVar 0) (Just errTyTm) alts)
+            handlerExpr =
+              EMatch
+                (EVar errN)
+                [MatchCase pat mguard hbody csp | ExceptCase pat mguard hbody csp <- excepts]
+                sp
+        (pre, handlerExpr') <- liftCurrentReadsExpr ctx' sp handlerExpr
+        let handlerBody =
+              if null pre
+                then handlerExpr'
+                else EDo Nothing (pre ++ [DoExpr handlerExpr']) sp
+        handlerBodyTm <- check ctx' handlerBody (ioType outErr resT)
+        let handlerTm = CLam Expl QW nm handlerBodyTm
         pure (CApp Expl (CApp Expl (CGlob prelCatchIO) bodyTm) handlerTm)
   final <- case mfin of
     Nothing -> pure caught
@@ -10217,49 +11161,61 @@ elabTry ctx body excepts mfin sp = do
 elabDo :: Ctx -> Maybe Name -> [DoItem] -> Span -> Maybe Value -> CheckM (Term, Value)
 elabDo ctx0 mlabel items0 _sp mexpected = do
   -- §18.9.3: '~' inout markers are admissible within this do elaboration
-  let ctx = ctx0 {ctxInDo = True}
-  -- §18.3.1: lift every monadic splice `!` in this do-scope (and its nested
-  -- loop/if suites) to a preceding `tmp <- act` bind BEFORE dispatching to a
-  -- kernel.  After this no kernel ever sees a raw 'EBang' as an item subterm,
-  -- so all three carriers (IO/STM, Eff, user-monad) get the spec-correct
-  -- monadic-bind semantics uniformly, and no synthesized `__runIO` splice-head
-  -- exists to bypass 'gateUnsafeIntrinsic'.
-  items <- liftDoItems items0
+  let ctx = ctx0 {ctxInDo = True, ctxVarReadBlock = Nothing}
   me <- traverse forceM mexpected
   case me of
     -- an Eff-typed do sequences algebraic-effect computations
     -- (§18.1.14); it elaborates to __effBind chains, not the IO kernel
-    Just (VGlobN (GName _ "Eff") [(_, row), (_, a)]) ->
-      elabEffDo ctx row a items _sp
+    Just (VGlobN g [(_, row), (_, a)])
+      | g == prelEff -> do
+        items <- liftDoItems items0
+        elabEffDo ctx row a items _sp
     -- an Elab-typed do sequences elaboration-time actions (§21.9); it
     -- elaborates to __elabBind chains run by the Elab evaluator
-    Just (VGlobN (GName pm "Elab") [(_, a)])
-      | pm == preludeModule ->
-          elabElabDo ctx a items _sp
+    Just (VGlobN g [(_, a)])
+      | g == prelElab ->
+          do
+            items <- liftDoItems items0
+            elabElabDo ctx a items _sp
     -- §18.8: a do-block whose result is a user monad `m a` (m has a
     -- Monad instance) and is not a kernel carrier (IO/STM handled by
     -- elabDoIO; Eff/Elab above) elaborates by the classic monadic
     -- desugaring to (>>=)/pure.
-    Just t@(VGlobN g@(GName _ gn) spine)
-      | not (null spine)
-      , gn `notElem` doKernelCarriers -> do
-          let mV = VGlobN g (init spine)
-          hasMonad <- isJust <$> instanceSearch ctx _sp (VGlobN prelMonad [(Expl, mV)])
-          if hasMonad then elabMonadDo ctx t items _sp else elabDoIO ctx me items
-    _ -> elabDoIO ctx me items
+    Just t
+      | Just (mV, _) <- splitExpectedMonadValue t
+      , not (isKernelDoCarrier mV) ->
+          elabMonadDo ctx t items0 _sp
+    _ -> elabDoIO ctx me items0
   where
     elabDoIO = elabDoIOItems (nameText <$> mlabel) _sp
+
+splitExpectedMonadValue :: Value -> Maybe (Value, Value)
+splitExpectedMonadValue = \case
+  VGlobN g spine
+    | not (null spine) -> Just (VGlobN g (init spine), snd (last spine))
+  VFlex m spine
+    | not (null spine) -> Just (VFlex m (init spine), snd (last spine))
+  VRigid l spine
+    | not (null spine) -> Just (VRigid l (init spine), snd (last spine))
+  _ -> Nothing
+
+isKernelDoCarrier :: Value -> Bool
+isKernelDoCarrier = \case
+  VGlobN g _ -> g `elem` doKernelCarriers
+  _ -> False
 
 elabDoIOItems :: Maybe Text -> Span -> Ctx -> Maybe Value -> [DoItem] -> CheckM (Term, Value)
 elabDoIOItems mlabel _sp ctx mexp items = do
   (errT, resT, doTy) <- case mexp of
-    Just (VGlobN (GName _ "IO") [(_, e), (_, a)]) ->
-      pure (e, a, Nothing)
+    Just (VGlobN g [(_, e), (_, a)])
+      | g == prelIO ->
+          pure (e, a, Nothing)
     -- an STM-typed do sequences IO-shaped items (§18.1.13); the kernel
     -- runs it as the underlying action
-    Just expd@(VGlobN (GName _ "STM") [(_, a)]) -> do
-      e <- freshMetaV ctx
-      pure (e, a, Just expd)
+    Just expd@(VGlobN g [(_, a)])
+      | g == prelSTM -> do
+          e <- freshMetaV ctx
+          pure (e, a, Just expd)
     -- pure-result do (corpus): a do block in a position expecting a
     -- known non-IO type sequences pure statements; the §18.8 kernel
     -- passes pure statement values through, so it runs unchanged
@@ -10278,12 +11234,12 @@ elabDoIOItems mlabel _sp ctx mexp items = do
     -- the underlying IO at runtime); otherwise IO of the scope's error type.
     wrapTy :: Value -> Value -> Value
     wrapTy errT x = case mexp of
-      Just (VGlobN (GName _ "STM") _) -> VGlobN prelSTM [(Expl, x)]
+      Just (VGlobN g _) | g == prelSTM -> VGlobN prelSTM [(Expl, x)]
       _ -> ioType errT x
     -- whether this do-scope is STM-typed (its items are STM actions, not
     -- IO) — the transparent nested-do path applies only to IO-shaped scopes
     isStmExpected :: Maybe Value -> Bool
-    isStmExpected (Just (VGlobN (GName _ "STM") _)) = True
+    isStmExpected (Just (VGlobN g _)) | g == prelSTM = True
     isStmExpected _ = False
     -- §18.8 pure-result do (corpus accommodation): a do-block elaborated at a
     -- KNOWN non-IO, non-STM, non-flex type sequences PURE statements (lets and a
@@ -10299,14 +11255,288 @@ elabDoIOItems mlabel _sp ctx mexp items = do
     -- this mode (§18.3.1 / §18.2: a monadic bind requires a monadic carrier).
     pureResult :: Bool
     pureResult = case mexp of
-      Just (VGlobN (GName _ "IO") _) -> False
-      Just (VGlobN (GName _ "STM") _) -> False
+      Just (VGlobN g _) | g == prelIO -> False
+      Just (VGlobN g _) | g == prelSTM -> False
       Just expd -> not (isFlexHead expd)
       Nothing -> False
+    doMonadType :: Value -> Maybe Value
+    doMonadType errT = case mexp of
+      Just (VGlobN g args)
+        | g == prelIO
+        , [(_, e), _] <- args -> Just (VGlobN prelIO [(Expl, e)])
+      Just (VGlobN g args)
+        | g == prelSTM
+        , [_] <- args -> Just (VGlobN prelSTM [])
+      Just _ -> Nothing
+      Nothing -> Just (VGlobN prelIO [(Expl, errT)])
+    actionTypeFor :: Value -> Value -> Value -> CheckM Value
+    actionTypeFor fallbackErr mTy a =
+      case monadResultType mTy a of
+        Just ty -> pure ty
+        Nothing -> do
+          errAt _sp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+            "this MonadRef carrier has a higher-order monad shape this implementation cannot apply (§18.6.1)"
+          pure (ioType fallbackErr a)
+    projectionPatternFields :: Pattern -> Value -> CheckM (Maybe ([(Maybe Name, Text)], [(Text, Value)]))
+    projectionPatternFields pat ty0 = do
+      ty <- forceM ty0
+      pure $ case (pat, ty) of
+        (PTuple ps _, VRecordT fs)
+          | Just ns <- mapM patVarName ps
+          , length ns == length fs ->
+              Just (zip ns (map fst fs), fs)
+        (PRecord recItems Nothing _, VRecordT fs)
+          | Just ns <- mapM recItemVar recItems
+          , sort (map fst ns) == map fst fs ->
+              Just ([(fromMaybe Nothing (lookup f ns), f) | (f, _) <- fs], fs)
+        _ -> Nothing
+      where
+        patVarName = \case
+          PVar n -> Just (Just n)
+          PWild _ -> Just Nothing
+          _ -> Nothing
+        recItemVar (False, f, mp) = case mp of
+          Nothing -> Just (nameText f, Just f)
+          Just (PVar n) -> Just (nameText f, Just n)
+          Just (PWild _) -> Just (nameText f, Nothing)
+          _ -> Nothing
+        recItemVar _ = Nothing
+    validateProjectionPattern :: Pattern -> [(Maybe Name, Text)] -> CheckM ()
+    validateProjectionPattern pat named =
+      forM_ (duplicatesOf [nameText n | (Just n, _) <- named]) $ \n ->
+        errAt (patternSpan pat) "E_DUPLICATE_PATTERN_BINDER" (Just "kappa-hs.pattern.duplicate-binder")
+          ("pattern binds '" <> n <> "' more than once (§17.2)")
+    projectedFieldItems :: Ctx -> Q -> [(Maybe Name, Text)] -> [(Text, Value)] -> CheckM (Ctx, [KItem])
+    projectedFieldItems c0 q named fs = go c0 0 named
+      where
+        go c _ [] = pure (c, [])
+        go c scrutIx ((mn, f) : rest) = do
+          let recv = CVar scrutIx
+              projTm = CProj recv f
+          projV <- evalIn c projTm
+          fldTy <- case lookup f fs of
+            Just t -> substThisInto c recv t
+            Nothing -> freshMetaV c
+          let (patC, cNext, bump) = case mn of
+                Just n -> (CPVar (nameText n), bindCtxLet (nameText n) False fldTy projV c, 1)
+                Nothing -> (CPWild, c, 0)
+          (cFin, more) <- go cNext (scrutIx + bump) rest
+          pure (cFin, KLet q patC projTm : more)
     goItems :: [Maybe Text] -> Ctx -> Value -> Value -> [DoItem] -> CheckM [KItem]
     goItems _ _ _ _ [] = pure []
     goItems loops c errT resT (item : rest) = do
       let lastItem = null rest
+          withLoop ml = (nameText <$> ml) : loops
+          checkLoopTarget what ml sp = case ml of
+            Just l ->
+              unless (Just (nameText l) `elem` loops) $
+                errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
+                  (what <> "@" <> nameText l
+                     <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
+            Nothing ->
+              when (null loops) $
+                errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa-hs.do.break-outside-loop")
+                  ("'" <> what
+                     <> "' is valid only within the body of a loop of this do-scope (§18.6)")
+          continueReturn ml me rsp = do
+            -- §18.5/§18.5.1: `return@L` targets the enclosing named function
+            -- or labeled lambda L. Resolution is confined to the current
+            -- function/lambda body and does not cross a user-written lambda
+            -- boundary, so the only reachable target is the innermost
+            -- enclosing one (`ctxReturnTarget`). When L names it, the abrupt
+            -- Return targets exactly the construct that bare `return` does
+            -- here (the current body's completion), so it lowers to the same
+            -- KReturn; a label naming anything else is a compile-time error.
+            forM_ ml $ \l ->
+              unless (Just (nameText l) == ctxReturnTarget c) $
+                errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
+                  ("return@" <> nameText l
+                     <> " does not target the enclosing named function or labeled lambda; return resolution is confined to the current function/lambda body and does not cross a lambda boundary (§18.5/§18.5.1)")
+            tm <- case me of
+              Just e -> do
+                -- a `return` payload ordinarily carries this do-scope's
+                -- result type; per the §18.8 completion kernel an abrupt
+                -- Return targets the enclosing function instead, so a
+                -- payload typed for the outer return context is also
+                -- accepted (e.g. `if c then pure () else do return 0`)
+                st0 <- get
+                n0 <- gets (length . csDiags)
+                tm0 <- check c (e) resT
+                n1 <- gets (length . csDiags)
+                if n1 == n0
+                  then pure tm0
+                  else do
+                    put st0
+                    retT <- freshMetaV c
+                    check c (e) retT
+              Nothing -> do
+                expectType c rsp (VGlobN prelUnit []) resT
+                pure (CCtor prelUnit Nothing [])
+            ks <- goItems loops c errT resT rest
+            pure (KReturn tm : ks)
+          continueFor ml pat src body mels fsp = do
+            -- §18.6/§20.2: a 'for' generator iterates any source the
+            -- comprehension as-if list model understands. The common case
+            -- is a List source, which is checked directly against
+            -- 'List elemT' exactly as before (no double elaboration, so
+            -- the §12 usage analysis on 'src' is unaffected). Non-List
+            -- sources (Array/Set/Map/Option/Query/range) are detected by a
+            -- side-effect-free probe of the inferred source type and
+            -- materialized to the element list via the matching prelude
+            -- conversion.
+            let src' = src
+            elemT <- freshMetaV c
+            srcKind <- probeForSrcKind c src'
+            let listSrc = case srcKind of
+                  SKArray -> prelApp1 fsp "__arrayToList" [src']
+                  SKSet -> prelApp1 fsp "__setToList" [src']
+                  SKMap -> prelApp1 fsp "__mapToList" [src']
+                  SKOption -> prelApp1 fsp "__optionToList" [src']
+                  SKQuery -> prelApp1 fsp "__queryToList" [src']
+                  SKRange -> prelApp1 fsp "rangeToList" [src']
+                  _ -> src'
+            srcTm <- check c listSrc (VGlobN prelList [(Expl, elemT)])
+            checkIrrefutable c pat elemT fsp
+            (patC, c', _) <- elabPattern c pat elemT
+            bodyKs <- goItems (withLoop ml) c' errT (VGlobN prelUnit []) body
+            elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
+            bodyWrites <- doItemsVarWrites c body
+            elseWrites <- maybe (pure Set.empty) (doItemsVarWrites c) mels
+            bodyEscapes <- doItemsVarEscapes c body
+            elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes c) mels
+            let cAfter =
+                  foldr escapeVarCurrent
+                    (foldr invalidateVarCurrent c (Set.toList (Set.union bodyWrites elseWrites)))
+                    (Set.toList (Set.union bodyEscapes elseEscapes))
+            ks <- goItems loops cAfter errT resT rest
+            pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
+          continueIf alts mels _isp = do
+            -- §7.4.1: `x is C` conditions refine their subject inside the
+            -- guarded suite
+            --
+            -- §16.4.2/§18.6.2: an `if`/`elif` chain in the IO do-kernel tests
+            -- its conditions in order, with no user code running between two
+            -- conditions and no loop back-edge into the chain. So when
+            -- `alt_k`'s suite runs, every earlier condition `c_1 … c_{k-1}`
+            -- evaluated False and `c_k` evaluated True, all at the chain's
+            -- single straight-line test sequence. We therefore thread the
+            -- accumulated negation `¬c_1 ∧ … ∧ ¬c_{k-1}` (as `(c_i, False)`
+            -- boolean evidence and as the §7.4.1 complement refinements of
+            -- each earlier `x is C`) into `alt_k`'s suite alongside its own
+            -- `(c_k, True)`. The trailing `else` gets `¬c_1 ∧ … ∧ ¬c_n`. Each
+            -- such fact is provably true on the branch it is pushed into: the
+            -- per-alt `(c_k, True)` is exactly the existing sound then-suite
+            -- fact, and a negation is sound under exactly the same conditions
+            -- (same straight-line, back-edge-free chain). The `var`-staleness
+            -- caveat is handled by §18.6.2 VarCurrent representatives:
+            -- generated/recognized reads alias a versioned current-value
+            -- root, and assignments or write-containing joins advance the
+            -- version before the following do-items are checked.
+            -- 'goAlts' threads the accumulated false-evidence forward and
+            -- returns it (as 'elseBool'/'elseCtx') so the trailing else suite
+            -- can reuse the same facts without re-elaborating the conditions.
+            let goAlts accBool accCtx [] = pure ([], accBool, accCtx)
+                goAlts accBool accCtx ((cond, body) : moreAlts) = do
+                  -- positive refinements of THIS condition, on top of the
+                  -- complement refinements accumulated from earlier conditions
+                  refs <- condRefines accCtx cond
+                  let cR = refineCtx refs accCtx
+                  condTm <- check cR (cond) (VGlobN prelBool [])
+                  -- this suite runs with `c_k` True and every earlier `c_i`
+                  -- False, so both kinds of fact hold (§3.2.3 proof source)
+                  oldBool <- gets csBoolFacts
+                  modify' $ \st ->
+                    st {csBoolFacts = (condTm, True) : accBool ++ csBoolFacts st}
+                  bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
+                  modify' $ \st -> st {csBoolFacts = oldBool}
+                  -- thread this condition's FALSE evidence into the remaining
+                  -- elif suites and the final else: `accCtx` for the §7.4.1
+                  -- complement refinements (`condRefinesElse accCtx cond`,
+                  -- mirroring the if-expression else-branch), `accBool` for the
+                  -- bare `(condTm, False)` boolean fact
+                  negs <- condRefinesElse accCtx cond
+                  let accCtx' = refineCtx negs accCtx
+                      accBool' = (condTm, False) : accBool
+                  (restAlts, elseBool, elseCtx) <- goAlts accBool' accCtx' moreAlts
+                  pure ((condTm, bodyKs) : restAlts, elseBool, elseCtx)
+            (alts', elseBool, elseCtx) <- goAlts [] c alts
+            elsKs <-
+              traverse
+                ( \body -> do
+                    oldBool <- gets csBoolFacts
+                    modify' $ \st -> st {csBoolFacts = elseBool ++ csBoolFacts st}
+                    ks <- goItems loops elseCtx errT (VGlobN prelUnit []) body
+                    modify' $ \st -> st {csBoolFacts = oldBool}
+                    pure ks
+                )
+                mels
+            -- §8.2.2A postdominating refinement: when every branch except
+            -- one completes abruptly, the surviving branch's facts hold
+            -- for the rest of this do-scope
+            cAfter <- case (alts, mels) of
+              ([(cond, thenB)], Just elseB)
+                | abruptSuite elseB -> do
+                    refs <- condRefines c cond
+                    pure (refineCtx refs c)
+                | abruptSuite thenB -> do
+                    negs <- condRefinesElse c cond
+                    pure (refineCtx negs c)
+              _ -> pure c
+            altWrites <- foldM (\s (_, body) -> Set.union s <$> doItemsVarWrites c body) Set.empty alts
+            elseWrites <- maybe (pure Set.empty) (doItemsVarWrites c) mels
+            altEscapes <- foldM (\s (_, body) -> Set.union s <$> doItemsVarEscapes c body) Set.empty alts
+            elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes c) mels
+            let cAfterJoin =
+                  foldr escapeVarCurrent
+                    (foldr invalidateVarCurrent cAfter (Set.toList (Set.union altWrites elseWrites)))
+                    (Set.toList (Set.union altEscapes elseEscapes))
+            ks <- goItems loops cAfterJoin errT resT rest
+            pure (KIf alts' elsKs : ks)
+          continueDefer ml e _dsp = do
+            -- §18.7: `defer e` schedules onto the current do-scope;
+            -- `defer@L e` schedules onto the enclosing do-scope labeled L
+            -- (which may be outer, so the action stays pending across inner
+            -- scope exits and runs only when L itself exits). The labeled
+            -- do-scopes enclosing this point are this do-block (mlabel) and
+            -- every enclosing labeled loop body (loops); a label naming
+            -- none of them is a compile-time error rather than a defer that
+            -- never fires.
+            forM_ ml $ \l ->
+              unless (Just (nameText l) == mlabel || Just (nameText l) `elem` loops) $
+                errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
+                  ("defer@" <> nameText l
+                     <> " does not target an enclosing labeled do-scope (explicit 'do' or loop) of this do-scope (§18.7)")
+            eTm <- check c (e) (ioType errT (VGlobN prelUnit []))
+            escapes <- escapedRefFacetsExpr c e
+            let cAfter = foldr escapeVarCurrent c (Set.toList escapes)
+            ks <- goItems loops cAfter errT resT rest
+            pure (KDefer (nameText <$> ml) eTm : ks)
+          continueUsing mq pat rhs usp = do
+            -- §9.3: using always binds its pattern with borrowed access at
+            -- the default quantity ω; an explicit prefix is rejected
+            forM_ mq $ \qsp ->
+              errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
+                "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
+            -- §19.5/§18.8.5 resource-scoped bind: `acquire` yields an owned
+            -- resource of type `m A`; `pat` is bound (borrowed) for the rest
+            -- of the scope, and the resource's `release` (resolved from the
+            -- required `Releasable m A` instance) is attached to scope exit,
+            -- running on EVERY exit path (normal/return/break/continue/error)
+            -- in LIFO order with any `defer`s — realized by the protected
+            -- exit machinery (KUsing), not a source rewrite to `defer` (which
+            -- would move the resource before the borrowed use, §19.5).
+            aT <- freshMetaV c
+            acquireTm <- check c (rhs) (ioType errT aT)
+            -- Releasable (m := IO errT) (a := aT); `release : a -> m Unit`
+            let mTyV = VGlobN prelIO [(Expl, errT)]
+            dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, aT)])
+            let releaseTm = CProj dictTm "release"
+            checkIrrefutable c pat aT usp
+            (patC, cBound, _) <- elabPattern c pat aT
+            escapes <- escapedRefFacetsExpr c rhs
+            let cAfter = foldr escapeVarCurrent cBound (Set.toList escapes)
+            ks <- goItems loops cAfter errT resT rest
+            pure (KUsing patC acquireTm releaseTm : ks)
       case item of
         -- §18.8.3.1: a nested `do` block in statement position is a child
         -- scope that is TRANSPARENT to abrupt completion. Its items are
@@ -10317,233 +11547,319 @@ elabDoIOItems mlabel _sp ctx mexp items = do
         -- spliced `!doVal` — stays opaque: it is elaborated through the
         -- ordinary value path, which resets the completion context.) STM-typed
         -- do-scopes keep the generic path.
-        DoExpr (EDo innerLbl innerItems _)
-          | not (isStmExpected mexp) -> do
-              aT <- if lastItem then pure resT else freshMetaV c
-              subItems <- goItems loops c errT aT innerItems
-              ks <- goItems loops c errT resT rest
-              pure (KSubDo (nameText <$> innerLbl) subItems : ks)
-        DoExpr e | pureResult -> do
-          -- §18.8 pure-result do: statements are PURE values, not IO actions.
-          -- The final statement IS the block's result (checked at the pure
-          -- 'resT'); a non-final statement is a discarded pure value.  No
-          -- IO-wrap acceptance here — that is what closes the §4.5 forge
-          -- (@do { throwIO Unit } : Void@ / a @!@-splice's lifted bind), since an
-          -- @IO errT _@ action no longer unifies with the pure result.
-          tm <-
-            if lastItem
-              then check c e resT
-              else do
-                aT <- freshMetaV c
-                check c e aT
-          (KExpr tm :) <$> goItems loops c errT resT rest
-        DoExpr e -> do
-          aT <- if lastItem then pure resT else freshMetaV c
-          let eD = e
-              ioT = wrapTy errT aT
-          -- statements are IO actions (§18.2); the corpus also
-          -- sequences pure expressions as statements, and the §18.8
-          -- kernel passes pure statement values through unchanged, so
-          -- an inferable statement may also check at the bare type
-          tm <- case eD of
-            _ | statementInferable eD -> do
-                  (tm0, ty0) <- infer c eD
-                  (tm1, ty1) <- insertAllImplicits c (exprSpan eD) tm0 ty0
-                  okIO <- unify c ty1 ioT
-                  if okIO
-                    then pure tm1
-                    else do
-                      okPure <- unify c ty1 aT
-                      okDiscard <-
-                        if okPure
-                          then pure True
-                          else do
-                            -- a final action of unit-result do-scopes
-                            -- may have a non-unit result; it is
-                            -- discarded (corpus accommodation)
-                            isUnit <-
-                              forceM aT >>= \case
-                                VGlobN (GName _ "Unit") [] -> pure True
-                                _ -> pure False
-                            if isUnit
-                              then do
-                                b <- freshMetaV c
-                                unify c ty1 (ioType errT b)
-                              else pure False
-                      unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
-                      pure tm1
-            _ -> check c eD ioT
-          (KExpr tm :) <$> goItems loops c errT resT rest
-        DoBind (LetBind implocal prefix pat mty rhs bsp) -> do
-          aT <- case mty of
-            Just tyE -> do
-              (tyTm, _) <- inferType c tyE
-              evalIn c tyTm
-            Nothing -> freshMetaV c
-          let rhsD = rhs
-          -- §18.8 pure-result do: there is no monadic carrier, so the IO-wrap
-          -- acceptance of the bind RHS is OFF (an @IO errT _@ action must NOT
-          -- satisfy a bind in a pure block — that was the §4.5 forge route:
-          -- @do { tmp <- throwIO Unit; tmp } : Void@).  Only the genuine
-          -- container bind (a non-IO container shape, below) remains valid here;
-          -- a bare IO action falls through to the container probe, fails the
-          -- @h /= "IO"@ guard, and is rejected.
-              bindRhsTy = if pureResult then aT else wrapTy errT aT
-          st0 <- get
-          n0 <- gets (length . csDiags)
-          rhsTm0 <- check c rhsD bindRhsTy
-          n1 <- gets (length . csDiags)
-          rhsTm <-
-            if n1 == n0
-              then pure rhsTm0
-              else do
-                -- container bind (§18.3 accommodation): a do block in a
-                -- non-IO container position binds through that container
-                put st0
-                (tm0, ty0) <- infer c rhsD
-                (tm1, ty1) <- insertAllImplicits c bsp tm0 ty0
-                ty1F <- forceM ty1
-                case ty1F of
-                  VGlobN (GName _ h) args
-                    | h /= "IO"
-                    , ((_, lastArg) : _) <- reverse args -> do
-                        expectType c bsp lastArg aT
-                        pure tm1
+        DoExpr e0 -> do
+          rewriteVarInoutStatement c e0 >>= \case
+            Just items -> goItems loops c errT resT (items ++ rest)
+            Nothing -> do
+              (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
+              if not (null pre)
+                then goItems loops c errT resT (pre ++ DoExpr e : rest)
+                else case e of
+                  EDo innerLbl innerItems _
+                    | not (isStmExpected mexp) -> do
+                        aT <- if lastItem then pure resT else freshMetaV c
+                        subItems <- goItems loops c errT aT innerItems
+                        ks <- goItems loops c errT resT rest
+                        pure (KSubDo (nameText <$> innerLbl) subItems : ks)
+                  _ | pureResult -> do
+                        -- §18.8 pure-result do: statements are PURE values, not IO actions.
+                        -- The final statement IS the block's result (checked at the pure
+                        -- 'resT'); a non-final statement is a discarded pure value.  No
+                        -- IO-wrap acceptance here — that is what closes the §4.5 forge
+                        -- (@do { throwIO Unit } : Void@ / a @!@-splice's lifted bind), since an
+                        -- @IO errT _@ action no longer unifies with the pure result.
+                        tm <-
+                          if lastItem
+                            then check c e resT
+                            else do
+                              aT <- freshMetaV c
+                              check c e aT
+                        cAfterWrite <- maybe c (`invalidateVarCurrent` c) <$> recognizedRefWriteName c e
+                        escapes <- escapedRefFacetsExpr c e
+                        let cAfter = foldr escapeVarCurrent cAfterWrite (Set.toList escapes)
+                        (KExpr tm :) <$> goItems loops cAfter errT resT rest
                   _ -> do
-                    -- not container-shaped: restore the IO/STM diagnosis
-                    put st0
-                    check c rhsD bindRhsTy
-          checkIrrefutable c pat aT bsp
-          (patC, cBound, _) <- elabPattern c pat aT
-          let c' = markImplicitLocal bsp implocal prefix c cBound
-          ks <- goItems loops c' errT resT rest
-          pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
-        DoLet (LetBind implocal prefix pat mty rhs bsp) -> do
-          -- §18.3.1: `let pat = expr` inside `do` may contain `!`. The
-          -- spliced computation is sequenced first and `pat` is then bound
-          -- to its value; desugar `!` here exactly as the bind/expr items
-          -- do, so it does not reach `infer`/`check` as a bare splice
-          -- (E_SPLICE_OUTSIDE_DO). The KLet runtime runs splices via evalK.
-          let rhsD = rhs
-          (rhsTm, rhsTy) <- case mty of
-            Just tyE -> do
-              (tyTm, _) <- inferType c tyE
-              tyV <- evalIn c tyTm
-              tm <- check c rhsD tyV
-              pure (tm, tyV)
+                        aT <- if lastItem then pure resT else freshMetaV c
+                        let eD = e
+                            ioT = wrapTy errT aT
+                        -- statements are IO actions (§18.2); the corpus also
+                        -- sequences pure expressions as statements, and the §18.8
+                        -- kernel passes pure statement values through unchanged, so
+                        -- an inferable statement may also check at the bare type
+                        tm <- case eD of
+                          _ | statementInferable eD -> do
+                                (tm0, ty0) <- infer c eD
+                                (tm1, ty1) <- insertAllImplicits c (exprSpan eD) tm0 ty0
+                                okIO <- unify c ty1 ioT
+                                if okIO
+                                  then pure tm1
+                                  else do
+                                    okPure <- unify c ty1 aT
+                                    okDiscard <-
+                                      if okPure
+                                        then pure True
+                                        else do
+                                          -- a final action of unit-result do-scopes
+                                          -- may have a non-unit result; it is
+                                          -- discarded (corpus accommodation)
+                                          isUnit <-
+                                            forceM aT >>= \case
+                                              VGlobN (GName _ "Unit") [] -> pure True
+                                              _ -> pure False
+                                          if isUnit
+                                            then do
+                                              b <- freshMetaV c
+                                              unify c ty1 (ioType errT b)
+                                            else pure False
+                                    unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
+                                    pure tm1
+                          _ -> check c eD ioT
+                        cAfterWrite <- maybe c (`invalidateVarCurrent` c) <$> recognizedRefWriteName c eD
+                        escapes <- escapedRefFacetsExpr c eD
+                        let cAfter = foldr escapeVarCurrent cAfterWrite (Set.toList escapes)
+                        (KExpr tm :) <$> goItems loops cAfter errT resT rest
+        DoBind (LetBind implocal prefix pat mty rhs0 bsp) -> do
+          rewritten <-
+            if isNothing mty && not implocal && prefix == emptyPrefix
+              then rewriteVarInoutBind VarInoutMonadic c pat rhs0
+              else pure Nothing
+          case rewritten of
+            Just items -> goItems loops c errT resT (items ++ rest)
             Nothing -> do
-              (tm, ty) <- infer c rhsD
-              insertAllImplicits c bsp tm ty
-          checkIrrefutable c pat rhsTy bsp
-          (patC, cBound, _) <- elabPattern c pat rhsTy
-          let cBound' = case (pat, rhs) of
-                -- §7.4.3 stable alias: `let q = p` transports refinement
-                (PVar qn, EVar pn)
-                  | Just _ <- lookupCtx (nameText pn) c ->
-                      addCtxAlias (nameText qn) (nameText pn) cBound
-                _ -> cBound
-          let c' = markImplicitLocal bsp implocal prefix c cBound'
-          ks <- goItems loops c' errT resT rest
-          pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
-        DoLetQ pat0 rhs0 mElse dsp -> do
-          (pat, rhs) <- rewriteActiveLetQ c pat0 rhs0 dsp
-          (rhsTm, rhsTy) <- infer c rhs
-          (patC, c', _) <- elabPattern c pat rhsTy
-          mElse' <- forM mElse $ \(rp, fe) -> do
-            (rpC, c2, _) <- elabPattern c rp rhsTy
-            feTm <- check c2 fe (ioType errT resT)
-            pure (rpC, feTm)
-          ks <- goItems loops c' errT resT rest
-          pure (KLetQ patC rhsTm mElse' : ks)
-        DoVar n rhs _ -> do
-          (rhsTm, rhsTy) <- infer c rhs
-          (rhsTm1, rhsTy1) <- insertAllImplicits c (nameSpan n) rhsTm rhsTy
-          let refTy = VGlobN prelRef [(Expl, rhsTy1)]
-              c' = bindCtxVar (nameText n) refTy c
-          ks <- goItems loops c' errT resT rest
-          pure (KVarItem (nameText n) rhsTm1 : ks)
-        DoAssign n monadic rhs asp -> do
-          mref <- pure (lookupCtx (nameText n) c)
-          case mref of
-            Just (i, entry) -> do
-              et <- forceM (ceType entry)
-              case et of
-                VGlobN (GName _ "Ref") [(_, a)] -> do
-                  rhsTm <-
-                    if monadic
-                      then check c (rhs) (ioType errT a)
-                      else check c (rhs) a
-                  ks <- goItems loops c errT resT rest
-                  pure (KAssign (CVar i) monadic rhsTm : ks)
-                _ -> do
-                  errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
-                    ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
-                  goItems loops c errT resT rest
-            Nothing
-              -- corpus accommodation: `x <- e` where `x` is not a var
-              -- binding in scope is an Idris-style monadic bind of a
-              -- fresh immutable binding (the §18.6.1 var-assign reading
-              -- requires an enclosing `var x`, which does not exist)
-              | monadic ->
-                  goItems loops c errT resT
-                    (DoBind (LetBind False emptyPrefix (PVar n) Nothing rhs asp) : rest)
-              | otherwise -> do
-                  errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
-                    ("unresolved name '" <> nameText n <> "'")
-                  goItems loops c errT resT rest
-        DoReturn ml me rsp -> do
-          -- §18.5/§18.5.1: `return@L` targets the enclosing named function
-          -- or labeled lambda L. Resolution is confined to the current
-          -- function/lambda body and does not cross a user-written lambda
-          -- boundary, so the only reachable target is the innermost
-          -- enclosing one (`ctxReturnTarget`). When L names it, the abrupt
-          -- Return targets exactly the construct that bare `return` does
-          -- here (the current body's completion), so it lowers to the same
-          -- KReturn; a label naming anything else is a compile-time error.
-          forM_ ml $ \l ->
-            unless (Just (nameText l) == ctxReturnTarget c) $
-              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
-                ("return@" <> nameText l
-                   <> " does not target the enclosing named function or labeled lambda; return resolution is confined to the current function/lambda body and does not cross a lambda boundary (§18.5/§18.5.1)")
-          tm <- case me of
-            Just e -> do
-              -- a `return` payload ordinarily carries this do-scope's
-              -- result type; per the §18.8 completion kernel an abrupt
-              -- Return targets the enclosing function instead, so a
-              -- payload typed for the outer return context is also
-              -- accepted (e.g. `if c then pure () else do return 0`)
-              st0 <- get
-              n0 <- gets (length . csDiags)
-              tm0 <- check c (e) resT
-              n1 <- gets (length . csDiags)
-              if n1 == n0
-                then pure tm0
+              (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+              if not (null pre)
+                then goItems loops c errT resT (pre ++ DoBind (LetBind implocal prefix pat mty rhs bsp) : rest)
                 else do
-                  put st0
-                  retT <- freshMetaV c
-                  check c (e) retT
+                  aT <- case mty of
+                    Just tyE -> do
+                      (tyTm, _) <- inferType c tyE
+                      evalIn c tyTm
+                    Nothing -> freshMetaV c
+                  let rhsD = rhs
+                      -- §18.8 pure-result do: there is no monadic carrier, so the IO-wrap
+                      -- acceptance of the bind RHS is OFF (an @IO errT _@ action must NOT
+                      -- satisfy a bind in a pure block — that was the §4.5 forge route:
+                      -- @do { tmp <- throwIO Unit; tmp } : Void@).  Only the genuine
+                      -- container bind (a non-IO container shape, below) remains valid here;
+                      -- a bare IO action falls through to the container probe, fails the
+                      -- @h /= "IO"@ guard, and is rejected.
+                      bindRhsTy = if pureResult then aT else wrapTy errT aT
+                  st0 <- get
+                  n0 <- gets (length . csDiags)
+                  rhsTm0 <- check c rhsD bindRhsTy
+                  n1 <- gets (length . csDiags)
+                  rhsTm <-
+                    if n1 == n0
+                      then pure rhsTm0
+                      else do
+                        -- container bind (§18.3 accommodation): a do block in a
+                        -- non-IO container position binds through that container
+                        put st0
+                        (tm0, ty0) <- infer c rhsD
+                        (tm1, ty1) <- insertAllImplicits c bsp tm0 ty0
+                        ty1F <- forceM ty1
+                        case ty1F of
+                          VGlobN (GName _ h) args
+                            | h /= "IO"
+                            , ((_, lastArg) : _) <- reverse args -> do
+                                expectType c bsp lastArg aT
+                                pure tm1
+                          _ -> do
+                            -- not container-shaped: restore the IO/STM diagnosis
+                            put st0
+                            check c rhsD bindRhsTy
+                  checkIrrefutable c pat aT bsp
+                  mProj <- if implocal then pure Nothing else projectionPatternFields pat aT
+                  case mProj of
+                    Just (named, fs) -> do
+                      validateProjectionPattern pat named
+                      scrutN <- freshNameM "__scrut"
+                      let cScrut = bindCtx scrutN False aT c
+                          q = qOf (bpQuantity prefix)
+                      (cFields, fieldItems) <- projectedFieldItems cScrut q named fs
+                      ks <- goItems loops cFields errT resT rest
+                      pure (KBind QW (CPVar scrutN) rhsTm : fieldItems ++ ks)
+                    Nothing -> do
+                      (patC, cBound, _) <- elabPattern c pat aT
+                      cAliased <- aliasCurrentReadPattern c pat rhsD cBound
+                      escapes <- escapedRefFacetsExpr c rhsD
+                      let c' = foldr escapeVarCurrent (markImplicitLocal bsp implocal prefix c cAliased) (Set.toList escapes)
+                      ks <- goItems loops c' errT resT rest
+                      pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
+        DoLet (LetBind implocal prefix pat mty rhs0 bsp) -> do
+          rewritten <-
+            if isNothing mty && not implocal && prefix == emptyPrefix
+              then rewriteVarInoutBind VarInoutPure c pat rhs0
+              else pure Nothing
+          case rewritten of
+            Just items -> goItems loops c errT resT (items ++ rest)
             Nothing -> do
-              expectType c rsp (VGlobN prelUnit []) resT
-              pure (CCtor prelUnit Nothing [])
-          ks <- goItems loops c errT resT rest
-          pure (KReturn tm : ks)
+              (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+              if not (null pre)
+                then goItems loops c errT resT (pre ++ DoLet (LetBind implocal prefix pat mty rhs bsp) : rest)
+                else do
+              -- §18.3.1: `let pat = expr` inside `do` may contain `!`. The
+              -- spliced computation is sequenced first and `pat` is then bound
+              -- to its value; desugar `!` here exactly as the bind/expr items
+              -- do, so it does not reach `infer`/`check` as a bare splice
+              -- (E_SPLICE_OUTSIDE_DO). The KLet runtime runs splices via evalK.
+                  let rhsD = rhs
+                  (rhsTm, rhsTy) <- case mty of
+                    Just tyE -> do
+                      (tyTm, _) <- inferType c tyE
+                      tyV <- evalIn c tyTm
+                      tm <- check c rhsD tyV
+                      pure (tm, tyV)
+                    Nothing -> do
+                      (tm, ty) <- infer c rhsD
+                      insertAllImplicits c bsp tm ty
+                  checkIrrefutable c pat rhsTy bsp
+                  mProj <- if implocal then pure Nothing else projectionPatternFields pat rhsTy
+                  case mProj of
+                    Just (named, fs) -> do
+                      validateProjectionPattern pat named
+                      scrutN <- freshNameM "__scrut"
+                      rhsV <- evalIn c rhsTm
+                      let cScrut = bindCtxLet scrutN False rhsTy rhsV c
+                          q = qOf (bpQuantity prefix)
+                      (cFields, fieldItems) <- projectedFieldItems cScrut q named fs
+                      ks <- goItems loops cFields errT resT rest
+                      pure (KLet QW (CPVar scrutN) rhsTm : fieldItems ++ ks)
+                    Nothing -> do
+                      (patC, cBound, _) <- elabPattern c pat rhsTy
+                      cDef <- case pat of
+                        PVar qn -> do
+                          rhsV <- evalIn c rhsTm
+                          mPj <- if implocal then pure Nothing else projectionInfoOfExpr c rhs
+                          let cDef0 = bindCtxLetProj (nameText qn) implocal rhsTy rhsV mPj c
+                          cDef1 <- aliasCurrentReadPattern c pat rhs cDef0
+                          escapes <- escapedRefFacetsExpr c rhs
+                          pure (foldr escapeVarCurrent cDef1 (Set.toList escapes))
+                        _ -> pure cBound
+                      let cBound' = case (pat, rhs) of
+                            -- §7.4.3 stable alias: `let q = p` transports refinement
+                            (PVar qn, EVar pn)
+                              | Just _ <- lookupCtx (nameText pn) c ->
+                                  addCtxAlias (nameText qn) (nameText pn) cDef
+                            _ -> cDef
+                      let c' = markImplicitLocal bsp implocal prefix c cBound'
+                      ks <- goItems loops c' errT resT rest
+                      pure (KLet (qOf (bpQuantity prefix)) patC rhsTm : ks)
+        DoLetQ pat0 rhs00 mElse dsp -> do
+          (pre, rhs0) <- liftCurrentReadsExpr c (exprSpan rhs00) rhs00
+          if not (null pre)
+            then goItems loops c errT resT (pre ++ DoLetQ pat0 rhs0 mElse dsp : rest)
+            else do
+              (pat, rhs) <- rewriteActiveLetQ c pat0 rhs0 dsp
+              (rhsTm, rhsTy) <- infer c rhs
+              (patC, c', _) <- elabPattern c pat rhsTy
+              mElse' <- forM mElse $ \(rp, fe) -> do
+                (rpC, c2, _) <- elabPattern c rp rhsTy
+                feTm <- check c2 fe (ioType errT resT)
+                pure (rpC, feTm)
+              ks <- goItems loops c' errT resT rest
+              pure (KLetQ patC rhsTm mElse' : ks)
+        DoVar n mty rhs0 vsp -> do
+          (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+          if not (null pre)
+            then goItems loops c errT resT (pre ++ DoVar n mty rhs vsp : rest)
+            else do
+              case doMonadType errT of
+                Nothing -> do
+                  errAt vsp "E_UNSUPPORTED" (Just "kappa.unsupported.deterministic")
+                    "'var' requires a do-block carrier with MonadRef evidence; this pure/non-reference do carrier is not supported for mutable variables (§18.6.1)"
+                  goItems loops c errT resT rest
+                Just mTy -> do
+                  refDict <- requireMonadRef c (nameSpan n) mTy
+                  (rhsTm1, rhsTy1) <- case mty of
+                    Just tyE -> do
+                      (tyTm, _) <- inferType c tyE
+                      tyV <- evalIn c tyTm
+                      tm <- check c rhs tyV
+                      pure (tm, tyV)
+                    Nothing -> do
+                      (rhsTm, rhsTy) <- infer c rhs
+                      insertAllImplicits c (nameSpan n) rhsTm rhsTy
+                  rhsTyTm <- quoteIn c rhsTy1
+                  refTy <- monadRefRefType c refDict rhsTyTm
+                  escapes <- escapedRefFacetsExpr c rhs
+                  let newAct = monadRefNewAction refDict rhsTyTm rhsTm1
+                      refInfo = VarRefInfo rhsTy1 rhsTyTm refDict mTy errT
+                      c' = foldr escapeVarCurrent (bindCtxVar (nameText n) refTy refInfo c) (Set.toList escapes)
+                  recordMutableBindingFields c (nameSpan n) refTy refInfo
+                  ks <- goItems loops c' errT resT rest
+                  pure (KVarItem (nameText n) rhsTm1 newAct : ks)
+        DoAssign n monadic rhs0 asp -> do
+          (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+          if not (null pre)
+            then goItems loops c errT resT (pre ++ DoAssign n monadic rhs asp : rest)
+            else do
+              mref <- pure (lookupCtx (nameText n) c)
+              case mref of
+                Just (i, entry) -> do
+                  case ceVarInfo entry of
+                    Just info -> do
+                      let evidenceShift = i + 1
+                          refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
+                          aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
+                          a = vriStoredType info
+                      let refTm = CVar i
+                      rhsActionTy <- actionTypeFor errT (vriMonadType info) a
+                      rhsTm <-
+                        if monadic
+                          then check c (rhs) rhsActionTy
+                          else check c (rhs) a
+                      escapes <- escapedRefFacetsExpr c rhs
+                      let cAfter = foldr escapeVarCurrent (invalidateVarCurrent (nameText n) c) (Set.toList escapes)
+                      ks <- goItems loops cAfter errT resT rest
+                      if monadic
+                        then do
+                          let refTm' = shiftTerm 1 0 refTm
+                              aTm' = shiftTerm 1 0 aTm
+                              refDict' = shiftTerm 1 0 refDict
+                              writeAct = monadRefWriteAction refDict' aTm' refTm' (CVar 0)
+                              writeItem = KAssign refTm' False (CVar 0) writeAct
+                          pure (KSubDo Nothing [KBind QW (CPVar "__assign") rhsTm, writeItem] : ks)
+                        else do
+                          let writeAct = monadRefWriteAction refDict aTm refTm rhsTm
+                          pure (KAssign refTm False rhsTm writeAct : ks)
+                    Nothing -> do
+                      errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+                        ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
+                      goItems loops c errT resT rest
+                Nothing -> do
+                  if monadic
+                    then
+                      errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+                        ("'" <> nameText n <> " <- ...' is mutable-var assignment syntax; use 'let "
+                           <> nameText n <> " <- ...' for monadic bind (§18.2)")
+                    else
+                      errAt asp "E_NAME_UNRESOLVED" (Just "kappa.name.unresolved")
+                        ("unresolved name '" <> nameText n <> "'")
+                  goItems loops c errT resT rest
+        DoReturn ml me0 rsp -> do
+          case me0 of
+            Just e0 -> do
+              (pre, e) <- liftCurrentReadsExpr c (exprSpan e0) e0
+              if not (null pre)
+                then goItems loops c errT resT (pre ++ DoReturn ml (Just e) rsp : rest)
+                else continueReturn ml (Just e) rsp
+            Nothing -> continueReturn ml Nothing rsp
         DoBreak ml bsp -> do
           checkLoopTarget "break" ml bsp
           (KBreak (nameText <$> ml) :) <$> goItems loops c errT resT rest
         DoContinue ml csp -> do
           checkLoopTarget "continue" ml csp
           (KContinue (nameText <$> ml) :) <$> goItems loops c errT resT rest
-        DoWhile ml cond body mels _ -> do
+        DoWhile ml cond0 body mels _wsp -> do
+          cond <- if exprHasCurrentRead c cond0
+            then do
+              (pre, cond') <- liftCurrentReadsExpr c (exprSpan cond0) cond0
+              pure (EDo Nothing (pre ++ [DoExpr cond']) (exprSpan cond0))
+            else pure cond0
           -- §18.6: a `while` condition may have type `Bool` or type
-          -- `m Bool` where `m` is the enclosing do-block's monad (here
-          -- `IO errT`). A pure `Bool` is used directly (and is a
-          -- flow-sensitive condition position per §18.6 line 20478); a
-          -- monadic `IO errT Bool` is re-run each iteration, so it is
-          -- wrapped in a `__runIO` splice whose evaluation executes the
-          -- action and yields the `Bool` the kernel loop tests. The pure
-          -- form is attempted first; only if it produces a type error is
-          -- the monadic form tried, which keeps the common pure path and
-          -- its refinement facts unchanged.
+          -- `m Bool`; a condition with current-value reads is wrapped as a
+          -- nested do action so those reads run once per loop iteration.
           let condD = cond
           st0 <- get
           n0 <- gets (length . csDiags)
@@ -10551,166 +11867,48 @@ elabDoIOItems mlabel _sp ctx mexp items = do
           n1 <- gets (length . csDiags)
           condTm <-
             if n1 == n0
-              then pure pureTm
+              then pure (KCondPure pureTm)
               else do
                 put st0
-                actTm <- check c condD (ioType errT (VGlobN prelBool []))
-                errTm <- quoteIn c errT
-                boolTm <- quoteIn c (VGlobN prelBool [])
-                pure
-                  ( CApp
-                      Expl
-                      (CApp Impl (CApp Impl (CGlob prelRunIO) errTm) boolTm)
-                      actTm
-                  )
+                actTm <- check c condD (wrapTy errT (VGlobN prelBool []))
+                pure (KCondAction actTm)
           bodyKs <- goItems (withLoop ml) c errT (VGlobN prelUnit []) body
           elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
-          ks <- goItems loops c errT resT rest
-          pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
-        DoFor ml pat src body mels fsp -> do
-          -- §18.6/§20.2: a 'for' generator iterates any source the
-          -- comprehension as-if list model understands. The common case
-          -- is a List source, which is checked directly against
-          -- 'List elemT' exactly as before (no double elaboration, so
-          -- the §12 usage analysis on 'src' is unaffected). Non-List
-          -- sources (Array/Set/Map/Option/Query/range) are detected by a
-          -- side-effect-free probe of the inferred source type and
-          -- materialized to the element list via the matching prelude
-          -- conversion.
-          let src' = src
-          elemT <- freshMetaV c
-          srcKind <- probeForSrcKind c src'
-          let listSrc = case srcKind of
-                SKArray -> prelApp1 fsp "__arrayToList" [src']
-                SKSet -> prelApp1 fsp "__setToList" [src']
-                SKMap -> prelApp1 fsp "__mapToList" [src']
-                SKOption -> prelApp1 fsp "__optionToList" [src']
-                SKQuery -> prelApp1 fsp "__queryToList" [src']
-                SKRange -> prelApp1 fsp "rangeToList" [src']
-                _ -> src'
-          srcTm <- check c listSrc (VGlobN prelList [(Expl, elemT)])
-          checkIrrefutable c pat elemT fsp
-          (patC, c', _) <- elabPattern c pat elemT
-          bodyKs <- goItems (withLoop ml) c' errT (VGlobN prelUnit []) body
-          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
-          ks <- goItems loops c errT resT rest
-          pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
-        DoIf alts mels _ -> do
-          -- §7.4.1: `x is C` conditions refine their subject inside the
-          -- guarded suite
-          --
-          -- §16.4.2/§18.6.2: an `if`/`elif` chain in the IO do-kernel tests
-          -- its conditions in order, with no user code running between two
-          -- conditions and no loop back-edge into the chain. So when
-          -- `alt_k`'s suite runs, every earlier condition `c_1 … c_{k-1}`
-          -- evaluated False and `c_k` evaluated True, all at the chain's
-          -- single straight-line test sequence. We therefore thread the
-          -- accumulated negation `¬c_1 ∧ … ∧ ¬c_{k-1}` (as `(c_i, False)`
-          -- boolean evidence and as the §7.4.1 complement refinements of
-          -- each earlier `x is C`) into `alt_k`'s suite alongside its own
-          -- `(c_k, True)`. The trailing `else` gets `¬c_1 ∧ … ∧ ¬c_n`. Each
-          -- such fact is provably true on the branch it is pushed into: the
-          -- per-alt `(c_k, True)` is exactly the existing sound then-suite
-          -- fact, and a negation is sound under exactly the same conditions
-          -- (same straight-line, back-edge-free chain). The `var`-staleness
-          -- caveat is the same one the then-suite already lives under: a
-          -- `DoWhile` body's loop back-edge (§18.6.2 line 21088) would make
-          -- a naive `var`-condition fact STALE, which is why `DoWhile` does
-          -- NOT push condition facts at all and needs versioned
-          -- `VarCurrent(x,n)` representatives — deliberately left untouched.
-          -- 'goAlts' threads the accumulated false-evidence forward and
-          -- returns it (as 'elseBool'/'elseCtx') so the trailing else suite
-          -- can reuse the same facts without re-elaborating the conditions.
-          let goAlts accBool accCtx [] = pure ([], accBool, accCtx)
-              goAlts accBool accCtx ((cond, body) : moreAlts) = do
-                -- positive refinements of THIS condition, on top of the
-                -- complement refinements accumulated from earlier conditions
-                refs <- condRefines accCtx cond
-                let cR = refineCtx refs accCtx
-                condTm <- check cR (cond) (VGlobN prelBool [])
-                -- this suite runs with `c_k` True and every earlier `c_i`
-                -- False, so both kinds of fact hold (§3.2.3 proof source)
-                oldBool <- gets csBoolFacts
-                modify' $ \st ->
-                  st {csBoolFacts = (condTm, True) : accBool ++ csBoolFacts st}
-                bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
-                modify' $ \st -> st {csBoolFacts = oldBool}
-                -- thread this condition's FALSE evidence into the remaining
-                -- elif suites and the final else: `accCtx` for the §7.4.1
-                -- complement refinements (`condRefinesElse accCtx cond`,
-                -- mirroring the if-expression else-branch), `accBool` for the
-                -- bare `(condTm, False)` boolean fact
-                negs <- condRefinesElse accCtx cond
-                let accCtx' = refineCtx negs accCtx
-                    accBool' = (condTm, False) : accBool
-                (restAlts, elseBool, elseCtx) <- goAlts accBool' accCtx' moreAlts
-                pure ((condTm, bodyKs) : restAlts, elseBool, elseCtx)
-          (alts', elseBool, elseCtx) <- goAlts [] c alts
-          elsKs <-
-            traverse
-              ( \body -> do
-                  oldBool <- gets csBoolFacts
-                  modify' $ \st -> st {csBoolFacts = elseBool ++ csBoolFacts st}
-                  ks <- goItems loops elseCtx errT (VGlobN prelUnit []) body
-                  modify' $ \st -> st {csBoolFacts = oldBool}
-                  pure ks
-              )
-              mels
-          -- §8.2.2A postdominating refinement: when every branch except
-          -- one completes abruptly, the surviving branch's facts hold
-          -- for the rest of this do-scope
-          cAfter <- case (alts, mels) of
-            ([(cond, thenB)], Just elseB)
-              | abruptSuite elseB -> do
-                  refs <- condRefines c cond
-                  pure (refineCtx refs c)
-              | abruptSuite thenB -> do
-                  negs <- condRefinesElse c cond
-                  pure (refineCtx negs c)
-            _ -> pure c
+          written <- Set.unions . maybeToList <$> traverse (doItemsVarWrites c) mels
+          bodyWritten <- doItemsVarWrites c body
+          escaped <- Set.unions . maybeToList <$> traverse (doItemsVarEscapes c) mels
+          bodyEscaped <- doItemsVarEscapes c body
+          let cAfter =
+                foldr escapeVarCurrent
+                  (foldr invalidateVarCurrent c (Set.toList (Set.union written bodyWritten)))
+                  (Set.toList (Set.union escaped bodyEscaped))
           ks <- goItems loops cAfter errT resT rest
-          pure (KIf alts' elsKs : ks)
-        DoDefer ml e _ -> do
-          -- §18.7: `defer e` schedules onto the current do-scope;
-          -- `defer@L e` schedules onto the enclosing do-scope labeled L
-          -- (which may be outer, so the action stays pending across inner
-          -- scope exits and runs only when L itself exits). The labeled
-          -- do-scopes enclosing this point are this do-block (mlabel) and
-          -- every enclosing labeled loop body (loops); a label naming
-          -- none of them is a compile-time error rather than a defer that
-          -- never fires.
-          forM_ ml $ \l ->
-            unless (Just (nameText l) == mlabel || Just (nameText l) `elem` loops) $
-              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
-                ("defer@" <> nameText l
-                   <> " does not target an enclosing labeled do-scope (explicit 'do' or loop) of this do-scope (§18.7)")
-          eTm <- check c (e) (ioType errT (VGlobN prelUnit []))
-          ks <- goItems loops c errT resT rest
-          pure (KDefer (nameText <$> ml) eTm : ks)
-        DoUsing mq pat rhs usp -> do
-          -- §9.3: using always binds its pattern with borrowed access at
-          -- the default quantity ω; an explicit prefix is rejected
-          forM_ mq $ \qsp ->
-            errAt qsp "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
-              "a 'using' item always binds with borrowed access at the default quantity ω; explicit quantity or borrow markers are not permitted (§9.3, §18.2)"
-          -- §19.5/§18.8.5 resource-scoped bind: `acquire` yields an owned
-          -- resource of type `m A`; `pat` is bound (borrowed) for the rest
-          -- of the scope, and the resource's `release` (resolved from the
-          -- required `Releasable m A` instance) is attached to scope exit,
-          -- running on EVERY exit path (normal/return/break/continue/error)
-          -- in LIFO order with any `defer`s — realized by the protected
-          -- exit machinery (KUsing), not a source rewrite to `defer` (which
-          -- would move the resource before the borrowed use, §19.5).
-          aT <- freshMetaV c
-          acquireTm <- check c (rhs) (ioType errT aT)
-          -- Releasable (m := IO errT) (a := aT); `release : a -> m Unit`
-          let mTyV = VGlobN prelIO [(Expl, errT)]
-          dictTm <- resolveImplicit c usp (VGlobN prelReleasable [(Expl, mTyV), (Expl, aT)])
-          let releaseTm = CProj dictTm "release"
-          checkIrrefutable c pat aT usp
-          (patC, cBound, _) <- elabPattern c pat aT
-          ks <- goItems loops cBound errT resT rest
-          pure (KUsing patC acquireTm releaseTm : ks)
+          pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
+        DoFor ml pat src0 body mels fsp -> do
+          (pre, src) <- liftCurrentReadsExpr c (exprSpan src0) src0
+          if not (null pre)
+            then goItems loops c errT resT (pre ++ DoFor ml pat src body mels fsp : rest)
+            else continueFor ml pat src body mels fsp
+        DoIf alts mels isp -> do
+          lifted <- liftCurrentReadsStmtIf c alts mels isp
+          case lifted of
+            Just items -> goItems loops c errT resT (items ++ rest)
+            Nothing -> continueIf alts mels isp
+        DoDefer ml e0 dsp
+          | exprHasCurrentRead c e0 ->
+              -- §18.7 schedules the computation value `e0`; it does not
+              -- evaluate the deferred action's argument expressions at the
+              -- registration site.  Current-value reads therefore belong to a
+              -- nested do-scope inside the deferred action, so they run during
+              -- unwinding in the action's stored environment.
+              continueDefer ml (EDo Nothing [DoExpr e0] (exprSpan e0)) dsp
+          | otherwise ->
+              continueDefer ml e0 dsp
+        DoUsing mq pat rhs0 usp -> do
+          (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
+          if not (null pre)
+            then goItems loops c errT resT (pre ++ DoUsing mq pat rhs usp : rest)
+            else continueUsing mq pat rhs usp
         DoDecl d -> do
           case d of
             DLet _ (LetDef (Just n) _ Nothing _ [] mty Nothing rhs) dsp ->
@@ -10719,19 +11917,7 @@ elabDoIOItems mlabel _sp ctx mexp items = do
               unsupportedAt (declSpan d)
                 "this local declaration form inside do is not supported by this implementation"
               goItems loops c errT resT rest
-      where
-        withLoop ml = (nameText <$> ml) : loops
-        checkLoopTarget what ml sp = case ml of
-          Just l ->
-            unless (Just (nameText l) `elem` loops) $
-              errAt (nameSpan l) "E_LABEL_UNRESOLVED" (Just "kappa-hs.do.label-unresolved")
-                (what <> "@" <> nameText l
-                   <> " does not target an enclosing labeled loop of this do-scope (§18.2.5)")
-          Nothing ->
-            when (null loops) $
-              errAt sp "E_BREAK_OUTSIDE_LOOP" (Just "kappa-hs.do.break-outside-loop")
-                ("'" <> what
-                   <> "' is valid only within the body of a loop of this do-scope (§18.6)")
+
 
 -- | Does this do-suite always complete abruptly (its final item is a
 -- return\/break\/continue)? Used for §8.2.2A postdominating refinement.
@@ -10768,6 +11954,395 @@ statementInferable = \case
   EStringLit {} -> True
   _ -> False
 
+data VarInoutTarget = VarInoutTarget
+  { vitRoot :: !Name
+  , vitPath :: ![Name]
+  , vitMutableRoot :: !Bool
+  , vitWriteBack :: !VarInoutWriteBack
+  , vitSuccessor :: !Text
+  , vitTemp :: !Name
+  }
+
+data VarInoutWriteBack
+  = VarInoutPath
+  | VarInoutSection !Expr
+  | VarInoutUnsupported !Span
+
+data VarInoutRewriteMode = VarInoutMonadic | VarInoutPure
+
+rewriteVarInoutStatement :: Ctx -> Expr -> CheckM (Maybe [DoItem])
+rewriteVarInoutStatement = rewriteVarInoutCall VarInoutMonadic Nothing
+
+rewriteVarInoutBind :: VarInoutRewriteMode -> Ctx -> Pattern -> Expr -> CheckM (Maybe [DoItem])
+rewriteVarInoutBind mode ctx pat = rewriteVarInoutCall mode (Just pat) ctx
+
+rewriteVarInoutCall :: VarInoutRewriteMode -> Maybe Pattern -> Ctx -> Expr -> CheckM (Maybe [DoItem])
+rewriteVarInoutCall mode mUserPat ctx expr = case expr of
+  EApp f args
+    | any isInoutArg args -> do
+        minfos <- resolvedInoutParams ctx f
+        case minfos of
+          Nothing -> do
+            mapM_ reportUnexpectedInout [sp | ArgInout _ sp <- args]
+            pure (Just [])
+          Just infos -> rewriteWith infos f args (exprSpan expr)
+  EAscription e ty sp -> do
+    rewriteVarInoutCall mode mUserPat ctx e >>= \case
+      Nothing -> pure Nothing
+      Just items -> pure (Just (map (ascribeFirst ty sp) items))
+  _ -> pure Nothing
+  where
+    isInoutArg = \case
+      ArgInout {} -> True
+      _ -> False
+
+    ascribeFirst ty sp = \case
+      DoBind lb -> DoBind lb {lbExpr = EAscription (lbExpr lb) ty sp}
+      DoLet lb -> DoLet lb {lbExpr = EAscription (lbExpr lb) ty sp}
+      item -> item
+
+    rewriteWith infos f args sp = do
+      let annotated = annotateExplicitArgs infos args
+      if any unresolvedInout annotated
+        then do
+          mapM_ reportUnexpectedInout [isp | (ArgInout _ isp, Nothing) <- annotated]
+          pure (Just [])
+        else do
+          targetResults <- forM annotated $ \(arg, mi) -> case (arg, mi) of
+            (ArgInout place isp, Just info) -> do
+              n0 <- gets (length . csDiags)
+              mt <- inoutPlaceTargetM ctx place
+              n1 <- gets (length . csDiags)
+              pure (arg, mi, (\target -> (info, isp, target)) <$> mt, n1 > n0)
+            _ -> pure (arg, mi, Nothing, False)
+          let targets0 = [target | (_, _, Just target, _) <- targetResults]
+          if length targets0 /= length [() | (ArgInout _ _, _) <- annotated]
+            then do
+              mapM_
+                (\(arg, mi, mt, diagnosed) -> case (arg, mi, mt, diagnosed) of
+                    (ArgInout place _, Just _, Nothing, False) -> reportInvalidInoutPlace place
+                    _ -> pure ())
+                targetResults
+              pure (Just [])
+            else do
+              hasOverlap <- checkVarInoutOverlap targets0
+              if hasOverlap
+                then pure (Just [])
+                else do
+                  case [usp | (_, _, (_, _, _, VarInoutUnsupported usp)) <- targets0] of
+                    usp : _ -> do
+                      errAt usp "E_UNSUPPORTED" (Just "kappa-hs.projection.descriptor")
+                        "this '~' projection has multiple possible yielded places; lowering it requires the generic OpenProjector zipper path, which is not implemented yet (§18.9.4, §30.2.2.3)"
+                      pure (Just [])
+                    [] -> do
+                      targets' <- forM targets0 $ \(info, _, (root, path, mutableRoot, writeBack)) -> do
+                        tmp <- freshNameM ("__inout_" <> iopSuccessor info)
+                        pure (VarInoutTarget root path mutableRoot writeBack (iopSuccessor info) (Name tmp sp))
+                      residual <- residualBindItems sp targets' mUserPat
+                      res <- freshNameM "__inout_result"
+                      let resN = Name res sp
+                          callArgs = map stripInout args
+                          bind = case mode of
+                            VarInoutMonadic ->
+                              DoBind $
+                                LetBind False emptyPrefix (PVar resN) Nothing (EApp f callArgs) sp
+                            VarInoutPure ->
+                              DoLet $
+                                LetBind False emptyPrefix (PVar resN) Nothing (EApp f callArgs) sp
+                          successorLets =
+                            [ DoLet $
+                                LetBind False emptyPrefix (PVar (vitTemp t)) Nothing
+                                  (EDot (EVar resN) (DotName (Name (vitSuccessor t) sp)))
+                                  sp
+                            | t <- targets'
+                            ]
+                      assigns <- restoreTargets targets'
+                      pure (Just (bind : successorLets ++ assigns ++ residual resN))
+
+    unresolvedInout = \case
+      (ArgInout _ _, Nothing) -> True
+      _ -> False
+
+    reportUnexpectedInout isp =
+      errAt isp "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
+        "call-site '~' marker requires resolved inout-parameter metadata at this argument position (§18.9.3)"
+
+    reportInvalidInoutPlace place =
+      errAt (exprSpan place) "E_PROJECTION_ROOT_INVALID" (Just "kappa-hs.projection.roots")
+        "a '~' inout argument must be a stable place, mutable var-place, or supported projection/accessor place (§18.9.3)"
+
+    stripInout = \case
+      ArgInout e _ -> ArgExplicit e
+      a -> a
+
+    restoreTargets = fmap concat . mapM restoreGroup . groupTargets
+      where
+        groupTargets = foldl insertGroup []
+        insertGroup [] t = [(vitRoot t, vitMutableRoot t, [t])]
+        insertGroup ((root, mutableRoot, ts) : rest) t
+          | nameText (vitRoot t) == nameText root
+          , vitMutableRoot t == mutableRoot = (root, mutableRoot, ts ++ [t]) : rest
+          | otherwise = (root, mutableRoot, ts) : insertGroup rest t
+        restoreGroup (_, True, [t])
+          | [] <- vitPath t
+          , VarInoutPath <- vitWriteBack t =
+              pure [DoAssign (vitRoot t) False (EVar (vitTemp t)) (nameSpan (vitRoot t))]
+        restoreGroup (_, False, [t])
+          | [] <- vitPath t
+          , VarInoutPath <- vitWriteBack t =
+              pure
+                [ DoLet $
+                    LetBind False emptyPrefix (PVar (vitRoot t)) Nothing (EVar (vitTemp t)) (nameSpan (vitRoot t))
+                ]
+        restoreGroup (root, True, ts) = do
+          old <- freshNameM ("__inout_old_" <> nameText root)
+          let oldN = Name old (nameSpan root)
+              rhs =
+                ERecordPatch
+                  (EVar oldN)
+                  [ restorePatchItem oldN t
+                  | t <- ts
+                  ]
+                  (nameSpan root)
+          pure
+            [ DoBind (LetBind False emptyPrefix (PVar oldN) Nothing (EVarRead root (nameSpan root)) (nameSpan root))
+            , DoAssign root False rhs (nameSpan root)
+            ]
+        restoreGroup (root, False, ts) = do
+          let rhs =
+                ERecordPatch
+                  (EVar root)
+                  [ restorePatchItem root t
+                  | t <- ts
+                  ]
+                  (nameSpan root)
+          pure
+            [ DoLet $
+                LetBind False emptyPrefix (PVar root) Nothing rhs (nameSpan root)
+            ]
+
+        restorePatchItem baseRoot t =
+          case (vitPath t, vitWriteBack t) of
+            ([], VarInoutSection recv) -> PatchSection recv (EVar (vitTemp t))
+            _ -> PatchUpdate [(False, n) | n <- vitPath t] (restorePatchValue baseRoot t)
+
+        restorePatchValue baseRoot t =
+          case vitWriteBack t of
+            VarInoutPath -> PatchValue (EVar (vitTemp t))
+            VarInoutSection recv ->
+              PatchValue $
+                ERecordPatch
+                  (placeExpr baseRoot (vitPath t))
+                  [PatchSection recv (EVar (vitTemp t))]
+                  (nameSpan baseRoot)
+            VarInoutUnsupported _ -> PatchValue (EVar (vitTemp t))
+
+        placeExpr root path =
+          foldl (\acc n -> EDot acc (DotName n)) (EVar root) path
+
+    checkVarInoutOverlap targets =
+      case overlapPairs of
+        ((startSp, conflictSp) : _) -> do
+          report $
+            withRelateds
+              [ related RoleBorrowStart startSp "place first borrowed by an inout argument here"
+              , related RoleBorrowConflict conflictSp "overlapping inout argument here"
+              ]
+              $ diag SevError StageElaborate "E_QTT_BORROW_OVERLAP" (Just "kappa.borrow.overlap") conflictSp
+                  "two '~' inout arguments of the same call have overlapping place footprints (§18.9.3, §12.4)"
+          pure True
+        [] -> pure False
+      where
+        overlapPairs =
+          [ (isp1, isp2)
+              | ((_, isp1, (root1, path1, _, _)), rest') <- zip targets (drop 1 (List.tails targets))
+              , (_, isp2, (root2, path2, _, _)) <- rest'
+          , nameText root1 == nameText root2
+          , pathsOverlapText (map nameText path1) (map nameText path2)
+          ]
+        pathsOverlapText a b = a `List.isPrefixOf` b || b `List.isPrefixOf` a
+
+    residualBindItems _sp targets mUserPat0 =
+      case mUserPat0 of
+        Nothing -> pure (\_ -> [])
+        Just pat
+          | inoutEmptyBindPattern pat -> pure (\_ -> [])
+          | otherwise -> do
+              validateResidualPattern targets pat
+              pure $ \resN ->
+                [ DoLet $
+                    LetBind False emptyPrefix pat Nothing (EVar resN) (patternSpan pat)
+                ]
+
+    validateResidualPattern targets pat = do
+      let successorNames = Set.fromList (map vitSuccessor targets)
+          rootNames = Set.fromList (map (nameText . vitRoot) targets)
+          bound = Set.fromList (map nameText (surfPatVars pat))
+          rootConflicts = Set.toList (Set.intersection rootNames bound)
+          successorConflicts = residualSuccessorFields successorNames pat
+      case rootConflicts of
+        n : _ ->
+          errAt (patternSpan pat) "E_QTT_INOUT_RESIDUAL_PATTERN" (Just "kappa.inout.restoration")
+            ("the residual pattern of an inout call must not bind the marked place '" <> n <> "' (§18.9.4)")
+        [] -> pure ()
+      case successorConflicts of
+        n : _ ->
+          errAt (patternSpan pat) "E_QTT_INOUT_RESIDUAL_PATTERN" (Just "kappa.inout.restoration")
+            ("the residual pattern of an inout call must not bind threaded successor field '" <> n <> "' (§18.9.4)")
+        [] -> pure ()
+      unless (residualPatternSupported pat) $
+        errAt (patternSpan pat) "E_QTT_INOUT_RESIDUAL_PATTERN" (Just "kappa.inout.restoration")
+          "a non-empty residual result of an inout call must be matched with an anonymous record pattern in this implementation (§18.9.4)"
+      where
+        residualSuccessorFields successors = \case
+          PRecord fs mrest _ ->
+            [nameText f | (_, f, _) <- fs, nameText f `Set.member` successors]
+              ++ case mrest of
+                   Just (PatRestBind _) -> [".."]
+                   _ -> []
+          PTyped p _ _ -> residualSuccessorFields successors p
+          _ -> []
+        residualPatternSupported = \case
+          PRecord _ mrest _ -> case mrest of
+            Just (PatRestBind _) -> False
+            _ -> True
+          PTyped p _ _ -> residualPatternSupported p
+          _ -> False
+
+annotateExplicitArgs :: [Maybe InoutParamInfo] -> [Arg] -> [(Arg, Maybe InoutParamInfo)]
+annotateExplicitArgs infos = go infos
+  where
+    go _ [] = []
+    go ps (arg : rest) = case arg of
+      ArgImplicit _ -> (arg, Nothing) : go ps rest
+      ArgNamedBlock {} -> (arg, Nothing) : go ps rest
+      ArgExplicit {} -> case ps of
+        p : ps' -> (arg, p) : go ps' rest
+        [] -> (arg, Nothing) : go [] rest
+      ArgInout {} -> case ps of
+        p : ps' -> (arg, p) : go ps' rest
+        [] -> (arg, Nothing) : go [] rest
+
+resolvedInoutParams :: Ctx -> Expr -> CheckM (Maybe [Maybe InoutParamInfo])
+resolvedInoutParams ctx f = do
+  st0 <- get
+  n0 <- gets (length . csDiags)
+  r <- do
+    (tm, _) <- infer ctx f
+    case headGlobalOf tm of
+      Nothing -> pure Nothing
+      Just g -> gets (Map.lookup g . csInoutParams)
+  n1 <- gets (length . csDiags)
+  put st0
+  pure (if n1 == n0 then r else Nothing)
+
+inoutPlaceTarget :: Ctx -> Expr -> Maybe (Name, [Name], Bool, VarInoutWriteBack)
+inoutPlaceTarget ctx = go []
+  where
+    go acc = \case
+      EVar n
+        | Just (_, entry) <- lookupCtx (nameText n) ctx ->
+            Just (n, acc, isJust (ceVarInfo entry), VarInoutPath)
+      EDot e (DotName fld) -> go (fld : acc) e
+      EAscription e _ _ -> go acc e
+      _ -> Nothing
+
+inoutPlaceTargetM :: Ctx -> Expr -> CheckM (Maybe (Name, [Name], Bool, VarInoutWriteBack))
+inoutPlaceTargetM ctx e =
+  case inoutPlaceTarget ctx e of
+    Just target -> pure (Just target)
+    Nothing -> projectionInoutTarget ctx e
+
+projectionInoutTarget :: Ctx -> Expr -> CheckM (Maybe (Name, [Name], Bool, VarInoutWriteBack))
+projectionInoutTarget ctx = \case
+  EAscription e _ _ -> projectionInoutTarget ctx e
+  EApp f args
+    | all isExplicitArg args -> do
+        mpj <- projectionInfoOfExpr ctx f
+        case mpj of
+          Just pj
+            | pjSelector pj
+            , length args == length (pjIsPlace pj)
+            , [(rootName, suffix)] <- nub (pjYields pj)
+            , Just rootExpr <- lookup rootName (projectionPlaceArgs pj args) -> do
+                inoutPlaceTargetM ctx rootExpr >>= \case
+                  Just (root, path, mutableRoot, _) ->
+                    let sp = exprSpan rootExpr
+                     in pure (Just (root, path ++ [Name fld sp | fld <- suffix], mutableRoot, VarInoutPath))
+                  Nothing -> pure Nothing
+          Just pj
+            | pjSelector pj
+            , length args == length (pjIsPlace pj)
+            , let yields = nub (pjYields pj)
+            , not (null yields)
+            , [rootName] <- nub [root | (root, _) <- yields]
+            , Just rootExpr <- lookup rootName (projectionPlaceArgs pj args) -> do
+                inoutPlaceTargetM ctx rootExpr >>= \case
+                  Just (root, path, mutableRoot, _) ->
+                    pure (Just (root, path, mutableRoot, VarInoutUnsupported (exprSpan f)))
+                  Nothing -> pure Nothing
+          Just pj
+            | not (pjSelector pj)
+            , length args == length (pjIsPlace pj)
+            , [(_, rootExpr)] <- projectionPlaceArgs pj args -> do
+                mrecv <- accessorInoutSection ctx (exprSpan f) f pj args
+                case mrecv of
+                  Nothing -> pure Nothing
+                  Just recv ->
+                    inoutPlaceTargetM ctx rootExpr >>= \case
+                      Just (root, path, mutableRoot, _) ->
+                        pure (Just (root, path, mutableRoot, VarInoutSection recv))
+                      Nothing -> pure Nothing
+          _ -> pure Nothing
+    | otherwise -> pure Nothing
+  _ -> pure Nothing
+  where
+    isExplicitArg = \case
+      ArgExplicit _ -> True
+      _ -> False
+
+    projectionPlaceArgs pj args =
+      zip (pjPlaceNames pj) [e | (True, ArgExplicit e) <- zip (pjIsPlace pj) args]
+
+    projectionOrdArgs pj args =
+      [a | (False, a) <- zip (pjIsPlace pj) args]
+
+    accessorInoutSection ctx0 sp f0 pj args0 = do
+      (fTm0, fTy0) <- infer ctx0 f0
+      (_dTm, dTy) <- elabSpine ctx0 sp fTm0 fTy0 (projectionOrdArgs pj args0)
+      dTyF <- forceM dTy
+      mcaps <- case dTyF of
+        VRecordT capFs -> bundleCapsM capFs
+        _ -> pure Nothing
+      case mcaps of
+        Just caps
+          | "open" `elem` [nm | (nm, _, _) <- caps] ->
+              pure (receiverSectionOf f0 (projectionOrdArgs pj args0) sp)
+          | otherwise -> do
+              errAt (exprSpan f0) "E_PROJECTION_CAPABILITY_REQUIRED" (Just "kappa-hs.projection.capability")
+                ( "this use requires the 'open' capability, but the accessor bundle provides only: "
+                    <> T.intercalate ", " [nm | (nm, _, _) <- caps] <> " (§16.1.6, §18.9.3)"
+                )
+              pure Nothing
+        Nothing -> pure Nothing
+
+    receiverSectionOf f0 ordArgs sp =
+      case receiverMembersOf f0 of
+        Just members -> Just (EReceiverSection members ordArgs sp)
+        Nothing -> Nothing
+
+    receiverMembersOf = \case
+      EVar n -> Just [DotName n]
+      EDot base (DotName n) -> (++ [DotName n]) <$> receiverMembersOf base
+      EAscription e _ _ -> receiverMembersOf e
+      _ -> Nothing
+
+inoutEmptyBindPattern :: Pattern -> Bool
+inoutEmptyBindPattern = \case
+  PWild _ -> True
+  PUnit _ -> True
+  _ -> False
+
 -- | §16.3.3: an implicit do-binding @let (\@x : T) = e@ joins the local
 -- implicit context for the remaining items. @before@ is the context the
 -- pattern was elaborated in; the entries added on top of it are marked.
@@ -10796,16 +12371,13 @@ markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
 -- the spliced result stays MONADIC-typed and left-to-right effect order is
 -- preserved.
 --
--- This is NOT a pure @__runIO@ extraction.  Extracting `!e` purely (the prior
--- implementation: @!e ↦ __runIO e@) was unsound: @__runIO : forall e a. IO e a
--- -> a@ discards the IO error channel, so composed with @throwIO : forall e a. e
--- -> IO e a@ it forges a pure inhabitant of the free @a@ — e.g. from a PLAIN
--- module @do { !(throwIO Unit) } : Void@ type-checked (the splice handed back
--- @__runIO (throwIO Unit) : Void@).  The bind-lift dissolves this: a bind keeps
--- the item monadic, so @do { !(throwIO Unit) }@ has type @IO _ _@ which is not
--- @Void@ — a plain type error.  It also removes the synthesized @__runIO@
--- splice-head entirely, so there is no sentinel name a user could spell (via
--- backticks) to route around 'gateUnsafeIntrinsic'.
+-- This is NOT a pure IO-result extraction.  Extracting `!e` purely was
+-- unsound: composed with @throwIO : forall e a. e -> IO e a@ it forges a pure
+-- inhabitant of the free @a@.  The bind-lift dissolves this: a bind keeps the
+-- item monadic, so @do { !(throwIO Unit) }@ has type @IO _ _@ which is not
+-- @Void@ — a plain type error.  It also removes the old synthesized splice-head
+-- entirely, so there is no sentinel name a user could spell (via backticks) to
+-- route around 'gateUnsafeIntrinsic'.
 --
 -- 'liftBangsExpr' realizes @Splice_m[-]@ for a single expression: it returns the
 -- ordered list of @tmp <- operand@ binds that must be sequenced BEFORE the
@@ -10824,8 +12396,18 @@ markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
 -- do-items to sequence before the expression (left-to-right) and @residual@ is
 -- @e@ with every (unconditional) splice replaced by its bound temp.  Realizes
 -- @Splice_m[-]@.
+shortCircuitBoolApp :: Expr -> Maybe Expr
+shortCircuitBoolApp e@(EApp (EVar op) [ArgExplicit l, ArgExplicit r])
+  | nameText op == "&&" =
+      let sp = exprSpan e
+       in Just (EIf [(l, r)] (Just (EVar (Name "False" sp))) sp)
+  | nameText op == "||" =
+      let sp = exprSpan e
+       in Just (EIf [(l, EVar (Name "True" sp))] (Just r) sp)
+shortCircuitBoolApp _ = Nothing
+
 liftBangsExpr :: Span -> Expr -> CheckM ([DoItem], Expr)
-liftBangsExpr sp = go
+liftBangsExpr _ = go
   where
     -- bind a (residual) computation to a fresh temp and yield the temp
     bindTo :: Span -> Expr -> CheckM ([DoItem], Expr)
@@ -10852,25 +12434,61 @@ liftBangsExpr sp = go
         (bsA, args') <- goArgs args
         (bs2, t) <- bindTo bsp (EApp f' args')
         pure (bsF ++ bsA ++ bs2, t)
-      EApp f args -> do
-        (bsF, f') <- go f
-        (bsA, args') <- goArgs args
-        pure (bsF ++ bsA, EApp f' args')
+      e@(EApp f args)
+        | Just e' <- shortCircuitBoolApp e -> go e'
+        | otherwise -> do
+            (bsF, f') <- go f
+            (bsA, args') <- goArgs args
+            pure (bsF ++ bsA, EApp f' args')
+      EStringLit sl parts lsp -> do
+        (bs, parts') <- goInterpParts parts
+        pure (bs, EStringLit sl parts' lsp)
+      ERecordLit items lsp -> do
+        (bs, items') <- goRecItems items
+        pure (bs, ERecordLit items' lsp)
+      ERecordPatch base items psp -> do
+        (bsB, base') <- go base
+        (bsI, items') <- goPatchItems items
+        pure (bsB ++ bsI, ERecordPatch base' items' psp)
+      EQDot e m -> do
+        (bs, e') <- go e
+        pure (bs, EQDot e' m)
+      EOpChain elems -> do
+        (bs, elems') <- goOpElems elems
+        pure (bs, EOpChain elems')
+      EElvis l r esp
+        | exprHasBang r -> do
+            (bsL, l') <- go l
+            tmp <- freshNameM "__elvis"
+            let tn = Name tmp esp
+                somePat = PCtor (CtorRef Nothing (Name "Some" esp)) [PVar tn] esp
+                nonePat = PCtor (CtorRef Nothing (Name "None" esp)) [] esp
+                matchE =
+                  EMatch
+                    l'
+                    [ MatchCase somePat Nothing (wrapBranchDo (EVar tn)) esp
+                    , MatchCase nonePat Nothing (wrapBranchDo r) esp
+                    ]
+                    esp
+            (bs2, t) <- bindTo esp matchE
+            pure (bsL ++ bs2, t)
+        | otherwise -> do
+            (bsL, l') <- go l
+            pure (bsL, EElvis l' r esp)
       -- §18.3.1 conditional: branch-local.  Hoist condition bangs; recurse into
       -- each branch as its own monadic scope.  If NO branch contains a bang the
       -- conditional is left as a pure residual (only its conditions are lifted).
-      EIf alts mels esp
-        | any branchHasBang alts || maybe False exprHasBang mels -> do
-            (bsC, alts', mels') <- goIfBranches alts mels
-            (bs2, t) <- bindTo esp (EIf alts' mels' esp)
+      EIf alts mels esp -> do
+        (bsC, ifE, monadic) <- goIfBranches alts mels esp
+        if monadic
+          then do
+            (bs2, t) <- bindTo esp ifE
             pure (bsC ++ bs2, t)
-        | otherwise -> do
-            (bsC, alts') <- goConds alts
-            pure (bsC, EIf alts' mels esp)
+          else pure (bsC, ifE)
       EMatch scrut cases msp
         | any caseHasBang cases -> do
             (bsS, scrut') <- go scrut
-            cases' <- traverse wrapCaseDo cases
+            cases' <- traverse wrapCaseDo (lowerGuardedCases scrut' cases msp)
             (bs2, t) <- bindTo msp (EMatch scrut' cases' msp)
             pure (bsS ++ bs2, t)
         | otherwise -> do
@@ -10888,9 +12506,42 @@ liftBangsExpr sp = go
       ESetLit es ssp -> do
         (bs, es') <- goList es
         pure (bs, ESetLit es' ssp)
+      EMapLit kvs msp -> do
+        (bs, kvs') <- goPairs kvs
+        pure (bs, EMapLit kvs' msp)
       EDot e m -> do
         (bs, e') <- go e
         pure (bs, EDot e' m)
+      EIs e cref -> do
+        (bs, e') <- go e
+        pure (bs, EIs e' cref)
+      e@EThunk {} -> pure ([], e)
+      e@ELazy {} -> pure ([], e)
+      EForce e fsp -> do
+        (bs, e') <- go e
+        pure (bs, EForce e' fsp)
+      ESeal e ty ssp -> do
+        (bs, e') <- go e
+        pure (bs, ESeal e' ty ssp)
+      ESealExists ws e ty ssp -> do
+        (bsW, ws') <- goWitnesses ws
+        (bsE, e') <- go e
+        pure (bsW ++ bsE, ESealExists ws' e' ty ssp)
+      ETry e excepts mfin tsp -> do
+        (bsE, e') <- go e
+        (bsF, mfin') <- goMaybe mfin
+        excepts' <- traverse wrapExceptDo excepts
+        pure (bsE ++ bsF, ETry e' excepts' mfin' tsp)
+      ETryMatch e cases excepts mfin tsp -> do
+        (bsE, e') <- go e
+        (bsF, mfin') <- goMaybe mfin
+        cases' <- traverse wrapCaseDo cases
+        excepts' <- traverse wrapExceptDo excepts
+        pure (bsE ++ bsF, ETryMatch e' cases' excepts' mfin' tsp)
+      EVariant arms mtail vsp -> do
+        (bsA, arms') <- goVariantArms arms
+        (bsT, mtail') <- goMaybe mtail
+        pure (bsA ++ bsT, EVariant arms' mtail' vsp)
       -- any other form: no bang extraction here.  A bang surviving inside an
       -- unsupported form reaches 'infer'/'check' as a bare 'EBang' and is
       -- rejected by the centralized E_SPLICE_OUTSIDE_DO check (§18.3.1: a bang
@@ -10904,32 +12555,132 @@ liftBangsExpr sp = go
     goArg = \case
       ArgExplicit e -> do (bs, e') <- go e; pure (bs, ArgExplicit e')
       ArgImplicit e -> do (bs, e') <- go e; pure (bs, ArgImplicit e')
-      a -> pure ([], a)
+      ArgInout e asp -> do (bs, e') <- go e; pure (bs, ArgInout e' asp)
+      ArgNamedBlock fields asp -> do
+        rs <- traverse
+          (\(n, me) -> do
+              (bs, me') <- goMaybe me
+              pure (bs, (n, me')))
+          fields
+        pure (concatMap fst rs, ArgNamedBlock (map snd rs) asp)
 
     goList :: [Expr] -> CheckM ([DoItem], [Expr])
     goList es = do
       rs <- traverse go es
       pure (concatMap fst rs, map snd rs)
 
-    -- conditions are evaluated unconditionally (left-to-right), so their bangs
-    -- hoist ahead; branch bodies are NOT touched here.
-    goConds :: [(Expr, Expr)] -> CheckM ([DoItem], [(Expr, Expr)])
-    goConds alts = do
-      rs <- traverse (\(c, t) -> do (bs, c') <- go c; pure (bs, (c', t))) alts
+    goMaybe :: Maybe Expr -> CheckM ([DoItem], Maybe Expr)
+    goMaybe = \case
+      Nothing -> pure ([], Nothing)
+      Just e -> do
+        (bs, e') <- go e
+        pure (bs, Just e')
+
+    goPairs :: [(Expr, Expr)] -> CheckM ([DoItem], [(Expr, Expr)])
+    goPairs kvs = do
+      rs <- traverse
+        (\(k, v) -> do
+            (bsK, k') <- go k
+            (bsV, v') <- go v
+            pure (bsK ++ bsV, (k', v')))
+        kvs
       pure (concatMap fst rs, map snd rs)
 
-    -- when a branch contains a bang the whole conditional is hoisted: lift each
-    -- condition ahead, and wrap each branch (and final else) as a nested `do`
-    -- so its bangs become binds local to the taken branch only.
-    goIfBranches :: [(Expr, Expr)] -> Maybe Expr -> CheckM ([DoItem], [(Expr, Expr)], Maybe Expr)
-    goIfBranches alts mels = do
+    goInterpParts :: [InterpPart] -> CheckM ([DoItem], [InterpPart])
+    goInterpParts parts = do
       rs <- traverse
-        (\(c, t) -> do
-            (bs, c') <- go c
-            pure (bs, (c', wrapBranchDo t)))
-        alts
-      let mels' = wrapBranchDo <$> mels
-      pure (concatMap fst rs, map snd rs, mels')
+        (\(InterpPart i e) -> do
+            (bs, e') <- go e
+            pure (bs, InterpPart i e'))
+        parts
+      pure (concatMap fst rs, map snd rs)
+
+    goRecItems :: [RecItem] -> CheckM ([DoItem], [RecItem])
+    goRecItems items = do
+      rs <- traverse
+        (\(RecItem im n me) -> do
+            (bs, me') <- goMaybe me
+            pure (bs, RecItem im n me'))
+        items
+      pure (concatMap fst rs, map snd rs)
+
+    goPatchItems :: [PatchItem] -> CheckM ([DoItem], [PatchItem])
+    goPatchItems items = do
+      rs <- traverse goPatchItem items
+      pure (concatMap fst rs, map snd rs)
+
+    goPatchItem :: PatchItem -> CheckM ([DoItem], PatchItem)
+    goPatchItem = \case
+      PatchUpdate path (PatchValue e) -> do
+        (bs, e') <- go e
+        pure (bs, PatchUpdate path (PatchValue e'))
+      PatchExtend n e -> do
+        (bs, e') <- go e
+        pure (bs, PatchExtend n e')
+      PatchSection recv e -> do
+        (bsR, recv') <- go recv
+        (bsE, e') <- go e
+        pure (bsR ++ bsE, PatchSection recv' e')
+      PatchPun n -> pure ([], PatchPun n)
+
+    goOpElems :: [OpElem] -> CheckM ([DoItem], [OpElem])
+    goOpElems elems = do
+      rs <- traverse
+        (\case
+            ChainOperand e -> do
+              (bs, e') <- go e
+              pure (bs, ChainOperand e')
+            ChainOp n -> pure ([], ChainOp n))
+        elems
+      pure (concatMap fst rs, map snd rs)
+
+    goWitnesses :: [(Name, Expr)] -> CheckM ([DoItem], [(Name, Expr)])
+    goWitnesses ws = do
+      rs <- traverse
+        (\(n, e) -> do
+            (bs, e') <- go e
+            pure (bs, (n, e')))
+        ws
+      pure (concatMap fst rs, map snd rs)
+
+    goVariantArms :: [VariantArm] -> CheckM ([DoItem], [VariantArm])
+    goVariantArms arms = do
+      rs <- traverse
+        (\(VariantArm e mt) -> do
+            (bsE, e') <- go e
+            (bsT, mt') <- goMaybe mt
+            pure (bsE ++ bsT, VariantArm e' mt'))
+        arms
+      pure (concatMap fst rs, map snd rs)
+
+    -- Conditions are evaluated left-to-right only until a branch is selected.
+    -- Binds for later `elif` conditions are therefore inserted into the false
+    -- continuation, not hoisted before the whole conditional.
+    goIfBranches :: [(Expr, Expr)] -> Maybe Expr -> Span -> CheckM ([DoItem], Expr, Bool)
+    goIfBranches [] mels esp = do
+      let e = fromMaybe (EUnit esp) mels
+      pure ([], e, maybe False exprHasBang mels)
+    goIfBranches ((c, t) : rest) mels esp = do
+      (bsC, c') <- go c
+      (mfalse0, falseMonadic) <- case rest of
+        [] -> do
+          let elseMonadic = maybe False exprHasBang mels
+              melse = (\e -> if elseMonadic then wrapBranchDo e else e) <$> mels
+          pure (melse, elseMonadic)
+        _ -> do
+          (bsRest, restIf, restMonadic) <- goIfBranches rest mels esp
+          let falseExpr
+                | null bsRest = restIf
+                | otherwise = EDo Nothing (bsRest ++ [DoExpr restIf]) (exprSpan restIf)
+          pure (Just falseExpr, restMonadic || not (null bsRest))
+      let monadic = exprHasBang t || falseMonadic
+          t' = if monadic then wrapBranchDo t else t
+          mfalse = case mfalse0 of
+            Nothing -> Nothing
+            Just f
+              | monadic && not falseMonadic -> Just (wrapBranchDo f)
+              | otherwise -> Just f
+      pure (bsC, EIf [(c', t')] mfalse esp, monadic)
 
     -- wrap a branch result expression as a single-item `do` so 'liftDoItems'
     -- (run over the nested suite later) sequences its bangs in that branch's
@@ -10943,9 +12694,25 @@ liftBangsExpr sp = go
       MatchCase p g b csp -> pure (MatchCase p g (wrapBranchDo b) csp)
       other -> pure other
 
-    branchHasBang (_, t) = exprHasBang t
+    lowerGuardedCases :: Expr -> [MatchCase] -> Span -> [MatchCase]
+    lowerGuardedCases scrut cases msp = go cases
+      where
+        go [] = []
+        go (MatchCase p (Just g) b csp : rest) =
+          let fallback = EMatch scrut (go rest) msp
+           in MatchCase p Nothing (EIf [(g, b)] (Just fallback) csp) csp : go rest
+        go (MatchCase p Nothing b csp : rest) = MatchCase p Nothing b csp : go rest
+        go (MatchImpossible sp : rest) = MatchImpossible sp : go rest
+
+    wrapExceptDo :: ExceptCase -> CheckM ExceptCase
+    wrapExceptDo (ExceptCase p g b csp)
+      | maybe False exprHasBang g || exprHasBang b =
+          pure (ExceptCase p g (wrapBranchDo b) csp)
+      | otherwise =
+          pure (ExceptCase p g b csp)
+
     caseHasBang = \case
-      MatchCase _ _ b _ -> exprHasBang b
+      MatchCase _ g b _ -> maybe False exprHasBang g || exprHasBang b
       _ -> False
 
 -- | Does an expression contain a monadic splice `!` that 'liftBangsExpr' would
@@ -10959,19 +12726,825 @@ exprHasBang = go
     go = \case
       EBang {} -> True
       EApp f as -> go f || any goA as
+      EStringLit _ parts _ -> any (go . ipExpr) parts
+      ERecordLit items _ -> any goRecItem items
+      ERecordPatch base items _ -> go base || any goPatchItem items
+      EQDot e _ -> go e
+      EOpChain elems -> any goOpElem elems
+      EElvis l r _ -> go l || go r
       EIf alts mels _ -> any (\(c, t) -> go c || go t) alts || maybe False go mels
-      EMatch s cs _ -> go s || or [go b | MatchCase _ _ b _ <- cs]
+      EMatch s cs _ -> go s || any goMatchCase cs
       EAscription e _ _ -> go e
       ETuple es _ -> any go es
       EListLit es _ -> any go es
       ESetLit es _ -> any go es
+      EMapLit kvs _ -> any (\(k, v) -> go k || go v) kvs
       EDot e _ -> go e
+      EIs e _ -> go e
+      EThunk {} -> False
+      ELazy {} -> False
+      EForce e _ -> go e
+      ESeal e _ _ -> go e
+      ESealExists ws e _ _ -> any (go . snd) ws || go e
+      ETry e excepts mfin _ ->
+        go e || any goExcept excepts || maybe False go mfin
+      ETryMatch e cases excepts mfin _ ->
+        go e || any goMatchCase cases || any goExcept excepts || maybe False go mfin
       -- a `!` under a lambda / nested do / quote belongs to that inner scope.
       _ -> False
     goA = \case
       ArgExplicit e -> go e
       ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock fields _ -> any (maybe False go . snd) fields
+    goRecItem (RecItem _ _ me) = maybe False go me
+    goPatchItem = \case
+      PatchUpdate _ (PatchValue e) -> go e
+      PatchExtend _ e -> go e
+      PatchSection recv e -> go recv || go e
+      PatchPun _ -> False
+    goOpElem = \case
+      ChainOperand e -> go e
+      ChainOp _ -> False
+    goMatchCase = \case
+      MatchCase _ mg b _ -> maybe False go mg || go b
+      MatchImpossible _ -> False
+    goExcept (ExceptCase _ mg b _) = maybe False go mg || go b
+
+-- | Does an expression contain a mutable-variable current-value occurrence for
+-- the supplied do-elaboration context?  The shadow set records binders whose
+-- source names override outer mutable bindings.
+exprHasCurrentRead :: Ctx -> Expr -> Bool
+exprHasCurrentRead ctx = go Set.empty
+  where
+    current shadow n =
+      nameText n `Set.notMember` shadow
+        && maybe False (isJust . ceVarInfo . snd) (lookupCtx (nameText n) ctx)
+    go shadow = \case
+      EVar n -> current shadow n
+      ERefFacet {} -> False
+      EVarRead {} -> False
+      EApp f as -> go shadow f || any (goArg shadow) as
+      EStringLit _ parts _ -> any (go shadow . ipExpr) parts
+      ERecordLit items _ -> any (goRecItem shadow) items
+      ERecordPatch base items _ -> go shadow base || any (goPatchItem shadow) items
+      EReceiverSection {} -> False
+      ESectionLeft {} -> False
+      ESectionRight {} -> False
+      EQDot e _ -> go shadow e
+      EOpChain elems -> any (goOpElem shadow) elems
+      EElvis l r _ -> go shadow l || go shadow r
+      ELet binds body _ -> goLetBinds shadow binds body
+      EBlock decls mres _ -> goBlock shadow decls mres
+      EIf alts mels _ -> any (\(c, t) -> go shadow c || go shadow t) alts || maybe False (go shadow) mels
+      EMatch s cs _ -> go shadow s || any (goCase shadow) cs
+      EHandle _ label scrut cases _ -> go shadow label || go shadow scrut || any (goHandler shadow) cases
+      EAscription e _ _ -> go shadow e
+      ETuple es _ -> any (go shadow) es
+      EListLit es _ -> any (go shadow) es
+      ESetLit es _ -> any (go shadow) es
+      EMapLit kvs _ -> any (\(k, v) -> go shadow k || go shadow v) kvs
+      EDot e _ -> go shadow e
+      EIs e _ -> go shadow e
+      EThunk {} -> False
+      ELazy {} -> False
+      EForce e _ -> go shadow e
+      ESeal e _ _ -> go shadow e
+      EOpenExists pkg ws pat body _ ->
+        let shadow' = Set.unions [shadow, Set.fromList (map nameText ws), Set.fromList (map nameText (surfPatVars pat))]
+         in go shadow pkg || go shadow' body
+      ESealExists ws e _ _ -> any (go shadow . snd) ws || go shadow e
+      EComprehension _ clauses yield _ -> goComp shadow clauses yield
+      ETry e excepts mfin _ ->
+        go shadow e || any (goExcept shadow) excepts || maybe False (go shadow) mfin
+      ETryMatch e cases excepts mfin _ ->
+        go shadow e || any (goCase shadow) cases || any (goExcept shadow) excepts || maybe False (go shadow) mfin
+      EVariant arms mtail _ ->
+        any (go shadow . vaExpr) arms || maybe False (go shadow) mtail
+      EBang {} -> True
+      -- Nested do/lambda/quote/type-like forms own their own lifting context or
+      -- are no-read positions (§18.3.1).
       _ -> False
+    goArg shadow = \case
+      ArgExplicit e -> go shadow e
+      ArgImplicit e -> go shadow e
+      ArgInout _ _ -> False
+      ArgNamedBlock fields _ -> any (maybe False (go shadow) . snd) fields
+    goLetBinds shadow [] body = go shadow body
+    goLetBinds shadow (LetBind _ _ pat _ rhs _ : rest) body =
+      go shadow rhs || goLetBinds (Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))) rest body
+    goBlock shadow [] mres = maybe False (go shadow) mres
+    goBlock shadow (d : ds) mres = case d of
+      DLet _ ld _ ->
+        let hasBody
+              | null (ldBinders ld) = go shadow (ldBody ld)
+              | otherwise = False
+            shadow' = Set.union shadow (Set.fromList (map nameText (letDefVars ld)))
+         in hasBody || goBlock shadow' ds mres
+      _ -> goBlock shadow ds mres
+    letDefVars ld =
+      maybeToList (ldName ld)
+        ++ maybe [] surfPatVars (ldPattern ld)
+    goRecItem shadow (RecItem _ _ me) = maybe False (go shadow) me
+    goPatchItem shadow = \case
+      PatchUpdate _ (PatchValue e) -> go shadow e
+      PatchExtend _ e -> go shadow e
+      PatchSection recv e -> go shadow recv || go shadow e
+      PatchPun _ -> False
+    goOpElem shadow = \case
+      ChainOperand e -> go shadow e
+      ChainOp _ -> False
+    goCase shadow = \case
+      MatchCase p g b _ ->
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+         in maybe False (go shadow') g || go shadow' b
+      MatchImpossible _ -> False
+    goHandler shadow = \case
+      HandlerReturn p b _ ->
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+         in go shadow' b
+      HandlerOp _ ps k b _ ->
+        let shadow' = Set.unions (shadow : Set.singleton (nameText k) : map (Set.fromList . map nameText . surfPatVars) ps)
+         in go shadow' b
+    goExcept shadow (ExceptCase p g b _) =
+      let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+       in maybe False (go shadow') g || go shadow' b
+    goComp shadow clauses yield =
+      let (hit, shadow') = foldl goClause (False, shadow) clauses
+       in hit || goYield shadow' yield
+    goClause (hit, shadow) = \case
+      S.CFor _ _ pat src _ ->
+        (hit || go shadow src, Set.union shadow (Set.fromList (map nameText (surfPatVars pat))))
+      S.CLet _ pat _ rhs _ ->
+        (hit || go shadow rhs, Set.union shadow (Set.fromList (map nameText (surfPatVars pat))))
+      S.CIf e -> (hit || go shadow e, shadow)
+      S.COrderBy keys _ -> (hit || any (go shadow . snd) keys, shadow)
+      S.CSkip e _ -> (hit || go shadow e, shadow)
+      S.CTake e _ -> (hit || go shadow e, shadow)
+      S.CDistinct me _ -> (hit || maybe False (go shadow) me, shadow)
+      S.CGroupBy key aggs into _ ->
+        ( hit || go shadow key || any (\(_, e, mu) -> go shadow e || maybe False (go shadow) mu) aggs
+        , Set.insert (nameText into) shadow
+        )
+      S.CJoin _ pat src on into _ ->
+        ( hit || go shadow src || go shadow on
+        , Set.unions [shadow, Set.fromList (map nameText (surfPatVars pat)), maybe Set.empty (Set.singleton . nameText) into]
+        )
+    goYield shadow = \case
+      YieldExpr e -> go shadow e
+      YieldPair k v -> go shadow k || go shadow v
+
+-- | Context-aware companion to 'liftBangsExpr' for §18.6.1 current-value
+-- occurrences of surface mutable variables.  Each bare occurrence of a mutable
+-- binding in ordinary value position becomes a generated MonadRef.readRef action
+-- bound immediately before the residual expression; @ref x@ remains a pure atom.
+liftCurrentReadsExpr :: Ctx -> Span -> Expr -> CheckM ([DoItem], Expr)
+liftCurrentReadsExpr ctx _ = go Set.empty
+  where
+    current shadow n =
+      nameText n `Set.notMember` shadow
+        && maybe False (isJust . ceVarInfo . snd) (lookupCtx (nameText n) ctx)
+
+    bindRead :: Span -> Name -> CheckM ([DoItem], Expr)
+    bindRead bsp n = do
+      t <- freshNameM "__var"
+      let tn = Name t bsp
+      pure ([DoBind (LetBind False emptyPrefix (PVar tn) Nothing (EVarRead n bsp) bsp)], EVar tn)
+
+    go :: Set Text -> Expr -> CheckM ([DoItem], Expr)
+    go shadow = \case
+      EVar n
+        | current shadow n -> bindRead (nameSpan n) n
+        | otherwise -> pure ([], EVar n)
+      e@ERefFacet {} -> pure ([], e)
+      e@EVarRead {} -> pure ([], e)
+      EBang _ e bsp -> do
+        (bs, e') <- go shadow e
+        (bs2, t) <- bindToWith "__bang" bsp e'
+        pure (bs ++ bs2, t)
+      EApp (EBang False f bsp) args -> do
+        (bsF, f') <- go shadow f
+        args0 <- repairWrongFacet shadow f args
+        (bsA, args') <- goArgs shadow args0
+        (bs2, t) <- bindToWith "__bang" bsp (EApp f' args')
+        pure (bsF ++ bsA ++ bs2, t)
+      e@(EApp f args)
+        | Just e' <- shortCircuitBoolApp e -> go shadow e'
+        | otherwise -> do
+            args0 <- repairWrongFacet shadow f args
+            (bsF, f') <- go shadow f
+            modes <- implicitRuntimeModes shadow f args0
+            (bsA, args') <- goArgsWith shadow modes args0
+            pure (bsF ++ bsA, EApp f' args')
+      EStringLit sl parts lsp -> do
+        (bs, parts') <- goInterpParts shadow parts
+        pure (bs, EStringLit sl parts' lsp)
+      ERecordLit items lsp -> do
+        (bs, items') <- goRecItems shadow items
+        pure (bs, ERecordLit items' lsp)
+      ERecordPatch base items psp -> do
+        (bsB, base') <- go shadow base
+        (bsI, items') <- goPatchItems shadow items
+        pure (bsB ++ bsI, ERecordPatch base' items' psp)
+      e@EReceiverSection {} -> pure ([], e)
+      e@ESectionLeft {} -> pure ([], e)
+      e@ESectionRight {} -> pure ([], e)
+      EQDot e m -> do
+        (bs, e') <- go shadow e
+        pure (bs, EQDot e' m)
+      EOpChain elems -> do
+        (bs, elems') <- goOpElems shadow elems
+        pure (bs, EOpChain elems')
+      EElvis l r esp
+        | goHas shadow r -> do
+            (bsL, l') <- go shadow l
+            tmp <- freshNameM "__elvis"
+            let tn = Name tmp esp
+                somePat = PCtor (CtorRef Nothing (Name "Some" esp)) [PVar tn] esp
+                nonePat = PCtor (CtorRef Nothing (Name "None" esp)) [] esp
+                matchE =
+                  EMatch
+                    l'
+                    [ MatchCase somePat Nothing (wrapBranchDo (EVar tn)) esp
+                    , MatchCase nonePat Nothing (wrapBranchDo r) esp
+                    ]
+                    esp
+            (bs2, t) <- bindTo esp matchE
+            pure (bsL ++ bs2, t)
+        | otherwise -> do
+            (bsL, l') <- go shadow l
+            pure (bsL, EElvis l' r esp)
+      EIf alts mels esp -> do
+        (bsC, ifE, monadic) <- goIfBranches shadow alts mels esp
+        if monadic
+          then do
+            (bs2, t) <- bindTo esp ifE
+            pure (bsC ++ bs2, t)
+          else pure (bsC, ifE)
+      ELet binds body lsp -> do
+        (bsB, binds', shadow') <- goLetBinds shadow binds
+        (bsBody, body') <- go shadow' body
+        pure (bsB ++ bsBody, ELet binds' body' lsp)
+      EBlock decls mres bsp -> do
+        (bsD, decls', shadow') <- goBlockDecls shadow decls
+        (bsR, mres') <- goMaybe shadow' mres
+        pure (bsD ++ bsR, EBlock decls' mres' bsp)
+      EMatch scrut cases msp
+        | any (caseHasCurrentRead shadow) cases -> do
+            (bsS, scrut') <- go shadow scrut
+            let cases' = map wrapCaseDo (lowerGuardedCases scrut' cases msp)
+            (bs2, t) <- bindTo msp (EMatch scrut' cases' msp)
+            pure (bsS ++ bs2, t)
+        | otherwise -> do
+            (bsS, scrut') <- go shadow scrut
+            pure (bsS, EMatch scrut' cases msp)
+      EAscription e t asp -> do
+        (bs, e') <- go shadow e
+        pure (bs, EAscription e' t asp)
+      ETuple es tsp -> do
+        (bs, es') <- goList shadow es
+        pure (bs, ETuple es' tsp)
+      EListLit es lsp -> do
+        (bs, es') <- goList shadow es
+        pure (bs, EListLit es' lsp)
+      ESetLit es ssp -> do
+        (bs, es') <- goList shadow es
+        pure (bs, ESetLit es' ssp)
+      EMapLit kvs msp -> do
+        (bs, kvs') <- goPairs shadow kvs
+        pure (bs, EMapLit kvs' msp)
+      EDot e m -> do
+        (bs, e') <- go shadow e
+        pure (bs, EDot e' m)
+      EIs e cref -> do
+        (bs, e') <- go shadow e
+        pure (bs, EIs e' cref)
+      EHandle deep label scrut cases hsp -> do
+        (bsL, label') <- go shadow label
+        (bsS, scrut') <- go shadow scrut
+        cases' <- traverse (goHandlerCase shadow) cases
+        pure (bsL ++ bsS, EHandle deep label' scrut' cases' hsp)
+      e@EThunk {} -> pure ([], e)
+      e@ELazy {} -> pure ([], e)
+      EForce e fsp -> do
+        (bs, e') <- go shadow e
+        pure (bs, EForce e' fsp)
+      ESeal e ty ssp -> do
+        (bs, e') <- go shadow e
+        pure (bs, ESeal e' ty ssp)
+      EOpenExists pkg ws pat body osp -> do
+        (bsPkg, pkg') <- go shadow pkg
+        let shadow' = Set.unions [shadow, Set.fromList (map nameText ws), Set.fromList (map nameText (surfPatVars pat))]
+        body' <- wrapBodyDo shadow' body
+        pure (bsPkg, EOpenExists pkg' ws pat body' osp)
+      ESealExists ws e ty ssp -> do
+        (bsW, ws') <- goWitnesses shadow ws
+        (bsE, e') <- go shadow e
+        pure (bsW ++ bsE, ESealExists ws' e' ty ssp)
+      EComprehension kind clauses yield csp -> do
+        (bsC, clauses', shadow') <- goCompClauses shadow clauses
+        (bsY, yield') <- goCompYield shadow' yield
+        pure (bsC ++ bsY, EComprehension kind clauses' yield' csp)
+      ETry e excepts mfin tsp -> do
+        (bsE, e') <- go shadow e
+        mfin' <- traverse (wrapBodyDo shadow) mfin
+        let excepts' = map (wrapExceptDo shadow) excepts
+        pure (bsE, ETry e' excepts' mfin' tsp)
+      ETryMatch e cases excepts mfin tsp -> do
+        (bsE, e') <- go shadow e
+        mfin' <- traverse (wrapBodyDo shadow) mfin
+        let cases' = map wrapCaseDo cases
+            excepts' = map (wrapExceptDo shadow) excepts
+        pure (bsE, ETryMatch e' cases' excepts' mfin' tsp)
+      EVariant arms mtail vsp -> do
+        (bsA, arms') <- goVariantArms shadow arms
+        (bsT, mtail') <- goMaybe shadow mtail
+        pure (bsA ++ bsT, EVariant arms' mtail' vsp)
+      e -> pure ([], e)
+
+    bindTo :: Span -> Expr -> CheckM ([DoItem], Expr)
+    bindTo = bindToWith "__var"
+
+    bindToWith :: Text -> Span -> Expr -> CheckM ([DoItem], Expr)
+    bindToWith prefix bsp act = do
+      t <- freshNameM prefix
+      let tn = Name t bsp
+      pure ([DoBind (LetBind False emptyPrefix (PVar tn) Nothing act bsp)], EVar tn)
+
+    repairWrongFacet :: Set Text -> Expr -> [Arg] -> CheckM [Arg]
+    repairWrongFacet shadow f args =
+      resolvedRefHead f >>= \case
+        Nothing -> pure args
+        Just api -> rewriteRefArg api args
+      where
+        rewriteRefArg _ [] = pure []
+        rewriteRefArg api (ArgImplicit e : rest) =
+          (ArgImplicit e :) <$> rewriteRefArg api rest
+        rewriteRefArg api (ArgExplicit e : rest)
+          | Just (n, rebuild) <- currentRefArg e = do
+              matches <- refHeadMatchesMutable n api
+              if matches
+                then do
+                  infoFields <- mutableBindingLookupFields ctx n "user-written"
+                  errMutableBinding
+                    (nameSpan n)
+                    "E_VAR_REF_REQUIRED"
+                    (nameText n)
+                    "current-value"
+                    ( infoFields
+                        ++ [ ("sourceOperation", fst api)
+                           , ("repair", "ref " <> nameText n)
+                           ]
+                    )
+                    ( "'" <> nameText n <> "' is a mutable variable's current-value facet here; "
+                        <> fst api <> " requires the reference facet, written 'ref "
+                        <> nameText n <> "' (§18.6.1)"
+                    )
+                  pure (ArgExplicit (rebuild (ERefFacet n (nameSpan n))) : rest)
+                else (ArgExplicit e :) <$> rewriteRefArg api rest
+        rewriteRefArg _ args0 = pure args0
+
+        currentRefArg = \case
+          EVar n
+            | current shadow n -> Just (n, id)
+          EAscription e ty sp ->
+            (\(n, rebuild) -> (n, \r -> EAscription (rebuild r) ty sp)) <$> currentRefArg e
+          _ -> Nothing
+
+    resolvedRefHead :: Expr -> CheckM (Maybe (Text, Maybe Term))
+    resolvedRefHead f = do
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      r <- do
+        (tm, _) <- infer ctx f
+        pure (refHeadOfTerm tm)
+      n1 <- gets (length . csDiags)
+      put st0
+      pure (if n1 == n0 then r else Nothing)
+
+    refHeadOfTerm :: Term -> Maybe (Text, Maybe Term)
+    refHeadOfTerm = \case
+      CApp _ f _ -> refHeadOfTerm f
+      CGlob g | g == prelReadRef -> Just ("readRef", Nothing)
+      CGlob g | g == prelWriteRef -> Just ("writeRef", Nothing)
+      CProj dict "readRef" -> Just ("readRef", Just dict)
+      CProj dict "writeRef" -> Just ("writeRef", Just dict)
+      _ -> Nothing
+
+    refHeadMatchesMutable :: Name -> (Text, Maybe Term) -> CheckM Bool
+    refHeadMatchesMutable _ (_, Nothing) = pure True
+    refHeadMatchesMutable n (_, Just dictTm) =
+      case lookupCtx (nameText n) ctx of
+        Just (i, entry)
+          | Just info <- ceVarInfo entry -> do
+              let expected0 = shiftTerm (i + 1) 0 (vriMonadRefDict info)
+                  d = ctxLen ctx
+              actual <- zonkTermM d dictTm
+              expected <- zonkTermM d expected0
+              if actual == expected
+                then pure True
+                else do
+                  actualN <- normalizeTermAt d actual
+                  expectedN <- normalizeTermAt d expected
+                  pure (actualN == expectedN)
+        _ -> pure False
+
+    goArgs shadow = fmap (\(bs, as) -> (concat bs, as)) . fmap unzip . traverse (goArg shadow)
+    goArgsWith shadow modes args =
+      fmap (\(bs, as) -> (concat bs, as)) . fmap unzip $
+        traverse (uncurry (goArgWith shadow)) (zip (modes ++ repeat False) args)
+    goArg shadow = \case
+      ArgExplicit e -> do (bs, e') <- go shadow e; pure (bs, ArgExplicit e')
+      ArgImplicit e -> pure ([], ArgImplicit e)
+      ArgInout e asp -> pure ([], ArgInout e asp)
+      ArgNamedBlock fields asp -> do
+        rs <- traverse
+          (\(n, me) -> do
+              (bs, me') <- goMaybe shadow me
+              pure (bs, (n, me')))
+          fields
+        pure (concatMap fst rs, ArgNamedBlock (map snd rs) asp)
+    goArgWith shadow mode = \case
+      ArgImplicit e
+        | mode -> do (bs, e') <- go shadow e; pure (bs, ArgImplicit e')
+        | otherwise -> pure ([], ArgImplicit e)
+      a -> goArg shadow a
+
+    implicitRuntimeModes :: Set Text -> Expr -> [Arg] -> CheckM [Bool]
+    implicitRuntimeModes shadow f args = do
+      st0 <- get
+      n0 <- gets (length . csDiags)
+      modes <- do
+        mfTy <- calleeRuntimeType shadow f
+        maybe (pure (map (const False) args)) (`goTy` args) mfTy
+      n1 <- gets (length . csDiags)
+      put st0
+      pure $
+        if n1 == n0
+          then modes
+          else map (const False) args
+      where
+        calleeRuntimeType sh = \case
+          EVar n
+            | current sh n
+            , Just (_, entry) <- lookupCtx (nameText n) ctx
+            , Just info <- ceVarInfo entry ->
+                pure (Just (vriStoredType info))
+          EAscription _ ty _ -> do
+            (tyTm, _) <- inferType ctx ty
+            Just <$> evalIn ctx tyTm
+          ECaptures e _ _ -> calleeRuntimeType sh e
+          e -> do
+            (_fTm, fTy) <- infer ctx e
+            pure (Just fTy)
+
+        goTy _ [] = pure []
+        goTy ty0 as@(a : rest) = do
+          ty <- forceM ty0
+          case ty of
+            VPi Impl q _ _ _dom clo -> case a of
+              ArgImplicit _ -> do
+                v <- freshMetaV ctx
+                ty' <- clApp clo v
+                ((q /= Q0) :) <$> goTy ty' rest
+              _ -> do
+                v <- freshMetaV ctx
+                ty' <- clApp clo v
+                goTy ty' as
+            VPi Expl _ _ _ _dom clo -> do
+              v <- freshMetaV ctx
+              ty' <- clApp clo v
+              (False :) <$> goTy ty' rest
+            _ -> pure (map (const False) as)
+
+    goList shadow es = do
+      rs <- traverse (go shadow) es
+      pure (concatMap fst rs, map snd rs)
+    goMaybe shadow = \case
+      Nothing -> pure ([], Nothing)
+      Just e -> do
+        (bs, e') <- go shadow e
+        pure (bs, Just e')
+    goPairs shadow kvs = do
+      rs <- traverse
+        (\(k, v) -> do
+            (bsK, k') <- go shadow k
+            (bsV, v') <- go shadow v
+            pure (bsK ++ bsV, (k', v')))
+        kvs
+      pure (concatMap fst rs, map snd rs)
+    goInterpParts shadow parts = do
+      rs <- traverse
+        (\(InterpPart i e) -> do
+            (bs, e') <- go shadow e
+            pure (bs, InterpPart i e'))
+        parts
+      pure (concatMap fst rs, map snd rs)
+    goRecItems shadow items = do
+      rs <- traverse
+        (\(RecItem im n me) -> do
+            (bs, me') <- goMaybe shadow me
+            pure (bs, RecItem im n me'))
+        items
+      pure (concatMap fst rs, map snd rs)
+    goPatchItems shadow items = do
+      rs <- traverse (goPatchItem shadow) items
+      pure (concatMap fst rs, map snd rs)
+    goPatchItem shadow = \case
+      PatchUpdate path (PatchValue e) -> do
+        (bs, e') <- go shadow e
+        pure (bs, PatchUpdate path (PatchValue e'))
+      PatchExtend n e -> do
+        (bs, e') <- go shadow e
+        pure (bs, PatchExtend n e')
+      PatchSection recv e -> do
+        (bsR, recv') <- go shadow recv
+        (bsE, e') <- go shadow e
+        pure (bsR ++ bsE, PatchSection recv' e')
+      PatchPun n -> pure ([], PatchPun n)
+    goOpElems shadow elems = do
+      rs <- traverse
+        (\case
+            ChainOperand e -> do
+              (bs, e') <- go shadow e
+              pure (bs, ChainOperand e')
+            ChainOp n -> pure ([], ChainOp n))
+        elems
+      pure (concatMap fst rs, map snd rs)
+    goWitnesses shadow ws = do
+      rs <- traverse
+        (\(n, e) -> do
+            (bs, e') <- go shadow e
+            pure (bs, (n, e')))
+        ws
+      pure (concatMap fst rs, map snd rs)
+    goVariantArms shadow arms = do
+      rs <- traverse
+        (\(VariantArm e mt) -> do
+            (bsE, e') <- go shadow e
+            (bsT, mt') <- goMaybe shadow mt
+            pure (bsE ++ bsT, VariantArm e' mt'))
+        arms
+      pure (concatMap fst rs, map snd rs)
+
+    goLetBinds shadow [] = pure ([], [], shadow)
+    goLetBinds shadow (LetBind im pf pat ty rhs bsp : rest) = do
+      (bsR, rhs') <- go shadow rhs
+      let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))
+      (bsRest, rest', shadowFinal) <- goLetBinds shadow' rest
+      pure (bsR ++ bsRest, LetBind im pf pat ty rhs' bsp : rest', shadowFinal)
+
+    goBlockDecls shadow [] = pure ([], [], shadow)
+    goBlockDecls shadow (d : ds) = case d of
+      DLet mods ld sp
+        | null (ldBinders ld) -> do
+            (bs, body') <- go shadow (ldBody ld)
+            let ld' = ld {ldBody = body'}
+                shadow' = Set.union shadow (Set.fromList (map nameText (letDefVars ld)))
+            (bsRest, ds', shadowFinal) <- goBlockDecls shadow' ds
+            pure (bs ++ bsRest, DLet mods ld' sp : ds', shadowFinal)
+        | otherwise -> do
+            let shadow' = Set.union shadow (Set.fromList (map nameText (letDefVars ld)))
+            (bsRest, ds', shadowFinal) <- goBlockDecls shadow' ds
+            pure (bsRest, d : ds', shadowFinal)
+      _ -> do
+        (bsRest, ds', shadowFinal) <- goBlockDecls shadow ds
+        pure (bsRest, d : ds', shadowFinal)
+
+    letDefVars ld =
+      maybeToList (ldName ld)
+        ++ maybe [] surfPatVars (ldPattern ld)
+
+    wrapBodyDo shadow body
+      | goHas shadow body = do
+          (bs, body') <- go shadow body
+          pure (EDo Nothing (bs ++ [DoExpr body']) (exprSpan body))
+      | otherwise = pure body
+
+    goHandlerCase shadow = \case
+      HandlerReturn pat body hsp -> do
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))
+        body' <- wrapBodyDo shadow' body
+        pure (HandlerReturn pat body' hsp)
+      HandlerOp op pats k body hsp -> do
+        let shadow' = Set.unions (shadow : Set.singleton (nameText k) : map (Set.fromList . map nameText . surfPatVars) pats)
+        body' <- wrapBodyDo shadow' body
+        pure (HandlerOp op pats k body' hsp)
+
+    goCompClauses shadow [] = pure ([], [], shadow)
+    goCompClauses shadow (cl : rest) = do
+      (bs, cl', shadow') <- goCompClause shadow cl
+      (bsRest, rest', shadowFinal) <- goCompClauses shadow' rest
+      pure (bs ++ bsRest, cl' : rest', shadowFinal)
+
+    goCompClause shadow = \case
+      S.CFor ref borrowed pat src csp -> do
+        (bs, src') <- go shadow src
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))
+        pure (bs, S.CFor ref borrowed pat src' csp, shadow')
+      S.CLet ref pat mty rhs csp -> do
+        (bs, rhs') <- go shadow rhs
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))
+        pure (bs, S.CLet ref pat mty rhs' csp, shadow')
+      S.CIf e -> do
+        (bs, e') <- go shadow e
+        pure (bs, S.CIf e', shadow)
+      S.COrderBy keys csp -> do
+        rs <- traverse (\(desc, e) -> do (bs, e') <- go shadow e; pure (bs, (desc, e'))) keys
+        pure (concatMap fst rs, S.COrderBy (map snd rs) csp, shadow)
+      S.CSkip e csp -> do
+        (bs, e') <- go shadow e
+        pure (bs, S.CSkip e' csp, shadow)
+      S.CTake e csp -> do
+        (bs, e') <- go shadow e
+        pure (bs, S.CTake e' csp, shadow)
+      S.CDistinct me csp -> do
+        (bs, me') <- goMaybe shadow me
+        pure (bs, S.CDistinct me' csp, shadow)
+      S.CGroupBy key aggs into csp -> do
+        (bsK, key') <- go shadow key
+        rs <-
+          traverse
+            (\(n, e, mu) -> do
+                (bsE, e') <- go shadow e
+                (bsU, mu') <- goMaybe shadow mu
+                pure (bsE ++ bsU, (n, e', mu')))
+            aggs
+        pure (bsK ++ concatMap fst rs, S.CGroupBy key' (map snd rs) into csp, Set.insert (nameText into) shadow)
+      S.CJoin left pat src on into csp -> do
+        (bsS, src') <- go shadow src
+        (bsO, on') <- go shadow on
+        let shadow' = Set.unions [shadow, Set.fromList (map nameText (surfPatVars pat)), maybe Set.empty (Set.singleton . nameText) into]
+        pure (bsS ++ bsO, S.CJoin left pat src' on' into csp, shadow')
+
+    goCompYield shadow = \case
+      YieldExpr e -> do
+        (bs, e') <- go shadow e
+        pure (bs, YieldExpr e')
+      YieldPair k v -> do
+        (bsK, k') <- go shadow k
+        (bsV, v') <- go shadow v
+        pure (bsK ++ bsV, YieldPair k' v')
+
+    goIfBranches shadow [] mels esp = do
+      let e = fromMaybe (EUnit esp) mels
+      pure ([], e, maybe False (goHas shadow) mels)
+    goIfBranches shadow ((c, t) : rest) mels esp = do
+      (bsC, c') <- go shadow c
+      (mfalse0, falseMonadic) <- case rest of
+        [] -> do
+          let elseMonadic = maybe False (goHas shadow) mels
+              melse = (\e -> if elseMonadic then wrapBranchDo e else e) <$> mels
+          pure (melse, elseMonadic)
+        _ -> do
+          (bsRest, restIf, restMonadic) <- goIfBranches shadow rest mels esp
+          let falseExpr
+                | null bsRest = restIf
+                | otherwise = EDo Nothing (bsRest ++ [DoExpr restIf]) (exprSpan restIf)
+          pure (Just falseExpr, restMonadic || not (null bsRest))
+      let monadic = goHas shadow t || falseMonadic
+          t' = if monadic then wrapBranchDo t else t
+          mfalse = case mfalse0 of
+            Nothing -> Nothing
+            Just f
+              | monadic && not falseMonadic -> Just (wrapBranchDo f)
+              | otherwise -> Just f
+      pure (bsC, EIf [(c', t')] mfalse esp, monadic)
+
+    wrapBranchDo e = EDo Nothing [DoExpr e] (exprSpan e)
+    caseHasCurrentRead shadow = \case
+      MatchCase p g b _ ->
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+         in maybe False (exprHasCurrentReadIn shadow') g || exprHasCurrentReadIn shadow' b
+      MatchImpossible _ -> False
+    exprHasCurrentReadIn shadow = goHas shadow
+    goHas shadow = \case
+      EVar n -> current shadow n
+      ERefFacet {} -> False
+      EVarRead {} -> False
+      EApp f as -> goHas shadow f || any (goHasArg shadow) as
+      EStringLit _ parts _ -> any (goHas shadow . ipExpr) parts
+      ERecordLit items _ -> any (\(RecItem _ _ me) -> maybe False (goHas shadow) me) items
+      ERecordPatch base items _ -> goHas shadow base || any (goHasPatch shadow) items
+      EReceiverSection {} -> False
+      ESectionLeft {} -> False
+      ESectionRight {} -> False
+      EQDot e _ -> goHas shadow e
+      EOpChain elems -> any (\case ChainOperand e -> goHas shadow e; ChainOp _ -> False) elems
+      EElvis l r _ -> goHas shadow l || goHas shadow r
+      ELet binds body _ -> goHasLetBinds shadow binds body
+      EBlock decls mres _ -> goHasBlock shadow decls mres
+      EIf alts mels _ -> any (\(c, t) -> goHas shadow c || goHas shadow t) alts || maybe False (goHas shadow) mels
+      EMatch s cs _ -> goHas shadow s || any (caseHasCurrentRead shadow) cs
+      EHandle _ label scrut cases _ -> goHas shadow label || goHas shadow scrut || any (goHasHandler shadow) cases
+      EAscription e _ _ -> goHas shadow e
+      ETuple es _ -> any (goHas shadow) es
+      EListLit es _ -> any (goHas shadow) es
+      ESetLit es _ -> any (goHas shadow) es
+      EMapLit kvs _ -> any (\(k, v) -> goHas shadow k || goHas shadow v) kvs
+      EDot e _ -> goHas shadow e
+      EIs e _ -> goHas shadow e
+      EThunk {} -> False
+      ELazy {} -> False
+      EForce e _ -> goHas shadow e
+      ESeal e _ _ -> goHas shadow e
+      EOpenExists pkg ws pat body _ ->
+        let shadow' = Set.unions [shadow, Set.fromList (map nameText ws), Set.fromList (map nameText (surfPatVars pat))]
+         in goHas shadow pkg || goHas shadow' body
+      ESealExists ws e _ _ -> any (goHas shadow . snd) ws || goHas shadow e
+      EComprehension _ clauses yield _ -> goHasComp shadow clauses yield
+      ETry e excepts mfin _ -> goHas shadow e || any (goHasExcept shadow) excepts || maybe False (goHas shadow) mfin
+      ETryMatch e cases excepts mfin _ -> goHas shadow e || any (caseHasCurrentRead shadow) cases || any (goHasExcept shadow) excepts || maybe False (goHas shadow) mfin
+      EVariant arms mtail _ -> any (goHas shadow . vaExpr) arms || maybe False (goHas shadow) mtail
+      EBang {} -> True
+      _ -> False
+    goHasArg shadow = \case
+      ArgExplicit e -> goHas shadow e
+      ArgImplicit e -> goHas shadow e
+      ArgInout _ _ -> False
+      ArgNamedBlock fields _ -> any (maybe False (goHas shadow) . snd) fields
+    goHasLetBinds shadow [] body = goHas shadow body
+    goHasLetBinds shadow (LetBind _ _ pat _ rhs _ : rest) body =
+      goHas shadow rhs || goHasLetBinds (Set.union shadow (Set.fromList (map nameText (surfPatVars pat)))) rest body
+    goHasBlock shadow [] mres = maybe False (goHas shadow) mres
+    goHasBlock shadow (d : ds) mres = case d of
+      DLet _ ld _ ->
+        let hasBody
+              | null (ldBinders ld) = goHas shadow (ldBody ld)
+              | otherwise = False
+            shadow' = Set.union shadow (Set.fromList (map nameText (letDefVars ld)))
+         in hasBody || goHasBlock shadow' ds mres
+      _ -> goHasBlock shadow ds mres
+    goHasPatch shadow = \case
+      PatchUpdate _ (PatchValue e) -> goHas shadow e
+      PatchExtend _ e -> goHas shadow e
+      PatchSection recv e -> goHas shadow recv || goHas shadow e
+      PatchPun _ -> False
+    goHasExcept shadow (ExceptCase p g b _) =
+      let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+       in maybe False (goHas shadow') g || goHas shadow' b
+    goHasHandler shadow = \case
+      HandlerReturn p b _ ->
+        let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+         in goHas shadow' b
+      HandlerOp _ ps k b _ ->
+        let shadow' = Set.unions (shadow : Set.singleton (nameText k) : map (Set.fromList . map nameText . surfPatVars) ps)
+         in goHas shadow' b
+    goHasComp shadow clauses yield =
+      let (hit, shadow') = foldl goHasClause (False, shadow) clauses
+       in hit || goHasYield shadow' yield
+    goHasClause (hit, shadow) = \case
+      S.CFor _ _ pat src _ ->
+        (hit || goHas shadow src, Set.union shadow (Set.fromList (map nameText (surfPatVars pat))))
+      S.CLet _ pat _ rhs _ ->
+        (hit || goHas shadow rhs, Set.union shadow (Set.fromList (map nameText (surfPatVars pat))))
+      S.CIf e -> (hit || goHas shadow e, shadow)
+      S.COrderBy keys _ -> (hit || any (goHas shadow . snd) keys, shadow)
+      S.CSkip e _ -> (hit || goHas shadow e, shadow)
+      S.CTake e _ -> (hit || goHas shadow e, shadow)
+      S.CDistinct me _ -> (hit || maybe False (goHas shadow) me, shadow)
+      S.CGroupBy key aggs into _ ->
+        ( hit || goHas shadow key || any (\(_, e, mu) -> goHas shadow e || maybe False (goHas shadow) mu) aggs
+        , Set.insert (nameText into) shadow
+        )
+      S.CJoin _ pat src on into _ ->
+        ( hit || goHas shadow src || goHas shadow on
+        , Set.unions [shadow, Set.fromList (map nameText (surfPatVars pat)), maybe Set.empty (Set.singleton . nameText) into]
+        )
+    goHasYield shadow = \case
+      YieldExpr e -> goHas shadow e
+      YieldPair k v -> goHas shadow k || goHas shadow v
+    lowerGuardedCases :: Expr -> [MatchCase] -> Span -> [MatchCase]
+    lowerGuardedCases scrut cases msp = goCases cases
+      where
+        goCases [] = []
+        goCases (MatchCase p (Just g) b csp : rest) =
+          let fallback = EMatch scrut (goCases rest) msp
+           in MatchCase p Nothing (EIf [(g, b)] (Just fallback) csp) csp : goCases rest
+        goCases (MatchCase p Nothing b csp : rest) = MatchCase p Nothing b csp : goCases rest
+        goCases (MatchImpossible sp : rest) = MatchImpossible sp : goCases rest
+    wrapCaseDo = \case
+      MatchCase p g b csp -> MatchCase p g (wrapBranchDo b) csp
+      other -> other
+    wrapExceptDo shadow ex@(ExceptCase p g b csp) =
+      let shadow' = Set.union shadow (Set.fromList (map nameText (surfPatVars p)))
+       in if goHas shadow' b then ExceptCase p g (wrapBranchDo b) csp else ex
+
+liftCurrentReadsStmtIf :: Ctx -> [(Expr, [DoItem])] -> Maybe [DoItem] -> Span -> CheckM (Maybe [DoItem])
+liftCurrentReadsStmtIf ctx alts mels isp = do
+  (changed, items) <- go alts mels
+  pure (if changed then Just items else Nothing)
+  where
+    go [] mElse = pure (False, fromMaybe [] mElse)
+    go ((cond, body) : rest) mElse = do
+      (pre, cond') <- liftCurrentReadsExpr ctx (exprSpan cond) cond
+      (falseChanged, falseItems) <- case rest of
+        [] -> pure (False, mElse)
+        _ -> do
+          (ch, items) <- go rest mElse
+          pure (ch, Just items)
+      let changed = not (null pre) || falseChanged
+      pure (changed, pre ++ [DoIf [(cond', body)] falseItems isp])
 
 -- | Spec §18.3.1 pre-pass: lift every monadic splice `!` in a do-scope's item
 -- list to a preceding @tmp <- act@ bind.  Run once per do-scope (each kernel,
@@ -10997,10 +13570,17 @@ liftDoItems = fmap concat . traverse liftOne
         withPre rhs $ \rhs' -> pure [DoLetQ pat rhs' mElse dsp]
       DoAssign n monadic rhs asp ->
         withPre rhs $ \rhs' -> pure [DoAssign n monadic rhs' asp]
-      DoVar n rhs vsp ->
-        withPre rhs $ \rhs' -> pure [DoVar n rhs' vsp]
-      DoDefer ml e dsp ->
-        withPre e $ \e' -> pure [DoDefer ml e' dsp]
+      DoVar n mty rhs vsp ->
+        withPre rhs $ \rhs' -> pure [DoVar n mty rhs' vsp]
+      DoDefer ml e dsp
+        | exprHasBang e ->
+            -- `defer e` stores `e` as an action (§18.7/§18.8.8).  Splices
+            -- inside that action are part of the action's execution, not the
+            -- registration step, so give them an inner do-scope instead of
+            -- hoisting them before the `defer` item.
+            pure [DoDefer ml (EDo Nothing [DoExpr e] (exprSpan e)) dsp]
+        | otherwise ->
+            pure [DoDefer ml e dsp]
       DoUsing mq pat rhs usp ->
         withPre rhs $ \rhs' -> pure [DoUsing mq pat rhs' usp]
       DoReturn ml (Just e) rsp ->
@@ -11020,12 +13600,9 @@ liftDoItems = fmap concat . traverse liftOne
           mels' <- traverse liftDoItems mels
           pure [DoFor ml pat src' body' mels' fsp]
       DoIf alts mels isp -> do
-        -- statement-if conditions are evaluated unconditionally in order; lift
-        -- their bangs ahead.  Each suite is its own nested do-scope.
-        (preAll, alts') <- goStmtIfConds alts
-        alts'' <- traverse (\(c, b) -> (,) c <$> liftDoItems b) alts'
-        mels' <- traverse liftDoItems mels
-        pure (preAll ++ [DoIf alts'' mels' isp])
+        -- Later `elif` conditions are evaluated only when earlier conditions
+        -- are false, so their lifted binds belong in the false continuation.
+        liftStmtIf alts mels isp
       -- items with no expression subterm to lift
       _ -> pure [item]
 
@@ -11037,14 +13614,16 @@ liftDoItems = fmap concat . traverse liftOne
       rest <- k e'
       pure (pre ++ rest)
 
-    goStmtIfConds :: [(Expr, [DoItem])] -> CheckM ([DoItem], [(Expr, [DoItem])])
-    goStmtIfConds alts = do
-      rs <- traverse
-        (\(c, b) -> do
-            (pre, c') <- liftBangsExpr (exprSpan c) c
-            pure (pre, (c', b)))
-        alts
-      pure (concatMap fst rs, map snd rs)
+    liftStmtIf :: [(Expr, [DoItem])] -> Maybe [DoItem] -> Span -> CheckM [DoItem]
+    liftStmtIf [] mels _ =
+      maybe (pure []) liftDoItems mels
+    liftStmtIf ((c, body) : rest) mels isp = do
+      (pre, c') <- liftBangsExpr (exprSpan c) c
+      body' <- liftDoItems body
+      falseItems <- case rest of
+        [] -> traverse liftDoItems mels
+        _ -> Just <$> liftStmtIf rest mels isp
+      pure (pre ++ [DoIf [(c', body')] falseItems isp])
 
     -- A `while` condition may be pure `Bool` or monadic `m Bool` (§18.6).  A
     -- bang there must re-run each iteration, so wrap the lifted condition as a
@@ -11158,8 +13737,8 @@ elabQuote ctx payload0 sp mexp = do
     case ty1F of
       VGlobN (GName pm "Syntax") [(_, t)]
         | pm == preludeModule -> pure (tm1, t)
-      VGlobN (GName pm "Elab") _
-        | pm == preludeModule -> do
+      VGlobN g _
+        | g == prelElab -> do
             errAt ssp "E_QUOTE_SPLICE_ELAB" (Just "kappa.syntax.quotation")
               "an 'Elab (Syntax _)' action is not run implicitly inside a quote; bind it in the surrounding Elab computation first and splice the resulting 'Syntax' value (§21.1)"
             (tm1,) <$> freshMetaV ctx
@@ -11171,7 +13750,7 @@ elabQuote ctx payload0 sp mexp = do
   -- type-directed payload checking sufficient to assign the Syntax
   -- index; the elaborated term is discarded (§21.1: quotation records
   -- syntax, final obligations are discharged at splice sites)
-  let ctxQ = ctx {ctxQuoteSlots = Map.fromList (zip [0 ..] (map snd slots))}
+  let ctxQ = withVarReadBlock VarReadCrossesBoundary ctx {ctxQuoteSlots = Map.fromList (zip [0 ..] (map snd slots))}
   tV <- case mexp of
     Just t -> do
       _ <- check ctxQ payload t
@@ -11193,7 +13772,7 @@ elabQuote ctx payload0 sp mexp = do
 elabCodeQuote :: Ctx -> Expr -> Span -> Maybe Value -> CheckM (Term, Value)
 elabCodeQuote ctx e _sp mexp = do
   tV <- maybe (freshMetaV ctx) pure mexp
-  tm <- check ctx {ctxCodeDepth = ctxCodeDepth ctx + 1} e tV
+  tm <- check (withVarReadBlock VarReadCrossesBoundary ctx) {ctxCodeDepth = ctxCodeDepth ctx + 1} e tV
   pure (CApp Expl (CGlob prelCodeQuote) tm, codeTV tV)
 
 -- | Elaborate a §23.2 escape @.~c@: requires @c : Code t@ and an
@@ -11339,8 +13918,8 @@ elabReflQuery ctx qn args mexp = do
     Nothing -> pure False
     Just e -> isElabHeaded <$> forceM e
   case ty1F of
-    VGlobN (GName pm "Elab") [(_, rT)]
-      | pm == preludeModule
+    VGlobN g [(_, rT)]
+      | g == prelElab
       , CGlob (GName fm _) <- fTm
       , fm == preludeModule
       , not expElab -> do
@@ -11354,7 +13933,7 @@ elabReflQuery ctx qn args mexp = do
     _ -> pure (tm1, ty1F)
   where
     isElabHeaded = \case
-      VGlobN (GName pm "Elab") _ | pm == preludeModule -> True
+      VGlobN g _ | g == prelElab -> True
       _ -> False
 
 -- | §21.6: elaborate a reflected syntax value at the current call site
@@ -11642,7 +14221,11 @@ elabElabDo ctx0 aTy items0 sp = do
           restTm <- go (bindCtx "_" False bTy ctx) rest
           pure (bindPrim mTm (CLam Expl QW "_" restTm))
         DoBind (LetBind _ _ pat mty rhs bsp) -> bindItem ctx pat mty rhs bsp rest
-        DoAssign n True rhs asp -> bindItem ctx (PVar n) Nothing rhs asp rest
+        DoAssign n True _ asp -> do
+          errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
+            ("'" <> nameText n <> " <- ...' is mutable-var assignment syntax; use 'let "
+               <> nameText n <> " <- ...' for monadic bind (§18.2)")
+          go ctx rest
         DoAssign n False rhs asp -> letItem ctx (PVar n) Nothing rhs asp rest
         DoLet (LetBind _ _ pat mty rhs bsp) -> letItem ctx pat mty rhs bsp rest
         other -> badForm ctx (doItemSpan other) rest
@@ -12092,7 +14675,8 @@ sourceInfo ctx ty = do
     VGlobN (GName _ "Set") [(_, a)] -> pure (SrcInfo SKSet a False False CZeroOrMore False)
     VGlobN (GName _ "Map") [(_, k), (_, v)] ->
       pure (SrcInfo SKMap (VRecordT [("key", k), ("value", v)]) False False CZeroOrMore False)
-    VGlobN (GName _ "Option") [(_, a)] -> pure (SrcInfo SKOption a True False CZeroOrOne False)
+    VGlobN g [(_, a)]
+      | g == prelOption -> pure (SrcInfo SKOption a True False CZeroOrOne False)
     -- §20.2 range generator: a NumericRange iterates its ascending
     -- element stream (Reusable QZeroOrMore per the §23.7 IntoQuery
     -- instance for the canonical range type)
@@ -12988,7 +15572,7 @@ headerPassIn siglessLets = \case
     fvs <- filterM (fmap isNothing . lookupGlobalName) (nub (freeLower tyE))
     kvs <- mapM (const (freshMetaV emptyCtx)) fvs
     let ctx0 = foldl (\c (v, k) -> bindCtx v False k c) emptyCtx (zip fvs kvs)
-    (tyTm0, _) <- inferType ctx0 tyE
+    (tyTm0, _) <- withNamedCallableInoutSignature tyE (inferType ctx0 tyE)
     kTms <- forM kvs $ \kv -> do
       kv' <- forceM kv
       case kv' of
@@ -13006,6 +15590,7 @@ headerPassIn siglessLets = \case
           ("duplicate declaration of '" <> nameText n <> "'")
     recordDeclSite g sp
     addGlobal g (GlobalDef tyV Nothing False)
+    recordSignatureInoutParams g tyE
     -- §9.1: the signature awaits its same-file definition (an expected
     -- name is governed by §9.4 satisfaction instead)
     unless isExpected $
@@ -13032,9 +15617,9 @@ headerPassIn siglessLets = \case
         tyV <- aliasKind params
         mv <- freshMetaV emptyCtx
         addGlobal g (GlobalDef tyV (Just mv) True)
-  DTypeAlias mods n params _ (Just rhs) sp -> do
+  DTypeAlias mods n params mkind (Just rhs) sp -> do
     -- alias: a definition at a universe type
-    (tm, ty) <- elabAliasBody params rhs
+    (tm, ty) <- elabAliasBody params mkind rhs
     g <- ownName n
     noteDefinition g sp
     -- §8.5.2: an 'opaque' type alias is transparent only within its
@@ -13092,8 +15677,8 @@ aliasKind params = do
       go (b : rest) = CPi (if bImplicit b then Impl else Expl) Q0 False (maybe "_" nameText (bName b)) (CSort 0) (go rest)
   evalIn emptyCtx (go params)
 
-elabAliasBody :: [Binder] -> Expr -> CheckM (Term, Value)
-elabAliasBody params rhs = do
+elabAliasBody :: [Binder] -> Maybe Expr -> Expr -> CheckM (Term, Value)
+elabAliasBody params mkind rhs = do
   (tm0, kindTm0) <- go emptyCtx params
   -- §11.3.3: unannotated alias parameters whose kind the body does not
   -- constrain generalize to implicit kind binders ('type Dep x = Nat'
@@ -13123,11 +15708,30 @@ elabAliasBody params rhs = do
     go ctx [] = do
       -- an eta-reduced alias body may itself be a (partially applied)
       -- type former of higher kind ('type Equal (@0 a) = (=) a', §3.5.1)
+      case mkind of
+        Just kindE | isBareTypeExpr kindE -> inferAliasRhsKind ctx
+        Just kindE -> do
+          (kindTm, _) <- inferType ctx kindE
+          kindV <- evalIn ctx kindTm
+          tm <- check ctx rhs kindV
+          pure (tm, kindTm)
+        Nothing -> inferAliasRhsKind ctx
+    go ctx (b : rest) = do
+      domTm <- case bType b of
+        Just t -> fst <$> inferType ctx t
+        Nothing -> freshMeta
+      domV <- evalIn ctx domTm
+      let nm = maybe "_" nameText (bName b)
+          ic = if bImplicit b then Impl else Expl
+          ctx' = bindCtx nm False domV ctx
+      (tm, innerK) <- go ctx' rest
+      pure (CLam ic Q0 nm tm, CPi ic Q0 False nm domTm innerK)
+    inferAliasRhsKind ctx = do
       (tm0, ty0) <- inferT ctx rhs
       tyF <- forceM ty0
       former <- finalIsSort ctx tyF
       case tyF of
-        VSort _ -> pure (tm0, CSort 0)
+        VSort lvl -> pure (tm0, CSort lvl)
         VFlex m [] -> solveMeta m (VSort 0) >> pure (tm0, CSort 0)
         -- the §18.1 'IO a' accommodation of inferType
         VPi Expl _ _ _ _ _
@@ -13143,16 +15747,6 @@ elabAliasBody params rhs = do
           errAt (exprSpan rhs) "E_NOT_A_TYPE" (Just "kappa.type.mismatch")
             ("expected a type; this expression has type " <> renderTerm oT)
           pure (tm0, CSort 0)
-    go ctx (b : rest) = do
-      domTm <- case bType b of
-        Just t -> fst <$> inferType ctx t
-        Nothing -> freshMeta
-      domV <- evalIn ctx domTm
-      let nm = maybe "_" nameText (bName b)
-          ic = if bImplicit b then Impl else Expl
-          ctx' = bindCtx nm False domV ctx
-      (tm, innerK) <- go ctx' rest
-      pure (CLam ic Q0 nm tm, CPi ic Q0 False nm domTm innerK)
 
 headerData :: DataDecl -> Span -> CheckM ()
 headerData (DataDecl n params mkind ctors) sp = do
@@ -13173,6 +15767,8 @@ headerData (DataDecl n params mkind ctors) sp = do
   tyV <- evalIn emptyCtx tyTm
   addGlobal g (GlobalDef tyV Nothing False)
   ctorGs <- forM ctors $ \(CtorDecl cn binders mgadt _) -> do
+    forM_ binders (rejectInoutBinderContext "data constructor")
+    forM_ mgadt (rejectAllInoutBinders "data constructor type")
     cg <- ownName cn
     cty <- case mgadt of
       Just sig -> do
@@ -13614,7 +16210,9 @@ headerTrait (TraitDecl supers n params members) sp = do
         superVals <- forM supPairs $ \(fld, sTm) -> (,) fld <$> evalIn pctx sTm
         oldSupers <- gets csTraitSupers
         modify' $ \st -> st {csTraitSupers = superVals}
-        (mtyTm0raw, _) <- withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
+        (mtyTm0raw, _) <-
+          withNamedCallableInoutSignature mtyE $
+            withThis (Just (ThisTraitSibs (sortOn fst acc))) (inferType mctx mtyE)
         -- Resolve any POSTPONED supertrait-operation dictionaries now, while
         -- 'csTraitSupers' is still in scope and the operations' explicit args
         -- have pinned their carriers, so each commits to its 'this.__superN'
@@ -13636,16 +16234,19 @@ headerTrait (TraitDecl supers n params members) sp = do
         let mtyTm = foldr (\(v, kT) b -> CPi Impl Q0 False v kT b) mtyTm0 (zip fvs kTms)
         mtyV <- evalIn pctx mtyTm
         pure (mtyTm, mtyV)
+      memberName (mn, _, _) = mn
+      memberTerm (mn, tm, _) = (mn, tm)
       goMembers _acc done [] = pure (reverse done)
       goMembers acc done (m : rest) = case m of
         TraitSig mn mtyE _ -> do
           (mtyTm, mtyV) <- elabMemberTy acc mtyE
-          goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm) : done) rest
+          let inouts = inoutParamsFromBinders (signatureBinders mtyE)
+          goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm, inouts) : done) rest
         TraitDefault (LetDef (Just mn) _ _ _ _ mty _ _) _
           -- a default for an already-declared member supplies its
           -- definition only; the declaration owns the dictionary
           -- field (§14.2: declaration vs definition forms)
-          | nameText mn `elem` map fst done -> goMembers acc done rest
+          | nameText mn `elem` map memberName done -> goMembers acc done rest
           | otherwise -> do
               (mtyTm, mtyV) <- case mty of
                 Just t -> elabMemberTy acc t
@@ -13653,10 +16254,12 @@ headerTrait (TraitDecl supers n params members) sp = do
                   mTm <- freshMeta
                   mV <- evalIn pctx mTm
                   pure (mTm, mV)
-              goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm) : done) rest
+              let inouts = maybe [] (inoutParamsFromBinders . signatureBinders) mty
+              goMembers (acc ++ [(nameText mn, mtyV)]) ((nameText mn, mtyTm, inouts) : done) rest
         TraitDefault {} -> goMembers acc done rest
   ms <- goMembers [] [] members
-  let dictBody = CRecordT (sortOn fst (supPairs ++ ms))
+  let memberTerms = map memberTerm ms
+      dictBody = CRecordT (sortOn fst (supPairs ++ memberTerms))
       dictTm = foldr (\(_, _, nm, _) acc -> CLam Expl Q0 nm acc) dictBody paramTele
   dictV <- evalIn emptyCtx dictTm
   -- the trait constructor is abstract (§14.1.1): not conversion-reducible
@@ -13669,14 +16272,14 @@ headerTrait (TraitDecl supers n params members) sp = do
           { csTraits =
               Map.insert
                 g
-                (TraitInfo (length paramTele) (map fst ms) defaults supTms)
+                (TraitInfo (length paramTele) (map memberName ms) defaults supTms)
                 (csTraits st)
           }
       )
   -- member projection globals: m : forall params. (@d : Tr params) -> τ
   -- (occurrences of sibling members in τ become projections from the
   -- dict binder)
-  forM_ ms $ \(mn, mtyTm) -> do
+  forM_ ms $ \(mn, mtyTm, inouts) -> do
     let dictTy =
           foldl
             (\f i -> CApp Expl f (CVar i))
@@ -13695,13 +16298,22 @@ headerTrait (TraitDecl supers n params members) sp = do
     projTyV <- evalIn emptyCtx projTy
     projV <- evalIn emptyCtx projTm
     mg <- ownName (Name mn sp)
-    -- both the bare member name and the qualified projection global.
-    -- Capture the KCore body for the native backend (§14.2.1 member
-    -- projection): a CLam chain projecting the member field from the dict.
-    addGlobal mg (GlobalDef projTyV (Just projV) True)
-    recordCoreBody mg projTm
+    -- Install the bare member name only when it does not already denote a
+    -- wired-in declaration. MonadRef's spec member names intentionally coincide
+    -- with the concrete IO ref primitives; the dictionary projection remains
+    -- available through the qualified member global below, while ordinary
+    -- `readRef` / `writeRef` source keeps resolving to the primitive wrapper.
+    bareExists <- gets (Map.member mg . csGlobals)
+    unless bareExists $ do
+      addGlobal mg (GlobalDef projTyV (Just projV) True)
+      recordCoreBody mg projTm
+      recordInoutParams mg inouts
+    -- Always install the qualified projection global. Capture the KCore body for
+    -- the native backend (§14.2.1 member projection): a CLam chain projecting the
+    -- member field from the dict.
     addGlobal (memberGlobal g mn) (GlobalDef projTyV (Just projV) True)
     recordCoreBody (memberGlobal g mn) projTm
+    recordInoutParams (memberGlobal g mn) inouts
 
 -- | The dictionary field carrying the i-th supertrait premise's
 -- evidence (§14.1.4/§14.3.3).
@@ -13765,9 +16377,10 @@ headerExpect form sp = case form of
     -- Elaborate the declared signature up front: it is needed both to
     -- register the abstract global (name resolution) and to check a
     -- backend-intrinsic satisfier against it up to definitional equality.
-    (tyTm, _) <- inferType emptyCtx tyE
+    (tyTm, _) <- withNamedCallableInoutSignature tyE (inferType emptyCtx tyE)
     tyV <- evalIn emptyCtx tyTm
     unless alreadyDef $ addGlobal g (GlobalDef tyV Nothing False)
+    recordSignatureInoutParams g tyE
     -- §34.5/§9.4: a matching backend intrinsic of the selected profile
     -- satisfies this expectation when its signature matches.
     byIntrinsic <- backendIntrinsicSatisfies g tyV sp
@@ -14018,7 +16631,7 @@ gateUnsafeAssertProof (GName gm nm) sp
 -- so there is no path by which ordinary user code reaches the raw admit.
 -- Each accepted opt-in use is recorded in the §4.7 audit ledger.
 -- The complete set of user-nameable prelude prims that inhabit an arbitrary
--- proposition, in two classes:
+-- proposition or can liberate a free result variable:
 --
 --   (a) RESULT type a free, unpinned variable — bound by the prim's telescope
 --       but appearing in no argument, so it unifies with any target type. A
@@ -14028,18 +16641,10 @@ gateUnsafeAssertProof (GName gm nm) sp
 --       wrappers one module up but is free at the bare-prim level —
 --       @let bogus : (=) True False = __debugInspect 0@ type-checks.
 --
---   (b) An eliminator whose result is pinned to a FREE argument variable that
---       a SOUND producer can supply unconstrained — a composition hole. The
---       6th hole: @__runIO : forall e a. IO e a -> a@ extracts the result of
---       an @IO e a@ PURELY, discarding the error channel (it is
---       @unsafePerformIO@). Its result @a@ is pinned to the argument, so the
---       original free-RESULT survey excluded it; but @throwIO : forall e a.
---       e -> IO e a@ produces @IO e a@ with a FREE @a@ (sound — the value
---       never yields an @a@), and @__runIO (throwIO Unit) : (=) True False@
---       then type-checks. So @__runIO@ is gated too. The program entry does
---       NOT need it (the runtime drives @main@), and the monadic splice @!e@
---       desugars to a monadic BIND (§18.3.1 'liftDoItems'), not a @__runIO@
---       extraction — so no synthesized @__runIO@ term reaches this gate.
+--   (b) Pure eliminators whose result is pinned to a FREE argument variable
+--       that a sound producer can supply unconstrained — a composition hole.
+--       The remaining prelude case is @__arrayIndexUnsafe@ via an empty
+--       @__arrayFromList []@ producer.
 --
 -- @__debugRender@ is deliberately NOT gated: its result is pinned to @String@
 -- (no free variable, no producer can liberate it), so it is not exploitable,
@@ -14053,10 +16658,10 @@ gateUnsafeAssertProof (GName gm nm) sp
 -- producer (@throwIO@/@stmAbort@ produce @IO@, not @Eff@, and a fully-handled
 -- @__effRowNil@ row cannot be reached with a free result); and @atomically :
 -- STM a -> IO Void a@ / @runCode : ClosedCode t -> IO Void t@ wrap (not extract)
--- the result. The two that DID have a sound free-variable producer —
--- @__runIO@ (via @throwIO@/@stmAbort@) and @__arrayIndexUnsafe@ (via
--- @__arrayFromList []@) — are gated above. @__bytesIndexUnsafe@/@__rowExtend@
--- have concrete results (@Byte@ / a row), no free variable to liberate.
+-- the result. The remaining eliminator that does have a sound free-variable
+-- producer is @__arrayIndexUnsafe@ (via @__arrayFromList []@), gated below.
+-- @__bytesIndexUnsafe@/@__rowExtend@ have concrete results (@Byte@ / a row),
+-- no free variable to liberate.
 -- @__unsafeAssertProof@ is gated separately by 'gateUnsafeAssertProof'.
 --
 -- @std.testing.failNow@ (type @forall (@0 a : Type). String -> a@) has the same
@@ -14079,35 +16684,13 @@ gatedUnsafeIntrinsics =
         , "__handleEff"
         , "__debugInspect"
         , "__debugCompare"
-        , -- §4.5 (6th hole): @__runIO : forall e a. IO e a -> a@ is an
-          -- @unsafePerformIO@ — it DISCARDS the IO error channel and extracts
-          -- the result @a@ PURELY. Its OWN result is pinned (the @a@ also
-          -- appears in the @IO e a@ argument), which is why the original
-          -- free-RESULT door-survey excluded it. But composition liberates the
-          -- variable: @throwIO : forall e a. e -> IO e a@ has a FREE @a@ in its
-          -- result (sound — the IO value never produces an @a@), so a plain
-          -- module could write @let bad : (=) True False = __runIO (throwIO Unit)@
-          -- (type-checks), then @subst@ over a discriminator family inhabits
-          -- @Void@: total unsoundness. The program ENTRY does not need this
-          -- name — both native backends and the interpreter drive @main@'s IO
-          -- value through the runtime (@krt2_run_main@ / @runIOValue@), never a
-          -- synthesized @__runIO main@ term. The §18.3.1 monadic splice @!e@
-          -- desugars to a monadic BIND @tmp <- e@ ('liftDoItems'), NOT a
-          -- @__runIO e@ extraction, so the splice keeps its result monadic-typed
-          -- (the forge above is a plain @IO _ _ ≠ Void@ type error) and emits no
-          -- @__runIO@ term to bypass this gate. (@var@-deref / monadic-@while@
-          -- read the cell / re-run the boolean condition; their @__runIO@ results
-          -- are pinned to the cell-content type / @Bool@ — concrete, no free
-          -- variable a producer can liberate, verified by probe — so they cannot
-          -- forge.) Thus only a USER-direct @__runIO@ reaches here, correctly gated.
-          "__runIO"
-        , -- §4.5 (same 6th-hole composition class): @__arrayIndexUnsafe :
+        , -- §4.5 composition class: @__arrayIndexUnsafe :
           -- forall a. Array a -> Int -> a@ extracts an element PURELY, and its
-          -- result @a@ is pinned to the @Array a@ argument — so, like @__runIO@,
-          -- the original free-RESULT survey passed it over. But @__arrayFromList
-          -- : forall a. List a -> Array a@ applied to the empty list @[]@ builds
-          -- an @Array (free a)@ with NO element (a genuinely empty array — the
-          -- producer is sound), and indexing it liberates the free @a@:
+          -- result @a@ is pinned to the @Array a@ argument, so the original
+          -- free-RESULT survey passed it over. But @__arrayFromList : forall a.
+          -- List a -> Array a@ applied to the empty list @[]@ builds an @Array
+          -- (free a)@ with NO element (a genuinely empty array — the producer is
+          -- sound), and indexing it liberates the free @a@:
           -- @let bad : (=) True False = __arrayIndexUnsafe (__arrayFromList []) 0@
           -- type-checks. Users have the safe @arrayIndex@/@Array.get@ wrappers
           -- (which return @Option@/trap), and the embedded prelude's own
@@ -14190,9 +16773,9 @@ elabActivePatternDecl mods ld sp = do
         (_argc, res) <- unrollExplicit 0 (gdType gd)
         resF <- forceM res
         let kind = case resF of
-              VGlobN (GName _ "Option") _ -> Right APOption
-              VGlobN (GName _ "Match") _ -> Right APMatch
-              VGlobN (GName _ h) _ | h `elem` kernelMonadCarriers -> Left h
+              VGlobN g _ | g == prelOption -> Right APOption
+              VGlobN g _ | g == prelMatch -> Right APMatch
+              VGlobN g _ | g `elem` kernelMonadCarriers -> Left (gKey g)
               _ -> Right APTotal
         case kind of
           Left h ->
@@ -14444,6 +17027,95 @@ registerProjection g coreTy defTm pj = do
   recordCoreBody g defTm'
   modify' $ \st -> st {csProjections = Map.insert g pj (csProjections st)}
 
+rejectInoutBinderContext :: Text -> Binder -> CheckM ()
+rejectInoutBinderContext context b =
+  when (bInout b) $
+    errAt (bSpan b) "E_QTT_INOUT_BINDER_CONTEXT" (Just "kappa-hs.qtt.inout-marker")
+      ( "'inout' is permitted only on explicit parameters of named functions, "
+          <> "methods, and trait-member signatures; it is not permitted in a "
+          <> context
+          <> " (§18.9.2)"
+      )
+
+rejectAllInoutBinders :: Data a => Text -> a -> CheckM ()
+rejectAllInoutBinders context x =
+  forM_ (collectInoutBinders x) (rejectInoutBinderContext context)
+
+collectInoutBinders :: Data a => a -> [Binder]
+collectInoutBinders x =
+  maybeToList (cast x >>= \b -> if bInout b then Just b else Nothing)
+    ++ concat (gmapQ collectInoutBinders x)
+
+withNamedCallableInoutSignature :: Expr -> CheckM a -> CheckM a
+withNamedCallableInoutSignature tyE action = do
+  validateNamedCallableInoutSignature tyE
+  old <- gets csAllowInoutBinderContext
+  modify' $ \st -> st {csAllowInoutBinderContext = True}
+  r <- action
+  modify' $ \st -> st {csAllowInoutBinderContext = old}
+  pure r
+
+validateNamedCallableInoutSignature :: Expr -> CheckM ()
+validateNamedCallableInoutSignature = goHead
+  where
+    goHead = \case
+      EArrow b body -> do
+        forM_ (bType b) (rejectAllInoutBinders "parameter type")
+        forM_ (bDefault b) (rejectAllInoutBinders "parameter default")
+        goHead body
+      EForall bs body _ -> do
+        forM_ bs $ \b -> do
+          rejectInoutBinderContext "forall binder" b
+          forM_ (bType b) (rejectAllInoutBinders "forall binder type")
+          forM_ (bDefault b) (rejectAllInoutBinders "forall binder default")
+        goHead body
+      ETraitArrow premise body -> do
+        rejectAllInoutBinders "trait premise" premise
+        goHead body
+      EAscription e ty _ -> do
+        goHead e
+        rejectAllInoutBinders "signature ascription type" ty
+      ECaptures e _ _ -> goHead e
+      other ->
+        rejectAllInoutBinders "nested anonymous function type" other
+
+recordInoutParams :: GName -> [Maybe InoutParamInfo] -> CheckM ()
+recordInoutParams g infos =
+  when (any isJust infos) $
+    modify' $ \st -> st {csInoutParams = Map.insert g infos (csInoutParams st)}
+
+inoutParamsFromBinders :: [Binder] -> [Maybe InoutParamInfo]
+inoutParamsFromBinders =
+  mapMaybe explicitInfo
+  where
+    explicitInfo b
+      | bImplicit b = Nothing
+      | otherwise =
+          Just $
+            if bInout b
+              then do
+                nm <- bName b
+                let t = nameText nm
+                Just (InoutParamInfo t t)
+              else Nothing
+
+signatureBinders :: Expr -> [Binder]
+signatureBinders = \case
+  EForall bs body _ -> bs ++ signatureBinders body
+  ETraitArrow _ body -> signatureBinders body
+  EArrow b body -> b : signatureBinders body
+  ECaptures e _ _ -> signatureBinders e
+  EAscription e _ _ -> signatureBinders e
+  _ -> []
+
+recordSignatureInoutParams :: GName -> Expr -> CheckM ()
+recordSignatureInoutParams g tyE =
+  recordInoutParams g (inoutParamsFromBinders (signatureBinders tyE))
+
+recordDefinitionInoutParams :: GName -> [Binder] -> CheckM ()
+recordDefinitionInoutParams g binders =
+  recordInoutParams g (inoutParamsFromBinders binders)
+
 elabLetDecl :: DeclMods -> LetDef -> Span -> CheckM ()
 -- Signature-governed functions are recorded for the SCC termination pass;
 -- non-recursive values still become reducible immediately.
@@ -14453,6 +17125,7 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   flushPending
   g <- ownName n
   noteDefinition g sp
+  recordDefinitionInoutParams g binders
   -- §8.5.2: an 'opaque' term definition keeps its equation available for
   -- definitional equality inside this module, but it is sealed
   -- (gdReducible cleared) at module end so other modules treat it as an
@@ -14575,7 +17248,7 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
       -- resolve and are reported as recursion-without-signature (§9.2)
       placeholderTy <- freshMetaV emptyCtx
       addGlobal g (GlobalDef placeholderTy Nothing False)
-      (tm0, ty) <- elabFunction binders mResTy body sp
+      (tm0, ty) <- elabFunction (Just (nameText n)) binders mResTy body sp
       flushPending
       tm <- zonkTermM 0 tm0
       when (occursGlobal g tm) $
@@ -15277,12 +17950,19 @@ collectFunEdges funMap src =
         rm <- maybe (pure (Just [])) (collectStrictSubtermEdges d sub ho facts boolFacts . snd) m
         pure (joinEdges rt rm)
       KExpr t -> collectStrictSubtermEdges d sub ho facts boolFacts t
-      KVarItem _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
-      KAssign lhs _ rhs -> joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts lhs <*> collectStrictSubtermEdges d sub ho facts boolFacts rhs
+      KVarItem _ initT actT ->
+        joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts initT <*> collectStrictSubtermEdges d sub ho facts boolFacts actT
+      KAssign lhs _ rhs actT ->
+        joinManyEdges
+          <$> sequence
+            [ collectStrictSubtermEdges d sub ho facts boolFacts lhs
+            , collectStrictSubtermEdges d sub ho facts boolFacts rhs
+            , collectStrictSubtermEdges d sub ho facts boolFacts actT
+            ]
       KReturn t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KWhile _ c b e ->
         joinManyEdges <$>
-          sequence (collectStrictSubtermEdges d sub ho facts boolFacts c : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
+          sequence (collectStrictSubtermEdges d sub ho facts boolFacts (kCondTerm c) : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
       KFor _ _ s b e ->
         joinManyEdges <$>
           sequence (collectStrictSubtermEdges d sub ho facts boolFacts s : map (collectStrictSubtermEdgesK d sub ho facts boolFacts) b ++ maybe [] (map (collectStrictSubtermEdgesK d sub ho facts boolFacts)) e)
@@ -15374,11 +18054,14 @@ collectFunEdges funMap src =
       KLet _ _ t -> containsSccReference d ho esc t
       KLetQ _ t m -> containsSccReference d ho esc t || maybe False (containsSccReference d ho esc . snd) m
       KExpr t -> containsSccReference d ho esc t
-      KVarItem _ t -> containsSccReference d ho esc t
-      KAssign lhs _ rhs -> containsSccReference d ho esc lhs || containsSccReference d ho esc rhs
+      KVarItem _ initT actT -> containsSccReference d ho esc initT || containsSccReference d ho esc actT
+      KAssign lhs _ rhs actT ->
+        containsSccReference d ho esc lhs
+          || containsSccReference d ho esc rhs
+          || containsSccReference d ho esc actT
       KReturn t -> containsSccReference d ho esc t
       KWhile _ c b e ->
-        containsSccReference d ho esc c || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
+        containsSccReference d ho esc (kCondTerm c) || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
       KFor _ _ s b e ->
         containsSccReference d ho esc s || any (containsSccReferenceK d ho esc) b || maybe False (any (containsSccReferenceK d ho esc)) e
       KIf alts e ->
@@ -15420,12 +18103,19 @@ collectFunEdges funMap src =
         rm <- maybe (pure (Just [])) (goArg d sub ho esc facts boolFacts . snd) m
         pure (joinEdges rt rm)
       KExpr t -> goArg d sub ho esc facts boolFacts t
-      KVarItem _ t -> goArg d sub ho esc facts boolFacts t
-      KAssign lhs _ rhs -> joinEdges <$> goArg d sub ho esc facts boolFacts lhs <*> goArg d sub ho esc facts boolFacts rhs
+      KVarItem _ initT actT ->
+        joinEdges <$> goArg d sub ho esc facts boolFacts initT <*> goArg d sub ho esc facts boolFacts actT
+      KAssign lhs _ rhs actT ->
+        joinManyEdges
+          <$> sequence
+            [ goArg d sub ho esc facts boolFacts lhs
+            , goArg d sub ho esc facts boolFacts rhs
+            , goArg d sub ho esc facts boolFacts actT
+            ]
       KReturn t -> go d sub ho esc facts boolFacts t
       KWhile _ c b e ->
         joinManyEdges <$>
-          sequence (go d sub ho esc facts boolFacts c : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
+          sequence (go d sub ho esc facts boolFacts (kCondTerm c) : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
       KFor _ _ s b e ->
         joinManyEdges <$>
           sequence (goArg d sub ho esc facts boolFacts s : map (goK d sub ho esc facts boolFacts) b ++ maybe [] (map (goK d sub ho esc facts boolFacts)) e)
@@ -16114,21 +18804,24 @@ checkAgainstSig retName sigTy binders body sp = do
       CLam ic q bn <$> go ctx' cod rest
 
 
-elabFunction :: [Binder] -> Maybe Expr -> Expr -> Span -> CheckM (Term, Value)
-elabFunction [] mResTy body _ = case mResTy of
-  Just tyE -> do
-    (tyTm, _) <- inferType emptyCtx tyE
-    tyV <- evalIn emptyCtx tyTm
-    tm <- check emptyCtx body tyV
-    pure (tm, tyV)
-  Nothing -> do
-    (tm, ty) <- infer emptyCtx body
-    insertAllImplicits emptyCtx (exprSpan body) tm ty
-elabFunction binders mResTy body sp = do
+elabFunction :: Maybe Text -> [Binder] -> Maybe Expr -> Expr -> Span -> CheckM (Term, Value)
+elabFunction retName [] mResTy body _ =
+  let ctx = emptyCtx {ctxReturnTarget = retName}
+   in case mResTy of
+        Just tyE -> do
+          (tyTm, _) <- inferType ctx tyE
+          tyV <- evalIn ctx tyTm
+          tm <- check ctx body tyV
+          pure (tm, tyV)
+        Nothing -> do
+          (tm, ty) <- infer ctx body
+          insertAllImplicits ctx (exprSpan body) tm ty
+elabFunction retName binders mResTy body sp = do
   let bodyE = case mResTy of
         Just tyE -> EAscription body tyE sp
         Nothing -> body
-  elabLambda emptyCtx binders bodyE sp Nothing
+      ctx = emptyCtx {ctxReturnTarget = retName}
+  elabNamedDeclLambda ctx binders bodyE sp Nothing
 
 -- | §14.3 instance pre-pass: elaborate and register the head of every
 -- top-level instance declaration (instance-set entry plus the

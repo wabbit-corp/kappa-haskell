@@ -76,6 +76,12 @@ newtype CauseReraise = CauseReraise Value
 instance Show CauseReraise where show _ = "reraised cause"
 instance Exception CauseReraise
 
+atomicReadIORef' :: IORef a -> IO a
+atomicReadIORef' ref = atomicModifyIORef' ref $ \x -> (x, x)
+
+atomicModifyIORef_' :: IORef a -> (a -> a) -> IO ()
+atomicModifyIORef_' ref f = atomicModifyIORef' ref $ \x -> (f x, ())
+
 -- | Build a structured 'InterruptCause' with the given §18.1.2 tag and no
 -- initiating fiber (@by = None@) — the form used by runtime-originated
 -- interruption (timeout's @TimedOut@, race's @RaceLost@).
@@ -103,6 +109,27 @@ causeOf e = case fromException e of
               , VCtor prelSome [VLit (LitStr (T.pack (show e)))]
               ]
           ]
+
+interruptCauseOfCause :: Value -> Maybe Value
+interruptCauseOfCause = \case
+  VCtor g [cause]
+    | g == prelInterrupt -> Just cause
+  VCtor g [primary, _cleanup]
+    | g == prelThen -> interruptCauseOfCause primary
+  VCtor g [left, right]
+    | g == prelBoth ->
+        case interruptCauseOfCause left of
+          Just cause -> Just cause
+          Nothing -> interruptCauseOfCause right
+  _ -> Nothing
+
+interruptCauseOfException :: SomeException -> Maybe Value
+interruptCauseOfException e =
+  case fromException e of
+    Just (Interrupt cause) -> Just cause
+    Nothing -> case fromException e of
+      Just (CauseReraise cause) -> interruptCauseOfCause cause
+      Nothing -> Nothing
 
 -- | Re-raise a §18.1.2 'Cause' value back into host execution: typed 'Fail'
 -- becomes a 'KappaError'; every non-typed cause (Interrupt/Defect/composite)
@@ -216,45 +243,49 @@ fiberUnmask = unsafePerformIO (newIORef Map.empty)
 currentMaskDepth :: IO Int
 currentMaskDepth = do
   tid <- myThreadId
-  Map.findWithDefault 0 tid <$> readIORef maskDepth
+  Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
 
 -- | Run @act@ with this fiber's mask depth raised by one (uninterruptible / mask
 -- entry); restored on every exit path.  NO interrupt is delivered at the boundary.
 withMaskDepthBump :: IO a -> IO a
 withMaskDepthBump act = do
   tid <- myThreadId
-  modifyIORef' maskDepth (Map.insertWith (+) tid 1)
-  act `CE.finally` modifyIORef' maskDepth (Map.adjust (subtract 1) tid)
+  atomicModifyIORef_' maskDepth (Map.insertWith (+) tid 1)
+  act `CE.finally` atomicModifyIORef_' maskDepth (Map.update dec tid)
+  where
+    dec d =
+      let d' = d - 1
+       in if d' <= 0 then Nothing else Just d'
 
 -- | Run @act@ with this fiber's mask depth SET to @d@ (a 'mask's @restore@ resets
 -- to the mask-entry level for one sub-action); restored afterwards.
 withMaskDepthSet :: Int -> IO a -> IO a
 withMaskDepthSet d act = do
   tid <- myThreadId
-  prev <- Map.findWithDefault 0 tid <$> readIORef maskDepth
-  modifyIORef' maskDepth (Map.insert tid d)
-  act `CE.finally` modifyIORef' maskDepth (Map.insert tid prev)
+  let setDepth depth =
+        if depth <= 0 then Map.delete tid else Map.insert tid depth
+  prev <- atomicModifyIORef' maskDepth $ \m ->
+    (setDepth d m, Map.findWithDefault 0 tid m)
+  act `CE.finally` atomicModifyIORef_' maskDepth (setDepth prev)
 
 -- | Record a pending interrupt cause for @tid@ (first request wins, §18.1.12).
 recordPending :: ThreadId -> Value -> IO ()
 recordPending tid cause =
-  modifyIORef' pendingInterrupt $ \m ->
+  atomicModifyIORef_' pendingInterrupt $ \m ->
     if Map.member tid m then m else Map.insert tid cause m
 
 -- | This fiber's pending interrupt cause, if any.
 takePendingIfUnmasked :: IO (Maybe Value)
 takePendingIfUnmasked = do
   tid <- myThreadId
-  d <- Map.findWithDefault 0 tid <$> readIORef maskDepth
+  d <- Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
   if d /= 0
     then pure Nothing
-    else do
-      m <- readIORef pendingInterrupt
-      case Map.lookup tid m of
-        Nothing -> pure Nothing
-        Just c -> do
-          modifyIORef' pendingInterrupt (Map.delete tid)
-          pure (Just c)
+    else
+      atomicModifyIORef' pendingInterrupt $ \m ->
+        case Map.lookup tid m of
+          Nothing -> (m, Nothing)
+          Just c -> (Map.delete tid m, Just c)
 
 -- | §32.2.6 loop-backedge safe point.  A forked fiber runs FULLY MASKED at the
 -- GHC level (spawnExit: uninterruptibleMask_), so a 'throwTo' interrupt lands
@@ -279,11 +310,13 @@ takePendingIfUnmasked = do
 -- 'interruptPoint' already handles this exactly: it opens the fiber's unmask
 -- window so the in-flight async throwTo is delivered (caught as Left), records
 -- it, and re-raises once when unmasked (or re-parks when masked — which for a
--- non-blocking checkpoint just means returning Unit, suppression intact).  So a
--- loop safe point IS 'interruptPoint (pure unit)': it absorbs the async throwTo
--- and delivers iff unmasked, never leaving a dangling async exception.
+-- non-blocking checkpoint just means returning Unit, suppression intact).
+-- 'CE.allowInterrupt' makes that unmasked window a real host delivery point
+-- even when there is no blocking operation at the loop back-edge.  So a loop
+-- safe point absorbs the async throwTo and delivers iff unmasked, never leaving
+-- a dangling async exception.
 loopSafepoint :: IO ()
-loopSafepoint = interruptPoint (pure unitV) >> pure ()
+loopSafepoint = interruptPoint (CE.allowInterrupt >> pure unitV) >> pure ()
 
 -- | A genuine interruption point: run the (parking) blocking @block@ through this
 -- fiber's GHC unmask so a 'throwTo' wake can land, then decide per §32.2.5:
@@ -298,7 +331,7 @@ loopSafepoint = interruptPoint (pure unitV) >> pure ()
 interruptPoint :: IO Value -> IO Value
 interruptPoint block = do
   tid <- myThreadId
-  um <- Map.lookup tid <$> readIORef fiberUnmask
+  um <- Map.lookup tid <$> atomicReadIORef' fiberUnmask
   case um of
     Nothing -> block   -- main fiber: not a forked interruptible target
     Just (Unmask unmask) -> go unmask
@@ -320,7 +353,7 @@ interruptPoint block = do
           d <- currentMaskDepth
           if d == 0
             then do
-              modifyIORef' pendingInterrupt (Map.delete tid)
+              atomicModifyIORef_' pendingInterrupt (Map.delete tid)
               throwIO (Interrupt cause)        -- DELIVER at this interruption point
             else go unmask                     -- RE-PARK (masked): retry the block
 
@@ -329,16 +362,16 @@ interruptPoint block = do
 getFiberLocal :: Int -> IO Value
 getFiberLocal rid = do
   tid <- myThreadId
-  locals <- readIORef fiberLocals
+  locals <- atomicReadIORef' fiberLocals
   case Map.lookup tid locals >>= Map.lookup rid of
     Just v -> pure v
-    Nothing -> Map.findWithDefault unitV rid <$> readIORef fiberRefInit
+    Nothing -> Map.findWithDefault unitV rid <$> atomicReadIORef' fiberRefInit
 
 -- | Set the current fiber's override for a cell (other cells untouched).
 setFiberLocal :: Int -> Value -> IO ()
 setFiberLocal rid v = do
   tid <- myThreadId
-  modifyIORef' fiberLocals (Map.insertWith Map.union tid (Map.singleton rid v))
+  atomicModifyIORef_' fiberLocals (Map.insertWith Map.union tid (Map.singleton rid v))
 
 -- | Spawn a fiber thread that ALWAYS records its terminal 'Exit' into a fresh
 -- MVar, returning the thread id and that cell. The child starts with async
@@ -350,8 +383,9 @@ setFiberLocal rid v = do
 spawnExit :: RT -> Value -> IO (ThreadId, MVar Value)
 spawnExit rt action = do
   parentTid <- myThreadId
-  snap <- Map.findWithDefault Map.empty parentTid <$> readIORef fiberLocals
+  snap <- Map.findWithDefault Map.empty parentTid <$> atomicReadIORef' fiberLocals
   mv <- newEmptyMVar
+  ready <- newEmptyMVar
   -- §32.2.5 interp fix: the child runs FULLY MASKED (uninterruptibleMask_), so GHC
   -- never auto-delivers a throwTo at any point — least of all at a masked region's
   -- exit boundary.  Delivery happens ONLY at explicit interruption points
@@ -359,17 +393,47 @@ spawnExit rt action = do
   -- 'unmask' (forkIOWithUnmask's restore-to-interruptible).  This makes the
   -- interpreter the faithful oracle for the native runtime's delivery gate.
   tid <- forkIOWithUnmask $ \unmask -> do
-    childTid <- myThreadId
-    modifyIORef' fiberLocals (Map.insert childTid snap)
-    modifyIORef' fiberUnmask (Map.insert childTid (Unmask unmask))
-    r <- try (CE.uninterruptibleMask_ (runIOValue rt action)) :: IO (Either SomeException Value)
-    -- per-fiber interruption state is keyed by ThreadId; drop it as the fiber ends
-    -- (ThreadIds can be reused, so a stale entry would mis-gate a future fiber).
-    modifyIORef' fiberUnmask (Map.delete childTid)
-    modifyIORef' maskDepth (Map.delete childTid)
-    modifyIORef' pendingInterrupt (Map.delete childTid)
-    _ <- tryPutMVar mv (exitOf r)
+    _ <-
+      try
+        ( CE.uninterruptibleMask_ $ do
+            childTid <- myThreadId
+            atomicModifyIORef_' fiberLocals (Map.insert childTid snap)
+            atomicModifyIORef_' fiberUnmask (Map.insert childTid (Unmask unmask))
+            -- Do not return a source-visible Fiber until the child is registered
+            -- and inside the protected driver. A parent-side cede is only a yield,
+            -- not a guarantee that the child has reached its handler.
+            _ <- tryPutMVar ready ()
+            r <- try (runIOValue rt action) :: IO (Either SomeException Value)
+            let terminalExit = exitOf r
+                -- Once the terminal Exit has been determined, publication to the
+                -- result cell is no longer an interruption point. A redundant async
+                -- Interrupt can still be in flight from the request side; absorb it
+                -- only after the MVar is definitely filled, otherwise awaiters can
+                -- block forever.
+                publish = do
+                  alreadyPublished <- isJust <$> tryReadMVar mv
+                  unless alreadyPublished $ do
+                    pr <-
+                      try
+                        ( CE.uninterruptibleMask_ $ do
+                            -- per-fiber interruption state is keyed by ThreadId; drop
+                            -- it as the fiber ends (ThreadIds can be reused, so a stale
+                            -- entry would mis-gate a future fiber).
+                            atomicModifyIORef_' fiberUnmask (Map.delete childTid)
+                            atomicModifyIORef_' maskDepth (Map.delete childTid)
+                            atomicModifyIORef_' pendingInterrupt (Map.delete childTid)
+                            _ <- tryPutMVar mv terminalExit
+                            pure ()
+                        ) ::
+                        IO (Either Interrupt ())
+                    case pr of
+                      Right () -> pure ()
+                      Left _ -> publish
+            publish
+        ) ::
+        IO (Either Interrupt ())
     pure ()
+  _ <- readMVar ready
   pure (tid, mv)
 
 -- | §18.1.4 spawn a cooperative child fiber as a 'VFiber' handle: the ThreadId
@@ -400,8 +464,7 @@ interruptWait tid mv cause = do
 -- — the registry is emptied first, so a repeat shutdown finds nothing.
 shutdownScopeReg :: IORef [Value] -> IO ()
 shutdownScopeReg reg = do
-  fibers <- readIORef reg
-  writeIORef reg []
+  fibers <- atomicModifyIORef' reg $ \fibers0 -> ([], fibers0)
   mapM_ interruptAndWait fibers
   where
     interruptAndWait (VFiber tid mv) = interruptWait tid mv (interruptCause "ScopeShutdown")
@@ -422,10 +485,10 @@ nanosToMicros ns = fromInteger (max 1 ((ns + 999) `div` 1000))
 -- cause carries the @TimedOut@ tag — i.e. the timer beat the computation.
 exitTimedOut :: EvalCtx -> Value -> Bool
 exitTimedOut ec v = case force ec v of
-  VCtor g [c] | g == prelFailure -> case force ec c of
-    VCtor g [cause] | g == prelInterrupt -> case force ec cause of
-      VCtor g (tag : _) | g == prelInterruptCause -> case force ec tag of
-        VCtor g _ | g == prelTimedOut -> True
+  VCtor exitG [c] | exitG == prelFailure -> case force ec c of
+    VCtor causeG [cause] | causeG == prelInterrupt -> case force ec cause of
+      VCtor interruptG (tag : _) | interruptG == prelInterruptCause -> case force ec tag of
+        VCtor tagG _ | tagG == prelTimedOut -> True
         _ -> False
       _ -> False
     _ -> False
@@ -498,9 +561,9 @@ runMainCaptured globals metas mainG = do
 runMainCapturedValue :: Globals -> MetaState -> GName -> IO (RunResult, Maybe Value, Text)
 runMainCapturedValue globals metas mainG = do
   buf <- newIORef []
-  let rt = RT (EvalCtx globals metas True mempty) (\t -> modifyIORef' buf (t :))
+  let rt = RT (EvalCtx globals metas True mempty) (\t -> atomicModifyIORef_' buf (t :))
   (r, mv) <- runMainRT rt mainG
-  out <- T.concat . reverse <$> readIORef buf
+  out <- T.concat . reverse <$> atomicReadIORef' buf
   pure (r, mv, out)
 
 runMainRT :: RT -> GName -> IO (RunResult, Maybe Value)
@@ -548,75 +611,15 @@ runIOValue rt v = case force (rtEC rt) v of
   VPrim p args -> runPrimIO rt p args
   other -> pure other
 
--- | Does the RAW value tree contain an embedded @__runIO@ splice
--- marker? The recursive splice walk re-forces every spine node it
--- rebuilds, so for the overwhelmingly common splice-free value it would
--- re-force each subtree once per ancestor — quadratic to exponential on
--- deep neutral spines (left-nested operator chains in particular). This
--- cheap, force-free structural pre-scan lets 'runSplices' fall straight
--- through to a single 'force' when there is nothing to splice. It mirrors
--- the structural shape of the 'runSplices' walk (same node kinds, same
--- "do not enter lambda/suspension bodies" boundary).
-hasSplice :: Value -> Bool
-hasSplice = \case
-  VPrim "__runIO" (_ : _) -> True
-  VGlobN g sp
-    | g == prelRunIO
-    , any ((== Expl) . fst) sp -> True
-    | otherwise -> any (hasSplice . snd) sp
-  VFlex _ sp -> any (hasSplice . snd) sp
-  VPrim _ args -> any hasSplice args
-  VCtor _ args -> any hasSplice args
-  VRecordV fs -> any (hasSplice . snd) fs
-  VInject _ a -> hasSplice a
-  _ -> False
-
--- | Run embedded monadic splices (§18.3): the elaborator marks them as
--- applications of the internal @__runIO@ primitive. The walk is
--- left-to-right, executes each splice exactly once, and does not enter
--- lambda or suspension bodies (splices do not cross those boundaries).
-runSplices :: RT -> Value -> IO Value
-runSplices rt v0
-  -- fast path: no embedded splice in the raw tree, so the walk would only
-  -- rebuild-and-re-force an unchanged spine. Force once and return.
-  | not (hasSplice v0) = pure (force ec v0)
-  where
-    ec = rtEC rt
-runSplices rt v0 = case v0 of
-  -- scan the RAW value: forcing first would β-reduce past unrun splices
-  VPrim "__runIO" (a : restArgs) -> do
-    r <- runIOValue rt =<< runSplices rt a
-    runSplices rt (foldl (\f x -> vapp ec f Expl x) r restArgs)
-  VGlobN g sp
-    -- the implicit prefix holds the splice marker's erased type
-    -- arguments; only the explicit argument onward matters here
-    | g == prelRunIO
-    , (_implPrefix, (Expl, a) : restSp) <- span ((== Impl) . fst) sp -> do
-        r <- runIOValue rt =<< runSplices rt a
-        runSplices rt (evalApp ec r restSp)
-  VGlobN g sp -> do
-    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices rt a) sp
-    pure (force ec (VGlobN g sp'))
-  VFlex m sp -> do
-    sp' <- mapM (\(ic, a) -> (,) ic <$> runSplices rt a) sp
-    pure (force ec (VFlex m sp'))
-  VPrim p args -> do
-    args' <- mapM (runSplices rt) args
-    pure (force ec (rebuild p args'))
-    where
-      rebuild q as = case evalPurePrim q (map (force ec) as) of
-        Just r -> r
-        Nothing -> VPrim q as
-  VCtor g args -> VCtor g <$> mapM (runSplices rt) args
-  VRecordV fs -> VRecordV <$> mapM (\(n, a) -> (,) n <$> runSplices rt a) fs
-  VInject t a -> VInject t <$> runSplices rt a
-  _ -> pure (force ec v0)
-  where
-    ec = rtEC rt
-
--- | Evaluate a term and execute its splices.
+-- | Evaluate a term. Monadic splices (§18.3.1) are elaborated into ordinary
+-- do-binds before runtime, so interpretation never performs value-position IO
+-- extraction while evaluating a pure term. Runtime pure evaluation is still an
+-- implementation-defined §32.2.6 safe-point region: outside Kappa masks, a
+-- pending fiber interruption may abort long-running pure recursion just as the
+-- native backends' scalar-loop safepoints do.
 evalK :: RT -> Env -> Term -> IO Value
-evalK rt env t = runSplices rt (eval (rtEC rt) env t)
+evalK rt env t =
+  interruptPoint (CE.evaluate (force (rtEC rt) (eval (rtEC rt) env t)))
 
 -- One do-scope: exit actions are scheduled here and run exactly once,
 -- LIFO, on every way out (§18.7, §18.8.3).
@@ -632,10 +635,21 @@ runScope rt reg0 selfLabel env0 items0 = do
   let reg = case selfLabel of
         Just l -> (l, exitsRef) : reg0
         Nothing -> reg0
+      appendCleanup primary cleanup = Just $ case primary of
+        Nothing -> cleanup
+        Just p ->
+          CE.toException (CauseReraise (VCtor prelThen [causeOf p, causeOf cleanup]))
+      runExitsFrom primary = do
+        exits <- atomicModifyIORef' exitsRef $ \exits0 -> ([], exits0)
+        withMaskDepthBump (loopExits primary exits)
+        where
+          loopExits acc [] = pure acc
+          loopExits acc (exitAction : more) = do
+            r <- try exitAction :: IO (Either SomeException ())
+            loopExits (either (appendCleanup acc) (const acc) r) more
       runExits = do
-        exits <- readIORef exitsRef
-        writeIORef exitsRef []
-        sequence_ exits
+        mErr <- runExitsFrom Nothing
+        maybe (pure ()) throwIO mErr
       leave c = runExits >> pure c
 
       go :: Env -> [KItem] -> IO Completion
@@ -661,17 +675,11 @@ runScope rt reg0 selfLabel env0 items0 = do
                   leave (CplNormal r)
                 Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? else: residue pattern failed")))
               Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? pattern failed and no Alternative is available")))
-        KVarItem _ t -> do
-          ref <- newIORef =<< evalK rt env t
-          go (VRef ref : env) rest
-        KAssign refT monadic rhsT -> do
-          rhs <-
-            if monadic
-              then runIOValue rt =<< evalK rt env rhsT
-              else evalK rt env rhsT
-          case force ec (eval ec env refT) of
-            VRef ref -> writeIORef ref rhs
-            _ -> throwIO (KappaError (VLit (LitStr "assignment target is not a var")))
+        KVarItem _ _ actT -> do
+          ref <- runIOValue rt =<< evalK rt env actT
+          go (ref : env) rest
+        KAssign _ _ _ actT -> do
+          _ <- runIOValue rt =<< evalK rt env actT
           go env rest
         KReturn t -> leave . CplReturn =<< evalK rt env t
         KBreak ml -> leave (CplBreak ml)
@@ -684,7 +692,7 @@ runScope rt reg0 selfLabel env0 items0 = do
           let target = case ml of
                 Nothing -> exitsRef
                 Just l -> fromMaybe exitsRef (lookup l reg)
-          modifyIORef' target ((() <$ (runIOValue rt =<< evalK rt env t)) :)
+          atomicModifyIORef_' target ((() <$ (runIOValue rt =<< evalK rt env t)) :)
           go env rest
         KWhile ml cond body mels -> loopOut =<< whileLoop env ml cond body mels
         KFor ml pat src body mels -> loopOut =<< forLoop env ml pat src body mels
@@ -700,10 +708,10 @@ runScope rt reg0 selfLabel env0 items0 = do
         -- for the rest of the scope, and attach `release resource` so it runs
         -- exactly once on EVERY exit path — normal completion, abrupt control,
         -- typed failure, AND interruption. The normal/abrupt path runs it LIFO
-        -- with `defer`s via the exit queue; the interrupt/error path runs it via
-        -- the exception guard below. A done-flag keeps it exactly-once across
-        -- both paths (§18.7). Unlike `defer`, this owns the quantity-`1` resource
-        -- directly (it is not a source rewrite to `defer`, §19.5).
+        -- with `defer`s via the exit queue. A done-flag keeps it exactly-once
+        -- across both normal exit and the scope-level exception drain below
+        -- (§18.7). Unlike `defer`, this owns the quantity-`1` resource directly
+        -- (it is not a source rewrite to `defer`, §19.5).
         KUsing pat acquireT releaseT -> do
           -- §32.2.5: raise the EXPLICIT mask depth for acquire (an interruption
           -- point inside it is suppressed), mirroring bracketM's masked acquire.
@@ -711,17 +719,12 @@ runScope rt reg0 selfLabel env0 items0 = do
           releaseFn <- evalK rt env releaseT
           releasedRef <- newIORef False
           let release = do
-                done <- readIORef releasedRef
-                unless done $ do
-                  writeIORef releasedRef True
-                  () <$ runIOValue rt (vapp ec releaseFn Expl resource)
-          modifyIORef' exitsRef (release :)
-          -- The continuation may exit by an async interrupt (or any exception)
-          -- that bypasses `leave`/`runExits`; `onException` runs the release in
-          -- that case too. On a normal/abrupt exit `runExits` has already run it
-          -- (so the done-flag makes `onException` — if it also fires — a no-op).
+                first <- atomicModifyIORef' releasedRef $ \done -> (True, not done)
+                when first $ do
+                  () <$ withMaskDepthBump (runIOValue rt (vapp ec releaseFn Expl resource))
+          atomicModifyIORef_' exitsRef (release :)
           bindOrDie pat resource $ \bs ->
-            go (reverse bs ++ env) rest `CE.onException` release
+            go (reverse bs ++ env) rest
         -- §18.8.3.1: a transparent nested do-scope. It runs as a child scope
         -- (its own exit-action frame and label) sharing the current label
         -- registry @reg@ — so its own `defer` runs at its exit while
@@ -746,7 +749,11 @@ runScope rt reg0 selfLabel env0 items0 = do
           -- §32.2.6: a safe point at the loop back-edge — observe a pending
           -- interrupt here so a tight non-ceding loop is interruptible (interp ==
           -- native).  Masked => no-op (suppression holds).
-          loop = loopSafepoint >> (asBool <$> evalK rt env cond) >>= \cv -> case cv of
+          evalCond = case cond of
+            KCondPure t -> evalK rt env t
+            KCondAction t -> runIOValue rt =<< evalK rt env t
+
+          loop = loopSafepoint >> (asBool <$> evalCond) >>= \cv -> case cv of
             Just True -> do
               r <- runScope rt reg ml env body
               case r of
@@ -802,17 +809,28 @@ runScope rt reg0 selfLabel env0 items0 = do
         VCtor g [h, t] | g == prelCons -> h : listElems t
         _ -> []
 
-  go env0 items0
+  r <- try (go env0 items0) :: IO (Either SomeException Completion)
+  case r of
+    Right c -> pure c
+    Left err -> do
+      mErr <- runExitsFrom (Just err)
+      throwIO (fromMaybe err mErr)
 
 -- ── IO primitives ────────────────────────────────────────────────────
 
 runPrimIO :: RT -> Text -> [Value] -> IO Value
-runPrimIO rt p rawArgs = do
-  args <- mapM (runSplices rt) rawArgs
-  runPrimIO' rt p args
+runPrimIO rt p rawArgs =
+  runPrimIO' rt p (forceArgs rawArgs)
+  where
+    ec = rtEC rt
+    forceArgs = \case
+      [] -> []
+      a : as ->
+        let a' = force ec a
+         in a' `seq` a' : forceArgs as
 
 runPrimIO' :: RT -> Text -> [Value] -> IO Value
-runPrimIO' rt p args = case (p, map (force ec) args) of
+runPrimIO' rt p args = case (p, args) of
   ("printString", [VLit (LitStr s)]) -> rtEmit rt s >> pure unitV
   ("printlnString", [VLit (LitStr s)]) -> rtEmit rt (s <> "\n") >> pure unitV
   ("ioPure", [v]) -> pure v
@@ -831,7 +849,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- KappaError, so a finalizer/release also runs when the body is interrupted.)
   ("finallyIO", [body, fin]) -> do
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    _ <- runIOValue rt fin
+    _ <- withMaskDepthBump (runIOValue rt fin)
     case r of
       Right v -> pure v
       Left err -> throwIO err
@@ -842,7 +860,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- OP_ONEXIT_FIN reason-carrying finalizer.
   ("onExit", [body, handler]) -> do
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    _ <- runIOValue rt (vapp ec handler Expl (exitOf r))
+    _ <- withMaskDepthBump (runIOValue rt (vapp ec handler Expl (exitOf r)))
     either throwIO pure r
   -- §18.1.4 onInterrupt: the handler runs ONLY when the body exits via
   -- interruption, receiving the 'InterruptCause'. Other exits (normal, typed
@@ -850,10 +868,9 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("onInterrupt", [body, handler]) -> do
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
     case r of
-      Left e | Just (Interrupt cause) <- fromException e ->
-        runIOValue rt (vapp ec handler Expl cause) >> throwIO e
+      Left e | Just cause <- interruptCauseOfException e ->
+        withMaskDepthBump (runIOValue rt (vapp ec handler Expl cause)) >> throwIO e
       _ -> either throwIO pure r
-  ("__runIO", [action]) -> runIOValue rt action
   -- §18.1.4/§18.11: fork spawns a cooperative child fiber (a GHC green thread
   -- on the single OS agent — non-threaded RTS ⇒ no parallelism, weak fairness
   -- from the RTS scheduler). The child runs concurrently; its terminal Exit
@@ -961,13 +978,13 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("newScope", _) -> VScope <$> newIORef []
   ("forkIn", [VScope reg, action]) -> do
     fib <- forkFiber rt action
-    modifyIORef' reg (fib :)
+    atomicModifyIORef_' reg (fib :)
     pure fib
   ("shutdownScope", [VScope reg]) -> shutdownScopeReg reg >> pure unitV
   ("withScope", [useFn]) -> do
     reg <- newIORef []
     r <- try (runIOValue rt (vapp ec useFn Expl (VScope reg))) :: IO (Either SomeException Value)
-    shutdownScopeReg reg
+    withMaskDepthBump (shutdownScopeReg reg)
     either throwIO pure r
   -- §18.1.12 interruption masking. The interpreter runs fibers on GHC green
   -- threads where interruption is an async 'Interrupt' exception, so masking
@@ -992,10 +1009,12 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- ignoring the mask depth.
   ("poll", _) -> do
     tid <- myThreadId
-    m <- readIORef pendingInterrupt
-    case Map.lookup tid m of
+    mc <- atomicModifyIORef' pendingInterrupt $ \m ->
+      case Map.lookup tid m of
+        Nothing -> (m, Nothing)
+        Just c -> (Map.delete tid m, Just c)
+    case mc of
       Just c -> do
-        modifyIORef' pendingInterrupt (Map.delete tid)
         throwIO (Interrupt c)
       Nothing -> pure unitV
   -- `mask f` runs `f` masked and hands it a `restore`.  We record the mask-ENTRY
@@ -1005,10 +1024,15 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- record popped on every exit path ('CE.finally').
   ("__mask", [f]) -> do
     tid <- myThreadId
-    entry <- Map.findWithDefault 0 tid <$> readIORef maskDepth
-    modifyIORef' maskEntryDepths (Map.insertWith (++) tid [entry])
-    let pop = modifyIORef' maskEntryDepths (Map.adjust (drop 1) tid)
+    entry <- Map.findWithDefault 0 tid <$> atomicReadIORef' maskDepth
+    atomicModifyIORef_' maskEntryDepths (Map.insertWith (++) tid [entry])
+    let pop = atomicModifyIORef_' maskEntryDepths (Map.update popEntry tid)
     withMaskDepthBump (runIOValue rt (vapp ec f Expl (VPrim "__restore" []))) `CE.finally` pop
+    where
+      popEntry (_ : rest)
+        | null rest = Nothing
+        | otherwise = Just rest
+      popEntry [] = Nothing
   -- '__restore act' (supplied by `mask` as its body's `restore`): run `act` at the
   -- interruptibility that held at the enclosing `mask`'s ENTRY — i.e. with the
   -- explicit mask depth reset to that entry level (often 0 => interruptible).  With
@@ -1016,7 +1040,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- run the action unchanged.
   ("__restore", [act]) -> do
     tid <- myThreadId
-    es <- readIORef maskEntryDepths
+    es <- atomicReadIORef' maskEntryDepths
     case Map.lookup tid es of
       Just (d : _) -> withMaskDepthSet d (runIOValue rt act)
       _ -> runIOValue rt act
@@ -1032,6 +1056,10 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- the wrapper), keeping interp == C == LLVM.
   ("__restoreAt", [raw, act]) ->
     runIOValue rt (vapp ec (vapp ec raw Impl (VSort 0)) Expl act)
+  -- §18.1.11 source-level blocking bridge. The interpreter runs on GHC green
+  -- threads, so it has no scheduler-worker monopolization to avoid; executing
+  -- the body directly is the sequential oracle for success/failure/interruption.
+  ("blocking", [body]) -> runIOValue rt body
   -- §18.1.8 monitors: a non-destructive observer of a fiber's terminal Exit
   -- (the result cell is read, not consumed, so monitoring is independent of
   -- awaiting). demonitor drops the observation.
@@ -1041,7 +1069,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- §18.1.7 fiber-local state.
   ("newFiberRef", [v]) -> do
     rid <- atomicModifyIORef' fiberRefCounter (\n -> (n + 1, n))
-    modifyIORef' fiberRefInit (Map.insert rid v)
+    atomicModifyIORef_' fiberRefInit (Map.insert rid v)
     pure (VFiberRef rid)
   ("getFiberRef", [VFiberRef rid]) -> getFiberLocal rid
   ("setFiberRef", [VFiberRef rid, v]) -> setFiberLocal rid v >> pure unitV
@@ -1059,7 +1087,7 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     old <- getFiberLocal rid
     setFiberLocal rid v
     r <- try (runIOValue rt body) :: IO (Either SomeException Value)
-    setFiberLocal rid old
+    withMaskDepthBump (setFiberLocal rid old)
     either throwIO pure r
   -- §18.1.13 STM (single agent): TVars are cells; `atomically` runs the
   -- transaction directly (no concurrent agent ⇒ trivially serializable);
@@ -1089,9 +1117,9 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("awaitPromise", [VMVar mv]) -> do
     exitV <- interruptPoint (readMVar mv)
     case force ec exitV of
-      VCtor g [v] | g == prelSuccess -> pure v
-      VCtor g [c] | g == prelFailure -> case force ec c of
-        VCtor g [e] | g == prelFail -> throwIO (KappaError e)
+      VCtor exitG [v] | exitG == prelSuccess -> pure v
+      VCtor exitG [c] | exitG == prelFailure -> case force ec c of
+        VCtor causeG [e] | causeG == prelFail -> throwIO (KappaError e)
         _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: promise failed with a non-Fail cause")))
       _ -> throwIO (KappaError (VLit (LitStr "awaitPromise: malformed promise Exit")))
   -- §18.11 non-blocking peek: pollPromise returns Some Exit iff completed (None
@@ -1129,6 +1157,9 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   ("newRef", [v]) -> VRef <$> newIORef v
   ("readRef", [VRef r]) -> readIORef r
   ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
+  ("__ioNewRef", [v]) -> VRef <$> newIORef v
+  ("__ioReadRef", [VRef r]) -> readIORef r
+  ("__ioWriteRef", [VRef r, v]) -> writeIORef r v >> pure unitV
   -- MUTABLE-ARRAY-DESIGN: the SEQUENTIAL ORACLE for the boxed mutable array.
   -- A fixed-length IOArray of boxed Values is the interpreter analogue of the
   -- runtime's K_ARRAY slab: O(1) in-place get/set, length stored in the bounds.
@@ -1152,19 +1183,13 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
     if ix < 0 || ix >= len
       then throwIO (KappaError (VLit (LitStr "__arrayWrite: index out of range")))
       else IOA.writeArray arr ix v >> pure unitV
-  -- §29.1 std.atomic — the SEQUENTIAL ORACLE.  The interpreter runs all fibers
-  -- cooperatively on one OS thread, so a read-modify-write never interleaves
-  -- with another fiber: a plain mutable cell models the SAME observable result
-  -- the native lock-free atomic produces, and every memory order is trivially
-  -- sequentially consistent (the order argument carries no observable effect
-  -- here).  This is the correct oracle for single-fiber use and for the
-  -- interp==C==LLVM sequential parity case — it does NOT, and cannot, exercise
-  -- the multi-worker race the native runtime guards against (no concurrency to
-  -- lose updates to).  The cell is the same IORef carrier as a Ref; the
-  -- AtomicRef wrapper keeps it opaque so user code cannot readRef/writeRef it.
+  -- §29.1 std.atomic. Interpreter fibers are GHC threads, so AtomicRef
+  -- read-modify-write operations must use IORef's atomic modifier as the oracle
+  -- for the native lock-free operations. Memory-order arguments still carry no
+  -- observable interpreter effect beyond the operation's required atomicity.
   ("__newAtomicRef", [v]) -> VRef <$> newIORef v
-  ("__atomicLoad", [_order, VRef r]) -> readIORef r
-  ("__atomicStore", [_order, VRef r, v]) -> writeIORef r v >> pure unitV
+  ("__atomicLoad", [_order, VRef r]) -> atomicModifyIORef' r (\old -> (old, old))
+  ("__atomicStore", [_order, VRef r, v]) -> atomicModifyIORef' r (\_old -> (v, unitV))
   ("__atomicExchange", [_order, VRef r, v]) -> atomicModifyIORef' r (\old -> (v, old))
   -- strong compare-exchange: perform the swap and return the WITNESSED old value
   -- (the matched expected on success, the actual current on failure).  On the
@@ -1173,10 +1198,10 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
   -- as the native path does — this keeps the oracle and the runtime identical.
   -- The order arg is now an Integer code; the single agent ignores it.
   ("__atomicCompareExchange", [_succ, _fail, VRef r, expected, desired]) -> do
-    current <- readIORef r
-    if convertible ec 0 (force ec current) (force ec expected)
-      then writeIORef r desired >> pure current
-      else pure current
+    atomicModifyIORef' r $ \current ->
+      if convertible ec 0 (force ec current) (force ec expected)
+        then (desired, current)
+        else (current, current)
   -- fetch-* return the OLD value (AtomicInteger gates these to integer cells).
   ("__atomicFetchAdd", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (+ n)
   ("__atomicFetchSub", [_order, VRef r, VLit (LitInt n)]) -> atomicFetchInt r (subtract n)
@@ -1201,11 +1226,11 @@ runPrimIO' rt p args = case (p, map (force ec) args) of
         <> " args=" <> T.intercalate " ; " (map (renderTerm . quote ec 0) args)
   where
     ec = rtEC rt
-    -- §29.1 a sequential fetch-modify on the single agent: read the old Integer,
-    -- write the transformed value, return the OLD (matching the native
-    -- fetch-* return convention).  Indivisible here because no other fiber runs.
+    -- §29.1 fetch-modify: atomically transform the cell and return the OLD value
+    -- (matching the native fetch-* return convention).
     atomicFetchInt r f = do
-      old <- readIORef r
-      case force ec old of
-        VLit (LitInt o) -> writeIORef r (VLit (LitInt (f o))) >> pure (VLit (LitInt o))
-        _ -> throwIO (KappaError (VLit (LitStr "atomicFetch: cell is not an Integer")))
+      res <- atomicModifyIORef' r $ \old ->
+        case force ec old of
+          VLit (LitInt o) -> (VLit (LitInt (f o)), Right (VLit (LitInt o)))
+          _ -> (old, Left (KappaError (VLit (LitStr "atomicFetch: cell is not an Integer"))))
+      either throwIO pure res

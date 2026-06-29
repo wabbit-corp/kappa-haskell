@@ -15,7 +15,7 @@ main : UIO Unit
 let main = do
     var i = 1
     while leInt i 5 do
-        f <- fork (emit i)
-        r <- await f
+        let f <- fork (emit i)
+        let r <- await f
         i = addInt i 1
     printlnString "done"

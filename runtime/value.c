@@ -302,7 +302,7 @@ KValue *kfgn(void *p, const char *kind) {
  * (§27.1.1).  Accumulates args via kapp.  `is_io` distinguishes a pure
  * builtin (fires its fn immediately on saturation) from an effectful action
  * (a saturated value is the suspended IO action that krun_io fires). */
-KValue *knative(KNativeFn fn, int arity, const char *kind, int is_io) {
+static KValue *knative_make(KNativeFn fn, int arity, const char *kind, int is_io, int blocking) {
   KValue *r = alloc_val(K_NATIVE);
   r->as.native.fn = fn;
   r->as.native.arity = arity;
@@ -310,14 +310,23 @@ KValue *knative(KNativeFn fn, int arity, const char *kind, int is_io) {
   r->as.native.args = NULL;
   r->as.native.kind = kind;
   r->as.native.is_io = is_io;
+  r->as.native.blocking = blocking;
   return r;
+}
+
+KValue *knative(KNativeFn fn, int arity, const char *kind, int is_io) {
+  return knative_make(fn, arity, kind, is_io, 0);
+}
+
+KValue *knative_blocking(KNativeFn fn, int arity, const char *kind, int is_io) {
+  return knative_make(fn, arity, kind, is_io, 1);
 }
 
 /* The saturated fast path: build a K_NATIVE holding all `arity` args at once
  * (copied into GC memory so it outlives the caller's argument array).  For an
  * effectful action this is the suspended IO action krun_io fires; codegen
  * emits this only for IO builtins / native symbols. */
-KValue *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io) {
+static KValue *knative_sat_make(KNativeFn fn, int arity, KValue **args, int is_io, int blocking) {
   KValue *r = alloc_val(K_NATIVE);
   r->as.native.fn = fn;
   r->as.native.arity = arity;
@@ -327,7 +336,16 @@ KValue *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io) {
   r->as.native.args = a;
   r->as.native.kind = "native";
   r->as.native.is_io = is_io;
+  r->as.native.blocking = blocking;
   return r;
+}
+
+KValue *knative_sat(KNativeFn fn, int arity, KValue **args, int is_io) {
+  return knative_sat_make(fn, arity, args, is_io, 0);
+}
+
+KValue *knative_sat_blocking(KNativeFn fn, int arity, KValue **args, int is_io) {
+  return knative_sat_make(fn, arity, args, is_io, 1);
 }
 
 KValue *kinject(int tagid, const char *tag, KValue *payload) {
@@ -410,6 +428,7 @@ static KValue *native_append_arg(KValue *f, KValue *x) {
   r->as.native.argc = n + 1;
   r->as.native.kind = f->as.native.kind;
   r->as.native.is_io = f->as.native.is_io;
+  r->as.native.blocking = f->as.native.blocking;
   KValue **a = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n + 1));
   for (int i = 0; i < n; i++) a[i] = f->as.native.args[i];
   a[n] = x;
@@ -800,6 +819,17 @@ void *kas_fgn(KValue *v) {
   return v->as.fgn.p;
 }
 
+void *kas_fgn_kind(KValue *v, const char *kind) {
+  if (kis_imm(v) || v->tag != K_FGN) krt_fail("kas_fgn_kind: not a foreign handle");
+  if (strcmp(v->as.fgn.kind, kind) != 0) {
+    char msg[256];
+    snprintf(msg, sizeof(msg), "wrong foreign handle kind: expected %s, got %s",
+             kind, v->as.fgn.kind ? v->as.fgn.kind : "<null>");
+    krt_fail(msg);
+  }
+  return v->as.fgn.p;
+}
+
 /* ── references ────────────────────────────────────────────────────── */
 
 KValue *kref_get(KValue *r) {
@@ -811,4 +841,3 @@ KValue *kref_set(KValue *r, KValue *v) {
   r->as.ref.cell[0] = v;
   return kunit();
 }
-

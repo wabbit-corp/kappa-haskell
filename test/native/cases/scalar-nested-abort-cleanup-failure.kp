@@ -1,0 +1,68 @@
+-- Native-only regression for scalar safe-point abort cleanup failures.
+--
+-- The abort must enter the runtime unwinder, not return through generated C:
+-- both cleanup actions run in LIFO order, both cleanup failures are preserved
+-- under Then after the primary Interrupt, and the source effect after the scalar
+-- worker never runs.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..), type InterruptCause(..))
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO String) Res =
+    let release r = do
+        printlnString "release-fail"
+        throwIO "release"
+
+acquireRes : IO String Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+-- UIO is IO Void. This explicitly weakens the impossible error channel; ordinary
+-- do-items do not implicitly coerce IO Void a to IO e a.
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
+
+spin : Int -> Int -> Int
+let spin acc n =
+    if leInt n 0
+    then acc
+    else spin (addInt acc 1) (subInt n 1)
+
+wrap : Int -> Int
+let wrap n = addInt (spin 0 n) 1
+
+deferFail : IO String Unit
+let deferFail = do
+    printlnString "defer-fail"
+    throwIO "defer"
+
+classify : Cause String -> String
+let classify c = match c
+    case Then (Then (Interrupt cause) (Fail a)) (Fail b) -> "exit:then2:" ++ a ++ ":" ++ b
+    case Then (Interrupt cause) (Fail a) -> "exit:then1:" ++ a
+    case Interrupt cause -> "exit:interrupted"
+    case Fail e -> "exit:fail:" ++ e
+    case _ -> "exit:other"
+
+child : Promise Void Unit -> IO String Unit
+let child ready = do
+    using r <- acquireRes
+    defer deferFail
+    let _ <- weakenVoidIO (completePromise ready (Success ()))
+    let x = wrap 1000000000000
+    printlnString "AFTER-SCALAR-RAN"
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure c -> printlnString (classify c)

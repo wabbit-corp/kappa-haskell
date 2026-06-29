@@ -1,0 +1,10 @@
+--! mode check
+--! assertNoErrors
+
+@NoPrelude module local_zipper_shadow
+
+data Unit : Type = Unit
+data Zipper (a : Type) : Type = Plain
+
+ok : Zipper Unit -> Unit
+let ok (z : Zipper Unit) : Unit = Unit

@@ -48,6 +48,29 @@ module Kappa.PathScheme
   , altBodyPos
   , altGuardPos
   , patSlotPos
+    -- * Do-kernel items
+  , doItemPos
+  , kBindActionPos
+  , kLetValuePos
+  , kLetQScrutPos
+  , kLetQElsePos
+  , kExprActionPos
+  , kVarActionPos
+  , kAssignActionPos
+  , kReturnValuePos
+  , kWhileCondPos
+  , kWhileBodyPos
+  , kWhileElsePos
+  , kForSourcePos
+  , kForBodyPos
+  , kForElsePos
+  , kIfCondPos
+  , kIfBodyPos
+  , kIfElsePos
+  , kDeferActionPos
+  , kUsingAcquirePos
+  , kUsingReleasePos
+  , kSubDoBodyPos
     -- * Single-child nodes
   , childPos
   ) where
@@ -148,6 +171,101 @@ altGuardPos = 0
 -- distinct, stable position.
 patSlotPos :: Int -> Int
 patSlotPos k = negate (k + 1)
+
+-- ── Do-kernel items ─────────────────────────────────────────────────
+
+-- | The @i@-th statement (0-based) of a 'Kappa.Core.CDo' \/ nested
+-- 'Kappa.Core.KSubDo'. Numbered from 1 like ordinary field/member slots.
+doItemPos :: Int -> Int
+doItemPos i = i + 1
+
+-- | The action child of 'Kappa.Core.KBind'.
+kBindActionPos :: Int
+kBindActionPos = 1
+
+-- | The value child of 'Kappa.Core.KLet'.
+kLetValuePos :: Int
+kLetValuePos = 1
+
+-- | The scrutinee child of 'Kappa.Core.KLetQ'.
+kLetQScrutPos :: Int
+kLetQScrutPos = 1
+
+-- | The optional else-action child of 'Kappa.Core.KLetQ'.
+kLetQElsePos :: Int
+kLetQElsePos = 2
+
+-- | The action child of 'Kappa.Core.KExpr'.
+kExprActionPos :: Int
+kExprActionPos = 1
+
+-- | The checker-selected @MonadRef.newRef@ action child of
+-- 'Kappa.Core.KVarItem'. The source initializer is deliberately not a separate
+-- runtime child here: the action already contains it.
+kVarActionPos :: Int
+kVarActionPos = 1
+
+-- | The checker-selected @MonadRef.writeRef@ action child of
+-- 'Kappa.Core.KAssign'. The source ref/rhs fields are retained for diagnostics
+-- and interpreter parity, but the backend executes the selected action.
+kAssignActionPos :: Int
+kAssignActionPos = 1
+
+-- | The value child of 'Kappa.Core.KReturn'.
+kReturnValuePos :: Int
+kReturnValuePos = 1
+
+-- | The condition child of 'Kappa.Core.KWhile'.
+kWhileCondPos :: Int
+kWhileCondPos = 1
+
+-- | The body child of 'Kappa.Core.KWhile'.
+kWhileBodyPos :: Int
+kWhileBodyPos = 2
+
+-- | The optional else child of 'Kappa.Core.KWhile'.
+kWhileElsePos :: Int
+kWhileElsePos = 3
+
+-- | The source child of 'Kappa.Core.KFor'.
+kForSourcePos :: Int
+kForSourcePos = 1
+
+-- | The body child of 'Kappa.Core.KFor'.
+kForBodyPos :: Int
+kForBodyPos = 2
+
+-- | The optional else child of 'Kappa.Core.KFor'.
+kForElsePos :: Int
+kForElsePos = 3
+
+-- | The condition child of the @i@-th 'Kappa.Core.KIf' arm.
+kIfCondPos :: Int -> Int
+kIfCondPos i = 1 + (2 * i)
+
+-- | The body child of the @i@-th 'Kappa.Core.KIf' arm.
+kIfBodyPos :: Int -> Int
+kIfBodyPos i = 2 + (2 * i)
+
+-- | The optional else child of a 'Kappa.Core.KIf'. Placed after every arm slot.
+kIfElsePos :: Int -> Int
+kIfElsePos armCount = 1 + (2 * armCount)
+
+-- | The action child of 'Kappa.Core.KDefer'.
+kDeferActionPos :: Int
+kDeferActionPos = 1
+
+-- | The acquire child of 'Kappa.Core.KUsing'.
+kUsingAcquirePos :: Int
+kUsingAcquirePos = 1
+
+-- | The release-function child of 'Kappa.Core.KUsing'.
+kUsingReleasePos :: Int
+kUsingReleasePos = 2
+
+-- | The child do-body of 'Kappa.Core.KSubDo'.
+kSubDoBodyPos :: Int
+kSubDoBodyPos = 1
 
 -- ── Single-child nodes ───────────────────────────────────────────────
 

@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\ncleanup-start\ncleanup-end\n"
+
+-- §18.7: a deferred action may itself suspend.  The C backend must register the
+-- deferred action as a CK-machine action tree, not run it through the synchronous
+-- krun_io bridge, so sleepFor parks and resumes during finalizer drain.
+module main
+
+main : UIO Unit
+let main = do
+    let cleanup = do
+        printlnString "cleanup-start"
+        sleepFor (millis 1)
+        printlnString "cleanup-end"
+    defer cleanup
+    printlnString "body"

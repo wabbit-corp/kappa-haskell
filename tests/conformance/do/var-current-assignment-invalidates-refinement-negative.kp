@@ -1,0 +1,24 @@
+module main
+
+-- §18.6.2 NEGATIVE: assignment advances the local var cell version and discards
+-- facts about the previous VarCurrent(x,n). The later read below must not reuse
+-- the pre-assignment Full fact, so the Full-only match remains non-exhaustive.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        cell = Empty
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

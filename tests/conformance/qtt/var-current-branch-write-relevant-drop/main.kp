@@ -1,0 +1,13 @@
+module main
+
+bad : Bool -> UIO Unit
+let bad (b : Bool) : UIO Unit =
+    do
+        var cell = 0
+        if b then
+            let >=1 token = 1
+            cell = token
+        pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP

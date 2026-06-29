@@ -1,0 +1,21 @@
+module main
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+type Outer = (sized : Sized, tag : Int)
+
+touchBufferBorrowLen :
+    forall (n : Nat). (inout buffer : Array n Byte) -> (& len : Nat) -> UIO (1 buffer : Array n Byte)
+let touchBufferBorrowLen (@0 n : Nat) (inout buffer : Array n Byte) (& len : Nat) : UIO (1 buffer : Array n Byte) =
+    pure (buffer = buffer)
+
+badBorrow : (1 outer : Outer) -> UIO Unit
+let badBorrow (1 outer : Outer) : UIO Unit =
+    do
+        touchBufferBorrowLen ~outer.sized.buffer outer.sized.len
+        pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_BORROW_OVERLAP

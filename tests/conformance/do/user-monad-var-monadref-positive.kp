@@ -1,0 +1,41 @@
+--! assertNoErrors
+--! assertExecute main 2
+
+module main
+
+data Wrap (a : Type) : Type =
+    MkWrap (runWrap : UIO a)
+
+instance Applicative Wrap =
+    let pureA x = MkWrap (pureIO x)
+    let liftA2 f ma mb =
+        match ma
+        case MkWrap ioa ->
+            match mb
+            case MkWrap iob ->
+                MkWrap (bindIO ioa (\a -> bindIO iob (\b -> pureIO (f a b))))
+
+instance Monad Wrap =
+    let (>>=) ma f =
+        match ma
+        case MkWrap ioa ->
+            MkWrap (bindIO ioa (\a ->
+                match f a
+                case MkWrap iob -> iob))
+
+instance MonadRef Wrap =
+    let Ref = __IORef
+    let newRef x = MkWrap (__ioNewRef x)
+    let readRef r = MkWrap (__ioReadRef r)
+    let writeRef r x = MkWrap (__ioWriteRef r x)
+
+foo : Wrap Int
+let foo = do
+    var x = 1
+    x = addInt x 1
+    pureA x
+
+main : UIO Int
+let main =
+    match foo
+    case MkWrap io -> io

@@ -26,7 +26,7 @@ struct { int n; const char **names; KValue **vals; } rec;   // runtime/kappart.h
 = 3 words (arity padded to 8 B + two pointers). Construction goes through `krec`:
 
 ```c
-KValue *krec(int n, const char **names, KValue **vals) {     // runtime/kappart.c:384-396
+KValue *krec(int n, const char **names, KValue **vals) {     // runtime/value.c
   KValue *r = alloc_val(K_REC);          // (1) box: kgc_alloc(sizeof(KValue))  — kappart.c:85-89
   r->as.rec.n = n;
   r->as.rec.names = names;               // stored verbatim — a generated static literal (387)
@@ -61,9 +61,9 @@ enables — not allocation bytes.
 Core has two projection nodes (`src/Kappa/Core.hs:135-144`):
 
 - `CProj !Term !Text` — name only → `kproj` → **linear `strcmp` scan** over
-  `names[]` (`runtime/kappart.c:925-939`).
+  `names[]` (`runtime/value.c`).
 - `CProjAt !Term !Text !Int` — name + a **static slot index `i`** → `krec_at` →
-  **direct `vals[i]` read, no `strcmp`** (`runtime/kappart.c:998-1002`).
+  **direct `vals[i]` read, no `strcmp`** (`runtime/value.c`).
 
 The elaborator picks per-site (`src/Kappa/Check.hs:5956-5975`, verified verbatim).
 It emits `CProjAt tm1 f i` **only** when the receiver type forces to a CLOSED

@@ -82,7 +82,7 @@ let combinedResult =
 nestedCatch : Maybe (Maybe Int)
 let nestedCatch =
     run (catch (do
-        inner <- catch (Except .throw ())
+        let inner <- catch (Except .throw ())
         pure (inner : Maybe Int)))
 -- expected: Just Nothing
 

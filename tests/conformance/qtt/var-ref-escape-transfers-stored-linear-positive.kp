@@ -1,0 +1,13 @@
+module main
+
+data Token : Type = Token
+
+data Cell : Type = Full (1 tok : Token)
+
+give : UIO (Ref Cell)
+let give = do
+    var cell : Cell = Full Token
+    return (ref cell)
+
+--! mode check
+--! assertNoErrors

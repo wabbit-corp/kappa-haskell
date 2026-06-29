@@ -38,7 +38,7 @@ accept : (& listener : Listener) -> IO HttpError Connection
 let accept listener =
     do
         var accepted = None
-        while !(readRef accepted) == None do
+        while accepted == None do
             let _ <- blocking (Selector.select listener.selector)
             match !(ServerSocketChannel.accept listener.server)
             case None -> cede
@@ -49,7 +49,7 @@ let accept listener =
                 let _ <- SocketChannel.register socket rs SelectionKey.OP_READ
                 let _ <- SocketChannel.register socket ws SelectionKey.OP_WRITE
                 accepted = Some (Connection socket rs ws)
-        match !(readRef accepted)
+        match accepted
         case Some c -> pure c
         case None -> raise (hostError "accept loop ended without a connection")
 
@@ -59,7 +59,7 @@ let readSome conn maxBytes =
         let buf <- ByteBuffer.allocate maxBytes
         var done = False
         var result = PeerClosed
-        while not (!(readRef done)) do
+        while not done do
             let _ <- blocking (Selector.select conn.readSelector)
             let n <- SocketChannel.read conn.socket buf
             if n < 0 then
@@ -73,15 +73,15 @@ let readSome conn maxBytes =
                     let arr <- ByteBuffer.flipToBytes buf
                     result = ReadBytes arr
                     done = True
-        readRef result
+        pure result
 
 writeAll : (& conn : Connection) -> Bytes -> IO HttpError Unit
 let writeAll conn payload =
     do
         var offset = 0
         let total = bytes.bytesLength payload
-        while !(readRef offset) < total do
-            let i <- readRef offset
+        while offset < total do
+            let i = offset
             let chunk = bytes.bytesDrop i payload
             let buf <- ByteBuffer.wrap chunk
             let _ <- blocking (Selector.select conn.writeSelector)

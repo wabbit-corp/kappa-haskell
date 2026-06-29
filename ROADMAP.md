@@ -56,21 +56,21 @@ FOREIGN-terminal hang) — the adversarial-review-every-merge discipline paid fo
 - **Interrupt delivery** — orphan sleep-timer (reactor-owned cancel + full-duration re-park)
   + **safe-points (§32.2.6)** — `krt2_safepoint` made real + emitted on loop back-edges across
   C/LLVM/interp; a tight CPU loop is interruptible now; no scalar perf regression.
-- **std.atomic** (§29.1) — lock-free, proven exact under an N×M race.
+- **std.atomic** (§29.1) — boxed mutex-protected atomic cells, proven exact under an N×M race.
 - **delve renders on C** + `restore`-over-suspending-do-block — both the sync-bridge `OP_*`
-  gap (`finallyIO`/`catchIO`/`OP_RESTORE` returned unrun; fixed in `C.hs suspendingNames`; [[c-backend-delve-render-bug]]).
-- **kappart.c split** (6 prefix-free TUs, `-flto`) + **`__runIO`** curried-value fix.
+  gap (`finallyIO`/`catchIO`/`OP_RESTORE` returned unrun; fixed in `C.hs suspendingNames`).
+- **kappart.c split** (6 prefix-free TUs, `-flto`) + synchronous bridge fixes for curried IO values.
 - **LLVM Int while-loop scalar-unboxing** — sumloop ~1195× → C parity.
 - **Cross-language benchmark suite** ([`bench/xlang`](bench/xlang), `make xbench`, [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md)) — 13 CLBG/Savina ports; concurrency runs the full suite correct + byte-identical to Go/GHC (the alloc-lever multiplier is not a model defect).
 
-**New open items (still TODO, folded into the tracks below):** the LLVM **curried-CK-machine-prim
-gap** (await/STM/interrupt as curried values — blocks Tier-2 on LLVM + the LLVM safepoint
-*delivery* test); the **`let`-blind + LLVM-function scalar-workers** (the next perf levers;
-mandelbrot stays boxed); a **`kctor` value-box multi-worker data race** (value.c, TSan); and the
-benchmark **prim gaps** — no `sqrt`/FP-transcendental, no fixed-precision (`%.9f`) Double format
-(block nbody/spectralnorm), **no mutable O(1) array** (highest-leverage missing data structure),
-+ 3 C-backend CPS edges (suspend-in-`for`, STM-self-tail-call stack overflow, `var:Double` helper
-miscompile).
+**Current open items (folded into the tracks below):** the completed June items formerly listed here
+are now recorded in the landed section below: LLVM curried CK-machine prims, let-blind/function
+scalar workers, FP/sqrt/transcendental + fixed-precision formatting, boxed `MutArray` Stage A,
+fiber identity, std.atomic, and several CPS/runtime edges have landed. The remaining active items are
+the explicit OPEN entries in the prioritized list: `MutArray` element unboxing and related array
+specialization, selected C-backend CPS edge cases, the `kctor` value-box multi-worker race, native
+harness concurrency-safety, remaining runtime spec-coverage stubs, and the Perceus precise-RC
+follow-up stages.
 
 ---
 
@@ -91,10 +91,10 @@ earlier this session: IsProp-under-Π soundness + honest List proofs (`d45480f`,
 
 **✅ Landed (`6756af1`) — unsafe-intrinsics gate + the `!e` desugaring fix:** the raw-admit intrinsics
 (`__eqProof`/`__transport`/`__absurd`/`__handleEff`/`__debugInspect`/`__debugCompare`/`__unsafeAssertProof`/
-`failNow`/`__runIO`/`__arrayIndexUnsafe`) are restricted to `@AllowUnsafeIntrinsics` modules — closing a
+`failNow`/`__arrayIndexUnsafe`) are restricted to `@AllowUnsafeIntrinsics` modules — closing a
 CRITICAL pre-existing TOTAL unsoundness (any module could `let bogus : (=) True False = __eqProof` → `Void`).
-The decisive find: the `!e` bang-splice was desugaring to a pure `__runIO` extraction; per **Spec §18.3.1** it
-must be a monadic **bind** (`tmp <- x; f tmp`) — fixing the desugaring closed both `__runIO` forges + a
+The decisive find: the `!e` bang-splice was desugaring to a pure extraction; per **Spec §18.3.1** it
+must be a monadic **bind** (`tmp <- x; f tmp`) — fixing the desugaring closed both extraction forges + a
 backtick-spellable sentinel bypass at the root, and a sibling pure-result-`do` extraction was closed too.
 ~10 holes found + closed across multi-model adversarial review (Claude workflows + Codex xhigh). Lesson
 logged: read the **spec** first, not the buggy code. Conformance 1916/1916, parity 121/0.
@@ -119,7 +119,7 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    `kctor` value-box multi-worker race (value.c, TSan); the timing-flaky `race`/`timeout` test; **the native
    test harness is not concurrency-safe** (`run-native-tests.sh` shares `/tmp/kserver` + the frag dir + a
    fixed port → false failures under parallel agents — needs a per-run temp dir + dynamic port); the
-   remaining runtime spec-coverage stubs (blocking, supervisor, labels, sandbox).
+   remaining runtime spec-coverage stubs (supervisor, labels, sandbox).
 5. **Bigger levers** — ✅ done: LLVM **curried-CK-machine-prim** gap (`2ceea5f`); LLVM **function**
    scalar-worker (`555f50b`); **value-unboxing largely landed** — immediate tagging (Int `b001` + nullary
    `b010` + packed 1/2-field `b011` ctors, all active in `value.c`), the suspendability gate (Stage 1.5),
@@ -144,7 +144,8 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
-   Couples with the array element-unboxing (#2 Stages B→H) and the [lazy-data note](docs/kappa_lazy_data_semantics_note.md) (the lazy+RC boundary).
+   Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
+   lazy-data design.
 6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
    Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
    `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
@@ -196,12 +197,12 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
 
 - [x] **kappart2 runtime is the unconditional native runtime** (M:N fibers, libuv reactor, STM, structured concurrency, CK-machine); the value model + scheduler live in [`runtime/`](runtime).
 - [x] **No by-name prim dispatch** — codegen lowers to direct `kp_*`/`kpf_*` calls or curried `K_NATIVE`; `prim_fire_pure`/`K_PRIM` removed.
-- [x] **`std.atomic` — real lock-free `AtomicRef`/CAS, WIRED** ([`../atomic.c`](runtime/atomic.c),
+- [x] **`std.atomic` — real boxed `AtomicRef`/CAS, WIRED** ([`../atomic.c`](runtime/atomic.c),
   commit `67e1d60`). The prelude `AtomicRef` ops lower to `krt2_atomic_load/store/
-  exchange/cas/fetch_*` with the memory-order arg threaded to a real `memory_order_*`
-  (it had been regressed to a plain `Ref` with `atomic.c` dead — fixed). Proven exact
+  exchange/cas/fetch_*`; the native cell is protected by a per-cell mutex rather
+  than promising lock-free hardware atomics for arbitrary Kappa values. Proven exact
   under an N×M multi-worker race (`atomic-race.kp` + `atomic_lostproof.c`: the old
-  plain-`Ref` lost 1,193,432 / 1,280,000 updates; the lock-free path loses 0). Two
+  plain-`Ref` lost 1,193,432 / 1,280,000 updates; the atomic path loses 0). Two
   honest in-code caveats: the order is passed as an Integer §29.1 declaration index
   (ctor tags are global), and the interpreter is the sequential oracle (cannot test
   the race). `rt-atomics` is now honest.
@@ -322,9 +323,9 @@ the real Lint are both impossible without them.
       (`GName` equality vs the canonical prelude globals), not a spelling string —
       §1.2 "a resolved reference MUST NOT target a spelling string" (a user type
       spelling `Double` in another module now stays boxed; unit-pinned). A §1.2 audit
-      of `C.hs`/`LLVM.hs` then caught the same smell in `runIOSplice`/`runIOSpliceLL`
-      (they matched the bare name `"__runIO"`) — fixed `ef6987b` to compare
-      `g == prelRunIO`; the rest of the backend's string uses (mangling, diagnostics,
+      of `C.hs`/`LLVM.hs` then caught the same smell in the old splice helpers
+      (they matched a bare internal name). Those helpers were removed when
+      bang-splice lowering became ordinary monadic bind-lifting; the rest of the backend's string uses (mangling, diagnostics,
       module-gated prim tables) were reviewed and cleared.
 - [ ] **Stage 4 — niche layout + coercion pass. DEFERRED — architectural mismatch
       with type erasure.** A bare-pointer niche (None=null, Some x=x) for ANY
@@ -478,7 +479,7 @@ the real Lint are both impossible without them.
       (state/abort/reader/nested, interp==C==LLVM). Conformance 1851→1854.
       *Partial:* `elabEffDo` lifts only `defer` (not `using`/`var`/loop — §32.2.19-21
       residual). **4b** tail-resumptive fast path + **4c** multi-shot (LARGE, behind a
-      new `rt-multishot` capability) remain. See
+      new `rt-multishot-effects` capability) remain. See
       [`docs/EFFECT-HANDLER-SCOPING.md`](docs/EFFECT-HANDLER-SCOPING.md) for the full
       design + the 4b/4c plan.
 - [ ] **Stage 5 — LLVM coroutines** (CPS-DESIGN §5). Retarget `kdo_*`/`kdok_*` to
@@ -489,7 +490,7 @@ the real Lint are both impossible without them.
 ## Track: Value unboxing ([`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md))
 
 - [~] **Stage 0 — GC/alignment contract + canonical encoding** (UNBOXING §5.2/§5.4/§7).
-      GC/alignment **CONTRACT now ENFORCED in the runtime** (`krt_init`, kappart.c):
+      GC/alignment **CONTRACT now ENFORCED in the runtime** (`krt_init`, split boxed-runtime TUs):
       `GC_set_all_interior_pointers(0)` *before* `GC_INIT` (Boehm roots only BASE
       pointers, so a tagged odd word is a non-pointer, not a false interior root);
       a startup `krt_assert_gc_alignment` (sampled `GC_MALLOC` all 8-aligned,
@@ -638,7 +639,7 @@ precise collector. Research 2026-06-27.
 ## Track: Record representation ([`RECORD-REP-OPTIMIZATION.md`](docs/RECORD-REP-OPTIMIZATION.md))
 
 Boxed records are heavy: `K_REC = {int n; const char **names; KValue **vals}` is 3 words and
-`krec` ([`kappart.c:384-396`](runtime/kappart.c)) does **two** scanned-heap allocations per
+`krec` ([`value.c`](runtime/value.c)) does **two** scanned-heap allocations per
 instance — the box (~4 words) **plus a separate copied `vals` array** (~`n` words) — and records
 **never pack** (a 2-field record allocates, while `Pair(Int,Int)` is 0 B/op). The `names` pointer
 is already a SHARED static literal (zero per-instance bytes); the redundancy is the `names` *word*
@@ -651,7 +652,7 @@ nor a coercion the `CRecord`/`CProj` nodes lack (unlike the deferred niche). Res
 - [ ] **Stage 1 — flatten `K_REC` inline** (cheapest high-payoff first step). Replace the separate
       `vals` array with a flexible-array-member (`{tag; int n; KValue fields[]}`): **one allocation
       instead of two** for EVERY record. Only `krec`'s body changes
-      ([`kappart.c:384-396`](runtime/kappart.c)) — codegen still calls `krec(n,names,vals)` and
+      ([`value.c`](runtime/value.c)) — codegen still calls `krec(n,names,vals)` and
       `CProjAt`/`krec_at` just index the inline slot. GC-positive, interpreter-parity-trivial
       (`VRecordV` is a separate Haskell type), zero typed-Core work, a better Perceus reuse target.
 - [ ] **Stage 2 — drop the per-instance `names` word for closed records.** Extend index-based
@@ -739,81 +740,86 @@ current code + the `E_*` diagnostic-catalogue coverage.
 ## Track: Runtime spec-coverage gaps ([`RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md))
 
 The `runtime-spec-coverage-audit` workflow (2026-06-26, `file:line`-grounded,
-commit `93f20af`) mapped the kappart2 runtime against the spec's §18/§29/§32.2/
-§27.6 MUSTs and found **11 normative-MUST gaps + several PARTIAL refinements** —
-**none of which this roadmap tracked**. [`docs/RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md)
-is the detailed map (per-area tables, `file:line` evidence, severity, effort);
-this track is the worklist. The CK-machine core (§32.2 sequential one-shot) and
-the §18.1 structured-concurrency surface are solidly done on C — **these are the
-edges, and several are silent-correctness bugs, not just missing features.**
-Verified still open against HEAD (the audit post-dates the `fbe787c` Eff-do lift).
+commit `93f20af`) originally mapped kappart2 against the spec's §18/§29/§32.2/
+§27.6 MUSTs and found **11 normative-MUST gaps + several PARTIAL refinements**.
+The live status is maintained in [`docs/RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md);
+as of the current S2.3b work it reports **5 deduplicated normative-MUST gaps**.
+This track keeps the remaining worklist and the closed items that materially
+changed runtime semantics. The CK-machine core (§32.2 sequential one-shot),
+native `rt-blocking`, atomics, STM core, and handler-abandonment drain are wired
+and tested; the remaining open items below are still real spec gaps.
 
 **Silent-correctness MUST violations (real bugs):**
-- [ ] **Handler abandonment cleanup (§32.2.20/.21)** — a one-shot handler clause
-      that completes WITHOUT resuming severs `[head..prev]` into a `Resumption`
-      ([`rt.c:795-803`](runtime/rt.c)) and pops the prompt; the slice is then GC'd
-      with **no path running `begin_finseq` over `r->head`**, so a `using`/`defer`
-      inside the handled body **never runs** — a silent resource leak on native.
-      Untested by construction (the interp oracle reduces `__effDefer` to Unit).
-      The audit's #1 priority.
+- [x] **Handler abandonment cleanup (§32.2.20/.21) — FIXED.** A one-shot handler
+      clause that completes without resuming now drains the captured segment
+      through `KK_ABANDON`/`KK_ABANDEND` and `begin_abandon_drain`, running captured
+      `using`/`defer` actions exactly once in masked LIFO order before delivering
+      the clause result. Covered by `runtime/tests/abandon_drain.c` and
+      `runtime/tests/abandon_perform.c`; see the implemented row in
+      [`docs/RUNTIME-SPEC-COVERAGE.md`](docs/RUNTIME-SPEC-COVERAGE.md).
 - [x] **`std.atomic` wired + atomic (§29.1) — FIXED** (commit `67e1d60`). The prelude
-      `AtomicRef` ops now lower to the lock-free `krt2_atomic_*` (was a plain `Ref`);
+      `AtomicRef` ops now lower to boxed, mutex-protected `krt2_atomic_*` cells (was a plain `Ref`);
       proven exact under the multi-worker race test (the old impl lost ~93% of
-      updates), memory orders threaded to real `memory_order_*`. See the Done section.
-- [ ] **`sleepFor`/`sleepUntil` nonpositive duration parks ~forever (§18.1.6)** —
-      `OP_SLEEP` does `(uint64_t)kas_int(...)` ([`rt.c:1061`](runtime/rt.c)); a
-      negative ns (a `sleepUntil` of a past `Instant`, [`Prelude.hs:847-848`](src/Kappa/Prelude.hs))
-      wraps to a huge unsigned and the fiber never wakes. Add a nonpositive guard
-      (return immediately). Small, concrete sign-cast bug.
+      updates). Memory-order constructors are validated at the runtime boundary, but
+      this does not claim lock-free hardware atomics for arbitrary Kappa values. See
+      the Done section.
+- [x] **`sleepFor`/`sleepUntil` nonpositive duration parks ~forever (§18.1.6)** —
+      fixed in `OP_SLEEP`: durations are read as signed nanoseconds and
+      nonpositive values deliver Unit immediately. Covered by
+      `test/native/cases/sleep-nonpositive.kp`.
 - [ ] **`UnhandledChildFailure` swallowed (§18.1.3/.8)** — an attached,
       never-awaited child that fails is unlinked and its `Exit` discarded
       (`fiber_finish` rt.c:477-496, `scope_detach` scope.c:119-134, root shutdown
       rt.c:1394-1423); it is never aggregated into the scope's `Exit` as a Defect,
       so a failing fork silently vanishes.
-- [ ] **`Alternative STM`/`orElse` drops a branch (§18.1.13)** — runtime
-      `STM_ORELSE` rollback exists (`stm.c:60,130-153`) but no instance binds it;
-      the only STM choice is `Monoid (STM a)` whose `append x y = x` **drops `y`**
-      ([`Prelude.hs:1417`](src/Kappa/Prelude.hs)). `orElse` is unreachable / silently wrong.
+- [ ] **`Alternative STM`/`orElse` has no surface instance (§18.1.13)** — runtime
+      `STM_ORELSE` rollback exists (`stm.c:60,130-153`) and `Pointed (STM a)` supplies
+      `empty = retry`, but no `Alternative STM` instance binds `<|>` to the runtime choice node.
+      This is unreachable surface, not an S2.3b mutable-`var` blocker.
 
 **Fairness / blocking MUST gaps:**
-- [ ] **Safe-points are a no-op (§32.2.5/.6)** — `krt2_safepoint` is empty
-      ([`rt.c:1322`](runtime/rt.c)) and codegen emits **zero** calls (incl. the
-      scalar fast-path loop `C.hs:4642-4659`); a compute-bound pure loop ignores
-      pending interruption and monopolizes a worker → violates weak fairness + the
-      interruption-point obligation. (Contract documented in `kappart2.h`; stub empty.)
-- [ ] **`blocking` is identity (§18.1.11 / §18.1.5)** — `krt2_blocking` returns its
-      body inline on a CK worker ([`rt.c:97`](runtime/rt.c)) with no `uv_queue_work`
-      offload lane, no prim/dispatch/gate — yet `rt-blocking` is advertised. N
-      concurrent blocking calls starve/deadlock the nproc-worker scheduler.
+- [x] **Safe-points are a no-op (§32.2.5/.6)** — `krt2_safepoint` now polls
+      pending interrupts, opportunistically runs another ready fiber for fairness,
+      and C/LLVM scalar workers plus boxed generated loops emit counter-gated
+      back-edge polls. Covered by `interrupt-tight-loop`,
+      `interrupt-general-loop`, and the S2.3b scalar-worker native gates.
+- [x] **`rt-blocking` routed for source and classified native calls (§18.1.11 / §18.1.5)** —
+      `std.prelude.blocking` builds a real action node, blocking `K_NATIVE`
+      actions park the fiber, and the host call runs on an off-worker lane.
+      `blocking-cancellable` remains rejected until a safe cancellation bridge exists.
 
 **Reachability gaps (runtime half present, no source path):**
 - [ ] **`sandbox`/`unsandbox` no native lowering (§18.1.2)** — declared + in the
       oracle but 0 backend hits → reachable use hard-fails `E_BACKEND_UNSUPPORTED`.
-- [ ] **`fiberId`/`currentFiberId` unreachable (§18.1.10)** — runtime ops exist
-      (`rt.c:80-81`), no prelude prim, no codegen. (Loosely noted under Spec-coverage §1.4.)
+- [x] **`fiberId`/`currentFiberId` wired (§18.1.10)** — prelude surface,
+      interpreter ids, and native codegen are present; `fiber-id.kp` pins the
+      source-visible identity properties.
 - [ ] **Fiber labels absent (§18.1.10)** — `get/set/locallyFiberLabel` + the
       `Fiber.label` field entirely missing.
+- [x] **Source-level `blocking` surface wired (§18.1.11)** — `std.prelude.blocking`
+      lowers to `krt2_blocking`, while build manifests still resolve
+      `std.build.blocking` as the FFI-classification token through config schema
+      scoping.
 - [ ] **`std.supervisor` is a total stub (§29.2)** — `startSupervisor`/`shutdown`/
       `await` return constants ([`Prelude.hs:3282-3297`](src/Kappa/Prelude.hs)); no
       restart engine/intensity/strategy/cause. (The Missing-primitives DERIVE item
       mentions `std.supervisor`; this is the normative-MUST shape of it.)
 
 **Capability declaration + PARTIAL refinements:**
-- [ ] **§27.6 capability decl is self-inconsistent** — `rt.c:17-19`
-      `KRT2_CAPABILITIES` = {rt-core, rt-parallel, rt-shared-stm, rt-blocking,
-      rt-atomics} vs `Capabilities.hs:30` = {rt-core, rt-blocking, rt-atomics};
-      they disagree on `rt-parallel`/`rt-shared-stm`, and the Haskell list (the one
-      actually consumed, `NativeProbe.hs:126`) calls the runtime single-agent
-      though it spawns nproc workers. Reconcile (also settles the `rt-blocking`/
-      `rt-atomics` over-advertisement above).
+- [ ] **§27.6 capability decl split needs an authoritative profile story** —
+      `KRT2_CAPABILITIES` names runtime implementation features
+      {rt-core, rt-parallel, rt-blocking, rt-shared-stm, rt-atomics}, while
+      `Backend/Capabilities.hs` advertises the binding-relevant native profile
+      {rt-core, rt-blocking, rt-atomics}; reconcile the remaining
+      `rt-parallel`/`rt-shared-stm` profile boundary.
 - [ ] **PARTIAL refinements** (detail in the doc): §32.2.13 resume does NOT restore
       the capture-point `mask_depth` (resumed body inherits the clause's mask);
-      §32.2.12 a failing finalizer abandons remaining finalizers + doesn't
-      `Then`-compose the cause, and interrupt/shutdown waits park without raising
-      `mask_depth`; §32.2.3 per-do-block supervision scopes aren't created (fork
-      attaches to a flat per-fiber scope); §29.1 missing `std.ffi` fixed-width
-      `AtomicValue` instances; multi-shot rejection emits `E_BACKEND_UNSUPPORTED`
-      not the mandated `E_FEATURE_BACKEND_CAPABILITY_MISSING`. The STM RUN-phase /
+      §32.2.12 interrupt/shutdown waits park without raising `mask_depth`;
+      §32.2.3 per-do-block supervision scopes aren't created (fork attaches to a
+      flat per-fiber scope); §29.1 missing `std.ffi` fixed-width `AtomicValue`
+      instances. Multi-shot rejection now emits the mandated
+      `E_FEATURE_BACKEND_CAPABILITY_MISSING` / `kappa.feature.gated`
+      diagnostic naming `rt-multishot-effects`. The STM RUN-phase /
       torn-read-snapshot SHOULD deviations are self-documented (`stm.c:25-37`).
 
 ### Shortcuts & over-claims to review (the "DONE"/"advertised" may not be real)
@@ -823,19 +829,21 @@ capabilities were implemented as the **easy stub** and then advertised, recorded
 as a capability, or marked DONE. These are not missing features anyone forgot;
 they are shortcuts that *look* finished. **Audit each before trusting it:**
 
-- [ ] **`std.atomic` / "`rt-atomics` honest"** — false: `AtomicRef` is a plain
-      `Ref` and the C11 `atomic.c` is dead code (§29.1 item above). The "Done ✅"
-      claim was stale; corrected.
-- [ ] **`rt-blocking` advertised** — `krt2_blocking` is literally the identity
-      function (`rt.c:97`); the "single-agent runtime ⇒ vacuously fine"
-      justification ([`Capabilities.hs:20-24`](src/Kappa/Capabilities.hs)) is false
-      for the nproc-worker runtime it actually ships.
-- [ ] **`krt2_safepoint`** — the cooperative-fairness contract is *documented* in
-      `kappart2.h` but the body is empty and nothing calls it (§32.2.5/.6 item).
+- [x] **`std.atomic` / "`rt-atomics` honest"** — fixed with the §29.1 atomic wiring:
+      `AtomicRef` lowers to the runtime atomic cell and native ops call `krt2_atomic_*`
+      instead of the old plain-`Ref` path. Remaining std.atomic gaps are fixed-width/
+      polymorphic instance coverage, not the capability being falsely advertised.
+- [x] **`rt-blocking` honest** — the native binding profile advertises
+      `rt-blocking` because source-level `blocking` and classified blocking calls
+      lower to blocking actions and run off-worker. `blocking-cancellable` still
+      fails closed.
+- [x] **`krt2_safepoint`** — implemented and emitted on generated loop/scalar
+      back-edges; the old documented-only stub is gone.
 - [ ] **`std.supervisor`** — every entry returns a constant; the only test
       exercises empty-children shutdown, so the stub "passes" a green suite.
-- [ ] **`Monoid (STM a)` / `orElse`** — `append x y = x` silently **drops `y`**
-      rather than binding the present `STM_ORELSE` runtime path.
+- [ ] **`Alternative STM` / `orElse`** — the runtime `STM_ORELSE` path exists, but the surface still
+      lacks an `Alternative STM` instance mapping `<|>` to it. `Pointed (STM a)` only supplies
+      `empty = retry`.
 - [ ] **Unproven parallelism claims** — the C runtime advertises `rt-parallel` /
       `rt-shared-stm`, yet cross-worker STM commit-serialization (§32.2.9) and
       cross-fiber happens-before (§32.2.10) have **no stress test** (`rt.c:1350-1352`

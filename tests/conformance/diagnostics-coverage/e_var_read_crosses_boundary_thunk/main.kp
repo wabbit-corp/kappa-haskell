@@ -1,0 +1,10 @@
+module main
+
+bad : UIO Unit
+let bad = do
+    var x = 1
+    let t = thunk x
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_READ_CROSSES_BOUNDARY

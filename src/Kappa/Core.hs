@@ -39,6 +39,7 @@ module Kappa.Core
   , CaseAlt (..)
   , CorePat (..)
   , KItem (..)
+  , KCond (..)
   , Literal (..)
   , Telescope
   , Value (..)
@@ -284,12 +285,12 @@ data KItem
   | KLet !Q !CorePat !Term -- ^ let pat = e
   | KLetQ !CorePat !Term !(Maybe (CorePat, Term)) -- ^ let? with optional else
   | KExpr !Term
-  | KVarItem !Text !Term -- ^ var x = e
-  | KAssign !Term !Bool !Term -- ^ ref-term, monadic?, rhs (x = e / x <- e)
+  | KVarItem !Text !Term !Term -- ^ name, initializer value, MonadRef.newRef action
+  | KAssign !Term !Bool !Term !Term -- ^ ref-term, monadic?, rhs, MonadRef.writeRef action
   | KReturn !Term
   | KBreak !(Maybe Text)
   | KContinue !(Maybe Text)
-  | KWhile !(Maybe Text) !Term ![KItem] !(Maybe [KItem])
+  | KWhile !(Maybe Text) !KCond ![KItem] !(Maybe [KItem])
   | KFor !(Maybe Text) !CorePat !Term ![KItem] !(Maybe [KItem])
   | KIf ![(Term, [KItem])] !(Maybe [KItem])
   | KDefer !(Maybe Text) !Term -- ^ defer (Nothing) / defer@label (§18.7)
@@ -302,6 +303,13 @@ data KItem
     -- outward. Distinct from a first-class @do@ VALUE (e.g. @let x = do …@),
     -- which is an opaque computation reached through 'KExpr'/'KBind'.
     KSubDo !(Maybe Text) ![KItem]
+  deriving stock (Eq, Show)
+
+-- | A while condition is either the ordinary pure Bool condition, or the
+-- §18.6 monadic condition action that must be run again for every test.
+data KCond
+  = KCondPure !Term
+  | KCondAction !Term
   deriving stock (Eq, Show)
 
 type Telescope = [(Icit, Q, Text, Term)]

@@ -6,6 +6,6 @@ module main
 
 main : UIO Unit
 let main = do
-    f <- fork (pure 42)
-    r <- join f
+    let f <- fork (pure 42)
+    let r <- join f
     printlnString (showInt r)

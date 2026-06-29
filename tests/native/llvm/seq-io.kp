@@ -14,5 +14,5 @@ let sumList xs = match xs case Nil -> 0 case y :: ys -> addInt y (sumList ys)
 
 main : UIO Unit
 let main = do
-    xs <- sequence (ioPure 10 :: ioPure 20 :: ioPure 30 :: Nil)
+    let xs <- sequence (ioPure 10 :: ioPure 20 :: ioPure 30 :: Nil)
     printlnString (showInt (sumList xs))

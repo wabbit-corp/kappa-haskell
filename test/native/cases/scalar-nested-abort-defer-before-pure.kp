@@ -1,0 +1,37 @@
+-- Native regression for source ordering around defer and following pure work.
+--
+-- The child publishes readiness, registers a defer, and then enters a long pure
+-- scalar computation.  The interrupt must see the defer as already registered;
+-- building the pure tail while constructing the action tree would run the scalar
+-- work before OP_DEFER executes and miss the cleanup.
+module main
+
+import std.prelude.(type Exit(..))
+
+spin : Int -> Int -> Int
+let spin acc n =
+    if leInt n 0
+    then acc
+    else spin (addInt acc 1) (subInt n 1)
+
+wrap : Int -> Int
+let wrap n = addInt (spin 0 n) 1
+
+child : Promise Void Unit -> UIO Unit
+let child ready = do
+    let _ <- completePromise ready (Success ())
+    defer (printlnString "defer-ran")
+    let x = wrap 1000000000000
+    printlnString "AFTER-SCALAR-RAN"
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

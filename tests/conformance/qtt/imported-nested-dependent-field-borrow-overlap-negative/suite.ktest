@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertDiagnostic error E_QTT_BORROW_OVERLAP

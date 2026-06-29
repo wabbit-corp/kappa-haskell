@@ -12,7 +12,7 @@ do
 -- =>
 action1 >>= \x -> action2 >> action3 x >>= \y -> finalExpr
 ```
-Do-items: `let bindPat <- expr` (monadic bind, irrefutable); `x <- expr` (var assign: `let __tmp <- expr; writeRef x __tmp`); `x = expr` (var assign pure: `writeRef x expr`); `let bindPat = expr`; `let? pat = expr [else residuePat -> failExpr]`; expression item (`expr : m a`; discarded value must be droppable); `using pat <- expr` (acquire owned resource, borrowed binding, requires `trait Releasable m a = release : (1 resource : a) -> m Unit`); `defer e`; `return e`; `break`; `continue`; loops; if-without-else; local decls (signatures, named lets, data/type/trait/scoped effect/instance/derive/import/fixity).
+Do-items: `let bindPat <- expr` (monadic bind, irrefutable); `x <- expr` (var assign: `let __tmp <- expr; writeRef (ref x) __tmp`); `x = expr` (var assign pure: write the hidden cell selected by `ref x`); `let bindPat = expr`; `let? pat = expr [else residuePat -> failExpr]`; expression item (`expr : m a`; discarded value must be droppable); `using pat <- expr` (acquire owned resource, borrowed binding, requires `trait Releasable m a = release : (1 resource : a) -> m Unit`); `defer e`; `return e`; `break`; `continue`; loops; if-without-else; local decls (signatures, named lets, data/type/trait/scoped effect/instance/derive/import/fixity).
 
 `let?` plain requires `Alternative m` (failure → `empty`); residue must be droppable. else-form: `match expr; case pat -> do rest; case residuePat -> failExpr` (failExpr abrupt item or `m Void` via absurd).
 
@@ -42,7 +42,7 @@ trait Iterator (it : Type) =
     Item : Type
     next : (1 this : it) -> Option (item : Item, rest : it)
 ```
-`var x = e` ⇒ `let x <- newRef e`. UNIFORM REFERENCE semantics: `x` denotes the Ref everywhere; no auto-deref; read = `readRef x` / `!(readRef x)`; write = `x = val` / `x <- mval` sugar. For-loop without break/continue/return/else MUST accept Foldable-style traversal; otherwise Iterator protocol.
+`var x = e` allocates a hidden `MonadRef` cell. In ordinary value position inside the same do-lifting context, `x` denotes the current value via a generated `readRef (ref x)`; the hidden cell is selected only by `ref x`. Explicit low-level reads/writes are `readRef (ref x)` / `writeRef (ref x) v`; `readRef x` / `writeRef x v` are ill-formed for mutable binding `x`. Assignment `x = val` / `x <- mval` writes the hidden cell. For-loop without break/continue/return/else MUST accept Foldable-style traversal; otherwise Iterator protocol.
 
 ## defer (§18.7)
 `defer e` schedules `e : m Unit` at do-scope exit (normal, return, error, break/continue crossing). Requires `MonadFinally m`. LIFO; all attempted; first error wins; body error is primary. Do-scopes: explicit do, while/for body, loop else, if-suite branches.

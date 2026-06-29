@@ -1,0 +1,15 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+type Inner : Type = (<=1 tok : Token)
+type Cell : Type = (inner : Inner, count : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = (inner = (tok = Token), count = 0)
+    let n = cell.count
+    pure ()

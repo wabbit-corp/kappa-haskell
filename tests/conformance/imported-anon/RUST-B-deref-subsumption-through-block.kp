@@ -35,11 +35,11 @@ type Id (a : Type) = a
 -- value IS the final (pure) tail expression — it is NOT a monadic carrier,
 -- so the tail is the bare value (`7 : Id Int`), not `pure (7 : Id Int)`.
 -- Wrapping the tail in `pure` would demand the block extract an `m Int`
--- action's result purely — an `unsafePerformIO`-style extraction (the §4.5
--- `__runIO` hole: a free-result IO action like `throwIO`/`stmAbort` would then
--- forge a pure inhabitant of ANY type from a plain module). That extraction is
--- rejected; the genuinely-pure tail is what the subsumption/alias-unfolding
--- obligation in this test is actually about.
+-- action's result through forbidden pure effect extraction, where a
+-- free-result IO action like `throwIO`/`stmAbort` would forge a pure inhabitant
+-- of ANY type from a plain module. That extraction is rejected; the
+-- genuinely-pure tail is what the subsumption/alias-unfolding obligation in
+-- this test is actually about.
 unfoldThroughBlock : Int
 let unfoldThroughBlock =
     let result : Int = do

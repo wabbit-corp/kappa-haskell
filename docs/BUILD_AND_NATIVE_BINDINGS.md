@@ -323,21 +323,17 @@ overload-disambiguation/interface-artifact subsystem is only needed for a future
 
 **Capability profile + routing (§26.1.4 / §27.6).** §27.6 requires every backend
 profile to declare a runtime capability set; the native profile's is declared in
-`Kappa.Backend.Capabilities` (`nativeRuntimeCapabilities = rt-core, rt-blocking,
-rt-atomics`) and recorded in each binding's native provenance
+`Kappa.Backend.Capabilities` (`nativeRuntimeCapabilities = rt-core,
+rt-blocking, rt-atomics`) and recorded in each binding's native provenance
 (`backend-capabilities …`). The classification→capability rule is enforced
 fail-closed during plan resolution (`Kappa.Build.Plan.checkClassificationCapability`):
 a binding whose classification needs a capability the profile does not advertise
 is rejected with `E_BACKEND_CAPABILITY_UNREALIZED` (§26.1.4:26311, §27.6:28186) —
-e.g. a `blocking-cancellable` binding (which needs a safe foreign-call
-cancellation capability the native runtime lacks). A `blocking` binding is
-accepted because `rt-blocking` *is* advertised; it is realized by **direct
-execution** on the native runtime's single agent — the agent is itself the
-blocking lane, so the §26.1.4:26304 "MUST NOT … starve unrelated runnable
-fibers" rule holds vacuously (there is no concurrent fiber execution). A true
-offloading blocking-work lane (needed only if the native runtime later gains a
-concurrent scheduler) is a low-priority tracked item
-(`docs/notes/KAPPA_SELF_HOSTING_PORT_NOTES.md`, H-7), not claimed as implemented.
+e.g. a `blocking-cancellable` binding, which additionally needs safe
+cancellation. A `blocking` binding is accepted on native and preserved into the
+resolved symbol so C/LLVM codegen emits `knative_blocking`/`knative_sat_blocking`;
+the runtime parks the fiber and runs the host call on an off-worker blocking
+thread. Direct execution on a scheduler worker is not a valid fallback.
 
 ### Lockfile + reproducibility (§36.4, §36.23.2, §3.2.15)
 

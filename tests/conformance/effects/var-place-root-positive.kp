@@ -1,0 +1,14 @@
+module main
+
+bump : (inout v : Int) -> UIO (1 v : Int)
+let bump (inout v : Int) : UIO (1 v : Int) =
+    pure (v = addInt v 1)
+
+main : UIO Int
+let main = do
+    var x = 1
+    bump ~x
+    pure x
+
+--! assertNoErrors
+--! assertExecute main 2

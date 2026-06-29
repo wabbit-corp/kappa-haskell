@@ -1,0 +1,24 @@
+module main
+
+-- §18.6.2 POSITIVE: a constructor test over a generated current-value read of a
+-- tracked local var refines VarCurrent(x,n). A later generated current-value
+-- read of the same version may use that branch-local fact, so the Full-only
+-- match is exhaustive.
+--! mode run
+--! assertNoErrors
+--! assertStdout "9\n"
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+main : UIO Unit
+let main = do
+    var cell : Cell = Full 9
+    if cell is Full then
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

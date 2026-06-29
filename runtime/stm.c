@@ -112,8 +112,8 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
     KValue *val = NULL; int retry = 0;
     switch (op) {
       case STM_PURE:  val = kctor_arg(cur, 0); break;
-      case STM_READ:  val = j_read(j, (TVar *)kas_fgn(kctor_arg(cur, 0))); break;
-      case STM_WRITE: j_write(j, (TVar *)kas_fgn(kctor_arg(cur, 0)), kctor_arg(cur, 1)); val = kunit(); break;
+      case STM_READ:  val = j_read(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR)); break;
+      case STM_WRITE: j_write(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR), kctor_arg(cur, 1)); val = kunit(); break;
       case STM_NEW: {
         TVar *tv = (TVar *)GC_MALLOC(sizeof(TVar));
         VBox *b = (VBox *)GC_MALLOC(sizeof(VBox));
@@ -212,6 +212,17 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
       if (b->version != j.r[i].ver) { stale = 1; break; }
     }
     if (stale) { pthread_mutex_unlock(&g_stm); continue; }      /* changed: re-run, don't park */
+    pthread_mutex_unlock(&g_stm);
+    int dp = krt2i_deliver_pending_before_park(rt, f);
+    if (dp < 0) return 0;
+    if (dp > 0) return 1;
+    pthread_mutex_lock(&g_stm);
+    stale = 0;
+    for (int i = 0; i < j.nr; i++) {
+      VBox *b = atomic_load_explicit(&j.r[i].tv->box, memory_order_acquire);
+      if (b->version != j.r[i].ver) { stale = 1; break; }
+    }
+    if (stale) { pthread_mutex_unlock(&g_stm); continue; }
     TVar **rds = j.nr ? (TVar **)GC_MALLOC(sizeof(TVar *) * j.nr) : NULL;
     for (int i = 0; i < j.nr; i++) {
       Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));

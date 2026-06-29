@@ -143,10 +143,11 @@ propagation through `catch`/`finally`. The observable behaviour matches
 representation only, but it does mean `Completion` is not a first-class
 core value.
 
-**`var` cells.** `var x = e` allocates a `Ref`; a *read* of `x`
-elaborates to a splice `__runIO (readRef x)` typed at the element type
-(§18.6.1), and assignments become `writeRef`. There is no §31.5 elision:
-cells are real refs at runtime.
+**`var` cells.** `var x = e` allocates a `Ref`; a current-value read of `x`
+inside a `do` scope is lifted to a `MonadRef.readRef (ref x)` action using the
+same evidence that created the cell (§18.6.1), and assignments become
+`MonadRef.writeRef` actions. There is no §31.5 elision: cells are real refs at
+runtime.
 
 **Variant tags are canonical rendered member types.** A variant value
 carries the canonical rendering (after alias normalization) of its

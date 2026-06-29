@@ -1,0 +1,20 @@
+module main
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+type Outer = (sized : Sized, tag : Nat)
+
+keepBuffer : forall (n : Nat). (inout buffer : Array n Byte) -> UIO (1 buffer : Array n Byte)
+let keepBuffer (@0 n : Nat) (inout buffer : Array n Byte) : UIO (1 buffer : Array n Byte) =
+    pure (buffer = buffer)
+
+ok : (1 outer : Outer) -> UIO Outer
+let ok (1 outer : Outer) : UIO Outer =
+    do
+        keepBuffer ~outer.sized.buffer
+        pure outer
+
+--! mode check
+--! assertNoErrors

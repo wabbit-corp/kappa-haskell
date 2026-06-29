@@ -1,0 +1,9 @@
+module main
+
+let answer : Int = 42
+
+main : UIO Unit
+let main = printlnString (showInt answer)
+
+--! mode check
+--! assertNoErrors

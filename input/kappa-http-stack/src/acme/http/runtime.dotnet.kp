@@ -48,8 +48,8 @@ let writeAll conn payload =
     do
         var sent = 0
         let total = bytes.bytesLength payload
-        while !(readRef sent) < total do
-            let offset <- readRef sent
+        while sent < total do
+            let offset = sent
             let remaining = bytes.bytesDrop offset payload
             let n <- Socket.sendBytesAsync conn.socket remaining
             if n == 0 then raise (TransportError "socket write returned zero bytes")

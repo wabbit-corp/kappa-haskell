@@ -1,0 +1,37 @@
+-- Native/C backend regression: legacy inline do-scope drains must run every
+-- finalizer and compose cleanup failures instead of returning after the first
+-- failing cleanup or dropping later cleanup causes.
+module main
+
+import std.prelude.(type Cause(..))
+
+cleanupOne : IO String Unit
+let cleanupOne = do
+    printlnString "cleanup-one"
+    throwIO "one"
+
+cleanupTwo : IO String Unit
+let cleanupTwo = do
+    printlnString "cleanup-two"
+    throwIO "two"
+
+child : IO String Unit
+let child = do
+    defer cleanupOne
+    defer cleanupTwo
+    throwIO "body"
+
+classify : Cause String -> String
+let classify c = match c
+    case Then (Then (Fail a) (Fail b)) (Fail d) -> "exit:then2:" ++ a ++ ":" ++ b ++ ":" ++ d
+    case Then (Fail a) (Fail b) -> "exit:then1:" ++ a ++ ":" ++ b
+    case Fail e -> "exit:fail:" ++ e
+    case _ -> "exit:other"
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure c -> printlnString (classify c)

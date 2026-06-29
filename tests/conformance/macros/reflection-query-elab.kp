@@ -18,7 +18,7 @@ let headAction =
 
 usesBoth : Syntax Integer -> Elab (Syntax Integer)
 let usesBoth s = do
-    eq <- defEqSyntax s '{ 0 }
+    let eq <- defEqSyntax s '{ 0 }
     match eq
     case True -> pure '{ 0 }
     case False -> pure '{ ${s} + 0 }

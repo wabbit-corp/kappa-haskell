@@ -1,0 +1,13 @@
+module main
+
+data Cell : Type = Empty | Full (>=1 n : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell = Empty
+    cell = Full 1
+    let snapshot = cell
+    pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP

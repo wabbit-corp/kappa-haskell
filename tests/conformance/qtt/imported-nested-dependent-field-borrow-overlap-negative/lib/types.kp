@@ -1,0 +1,16 @@
+module lib.types
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+type Outer = (sized : Sized, tag : Nat)
+
+data NatBox : Type =
+    NatBox (1 n : Nat)
+
+consumeNat : (1 n : Nat) -> NatBox
+let consumeNat (1 n : Nat) : NatBox = NatBox n
+
+projection outerBuffer (place this : Outer) : Array this.sized.len Byte =
+    yield this.sized.buffer

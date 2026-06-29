@@ -14,9 +14,9 @@ let sleeper = do
 
 main : UIO Unit
 let main = do
-    s <- fork sleeper
+    let s <- fork sleeper
     interrupt s
-    ex <- await s
+    let ex <- await s
     match ex
     case Success v -> printlnString "completed"
     case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupt:Requested"

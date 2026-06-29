@@ -10,8 +10,8 @@ let worker n = do
 
 main : UIO Unit
 let main = do
-    f1 <- fork (worker 1)
-    r1 <- await f1
-    f2 <- fork (worker 2)
-    r2 <- await f2
+    let f1 <- fork (worker 1)
+    let r1 <- await f1
+    let f2 <- fork (worker 2)
+    let r2 <- await f2
     printlnString "done"

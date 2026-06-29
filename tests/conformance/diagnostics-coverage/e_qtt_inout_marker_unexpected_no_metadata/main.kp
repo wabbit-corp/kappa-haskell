@@ -1,0 +1,12 @@
+module main
+
+take : Int -> UIO Unit
+let take x = pure ()
+
+bad : UIO Unit
+let bad = do
+    let x = 1
+    take ~x
+
+--! mode check
+--! assertDiagnostic error E_QTT_INOUT_MARKER_UNEXPECTED

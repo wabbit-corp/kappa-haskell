@@ -11,7 +11,7 @@ let liftUIO action = catchIO action (\v -> raise (absurd v))
 fileFailure : forall (a : Type). Int -> IO GameError a
 let fileFailure code =
     do
-        message <- liftUIO (Raw.delve_describe_error2 code)
+        let message <- liftUIO (Raw.delve_describe_error2 code)
         raise (FileError message)
 
 checkUnit : Int -> IO GameError Unit
@@ -21,24 +21,24 @@ let checkUnit code =
 readText : String -> IO GameError String
 let readText path =
     do
-        text <- liftUIO (Raw.delve_read_text_file2 path)
-        code <- liftUIO Raw.delve_last_errno2
+        let text <- liftUIO (Raw.delve_read_text_file2 path)
+        let code <- liftUIO Raw.delve_last_errno2
         if code == 0 then pure text else fileFailure code
 
 writeText : String -> String -> IO GameError Unit
 let writeText path text =
     do
-        code <- liftUIO (Raw.delve_write_text_file2 path text (natToInt (uni.byteLength text)))
+        let code <- liftUIO (Raw.delve_write_text_file2 path text (natToInt (uni.byteLength text)))
         checkUnit code
 
 exists : String -> IO GameError Bool
 let exists path =
     do
-        code <- liftUIO (Raw.delve_file_exists2 path)
+        let code <- liftUIO (Raw.delve_file_exists2 path)
         if code < 0 then fileFailure (0 - code) else pure (code != 0)
 
 ensureDirectory : String -> IO GameError Unit
 let ensureDirectory path =
     do
-        code <- liftUIO (Raw.delve_ensure_directory2 path)
+        let code <- liftUIO (Raw.delve_ensure_directory2 path)
         checkUnit code

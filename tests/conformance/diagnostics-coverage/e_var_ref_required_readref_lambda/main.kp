@@ -1,0 +1,15 @@
+module main
+
+badReadFacet : UIO Unit
+let badReadFacet = do
+    var x : Bool = True
+    let f = \_ -> readRef x
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_REF_REQUIRED
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/binding x
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/selectedFacet current-value
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/sourceOperation readRef
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/repair ref x

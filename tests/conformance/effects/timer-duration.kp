@@ -20,7 +20,7 @@ let main = do
     let sum = durationAdd (micros 1000) (micros 2000)
     printlnString (showOrd (durationCompare sum (millis 3)))
     -- instant arithmetic round-trips a Duration: diff of (t0 + 3us) and t0
-    t0 <- nowMonotonic
+    let t0 <- nowMonotonic
     let later = instantAdd t0 (micros 3)
     let d = instantDiff later t0
     -- d should be 3000 ns

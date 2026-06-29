@@ -36,7 +36,7 @@ interval, per-iteration allocation = total_bytes / N, setup randomization, pinne
 
 | File | Dimension | Targets gap | Raw-C baseline | Builds today? |
 |---|---|---|---|---|
-| `scalar_intloop.kp` | scalar Int loop (alloc-free) | LR1/P0.2 | `raw/scalar_intloop.c` | yes |
+| `scalar_intloop.kp` | scalar Int loop (alloc-free) | LR1 | `raw/scalar_intloop.c` | yes |
 | `scalar_doubleloop.kp` | scalar Double loop | P0-D | `raw/scalar_doubleloop.c` | yes |
 | `adtbuild.kp` | ADT/list construction (alloc-heavy) | **P0-A / P0-B** | `raw/adtbuild.c` | yes |
 | `adtmatch.kp` | ADT + variant matching | **P0-C** | — | yes |

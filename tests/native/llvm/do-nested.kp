@@ -7,7 +7,7 @@ module main
 
 main : UIO Unit
 let main = do
-    x <- do
+    let x <- do
         printlnString "inner-1"
         ioPure 10
     printlnString (showInt x)

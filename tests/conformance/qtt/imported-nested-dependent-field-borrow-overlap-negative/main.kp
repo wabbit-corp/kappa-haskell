@@ -1,0 +1,9 @@
+module main
+
+import lib.types
+
+bad : (1 outer : lib.types.Outer) -> lib.types.NatBox
+let bad (1 outer : lib.types.Outer) : lib.types.NatBox =
+    block
+        let & b = lib.types.outerBuffer outer
+        lib.types.consumeNat outer.sized.len

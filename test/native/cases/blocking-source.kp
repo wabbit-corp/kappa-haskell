@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\ninside\nafter\n"
+
+-- Native rt-blocking support includes the source-level `blocking` bridge:
+-- codegen must lower this through krt2_blocking, not the synchronous bridge.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    blocking (printlnString "inside")
+    printlnString "after"

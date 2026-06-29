@@ -1,26 +1,13 @@
--- LLVM-backend parity regression for the `__runIO`-as-curried-value gap.
+-- LLVM-backend parity regression for mutable-var current reads through
+-- short-circuiting operators.
 --
 -- `(&&) : Bool -> Thunk Bool -> Bool` and `(||) : Bool -> Thunk Bool -> Bool`
--- (Prelude) wrap their RHS in a `Thunk` (a `CThunkE`).  When a `var` read sits
--- in that thunked RHS, its `__runIO (readRef i)` monadic splice ends up INSIDE
--- a `CThunkE` body — a position the do-kernel's splice-hoister
--- (`liftFirstSplice`) never descends into (it walks only `CApp`/`CCtor`/`CIf`
--- conditions).  The surviving splice then reached the LLVM backend's
--- `compilePrimValue "__runIO"` and aborted with
--- `E_BACKEND_UNSUPPORTED … '__runIO' as a curried value`.  The C backend lowers
--- the same Core fine via a top-level `compileRunIO` interception on `compile`;
--- this test pins the LLVM backend to the same behaviour.
+-- (Prelude) wrap their RHS in a `Thunk` (a `CThunkE`).  The source uses bare
+-- mutable-variable reads around those operators; the do-item lift must insert
+-- the reads and compile them consistently in the C and LLVM do-kernels.
 --
--- IMPORTANT shape constraint — the var-reading thunk must NEVER be FORCED at
--- runtime.  The `__runIO`-curried error is a COMPILE-time failure: the backend
--- must emit code for the thunk regardless of whether it is ever forced.  The
--- interpreter, by design, does not run splices buried in thunk/lambda bodies
--- (see `runSplices`' boundary in Interp.hs) — so a thunk it actually FORCES
--- would crash it ("while condition was not a Bool").  We therefore arrange every
--- var-reading thunk to be SHORT-CIRCUITED away at runtime (an `&&` with a False
--- LHS / a `||` with a True LHS), so the interpreter never forces it while the
--- LLVM backend still has to compile it — exactly the gap, and interp == C ==
--- LLVM all agree on output.
+-- The RHS remains short-circuited at runtime (an `&&` with a False LHS / a `||`
+-- with a True LHS), so interp == C == LLVM agree on output.
 --
 -- After the counting loop `i == n == 3`, so:
 --   b1 = eqInt 3 99 (False) && (var-reading thunk)  -> short-circuits -> "b1-no"
@@ -38,13 +25,11 @@ main : UIO Unit
 let main = do
     var i = 0
     var n = 3
-    -- A counting loop whose `&&` condition reads `i` (the LHS splice IS
-    -- hoistable, so this part already worked) and thunks a literal RHS.
+    -- A counting loop whose `&&` condition reads `i` and thunks a literal RHS.
     while (ltInt i n && ltInt 0 1) do
         printlnString (showInt i)
         i = addInt i 1
-    -- `&&` with a False LHS: its var-reading thunk RHS (`ltInt i n`) is never
-    -- forced, but the LLVM backend must still COMPILE the embedded readRef.
+    -- `&&` with a False LHS: its RHS is never forced.
     let b1 = eqInt n 99 && ltInt i n
     -- `||` with a True LHS: same, the var-reading thunk RHS is never forced.
     let b2 = eqInt n 3 || ltInt i n

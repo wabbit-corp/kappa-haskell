@@ -34,7 +34,10 @@ if ! command -v timeout >/dev/null 2>&1; then
   timeout() {
     python3 - "$@" <<'PY'
 import subprocess, sys
-seconds = float(sys.argv[1].removesuffix('s'))
+raw = sys.argv[1]
+if raw.endswith('s'):
+    raw = raw[:-1]
+seconds = float(raw)
 cmd = sys.argv[2:]
 try:
     raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
@@ -85,14 +88,14 @@ echo "== C driver (performance, -O2): $BENCHCC =="
 #
 # bench  expected-result  total_bytes-bound (0 = no allocation gate)
 BENCHES=(
-  "arithloop 2000001000000 1000000"
+  "arithloop 2000001000000 0"
   "tailsum   2000001000000 1000000"
   "recproj   7000000        1000000"
   "listfold  500000500000   620000000"
 )
-# arithloop's bound is now ~1MB (was 380MB): P0.2 scalarizes its non-escaping
-# Int `var` loop to int64 C locals (zero per-iteration allocation); a
-# regression back to the boxed kref loop (~145MB) blows this bound.
+# arithloop is intentionally report-only under S2.3b: the old P0.2 var-loop
+# scalarizer bypassed checker-selected MonadRef evidence and is suspended, so
+# the safe current path is the boxed kref loop.
 # tailsum's bound is now ~1MB (was 260MB): LR1 lowers it to a scalar int64
 # worker that allocates ~zero per iteration (≈hundreds of bytes total), so a
 # regression back to per-iteration kint boxing (~193MB) blows this bound.
@@ -158,7 +161,7 @@ ratio_bench() {
   fi
 }
 ratio_bench tailsum   "$BENCH/ratio_tailsum.kp"   "$BENCH/raw/tailsum.c"   5  "(LR1 scalar int64 worker; GATED <=5x raw C)"
-ratio_bench arithloop "$BENCH/ratio_arithloop.kp" "$BENCH/raw/arithloop.c" 5  "(P0.2 scalar int64 var loop; GATED <=5x raw C)"
+ratio_bench arithloop "$BENCH/ratio_arithloop.kp" "$BENCH/raw/arithloop.c" 0  "(var-loop boxed MonadRef path under S2.3b; report-only until P0.2 replacement)"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL BENCHMARKS PASSED (results + allocation gates + raw-C ratio gate)"; else echo "$fails BENCHMARK GATE(S) FAILED"; exit 1; fi

@@ -47,9 +47,9 @@ let slowChild done = onInterrupt (sleepFor (seconds 10)) (recordTag done)
 
 main : UIO Unit
 let main = do
-    done <- newPromise
+    let done <- newPromise
     -- run the child DETACHED inside `parent`: parent's interrupt won't wait on it.
-    p <- fork (disconnect (slowChild done))
+    let p <- fork (disconnect (slowChild done))
     cede
     cede
     interrupt p
@@ -57,7 +57,7 @@ let main = do
     -- detached join makes that prompt — no blocking on the child's finalizer.
     printlnString "parent-resumed"
     -- The child's onInterrupt finalizer completed `done` in the background.
-    ex <- awaitPromiseExit done
+    let ex <- awaitPromiseExit done
     match ex
       case Success tag -> printlnString (stringAppend "bg-finalized:" tag)
       case Failure _ -> printlnString "bg-finalized:fail"

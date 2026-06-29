@@ -119,7 +119,7 @@ builtinState =
       , (prel "Need", opaqueTy (tyV (tType ~> tType)))
       , (prel "IO", opaqueTy (tyV (tType ~> tType ~> tType)))
       , (prel "Ref", opaqueTy (tyV (tType ~> tType)))
-      , -- §29.1 the opaque lock-free atomic cell wrapped by AtomicRef. NOT a
+      , -- §29.1 the opaque atomic cell wrapped by AtomicRef. NOT a
         -- Ref/TVar: it has no readRef/writeRef surface, so atomicity cannot be
         -- bypassed. Built by __newAtomicRef; consumed by the other __atomic* ops.
         (prel "__AtomicCell", opaqueTy (tyV (tType ~> tType)))
@@ -285,7 +285,7 @@ builtinState =
     closedCodeT a = CApp Expl (tcon "ClosedCode") a
     effT r a = CApp Expl (CApp Expl (tcon "Eff") r) a
     refT a = CApp Expl (tcon "Ref") a
-    atomicCellT a = CApp Expl (tcon "__AtomicCell") a -- §29.1 opaque lock-free cell
+    atomicCellT a = CApp Expl (tcon "__AtomicCell") a -- §29.1 opaque atomic cell
     arrayBufT a = CApp Expl (tcon "__ArrayBuf") a -- MUTABLE-ARRAY-DESIGN §4.1 buffer
     listT a = CApp Expl (tcon "List") a
     setT a = CApp Expl (tcon "Set") a
@@ -437,14 +437,14 @@ builtinState =
       , prim "__intXor" (tyV (tInt ~> tInt ~> tInt))
       , -- §29.1 representation equality for atomicCompareExchange
         prim "__atomicRepEq" (tyV (piI Q0 "a" tType (CVar 0 ~> CVar 1 ~> tcon "Bool")))
-      , -- §29.1 std.atomic primitive surface — the TRUE lock-free atomic cell.
-        -- Native (C/LLVM): each lowers to a @krt2_atomic_*@ call on a single
-        -- @_Atomic(int64_t)@ cell under the requested C11 @memory_order@, so a
+      , -- §29.1 std.atomic primitive surface — the opaque atomic cell.
+        -- Native (C/LLVM): each lowers to a @krt2_atomic_*@ operation on one boxed
+        -- @KValue *@ cell protected by the runtime's atomic-cell discipline, so a
         -- concurrent fetch-add / CAS across the nproc worker pool conserves every
-        -- update (no torn read-modify-write).  Interpreter: the single agent runs
-        -- fibers cooperatively on one OS thread, so an @IORef@ cell models the
-        -- SAME sequential semantics — it is the oracle for single-fiber use, NOT a
-        -- test of the multi-worker race (which only the native runtime can run).
+        -- update without narrowing §6 @Integer@ values.  Interpreter: fibers run
+        -- cooperatively on one OS thread, so an @IORef@ cell models the SAME
+        -- sequential semantics; it is the oracle for single-fiber use, not a test
+        -- of the multi-worker race (which only the native runtime can run).
         --
         -- The atomic CELL type @__AtomicCell a@ IS a prelude tcon, so it is named
         -- concretely here (this pins inference — a fully-erased cell var would be
@@ -591,6 +591,13 @@ builtinState =
         -- forall e a. IO e a -> IO e a
         prim "uninterruptible"
           (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , -- §18.1.11 source-level blocking bridge. The native backends lower this
+        -- to OP_BLOCKING (krt2_blocking): the fiber parks while the body runs on
+        -- the rt-blocking lane. The build DSL's `std.build.blocking` value is a
+        -- separate schema-scoped FFI classification token.
+        -- forall e a. IO e a -> IO e a
+        prim "blocking"
+          (tyV (forallEA (io (CVar 1) (CVar 0) ~> io (CVar 2) (CVar 1))))
       , -- §18.1.12 `poll`: an explicit interruption checkpoint that delivers a
         -- pending interrupt even inside a masked region (otherwise returns Unit).
         -- Lowered to the OP_POLL node (krt2_poll). UIO Unit.
@@ -711,7 +718,6 @@ builtinState =
             (io (CVar 1) (CVar 0)                                            -- IO e a (body)
               ~> ( tcon "InterruptCause" ~> io (CVar 3) tUnit )             -- InterruptCause -> IO e Unit
               ~> io (CVar 3) (CVar 2))))                                     -- -> IO e a
-      , prim "__runIO" (tyV (forallEA (io (CVar 1) (CVar 0) ~> CVar 1)))
       , -- §28 IO carrier instances delegate to this bind primitive
         prim "ioBind"
           (tyV (piI Q0 "e" tType (piI Q0 "a" tType (piI Q0 "b" tType
@@ -838,6 +844,9 @@ builtinState =
       , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
+      , prim "__ioNewRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
+      , prim "__ioReadRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
+      , prim "__ioWriteRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
       , -- MUTABLE-ARRAY-DESIGN §4.1: the boxed mutable-array primitives. The
         -- element type @a@ is a Q0-erased @forall@ slot, dropped before codegen,
         -- so it NEVER reaches the kpf_* symbol (the erasure-safety contract).
@@ -1028,6 +1037,7 @@ preludeSource =
     , "type Float = Double"
     , "type Char = UnicodeScalar" -- sanctioned alias (§28.5)
     , "type UIO (a : Type) = IO Void a"
+    , "type __IORef (a : Type) = Ref a"
     , ""
     , "not : Bool -> Bool"
     , "let not b = if b then False else True"
@@ -1277,10 +1287,10 @@ preludeSource =
     , "    bracketM : forall (a : Type) (b : Type). m a -> (a -> m Unit) -> (a -> m b) -> m b"
     , ""
     , "trait MonadRef (m : Type -> Type) ="
-    , "    RefT : Type -> Type"
-    , "    newRefM : forall (a : Type). a -> m (RefT a)"
-    , "    readRefM : forall (a : Type). RefT a -> m a"
-    , "    writeRefM : forall (a : Type). RefT a -> a -> m Unit"
+    , "    Ref : Type -> Type"
+    , "    newRef : forall (a : Type). a -> m (Ref a)"
+    , "    readRef : forall (a : Type). Ref a -> m a"
+    , "    writeRef : forall (a : Type). Ref a -> a -> m Unit"
     , ""
     , -- §11.4/§28.2 proof-classification traits. IsEmpty provides the
       -- 'absurdT' eliminator. IsContr/IsSubsingleton/IsProp/IsSet/
@@ -1616,6 +1626,13 @@ preludeSource =
     , "instance Monad STM ="
     , "    let (>>=) m f = stmBind m f"
     , ""
+    , -- §18.6.1: STM supports surface `var` through TVar-backed MonadRef.
+      "instance MonadRef STM ="
+    , "    let Ref = TVar"
+    , "    let newRef x = newTVar x"
+    , "    let readRef r = readTVar r"
+    , "    let writeRef r x = writeTVar r x"
+    , ""
     , -- check c: succeed if c, else retry the transaction (§18.1.13).
       "check : Bool -> STM Unit"
     , "let check c = if c then stmPure Unit else retry"
@@ -1661,9 +1678,25 @@ preludeSource =
       "    let bracketM acquire release use ="
     , "        mask (\\restore -> ioBind acquire (\\r -> finallyIO (restore (use r)) (release r)))"
     , ""
+    , -- §18.6.1 / §28.2: IO supports surface `var` through MonadRef.
+      "instance MonadRef (IO e) ="
+    , "    let Ref = __IORef"
+    , "    let newRef x = __ioNewRef x"
+    , "    let readRef r = __ioReadRef r"
+    , "    let writeRef r x = __ioWriteRef r x"
+    , ""
     , -- §28.2 `bracket` surface name (the MonadResource method for IO).
       "bracket : forall (e : Type) (a : Type) (b : Type). IO e a -> (a -> IO e Unit) -> (a -> IO e b) -> IO e b"
     , "let bracket acquire release use = bracketM acquire release use"
+    , ""
+    , -- §18.1.12 surface names over the same protected-scope machinery. `ensuring`
+      -- is the named finalizer combinator; `acquireRelease` keeps the resource-facing
+      -- signature from the spec and delegates to the IO MonadResource instance.
+      "ensuring : forall (e : Type) (a : Type). IO e a -> IO e Unit -> IO e a"
+    , "let ensuring body finalizer = finallyIO body finalizer"
+    , ""
+    , "acquireRelease : forall (e : Type) (r : Type) (a : Type). IO e r -> ((1 resource : r) -> IO e Unit) -> ((& resource : r) -> IO e a) -> IO e a"
+    , "let acquireRelease acquire release use = bracket acquire release use"
     , ""
     , -- §18.1.4: structured-concurrency handles (check-mode support)
       "data Fiber (e : Type) (a : Type) : Type ="
@@ -3372,25 +3405,27 @@ stdFfiCSource =
     , "data CDouble : Type =    MkCDouble (rep : Double)"
     ]
 
--- | Embedded @std.atomic@ source (§29.1): the canonical surface over a TRUE
--- lock-free atomic cell.  An @AtomicRef a@ wraps an opaque @__AtomicCell a@ —
+-- | Embedded @std.atomic@ source (§29.1): the canonical surface over an opaque
+-- atomic cell.  An @AtomicRef a@ wraps an opaque @__AtomicCell a@ —
 -- NOT a 'Ref' (§29.1: "not an ordinary var, Ref, TVar, or MonadRef"), so the
 -- cell cannot be 'readRef'/'writeRef'-ed to bypass atomicity.  Every operation
 -- lowers to a @__atomic*@ primitive:
 --
---   * Native (C/LLVM): a @krt2_atomic_*@ call on a single @_Atomic(int64_t)@
---     cell, executed under the caller's C11 'memory_order'.  fetch-add / CAS
---     are real hardware read-modify-writes, so concurrent updates across the
---     worker pool are conserved exactly (no lost updates).
+--   * Native (C/LLVM): a @krt2_atomic_*@ operation on one runtime AtomicRef cell.
+--     The cell stores the source @KValue *@, so §6 arbitrary-precision @Integer@
+--     values are not narrowed.  fetch-add / CAS are indivisible runtime
+--     operations, so concurrent updates across the worker pool are conserved
+--     exactly (no lost updates).
 --   * Interpreter: the single agent runs fibers cooperatively on one OS thread,
 --     so every memory order is trivially sequentially consistent and the cell
 --     is modelled by a plain mutable IORef.  This is the correct SEQUENTIAL
 --     oracle; it does NOT (and cannot) exercise the multi-worker race the native
 --     runtime guards against.
 --
--- The memory-order argument is passed THROUGH to the runtime by its numeric tag
--- id, so each LoadOrder/StoreOrder/RmwOrder/CasFailureOrder maps directly onto a
--- C11 @memory_order_*@ (see "runtime/atomic.c").
+-- The memory-order argument is passed through as a small declaration-order code,
+-- not a codegen-assigned constructor tag, so each LoadOrder/StoreOrder/RmwOrder/
+-- CasFailureOrder maps directly onto the corresponding runtime order check (see
+-- "runtime/atomic.c").
 stdAtomicSource :: Text
 stdAtomicSource =
   T.unlines
@@ -3475,7 +3510,7 @@ stdAtomicSource =
     , "-- with a sequential IORef cell."
     , "newAtomicRef : forall (a : Type). (@_ : AtomicValue a) -> a -> UIO (AtomicRef a)"
     , "let newAtomicRef initial = do"
-    , "    cell <- __newAtomicRef initial"
+    , "    let cell <- __newAtomicRef initial"
     , "    pure (MkAtomicRef cell)"
     , ""
     , "atomicLoad : forall (a : Type). (@_ : AtomicValue a) -> LoadOrder -> AtomicRef a -> UIO a"

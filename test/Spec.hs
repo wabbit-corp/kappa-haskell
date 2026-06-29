@@ -35,6 +35,7 @@ import Kappa.Ownership
   , OwnInfo (..)
   , argConvBodies
   , crossCheckBodies
+  , renderOwnInfo
   )
 import Kappa.Pipeline (CompiledUnit (..), compileFiles, compileSourceWithPrelude)
 import Kappa.Source (ModuleName (..))
@@ -125,10 +126,11 @@ reprScalarIdentity = do
 -- on the Core binder nodes, across the whole WELL-TYPED corpus.
 --
 -- 'crossCheckBodies' asserts, for every binder: a linear (@1@) binder has
--- EXACTLY ONE 'LastUse' and no 'NonLast'; a borrowed (@&@) binder has no
--- consuming use. A non-empty result means the last-use analysis is WRONG (it
--- drifted from the quantities the checker validated), and this gate fails the
--- build — the analysis must be fixed, not the check weakened.
+-- at least one consuming 'LastUse' and no consuming 'NonLast'; a borrowed
+-- (@&@) binder has no consuming use. A non-empty result means the last-use
+-- analysis is WRONG (it drifted from the quantities the checker validated),
+-- and this gate fails the build — the analysis must be fixed, not the check
+-- weakened.
 --
 -- The corpus is the full implicit prelude + std library (hundreds of well-typed
 -- globals exercising linear @let@s, borrowed params, and match arms) plus a few
@@ -187,10 +189,12 @@ ownershipCrossCheckClean = do
         let cu = compileSourceWithPrelude "fixture.kp" src
             st = cuState cu
             ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+            ctorTypes = Map.map ciType (csCtors st)
             -- S1.1 last-use + S1.4 §3a refinement tighten-only invariant.
             xc =
               crossCheckBodies
                 ctx
+                ctorTypes
                 (csCoreBodies st)
                 (csOwnership st)
             -- S1.5 owned/borrowed call-site classification: every global-headed
@@ -198,10 +202,280 @@ ownershipCrossCheckClean = do
             ac = argConvBodies ctx (csCoreBodies st)
          in xc ++ ac
       mismatches = concatMap check fixtures
+      consumeVsReadSrc =
+        T.unlines
+          [ "module main"
+          , "ignore : (0 x : Int) -> Int -> Int"
+          , "let ignore x y = y"
+          , "peek : (& x : Int) -> Int"
+          , "let peek x = x"
+          , "pass : Int -> Int"
+          , "let pass y = peek y"
+          , "type PeekInt = (& x : Int) -> Int"
+          , "aliasPeek : PeekInt"
+          , "let aliasPeek x = x"
+          , "aliasPass : Int -> Int"
+          , "let aliasPass y = aliasPeek y"
+          , "type IgnoreInt = (0 x : Int) -> Int"
+          , "localAlias : PeekInt -> Int -> Int"
+          , "let localAlias f y = f y"
+          , "localAliasIgnore : IgnoreInt -> Int -> Int"
+          , "let localAliasIgnore f y = f y"
+          , "localAnnotated : Int -> Int"
+          , "let localAnnotated y ="
+          , "  let h : PeekInt -> Int = \\f -> f y"
+          , "  h aliasPeek"
+          , "choosePeek : Bool -> Int -> Int -> Int"
+          , "let choosePeek c a b = peek (if c then a else b)"
+          , "erasedOnly : Int -> Int"
+          , "let erasedOnly n = ignore n 1"
+          , "apply : ((1 x : Int) -> Int) -> (1 y : Int) -> Int"
+          , "let apply f y = f y"
+          , "localIgnore : ((0 x : Int) -> Int) -> Int -> Int"
+          , "let localIgnore f y = f y"
+          , "data Wrap : Type ="
+          , "    MkWrap ((& x : Int) -> Int)"
+          , "useWrap : Wrap -> Int -> Int"
+          , "let useWrap w y ="
+          , "  match w"
+          , "  case MkWrap f -> f y"
+          , "data WrapAlias : Type ="
+          , "    MkWrapAlias PeekInt"
+          , "useWrapAlias : WrapAlias -> Int -> Int"
+          , "let useWrapAlias w y ="
+          , "  match w"
+          , "  case MkWrapAlias f -> f y"
+          , "data BoxF (ft : Type) : Type ="
+          , "    MkBoxF ft"
+          , "useParamCtor : BoxF PeekInt -> Int -> Int"
+          , "let useParamCtor b y ="
+          , "  match b"
+          , "  case MkBoxF f -> f y + y"
+          , "type RecAlias = (f : PeekInt)"
+          , "useRecordAlias : RecAlias -> Int -> Int"
+          , "let useRecordAlias r y ="
+          , "  match r"
+          , "  case (f = f) -> f y"
+          , "useProjectedCallee : RecAlias -> Int -> Int"
+          , "let useProjectedCallee r y = r.f y + y"
+          , "type TupleAlias = (PeekInt, Int)"
+          , "useTupleAlias : TupleAlias -> Int -> Int"
+          , "let useTupleAlias p y ="
+          , "  match p"
+          , "  case (f, _) -> f y"
+          , "useVariant : (| PeekInt |) -> Int -> Int"
+          , "let useVariant v y ="
+          , "  match v"
+          , "  case (| f : PeekInt |) -> f y + y"
+          , "foo : (a : Type) -> Int"
+          , "let foo a = 0"
+          , "typeOnly : (a : Type) -> Int"
+          , "let typeOnly a = foo a"
+          , "type K = Type"
+          , "fooK : (a : K) -> Int"
+          , "let fooK a = 0"
+          , "typeOnlyAlias : (a : K) -> Int"
+          , "let typeOnlyAlias a = fooK a"
+          , "projOnly : (r : (v : Int)) -> Int"
+          , "let projOnly r = r.v"
+          , "type Box = (v : Int)"
+          , "peekBox : (& x : Box) -> Int"
+          , "let peekBox x = x.v"
+          , "useBorrowTwice : Box -> Int"
+          , "let useBorrowTwice y = peekBox y + y.v"
+          ]
+      focused =
+        let cu = compileSourceWithPrelude "consume-vs-read.kp" consumeVsReadSrc
+            st = cuState cu
+            ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+            ctorTypes = Map.map ciType (csCtors st)
+            mainMod = ModuleName [T.pack "main"]
+            passG = GName mainMod (T.pack "pass")
+            aliasPassG = GName mainMod (T.pack "aliasPass")
+            localAliasG = GName mainMod (T.pack "localAlias")
+            localAliasIgnoreG = GName mainMod (T.pack "localAliasIgnore")
+            localAnnotatedG = GName mainMod (T.pack "localAnnotated")
+            choosePeekG = GName mainMod (T.pack "choosePeek")
+            erasedG = GName mainMod (T.pack "erasedOnly")
+            applyG = GName mainMod (T.pack "apply")
+            localIgnoreG = GName mainMod (T.pack "localIgnore")
+            useWrapG = GName mainMod (T.pack "useWrap")
+            useWrapAliasG = GName mainMod (T.pack "useWrapAlias")
+            useParamCtorG = GName mainMod (T.pack "useParamCtor")
+            useRecordAliasG = GName mainMod (T.pack "useRecordAlias")
+            useProjectedCalleeG = GName mainMod (T.pack "useProjectedCallee")
+            useTupleAliasG = GName mainMod (T.pack "useTupleAlias")
+            useVariantG = GName mainMod (T.pack "useVariant")
+            typeOnlyG = GName mainMod (T.pack "typeOnly")
+            typeOnlyAliasG = GName mainMod (T.pack "typeOnlyAlias")
+            projOnlyG = GName mainMod (T.pack "projOnly")
+            useBorrowTwiceG = GName mainMod (T.pack "useBorrowTwice")
+            paramBid g = BinderId g []
+            refinedOf g =
+              case Map.lookup g (csOwnership st) of
+                Nothing -> Left ("no OwnInfo for " <> show g)
+                Just oi ->
+                  case Map.lookup (paramBid g) (oiBinders oi) of
+                    Nothing -> Left ("no parameter binder for " <> show g)
+                    Just bo -> Right (boRefined bo)
+            passDump =
+              case Map.lookup passG (csOwnership st) of
+                Nothing -> T.empty
+                Just oi -> renderOwnInfo passG oi
+            dumpOf g =
+              case Map.lookup g (csOwnership st) of
+                Nothing -> T.empty
+                Just oi -> renderOwnInfo g oi
+            forcedLinear =
+              Map.adjust
+                ( \oi ->
+                    oi
+                      { oiBinders =
+                          Map.adjust
+                            (\bo -> bo {boDeclQ = Q1})
+                            (paramBid passG)
+                            (oiBinders oi)
+                      }
+                )
+                passG
+                (csOwnership st)
+            forcedBodies = Map.filterWithKey (\g _ -> g == passG) (csCoreBodies st)
+            forcedMsgs = crossCheckBodies ctx ctorTypes forcedBodies forcedLinear
+            missingMsgs = crossCheckBodies ctx ctorTypes forcedBodies Map.empty
+            driftUses =
+              Map.adjust
+                (\oi -> oi {oiUses = Map.empty})
+                passG
+                (csOwnership st)
+            driftBinderUses =
+              Map.adjust
+                (\oi -> oi {oiBinderUses = Map.empty})
+                passG
+                (csOwnership st)
+            driftBinders =
+              Map.adjust
+                (\oi -> oi {oiBinders = Map.empty})
+                passG
+                (csOwnership st)
+            driftUsesMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftUses
+            driftBinderUsesMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinderUses
+            driftBindersMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinders
+            focusedXc = crossCheckBodies ctx ctorTypes (csCoreBodies st) (csOwnership st)
+            checks =
+              [ ( "borrowed call arg records LastUse consumes=False"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` passDump
+                )
+              , ( "borrowed call arg still counts as runtime use"
+                , refinedOf passG == Right (Just (1, Just 1))
+                )
+              , ( "alias-wrapped borrowed call arg records non-consuming use"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf aliasPassG
+                    && refinedOf aliasPassG == Right (Just (1, Just 1))
+                )
+              , ( "alias-wrapped local borrowed callee records read argument"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf localAliasG
+                )
+              , ( "alias-wrapped local Q0 callee records runtime read"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf localAliasIgnoreG
+                )
+              , ( "typed local lambda RHS uses annotated borrowed callee parameter"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf localAnnotatedG
+                )
+              , ( "branch-computed borrowed arg preserves read context"
+                , T.count (T.pack "LastUse consumes=False") (dumpOf choosePeekG) >= 2
+                )
+              , ( "Q0 erased arg does not count as runtime use"
+                , refinedOf erasedG == Right (Just (0, Just 0))
+                )
+              , ( "higher-order local linear call cross-checks"
+                , null focusedXc
+                )
+              , ( "higher-order local linear call records consuming uses"
+                , T.count (T.pack "LastUse consumes=True") (dumpOf applyG) >= 2
+                )
+              , ( "local Q0 first-class call records runtime read, not erasure"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf localIgnoreG
+                )
+              , ( "pattern-bound borrowed callee records read argument"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf useWrapG
+                )
+              , ( "alias-wrapped constructor callee records read argument"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf useWrapAliasG
+                )
+              , ( "parameterized constructor field instantiates borrowed callee type"
+                , T.pack "NonLast consumes=False" `T.isInfixOf` dumpOf useParamCtorG
+                )
+              , ( "alias-wrapped record callee records read argument"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf useRecordAliasG
+                )
+              , ( "projected record callee records read argument"
+                , T.pack "NonLast consumes=False" `T.isInfixOf` dumpOf useProjectedCalleeG
+                )
+              , ( "alias-wrapped tuple callee records read argument"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf useTupleAliasG
+                )
+              , ( "variant payload callee records read argument"
+                , T.pack "NonLast consumes=False" `T.isInfixOf` dumpOf useVariantG
+                )
+              , ( "kind-domain non-Q0 arg does not count as runtime use"
+                , refinedOf typeOnlyG == Right (Just (0, Just 0))
+                    && not (T.pack "\n  use " `T.isInfixOf` dumpOf typeOnlyG)
+                )
+              , ( "alias-wrapped kind-domain arg does not count as runtime use"
+                , refinedOf typeOnlyAliasG == Right (Just (0, Just 0))
+                    && not (T.pack "\n  use " `T.isInfixOf` dumpOf typeOnlyAliasG)
+                )
+              , ( "projection-only read records non-consuming LastUse"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf projOnlyG
+                )
+              , ( "projection-only read still counts as runtime use"
+                , refinedOf projOnlyG == Right (Just (1, Just 1))
+                )
+              , ( "read-only NonLast does not consume"
+                , T.pack "NonLast consumes=False" `T.isInfixOf` dumpOf useBorrowTwiceG
+                )
+              , ( "linear cross-check rejects read-only LastUse"
+                , not (null forcedMsgs)
+                )
+              , ( "cross-check rejects missing OwnInfo entry"
+                , not (null missingMsgs)
+                )
+              , ( "cross-check rejects stored oiUses drift"
+                , not (null driftUsesMsgs)
+                )
+              , ( "cross-check rejects stored oiBinderUses drift"
+                , not (null driftBinderUsesMsgs)
+                )
+              , ( "cross-check rejects stored oiBinders drift"
+                , not (null driftBindersMsgs)
+                )
+              ]
+            failed = [name | (name, ok) <- checks, not ok]
+         in (null failed, failed, passDump, forcedMsgs, focusedXc, refinedOf passG, refinedOf erasedG, refinedOf typeOnlyG, refinedOf projOnlyG)
+      ( focusedOK
+        , focusedFailed
+        , focusedPassDump
+        , focusedForcedMsgs
+        , focusedXcOut
+        , focusedPassRefined
+        , focusedErasedRefined
+        , focusedTypeRefined
+        , focusedProjRefined
+        ) = focused
   unless (null mismatches) $ do
     putStrLn ("ownershipCrossCheckClean FAILED: " <> show (length mismatches) <> " mismatch(es)")
     mapM_ (putStrLn . ("  " <>)) (take 20 mismatches)
-  pure (null mismatches)
+  unless focusedOK $ do
+    putStrLn "ownershipCrossCheckClean focused consume/read regressions FAILED:"
+    mapM_ (putStrLn . ("  " <>)) focusedFailed
+    putStrLn ("  passRefined=" <> show focusedPassRefined)
+    putStrLn ("  erasedRefined=" <> show focusedErasedRefined)
+    putStrLn ("  typeOnlyRefined=" <> show focusedTypeRefined)
+    putStrLn ("  projOnlyRefined=" <> show focusedProjRefined)
+    putStrLn ("  focusedMsgs=" <> show focusedXcOut)
+    putStrLn ("  forcedMsgs=" <> show focusedForcedMsgs)
+    putStrLn ("  passDump=" <> T.unpack focusedPassDump)
+  pure (null mismatches && focusedOK)
 
 -- | Perceus S1.3 regression: 'Kappa.Backend.Repr.ctorLayoutOf' must count a
 -- constructor's RUNTIME fields — the field set the backend actually builds the
@@ -337,6 +611,7 @@ reExportBoundaryRefinement = do
       cu = compileFiles [("lib.kp", libSrc), ("app.kp", appSrc)]
       st = cuState cu
       ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      ctorTypes = Map.map ciType (csCtors st)
       lib = ModuleName [T.pack "lib"]
       -- the single leading ω parameter of each one-arg body sits at biPath [].
       refinedOf cname =
@@ -349,6 +624,7 @@ reExportBoundaryRefinement = do
       xcClean =
         crossCheckBodies
           ctx
+          ctorTypes
           (csCoreBodies st)
           (csOwnership st)
       -- The surviving soundness gate is tighten-only: a 'boRefined' interval must
@@ -373,6 +649,7 @@ reExportBoundaryRefinement = do
       xcForced =
         crossCheckBodies
           ctx
+          ctorTypes
           (csCoreBodies st)
           forcedWiden
       results =

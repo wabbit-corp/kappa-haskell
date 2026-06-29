@@ -1,0 +1,20 @@
+--! assertErrorCount 2
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+type Inner : Type =
+    (1 tok : Token)
+
+type Outer : Type =
+    (inner : Inner, count : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Outer = (inner = (tok = Token), count = 0)
+    let copy = cell.inner
+    pure ()

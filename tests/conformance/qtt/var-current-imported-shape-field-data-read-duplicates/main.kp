@@ -1,0 +1,9 @@
+module main
+
+import lib.types.(type Token(..), type Box(..), type Outer, makeOuter)
+
+bad : UIO Unit
+let bad = do
+    var outer : Outer = makeOuter ()
+    let copy = outer.box
+    pure ()

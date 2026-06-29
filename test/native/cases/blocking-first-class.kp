@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\ninside\nafter\n"
+
+-- First-class `blocking` uses the kpf_blocking wrapper path, which must build
+-- the same OP_BLOCKING action as the saturated direct source form.
+module main
+
+withBridge : (UIO Unit -> UIO Unit) -> UIO Unit
+let withBridge bridge = bridge (printlnString "inside")
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    withBridge blocking
+    printlnString "after"

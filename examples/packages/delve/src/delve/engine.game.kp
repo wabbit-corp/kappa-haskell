@@ -1615,19 +1615,19 @@ let runLoop terminal mapSize lastMusic game =
         case Quit -> pure ()
         case _ ->
             do
-                nextMusic <- updateMusic lastMusic (desiredMusic game)
-                key <- term.readKey terminal
+                let nextMusic <- updateMusic lastMusic (desiredMusic game)
+                let key <- term.readKey terminal
                 let cmd = commandFor game key
-                game2 <- stepIO mapSize cmd game
-                musicAfterInput <- if game2.audioMuted && not game.audioMuted then updateMusic nextMusic musicNone else pure nextMusic
+                let game2 <- stepIO mapSize cmd game
+                let musicAfterInput <- if game2.audioMuted && not game.audioMuted then updateMusic nextMusic musicNone else pure nextMusic
                 playEvents game cmd game2
                 runLoop terminal mapSize musicAfterInput game2
 
 main : IO GameError Unit
 let main =
     do
-        pack <- config.loadDefault
-        terminal <- term.open
+        let pack <- config.loadDefault
+        let terminal <- term.open
         let cleanup =
             do
                 audio.shutdown
@@ -1635,8 +1635,8 @@ let main =
         let body =
             do
                 audio.init
-                seed <- liftUIO term.monotonicSeed
-                screen <- term.size terminal
+                let seed <- liftUIO term.monotonicSeed
+                let screen <- term.size terminal
                 let mapSize = mapSizeFor pack screen
                 let game = initialMenu pack seed mapSize
                 runLoop terminal mapSize musicNone game

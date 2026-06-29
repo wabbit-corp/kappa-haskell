@@ -1,0 +1,26 @@
+module main
+
+--! allow_unsafe_consume
+
+data Token : Type =
+    Token
+
+bad : (1 t : Token) -> UIO Unit
+let bad t = do
+    var x : Token = t
+    let y = x
+    ioPure ()
+
+--! mode check
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/binding x
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/selectedFacet current-value
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/occurrence user-written
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/sourceOperation current read
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/storedValueType Token
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/hiddenReferenceType "Ref Token"
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/enclosingMonad "IO Void"
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/enclosingDoBlock nearest
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/monadRefEvidenceType "MonadRef (IO Void)"
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/nonDuplicableFact stored-value

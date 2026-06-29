@@ -25,7 +25,7 @@ buildAccts : Int -> Int -> List (TVar Int) -> UIO (List (TVar Int))
 let buildAccts k initBal acc =
     if leInt k 0 then pure acc
     else do
-        tv <- atomically (newTVar initBal)
+        let tv <- atomically (newTVar initBal)
         buildAccts (subInt k 1) initBal (tv :: acc)
 
 -- O(K) index into the account list (the gap: no constant-time array).
@@ -43,9 +43,9 @@ let firstTV xs dflt = match xs
 -- One atomic transfer: debit a, credit b. Total is conserved for any amt/sign.
 transfer : TVar Int -> TVar Int -> Int -> STM Unit
 let transfer a b amt = do
-    av <- readTVar a
+    let av <- readTVar a
     writeTVar a (subInt av amt)
-    bv <- readTVar b
+    let bv <- readTVar b
     writeTVar b (addInt bv amt)
 
 -- Park-Miller MINSTD LCG: state in (0, 2^31-1). Bounded so the Int never
@@ -71,27 +71,27 @@ sumAccts : List (TVar Int) -> Int -> UIO Int
 let sumAccts xs acc = match xs
     case Nil -> pure acc
     case x :: rest -> do
-        v <- atomically (readTVar x)
+        let v <- atomically (readTVar x)
         sumAccts rest (addInt acc v)
 
 main : UIO Unit
 let main = do
     -- N = 1000 accounts, 1000000 transfers (4 workers x 250000).
     let k = 1000
-    seedTv <- atomically (newTVar 0)
-    accts <- buildAccts k 1000 Nil
+    let seedTv <- atomically (newTVar 0)
+    let accts <- buildAccts k 1000 Nil
     let h = firstTV accts seedTv
-    f1 <- fork (workerGo accts h k 250000 1)
-    f2 <- fork (workerGo accts h k 250000 1000003)
-    f3 <- fork (workerGo accts h k 250000 2000029)
-    f4 <- fork (workerGo accts h k 250000 3000071)
-    e1 <- await f1
-    e2 <- await f2
-    e3 <- await f3
-    e4 <- await f4
+    let f1 <- fork (workerGo accts h k 250000 1)
+    let f2 <- fork (workerGo accts h k 250000 1000003)
+    let f3 <- fork (workerGo accts h k 250000 2000029)
+    let f4 <- fork (workerGo accts h k 250000 3000071)
+    let e1 <- await f1
+    let e2 <- await f2
+    let e3 <- await f3
+    let e4 <- await f4
     let _ = e1
     let _ = e2
     let _ = e3
     let _ = e4
-    total <- sumAccts accts 0
+    let total <- sumAccts accts 0
     printlnString (showInt total)

@@ -1,0 +1,16 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\ninside\nafter\n"
+
+-- `blocking` is an ordinary source term, not only syntax. Passing it as a value
+-- must preserve the same IO-transformer behavior as a saturated call.
+module main
+
+withBridge : (UIO Unit -> UIO Unit) -> UIO Unit
+let withBridge bridge = bridge (printlnString "inside")
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    withBridge blocking
+    printlnString "after"

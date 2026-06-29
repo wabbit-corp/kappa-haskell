@@ -9,14 +9,16 @@ data File = Handle Int
 openFile : String -> UIO File
 let openFile name = pure (Handle 1)
 
-readData : File -> UIO String
-let readData file = pure "chunk"
+readData : (1 file : File) -> UIO String
+let readData (1 file : File) =
+  match file
+  case Handle _ -> pure "chunk"
 
 main : UIO Unit
 let main = do
-  cell <- newRef 0
-  opened <- openFile "data.txt"
-  chunk <- readData opened
+  let cell <- newRef 0
+  let opened <- openFile "data.txt"
+  let ω chunk <- readData opened
   printlnString chunk
 
 --! mode check

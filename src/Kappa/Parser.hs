@@ -2180,6 +2180,7 @@ pAtom = do
       pKeyword "moduleSig"
       n <- pIdent
       EModuleSig n <$> spanFrom start
+    TokIdent "ref" -> refFacet start <|> (EVar <$> pIdent)
     TokIdent _ -> EVar <$> pIdent
     TokBacktick _ -> EVar <$> pIdent
     -- Brackets close any enclosing clause context, so query keywords
@@ -2243,6 +2244,13 @@ pAtom = do
                 _ -> SelModule
           EKindQualified sel n <$> spanFrom start
         else EVar <$> pIdent
+    -- §18.6.1: `ref x` selects a mutable binding's hidden reference cell.
+    -- The operand is deliberately a simple identifier; ordinary values named
+    -- `ref` can still be referenced with backticks.
+    refFacet start = try $ do
+      pKeyword "ref"
+      n <- pIdent
+      ERefFacet n <$> spanFrom start
 
 -- Atom without sections (constructor bare fields).
 pAtomNoSection :: P Expr
@@ -2736,9 +2744,18 @@ pLetIn = do
     ok <- lookAheadIs (pKeyword "in")
     if ok then pure () else parseFail "expected 'in'"
   pKeyword "in"
-  body <- pSuiteOrExpr
+  body <- pLetInBody
   ELet binds body <$> spanFrom start
   where
+    pLetInBody =
+      pSuiteOrExpr <|> sameIndentContinuationBody
+    sameIndentContinuationBody = try $ do
+      -- In an expression suite opened by `=`, a line after `in` at the
+      -- suite's indentation still belongs to that §5.4 continuation region.
+      ok <- sameIndentContinuationAllowed
+      unless ok (parseFail "same-indentation let body requires a continuation context")
+      pNewline
+      withSameIndentContinuation pExpr
     letBlock = try $ do
       pNewline
       token TokIndent
@@ -2901,7 +2918,7 @@ pBlockItems = go []
                     else parseFail "only the final item of a block may be an expression"
     letInExpr = do
       ok <- lookAheadIs (pKeyword "let")
-      if ok then pLetIn else parseFail "not a let-in expression"
+      if ok then withSameIndentContinuation pLetIn else parseFail "not a let-in expression"
 
 -- Local declarations inside block/do (§9.3.1).
 pLocalDecl :: P Decl
@@ -2935,9 +2952,10 @@ pDoItem = do
     TokIdent "var" -> do
       pKeyword "var"
       n <- pIdent
+      mty <- optionMaybe (token TokColon *> noEq pExpr)
       token TokEquals
-      e <- pExpr
-      DoVar n e <$> spanFrom start
+      e <- pSuiteOrExpr
+      DoVar n mty e <$> spanFrom start
     TokIdent "using" -> do
       pKeyword "using"
       pstart <- currentSpan

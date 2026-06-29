@@ -14,8 +14,8 @@ let showList xs =
 
 pairs : List Int
 let pairs = do
-    x <- 1 :: 2 :: Nil
-    y <- 10 :: 20 :: Nil
+    let x <- 1 :: 2 :: Nil
+    let y <- 10 :: 20 :: Nil
     (x + y) :: Nil
 
 main : UIO Unit

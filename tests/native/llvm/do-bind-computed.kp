@@ -9,5 +9,5 @@ let twice n = ioPure (addInt n n)
 
 main : UIO Unit
 let main = do
-    r <- twice 21
+    let ω r <- twice 21
     printlnString (showInt r)

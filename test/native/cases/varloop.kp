@@ -1,8 +1,7 @@
--- P0.2: a non-escaping Int `var` loop scalarizes to int64 C locals; the
--- result must match the interpreter on the non-overflow path AND when the
--- scalar loop overflows and escapes to the boxed/GMP path.  An effectful or
--- escaping var loop stays boxed (also matching).  `while` runs iteratively in
--- the interpreter, so the oracle runs these directly.
+-- S2.3b: surface `var` loops stay on the boxed MonadRef path unless a backend
+-- optimizer proves the selected evidence is preserved. These cases still pin
+-- interpreter/native equality for non-overflow, GMP-sized overflow, and
+-- effectful loop bodies.
 module main
 
 main : UIO Unit

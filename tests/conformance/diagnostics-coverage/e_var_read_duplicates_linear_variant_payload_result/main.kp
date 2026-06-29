@@ -1,0 +1,23 @@
+module main
+
+--! allow_unsafe_consume
+
+data Token : Type =
+    Token
+
+type Cell = (| Token | Unit |)
+
+make : (1 t : Token) -> Cell
+let make t = (| t : Token |)
+
+bad : (1 t : Token) -> UIO Unit
+let bad t = do
+    var cell = make t
+    let y = cell
+    ioPure ()
+
+--! mode check
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/binding cell
+--! assertDiagnosticPayload error E_VAR_READ_DUPLICATES_LINEAR_VALUE /payload/nonDuplicableFact stored-value

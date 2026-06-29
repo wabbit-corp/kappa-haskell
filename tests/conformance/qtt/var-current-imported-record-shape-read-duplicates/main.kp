@@ -1,0 +1,9 @@
+module main
+
+import lib.types.(type Token(..), type Inner, type Outer)
+
+bad : UIO Unit
+let bad = do
+    var cell : Outer = (inner = (tok = Token), count = 0)
+    let copy = cell.inner
+    pure ()

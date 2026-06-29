@@ -16,7 +16,7 @@ let liftUIO action = catchIO action (\v -> raise (absurd v))
 terminalFailure : forall (a : Type). Int -> IO GameError a
 let terminalFailure code =
     do
-        message <- liftUIO (Raw.delve_describe_error2 code)
+        let message <- liftUIO (Raw.delve_describe_error2 code)
         raise (TerminalError message)
 
 checkUnit : Int -> IO GameError Unit
@@ -30,12 +30,12 @@ let checkNonNegative code =
 open : IO GameError Terminal
 let open =
     do
-        handle <- liftUIO Raw.delve_open_terminal2
+        let handle <- liftUIO Raw.delve_open_terminal2
         match handle
         case Some _ -> pure (Terminal handle)
         case None ->
             do
-                code <- liftUIO Raw.delve_last_errno2
+                let code <- liftUIO Raw.delve_last_errno2
                 terminalFailure code
 
 close : (1 terminal : Terminal) -> IO GameError Unit
@@ -43,7 +43,7 @@ let close terminal =
     match terminal
     case Terminal handle ->
         do
-            code <- liftUIO (Raw.delve_close_terminal2 handle)
+            let code <- liftUIO (Raw.delve_close_terminal2 handle)
             checkUnit code
 
 readKey : (& terminal : Terminal) -> IO GameError Key
@@ -51,8 +51,8 @@ let readKey terminal =
     match terminal
     case Terminal handle ->
         do
-            code <- liftUIO (Raw.delve_read_key2 handle)
-            decoded <- checkNonNegative code
+            let code <- liftUIO (Raw.delve_read_key2 handle)
+            let decoded <- checkNonNegative code
             pure (decodeKey decoded)
 
 write : (& terminal : Terminal) -> String -> IO GameError Unit
@@ -60,7 +60,7 @@ let write terminal text =
     match terminal
     case Terminal handle ->
         do
-            code <- liftUIO (Raw.delve_write_all2 handle text (natToInt (uni.byteLength text)))
+            let code <- liftUIO (Raw.delve_write_all2 handle text (natToInt (uni.byteLength text)))
             checkUnit code
 
 size : (& terminal : Terminal) -> IO GameError Size
@@ -68,10 +68,10 @@ let size terminal =
     match terminal
     case Terminal handle ->
         do
-            cols0 <- liftUIO (Raw.delve_get_cols2 handle)
-            rows0 <- liftUIO (Raw.delve_get_rows2 handle)
-            cols <- checkNonNegative cols0
-            rows <- checkNonNegative rows0
+            let cols0 <- liftUIO (Raw.delve_get_cols2 handle)
+            let rows0 <- liftUIO (Raw.delve_get_rows2 handle)
+            let cols <- checkNonNegative cols0
+            let rows <- checkNonNegative rows0
             pure (Size cols rows)
 
 monotonicSeed : UIO Nat

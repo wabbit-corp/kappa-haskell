@@ -11,7 +11,7 @@
 --     the spliced computation, never `(!writeRef) r 12`.
 main : UIO Unit
 let main = do
-    r <- newRef 7
+    let r <- newRef 7
     let x = !readRef r
     printlnString (showInt x)
     !writeRef r 12

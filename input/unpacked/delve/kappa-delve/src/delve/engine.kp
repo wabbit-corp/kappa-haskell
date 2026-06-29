@@ -168,7 +168,7 @@ let runLoop terminal game =
         match game.mode
         case Quit -> pure ()
         case _ ->
-            key <- term.readKey terminal
+            let key <- term.readKey terminal
             let game2 = step key game
             runLoop terminal game2
 
@@ -176,8 +176,8 @@ main : IO GameError Unit
 let main =
     do
         using terminal <- term.open
-            seed <- term.monotonicSeed
-            screen <- term.size terminal
+            let seed <- term.monotonicSeed
+            let screen <- term.size terminal
             let mapSize = Size (min 96 (max 60 screen.width)) (min 32 (max 20 (screen.height - 6)))
             let game = initialGame seed mapSize
             runLoop terminal game

@@ -156,7 +156,7 @@ EOF
 
 That is ~50k loop iterations/s. Each iteration performs, through the
 tree-walking interpreter and the §18.8 completion kernel: two `var`
-reads (each elaborated to a `__runIO (readRef …)` splice per §18.6.1),
+reads (each lifted to a `MonadRef.readRef (ref …)` action per §18.6.1),
 two `writeRef`s, two primitive arithmetic calls, and one comparison —
 all as interpreted core terms, with a completion record allocated per
 do-item. This is the expected cost profile for an AST interpreter; no

@@ -21,13 +21,13 @@ let saveGame game =
 loadGame : ContentPack -> Size -> IO GameError GameState
 let loadGame pack fallbackSize =
     do
-        present <- files.exists pack.save.path
+        let present <- files.exists pack.save.path
         if not present then raise (SaveError "no save file exists")
         else
             do
-                text <- files.readText pack.save.path
-                value <- parseOrRaise text
-                decoded <- decodeGame pack fallbackSize value
+                let text <- files.readText pack.save.path
+                let value <- parseOrRaise text
+                let decoded <- decodeGame pack fallbackSize value
                 pure (ecs.sync decoded.{ mode = Playing })
 
 parseOrRaise : String -> IO GameError JsonValue
@@ -204,9 +204,9 @@ let encodeEcs world =
 decodeGame : ContentPack -> Size -> JsonValue -> IO GameError GameState
 let decodeGame pack fallbackSize value =
     do
-        format <- optIntField pack.save.formatVersion "format_version" value
-        savedPack <- optStringField pack.packId "pack_id" value
-        savedVersion <- optStringField pack.version "pack_version" value
+        let format <- optIntField pack.save.formatVersion "format_version" value
+        let savedPack <- optStringField pack.packId "pack_id" value
+        let savedVersion <- optStringField pack.version "pack_version" value
         if format != pack.save.formatVersion then
             raise (SaveError "save format version does not match this content pack")
         elif savedPack != pack.packId then
@@ -214,16 +214,16 @@ let decodeGame pack fallbackSize value =
         elif savedVersion != pack.version then
             raise (SaveError "save file was written for a different content version")
         else pure ()
-        rngValue <- optIntField 0 "rng" value
-        playerJson <- requireField "player" value
-        levelJson <- requireField "level" value
-        rumorJson <- requireArrayField "rumors" value
-        audioMuted <- optBoolField False "audio_muted" value
-        player <- decodePlayer pack playerJson
-        level <- decodeLevel fallbackSize levelJson
-        rumors <- traverse decodeRumor rumorJson
-        levelsJson <- optArrayField Nil "levels" value
-        storedLevels <- traverse (decodeLevel fallbackSize) levelsJson
+        let rngValue <- optIntField 0 "rng" value
+        let playerJson <- requireField "player" value
+        let levelJson <- requireField "level" value
+        let rumorJson <- requireArrayField "rumors" value
+        let audioMuted <- optBoolField False "audio_muted" value
+        let player <- decodePlayer pack playerJson
+        let level <- decodeLevel fallbackSize levelJson
+        let rumors <- traverse decodeRumor rumorJson
+        let levelsJson <- optArrayField Nil "levels" value
+        let storedLevels <- traverse (decodeLevel fallbackSize) levelsJson
         validateLoadedState player level
         pure (GameState {
                 rng = intToNat rngValue,
@@ -288,7 +288,7 @@ let optArrayField fallback name value =
 requireArrayField : String -> JsonValue -> IO GameError (List JsonValue)
 let requireArrayField name value =
     do
-        fieldValue <- requireField name value
+        let fieldValue <- requireField name value
         match js.asArray fieldValue
         case Ok xs -> pure xs
         case Err e -> raise e
@@ -316,72 +316,72 @@ let decodeRumor value =
 decodeSkillEntry : JsonValue -> IO GameError SkillEntry
 let decodeSkillEntry value =
     do
-        id <- optStringField "" "id" value
-        level <- optIntField 0 "level" value
+        let id <- optStringField "" "id" value
+        let level <- optIntField 0 "level" value
         pure (SkillEntry id level)
 
 decodeKnowledge : JsonValue -> IO GameError SpeciesKnowledge
 let decodeKnowledge value =
     do
-        speciesName0 <- optStringField "Rat" "species" value
-        species <- decodeSpeciesString speciesName0
-        sightings <- optIntField 0 "sightings" value
-        kills <- optIntField 0 "kills" value
-        dmgJson <- optArrayField Nil "damage_seen" value
-        damageSeen <- traverse decodeDamageTypeJson dmgJson
-        firstDepth <- optIntField 0 "first_depth" value
-        dropsJson <- optArrayField Nil "drops" value
-        drops <- traverse decodeItemKindJson dropsJson
+        let speciesName0 <- optStringField "Rat" "species" value
+        let species <- decodeSpeciesString speciesName0
+        let sightings <- optIntField 0 "sightings" value
+        let kills <- optIntField 0 "kills" value
+        let dmgJson <- optArrayField Nil "damage_seen" value
+        let damageSeen <- traverse decodeDamageTypeJson dmgJson
+        let firstDepth <- optIntField 0 "first_depth" value
+        let dropsJson <- optArrayField Nil "drops" value
+        let drops <- traverse decodeItemKindJson dropsJson
         pure (SpeciesKnowledge species sightings kills damageSeen firstDepth drops)
 
 decodePlayer : ContentPack -> JsonValue -> IO GameError PlayerState
 let decodePlayer pack value =
     do
-        actorId <- optIntField 1 "actor_id" value
-        hunger <- optIntField pack.rules.startingHunger "hunger" value
-        gold <- optIntField 0 "gold" value
-        identifiedJson <- optArrayField Nil "identified" value
-        identified <- traverse decodeItemKindJson identifiedJson
-        tacticName0 <- optStringField "Balanced" "tactic" value
-        tactic <- decodeTacticString tacticName0
-        signName0 <- optStringField "Raven" "star_sign" value
-        sign <- decodeStarSignString signName0
-        corruption <- optIntField 0 "corruption" value
-        mutationJson <- optArrayField Nil "mutations" value
-        mutations <- traverse decodeMutationJson mutationJson
-        favor <- optIntField 0 "favor" value
-        faithName0 <- optStringField "EmberMother" "faith" value
-        faith <- decodeFaithString faithName0
-        reputation <- optIntField 0 "reputation" value
-        legacyCrafting <- optIntField 1 "crafting" value
-        skillsJson <- optArrayField Nil "skills" value
-        skills0 <- traverse decodeSkillEntry skillsJson
+        let actorId <- optIntField 1 "actor_id" value
+        let hunger <- optIntField pack.rules.startingHunger "hunger" value
+        let gold <- optIntField 0 "gold" value
+        let identifiedJson <- optArrayField Nil "identified" value
+        let identified <- traverse decodeItemKindJson identifiedJson
+        let tacticName0 <- optStringField "Balanced" "tactic" value
+        let tactic <- decodeTacticString tacticName0
+        let signName0 <- optStringField "Raven" "star_sign" value
+        let sign <- decodeStarSignString signName0
+        let corruption <- optIntField 0 "corruption" value
+        let mutationJson <- optArrayField Nil "mutations" value
+        let mutations <- traverse decodeMutationJson mutationJson
+        let favor <- optIntField 0 "favor" value
+        let faithName0 <- optStringField "EmberMother" "faith" value
+        let faith <- decodeFaithString faithName0
+        let reputation <- optIntField 0 "reputation" value
+        let legacyCrafting <- optIntField 1 "crafting" value
+        let skillsJson <- optArrayField Nil "skills" value
+        let skills0 <- traverse decodeSkillEntry skillsJson
         let skills = if listLength skills0 == 0 then [SkillEntry "crafting" legacyCrafting] else skills0
-        knowledgeJson <- optArrayField Nil "knowledge" value
-        knowledge <- traverse decodeKnowledge knowledgeJson
-        spellsJson <- optArrayField Nil "known_spells" value
-        knownSpells <- traverse decodeStringJson spellsJson
-        crouching <- optBoolField False "crouching" value
+        let knowledgeJson <- optArrayField Nil "knowledge" value
+        let knowledge <- traverse decodeKnowledge knowledgeJson
+        let spellsJson <- optArrayField Nil "known_spells" value
+        let knownSpells <- traverse decodeStringJson spellsJson
+        let crouching <- optBoolField False "crouching" value
         pure (PlayerState actorId hunger gold identified tactic sign corruption mutations favor faith reputation crouching skills knowledge knownSpells)
 
 decodeLevel : Size -> JsonValue -> IO GameError Level
 let decodeLevel fallbackSize value =
     do
-        depth <- optIntField 1 "depth" value
-        sizeJson <- requireField "size" value
-        size <- decodeSize sizeJson
-        tileJson <- requireArrayField "tiles" value
-        tiles <- traverse decodeTile tileJson
-        roomJson <- requireArrayField "rooms" value
-        rooms <- traverse decodeRoom roomJson
-        actorJson <- requireArrayField "actors" value
-        actors <- traverse decodeActor actorJson
-        itemJson <- requireArrayField "items" value
-        items <- traverse decodeGroundItem itemJson
-        msgJson <- requireArrayField "messages" value
-        messages <- traverse decodeStringJson msgJson
-        turn <- optIntField 0 "turn" value
-        branch <- optIntField 0 "branch" value
+        let depth <- optIntField 1 "depth" value
+        let sizeJson <- requireField "size" value
+        let size <- decodeSize sizeJson
+        let tileJson <- requireArrayField "tiles" value
+        let tiles <- traverse decodeTile tileJson
+        let roomJson <- requireArrayField "rooms" value
+        let rooms <- traverse decodeRoom roomJson
+        let actorJson <- requireArrayField "actors" value
+        let actors <- traverse decodeActor actorJson
+        let itemJson <- requireArrayField "items" value
+        let items <- traverse decodeGroundItem itemJson
+        let msgJson <- requireArrayField "messages" value
+        let messages <- traverse decodeStringJson msgJson
+        let turn <- optIntField 0 "turn" value
+        let branch <- optIntField 0 "branch" value
         if listLength tiles == 0 then raise (SaveError "save file has no tiles")
         elif listLength actors == 0 then raise (SaveError "save file has no actors")
         else pure (Level depth size (arrayFromList tiles) rooms actors items messages (intToNat turn) branch)
@@ -389,128 +389,128 @@ let decodeLevel fallbackSize value =
 decodeSize : JsonValue -> IO GameError Size
 let decodeSize value =
     do
-        w <- optIntField 60 "width" value
-        h <- optIntField 25 "height" value
+        let w <- optIntField 60 "width" value
+        let h <- optIntField 25 "height" value
         pure (Size w h)
 
 decodeVec2 : JsonValue -> IO GameError Vec2
 let decodeVec2 value =
     do
-        x <- optIntField 0 "x" value
-        y <- optIntField 0 "y" value
+        let x <- optIntField 0 "x" value
+        let y <- optIntField 0 "y" value
         pure (Vec2 x y)
 
 decodeRoom : JsonValue -> IO GameError Room
 let decodeRoom value =
     do
-        x <- optIntField 0 "x" value
-        y <- optIntField 0 "y" value
-        w <- optIntField 1 "w" value
-        h <- optIntField 1 "h" value
+        let x <- optIntField 0 "x" value
+        let y <- optIntField 0 "y" value
+        let w <- optIntField 1 "w" value
+        let h <- optIntField 1 "h" value
         pure (Room x y w h)
 
 decodeTile : JsonValue -> IO GameError Tile
 let decodeTile value =
     do
-        kindName0 <- optStringField "Wall" "kind" value
-        kind <- decodeTileKindString kindName0
-        seen <- optBoolField False "seen" value
-        lit <- optBoolField False "lit" value
-        blood <- optBoolField False "blood" value
-        warded <- optBoolField False "warded" value
+        let kindName0 <- optStringField "Wall" "kind" value
+        let kind <- decodeTileKindString kindName0
+        let seen <- optBoolField False "seen" value
+        let lit <- optBoolField False "lit" value
+        let blood <- optBoolField False "blood" value
+        let warded <- optBoolField False "warded" value
         pure (Tile kind seen lit blood warded)
 
 decodeActor : JsonValue -> IO GameError Actor
 let decodeActor value =
     do
-        id <- optIntField 0 "id" value
-        speciesName0 <- optStringField "Rat" "species" value
-        species <- decodeSpeciesString speciesName0
-        name <- optStringField "monster" "name" value
-        glyph <- optStringField "?" "glyph" value
-        posJson <- requireField "pos" value
-        pos <- decodeVec2 posJson
-        statsJson <- requireField "stats" value
-        stats <- decodeStats statsJson
-        attitudeName0 <- optStringField "Hostile" "attitude" value
-        attitude <- decodeAttitudeString attitudeName0
-        factionName0 <- optStringField "CaveFaction" "faction" value
-        faction <- decodeFactionString factionName0
-        inventoryJson <- optArrayField Nil "inventory" value
-        inventory <- traverse decodeItem inventoryJson
-        woundJson <- optArrayField Nil "wounds" value
-        wounds <- traverse decodeWound woundJson
-        morale <- optIntField 8 "morale" value
-        loyalty <- optIntField 0 "loyalty" value
-        alive <- optBoolField True "alive" value
-        facingCode0 <- optIntField (directionCode South) "facing" value
-        resistJson <- optArrayField Nil "resistances" value
-        resistances <- traverse decodeDamageTypeJson resistJson
-        vulnJson <- optArrayField Nil "vulnerabilities" value
-        vulnerabilities <- traverse decodeDamageTypeJson vulnJson
+        let id <- optIntField 0 "id" value
+        let speciesName0 <- optStringField "Rat" "species" value
+        let species <- decodeSpeciesString speciesName0
+        let name <- optStringField "monster" "name" value
+        let glyph <- optStringField "?" "glyph" value
+        let posJson <- requireField "pos" value
+        let pos <- decodeVec2 posJson
+        let statsJson <- requireField "stats" value
+        let stats <- decodeStats statsJson
+        let attitudeName0 <- optStringField "Hostile" "attitude" value
+        let attitude <- decodeAttitudeString attitudeName0
+        let factionName0 <- optStringField "CaveFaction" "faction" value
+        let faction <- decodeFactionString factionName0
+        let inventoryJson <- optArrayField Nil "inventory" value
+        let inventory <- traverse decodeItem inventoryJson
+        let woundJson <- optArrayField Nil "wounds" value
+        let wounds <- traverse decodeWound woundJson
+        let morale <- optIntField 8 "morale" value
+        let loyalty <- optIntField 0 "loyalty" value
+        let alive <- optBoolField True "alive" value
+        let facingCode0 <- optIntField (directionCode South) "facing" value
+        let resistJson <- optArrayField Nil "resistances" value
+        let resistances <- traverse decodeDamageTypeJson resistJson
+        let vulnJson <- optArrayField Nil "vulnerabilities" value
+        let vulnerabilities <- traverse decodeDamageTypeJson vulnJson
         pure (Actor id species name glyph pos stats attitude faction inventory wounds morale loyalty alive (decodeDirectionCode facingCode0) resistances vulnerabilities)
 
 decodeStats : JsonValue -> IO GameError Stats
 let decodeStats value =
     do
-        hp <- optIntField 1 "hp" value
-        maxHp <- optIntField hp "max_hp" value
-        mp <- optIntField 0 "mp" value
-        maxMp <- optIntField mp "max_mp" value
-        strength <- optIntField 1 "str" value
-        dex <- optIntField 1 "dex" value
-        defense <- optIntField 0 "def" value
-        xp <- optIntField 0 "xp" value
-        level <- optIntField 1 "level" value
+        let hp <- optIntField 1 "hp" value
+        let maxHp <- optIntField hp "max_hp" value
+        let mp <- optIntField 0 "mp" value
+        let maxMp <- optIntField mp "max_mp" value
+        let strength <- optIntField 1 "str" value
+        let dex <- optIntField 1 "dex" value
+        let defense <- optIntField 0 "def" value
+        let xp <- optIntField 0 "xp" value
+        let level <- optIntField 1 "level" value
         pure (Stats hp maxHp mp maxMp strength dex defense xp level)
 
 decodeItem : JsonValue -> IO GameError Item
 let decodeItem value =
     do
-        kindName0 <- optStringField "Gold" "kind" value
-        kind <- decodeItemKindString kindName0
-        name <- optStringField "item" "name" value
-        glyph <- optStringField "?" "glyph" value
-        className0 <- optStringField "ToolClass" "class" value
-        cls <- decodeItemClassString className0
-        stackable <- optBoolField False "stackable" value
-        power <- optIntField 0 "power" value
-        count <- optIntField 1 "count" value
-        beatitudeName0 <- optStringField "UnknownBeatitude" "beatitude" value
-        beatitude <- decodeBeatitudeString beatitudeName0
-        beatitudeKnown <- optBoolField False "beatitude_known" value
-        identified <- optBoolField False "identified" value
-        charges <- optIntField 0 "charges" value
-        equipped <- optBoolField False "equipped" value
-        sourceName0 <- optStringField "PlayerSpecies" "source" value
-        source <- decodeSpeciesString sourceName0
-        cooked <- optBoolField False "cooked" value
-        rarity <- optStringField "common" "rarity" value
-        teaches <- optStringField "" "teaches" value
+        let kindName0 <- optStringField "Gold" "kind" value
+        let kind <- decodeItemKindString kindName0
+        let name <- optStringField "item" "name" value
+        let glyph <- optStringField "?" "glyph" value
+        let className0 <- optStringField "ToolClass" "class" value
+        let cls <- decodeItemClassString className0
+        let stackable <- optBoolField False "stackable" value
+        let power <- optIntField 0 "power" value
+        let count <- optIntField 1 "count" value
+        let beatitudeName0 <- optStringField "UnknownBeatitude" "beatitude" value
+        let beatitude <- decodeBeatitudeString beatitudeName0
+        let beatitudeKnown <- optBoolField False "beatitude_known" value
+        let identified <- optBoolField False "identified" value
+        let charges <- optIntField 0 "charges" value
+        let equipped <- optBoolField False "equipped" value
+        let sourceName0 <- optStringField "PlayerSpecies" "source" value
+        let source <- decodeSpeciesString sourceName0
+        let cooked <- optBoolField False "cooked" value
+        let rarity <- optStringField "common" "rarity" value
+        let teaches <- optStringField "" "teaches" value
         pure (Item kind name glyph cls stackable power count beatitude beatitudeKnown identified charges equipped source cooked rarity teaches)
 
 decodeGroundItem : JsonValue -> IO GameError GroundItem
 let decodeGroundItem value =
     do
-        posJson <- requireField "pos" value
-        pos <- decodeVec2 posJson
-        itemJson0 <- requireField "item" value
-        item <- decodeItem itemJson0
+        let posJson <- requireField "pos" value
+        let pos <- decodeVec2 posJson
+        let itemJson0 <- requireField "item" value
+        let item <- decodeItem itemJson0
         pure (GroundItem pos item)
 
 decodeWound : JsonValue -> IO GameError Wound
 let decodeWound value =
     do
-        typ <- optStringField "Bruised" "type" value
+        let typ <- optStringField "Bruised" "type" value
         if typ == "Stunned" || typ == "Fading" || typ == "Chilled" then
             do
-                turns <- optIntField 1 "turns" value
+                let turns <- optIntField 1 "turns" value
                 pure (if typ == "Fading" then Fading turns elif typ == "Chilled" then Chilled turns else Stunned turns)
         else
             do
-                partName0 <- optStringField "Torso" "part" value
-                part <- decodeBodyPartString partName0
-                severity <- optIntField 1 "severity" value
+                let partName0 <- optStringField "Torso" "part" value
+                let part <- decodeBodyPartString partName0
+                let severity <- optIntField 1 "severity" value
                 if typ == "Bleeding" then pure (Bleeding part severity)
                 elif typ == "Crippled" then pure (Crippled part)
                 elif typ == "Burning" then pure (Burning severity)
@@ -526,19 +526,19 @@ let decodeStringJson value =
 decodeItemKindJson : JsonValue -> IO GameError ItemKind
 let decodeItemKindJson value =
     do
-        text <- decodeStringJson value
+        let text <- decodeStringJson value
         decodeItemKindString text
 
 decodeMutationJson : JsonValue -> IO GameError Mutation
 let decodeMutationJson value =
     do
-        text <- decodeStringJson value
+        let text <- decodeStringJson value
         decodeMutationString text
 
 decodeDamageTypeJson : JsonValue -> IO GameError DamageType
 let decodeDamageTypeJson value =
     do
-        text <- decodeStringJson value
+        let text <- decodeStringJson value
         config.decodeDamageType text
 
 damageTypeName : DamageType -> String

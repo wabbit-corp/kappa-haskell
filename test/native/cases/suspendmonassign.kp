@@ -9,8 +9,8 @@ module main
 -- an "IO step": fork+await computing acc + i, so it suspends.
 step : Int -> Int -> UIO Int
 let step acc i = do
-    f <- fork (ioPure (addInt acc i))
-    ec <- await f
+    let f <- fork (ioPure (addInt acc i))
+    let ec <- await f
     match ec
       case Success v -> ioPure v
       case Failure _ -> ioPure acc

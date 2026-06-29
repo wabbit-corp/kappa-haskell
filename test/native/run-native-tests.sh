@@ -17,11 +17,34 @@ fails=0
 
 cd "$ROOT"
 
+perceus_rc_enabled() {
+  case "${KAPPA_PERCEUS_RC:-}" in
+    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+check_perceus_rc_log() {
+  local log="$1"
+  if perceus_rc_enabled; then
+    if ! grep -q "perceus-rc: R-path walk-and-lookup complete; 0 validation miss(es)" "$log"; then
+      echo "   FAIL: Perceus RC build did not report zero validation R-path misses"
+      sed -n '/perceus-rc:/p' "$log" | sed 's/^/     /'
+      fails=$((fails+1))
+      return 1
+    fi
+  fi
+  return 0
+}
+
 if ! command -v timeout >/dev/null 2>&1; then
   timeout() {
     python3 - "$@" <<'PY'
 import subprocess, sys
-seconds = float(sys.argv[1].removesuffix('s'))
+raw = sys.argv[1]
+if raw.endswith('s'):
+    raw = raw[:-1]
+seconds = float(raw)
 cmd = sys.argv[2:]
 try:
     raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
@@ -47,6 +70,21 @@ rm -rf "$WORK"; mkdir -p "$WORK"
 echo "== building the kappa CLI =="
 timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
+cleanup_generated_for_source() {
+  local src="$1"
+  rm -f "${src%.kp}.kappa.c" "${src%.kp}.kappa.ll"
+}
+
+build_clean_for_source() {
+  local src="$1"
+  shift
+  cleanup_generated_for_source "$src"
+  "$@"
+  local rc=$?
+  cleanup_generated_for_source "$src"
+  return "$rc"
+}
+
 run_diff_case() {
   local name="$1"; local src="$CASES/$name.kp"
   echo "-- case: $name (native output must match the interpreter)"
@@ -56,9 +94,13 @@ run_diff_case() {
     echo "   FAIL: interpreter exited with $irc"; fails=$((fails+1)); return
   fi
   exe="$WORK/$name"
+  cleanup_generated_for_source "$src"
   if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
     echo "   FAIL: native build failed"; cat "$WORK/$name.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
   fi
+  cleanup_generated_for_source "$src"
+  check_perceus_rc_log "$WORK/$name.build.log" || return
   native="$(timeout 120 "$exe" 2>/dev/null)"; nrc=$?
   if [ "$nrc" -ne 0 ]; then
     echo "   FAIL: native executable exited with $nrc"; fails=$((fails+1)); return
@@ -79,9 +121,13 @@ run_expected_fail_case() {
   local interp native exe irc nrc
   interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?
   exe="$WORK/$name"
+  cleanup_generated_for_source "$src"
   if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
     echo "   FAIL: native build failed"; cat "$WORK/$name.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
   fi
+  cleanup_generated_for_source "$src"
+  check_perceus_rc_log "$WORK/$name.build.log" || return
   native="$(timeout 120 "$exe" 2>/dev/null)"; nrc=$?
   if [ "$irc" -ne 0 ] && [ "$nrc" -ne 0 ] && [ -z "$interp" ] && [ -z "$native" ]; then
     echo "   ok (interpreter rc=$irc, native rc=$nrc, no stdout)"
@@ -94,16 +140,105 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy prefixbind letqor letqelse projection lr1 varloop recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout interrupt-cause withscope monitor interrupt interrupt-tight-loop interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw suspendbreak suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
+
+echo "== interpreter interrupt publication stress =="
+stress_src="$CASES/adv-loop-tail-read.kp"
+stress_ok=1
+for i in $(seq 1 50); do
+  err="$WORK/adv-loop-tail-read-stress.$i.err"
+  out="$(timeout 120 $KAPPA run "$stress_src" 2>"$err")"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$out" != "exit:interrupted" ]; then
+    echo "   FAIL: adv-loop-tail-read stress iteration $i rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    sed 's/^/     /' "$err" | head -20
+    fails=$((fails+1))
+    stress_ok=0
+    break
+  fi
+  rm -f "$err"
+done
+if [ "$stress_ok" -eq 1 ]; then
+  echo "   ok (50/50 interrupted fibers published exactly one Exit)"
+fi
+
+echo "== interpreter AtomicRef RMW stress =="
+atomic_stress_src="$CASES/atomic-race.kp"
+atomic_stress_ok=1
+for i in $(seq 1 25); do
+  err="$WORK/atomic-race-stress.$i.err"
+  out="$(timeout 120 $KAPPA run "$atomic_stress_src" 2>"$err")"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$out" != "64000" ]; then
+    echo "   FAIL: atomic-race stress iteration $i rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    sed 's/^/     /' "$err" | head -20
+    fails=$((fails+1))
+    atomic_stress_ok=0
+    break
+  fi
+  rm -f "$err"
+done
+if [ "$atomic_stress_ok" -eq 1 ]; then
+  echo "   ok (25/25 AtomicRef fetch-add runs reached 64000)"
+fi
+
+# §18.1.11: the source-level `blocking` combinator must lower to the rt-blocking
+# OP node on both native backends. Running the case above checks observable
+# parity; this catches an accidental fallback through the synchronous bridge.
+echo "== rt-blocking: source blocking lowers to krt2_blocking =="
+btmp="$WORK/blocking-source-emit"; mkdir -p "$btmp"
+cfile="$CASES/blocking-source.kappa.c"
+rm -f "$cfile"
+if timeout 120 $KAPPA build "$CASES/blocking-source.kp" --emit-c -o "$btmp/blocking" >"$btmp/c.log" 2>&1; then
+  if [ -f "$cfile" ] && grep -qE '\bkrt2_blocking\(' "$cfile"; then
+    echo "   ok (C source-level blocking builds OP_BLOCKING)"
+  else
+    echo "   FAIL: C source-level blocking did not lower through krt2_blocking or did not emit fresh C"; fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: blocking-source C --emit-c build failed"; cat "$btmp/c.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+llfile="$CASES/blocking-source.kappa.ll"
+rm -f "$llfile"
+if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$CASES/blocking-source.kp" --emit-c -o "$btmp/blocking-llvm" >"$btmp/llvm.log" 2>&1; then
+  if [ -f "$llfile" ] && grep -qE 'call ptr @krt2_blocking\(' "$llfile"; then
+    echo "   ok (LLVM source-level blocking builds OP_BLOCKING)"
+  else
+    echo "   FAIL: LLVM source-level blocking did not lower through krt2_blocking or did not emit fresh LLVM"; fails=$((fails+1))
+  fi
+  rm -f "$llfile"
+else
+  echo "   FAIL: blocking-source LLVM --emit-c build failed"; cat "$btmp/llvm.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+echo "== rt-blocking runtime lane and foreign-handle kind gates =="
+if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind >"$btmp/runtime.log" 2>&1; then
+  if timeout 30 "$ROOT/runtime/build/blocking_lane" >"$btmp/blocking_lane.out" 2>"$btmp/blocking_lane.err"; then
+    echo "   ok (runtime blocking lane preserves scheduler progress and source interruption)"
+  else
+    echo "   FAIL: runtime blocking lane harness failed"
+    cat "$btmp/blocking_lane.out" "$btmp/blocking_lane.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  if timeout 30 "$ROOT/runtime/build/fgn_kind" >"$btmp/fgn_kind.out" 2>"$btmp/fgn_kind.err"; then
+    echo "   ok (runtime foreign handles trap wrong kind before casting)"
+  else
+    echo "   FAIL: runtime foreign-handle kind harness failed"
+    cat "$btmp/fgn_kind.out" "$btmp/fgn_kind.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: runtime blocking/fgn harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
 # on a constructor/variant-heavy program's generated C.
 echo "== LR2: match dispatch uses numeric tag ids, not strcmp =="
 ltmp="$WORK/lr2c"; mkdir -p "$ltmp"
+cfile="$CASES/ctortags.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$CASES/ctortags.kp" --emit-c -o "$ltmp/ct" >"$ltmp/build.log" 2>&1; then
-  cfile="$CASES/ctortags.kappa.c"
+  check_perceus_rc_log "$ltmp/build.log"
   if grep -qE 'kctor_tagid\(' "$cfile" \
      && ! grep -qE 'kctor_is\(|kvariant_is\(' "$cfile"; then
     echo "   ok (matches dispatch on kctor_tagid/kvariant_tagid; no kctor_is/kvariant_is in generated C)"
@@ -126,8 +261,10 @@ fi
 # `p0 = …; continue;`), so there is no `kvar`/`kpush` on the build path at all.
 echo "== R1.1: saturated constructor application is a direct kctor (no eta-ctor closure storm) =="
 rtmp="$WORK/r11c"; mkdir -p "$rtmp"
+cfile="$CASES/adtcons.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$CASES/adtcons.kp" --emit-c -o "$rtmp/ac" >"$rtmp/build.log" 2>&1; then
-  cfile="$CASES/adtcons.kappa.c"
+  check_perceus_rc_log "$rtmp/build.log"
   if grep -qE 'kctor\(KCT_CONS,' "$cfile" \
      && ! grep -qE 'kappi\(kclo\(' "$cfile" \
      && grep -qE 'p[0-9]+ = tc_[0-9]+;' "$cfile" \
@@ -187,8 +324,10 @@ fi
 echo "== R2.2: Double / mixed-kind functions get a typed unboxed scalar worker =="
 dtmp="$WORK/r22c"; mkdir -p "$dtmp"
 dbench="$ROOT/test/native/bench/proposed/scalar_doubleloop.kp"
+cfile="$ROOT/test/native/bench/proposed/scalar_doubleloop.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$dbench" --emit-c -o "$dtmp/sd" >"$dtmp/build.log" 2>&1; then
-  cfile="$ROOT/test/native/bench/proposed/scalar_doubleloop.kappa.c"
+  check_perceus_rc_log "$dtmp/build.log"
   # the body of the unboxed double worker: from its `double kwd_…(double` line
   # to the next top-level `}` at column 0.
   # a kwd_ worker (any double param/result) — the bench's sumD returns double,
@@ -207,29 +346,58 @@ else
   echo "   FAIL: scalar_doubleloop --emit-c build failed"; cat "$dtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
-# R2.2-LLVM: the LLVM backend lowers an eligible `var…while` Int loop to an
-# UNBOXED int64 scalar loop (the LLVM analogue of the C-side 'compileScalarWhile'
-# lowering R2.2 asserts for the C backend).  The generated `.ll` must carry the
-# `@kscalarloop_N` helper with native saturating-overflow intrinsics
-# (`llvm.sadd.with.overflow.i64`) and must NOT keep the per-iteration boxed
-# `krt2_while` action (which would mean the loop re-boxed every op + var read —
-# the ~hundreds-of-x-slower path this lowering exists to replace).  Mirrors R2.2,
-# but on the LLVM backend's `.ll` rather than the C backend's `.c`.
-echo "== R2.2-LLVM: an eligible var/while Int loop lowers to a native int64 scalar loop (no krt2_while) =="
+# S2.3b: the LLVM backend must not resurrect the old var-loop scalarizer. That
+# path bypassed checker-selected MonadRef evidence, so surface var/while loops
+# stay on the generic do-kernel path until a future optimizer proves equivalence.
+echo "== S2.3b LLVM: var/while Int loops stay on the boxed MonadRef do-kernel path =="
 ltmp="$WORK/r22llvm"; mkdir -p "$ltmp"
 lbench="$ROOT/test/native/bench/proposed/scalar_intwhile.kp"
+llfile="$ROOT/test/native/bench/proposed/scalar_intwhile.kappa.ll"
+rm -f "$llfile"
 if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$lbench" --emit-c -o "$ltmp/siw" >"$ltmp/build.log" 2>&1; then
-  llfile="$ROOT/test/native/bench/proposed/scalar_intwhile.kappa.ll"
-  if grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$llfile" \
-     && grep -qE 'call \{i64, i1\} @llvm\.sadd\.with\.overflow\.i64\(' "$llfile" \
-     && ! grep -qE 'call ptr @krt2_while\(' "$llfile"; then
-    echo "   ok (unboxed @kscalarloop_ via llvm.sadd.with.overflow.i64; no boxed krt2_while in the loop)"
+  check_perceus_rc_log "$ltmp/build.log"
+  if [ -f "$llfile" ] \
+     && ! grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$llfile" \
+     && grep -qE 'call ptr @krt2_while\(' "$llfile"; then
+    echo "   ok (no @kscalarloop_; loop lowers through krt2_while and checker-selected MonadRef actions)"
   else
-    echo "   FAIL: LLVM var/while Int loop did not lower to a native int64 scalar loop (R2.2-LLVM regressed)"; fails=$((fails+1))
+    echo "   FAIL: LLVM var/while Int loop used or skipped the wrong S2.3b lowering path"; fails=$((fails+1))
   fi
   rm -f "$llfile"
 else
   echo "   FAIL: scalar_intwhile (LLVM) --emit-c build failed"; cat "$ltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== LLVM scalar workers: scalar let slots are entry-allocated, not loop-allocated =="
+sltmp="$WORK/llvm-scalar-let"; mkdir -p "$sltmp"
+slsrc="$sltmp/scalar_let_slots.kp"
+cat > "$slsrc" <<'KP'
+module main
+sumLet : Int -> Int -> Int
+let sumLet acc n =
+    let next = addInt acc n in
+    let prev = subInt n 1 in
+    if leInt n 0 then acc else sumLet next prev
+main : UIO Unit
+let main = printlnString (showInt (sumLet 0 5))
+KP
+if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$slsrc" --emit-c -o "$sltmp/scalar_let_slots" >"$sltmp/build.log" 2>&1; then
+  llfile="$sltmp/scalar_let_slots.kappa.ll"
+  worker="$(awk '/^define internal i64 @kwi_main_2e_sumLet\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$llfile")"
+  before_loop="$(awk '{ print } /kwloop_[0-9]+:/ { exit }' <<<"$worker")"
+  after_loop="$(awk 'seen { print } /kwloop_[0-9]+:/ { seen = 1; next }' <<<"$worker")"
+  if grep -qE '^define internal i64 @kwi_main_2e_sumLet\(' <<<"$worker" \
+     && grep -qE ' = alloca i64, align 8' <<<"$before_loop" \
+     && ! grep -qE ' = alloca ' <<<"$after_loop"; then
+    echo "   ok (scalar let scratch slots are allocated before the loop header)"
+  else
+    echo "   FAIL: LLVM scalar worker still allocates scratch slots inside the loop"
+    printf '%s\n' "$worker" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$llfile"
+else
+  echo "   FAIL: scalar_let_slots (LLVM) --emit-c build failed"; cat "$sltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # R3.1 / P1-E: a saturated call to a worker that can NEVER return a K_BOUNCE
@@ -242,11 +410,13 @@ fi
 echo "== R3.1: ktrampoline dropped for non-bouncing workers, kept for bouncing ones =="
 btmp="$WORK/r31c"; mkdir -p "$btmp"
 nb_ok=1
+rm -f "$CASES/adtcons.kappa.c"
 if timeout 120 $KAPPA build "$CASES/adtcons.kp" --emit-c -o "$btmp/ac" >"$btmp/ac.log" 2>&1; then
   grep -qE 'ktrampoline\(' "$CASES/adtcons.kappa.c" && nb_ok=0   # must be NONE
   rm -f "$CASES/adtcons.kappa.c"
 else nb_ok=0; fi
 b_ok=0
+rm -f "$CASES/tailrec.kappa.c"
 if timeout 120 $KAPPA build "$CASES/tailrec.kp" --emit-c -o "$btmp/tr" >"$btmp/tr.log" 2>&1; then
   grep -qE 'ktrampoline\(' "$CASES/tailrec.kappa.c" && b_ok=1   # must be PRESENT
   rm -f "$CASES/tailrec.kappa.c"
@@ -264,8 +434,10 @@ fi
 # worker): no kvar/kpush, and a direct `krec_at(p` field read.
 echo "== R2.3: capture-free binder-free workers read params as flat C locals (no kvar/kpush) =="
 ftmp="$WORK/r23c"; mkdir -p "$ftmp"
+cfile="$CASES/flatframe.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$CASES/flatframe.kp" --emit-c -o "$ftmp/ff" >"$ftmp/build.log" 2>&1; then
-  cfile="$CASES/flatframe.kappa.c"
+  check_perceus_rc_log "$ftmp/build.log"
   goworker="$(awk '/^static KValue \*kw_main_2e_go\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
   if printf '%s' "$goworker" | grep -qE 'krec_at\(p[0-9]' \
      && ! printf '%s' "$goworker" | grep -qE 'kvar\(|kpush\('; then
@@ -301,8 +473,10 @@ fi
 # kctor_arg into pat_ locals and a let_ local, with NO kvar/kpush.
 echo "== R2.3-rest: capture-free match/let-bearing workers are flat (binders as C locals) =="
 btmp="$WORK/r23r"; mkdir -p "$btmp"
+cfile="$CASES/flatbinders.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$CASES/flatbinders.kp" --emit-c -o "$btmp/fb" >"$btmp/build.log" 2>&1; then
-  cfile="$CASES/flatbinders.kappa.c"
+  check_perceus_rc_log "$btmp/build.log"
   spw="$(awk '/^static KValue \*kw_main_2e_sumPairs\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile" 2>/dev/null)"
   if printf '%s' "$spw" | grep -qE 'KValue \*pat_[0-9]+ = kctor_arg' \
      && printf '%s' "$spw" | grep -qE 'KValue \*let_[0-9]+ = ' \
@@ -322,8 +496,10 @@ fi
 # kfn_ body reads `arg` and `kvar(cenv,` (the capture) but contains no `kpush`.
 echo "== R3.2: capture-free closures read the param flat (no per-application kpush) =="
 ctmp="$WORK/r32"; mkdir -p "$ctmp"
+cfile="$CASES/flatclosure.kappa.c"
+rm -f "$cfile"
 if timeout 120 $KAPPA build "$CASES/flatclosure.kp" --emit-c -o "$ctmp/fc" >"$ctmp/build.log" 2>&1; then
-  cfile="$CASES/flatclosure.kappa.c"
+  check_perceus_rc_log "$ctmp/build.log"
   # the lambda body: a kfn_ function that reads cenv (it captures k).
   lam="$(awk '/^static KValue \*kfn_[A-Za-z0-9_]+\(KEnv \*cenv, KValue \*arg\) \{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
   if printf '%s' "$lam" | grep -qE 'kvar\(cenv,' \
@@ -338,6 +514,354 @@ else
   echo "   FAIL: flatclosure --emit-c build failed"; cat "$ctmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# Perceus RC S2.3b: a read-only NonLast occurrence must not get a balancing
+# kdup. The first use of y below is a borrowed call argument; y is read again by
+# projection afterward, so the occurrence is NonLast but consumes=False.
+echo "== Perceus S2.3b: read-only NonLast use avoids kdup in generated C =="
+rtmp="$WORK/rc-read-nonlast"; mkdir -p "$rtmp"
+rcsrc="$rtmp/rc_read_nonlast.kp"
+cat > "$rcsrc" <<'KP'
+module main
+type Box = (v : Int)
+type PeekBox = (& x : Box) -> Int
+peekBox : (& x : Box) -> Int
+let peekBox x = x.v
+useBorrowTwice : Box -> Int
+let useBorrowTwice y = peekBox y + y.v
+type RecAlias = (f : PeekBox)
+useProjectedTwice : RecAlias -> Box -> Int
+let useProjectedTwice r y = r.f y + y.v
+main : UIO Unit
+let main = printInt (useBorrowTwice (v = 41) + useProjectedTwice (f = peekBox) (v = 1))
+KP
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$rcsrc" --emit-c -o "$rtmp/rc_read_nonlast" >"$rtmp/build.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$rtmp/build.log"
+  cfile="$rtmp/rc_read_nonlast.kappa.c"
+  worker="$(awk '/^static KValue \*kw_main_2e_useBorrowTwice\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  projected_worker="$(awk '/^static KValue \*kw_main_2e_useProjectedTwice\(KValue \*p0, KValue \*p1\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$worker" | grep -qE 'kw_main_2e_peekBox\(p0\)' \
+     && printf '%s' "$worker" | grep -qE 'krec_at\(p0, 0\)' \
+     && ! printf '%s' "$worker" | grep -qE 'kdup\('; then
+    echo "   ok (borrowed NonLast call arg remains bare; no unbalanced kdup)"
+  else
+    echo "   FAIL: read-only NonLast use was duped or the focused worker was not found"
+    printf '%s\n' "$worker" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  if printf '%s' "$projected_worker" | grep -qE 'krec_at\(p0, 0\)' \
+     && printf '%s' "$projected_worker" | grep -qE 'krec_at\(p1, 0\)' \
+     && ! printf '%s' "$projected_worker" | grep -qE 'kdup\('; then
+    echo "   ok (projected borrowed callee NonLast arg remains bare)"
+  else
+    echo "   FAIL: projected read-only NonLast use was duped or the focused worker was not found"
+    printf '%s\n' "$projected_worker" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: rc_read_nonlast --emit-c build failed"; cat "$rtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# Perceus RC S2.3b: mixed boxed/scalar fast workers must remain available under
+# RC. Boxed-field projections in this worker grammar are read-only and boxed
+# self-args are pass-through tail-loop state, so the ownership path validated by
+# the boxed worker remains the source of truth and the optimized worker must not
+# be suppressed as a workaround.
+echo "== Perceus S2.3b: RC keeps mixed boxed/scalar workers =="
+mtmp="$WORK/rc-mixed-scalar"; mkdir -p "$mtmp"
+msrc="$mtmp/rc_mixed_scalar.kp"
+cat > "$msrc" <<'KP'
+module main
+type Box = (v : Int)
+sumBox : Box -> Int -> Int
+let sumBox b n =
+    if leInt n 0
+    then b.v
+    else sumBox b (subInt n 1)
+main : UIO Unit
+let main = printInt (sumBox (v = 7) 3)
+KP
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$msrc" --emit-c -o "$mtmp/rc_mixed_scalar" >"$mtmp/build.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$mtmp/build.log"
+  cfile="$mtmp/rc_mixed_scalar.kappa.c"
+  mixed_worker="$(awk '/^static int64_t kwm_main_2e_sumBox\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$mixed_worker" | grep -qE '\bkwm_main_2e_sumBox\b' \
+     && printf '%s' "$mixed_worker" | grep -qE 'krec_at\(p[0-9]' \
+     && printf '%s' "$mixed_worker" | grep -qE 'if \(krt2_safepoint\(\)\) \{ \*kovf = KRT2_SCALAR_ABORT; return 0; \}'; then
+    echo "   ok (RC build emits mixed worker with read-only boxed field access and scalar abort channel)"
+  else
+    echo "   FAIL: RC build did not emit the expected mixed boxed/scalar worker for sumBox"
+    grep -nE 'kwm_main_2e_sumBox|kw_main_2e_sumBox' "$cfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: rc_mixed_scalar --emit-c build failed"; cat "$mtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== Perceus S2.3b: RC keeps all-scalar workers =="
+atmp="$WORK/rc-all-scalar"; mkdir -p "$atmp"
+asrc="$atmp/rc_all_scalar.kp"
+cat > "$asrc" <<'KP'
+module main
+sumInt : Int -> Int -> Int
+let sumInt acc n =
+    if leInt n 0
+    then acc
+    else sumInt (addInt acc n) (subInt n 1)
+main : UIO Unit
+let main = printInt (sumInt 0 3)
+KP
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$asrc" --emit-c -o "$atmp/rc_all_scalar" >"$atmp/build.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$atmp/build.log"
+  cfile="$atmp/rc_all_scalar.kappa.c"
+  scalar_worker="$(awk '/^static int64_t kwi_main_2e_sumInt\(.*\{$/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  if printf '%s' "$scalar_worker" | grep -qE '\bkwi_main_2e_sumInt\b' \
+     && printf '%s' "$scalar_worker" | grep -qE 'if \(krt2_safepoint\(\)\) \{ \*kovf = KRT2_SCALAR_ABORT; return 0; \}' \
+     && grep -qE '\bkw_main_2e_sumInt\b' "$cfile"; then
+    echo "   ok (RC build emits all-scalar worker with scalar abort channel and boxed fallback)"
+  else
+    echo "   FAIL: RC build did not emit the expected all-scalar worker for sumInt"
+    grep -nE 'kwi_main_2e_sumInt|kwd_main_2e_sumInt|kw_main_2e_sumInt' "$cfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: rc_all_scalar --emit-c build failed"; cat "$atmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== §32.2.6: scalar-worker abort unwinds nested pure frames before later effects =="
+natmp="$WORK/scalar-nested-abort"; mkdir -p "$natmp"
+nasrc="$CASES/scalar-nested-abort.kp"
+cfile="$CASES/scalar-nested-abort.kappa.c"
+rm -f "$cfile"
+if timeout 120 $KAPPA build "$nasrc" --emit-c -o "$natmp/scalar_nested_abort_emit" >"$natmp/emit.log" 2>&1; then
+  check_perceus_rc_log "$natmp/emit.log"
+  if [ -f "$cfile" ] \
+     && grep -qE '\bkwi_main_2e_spin\b' "$cfile" \
+     && grep -qE '\bkrt2_scalar_abort\(\)' "$cfile"; then
+    echo "   ok-shape (nested scalar call uses scalar abort hook, not Unit sentinel)"
+  else
+    echo "   FAIL: scalar nested abort source shape missing scalar worker or abort hook"
+    grep -nE 'kwi_main_2e_spin|kw_main_2e_wrap|KRT2_SCALAR_ABORT|krt2_scalar_abort|return kunit' "$cfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: scalar-nested-abort --emit-c build failed"; cat "$natmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if build_clean_for_source "$nasrc" timeout 240 $KAPPA build "$nasrc" -o "$natmp/scalar_nested_abort" >"$natmp/build.log" 2>&1; then
+  check_perceus_rc_log "$natmp/build.log"
+  out="$(timeout 30 "$natmp/scalar_nested_abort" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "exit:interrupted" ]; then
+    echo "   ok-run (post-scalar effect skipped; interrupt delivered)"
+  else
+    echo "   FAIL: scalar abort did not stop the enclosing generated frame before later effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort native build failed"; cat "$natmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+llfile="$CASES/scalar-nested-abort.kappa.ll"
+rm -f "$llfile"
+if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$nasrc" --emit-c -o "$natmp/scalar_nested_abort_llvm_emit" >"$natmp/llvm-emit.log" 2>&1; then
+  check_perceus_rc_log "$natmp/llvm-emit.log"
+  if [ -f "$llfile" ] \
+     && grep -qE 'call void @krt2_scalar_abort\(\)' "$llfile" \
+     && grep -qE 'call ptr @kio\(ptr @kdo_[0-9]+, ptr null\)' "$llfile" \
+     && grep -qE 'call ptr @kio_tail\(' "$llfile"; then
+    echo "   ok-llvm-shape (child do-block is delayed behind kio and returns a tail action)"
+  else
+    echo "   FAIL: LLVM scalar nested abort shape is missing delayed child action, tail marker, or abort hook"
+    grep -nE 'kg_main_2e_child|@kio|kio_tail|krt2_scalar_abort|AFTER-SCALAR' "$llfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$llfile"
+else
+  echo "   FAIL: scalar-nested-abort LLVM --emit-c build failed"; cat "$natmp/llvm-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$nasrc" timeout 240 $KAPPA build "$nasrc" -o "$natmp/scalar_nested_abort_llvm" >"$natmp/llvm-build.log" 2>&1; then
+  check_perceus_rc_log "$natmp/llvm-build.log"
+  out="$(timeout 30 "$natmp/scalar_nested_abort_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "exit:interrupted" ]; then
+    echo "   ok-llvm-run (post-scalar effect skipped; interrupt delivered)"
+  else
+    echo "   FAIL: LLVM scalar abort did not stop the enclosing generated frame before later effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort LLVM native build failed"; cat "$natmp/llvm-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== §32.2.6: scalar-worker abort releases active using scopes =="
+nu_tmp="$WORK/scalar-nested-abort-using"; mkdir -p "$nu_tmp"
+nu_src="$CASES/scalar-nested-abort-using.kp"
+nu_expect="$(printf 'acquired\nreleased\nexit:interrupted')"
+cfile="$CASES/scalar-nested-abort-using.kappa.c"
+rm -f "$cfile"
+if timeout 120 $KAPPA build "$nu_src" --emit-c -o "$nu_tmp/scalar_nested_abort_using_emit" >"$nu_tmp/emit.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/emit.log"
+  if [ -f "$cfile" ] \
+     && grep -qE '\bkrt2_scalar_abort\(\)' "$cfile" \
+     && { { grep -qE 'krt2_abort_exit_push\(' "$cfile" \
+            && grep -qE 'krt2_abort_exit_finalizer\(' "$cfile"; } \
+          || grep -qE 'krt2_acquire_release\(' "$cfile"; } \
+     && ! grep -qE 'krt2_abort_release_drain\(\)' "$cfile"; then
+    echo "   ok-shape (using release is runtime-tokenized and abort path enters the unwinder)"
+  else
+    echo "   FAIL: scalar abort using-release token shape missing"
+    grep -nE 'abort_(release|exit)|release_fail|krt2_scalar_abort|defer-ran|AFTER-SCALAR' "$cfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: scalar-nested-abort-using --emit-c build failed"; cat "$nu_tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if build_clean_for_source "$nu_src" timeout 240 $KAPPA build "$nu_src" -o "$nu_tmp/scalar_nested_abort_using" >"$nu_tmp/build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_using" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nu_expect" ]; then
+    echo "   ok-run (using release runs; post-scalar effect is skipped)"
+  else
+    echo "   FAIL: scalar abort did not preserve using/defer interrupt semantics"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-using native build failed"; cat "$nu_tmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+nud_src="$CASES/scalar-nested-abort-using-defer.kp"
+nud_expect="$(printf 'acquired\ndefer-ran\nreleased\nexit:interrupted')"
+if build_clean_for_source "$nud_src" timeout 240 $KAPPA build "$nud_src" -o "$nu_tmp/scalar_nested_abort_using_defer" >"$nu_tmp/defer-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/defer-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_using_defer" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nud_expect" ]; then
+    echo "   ok-c-defer-run (ordinary defer and using release both run on async abort)"
+  else
+    echo "   FAIL: C scalar abort skipped a defer/using release or ran later source effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-using-defer native build failed"; cat "$nu_tmp/defer-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+nup_src="$CASES/scalar-nested-abort-defer-before-pure.kp"
+nup_expect="$(printf 'defer-ran\nexit:interrupted')"
+if build_clean_for_source "$nup_src" timeout 240 $KAPPA build "$nup_src" -o "$nu_tmp/scalar_nested_abort_defer_before_pure" >"$nu_tmp/defer-before-pure-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/defer-before-pure-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_defer_before_pure" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nup_expect" ]; then
+    echo "   ok-c-defer-before-pure (defer registers before following pure scalar work)"
+  else
+    echo "   FAIL: C scalar abort skipped a preceding defer or ran later source effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-defer-before-pure native build failed"; cat "$nu_tmp/defer-before-pure-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+nuo_src="$CASES/scalar-nested-abort-onexit.kp"
+nuo_expect="$(printf 'int:Requested\nexit:Interrupt\nawait:interrupted')"
+if build_clean_for_source "$nuo_src" timeout 240 $KAPPA build "$nuo_src" -o "$nu_tmp/scalar_nested_abort_onexit" >"$nu_tmp/onexit-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/onexit-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_onexit" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nuo_expect" ]; then
+    echo "   ok-c-onexit-run (reason-aware finalizers run on scalar abort)"
+  else
+    echo "   FAIL: C scalar abort skipped onInterrupt/onExit markers or source continued"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-onexit native build failed"; cat "$nu_tmp/onexit-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+nuf_src="$CASES/scalar-nested-abort-cleanup-failure.kp"
+nuf_expect="$(printf 'acquired\ndefer-fail\nrelease-fail\nexit:then2:defer:release')"
+if build_clean_for_source "$nuf_src" timeout 240 $KAPPA build "$nuf_src" -o "$nu_tmp/scalar_nested_abort_cleanup_failure" >"$nu_tmp/fail-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/fail-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_cleanup_failure" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nuf_expect" ]; then
+    echo "   ok-c-cleanup-fail (all abort cleanups run and compose after interrupt)"
+  else
+    echo "   FAIL: C scalar abort cleanup failures were not LIFO/composed or source continued"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-cleanup-failure native build failed"; cat "$nu_tmp/fail-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+llfile="$CASES/scalar-nested-abort-using.kappa.ll"
+rm -f "$llfile"
+if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$nu_src" --emit-c -o "$nu_tmp/scalar_nested_abort_using_llvm_emit" >"$nu_tmp/llvm-emit.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/llvm-emit.log"
+  if [ -f "$llfile" ] \
+     && grep -qE 'call void @krt2_scalar_abort\(\)' "$llfile" \
+     && grep -qE 'call ptr @krt2_acquire_release\(' "$llfile"; then
+    echo "   ok-llvm-shape (using is runtime-managed and scalar abort uses runtime hook)"
+  else
+    echo "   FAIL: LLVM scalar abort using shape is missing finalizer node or abort hook"
+    grep -nE 'krt2_acquire_release|krt2_scalar_abort|defer-ran|AFTER-SCALAR' "$llfile" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$llfile"
+else
+  echo "   FAIL: scalar-nested-abort-using LLVM --emit-c build failed"; cat "$nu_tmp/llvm-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$nu_src" timeout 240 $KAPPA build "$nu_src" -o "$nu_tmp/scalar_nested_abort_using_llvm" >"$nu_tmp/llvm-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/llvm-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_using_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nu_expect" ]; then
+    echo "   ok-llvm-run (using release runs; post-scalar effect is skipped)"
+  else
+    echo "   FAIL: LLVM scalar abort did not preserve using/defer interrupt semantics"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-using LLVM native build failed"; cat "$nu_tmp/llvm-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$nud_src" timeout 240 $KAPPA build "$nud_src" -o "$nu_tmp/scalar_nested_abort_using_defer_llvm" >"$nu_tmp/llvm-defer-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/llvm-defer-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_using_defer_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nud_expect" ]; then
+    echo "   ok-llvm-defer-run (ordinary defer and using release both run on async abort)"
+  else
+    echo "   FAIL: LLVM scalar abort skipped a defer/using release or ran later source effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-using-defer LLVM native build failed"; cat "$nu_tmp/llvm-defer-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$nup_src" timeout 240 $KAPPA build "$nup_src" -o "$nu_tmp/scalar_nested_abort_defer_before_pure_llvm" >"$nu_tmp/llvm-defer-before-pure-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/llvm-defer-before-pure-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_defer_before_pure_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nup_expect" ]; then
+    echo "   ok-llvm-defer-before-pure (defer registers before following pure scalar work)"
+  else
+    echo "   FAIL: LLVM scalar abort skipped a preceding defer or ran later source effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-defer-before-pure LLVM native build failed"; cat "$nu_tmp/llvm-defer-before-pure-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$nuf_src" timeout 240 $KAPPA build "$nuf_src" -o "$nu_tmp/scalar_nested_abort_cleanup_failure_llvm" >"$nu_tmp/llvm-fail-build.log" 2>&1; then
+  check_perceus_rc_log "$nu_tmp/llvm-fail-build.log"
+  out="$(timeout 30 "$nu_tmp/scalar_nested_abort_cleanup_failure_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "$nuf_expect" ]; then
+    echo "   ok-llvm-cleanup-fail (all abort cleanups run and compose after interrupt)"
+  else
+    echo "   FAIL: LLVM scalar abort cleanup failures were not LIFO/composed or source continued"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-nested-abort-cleanup-failure LLVM native build failed"; cat "$nu_tmp/llvm-fail-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
 # Honest no-fallback property: the native backend never silently falls back
 # to interpreter behaviour.  The full accepted run-mode (UIO) surface now
 # compiles (there is no spec-mandated runtime construct left to reject — the
@@ -350,7 +874,9 @@ fi
 
 echo "== tail-call stress (deep tail recursion, default ~8MB C stack) =="
 exe="$WORK/tailrec"
+cleanup_generated_for_source "$CASES/tailrec.kp"
 if timeout 240 $KAPPA build "$CASES/tailrec.kp" -o "$exe" >"$WORK/tailrec.build.log" 2>&1; then
+  cleanup_generated_for_source "$CASES/tailrec.kp"
   # run with the default stack: without tail-call elimination this depth
   # (millions) overflows the C stack and crashes.
   out="$( (ulimit -s 8192; timeout 60 "$exe" 2>/dev/null) | tr '\n' '|')"
@@ -363,16 +889,21 @@ if timeout 240 $KAPPA build "$CASES/tailrec.kp" -o "$exe" >"$WORK/tailrec.build.
     echo "   FAIL: wrong result: $out"; fails=$((fails+1))
   fi
 else
+  cleanup_generated_for_source "$CASES/tailrec.kp"
   echo "   FAIL: tailrec build failed"; fails=$((fails+1))
 fi
 
 echo "== namespace hygiene: hidden runtime symbols are not source-visible =="
 exe="$WORK/hidden"
+cleanup_generated_for_source "$CASES/hidden-symbol.kp"
 if timeout 120 $KAPPA build "$CASES/hidden-symbol.kp" -o "$exe" >"$WORK/hidden.log" 2>&1; then
+  cleanup_generated_for_source "$CASES/hidden-symbol.kp"
   echo "   FAIL: a program calling __tcpListen built (hidden symbol leaked)"; fails=$((fails+1))
 elif grep -q "E_NAME_UNRESOLVED" "$WORK/hidden.log" && [ ! -f "$exe" ]; then
+  cleanup_generated_for_source "$CASES/hidden-symbol.kp"
   echo "   ok (__tcpListen is E_NAME_UNRESOLVED, no executable; FFI prims are not prelude globals)"
 else
+  cleanup_generated_for_source "$CASES/hidden-symbol.kp"
   echo "   FAIL: __tcpListen not rejected as unresolved / left an executable"
   cat "$WORK/hidden.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
@@ -382,11 +913,15 @@ echo "== a bare foreign 'expect' is unsatisfied without a host binding (no silen
 # through the manifest's host.native modules, never a bare-name table or
 # --ffi-full. So the legacy single-file build leaves it unsatisfied.
 exe="$WORK/unsupported"
+cleanup_generated_for_source "$CASES/unsupported.kp"
 if timeout 120 $KAPPA build "$CASES/unsupported.kp" -o "$exe" >"$WORK/unsupported.log" 2>&1; then
+  cleanup_generated_for_source "$CASES/unsupported.kp"
   echo "   FAIL: a bare foreign-expect program built (FFI fabricated)"; fails=$((fails+1))
 elif grep -q "E_EXPECT_UNSATISFIED" "$WORK/unsupported.log" && [ ! -f "$exe" ]; then
+  cleanup_generated_for_source "$CASES/unsupported.kp"
   echo "   ok (unsatisfied foreign expect -> E_EXPECT_UNSATISFIED, no executable, §9.4)"
 else
+  cleanup_generated_for_source "$CASES/unsupported.kp"
   echo "   FAIL: foreign expect not rejected as E_EXPECT_UNSATISFIED / left an executable"
   cat "$WORK/unsupported.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
@@ -407,19 +942,23 @@ echo "== native bindings are driven by the manifest (host.native imports -> prim
 # Build a program that imports a manifest-provided host.native module to
 # C (--emit-c, no toolchain/lib needed) and confirm codegen lowered the
 # provider's members to codegen-emitted direct native wrappers.
-if timeout 120 $KAPPA build --update --manifest "$ROOT/tests/build/native/ok-sqlite" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
-   && grep -Rql --include='*.kappa.c' "kw_host_native_sqlite3_sqliteOpen" "$ROOT/tests/build/native/ok-sqlite" \
-   && grep -Rql --include='*.kappa.c' "knative_sat(kw_host_native_sqlite3_sqliteOpen" "$ROOT/tests/build/native/ok-sqlite"; then
+ok_sqlite_dir="$ROOT/tests/build/native/ok-sqlite"
+find "$ok_sqlite_dir" -name '*.kappa.c' -delete 2>/dev/null
+if timeout 120 $KAPPA build --update --manifest "$ok_sqlite_dir" --emit-c -o "$WORK/oksql" >"$WORK/oksql.log" 2>&1 \
+   && grep -Rql --include='*.kappa.c' "kw_host_native_sqlite3_sqliteOpen" "$ok_sqlite_dir" \
+   && grep -Rql --include='*.kappa.c' "knative_sat(kw_host_native_sqlite3_sqliteOpen" "$ok_sqlite_dir"; then
   echo "   ok (manifest nativeBinding -> host.native.sqlite3 import -> direct native sqliteOpen wrapper)"
-  find "$ROOT/tests/build/native/ok-sqlite" -name '*.kappa.c' -delete 2>/dev/null
 else
   echo "   FAIL: manifest-driven native build did not emit the provider prim"
   cat "$WORK/oksql.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
+find "$ok_sqlite_dir" -name '*.kappa.c' -delete 2>/dev/null
 
 echo "== performance smoke (sum 1..1_000_000, bounded) =="
 exe="$WORK/perf"
+cleanup_generated_for_source "$CASES/perf.kp"
 if timeout 240 $KAPPA build "$CASES/perf.kp" -o "$exe" >"$WORK/perf.build.log" 2>&1; then
+  cleanup_generated_for_source "$CASES/perf.kp"
   start=$(python3 - <<'PY'
 import time
 print(f"{time.time():.6f}")
@@ -447,6 +986,7 @@ PY
     echo "   FAIL: wrong result: $out"; fails=$((fails+1))
   fi
 else
+  cleanup_generated_for_source "$CASES/perf.kp"
   echo "   FAIL: perf build failed"; fails=$((fails+1))
 fi
 
@@ -465,11 +1005,11 @@ fi
 # R0.1: enforce the now-fair landed-wave allocation gates from the proposed
 # bench suite (median-of-N timing, per-iteration allocation): adtbuild's
 # direct-ctor alloc/iter bound (R1.1) and scalar_doubleloop's unboxed-double
-# alloc bound (R2.2), alongside the scalar_intloop unboxed-Int bound (LR1/P0.2).
+# alloc bound (R2.2), alongside the scalar_intloop unboxed-Int bound (LR1).
 # These convert three measured wins into deterministic regression gates.
 echo "== R0.1: landed-wave allocation gates (proposed bench --gate) =="
 if timeout 400 bash "$ROOT/test/native/bench/proposed/run-proposed.sh" --gate --reps 3 scalar_intloop adtbuild scalar_doubleloop >"$WORK/proposed.log" 2>&1; then
-  echo "   ok (adtbuild ≤300B/iter [R1.1], scalar_doubleloop ≤100KB [R2.2], scalar_intloop ≤100KB [LR1/P0.2])"
+  echo "   ok (adtbuild ≤300B/iter [R1.1], scalar_doubleloop ≤100KB [R2.2], scalar_intloop ≤100KB [LR1])"
   grep -E '^   ok (adtbuild|scalar_doubleloop|scalar_intloop)' "$WORK/proposed.log" | sed 's/^/  /'
 else
   echo "   FAIL: a landed-wave allocation gate regressed"; grep -iE 'FAIL' "$WORK/proposed.log" | sed 's/^/     /'; fails=$((fails+1))
@@ -525,11 +1065,13 @@ fi
 
 echo "== HTTP + sqlite demo =="
 if command -v sqlite3 >/dev/null 2>&1 || ldconfig -p 2>/dev/null | grep -q sqlite3; then
+  rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c" "$ROOT/examples/native/http_sqlite/server.kappa.ll"
   if timeout 320 bash "$ROOT/examples/native/http_sqlite/run.sh" >"$WORK/demo.log" 2>&1 && grep -q "DEMO OK" "$WORK/demo.log"; then
     echo "   ok (request -> sqlite write+read -> response; see $WORK/demo.log)"
   else
     echo "   FAIL: demo did not report DEMO OK"; tail -20 "$WORK/demo.log" | sed 's/^/     /'; fails=$((fails+1))
   fi
+  rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c" "$ROOT/examples/native/http_sqlite/server.kappa.ll"
 else
   echo "   SKIP: sqlite3 not available for the demo"
 fi
@@ -588,7 +1130,7 @@ rm -rf "$FG"
 echo "== native ABI discovery + verification against the real headers (§26.1.5/§36.28) =="
 if pkg-config --exists sqlite3 2>/dev/null; then
   # (a) a real build records verified-against-sqlite3.h provenance
-  rm -f "$ROOT/examples/native/http_sqlite/server.native.prov"
+  rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c" "$ROOT/examples/native/http_sqlite/server.kappa.ll" "$ROOT/examples/native/http_sqlite/server.native.prov"
   if timeout 200 $KAPPA build --update --manifest "$ROOT/examples/native/http_sqlite" --emit-c -o "$WORK/abi" >"$WORK/abi.log" 2>&1 \
      && grep -q "verified-decl int sqlite3_open" "$ROOT/examples/native/http_sqlite/server.native.prov" \
      && grep -q "pkg-config sqlite3 version=" "$ROOT/examples/native/http_sqlite/server.native.prov" \
@@ -597,10 +1139,10 @@ if pkg-config --exists sqlite3 2>/dev/null; then
   else
     echo "   FAIL: demo build did not record verified native provenance"; cat "$WORK/abi.log" | sed 's/^/     /'; fails=$((fails+1))
   fi
-  rm -f "$ROOT/examples/native/http_sqlite/server.native.prov"
+  rm -f "$ROOT/examples/native/http_sqlite/server.kappa.c" "$ROOT/examples/native/http_sqlite/server.kappa.ll" "$ROOT/examples/native/http_sqlite/server.native.prov"
   # (b) a verify decl that disagrees with the real sqlite3.h fails the build (fail-closed)
   BAD="$WORK/badabi"; rm -rf "$BAD"; mkdir -p "$BAD/src"
-  printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
+  printf 'module app\nimport host.native.sqlite3 as db\nlet main = do\n  let h <- db.sqliteOpen "x"\n  db.sqliteClose h\n' > "$BAD/src/app.kp"
   # real C symbol names; the verify decls are ABI-CONSISTENT with the declared
   # symbolList signatures (pointer params/results), so they pass the signature
   # consistency check — but the sqlite3_open verify prototype is deliberately
@@ -620,7 +1162,7 @@ fi
 
 echo "== exact-width ABI vocabulary (ctU32/ctUsize…) maps to real C widths + verifies (§26.1.1) =="
 WD="$WORK/widths"; rm -rf "$WD"; mkdir -p "$WD/src"
-printf 'module app\nimport host.native.widths as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  x <- n.id32 (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
+printf 'module app\nimport host.native.widths as n\nimport std.ffi.(u32, u32Value)\nlet main = do\n  let x <- n.id32 (u32 256)\n  printlnString (showInt (u32Value x))\n' > "$WD/src/app.kp"
 printf '#include <stdint.h>\nuint32_t id32(uint32_t x);\n' > "$WD/src/width.h"
 printf '#include "width.h"\nuint32_t id32(uint32_t x) { return x + 1; }\n' > "$WD/src/width.c"
 printf 'let buildConfig : BuildConfig = package { name="w", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="nb", provides=[module "host.native.widths"], surface=symbolList [symbolDecl "id32" "id32" [ctU32] ctU32], abi=cAbi, inputs=[headers ["src/width.h"], shim ["src/width.c"], verify ["uint32_t id32(uint32_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="t" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["nb"] }] }' > "$WD/kappa.build.kp"
@@ -635,7 +1177,7 @@ rm -rf "$WD"
 
 echo "== a shim symbol whose ABI signature disagrees with the manifest is fail-closed (§27.1.1, N-19) =="
 SB="$WORK/shimabi"; rm -rf "$SB"; mkdir -p "$SB/src"
-printf 'module app\nimport host.native.probe as p\nlet main = do\n  x <- p.thing 7\n  printlnString "ok"\n' > "$SB/src/app.kp"
+printf 'module app\nimport host.native.probe as p\nlet main = do\n  let x <- p.thing 7\n  printlnString "ok"\n' > "$SB/src/app.kp"
 # shim DEFINES probe_thing returning double, but the manifest declares ctI64 (int64_t)
 printf '#include <stdint.h>\ndouble probe_thing(int64_t x) { return (double)x + 0.5; }\n' > "$SB/src/shim.c"
 printf 'let buildConfig : BuildConfig = package { name="s", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="pb", provides=[module "host.native.probe"], surface=symbolList [symbolDecl "thing" "probe_thing" [ctI64] ctI64], abi=cAbi, inputs=[shim ["src/shim.c"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["pb"] }] }' > "$SB/kappa.build.kp"
@@ -648,7 +1190,7 @@ rm -rf "$SB"
 
 echo "== U64 round-trips the full unsigned range incl. >= 2^63 (§26.1.1, N-35) =="
 U6="$WORK/u64"; rm -rf "$U6"; mkdir -p "$U6/src"
-printf 'module app\nimport host.native.u64x as n\nimport std.ffi.(u64, u64Value)\nlet main = do\n  x <- n.u64id (u64 18446744073709551615)\n  printlnString (showInt (u64Value x))\n' > "$U6/src/app.kp"
+printf 'module app\nimport host.native.u64x as n\nimport std.ffi.(u64, u64Value)\nlet main = do\n  let x <- n.u64id (u64 18446744073709551615)\n  printlnString (showInt (u64Value x))\n' > "$U6/src/app.kp"
 printf '#include <stdint.h>\nuint64_t u64id(uint64_t x);\n' > "$U6/src/u64id.h"
 printf '#include "u64id.h"\nuint64_t u64id(uint64_t x) { return x; }\n' > "$U6/src/shim.c"
 printf 'let buildConfig : BuildConfig = package { name="u", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ub", provides=[module "host.native.u64x"], surface=symbolList [symbolDecl "u64id" "u64id" [ctU64] ctU64], abi=cAbi, inputs=[headers ["src/u64id.h"], shim ["src/shim.c"], verify ["uint64_t u64id(uint64_t)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ub"] }] }' > "$U6/kappa.build.kp"
@@ -666,7 +1208,7 @@ rm -rf "$U6"
 
 echo "== a direct library binding with a mismatched scalar width is fail-closed (§26.1.5, N-19/F2) =="
 AB="$WORK/absabi"; rm -rf "$AB"; mkdir -p "$AB/src"
-printf 'module app\nimport host.native.absx as n\nimport std.ffi.(i64)\nlet main = do\n  x <- n.myabs (i64 5)\n  printlnString "ok"\n' > "$AB/src/app.kp"
+printf 'module app\nimport host.native.absx as n\nimport std.ffi.(i64)\nlet main = do\n  let x <- n.myabs (i64 5)\n  printlnString "ok"\n' > "$AB/src/app.kp"
 # binds the real libc `abs` (int abs(int)) but DECLARES it [ctI64] ctI64 — a width mismatch
 printf 'let buildConfig : BuildConfig = package { name="a", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="ab", provides=[module "host.native.absx"], surface=symbolList [symbolDecl "myabs" "abs" [ctI64] ctI64], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["int abs(int)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["ab"] }] }' > "$AB/kappa.build.kp"
 about="$(timeout 200 $KAPPA build --update --manifest "$AB" --emit-c -o "$WORK/abbin" 2>&1)"; abrc=$?
@@ -696,7 +1238,7 @@ rm -rf "$NH"
 
 echo "== RawPtr results surface as Option RawPtr (nullability, §26.1.1:27307) =="
 RP="$WORK/rawptr"; rm -rf "$RP"; mkdir -p "$RP/src"
-printf 'module app\nimport host.native.envx as n\nlet main = do\n  r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"
+printf 'module app\nimport host.native.envx as n\nlet main = do\n  let r <- n.getenv "PATH"\n  match r\n  case None -> printlnString "PATH=none"\n  case Some p -> printlnString "PATH=some"\n' > "$RP/src/app.kp"
 printf 'let buildConfig : BuildConfig = package { name="r", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="e", provides=[module "host.native.envx"], surface=symbolList [symbolDecl "getenv" "getenv" [ctString] ctRawPtr], abi=cAbi, inputs=[headers ["stdlib.h"], verify ["char *getenv(const char *)"]], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app", modules=modulesUnder "app", dependencies=[], hostBindings=["e"] }] }' > "$RP/kappa.build.kp"
 RPC="$WORK/rpbin"
 if timeout 200 $KAPPA build --update --manifest "$RP" -o "$RPC" >"$RP/b.log" 2>&1; then
@@ -773,6 +1315,7 @@ if pkg-config --exists libuv 2>/dev/null; then
   fi
   sed 's/--.*//' "$GENM" | grep -q "generateFromHeader" || { echo "   FAIL: the libuv example manifest does not use generateFromHeader"; okg=0; }
   GE="$WORK/httpgen"; rm -rf "$GE"; mkdir -p "$GE"; cp -r "$ROOT/examples/native/http_uv/." "$GE/"
+  find "$GE" \( -name '*.kappa.c' -o -name '*.kappa.ll' \) -delete 2>/dev/null
   if timeout 240 $KAPPA build --update --manifest "$GE" --emit-c -o "$WORK/gexe" >"$GE/b.log" 2>&1; then
     ext="$(cat "$GE"/src/acme/http/*.kappa.c 2>/dev/null)"
     # parsed from uv.h: a void-arg const-char* return; parsed from the shim header:
@@ -824,14 +1367,14 @@ else
 fi
 
 echo "== foreign-call classification capability rule is fail-closed (§26.1.4/§27.6) =="
-# The native profile advertises rt-blocking (realized as direct execution on the
-# single agent), so a `blocking` binding builds; it does NOT advertise a
-# safe-cancellation capability, so a `blocking-cancellable` binding is rejected
-# rather than executed with weakened semantics.
+# The native profile advertises rt-blocking and routes classified blocking calls
+# through the off-worker blocking lane, so a `blocking` binding builds. It does
+# NOT advertise a safe-cancellation capability, so a `blocking-cancellable`
+# binding is rejected rather than executed with weakened semantics.
 if pkg-config --exists libuv 2>/dev/null; then
   CAP="$WORK/gcap"; rm -rf "$CAP"; mkdir -p "$CAP/src/app"
   # the module header MUST match the §8.1 path-derived name (src/app/main.kp -> app.main)
-  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
+  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  let v <- u.uv_version_string\n  printlnString v\n' > "$CAP/src/app/main.kp"
   capbuild() { printf 'let buildConfig : BuildConfig = package { name="cap", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0"), cstrings ["uv_version_string"], classify %s], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$CAP/kappa.build.kp"; }
   okc=1
   capbuild "blocking"
@@ -857,7 +1400,7 @@ fi
 echo "== header-surface generation is fail-closed: missing symbol / unmappable type (§27.1.1/§36.28) =="
 if pkg-config --exists libuv 2>/dev/null; then
   FC="$WORK/gfc"; rm -rf "$FC"; mkdir -p "$FC/src/app"
-  printf 'module app\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$FC/src/app/main.kp"
+  printf 'module app\nimport host.native.libuv.Raw as u\nlet main = do\n  let v <- u.uv_version_string\n  printlnString v\n' > "$FC/src/app/main.kp"
   fcbuild() { printf 'let buildConfig : BuildConfig = package { name="fc", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateFromHeader "uv.h" [%s], abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' "$1" > "$FC/kappa.build.kp"; }
   okf=1
   fcbuild '"uv_not_a_function"'
@@ -941,7 +1484,7 @@ fi
 echo "== generated char* is conservative: Option RawPtr unless cstrings proves it (§26.1.4) =="
 if pkg-config --exists libuv 2>/dev/null; then
   CS="$WORK/gcs"; rm -rf "$CS"; mkdir -p "$CS/src/app"
-  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  v <- u.uv_version_string\n  printlnString v\n' > "$CS/src/app/main.kp"
+  printf 'module app.main\nimport host.native.libuv.Raw as u\nlet main = do\n  let v <- u.uv_version_string\n  printlnString v\n' > "$CS/src/app/main.kp"
   # no cstrings: uv_version_string's char* is Option RawPtr, so printlnString on it type-errors
   printf 'let buildConfig : BuildConfig = package { name="cs", version=semver "1", sourceRoots=[sourceRoot "src"], fragmentAxes=[], dependencies=[], hostBindings=[nativeBinding { name="libuv", provides=[module "host.native.libuv.Raw"], surface=generateAllFromHeader "uv.h" "uv_version", abi=cAbi, inputs=[headers ["uv.h"], define "_GNU_SOURCE" "1", pkgConfig "libuv" (Some "1.0")], link=noLink, load=systemLoader }], targets=[executable { name="app", backend=native { toolchain="cc", targetTriple="x86_64-linux-gnu" }, fragments=tags [], main=module "app.main", modules=modulesUnder "app", dependencies=[], hostBindings=["libuv"] }] }' > "$CS/kappa.build.kp"
   cso="$(timeout 120 $KAPPA build --update --manifest "$CS" -o "$WORK/csb" 2>&1)"

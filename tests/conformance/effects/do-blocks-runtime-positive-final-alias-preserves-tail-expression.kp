@@ -6,7 +6,7 @@ module main
 
 main : IO Int
 let main = do
-    value <- pure 42
+    let value <- pure 42
     let result = pure value
     result
 

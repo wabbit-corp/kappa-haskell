@@ -1,0 +1,28 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+type Cell : Type =
+    (value : Box)
+
+projection cellValue (place this : Cell) : Box =
+    yield this.value
+
+replace : (inout b : Box) -> UIO (1 b : Box)
+let replace (inout b : Box) : UIO (1 b : Box) =
+    pure (b = Full Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = (value = Empty)
+    let proj = cellValue
+    replace ~(proj cell)
+    let snapshot = cell.value
+    pure ()

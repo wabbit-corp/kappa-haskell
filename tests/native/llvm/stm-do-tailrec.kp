@@ -14,7 +14,7 @@ let loop c k decreases k =
 
 main : UIO Unit
 let main = do
-    c <- atomically (newTVar 0)
+    let c <- atomically (newTVar 0)
     loop c 1000
-    v <- atomically (readTVar c)
+    let v <- atomically (readTVar c)
     printlnString (showInt v)

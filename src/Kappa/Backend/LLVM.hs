@@ -42,10 +42,10 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (forM, forM_, foldM, msum, mplus, replicateM, unless, when, void)
 import Control.Monad.State.Strict
-import Kappa.Backend.C (BackendError (..), PrimEntry (..), eraseQ0ArgsP, multishotLegality, primDirect, primEntries, resultIsProofP)
+import Kappa.Backend.C (BackendError (..), PrimEntry (..), backendUnsupported, cpsEligible, eraseQ0ArgsP, generateC, multishotLegality, primDirect, primEntries, resultIsProofP, suspenderGlobalsWith)
 import Kappa.Backend.NativeFfi (ResolvedNativeSymbol (..), externPrototype, rnsCollectCtors, wrapperCName, wrapperDefinition)
 import qualified Kappa.Backend.Repr as Repr
-import Kappa.Builtins (prelRunIO)
+import Kappa.Build.Types (FfiClass (..))
 import Kappa.Check (CheckState (..))
 import Kappa.Core
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
@@ -75,6 +75,7 @@ data GenState = GenState
   , gsGlobals :: !(Map GName GlobalDef)
   , gsEvalCtx :: !EvalCtx -- ^ a non-runtime EvalCtx (from the CheckState), used only to 'quote' a global's 'gdType' to a Term in 'isTypeGlob' (the sort-kind erasure fallback — mirrors C's 'gsEvalCtx').
   , gsBodies :: !(Map GName Term)
+  , gsSuspenders :: !(Set GName) -- ^ Shared §3.3 transitive suspender closure. A do-block that reaches one of these heads must lower to a CK-machine action tree; a non-suspending block can stay as a suspended legacy kio thunk so its pure lets are not evaluated at action construction time.
   , gsPrims :: !(Set Text) -- ^ primitive names the linked runtime implements
   , gsDeclSites :: !(Map GName Span)
   , gsCtorTags :: !(Map Text Int) -- ^ Milestone C: USER-constructor gKey -> numeric tag id (@KCT_USER_BASE+i@). Precomputed once ('hostCtorTags') so 'compileCtor'/'compileMatch' can emit a literal @i32@ immediate (LLVM has no symbolic enum constant like the C backend's @KT_*@). Builtin ctors are NOT here — they use the fixed 'builtinCtorTagId'. Milestone L: includes the @std.ffi@ ctors host marshalling builds, so the @.ll@ and the wrapper sidecar agree on ids.
@@ -83,6 +84,7 @@ data GenState = GenState
   , gsDataSet :: !(Set GName) -- ^ Milestone D: declared data-type / trait gnames — a reference to one in argument position is computationally erased ('isTypeGlob'); mirrors C's @gsDatas@ ∪ @gsTraits@.
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ Milestone L (§27.1.1/§36.28): each provided @host.native.*@ member ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings. A reference to such a member is lowered like a PRIM over the codegen-emitted C-wrapper symbol ('wrapperCName') — a saturated reference to a @knative_sat@ over the wrapper, a curried/bare reference to a @knative@ closure — and the wrapper is compiled+linked from a sidecar @.c@ the Driver emits ('hostFfiSidecar'). Mirrors C's @gsHostSyms@; recognised at the REFERENCE so a host member is NEVER enqueued as a no-core-body CAF.
   , gsScalarHelpers :: !(Set Text) -- ^ names of scalar-worker helper @define@s already emitted (the @.ll@-local arg-unbox @kunbox_i64_ll@/@kunbox_dbl_ll@), so each is emitted exactly once.
+  , gsScalarLetSlots :: ![Text] -- ^ entry-block scratch slots reserved for scalar-worker 'CLet' binders. Popped during scalar worker emission so tail loops store into fixed slots instead of executing 'alloca' on every iteration.
   }
 
 type Gen = State GenState
@@ -133,6 +135,7 @@ captured env act = do
   saved <- gets gsInsns
   savedEnv <- gets gsEnv
   savedBlock <- gets gsBlock
+  savedScalarLetSlots <- gets gsScalarLetSlots
   -- The captured region is spliced verbatim under the accessor's @build:@
   -- label, so that is the block active when @act@ starts emitting; a control
   -- form ('compileMatch'/'compileIf') reads/updates 'gsBlock' from here.
@@ -140,7 +143,7 @@ captured env act = do
   r <- act
   produced <- gets gsInsns
   endBlock <- gets gsBlock
-  modify' $ \g -> g {gsInsns = saved, gsEnv = savedEnv, gsBlock = savedBlock}
+  modify' $ \g -> g {gsInsns = saved, gsEnv = savedEnv, gsBlock = savedBlock, gsScalarLetSlots = savedScalarLetSlots}
   pure (reverse produced, endBlock, r)
 
 -- | Record an unsupported-construct finding and return a placeholder operand
@@ -150,7 +153,7 @@ unsupported construct detail = do
   g <- gets gsCur
   sites <- gets gsDeclSites
   let sp = Map.findWithDefault noSpan g sites
-  modify' $ \st -> st {gsErrs = BackendError g sp construct detail : gsErrs st}
+  modify' $ \st -> st {gsErrs = backendUnsupported g sp construct detail : gsErrs st}
   -- a unit placeholder operand; M0 never reaches this on the happy path.
   declRuntime "declare ptr @kunit()"
   r <- freshReg
@@ -289,12 +292,12 @@ userCtorKeys = goT
       KLet _ pat t -> goPat pat <> goT t
       KLetQ pat t m -> goPat pat <> goT t <> foldMap (\(p, e) -> goPat p <> goT e) m
       KExpr t -> goT t
-      KVarItem _ t -> goT t
-      KAssign lhs _ rhs -> goT lhs <> goT rhs
+      KVarItem _ _ actT -> goT actT
+      KAssign _ _ _ actT -> goT actT
       KReturn t -> goT t
       KBreak _ -> Set.empty
       KContinue _ -> Set.empty
-      KWhile _ c b e -> goT c <> foldMap goItem b <> foldMap (foldMap goItem) e
+      KWhile _ c b e -> goT (kCondTermLL c) <> foldMap goItem b <> foldMap (foldMap goItem) e
       KFor _ pat s b e -> goPat pat <> goT s <> foldMap goItem b <> foldMap (foldMap goItem) e
       KIf alts e -> foldMap (\(c, b) -> goT c <> foldMap goItem b) alts <> foldMap (foldMap goItem) e
       KDefer _ t -> goT t
@@ -404,41 +407,58 @@ internCStr s = do
 -- report the unsupported constructs.  The SAME signature as
 -- 'Kappa.Backend.C.generateC', so the Driver dispatches on a flag with no
 -- change to the call site's type.
-generateLL :: CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either [BackendError] Text
-generateLL cs mainG ffiPrims hostSyms =
-  let st0 =
-        GenState
-          { gsFresh = 0
-          , gsInsns = []
-          , gsEnv = "null"
-          , gsTop = []
-          , gsDecls = Set.empty
-          , gsStrs = []
-          , gsCStrs = []
-          , gsGlobalsExtra = []
-          , gsEmitted = Set.singleton mainG
-          , gsQueue = [mainG]
-          , gsErrs = []
-          , gsCur = mainG
-          , gsGlobals = csGlobals cs
-          , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
-          , gsBodies = csCoreBodies cs
-          , gsPrims = Set.union basePrims ffiPrims
-          , gsDeclSites = csDeclSites cs
-          , gsCtorTags = hostCtorTags (csCoreBodies cs) hostSyms
-          , gsBlock = "build"
-          , gsCtorSet = Map.keysSet (csCtors cs)
-          , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
-          , gsHostSyms = hostSyms
-          , gsScalarHelpers = Set.empty
-          }
-      final = execState (drainQueue >> emitMain mainG) st0
-      -- §18.1.17/§27.6/§34.3.3 Stage-4a: the LLVM backend links the SAME one-shot
-      -- kappart2 runtime, so it rejects a reachable multi-shot resumption too.
-      multishotErrs = multishotLegality cs (gsEmitted final)
-   in case reverse (gsErrs final) ++ multishotErrs of
-        [] -> Right (assembleLL final)
-        errs -> Left errs
+generateLL :: Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
+generateLL rcEnabled cs mainG ffiPrims hostSyms =
+  case rcValidation of
+    Left failure -> Left failure
+    Right mRcFindings ->
+      let
+        evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
+        st0 =
+          GenState
+            { gsFresh = 0
+            , gsInsns = []
+            , gsEnv = "null"
+            , gsTop = []
+            , gsDecls = Set.empty
+            , gsStrs = []
+            , gsCStrs = []
+            , gsGlobalsExtra = []
+            , gsEmitted = Set.singleton mainG
+            , gsQueue = [mainG]
+            , gsErrs = []
+            , gsCur = mainG
+            , gsGlobals = csGlobals cs
+            , gsEvalCtx = evalCtx0
+            , gsBodies = csCoreBodies cs
+            , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
+            , gsPrims = Set.union basePrims ffiPrims
+            , gsDeclSites = csDeclSites cs
+            , gsCtorTags = hostCtorTags (csCoreBodies cs) hostSyms
+            , gsBlock = "build"
+            , gsCtorSet = Map.keysSet (csCtors cs)
+            , gsDataSet = Set.union (Map.keysSet (csDatas cs)) (Map.keysSet (csTraits cs))
+            , gsHostSyms = hostSyms
+            , gsScalarHelpers = Set.empty
+            , gsScalarLetSlots = []
+            }
+        final = execState (drainQueue >> emitMain mainG) st0
+        -- §18.1.17/§27.6/§34.3.3 Stage-4a: the LLVM backend links the SAME one-shot
+        -- kappart2 runtime, so it rejects a reachable multi-shot resumption too.
+        multishotErrs = multishotLegality cs (gsEmitted final)
+      in case reverse (gsErrs final) ++ multishotErrs of
+          [] -> Right (assembleLL final, mRcFindings)
+          errs -> Left (errs, mRcFindings)
+  where
+    -- Perceus S2.3b's R-path validator is shared by running the C backend's
+    -- authoritative walk-and-lookup pass before LLVM emission. This keeps LLVM
+    -- RC builds from silently bypassing the side table while avoiding a second,
+    -- drifting implementation of the same structural-path checker.
+    rcValidation
+      | rcEnabled = case generateC True cs mainG ffiPrims hostSyms of
+          Left failure -> Left failure
+          Right (_, mRcFindings) -> Right mRcFindings
+      | otherwise = Right Nothing
 
 -- | Milestone L (§27.1.1): the C-WRAPPER SIDECAR translation unit for a build's
 -- host-native FFI members.  The @.ll@ the LLVM backend emits lowers a host
@@ -523,10 +543,11 @@ hostFfiSidecar cs hostSyms
 -- INVARIANT: 'globPrimName' returns a name only when it is in @gsPrims@, and
 -- 'compilePrimApp'/'compilePrimValue' must then handle it — which they do for
 -- any 'primEntries' member.  The do-kernel monad/ref ops (@ioBind@/@ioThen@/
--- @ioPure@/@newRef@/@readRef@/@writeRef@) are still recognised here, but their
--- NODE-BUILDER handling in 'compileDo'/'compileMonadicAction'/'newRefAction'
--- takes precedence in the do-context (only OUTSIDE it do they fall to the
--- generic @knative_sat@ path, which is exactly what the C backend does too).
+-- @ioPure@/@newRef@/@readRef@/@writeRef@) are still recognised here. In
+-- do-contexts, surface `var` / assignment already carry MonadRef-selected
+-- action terms, and 'compileMonadicAction' handles those as ordinary actions.
+-- Direct primitive calls outside that path fall to the generic @knative_sat@
+-- lowering, exactly as in the C backend.
 basePrims :: Set Text
 basePrims =
   Set.difference (Map.keysSet primEntries) ckMachinePrims
@@ -535,7 +556,7 @@ basePrims =
     -- them here so 'globPrimName' recognises a saturated `uninterruptible`/`mask`/
     -- `poll` and routes it to 'compilePrimApp' → 'compileIoNode' (krt2_*) rather
     -- than the bare-value path.
-    `Set.union` Set.fromList ["uninterruptible", "__mask", "poll"]
+    `Set.union` Set.fromList ["blocking", "uninterruptible", "__mask", "poll"]
     -- §18.1.12 rank-2 restore adapter: lowered to a bare kapp(raw, act) in
     -- 'compilePrimApp' (no kpf_* entry, no krt2_* node), so add it here so
     -- 'globPrimName' recognises a saturated `__restoreAt` rather than rejecting it.
@@ -601,9 +622,11 @@ basePrims =
 --     @fork@/@await@/@sleepFor@/@self@/@spawn@ names are PRELUDE functions, not
 --     prims, so they never needed an entry here at all).
 --
--- The do-kernel ('compileDo') already lowers every block to a uniform @krt2_*@
--- action tree with LAZY continuation closures, so a do-block using STM/fork/await
--- is CK-machine-driven end to end (no sync bridge) and stack-safe by construction.
+-- The do-kernel ('compileDo') follows the C backend's semantic split:
+-- suspending or structured-finalizer blocks lower to @krt2_*@ action trees with
+-- LAZY continuation closures, while simple non-suspending do values are delayed
+-- behind @kio(fn, env)@ so their pure lets run when the action executes, not when
+-- the action value is constructed.
 ckMachinePrims :: Set Text
 ckMachinePrims = Set.empty
 
@@ -813,16 +836,6 @@ assembleLL st =
 -- non-recursive local @let@ ('CLet').  General application and closures remain
 -- a later milestone.
 compile :: Term -> Gen Text
--- §18.3 monadic splice (mirrors C.hs:1546): a @__runIO action@ that the do-kernel's
--- splice-hoister LEFT BEHIND — i.e. one buried inside a @CThunkE@/@CLazyE@/@CLam@/
--- @CMatch@ body (e.g. the @Thunk Bool@ RHS of @(&&)@/@(||)@), positions
--- 'liftFirstSplice' never descends into.  Those bodies are RE-EXECUTED each force/
--- apply, so a build-time @kref_get@ here reads the LIVE cell, exactly as in C's
--- synchronous-body regime.  The do-kernel's top-level re-run positions (a bare
--- @while@ condition / loop-body @var@ read) are already hoisted into @krt2_bind@
--- nodes by 'compileMonadicAs' BEFORE 'compile' is reached, so this guard never
--- pre-empts them.
-compile term | Just action <- runIOSpliceLL term = compileRunIO action
 compile term = do
   -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global (a
   -- propositional-equality / h-prop lemma such as 'isPropEq' /
@@ -1225,6 +1238,14 @@ compileUnit = do
   emit (r <> " = call ptr @kunit()")
   pure r
 
+unitAction :: Gen Text
+unitAction = do
+  u <- compileUnit
+  declRuntime "declare ptr @krt2_pure(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_pure(ptr " <> u <> ")")
+  pure r
+
 -- | A record VALUE (mirrors C's 'compileRecord').  The fields arrive in canonical
 -- lexicographic order — the SAME order the @K_REC@ runtime layout expects — so we
 -- preserve it.  The runtime constructor is
@@ -1232,7 +1253,7 @@ compileUnit = do
 --   @KValue *krec(int n, const char **names, KValue **vals)@
 --
 -- which STORES the @names@ pointer without copying (the labels are compile-time
--- literals) and COPIES @vals@ into a GC array (runtime/kappart.c:322).  So:
+-- literals) and COPIES @vals@ into a GC array (runtime/value.c).  So:
 --
 --   * the NAMES array must OUTLIVE this frame — emit it as a module-level
 --     @private constant [n x ptr]@ of pointers to the interned field-name
@@ -1846,12 +1867,16 @@ recWithoutLL v names = do
 
 -- ── do-kernel (Milestone E) ──────────────────────────────────────────
 --
--- A do-block lowers to a @krt2_*@ ACTION TREE — the uniform CPS path the
--- kappart2 CK-machine ('krt2_run_main') drives.  This mirrors the C backend's
--- 'cpsItems' shape (C.hs:3006) rather than its synchronous @kio@ bridge: parity
--- first, one lowering for both the sequential and the (future) suspending case.
--- The whole block compiles to a single 'KValue*' operand — a @krt2_pure@ leaf,
--- or a @krt2_bind@/@krt2_then@ spine whose tail is the block's final action.
+-- A do-block follows the C backend's semantic split. If §3.3 says the block may
+-- suspend, or if it contains `using` (mask/restore/finalizer nodes), it lowers to
+-- a @krt2_*@ ACTION TREE — the CPS path the kappart2 CK-machine
+-- ('krt2_run_main') drives. Otherwise the same action-building body is placed
+-- behind @kio(fn, env)@ by 'compileDoLegacyLL', preserving IO value suspension:
+-- pure lets inside a do-block value run when the action executes, not when the
+-- action is constructed as a CAF/fork argument. The do thunk returns a
+-- @K_IOTAIL@ marker around the block's action tree, matching the C backend's
+-- legacy trampoline rather than recursively forcing the tree inside the thunk.
+-- The whole block still compiles to a single 'KValue*' action operand.
 --
 -- Stack safety (the load-bearing invariant): every non-final item becomes a
 -- @krt2_bind(action, kclo(@kdo_N, env))@ where @kdo_N@ is a lifted continuation
@@ -1864,15 +1889,13 @@ recWithoutLL v names = do
 -- slot, so the continuation's de Bruijn indices line up after the delivered
 -- value is pushed at index 0).
 --
--- SUPPORTED items (the linear bind/let/action/final subset): 'KBind' (monadic
--- @x <- action@), 'KExpr' (a plain action), 'KLet' (a pure binding — no krt2
--- node), and the terminal item (a final action / @pure e@).  A bind/let whose
--- binder is a constructor/tuple PATTERN is lowered as a bind-to-fresh-var
--- followed by a 'CMatch' (via 'matchAfterBind').  Everything else — the loop
--- family ('KWhile'/'KFor'), 'KVarItem'/'KAssign' (mutable cells),
--- 'KReturn'/'KBreak'/'KContinue' (abrupt control), 'KDefer', 'KIf', 'KUsing',
--- 'KSubDo', 'KLetQ' — is a later milestone and is reported as a clean
--- @E_BACKEND_UNSUPPORTED@ (never miscompiled).
+-- SUPPORTED items: 'KBind', 'KExpr', 'KLet', mutable 'KVarItem'/'KAssign',
+-- unlabeled else-less 'KWhile' with unlabeled 'KBreak'/'KContinue', 'KReturn',
+-- unlabeled 'KDefer', statement 'KIf', statement 'KSubDo', and 'KUsing'.
+-- A binder with a structured
+-- pattern is lowered through the same environment/pattern machinery as the
+-- match path. Still-deferred items fail the whole block closed via
+-- @E_BACKEND_UNSUPPORTED@ rather than partially lowering.
 compileDo :: Maybe Text -> [KItem] -> Gen Text
 compileDo _lbl items
   -- The optional scope label is only observable through §18.7 defers / labeled
@@ -1880,20 +1903,122 @@ compileDo _lbl items
   -- has no runtime effect, so it is ignored here (parity with the C CPS path,
   -- which threads it only through 'krt2_doscope').
   | Just bad <- firstUnsupportedItem items = unsupportedDoItem bad
-  | otherwise = cpsItemsLL items
+  | otherwise = do
+      susp <- gets gsSuspenders
+      -- `cpsEligible` is shared with the C backend and counts both named
+      -- suspenders and local-headed restore-like actions. `using` builds
+      -- mask/restore/finalizer nodes even when its acquire action itself cannot
+      -- suspend, so it is also kept on the CK-machine path.
+      if cpsEligible susp items || blockUsesUsingLL items
+        then cpsItemsLL items >>= wrapDoActionLL items
+        else compileDoLegacyLL items
+
+blockUsesUsingLL :: [KItem] -> Bool
+blockUsesUsingLL = any go
+  where
+    go = \case
+      KUsing {} -> True
+      KWhile _ _ body me -> blockUsesUsingLL body || maybe False blockUsesUsingLL me
+      KIf alts me -> any (blockUsesUsingLL . snd) alts || maybe False blockUsesUsingLL me
+      KSubDo _ body -> blockUsesUsingLL body
+      _ -> False
+
+wrapReturnScopeLL :: [KItem] -> Text -> Gen Text
+wrapReturnScopeLL items actionOp
+  | itemsReturnLL items = do
+      declRuntime "declare ptr @krt2_retscope(ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @krt2_retscope(ptr " <> actionOp <> ")")
+      pure r
+  | otherwise = pure actionOp
+
+wrapDoActionLL :: [KItem] -> Text -> Gen Text
+wrapDoActionLL items actionOp = do
+  returned <- wrapReturnScopeLL items actionOp
+  if any directDefersLL items
+    then wrapDoScopeLL returned
+    else pure returned
+
+wrapDoScopeLL :: Text -> Gen Text
+wrapDoScopeLL actionOp = do
+  declRuntime "declare ptr @krt2_doscope(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_doscope(ptr " <> actionOp <> ")")
+  pure r
+
+compileDoLegacyLL :: [KItem] -> Gen Text
+compileDoLegacyLL items = do
+      fnIdent <- freshLabel "kdo_"
+      capturedEnv <- gets gsEnv
+      (bodyInsns, _endBlock, scopedOp) <- captured "%env" (cpsItemsLL items >>= wrapDoActionLL items)
+      declRuntime "declare ptr @kio_tail(ptr)"
+      let def =
+            T.unlines $
+              [ "define internal ptr @" <> fnIdent <> "(ptr %env) {"
+              , "build:"
+              ]
+                ++ map ("  " <>) bodyInsns
+                ++ [ "  %tail = call ptr @kio_tail(ptr " <> scopedOp <> ")"
+                   , "  ret ptr %tail"
+                   , "}"
+                   ]
+      modify' $ \st -> st {gsTop = def : gsTop st}
+      declRuntime "declare ptr @kio(ptr, ptr)"
+      r <- freshReg
+      emit (r <> " = call ptr @kio(ptr @" <> fnIdent <> ", ptr " <> capturedEnv <> ")")
+      pure r
+
+deferActionTreeLL :: Text -> Gen Text -> Gen Text
+deferActionTreeLL label buildAction = do
+  fnIdent <- freshLabel label
+  capturedEnv <- gets gsEnv
+  (bodyInsns, _endBlock, actionOp) <- captured "%cenv" buildAction
+  let def =
+        T.unlines $
+          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
+          , "build:"
+          , "  ; %arg intentionally ignored: this thunk delays action-tree construction"
+          ]
+            ++ map ("  " <>) bodyInsns
+            ++ [ "  ret ptr " <> actionOp
+               , "}"
+               ]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  declRuntime "declare ptr @kunit()"
+  declRuntime "declare ptr @krt2_pure(ptr)"
+  declRuntime "declare ptr @kclo(ptr, ptr)"
+  declRuntime "declare ptr @krt2_bind(ptr, ptr)"
+  unit <- freshReg
+  emit (unit <> " = call ptr @kunit()")
+  seed <- freshReg
+  emit (seed <> " = call ptr @krt2_pure(ptr " <> unit <> ")")
+  clo <- freshReg
+  emit (clo <> " = call ptr @kclo(ptr @" <> fnIdent <> ", ptr " <> capturedEnv <> ")")
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_bind(ptr " <> seed <> ", ptr " <> clo <> ")")
+  pure r
+
+itemsReturnLL :: [KItem] -> Bool
+itemsReturnLL = any go
+  where
+    go = \case
+      KReturn _ -> True
+      KWhile _ _ body me -> itemsReturnLL body || maybe False itemsReturnLL me
+      KIf alts me -> any (itemsReturnLL . snd) alts || maybe False itemsReturnLL me
+      KSubDo _ body -> itemsReturnLL body
+      _ -> False
+
+directDefersLL :: KItem -> Bool
+directDefersLL KDefer {} = True
+directDefersLL _ = False
 
 -- | The first do-item outside the supported subset, if any — used to fail the
--- WHOLE block closed (a clean unsupported) before emitting a partial tree, so a
--- deferred construct can never be silently dropped.  The supported set is the
--- Milestone-E linear bind/let/action items plus (Milestone F) a do-kernel @if@
--- whose branches are themselves entirely supported (recurse into each branch and
--- the optional else, so an unsupported item nested in a branch is caught here too
--- rather than mis-lowered when the branch is built).
--- Milestone G adds the imperative do-kernel: mutable cells ('KVarItem'/
--- 'KAssign'), the @while@ loop ('KWhile') with an UNLABELED @break@/@continue@
--- ('KBreak'/'KContinue' over 'Nothing'), and early @return@ ('KReturn').  A
--- LABELED loop / @break@ / @continue@, a @while@-@else@, 'KFor', 'KDefer',
--- 'KUsing', 'KSubDo', and 'KLetQ' remain deferred (they fail the block closed).
+-- WHOLE block closed before emitting a partial tree. The supported set includes
+-- linear bind/let/action items, statement @if@, mutable cells, unlabeled
+-- else-less @while@ with unlabeled @break@/@continue@, @return@, statement
+-- sub-do, unlabeled @defer@, and @using@. A labeled loop / @break@ /
+-- @continue@, a @while@-@else@, 'KFor', labeled 'KDefer', and 'KLetQ' remain
+-- deferred (they fail closed).
 firstUnsupportedItem :: [KItem] -> Maybe KItem
 firstUnsupportedItem = go
   where
@@ -1907,13 +2032,12 @@ firstUnsupportedItem = go
       KReturn {} -> go rest
       KBreak Nothing -> go rest
       KContinue Nothing -> go rest
+      KDefer Nothing _ -> go rest
       -- §18.8 while: only the UNLABELED, else-less form is lowered, and its body
       -- must be entirely supported too — recurse into it so a deferred item nested
       -- in the loop is caught here rather than mis-lowered.  (A labeled loop or a
       -- while-else hits the catch-all below and fails the block closed.)  The
-      -- condition itself is lowered by 'compileMonadicCond'; the only shape it
-      -- cannot handle is an `__runIO` splice over an action outside this backend's
-      -- prim coverage, which is reported as a clean unsupported at compile time.
+      -- condition itself is lowered by 'compileMonadicCond'.
       KWhile Nothing _cond body Nothing ->
         case go body of
           Just bad -> Just bad
@@ -1937,11 +2061,9 @@ firstUnsupportedItem = go
         go rest
       _ -> Just it
 
--- | Report a do-item this backend cannot yet lower.  Milestone E covered the
--- linear bind/let/action subset; Milestone F the do-kernel @if@; Milestone G the
--- imperative kernel (mutable cells, the UNLABELED @while@/@break@/@continue@, and
--- @return@).  Still deferred: a LABELED loop / break / continue, a @while@-@else@,
--- 'KFor', 'KDefer', 'KUsing', 'KSubDo', and 'KLetQ' — each fails the block closed.
+-- | Report a do-item this backend cannot yet lower. Still deferred: a LABELED
+-- loop / break / continue, a @while@-@else@, 'KFor', labeled 'KDefer', and 'KLetQ' —
+-- each fails the block closed.
 unsupportedDoItem :: KItem -> Gen Text
 unsupportedDoItem it =
   unsupported "do-kernel"
@@ -1974,9 +2096,9 @@ doItemKind = \case
 -- | Lower a linear do-block to its @krt2_*@ action tree (mirrors C's 'cpsItems',
 -- C.hs:3006).  An empty block is @krt2_pure(kunit())@; the FINAL item is the
 -- block's action (compiled directly, in tail-ish position — its own value); a
--- non-final bind/action becomes a @krt2_bind@ over a lazily-compiled
--- continuation closure; a non-final let is a pure binding compiled INLINE
--- (extending the env for the rest, then restored).
+-- non-final bind/action/let becomes a @krt2_bind@ over a lazily-compiled
+-- continuation closure, so pure RHS work observes source order with defers,
+-- interrupts, and scalar safepoints.
 cpsItemsLL :: [KItem] -> Gen Text
 cpsItemsLL items = case items of
   [] -> do
@@ -1993,20 +2115,8 @@ cpsItemsLL items = case items of
   [KExpr t] -> compileMonadicAction t
   [KBind _ _ t] -> compileMonadicAction t
   -- FINAL let: a pure binding with no following action is degenerate (the block
-  -- must end in an action), but lower it as @pure(value)@ for totality.
-  -- A FINAL let.  If its rhs reads `var`s (a splice), it must be a re-runnable
-  -- value-action ('compileMonadic' — which already yields an IO action delivering
-  -- the value); the pattern binding is moot since nothing follows.  Otherwise the
-  -- pure value is bound and `krt2_pure`d.
-  [KLet _ _ t] | hasSpliceLL t -> compileMonadic t
-  [KLet _ pat t] -> do
-    te <- compile t
-    declRuntime "declare ptr @krt2_pure(ptr)"
-    -- bind the value (so a constructor pattern is still well-typed) then pure it
-    _ <- bindPatDo te pat
-    r <- freshReg
-    emit (r <> " = call ptr @krt2_pure(ptr " <> te <> ")")
-    pure r
+  -- must end in an action), but lower it as a delayed pure action for totality.
+  [KLet _ _pat t] -> pureValueActionLL t
   -- FINAL do-kernel `if` (Milestone F): the if-action IS the block's result —
   -- lower it to its phi'd action operand and return it directly (no surrounding
   -- bind; the CK-machine drives whichever branch's action the phi selected).
@@ -2023,78 +2133,51 @@ cpsItemsLL items = case items of
   (KIf alts mels : rest) -> do
     ifAction <- compileDoIf alts mels
     seqActionThen ifAction CPWild rest
-  -- A pure LET binding: compile e, kpush, compile REST under the extended env
-  -- (restored after).  No krt2 node — the runtime never sees this binding.
-  -- A `let` whose rhs reads `var`s (e.g. `let t = addInt a b` in a loop body):
-  -- the rhs is a re-runnable value-action; bind its delivered value to @pat@ via
-  -- the same lazy continuation machinery as a 'KBind', so REST sees @pat@ at de
-  -- Bruijn 0.  The pure (linear) case keeps the cheap build-time `kpush` (no krt2
-  -- node — the runtime never sees a splice-free binding).
-  (KLet _ pat t : rest) | hasSpliceLL t -> do
-    m <- compileMonadic t
-    seqActionThen m pat rest
+  -- A pure LET binding: current reads/splices have already been lifted by the
+  -- checker into preceding bind/action items, so no hidden monadic splice remains
+  -- in the RHS.  Still, the pure RHS must run when the action reaches this source
+  -- point, not while building the surrounding action tree; scalar safepoint
+  -- aborts and preceding defers depend on that ordering.
   (KLet _ CPWild t : rest) -> do
-    _ <- compile t -- evaluated for its (pure) value; result discarded
-    cpsItemsLL rest
+    valueAct <- pureValueActionLL t
+    seqActionThen valueAct CPWild rest
   (KLet _ pat t : rest) -> do
-    te <- compile t
-    env0 <- gets gsEnv
-    env1 <- bindPatDo te pat
-    modify' $ \g -> g {gsEnv = env1}
-    r <- cpsItemsLL rest
-    modify' $ \g -> g {gsEnv = env0}
-    pure r
+    valueAct <- pureValueActionLL t
+    seqActionThen valueAct pat rest
   -- ── Milestone G: the imperative do-kernel ──────────────────────────
   -- ── FINAL imperative items (the block's tail action) ──────────────
   -- A FINAL `var` is degenerate (a do-block ends in an action), but the newRef
   -- IS an action — return it directly.  A FINAL assignment is its writeRef
   -- action; a FINAL return/break/continue/while is its own action operand.
-  [KVarItem _ e] -> newRefAction e
-  [KAssign refT _ rhsT] -> writeRefAction refT rhsT
+  [KVarItem _ _ actT] -> do
+    refAct <- compileMonadicAction actT
+    unitAct <- unitAction
+    declRuntime "declare ptr @krt2_then(ptr, ptr)"
+    r <- freshReg
+    emit (r <> " = call ptr @krt2_then(ptr " <> refAct <> ", ptr " <> unitAct <> ")")
+    pure r
+  [KAssign _ _ _ actT] -> compileMonadicAction actT
   [KReturn e] -> returnAction e
   [KBreak Nothing] -> breakAction
   [KContinue Nothing] -> continueAction
   [KWhile Nothing cond body Nothing] -> whileAction cond body
   -- ── NON-final imperative items (sequenced with the rest) ──────────
-  -- P0.2 (LLVM): an eligible `var…var; while` group at the HEAD of the items
-  -- lowers to an UNBOXED int64 scalar loop (native arithmetic, an LLVM phi-node
-  -- back-edge, ZERO per-iteration allocation), with the EXISTING boxed loop as
-  -- the §6 overflow continuation — mirroring the C backend's 'scalarLoopPlan' /
-  -- 'compileScalarWhile' decision and lowering exactly (same eligibility, same
-  -- snapshot-and-fall-back-to-boxed semantics), but emitted as one
-  -- `knative_sat` IO-action leaf (the do-kernel's action-tree analogue of C's
-  -- inline goto loop).  When the group is NOT eligible the whole `case` falls
-  -- through to the generic boxed `var`/`while` lowering below — never a
-  -- miscompile, only a slower (boxed) loop.
-  items'@(KVarItem _ _ : _)
-    | Just plan <- scalarLoopPlanLL items' -> emitScalarLoopLL plan
-  -- `var x = e` ≡ `x <- newRef e`: the action is a `newRef` IO node (built via
-  -- the prim path), bound like a 'KBind' so the slot at de Bruijn 0 holds the
-  -- Ref.  A source `readRef x` (already a `__runIO (readRef x)` splice in Core)
-  -- then reads it through 'compileMonadic'; an assignment is 'KAssign'.
-  (KVarItem x e : rest) -> do
-    refAct <- newRefAction e
+  KVarItem x _ actT : rest -> do
+    -- S2.3b: run the checker-selected MonadRef.newRef action. The former LLVM
+    -- scalar-loop peephole bypassed MonadRef evidence and rebuilt raw refs in
+    -- fallback paths, so mutable cells stay on the generic boxed path.
+    refAct <- compileMonadicAction actT
     seqActionThen refAct (CPVar x) rest
-  -- `x = e` (pure rhs) / `x <- e` (monadic rhs): a `writeRef ref val` IO action,
-  -- sequenced like a 'KExpr' (`_ <- writeAction; rest`).  For a monadic rhs the
-  -- value is the result of running e first ('emitAssignCont' binds it, then the
-  -- continuation writes); for a pure rhs the value is e's compiled operand.
-  (KAssign refT monadic rhsT : rest)
-    | monadic -> do
-        -- `x <- e`: bind e's result, then writeRef ref boundResult; rest.
-        rhsAct <- compileMonadic rhsT
-        contFn <- emitAssignCont refT rest
-        capturedEnv <- gets gsEnv
-        declRuntime "declare ptr @kclo(ptr, ptr)"
-        declRuntime "declare ptr @krt2_bind(ptr, ptr)"
-        k <- freshReg
-        emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
-        r <- freshReg
-        emit (r <> " = call ptr @krt2_bind(ptr " <> rhsAct <> ", ptr " <> k <> ")")
-        pure r
-    | otherwise -> do
-        writeAct <- writeRefAction refT rhsT
-        seqActionThen writeAct CPWild rest
+  -- `var x = e` ≡ `x <- MonadRef.newRef e`: the checker has already built the
+  -- selected MonadRef action. Bind it like a 'KBind' so the slot at de Bruijn 0
+  -- holds the Ref. Explicit reads are ordinary actions lifted by the do-splice
+  -- pass; assignment is 'KAssign'.
+  -- `x = e` / `x <- e`: sequence the checker-selected MonadRef.writeRef action.
+  -- The action already encodes the selected evidence and any monadic RHS
+  -- binding, so LLVM must not reconstruct a raw IO ref write here.
+  (KAssign _ _ _ actT : rest) -> do
+    writeAct <- compileMonadicAction actT
+    seqActionThen writeAct CPWild rest
   -- `return e`: an early-return IO action (`krt2_return value`).  Whatever
   -- follows in the items list is dead (return unwinds the fiber), but it is
   -- sequenced uniformly anyway — the CK-machine never delivers past the return.
@@ -2116,6 +2199,16 @@ cpsItemsLL items = case items of
   (KWhile Nothing cond body Nothing : rest) -> do
     whileAct <- whileAction cond body
     seqActionThen whileAct CPWild rest
+  -- §18.7 plain defer: register a lazily-built action on the current do-scope's
+  -- ExitStack, then continue.  `wrapDoActionLL`/`wrapScopedItemsLL` guarantee
+  -- that any item list containing a direct plain defer has a surrounding
+  -- krt2_doscope, so OP_DEFER never lands outside a scope.
+  (KDefer Nothing t : rest) -> do
+    de <- deferActionTreeLL "kdefer_" (compileMonadicAction t)
+    declRuntime "declare ptr @krt2_defer(ptr)"
+    reg <- freshReg
+    emit (reg <> " = call ptr @krt2_defer(ptr " <> de <> ")")
+    seqActionThen reg CPWild rest
   -- ── Milestone M: a statement-position sub-do (`then do { … }`) ──────
   -- §18.8.3.1 'KSubDo': a nested do-block written in statement position.  Its
   -- items are lowered to their OWN @krt2_*@ action tree via the same do-kernel
@@ -2128,9 +2221,9 @@ cpsItemsLL items = case items of
   -- recursion), but a plain `then do { … }` works.  The sub-do's own bindings
   -- live inside its 'cpsItemsLL' continuation closures, so the build-time 'gsEnv'
   -- is unchanged and REST sees only the enclosing scope (correct lexical nesting).
-  [KSubDo _lbl subItems] -> cpsItemsLL subItems
+  [KSubDo _lbl subItems] -> wrapScopedItemsLL subItems
   (KSubDo _lbl subItems : rest) -> do
-    subAct <- cpsItemsLL subItems
+    subAct <- wrapScopedItemsLL subItems
     seqActionThen subAct CPWild rest
   -- §19.5/§18.8.3 `using pat <- acquire`: lower through the runtime's
   -- krt2_acquire_release (the SAME machinery `bracketM` uses, §18.1.12):
@@ -2164,10 +2257,6 @@ cpsItemsLL items = case items of
 -- time as the CK-machine runs it, not all at once at build time).
 bindThen :: Term -> CorePat -> [KItem] -> Gen Text
 bindThen action pat rest = do
-  -- The action term may carry `__runIO` `var`-read splices (e.g. a `KExpr`
-  -- `printlnString (showInt (readRef i))` inside a loop body); 'compileMonadicAction'
-  -- hoists them so the reads re-execute, and is a plain 'compile' when there are
-  -- none (so the linear-do path is unchanged).
   m <- compileMonadicAction action
   seqActionThen m pat rest
 
@@ -2208,7 +2297,7 @@ seqActionThen m pat rest = do
 -- @krt2_while@ body the body action tree is built ONCE and re-run each iteration
 -- (rt.c KK_LOOP), so a build-time branch on the condition would freeze the
 -- decision at the first iteration.  Instead, the condition is an ACTION
--- ('compileMonadicCond' — it re-reads its `var`s each iteration) and the branch
+-- ('compileMonadic' — it re-reads its explicit Ref reads each iteration) and the branch
 -- is chosen INSIDE a lifted selector closure that the CK-machine re-invokes with
 -- the freshly-evaluated condition value: @krt2_bind(condIO, kclo(@doifsel))@.  The
 -- selector @br i1@s on @kas_bool(%cond)@ and RETURNS the taken branch's action
@@ -2233,8 +2322,8 @@ compileDoIf alts mels = go alts
         emit (r <> " = call ptr @krt2_pure(ptr " <> u <> ")")
         pure r
     go ((cond, body) : more) = do
-      -- condIO re-evaluates the guard (re-reading `var`s) each time it runs.
-      condIO <- compileMonadicCond cond
+      -- condIO re-evaluates the guard each time it runs.
+      condIO <- compileMonadic cond
       selFn <- emitDoIfSelector body more
       capturedEnv <- gets gsEnv
       declRuntime "declare ptr @kclo(ptr, ptr)"
@@ -2250,7 +2339,9 @@ compileDoIf alts mels = go alts
       env0 <- gets gsEnv
       a <- cpsItemsLL items
       modify' $ \g -> g {gsEnv = env0}
-      pure a
+      if any directDefersLL items
+        then wrapDoScopeLL a
+        else pure a
     -- A selector closure @doifsel(%cenv, %cond)@: it does NOT bind %cond into the
     -- env (it is the guard's Bool, not a value binder).  @br i1@ on
     -- @kas_bool(%cond)@; the then-block returns this guard's branch action, the
@@ -2346,506 +2437,60 @@ bindPatDo v pat
       emit (n <> " = call ptr @kpush(ptr " <> valOp <> ", ptr " <> e <> ")")
       pure n
 
+wrapScopedItemsLL :: [KItem] -> Gen Text
+wrapScopedItemsLL items = do
+  action <- cpsItemsLL items
+  if any directDefersLL items
+    then wrapDoScopeLL action
+    else pure action
+
 -- ── Milestone G: the imperative do-kernel ────────────────────────────
 --
 -- Mutable cells, `while` loops, and abrupt control, lowered onto the kappart2
 -- CK-machine the do-kernel already uses (NOT the C backend's synchronous
 -- `goto`/`krun_io` loop, which is a Phase-2 perf path).  The load-bearing fact:
 -- `krt2_while(condIO, bodyIO)` RE-RUNS both action operands every iteration
--- (rt.c OP_WHILE → KK_LOOP), so a `var` read re-evaluates for free PROVIDED the
--- read is an IO ACTION (a `knative_sat(kpf_io_readRef,…)` node whose `kref_get`
--- fires when the CK-machine runs it), not a value frozen at build time.
---
--- A source `var` read arrives in Core as a `__runIO (readRef <ref>)` MONADIC
--- SPLICE buried in an otherwise-pure term (e.g. `ltInt (__runIO (readRef i)) 3`).
--- 'compileMonadic' turns such a term into a re-runnable action by HOISTING each
--- splice into a `krt2_bind` (the read becomes a real action; its delivered value
--- is bound and the pure residual `krt2_pure`d) — the standard monadic-normal-form
--- lift.  A wholly-monadic condition (`while check i`, elaborated to `__runIO
--- actTm`) is just `actTm` directly.
+-- (rt.c OP_WHILE → KK_LOOP). Normal source `!` splices and mutable-current reads
+-- are lifted by the checker to preceding monadic binds or stored as action terms
+-- in 'KCondAction', so LLVM lowering only sees ordinary do-kernel actions here.
 
--- | Recognise a @__runIO action@ monadic splice and return the single explicit
--- action argument (mirrors C's 'runIOSplice').  Implicit type arguments are
--- erased.
-runIOSpliceLL :: Term -> Maybe Term
-runIOSpliceLL t = case spineOf t of
-  (CGlob g, args)
-    | g == prelRunIO -- §1.2: declaration-symbol identity, not the "__runIO" spelling
-    , [a] <- [x | (Expl, x) <- args] -> Just a
-  _ -> Nothing
-
--- | Shift every FREE de Bruijn index (one at cutoff @c@ or above) in a term by
--- @d@.  Used by 'compileMonadic' when a hoisted splice pushes one fresh env slot
--- under which the pure residual is re-expressed (so the residual's references to
--- the enclosing scope stay correct after the push).  A complete traversal over
--- 'Term' / 'CaseAlt' / 'CorePat', incrementing the cutoff under every binder.
-shiftTerm :: Int -> Int -> Term -> Term
-shiftTerm d = goT
-  where
-    goT c = \case
-      CVar i -> CVar (if i >= c then i + d else i)
-      CGlob g -> CGlob g
-      CLam ic q n b -> CLam ic q n (goT (c + 1) b)
-      CPi ic q bw n ty b -> CPi ic q bw n (goT c ty) (goT (c + 1) b)
-      CApp ic f a -> CApp ic (goT c f) (goT c a)
-      CSort u -> CSort u
-      CLit l -> CLit l
-      CCtor g ann as -> CCtor g (fmap (goT c) ann) (map (goT c) as)
-      CMatch s ann alts -> CMatch (goT c s) (fmap (goT c) ann) (map (goAlt c) alts)
-      CRecordT fs -> CRecordT [(k, goT c v) | (k, v) <- fs]
-      CRecordV fs -> CRecordV [(k, goT c v) | (k, v) <- fs]
-      CProj e f -> CProj (goT c e) f
-      CProjAt e f i -> CProjAt (goT c e) f i
-      CVariantT ts -> CVariantT (map (goT c) ts)
-      CInject l e -> CInject l (goT c e)
-      CLet q n ty rhs body -> CLet q n (goT c ty) (goT c rhs) (goT (c + 1) body)
-      CLetRec q n ty rhs body -> CLetRec q n (goT c ty) (goT (c + 1) rhs) (goT (c + 1) body)
-      CMeta m -> CMeta m
-      CDo lbl items -> CDo lbl (goItems c items)
-      CSealE ls e -> CSealE ls (goT c e)
-      CSigT ls e -> CSigT ls (goT c e)
-      CThunkE e -> CThunkE (goT c e)
-      CLazyE e -> CLazyE (goT c e)
-      CForceE e -> CForceE (goT c e)
-      CIf cc th el -> CIf (goT c cc) (goT c th) (goT c el)
-      CQuote q ts -> CQuote q (map (goT c) ts)
-    goAlt c (CaseAlt pat mg body) =
-      let n = patArity pat
-       in CaseAlt pat (goT (c + n) <$> mg) (goT (c + n) body)
-    -- KItems run under accumulating binders; shifting do-kernel items here is
-    -- only reached if a residual contains a nested do, which the loop corpus
-    -- does not produce — a conservative same-cutoff walk keeps it total.
-    goItems _ = id
-
--- | The number of binders a 'CorePat' introduces (for 'shiftTerm''s cutoff under
--- a 'CaseAlt').  Mirrors the left-to-right binder count the match path pushes.
-patArity :: CorePat -> Int
-patArity = \case
-  CPWild -> 0
-  CPVar _ -> 1
-  CPLit _ -> 0
-  -- §17.1: @nEx@ existential-skolem placeholder slots are real runtime binders
-  -- (see 'patBindingsLL'); count them so 'shiftTerm''s cutoff matches.
-  CPCtor _ nEx ps -> nEx + sum (map patArity ps)
-  CPTuple ps -> sum (map patArity ps)
-  CPRecord fs _ -> sum (map (patArity . snd) fs)
-  CPInject _ p -> patArity p
-  CPInjectRest _ -> 0
-  CPOr (p : _) _ -> patArity p
-  CPOr [] _ -> 0
-  CPAs _ p -> 1 + patArity p
-
--- | Find the leftmost (first-to-evaluate) @__runIO action@ splice that sits at
--- binder depth 0 within @t@ (i.e. not under a local lambda/let/match binder),
--- and return its action together with @t@ rewritten so that occurrence becomes a
--- reference to a freshly-pushed slot: every other free var is shifted by +1 and
--- the splice itself is 'CVar 0'.  'Nothing' when @t@ has no liftable splice (it
--- is then a pure residual).  Splice search follows evaluation order (function
--- before argument) so reads are sequenced as written.
-liftFirstSplice :: Term -> Maybe (Term, Term)
-liftFirstSplice t0
-  | Just _ <- runIOSpliceLL t0 = Nothing -- the WHOLE term is a splice: handled directly
-  | otherwise = case go t0 of
-      Nothing -> Nothing
-      Just (action, residual) -> Just (action, residual)
-  where
-    -- Returns (action, residual) where residual is @t@ with the found splice
-    -- replaced by 'CVar 0' and all of t's own free vars shifted +1.
-    go :: Term -> Maybe (Term, Term)
-    go t = case runIOSpliceLL t of
-      Just action -> Just (action, CVar 0) -- this node IS a splice → slot 0
-      Nothing -> case t of
-        CApp ic f a -> case go f of
-          Just (act, f') -> Just (act, CApp ic f' (shiftTerm 1 0 a))
-          Nothing -> case go a of
-            Just (act, a') -> Just (act, CApp ic (shiftTerm 1 0 f) a')
-            Nothing -> Nothing
-        CCtor g ann as -> goList as (CCtor g (fmap (shiftTerm 1 0) ann))
-        CIf c th el -> case go c of
-          Just (act, c') -> Just (act, CIf c' (shiftTerm 1 0 th) (shiftTerm 1 0 el))
-          Nothing -> Nothing
-        _ -> Nothing
-    -- Lift the first splice across a list of subterms (left to right), shifting
-    -- the untouched siblings +1 and rebuilding via @mk@.
-    goList :: [Term] -> ([Term] -> Term) -> Maybe (Term, Term)
-    goList xs mk = goAt [] xs
-      where
-        goAt _ [] = Nothing
-        goAt before (x : after) = case go x of
-          Just (act, x') ->
-            Just (act, mk (map (shiftTerm 1 0) (reverse before) ++ x' : map (shiftTerm 1 0) after))
-          Nothing -> goAt (x : before) after
-
--- | True if a value-position term carries a `__runIO` `var`-read splice (a whole-
--- term splice, or one buried inside a larger pure term), so it must be lowered as
--- a re-runnable IO action via 'compileMonadic' rather than the build-time 'compile'
--- (which would hit the unlowered @__runIO@ primitive).  In the imperative do-kernel
--- a @let@/@var@ rhs over `var`s (e.g. @let t = addInt a b@) is exactly this case.
-hasSpliceLL :: Term -> Bool
-hasSpliceLL t
-  | Just _ <- runIOSpliceLL t = True
-  | Just _ <- liftFirstSplice t = True
-  | otherwise = False
-
--- | Lower a @__runIO action@ splice the hoister left behind (see 'compile''s
--- guard) by running its IO action INLINE and yielding the result as an ordinary
--- value.  Mirrors C's 'compileRunIO' (C.hs:2471): a mutable-reference action
--- (@readRef@ / @writeRef@ / @newRef@, §18.6.1) is lowered DIRECTLY to its
--- @kref_*@ cell op, skipping the suspend-as-action-then-run path — a @var@
--- read/write under a thunk is then a single cell access.  Any other action
--- keeps the general @krun_io_checked@ lowering.  All four runtime symbols
--- already exist (runtime/kappart.h ~447,541,542,546); no runtime change.
---
--- RESIDUAL (matches C): a SUSPENDING action under such a thunked @__runIO@ would
--- be driven synchronously by @krun_io_checked@ — fine for the cell ops here, but
--- a fork/await under a thunk is not modelled (the C backend has the same shape).
-compileRunIO :: Term -> Gen Text
-compileRunIO action = do
-  let (hd, sargs) = spineOf action
-      expl = [a | (Expl, a) <- sargs]
-  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
-  case (mp, expl) of
-    (Just "readRef", [r]) -> do
-      re <- compile r
-      declRuntime "declare ptr @kref_get(ptr)"
-      res <- freshReg
-      emit (res <> " = call ptr @kref_get(ptr " <> re <> ")")
-      pure res
-    (Just "writeRef", [r, v]) -> do
-      re <- compile r
-      ve <- compile v
-      declRuntime "declare ptr @kref_set(ptr, ptr)"
-      res <- freshReg
-      emit (res <> " = call ptr @kref_set(ptr " <> re <> ", ptr " <> ve <> ")")
-      pure res
-    (Just "newRef", [v]) -> do
-      ve <- compile v
-      declRuntime "declare ptr @kref_new(ptr)"
-      res <- freshReg
-      emit (res <> " = call ptr @kref_new(ptr " <> ve <> ")")
-      pure res
-    -- MUTABLE-ARRAY-DESIGN §7 Stage D: mirror the C backend's array peephole so
-    -- both backends lower an array op run under __runIO to a bare karr_* call.
-    -- The index is an Int KValue* (ptr); kas_int decodes it to the i64 the
-    -- karr_get/set entry points expect.  The boxed slab is correct; this is the
-    -- perf-only delta — the default IO-prim path already gives correctness.
-    (Just "__newArray", [n, v]) -> do
-      ne <- compile n
-      ve <- compile v
-      declRuntime "declare i64 @kas_int(ptr)"
-      declRuntime "declare ptr @karr_new(i64, ptr)"
-      ni <- freshReg
-      emit (ni <> " = call i64 @kas_int(ptr " <> ne <> ")")
-      res <- freshReg
-      emit (res <> " = call ptr @karr_new(i64 " <> ni <> ", ptr " <> ve <> ")")
-      pure res
-    (Just "__arrayRead", [buf, i]) -> do
-      be <- compile buf
-      ie <- compile i
-      declRuntime "declare i64 @kas_int(ptr)"
-      declRuntime "declare ptr @karr_get(ptr, i64)"
-      ii <- freshReg
-      emit (ii <> " = call i64 @kas_int(ptr " <> ie <> ")")
-      res <- freshReg
-      emit (res <> " = call ptr @karr_get(ptr " <> be <> ", i64 " <> ii <> ")")
-      pure res
-    (Just "__arrayWrite", [buf, i, v]) -> do
-      be <- compile buf
-      ie <- compile i
-      ve <- compile v
-      declRuntime "declare i64 @kas_int(ptr)"
-      declRuntime "declare ptr @karr_set(ptr, i64, ptr)"
-      ii <- freshReg
-      emit (ii <> " = call i64 @kas_int(ptr " <> ie <> ")")
-      res <- freshReg
-      emit (res <> " = call ptr @karr_set(ptr " <> be <> ", i64 " <> ii <> ", ptr " <> ve <> ")")
-      pure res
-    _ -> do
-      ae <- compile action
-      declRuntime "declare ptr @krun_io_checked(ptr)"
-      res <- freshReg
-      emit (res <> " = call ptr @krun_io_checked(ptr " <> ae <> ")")
-      pure res
-
--- | Compile a value-position term that may carry @__runIO@ monadic splices into
--- a re-runnable IO ACTION yielding the term's value.  The whole-term splice case
--- (@__runIO actTm@, a monadic `while` condition) is the action itself; otherwise
--- each splice is hoisted into a `krt2_bind` (so a `var` read re-executes each
--- time the action runs) and the pure residual is `krt2_pure`d.  This is the
--- monadic-normal-form lift; it reuses the do-kernel's lazy continuation closures
--- ('emitDoCont') so the spine stays bounded.
+-- | Lift a pure value-position term into a re-runnable IO ACTION yielding the
+-- term's value.
 compileMonadic :: Term -> Gen Text
-compileMonadic = compileMonadicAs ResValue
+compileMonadic t = do
+  v <- compile t
+  declRuntime "declare ptr @krt2_pure(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_pure(ptr " <> v <> ")")
+  pure r
 
--- | Lower an ACTION-position term that may carry `__runIO` splices to a
--- re-runnable IO action.  Same hoist as 'compileMonadic', but the residual IS
--- itself an action (e.g. `printlnString (showInt (readRef i))`), so it is
--- compiled DIRECTLY — never `krt2_pure`-wrapped (which would give @IO (IO a)@).
+-- | Lower an ACTION-position term to a re-runnable IO action.
 compileMonadicAction :: Term -> Gen Text
-compileMonadicAction = compileMonadicAs ResAction
+compileMonadicAction = compile
 
--- | Whether the residual of a splice lift is a VALUE (wrap in @krt2_pure@) or an
--- ACTION (compile directly).  A `while` condition / assignment rhs is a value; a
--- `KExpr` / bind action term is an action.
-data ResidualKind = ResValue | ResAction
-
-compileMonadicAs :: ResidualKind -> Term -> Gen Text
-compileMonadicAs rk t
-  | ResAction <- rk, Just action <- runIOSpliceLL t = compile action
-  | ResValue <- rk, Just action <- runIOSpliceLL t = compile action
-  | otherwise = case liftFirstSplice t of
-      Nothing -> case rk of
-        ResAction -> compile t -- the residual is the action itself
-        ResValue -> do
-          -- No splice: a pure value lifted into the IO monad.
-          v <- compile t
-          declRuntime "declare ptr @krt2_pure(ptr)"
-          r <- freshReg
-          emit (r <> " = call ptr @krt2_pure(ptr " <> v <> ")")
-          pure r
-      Just (action, residual) -> do
-        -- Bind the splice's action; in the continuation, the delivered value is
-        -- pushed at slot 0 and the residual (now an action) is built lazily.
-        m <- compile action
-        contFn <- emitMonadicCont rk residual
-        capturedEnv <- gets gsEnv
-        declRuntime "declare ptr @kclo(ptr, ptr)"
-        declRuntime "declare ptr @krt2_bind(ptr, ptr)"
-        k <- freshReg
-        emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
-        r <- freshReg
-        emit (r <> " = call ptr @krt2_bind(ptr " <> m <> ", ptr " <> k <> ")")
-        pure r
-
--- | Emit a continuation closure for 'compileMonadicAs': the delivered splice
--- value is pushed at env slot 0 (the 'CVar 0' the residual references) and the
--- residual term is compiled (recursing for any further splices, preserving the
--- residual kind).  The same lifted-`kfn` shape as 'emitDoCont'.
-emitMonadicCont :: ResidualKind -> Term -> Gen Text
-emitMonadicCont rk residual = do
-  fnIdent <- freshLabel "kmc_"
-  declRuntime "declare ptr @kpush(ptr, ptr)"
-  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
-    env1 <- freshReg
-    emit (env1 <> " = call ptr @kpush(ptr %arg, ptr %cenv)")
-    modify' $ \g -> g {gsEnv = env1}
-    compileMonadicAs rk residual
-  let def =
-        T.unlines $
-          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "build:"
-          ]
-            ++ map ("  " <>) bodyInsns
-            ++ [ "  ret ptr " <> resultOp
-               , "}"
-               ]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
-
--- | The @newRef e@ IO action for a @var x = e@ (or @x <- newRef e@).  A SPLICE-FREE
--- init is a saturated `newRef` prim application through the existing IO-prim path
--- (@knative_sat(kpf_io_newRef, [e], isio=1)@).  An init that reads `var`s (e.g.
--- @var b = addInt a 3@) is built as a re-runnable value-action via 'compileMonadic',
--- whose delivered value is `newRef`-ed in the continuation — symmetric with
--- 'writeRefAction'.
-newRefAction :: Term -> Gen Text
-newRefAction e
-  | not (hasSpliceLL e) = compilePrimApp "newRef" [(Expl, e)]
-  | otherwise = do
-      initAct <- compileMonadic e
-      contFn <- emitNewRefCont
-      capturedEnv <- gets gsEnv
-      declRuntime "declare ptr @kclo(ptr, ptr)"
-      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
-      k <- freshReg
-      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
-      r <- freshReg
-      emit (r <> " = call ptr @krt2_bind(ptr " <> initAct <> ", ptr " <> k <> ")")
-      pure r
-
--- | Build a @newRef@ IO action from an already-compiled init-value operand
--- (a direct @knative_sat(kpf_io_newRef, [val], 1)@).
-newRefValueAction :: Text -> Gen Text
-newRefValueAction valOp = do
-  argv <- freshReg
-  emit (argv <> " = alloca [1 x ptr], align 8")
-  s0 <- freshReg
-  emit (s0 <> " = getelementptr inbounds [1 x ptr], ptr " <> argv <> ", i64 0, i64 0")
-  emit ("store ptr " <> valOp <> ", ptr " <> s0 <> ", align 8")
-  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
-  declRuntime "declare ptr @kpf_io_newRef(ptr)"
-  r <- freshReg
-  emit (r <> " = call ptr @knative_sat(ptr @kpf_io_newRef, i32 1, ptr " <> argv <> ", i32 1)")
-  pure r
-
--- | A continuation closure for a splicey @var x = e@: the delivered init value
--- arrives at @%arg@ and is @newRef@-ed as the tail action (the resulting Ref is the
--- bound value).  No env push — @%arg@ is consumed by the newRef.
-emitNewRefCont :: Gen Text
-emitNewRefCont = do
-  fnIdent <- freshLabel "knr_"
-  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" (newRefValueAction "%arg")
-  let def =
-        T.unlines $
-          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "build:"
-          ]
-            ++ map ("  " <>) bodyInsns
-            ++ [ "  ret ptr " <> resultOp
-               , "}"
-               ]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
-
--- | The @writeRef ref val@ IO action for an assignment.  @val@ may itself carry
--- `__runIO` splices (e.g. @addInt (readRef x) 1@), so it is compiled through
--- 'compileMonadic' — but the result must be a plain VALUE for `writeRef`'s second
--- argument, so a splicey rhs is sequenced first via 'compileMonadic' and the
--- write happens in its continuation.  The common case (a rhs with splices) is
--- handled by 'KAssign''s own bind in 'cpsItemsLL'; here we cover the SPLICE-FREE
--- rhs as a single `writeRef` action.
-writeRefAction :: Term -> Term -> Gen Text
-writeRefAction refT rhsT
-  | Nothing <- liftFirstSplice rhsT
-  , Nothing <- runIOSpliceLL rhsT =
-      -- Splice-free rhs: a single writeRef action over the compiled value.
-      compilePrimApp "writeRef" [(Expl, refT), (Expl, rhsT)]
-  | otherwise = do
-      -- The rhs reads `var`s: build it as an action, bind the value, then write.
-      rhsAct <- compileMonadic rhsT
-      contFn <- emitAssignCont' refT
-      capturedEnv <- gets gsEnv
-      declRuntime "declare ptr @kclo(ptr, ptr)"
-      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
-      k <- freshReg
-      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
-      r <- freshReg
-      emit (r <> " = call ptr @krt2_bind(ptr " <> rhsAct <> ", ptr " <> k <> ")")
-      pure r
-
--- | A continuation closure that, given the delivered rhs value at @%arg@, emits
--- @writeRef ref %arg@ as the tail action.  @ref@ is re-compiled inside the
--- closure under the captured env (a `var` ref is just an env read, so this is
--- a `kvar` — cheap and correct).  Used by 'writeRefAction' for a splicey rhs.
-emitAssignCont' :: Term -> Gen Text
-emitAssignCont' refT = do
-  fnIdent <- freshLabel "kwr_"
-  -- The captured %cenv IS the enclosing env; the ref term reads from it with no
-  -- shift, and the delivered rhs value is %arg (no env push needed).
-  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
-    re <- compile refT
-    writeRefValueAction re "%arg"
-  let def =
-        T.unlines $
-          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "build:"
-          ]
-            ++ map ("  " <>) bodyInsns
-            ++ [ "  ret ptr " <> resultOp
-               , "}"
-               ]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
-
--- | Build a @writeRef@ IO action from already-compiled ref and value operands
--- (a direct @knative_sat(kpf_io_writeRef, [ref,val], 1)@), bypassing the prim
--- argument-compilation path since both operands are in hand.
-writeRefValueAction :: Text -> Text -> Gen Text
-writeRefValueAction refOp valOp = do
-  argv <- freshReg
-  emit (argv <> " = alloca [2 x ptr], align 8")
-  s0 <- freshReg
-  emit (s0 <> " = getelementptr inbounds [2 x ptr], ptr " <> argv <> ", i64 0, i64 0")
-  emit ("store ptr " <> refOp <> ", ptr " <> s0 <> ", align 8")
-  s1 <- freshReg
-  emit (s1 <> " = getelementptr inbounds [2 x ptr], ptr " <> argv <> ", i64 0, i64 1")
-  emit ("store ptr " <> valOp <> ", ptr " <> s1 <> ", align 8")
-  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
-  declRuntime "declare ptr @kpf_io_writeRef(ptr)"
-  r <- freshReg
-  emit (r <> " = call ptr @knative_sat(ptr @kpf_io_writeRef, i32 2, ptr " <> argv <> ", i32 1)")
-  pure r
-
--- | A continuation closure for a MONADIC assignment (@x <- e@): the delivered
--- result of running @e@ arrives at @%arg@ and is written to @ref@, then the rest
--- of the block runs.  An assignment introduces NO new env binder (it mutates an
--- existing ref), so @ref@ and the rest read the captured @%cenv@ with no shift;
--- @%arg@ is consumed by the write, not pushed.
-emitAssignCont :: Term -> [KItem] -> Gen Text
-emitAssignCont refT rest = do
-  fnIdent <- freshLabel "kasgk_"
-  declRuntime "declare ptr @krt2_then(ptr, ptr)"
-  -- The captured %cenv IS the enclosing env: `x <- e` writes to an existing ref,
-  -- introducing NO new binder, so both the ref term and `rest` use %cenv with no
-  -- shift.  The delivered rhs result (%arg) is written, not bound into the env.
-  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
-    re <- compile refT
-    writeAct <- writeRefValueAction re "%arg"
-    -- _ <- writeRef ref value; rest  (rest sequenced after the write completes;
-    -- writeRef has no result to bind, so krt2_then is exact).
-    restAct <- cpsItemsLL rest
+-- | Lower a pure term to a delayed action yielding that value.  This is used for
+-- pure @let@ inside CPS do-kernel lowering: the RHS may contain long scalar work
+-- or safepoints, so it must execute in source order when the CK machine reaches
+-- the let, not while the surrounding action tree is being constructed.
+pureValueActionLL :: Term -> Gen Text
+pureValueActionLL t =
+  deferActionTreeLL "kpure_" $ do
+    v <- compile t
+    declRuntime "declare ptr @krt2_pure(ptr)"
     r <- freshReg
-    emit (r <> " = call ptr @krt2_then(ptr " <> writeAct <> ", ptr " <> restAct <> ")")
+    emit (r <> " = call ptr @krt2_pure(ptr " <> v <> ")")
     pure r
-  let def =
-        T.unlines $
-          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "build:"
-          ]
-            ++ map ("  " <>) bodyInsns
-            ++ [ "  ret ptr " <> resultOp
-               , "}"
-               ]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
 
--- | The @return e@ early-exit IO action: @krt2_return(value)@.  When @e@ is a
--- splice-free value it is compiled directly; when it carries `var`-read splices
--- (e.g. @return i@ ≡ @return (__runIO (readRef i))@) the read is sequenced as an
--- action FIRST ('compileMonadic') and the @krt2_return@ runs in its continuation,
--- so the returned value is the freshly-read cell.
+-- | The @return e@ early-exit IO action: @krt2_return(value)@. Current reads and
+-- splices inside @e@ have already been lifted into preceding binds by the
+-- checker, so @e@ is a pure value at this point.
 returnAction :: Term -> Gen Text
-returnAction e
-  | Nothing <- liftFirstSplice e
-  , Nothing <- runIOSpliceLL e = do
-      v <- compile e
-      declRuntime "declare ptr @krt2_return(ptr)"
-      r <- freshReg
-      emit (r <> " = call ptr @krt2_return(ptr " <> v <> ")")
-      pure r
-  | otherwise = do
-      valAct <- compileMonadic e
-      contFn <- emitReturnCont
-      capturedEnv <- gets gsEnv
-      declRuntime "declare ptr @kclo(ptr, ptr)"
-      declRuntime "declare ptr @krt2_bind(ptr, ptr)"
-      k <- freshReg
-      emit (k <> " = call ptr @kclo(ptr @" <> contFn <> ", ptr " <> capturedEnv <> ")")
-      r <- freshReg
-      emit (r <> " = call ptr @krt2_bind(ptr " <> valAct <> ", ptr " <> k <> ")")
-      pure r
-
--- | A continuation closure that returns @krt2_return(%arg)@ — the delivered value
--- (a freshly-read `var`) is the early-return value.
-emitReturnCont :: Gen Text
-emitReturnCont = do
-  fnIdent <- freshLabel "kret_"
-  (bodyInsns, _endBlock, resultOp) <- captured "%cenv" $ do
-    declRuntime "declare ptr @krt2_return(ptr)"
-    r <- freshReg
-    emit (r <> " = call ptr @krt2_return(ptr %arg)")
-    pure r
-  let def =
-        T.unlines $
-          [ "define internal ptr @" <> fnIdent <> "(ptr %cenv, ptr %arg) {"
-          , "build:"
-          ]
-            ++ map ("  " <>) bodyInsns
-            ++ [ "  ret ptr " <> resultOp
-               , "}"
-               ]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
+returnAction e = do
+  v <- compile e
+  declRuntime "declare ptr @krt2_return(ptr)"
+  r <- freshReg
+  emit (r <> " = call ptr @krt2_return(ptr " <> v <> ")")
+  pure r
 
 -- | The unlabeled @break@ IO action: @krt2_break()@ — exits the innermost
 -- enclosing @krt2_while@ (rt.c KK_LOOP, RK_BREAK).
@@ -2869,7 +2514,7 @@ continueAction = do
 -- operands are re-runnable actions ('compileMonadicCond' / 'compileLoopBody'),
 -- which the CK-machine re-executes each iteration (so `var` reads re-evaluate).
 -- The loop's normal completion (condition False) yields Unit.
-whileAction :: Term -> [KItem] -> Gen Text
+whileAction :: KCond -> [KItem] -> Gen Text
 whileAction cond body = do
   condIO <- compileMonadicCond cond
   bodyIO <- compileLoopBody body
@@ -2879,645 +2524,18 @@ whileAction cond body = do
   pure r
 
 -- | The condition action for a @while@: a re-runnable IO action yielding a Bool.
--- Just 'compileMonadic' — a pure condition lifts its `var` reads into binds and
--- `krt2_pure`s the residual Bool; a monadic `while` condition (`__runIO actTm`)
--- is the action itself.
-compileMonadicCond :: Term -> Gen Text
-compileMonadicCond = compileMonadic
+compileMonadicCond :: KCond -> Gen Text
+compileMonadicCond = \case
+  KCondPure t -> compileMonadic t
+  KCondAction t -> compileMonadicAction t
 
 -- | The body action for a @while@: the body items lowered to a `krt2_*` action
 -- tree via 'cpsItemsLL'.  The body runs under the enclosing env (its `var`s are
 -- env slots the loop's actions read); 'krt2_while' re-runs this whole action each
 -- iteration, and `var` reads inside re-execute because they are IO read actions.
 compileLoopBody :: [KItem] -> Gen Text
-compileLoopBody body = do
-  env0 <- gets gsEnv
-  a <- cpsItemsLL body
-  modify' $ \g -> g {gsEnv = env0}
-  pure a
-
--- ─────────────────────────────────────────────────────────────────────────────
--- P0.2 (LLVM): the unboxed int64 SCALAR `while`-loop.
---
--- A `var i = 0; var acc = 0; while leInt i N do { acc = addInt acc i; i = addInt
--- i 1 }` group at the head of a do-block compiles, on the C backend, to a raw
--- int64 register loop with ZERO per-iteration allocation, with the existing
--- boxed loop kept as the §6 (unbounded-Integer) overflow continuation
--- ('Kappa.Backend.C.scalarLoopPlan' / 'compileScalarWhile').  This is the
--- single biggest LLVM perf lever — without it the LLVM backend lowers the loop
--- to a `krt2_while` action whose condition + each body op + each `var` read is a
--- BOXED `kp_*` / `kref_*` heap-allocating call, ~hundreds-of-x slower.
---
--- This mirrors the C decision and lowering EXACTLY (same eligibility predicates,
--- same snapshot-and-fall-back-to-boxed semantics) but emits the loop as a single
--- `knative_sat` IO-action leaf: a generated `KNativeFn` (@kscalarloop_N@) whose
--- @args@ are the k `var` ref cells, doing the whole loop inline with native
--- arithmetic + an LLVM phi-node back-edge, and committing each var's final
--- int64 back to its ref cell so the do-block's continuation reads it.  On a
--- §6 overflow (native add/sub/mul carry) it flushes the PRE-iteration snapshot
--- to the cells and continues the rest of the loop in a BOXED inline loop
--- (`kref_get` + `kp_*` + `kas_bool`, which promote to GMP exactly like the C
--- backend's boxed continuation), so the unbounded-Integer result is bit-identical
--- to interp == C.  When the group is not eligible the caller falls through to
--- the generic boxed `var`/`while` lowering — never a miscompile.
-
--- | The recognized eligible shape (parallels 'Kappa.Backend.C.ScalarLoop').
-data ScalarLoopLL = ScalarLoopLL
-  { sllInits :: ![Integer] -- ^ the k `var` initial Int literals, declaration order
-  , sllCond :: !Term -- ^ the loop condition (an Int compare over loop-exprs)
-  , sllBody :: ![(Int, Term)] -- ^ flat (de-Bruijn index < k, rhs) assignments
-  , sllRest :: ![KItem] -- ^ the do-block continuation after the loop
-  }
-
--- | In-range for a machine int64 (matches C's 'i64InRange').
-i64InRangeLL :: Integer -> Bool
-i64InRangeLL m = m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int)
-
--- | A scalar Int arith prim and its (result-is-Int, arg count).  The LLVM
--- scalar loop scalarizes Int `var`s only, so ONLY the Int arith ops are
--- admitted (mirroring C's 'arithPrim' restricted to the @KInt64@ result rows,
--- which is exactly what 'i64LoopExpr' consults).  @divInt@/@modInt@ are admitted
--- (their INT64_MIN/-1 and zero edges escape to the boxed path), matching C.
-intArithPrimLL :: Text -> Maybe Int
-intArithPrimLL = \case
-  "addInt" -> Just 2
-  "subInt" -> Just 2
-  "mulInt" -> Just 2
-  "divInt" -> Just 2
-  "modInt" -> Just 2
-  "negInt" -> Just 1
-  _ -> Nothing
-
--- | An Int comparison usable as a loop condition: (LLVM @icmp@ predicate suffix,
--- arg count).  ONLY the Int compares whose semantics match the runtime prim
--- exactly (signed compares — `kint_cmp` is a signed total order on the in-range
--- word path).  Mirrors C's 'cmpPrim' restricted to its @KInt64@ rows.
-intCmpPrimLL :: Text -> Maybe Text
-intCmpPrimLL = \case
-  "eqInt" -> Just "eq"
-  "ltInt" -> Just "slt"
-  "leInt" -> Just "sle"
-  _ -> Nothing
-
--- | The de Bruijn index of a scalarized-var READ — a `__runIO (readRef (CVar
--- i))` splice with @0 <= i < k@ (the elaborator auto-derefs a surface `var`
--- read).  Mirrors C's 'scalarVarReadIdx' (it does not consult 'gsPrims' here —
--- the splice's @readRef@ is the prelude prim by spelling at this surface, the
--- same recognition C uses; a non-`readRef` head yields 'Nothing' → ineligible).
-scalarVarReadIdxLL :: Int -> Term -> Maybe Int
-scalarVarReadIdxLL k term = case runIOSpliceLL term of
-  Just action -> case spineOf action of
-    (CGlob (GName _ nm), sargs)
-      | nm == "readRef"
-      , [CVar i] <- [a | (Expl, a) <- sargs]
-      , i >= 0
-      , i < k ->
-          Just i
-    _ -> Nothing
-  Nothing -> Nothing
-
--- | int64-expressible over scalar-var reads (idx<k), in-range Int literals, and
--- the Int arith prims — and NOTHING else (an outer-var read, a non-listed prim,
--- a ctor, a Double op, etc. fails, keeping the loop boxed).  Pure mirror of C's
--- 'i64LoopExpr'.
-i64LoopExprLL :: Int -> Term -> Bool
-i64LoopExprLL k term = case scalarVarReadIdxLL k term of
-  Just _ -> True
-  Nothing -> case term of
-    CLit (LitInt m) -> i64InRangeLL m
-    _ -> case spineOf term of
-      (CGlob (GName _ nm), sargs) ->
-        let expl = [a | (Expl, a) <- sargs]
-         in case intArithPrimLL nm of
-              Just n | length expl == n -> all (i64LoopExprLL k) expl
-              _ -> False
-      _ -> False
-
--- | A loop condition: a saturated Int compare over loop-expressible operands.
--- Mirror of C's 'i64LoopCond'.
-i64LoopCondLL :: Int -> Term -> Bool
-i64LoopCondLL k term = case spineOf term of
-  (CGlob (GName _ nm), sargs) ->
-    let expl = [a | (Expl, a) <- sargs]
-     in case (intCmpPrimLL nm, expl) of
-          (Just _, [_, _]) -> all (i64LoopExprLL k) expl
-          _ -> False
-  _ -> False
-
--- | Does a term build a closure/thunk/do/letrec that could capture an enclosing
--- `var` by reference (so the scalarized int64 register would be invisible to the
--- captured env)?  Mirror of C's 'bodyCapturesEnv', minus the eta-ctor peephole
--- the LLVM backend does not emit — a conservative @True@ on any @CApp@ over a
--- ctor's args is fine since the loop corpus never builds ctors anyway.
-bodyCapturesEnvLL :: Term -> Bool
-bodyCapturesEnvLL = go
-  where
-    go t = case t of
-      CLam {} -> True
-      CLetRec {} -> True
-      CDo {} -> True
-      CThunkE {} -> True
-      CLazyE {} -> True
-      CQuote {} -> True
-      CApp _ f a -> go f || go a
-      CCtor _ _ args -> any go args
-      CMatch s _ alts -> go s || any goAlt alts
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CInject _ e -> go e
-      CForceE e -> go e
-      CSealE _ e -> go e
-      CLet _ _ ty rhs body -> go ty || go rhs || go body
-      CIf c th el -> go c || go th || go el
-      CRecordV fs -> any (go . snd) fs
-      CRecordT fs -> any (go . snd) fs
-      CVariantT ts -> any go ts
-      CSigT _ e -> go e
-      CPi _ _ _ _ a b -> go a || go b
-      CVar {} -> False
-      CGlob {} -> False
-      CSort {} -> False
-      CLit {} -> False
-      CMeta {} -> False
-    goAlt (CaseAlt _ mg body) = maybe False go mg || go body
-
--- | Does any term in this item (recursively) capture the env?  Mirror of C's
--- 'itemHasClosure'.
-itemHasClosureLL :: KItem -> Bool
-itemHasClosureLL item = case item of
-  KExpr t -> bodyCapturesEnvLL t
-  KBind _ _ t -> bodyCapturesEnvLL t
-  KLet _ _ t -> bodyCapturesEnvLL t
-  KLetQ _ t mels -> bodyCapturesEnvLL t || maybe False (bodyCapturesEnvLL . snd) mels
-  KVarItem _ t -> bodyCapturesEnvLL t
-  KAssign r _ t -> bodyCapturesEnvLL r || bodyCapturesEnvLL t
-  KReturn t -> bodyCapturesEnvLL t
-  KWhile _ c b mels -> bodyCapturesEnvLL c || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
-  KFor _ _ s b mels -> bodyCapturesEnvLL s || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
-  KIf alts mels -> any (\(c, b) -> bodyCapturesEnvLL c || any itemHasClosureLL b) alts || maybe False (any itemHasClosureLL) mels
-  KDefer _ t -> bodyCapturesEnvLL t
-  KUsing _ a r -> bodyCapturesEnvLL a || bodyCapturesEnvLL r
-  KSubDo _ b -> any itemHasClosureLL b
-  KBreak _ -> False
-  KContinue _ -> False
-
--- | Recognize the eligible scalarizable shape at the head of an item list — the
--- pure mirror of C's 'scalarLoopPlan': a run of k `var x = <in-range Int lit>`
--- immediately followed by an UNLABELED, else-less `while` whose condition is an
--- Int compare over loop-expressible operands and whose body is a NON-EMPTY flat
--- list of `KAssign (CVar idx) False rhs` (idx<k, Int-arith rhs), with NO closure
--- anywhere in the loop or the continuation (the escape gate).
-scalarLoopPlanLL :: [KItem] -> Maybe ScalarLoopLL
-scalarLoopPlanLL items =
-  case span isKVar items of
-    (varRun@(_ : _), KWhile Nothing cond body Nothing : rest2)
-      | Just inits <- traverse initLit varRun ->
-          let k = length inits
-              okCond = i64LoopCondLL k cond
-              bodyPairs = traverse (bodyItemOk k) body
-              noClosure = not (any itemHasClosureLL (KWhile Nothing cond body Nothing : rest2))
-           in case bodyPairs of
-                Just pairs
-                  | okCond && not (null body) && noClosure ->
-                      Just (ScalarLoopLL inits cond pairs rest2)
-                _ -> Nothing
-    _ -> Nothing
-  where
-    isKVar (KVarItem _ _) = True
-    isKVar _ = False
-    initLit (KVarItem _ (CLit (LitInt m))) | i64InRangeLL m = Just m
-    initLit _ = Nothing
-    bodyItemOk k (KAssign (CVar idx) False rhs)
-      | idx >= 0, idx < k, i64LoopExprLL k rhs = Just (idx, rhs)
-    bodyItemOk _ _ = Nothing
-
--- | Lower an eligible scalar `var…while` group.  At the do-block site we (1)
--- push the k `var` ref cells onto the env (so the loop's continuation reads
--- them at the right de-Bruijn slots, exactly as the boxed path would), (2)
--- generate a dedicated `KNativeFn` @kscalarloop_N(args)@ that runs the unboxed
--- loop over those cells, and (3) emit a `knative_sat` IO action over it, then
--- sequence the continuation.  The cells are passed by the args array; the ref
--- de-Bruijn index of the var declared FIRST is the DEEPEST (k-1), matching the
--- push order (mirrors C's @Map.fromList [(k-1-j, …)]@).
-emitScalarLoopLL :: ScalarLoopLL -> Gen Text
-emitScalarLoopLL plan = do
-  let inits = sllInits plan
-      k = length inits
-  -- (1) Build + push the k ref cells; collect their operands in declaration
-  -- order.  Each is `kref_new(kint(lit))`, then `kpush`ed (value-first) so the
-  -- LAST-declared var is at de Bruijn 0 — the same env shape the generic
-  -- `var x = lit` path produces.
-  declRuntime "declare ptr @kint(i64)"
-  declRuntime "declare ptr @kref_new(ptr)"
-  declRuntime "declare ptr @kpush(ptr, ptr)"
-  env0 <- gets gsEnv
-  -- refs in declaration order: refs!!0 is the first-declared var.
-  (refsRev, envK) <-
-    foldM
-      ( \(acc, e) lit -> do
-          boxr <- freshReg
-          emit (boxr <> " = call ptr @kint(i64 " <> T.pack (show lit) <> ")")
-          refr <- freshReg
-          emit (refr <> " = call ptr @kref_new(ptr " <> boxr <> ")")
-          e2 <- freshReg
-          emit (e2 <> " = call ptr @kpush(ptr " <> refr <> ", ptr " <> e <> ")")
-          pure (refr : acc, e2)
-      )
-      ([], env0)
-      inits
-  let refs = reverse refsRev -- declaration order
-  -- (2) Emit the loop helper as a top-level KNativeFn; it reads the cells from
-  -- its args array (args[j] is the j-th declared var's ref cell).
-  fnIdent <- emitScalarLoopFn plan refs
-  -- (3) The args array for knative_sat: refs in declaration order.
-  argv <- freshReg
-  emit (argv <> " = alloca [" <> T.pack (show k) <> " x ptr], align 8")
-  forM_ (zip [0 :: Int ..] refs) $ \(j, refr) -> do
-    slot <- freshReg
-    emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show j))
-    emit ("store ptr " <> refr <> ", ptr " <> slot <> ", align 8")
-  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
-  loopAct <- freshReg
-  emit (loopAct <> " = call ptr @knative_sat(ptr @" <> fnIdent <> ", i32 " <> T.pack (show k) <> ", ptr " <> argv <> ", i32 1)")
-  -- (4) Sequence the continuation under the env extended by the k pushed cells.
-  -- The loop's normal completion is Unit (like the boxed `while`), so it is
-  -- sequenced as `_ <- loopAct; rest`.
-  modify' $ \g -> g {gsEnv = envK}
-  r <- seqActionThen loopAct CPWild (sllRest plan)
-  modify' $ \g -> g {gsEnv = env0}
-  pure r
-
--- | §32.2.6 native-loop safe-point quantum (fix SP): how many unboxed scalar-loop
--- iterations between @krt2_safepoint()@ calls.  Matches the C backend's
--- @KRT2_SP_QUANTUM@ default so both backends poll for interrupts at the same
--- granularity; large enough that the counter check is free in the hot loop.
-kSpQuantum :: Int
-kSpQuantum = 65536
-
--- | Emit the @kscalarloop_N(ptr %args)@ helper: an unboxed int64 loop returning
--- Unit, with an overflow fall-back to a boxed inline loop.
---
--- Each scalar var gets an @i64*@ stack slot (@alloca@); the loop reads/writes
--- those slots with NATIVE arithmetic (the @llvm.s{add,sub,mul}.with.overflow@
--- intrinsics).  Clang's @-O2@ @mem2reg@ pass promotes the slots to SSA phi
--- registers (the standard LLVM frontend idiom), so the hot loop is a raw
--- register loop with NO per-iteration allocation — exactly the C backend's
--- @int64_t sv_*@ loop.  On a §6 overflow the slot values (the pre-op snapshot)
--- are flushed to the ref cells and the boxed continuation re-runs the rest of
--- the loop with GMP-promoting @kp_*@ prims (bit-identical to interp == C).
---
--- The de-Bruijn index i used in the loop body/cond maps to declaration index
--- (k-1-i): the FIRST-declared var sits at the DEEPEST env slot.  @args[j]@ is
--- the j-th declared var's ref cell.
-emitScalarLoopFn :: ScalarLoopLL -> [Text] -> Gen Text
-emitScalarLoopFn plan _refs = do
-  fnIdent <- freshLabel "kscalarloop_"
-  let inits = sllInits plan
-      k = length inits
-  (bodyInsns, _end, ()) <- captured "%args" $ do
-    declRuntime "declare ptr @kunit()"
-    declRuntime "declare ptr @kint(i64)"
-    declRuntime "declare ptr @kref_set(ptr, ptr)"
-    -- entry: load each ref cell from args; one i64 stack slot per var, init'd.
-    cellOf <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
-      slot <- freshReg
-      emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr %args, i64 0, i64 " <> T.pack (show j))
-      cell <- freshReg
-      emit (cell <> " = load ptr, ptr " <> slot <> ", align 8")
-      pure (j, cell)
-    slotOf <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
-      sl <- freshReg
-      emit (sl <> " = alloca i64, align 8")
-      emit ("store i64 " <> T.pack (show (inits !! j)) <> ", ptr " <> sl <> ", align 8")
-      pure (j, sl)
-    -- §32.2.6 safe point (fix SP): a one-i64-slot counter, reloaded to the quantum,
-    -- gates a krt2_safepoint() call at the back-edge so the hot unboxed loop is not
-    -- slowed (mem2reg promotes the slot to an SSA register, so the per-iteration
-    -- cost is a decrement + predictable branch).  On a deliverable interrupt the
-    -- loop flushes its FINAL slot values and exits via flushL → the CK-machine
-    -- delivers at the next step.  This is the LLVM analogue of the C scalar loop's
-    -- counter-gated krt2_safepoint at its `goto kscont`.
-    declRuntime "declare i32 @krt2_safepoint()"
-    spSlot <- freshReg
-    emit (spSlot <> " = alloca i64, align 8")
-    emit ("store i64 " <> T.pack (show kSpQuantum) <> ", ptr " <> spSlot <> ", align 8")
-    -- de-Bruijn i → (declaration index k-1-i)'s i64 slot / ref cell.
-    let dbSlot i = slotOf Map.! (k - 1 - i)
-        dbCell i = cellOf Map.! (k - 1 - i)
-    contL <- freshLabel "scont_"
-    bodyL <- freshLabel "sbody_"
-    spchkL <- freshLabel "sspchk_"
-    flushL <- freshLabel "sflush_"
-    boxedL <- freshLabel "sbox_"
-    doneL <- freshLabel "sdone_"
-    -- Flush a SNAPSHOT (declaration-index → iteration-entry i64 operand) to the
-    -- ref cells, then branch to the boxed loop.  Mirrors C's `flushSnaps`: it is
-    -- the PRE-iteration state (NOT the partially-mutated slots), so an
-    -- earlier-committed assignment in the same iteration is NOT double-applied
-    -- when the boxed loop re-runs the iteration from these cells.
-    let flushSnapTo snapOf target = do
-          forM_ [0 .. k - 1] $ \j -> do
-            bx <- freshReg
-            emit (bx <> " = call ptr @kint(i64 " <> snapOf j <> ")")
-            dump <- freshReg
-            emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! j) <> ", ptr " <> bx <> ")")
-          emit ("br label %" <> target)
-    emit ("br label %" <> contL)
-    -- loop header: snapshot each var's iteration-entry value (a register load —
-    -- no allocation), then evaluate the (scalar) condition.  A cond-operand
-    -- overflow flushes THESE snapshots and re-runs boxed.
-    startBlock contL
-    hdrSnaps <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
-      v <- freshReg
-      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
-      pure (j, v)
-    let snapAt m j = m Map.! j
-    condBit <- scalarCondLL k dbSlot (flushSnapTo (snapAt hdrSnaps) boxedL) (sllCond plan)
-    emit ("br i1 " <> condBit <> ", label %" <> bodyL <> ", label %" <> flushL)
-    -- body: snapshot the iteration-entry values again (the body is a distinct
-    -- block, so re-load — same SSA-friendly register snapshot), then each
-    -- assignment computes a native i64 (overflow → flush THESE snapshots + goto
-    -- boxed) and stores it into the var's slot so a later read in the SAME
-    -- iteration sees it (sequential in-place commit, matching C).
-    startBlock bodyL
-    bodySnaps <- fmap Map.fromList $ forM [0 .. k - 1] $ \j -> do
-      v <- freshReg
-      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
-      pure (j, v)
-    scalarBodyLL k dbSlot (flushSnapTo (snapAt bodySnaps) boxedL) (sllBody plan)
-    -- §32.2.6 back-edge safe point: decrement the counter; only when it reaches 0
-    -- reload the quantum and call krt2_safepoint().  On a deliverable interrupt
-    -- (non-zero return) branch to flushL — which commits the FINAL slot values to
-    -- the ref cells and exits — so the CK-machine delivers; otherwise loop.
-    --
-    -- FINDING B (the scalar-loop continuation must not run before delivery): unlike
-    -- the C backend — where the scalar loop AND its continuation (`slRest`) are
-    -- emitted INLINE in the SAME krun_io-driven function, so a fall-through past the
-    -- loop would run the continuation before the post-bridge gate fires, requiring a
-    -- dedicated skip-continuation abort exit (C's `ksabort_`) — the LLVM scalar loop
-    -- is its OWN `knative_sat` (K_NATIVE) leaf, and the continuation is sequenced as
-    -- a SEPARATE CK bind (`seqActionThen` → krt2_bind, see emitScalarLoopFn's
-    -- caller).  When this K_NATIVE returns with safepoint_hit set, the post-K_NATIVE
-    -- delivery gate (rt.c ~1794) fires BEFORE the bind's continuation closure runs,
-    -- so the continuation NEVER observes a side effect before delivery.  Both the
-    -- abort exit and normal completion may therefore share flushL → doneL → ret here
-    -- WITHOUT a separate skip-continuation path: the CK bind boundary already gives
-    -- LLVM the ordering the C backend has to engineer explicitly.
-    spCur <- freshReg
-    emit (spCur <> " = load i64, ptr " <> spSlot <> ", align 8")
-    spDec <- freshReg
-    emit (spDec <> " = sub i64 " <> spCur <> ", 1")
-    emit ("store i64 " <> spDec <> ", ptr " <> spSlot <> ", align 8")
-    spGate <- freshReg
-    emit (spGate <> " = icmp sle i64 " <> spDec <> ", 0")
-    emit ("br i1 " <> spGate <> ", label %" <> spchkL <> ", label %" <> contL)
-    -- the (amortized) real check: reload the quantum, call the safepoint, abort to
-    -- flushL on a deliverable interrupt.
-    startBlock spchkL
-    emit ("store i64 " <> T.pack (show kSpQuantum) <> ", ptr " <> spSlot <> ", align 8")
-    spRc <- freshReg
-    emit (spRc <> " = call i32 @krt2_safepoint()")
-    spAbort <- freshReg
-    emit (spAbort <> " = icmp ne i32 " <> spRc <> ", 0")
-    emit ("br i1 " <> spAbort <> ", label %" <> flushL <> ", label %" <> contL)
-    -- normal completion: commit each var's FINAL slot value to its ref cell.
-    startBlock flushL
-    forM_ [0 .. k - 1] $ \j -> do
-      v <- freshReg
-      emit (v <> " = load i64, ptr " <> (slotOf Map.! j) <> ", align 8")
-      bx <- freshReg
-      emit (bx <> " = call ptr @kint(i64 " <> v <> ")")
-      dump <- freshReg
-      emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! j) <> ", ptr " <> bx <> ")")
-    emit ("br label %" <> doneL)
-    -- §6 overflow continuation: the boxed loop over the just-flushed cells.
-    startBlock boxedL
-    scalarBoxedLoopLL k dbCell (sllCond plan) (sllBody plan) doneL
-    -- done: return Unit.
-    startBlock doneL
-    u <- freshReg
-    emit (u <> " = call ptr @kunit()")
-    emit ("ret ptr " <> u)
-  let def =
-        T.unlines $
-          ["define internal ptr @" <> fnIdent <> "(ptr %args) {", "build:"]
-            ++ map ("  " <>) bodyInsns
-            ++ ["}"]
-  modify' $ \st -> st {gsTop = def : gsTop st}
-  pure fnIdent
-
--- | Lower a scalar (i64) loop expression to its native operand, escaping to the
--- boxed continuation @boxedL@ on any overflow.  @dbSlot i@ is the @i64*@ stack
--- slot of the scalar var at de-Bruijn index i; @flushAndGoto@ commits the
--- pre-op snapshot (the current slot values) to the cells and branches to
--- @boxedL@ when an op overflows.  Mirrors C's 'scalarExpr' for the Int subset.
-scalarI64ExprLL :: Int -> (Int -> Text) -> Gen () -> Term -> Gen Text
-scalarI64ExprLL k dbSlot flushAndGoto = goE
-  where
-    goE term = case scalarVarReadIdxLL k term of
-      Just i -> do
-        r <- freshReg
-        emit (r <> " = load i64, ptr " <> dbSlot i <> ", align 8")
-        pure r
-      Nothing -> case term of
-        CLit (LitInt m) -> pure (T.pack (show m))
-        _ -> case spineOf term of
-          (CGlob (GName _ nm), sargs) ->
-            let expl = [a | (Expl, a) <- sargs]
-             in case (intArithPrimLL nm, expl) of
-                  (Just 2, [a, b]) -> binOp nm a b
-                  (Just 1, [a]) -> negOp a
-                  _ -> escalateScalarLL
-          _ -> escalateScalarLL
-    -- a 2-arg op: add/sub/mul use the overflow intrinsic; div/mod escape on the
-    -- INT64_MIN/-1 and div-by-zero edges (matching the C backend exactly).
-    binOp nm a b = do
-      ae <- goE a
-      be <- goE b
-      case nm of
-        "addInt" -> ovfOp "sadd" ae be
-        "subInt" -> ovfOp "ssub" ae be
-        "mulInt" -> ovfOp "smul" ae be
-        "divInt" -> divModOp True ae be
-        "modInt" -> divModOp False ae be
-        _ -> escalateScalarLL
-    negOp a = do
-      ae <- goE a
-      -- negate via 0 - a so INT64_MIN escapes through the ssub overflow check.
-      ovfOp "ssub" "0" ae
-    -- an overflow-checked op: call @llvm.s{add,sub,mul}.with.overflow.i64@,
-    -- extract the {value, ovf-bit}; on the ovf bit, flush + goto boxed.
-    ovfOp pfx ae be = do
-      declRuntime ("declare {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64, i64)")
-      pair <- freshReg
-      emit (pair <> " = call {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64 " <> ae <> ", i64 " <> be <> ")")
-      val <- freshReg
-      emit (val <> " = extractvalue {i64, i1} " <> pair <> ", 0")
-      ovf <- freshReg
-      emit (ovf <> " = extractvalue {i64, i1} " <> pair <> ", 1")
-      okL <- freshLabel "sok_"
-      escL <- freshLabel "sesc_"
-      emit ("br i1 " <> ovf <> ", label %" <> escL <> ", label %" <> okL)
-      startBlock escL
-      flushAndGoto
-      startBlock okL
-      pure val
-    -- div/mod: zero divisor traps (krt_fail), INT64_MIN/-1 escapes; otherwise a
-    -- native sdiv/srem.  Mirrors C's scalarArith div/mod edges.
-    divModOp isDiv ae be = do
-      declRuntime "declare void @krt_fail(ptr)"
-      -- divisor == 0 → trap.
-      zchk <- freshReg
-      emit (zchk <> " = icmp eq i64 " <> be <> ", 0")
-      trapL <- freshLabel "sdz_"
-      contL <- freshLabel "sdc_"
-      emit ("br i1 " <> zchk <> ", label %" <> trapL <> ", label %" <> contL)
-      startBlock trapL
-      msgG <- internCStr (if isDiv then "divInt: division by zero" else "modInt: division by zero")
-      emit ("call void @krt_fail(ptr " <> msgG <> ")")
-      emit "unreachable"
-      startBlock contL
-      -- INT64_MIN / -1 overflow edge: for div it escapes; for mod the result is 0.
-      minChk <- freshReg
-      emit (minChk <> " = icmp eq i64 " <> ae <> ", -9223372036854775808")
-      negOneChk <- freshReg
-      emit (negOneChk <> " = icmp eq i64 " <> be <> ", -1")
-      edge <- freshReg
-      emit (edge <> " = and i1 " <> minChk <> ", " <> negOneChk)
-      if isDiv
-        then do
-          escL <- freshLabel "sde_"
-          okL <- freshLabel "sdo_"
-          emit ("br i1 " <> edge <> ", label %" <> escL <> ", label %" <> okL)
-          startBlock escL
-          flushAndGoto
-          startBlock okL
-          r <- freshReg
-          emit (r <> " = sdiv i64 " <> ae <> ", " <> be <> "")
-          pure r
-        else do
-          -- modInt INT64_MIN%-1 == 0 (no escape; matches C's `t = 0`).
-          remL <- freshLabel "smr_"
-          joinL <- freshLabel "smj_"
-          curBlk <- gets gsBlock
-          emit ("br i1 " <> edge <> ", label %" <> joinL <> ", label %" <> remL)
-          startBlock remL
-          rr <- freshReg
-          emit (rr <> " = srem i64 " <> ae <> ", " <> be <> "")
-          emit ("br label %" <> joinL)
-          startBlock joinL
-          r <- freshReg
-          emit (r <> " = phi i64 [ 0, %" <> curBlk <> " ], [ " <> rr <> ", %" <> remL <> " ]")
-          pure r
-
--- | Lower a scalar loop CONDITION to an @i1@ over native i64 operands (an
--- @icmp@).  The cond operands are loop-exprs lowered through 'scalarI64ExprLL';
--- an operand arith overflow escapes to the boxed loop via @flushAndGoto@ (the
--- header's snapshot flush).  Mirror of C's 'scalarCond' for the Int subset.
-scalarCondLL :: Int -> (Int -> Text) -> Gen () -> Term -> Gen Text
-scalarCondLL k dbSlot flushAndGoto term = case spineOf term of
-  (CGlob (GName _ nm), sargs) ->
-    case (intCmpPrimLL nm, [a | (Expl, a) <- sargs]) of
-      (Just pred_, [a, b]) -> do
-        ae <- scalarI64ExprLL k dbSlot flushAndGoto a
-        be <- scalarI64ExprLL k dbSlot flushAndGoto b
-        r <- freshReg
-        emit (r <> " = icmp " <> pred_ <> " i64 " <> ae <> ", " <> be)
-        pure r
-      _ -> escalateScalarLL
-  _ -> escalateScalarLL
-
--- | A defensive backend error for a term the eligibility analysis should have
--- excluded (mirror of C's 'lr1Unreachable' — never a silent miscompile).
-escalateScalarLL :: Gen Text
-escalateScalarLL =
-  unsupported
-    "scalar-loop"
-    "an int64-ineligible term reached the LLVM unboxed scalar loop (eligibility invariant violated)"
-
--- | Lower the loop BODY in the scalar (i64) world: each `KAssign (CVar idx)
--- False rhs` computes a native i64 (overflow → @flushAndGoto@: flush the
--- iteration-entry snapshot to the cells and jump to the boxed continuation) and
--- stores it into the var's i64 slot, so a later read in the SAME iteration sees
--- the freshly-assigned value (sequential in-place commit, matching C).
-scalarBodyLL :: Int -> (Int -> Text) -> Gen () -> [(Int, Term)] -> Gen ()
-scalarBodyLL k dbSlot flushAndGoto body = forM_ body $ \(idx, rhs) -> do
-  v <- scalarI64ExprLL k dbSlot flushAndGoto rhs
-  emit ("store i64 " <> v <> ", ptr " <> dbSlot idx <> ", align 8")
-
--- | The §6 BOXED overflow continuation: the same loop, but every value is a
--- boxed @KValue*@ — the condition via @kp_*@ + @kas_bool@, each assignment via
--- @kp_*@, each var read/write via @kref_get@/@kref_set@.  These promote to GMP
--- exactly like the C backend's boxed loop (the result is bit-identical to
--- interp == C even past int64).  Reads/writes go straight to the ref cells.
-scalarBoxedLoopLL :: Int -> (Int -> Text) -> Term -> [(Int, Term)] -> Text -> Gen ()
-scalarBoxedLoopLL k dbCell cond body doneL = do
-  declRuntime "declare i32 @kas_bool(ptr)"
-  declRuntime "declare ptr @kref_get(ptr)"
-  declRuntime "declare ptr @kref_set(ptr, ptr)"
-  contL <- freshLabel "bxcont_"
-  bodyL <- freshLabel "bxbody_"
-  emit ("br label %" <> contL)
-  startBlock contL
-  cv <- boxedExprLL k dbCell cond
-  bb <- freshReg
-  emit (bb <> " = call i32 @kas_bool(ptr " <> cv <> ")")
-  bit <- freshReg
-  emit (bit <> " = icmp ne i32 " <> bb <> ", 0")
-  emit ("br i1 " <> bit <> ", label %" <> bodyL <> ", label %" <> doneL)
-  startBlock bodyL
-  forM_ body $ \(idx, rhs) -> do
-    rv <- boxedExprLL k dbCell rhs
-    dump <- freshReg
-    emit (dump <> " = call ptr @kref_set(ptr " <> dbCell idx <> ", ptr " <> rv <> ")")
-  emit ("br label %" <> contL)
-
--- | Lower a loop expression/condition in the BOXED world: a var read is
--- @kref_get(cell)@, a literal is @kint@, an arith/compare prim is the boxed
--- @kp_*@ runtime call (so it promotes to GMP and traps/edges exactly like the
--- prim does in interp == C).
-boxedExprLL :: Int -> (Int -> Text) -> Term -> Gen Text
-boxedExprLL k dbCell = goE
-  where
-    goE term = case scalarVarReadIdxLL k term of
-      Just i -> do
-        declRuntime "declare ptr @kref_get(ptr)"
-        r <- freshReg
-        emit (r <> " = call ptr @kref_get(ptr " <> dbCell i <> ")")
-        pure r
-      Nothing -> case term of
-        CLit (LitInt m)
-          | i64InRangeLL m -> do
-              declRuntime "declare ptr @kint(i64)"
-              r <- freshReg
-              emit (r <> " = call ptr @kint(i64 " <> T.pack (show m) <> ")")
-              pure r
-        _ -> case spineOf term of
-          (CGlob (GName _ nm), sargs)
-            | Just sym <- boxedPrimSymLL nm -> do
-                let expl = [a | (Expl, a) <- sargs]
-                aes <- mapM goE expl
-                declRuntime ("declare ptr @" <> sym <> "(" <> T.intercalate ", " (replicate (length aes) "ptr") <> ")")
-                r <- freshReg
-                emit (r <> " = call ptr @" <> sym <> "(" <> T.intercalate ", " [("ptr " <> a) | a <- aes] <> ")")
-                pure r
-          _ -> escalateScalarLL
-
--- | The boxed runtime symbol for an admitted Int arith/compare prim (the same
--- @kp_*@ helpers the generic boxed path uses).  Only the prims the eligibility
--- admits appear here.
-boxedPrimSymLL :: Text -> Maybe Text
-boxedPrimSymLL = \case
-  "addInt" -> Just "kp_addInt"
-  "subInt" -> Just "kp_subInt"
-  "mulInt" -> Just "kp_mulInt"
-  "divInt" -> Just "kp_divInt"
-  "modInt" -> Just "kp_modInt"
-  "negInt" -> Just "kp_negInt"
-  "eqInt" -> Just "kp_eqInt"
-  "ltInt" -> Just "kp_ltInt"
-  "leInt" -> Just "kp_leInt"
-  _ -> Nothing
+compileLoopBody body =
+  deferActionTreeLL "kwhile_body_" (cpsItemsLL body)
 
 -- ── Function scalar worker (the LLVM @kwi_@/@kwd_@ analog) ────────────
 --
@@ -3533,16 +2551,31 @@ boxedPrimSymLL = \case
 -- is always the reference (the unbox tag-check is the soundness net: even a
 -- mis-derived kind escapes to boxed, never miscompiles).
 --
--- This is the LLVM analogue of the C function worker (the while-loop scalarizer
--- '@kscalarloop_' already mirrors C's @var/while@ loop; THIS mirrors C's typed
--- function worker).  The body grammar is the SAME conservative allowlist as C's
--- 'scalarEligTail'/'scalarKindOf' (scalar literal, scalar param/let var, the
--- int+double arith prims, @intToDouble@, the safe compares as an @if@ condition,
--- @if@/@let@ in tail or value position, and saturated self-calls) — which admits
+-- This is the LLVM analogue of the C function worker. The body grammar is the
+-- SAME conservative allowlist as C's 'scalarEligTail'/'scalarKindOf' (scalar
+-- literal, scalar param/let var, the int+double arith prims, @intToDouble@, the
+-- safe compares as an @if@ condition, @if@/@let@ in tail or value position, and
+-- saturated self-calls) — which admits
 -- NO suspending or IO form, so a worker body is suspension-free BY CONSTRUCTION
 -- (the §7 Stage 1.5 witness the C backend spells out is implied here by the
 -- narrow grammar — there is no admitted leaf at which a fiber could park, so no
 -- raw-scalar SSA value is ever live across a suspension point).
+
+kCondTermLL :: KCond -> Term
+kCondTermLL = \case
+  KCondPure t -> t
+  KCondAction t -> t
+
+i64InRangeLL :: Integer -> Bool
+i64InRangeLL m = m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int)
+
+-- | A defensive backend error for a term the scalar-worker eligibility analysis
+-- should have excluded.
+escalateScalarLL :: Gen Text
+escalateScalarLL =
+  unsupported
+    "scalar-worker"
+    "an ineligible term reached the LLVM scalar worker (eligibility invariant violated)"
 
 -- | The scalar kind of a worker param/result: an unboxed @i64@ or @double@.
 data ScalarKindLL = KInt64L | KDoubleL deriving (Eq)
@@ -3557,6 +2590,15 @@ data ParamKindLL = PScalarLL !ScalarKindLL | PBoxedLL deriving (Eq)
 llScalarTy :: ScalarKindLL -> Text
 llScalarTy KInt64L = "i64"
 llScalarTy KDoubleL = "double"
+
+scalarOverflowLL :: Text
+scalarOverflowLL = "1"
+
+scalarAbortLL :: Text
+scalarAbortLL = "2"
+
+scalarSpQuantumLL :: Text
+scalarSpQuantumLL = "65536"
 
 -- | The LLVM type text for a parameter slot (an all-scalar worker never has a
 -- boxed slot; default to @i64@ defensively).
@@ -3791,14 +2833,28 @@ compileScalarFnWorkerLL g pks ret inner = do
       emit (sl <> " = alloca " <> pkTyLL k <> ", align 8")
       emit ("store " <> pkTyLL k <> " %p" <> T.pack (show i) <> ", ptr " <> sl <> ", align 8")
       pure sl
+    -- Each scalar 'let' binder also needs a slot because later CVar reads use
+    -- the same de-Bruijn slot machinery as parameters. Reserve those slots in
+    -- the worker entry block. Emitting the alloca at the syntactic let site
+    -- places it inside the self-tail loop and grows the C stack every iteration.
+    -- Current scalar kinds are Int64 and Double, both 8 bytes, so an i64 scratch
+    -- alloca is a correctly-sized untyped slot under LLVM opaque pointers.
+    letSlots <- replicateM (scalarLetSlotCountLL inner) $ do
+      sl <- freshReg
+      emit (sl <> " = alloca i64, align 8")
+      pure sl
+    modify' $ \st -> st {gsScalarLetSlots = letSlots}
     -- de-Bruijn slot/kind context: index 0 = innermost = LAST param (so @reverse@
     -- both the slot list and the kind list), parallel to C's @env = reverse ps@.
     let dslots = reverse slots
         dks = reverse pks
     loopL <- freshLabel "kwloop_"
+    spc <- freshReg
+    emit (spc <> " = alloca i64, align 8")
+    emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spc <> ", align 8")
     emit ("br label %" <> loopL)
     startBlock loopL
-    scalarFnTailLL g pks ret loopL dslots dks ret inner
+    scalarFnTailLL g pks ret loopL spc dslots dks ret inner
   let def =
         T.unlines $
           ["define internal " <> retTy <> " @" <> worker <> "(" <> paramDecl <> ") {", "build:"]
@@ -3812,28 +2868,84 @@ scalarZeroLL :: ScalarKindLL -> Text
 scalarZeroLL KInt64L = "0"
 scalarZeroLL KDoubleL = "0.0"
 
+scalarLetSlotCountLL :: Term -> Int
+scalarLetSlotCountLL = go
+  where
+    go = \case
+      CVar {} -> 0
+      CGlob {} -> 0
+      CLam _ _ _ b -> go b
+      CPi _ _ _ _ ty b -> go ty + go b
+      CApp _ a b -> go a + go b
+      CSort {} -> 0
+      CLit {} -> 0
+      CCtor _ _ args -> sum (map go args)
+      CMatch s _ alts -> go s + sum [maybe 0 go (caGuard a) + go (caBody a) | a <- alts]
+      CRecordT fs -> sum (map (go . snd) fs)
+      CRecordV fs -> sum (map (go . snd) fs)
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CVariantT ts -> sum (map go ts)
+      CInject _ e -> go e
+      CLet _ _ ty rhs body -> 1 + go ty + go rhs + go body
+      CLetRec _ _ ty rhs body -> go ty + go rhs + go body
+      CMeta {} -> 0
+      CDo _ items -> sum (map goItem items)
+      CSealE _ e -> go e
+      CSigT _ e -> go e
+      CThunkE e -> go e
+      CLazyE e -> go e
+      CForceE e -> go e
+      CIf c t e -> go c + go t + go e
+      CQuote _ ts -> sum (map go ts)
+    goCond = \case
+      KCondPure t -> go t
+      KCondAction t -> go t
+    goItem = \case
+      KBind _ _ t -> go t
+      KLet _ _ t -> go t
+      KLetQ _ t me -> go t + maybe 0 (go . snd) me
+      KExpr t -> go t
+      KVarItem _ _ t -> go t
+      KAssign _ _ _ t -> go t
+      KReturn t -> go t
+      KBreak _ -> 0
+      KContinue _ -> 0
+      KWhile _ c body me -> goCond c + sum (map goItem body) + maybe 0 (sum . map goItem) me
+      KFor _ _ src body me -> go src + sum (map goItem body) + maybe 0 (sum . map goItem) me
+      KIf alts me -> sum [go c + sum (map goItem body) | (c, body) <- alts] + maybe 0 (sum . map goItem) me
+      KDefer _ t -> go t
+      KUsing _ a r -> go a + go r
+      KSubDo _ items -> sum (map goItem items)
+
+nextScalarLetSlotLL :: Gen Text
+nextScalarLetSlotLL = do
+  slots <- gets gsScalarLetSlots
+  case slots of
+    sl : rest -> modify' (\st -> st {gsScalarLetSlots = rest}) >> pure sl
+    [] -> error "LLVM scalar worker let-slot preallocation undercount"
+
 -- | Compile the worker body in TAIL position over the de-Bruijn slot/kind
 -- context (@dslots@ : @ptr@ stack slots, @dks@ : their kinds — kept in
 -- lock-step; a 'CLet' prepends to both).  Mirror of C's 'scalarTail' + its §let
 -- case, lowered to LLVM blocks.
-scalarFnTailLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Text -> [Text] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen ()
-scalarFnTailLL g pks ret loopHdr dslots dks loopRet term = case term of
+scalarFnTailLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Text -> Text -> [Text] -> [ParamKindLL] -> ScalarKindLL -> Term -> Gen ()
+scalarFnTailLL g pks ret loopHdr spc dslots dks loopRet term = case term of
   CIf c t e -> do
     cond <- scalarFnCondLL g pks ret dslots dks c
     thenL <- freshLabel "kwthen_"
     elseL <- freshLabel "kwelse_"
     emit ("br i1 " <> cond <> ", label %" <> thenL <> ", label %" <> elseL)
     startBlock thenL
-    scalarFnTailLL g pks ret loopHdr dslots dks loopRet t
+    scalarFnTailLL g pks ret loopHdr spc dslots dks loopRet t
     startBlock elseL
-    scalarFnTailLL g pks ret loopHdr dslots dks loopRet e
+    scalarFnTailLL g pks ret loopHdr spc dslots dks loopRet e
   CLet _ _ _ rhs body -> do
     k <- letScalarKindLL g pks dks ret rhs
     e <- scalarFnExprLL g pks ret dslots dks k rhs
-    sl <- freshReg
-    emit (sl <> " = alloca " <> llScalarTy k <> ", align 8")
+    sl <- nextScalarLetSlotLL
     emit ("store " <> llScalarTy k <> " " <> e <> ", ptr " <> sl <> ", align 8")
-    scalarFnTailLL g pks ret loopHdr (sl : dslots) (PScalarLL k : dks) loopRet body
+    scalarFnTailLL g pks ret loopHdr spc (sl : dslots) (PScalarLL k : dks) loopRet body
   _
     | Just args <- lr1SelfArgsLL g (length pks) term -> do
         -- tail self-call: evaluate the new args into registers FIRST (they may
@@ -3849,10 +2961,34 @@ scalarFnTailLL g pks ret loopHdr dslots dks loopRet term = case term of
           PBoxedLL -> escalateScalarLL
         forM_ (zip3 paramSlots pks newVals) $ \(sl, pk, v) ->
           emit ("store " <> maybe "i64" llScalarTy (paramSKLL pk) <> " " <> v <> ", ptr " <> sl <> ", align 8")
-        emit ("br label %" <> loopHdr)
+        emitScalarSafepointLL spc loopHdr loopRet
     | otherwise -> do
         e <- scalarFnExprLL g pks ret dslots dks loopRet term
         emit ("ret " <> llScalarTy loopRet <> " " <> e)
+
+emitScalarSafepointLL :: Text -> Text -> ScalarKindLL -> Gen ()
+emitScalarSafepointLL spc loopHdr ret = do
+  declRuntime "declare i32 @krt2_safepoint()"
+  old <- freshReg
+  emit (old <> " = load i64, ptr " <> spc <> ", align 8")
+  dec <- freshReg
+  emit (dec <> " = sub i64 " <> old <> ", 1")
+  emit ("store i64 " <> dec <> ", ptr " <> spc <> ", align 8")
+  due <- freshReg
+  emit (due <> " = icmp sle i64 " <> dec <> ", 0")
+  checkL <- freshLabel "kwspcheck_"
+  abortL <- freshLabel "kwspabort_"
+  emit ("br i1 " <> due <> ", label %" <> checkL <> ", label %" <> loopHdr)
+  startBlock checkL
+  emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spc <> ", align 8")
+  hit <- freshReg
+  emit (hit <> " = call i32 @krt2_safepoint()")
+  hitp <- freshReg
+  emit (hitp <> " = icmp ne i32 " <> hit <> ", 0")
+  emit ("br i1 " <> hitp <> ", label %" <> abortL <> ", label %" <> loopHdr)
+  startBlock abortL
+  emit ("store i32 " <> scalarAbortLL <> ", ptr %kovf, align 4")
+  emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
 
 -- | The scalar kind a let-RHS evaluates to (for the slot type), re-derived at
 -- codegen.  Eligibility proved it 'Just'; default to @ret@ on the impossible
@@ -3882,8 +3018,7 @@ scalarFnExprLL g pks ret dslots dks dk term = case term of
   CLet _ _ _ rhs body -> do
     k <- letScalarKindLL g pks dks ret rhs
     e <- scalarFnExprLL g pks ret dslots dks k rhs
-    sl <- freshReg
-    emit (sl <> " = alloca " <> llScalarTy k <> ", align 8")
+    sl <- nextScalarLetSlotLL
     emit ("store " <> llScalarTy k <> " " <> e <> ", ptr " <> sl <> ", align 8")
     scalarFnExprLL g pks ret (sl : dslots) (PScalarLL k : dks) dk body
   _ -> case spineOf term of
@@ -3967,7 +3102,7 @@ scalarFnArithLL g pks ret dslots dks p argspec = do
       okL <- freshLabel "kwook_"
       emit ("br i1 " <> ovf <> ", label %" <> escL <> ", label %" <> okL)
       startBlock escL
-      emit "store i32 1, ptr %kovf, align 4"
+      emit ("store i32 " <> scalarOverflowLL <> ", ptr %kovf, align 4")
       emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
       startBlock okL
       pure val
@@ -3995,7 +3130,7 @@ scalarFnArithLL g pks ret dslots dks p argspec = do
           okL <- freshLabel "kwdo_"
           emit ("br i1 " <> edge <> ", label %" <> escL <> ", label %" <> okL)
           startBlock escL
-          emit "store i32 1, ptr %kovf, align 4"
+          emit ("store i32 " <> scalarOverflowLL <> ", ptr %kovf, align 4")
           emit ("ret " <> llScalarTy ret <> " " <> scalarZeroLL ret)
           startBlock okL
           r <- freshReg
@@ -4077,7 +3212,7 @@ emitScalarUnboxHelpersLL = do
             , "ok:"
             , "  ret i64 %u"
             , "esc:"
-            , "  store i32 1, ptr %ovf, align 4"
+            , "  store i32 " <> scalarOverflowLL <> ", ptr %ovf, align 4"
             , "  ret i64 0"
             , "}"
             ]
@@ -4138,6 +3273,16 @@ compileScalarFnCallLL g pks ret sargs = do
   emit (wres <> " = call " <> llScalarTy ret <> " @" <> worker <> "(" <> callArgs <> ")")
   postOvf <- freshReg
   emit (postOvf <> " = load i32, ptr " <> ovfSlot <> ", align 4")
+  postAbort <- freshReg
+  emit (postAbort <> " = icmp eq i32 " <> postOvf <> ", " <> scalarAbortLL)
+  abortL <- freshLabel "kwabort_"
+  postCheckL <- freshLabel "kwpost_"
+  emit ("br i1 " <> postAbort <> ", label %" <> abortL <> ", label %" <> postCheckL)
+  startBlock abortL
+  declRuntime "declare void @krt2_scalar_abort()"
+  emit "call void @krt2_scalar_abort()"
+  emit "unreachable"
+  startBlock postCheckL
   postBad <- freshReg
   emit (postBad <> " = icmp ne i32 " <> postOvf <> ", 0")
   reboxL <- freshLabel "kwrebox_"
@@ -4418,13 +3563,41 @@ compileHostValue :: ResolvedNativeSymbol -> Gen Text
 compileHostValue rns = do
   let cfn = wrapperCName rns
       ar = length (rns.params)
-  declRuntime "declare ptr @knative(ptr, i32, ptr, i32)"
+  ctor <- hostNativeCtor rns
+  declRuntime ("declare ptr @" <> ctor <> "(ptr, i32, ptr, i32)")
   declRuntime ("declare ptr @" <> cfn <> "(ptr)")
   nameG <- internCStr (rns.cSymbol)
   r <- freshReg
-  emit (r <> " = call ptr @knative(ptr @" <> cfn <> ", i32 " <> T.pack (show ar)
+  emit (r <> " = call ptr @" <> ctor <> "(ptr @" <> cfn <> ", i32 " <> T.pack (show ar)
           <> ", ptr " <> nameG <> ", i32 1)")
   pure r
+
+hostNativeCtor :: ResolvedNativeSymbol -> Gen Text
+hostNativeCtor rns = case rns.ffiClass of
+  FfiNonblocking -> pure "knative"
+  FfiBlocking -> pure "knative_blocking"
+  FfiBlockingCancellable ->
+    unsupported "native binding"
+      ("the LLVM backend does not implement cancellable blocking calls for '"
+        <> rns.cSymbol <> "'")
+
+hostNativeSatCtor :: ResolvedNativeSymbol -> Gen Text
+hostNativeSatCtor rns = case rns.ffiClass of
+  FfiNonblocking -> pure "knative_sat"
+  FfiBlocking -> pure "knative_sat_blocking"
+  FfiBlockingCancellable ->
+    unsupported "native binding"
+      ("the LLVM backend does not implement cancellable blocking calls for '"
+        <> rns.cSymbol <> "'")
+
+blockingHostGlobals :: Map GName ResolvedNativeSymbol -> Set GName
+blockingHostGlobals =
+  Map.keysSet . Map.filter (isBlockingClass . (.ffiClass))
+  where
+    isBlockingClass = \case
+      FfiNonblocking -> False
+      FfiBlocking -> True
+      FfiBlockingCancellable -> True
 
 -- | An application spine: head term plus its arguments with icities
 -- (mirrors C's 'spineOf').
@@ -4542,10 +3715,11 @@ compileHostSat rns explArgs = do
     emit (slot <> " = getelementptr inbounds [" <> T.pack (show ar)
             <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show i) <> "")
     emit ("store ptr " <> ae <> ", ptr " <> slot <> ", align 8")
-  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  ctor <- hostNativeSatCtor rns
+  declRuntime ("declare ptr @" <> ctor <> "(ptr, i32, ptr, i32)")
   declRuntime ("declare ptr @" <> cfn <> "(ptr)")
   r <- freshReg
-  emit (r <> " = call ptr @knative_sat(ptr @" <> cfn <> ", i32 "
+  emit (r <> " = call ptr @" <> ctor <> "(ptr @" <> cfn <> ", i32 "
           <> T.pack (show ar) <> ", ptr " <> argv <> ", i32 1)")
   pure r
 
@@ -4800,6 +3974,9 @@ ioNodeBuilder = \case
   "onExit" -> Just ("krt2_on_exit", 2)
   "onInterrupt" -> Just ("krt2_on_interrupt", 2)
   "locallyFiberRef" -> Just ("krt2_locally_fiber_ref", 3)
+  -- §18.1.11 source-level blocking bridge: the native profile advertises
+  -- rt-blocking, so saturated `blocking body` builds the OP_BLOCKING node.
+  "blocking" -> Just ("krt2_blocking", 1)
   -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders, the
   -- same lowering as the C backend (compileAppGlob).  `uninterruptible body` and
   -- `__mask f` are 1-arg; `poll` is 0-arg (handled below as a bare value too).

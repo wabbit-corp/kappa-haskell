@@ -1,0 +1,9 @@
+module main
+
+import lib.tokens.(type Token(..), type Box(..))
+
+bad : UIO Unit
+let bad = do
+    var box = Box.Full Token
+    let snapshot = box
+    pure ()

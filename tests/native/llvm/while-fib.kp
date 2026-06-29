@@ -1,7 +1,7 @@
 -- Milestone G fix: a `let` whose rhs reads TWO `var`s in one expression
--- (`let t = addInt a b`) — a KLet with multiple `__runIO (readRef)` splices.
--- The fix routes a splicey KLet rhs through compileMonadic (which hoists every
--- splice into a krt2_bind), not build-time `compile`.  Iterative fib(10) = 55.
+-- (`let t = addInt a b`). The checker lifts both current-value reads to
+-- preceding MonadRef.readRef binds, so LLVM receives a pure KLet and the loop
+-- re-reads each cell through the CK action tree. Iterative fib(10) = 55.
 module main
 
 main : UIO Unit

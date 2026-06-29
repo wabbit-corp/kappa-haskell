@@ -9,17 +9,13 @@ against observed CLI behavior of probe `.kp` programs, NOT against
 Status legend: IMPLEMENTED+TESTED | IMPLEMENTED-WEAK | MISSING |
 INTENTIONALLY-UNSUPPORTED(cite) | SPEC-CONFLICT | UNCLEAR.
 
-Key structural fact (drives many rows): the diagnostic record
-(`src/Kappa/Diagnostic.hs:48-59`) has only
-`{code, family, severity, stage, primary, message, notes, helps}`. There is **no**
-JSON renderer, no `--json`/`--format` flag (`app/Main.hs` only does prose
-`renderDiagnostic`), and no `related`, `payload`, `labels`, `fixes`,
-`schemaVersion`, `phase`, `explain`, or `suppressed` field. KCore `Term`
-(`src/Kappa/Core.hs:76-103`) carries no provenance/origin. The implementation's
-own harness (`src/Kappa/TestHarness.hs:168-185`) classifies
-`assertDiagnosticPayload/Label/Related/Fix*/Suppressed` as
-`structuredUnsupported`, and the in-tree corpus has **zero** such directives
-(`grep` over `tests/conformance` → 0 files), so "195/195" does not touch these MUSTs.
+Key structural fact (drives many rows): the diagnostic record now carries
+`{code, family, severity, stage, primary, message, notes, helps, related, payload,
+fixes, suppressed}`, the CLI has `--json`, and the harness checks structured
+diagnostic assertions against those fields. Remaining gaps in this lane are no
+longer "no structured record at all"; they are incomplete labels/provenance and
+family-specific payload coverage. KCore `Term` (`src/Kappa/Core.hs`) still carries
+no full provenance/origin frame.
 
 ## §3 Diagnostic contract
 
@@ -27,35 +23,35 @@ own harness (`src/Kappa/TestHarness.hs:168-185`) classifies
 |---|---|---|---|---|
 | 3.1 | error-tolerant frontend; recover and keep analyzing | IMPLEMENTED-WEAK | `/tmp/probe/multi.kp` (3 type errors) → 3 diagnostics; `/tmp/probe/recov.kp` (parse error then later decl) continues and reports the later type error | cross-declaration recovery works; intra-expression typed recovery nodes (§3.1.14A) unverified |
 | 3.1 | human-readable renderer | IMPLEMENTED+TESTED | every probe renders `path:line:col: sev[CODE] (family): msg` + note/help | `renderDiagnostic` |
-| 3.1 | **machine-readable JSON output** | **MISSING** | no `--json`; `grep aeson/toJSON/encode/object` in src → none; `kappa check --json` falls to usage | §3.1 line 493-496 MUST. Blocker. |
-| 3.1 | tools MUST NOT need to parse prose to recover code/severity/ranges/related/fixes/family | MISSING | only prose output exists; the only structured surface is the in-process harness reading the `Diagnostic` record (no related/payload/fix fields at all) | §3.1 line 500-502 |
-| 3.1.1 | JSON exposes fields ≡ {schemaVersion, code, family, severity, stage, phase, primary, message, labels, notes, helps, fixes, related, payload, explain, suppressed} | MISSING | record has 8 of these; no JSON at all; `schemaVersion/phase/labels/fixes/related/payload/explain/suppressed` have no representation (`Diagnostic.hs:48-59`) | §3.1.1 line 529-530 MUST |
+| 3.1 | **machine-readable JSON output** | IMPLEMENTED-WEAK | `kappa check --json`, `run --json`, and `verify-kbackendir --json` render structured diagnostics using the in-tree JSON encoder. | JSON exists; remaining weakness is coverage/completeness of some optional fields. |
+| 3.1 | tools MUST NOT need to parse prose to recover code/severity/ranges/related/fixes/family | IMPLEMENTED-WEAK | JSON exposes code, family, severity, primary range, related origins, fixes, payload, and suppressed diagnostics. | Some producers still omit family-specific related/payload/fix data. |
+| 3.1.1 | JSON exposes fields ≡ {schemaVersion, code, family, severity, stage, phase, primary, message, labels, notes, helps, fixes, related, payload, explain, suppressed} | IMPLEMENTED-WEAK | `diagnosticJson` emits those top-level fields plus `portableCode`; labels are currently derived from notes and `phase` is null. | Structured surface exists; semantic richness remains partial. |
 | 3.1.1 | error severity fails compilation | IMPLEMENTED+TESTED | every error probe → exit 1 (`hasErrors`) | |
-| 3.1.1A | diagnostic multi-span by default; `related` with stable roles | MISSING | no `related` field; no role enum in source | §3.1.1A line 535-590 |
-| 3.1.1A | type-mismatch MUST include actual-expr site + expected-type origin | MISSING | `/tmp/probe/tm.kp` → only prose notes `actual/expected`; no structured related origins | §3.1.1A line 597-599 MUST |
+| 3.1.1A | diagnostic multi-span by default; `related` with stable roles | IMPLEMENTED-WEAK | `Diagnostic` has `dRelated`, a `RelatedRole` enum, JSON rendering, and harness assertions. | Producer coverage remains partial outside the borrow/path and selected checker families. |
+| 3.1.1A | type-mismatch MUST include actual-expr site + expected-type origin | IMPLEMENTED-WEAK | Type mismatch carries structured expected/actual payload; related expected-origin coverage is still partial. | Payload side fixed; origin side still needs producer audit. |
 | 3.1.1A | ambiguous-name/implicit MUST include all candidate sites | MISSING | `implicits/local_candidates.kp:32` `E_IMPLICIT_AMBIGUOUS` says "two implicit candidates" in prose; the two binder sites (`left`,`right`) are not exposed as related origins | §3.1.1A line 596,600 MUST |
 | 3.1.1A | trait-coherence MUST include every surviving incoherent instance site | MISSING | `/tmp/probe/coh.kp` `E_INSTANCE_INCOHERENT` blames one line; other instance site not a related origin | §3.1.1A line 601 MUST |
 | 3.1.1A | borrow/path MUST include intro site + failing use/escape site | IMPLEMENTED+TESTED | every `E_QTT_BORROW_ESCAPE`/`_OVERLAP`/`_CONSUME`/`_PATH_CONSUMED` emit site uses `emitRel` carrying `borrow-start`/`consumed-here` + the failing use/escape origin (re-probed `/tmp/probes/overlap_probe.kp` → `borrow-start`+`consumed-here`; `consume_probe.kp` likewise); regression in `qtt/record-paths.kp`, `qtt/inout-overlap.kp`, `qtt/borrow-consume-related.kp`, `projections/selector-footprint.kp` | §3.1.1A line 602 MUST — satisfied |
-| 3.1.1A | machine renderer MUST preserve all related origins | MISSING | no machine renderer | §3.1.1A line 616 |
-| 3.1.1A | unavailable required related origin → payload records why | MISSING | no payload | §3.1.1A line 610-611 |
+| 3.1.1A | machine renderer MUST preserve all related origins | IMPLEMENTED+TESTED | `diagnosticJson` renders `related`, and `assertDiagnosticRelated` checks related roles. | |
+| 3.1.1A | unavailable required related origin → payload records why | IMPLEMENTED-WEAK | Payloads can record availability booleans/reasons; several implicit/borrow producers do so. | Not yet audited for every required family. |
 | 3.1.2 | stable symbolic codes; not all-digits; symbolic form | IMPLEMENTED+TESTED | all observed codes `E_*`/`W_*`/`I_*` symbolic | `Explain.hs` registry |
-| 3.1.2 | corresponding §3.2 family MUST be on the diagnostic | IMPLEMENTED-WEAK | families present in prose; e.g. `E_TYPE_EQUALITY_MISMATCH`→`kappa.type.mismatch`, `E_NUMERIC_LITERAL_DOMAIN_MISMATCH`→`kappa.type.literal-domain-mismatch`; impl-defined ones use reserved `kappa-hs.*` | family mapping correct; but only recoverable from prose (no JSON) — see 3.1.1 |
+| 3.1.2 | corresponding §3.2 family MUST be on the diagnostic | IMPLEMENTED-WEAK | families are stored on `Diagnostic` and emitted by JSON/prose; e.g. `E_TYPE_EQUALITY_MISMATCH`→`kappa.type.mismatch`, `E_NUMERIC_LITERAL_DOMAIN_MISMATCH`→`kappa.type.literal-domain-mismatch`; impl-defined ones use reserved `kappa-hs.*` | family mapping is structurally recoverable; remaining weakness is incomplete producer coverage for some newer codes |
 | 3.1.2A | machine-readable code registry, available without compiling invalid source | IMPLEMENTED+TESTED | `Explain.registry` is a static table; `kappa explain E_TYPE_MISMATCH` works with no source | registry is the entry list; portable aliases + Unicode codes registered |
 | 3.1.2A | `kappa explain <code>` rejects unknown codes deterministically | IMPLEMENTED+TESTED | `kappa explain E_NOPE` → stderr "unknown diagnostic code", exit 1 | `cmdExplain` |
 | 3.1.2A | registry entry shape (defaultSeverity, stability, payloadSchema, introducedIn, owner…) | IMPLEMENTED-WEAK | `ExplainEntry` carries only {code, family, explanation}; no stability/severity/version/owner/payloadSchema fields | §3.1.2A line 686-701; registry exists but is a thin subset of the conceptual entry |
 | 3.1.3 | stable Unicode diagnostic codes (E_UNICODE_*, W_UNICODE_*) registered | IMPLEMENTED-WEAK | all 14 codes in `Explain.registry`; emission verified for some (corpus `unicode/`), not all (e.g. INVALID_GRAPHEME/BYTE/UTF8 emission unverified here) | spellings fixed; emission partially exercised |
-| 3.1.4 | portable aliases recoverable without parsing prose | IMPLEMENTED-WEAK | `requiredAliasTable` maps rendered→portable; recoverable only via the in-process harness (`codeNames`), not via any machine output | §3.1.4 line 819-821; no JSON `code`/`portableCode` field |
-| 3.1.5 | origins carry source ranges | IMPLEMENTED-WEAK | `Span` has start+exclusive-end (`Source.hs:27-31`); renderer prints only `line:col` start; no JSON range | data present, not exposed structurally |
-| 3.1.5 | labels (sub-span labels) | MISSING | no `labels` field; harness lists `assertDiagnosticLabel` unsupported | §3.1.5 |
+| 3.1.4 | portable aliases recoverable without parsing prose | IMPLEMENTED-WEAK | `requiredAliasTable` maps rendered→portable; JSON emits `portableCode`; the in-process harness also recognizes aliases via `codeNames`. | Alias surface exists; registry metadata is still thin. |
+| 3.1.5 | origins carry source ranges | IMPLEMENTED-WEAK | `Span` has start+exclusive-end (`Source.hs:27-31`) and JSON emits the structured `primary` range; the human renderer prints only `line:col` start. | Machine range exists; human excerpts remain weak. |
+| 3.1.5 | labels (sub-span labels) | IMPLEMENTED-WEAK | JSON emits `labels` derived from notes, and `assertDiagnosticLabel` checks them. | Dedicated producer-side sub-span labels are still weak. |
 | 3.1.5A | **provenance frames** for generated syntax/obligations/implicit insertions/transports | MISSING | no `ProvenanceFrame`; KCore nodes carry no origin (`Core.hs`) | §3.1.5A line 1120,1163-1165 MUST |
 | 3.1.5A | every synthetic origin carries/refs a provenance frame; diagnostic exposes frame | MISSING | none represented | §3.1.5A line 1163,1167-1168 MUST |
-| 3.1.6 | fix-its (`DiagnosticFix`, `SourceEdit`, applicability) | MISSING | no `fixes` field; only `helps` prose; harness lists `assertDiagnosticFix*` unsupported | §3.1.6 line 1191-1271 |
-| 3.1.7 | local repair ranking (delimiter < rewrite < import < gate < unsafe) | MISSING | no fix-its to rank | §3.1.7 |
-| 3.1.8 | human renderer shows sev, code, message, primary range, labels(when avail), notes/help/fixes | IMPLEMENTED-WEAK | shows sev/code/family/point/message/notes/helps; no labeled excerpt, no fixes | §3.1.8 line 1331-1338; meets the unconditional bullets, missing the "when available" excerpt/fix |
-| 3.1.9 | **diagnostic payloads** (`kind`, family-required fields) | MISSING | no `payload` field; harness lists `assertDiagnosticPayload` unsupported | §3.1.9 line 1362-1405 MUST for §3.2 families |
-| 3.1.9 | `E_TYPE_MISMATCH` MUST expose expected/actual payload | MISSING | `/tmp/probe/tm.kp` mismatch carries types only in prose notes | §3.1.9 line 1498 MUST |
+| 3.1.6 | fix-its (`DiagnosticFix`, `SourceEdit`, applicability) | IMPLEMENTED-WEAK | `Diagnostic` has `dFixes`, JSON renders fixes, and the harness supports fix assertions. | Producer coverage is still thin; not every repairable family emits structured fixes. |
+| 3.1.7 | local repair ranking (delimiter < rewrite < import < gate < unsafe) | IMPLEMENTED-WEAK | Machine-applicable typo fixes exist and are ordered deterministically. | Full cross-family ranking policy is not complete. |
+| 3.1.8 | human renderer shows sev, code, message, primary range, labels(when avail), notes/help/fixes | IMPLEMENTED-WEAK | shows sev/code/family/point/message/notes/helps and renders related/fixes/suppressed when present. | Labeled source excerpts remain weak. |
+| 3.1.9 | **diagnostic payloads** (`kind`, family-required fields) | IMPLEMENTED-WEAK | `Diagnostic` has `dPayload`, JSON renders it, and `assertDiagnosticPayload` is supported; many diagnostics now attach payloads. Coverage is still incomplete for every §3.2 standardized family. | §3.1.9 line 1362-1405 MUST for §3.2 families |
+| 3.1.9 | `E_TYPE_MISMATCH` MUST expose expected/actual payload | IMPLEMENTED+TESTED | mismatch diagnostics attach `expected`, `actual`, and `mismatchKind`; `tests/conformance/diagnostics/type-mismatch-payload.kp` asserts them. | §3.1.9 line 1498 MUST |
 | 3.1.10 | obligation provenance / diagnostic selection determinism | UNCLEAR | selection appears deterministic across reruns of `multi.kp`; no obligation records exposed; cannot fully verify | §3.1.10 |
-| 3.1.11 | root-cause suppression into `suppressed` | MISSING | no `suppressed` field; cascade errors emitted independently | §3.1.11 line 1588-1594 (SHOULD for suppression, MUST for retaining summary) |
+| 3.1.11 | root-cause suppression into `suppressed` | IMPLEMENTED-WEAK | `Diagnostic` has `dSuppressed`, JSON renders suppressed diagnostics, and the harness can assert them. | Suppression producer coverage is still partial; many cascades remain independent diagnostics. |
 | 3.1.11 | primary span anchored to user-written decl, no drift | IMPLEMENTED+TESTED | probes anchor to the offending expression/decl span | |
 | 3.1.11 | internal-placeholder hygiene: no raw metavariable as the only explanation | SPEC-CONFLICT | `/tmp/probe/qid.kp`, `/tmp/probe/ctor.kp`, `/tmp/probe/esc2.kp` leak `?m1237`, `@-1.⟨wit0⟩` into the user-facing `actual:` note as the sole rendering of the type | §3.1.11 line 1607-1611 MUST; rendering bug |
 | 3.1.11 | function-valued application binder names; payload arg index/binder | MISSING | no payload; binder metadata not surfaced | §3.1.11 line 1632-1639 MUST (payload part) |
@@ -65,7 +61,7 @@ own harness (`src/Kappa/TestHarness.hs:168-185`) classifies
 | 3.1.14 | continue after recoverable failures | IMPLEMENTED-WEAK | cross-decl recovery works (`recov.kp`) | SHOULD |
 | 3.1.14 | recovery MUST NOT accept invalid program | IMPLEMENTED+TESTED | every invalid probe → exit 1 | |
 | 3.1.14A | recovery as typed frontend state with `RecoveryNode`s for the listed conditions | MISSING | no `RecoveryNode`/recovery-metadata type; parser recovers by skipping to next decl, not by inserting typed recovery nodes | §3.1.14A line 1789-1832 MUST; partially mitigated — invalid programs are still rejected, so the soundness clause holds |
-| 3.2.x | each standardized family's "Payload MUST include …" | MISSING | no payloads at all (see 3.1.9) | §3.2.1–§3.2.19 |
+| 3.2.x | each standardized family's "Payload MUST include …" | IMPLEMENTED-WEAK | payload infrastructure exists (`dPayload`, JSON, `assertDiagnosticPayload`), and type/mutable-variable families have committed payload fixtures. | Remaining gap is family-by-family producer completion, not absent payload machinery. |
 | 3.2 | family identifiers correct (`kappa.*` for standardized, reserved prefix otherwise) | IMPLEMENTED-WEAK | spot-checked: coherence/non-callable have no standardized §3.2 family → `kappa-hs.*` is permitted; standardized ones use `kappa.*` | only recoverable from prose |
 | 3.3 | path/dep/borrow diagnostics (codes/families) | IMPLEMENTED+TESTED (related) | `E_QTT_BORROW_ESCAPE`/`_OVERLAP`/`_CONSUME`/`_PATH_CONSUMED` emitted with `kappa.borrow.*`/`kappa.path.consumed`/`kappa.quantity.unsatisfied`; all now carry §3.1.1A related origins (`borrow-start`/`consumed-here`/`borrow-escape-site`/`used-after-consume`) | code+family correct; related origins present for every borrow/path family; family-specific payloads (§3.2.x) still prose-only |
 
@@ -190,11 +186,10 @@ In-scope (§3 core diagnostic contract; §10.4; §30.2.3 carrying), spec-grounde
 MUST/SHALL-level, each disproved by a probe. Profile-scoped items are excluded
 (listed separately below).
 
-### 1. No machine-readable JSON diagnostic output — §3.1.1 (line 493-496, 529-530) — BLOCKER
-- **Required**: "A conforming implementation MUST support both: (1) a human-readable diagnostic renderer; and (2) machine-readable diagnostic output in JSON." JSON MUST expose fields observationally equivalent to {schemaVersion, code, family, severity, stage, phase, primary, message, labels, notes, helps, fixes, related, payload, explain, suppressed}.
-- **Probe**: `kappa check --json /tmp/probe/tm.kp` → falls through to `usage:` (no flag). `grep -niE 'aeson|toJSON|encode|object \[|--json|--format' src app` → no JSON producer. The only output path is `renderDiagnostic` (prose).
-- **Observed vs required**: prose-only `path:line:col: error[CODE] (family): message` vs a JSON record with the 16 conceptual fields. Tools cannot recover code/severity/range/family/related/fixes without parsing prose (also violates §3.1 line 500-502).
-- **Fix locus**: `src/Kappa/Diagnostic.hs` (add JSON encoder over an enriched record using only boot packages — hand-rolled JSON), `app/Main.hs` (add `--json`/format selection to `cmdCheck`/`cmdRun`).
+### 1. Incomplete machine-readable diagnostic coverage — §3.1.1 / §3.1.9 — MAJOR
+- **Required**: JSON MUST expose fields observationally equivalent to {schemaVersion, code, family, severity, stage, phase, primary, message, labels, notes, helps, fixes, related, payload, explain, suppressed}; standardized families must populate their required payload/related fields.
+- **Observed**: `kappa check --json`, `run --json`, and `verify-kbackendir --json` exist; `Diagnostic` carries payload, related origins, fixes, and suppressed summaries, and the harness asserts them. Remaining gaps are incomplete producer coverage and weak provenance/label richness.
+- **Fix locus**: continue producer-by-producer completion in `src/Kappa/Check.hs`, `src/Kappa/Resolve.hs`, and `src/Kappa/Usage.hs`; keep `src/Kappa/Diagnostic.hs` as the structured transport.
 
 ### 2. Strict positivity not enforced — §10.4 (line 8685, 8690) — BLOCKER (soundness)
 - **Required**: "Implementations MUST reject non-strictly-positive `data` declarations." Spec lists `data Bad = MkBad (Bad -> Bad)` as a *rejected* example.
@@ -202,17 +197,16 @@ MUST/SHALL-level, each disproved by a probe. Profile-scoped items are excluded
 - **Observed vs required**: accepted silently vs MUST-reject with a well-formedness error. A negative datatype admits a fixed point and lets one construct non-terminating/`⊥` inhabitants, breaking logical soundness of the dependent type theory.
 - **Fix locus**: `src/Kappa/Check.hs` (data-declaration well-formedness, where constructor argument types are checked; add a positivity pass computing per-parameter positivity signatures per §10.4 and rejecting negative occurrences before admitting the `data`).
 
-### 3. No related origins (multi-span) — §3.1.1A (line 535-616) — BLOCKER
+### 3. Incomplete related-origin coverage (multi-span) — §3.1.1A (line 535-616) — MAJOR
 - **Required**: type-mismatch MUST include actual-expr + expected-type sites; ambiguous-name/implicit MUST include all candidate sites; trait-coherence MUST include every surviving incoherent instance site; borrow/path MUST include intro + failing-use sites; machine renderer MUST preserve all related origins.
-- **Probe**: `implicits/local_candidates.kp:32` `E_IMPLICIT_AMBIGUOUS` renders "two implicit candidates in the same scope" but neither candidate binder site (`left`,`right`) is a structured related origin; `/tmp/probe/coh.kp` `E_INSTANCE_INCOHERENT` blames one instance line only; `/tmp/probe/tm.kp` carries expected/actual only as prose notes.
-- **Observed vs required**: single `primary` span + prose notes vs `related : List RelatedOrigin` with stable roles. `Diagnostic` (`Diagnostic.hs:48-59`) has no `related` field at all.
-- **Fix locus**: `src/Kappa/Diagnostic.hs` (add `dRelated :: [RelatedOrigin]` with role enum), then thread sites at each producer in `src/Kappa/Check.hs` / `src/Kappa/Resolve.hs` / `src/Kappa/Usage.hs`.
+- **Probe**: borrow/path families carry structured related roles and JSON preserves them; `assertDiagnosticRelated` can assert them. Some families, such as ambiguous-name/implicit and trait coherence, still have incomplete candidate-site coverage.
+- **Observed vs required**: the `related` field and role enum exist; the remaining gap is producer coverage for every required family.
+- **Fix locus**: thread complete related origins at each remaining producer in `src/Kappa/Check.hs` / `src/Kappa/Resolve.hs` / `src/Kappa/Usage.hs`.
 
-### 4. No diagnostic payloads — §3.1.9 (line 1362-1405, 1498) and §3.2.x family payloads — MAJOR
-- **Required**: payload MUST contain at least `kind`; for any §3.2 standardized family the payload MUST contain that family's required fields; `E_TYPE_MISMATCH` MUST expose an expected/actual payload when both sides exist.
-- **Probe**: `/tmp/probe/tm.kp` mismatch carries expected/actual only in prose `note:` lines; `exhaustiveness` carries missing cases only in prose; the harness lists `assertDiagnosticPayload` as `structuredUnsupported` (`TestHarness.hs:177`) and the corpus has 0 payload assertions.
-- **Observed vs required**: prose notes vs `payload : DiagnosticPayload` (e.g. `ExpectedActualPayload`).
-- **Fix locus**: `src/Kappa/Diagnostic.hs` (add `dPayload`), producers in `src/Kappa/Check.hs`.
+### 4. Incomplete diagnostic payload coverage — §3.1.9 and §3.2.x family payloads — MAJOR
+- **Required**: payload MUST contain at least `kind`; for any §3.2 standardized family the payload MUST contain that family's required fields.
+- **Observed**: `Diagnostic` has `dPayload`, JSON renders it, and `assertDiagnosticPayload` checks it. Type mismatch and S2.3b mutable-variable payload fixtures are covered. Some standardized families still only expose family-specific details in prose.
+- **Fix locus**: audit remaining producers in `src/Kappa/Check.hs` / `src/Kappa/Resolve.hs` / `src/Kappa/Usage.hs` and attach family-required payload fields where absent.
 
 ### 5. No provenance frames; KCore nodes carry no provenance — §3.1.5A (line 1120,1163-1168) + §30.2.3 (line 33060) — MAJOR
 - **Required**: §3.1.5A — preserve provenance frames for generated syntax/inserted terms/implicit insertions/transports/derived decls; every synthetic origin MUST carry/reference a frame; every diagnostic from a generated obligation MUST expose the frame. §30.2.3 — every synthetic KCore node MUST carry provenance (origins + introduction kind).
@@ -220,10 +214,10 @@ MUST/SHALL-level, each disproved by a probe. Profile-scoped items are excluded
 - **Observed vs required**: synthetic nodes (implicit insertions, eta-coercions for quantity subsumption, etc.) are unannotated vs a `ProvenanceFrame` chain.
 - **Fix locus**: `src/Kappa/Core.hs` (origin/provenance on synthetic terms or a side table keyed by node identity), `src/Kappa/Check.hs` (populate on insertion). Note the §30.2.3 *dump* (KCore dump) is §34 → profile-scoped; the *carrying* requirement is core.
 
-### 6. No fix-its — §3.1.6 (line 1191-1271), §3.1.7 — MAJOR
+### 6. Incomplete fix-it producer coverage — §3.1.6 (line 1191-1271), §3.1.7 — MAJOR
 - **Required**: `DiagnosticFix`/`SourceEdit` records with applicability; local-repair ranking.
-- **Probe**: `Diagnostic.hs` has only `dHelps :: [Text]` (prose); no `fixes`; harness lists `assertDiagnosticFix*` unsupported; corpus has 0 fix assertions.
-- **Observed vs required**: prose `help:` lines vs structured `fixes`.
+- **Probe**: `Diagnostic.hs` has `DiagnosticFix`, `dFixes`, JSON fix rendering, and `assertDiagnosticFix*`/`assertDiagnosticFixCompiles` harness support. Corpus coverage and producer adoption are still thin.
+- **Observed vs required**: structured fix transport exists; many repairable families still emit only prose `help:`.
 - **Fix locus**: `src/Kappa/Diagnostic.hs` + producers.
 
 ### 7. Internal metavariable names leak into user-facing messages — §3.1.11 (line 1607-1611) — MAJOR
@@ -232,9 +226,9 @@ MUST/SHALL-level, each disproved by a probe. Profile-scoped items are excluded
 - **Observed vs required**: `?m1236`/`@-1.⟨wit0⟩` printed vs a stable explanatory phrase or solved type.
 - **Fix locus**: `src/Kappa/Pretty.hs` (metavariable/rigid rendering), and zonk-before-render in `src/Kappa/Check.hs` mismatch reporting.
 
-### 8. No root-cause suppression (`suppressed`) — §3.1.11 (line 1588-1594), §3.1.10 (line 1573) — MINOR
+### 8. Incomplete root-cause suppression coverage — §3.1.11 (line 1588-1594), §3.1.10 (line 1573) — MINOR
 - **Required**: related cascade diagnostics SHOULD be suppressed into one root's `suppressed` field; suppressed MUST retain structured summary.
-- **Probe**: `/tmp/probe/amb.kp` and `/tmp/probe/multi.kp` emit independent cascade errors; no `suppressed` representation exists.
+- **Probe**: `Diagnostic` has `dSuppressed`, JSON renders suppressed summaries, and `assertSuppressedDiagnostic` checks them. Some cascades, such as `/tmp/probe/amb.kp` and `/tmp/probe/multi.kp`, still emit independent diagnostics.
 - **Fix locus**: `src/Kappa/Diagnostic.hs` + `src/Kappa/Pipeline.hs` aggregation.
 
 ### 9. Registry entries are a thin subset of the conceptual entry — §3.1.2A (line 686-701) — MINOR

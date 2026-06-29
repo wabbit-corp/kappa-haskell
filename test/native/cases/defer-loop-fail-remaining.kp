@@ -1,0 +1,33 @@
+-- Native/runtime regression: a defer frame in a legacy loop body must drain all
+-- remaining finalizers even if one cleanup fails. The body registers cleanup-a
+-- first and cleanup-b second; LIFO runs b then a, and b's failure becomes the
+-- loop/body failure.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+
+failB : IO String Unit
+let failB = do
+    printlnString "cleanup-b"
+    throwIO "b"
+
+child : IO String Unit
+let child = do
+    for i in 1 :: Nil do
+        defer printlnString "cleanup-a"
+        defer failB
+    printlnString "unreachable"
+
+classifyCause : Cause String -> String
+let classifyCause c = match c
+    case Fail e -> "exit:fail:" ++ e
+    case Then (Fail e1) (Fail e2) -> "exit:then:" ++ e1 ++ ":" ++ e2
+    case _ -> "exit:other"
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure c -> printlnString (classifyCause c)

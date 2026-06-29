@@ -1,0 +1,11 @@
+module main
+
+-- §18.3.1 / §4.5 SOUNDNESS (NEGATIVE): value-position IO extraction is not a
+-- source or unsafe-debug primitive. The old spelling remains rejected as an
+-- unresolved name; program entry runs the `main` action through the runtime, and
+-- monadic splice `!e` elaborates to a bind, not to a pure extraction.
+
+bad : (=) True False
+let bad = __runIO (throwIO Unit)
+
+--! assertDiagnostic error E_NAME_UNRESOLVED

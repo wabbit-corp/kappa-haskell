@@ -1,0 +1,19 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+type Cell : Type =
+    (value : Int, <=1 tok : Token)
+
+bump : (inout v : Int) -> UIO (1 v : Int)
+let bump (inout v : Int) : UIO (1 v : Int) =
+    pure (v = addInt v 1)
+
+bad : UIO Int
+let bad = do
+    var cell : Cell = (value = 1, tok = Token)
+    bump ~cell.value
+    pure cell.value

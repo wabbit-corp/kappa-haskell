@@ -17,10 +17,10 @@ let emit ex =
 
 main : UIO Unit
 let main = do
-    f <- fork worker
-    m <- monitor f
-    e1 <- awaitMonitor m
+    let f <- fork worker
+    let m <- monitor f
+    let e1 <- awaitMonitor m
     emit e1
     demonitor m
-    e2 <- await f
+    let e2 <- await f
     emit e2

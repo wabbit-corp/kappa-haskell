@@ -1,0 +1,9 @@
+module main
+
+import lib.tokens.(type Token(..), type Box, ctor Full as MakeFull)
+
+bad : UIO Unit
+let bad = do
+    var box = MakeFull Token
+    let snapshot = box
+    pure ()

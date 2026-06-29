@@ -1,0 +1,13 @@
+module main
+
+readRef : Int -> UIO Int
+let readRef n = pure (addInt n 1)
+
+main : UIO Int
+let main = do
+    var x = 41
+    let ω y <- readRef x
+    pure y
+
+--! assertNoErrors
+--! assertExecute main 42

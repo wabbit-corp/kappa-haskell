@@ -36,6 +36,7 @@ import Data.List (nub, partition, sortOn)
 import qualified Data.Map.Lazy as MapLazy
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -48,7 +49,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
-import Kappa.Core (GName (..), Term, gnameText)
+import Kappa.Core (GName (..), Term (..), gnameText)
 import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
@@ -76,7 +77,25 @@ import Kappa.Resolve (defaultFixities, fixitiesOf, multiFixityOps, resolveModule
 import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
-import Kappa.Usage (PInfo, coreFnParams, moduleUsageSignatures, usageDiagnostics)
+import Kappa.Usage
+  ( CtorParamInfo
+  , FieldShape (..)
+  , PInfo
+  , ProjUse
+  , RecordShape (..)
+  , RefOp (..)
+  , coreFnParams
+  , moduleUsageCtors
+  , moduleUsageInoutResultsWith
+  , moduleUsageProjections
+  , moduleUsageResultTypesWith
+  , moduleUsageValueResultTypes
+  , moduleUsageRecordAliases
+  , moduleUsageRecordDeps
+  , moduleUsageRecordShapes
+  , moduleUsageSignatures
+  , usageDiagnostics
+  )
 
 -- | One §T.5.5 portable pipeline-trace step: @(event, subject)@.
 -- The prelude bootstrap is implementation machinery and contributes no
@@ -643,7 +662,26 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                 if hasErrors preDiags
                   then []
                   else
-                    usageDiagnostics (csExpansions st1) (usageImportedParams byName st1 ie) m'
+                    let resolvedCtorAliases = usageLocalCtorAliases byName st1 m'
+                     in
+                    usageDiagnostics
+                      (csExpansions st1)
+                      (csMutableBindingFields st1)
+                      (usageImportedParams byName st1 ie)
+                      (usageImportedInoutResults byName st1 ie)
+                      (usageImportedResultTypes byName st1 ie)
+                      (usageImportedValueResultTypes byName st1 ie)
+                      (usageImportedRecordAliases byName st1 ie)
+                      (usageImportedRecordShapes byName st1 ie)
+                      (usageImportedRecordDeps byName st1 ie)
+                      (resolvedCtorAliases `Map.union` usageImportedCtors byName st1 ie)
+                      (usageImportedRefOps st1 ie)
+                      (usageRecognizedRefOps st1)
+                      (usageImportedBorrowViewHeads st1 ie)
+                      (usageVisibleMonadicResultHeads st1 ie m')
+                      (usageImportedProjections byName st1 ie)
+                      (usageImportedDuplicableStorageHeads st1 ie)
+                      m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
               -- §8.4 re-exports: record where each aliased/selected
@@ -750,12 +788,15 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
           (csMetas finalSt'0)
           False
           (csFacts finalSt'0)
+      ctorTypes = Map.map ciType (csCtors finalSt'0)
       finalSt' =
         finalSt'0
           { csOwnership =
               refineOwnership
+                ownCtx
+                ctorTypes
                 (csCoreBodies finalSt'0)
-                (annotateOwnership ownCtx (csCoreBodies finalSt'0))
+                (annotateOwnership ownCtx ctorTypes (csCoreBodies finalSt'0))
           }
       -- KBackendIR Stage 0: an OBSERVE-ONLY lint over the elaborated,
       -- zonked Core. It only appends 'SevWarning' diagnostics — it never
@@ -895,6 +936,7 @@ moduleExportNames m =
               DSig mods n _ _ -> [(nameText n, [dmVisibility mods])]
               DLet mods (LetDef (Just n) _ _ _ _ _ _ _) _ -> [(nameText n, [dmVisibility mods])]
               DTypeAlias mods n _ _ _ _ -> [(nameText n, [dmVisibility mods])]
+              DProjection mods n _ _ _ _ -> [(nameText n, [dmVisibility mods])]
               _ -> []
           )
           (modDecls m)
@@ -1066,7 +1108,7 @@ buildImportsInWithScope unitMods baseScope st m = foldl' addSpec ie0 specs
               then unknownModule ie sp mn
               else case malias of
                 Just a -> ie {ieAliases = Map.insert (nameText a) mn (ieAliases ie)}
-                Nothing -> ie
+                Nothing -> ie {ieAliases = Map.insert (moduleNameText mn) mn (ieAliases ie)}
       ImportAll (RefPath mp) excepts ->
         let mn = pathModule mp
             exceptNames = [nameText n | ExceptItem _ n <- excepts]
@@ -1228,19 +1270,499 @@ usageImportedParams byName st ie =
         | (mn, (sm, _)) <- Map.toList byName
         , (nm, ps) <- Map.toList (moduleUsageSignatures sm)
         ]
-    importedNames =
-      Map.fromListWith
-        const
-        ( Map.toList (ieScope ie)
-            ++ [ (alias <> "." <> nm, usageExportTarget st mn nm)
-               | (alias, mn) <- Map.toList (ieAliases ie)
-               , nm <- exportedMemberNames st mn
-            ]
-        )
+    importedNames = usageImportedNames st ie
     paramsFor g@(GName mn nm) =
       case Map.lookup (mn, nm) sourceParams of
         Just ps -> Just ps
         Nothing -> coreFnParams . quote ctx 0 . gdType <$> Map.lookup g (csGlobals st)
+
+usageImportedInoutResults ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text [FieldShape]
+usageImportedInoutResults byName st ie =
+  Map.mapMaybeWithKey resultsFor importedNames
+  where
+    importedNames = usageImportedNames st ie
+    sourceResults =
+      Map.fromList
+        [ ((mn, nm), shapes)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, shapes) <- Map.toList (moduleUsageInoutResultsWith (usageModuleMonadicResultHeads st mn) sm)
+        ]
+    resultsFor local (GName mn nm) =
+      qualifyFieldShapeTypes (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
+        <$> Map.lookup (mn, nm) sourceResults
+
+usageImportedResultTypes ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text Expr
+usageImportedResultTypes byName st ie =
+  Map.mapMaybeWithKey resultFor importedNames
+  where
+    importedNames = usageImportedNames st ie
+    sourceResults =
+      Map.fromList
+        [ ((mn, nm), ty)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, ty) <- Map.toList (moduleUsageResultTypesWith (usageModuleMonadicResultHeads st mn) sm)
+        ]
+    resultFor local (GName mn nm) =
+      qualifyStorageExpr (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
+        <$> Map.lookup (mn, nm) sourceResults
+
+usageImportedValueResultTypes ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text Expr
+usageImportedValueResultTypes byName st ie =
+  Map.mapMaybeWithKey resultFor importedNames
+  where
+    importedNames = usageImportedNames st ie
+    sourceResults =
+      Map.fromList
+        [ ((mn, nm), ty)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, ty) <- Map.toList (moduleUsageValueResultTypes sm)
+        ]
+    resultFor local (GName mn nm) =
+      qualifyStorageExpr (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
+        <$> Map.lookup (mn, nm) sourceResults
+
+usageImportedCtors ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text [(Text, [CtorParamInfo])]
+usageImportedCtors byName st ie =
+  directCtors
+    `Map.union` resolvedAliasCtors
+    `Map.union` qualifiedTypeCtors
+    `Map.union` moduleQualifiedTypeCtors
+    `Map.union` aliasQualifiedTypeCtors
+  where
+    importedNames = usageImportedNames st ie
+    sourceCtors = usageSourceCtors byName
+    sourceDataCtors =
+      Map.fromList
+        [ ((mn, nameText (ddName dd)), [nameText (cdName c) | c <- ddCtors dd])
+        | (mn, (sm, _)) <- Map.toList byName
+        , DData _ dd _ <- modDecls sm
+        ]
+    sourceDataModules = nub [mn | ((mn, _), _) <- Map.toList sourceDataCtors]
+    directCtors =
+      Map.mapMaybeWithKey
+        (\local g -> rekeyCtorFact local <$> ctorsFor g)
+        importedNames
+    resolvedAliasCtors =
+      Map.mapMaybeWithKey
+        ( \local g -> do
+            target <- resolvedCtorAliasTarget st g
+            rekeyCtorFact local <$> ctorFactsForTarget sourceCtors target
+        )
+        importedNames
+    qualifiedTypeCtors =
+      Map.fromList
+        [ (localTy <> "." <> ctor, rekeyQualifiedCtorSiblings localTy siblings)
+        | (localTy, GName mn sourceTy) <- Map.toList importedNames
+        , ctor <- Map.findWithDefault [] (mn, sourceTy) sourceDataCtors
+        , Just siblings <- [Map.lookup (mn, sourceTy <> "." <> ctor) sourceCtors]
+        ]
+    moduleQualifiedTypeCtors =
+      Map.fromList
+        [ (moduleNameText mn <> "." <> sourceTy <> "." <> ctor, rekeyQualifiedCtorSiblings (moduleNameText mn <> "." <> sourceTy) siblings)
+        | ((mn, sourceTy), ctors) <- Map.toList sourceDataCtors
+        , mn `elem` sourceDataModules
+        , ctor <- ctors
+        , Just siblings <- [Map.lookup (mn, sourceTy <> "." <> ctor) sourceCtors]
+        ]
+    aliasQualifiedTypeCtors =
+      Map.fromList
+        [ (alias <> "." <> sourceTy <> "." <> ctor, rekeyQualifiedCtorSiblings (alias <> "." <> sourceTy) siblings)
+        | (alias, mn) <- Map.toList (ieAliases ie)
+        , sourceTy <- sourceDataTypeNames mn
+        , Just ctors <- [Map.lookup (mn, sourceTy) sourceDataCtors]
+        , ctor <- ctors
+        , Just siblings <- [Map.lookup (mn, sourceTy <> "." <> ctor) sourceCtors]
+        ]
+    ctorsFor (GName mn nm) = (\siblings -> (nm, siblings)) <$> Map.lookup (mn, nm) sourceCtors
+    sourceDataTypeNames mn =
+      [ ty
+      | ((mn', ty), _) <- Map.toList sourceDataCtors
+      , mn' == mn
+      ]
+    rekeyQualifiedCtorSiblings localTy siblings =
+      [(localTy <> "." <> ctorLeaf cn, ps) | (cn, ps) <- siblings]
+
+usageLocalCtorAliases ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  Module ->
+  Map.Map Text [(Text, [CtorParamInfo])]
+usageLocalCtorAliases byName st m =
+  Map.fromList
+    [ (alias, rekeyCtorFact alias facts)
+    | DLet _ (LetDef (Just n) _ Nothing _ [] _ _ _) _ <- modDecls m
+    , let alias = nameText n
+          aliasG = GName (csModule st) alias
+    , Just target <- [resolvedCtorAliasTarget st aliasG]
+    , Just facts <- [ctorFactsForTarget sourceCtors target]
+    ]
+  where
+    sourceCtors = usageSourceCtors byName
+
+usageSourceCtors ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  Map.Map (ModuleName, Text) [(Text, [CtorParamInfo])]
+usageSourceCtors byName =
+  Map.fromList
+    [ ((mn, nm), siblings)
+    | (mn, (sm, _)) <- Map.toList byName
+    , (nm, siblings) <- Map.toList (moduleUsageCtors sm)
+    ]
+
+resolvedCtorAliasTarget :: CheckState -> GName -> Maybe GName
+resolvedCtorAliasTarget st g =
+  case Map.lookup g (csCoreBodies st) of
+    Just (CGlob target)
+      | Map.member target (csCtors st) -> Just target
+    _ -> Nothing
+
+ctorFactsForTarget ::
+  Map.Map (ModuleName, Text) [(Text, [CtorParamInfo])] ->
+  GName ->
+  Maybe (Text, [(Text, [CtorParamInfo])])
+ctorFactsForTarget sourceCtors (GName mn nm) =
+  case Map.lookup (mn, nm) sourceCtors of
+    Just siblings -> Just (nm, siblings)
+    Nothing -> Nothing
+
+rekeyCtorFact :: Text -> (Text, [(Text, [CtorParamInfo])]) -> [(Text, [CtorParamInfo])]
+rekeyCtorFact local (sourceHead, siblings) =
+  case T.stripSuffix sourceHead local of
+    Just prefix
+      | not (T.null prefix)
+      , "." `T.isSuffixOf` prefix ->
+          [(prefix <> ctorLeaf cn, ps) | (cn, ps) <- siblings]
+    _ | local == sourceHead -> siblings
+    _ ->
+      [ (local, params)
+      | Just params <- [lookup sourceHead siblings]
+      ]
+
+ctorLeaf :: Text -> Text
+ctorLeaf nm =
+  let leaf = snd (T.breakOnEnd "." nm)
+   in if T.null leaf then nm else leaf
+
+usageImportedRecordAliases ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text [(Text, Maybe Quantity)]
+usageImportedRecordAliases byName st ie =
+  Map.mapMaybe aliasesFor (usageImportedNames st ie)
+  where
+    sourceAliases =
+      Map.fromList
+        [ ((mn, nm), fields)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, fields) <- Map.toList (moduleUsageRecordAliases sm)
+        ]
+    aliasesFor (GName mn nm) = Map.lookup (mn, nm) sourceAliases
+
+usageImportedRecordShapes ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text RecordShape
+usageImportedRecordShapes byName st ie =
+  builtinShapes `Map.union` qualifiedAliasShapes `Map.union` directShapes
+  where
+    sourceShapes =
+      Map.fromList
+        [ ((mn, nm), shapes)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, shapes) <- Map.toList (moduleUsageRecordShapes sm)
+        ]
+    directShapes = directClosure `Map.union` Map.mapMaybeWithKey directShapeFor importedNames
+    importedNames = usageImportedNames st ie
+    builtinShapes =
+      Map.fromList
+        [ (local, shape)
+        | (local, g) <- Map.toList importedNames
+        , Just shape <- [usageBuiltinRecordShape g]
+        ]
+    importedGlobals = Map.elems importedNames
+    directShapeModules =
+      nub
+        [ mn
+        | g@(GName mn _) <- importedGlobals
+        , isJust (shapesFor g)
+        ]
+    directClosure =
+      Map.fromList
+        [ (sourceKey mn nm, qualifyRecordShapeTypes (moduleNameText mn) (sourceStorageTypeNamesIn byName mn) shapes)
+        | ((mn, nm), shapes) <- Map.toList sourceShapes
+        , mn `elem` directShapeModules
+        ]
+    qualifiedAliasShapes =
+      Map.fromList
+        [ (alias <> "." <> nm, qualifyRecordShapeTypes alias sourceShapeNames shapes)
+        | (alias, mn) <- Map.toList (ieAliases ie)
+        , nm <- exportedMemberNames st mn
+        , let sourceShapeNames = sourceStorageTypeNamesIn byName mn
+        , Just shapes <- [Map.lookup (mn, nm) sourceShapes]
+        ]
+    shapesFor (GName mn nm) = Map.lookup (mn, nm) sourceShapes
+    directShapeFor _local (GName mn nm) =
+      qualifyRecordShapeTypes (moduleNameText mn) (sourceStorageTypeNamesIn byName mn) <$> Map.lookup (mn, nm) sourceShapes
+    sourceKey mn nm = moduleNameText mn <> "." <> nm
+
+usageBuiltinRecordShape :: GName -> Maybe RecordShape
+usageBuiltinRecordShape g
+  | g == prelZipper =
+      Just $
+        RecordShape
+          ["whole", "focus", "replace"]
+          [ FieldShape "focus" Nothing Nothing
+          , FieldShape "fill" (Just QOne) Nothing
+          ]
+  | otherwise = Nothing
+
+usageImportedRecordDeps ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text [(Text, [Text])]
+usageImportedRecordDeps byName st ie =
+  qualifiedAliasDeps `Map.union` directDeps
+  where
+    sourceDeps =
+      Map.fromList
+        [ ((mn, nm), deps)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, deps) <- Map.toList (moduleUsageRecordDeps sm)
+        ]
+    importedNames = usageImportedNames st ie
+    importedGlobals = Map.elems importedNames
+    directDeps = directClosure `Map.union` Map.mapMaybe depsFor importedNames
+    directDepModules =
+      nub
+        [ mn
+        | g@(GName mn _) <- importedGlobals
+        , isJust (depsFor g)
+        ]
+    directClosure =
+      Map.fromList
+        [ (moduleNameText mn <> "." <> nm, deps)
+        | ((mn, nm), deps) <- Map.toList sourceDeps
+        , mn `elem` directDepModules
+        ]
+    qualifiedAliasDeps =
+      Map.fromList
+        [ (alias <> "." <> nm, deps)
+        | (alias, mn) <- Map.toList (ieAliases ie)
+        , nm <- exportedMemberNames st mn
+        , Just deps <- [Map.lookup (mn, nm) sourceDeps]
+        ]
+    depsFor (GName mn nm) = Map.lookup (mn, nm) sourceDeps
+
+resultQualifier :: Text -> ModuleName -> Text
+resultQualifier local mn =
+  case T.breakOnEnd "." local of
+    (prefix, _) | not (T.null prefix) -> T.dropEnd 1 prefix
+    _ -> moduleNameText mn
+
+sourceStorageTypeNamesIn :: Map.Map ModuleName (Module, [Fragment]) -> ModuleName -> [Text]
+sourceStorageTypeNamesIn byName mn =
+  sourceRecordShapeNames ++ sourceDataTypeNames
+  where
+    sourceRecordShapeNames =
+      [ nm
+      | (mn', (sm, _)) <- Map.toList byName
+      , mn' == mn
+      , nm <- Map.keys (moduleUsageRecordShapes sm)
+      ]
+    sourceDataTypeNames =
+      [ nameText (ddName dd)
+      | (mn', (sm, _)) <- Map.toList byName
+      , mn' == mn
+      , DData _ dd _ <- modDecls sm
+      ]
+
+qualifyRecordShapeTypes :: Text -> [Text] -> RecordShape -> RecordShape
+qualifyRecordShapeTypes alias sourceShapeNames shape =
+  shape {rsFields = qualifyFieldShapeTypes alias sourceShapeNames (rsFields shape)}
+
+qualifyFieldShapeTypes :: Text -> [Text] -> [FieldShape] -> [FieldShape]
+qualifyFieldShapeTypes alias sourceShapeNames =
+  map $ \s -> s {fsType = qualifyStorageExpr alias sourceShapeNames <$> fsType s}
+
+qualifyStorageExpr :: Text -> [Text] -> Expr -> Expr
+qualifyStorageExpr alias sourceShapeNames = qualifyExpr
+  where
+    isSourceShape n = nameText n `elem` sourceShapeNames
+    qualifyExpr = \case
+      EVar n
+        | isSourceShape n ->
+            EDot (EVar (Name alias (nameSpan n))) (DotName n)
+      ETuple es sp -> ETuple (map qualifyExpr es) sp
+      ERecordType fs mtail sp ->
+        ERecordType [f {rtfType = qualifyExpr (rtfType f)} | f <- fs] (qualifyExpr <$> mtail) sp
+      EApp f args -> EApp (qualifyExpr f) (map qualifyArg args)
+      EDot e m -> EDot (qualifyExpr e) m
+      EQDot e m -> EQDot (qualifyExpr e) m
+      EArrow b body -> EArrow (qualifyBinder b) (qualifyExpr body)
+      EForall bs body sp -> EForall (map qualifyBinder bs) (qualifyExpr body) sp
+      EExists bs body sp -> EExists (map qualifyBinder bs) (qualifyExpr body) sp
+      ETraitArrow c body -> ETraitArrow (qualifyExpr c) (qualifyExpr body)
+      EEffRow fields mtail sp -> EEffRow [(n, qualifyExpr e) | (n, e) <- fields] (qualifyExpr <$> mtail) sp
+      EVariant arms mtail sp -> EVariant (map qualifyVariant arms) (qualifyExpr <$> mtail) sp
+      EAscription e ty sp -> EAscription (qualifyExpr e) (qualifyExpr ty) sp
+      ECaptures e caps sp -> ECaptures (qualifyExpr e) caps sp
+      EOptionSugar e sp -> EOptionSugar (qualifyExpr e) sp
+      other -> other
+    qualifyBinder b = b {bType = qualifyExpr <$> bType b, bDefault = qualifyExpr <$> bDefault b}
+    qualifyVariant (VariantArm e ty) = VariantArm (qualifyExpr e) (qualifyExpr <$> ty)
+    qualifyArg = \case
+      ArgExplicit e -> ArgExplicit (qualifyExpr e)
+      ArgImplicit e -> ArgImplicit (qualifyExpr e)
+      ArgInout e sp -> ArgInout (qualifyExpr e) sp
+      ArgNamedBlock items sp ->
+        ArgNamedBlock [(n, qualifyExpr <$> me) | (n, me) <- items] sp
+
+usageImportedRefOps :: CheckState -> ImportEnv -> Map.Map Text RefOp
+usageImportedRefOps st ie =
+  Map.mapMaybe refOpFor (usageImportedNames st ie)
+  where
+    refOpFor g
+      | g == prelReadRef = Just RefRead
+      | g == prelWriteRef = Just RefWrite
+      | otherwise = Nothing
+
+usageRecognizedRefOps :: CheckState -> Map.Map Span RefOp
+usageRecognizedRefOps st =
+  Map.mapMaybe refOpFor (csRecognizedRefOps st)
+  where
+    refOpFor op
+      | op == T.pack "readRef" = Just RefRead
+      | op == T.pack "writeRef" = Just RefWrite
+      | otherwise = Nothing
+
+usageImportedBorrowViewHeads :: CheckState -> ImportEnv -> Set.Set Text
+usageImportedBorrowViewHeads st ie =
+  Map.keysSet $
+    Map.filter (== prelBorrowView) (usageImportedNames st ie)
+
+usageVisibleMonadicResultHeads :: CheckState -> ImportEnv -> Module -> Set.Set Text
+usageVisibleMonadicResultHeads st ie m =
+  usageModuleMonadicResultHeads st (csModule st)
+    `Set.union` (usageImportedMonadicResultHeads st ie Set.\\ localTypeHeads m)
+
+usageImportedMonadicResultHeads :: CheckState -> ImportEnv -> Set.Set Text
+usageImportedMonadicResultHeads st ie =
+  Set.fromList
+    [ alias
+    | (alias, g) <- Map.toList (usageImportedNames st ie)
+    , g `Set.member` usageMonadicCarrierGlobals st
+    ]
+
+usageModuleMonadicResultHeads :: CheckState -> ModuleName -> Set.Set Text
+usageModuleMonadicResultHeads st mn =
+  Set.fromList
+    [ nm
+    | GName im nm <- Set.toList (usageMonadicCarrierGlobals st)
+    , im == mn
+    ]
+
+usageMonadicCarrierGlobals :: CheckState -> Set.Set GName
+usageMonadicCarrierGlobals st =
+  Set.fromList
+    [ g
+    | inst <- csInstances st
+    , ieTrait inst == prelMonad || ieTrait inst == prelMonadRef
+    , Just g <- [monadicCarrierHead (ieHead inst)]
+    ]
+
+monadicCarrierHead :: [Term] -> Maybe GName
+monadicCarrierHead (ty : _) = coreTypeHeadGName ty
+monadicCarrierHead [] = Nothing
+
+coreTypeHeadGName :: Term -> Maybe GName
+coreTypeHeadGName = \case
+  CGlob g -> Just g
+  CApp _ f _ -> coreTypeHeadGName f
+  CForceE t -> coreTypeHeadGName t
+  _ -> Nothing
+
+localTypeHeads :: Module -> Set.Set Text
+localTypeHeads m =
+  Set.fromList $
+    [nameText (ddName dd) | DData _ dd _ <- modDecls m]
+      ++ [nameText n | DTypeAlias _ n _ _ _ _ <- modDecls m]
+
+usageImportedProjections ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Map.Map Text ProjUse
+usageImportedProjections byName st ie =
+  Map.mapMaybe projFor (usageImportedNames st ie)
+  where
+    sourceProjs =
+      Map.fromList
+        [ ((mn, nm), pu)
+        | (mn, (sm, _)) <- Map.toList byName
+        , (nm, pu) <- Map.toList (moduleUsageProjections sm)
+        ]
+    projFor (GName mn nm) = Map.lookup (mn, nm) sourceProjs
+
+usageImportedDuplicableStorageHeads :: CheckState -> ImportEnv -> Set.Set Text
+usageImportedDuplicableStorageHeads st ie =
+  Set.fromList
+    [ alias
+    | (alias, g) <- Map.toList (usageImportedNames st ie)
+    , g `Set.member` duplicableStorageTypes
+    ]
+  where
+    duplicableStorageTypes =
+      Set.fromList
+        [ prelUnit
+        , prelBool
+        , prelString
+        , prelNat
+        , prelInt
+        , prelInteger
+        , prelDouble
+        , prelByte
+        , prelGrapheme
+        , prelUnicodeScalar
+        , gPrel "Ordering"
+        , prelRegion
+        , prelRef
+        , gPrel "TVar"
+        , gPrel "Fiber"
+        , gPrel "Promise"
+        , gPrel "Scope"
+        , gPrel "Duration"
+        , gPrel "Instant"
+        ]
+
+usageImportedNames :: CheckState -> ImportEnv -> Map.Map Text GName
+usageImportedNames st ie =
+  Map.fromListWith
+    const
+    ( Map.toList (ieScope ie)
+        ++ [ (alias <> "." <> nm, usageExportTarget st mn nm)
+           | (alias, mn) <- Map.toList (ieAliases ie)
+           , nm <- exportedMemberNames st mn
+        ]
+    )
 
 usageExportTarget :: CheckState -> ModuleName -> Text -> GName
 usageExportTarget st mn nm =

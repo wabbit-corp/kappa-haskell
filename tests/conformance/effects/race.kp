@@ -16,8 +16,8 @@ let fastL = ioPure 1
 
 main : UIO Unit
 let main = do
-    f <- fork (race fastL slowR)
-    ex <- await f
+    let f <- fork (race fastL slowR)
+    let ex <- await f
     match ex
     case Success r ->
       match r

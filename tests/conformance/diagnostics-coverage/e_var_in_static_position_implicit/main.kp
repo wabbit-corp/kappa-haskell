@@ -1,0 +1,12 @@
+module main
+
+idType : (@0 a : Type) -> UIO Unit
+let idType (@0 a : Type) = pure ()
+
+bad : UIO Unit
+let bad = do
+    var x : Type = Bool
+    idType @x
+
+--! mode check
+--! assertDiagnostic error E_VAR_IN_STATIC_POSITION

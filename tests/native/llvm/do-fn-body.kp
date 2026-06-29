@@ -1,5 +1,5 @@
 -- Milestone E: a do-block as a FUNCTION BODY, called from main's do-block.
--- `shout n` returns a do-block action; main binds it (`u <- shout 7`), so the
+-- `shout n` returns a do-block action; main sequences it (`let _ <- shout 7`), so the
 -- action runs to completion (printing 7 then !) before main continues with
 -- "done".  Effect order: 7, !, done.
 module main
@@ -11,5 +11,5 @@ let shout n = do
 
 main : UIO Unit
 let main = do
-    u <- shout 7
+    let _ <- shout 7
     printlnString "done"

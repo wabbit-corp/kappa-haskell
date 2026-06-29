@@ -98,7 +98,7 @@ enum {
   /* §18.1.21/.22 algebraic-effect handlers as prompt frames (Stage 4a).  These
    * run an `Eff` computation ON the scheduler so a handler clause can park —
    * the unification of the §30.2.2.7 OpCall tree with the CK-machine Cont
-   * chain.  ONE-SHOT only; multi-shot is gated behind rt-multishot (absent). */
+   * chain.  ONE-SHOT only; multi-shot is gated behind rt-multishot-effects (absent). */
   OP_HANDLE,              /* [deep, label, ret, ops, body]  install a KK_HANDLER
                            *                  prompt frame and run `body`         */
   OP_PERFORM,             /* [label, op, payload]  outward-search f->k for the
@@ -116,6 +116,7 @@ enum {
    * scope exits via interrupt; onExit fires on EVERY exit. */
   OP_ONEXIT_FIN,          /* [handler]        onExit:      handler : Exit e a -> IO e' Unit */
   OP_ONINT_FIN,           /* [handler]        onInterrupt: handler : InterruptCause -> IO e' Unit */
+  OP_ABORT_EXIT_FIN,      /* [token]          run a tokenized exit action at most once */
   /* §18.1.7 FiberRef ops (fiber-local cells with copy-on-fork).  newFiberRef
    * allocates a cell id + records its init; get/set/modify index the current
    * fiber's FiberRef map (snapshotted into a child at fork). */
@@ -126,6 +127,7 @@ enum {
   /* §18.11 Promise non-blocking peek. */
   OP_POLL_PROMISE,        /* [p]              poll  -> Option (Exit e a)           */
   OP_IS_DONE_PROMISE,     /* [p]              isDone -> Bool                       */
+  OP_BLOCKING,            /* [body]           run body on rt-blocking lane         */
   OP_LAST
 };
 
@@ -168,6 +170,8 @@ typedef enum {
   KK_HANDLER,   /* §18.1.21 an effect-handler prompt: `perform` searches f->k for
                  * the nearest matching one; the captured op-site->handler Cont
                  * sub-chain becomes the resumption (Stage 4a, one-shot)          */
+  KK_BLOCKING,  /* source-level blocking delimiter: post-park resumes stay on the
+                 * rt-blocking lane until this frame is crossed                   */
   KK_ABANDON,   /* §32.2.20 sits BENEATH a general-path handler clause, carrying
                  * the severed Resumption (Cont.aux).  When the clause completes
                  * (deliver/unwind reach it) WITHOUT having resumed, it drains the
@@ -202,6 +206,16 @@ typedef struct Handler {
 /* A do-scope's stack of registered exit actions (defer/using/finally), run LIFO
  * on every way out of the scope (§18.7, §32.2.19).  GC_MALLOC'd. */
 typedef struct { KValue **items; int n, cap; } ExitStack;
+
+/* A dynamically-active exit action that must run if generated synchronous C
+ * aborts at a scalar/boxed-loop safe point before ordinary scope exit reaches
+ * its finalizers. The token is also captured by the ordinary finalizer wrapper
+ * so normal exit and safe-point abort cannot run the action twice. */
+typedef struct AbortExit {
+  KValue *action;
+  int active;
+  struct AbortExit *next;
+} AbortExit;
 
 /* ── fibers ─────────────────────────────────────────────────────────────── */
 typedef enum { F_RUNNABLE, F_RUNNING, F_PARKED, F_DONE } FStatus;
@@ -282,6 +296,8 @@ struct Fiber {
    * whose later callback could CAS-win an unrelated park and spuriously resume it. */
   void           *sleep_timer;       /* reactor-owned: the active SleepTimer*, or NULL */
   _Atomic int     sleep_armed;       /* worker-visible: a sleep timer may be live      */
+  int             blocking_armed;    /* guarded by lock: parked in non-cancellable rt-blocking */
+  _Atomic int     blocking_depth;    /* source-level blocking dynamic extent depth      */
   /* §32.2.6 safe points (fix SP).  A long-running NON-CEDING loop (a CK-machine
    * KK_LOOP that re-runs `iterate` in place, or a codegen-emitted native scalar
    * loop) must still (a) observe a pending interrupt and (b) restore fairness —
@@ -293,6 +309,7 @@ struct Fiber {
    * weak fairness without per-iteration scheduler traffic. */
   int             safepoint_hit;     /* a back-edge observed a deliverable interrupt   */
   uint32_t        backedge_budget;   /* iterations left before a fairness cede          */
+  AbortExit      *abort_exits;       /* active exit actions for synchronous aborts      */
   /* doubly-linked membership in rt->all (the strong GC root set) */
   Fiber          *all_prev, *all_next;
 };
@@ -414,6 +431,7 @@ void    krt2i_resume(Rt *rt, Fiber *f);       /* status=RUNNABLE then rq_push (f
  * DONE fiber is a safe no-op.  `resume_val`, if non-NULL, becomes the fiber's
  * next `cur` (interrupt delivery, checked at step entry, takes precedence). */
 void    krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val);
+int     krt2i_deliver_pending_before_park(Rt *rt, Fiber *f);
 void    krt2i_all_add(Rt *rt, Fiber *f);      /* add to strong root set             */
 void    krt2i_all_remove(Rt *rt, Fiber *f);   /* drop from strong root set          */
 

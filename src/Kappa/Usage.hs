@@ -55,18 +55,35 @@
 -- docs/CONCEPTS.md.
 module Kappa.Usage
   ( PInfo
+  , CtorParamInfo (..)
+  , FieldShape (..)
+  , RecordShape (..)
+  , ProjUse (..)
+  , RefOp (..)
   , coreFnParams
+  , moduleUsageCtors
+  , moduleUsageProjections
+  , moduleUsageRecordAliases
+  , moduleUsageRecordDeps
+  , moduleUsageRecordShapes
+  , moduleUsageInoutResults
+  , moduleUsageInoutResultsWith
+  , moduleUsageResultTypes
+  , moduleUsageResultTypesWith
+  , moduleUsageValueResultTypes
   , moduleUsageSignatures
   , usageDiagnostics
   , tailResumptiveClause
   ) where
 
-import Control.Monad (forM, forM_, unless, when)
+import Control.Applicative ((<|>))
+import Control.Monad (foldM, forM, forM_, unless, when)
 import Control.Monad.State.Strict (State, execState, gets, modify')
 import Data.List (find, isPrefixOf, tails)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, mapMaybe, maybeToList)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing, listToMaybe, mapMaybe, maybeToList)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import Kappa.Core (Term)
@@ -74,6 +91,7 @@ import qualified Kappa.Core as Core
 import Kappa.Diagnostic
 import Kappa.Source (Span)
 import Kappa.Syntax
+import Kappa.SyntaxOps (renderExprSrc)
 
 -- ── Tables ───────────────────────────────────────────────────────────
 
@@ -99,6 +117,26 @@ data EscapeKind = EscapeOrdinaryParam | EscapeFork | EscapeForkDaemon | EscapeFo
 defaultP :: PInfo
 defaultP = PInfo Nothing Nothing False False False True False CapAny EscapeOrdinaryParam
 
+data CtorParamInfo = CtorParamInfo
+  { cpiName :: !(Maybe Text)
+  , cpiQuantity :: !(Maybe Quantity)
+  , cpiType :: !(Maybe Expr)
+  , cpiDataParams :: ![Text]
+  }
+
+data FieldShape = FieldShape
+  { fsName :: !Text
+  , fsQuantity :: !(Maybe Quantity)
+  , fsType :: !(Maybe Expr)
+  }
+
+data RecordShape = RecordShape
+  { rsParams :: ![Text]
+  , rsFields :: ![FieldShape]
+  }
+
+type FieldPath = [Text]
+
 -- | Demand interval of a parameter (§12.2.1); 'Nothing' upper = ω.
 pDemand :: PInfo -> (Int, Maybe Int)
 pDemand p = case pQuantity p of
@@ -123,8 +161,34 @@ data VInfo = VInfo
   , vUsing :: !Bool -- ^ @using@-scoped resource: may not escape itself (§19.5)
   , vTaint :: !(Maybe Span) -- ^ closure capturing a borrow, formed here
   , vLatent :: !Usage -- ^ per-call captured usage (closure-valued bindings)
-  , vFields :: ![(Text, Maybe Quantity)] -- ^ record fields, when known
+  , vFields :: ![(Text, Maybe Quantity)] -- ^ top-level record fields, when known
+  , vPathFields :: ![(FieldPath, Maybe Quantity)]
+  -- ^ quantity-bearing visible field paths, including nested record paths.
+  , vNonDupValue :: !Bool
+  -- ^ The value may hide a non-duplicable component not represented as a
+  -- visible field path (for example a constructor payload).
+  , vNonDupFields :: ![FieldPath]
+  -- ^ Visible field paths that are non-duplicable but not necessarily
+  -- quantity-1 droppable obligations (notably <=1 affine fields).
+  , vMutable :: !Bool
+  -- ^ Surface @var@ binding: ordinary value occurrences are current-value
+  -- reads, not stable-place moves.
+  , vStoredTypeText :: !(Maybe Text)
+  -- ^ Source-rendered stored type when Usage can derive it from an explicit
+  -- annotation/ascription. Used only for structured diagnostics; Usage does not
+  -- invent type text for inferred mutable cells.
+  , vStoredTypeExpr :: !(Maybe Expr)
+  -- ^ Source type expression for the mutable cell's stored value, when known.
+  -- Monadic assignment writes an action result, not the action expression, so
+  -- usage needs the cell/result type to derive conservative storage facts.
+  , vMutableDiagFields :: ![(Text, Text)]
+  -- ^ Checker-captured §18.6.1 mutable-binding payload fields, including the
+  -- selected MonadRef evidence, for usage-origin storage diagnostics.
   , vDeps :: ![(Text, [Text])] -- ^ §13.2.1 field dependencies (field ↦ siblings its type mentions)
+  , vPathDeps :: ![(FieldPath, [FieldPath])]
+  -- ^ §13.2.1 dependencies at their full visible field path.  A nested
+  -- record field such as @outer.sized.buffer : Array this.len Byte@ locks
+  -- @outer.sized.len@, not just top-level siblings.
   , vOpenTail :: !(Maybe (Text, Span))
   -- ^ §13.2.7: a linear (1\/>=1) receiver of an open record type
   -- @(... | r)@ owns the abstract residual tail @r@. Without a
@@ -137,16 +201,26 @@ data VInfo = VInfo
   }
 
 plainV :: Text -> Span -> VInfo
-plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] Nothing sp
+plainV k sp = VInfo k Nothing False False False Nothing Map.empty [] [] False [] False Nothing Nothing [] [] [] Nothing sp
 
 -- | Expand a borrow lock over a field path with the §12.4 dependency
 -- rule: borrowing a dependent field also locks the fields its type
 -- mentions ("dependent fields are not disjoint merely because their
 -- labels differ").
 lockWithDeps :: VInfo -> [Text] -> [[Text]]
-lockWithDeps vi path = case path of
-  (f : _) -> path : [[d] | d <- fromMaybe [] (lookup f (vDeps vi))]
-  [] -> [path]
+lockWithDeps vi path =
+  dedupPaths $
+    path
+      : topLevelDeps
+        ++ [ dep
+           | (src, deps) <- vPathDeps vi
+           , src `isPrefixOf` path
+           , dep <- deps
+           ]
+  where
+    topLevelDeps = case path of
+      (f : _) -> [[d] | d <- fromMaybe [] (lookup f (vDeps vi))]
+      [] -> []
 
 -- | The taint a bare occurrence of the binding carries: a closure that
 -- captured a borrow, or a @using@-scoped resource escaping itself.
@@ -156,14 +230,90 @@ vEscape vi sp
   | vUsing vi = Just sp
   | otherwise = Nothing
 
--- | Quantity-1 field names of a tracked record binding (§12.4).
-linFields :: VInfo -> [Text]
-linFields vi = [f | (f, Just QOne) <- vFields vi]
+linTopFields :: VInfo -> [Text]
+linTopFields vi = foldr add [] (linPaths vi)
+  where
+    add (f : _) acc
+      | f `elem` acc = acc
+      | otherwise = f : acc
+    add [] acc = acc
+
+linPaths :: VInfo -> [FieldPath]
+linPaths vi =
+  dedupPaths $
+    [ [f]
+    | (f, q) <- vFields vi
+    , positiveLowerQuantity q
+    ]
+      ++ [p | (p, q) <- vPathFields vi, positiveLowerQuantity q]
+
+sliceVInfo :: VInfo -> FieldPath -> VInfo
+sliceVInfo vi path =
+  vi
+    { vQ = pathPositiveQuantity vi path <|> if anyLinearBelow then Just QOne else Nothing
+    , vFields = mergeFieldQuantities rebasedTop (topFieldsFromPaths rebasedPaths)
+    , vPathFields = rebasedPaths
+    , vNonDupValue = vNonDupValue vi && null path
+    , vNonDupFields = rebasePaths path (vNonDupFields vi)
+    , vDeps = [(f, ds) | ([f], deps) <- rebasedPathDeps, let ds = [d | [d] <- deps], not (null ds)]
+    , vPathDeps = rebasedPathDeps
+    , vOpenTail = Nothing
+    }
+  where
+    rebasedPaths = rebasePathFields path (vPathFields vi)
+    rebasedTop = if null path then vFields vi else []
+    rebasedPathDeps =
+      [ (src', deps')
+      | (src, deps) <- vPathDeps vi
+      , path `isPrefixOf` src
+      , let src' = drop (length path) src
+      , not (null src')
+      , let deps' =
+              [ drop (length path) dep
+              | dep <- deps
+              , path `isPrefixOf` dep
+              , not (null (drop (length path) dep))
+              ]
+      , not (null deps')
+      ]
+    anyLinearBelow =
+      any
+        ( \p ->
+            path `isPrefixOf` p
+              && length p > length path
+        )
+        (linPaths vi)
+
+fieldPatternQuantity :: VInfo -> FieldPath -> Maybe Quantity
+fieldPatternQuantity vi path =
+  pathPositiveQuantity vi path
+    <|> if any (\p -> path `isPrefixOf` p && length p > length path) (linPaths vi)
+      then Just QOne
+      else Nothing
+
+nonDupQuantity :: Maybe Quantity -> Bool
+nonDupQuantity q = q `elem` [Just QOne, Just QAtMostOne]
+
+positiveLowerQuantity :: Maybe Quantity -> Bool
+positiveLowerQuantity q = q `elem` [Just QOne, Just QAtLeastOne]
+
+-- | Field names that cannot be duplicated. This intentionally includes affine
+-- fields; 'linPaths' tracks the separate positive-lower "must consume" axis.
+nonDupFields :: VInfo -> [FieldPath]
+nonDupFields vi =
+  dedupPaths $
+    [ [f]
+    | (f, q) <- vFields vi
+    , nonDupQuantity q
+    ]
+    ++ [p | (p, q) <- vPathFields vi, nonDupQuantity q]
+    ++ vNonDupFields vi
 
 -- | One chronological place event on a tracked root binding: a
 -- definite consume of a path, or a borrow\/re-projection read of a
 -- path (§12.4 path-sensitive consumption).
 data PEv = PMove ![Text] !Span | PBorrow ![Text] !Span
+  deriving (Eq)
 
 -- | Usage interval of one binding plus the metadata its diagnostics need.
 data UseCount = UseCount
@@ -182,6 +332,7 @@ data UseCount = UseCount
   , ucViolations :: ![([Text], Span)]
   -- ^ detected §12.4 borrow-after-consume violations (borrowed path, borrow site)
   }
+  deriving (Eq)
 
 -- | Whether the binding is touched (used or borrowed) on some path.
 ucTouched :: UseCount -> Bool
@@ -195,6 +346,11 @@ oneUC sp = UseCount 1 1 [sp] 1 [] []
 
 touchUC :: UseCount
 touchUC = UseCount 0 0 [] 1 [] []
+
+refEscapeUC :: Span -> UseCount
+-- Escaping `ref x` marks the cell lifetime as no longer locally owned, but
+-- copying the Ref value is not a second move of the stored payload.
+refEscapeUC sp = (oneUC sp) {ucHi = 0, ucMoves = []}
 
 -- | A root-key occurrence carrying a §12.4 place event.
 evUC :: PEv -> UseCount -> UseCount
@@ -291,6 +447,11 @@ emit code fam sp msg =
   modify' $ \s ->
     s {sDiags = diag SevError StageElaborate code (Just fam) sp msg : sDiags s}
 
+emitPayload :: DiagnosticCode -> DiagnosticFamily -> Payload -> Span -> Text -> Analysis ()
+emitPayload code fam payload sp msg =
+  modify' $ \s ->
+    s {sDiags = withPayload payload (diag SevError StageElaborate code (Just fam) sp msg) : sDiags s}
+
 -- | Like 'emit' but attaches §3.1.1A related origins — used by the
 -- borrow/path/ownership diagnostics, which MUST include the borrow or
 -- consume introduction site and the failing later use or escape site.
@@ -320,12 +481,19 @@ freshKey nm = do
 data Env = Env
   { eVars :: !(Map Text VInfo)
   , eFns :: !(Map Text [PInfo])
+  , eInoutResults :: !(Map Text [FieldShape])
+  , eResultTypes :: !(Map Text Expr)
+  , eValueResultTypes :: !(Map Text Expr)
+  , eResultStorage :: !(Map Text VInfo)
+  , eRefOps :: !(Map Text RefOp)
+  , eRecognizedRefOps :: !(Map Span RefOp)
   , eBorrows :: ![(Text, [Text], Span)]
   -- ^ live lexical borrows: root key, path, and the §3.1.1A
   -- borrow-introduction site (the @let &@ binding span) so the
   -- borrow/path/ownership diagnostics can relate the introduction site.
   , eAliases :: !(Map Text [(Text, Maybe Quantity)])
-  , eCtors :: !(Map Text [(Text, [Maybe Quantity])])
+  , eRecordShapes :: !(Map Text RecordShape)
+  , eCtors :: !(Map Text [(Text, [CtorParamInfo])])
   -- ^ ctor name → all sibling ctors of its data type with field quantities
   , eProjs :: !(Map Text ProjUse)
   -- ^ §9.1.1 projection definitions of the module
@@ -346,6 +514,20 @@ data Env = Env
   -- params, to be aligned with a leading lambda chain in the body so
   -- their quantity obligations bind the lambda binders. Cleared once a
   -- lambda has claimed them (or on any non-lambda step).
+  , eMutableBindingFields :: !(Map Span [(Text, Text)])
+  -- ^ Checker-captured mutable-binding payloads keyed by source binding span.
+  , eMonadicResultHeads :: !(Set.Set Text)
+  -- ^ Source type heads that import resolution / instance registration proved
+  -- denote monadic action carriers. Usage may unwrap action result types only
+  -- for these heads plus the built-in carriers.
+  , eDuplicableStorageHeads :: !(Set.Set Text)
+  -- ^ Source heads that import resolution proved denote primitive duplicable
+  -- storage types. Same-spelling local types are removed before the Env is built.
+  , eLatentCurrentReadEscape :: !Bool
+  -- ^ While walking the body of a user-written closure/thunk/code quote,
+  -- a generated current-value read captures the hidden cell. Keep ordinary
+  -- straight-line reads non-consuming, but record the hidden-cell escape in
+  -- the latent usage of the closure-shaped value.
   }
 
 -- | §9.1.1 projection shape for the §12.4 footprint analysis.
@@ -353,6 +535,11 @@ data ProjUse = ProjUse
   { puIsPlace :: ![Bool] -- ^ per explicit binder, declaration order
   , puPlaceNames :: ![Text] -- ^ place binder names, declaration order
   , puYields :: ![(Text, [Text])] -- ^ yield leaves: place name, path suffix
+  }
+
+data MutableCloseContext = MutableCloseContext
+  { mccSelectedFacet :: !Text
+  , mccSourceOperation :: !Text
   }
 
 bindVars :: [(Text, VInfo)] -> Env -> Env
@@ -391,8 +578,26 @@ flatR r = (wrUsage r `seqU` wrLatent r, wrTaint r)
 -- module; without it a qualified imported call such as @m.borrow x@ would
 -- be treated as an unknown consuming call even when its interface says the
 -- parameter is unrestricted or affine.
-usageDiagnostics :: Map Span Expr -> Map Text [PInfo] -> Module -> [Diagnostic]
-usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
+usageDiagnostics ::
+  Map Span Expr ->
+  Map Span [(Text, Text)] ->
+  Map Text [PInfo] ->
+  Map Text [FieldShape] ->
+  Map Text Expr ->
+  Map Text Expr ->
+  Map Text [(Text, Maybe Quantity)] ->
+  Map Text RecordShape ->
+  Map Text [(Text, [Text])] ->
+  Map Text [(Text, [CtorParamInfo])] ->
+  Map Text RefOp ->
+  Map Span RefOp ->
+  Set.Set Text ->
+  Set.Set Text ->
+  Map Text ProjUse ->
+  Set.Set Text ->
+  Module ->
+  [Diagnostic]
+usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors importedRefOps recognizedRefOps importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -409,72 +614,53 @@ usageDiagnostics expansions importedFnParams m = concatMap analyzeDecl lets
         | DEffect _ ed _ <- decls
         , not (effIsLabelDecl ed)
         ]
-    projs =
-      Map.fromList
-        [ (nameText n, ProjUse isPlace placeNames yields)
-        | DProjection _ n bs _ body _ <- decls
-        , let groups = projBinderGroups bs
-              isPlace = map fst groups
-              placeNames = [maybe "_" nameText (bName b) | (True, b) <- groups]
-              yields = case body of
-                ProjSelector e ->
-                  [ (root, path)
-                  | Right (root, path) <- projYieldPlaces e
-                  , root `elem` placeNames
-                  ]
-                -- an accessor bundle's footprint is its whole root
-                ProjAccessors _ -> [(p, []) | p <- placeNames]
-        ]
-    aliases =
-      Map.fromList
-        [ (nameText n, fieldsOf rhs)
-        | DTypeAlias _ n [] _ (Just rhs) _ <- decls
-        , ERecordType {} <- [rhs]
-        ]
-        <> dataRecordFields
-    -- §12.4.3: a single-constructor data type with named fields (the
-    -- prelude Zipper, or a user type) resolves to its real field
-    -- quantities, so usage checking reads them from the declaration
-    -- instead of a hardcoded table keyed on the type name.
-    dataRecordFields =
-      Map.fromList
-        [ (nameText (ddName dd), fields)
-        | DData _ dd _ <- decls
-        , [c] <- [ddCtors dd]
-        , let fields =
-                [ (nameText nm, bpQuantity (bPrefix b))
-                | b <- cdBinders c
-                , Just nm <- [bName b]
-                ]
-        , not (null fields)
-        ]
-    aliasDeps =
-      Map.fromList
-        [ (nameText n, fieldDepsOf fs)
-        | DTypeAlias _ n [] _ (Just rhs) _ <- decls
-        , ERecordType fs _ _ <- [rhs]
-        ]
-    fieldsOf (ERecordType fs _ _) =
-      [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
-    fieldsOf _ = []
-    ctors =
-      Map.fromList
-        [ (nameText (cdName c), siblings)
-        | DData _ dd _ <- decls
-        , let siblings =
-                [ ( nameText (cdName c')
-                  , [bpQuantity (bPrefix b) | b <- cdBinders c']
-                  )
-                | c' <- ddCtors dd
-                ]
-        , c <- ddCtors dd
-        ]
-    fns = moduleUsageSignatures m `Map.union` builtinFns `Map.union` importedFnParams
+    projs = moduleUsageProjections m `Map.union` importedProjs
+    aliases = moduleUsageRecordAliases m `Map.union` importedAliases
+    recordShapes = moduleUsageRecordShapes m `Map.union` importedRecordShapes
+    aliasDeps = moduleUsageRecordDeps m `Map.union` importedRecordDeps
+    localFns = moduleUsageSignatures m
+    inoutResults = moduleUsageInoutResultsWith monadicResultHeads m `Map.union` importedInoutResults
+    resultTypes = moduleUsageResultTypesWith monadicResultHeads m `Map.union` importedResultTypes
+    valueResultTypes = moduleUsageValueResultTypes m `Map.union` importedValueResultTypes
+    localCtors = moduleUsageCtors m
+    baseCtors = localCtors `Map.union` importedCtors
+    ctors = baseCtors
+    borrowViewHeads = importedBorrowViewHeads Set.\\ localTypeHeads
+    resultStorage =
+      moduleUsageResultStorage
+        fns
+        inoutResults
+        resultTypes
+        valueResultTypes
+        refOps
+        recognizedRefOps
+        aliases
+        recordShapes
+        aliasDeps
+        ctors
+        projs
+        topEffOps
+        mutableBindingFields
+        borrowViewHeads
+        monadicResultHeads
+        duplicableStorageHeads
+        m
+    duplicableStorageHeads = importedDuplicableStorageHeads Set.\\ localTypeHeads
+    -- Ref-operation recognition is semantic, not source-spelling based.
+    -- Imported Prelude/std ref operations are shadowed by same-module term
+    -- declarations before Usage sees application heads.
+    refOps = (importedRefOps `Map.difference` localFns) `Map.difference` localCtors
+    fns = localFns `Map.union` builtinFns `Map.union` importedFnParams
+    monadicResultHeads = visibleMonadicResultHeads
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions fns aliases aliasDeps ctors projs topEffOps sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
+    localTypeHeads =
+      Set.fromList $
+        [nameText (ddName dd) | DData _ dd _ <- decls]
+          ++ [nameText n | DTypeAlias _ n _ _ _ _ <- decls]
 
 data BuiltinUsage = BuiltinUsage
   { buParams :: [PInfo]
@@ -482,12 +668,15 @@ data BuiltinUsage = BuiltinUsage
   , buLiftLike :: Bool
   }
 
+data RefOp = RefRead | RefWrite
+  deriving (Eq, Show)
+
 builtinUsage :: Map Text BuiltinUsage
 builtinUsage =
   Map.fromList
     [ ("unsafeConsume", BuiltinUsage [defaultP {pQuantity = Just QOne, pKnown = True}] EscapeOrdinaryParam False)
-    , ("pure", BuiltinUsage [defaultP {pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
-    , ("ioPure", BuiltinUsage [defaultP {pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
+    , ("pure", BuiltinUsage [defaultP {pQuantity = Just QOne, pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
+    , ("ioPure", BuiltinUsage [defaultP {pQuantity = Just QOne, pKnown = True, pEscapingParam = False}] EscapeOrdinaryParam True)
     , ("return", BuiltinUsage [] EscapeOrdinaryParam True)
     , ("summon", BuiltinUsage [defaultP {pQuantity = Just QZero, pKnown = True}] EscapeOrdinaryParam False)
     , ("fork", BuiltinUsage [defaultP {pKnown = True, pCaptureBound = CapClosed, pEscapeKind = EscapeFork}] EscapeFork False)
@@ -518,6 +707,305 @@ moduleUsageSignatures m =
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
     lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
 
+moduleUsageInoutResults :: Module -> Map Text [FieldShape]
+moduleUsageInoutResults = moduleUsageInoutResultsWith Set.empty
+
+moduleUsageInoutResultsWith :: Set.Set Text -> Module -> Map Text [FieldShape]
+moduleUsageInoutResultsWith monadicResultHeads m =
+  Map.fromList
+    [ (nameText n, inoutShapes)
+    | ld <- lets
+    , Just n <- [ldName ld]
+    , let inoutShapes = resultShapes (ldResultType ld `orElseE` Map.lookup (nameText n) sigs)
+    , not (null inoutShapes)
+    ]
+  where
+    decls = modDecls m
+    sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
+    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    resultShapes mty =
+      maybe [] (recordShapeFieldsWith shapes . unwrapActionType monadicResultHeads . dropBinders) mty
+    shapes = moduleUsageRecordShapes m
+    orElseE (Just x) _ = Just x
+    orElseE Nothing y = y
+
+moduleUsageResultTypes :: Module -> Map Text Expr
+moduleUsageResultTypes = moduleUsageResultTypesWith Set.empty
+
+moduleUsageResultTypesWith :: Set.Set Text -> Module -> Map Text Expr
+moduleUsageResultTypesWith monadicResultHeads m =
+  Map.fromList
+    [ (nameText n, unwrapActionType monadicResultHeads (dropBinders ty))
+    | ld <- lets
+    , Just n <- [ldName ld]
+    , Just ty <- [ldResultType ld `orElseE` Map.lookup (nameText n) sigs]
+    ]
+  where
+    decls = modDecls m
+    sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
+    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    orElseE (Just x) _ = Just x
+    orElseE Nothing y = y
+
+moduleUsageValueResultTypes :: Module -> Map Text Expr
+moduleUsageValueResultTypes m =
+  Map.fromList
+    [ (nameText n, dropBinders ty)
+    | ld <- lets
+    , Just n <- [ldName ld]
+    , Just ty <- [ldResultType ld `orElseE` Map.lookup (nameText n) sigs]
+    ]
+  where
+    decls = modDecls m
+    sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
+    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    orElseE (Just x) _ = Just x
+    orElseE Nothing y = y
+
+moduleUsageProjections :: Module -> Map Text ProjUse
+moduleUsageProjections m =
+  Map.fromList
+    [ (nameText n, ProjUse isPlace placeNames yields)
+    | DProjection _ n bs _ body _ <- modDecls m
+    , let groups = projBinderGroups bs
+          isPlace = map fst groups
+          placeNames = [maybe "_" nameText (bName b) | (True, b) <- groups]
+          yields = case body of
+            ProjSelector e ->
+              [ (root, path)
+              | Right (root, path) <- projYieldPlaces e
+              , root `elem` placeNames
+              ]
+            -- an accessor bundle's footprint is its whole root.
+            ProjAccessors _ -> [(p, []) | p <- placeNames]
+    ]
+
+moduleUsageResultStorage ::
+  Map Text [PInfo] ->
+  Map Text [FieldShape] ->
+  Map Text Expr ->
+  Map Text Expr ->
+  Map Text RefOp ->
+  Map Span RefOp ->
+  Map Text [(Text, Maybe Quantity)] ->
+  Map Text RecordShape ->
+  Map Text [(Text, [Text])] ->
+  Map Text [(Text, [CtorParamInfo])] ->
+  Map Text ProjUse ->
+  Map Text [(Text, Quantity)] ->
+  Map Span [(Text, Text)] ->
+  Set.Set Text ->
+  Set.Set Text ->
+  Set.Set Text ->
+  Module ->
+  Map Text VInfo
+moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads m =
+  fixedPoint (length lets + 1) Map.empty
+  where
+    decls = modDecls m
+    sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
+    lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+
+    fixedPoint fuel prev
+      | fuel <= 0 = prev
+      | storageSummariesStable next prev = next
+      | otherwise = fixedPoint (fuel - 1) next
+      where
+        next = summaryMap prev
+
+    summaryMap resultStorage =
+      Map.fromList
+        [ (nameText n, summaryFor resultStorage n sigTy ld)
+        | ld <- lets
+        , Just n <- [ldName ld]
+        , let sigTy = Map.lookup (nameText n) sigs
+        ]
+
+    summaryFor resultStorage n sigTy ld =
+      let binds = mapMaybe paramBindPure (alignParams (ldBinders ld) (maybe [] sigBinders sigTy))
+          env =
+            Env
+              (Map.fromList binds)
+              fns
+              inoutResults
+              resultTypes
+              valueResultTypes
+              resultStorage
+              refOps
+              recognizedRefOps
+              []
+              aliases
+              recordShapes
+              ctors
+              projs
+              Map.empty
+              Map.empty
+              aliasDeps
+              effs
+              Map.empty
+              []
+              mutableBindingFields
+              monadicResultHeads
+              duplicableStorageHeads
+              False
+       in storedValueInfo env ("$result:" <> nameText n) (exprSpan (ldBody ld)) (ldBody ld)
+
+    storageSummariesStable a b =
+      Map.map storageSummaryKey a == Map.map storageSummaryKey b
+
+    storageSummaryKey vi =
+      ( vQ vi
+      , vFields vi
+      , vPathFields vi
+      , vNonDupValue vi
+      , vNonDupFields vi
+      , vDeps vi
+      , vPathDeps vi
+      , vStoredTypeText vi
+      , renderExprSrc <$> vStoredTypeExpr vi
+      )
+
+    paramBindPure (b, ms) = do
+      n <- bName b
+      let BinderPrefix mq mb = bPrefix b
+          BinderPrefix sq sb = maybe emptyPrefix bPrefix ms
+          q = mq `orElse` sq
+          mark = mb `orElse` sb
+          ty = bType b `orElse` (bType =<< ms)
+          borrowViewed = maybe False (isBorrowViewTy borrowViewHeads) ty
+          anon = mark == Just (BorrowMark Nothing) || borrowViewed
+          pathFields = maybe [] (recordPathFieldsWith recordShapes ctors) ty
+          fields = mergeFieldQuantities (maybe [] (resolveFields aliases) ty) (topFieldsFromPaths pathFields)
+          deps = maybe [] (resolveDeps aliasDeps) ty
+          pathDeps = maybe [] (recordPathDepsWith recordShapes) ty
+          openTail
+            | isNothing mark
+            , q `elem` [Just QOne, Just QAtLeastOne]
+            , Just rowVar <- (hasAbstractTail aliases =<< ty) =
+                Just (rowVar, bSpan b)
+            | otherwise = Nothing
+      pure
+        ( nameText n
+        , (plainV ("$param:" <> nameText n) (bSpan b))
+            { vQ = q
+            , vBorrowed = isJust mark || borrowViewed
+            , vAnonBorrow = anon
+            , vFields = fields
+            , vPathFields = pathFields
+            , vDeps = deps
+            , vPathDeps = pathDeps
+            , vOpenTail = openTail
+            }
+        )
+
+    orElse (Just x) _ = Just x
+    orElse Nothing y = y
+
+moduleUsageCtors :: Module -> Map Text [(Text, [CtorParamInfo])]
+moduleUsageCtors m =
+  dataCtors
+  where
+    dataCtors = Map.fromList (concatMap dataCtorEntries [dd | DData _ dd _ <- modDecls m])
+    dataCtorEntries dd =
+      let typeName = nameText (ddName dd)
+          dataParams = binderParamNames (ddParams dd)
+          ctorParams c = [CtorParamInfo (nameText <$> bName b) (bpQuantity (bPrefix b)) (bType b) dataParams | b <- cdBinders c]
+          siblings = [(nameText (cdName c), ctorParams c) | c <- ddCtors dd]
+          qualifiedSiblings = [(typeName <> "." <> nameText (cdName c), ctorParams c) | c <- ddCtors dd]
+       in concat
+            [ [ (nameText (cdName c), siblings)
+              , (typeName <> "." <> nameText (cdName c), qualifiedSiblings)
+              ]
+            | c <- ddCtors dd
+            ]
+
+moduleUsageRecordAliases :: Module -> Map Text [(Text, Maybe Quantity)]
+moduleUsageRecordAliases m =
+  Map.fromList
+    [ (nameText n, fieldsOf fs)
+    | DTypeAlias _ n _ _ (Just rhs) _ <- decls
+    , Just fs <- [recordTypeFieldsOf rhs]
+    ]
+    <> dataRecordFields
+  where
+    decls = modDecls m
+    fieldsOf fs =
+      [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
+    -- §12.4.3: a single-constructor data type with named fields (the
+    -- prelude Zipper, or a user type) resolves to its real field
+    -- quantities, so usage checking reads them from the declaration
+    -- instead of a hardcoded table keyed on the type name.
+    dataRecordFields =
+      Map.fromList
+        [ (nameText (ddName dd), fields)
+        | DData _ dd _ <- decls
+        , [c] <- [ddCtors dd]
+        , let fields =
+                [ (nameText nm, bpQuantity (bPrefix b))
+                | b <- cdBinders c
+                , Just nm <- [bName b]
+                ]
+        , not (null fields)
+        ]
+
+moduleUsageRecordDeps :: Module -> Map Text [(Text, [Text])]
+moduleUsageRecordDeps m =
+  Map.fromList
+    [ (nameText n, fieldDepsOf fs)
+    | DTypeAlias _ n _ _ (Just rhs) _ <- decls
+    , Just fs <- [recordTypeFieldsOf rhs]
+    ]
+  where
+    decls = modDecls m
+
+moduleUsageRecordShapes :: Module -> Map Text RecordShape
+moduleUsageRecordShapes m =
+  Map.fromList
+    [ (nameText n, RecordShape (binderParamNames params) (shapesOfRecordType fs))
+    | DTypeAlias _ n params _ (Just rhs) _ <- decls
+    , Just fs <- [recordTypeFieldsOf rhs]
+    ]
+    <> dataRecordShapes
+  where
+    decls = modDecls m
+    shapesOfRecordType fs =
+      [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
+    dataRecordShapes =
+      Map.fromList
+        [ (nameText (ddName dd), shapes)
+        | DData _ dd _ <- decls
+        , [c] <- [ddCtors dd]
+        , let fields =
+                [ FieldShape (nameText nm) (bpQuantity (bPrefix b)) (bType b)
+                | b <- cdBinders c
+                , Just nm <- [bName b]
+                ]
+              shapes = RecordShape (binderParamNames (ddParams dd)) fields
+        , not (null fields)
+        ]
+
+binderParamNames :: [Binder] -> [Text]
+binderParamNames =
+  mapMaybe (fmap nameText . bName)
+
+-- | Surface @(field : T)@ is ambiguous with expression ascription in the
+-- parser, but in type position the checker treats a lower-case field as a
+-- singleton record type (§13.1). Usage consumes declaration/type shapes after
+-- parsing, so it must preserve the same interpretation.
+recordTypeFieldsOf :: Expr -> Maybe [RecTypeField]
+recordTypeFieldsOf = \case
+  ERecordType fs _ _ -> Just fs
+  EAscription (EVar n) ty _
+    | isLowerName (nameText n) ->
+        Just [RecTypeField False False emptyPrefix Nothing n ty]
+  ECaptures e _ _ -> recordTypeFieldsOf e
+  _ -> Nothing
+
+isLowerName :: Text -> Bool
+isLowerName t = case T.uncons t of
+  Just (c, _) -> c >= 'a' && c <= 'z'
+  Nothing -> False
+
 -- | Resolve a (possibly aliased) record type to its field list.
 resolveFields :: Map Text [(Text, Maybe Quantity)] -> Expr -> [(Text, Maybe Quantity)]
 resolveFields aliases = go
@@ -525,31 +1013,337 @@ resolveFields aliases = go
     go = \case
       ERecordType fs _ _ ->
         [(nameText (rtfName f), bpQuantity (rtfPrefix f)) | f <- fs]
-      EVar n -> Map.findWithDefault [] (nameText n) aliases
-      EApp (EVar n) _
-        -- an applied record alias / single-ctor data type resolves to its
-        -- declared fields (so a user type named Zipper uses its own fields)
-        | Just fs <- Map.lookup (nameText n) aliases -> fs
-        -- §12.4.3 fallback for the prelude Zipper, an imported data type the
-        -- usage pass cannot resolve locally: a linear fill closure.
-        | nameText n == "Zipper" -> [("focus", Nothing), ("fill", Just QOne)]
+      EAscription (EVar n) _ _
+        | isLowerName (nameText n) -> [(nameText n, Nothing)]
+      e
+        | Just hd <- typePathHead e
+        , Just fs <- Map.lookup hd aliases -> fs
       EAscription e _ _ -> go e
       ECaptures e _ _ -> go e
       _ -> []
 
--- | Combine field-quantity lists, preferring the more demanding
--- (quantity-1) entry. A field is linear in the result if either source
--- records it as quantity 1, so an annotation never weakens an inferred
--- linear field and vice versa.
+typePathHead :: Expr -> Maybe Text
+typePathHead = \case
+  EVar n -> Just (nameText n)
+  EDot base (DotName n) -> (<> "." <> nameText n) <$> typePathHead base
+  EApp f _ -> typePathHead f
+  EAscription e _ _ -> typePathHead e
+  ECaptures e _ _ -> typePathHead e
+  _ -> Nothing
+
+recordPathFields :: Env -> Expr -> [(FieldPath, Maybe Quantity)]
+recordPathFields env = recordPathFieldsWith (eRecordShapes env) (eCtors env)
+
+recordPathFieldsWith :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Expr -> [(FieldPath, Maybe Quantity)]
+recordPathFieldsWith shapesByName ctorsByName = go (0 :: Int) Set.empty
+  where
+    go depth seen e
+      | depth > 32 = []
+      | otherwise = case e of
+          ERecordType fs _ _ ->
+            shapePaths depth seen [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
+          EAscription (EVar n) ty _
+            | isLowerName (nameText n) ->
+                shapePaths depth seen [FieldShape (nameText n) Nothing (Just ty)]
+          EAscription e' _ _ -> go depth seen e'
+          ECaptures e' _ _ -> go depth seen e'
+          e'
+            | Just hd <- typePathHead e' ->
+                if Set.member hd seen
+                  then []
+                  else case shapeFieldsForType shapesByName e' of
+                    Just shapes -> shapePaths depth (Set.insert hd seen) shapes
+                    Nothing -> []
+          _ -> []
+    shapePaths depth seen shapes =
+      mergePathQuantities direct nested
+      where
+        childPaths =
+          [ (s, maybe [] (go (depth + 1) seen) (fsType s))
+          | s <- shapes
+          ]
+        direct =
+          [ ([fsName s], Just q)
+          | (s, children) <- childPaths
+          , Just q <- [fieldStorageQuantity depth s children]
+          , nonDupQuantity (Just q) || positiveLowerQuantity (Just q)
+          ]
+        nested =
+          concat
+            [ [ (fsName s : p, q) | (p, q) <- children ]
+            | (s, children) <- childPaths
+            ]
+    fieldStorageQuantity depth s childPaths =
+      joinFieldQuantities
+        [ fsQuantity s
+        , if null childPaths
+            then fsType s >>= typeStorageQuantityWithDepth shapesByName ctorsByName (depth + 1)
+            else Nothing
+        ]
+
+typeStorageQuantityWith :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Expr -> Maybe Quantity
+typeStorageQuantityWith shapesByName ctorsByName = typeStorageQuantityWithDepth shapesByName ctorsByName 0
+
+typeStorageQuantityWithDepth :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Int -> Expr -> Maybe Quantity
+typeStorageQuantityWithDepth shapesByName ctorsByName startDepth = go startDepth Set.empty
+  where
+    go depth seen ty
+      | depth > 32 = Nothing
+      | otherwise =
+          joinFieldQuantities $
+            case ty of
+              ERecordType fs _ _ ->
+                shapeQuantities depth seen [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
+              EAscription (EVar n) fieldTy _
+                | isLowerName (nameText n) ->
+                    shapeQuantities depth seen [FieldShape (nameText n) Nothing (Just fieldTy)]
+              EAscription e _ _ -> [go depth seen e]
+              ECaptures e _ _ -> [go depth seen e]
+              e
+                | Just hd <- typePathHead e ->
+                    if Set.member hd seen
+                      then []
+                      else
+                        let seen' = Set.insert hd seen
+                         in maybe [] (shapeQuantities depth seen') (shapeFieldsForType shapesByName e)
+                              ++ ctorQuantities depth seen' e hd
+              EApp f _ -> [go depth seen f]
+              _ -> []
+    shapeQuantities depth seen shapes =
+      [ fsQuantity s
+      | s <- shapes
+      , nonDupQuantity (fsQuantity s) || positiveLowerQuantity (fsQuantity s)
+      ]
+        ++ [ go (depth + 1) seen ty
+           | s <- shapes
+           , ty <- maybeToList (fsType s)
+           ]
+    ctorQuantities depth seen ty hd =
+      [ ctorParamStorageQuantity depth seen p
+      | siblings <- ctorsForType hd
+      , (_, params) <- siblings
+      , p <- map (substCtorParamInfoForType ty) params
+      ]
+    ctorsForType hd =
+      dedupCtorGroups
+        [ siblings
+        | (k, siblings) <- Map.toList ctorsByName
+        , (hd <> ".") `T.isPrefixOf` k
+        ]
+    dedupCtorGroups = goGroups Set.empty
+      where
+        goGroups _ [] = []
+        goGroups seenKeys (siblings : rest)
+          | key `Set.member` seenKeys = goGroups seenKeys rest
+          | otherwise = siblings : goGroups (Set.insert key seenKeys) rest
+          where
+            key = map fst siblings
+    ctorParamStorageQuantity depth seen p =
+      joinFieldQuantities
+        [ cpiQuantity p
+        , cpiType p >>= go (depth + 1) seen
+        ]
+
+substCtorParamInfoForType :: Expr -> CtorParamInfo -> CtorParamInfo
+substCtorParamInfoForType ty p =
+  let subst = Map.fromList (zip (cpiDataParams p) (typeAppArgs ty))
+   in p {cpiType = substExpr subst <$> cpiType p}
+
+recordPathDeps :: Env -> Expr -> [(FieldPath, [FieldPath])]
+recordPathDeps env = recordPathDepsWith (eRecordShapes env)
+
+recordPathDepsWith :: Map Text RecordShape -> Expr -> [(FieldPath, [FieldPath])]
+recordPathDepsWith shapesByName = go (0 :: Int) []
+  where
+    go depth prefix e
+      | depth > 32 = []
+      | otherwise = case recordShapeFieldsWith shapesByName e of
+          [] -> []
+          shapes ->
+            mergePathDeps direct nested
+            where
+              names = map fsName shapes
+              direct =
+                [ (prefix ++ [fsName s], [prefix ++ [d] | d <- deps])
+                | s <- shapes
+                , ty <- maybeToList (fsType s)
+                , let deps = [d | d <- surfaceThisRefs ty, d `elem` names]
+                , not (null deps)
+                ]
+              nested =
+                foldr
+                  mergePathDeps
+                  []
+                  [ go (depth + 1) (prefix ++ [fsName s]) ty
+                  | s <- shapes
+                  , ty <- maybeToList (fsType s)
+                  ]
+
+recordShapeFieldsWith :: Map Text RecordShape -> Expr -> [FieldShape]
+recordShapeFieldsWith shapesByName = \case
+  ERecordType fs _ _ ->
+    [FieldShape (nameText (rtfName f)) (bpQuantity (rtfPrefix f)) (Just (rtfType f)) | f <- fs]
+  EAscription (EVar n) ty _
+    | isLowerName (nameText n) ->
+        [FieldShape (nameText n) Nothing (Just ty)]
+  EAscription e _ _ -> recordShapeFieldsWith shapesByName e
+  ECaptures e _ _ -> recordShapeFieldsWith shapesByName e
+  e -> fromMaybe [] (shapeFieldsForType shapesByName e)
+
+shapeFieldsForType :: Map Text RecordShape -> Expr -> Maybe [FieldShape]
+shapeFieldsForType shapesByName ty = do
+  hd <- typePathHead ty
+  RecordShape params fields <- Map.lookup hd shapesByName
+  let subst = Map.fromList (zip params (typeAppArgs ty))
+  pure (map (substFieldShape subst) fields)
+
+typeAppArgs :: Expr -> [Expr]
+typeAppArgs = \case
+  EApp f args -> typeAppArgs f ++ explicitArgs args
+  EAscription e _ _ -> typeAppArgs e
+  ECaptures e _ _ -> typeAppArgs e
+  _ -> []
+  where
+    explicitArgs = mapMaybe $ \case
+      ArgExplicit e -> Just e
+      ArgImplicit e -> Just e
+      _ -> Nothing
+
+substFieldShape :: Map Text Expr -> FieldShape -> FieldShape
+substFieldShape subst s =
+  s {fsType = substExpr subst <$> fsType s}
+
+substExpr :: Map Text Expr -> Expr -> Expr
+substExpr subst expr = case expr of
+  EVar n -> Map.findWithDefault expr (nameText n) subst
+  ETuple es sp -> ETuple (map go es) sp
+  ERecordType fs mtail sp ->
+    ERecordType [f {rtfType = go (rtfType f)} | f <- fs] (go <$> mtail) sp
+  EApp f args -> EApp (go f) (map substArg args)
+  EDot e m -> EDot (go e) m
+  EQDot e m -> EQDot (go e) m
+  EArrow b body ->
+    EArrow (substBinder subst b) (substExpr (dropBinder b subst) body)
+  EForall bs body sp ->
+    let subst' = foldr dropBinder subst bs
+     in EForall (map (substBinder subst) bs) (substExpr subst' body) sp
+  EExists bs body sp ->
+    let subst' = foldr dropBinder subst bs
+     in EExists (map (substBinder subst) bs) (substExpr subst' body) sp
+  ETraitArrow c body -> ETraitArrow (go c) (go body)
+  EEffRow fields mtail sp -> EEffRow [(n, go e) | (n, e) <- fields] (go <$> mtail) sp
+  EVariant arms mtail sp -> EVariant (map substVariant arms) (go <$> mtail) sp
+  EAscription e ty sp -> EAscription (go e) (go ty) sp
+  ECaptures e caps sp -> ECaptures (go e) caps sp
+  EOptionSugar e sp -> EOptionSugar (go e) sp
+  other -> other
+  where
+    go = substExpr subst
+    substArg = \case
+      ArgExplicit e -> ArgExplicit (go e)
+      ArgImplicit e -> ArgImplicit (go e)
+      ArgInout e sp -> ArgInout (go e) sp
+      ArgNamedBlock items sp -> ArgNamedBlock [(n, go <$> me) | (n, me) <- items] sp
+    substBinder sub b = b {bType = substExpr sub <$> bType b, bDefault = substExpr sub <$> bDefault b}
+    substVariant (VariantArm e ty) = VariantArm (go e) (go <$> ty)
+    dropBinder b sub = maybe sub (\n -> Map.delete (nameText n) sub) (bName b)
+
+topFieldsFromPaths :: [(FieldPath, Maybe Quantity)] -> [(Text, Maybe Quantity)]
+topFieldsFromPaths paths =
+  [ (f, joinFieldQuantities qs)
+  | f <- fields
+  , let qs = [q | ([f'], q) <- paths, f' == f]
+  ]
+  where
+    fields = foldr (\p acc -> case p of [f] | f `notElem` acc -> f : acc; _ -> acc) [] (map fst paths)
+
+-- | Combine field-quantity lists, preserving the two independent linear
+-- axes: @>=1@ is a drop obligation, @<=1@ is a duplication limit, and their
+-- join is @1@. An annotation never weakens an inferred obligation and vice
+-- versa.
 mergeFieldQuantities ::
   [(Text, Maybe Quantity)] -> [(Text, Maybe Quantity)] -> [(Text, Maybe Quantity)]
 mergeFieldQuantities annotated inferred =
-  [ (f, if f `elem` infLin then Just QOne else q)
-  | (f, q) <- annotated
-  ]
-    ++ [(f, Just QOne) | f <- infLin, f `notElem` map fst annotated]
+  [(f, joinFieldQuantities (lookupAll f annotated ++ lookupAll f inferred)) | f <- fields]
   where
-    infLin = [f | (f, Just QOne) <- inferred]
+    fields = map fst annotated ++ [f | (f, _) <- inferred, f `notElem` map fst annotated]
+
+lookupAll :: Eq a => a -> [(a, b)] -> [b]
+lookupAll k = map snd . filter ((== k) . fst)
+
+mergePathQuantities ::
+  [(FieldPath, Maybe Quantity)] -> [(FieldPath, Maybe Quantity)] -> [(FieldPath, Maybe Quantity)]
+mergePathQuantities annotated inferred =
+  [(p, joinFieldQuantities (lookupAll p annotated ++ lookupAll p inferred)) | p <- paths]
+  where
+    paths = dedupPaths (map fst annotated ++ map fst inferred)
+
+dedupPaths :: [FieldPath] -> [FieldPath]
+dedupPaths = foldr (\p ps -> if p `elem` ps then ps else p : ps) []
+
+mergePathDeps :: [(FieldPath, [FieldPath])] -> [(FieldPath, [FieldPath])] -> [(FieldPath, [FieldPath])]
+mergePathDeps a b =
+  [ (p, dedupPaths (concat (lookupAll p a ++ lookupAll p b)))
+  | p <- dedupPaths (map fst a ++ map fst b)
+  ]
+
+pathText :: FieldPath -> Text
+pathText = T.intercalate "."
+
+pathKey :: VInfo -> FieldPath -> Text
+pathKey vi p = vKey vi <> "." <> pathText p
+
+refEscapeKey :: VInfo -> Text
+refEscapeKey vi = vKey vi <> "$refescape"
+
+usagePathOf :: VInfo -> Text -> Maybe FieldPath
+usagePathOf vi k
+  | k == vKey vi = Just []
+  | Just rest <- T.stripPrefix (vKey vi <> ".") k
+  , rest /= "~" =
+      Just (T.splitOn "." rest)
+  | otherwise = Nothing
+
+pathUsage :: VInfo -> FieldPath -> Usage -> UseCount
+pathUsage vi p u =
+  foldr seqUC zeroUC
+    [ c
+    | (k, c) <- Map.toList u
+    , Just q <- [usagePathOf vi k]
+    , not (null q)
+    , pathsOverlap p q
+    ]
+
+joinFieldQuantities :: [Maybe Quantity] -> Maybe Quantity
+joinFieldQuantities qs
+  | Just QOne `elem` qs = Just QOne
+  | Just QAtMostOne `elem` qs && Just QAtLeastOne `elem` qs = Just QOne
+  | Just QAtLeastOne `elem` qs = Just QAtLeastOne
+  | Just QAtMostOne `elem` qs = Just QAtMostOne
+  | Just QZero `elem` qs = Just QZero
+  | Just QOmega `elem` qs = Just QOmega
+  | otherwise = case [q | q@(Just (QTerm _)) <- qs] of
+      (q : _) -> q
+      [] -> Nothing
+
+joinVInfo :: VInfo -> VInfo -> VInfo
+joinVInfo a b =
+  a
+    { vQ = joinFieldQuantities [vQ a, vQ b]
+    , vFields = mergeFieldQuantities (vFields a) (vFields b)
+    , vPathFields = mergePathQuantities (vPathFields a) (vPathFields b)
+    , vNonDupValue = vNonDupValue a || vNonDupValue b
+    , vNonDupFields = dedupPaths (vNonDupFields a ++ vNonDupFields b)
+    , vMutable = vMutable a || vMutable b
+    , vStoredTypeExpr = vStoredTypeExpr a `orElse` vStoredTypeExpr b
+    , vMutableDiagFields = if null (vMutableDiagFields a) then vMutableDiagFields b else vMutableDiagFields a
+    , vDeps = vDeps a ++ [d | d <- vDeps b, d `notElem` vDeps a]
+    , vPathDeps = mergePathDeps (vPathDeps a) (vPathDeps b)
+    , vOpenTail = vOpenTail a `orElse` vOpenTail b
+    }
+  where
+    orElse (Just x) _ = Just x
+    orElse Nothing y = y
 
 -- | §13.2.1: the fields a record literal makes linear because their
 -- initializer transfers a quantity-1 value (a linear binding or a
@@ -559,7 +1353,7 @@ mergeFieldQuantities annotated inferred =
 litLinearFields :: Env -> Expr -> [(Text, Maybe Quantity)]
 litLinearFields env = \case
   ERecordLit items _ ->
-    [ (nameText (riName it), Just QOne)
+    [ (nameText (riName it), Just (fromMaybe QOne (positiveTransferQuantity env v)))
     | it <- items
     , Just v <- [riValue it]
     , transfersLinear env v
@@ -568,14 +1362,433 @@ litLinearFields env = \case
   ECaptures e _ _ -> litLinearFields env e
   _ -> []
 
+litPathFields :: Env -> Expr -> [(FieldPath, Maybe Quantity)]
+litPathFields env = \case
+  ERecordLit items _ ->
+    mergePathQuantities direct nested
+    where
+      direct =
+        [ ([nameText (riName it)], Just (fromMaybe QOne (positiveTransferQuantity env v)))
+        | it <- items
+        , Just v <- [riValue it]
+        , transfersLinear env v
+        ]
+      nested =
+        concat
+          [ [ (nameText (riName it) : p, q)
+            | (p, q) <- storedPathFields env v
+            ]
+          | it <- items
+          , Just v <- [riValue it]
+          ]
+  EAscription e _ _ -> litPathFields env e
+  ECaptures e _ _ -> litPathFields env e
+  _ -> []
+
+litNonDuplicableFields :: Env -> Expr -> [FieldPath]
+litNonDuplicableFields env = \case
+  ERecordLit items _ ->
+    dedupPaths $
+      [ [nameText (riName it)]
+      | it <- items
+      , Just v <- [riValue it]
+      , transfersNonDuplicable env v
+      ]
+      ++ concat
+        [ [nameText (riName it) : p | p <- storedNonDupFields env v]
+        | it <- items
+        , Just v <- [riValue it]
+        ]
+  EAscription e _ _ -> litNonDuplicableFields env e
+  ECaptures e _ _ -> litNonDuplicableFields env e
+  _ -> []
+
+storedPathFields :: Env -> Expr -> [(FieldPath, Maybe Quantity)]
+storedPathFields env e = case e of
+  ERecordLit {} -> litPathFields env e
+  EAscription e' ty _ -> mergePathQuantities (recordPathFields env ty) (storedPathFields env e')
+  ECaptures e' _ _ -> storedPathFields env e'
+  EApp f args ->
+    mergePathQuantities
+      (ctorPathFields env f args)
+      (maybe [] vPathFields (calleeStorageInfo env f))
+  _
+    | Just (vi, path, _) <- placeOf env e ->
+        rebasePathFields path (vPathFields vi)
+  _ -> []
+
+storedNonDupFields :: Env -> Expr -> [FieldPath]
+storedNonDupFields env e = case e of
+  ERecordLit {} -> litNonDuplicableFields env e
+  EAscription e' ty _ ->
+    let annotated = [p | (p, q) <- recordPathFields env ty, nonDupQuantity q]
+        inferred = storedNonDupFields env e'
+     in dedupPaths (annotated ++ inferred)
+  ECaptures e' _ _ -> storedNonDupFields env e'
+  EApp f args ->
+    dedupPaths $
+      [p | (p, q) <- ctorPathFields env f args, nonDupQuantity q]
+        ++ maybe [] vNonDupFields (calleeStorageInfo env f)
+  _
+    | Just (vi, path, _) <- placeOf env e ->
+        rebasePaths path (nonDupFields vi)
+  _ -> []
+
+rebasePathFields :: FieldPath -> [(FieldPath, Maybe Quantity)] -> [(FieldPath, Maybe Quantity)]
+rebasePathFields base fields =
+  [ (rest, q)
+  | (p, q) <- fields
+  , base `isPrefixOf` p
+  , let rest = drop (length base) p
+  , not (null rest)
+  ]
+
+rebasePaths :: FieldPath -> [FieldPath] -> [FieldPath]
+rebasePaths base fields =
+  dedupPaths
+    [ rest
+    | p <- fields
+    , base `isPrefixOf` p
+    , let rest = drop (length base) p
+    , not (null rest)
+    ]
+
+ctorPathFields :: Env -> Expr -> [Arg] -> [(FieldPath, Maybe Quantity)]
+ctorPathFields env f args =
+  case appHeadVar env f of
+    Just cn
+      | not (Map.member cn (eVars env))
+      , Just params <- lookup cn (Map.findWithDefault [] cn (eCtors env)) ->
+          mergePathQuantities (direct params args) (nested params args)
+    _ -> []
+  where
+    direct params args0 =
+      [ ([n], q)
+      | p <- ctorParamArgs params args0
+      , Just n <- [cpiName p]
+      , let q = cpiQuantity p
+      , nonDupQuantity q || positiveLowerQuantity q
+      ]
+    nested params args0 =
+      concat
+        [ [ (n : p, q)
+          | Just n <- [cpiName pinfo]
+          , (p, q) <- maybe [] (recordPathFields env) (cpiType pinfo)
+          ]
+        | pinfo <- ctorParamArgs params args0
+        ]
+    ctorParamArgs params0 = snd . foldl step (0 :: Int, [])
+      where
+        step (i, acc) = \case
+          ArgExplicit _ -> (i + 1, acc ++ maybeToList (atMay i params0))
+          ArgInout _ _ -> (i + 1, acc ++ maybeToList (atMay i params0))
+          ArgNamedBlock items _ ->
+            ( i
+            , acc
+                ++ [ p
+                   | (n, _) <- items
+                   , Just p <- [find ((== Just (nameText n)) . cpiName) params0]
+                   ]
+            )
+          ArgImplicit _ -> (i, acc)
+        atMay i xs
+          | i >= 0 = listToMaybe (drop i xs)
+          | otherwise = Nothing
+
+storedLinearFields :: Env -> Expr -> [(Text, Maybe Quantity)]
+storedLinearFields env e =
+  mergeFieldQuantities top (topFieldsFromPaths (storedPathFields env e))
+  where
+    top = case e of
+      ERecordLit {} -> mergeFieldQuantities (resolveFields (eAliases env) e) (litLinearFields env e)
+      EVar n
+        | Just vi <- Map.lookup (nameText n) (eVars env) ->
+            [(f, q) | (f, q) <- vFields vi, positiveLowerQuantity q]
+      EAscription e' ty _ -> mergeFieldQuantities (resolveFields (eAliases env) ty) (storedLinearFields env e')
+      ECaptures e' _ _ -> storedLinearFields env e'
+      _ -> []
+
+storedRootQuantity :: Env -> Expr -> Maybe Quantity
+storedRootQuantity env e = case placeOf env e of
+  Just (vi, [], _)
+    | positiveLowerQuantity (vQ vi) -> vQ vi
+    | not (null (linPaths vi)) -> Just QOne
+    | otherwise -> Nothing
+  Just (vi, path, _) -> pathPositiveQuantity vi path
+  Nothing -> case e of
+    ERecordLit {} -> Nothing
+    EAscription e' _ _ -> storedRootQuantity env e'
+    ECaptures e' _ _ -> storedRootQuantity env e'
+    EApp f args ->
+      joinFieldQuantities $
+        ctorStoresQuantityWith positiveLowerQuantity env f args
+          : [q | Just vi <- [calleeStorageInfo env f], let q = vQ vi, positiveLowerQuantity q]
+    _ -> if transfersLinear env e then Just QOne else Nothing
+
+storedValueInfo :: Env -> Text -> Span -> Expr -> VInfo
+storedValueInfo env key sp rhs =
+  let storedTyExpr = storedValueTypeExpr env rhs
+      typeInfo =
+        if storedValueHasCompleteStorageShape env rhs
+          then Nothing
+          else storedValueInfoFromType env key sp <$> storedTyExpr
+      linearFields = mergeFieldQuantities (storedLinearFields env rhs) (maybe [] vFields typeInfo)
+      pathFields = mergePathQuantities (storedPathFields env rhs) (maybe [] vPathFields typeInfo)
+      deps = maybe [] vDeps typeInfo
+      pathDeps = maybe [] vPathDeps typeInfo
+      nonDupFieldNames = dedupPaths (storedNonDupFields env rhs ++ maybe [] vNonDupFields typeInfo)
+      rootQuantity = joinFieldQuantities [storedRootQuantity env rhs, typeInfo >>= vQ]
+      diagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
+      storedTyText = case lookup "storedValueType" diagFields of
+        Just t -> Just t
+        Nothing -> case rhs of
+          EAscription _ ty _ -> Just (renderExprSrc ty)
+          _ -> Nothing
+      nonDupHidden =
+        ( transfersNonDuplicable env rhs
+            && not (maybe False (nonDupQuantity . Just) rootQuantity)
+            && null (storedNonDupFields env rhs)
+        )
+          || maybe False vNonDupValue typeInfo
+   in (plainV key sp)
+        { vMutable = True
+        , vQ = rootQuantity
+        , vFields = linearFields
+        , vPathFields = pathFields
+        , vDeps = deps
+        , vPathDeps = pathDeps
+        , vNonDupValue = nonDupHidden
+        , vNonDupFields = nonDupFieldNames
+        , vStoredTypeText = storedTyText
+        , vStoredTypeExpr = storedTyExpr
+        , vMutableDiagFields = diagFields
+        }
+
+storedValueHasConcreteShape :: Env -> Expr -> Bool
+storedValueHasConcreteShape env = \case
+  ERecordLit {} -> True
+  EAscription e _ _ -> storedValueHasConcreteShape env e
+  ECaptures e _ _ -> storedValueHasConcreteShape env e
+  EVar n ->
+    let cn = nameText n
+     in not (Map.member cn (eVars env)) && Map.member cn (eCtors env)
+  EApp f _
+    | Just cn <- appHeadVar env f ->
+        not (Map.member cn (eVars env)) && Map.member cn (eCtors env)
+  e
+    | Just _ <- placeOf env e -> True
+  _ -> False
+
+-- | True only when the value shape is precise enough to own the mutable-cell
+-- storage facts without consulting the declared/ascribed cell type.  An
+-- ascription on mutable storage is the cell's type, not just an initializer
+-- check; it can contain hidden variant payload obligations even when the
+-- immediate initializer is a concrete droppable constructor.
+storedValueHasCompleteStorageShape :: Env -> Expr -> Bool
+storedValueHasCompleteStorageShape env = \case
+  EAscription {} -> False
+  ECaptures e _ _ -> storedValueHasCompleteStorageShape env e
+  e -> storedValueHasConcreteShape env e
+
+storedValueTypeExpr :: Env -> Expr -> Maybe Expr
+storedValueTypeExpr env = \case
+  EAscription _ ty _ -> Just ty
+  ECaptures e _ _ -> storedValueTypeExpr env e
+  EApp f _ -> calleeDemandName env f >>= (`Map.lookup` eValueResultTypes env)
+  _ -> Nothing
+
+storedValueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
+storedValueInfoFromType env key sp ty =
+  let pathFields = recordPathFields env ty
+      pathDeps = recordPathDeps env ty
+      fields = mergeFieldQuantities (resolveFields (eAliases env) ty) (topFieldsFromPaths pathFields)
+      nonDupFieldNames = [p | (p, q) <- pathFields, nonDupQuantity q]
+      hiddenPositive = typeMayContainPositive env ty && null [() | (_, q) <- pathFields, positiveLowerQuantity q]
+      hiddenNonDup =
+        typeMayContainNonDuplicable env ty
+          && null nonDupFieldNames
+          && not hiddenPositive
+      diagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
+   in (plainV key sp)
+        { vMutable = True
+        , vQ = if hiddenPositive then Just QOne else Nothing
+        , vFields = fields
+        , vPathFields = pathFields
+        , vDeps = resolveDeps (eFieldDeps env) ty
+        , vPathDeps = pathDeps
+        , vNonDupValue = hiddenNonDup
+        , vNonDupFields = nonDupFieldNames
+        , vStoredTypeText = Just (renderExprSrc ty)
+        , vStoredTypeExpr = Just ty
+        , vMutableDiagFields = diagFields
+        }
+
+storedActionResultInfo :: Env -> VInfo -> Expr -> VInfo
+storedActionResultInfo env oldInfo action =
+  case actionResultValueExpr env action of
+    Just valueExpr ->
+      inheritStoredCellType env oldInfo False (storedValueInfo env key sp valueExpr)
+    Nothing -> case actionResultType env action <|> vStoredTypeExpr oldInfo of
+      Just ty -> storedValueInfoFromType env key sp ty
+      Nothing ->
+        (plainV key sp)
+            { vMutable = True
+            , vStoredTypeText = vStoredTypeText oldInfo
+            , vStoredTypeExpr = vStoredTypeExpr oldInfo
+            , vMutableDiagFields = vMutableDiagFields oldInfo
+            }
+  where
+    key = vKey oldInfo
+    sp = vSpan oldInfo
+
+storedValueInfoForWrite :: Env -> VInfo -> Expr -> VInfo
+storedValueInfoForWrite env oldInfo rhs =
+  inheritStoredCellType env oldInfo False (storedValueInfo env (vKey oldInfo) (vSpan oldInfo) rhs)
+
+inheritStoredCellType :: Env -> VInfo -> Bool -> VInfo -> VInfo
+inheritStoredCellType env oldInfo mergeFallback vi =
+  let fallback = storedValueInfoFromType env (vKey oldInfo) (vSpan oldInfo) <$> vStoredTypeExpr oldInfo
+      mergeFacts base extra =
+        base
+          { vQ = joinFieldQuantities [vQ base, vQ extra]
+          , vFields = mergeFieldQuantities (vFields base) (vFields extra)
+          , vPathFields = mergePathQuantities (vPathFields base) (vPathFields extra)
+          , vDeps = vDeps base ++ [d | d <- vDeps extra, d `notElem` vDeps base]
+          , vPathDeps = mergePathDeps (vPathDeps base) (vPathDeps extra)
+          , vNonDupValue = vNonDupValue base || vNonDupValue extra
+          , vNonDupFields = dedupPaths (vNonDupFields base ++ vNonDupFields extra)
+          }
+      vi' =
+        if mergeFallback
+          then maybe vi (mergeFacts vi) fallback
+          else vi
+   in vi'
+        { vStoredTypeText = vStoredTypeText vi' <|> vStoredTypeText oldInfo
+        , vStoredTypeExpr = vStoredTypeExpr vi' <|> vStoredTypeExpr oldInfo
+        , vMutableDiagFields =
+            if null (vMutableDiagFields vi')
+              then vMutableDiagFields oldInfo
+              else vMutableDiagFields vi'
+        }
+
+actionResultValueExpr :: Env -> Expr -> Maybe Expr
+actionResultValueExpr env = \case
+  EAscription e _ _ -> actionResultValueExpr env e
+  ECaptures e _ _ -> actionResultValueExpr env e
+  EApp f args
+    | Just n <- appHeadVar env f
+    , maybe False buLiftLike (Map.lookup n builtinUsage)
+    , (valueExpr : _) <- reverse (explicitExprs args) ->
+        Just valueExpr
+  _ -> Nothing
+
+actionResultType :: Env -> Expr -> Maybe Expr
+actionResultType env = \case
+  EAscription _ ty _ -> Just (unwrapActionType (eMonadicResultHeads env) ty)
+  ECaptures e _ _ -> actionResultType env e
+  EApp f _ -> calleeDemandName env f >>= (`Map.lookup` eResultTypes env)
+  e -> calleeDemandName env e >>= (`Map.lookup` eResultTypes env)
+
 -- | Does this expression transfer ownership of a quantity-1 value? True
 -- for a place that is a linear binding or a quantity-1 field path of a
 -- tracked record (§12.4).
 transfersLinear :: Env -> Expr -> Bool
 transfersLinear env e = case placeOf env e of
-  Just (vi, [], _) -> vQ vi == Just QOne
+  Just (vi, [], _) ->
+    positiveLowerQuantity (vQ vi) || not (null (linPaths vi))
   Just (vi, path, _) -> isLinearPath vi path
-  Nothing -> False
+  Nothing -> case e of
+    ERecordLit items _ -> any (maybe False (transfersLinear env) . riValue) items
+    EAscription e' _ _ -> transfersLinear env e'
+    ECaptures e' _ _ -> transfersLinear env e'
+    EApp f args ->
+      ctorStoresWith positiveLowerQuantity env f args
+        || maybe False summaryHasPositive (calleeStorageInfo env f)
+        || anyArg (transfersLinear env) args
+    _ -> False
+
+transfersNonDuplicable :: Env -> Expr -> Bool
+transfersNonDuplicable env e = case placeOf env e of
+  Just (vi, [], _) -> vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi))
+  Just (vi, path, _) -> isNonDupPath vi path
+  Nothing -> case e of
+    ERecordLit items _ -> any (maybe False (transfersNonDuplicable env) . riValue) items
+    EAscription e' _ _ -> transfersNonDuplicable env e'
+    ECaptures e' _ _ -> transfersNonDuplicable env e'
+    EApp f args ->
+      ctorStoresWith nonDupQuantity env f args
+        || maybe False valueMayContainNonDuplicable (calleeStorageInfo env f)
+        || anyArg (transfersNonDuplicable env) args
+    _ -> False
+
+valueMayContainNonDuplicable :: VInfo -> Bool
+valueMayContainNonDuplicable vi =
+  vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi))
+
+summaryHasPositive :: VInfo -> Bool
+summaryHasPositive vi =
+  positiveLowerQuantity (vQ vi) || not (null (linPaths vi))
+
+pathPositiveQuantity :: VInfo -> [Text] -> Maybe Quantity
+pathPositiveQuantity vi path =
+  joinFieldQuantities [q | (p, q) <- vPathFields vi, pathsOverlap p path, positiveLowerQuantity q]
+
+isNonDupPath :: VInfo -> [Text] -> Bool
+isNonDupPath vi path = any (pathsOverlap path) (nonDupFields vi)
+
+anyArg :: (Expr -> Bool) -> [Arg] -> Bool
+anyArg p = any $ \case
+  ArgExplicit e -> p e
+  ArgInout e _ -> p e
+  ArgNamedBlock items _ -> any (maybe False p . snd) items
+  _ -> False
+
+ctorStoresWith :: (Maybe Quantity -> Bool) -> Env -> Expr -> [Arg] -> Bool
+ctorStoresWith qPred env f args = maybe False (const True) (ctorStoresQuantityWith qPred env f args)
+
+ctorStoresQuantityWith :: (Maybe Quantity -> Bool) -> Env -> Expr -> [Arg] -> Maybe Quantity
+ctorStoresQuantityWith qPred env f args =
+  case appHeadVar env f of
+    Just cn
+      | not (Map.member cn (eVars env))
+      , Just params <- lookup cn (Map.findWithDefault [] cn (eCtors env)) ->
+          let stored = filter qPred (ctorArgQuantities params args)
+           in if null stored then Nothing else Just (fromMaybe QOne (joinFieldQuantities stored))
+    _ -> Nothing
+  where
+    ctorArgQuantities params0 = snd . foldl step (0 :: Int, [])
+      where
+        step (i, qs) = \case
+          ArgExplicit _ -> (i + 1, qs ++ maybeToList (cpiQuantity <$> atMay i params0))
+          ArgInout _ _ -> (i + 1, qs ++ maybeToList (cpiQuantity <$> atMay i params0))
+          ArgNamedBlock items _ ->
+            ( i
+            , qs
+                ++ [ cpiQuantity p
+                   | (n, _) <- items
+                   , Just p <- [find ((== Just (nameText n)) . cpiName) params0]
+                   ]
+            )
+          ArgImplicit _ -> (i, qs)
+        atMay i xs
+          | i >= 0 = listToMaybe (drop i xs)
+          | otherwise = Nothing
+
+positiveTransferQuantity :: Env -> Expr -> Maybe Quantity
+positiveTransferQuantity env e = case placeOf env e of
+  Just (vi, [], _)
+    | positiveLowerQuantity (vQ vi) -> vQ vi
+    | not (null (linPaths vi)) -> Just QOne
+    | otherwise -> Nothing
+  Just (vi, path, _) -> pathPositiveQuantity vi path
+  Nothing -> case e of
+    EAscription e' _ _ -> positiveTransferQuantity env e'
+    ECaptures e' _ _ -> positiveTransferQuantity env e'
+    EApp f args ->
+      joinFieldQuantities $
+        ctorStoresQuantityWith positiveLowerQuantity env f args
+          : [q | Just vi <- [calleeStorageInfo env f], let q = vQ vi, positiveLowerQuantity q]
+    _ -> if transfersLinear env e then Just QOne else Nothing
 
 -- | Does this record type carry an abstract residual row tail @(... |
 -- r)@ where @r@ is a row variable (§11.3.1A, §13.2.7)? A tail that is a
@@ -617,7 +1830,11 @@ resolveDeps depAliases = go
   where
     go = \case
       ERecordType fs _ _ -> fieldDepsOf fs
-      EVar n -> Map.findWithDefault [] (nameText n) depAliases
+      EAscription (EVar n) ty _
+        | isLowerName (nameText n) ->
+            fieldDepsOf [RecTypeField False False emptyPrefix Nothing n ty]
+      e
+        | Just hd <- typePathHead e -> Map.findWithDefault [] hd depAliases
       EAscription e _ _ -> go e
       ECaptures e _ _ -> go e
       _ -> []
@@ -657,6 +1874,44 @@ sigBinders = \case
   EArrow b body -> b : sigBinders body
   ECaptures e _ _ -> sigBinders e
   _ -> []
+
+dropBinders :: Expr -> Expr
+dropBinders = \case
+  EForall _ body _ -> dropBinders body
+  ETraitArrow _ body -> dropBinders body
+  EArrow _ body -> dropBinders body
+  e -> e
+
+isBorrowViewTy :: Set.Set Text -> Expr -> Bool
+isBorrowViewTy heads ty =
+  maybe False (`Set.member` heads) (typePathHead ty)
+
+unwrapActionType :: Set.Set Text -> Expr -> Expr
+unwrapActionType monadicResultHeads = \case
+  EApp (EVar hd) args
+    | isActionHead (nameText hd)
+    , (a : _) <- reverse [e | ArgExplicit e <- args] ->
+        a
+  EApp f args
+    | Just hd <- typePathHead f
+    , isActionHead hd
+    , (a : _) <- reverse [e | ArgExplicit e <- args] ->
+        a
+  EAscription e _ _ -> unwrapActionType monadicResultHeads e
+  ECaptures e _ _ -> unwrapActionType monadicResultHeads e
+  e -> e
+  where
+    isActionHead hd =
+      hd `Set.member` builtinActionHeads || hd `Set.member` monadicResultHeads
+    builtinActionHeads =
+      Set.fromList
+        [ "IO"
+        , "UIO"
+        , "STM"
+        , "std.prelude.IO"
+        , "std.prelude.UIO"
+        , "std.prelude.STM"
+        ]
 
 -- | Align definition binders with signature binders: an explicit
 -- definition binder claims a leading implicit signature binder of the
@@ -708,7 +1963,7 @@ fnParams msig ld =
       let BinderPrefix mq mb = bPrefix b
        in defaultP
             { pName = nameText <$> bName b
-            , pQuantity = mq
+            , pQuantity = if bInout b then Just QOne else mq
             , pBorrow = isJust mb
             , pInout = bInout b
             , pKnown = True
@@ -749,16 +2004,27 @@ fnParams msig ld =
 
 analyzeLet ::
   Map Span Expr ->
+  Map Span [(Text, Text)] ->
   Map Text [PInfo] ->
+  Map Text [FieldShape] ->
+  Map Text Expr ->
+  Map Text Expr ->
+  Map Text VInfo ->
+  Map Text RefOp ->
+  Map Span RefOp ->
   Map Text [(Text, Maybe Quantity)] ->
+  Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
-  Map Text [(Text, [Maybe Quantity])] ->
+  Map Text [(Text, [CtorParamInfo])] ->
   Map Text ProjUse ->
   Map Text [(Text, Quantity)] ->
+  Set.Set Text ->
+  Set.Set Text ->
+  Set.Set Text ->
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
+analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -771,8 +2037,10 @@ analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
         ELambda {} -> remainingSig (ldBinders ld) sigPs
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
-  let env = (Env (Map.fromList binds) fns [] aliases ctors projs Map.empty Map.empty aliasDeps effs expansions []) {ePendingSig = pendingSig}
-  checkInoutResult msig ld
+  let env =
+        (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps [] aliases recordShapes ctors projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads False)
+          {ePendingSig = pendingSig}
+  checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
   let (u, taint) = flatR r
   forM_ binds $ \(_, vi) -> closeVar vi u
@@ -804,10 +2072,12 @@ analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
             -- §12.4.3: a BorrowView value is a reified borrow of its
             -- region — capturing it in a result-escaping closure is the
             -- same escape as capturing an anonymous borrowed binding
-            borrowViewed = maybe False (isBorrowViewTy . appHeadName) ty
+            borrowViewed = maybe False (isBorrowViewTy borrowViewHeads) ty
             anon = mark == Just (BorrowMark Nothing) || borrowViewed
-            fields = maybe [] (resolveFields aliases) ty
+            pathFields = maybe [] (recordPathFieldsWith recordShapes ctors) ty
+            fields = mergeFieldQuantities (maybe [] (resolveFields aliases) ty) (topFieldsFromPaths pathFields)
             deps = maybe [] (resolveDeps aliasDeps) ty
+            pathDeps = maybe [] (recordPathDepsWith recordShapes) ty
             -- §13.2.7: a linear (consuming) receiver of an open record
             -- type owns its abstract residual tail; track it so a body
             -- that forgets the tail without transferring or restoring it
@@ -819,12 +2089,21 @@ analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
                   Just (rowVar, bSpan b)
               | otherwise = Nothing
         k <- freshKey (nameText n)
-        pure (Just (nameText n, (VInfo k q (isJust mark || borrowViewed) anon False Nothing Map.empty fields deps Nothing (bSpan b)) {vOpenTail = openTail}))
-    appHeadName = \case
-      EApp f _ -> appHeadName f
-      EVar n -> Just (nameText n)
-      _ -> Nothing
-    isBorrowViewTy = (== Just "BorrowView")
+        pure
+            ( Just
+                ( nameText n
+                , (plainV k (bSpan b))
+                    { vQ = q
+                    , vBorrowed = isJust mark || borrowViewed
+                    , vAnonBorrow = anon
+                    , vFields = fields
+                    , vPathFields = pathFields
+                    , vDeps = deps
+                    , vPathDeps = pathDeps
+                    , vOpenTail = openTail
+                    }
+                )
+            )
     orElseE (Just x) _ = Just x
     orElseE Nothing y = y
     sigResultOf e = case sigBinders e of
@@ -839,12 +2118,12 @@ analyzeLet expansions fns aliases aliasDeps ctors projs effs msig ld = do
 
 -- | §18.9.3: an @inout@ parameter must be threaded back through the
 -- declared result as a record field of the same name.
-checkInoutResult :: Maybe Expr -> LetDef -> Analysis ()
-checkInoutResult msig ld =
+checkInoutResult :: Map Text [(Text, Maybe Quantity)] -> Set.Set Text -> Maybe Expr -> LetDef -> Analysis ()
+checkInoutResult aliases monadicResultHeads msig ld =
   forM_ inouts $ \(nm, bsp) -> do
     let resTy = ldResultType ld `orElse` (sigResult <$> msig)
     forM_ resTy $ \ty ->
-      unless (threadsField nm (unwrapIO ty)) $
+      unless (threadsField nm (unwrapActionType monadicResultHeads ty)) $
         emit "E_QTT_INOUT_THREADED_FIELD_MISSING" "kappa.inout.restoration" bsp
           ("the result type does not thread the inout place '" <> nm <> "' back as a field (§18.9.3)")
   where
@@ -865,35 +2144,26 @@ checkInoutResult msig ld =
           ]
     orElse (Just x) _ = Just x
     orElse Nothing y = y
-    sigResult e = case sigBinders e of
-      [] -> e
-      _ -> dropBinders e
-    dropBinders = \case
-      EForall _ body _ -> dropBinders body
-      ETraitArrow _ body -> dropBinders body
-      EArrow _ body -> dropBinders body
-      e -> e
-    unwrapIO = \case
-      EApp (EVar hd) args
-        | nameText hd `elem` ["IO", "UIO"]
-        , (a : _) <- reverse [e | ArgExplicit e <- args] ->
-            a
-      e -> e
-    threadsField nm = \case
-      ERecordType fs _ _ -> nm `elem` map (nameText . rtfName) fs
-      EAscription (EVar n) _ _ -> nameText n == nm
-      ETuple {} -> True -- positional threading is not modelled
-      _ -> False
+    sigResult = dropBinders
+    threadsField nm ty =
+      any (\(field, q) -> field == nm && q == Just QOne) (resolveFields aliases ty)
 
 -- | Close one binding's scope: enforce its quantity interval, including
 -- per-path consumption of its quantity-1 record fields (§12.4).
 closeVar :: VInfo -> Usage -> Analysis ()
-closeVar vi u = do
+closeVar = closeVarWith Nothing
+
+closeVarWith :: Maybe MutableCloseContext -> VInfo -> Usage -> Analysis ()
+closeVarWith mctx vi u = do
   let UseCount {ucLo = rLo, ucHi = rHi, ucMoves = rOccs, ucTouches = rTlo, ucViolations = viols} =
         Map.findWithDefault zeroUC (vKey vi) u
-      res = Map.findWithDefault zeroUC (vKey vi <> ".~") u
+      res@(UseCount {ucMoves = resOccs, ucTouches = resTlo}) =
+        Map.findWithDefault zeroUC (vKey vi <> ".~") u
+      refEsc =
+        Map.findWithDefault zeroUC (refEscapeKey vi) u
       rootHi = rHi + ucHi res
-      rootLo = rLo + ucLo res
+      rootLo = rLo + ucLo res + ucLo refEsc
+      rootTlo = rTlo + resTlo + ucTouches refEsc
   -- §12.4: borrowing or re-projecting a path after an overlapping
   -- definite consume (no intervening restore — a restoring patch
   -- rebinds through a fresh root) is a compile-time error
@@ -921,15 +2191,15 @@ closeVar vi u = do
   -- for that field path regardless of the record binding's own quantity
   -- — a record literal that places a linear value into a field
   -- (vQ == Nothing, fields inferred) is just as much a linear resource as
-  -- an annotated `1 r` binding. The drop check below keys on `linFields`
+  -- an annotated `1 r` binding. The drop check below keys on `linPaths`
   -- independent of `vQ vi`; the upper-bound check must do the same, or a
   -- linear field consumed twice (`free r.buf; free r.buf`) escapes.
-  pathOver <- fmap or . forM (linFields vi) $ \f -> do
-    let pc@(UseCount {ucHi = pHi, ucMoves = pOccs}) = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
+  pathOver <- fmap or . forM (linPaths vi) $ \p -> do
+    let pc@(UseCount {ucHi = pHi, ucMoves = pOccs}) = pathUsage vi p u
     if ucHi pc > 0 && rHi + pHi > 1
       then do
-        -- the path is in linFields, i.e. quantity-1 (linear)
-        overuse "linear" (nm <> "." <> f) (pOccs ++ rOccs)
+        -- the path is in linPaths, i.e. quantity-1 (linear/relevant)
+        overuse "linear" (nm <> "." <> pathText p) (pOccs ++ rOccs)
         pure True
       else pure False
   -- §13.2.1: a record value carrying a quantity-1 field is a linear
@@ -946,17 +2216,17 @@ closeVar vi u = do
         -- field with it
         | vBorrowed vi || rootLo >= 1 = []
         | otherwise =
-            [ f
-            | f <- linFields vi
-            , let fc = Map.findWithDefault zeroUC (vKey vi <> "." <> f) u
+            [ p
+            | p <- linPaths vi
+            , let fc = pathUsage vi p u
               -- a linear field is dropped when neither consumed (moved)
               -- nor borrowed (touched) on this completion path; a borrow
               -- discharges the obligation for its scope under §12.2.5
             , ucLo fc < 1 && not (ucTouched fc)
             ]
-  forM_ droppedFields $ \f ->
-    emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
-      ("the quantity-1 field '" <> nm <> "." <> f
+  forM_ droppedFields $ \p ->
+    linearDrop (Just p) (vSpan vi)
+      ("the quantity-1 field '" <> nm <> "." <> pathText p
          <> "' may be dropped without being consumed (§13.2.1, §12.2.5)")
   -- §13.2.7: a consuming open-record receiver must transfer (root move)
   -- or restore/extend (patch, which consumes the residue) its abstract
@@ -974,7 +2244,7 @@ closeVar vi u = do
   -- obligation.
   let tailDropped = case vOpenTail vi of
         Just (rowVar, _)
-          | rootLo < 1 && rTlo >= 1 && null droppedFields -> Just rowVar
+          | rootLo < 1 && rootTlo >= 1 && null droppedFields -> Just rowVar
         _ -> Nothing
   forM_ tailDropped $ \rowVar ->
     emit "E_ROW_TAIL_QUANTITY_UNSATISFIED" "kappa.row.tail-quantity" (vSpan vi)
@@ -986,15 +2256,15 @@ closeVar vi u = do
   let tailWasDropped = isJust tailDropped
   case vQ vi of
     Just QOne -> do
-      when (rootHi > 1) (overuse "linear" nm rOccs)
+      when (rootHi > 1) (overuse "linear" nm (rOccs ++ resOccs))
       -- the whole-record drop is reported only when no linear field or
       -- residual tail already carried the leak (otherwise those reports
       -- are the precise diagnostics for the same untransferred resource)
       when
-        (rTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailWasDropped)
+        (rootTlo < 1 && rootHi <= 1 && not pathOver && null droppedFields && not tailWasDropped)
         (dropErr "linear")
-    Just QAtLeastOne -> when (rTlo < 1 && not tailWasDropped) (dropErr "relevant")
-    Just QAtMostOne -> when (rootHi > 1) (overuse "affine" nm rOccs)
+    Just QAtLeastOne -> when (rootTlo < 1 && not tailWasDropped) (dropErr "relevant")
+    Just QAtMostOne -> when (rootHi > 1) (overuse "affine" nm (rOccs ++ resOccs))
     _ -> pure ()
   where
     nm = T.takeWhile (/= '#') (vKey vi)
@@ -1008,9 +2278,43 @@ closeVar vi u = do
       (sp : _) -> sp
       [] -> vSpan vi
     dropErr kind =
-      emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" (vSpan vi)
+      linearDrop Nothing (vSpan vi)
         ("'" <> nm <> "' (" <> kind <> ") may be dropped without being consumed (§12.2.5)")
+    linearDrop path sp msg =
+      case mctx of
+        Just ctx | vMutable vi ->
+          emitPayload "E_QTT_LINEAR_DROP" "kappa.var.mutable-binding" (mutableStoredDropPayload ctx vi path) sp msg
+        _ ->
+          emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" sp msg
     dedupViols = foldr (\v vs -> if v `elem` vs then vs else v : vs) []
+
+mutableStoredDropPayload :: MutableCloseContext -> VInfo -> Maybe FieldPath -> Payload
+mutableStoredDropPayload ctx vi mpath =
+  foldl
+    (\p (k, v) -> withPayloadField k v p)
+    ( withPayloadField "quantityFact" "stored-value" $
+        withPayloadField "sourceOperation" (mccSourceOperation ctx) $
+          withPayloadField "occurrence" "user-written" $
+            withPayloadField "selectedFacet" (mccSelectedFacet ctx) $
+              withPayloadField "binding" binding $
+                payloadKind "mutable-binding"
+    )
+    fields
+  where
+    binding = T.takeWhile (/= '#') (vKey vi)
+    fields =
+      vMutableDiagFields vi
+        ++ missingTypeFields
+        ++ [("storedValuePath", pathText p) | Just p <- [mpath], not (null p)]
+    hasField k = any ((== k) . fst) (vMutableDiagFields vi)
+    missingTypeFields =
+      maybe
+        []
+        ( \t ->
+            [ ("storedValueType", t) | not (hasField "storedValueType") ]
+              ++ [ ("hiddenReferenceType", "Ref " <> t) | not (hasField "hiddenReferenceType") ]
+        )
+        (vStoredTypeText vi)
 
 -- ── Place helpers (§12.4) ────────────────────────────────────────────
 
@@ -1021,17 +2325,46 @@ isWildBinder :: Pattern -> Bool
 isWildBinder = \case
   PWild _ -> True
   PVar n -> nameText n == "_"
+  PTyped p _ _ -> isWildBinder p
+  _ -> False
+
+refFacetValue :: Expr -> Bool
+refFacetValue = \case
+  ERefFacet {} -> True
+  EAscription e _ _ -> refFacetValue e
+  ECaptures e _ _ -> refFacetValue e
   _ -> False
 
 placeOf :: Env -> Expr -> Maybe (VInfo, [Text], Span)
 placeOf env = \case
   EVar n -> do
     vi <- Map.lookup (nameText n) (eVars env)
+    if vMutable vi then Nothing else pure ()
     pure (vi, [], nameSpan n)
   EDot b (DotName f) -> do
     (vi, path, _) <- placeOf env b
     pure (vi, path ++ [nameText f], nameSpan f)
+  EAscription e _ _ -> placeOf env e
+  ECaptures e _ _ -> placeOf env e
   _ -> Nothing
+
+varPlaceOf :: Env -> Expr -> Maybe (VInfo, [Text], Span)
+varPlaceOf env = \case
+  EVar n -> do
+    vi <- Map.lookup (nameText n) (eVars env)
+    if vMutable vi then pure () else Nothing
+    pure (vi, [], nameSpan n)
+  EDot b (DotName f) -> do
+    (vi, path, _) <- varPlaceOf env b
+    pure (vi, path ++ [nameText f], nameSpan f)
+  EAscription e _ _ -> varPlaceOf env e
+  _ -> Nothing
+
+varInoutPlaceOf :: Env -> Expr -> Maybe (VInfo, [Text], Span)
+varInoutPlaceOf env e =
+  varPlaceOf env e <|> case projVarPlacesOf env e of
+    Just ([place], _) -> Just place
+    _ -> Nothing
 
 -- | Resolve a place through any §12.4 borrowed place-alias binding:
 -- @let & x = root.path@ makes @x.f@ an alias of @root.path.f@ for
@@ -1055,14 +2388,21 @@ borrowLocks env pl@(vi, path, bsp) =
         | otherwise = []
    in (rootK, fullPath, bsp) : [(rootK, p, bsp) | p <- depLocks]
 
+-- | Same-call static footprint facts use the same dependency-expanded place
+-- model as lexical borrows, but keep the operation span of the call argument
+-- for diagnostics.
+placeFootprintLocks :: Env -> (VInfo, [Text], Span) -> Span -> [(Text, [Text], Span)]
+placeFootprintLocks env pl opSp =
+  [(rootK, path, opSp) | (rootK, path, _) <- borrowLocks env pl]
+
 -- | A fully applied §9.1.1 projection (or local descriptor binding)
 -- call: the stable places its yield leaves touch, plus the auxiliary
 -- expressions (ordinary arguments, descriptor head) to walk normally.
 projPlacesOf :: Env -> Expr -> Maybe ([(VInfo, [Text], Span)], [Expr])
 projPlacesOf env e0 = case e0 of
-  EApp (EVar f) args
-    | not (Map.member (nameText f) (eVars env))
-    , Just pu <- Map.lookup (nameText f) (eProjs env)
+  EApp f args
+    | Just headKey <- staticPathHead env f
+    , Just pu <- Map.lookup headKey (eProjs env)
     , length args == length (puIsPlace pu)
     , or (puIsPlace pu) -> do
         let split = zip (puIsPlace pu) args
@@ -1074,6 +2414,7 @@ projPlacesOf env e0 = case e0 of
             ordArgs = [e | (False, ArgExplicit e) <- split]
         (places, aux) <- packPlaces pu placeArgs
         pure (places, ordArgs ++ aux)
+  EApp (EVar f) args
     | Just du <- Map.lookup (nameText f) (eDescs env)
     , [arg] <- args -> do
         e <- case arg of
@@ -1104,18 +2445,65 @@ projPlacesOf env e0 = case e0 of
       pure (vi, path ++ suffix, sp)
     leafPlace _ = Nothing
 
+projVarPlacesOf :: Env -> Expr -> Maybe ([(VInfo, [Text], Span)], [Expr])
+projVarPlacesOf env e0 = case e0 of
+  EApp f args
+    | Just headKey <- staticPathHead env f
+    , Just pu <- Map.lookup headKey (eProjs env)
+    , length args == length (puIsPlace pu)
+    , or (puIsPlace pu) -> do
+        let split = zip (puIsPlace pu) args
+            placeArgs =
+              [ (nm, e)
+              | ((True, ArgExplicit e), nm) <-
+                  zip [p | p@(True, _) <- split] (puPlaceNames pu)
+              ]
+            ordArgs = [e | (False, ArgExplicit e) <- split]
+        (places, aux) <- packPlaces pu placeArgs
+        pure (places, ordArgs ++ aux)
+  EApp (EVar f) args
+    | Just du <- Map.lookup (nameText f) (eDescs env)
+    , [arg] <- args -> do
+        e <- case arg of
+          ArgExplicit e -> Just e
+          ArgInout e _ -> Just e
+          _ -> Nothing
+        (places, aux) <- case (puPlaceNames du, e) of
+          (_, ERecordLit items _) ->
+            packPlaces du
+              [(nameText fn, fe) | RecItem _ fn (Just fe) <- items]
+          ([pn], _) -> packPlaces du [(pn, e)]
+          _ -> Nothing
+        pure (places, EVar f : aux)
+  EAscription e _ _ -> projVarPlacesOf env e
+  _ -> Nothing
+  where
+    packPlaces pu pairs = do
+      let leaves =
+            [ (root, suffix, lookup root pairs)
+            | (root, suffix) <- puYields pu
+            ]
+      resolved <- Just (mapMaybe leafPlace leaves)
+      let aux = [e | (_, e) <- pairs, Nothing <- [placeOf env e <|> varPlaceOf env e]]
+      pure (resolved, aux)
+    leafPlace (_, suffix, Just argE) = do
+      (vi, path, sp) <- varPlaceOf env argE
+      pure (vi, path ++ suffix, sp)
+    leafPlace _ = Nothing
+
 -- | Does this expression denote a (partially applied) projection
 -- descriptor value (§16.1.5)?
 descOf :: Env -> Expr -> Maybe ProjUse
 descOf env = \case
-  EVar f
-    | not (Map.member (nameText f) (eVars env))
-    , Just pu <- Map.lookup (nameText f) (eProjs env) ->
+  e
+    | Just headKey <- staticPathHead env e
+    , Just pu <- Map.lookup headKey (eProjs env) ->
         Just pu
+  EVar f
     | Just du <- Map.lookup (nameText f) (eDescs env) -> Just du
-  EApp (EVar f) args
-    | not (Map.member (nameText f) (eVars env))
-    , Just pu <- Map.lookup (nameText f) (eProjs env)
+  EApp f args
+    | Just headKey <- staticPathHead env f
+    , Just pu <- Map.lookup headKey (eProjs env)
     , length args == length (filter not (puIsPlace pu)) ->
         Just pu
   EAscription e _ _ -> descOf env e
@@ -1163,8 +2551,7 @@ movePlace env vi path sp = do
 
 -- | Is the one-segment path a quantity-1 field of the binding?
 isLinearPath :: VInfo -> [Text] -> Bool
-isLinearPath vi [f] = f `elem` linFields vi
-isLinearPath _ _ = False
+isLinearPath vi path = any (pathsOverlap path) (linPaths vi)
 
 -- | Non-consuming touch usage for a borrowed/read place: the root is
 -- touched and, for a field path, that field path too. Touching a linear
@@ -1194,11 +2581,65 @@ placeBorrow vi path sp =
         | not (null path)
         ]
 
+mutableReadUsage :: VInfo -> [Text] -> Span -> Analysis Usage
+mutableReadUsage vi path sp = do
+  -- §18.6.1 current-value facet: even `x.f` first reads the current value
+  -- stored in the hidden cell, then projects from the read result. The read is
+  -- therefore a duplication position for the whole stored value, including
+  -- sibling fields and hidden constructor payloads.
+  when (valueMayContainNonDuplicable vi) $
+    emitPayload "E_VAR_READ_DUPLICATES_LINEAR_VALUE" "kappa.var.mutable-binding" (mutableReadPayload vi path) sp
+      ("a current-value read of mutable variable '" <> T.takeWhile (/= '#') (vKey vi)
+         <> "' would duplicate a non-duplicable value stored in the cell (§12.2.6, §18.6.1)")
+  -- A mutable current read is a duplication position: it produces an additional
+  -- value but the cell retains the stored value.  It therefore must not count as
+  -- a touch/consume that can satisfy the stored value's final drop obligation.
+  pure Map.empty
+
+currentReadUsage :: Env -> VInfo -> [Text] -> Span -> Analysis Usage
+currentReadUsage env vi path sp = do
+  u <- mutableReadUsage vi path sp
+  pure $
+    if eLatentCurrentReadEscape env
+      then u `seqU` Map.singleton (refEscapeKey vi) (refEscapeUC sp)
+      else u
+
+mutableReadPayload :: VInfo -> [Text] -> Payload
+mutableReadPayload vi path =
+  foldl
+    (\p (k, v) -> withPayloadField k v p)
+    ( withPayloadField "sourceOperation" "current read" $
+        withPayloadField "occurrence" "user-written" $
+          withPayloadField "selectedFacet" "current-value" $
+            withPayloadField "binding" binding $
+              payloadKind "mutable-binding"
+    )
+    fields
+  where
+    binding = T.takeWhile (/= '#') (vKey vi)
+    factPathText = if null path then "stored-value" else T.intercalate "." path
+    fields =
+      vMutableDiagFields vi
+        ++ missingTypeFields
+        ++ [ ("nonDuplicableFact", factPathText)
+           , ("quantityFact", if null path then "non-duplicable stored value" else "non-duplicable path")
+           ]
+    hasField k = any ((== k) . fst) (vMutableDiagFields vi)
+    missingTypeFields =
+      maybe
+        []
+        ( \t ->
+            [ ("storedValueType", t) | not (hasField "storedValueType") ]
+              ++ [ ("hiddenReferenceType", "Ref " <> t) | not (hasField "hiddenReferenceType") ]
+        )
+        (vStoredTypeText vi)
+
 -- ── Expression walk ──────────────────────────────────────────────────
 
 walkE :: Env -> Expr -> Analysis WalkResult
 walkE env e0 = case e0 of
   EVar n -> case Map.lookup (nameText n) (eVars env) of
+    Just vi | vMutable vi -> mutableRead vi [] (nameSpan n)
     Just vi -> do
       u <- movePlace env vi [] (nameSpan n)
       pure (WalkResult u (vEscape vi (nameSpan n)) (vLatent vi))
@@ -1212,6 +2653,8 @@ walkE env e0 = case e0 of
   ERecordLit items _ -> walks [v | RecItem _ _ (Just v) <- items]
   EApp f args -> walkApp env f args
   EDot {}
+    | Just (vi, path, sp) <- varPlaceOf env e0 ->
+        mutableRead vi path sp
     | Just (vi, path, sp) <- placeOf env e0 ->
         if isLinearPath vi path
           then rPlain <$> movePlace env vi path sp
@@ -1239,7 +2682,7 @@ walkE env e0 = case e0 of
           ELambda {} -> remainingSig bs (ePendingSig env)
           _ -> []
         env' = bindVars bound env {ePendingSig = restSig}
-    r <- walkE env' body
+    r <- walkE env' {eLatentCurrentReadEscape = True} body
     let (u, t) = flatR r
     forM_ bound $ \(_, vi) -> closeVar vi u
     let u' = foldr (Map.delete . vKey . snd) u bound
@@ -1264,7 +2707,7 @@ walkE env e0 = case e0 of
     walkE env' (ELet binds (fromMaybe (EUnit (exprSpan e0)) mres) (exprSpan e0))
   EDo _ items _ -> do
     fl <- walkItems env items
-    let paths = maybeToList (fU fl) ++ fRet fl ++ fBC fl
+    let paths = flowPaths fl
         computeTaint = firstJust (maybeToList (fT fl) ++ mapMaybe (usageAnonBorrowIntro env) paths)
     pure (WalkResult (altUs paths) computeTaint Map.empty)
   EIf alts mels _ -> do
@@ -1326,6 +2769,19 @@ walkE env e0 = case e0 of
   EOptionSugar {} -> pure rNone
   EAscription b _ _ -> walkE env b
   ECaptures b _ _ -> walkE env b
+  ERefFacet n sp ->
+    case Map.lookup (nameText n) (eVars env) of
+      Just vi | vMutable vi ->
+        -- The reference facet exposes the hidden cell. Direct recognized
+        -- readRef/writeRef calls are handled before walking arguments. For
+        -- other positions the produced Ref value carries a latent cell-lifetime
+        -- escape: returning, storing, or passing it spends the latent usage, but
+        -- a wildcard/discard does not.
+        pure (WalkResult Map.empty Nothing (Map.singleton (refEscapeKey vi) (refEscapeUC sp)))
+      _ -> pure rNone
+  EVarRead n sp -> case Map.lookup (nameText n) (eVars env) of
+    Just vi | vMutable vi -> rPlain <$> currentReadUsage env vi [] sp
+    _ -> pure rNone
   EBang _ b _ -> walkE env b
   -- §21.2: a quote's object-level uses are charged when (and where) it
   -- is spliced, through the recorded expansion; the quote itself only
@@ -1351,6 +2807,7 @@ walkE env e0 = case e0 of
     taintLatent env u t sp
   EOpChain {} -> bailOut >> pure rNone -- resolver output should not contain chains
   where
+    mutableRead vi path sp = rPlain <$> currentReadUsage env vi path sp
     walks es = do
       rs <- mapM (walkE env) es
       let parts = map flatR rs
@@ -1358,7 +2815,7 @@ walkE env e0 = case e0 of
     -- a delayed computation: its body usage becomes latent, and it is
     -- tainted when it captures an anonymous borrow (§12.3.2)
     suspend envS b sp = do
-      r <- walkE envS b
+      r <- walkE envS {eLatentCurrentReadEscape = True} b
       let (u, t) = flatR r
       taintLatent envS u t sp
     -- shared by lambda/thunk/lazy/section formation
@@ -1367,7 +2824,7 @@ walkE env e0 = case e0 of
           captured = or [ucTouched c | (k, c) <- Map.toList u, k `elem` anonKeys]
       pure (WalkResult Map.empty (if captured || isJust t then Just sp else Nothing) u)
     latentOf envS operand sp = do
-      r <- walkE envS operand
+      r <- walkE envS {eLatentCurrentReadEscape = True} operand
       let (u, t) = flatR r
       taintLatent envS u t sp
 
@@ -1378,10 +2835,63 @@ firstJust [] = Nothing
 -- | The leftmost head variable of a (possibly nested/curried)
 -- application head, used to classify application heads (e.g. a
 -- data-constructor application). Skips intermediate application spines.
-appHeadVar :: Expr -> Maybe Text
-appHeadVar = \case
+appHeadVar :: Env -> Expr -> Maybe Text
+appHeadVar env = \case
   EVar n -> Just (nameText n)
-  EApp g _ -> appHeadVar g
+  EDot base (DotName n)
+    | Just prefix <- staticPathHead env base ->
+        Just (prefix <> "." <> nameText n)
+  EApp g _ -> appHeadVar env g
+  EAscription e _ _ -> appHeadVar env e
+  _ -> Nothing
+
+staticPathHead :: Env -> Expr -> Maybe Text
+staticPathHead env = \case
+  EVar n
+    | not (Map.member (nameText n) (eVars env)) -> Just (nameText n)
+  EDot base (DotName n) -> (<> "." <> nameText n) <$> staticPathHead env base
+  EAscription e _ _ -> staticPathHead env e
+  _ -> Nothing
+
+refOpHead :: Env -> RefOp -> Expr -> Bool
+refOpHead env expected e =
+  case staticPathHead env e of
+    Just headKey -> Map.lookup headKey (eRefOps env) == Just expected
+    Nothing -> case e of
+      EApp g _ -> refOpHead env expected g
+      _ -> False
+
+recognizedRefRead :: Env -> Expr -> [Arg] -> Maybe (Name, Span)
+recognizedRefRead env f args = do
+  (n, sp) <- refReadFacetArg args
+  if refOpHead env RefRead f || Map.lookup sp (eRecognizedRefOps env) == Just RefRead
+    then Just (n, sp)
+    else Nothing
+
+recognizedRefWrite :: Env -> Expr -> [Arg] -> Maybe (Name, Expr, Span)
+recognizedRefWrite env f args = do
+  (n, rhs, sp) <- refWriteFacetArgs args
+  if refOpHead env RefWrite f || Map.lookup sp (eRecognizedRefOps env) == Just RefWrite
+    then Just (n, rhs, sp)
+    else Nothing
+
+refReadFacetArg :: [Arg] -> Maybe (Name, Span)
+refReadFacetArg args =
+  case explicitExprs args of
+    [ERefFacet n sp] -> Just (n, sp)
+    [EAscription (ERefFacet n sp) _ _] -> Just (n, sp)
+    _ -> Nothing
+
+refWriteFacetArgs :: [Arg] -> Maybe (Name, Expr, Span)
+refWriteFacetArgs args =
+  case explicitExprs args of
+    [ERefFacet n sp, rhs] -> Just (n, rhs, sp)
+    [EAscription (ERefFacet n sp) _ _, rhs] -> Just (n, rhs, sp)
+    _ -> Nothing
+
+explicitExprs :: [Arg] -> [Expr]
+explicitExprs = mapMaybe $ \case
+  ArgExplicit e -> Just e
   _ -> Nothing
 
 -- | Comprehension usage (§20.10.5): each generator/join source is
@@ -1454,7 +2964,9 @@ lamBind env (b, ms) = case bName b of
         q = mq `orElse` sq
         mark = mb `orElse` sb
         ty = bType b `orElse` (bType =<< ms)
-        fields = maybe [] (resolveFields (eAliases env)) ty
+        pathFields = maybe [] (recordPathFields env) ty
+        pathDeps = maybe [] (recordPathDeps env) ty
+        fields = mergeFieldQuantities (maybe [] (resolveFields (eAliases env)) ty) (topFieldsFromPaths pathFields)
         deps = maybe [] (resolveDeps (eFieldDeps env)) ty
         -- §13.2.7: a consuming open-record lambda receiver owns its
         -- abstract residual tail, exactly as an equation-head receiver
@@ -1468,8 +2980,16 @@ lamBind env (b, ms) = case bName b of
     pure
       ( Just
           ( nameText n
-          , (VInfo k q (isJust mark) (mark == Just (BorrowMark Nothing)) False Nothing Map.empty fields deps Nothing (bSpan b))
-              {vOpenTail = openTail}
+              , (plainV k (bSpan b))
+                  { vQ = q
+                  , vBorrowed = isJust mark
+                  , vAnonBorrow = mark == Just (BorrowMark Nothing)
+                  , vFields = fields
+                  , vPathFields = pathFields
+                  , vDeps = deps
+                  , vPathDeps = pathDeps
+                  , vOpenTail = openTail
+                  }
           )
       )
   where
@@ -1515,15 +3035,15 @@ walkMatch env scrut cases = do
 patBindings :: Maybe VInfo -> Pattern -> [(Text, Maybe Quantity)]
 patBindings scrutV pat = case (scrutV, pat) of
   (Just vi, PRecord fs rest _) ->
-    [ (nm, if fld `elem` linFields vi then Just QOne else Nothing)
-    | (_, f, mp) <- fs
-    , let fld = nameText f
-    , nm <- case mp of
-        Nothing -> [fld]
-        Just (PVar x) -> [nameText x]
-        Just p -> map fst (patBindings Nothing p)
-    ]
-      ++ [ (nameText n, if any (`notElem` named fs) (linFields vi) then Just QOne else Nothing)
+    concat
+      [ case mp of
+          Nothing -> [(fld, fieldPatternQuantity vi [fld])]
+          Just (PVar x) -> [(nameText x, fieldPatternQuantity vi [fld])]
+          Just p -> patBindings (Just (sliceVInfo vi [fld])) p
+      | (_, f, mp) <- fs
+      , let fld = nameText f
+      ]
+      ++ [ (nameText n, if any (`notElem` named fs) (linTopFields vi) then Just QOne else Nothing)
          | Just (PatRestBind n) <- [rest]
          ]
   _ -> map (\nm -> (nm, Nothing)) (patVars pat)
@@ -1553,10 +3073,21 @@ patVars = \case
 checkRecordRest :: Maybe VInfo -> Pattern -> Span -> Analysis ()
 checkRecordRest (Just vi) (PRecord fs (Just PatRestDiscard) _) csp = do
   let named = [nameText f | (_, f, _) <- fs]
-      missing = [f | f <- linFields vi, f `notElem` named]
+      missing = [f | f <- linTopFields vi, f `notElem` named]
   forM_ missing $ \f ->
     emit "E_QTT_LINEAR_DROP" "kappa.quantity.positive-lower-bound" csp
       ("the '..' rest pattern drops the quantity-1 field '" <> f <> "' (§12.2.6)")
+  forM_ fs $ \(_, f, mp) ->
+    forM_ mp $ \p ->
+      checkRecordRest (Just (sliceVInfo vi [nameText f])) p csp
+checkRecordRest (Just vi) (PRecord fs _ _) csp =
+  forM_ fs $ \(_, f, mp) ->
+    forM_ mp $ \p ->
+      checkRecordRest (Just (sliceVInfo vi [nameText f])) p csp
+checkRecordRest Nothing (PRecord fs _ _) csp =
+  forM_ fs $ \(_, _, mp) ->
+    forM_ mp $ \p ->
+      checkRecordRest Nothing p csp
 checkRecordRest _ _ _ = pure ()
 
 -- ── Record patches (§12.4) ───────────────────────────────────────────
@@ -1568,17 +3099,10 @@ walkPatch env base items sp = do
     EVar n
       | Just vi <- Map.lookup (nameText n) (eVars env) -> do
           -- replacing patched paths conflicts with any live borrow of
-          -- the record; the residue (and every moved-but-unpatched
-          -- quantity-1 path) is consumed by the patch
-          checkBorrowOverlap env vi [] sp
-          let patched = concatMap patchLabels items
-              reconsumed =
-                [ (vKey vi <> "." <> f, oneUC sp)
-                | f <- linFields vi
-                , f `notElem` patched
-                ]
-          pure $
-            Map.fromList ((vKey vi <> ".~", oneUC sp) : (vKey vi, touchUC) : reconsumed)
+            -- the record; the residue (and every moved-but-unpatched
+            -- quantity-1 path) is consumed by the patch
+            checkBorrowOverlap env vi [] sp
+            pure $ patchRootUsage vi (concatMap patchPaths items) sp
     _ -> fst . flatR <$> walkE env base
   pure (rPlain (bu `seqU` vu))
   where
@@ -1587,15 +3111,24 @@ walkPatch env base items sp = do
       PatchExtend _ v -> [v]
       PatchSection _ v -> [v]
       PatchPun _ -> []
-    patchLabels = \case
-      PatchUpdate ((_, n) : _) _ -> [nameText n]
-      PatchUpdate [] _ -> []
-      PatchExtend n _ -> [nameText n]
+    patchPaths = \case
+      PatchUpdate path _ -> [[nameText n | (_, n) <- path] | not (null path)]
+      PatchExtend n _ -> [[nameText n]]
       PatchSection {} -> []
-      PatchPun n -> [nameText n]
+      PatchPun n -> [[nameText n]]
     walks es = do
       rs <- mapM (walkE env) es
       pure (foldr (seqU . fst . flatR) Map.empty rs)
+
+patchRootUsage :: VInfo -> [FieldPath] -> Span -> Usage
+patchRootUsage vi patched sp =
+  Map.fromList ((vKey vi <> ".~", oneUC sp) : (vKey vi, touchUC) : reconsumed)
+  where
+    reconsumed =
+      [ (pathKey vi p, oneUC sp)
+      | p <- linPaths vi
+      , not (any (pathsOverlap p) patched)
+      ]
 
 -- ── Applications ─────────────────────────────────────────────────────
 
@@ -1608,6 +3141,211 @@ data Fact
   | FInout !Text ![Text] !Span
   -- ^ a '~'-marked inout argument's place footprint (§18.9.3)
 
+applyExprVarInoutWrites :: Env -> Expr -> Env
+applyExprVarInoutWrites env = \case
+  EAscription e _ _ -> applyExprVarInoutWrites env e
+  ECaptures e _ _ -> applyExprVarInoutWrites env e
+  EApp f args ->
+    foldl applyOne env (varInoutWriteBacks env f args)
+  _ -> env
+  where
+    applyOne envc (nm, vi) = envc {eVars = Map.insert nm vi (eVars envc)}
+
+applyStableExprVarInoutWrites :: Env -> Expr -> Analysis (Usage, [(Text, VInfo)], Env)
+applyStableExprVarInoutWrites env = \case
+  EAscription e _ _ -> applyStableExprVarInoutWrites env e
+  ECaptures e _ _ -> applyStableExprVarInoutWrites env e
+  EApp f args -> do
+    foldM applyGroup (Map.empty, [], env) (stableInoutWriteBackGroups env f args)
+  _ -> pure (Map.empty, [], env)
+  where
+    applyGroup (u, bound, envc) (nm, vi, targets) = do
+      k <- freshKey nm
+      let patched = [path | (path, _, _) <- targets]
+          sp = case targets of
+            ((_, _, targetSp) : _) -> targetSp
+            [] -> vSpan vi
+          refreshed =
+            foldl
+              (\acc (path, shape, targetSp) -> updateStableStoredShape envc acc path shape targetSp)
+              vi
+              targets
+          newVi = refreshed {vKey = k, vSpan = sp}
+          env' = envc {eVars = Map.insert nm newVi (eVars envc)}
+      pure (u `seqU` patchRootUsage vi patched sp, bound ++ [(nm, newVi)], env')
+
+varInoutWriteBacks :: Env -> Expr -> [Arg] -> [(Text, VInfo)]
+varInoutWriteBacks env f args =
+  case calleeDemandName env f of
+    Nothing -> []
+    Just callee ->
+      let params = Map.findWithDefault [] callee (eFns env)
+          resultShapes = Map.findWithDefault [] callee (eInoutResults env)
+       in mapMaybe (writeBack resultShapes) (alignArgParams params args)
+  where
+    writeBack resultShapes = \case
+      (ArgInout e sp, p)
+        | pInout p
+        , Just formal <- pName p
+        , Just shape <- find ((== formal) . fsName) resultShapes
+        , Just (vi, path, _) <- varInoutPlaceOf env e
+        , Just (nm, _) <- find ((== vKey vi) . vKey . snd) (Map.toList (eVars env)) ->
+            Just (nm, updateMutableStoredShape env vi path shape sp)
+      _ -> Nothing
+
+stableInoutWriteBackGroups :: Env -> Expr -> [Arg] -> [(Text, VInfo, [(FieldPath, FieldShape, Span)])]
+stableInoutWriteBackGroups env f args =
+  foldr insertGroup [] (stableInoutWriteBacks env f args)
+  where
+    insertGroup (nm, vi, path, shape, sp) [] = [(nm, vi, [(path, shape, sp)])]
+    insertGroup wb@(nm, _vi, path, shape, sp) ((gnm, gvi, targets) : rest)
+      | nm == gnm = (gnm, gvi, targets ++ [(path, shape, sp)]) : rest
+      | otherwise = (gnm, gvi, targets) : insertGroup wb rest
+
+stableInoutWriteBacks :: Env -> Expr -> [Arg] -> [(Text, VInfo, FieldPath, FieldShape, Span)]
+stableInoutWriteBacks env f args =
+  case calleeDemandName env f of
+    Nothing -> []
+    Just callee ->
+      let params = Map.findWithDefault [] callee (eFns env)
+          resultShapes = Map.findWithDefault [] callee (eInoutResults env)
+       in mapMaybe (writeBack resultShapes) (alignArgParams params args)
+  where
+    writeBack resultShapes = \case
+      (ArgInout e sp, p)
+        | pInout p
+        , Just formal <- pName p
+        , Just shape <- find ((== formal) . fsName) resultShapes
+        , Just (vi, path, _) <- stableInoutPlaceOf env e
+        , Just (nm, _) <- find ((== vKey vi) . vKey . snd) (Map.toList (eVars env)) ->
+            Just (nm, vi, path, shape, sp)
+      _ -> Nothing
+
+stableInoutPlaceOf :: Env -> Expr -> Maybe (VInfo, FieldPath, Span)
+stableInoutPlaceOf env e =
+  placeOf env e <|> case projPlacesOf env e of
+    Just ([place], _) -> Just place
+    _ -> Nothing
+
+updateMutableStoredShape :: Env -> VInfo -> [Text] -> FieldShape -> Span -> VInfo
+updateMutableStoredShape env vi path shape sp =
+  vi
+    { vQ = if null path then successorRootQ else vQ vi
+    , vFields = if null path then fieldsFromType else vFields vi
+    , vPathFields = mergePathQuantities keptPathFields newPathFields
+    , vDeps =
+        if null path
+          then maybe [] (resolveDeps (eFieldDeps env)) (fsType shape)
+          else vDeps vi
+    , vPathDeps =
+        if null path
+          then tyPathDeps
+          else mergePathDeps (vPathDeps vi) [(path ++ p, [path ++ d | d <- deps]) | (p, deps) <- tyPathDeps]
+    , vNonDupFields = dedupPaths (keptNonDupFields ++ newNonDupFields)
+    , vNonDupValue =
+        if null path
+          then successorNonDup && isNothing successorRootQ && null newNonDupFields && null newPathFields
+          else vNonDupValue vi
+    , vStoredTypeText =
+        if null path
+          then renderExprSrc <$> fsType shape
+          else vStoredTypeText vi
+    , vStoredTypeExpr =
+        if null path
+          then fsType shape
+          else vStoredTypeExpr vi
+    , vSpan = sp
+    }
+  where
+    successorRootQ =
+      if maybe False successorHasHiddenPositive (fsType shape)
+        then Just QOne
+        else Nothing
+    successorNonDup =
+      maybe False typeHasHiddenNonDuplicable (fsType shape)
+    tyPathFields = maybe [] (recordPathFields env) (fsType shape)
+    tyPathDeps = maybe [] (recordPathDeps env) (fsType shape)
+    successorHasHiddenPositive ty =
+      typeMayContainPositive env ty
+        && not (any (positiveLowerQuantity . snd) tyPathFields)
+    typeHasHiddenNonDuplicable ty =
+      typeMayContainNonDuplicable env ty
+        && not (any (nonDupQuantity . snd) tyPathFields)
+    directPathFields =
+      [ (path, q)
+      | not (null path)
+      , let q = successorRootQ
+      , maybe False (\qv -> positiveLowerQuantity (Just qv) || nonDupQuantity (Just qv)) q
+      ]
+    fieldsFromType =
+      mergeFieldQuantities
+        (maybe [] (resolveFields (eAliases env)) (fsType shape))
+        (topFieldsFromPaths tyPathFields)
+    newPathFields =
+      if null path
+        then tyPathFields
+        else mergePathQuantities directPathFields [(path ++ p, q) | (p, q) <- tyPathFields]
+    newNonDupFields =
+      dedupPaths $
+        [path | not (null path), successorNonDup]
+          ++ [path ++ p | (p, q) <- tyPathFields, nonDupQuantity q]
+    keptPathFields =
+      if null path
+        then []
+        else [(p, q) | (p, q) <- vPathFields vi, not (pathsOverlap p path)]
+    keptNonDupFields =
+      if null path
+        then []
+        else [p | p <- vNonDupFields vi, not (pathsOverlap p path)]
+
+updateStableStoredShape :: Env -> VInfo -> [Text] -> FieldShape -> Span -> VInfo
+updateStableStoredShape env vi path shape sp =
+  let updated = updateMutableStoredShape env vi path shape sp
+   in if null path
+        then updated
+        else updated {vQ = Nothing}
+
+typeMayContainPositive :: Env -> Expr -> Bool
+typeMayContainPositive = typeMayContainQuantity positiveLowerQuantity
+
+typeMayContainNonDuplicable :: Env -> Expr -> Bool
+typeMayContainNonDuplicable = typeMayContainQuantity nonDupQuantity
+
+typeMayContainQuantity :: (Maybe Quantity -> Bool) -> Env -> Expr -> Bool
+typeMayContainQuantity qPred env ty =
+  case typeStorageQuantityWith (eRecordShapes env) (eCtors env) ty of
+    Just q -> qPred (Just q)
+    Nothing ->
+      typeStorageFactsUnknown env ty
+        && (qPred (Just QOne) || qPred (Just QAtMostOne))
+
+typeStorageFactsUnknown :: Env -> Expr -> Bool
+typeStorageFactsUnknown env = \case
+  ERecordType {} -> False
+  EAscription (EVar n) _ _
+    | isLowerName (nameText n) -> False
+  EAscription e _ _ -> typeStorageFactsUnknown env e
+  ECaptures e _ _ -> typeStorageFactsUnknown env e
+  EApp f _ -> typeStorageFactsUnknown env f
+  ty
+    | Just hd <- typePathHead ty ->
+        not (knownDuplicableStorageHead env hd)
+          && isNothing (shapeFieldsForType (eRecordShapes env) ty)
+          && null
+              [ ()
+              | (k, _) <- Map.toList (eCtors env)
+              , (hd <> ".") `T.isPrefixOf` k
+              ]
+  _ -> False
+
+knownDuplicableStorageHead :: Env -> Text -> Bool
+knownDuplicableStorageHead env hd =
+  hd `Set.member` eDuplicableStorageHeads env || builtinSortHead hd
+  where
+    -- Universe spellings are parser/kernel syntax, not user-definable storage
+    -- type constructors imported through a module scope.
+    builtinSortHead t = t `elem` ["Type", "Type0", "Type1"]
+
 walkApp :: Env -> Expr -> [Arg] -> Analysis WalkResult
 walkApp env (EDot recv (DotName m)) args
   -- §7.4 method-call sugar: the receiver is one ordinary argument of
@@ -1616,6 +3354,11 @@ walkApp env (EDot recv (DotName m)) args
   , Just params <- Map.lookup (nameText m) (eFns env)
   , (i : _) <- [ix | (ix, pp) <- zip [0 ..] params, pReceiver pp] =
       walkApp env (EVar m) (take i args ++ [ArgExplicit recv] ++ drop i args)
+walkApp env f args
+  | Just (n, sp) <- recognizedRefRead env f args
+  , Just vi <- Map.lookup (nameText n) (eVars env)
+  , vMutable vi = do
+      rPlain <$> currentReadUsage env vi [] sp
 walkApp env f args
   -- a projection call in an ordinary value position is a non-consuming
   -- read of its yield leaves (§30.2.2.3 ReadProjector)
@@ -1628,13 +3371,15 @@ walkApp env f args = do
   hr <- walkE env f
   let (hu, _ht) = flatR hr -- an application calls its head exactly once
       params = maybe [] (\n -> Map.findWithDefault [] n (eFns env)) (calleeDemandName env f)
-      ps = params ++ repeat defaultP
-  rs <- sequence (zipWith (walkArg env params) args ps)
+      liftLike = case appHeadVar env f of
+        Just n -> maybe False buLiftLike (Map.lookup n builtinUsage)
+        Nothing -> False
+  rs <- forM (alignArgParams params args) $ \(arg, p) -> walkArg env params liftLike arg p
   -- §12.4: places borrowed and consumed by the same call must be disjoint
   let facts = concatMap snd rs
-      borrows =
-        [(k, p, bsp) | FBorrow k p bsp <- facts]
-          ++ [(k, p, isp) | FInout k p isp <- facts]
+      borrowFacts = [(k, p, bsp) | FBorrow k p bsp <- facts]
+      inouts = [(k, p, isp) | FInout k p isp <- facts]
+      borrows = borrowFacts ++ inouts
   forM_ facts $ \case
     FMove k p msp
       | ((_, _, bsp) : _) <-
@@ -1647,10 +3392,16 @@ walkApp env f args = do
             ]
             "a place is consumed by the same call that borrows an overlapping place (§12.4)"
     _ -> pure ()
-  -- §18.9.3: the place footprints of the '~' arguments of one call must
-  -- be pairwise disjoint ("a given stable place, or a given projection
-  -- call occurrence, may appear in at most one '~' argument")
-  let inouts = [(k, p, isp) | FInout k p isp <- facts]
+  -- §18.9.3 / §3.3.4: a '~' footprint is an update footprint. It must be
+  -- disjoint both from other '~' update footprints and from borrowed
+  -- footprints in the same call, using dependency-expanded static footprints.
+  let inoutBorrowPairs =
+        [ (bsp, isp)
+        | (k1, p1, isp) <- inouts
+        , (k2, p2, bsp) <- borrowFacts
+        , k1 == k2
+        , pathsOverlap p1 p2
+        ]
       overlapPairs =
         [ (isp1, isp2)
         | ((k1, p1, isp1), rest') <- zip inouts (drop 1 (tails inouts))
@@ -1658,6 +3409,14 @@ walkApp env f args = do
         , k1 == k2
         , pathsOverlap p1 p2
         ]
+  case inoutBorrowPairs of
+    ((bsp, isp) : _) ->
+      emitRel "E_QTT_BORROW_OVERLAP" "kappa.borrow.overlap" isp
+        [ related RoleBorrowStart bsp "overlapping place borrowed by the same call here"
+        , related RoleBorrowConflict isp "overlapping inout argument here"
+        ]
+        "an inout argument overlaps a borrowed place in the same call (§18.9.3, §12.4)"
+    [] -> pure ()
   case overlapPairs of
     ((isp1, osp) : _) ->
       -- §3.1.1A line 602: both overlapping '~' footprints are
@@ -1682,13 +3441,10 @@ walkApp env f args = do
   --     a value, so a borrow-capturing closure argument keeps its taint,
   --     exactly like the tuple/record-literal construction handled by
   --     'walks'. (Tuples and records already propagate via 'walks'.)
-  let liftLike = case appHeadVar f of
-        Just n -> maybe False buLiftLike (Map.lookup n builtinUsage)
-        Nothing -> False
-      -- the head names a data constructor (looked up by ctor name, not a
+  let -- the head names a data constructor (looked up by ctor name, not a
       -- locally-bound variable shadowing it) — its application builds a
       -- value that holds the argument
-      ctorLike = case appHeadVar f of
+      ctorLike = case appHeadVar env f of
         Just n -> not (Map.member n (eVars env)) && Map.member n (eCtors env)
         Nothing -> False
       taint
@@ -1696,22 +3452,21 @@ walkApp env f args = do
         | otherwise = Nothing
   pure ((rPlain (foldr (seqU . wrUsage . fst) hu rs)) {wrTaint = taint})
 
-walkArg :: Env -> [PInfo] -> Arg -> PInfo -> Analysis (WalkResult, [Fact])
-walkArg env params arg p = case arg of
+walkArg :: Env -> [PInfo] -> Bool -> Arg -> PInfo -> Analysis (WalkResult, [Fact])
+walkArg env params resultCarried arg p = case arg of
   ArgImplicit _ -> pure (rNone, []) -- erased position (§12.2.1)
   ArgNamedBlock items _ -> do
     rs <- forM items $ \(n, me) -> do
       let np = fromMaybe defaultP (find ((== Just (nameText n)) . pName) params)
-      walkArg env params (ArgExplicit (fromMaybe (EVar n) me)) np
+      walkArg env params resultCarried (ArgExplicit (fromMaybe (EVar n) me)) np
     let r = (rPlain (foldr (seqU . wrUsage . fst) Map.empty rs)) {wrTaint = firstJust (mapMaybe (wrTaint . fst) rs)}
     pure (r, concatMap snd rs)
   ArgInout e sp
     | pInout p -> inoutish e sp
-    | hasDemand -> do
+    | otherwise -> do
         emit "E_QTT_INOUT_MARKER_UNEXPECTED" "kappa-hs.qtt.inout-marker" sp
           "call-site '~' marker on an argument whose parameter is not declared inout (§18.9.3)"
         (,[]) <$> walkE env e
-    | otherwise -> inoutish e sp
   ArgExplicit e
     | pInout p -> do
         emit "E_QTT_INOUT_MARKER_REQUIRED" "kappa-hs.qtt.inout-marker" (exprSpan e)
@@ -1727,23 +3482,39 @@ walkArg env params arg p = case arg of
         rs <- mapM (walkE env) aux
         us <- mapM (\(vi, path, psp) -> movePlace env vi path psp) places
         let u = foldr seqU (foldr (seqU . fst . flatR) Map.empty rs) us
-        pure (rPlain u, [FMove (vKey vi) path psp | (vi, path, psp) <- places])
+        pure
+          ( rPlain u
+          , [ FMove k fp fsp
+            | pl@(_, _, psp) <- places
+            , (k, fp, fsp) <- placeFootprintLocks env pl psp
+            ]
+          )
     | Just (places, aux) <- projPlacesOf env e -> do
         rs <- mapM (walkE env) aux
         let u = foldr (seqU . fst . flatR) Map.empty rs
             touch = placesTouch places
-        pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path psp | (vi, path, psp) <- places])
+        pure
+          ( rPlain (u `seqU` touch)
+          , [ FBorrow k fp fsp
+            | pl@(_, _, psp) <- places
+            , (k, fp, fsp) <- placeFootprintLocks env pl psp
+            ]
+          )
     | consuming
     , Just (vi, [], sp) <- placeOf env e
     , vBorrowed vi -> do
-        -- §3.1.1A line 602: relate the borrow-introduction site (the
-        -- borrowed binding's binder) and the failing consuming use.
-        emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
-          [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
-          , related RoleConsumedHere sp "consumed by a quantity-1 parameter here"
-          ]
-          ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
-        pure (rPlain (Map.singleton (vKey vi) touchUC), [])
+        case vEscape vi sp of
+          Just tsp | resultCarried ->
+            pure (WalkResult (Map.singleton (vKey vi) touchUC) (Just tsp) Map.empty, [])
+          _ -> do
+            -- §3.1.1A line 602: relate the borrow-introduction site (the
+            -- borrowed binding's binder) and the failing consuming use.
+            emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
+              [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
+              , related RoleConsumedHere sp "consumed by a quantity-1 parameter here"
+              ]
+              ("borrowed binding '" <> T.takeWhile (/= '#') (vKey vi) <> "' cannot be consumed by a quantity-1 parameter (§12.3.1)")
+            pure (rPlain (Map.singleton (vKey vi) touchUC), [])
     -- a direct place argument is counted at the parameter's demand
     -- interval (§12.2.2); a definite consume is a move fact (§12.4)
     | Just (vi, path, sp) <- placeOf env e
@@ -1774,7 +3545,10 @@ walkArg env params arg p = case arg of
           _ -> pure ()
         pure
           ( WalkResult (scaleU d u `seqU` latent) escapeT Map.empty
-          , [FMove (vKey vi) path sp | fst d >= 1]
+          , [ FMove k fp msp
+            | fst d >= 1
+            , (k, fp, msp) <- placeFootprintLocks env (vi, path, sp) sp
+            ]
           )
     -- a definite consume of a deeper (non-linear) path still conflicts
     -- with a live borrow of an overlapping path (§12.4)
@@ -1783,7 +3557,7 @@ walkArg env params arg p = case arg of
         checkBorrowOverlap env vi path sp
         pure
           ( rPlain (Map.singleton (vKey vi) touchUC)
-          , [FMove (vKey vi) path sp]
+          , [FMove k fp msp | (k, fp, msp) <- placeFootprintLocks env (vi, path, sp) sp]
           )
     | otherwise -> do
         WalkResult u t l <- walkE env e
@@ -1797,6 +3571,7 @@ walkArg env params arg p = case arg of
             -- fails the linear upper bound, exactly as a direct place
             -- argument already does.
             u' = scaleU d u
+            l' = if refFacetValue e then l else scaleU d l
         -- a borrow-capturing closure may flow only into an
         -- at-most-once consuming position (§12.3.2); an unrestricted
         -- parameter may retain it beyond the borrow's scope
@@ -1816,10 +3591,9 @@ walkArg env params arg p = case arg of
                   , related RoleBorrowEscapeSite (exprSpan e) "flows into an unrestricted parameter here"
                   ]
                   "a closure capturing a borrowed binding flows into an unrestricted parameter (§12.3.2)"
-                pure (rPlain (u' `seqU` scaleU d l), [])
-          _ -> pure (WalkResult (u' `seqU` scaleU d l) t Map.empty, [])
+                pure (rPlain (u' `seqU` l'), [])
+          _ -> pure (WalkResult (u' `seqU` l') t Map.empty, [])
   where
-    hasDemand = isJust (pQuantity p) || pBorrow p
     consuming = pQuantity p `elem` [Just QOne, Just QAtLeastOne]
     placeUse vi path sp =
       case path of
@@ -1831,10 +3605,10 @@ walkArg env params arg p = case arg of
             ]
     borrowish e = case placeOf env e of
       Just (vi, path, sp) ->
-        pure
-          ( rPlain (placeBorrow vi path sp)
-          , [FBorrow (vKey vi) path sp]
-          )
+          pure
+            ( rPlain (placeBorrow vi path sp)
+            , [FBorrow k fp bsp | (k, fp, bsp) <- placeFootprintLocks env (vi, path, sp) sp]
+            )
       Nothing
         -- a projection call in borrow demand borrows every yield leaf
         -- for the call (§30.2.2.3 BorrowProjector)
@@ -1842,13 +3616,71 @@ walkArg env params arg p = case arg of
             rs <- mapM (walkE env) aux
             let u = foldr (seqU . fst . flatR) Map.empty rs
                 touch = placesTouch places
-            pure (rPlain (u `seqU` touch), [FBorrow (vKey vi) path psp | (vi, path, psp) <- places])
+            pure
+              ( rPlain (u `seqU` touch)
+              , [ FBorrow k fp bsp
+                | pl@(_, _, psp) <- places
+                , (k, fp, bsp) <- placeFootprintLocks env pl psp
+                ]
+              )
         | otherwise -> (,[]) <$> walkE env e
     -- like 'borrowish', but the facts carry the marker span for the
     -- §18.9.3 pairwise-disjointness check of one call's '~' arguments
-    inoutish e isp = do
-      (r, fs) <- borrowish e
-      pure (r, [FInout k path isp | FBorrow k path _ <- fs])
+    inoutish e isp =
+      case placeOf env e of
+        Just (vi, path, sp) -> do
+          checkBorrowOverlap env vi path isp
+          pure
+            ( rPlain (placeBorrow vi path sp)
+            , [FInout k fp isp | (k, fp, _) <- placeFootprintLocks env (vi, path, sp) isp]
+            )
+        Nothing -> case varPlaceOf env e of
+          Just (vi, path, _) -> do
+            checkBorrowOverlap env vi path isp
+            pure
+              ( rPlain Map.empty
+              , [FInout k fp isp | (k, fp, _) <- placeFootprintLocks env (vi, path, isp) isp]
+              )
+          Nothing -> case projPlacesOf env e of
+            Just (places, aux) -> do
+              forM_ places $ \(vi, path, _) -> checkBorrowOverlap env vi path isp
+              rs <- mapM (walkE env) aux
+              let u = foldr (seqU . fst . flatR) (placesTouch places) rs
+              pure
+                ( rPlain u
+                , [ FInout k fp isp
+                  | pl <- places
+                  , (k, fp, _) <- placeFootprintLocks env pl isp
+                  ]
+                )
+            Nothing -> case projVarPlacesOf env e of
+              Just (places, aux) -> do
+                forM_ places $ \(vi, path, _) -> checkBorrowOverlap env vi path isp
+                rs <- mapM (walkE env) aux
+                let u = foldr (seqU . fst . flatR) Map.empty rs
+                pure
+                  ( rPlain u
+                  , [ FInout k fp isp
+                    | pl <- places
+                    , (k, fp, _) <- placeFootprintLocks env pl isp
+                    ]
+                  )
+              Nothing -> do
+                (r, fs) <- borrowish e
+                pure (r, [FInout k path isp | FBorrow k path _ <- fs])
+
+alignArgParams :: [PInfo] -> [Arg] -> [(Arg, PInfo)]
+alignArgParams params0 = go params0
+  where
+    go _ [] = []
+    go ps (arg : rest) = case arg of
+      ArgImplicit _ -> (arg, defaultP) : go ps rest
+      ArgNamedBlock {} -> (arg, defaultP) : go ps rest
+      ArgExplicit {} -> consume arg ps rest
+      ArgInout {} -> consume arg ps rest
+    consume arg ps rest = case ps of
+      p : ps' -> (arg, p) : go ps' rest
+      [] -> (arg, defaultP) : go [] rest
 
 checkCaptureBound :: PInfo -> Maybe Span -> Span -> Analysis ()
 checkCaptureBound p mt escapeSp =
@@ -1888,15 +3720,21 @@ usageAnonBorrowIntro env u =
 
 calleeDemandName :: Env -> Expr -> Maybe Text
 calleeDemandName env = \case
-  EVar n
-    | not (Map.member (nameText n) (eVars env)) -> Just (nameText n)
-  -- Module-qualified calls keep the alias spelling in the surface tree.
-  -- Preserve it as part of the demand key so @term.write x@ cannot
-  -- accidentally use another imported module's bare @write@ profile.
-  EDot (EVar alias) (DotName n)
-    | not (Map.member (nameText alias) (eVars env)) -> Just (nameText alias <> "." <> nameText n)
+  e | Just headKey <- staticPathHead env e -> Just headKey
+  EApp f _ -> calleeDemandName env f
   EAscription e _ _ -> calleeDemandName env e
   _ -> Nothing
+
+calleeStorageInfo :: Env -> Expr -> Maybe VInfo
+calleeStorageInfo env f = do
+  n <- appHeadVar env f
+  guardNotLocal n
+  Map.lookup n (eResultStorage env)
+  where
+    guardNotLocal n =
+      if Map.member n (eVars env)
+        then Nothing
+        else Just ()
 
 coreFnParams :: Term -> [PInfo]
 coreFnParams = \case
@@ -1920,6 +3758,10 @@ coreFnParams = \case
 walkBinds :: Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
 walkBinds env binds = go env binds
   where
+    bindsWholeRhs = \case
+      PVar {} -> True
+      PTyped p _ _ -> bindsWholeRhs p
+      _ -> False
     go envc [] = pure ([], envc)
     go envc (LetBind _ prefix pat mty rhs bsp : rest) = do
       let BinderPrefix mq mb = prefix
@@ -1976,7 +3818,16 @@ walkBinds env binds = go env binds
                   pure (Map.empty, Nothing, Map.empty, [])
             _ -> do
               WalkResult u' t' l' <- walkE envc rhs
-              pure (u', t', l', [])
+              let forceRefEscape =
+                    bindsWholeRhs pat
+                      && not (isWildBinder pat)
+                      && refFacetValue rhs
+              pure
+                ( if forceRefEscape then u' `seqU` l' else u'
+                , t'
+                , if forceRefEscape then Map.empty else l'
+                , []
+                )
       let names = patVars pat
           single = length names == 1
           -- a binding receiving a quantity-1 field projection inherits the
@@ -2003,22 +3854,42 @@ walkBinds env binds = go env binds
             mergeFieldQuantities
               (maybe [] (resolveFields (eAliases envc)) mty)
               litFields
+          annotatedPathFields = maybe [] (recordPathFields envc) mty
           fdeps = maybe [] (resolveDeps (eFieldDeps envc)) mty
+          annotatedPathDeps = maybe [] (recordPathDeps envc) mty
+          wholeRhsBinder = bindsWholeRhs pat
           mk nm = do
             k <- freshKey nm
+            let storedInfo
+                  | wholeRhsBinder, not borrowed, not (isWildBinder pat) = Just (storedValueInfo envc k bsp rhs)
+                  | otherwise = Nothing
+                q' = q `orElse` (storedInfo >>= vQ)
+                pathFields' = maybe annotatedPathFields (mergePathQuantities annotatedPathFields . vPathFields) storedInfo
+                pathDeps' = maybe annotatedPathDeps (mergePathDeps annotatedPathDeps . vPathDeps) storedInfo
+                fields' =
+                  maybe
+                    (mergeFieldQuantities fields (topFieldsFromPaths pathFields'))
+                    (mergeFieldQuantities fields . vFields)
+                    storedInfo
+                nonDupValue' = maybe False vNonDupValue storedInfo
+                nonDupFields' = maybe [] vNonDupFields storedInfo
+                openTail' = storedInfo >>= vOpenTail
             pure
               ( nm
-              , VInfo k
-                  q
-                  borrowed
-                  anon
-                  False
-                  (if single then taint else Nothing)
-                  (if single then latent else Map.empty)
-                  fields
-                  fdeps
-                  Nothing
-                  bsp
+              , (plainV k bsp)
+                  { vQ = q'
+                  , vBorrowed = borrowed
+                  , vAnonBorrow = anon
+                  , vTaint = if single then taint else Nothing
+                  , vLatent = if single then latent else Map.empty
+                  , vFields = fields'
+                  , vPathFields = pathFields'
+                  , vPathDeps = pathDeps'
+                  , vNonDupValue = nonDupValue'
+                  , vNonDupFields = nonDupFields'
+                  , vDeps = fdeps
+                  , vOpenTail = openTail'
+                  }
               )
       -- every pattern name is bound (untracked entries still shadow
       -- outer bindings); only prefixed/tainted ones carry checks
@@ -2038,14 +3909,16 @@ walkBinds env binds = go env binds
             , [nm] <- [names]
             , Just du <- [descOf envc rhs]
             ]
-          envb0 = bindVars bound envc
+      (restoreU, restored, envStable) <- applyStableExprVarInoutWrites envc rhs
+      let envAfterRhs = applyExprVarInoutWrites envStable rhs
+          envb0 = bindVars bound envAfterRhs
           envb =
             envb0
               { eDescs = foldr (uncurry Map.insert) (eDescs envb0) descEntries
               , eBorrowAliases = foldr (uncurry Map.insert) (eBorrowAliases envb0) aliasEntries
               }
       (segs, env') <- go (addBorrows brs envb) rest
-      pure ((u, bound, brs) : segs, env')
+      pure ((u `seqU` restoreU, restored ++ bound, brs) : segs, env')
     orElse (Just x) _ = Just x
     orElse Nothing y = y
 
@@ -2239,6 +4112,8 @@ subExprs e0 = case e0 of
   EMapLit kvs _ -> concatMap (\(a, b) -> [a, b]) kvs
   EAscription e _ _ -> [e]
   ECaptures e _ _ -> [e]
+  ERefFacet {} -> []
+  EVarRead {} -> []
   EBang _ e _ -> [e]
   EQuote e _ -> [e]
   ESplice e _ -> [e]
@@ -2267,7 +4142,7 @@ doItemExprs = \case
   DoBind lb -> [lbExpr lb]
   DoLet lb -> [lbExpr lb]
   DoLetQ _ e mels _ -> e : maybe [] (\(_, fe) -> [fe]) mels
-  DoVar _ e _ -> [e]
+  DoVar _ _ e _ -> [e]
   DoAssign _ _ e _ -> [e]
   DoExpr e -> [e]
   DoUsing _ _ e _ -> [e]
@@ -2298,20 +4173,54 @@ declsToBinds (d : ds) = case d of
 -- completion path; break\/continue stop at the enclosing loop, returns
 -- exit the do-scope).
 data Flow = Flow
-  { fU :: !(Maybe Usage)
+  { fU :: !(Maybe PathState)
   , fT :: !(Maybe Span)
-  , fBC :: ![Usage]
-  , fRet :: ![Usage]
+  , fBC :: ![PathState]
+  , fRet :: ![PathState]
+  }
+
+data PathState = PathState
+  { psU :: !Usage
+  , psVars :: !(Map Text VInfo)
   }
 
 -- | Sequence a prefix usage before a segment's flow.
 prefixFlow :: Usage -> Flow -> Flow
 prefixFlow u (Flow mu t bc ret) =
-  Flow ((u `seqU`) <$> mu) t (map (u `seqU`) bc) (map (u `seqU`) ret)
+  Flow (prefixPathState u <$> mu) t (map (prefixPathState u) bc) (map (prefixPathState u) ret)
+
+prefixPathState :: Usage -> PathState -> PathState
+prefixPathState u ps = ps {psU = u `seqU` psU ps}
 
 -- | All paths of a segment (fall-through plus early exits).
 flowPaths :: Flow -> [Usage]
-flowPaths fl = maybeToList (fU fl) ++ fBC fl ++ fRet fl
+flowPaths fl = map psU (flowPathStates fl)
+
+flowPathStates :: Flow -> [PathState]
+flowPathStates fl = maybeToList (fU fl) ++ fBC fl ++ fRet fl
+
+scopeFlowVars :: Env -> [Text] -> Flow -> Flow
+scopeFlowVars env names fl =
+  fl
+    { fU = scopePath <$> fU fl
+    , fBC = map scopePath (fBC fl)
+    , fRet = map scopePath (fRet fl)
+    }
+  where
+    scopePath ps = ps {psVars = foldr restore (psVars ps) names}
+    restore nm vars = case Map.lookup nm (eVars env) of
+      Just vi -> Map.insert nm vi vars
+      Nothing -> Map.delete nm vars
+
+joinPathVars :: Env -> [PathState] -> Map Text VInfo
+joinPathVars env paths =
+  Map.mapWithKey joinOne (eVars env)
+  where
+    joinOne nm baseVi =
+      foldl
+        joinVInfo
+        baseVi
+        [vi | ps <- paths, Just vi <- [Map.lookup nm (psVars ps)]]
 
 -- | Walk a do-scope; sequential items, branch joins for statement-ifs,
 -- loop bodies may run zero times and every break\/continue\/return path
@@ -2321,26 +4230,37 @@ flowPaths fl = maybeToList (fU fl) ++ fBC fl ++ fRet fl
 walkItems :: Env -> [DoItem] -> Analysis Flow
 walkItems env0 items0 = go env0 items0
   where
-    go _ [] = pure (Flow (Just Map.empty) Nothing [] [])
+    go env [] = pure (Flow (Just (PathState Map.empty (eVars env))) Nothing [] [])
     go env (item : rest) = case item of
-      DoExpr e -> do
-        r <- walkE env e
-        let (u, t) = flatR r
-        fl <- go env rest
-        let fl' = prefixFlow u fl
-        -- the final statement's value escapes the do-scope: report the
-        -- escape at that statement, not at the closure formation
-        pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
+      DoExpr e
+        | Just (n, rhs, sp) <- recognizedWriteRef env e ->
+            mutableWrite (MutableCloseContext "reference" "writeRef") env n rhs sp rest
+        | otherwise -> do
+            r <- walkE env e
+            let (u, t) = flatR r
+            (restoreU, restored, envStable) <- applyStableExprVarInoutWrites env e
+            let env' = applyExprVarInoutWrites envStable e
+            fl <- go env' rest
+            forM_ restored $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
+            let flScoped = scopeFlowVars env (map fst restored) fl
+                fl' = prefixFlow (u `seqU` restoreU) flScoped
+            -- the final statement's value escapes the do-scope: report the
+            -- escape at that statement, not at the closure formation
+            pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
       DoLet lb -> bindLike env lb rest
-      DoBind lb -> do
-        (fl, suffixFl) <- bindLike' env lb rest
-        -- §18.1.20 call-site capture rule: the suffix from a multi-shot
-        -- operation site to the handler boundary is captured by a
-        -- reusable resumption, so every runtime-relevant captured value
-        -- must be duplicable and free of borrow obligations
-        forM_ (multishotOpCall env (lbExpr lb)) $ \(osp, opn) ->
-          checkMultishotCapture env osp opn (flowPaths suffixFl)
-        pure fl
+      DoBind lb
+        | Just (n, rhs, sp) <- recognizedWriteRef env (lbExpr lb) ->
+            mutableWriteBind env n rhs sp lb rest
+      DoBind lb
+        | otherwise -> do
+            (fl, suffixFl) <- bindLike' env lb rest
+            -- §18.1.20 call-site capture rule: the suffix from a multi-shot
+            -- operation site to the handler boundary is captured by a
+            -- reusable resumption, so every runtime-relevant captured value
+            -- must be duplicable and free of borrow obligations
+            forM_ (multishotOpCall env (lbExpr lb)) $ \(osp, opn) ->
+              checkMultishotCapture env osp opn (flowPaths suffixFl)
+            pure fl
       DoUsing _ pat rhs sp -> do
         -- §19.5: the bound resource is borrowed for the rest of scope
         -- and may not itself escape the do-scope
@@ -2350,7 +4270,7 @@ walkItems env0 items0 = go env0 items0
             markUsing = foldr (\(nm, _) -> Map.adjust (\vi -> vi {vUsing = True}) nm) (eVars env') bound
         fl <- go env' {eVars = markUsing} rest
         forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
-        pure (prefixFlow u fl)
+        pure (prefixFlow u (scopeFlowVars env (map fst bound) fl))
       DoLetQ pat rhs mElse sp -> do
         u <- fst . flatR <$> walkE env rhs
         -- the else handler is an alternative completion path (§18.2)
@@ -2368,41 +4288,78 @@ walkItems env0 items0 = go env0 items0
             pure Nothing
         shadow <- shadowVars (patVars pat) sp
         fl <- go (bindVars shadow env) rest
-        let fl' = prefixFlow u fl
-        pure fl' {fRet = maybeToList eu ++ fRet fl'}
-      DoVar n rhs _ -> do
+        let flScoped = scopeFlowVars env (map fst shadow) fl
+            fl' = prefixFlow u flScoped
+            elseRet = [PathState e (eVars env) | e <- maybeToList eu]
+        pure fl' {fRet = elseRet ++ fRet fl'}
+      DoVar n mty rhs _ -> do
         u <- fst . flatR <$> walkE env rhs
         shadowK <- freshKey (nameText n)
-        let env' = bindVars [(nameText n, plainV shadowK (nameSpan n))] env
-        prefixFlow u <$> go env' rest
-      DoAssign _ _ rhs _ -> do
-        u <- fst . flatR <$> walkE env rhs
-        prefixFlow u <$> go env rest
+        let factRhs = maybe rhs (\ty -> EAscription rhs ty (exprSpan rhs)) mty
+            mutInfo = storedValueInfo env shadowK (nameSpan n) factRhs
+            env' = bindVars [(nameText n, mutInfo)] env
+        fl <- go env' rest
+        forM_ (flowPathStates fl) $ \ps ->
+          closeVarWith
+            (Just (MutableCloseContext "current-value" "scope exit"))
+            (Map.findWithDefault mutInfo (nameText n) (psVars ps))
+            (psU ps)
+        pure (prefixFlow u (scopeFlowVars env [nameText n] fl))
+      DoAssign n monadic rhs sp
+        | Just vi <- Map.lookup (nameText n) (eVars env)
+        , vMutable vi ->
+            if monadic
+              then mutableWriteAction env n rhs sp rest
+              else mutableWrite (MutableCloseContext "assignment-target" "assignment") env n rhs sp rest
+        | otherwise -> do
+            u <- fst . flatR <$> walkE env rhs
+            prefixFlow u <$> go env rest
       DoReturn _ me _ -> do
         -- a return ends this path; items after it are unreachable
         (u, t) <- maybe (pure (Map.empty, Nothing)) (fmap flatR . walkE env) me
-        pure (Flow Nothing t [] [u])
-      DoBreak {} -> pure (Flow Nothing Nothing [Map.empty] [])
-      DoContinue {} -> pure (Flow Nothing Nothing [Map.empty] [])
+        pure (Flow Nothing t [] [PathState u (eVars env)])
+      DoBreak {} -> pure (Flow Nothing Nothing [PathState Map.empty (eVars env)] [])
+      DoContinue {} -> pure (Flow Nothing Nothing [PathState Map.empty (eVars env)] [])
       DoWhile _ cond body mels _ -> do
         cu <- fst . flatR <$> walkE env cond
         bodyFl <- go env body
         -- per-iteration paths: fall-through and break/continue exits;
         -- the loop may run zero times (§18.2.4)
-        let iter = loopU (altUs (maybeToList (fU bodyFl) ++ fBC bodyFl))
-        eu <- maybe (pure Map.empty) (fmap (altUs . flowPaths) . go env) mels
-        fl <- go env rest
+        let iter = loopU (altUs (map psU (maybeToList (fU bodyFl) ++ fBC bodyFl)))
+            loopExitVars = joinPathVars env (PathState Map.empty (eVars env) : flowPathStates bodyFl)
+            loopEnv = env {eVars = loopExitVars}
+        elseFl <- traverse (go loopEnv) mels
+        let eu = maybe Map.empty (altUs . flowPaths) elseFl
+            elseRet = maybe [] fRet elseFl
+            afterLoopVars =
+              case elseFl of
+                Just ef | not (null (maybeToList (fU ef))) -> joinPathVars loopEnv (maybeToList (fU ef) ++ fBC bodyFl)
+                _ -> joinPathVars env (PathState Map.empty (eVars env) : fBC bodyFl)
+            restEnv = env {eVars = afterLoopVars}
+        fl <- go restEnv rest
         let fl' = prefixFlow (cu `seqU` iter `seqU` eu) fl
-        pure fl' {fRet = fRet bodyFl ++ fRet fl'}
+            loopRet = map (prefixPathState cu) (fRet bodyFl ++ elseRet)
+        pure fl' {fRet = loopRet ++ fRet fl'}
       DoFor _ pat src body mels sp -> do
         su <- fst . flatR <$> walkE env src
         shadow <- shadowVars (patVars pat) sp
-        bodyFl <- go (bindVars shadow env) body
-        let iter = loopU (altUs (maybeToList (fU bodyFl) ++ fBC bodyFl))
-        eu <- maybe (pure Map.empty) (fmap (altUs . flowPaths) . go env) mels
-        fl <- go env rest
+        bodyFl0 <- go (bindVars shadow env) body
+        let bodyFl = scopeFlowVars env (map fst shadow) bodyFl0
+            iter = loopU (altUs (map psU (maybeToList (fU bodyFl) ++ fBC bodyFl)))
+            loopExitVars = joinPathVars env (PathState Map.empty (eVars env) : flowPathStates bodyFl)
+            loopEnv = env {eVars = loopExitVars}
+        elseFl <- traverse (go loopEnv) mels
+        let eu = maybe Map.empty (altUs . flowPaths) elseFl
+            elseRet = maybe [] fRet elseFl
+            afterLoopVars =
+              case elseFl of
+                Just ef | not (null (maybeToList (fU ef))) -> joinPathVars loopEnv (maybeToList (fU ef) ++ fBC bodyFl)
+                _ -> joinPathVars env (PathState Map.empty (eVars env) : fBC bodyFl)
+            restEnv = env {eVars = afterLoopVars}
+        fl <- go restEnv rest
         let fl' = prefixFlow (su `seqU` iter `seqU` eu) fl
-        pure fl' {fRet = fRet bodyFl ++ fRet fl'}
+            loopRet = map (prefixPathState su) (fRet bodyFl ++ elseRet)
+        pure fl' {fRet = loopRet ++ fRet fl'}
       DoIf alts mels _ -> do
         cus <- mapM (fmap (fst . flatR) . walkE env . fst) alts
         bfs <- mapM (go env . snd) alts
@@ -2411,17 +4368,18 @@ walkItems env0 items0 = go env0 items0
             -- with no else there is an implicit empty fall-through path
             fallts =
               mapMaybe fU branchFls
-                ++ [Map.empty | case mef of Nothing -> True; Just _ -> False]
+                ++ [PathState Map.empty (eVars env) | case mef of Nothing -> True; Just _ -> False]
             condU = foldr seqU Map.empty cus
             branchFall
               | null fallts = Nothing
-              | otherwise = Just (altUs fallts)
-        fl <- go env rest
+              | otherwise = Just (altUs (map psU fallts))
+            joinedEnv = env {eVars = joinPathVars env fallts}
+        fl <- go joinedEnv rest
         let fl' = case branchFall of
               Nothing -> Flow Nothing (fT fl) [] []
               Just bu -> prefixFlow (condU `seqU` bu) fl
-            exitsB = map (condU `seqU`) (concatMap fBC branchFls)
-            exitsR = map (condU `seqU`) (concatMap fRet branchFls)
+            exitsB = map (\ps -> ps {psU = condU `seqU` psU ps}) (concatMap fBC branchFls)
+            exitsR = map (\ps -> ps {psU = condU `seqU` psU ps}) (concatMap fRet branchFls)
         pure fl' {fBC = exitsB ++ fBC fl', fRet = exitsR ++ fRet fl'}
       DoDefer _ e sp -> do
         u <- fst . flatR <$> walkE env e
@@ -2446,7 +4404,61 @@ walkItems env0 items0 = go env0 items0
           fl <- go env' restItems
           -- every path leaving the binding's scope must satisfy it
           forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
-          pure (prefixFlow u fl, fl)
+          let flScoped = scopeFlowVars envc (map fst bound) fl
+          pure (prefixFlow u flScoped, flScoped)
+        mutableWrite closeCtx envc n rhs wsp restItems = do
+          case Map.lookup (nameText n) (eVars envc) of
+            Just oldInfo | vMutable oldInfo -> do
+              closeVarWith
+                (Just closeCtx)
+                (oldInfo {vSpan = wsp})
+                Map.empty
+              u <- fst . flatR <$> walkE envc rhs
+              let newInfo = (storedValueInfoForWrite envc oldInfo rhs) {vMutable = True}
+                  env' = envc {eVars = Map.insert (nameText n) newInfo (eVars envc)}
+              fl <- go env' restItems
+              pure (prefixFlow u fl)
+            _ -> do
+              u <- fst . flatR <$> walkE envc rhs
+              prefixFlow u <$> go envc restItems
+        mutableWriteAction envc n action wsp restItems = do
+          case Map.lookup (nameText n) (eVars envc) of
+            Just oldInfo | vMutable oldInfo -> do
+              closeVarWith
+                (Just (MutableCloseContext "assignment-target" "assignment"))
+                (oldInfo {vSpan = wsp})
+                Map.empty
+              u <- fst . flatR <$> walkE envc action
+              let newInfo = storedActionResultInfo envc oldInfo action
+                  env' = envc {eVars = Map.insert (nameText n) newInfo (eVars envc)}
+              fl <- go env' restItems
+              pure (prefixFlow u fl)
+            _ -> do
+              u <- fst . flatR <$> walkE envc action
+              prefixFlow u <$> go envc restItems
+        mutableWriteBind envc n rhs wsp lb restItems = do
+          case Map.lookup (nameText n) (eVars envc) of
+            Just oldInfo | vMutable oldInfo -> do
+              closeVarWith
+                (Just (MutableCloseContext "reference" "writeRef"))
+                (oldInfo {vSpan = wsp})
+                Map.empty
+              u <- fst . flatR <$> walkE envc rhs
+              let newInfo = (storedValueInfoForWrite envc oldInfo rhs) {vMutable = True}
+                  envWritten = envc {eVars = Map.insert (nameText n) newInfo (eVars envc)}
+              shadow <- shadowVars (patVars (lbPattern lb)) (lbSpan lb)
+              fl <- go (bindVars shadow envWritten) restItems
+              forM_ shadow $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
+              pure (prefixFlow u (scopeFlowVars envWritten (map fst shadow) fl))
+            _ -> bindLike envc lb restItems
+        recognizedWriteRef envc = \case
+          EApp f args
+            | Just (n, rhs, sp) <- recognizedRefWrite envc f args
+            , Just vi <- Map.lookup (nameText n) (eVars envc)
+            , vMutable vi ->
+                Just (n, rhs, sp)
+          EAscription e _ _ -> recognizedWriteRef envc e
+          _ -> Nothing
         -- a use of any outer non-duplicable binding in the captured
         -- suffix of a multi-shot operation (§18.1.20.2)
         checkMultishotCapture envc osp opn paths = do
@@ -2470,7 +4482,8 @@ walkItems env0 items0 = go env0 items0
             [] -> pure ()
         captureKind vi
           | vBorrowed vi = Just "a borrowed binding"
-          | vQ vi `elem` [Just QOne, Just QAtMostOne] = Just "a quantity-1 binding"
+          | vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi)) =
+              Just "a non-duplicable binding"
           | otherwise = Nothing
 
 -- | Residual constructors of a plain @let?@ pattern that carry a
@@ -2479,9 +4492,9 @@ residueLinear :: Env -> Pattern -> [Text]
 residueLinear env pat = case headCtor pat of
   Just cn ->
     [ cn'
-    | (cn', qs) <- Map.findWithDefault [] cn (eCtors env)
+    | (cn', ps) <- Map.findWithDefault [] cn (eCtors env)
     , cn' /= cn
-    , any (`elem` [Just QOne, Just QAtLeastOne]) qs
+    , any (\p -> cpiQuantity p `elem` [Just QOne, Just QAtLeastOne]) ps
     ]
   Nothing -> []
   where

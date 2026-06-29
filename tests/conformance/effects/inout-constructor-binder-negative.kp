@@ -1,0 +1,7 @@
+--! assertDiagnosticFamily error kappa-hs.qtt.inout-marker
+--! assertDiagnosticMatch inout|constructor|data
+
+module main
+
+data Box : Type =
+    MkBox (inout x : Int)

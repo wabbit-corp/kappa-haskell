@@ -1,0 +1,10 @@
+module main
+
+badRefFacet : UIO Unit
+let badRefFacet = do
+    let x = 1
+    let _ = ref x
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_REF_REQUIRED

@@ -4,6 +4,6 @@ module main
 
 main : UIO Unit
 let main = do
-    f <- fork (ioPure 99)
-    v <- join f
+    let f <- fork (ioPure 99)
+    let v <- join f
     printlnString (showInt v)

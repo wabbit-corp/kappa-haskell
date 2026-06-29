@@ -18,6 +18,24 @@ KAPPA="cabal run -v0 kappa --"
 fails=0
 
 cd "$ROOT"
+
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    python3 - "$@" <<'PY'
+import subprocess, sys
+raw = sys.argv[1]
+if raw.endswith('s'):
+    raw = raw[:-1]
+seconds = float(raw)
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  }
+fi
+
 echo "== building the kappa CLI =="
 timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
@@ -53,6 +71,9 @@ echo "== native bindings: codegen + diagnostics driven by manifest providers (§
 for d in "$DIR"/native/*/; do
   name="native/$(basename "$d")"
   want="$(sed -n 's/^-- expect: //p' "$d/kappa.build.kp" | head -1)"
+  # Generated-code assertions must inspect only this build's output.  A stale
+  # fixture-local .kappa.c could otherwise mask a failed build or old lowering.
+  find "$d" -name '*.kappa.c' -delete 2>/dev/null
   out="$(timeout 120 $KAPPA build --update --manifest "$d" --emit-c -o /tmp/kbuild-out 2>&1)"; rc=$?
   if [ "$want" = "BUILD_OK" ]; then
     # a fixture that selects the sqlite host binding must emit its prim;
@@ -62,17 +83,23 @@ for d in "$DIR"/native/*/; do
     # wrapper (kw_host_native_sqlite3_*) and must contain NO string-dispatched
     # native primitive (kprim_call("__sqlite...) is the forbidden old design).
     needprim=0; grep -q "host.native.sqlite3" "$d/kappa.build.kp" && needprim=1
+    needblocking=0; [ "$(basename "$d")" = "blocking-classification" ] && needblocking=1
     primok=1
     if [ "$needprim" = 1 ]; then
       grep -rql --include='*.kappa.c' "kw_host_native_sqlite3_" "$d" >/dev/null || primok=0
       grep -rq --include='*.kappa.c' 'kprim_call("__' "$d" && primok=0
     fi
-    if [ "$rc" -eq 0 ] && [ -n "$(find "$d" -name '*.kappa.c')" ] && [ "$primok" = 1 ]; then
-      echo "PASS $name (built$([ "$needprim" = 1 ] && echo '; direct native call sites, no string dispatch'))"
+    blockok=1
+    if [ "$needblocking" = 1 ]; then
+      grep -rEq --include='*.kappa.c' 'knative(_sat)?_blocking' "$d" || blockok=0
+      grep -rEq --include='*.kappa.c' 'knative(_sat)?\(' "$d" && blockok=0
+    fi
+    generated="$(find "$d" -name '*.kappa.c' -print)"
+    if [ "$rc" -eq 0 ] && [ -n "$generated" ] && [ "$primok" = 1 ] && [ "$blockok" = 1 ]; then
+      echo "PASS $name (built$([ "$needprim" = 1 ] && echo '; direct native call sites, no string dispatch')$([ "$needblocking" = 1 ] && echo '; blocking native call routed'))"
     else
       echo "FAIL $name (expected build + direct native call sites)"; echo "$out" | sed 's/^/    /'; fails=$((fails+1))
     fi
-    find "$d" -name '*.kappa.c' -delete 2>/dev/null
   else
     if [ "$rc" -eq 0 ]; then
       echo "FAIL $name (expected $want, got exit 0)"; fails=$((fails+1))
@@ -82,6 +109,7 @@ for d in "$DIR"/native/*/; do
       echo "PASS $name ($want)"
     fi
   fi
+  find "$d" -name '*.kappa.c' -delete 2>/dev/null
   # a path-dep build creates kappa.lock in the fixture dir; clean it
   find "$d" -name 'kappa.lock' -delete 2>/dev/null
 done

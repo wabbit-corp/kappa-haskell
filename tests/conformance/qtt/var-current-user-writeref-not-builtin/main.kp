@@ -1,0 +1,17 @@
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+writeRef : Ref Cell -> Cell -> UIO Unit
+let writeRef r value = pure ()
+
+bad : UIO Unit
+let bad = do
+    var cell = Empty
+    writeRef (ref cell) (Full Token)
+    pure ()

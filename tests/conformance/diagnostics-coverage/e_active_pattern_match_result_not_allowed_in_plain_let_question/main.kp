@@ -1,15 +1,11 @@
 module main
 
-data Match (a : Type) (r : Type) : Type =
-    Hit a
-    Miss r
-
 data Buf : Type =
     Buf (n : Int)
 
 pattern Grab (1 b : Buf) : Match Int Buf =
     match b
-    case Buf n -> Hit n
+    case Buf n -> Match.Hit n
 
 useGrab : Buf -> UIO Int
 let useGrab b = do

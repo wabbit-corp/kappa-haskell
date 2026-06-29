@@ -1,28 +1,27 @@
-/* atomic.c — §29.1 std.atomic: lock-free AtomicRef cells (capability rt-atomics).
+/* atomic.c — §29.1 std.atomic: AtomicRef cells (capability rt-atomics).
  *
  * An `AtomicRef a` is a distinct mutable cell (§29.1: "not an ordinary var, Ref,
- * TVar, or MonadRef").  The required `AtomicValue` instances — `Bool` and the
- * exact-width / pointer-width integers — all fit in a machine word, so the cell
- * is a single `_Atomic(int64_t)` operated on with C11 atomics under the caller's
- * requested memory order.  The boxed KValue is unboxed to the scalar on the way
- * in and re-boxed on the way out; a per-cell `kind` records how to re-box
- * (`Bool` -> kbool, integer -> kint).  This gives TRUE value semantics for
- * compare-exchange (a real hardware CAS on the scalar, not a boxed-pointer CAS
- * that would spuriously fail on equal-but-distinct boxes), and real lock-free
- * fetch-add/sub/and/or/xor.
+ * TVar, or MonadRef").  Source `Integer` is arbitrary precision (§6), so the
+ * native cell stores the canonical `KValue *` under a per-cell mutex instead of
+ * narrowing through a fixed-width scalar atomic.  That keeps the native backend
+ * semantically aligned with the interpreter for large integers while still
+ * making each load/store/exchange/CAS/fetch-* one indivisible runtime operation.
  *
  * Memory orders arrive as boxed §29.1 LoadOrder/StoreOrder/RmwOrder/
- * CasFailureOrder constructors.  They are nullary data constructors, so they map
- * to C11 memory_order by their numeric tag id (LR2) in the spec's canonical
- * declaration order — a numeric switch, no string dispatch.
+ * CasFailureOrder constructor codes.  A mutex is at least acquire/release for
+ * the operation, so validating the order code is still useful, but the current
+ * representation intentionally does not promise lock-free hardware atomics.
  */
 #include "internal.h"
+
+#include <string.h>
 
 /* How to re-box the scalar cell on load/return. */
 typedef enum { AKIND_INT = 0, AKIND_BOOL = 1 } AtomicKind;
 
 struct AtomicRef {
-  _Atomic(int64_t) cell;
+  pthread_mutex_t mu;
+  KValue *cell;
   AtomicKind kind;
 };
 
@@ -35,36 +34,28 @@ struct AtomicRef {
  * codegen tags them) by the §29.1 strong-CAS contract: the exchange succeeded
  * iff the witnessed old value equals `expected`. */
 
-/* ── value <-> scalar ─────────────────────────────────────────────────── */
-
-static int64_t atomic_unbox(KValue *v) {
-  if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1 immediate Int */
-  /* Stage 1b: Bool is now a b010 nullary immediate, not a boxed K_CTOR. */
-  if (kis_imm_ctor(v)) return kas_bool(v);
-  if (kis_imm(v))
-    krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
-  if (v->tag == K_INT) return v->as.i;
-  if (v->tag == K_CTOR) return kas_bool(v); /* a retired boxed Bool carrier */
-  krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
-}
-
 static AtomicKind atomic_kind_of(KValue *v) {
-  if (kis_imm_int(v)) return AKIND_INT;         /* Stage 1 immediate Int */
-  if (kis_imm_ctor(v)) return AKIND_BOOL;       /* Stage 1b: Bool immediate */
-  if (kis_imm(v))
-    krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
-  if (v->tag == K_INT) return AKIND_INT;
-  if (v->tag == K_CTOR) return AKIND_BOOL;
-  krt_fail("atomic: value is not an AtomicValue (expected Bool or a fixed-width Int)");
+  if (kis_int_any(v)) return AKIND_INT;
+  if (kctor_tagid(v) == KCT_TRUE || kctor_tagid(v) == KCT_FALSE) return AKIND_BOOL;
+  krt_fail("atomic: value is not an AtomicValue (expected Bool or Integer)");
 }
 
-static KValue *atomic_rebox(int64_t s, AtomicKind k) {
-  return k == AKIND_BOOL ? kbool((int)s) : kint(s);
+static void atomic_check_kind(struct AtomicRef *r, KValue *v) {
+  if (atomic_kind_of(v) != r->kind) {
+    krt_fail("atomic: value type does not match AtomicRef cell type");
+  }
+}
+
+static int atomic_value_eq(AtomicKind k, KValue *a, KValue *b) {
+  switch (k) {
+    case AKIND_INT: return kas_bool(kp_eqInt(a, b));
+    case AKIND_BOOL: return kas_bool(a) == kas_bool(b);
+  }
+  return 0;
 }
 
 static struct AtomicRef *as_aref(KValue *r) {
-  if (kis_imm(r) || r->tag != K_FGN) krt_fail("atomic: argument is not an AtomicRef");
-  return (struct AtomicRef *)r->as.fgn.p;
+  return (struct AtomicRef *)kas_fgn_kind(r, KRT2_KIND_ATOMIC);
 }
 
 /* ── memory-order mapping ──────────────────────────────────────────────
@@ -117,26 +108,40 @@ static memory_order cas_fail_order(KValue *o) {
 
 KValue *krt2_new_atomic_ref(KValue *v) {
   struct AtomicRef *r = (struct AtomicRef *)kgc_alloc(sizeof *r);
-  atomic_init(&r->cell, atomic_unbox(v));
+  pthread_mutex_init(&r->mu, NULL);
+  r->cell = v;
   r->kind = atomic_kind_of(v);
   return kfgn(r, KRT2_KIND_ATOMIC);
 }
 
 KValue *krt2_atomic_load(KValue *order, KValue *ref) {
+  (void)load_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_load_explicit(&r->cell, load_order(order)), r->kind);
+  pthread_mutex_lock(&r->mu);
+  KValue *v = r->cell;
+  pthread_mutex_unlock(&r->mu);
+  return v;
 }
 
 KValue *krt2_atomic_store(KValue *order, KValue *ref, KValue *v) {
+  (void)store_order(order);
   struct AtomicRef *r = as_aref(ref);
-  atomic_store_explicit(&r->cell, atomic_unbox(v), store_order(order));
+  atomic_check_kind(r, v);
+  pthread_mutex_lock(&r->mu);
+  r->cell = v;
+  pthread_mutex_unlock(&r->mu);
   return kunit();
 }
 
 KValue *krt2_atomic_exchange(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  int64_t old = atomic_exchange_explicit(&r->cell, atomic_unbox(v), rmw_order(order));
-  return atomic_rebox(old, r->kind);
+  atomic_check_kind(r, v);
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = v;
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 
 /* Strong compare-exchange.  Returns the WITNESSED old value (boxed) — on success
@@ -145,36 +150,75 @@ KValue *krt2_atomic_exchange(KValue *order, KValue *ref, KValue *v) {
  * CAS contract), so this never builds a result constructor itself. */
 KValue *krt2_atomic_compare_exchange(KValue *succ, KValue *fail,
                                      KValue *ref, KValue *expected, KValue *desired) {
+  (void)rmw_order(succ);
+  (void)cas_fail_order(fail);
   struct AtomicRef *r = as_aref(ref);
-  int64_t exp = atomic_unbox(expected);
-  int64_t des = atomic_unbox(desired);
-  /* On success the CAS replaces the cell and leaves `exp` = the (matched) old
-   * value; on failure it writes the actual current value back into `exp`. */
-  (void)atomic_compare_exchange_strong_explicit(
-      &r->cell, &exp, des, rmw_order(succ), cas_fail_order(fail));
-  return atomic_rebox(exp, r->kind);
+  atomic_check_kind(r, expected);
+  atomic_check_kind(r, desired);
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  if (atomic_value_eq(r->kind, old, expected)) {
+    r->cell = desired;
+  }
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 
 /* fetch-* return the OLD value; AtomicInteger gates these to integer cells. */
 KValue *krt2_atomic_fetch_add(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_fetch_add_explicit(&r->cell, atomic_unbox(v), rmw_order(order)), r->kind);
+  atomic_check_kind(r, v);
+  if (r->kind != AKIND_INT) krt_fail("atomicFetchAdd: AtomicRef is not an Integer cell");
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = kp_addInt(old, v);
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 KValue *krt2_atomic_fetch_sub(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_fetch_sub_explicit(&r->cell, atomic_unbox(v), rmw_order(order)), r->kind);
+  atomic_check_kind(r, v);
+  if (r->kind != AKIND_INT) krt_fail("atomicFetchSub: AtomicRef is not an Integer cell");
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = kp_subInt(old, v);
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 KValue *krt2_atomic_fetch_and(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_fetch_and_explicit(&r->cell, atomic_unbox(v), rmw_order(order)), r->kind);
+  atomic_check_kind(r, v);
+  if (r->kind != AKIND_INT) krt_fail("atomicFetchAnd: AtomicRef is not an Integer cell");
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = kp_intAnd(old, v);
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 KValue *krt2_atomic_fetch_or(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_fetch_or_explicit(&r->cell, atomic_unbox(v), rmw_order(order)), r->kind);
+  atomic_check_kind(r, v);
+  if (r->kind != AKIND_INT) krt_fail("atomicFetchOr: AtomicRef is not an Integer cell");
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = kp_intOr(old, v);
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 KValue *krt2_atomic_fetch_xor(KValue *order, KValue *ref, KValue *v) {
+  (void)rmw_order(order);
   struct AtomicRef *r = as_aref(ref);
-  return atomic_rebox(atomic_fetch_xor_explicit(&r->cell, atomic_unbox(v), rmw_order(order)), r->kind);
+  atomic_check_kind(r, v);
+  if (r->kind != AKIND_INT) krt_fail("atomicFetchXor: AtomicRef is not an Integer cell");
+  pthread_mutex_lock(&r->mu);
+  KValue *old = r->cell;
+  r->cell = kp_intXor(old, v);
+  pthread_mutex_unlock(&r->mu);
+  return old;
 }
 
 /* ── codegen entry points (§34.5.3) ───────────────────────────────────────
@@ -182,7 +226,7 @@ KValue *krt2_atomic_fetch_xor(KValue *order, KValue *ref, KValue *v) {
  * (Kappa.Prelude).  Both backends compile a SATURATED IO prim to a `knative_sat`
  * suspended action whose entry point is a `KValue **`-taking wrapper that
  * krun_io fires (C.hs:2113 / LLVM.hs:3350).  These adapters unpack that array
- * and forward to the positional `krt2_atomic_*` lock-free ops above, in the same
+ * and forward to the positional `krt2_atomic_*` boxed atomic-cell ops above, in the same
  * argument order the prelude wrapper passes them.  Atomic ops never park, so the
  * synchronous bridge is the correct (and complete) path — no CK-machine node.
  *

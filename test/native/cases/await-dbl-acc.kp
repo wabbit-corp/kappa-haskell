@@ -20,8 +20,8 @@ let producer x = do
 main : UIO Unit
 let main = do
     let acc = addDouble 0.1 0.2          -- 0.30000000000000004, live across the park
-    f <- fork (producer 21.0)             -- fork: a real CK-machine park
-    ex <- await f                          -- await: parks until the fiber completes
+    let f <- fork (producer 21.0)             -- fork: a real CK-machine park
+    let ex <- await f                          -- await: parks until the fiber completes
     match ex
       case Success v -> printlnString (showDouble (addDouble acc v))   -- 42.300000000000004
       case Failure _ -> printlnString "failed"

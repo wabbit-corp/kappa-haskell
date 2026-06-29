@@ -34,10 +34,15 @@ data BinderOwn = BinderOwn
   , boDroppable :: Bool }                  -- §12.2.6: True for 0/≤1/ω, False for 1/≥1
 data OwnInfo = OwnInfo
   { oiBinders :: Map BinderId BinderOwn    -- BinderId = (GName, child-position path) — de-Bruijn-stable
-  , oiUses    :: Map UseSite  UseKind }
+  , oiUses    :: Map UseSite  UseKind
+  , oiUseConsumes :: Map UseSite Bool       -- S2.3b: use transfers ownership vs read-only
+  , oiBinderUses :: Map BinderId [UseKind]
+  , oiBinderConsumingUses :: Map BinderId [UseKind] }
 ```
 
-`UseKind` is the directly-consumable form for S2's drop-after-last-use / dup-before-non-last rule.
+`UseKind` plus `oiUseConsumes` is the directly-consumable form for S2's drop-after-last-use /
+dup-before-non-last rule. S2.3b makes the split explicit because a `LastUse` or `NonLast` can be a
+read-only occurrence (projection base, borrowed call argument) that must not receive a balancing `kdup`.
 `boDroppable` reads straight from §12.2.6 (Spec.md:11403). `boRefined` (§3a) only ever *narrows* the
 declared bound. The refinement is **whole-program sound** whenever the analysis sees every use of a binder,
 which it always does in Kappa's current **whole-program-static** compile (no dynamic linking / separate
@@ -52,8 +57,9 @@ from the `CPi` telescope, NOT a side table — avoids a second source of truth.
 
 Adding fields to `CVar` was measured at **586 occurrences** (162 hand-built in `Prelude.hs`) and collides
 with §31.2 (the metadata must never become a runtime dependency). Instead: a new module
-`src/Kappa/Ownership.hs` exporting `annotateOwnership :: EvalCtx -> Map GName Term -> Map GName OwnInfo`,
-run in `Pipeline.hs` right after `csCoreBodies` are finalized (beside `lintCoreBodies`), stored as
+`src/Kappa/Ownership.hs` exporting `annotateOwnership :: EvalCtx -> Map GName Term -> Map GName Term -> Map GName OwnInfo`
+(constructor types, then core bodies), run in `Pipeline.hs` right after `csCoreBodies` are finalized
+(beside `lintCoreBodies`), stored as
 `csOwnership` in `CheckState` and carried to the backend as `gsOwnership` beside `gsSuspenders`. It mirrors
 the Stage-0 `CCtor`/`CMatch` `Maybe Term` annotation precedent (observe-only; `Eq Term` ignores it;
 `CoreLint.hs` is the first observe-only consumer). The *checking* (rejecting linearity violations) stays in
@@ -70,22 +76,22 @@ No `Term` arity change.
 
 ## (d) How the backend reads it (S2 shape, defined now)
 
-- **Owned/borrowed convention**: at each `CApp`, resolve the callee `CPi` telescope (already done by
-  `Repr.repSelect`) to per-arg `(Q, borrow)`. Owned `1`/`≥1` ⇒ callee consumes (caller transfers, no
-  post-call drop); borrowed `&` ⇒ caller retains (callee reads+dups, never drops).
-- **dup** before a `NonLast` use whose effective interval (refined if static-link-safe, else declared) is
-  `>1`-capable; immediates skip it (`kis_imm` guard).
-- **drop** after the `LastUse` of a non-borrowed binder, or at a droppable-unused binder — **except** when
-  the value is reachable from a live ExitStack (§1 contract: resource lifetime is `defer`/`using`, never
-  RC-to-zero). S1 records per-binder whether it carries `K_FGN`/resource state (via `Repr` head type).
+- **Owned/borrowed convention**: at each `CApp`, resolve the callee `CPi` telescope to per-arg `(Q, borrow)`.
+  Globals use the global type; local and pattern-bound first-class callees use recovered binder/pattern types.
+  Owned runtime positions consume; borrowed, `Q0`, and kind-domain positions read/erase as appropriate.
+- **dup** before a consuming `NonLast` use; read-only `NonLast` occurrences stay bare because no consumer-side
+  drop balances a dup.
+- **drop** at the conservative S2.3 structural seams only when the value is known owned. `CDo` remains opaque to
+  the ownership walk, so resource lifetime is protected structurally by the do-kernel/defer/using lowering rather
+  than by a stored resource flag in `OwnInfo`.
 - Placement precedent: the `gsSuspenders` threading (`C.hs:110/474`, consulted at `:935/983/2497`).
 
 **S2 consumption discipline (from the S1.1 R1 review).** The `OwnInfo` keys are structural child-position
 paths. S2 must consume them by **walking the lowered term and looking up each node's path** (visit node →
 compute its path → query the table), NOT by iterating the table. A stale key naming an erased subterm
 resolves to a `CSort 0` childless leaf (safe — it addresses nothing, never a wrong binder), but
-walk-and-lookup never queries a deleted key at all. Pin this with an explicit assertion when the S2 dup/drop
-consumer lands.
+walk-and-lookup never queries a deleted key at all. S2.3b pins this with the `KAPPA_PERCEUS_RC=1` validation
+gate: every non-erased runtime lookup must resolve both `oiUses` and `oiUseConsumes`, or the backend fails.
 
 ## (e) Sub-stages, ordering, risks
 
@@ -118,10 +124,11 @@ proxy, now removed). The surviving cross-check invariant is tighten-only (`boRef
 ## (f) Incremental validation (Boehm untouched, zero codegen change through all of S1)
 
 1. **`kappa dump-ownership <file>`** — per global, each binder's `(declQ, refined, borrowed, droppable)` +
-   each `CVar` occurrence's `LastUse|NonLast|Borrowed`.
-2. **Cross-check vs the quantity checker** — every binder `Usage.hs` proved linear (`1`) has exactly one
-   `LastUse` and no `NonLast`; every borrowed binder has no `LastUse` consume; every non-droppable binder is
-   consumed on every path. A mismatch is an internal-invariant error. This is the ground truth before any RC.
+   each `CVar` occurrence's `LastUse|NonLast|Borrowed` and `consumes=True|False`.
+2. **Cross-check vs the quantity checker** — on the well-typed corpus that `Usage.hs` has already accepted,
+   every linear (`1`) binder has at least one consuming `LastUse` and no consuming `NonLast`; every borrowed
+   binder has no `LastUse` consume. A mismatch is an internal-invariant error in ownership classification.
+   The quantity checker remains the path-sensitive authority for “consumed on every path.”
 3. **§31.2 legality** — extend `verify-kbackendir` to assert no runtime term depends on `OwnInfo`.
 4. **Parity invariant** — all S1 consumers are observe-only ⇒ interp == C == LLVM byte-identical, full
    corpus unchanged. Boehm is the collector throughout S1; RC-free arrives at S3.

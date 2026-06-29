@@ -15,15 +15,16 @@
  * (see native/fiber.c).  Every "and then do the rest" is a heap `Cont` frame,
  * not a nested C call, so a fiber can SUSPEND at any IO boundary (await, sleep,
  * STM retry, blocking I/O, cede) and be resumed later — possibly on a different
- * worker thread.  See DESIGN.md §5 for the CK-machine and §6 for the M:N
- * work-stealing scheduler.
+ * worker thread.  See DESIGN.md §5 for the CK-machine and §6 for the current
+ * M:N FIFO scheduler; per-worker work stealing is future performance work.
  *
  * THREADING.  The runtime is multicore (capability rt-parallel): N worker
- * threads run runnable fibers in parallel, a single libuv reactor thread drives
- * async I/O and timers, and a libuv threadpool backs the rt-blocking offload
- * lane.  All threads are registered with Boehm GC.  Ordinary refs (K_REF/var)
- * are NOT cross-fiber synchronization (§32.2.10); cross-fiber coordination uses
- * await/join, scopes/monitors, promises, STM, or atomics.
+ * threads run runnable fibers in parallel, and a single libuv reactor thread
+ * drives async I/O and timers.  Blocking native calls park their fiber and run
+ * on an off-worker lane (capability rt-blocking).  All threads are registered
+ * with Boehm GC.  Ordinary refs (K_REF/var) are NOT cross-fiber synchronization
+ * (§32.2.10); cross-fiber coordination uses await/join, scopes/monitors,
+ * promises, STM, or atomics.
  *
  * CODEGEN CONTRACT.  Functions in the "IO CK-machine builders" and
  * "scheduler primitives" sections are what `Kappa.Backend.C` emits in place of
@@ -127,12 +128,27 @@ KValue *krt2_write_ref(KValue *ref, KValue *val);   /* writeRef: Ref a -> a -> I
 /* §32.2.6 safe point for a codegen-emitted NATIVE loop.  Returns 1 iff the loop
  * should ABORT to let the runtime deliver a pending interrupt at this back-edge
  * (interrupt_pending && mask_depth==0 on the current fiber) — the generated loop
- * then flushes its var cells and breaks so the CK-machine delivers on the next
- * step.  Returns 0 when masked (suppression holds) or off any fiber.  Codegen
+ * then aborts through the scalar-worker boundary so the CK-machine delivers
+ * before later source effects run.  Returns 0 when masked (suppression holds) or off any fiber.  Codegen
  * emits this at native loop back-edges, counter-gated so the hot unboxed loop is
  * not slowed (§32.2.6 / DESIGN.md §6.4).  In-place CK loops (OP_WHILE/KK_LOOP)
  * get their safe point + fairness cede inside the runtime, not via this call. */
 int krt2_safepoint(void);
+/* Called after a scalar worker reports KRT2_SCALAR_ABORT. This does not return
+ * to generated Kappa code; it unwinds to the active fiber-step boundary so the
+ * scheduler delivers the pending interrupt before later source effects run. */
+void krt2_scalar_abort(void);
+/* §18.7/§19.5/§32.2.6: register a dynamically-active exit action for generated
+ * synchronous safe-point aborts. The returned token is captured by the ordinary
+ * finalizer wrapper; normal finalization and abort-drain both mark it inactive
+ * so the action runs at most once. */
+KValue *krt2_abort_exit_push(KValue *exit_action);
+KValue *krt2_abort_exit_finalizer(KValue *token);
+/* Legacy synchronous do-code still owns some C-local defer frames for shapes not
+ * yet expressed as OP_DOSCOPE trees. Drain one frame through the same
+ * reason/cause composition rules as the CK finalizer sequence, and set *count to
+ * zero so later control paths cannot run the actions twice. */
+KValue *krt2_run_legacy_finalizers(KValue *primary, KValue **defers, int *count);
 
 /* How many native scalar-loop iterations between krt2_safepoint() calls (fix SP).
  * The emitted loop decrements a counter each iteration and only calls
@@ -143,6 +159,12 @@ int krt2_safepoint(void);
 #ifndef KRT2_SP_QUANTUM
 #define KRT2_SP_QUANTUM 65536
 #endif
+
+/* Scalar-worker side-channel values.  1 is the historical "rerun boxed" escape
+ * for int overflow/wrong unbox; 2 is a runtime safe-point abort and must not
+ * fall back to boxed computation. */
+#define KRT2_SCALAR_OVERFLOW 1
+#define KRT2_SCALAR_ABORT    2
 
 /* ── fibers (§18.1.4) ──────────────────────────────────────────────────── */
 KValue *krt2_fork(KValue *action);                  /* (IO e a) -> UIO (Fiber e a) */
@@ -189,15 +211,15 @@ KValue *krt2_demonitor(KValue *mon);                /* UIO Unit                 
  * These entry points are part of the intended kappart2 surface but have no C
  * definition yet, so they are NOT declared here (a declaration without a
  * definition is a link-fail trap, and the capability check would pass while the
- * symbol is absent).  They are reached today via the Kappa-level prelude over
- * the primitives that ARE implemented (e.g. `join`/`awaitPromise` over `await`
- * + a `match`, single-agent `FiberRef` over `Ref`), and the krt2_* C ABI for
- * them lands with the do-kernel CPS rewrite + per-fiber state.  See
+ * symbol is absent).  Some are reached today via the Kappa-level prelude over
+ * implemented primitives (for example `join`/`awaitPromise` over `await` plus
+ * a `match`), and the krt2_* C ABI for each pending surface lands as that
+ * surface is wired.  See
  * docs/PRIMITIVES.md for the plan:
  *   - krt2_join, krt2_await_promise            (Fiber/Promise -> IO e a: re-raise the Cause)
  *   - krt2_sleep_until                          (Instant -> UIO Unit)
  *   - krt2_get/set/locally_fiber_label          (§18.1.10: needs a per-fiber label field)
- * §18.1.7 FiberRef (new/get/set/modify/locally) + copy-on-fork is now IMPLEMENTED
+ * §18.1.7 FiberRef (new/get/set/modify/locally) + copy-on-fork is implemented
  * (see the fiber-local-state declarations above; PRIMITIVES.md ADD #4 — DONE).
  *   - krt2_sandbox, krt2_unsandbox              (§18.1.2: expose/absorb the full Cause)
  */
@@ -263,15 +285,16 @@ void krt2_dump(void *out /* FILE* */);
 long krt2_live_fiber_count(void);
 
 /* ── advertised runtime capability set (§27.6) ─────────────────────────── */
-/* NUL-terminated array; the backend's Capabilities.hs must agree once wired.
- * v1 advertises FIVE flags: rt-core, rt-parallel, rt-shared-stm, rt-blocking,
- * rt-atomics.  rt-multishot-effects is STAGED to v2 behind a real gate (the
- * static §32.2.20 escape check + per-use clone protocol + native reachability
- * rejection do not exist yet) — see docs/REVIEW.md "Capability staging".  The pure
- * __EffOp closure encoding (multishot-capable for pure effects) still works;
- * only the multishot-with-IO-segments contract is deferred. */
-extern const char *const KRT2_CAPABILITIES[]; /* rt-core, rt-parallel, rt-shared-stm,
-                                               * rt-blocking, rt-atomics, NULL */
+/* NUL-terminated array; the backend's Capabilities.hs consumes the
+ * binding-relevant subset. v1 advertises rt-core, rt-parallel, rt-blocking,
+ * rt-shared-stm, rt-atomics. rt-multishot-effects is staged behind a real gate
+ * (the static §32.2.20 escape check + per-use clone protocol + native
+ * reachability rejection do not exist yet). The pure __EffOp closure encoding
+ * (multishot-capable for pure effects) still works; only the
+ * multishot-with-IO-segments contract is deferred. */
+extern const char *const KRT2_CAPABILITIES[]; /* rt-core, rt-parallel,
+                                               * rt-blocking, rt-shared-stm,
+                                               * rt-atomics, NULL */
 
 #ifdef __cplusplus
 }

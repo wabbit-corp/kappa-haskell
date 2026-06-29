@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\nafter\n"
+
+-- §18.1.11: `blocking` accepts arbitrary IO, including scheduler operations
+-- that park or yield. It must not run through the sync-only bridge.
+module main
+
+main : UIO Unit
+let main = do
+    printlnString "before"
+    blocking cede
+    printlnString "after"

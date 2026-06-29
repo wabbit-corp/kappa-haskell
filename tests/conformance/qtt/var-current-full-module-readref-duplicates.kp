@@ -1,0 +1,17 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+import std.prelude
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Full { 1 tok : Token }
+
+bad : UIO Unit
+let bad = do
+    var cell : Box = Full { tok = Token }
+    let copy <- std.prelude.readRef (ref cell)
+    pure ()

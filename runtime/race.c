@@ -77,24 +77,32 @@ KValue *krt2_race(KValue *left, KValue *right) {
 
 /* ── timeout ────────────────────────────────────────────────────────────── */
 
-/* \mae -> if Some aex then TimeoutDone aex else (interruptAs TimedOut af; TimeoutFired)
- *  (env=[af]) */
+/* \mae -> if Some aex then (interrupt timer; TimeoutDone aex)
+ *         else (interruptAs TimedOut af; TimeoutFired)
+ *  (env=[af, tf]) */
 static KValue *timeout_decide(KEnv *env, KValue *mae) {
-  KValue *af = kvar(env, 0);
+  KValue *af = kvar(env, 0), *tf = kvar(env, 1);
   if (kctor_is(mae, "Some"))
-    return krt2_pure(won(KCT_TO_EXIT, "TimeoutDone", kctor_arg(mae, 0)));
+    return krt2_then(krt2_interrupt(tf),
+                     krt2_pure(won(KCT_TO_EXIT, "TimeoutDone", kctor_arg(mae, 0))));
   KValue *cause = krt2_interrupt_cause("TimedOut", krt2i_none());
   return krt2_then(krt2_interrupt_as(cause, af),
                    krt2_pure(kctor0(KCT_TO_TIMED_OUT, "TimeoutFired")));
+}
+/* \tf -> spawn action-watcher, await first signal, then decide
+ *  (env=[af, signal]) */
+static KValue *timeout_k_tf(KEnv *env, KValue *tf) {
+  KValue *af = kvar(env, 0), *signal = kvar(env, 1);
+  KValue *decide = krt2_bind(krt2i_try_exit(af), kclo(timeout_decide, kpush(af, kpush(tf, NULL))));
+  return krt2_then(krt2_fork_daemon(signal_on(krt2_await(af), signal)),
+         krt2_then(krt2_await_promise_exit(signal), decide));
 }
 /* \af -> spawn action-watcher + timer-watcher, await first signal, then decide
  *  (env=[dur, signal]) */
 static KValue *timeout_k_af(KEnv *env, KValue *af) {
   KValue *dur = kvar(env, 0), *signal = kvar(env, 1);
-  KValue *decide = krt2_bind(krt2i_try_exit(af), kclo(timeout_decide, kpush(af, NULL)));
-  return krt2_then(krt2_fork_daemon(signal_on(krt2_await(af), signal)),
-         krt2_then(krt2_fork_daemon(signal_on(krt2_sleep_for(dur), signal)),
-         krt2_then(krt2_await_promise_exit(signal), decide)));
+  KValue *timer = signal_on(krt2_sleep_for(dur), signal);
+  return krt2_bind(krt2_fork_daemon(timer), kclo(timeout_k_tf, kpush(af, kpush(signal, NULL))));
 }
 /* \signal -> fork action >>= timeout_k_af  (env=[dur, action]) */
 static KValue *timeout_k_signal(KEnv *env, KValue *signal) {

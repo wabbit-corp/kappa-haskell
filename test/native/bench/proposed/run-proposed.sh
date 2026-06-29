@@ -35,7 +35,10 @@ if ! command -v timeout >/dev/null 2>&1; then
   timeout() {
     python3 - "$@" <<'PY'
 import subprocess, sys
-seconds = float(sys.argv[1].removesuffix('s'))
+raw = sys.argv[1]
+if raw.endswith('s'):
+    raw = raw[:-1]
+seconds = float(raw)
 cmd = sys.argv[2:]
 try:
     raise SystemExit(subprocess.run(cmd, timeout=seconds).returncode)
@@ -178,10 +181,10 @@ done
 # ── currently-fair gates (only what is achievable today; design §4) ──────
 if [ "$GATE" -eq 1 ]; then
   echo ""; echo "== gates (currently-fair only) =="
-  # scalar_intloop: LR1/P0.2 must keep this an alloc-free unboxed loop.
+  # scalar_intloop: LR1 must keep this an alloc-free unboxed worker loop.
   tb="$(KAPPA_GC_STATS=1 "$WORK/scalar_intloop" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
   if [ -n "$tb" ] && [ "$tb" -le 100000 ]; then
-    echo "   ok scalar_intloop alloc ${tb}B <= 100KB (LR1/P0.2 unboxed loop)"
+    echo "   ok scalar_intloop alloc ${tb}B <= 100KB (LR1 unboxed worker loop)"
   else
     echo "   FAIL scalar_intloop alloc ${tb:-?}B > 100KB — the Int scalar loop regressed to boxing"; fails=$((fails+1))
   fi
@@ -201,7 +204,7 @@ if [ "$GATE" -eq 1 ]; then
   fi
   # scalar_doubleloop (R2.2 LANDED): a monomorphic Double loop lowers to an
   # unboxed `double` worker, so it allocates ~nothing per iteration (no kdbl
-  # box).  Gate total alloc <= 100KB (mirrors scalar_intloop's LR1/P0.2 gate).
+  # box). Gate total alloc <= 100KB (mirrors scalar_intloop's LR1 gate).
   if [ -x "$WORK/scalar_doubleloop" ]; then
     tb="$(KAPPA_GC_STATS=1 "$WORK/scalar_doubleloop" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
     if [ -n "$tb" ] && [ "$tb" -le 100000 ]; then

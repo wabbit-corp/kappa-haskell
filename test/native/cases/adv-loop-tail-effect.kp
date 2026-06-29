@@ -1,0 +1,37 @@
+--! mode run
+
+-- ADVERSARIAL (fix SP): a tight interruptible loop FOLLOWED by an observable side
+-- effect IN THE SAME do-block.  At the loop back-edge safe point an interrupt is
+-- observed; the question is whether the post-loop `printString` runs BEFORE the
+-- interrupt is delivered.
+--
+-- Interp oracle: loopSafepoint = interruptPoint(pure unit) at the back-edge throws
+-- the Interrupt immediately when unmasked, so the post-loop effect MUST NOT run —
+-- the fiber unwinds at the loop with the post-loop "AFTER" never printed.
+--
+-- Native concern: any optimized loop path must not inline the loop continuation
+-- past the interrupt safe point. If the loop aborts (krt2_safepoint -> flush)
+-- but control falls through to the continuation, native prints "AFTER" while
+-- interp does not — an interp != native divergence in observable side-effect
+-- ordering.
+module main
+
+-- a long interruptible spin, then an OBSERVABLE side effect in the same do-block.
+spinThenPrint : UIO Unit
+let spinThenPrint = do
+    var i = 0
+    while ltInt i 1000000000000 do
+        i = addInt i 1
+    -- if the interrupt is delivered AT the loop safe point this line never runs.
+    printlnString "AFTER-LOOP-RAN"
+
+main : UIO Unit
+let main = do
+    let f <- fork spinThenPrint
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

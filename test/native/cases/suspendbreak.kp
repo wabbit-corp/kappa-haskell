@@ -18,8 +18,8 @@ let scan = do
     var found = 0
     while leInt i 100 do
         i = addInt i 1
-        f <- fork (note i)
-        _ <- await f
+        let f <- fork (note i)
+        let _ <- await f
         if eqInt (modInt i 2) 0 then
             continue          -- skip evens
         if not (leInt i 4) then
@@ -29,5 +29,5 @@ let scan = do
 
 main : UIO Unit
 let main = do
-    r <- scan
+    let r <- scan
     printlnString (stringAppend "found " (showInt r))

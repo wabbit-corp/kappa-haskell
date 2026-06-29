@@ -1,6 +1,6 @@
 module main
 
--- §4.5 SOUNDNESS (NEGATIVE, same composition class as the __runIO 6th hole):
+-- §4.5 SOUNDNESS (NEGATIVE, composition hole):
 -- '__arrayIndexUnsafe : forall a. Array a -> Int -> a' extracts an element
 -- PURELY. Its result 'a' is pinned to the 'Array a' argument, so the original
 -- free-RESULT door-survey passed it over. But '__arrayFromList : forall a.

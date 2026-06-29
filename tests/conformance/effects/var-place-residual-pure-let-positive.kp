@@ -1,0 +1,14 @@
+module main
+
+bumpOldPure : (inout v : Int) -> (1 v : Int, old : Int)
+let bumpOldPure (inout v : Int) : (1 v : Int, old : Int) =
+    (v = addInt v 1, old = v)
+
+main : UIO Int
+let main = do
+    var x = 5
+    let (old = before) = bumpOldPure ~x
+    pure (addInt before x)
+
+--! assertNoErrors
+--! assertExecute main 11

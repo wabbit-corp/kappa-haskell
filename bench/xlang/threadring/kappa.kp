@@ -28,7 +28,7 @@ import std.prelude.(type Option(..), type Exit(..), type List(..))
 -- Block (STM retry) until a token is present, then take it and empty the slot.
 recv : TVar (Option Int) -> STM Int
 let recv box = do
-    m <- readTVar box
+    let m <- readTVar box
     match m
       case None   -> retry
       case Some n -> do
@@ -45,9 +45,9 @@ worker : Int -> TVar (Option Int) -> TVar (Option Int) -> Promise Void Int -> UI
 let worker myid inbox next done = do
     var go = True
     while go do
-        n <- atomically (recv inbox)
+        let n <- atomically (recv inbox)
         if leInt n 0 then do
-            d <- completePromise done (Success myid)
+            let d <- completePromise done (Success myid)
             let _ = d
             go = False
         else do
@@ -58,8 +58,8 @@ makeBoxes : Int -> UIO (List (TVar (Option Int)))
 let makeBoxes count =
     if leInt count 0 then pure Nil
     else do
-        b  <- atomically (newTVar None)
-        bs <- makeBoxes (subInt count 1)
+        let b <- atomically (newTVar None)
+        let bs <- makeBoxes (subInt count 1)
         pure (b :: bs)
 
 -- Fork one worker per mailbox, wiring box i -> box (i+1); the LAST node's `next`
@@ -71,11 +71,11 @@ let spawnRing myid boxes first done =
       case b :: rest ->
         match rest
           case Nil -> do
-            f <- forkDaemon (worker myid b first done)
+            let f <- forkDaemon (worker myid b first done)
             let _ = f
             pure ()
           case nb :: _ -> do
-            f <- forkDaemon (worker myid b nb done)
+            let f <- forkDaemon (worker myid b nb done)
             let _ = f
             spawnRing (addInt myid 1) rest first done
 
@@ -88,11 +88,11 @@ let firstBox boxes dflt =
 main : UIO Unit
 let main = do
     -- N = 503 ring nodes, HOPS = 1000000
-    boxes <- makeBoxes 503
-    dummy <- atomically (newTVar None)
+    let boxes <- makeBoxes 503
+    let dummy <- atomically (newTVar None)
     let first = firstBox boxes dummy
-    done <- newPromise
+    let done <- newPromise
     spawnRing 1 boxes first done
     send first 1000000
-    winner <- awaitPromise done
+    let winner <- awaitPromise done
     printlnString (showInt winner)

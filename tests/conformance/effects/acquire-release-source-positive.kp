@@ -1,0 +1,24 @@
+--! mode run
+--! allow_unsafe_consume
+--! assertNoErrors
+--! assertStdout "acquire\nuse\nrelease\n"
+
+module main
+
+acquire : UIO Integer
+let acquire = do
+    printlnString "acquire"
+    pure 7
+
+release : (1 resource : Integer) -> UIO Unit
+let release (1 resource : Integer) = do
+    let _ = unsafeConsume resource
+    printlnString "release"
+
+use : (& resource : Integer) -> UIO Unit
+let use (& resource : Integer) =
+    printlnString "use"
+
+main : UIO Unit
+let main =
+    acquireRelease acquire release use

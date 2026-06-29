@@ -1,0 +1,20 @@
+module main
+
+badReadFacet : UIO Unit
+let badReadFacet = do
+    var x : Bool = True
+    let _ <- readRef x
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_REF_REQUIRED
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/binding x
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/selectedFacet current-value
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/sourceOperation readRef
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/repair ref x
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/storedValueType Bool
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/hiddenReferenceType "Ref Bool"
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/enclosingMonad "IO Void"
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/monadRefEvidenceType "MonadRef (IO Void)"
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /payload/occurrence user-written

@@ -28,7 +28,7 @@ printCode : Code Integer -> UIO Unit
 let printCode (c : Code Integer) = do
     match closeCode c
     case Some cc -> do
-        v <- runCode cc
+        let v <- runCode cc
         println v
     case None ->
         printlnString "not closed"

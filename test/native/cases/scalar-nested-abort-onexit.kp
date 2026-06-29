@@ -1,0 +1,53 @@
+-- Native-only regression for reason-aware finalizers during scalar safe-point abort.
+--
+-- A scalar abort must preserve the do-kernel's onInterrupt/onExit marker
+-- semantics: the interrupt handler sees the InterruptCause and the outer
+-- onExit handler sees the reconstructed Interrupt exit. The cleanup must run
+-- before await observes the interrupted child, and the scalar worker body must
+-- not continue after the safe point.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..), type InterruptCause(..), type InterruptTag(..))
+
+classifyExit : forall (a : Type). Exit Void a -> String
+let classifyExit ex = match ex
+    case Success _ -> "exit:Success"
+    case Failure c -> match c
+      case Interrupt _ -> "exit:Interrupt"
+      case Fail _ -> "exit:Fail"
+      case _ -> "exit:other"
+
+classifyCause : InterruptCause -> String
+let classifyCause ic = match ic
+    case InterruptCause Requested _ -> "int:Requested"
+    case InterruptCause _ _ -> "int:other"
+
+spin : Int -> Int -> Int
+let spin acc n =
+    if leInt n 0
+    then acc
+    else spin (addInt acc 1) (subInt n 1)
+
+wrap : Int -> Int
+let wrap n = addInt (spin 0 n) 1
+
+body : Promise Void Unit -> UIO Unit
+let body ready = do
+    let _ <- completePromise ready (Success ())
+    let x = wrap 1000000000000
+    printlnString (showInt x)
+
+child : Promise Void Unit -> UIO Unit
+let child ready = onExit (onInterrupt (body ready) (\ic -> printlnString (classifyCause ic))) (\ex -> printlnString (classifyExit ex))
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "await:success"
+    case Failure (Interrupt cause) -> printlnString "await:interrupted"
+    case Failure c -> printlnString "await:other-failure"

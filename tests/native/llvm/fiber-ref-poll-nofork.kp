@@ -11,23 +11,23 @@ let showBool b = if b then "T" else "F"
 
 main : UIO Unit
 let main = do
-    ref <- newFiberRef 3
+    let ref <- newFiberRef 3
     setFiberRef ref 7
-    after <- modifyFiberRef ref (\x -> addInt x 4)   -- 7 -> 11, returns 11
-    cur <- getFiberRef ref                            -- 11... wait, reset below
+    let after <- modifyFiberRef ref (\x -> addInt x 4)   -- 7 -> 11, returns 11
+    let cur <- getFiberRef ref                            -- 11... wait, reset below
     -- show the modify result and the value BEFORE the modify via a second cell
-    other <- newFiberRef 7
-    base <- getFiberRef other                         -- 7
-    p <- newPromise
-    m0 <- pollPromise p
-    d0 <- isDonePromise p
+    let other <- newFiberRef 7
+    let base <- getFiberRef other                         -- 7
+    let p <- newPromise
+    let m0 <- pollPromise p
+    let d0 <- isDonePromise p
     let before = match m0
           case None -> "None"
           case Some _ -> "Some"
-    ok <- completePromise p (Success 1)
+    let ok <- completePromise p (Success 1)
     let _ = ok
-    m1 <- pollPromise p
-    d1 <- isDonePromise p
+    let m1 <- pollPromise p
+    let d1 <- isDonePromise p
     let after1 = match m1
           case None -> "None"
           case Some _ -> "Some"

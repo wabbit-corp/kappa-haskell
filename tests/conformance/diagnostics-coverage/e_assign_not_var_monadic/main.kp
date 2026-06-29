@@ -1,0 +1,9 @@
+module main
+
+bad : UIO Unit
+let bad = do
+    x <- pure 1
+    pure ()
+
+--! mode check
+--! assertDiagnostic error E_ASSIGN_NOT_VAR

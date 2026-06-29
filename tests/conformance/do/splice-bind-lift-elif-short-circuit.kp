@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n0\nfirst\n0\n"
+
+-- §18.3.1 branch-locality applies to later elif conditions too. The spliced
+-- condition below mutates and prints if it runs; both first branches are taken,
+-- so the condition must remain in the false continuation.
+
+touch : Ref Int -> UIO Bool
+let touch r = do
+    printlnString "ELIF"
+    writeRef r 1
+    ioPure True
+
+main : UIO Unit
+let main = do
+    let r <- newRef 0
+
+    let x = if True then 1 elif !(touch r) then 2 else 3
+    printlnString (showInt x)
+    printlnString (showInt !(readRef r))
+
+    if True then
+        printlnString "first"
+    elif !(touch r) then
+        printlnString "second"
+    else
+        printlnString "else"
+    printlnString (showInt !(readRef r))

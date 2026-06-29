@@ -54,7 +54,7 @@ module effect_do
 
 main : UIO Unit
 let main = do
-    effect <- pure 1
+    let effect <- pure 1
     printlnString (showInt effect)
 ```
 

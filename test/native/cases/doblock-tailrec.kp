@@ -20,8 +20,8 @@ module main
 
 acquire : TVar Bool -> TVar Bool -> STM Unit
 let acquire l r = do
-    lf <- readTVar l
-    rf <- readTVar r
+    let lf <- readTVar l
+    let rf <- readTVar r
     check (and (lf :: rf :: Nil))
     writeTVar l False
     writeTVar r False
@@ -34,7 +34,7 @@ let release l r = do
 -- Read-modify-write the meal counter in one transaction.
 eat : TVar Int -> STM Unit
 let eat meals = do
-    n <- readTVar meals
+    let n <- readTVar meals
     writeTVar meals (addInt n 1)
 
 -- One round: take both forks, eat (bump the meal counter), drop both forks,
@@ -51,11 +51,11 @@ let philosopher l r meals rounds decreases rounds =
 
 main : UIO Unit
 let main = do
-    fl <- atomically (newTVar True)
-    fr <- atomically (newTVar True)
-    meals <- atomically (newTVar 0)
-    f <- fork (philosopher fl fr meals 50000)
-    e <- await f
-    total <- atomically (readTVar meals)
+    let fl <- atomically (newTVar True)
+    let fr <- atomically (newTVar True)
+    let meals <- atomically (newTVar 0)
+    let f <- fork (philosopher fl fr meals 50000)
+    let e <- await f
+    let total <- atomically (readTVar meals)
     printlnString (showInt total)        -- 50000
     printlnString "done"

@@ -1,0 +1,10 @@
+module main
+
+main : UIO Int
+let main = do
+    var x = 41
+    let y = addInt x 1
+    pure y
+
+--! assertNoErrors
+--! assertExecute main 42

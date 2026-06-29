@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Full (1 tok : Token)
+
+sink : Ref Cell -> UIO Unit
+let sink _ =
+    pure ()
+
+good : UIO Unit
+let good = do
+    var cell : Cell = Full Token
+    let r = ref cell
+    sink r
+    pure ()

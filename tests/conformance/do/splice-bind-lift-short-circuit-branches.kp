@@ -1,0 +1,18 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "False\nTrue\n"
+
+boom : String -> UIO Bool
+let boom label = do
+    printlnString label
+    ioPure True
+
+showBoolLocal : Bool -> String
+let showBoolLocal b = if b then "True" else "False"
+
+main : UIO Unit
+let main = do
+    let a = False && !(boom "AND-RHS")
+    let b = True || !(boom "OR-RHS")
+    printlnString (showBoolLocal a)
+    printlnString (showBoolLocal b)

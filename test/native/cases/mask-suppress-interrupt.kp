@@ -56,11 +56,11 @@ let childB = mask maskedRestored
 -- its Exit, and report Success/Failure with the given label.
 runCase : String -> UIO String -> UIO Unit
 let runCase label body = do
-    f <- fork body
+    let f <- fork body
     cede
     cede
     interrupt f
-    ex <- await f
+    let ex <- await f
     match ex
       case Success v -> printlnString (stringAppend label (stringAppend ":" v))
       case Failure c -> printlnString (stringAppend label ":interrupted")

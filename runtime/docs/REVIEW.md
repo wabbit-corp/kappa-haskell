@@ -4,7 +4,7 @@ An 8-lens adversarial review (conformance, GC/parallelism, CK-machine, libuv,
 STM, structured+multishot, alternative-architecture, ABI/build) was run against
 [`DESIGN.md`](DESIGN.md) and [`include/kappart2.h`](../kappart2.h) before any
 core code was written. **Verdict: proceed with fixes.** The architecture
-(stackless CK-machine + M:N work-stealing + single libuv reactor + Boehm GC) is
+(stackless CK-machine + M:N scheduler + single libuv reactor + Boehm GC) is
 sound; no reviewer found a materially better alternative (the steelman of
 stackful coroutines, per-worker loops, scheduler-as-effect, and GHC-RTS-reuse all
 concluded *keep the design*). This file records every blocker/major and how the
@@ -27,7 +27,8 @@ So the v1 boundary is:
   harnesses that build `krt2_bind`/`krt2_then` action trees directly (exactly the
   shape the v2 codegen will emit). v1 does **not** make already-compiled
   do-blocks suspend; it proves the runtime mechanism that v2's codegen will feed.
-- **v2:** the `C.hs` CPS rewrite + Driver wiring + the capability flip.
+- **v2:** the remaining `C.hs` CPS rewrite + Driver wiring for legacy producers;
+  future capability flips follow the same advertise-only-after-wired rule.
 
 This is stated up front so the "fiber suspends at any IO boundary" claim is scoped
 to "any IO boundary *expressed via the CK-machine builders*," which is what the
@@ -35,15 +36,17 @@ runtime controls.
 
 ## Capability staging (§3, §19)
 
-v1 advertises **five** of six: `rt-core`, `rt-parallel`, `rt-shared-stm`,
-`rt-blocking`, `rt-atomics`. **`rt-multishot-effects` is staged to v2** behind a
-real gate, because (a) the static escape restriction it relies on (§32.2.20) is
-**not implemented** — `Usage.hs:checkMultishotCapture` tracks only
-borrowed/quantity-1 captures, with no notion of a `defer`/`using` obligation in
-the captured suffix (finding M3/m1); and (b) coupling the common one-shot path to
-multishot machinery risks regressing it. The pure `__EffOp` closure encoding
-(already multishot-capable for *pure* effects) stays; the full §32.2.16
-multishot-with-IO-segments contract is not claimed until the per-use-clone
+The Haskell native profile advertises the end-to-end verified set:
+`rt-core`, `rt-blocking`, and `rt-atomics`. The C runtime contains worker and
+STM machinery, but `rt-parallel` and `rt-shared-stm` are not advertised by the
+native profile until that profile boundary is reconciled. **`rt-multishot-effects`
+is staged to v2** behind a real gate, because (a) the static escape restriction it
+relies on (§32.2.20) is **not implemented** — `Usage.hs:checkMultishotCapture`
+tracks only borrowed/quantity-1 captures, with no notion of a `defer`/`using`
+obligation in the captured suffix (finding M3/m1); and (b) coupling the common
+one-shot path to multishot machinery risks regressing it. The pure `__EffOp`
+closure encoding (already multishot-capable for *pure* effects) stays; the full
+§32.2.16 multishot-with-IO-segments contract is not claimed until the per-use-clone
 protocol, the Eff/CK split, the §34.4.1 doc, and a native reachability gate
 (`E_BACKEND_INCAPABLE`, currently missing at `C.hs:276`) all land. Each flag flips
 only when its evidence exists (§27.6 forbids advertising an unbacked flag).
@@ -56,7 +59,7 @@ only when its evidence exists (§27.6 forbids advertising an unbacked flag).
 | **B2** ✅ | Abrupt completion (`Break`/`Continue`/`Return[L]`, §18.8/§30.2.2.6) has no channel in the step loop (only VALUE/FAIL/BLOCK/CEDE), so `do { defer cleanup; break }` never runs `cleanup`. | **SHIPPED.** A unified `unwind(reason)` with `RK_NORMAL/FAIL/RETURN/BREAK/CONTINUE/INTERRUPT`; a **`KK_DOSCOPE`** frame whose exit-action stack runs LIFO via a suspendable **`KK_FINSEQ`** frame on *every* exit, then re-propagates the reason; `KK_LOOP` consumes break/continue; `KK_CATCH` consumes fail. Heap-reified so finalizers survive a cross-worker resume (RESEARCH.md §1 pitfall). `test/completion.c` green. |
 | **B3** | Lost-wakeup family: worker-park, `uv_async` submission, STM-retry park, generic park/unpark — each an unspecified deadlock. | **One CAS park/unpark protocol** (§6.2), specified once and referenced everywhere: a fiber's `status` is the CAS arbiter; a *sticky wake-pending* flag a parker checks before sleeping. Worker idle uses a seq-counter futex (`inject; fetch_add(seq,release); wake` ‖ `load(seq,acq); try_work else futex_wait(seq,s)`). `uv_async` uses unconditional-send + drain-to-empty with an acquire recheck. STM retry **re-validates under the commit lock, then inserts onto watcher lists and parks, all under the lock**. (§6.2, §7.2, §11.) |
 | **B4** | Parked/runnable fibers can be GC-collected mid-flight: the fiber table is weak, and the only holders are libuv-malloc memory (`uv_timer_t->data`, `IoReq`, `uv_work_t.data`) and the malloc-backed Chase–Lev array — none scanned by Boehm. | The runtime keeps an **explicit `Rt`-rooted strong set** of every parked/in-flight `Fiber*` (added at park, removed at wake). The deque backing array, global injection ring, `IoReq` pool, and reactor MPSC nodes are **`GC_MALLOC`'d** (scanned) or shadowed by a GC-rooted `Fiber*` array. §16 rewritten: suspended-fiber liveness is an explicit root set; **libuv memory is not a GC root**. |
-| **B5** | KValue allocation on libuv threadpool threads is UB — libuv creates those threads; `GC_register_my_thread` is never called, so a collection won't scan their stacks. | §7.4 rewritten: **forbid KValue allocation on pool threads** — run the foreign call there, marshal *raw C* results back, box on the reactor/worker. For `blocking { arbitrary Kappa }`, `work_cb` **self-registers** via `GC_get_stack_base`/`GC_register_my_thread` (guarded for thread reuse, no unregister), relying on Boehm's documented foreign-thread self-registration. |
+| **B5** | KValue allocation on libuv threadpool threads is UB — libuv creates those threads; `GC_register_my_thread` is never called, so a collection won't scan their stacks. | The shipped correctness lane uses `GC_pthread_create` for off-worker blocking calls, so the wrapper may box/unbox `KValue`s safely. If this becomes a libuv/bounded-pool lane, preserve §7.4's stricter rule: pool threads either self-register before touching `KValue`s or return raw C data to be boxed by a GC-active runtime thread. |
 | **B6** | Timeout/race tie-break (§18.1.6/§32.2.8) has no mechanism; the timer wake and the io wake race onto the global queue with no io-wins/left-wins bias. | A **single-assignment resolution cell** with priority, resolved **on the reactor thread**: io/left claims first; timer/right claims only-if-unclaimed (CAS where the loser cannot overwrite). For `timeout`, convert to `Fail Timeout` only when the action's terminal `Exit` is itself the `TimedOut` interrupt (mirror `Interp.hs:exitTimedOut`). **All** libuv handle ops — start *and* `stop`/`close` — are reactor-confined; cancellation is an `IoReq` through the async path. (§7.4a.) |
 
 ## Selected majors (folded into the design / implementation)

@@ -31,7 +31,7 @@ import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Numeric (showHex)
-import Kappa.Build.Types (CType (..))
+import Kappa.Build.Types (CType (..), FfiClass (..))
 import Kappa.Core (GName (..), Icit (..), Q (..), Term (..))
 import Kappa.Source (ModuleName (..))
 
@@ -46,6 +46,10 @@ data ResolvedNativeSymbol = ResolvedNativeSymbol
   -- ^ the C symbol the wrapper calls directly (no name dispatch)
   , params :: ![CType]
   , result :: !CType
+  , ffiClass :: !FfiClass
+  -- ^ §26.1.4/§27.6 classification selected for this binding. Codegen must
+  -- preserve it into the native action value; using it only for capability
+  -- checks would let blocking calls run on scheduler workers.
   , shimProvided :: !Bool
   -- ^ True iff this symbol is DEFINED by one of the binding's shim translation
   -- units (the binding has a @shim@ input). Only shim-provided symbols get a

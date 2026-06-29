@@ -1,30 +1,28 @@
 # Effect-Handler Unification on the kappart2 CK-Machine (`KK_HANDLER`) — Scoping
 
-Status: scoping / design-of-record consolidation. This document scopes CPS-DESIGN
-Stage 4 — replacing Kappa's pure free-monad effect kernel with a runtime
-`KK_HANDLER` prompt frame on the existing kappart2 CK-machine. It is grounded in
-five subsystem studies (current-eff, ck-machine, spec, prior-art, cps-design-plan)
-and verified against current `runtime/rt.c`, `runtime/internal.h`,
-`runtime/docs/CPS-DESIGN.md`, `src/Kappa/Eval.hs`, `src/Kappa/Check.hs`, and
-`src/Kappa/Usage.hs`.
+Status: design-of-record consolidation plus current implementation notes. This
+document scopes CPS-DESIGN Stage 4 — replacing Kappa's pure free-monad effect
+kernel with a runtime `KK_HANDLER` prompt frame on the existing kappart2
+CK-machine. It is grounded in five subsystem studies (current-eff, ck-machine,
+spec, prior-art, cps-design-plan) and verified against current `runtime/rt.c`,
+`runtime/internal.h`, `runtime/docs/CPS-DESIGN.md`, `src/Kappa/Eval.hs`,
+`src/Kappa/Check.hs`, and `src/Kappa/Usage.hs`.
 
-The honest one-line summary: this is the **single highest-risk runtime feature**
-on the roadmap, but the substrate is unusually well-prepared — the hard
-prerequisite (R1) is landed, the compile-time safety gate is already built, and
-the two "hard" operations (perform/resume) are generalizations of code that
-already exists. The one-shot path is **moderate**; multi-shot is where the real
-risk lives, and it is correctly gated behind a capability that does not yet exist.
+Current runtime status: the one-shot handler path now has `KK_HANDLER`,
+`OP_HANDLE`/`OP_PERFORM`/`OP_RESUME`, and the `KK_ABANDON`/`KK_ABANDEND`
+abandonment drain. Multi-shot is where the real risk remains, and it is correctly
+gated behind a capability that does not yet exist.
 
 ---
 
 ## 1. What `KK_HANDLER` unification concretely means for kappart2
 
-### 1.1 Today: two disconnected worlds
+### 1.1 Historical baseline: two disconnected worlds
 
-Kappa already has a **complete, type-checked, running** algebraic-effect system —
-but it is realized as a **pure free-monad tree rewrite** with no scheduler handle.
-There is no runtime handler; perform/resume never touch the CK-machine's `Cont`
-chain.
+Before Stage 4 landed, Kappa already had a **complete, type-checked, running**
+algebraic-effect system, but it was realized as a **pure free-monad tree
+rewrite** with no scheduler handle. There was no runtime handler; perform/resume
+never touched the CK-machine's `Cont` chain.
 
 - `Eff : EffRow -> Type -> Type` is an opaque carrier (`Prelude.hs:104-110`).
   Effect rows are `__effRowCons label iface rest` / `__effRowNil`
@@ -33,7 +31,7 @@ chain.
   finished) and `__EffOp label op payload cont` (`KCT_EFFOP = 10`, a suspended
   operation carrying a **re-entrant captured continuation** `cont`)
   (`Builtins.hs:382-385,671-672`; `runtime/kappart.h:81`;
-  `runtime/kappart.c:308-309`).
+  `runtime/prims.c`).
 - There is **no** `perform`/`resume` keyword. "perform" is the operation
   selection `label.op` — a first-class value `argTy -> Eff <[label:iface]> resTy`
   elaborated by `effOpSelection` (`Check.hs:7737-7779`), which builds
@@ -45,32 +43,31 @@ chain.
   `__handleEff deep label retLam opsRecord scrut` (`Check.hs:7919-7925`).
 - Execution is a pure `KValue`-tree rewrite, **identical** in the Haskell
   interpreter (`Eval.hs:1053-1138`: `__effBind`, `__handleEff`, `runPure`) and the
-  native runtime (`kappart.c:559-622`: `kpf___effBind`, `kpf___handleEff`,
+  native runtime (`runtime/prims.c`: `kpf___effBind`, `kpf___handleEff`,
   `kpf_runPure`). Neither touches `Fiber*`, `f->k`, `deliver`, `unwind`, or the
   scheduler. The C backend lowers the three prims to `kpf_runPure` /
   `kpf___effBind` / `kpf___handleEff` (`Backend/C.hs:1948-1950`); `Interp.hs` does
   not special-case `Eff` at all.
 
-Separately, the **kappart2 CK-machine** is a stackless, heap-reified free-monad
+Separately, the **kappart2 CK-machine** was a stackless, heap-reified free-monad
 interpreter: a fiber is `f->cur` (current action `KValue`) plus `f->k` (a
 singly-linked `Cont` chain on the GC heap; `internal.h:133-139,164-165`). One
 worker steps one fiber at a time via the flat `fiber_step` loop (`rt.c:623`). It
-has a real M:N scheduler with fork/await/sleep/STM parking — but `Eff` cannot
-reach any of it.
+had a real M:N scheduler with fork/await/sleep/STM parking, but the pure `Eff`
+path could not reach any of it.
 
-### 1.2 The gap
+### 1.2 Historical gap
 
-Because `__handleEff` is a pure 5-arg prim with no `Fiber*`, a handler clause
-**cannot park, cede, await, fork, or do any real IO/STM** — it can only rewrite
-the tree. `Eff` effects compose with each other but are walled off from the
-fiber/IO/STM runtime (CPS-DESIGN R11, line 289; §line 51). Second, because
-`elabEffDo` (`Check.hs:7952-8031`) accepts **only** `DoExpr`/`DoBind`/`DoLet`/
-trailing-`DoIf` and rejects every other do-item via `unsupportedAt`
-(`Check.hs:8027-8030`), an `Eff` do-block can never contain `defer`/`using`/`var`/
-loop. So the captured `cont` carries **zero exit-action frames** and the spec's
-abandonment guarantee (§32.2.19/.20/.21) is structurally unimplementable for
-`Eff` today — this is the SPEC_COMPLIANCE §32.2.19/.20/.21 gap
-(`SPEC_COMPLIANCE.md:101`, "medium").
+Because `__handleEff` is a pure 5-arg prim with no `Fiber*`, the historical
+handler clause **could not park, cede, await, fork, or do any real IO/STM** — it
+could only rewrite the tree. `Eff` effects composed with each other but were
+walled off from the fiber/IO/STM runtime (CPS-DESIGN R11, line 289; §line 51).
+Second, because old `elabEffDo` accepted only a small do-item subset, a captured
+pure `cont` carried **zero exit-action frames** and the spec's abandonment
+guarantee (§32.2.19/.20/.21) was structurally unimplementable on that path. The
+current runtime handler path closes the one-shot abandonment gap with
+`KK_ABANDON`/`KK_ABANDEND`; remaining work is in multi-shot/persistent
+continuations and any source forms still intentionally withheld.
 
 ### 1.3 The unification
 
@@ -123,21 +120,15 @@ stack-segment (OCaml 5) and C-stack-copying (libhandler/libmprompt) both fight a
 future Perceus precise/moving collector — live pointers sit in opaque native-stack
 images at compiler-chosen offsets a moving GC cannot relocate without per-frame
 stackmaps — and under today's **Boehm conservative GC** (`GC_MALLOC`,
-`kappart.c:45`) thousands of suspended stacks would pin everything. A heap `Cont`
+`runtime/gc.c`) thousands of suspended stacks would pin everything. A heap `Cont`
 sub-chain is ordinary GC-walkable data (CPS-DESIGN §8).
 
 ### 2.2 The `KK_HANDLER` prompt frame
 
 The current `Cont` frame is `{KKind kind; KValue *a; void *aux; void *aux2;
-Cont *next;}` (`internal.h:133-139`) and `KKind` has exactly 10 kinds today,
-**none** is `KK_HANDLER`:
-
-```
-KK_DONE, KK_BIND, KK_THEN, KK_CATCH, KK_POPMASK, KK_SETMASK,
-KK_DOSCOPE, KK_FINSEQ, KK_LOOP, KK_RETSCOPE              (internal.h:124-132)
-```
-
-`KK_HANDLER` is added as an 11th kind. Following the existing field convention
+Cont *next;}` (`internal.h:133-139`) and `KKind` includes the one-shot handler
+frames: `KK_HANDLER` plus `KK_ABANDON`/`KK_ABANDEND` for abandonment drain.
+Following the existing field convention
 (e.g. `KK_DOSCOPE` uses `aux`/`aux2` for ExitStack pointers, `internal.h:135-137`),
 it carries:
 
@@ -218,7 +209,7 @@ auto-reinstall (§18.1.21 lines 19616-19617). This matches the reference oracle:
 (`Eval.hs:1107-1118`); non-matching labels propagate outward with the handler
 reinstalled inside the resumption (`Eval.hs:1112-1115`).
 
-### 2.6 One-shot vs multi-shot, and the `rt-multishot` escape-check
+### 2.6 One-shot vs multi-shot, and the `rt-multishot-effects` escape-check
 
 This is the central gate.
 
@@ -269,7 +260,7 @@ This is the central gate.
   `Check.hs:7577` sets the §18.1.17 one-shot default (`eoiQ = ... Q1`).
 
 So the multi-shot line item reduces from "design+build an escape-check" to
-**"wire the existing `E_QTT_CONTINUATION_CAPTURE` analysis to an `rt-multishot`
+**"wire the existing `E_QTT_CONTINUATION_CAPTURE` analysis to an `rt-multishot-effects`
 capability gate."**
 
 ### 2.7 Abandonment (the spec-mandated guarantee Stage 4 must finally deliver)
@@ -306,21 +297,20 @@ On the CK-machine this **falls out of the existing `unwind` path** through
 | Park/wake | `OP_FORK`/`AWAIT`/`SLEEP`/`ATOMICALLY`; `krt2i_wake` CAS `rt.c:286-300` | scheduler is already a built-in prompt in all but name |
 | Strong root set | `rt->all` `internal.h:251-252` | keeps a captured resumption GC-reachable across a park |
 
-**New (must be built):**
+**New / partially present:**
 
 | Item | Where | Size |
 |---|---|---|
-| `KK_HANDLER` kind + handler-table field | `internal.h:124-132` | small |
-| `OP_PERFORM`/`OP_RESUME`/`OP_HANDLE` opcodes + `krt2_*` builders | `internal.h` OP enum; `rt.c` (mirror `rt.c:54-164`) | small, mechanical |
-| **Capture-sub-chain primitive** (sever op-site→handler) | `rt.c` | ~20 lines, genuinely new |
-| `deliver`/`unwind` arm for `KK_HANDLER` | `rt.c:510`/`rt.c:551` | small |
-| `rt-multishot` capability string | `rt.c:17` | trivial |
+| `KK_HANDLER` kind + handler-table field | `internal.h` | present |
+| `OP_PERFORM`/`OP_RESUME`/`OP_HANDLE` opcodes + `krt2_*` builders | `internal.h` OP enum; `rt.c` builders | present |
+| **Capture-sub-chain / abandonment drain** (sever op-site→handler and drain an unresumed captured segment) | `rt.c` | present for the one-shot path |
+| `deliver`/`unwind` arm for `KK_HANDLER` | `rt.c` | present for one-shot machinery |
+| `rt-multishot-effects` capability string | `rt.c` capability profile | trivial |
 | Persistent / copy-on-resume `Cont` spine + ExitStacks | `rt.c` `deliver`/`unwind` | **large, semantic** (multi-shot only) |
 
-Verified absent: grep across `runtime/*.c,*.h` finds **zero** `KK_HANDLER` /
-`OP_PERFORM` / `OP_RESUME` / `prompt` / `delimited`; `KRT2_CAPABILITIES`
-(`rt.c:17-18`) = `{rt-core, rt-parallel, rt-shared-stm, rt-blocking, rt-atomics,
-NULL}` — **no `rt-multishot`** (confirmed against current `rt.c`).
+Current status: the one-shot handler opcodes/builders, `KK_HANDLER` frame, and
+handler-abandonment drain described in §2.7 are present in the runtime.
+`rt-multishot-effects` remains absent.
 
 ---
 
@@ -336,10 +326,10 @@ NULL}` — **no `rt-multishot`** (confirmed against current `rt.c`).
   exactly once on BOTH the normal path (`KK_FINSEQ` done → `apply_reason` descends
   through `KK_POPMASK`, verified in `deliver` `rt.c:539-543`) and the abnormal/
   abandonment path (`unwind` through `KK_FINSEQ`). `COVERAGE.md:56` confirms
-  "finalizers run masked." **The §2.7 abandonment guarantee is therefore
-  satisfiable.** The only R1 residual is failing-finalizer cause-composition via
-  §32.2.12 `Then` (`rt.c:602-604`, "a remaining refinement") — small and
-  orthogonal to handler park/abandon.
+  "finalizers run masked." Failing-finalizer cause composition via §32.2.12
+  `Then` is also implemented in the `KK_FINSEQ` failure path, which keeps
+  draining remaining finalizers. **The §2.7 abandonment guarantee is therefore
+  satisfiable once handler abandonment routes through that existing drain.**
 - **Other Stage-0 prereqs landed:** `OP_DEFER` fails closed (`rt.c:761-769`,
   `krt_fail` on null `cur_exits` — R10); `KK_POPMASK`/`KK_SETMASK` restore the
   mask on both `deliver` (`rt.c:522-527`) and `unwind` (`rt.c:568-573`).
@@ -357,21 +347,15 @@ NULL}` — **no `rt-multishot`** (confirmed against current `rt.c`).
 
 ### 3.2 To build — runtime (`rt.c`/`internal.h`)
 
-1. `KK_HANDLER` kind + handler-table field (§2.2).
-2. `OP_PERFORM`/`OP_RESUME`/`OP_HANDLE` opcodes + `krt2_*` builders (§2.8).
-3. The **capture-sub-chain** primitive — the one genuinely new ~20-line piece
-   (§2.3).
-4. `deliver`/`unwind` arms for `KK_HANDLER`.
-5. (Multi-shot, later) persistent/copy-on-resume spine + per-clone ExitStacks +
-   `rt-multishot` capability string.
+1. (Multi-shot, later) persistent/copy-on-resume spine + per-clone ExitStacks +
+   `rt-multishot-effects` capability string.
 
 ### 3.3 To build — elaborator / backend
 
-- **Lift `elabEffDo`'s rejection of `defer`/`using`/`var`/loop**
-  (`Check.hs:8027-8030`) **in LOCKSTEP** with the runtime work. Until `Eff`
-  do-blocks can carry exit-action frames, there is *nothing for the abandonment
-  path to unwind* and the §32.2.20 masked-LIFO guarantee cannot even be
-  exercised. Scope these together (current-eff study, anchor 2).
+- **Finish Eff-do/runtime alignment for the remaining stateful forms**
+  (`var`/assignment/loop) and keep handler abandonment on the runtime path.
+  `Eff` do-blocks can carry `defer`/`using` exit-action frames, and unresumed
+  captured segments route through the existing masked drain machinery.
 - **Backend emits `OP_PERFORM`/`OP_HANDLE`/`OP_RESUME` nodes** in place of
   `kpf___effBind`/`kpf___handleEff`/`kpf_runPure` (`Backend/C.hs:1948-1950`) for
   computations that must run on the scheduler. The pure prims and their
@@ -379,7 +363,7 @@ NULL}` — **no `rt-multishot`** (confirmed against current `rt.c`).
   the new runtime path (differential oracle, §3.1).
 - **Add `perform` to the §3.3 suspendability witness** (a perform whose handler
   may park = may-suspend) — confirm with the backend lane.
-- **Wire the existing `E_QTT_CONTINUATION_CAPTURE` analysis to the `rt-multishot`
+- **Wire the existing `E_QTT_CONTINUATION_CAPTURE` analysis to the `rt-multishot-effects`
   capability gate** (§34.3.3 legality check) — NOT a from-scratch build (§2.6).
 - **Multi-shot KBackendIR witness:** multi-shot sites must record a
   backend-capability witness in the KBackendIR dump (spec §34.3.4 line 37929) and
@@ -441,9 +425,9 @@ splice must not grow `f->k` unboundedly across repeated perform/resume cycles �
 **assert constant `Cont` depth**, mirroring the per-iteration-doscope
 loop-growth test.
 
-### Stage 4c — MULTI-SHOT, behind `rt-multishot`
+### Stage 4c — MULTI-SHOT, behind `rt-multishot-effects`
 
-**Scope:** add the `rt-multishot` capability string (`rt.c:17`); wire the existing
+**Scope:** advertise the `rt-multishot-effects` capability only after wiring the existing
 `E_QTT_CONTINUATION_CAPTURE` gate to it; make `deliver`/`unwind` **copy-on-resume**
 — the `f->k` spine AND each `KK_DOSCOPE` ExitStack become persistent rather than
 destructively popped, and each logical clone carries an independent pending-defer
@@ -527,7 +511,7 @@ Rationale, honestly weighted:
 
 3. **Multi-shot is the real risk and is correctly walled off.** It is a semantic
    change to `deliver`/`unwind` (copy-on-resume), behind a capability
-   (`rt-multishot`) that does not yet exist, gated by an escape-check that does.
+   (`rt-multishot-effects`) that is currently withheld, gated by an escape-check that does.
    Do not let it be scoped as "a flag." It can land later without blocking the
    one-shot value.
 

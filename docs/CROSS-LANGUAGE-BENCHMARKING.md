@@ -54,7 +54,7 @@ Verified against the repo so the plan is honest about what runs now:
   not a Kappa web stack. TFB therefore needs an HTTP server + JSON encoder +
   Postgres driver built via FFI (the runtime already links **libuv**, so the
   reactor half is in place).
-- **GMP bignums present** (`kint` / GMP, [`runtime/kappart.c`](../runtime/kappart.c))
+- **GMP bignums present** (`kint` / GMP, [`runtime/bignum.c`](../runtime/bignum.c))
   → `pidigits` and other bignum work look *good*.
 - **`Double` present** (`addDouble`/`mulDouble`, the `kp_showDouble` Dragon4
   printer) → the FP benchmarks (n-body, mandelbrot, spectral-norm) are feasible;

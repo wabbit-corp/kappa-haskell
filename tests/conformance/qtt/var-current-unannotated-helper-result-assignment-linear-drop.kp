@@ -1,0 +1,18 @@
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Full (1 tok : Token)
+
+let mkBox tok =
+    Full tok
+
+bad : UIO Unit
+let bad = do
+    var box = mkBox Token
+    box = mkBox Token
+    pure ()

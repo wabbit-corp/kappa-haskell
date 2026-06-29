@@ -1,0 +1,19 @@
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+type Inner : Type =
+    (1 tok : Token)
+
+type Outer : Type =
+    (inner : Inner, count : Int)
+
+bad : UIO Unit
+let bad = do
+    let outer : Outer = (inner = (tok = Token), count = 0)
+    var cell = outer.inner
+    cell = (tok = Token)
+    pure ()

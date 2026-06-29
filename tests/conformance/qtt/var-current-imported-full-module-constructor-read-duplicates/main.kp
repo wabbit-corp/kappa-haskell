@@ -1,0 +1,11 @@
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+import lib.tokens
+
+bad : UIO Unit
+let bad = do
+    var box = lib.tokens.Box.Full lib.tokens.Token
+    let snapshot = box
+    pure ()

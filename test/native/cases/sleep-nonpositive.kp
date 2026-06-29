@@ -22,7 +22,7 @@ let main = do
     printlnString "negative"
     -- sleepUntil of an instant in the PAST: `instantDiff past now` is negative,
     -- the exact path that wrapped to a near-infinite park.
-    now <- nowMonotonic
+    let now <- nowMonotonic
     let past = instantAdd now (nanos (negInt 1000000000))
     sleepUntil past
     printlnString "past"

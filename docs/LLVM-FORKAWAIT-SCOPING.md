@@ -168,13 +168,13 @@ continuation is the heap `Cont` chain (`f->k`) and `f->cur`. A parked fiber's
 (`reactor.c:85-94`, `rt.c:359`). A suspending op simply `return`s out of
 `fiber_step` — the C stack unwinds and no roots are lost.
 
-Consequence: **the LLVM IR needs no GC statepoints, no stack maps, no safepoint
-polls.** It only needs to (a) route allocations through `GC_MALLOC`/`kgc_alloc`
-(it already does, via the runtime builders) and (b) keep live values in the heap
-node/env graph (it already does — it only emits node-builder calls; the machine
-owns the `Cont` chain). `krt2_safepoint` exists for scheduler fairness and is a
-no-op in the v1 spine (`rt.c:1322`). This removes the scariest hypothetical risk
-from the port.
+Consequence: **the LLVM IR needs no GC statepoints or stack maps.** It only needs
+to (a) route allocations through `GC_MALLOC`/`kgc_alloc` (it already does, via
+the runtime builders) and (b) keep live values in the heap node/env graph (it
+already does — it only emits node-builder calls; the machine owns the `Cont`
+chain). Scheduler fairness is handled separately: generated scalar loops emit
+counter-gated `krt2_safepoint` calls, but those are interruption/fairness polls,
+not GC statepoints. This removes the scariest hypothetical risk from the port.
 
 ### 2.4 The fix shape per construct kind (from §1.3)
 

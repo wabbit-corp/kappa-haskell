@@ -37,11 +37,13 @@ module Kappa.Builtins
   , prelList
   , prelArray
   , prelOption
+  , prelMatch
   , prelThunk
   , prelNeed
   , prelZipper
   , prelRef
   , prelRegion
+  , prelBorrowView
   , prelEff
   , prelEffRow
   , prelEffLabel
@@ -110,7 +112,9 @@ module Kappa.Builtins
     -- * Prelude traits
   , prelShow
   , prelOrd
+  , prelApplicative
   , prelMonad
+  , prelMonadRef
   , prelReleasable
   , prelFromComprehensionRaw
   , prelFromComprehensionPlan
@@ -125,12 +129,12 @@ module Kappa.Builtins
   , prelNot
   , prelCompare
   , prelReadRef
+  , prelWriteRef
   , prelCatchIO
   , prelFinallyIO
   , prelStringAppend
 
     -- * Wired-in intrinsics (compiler-synthesized prelude globals)
-  , prelRunIO
   , prelThis
   , prelCaptures
   , prelSizedOf
@@ -225,17 +229,19 @@ prelByte = gPrel "Byte"
 prelGrapheme = gPrel "Grapheme"
 prelUnicodeScalar = gPrel "UnicodeScalar"
 
-prelList, prelArray, prelOption :: GName
+prelList, prelArray, prelOption, prelMatch :: GName
 prelList = gPrel "List"
 prelArray = gPrel "Array"
 prelOption = gPrel "Option"
+prelMatch = gPrel "Match"
 
-prelThunk, prelNeed, prelZipper, prelRef, prelRegion :: GName
+prelThunk, prelNeed, prelZipper, prelRef, prelRegion, prelBorrowView :: GName
 prelThunk = gPrel "Thunk"
 prelNeed = gPrel "Need"
 prelZipper = gPrel "Zipper"
 prelRef = gPrel "Ref"
 prelRegion = gPrel "Region"
+prelBorrowView = gPrel "BorrowView"
 
 prelEff, prelEffRow, prelEffLabel, prelIO, prelSTM, prelElab :: GName
 prelEff = gPrel "Eff"
@@ -358,10 +364,12 @@ prelRORight = gPrel "RORight"
 
 -- ── Prelude traits ───────────────────────────────────────────────────
 
-prelShow, prelOrd, prelMonad, prelReleasable :: GName
+prelShow, prelOrd, prelApplicative, prelMonad, prelMonadRef, prelReleasable :: GName
 prelShow = gPrel "Show"
 prelOrd = gPrel "Ord"
+prelApplicative = gPrel "Applicative"
 prelMonad = gPrel "Monad"
+prelMonadRef = gPrel "MonadRef"
 prelReleasable = gPrel "Releasable"
 
 prelFromComprehensionRaw, prelFromComprehensionPlan, prelIsTraitWitness :: GName
@@ -385,18 +393,18 @@ prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 
-prelNot, prelCompare, prelReadRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
+prelNot, prelCompare, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
 prelNot = gPrel "not"
 prelCompare = gPrel "compare"
 prelReadRef = gPrel "readRef"
+prelWriteRef = gPrel "writeRef"
 prelCatchIO = gPrel "catchIO"
 prelFinallyIO = gPrel "finallyIO"
 prelStringAppend = gPrel "stringAppend"
 
 -- ── Wired-in intrinsics (compiler-synthesized prelude globals) ───────
 
-prelRunIO, prelThis, prelCaptures, prelSizedOf :: GName
-prelRunIO = gPrel "__runIO"
+prelThis, prelCaptures, prelSizedOf :: GName
 prelThis = gPrel "__this"
 prelCaptures = gPrel "__captures"
 prelSizedOf = gPrel "__sizedOf"
@@ -492,8 +500,8 @@ traitFromFloat = "FromFloat"
 -- (§17.3.1). These are NOT "any type with a Monad instance" — pure monads like
 -- @Option@ / @List@ / @Result@ are valid total views; only these effectful
 -- carriers (an action, not a view) are rejected as active-pattern results.
-kernelMonadCarriers :: [Text]
-kernelMonadCarriers = ["IO", "STM", "Eff", "Elab"]
+kernelMonadCarriers :: [GName]
+kernelMonadCarriers = [prelIO, prelSTM, prelEff, prelElab]
 
 -- | The carriers that get dedicated KERNEL do-block elaboration (§18.8,
 -- 'elabDoIOItems'). STM is deliberately NOT here even though it is in
@@ -502,8 +510,8 @@ kernelMonadCarriers = ["IO", "STM", "Eff", "Elab"]
 -- ordinary user-monad path ('elabMonadDo' → stmBind/stmPure), which the native
 -- backend lowers to journaled STM_BIND/STM_PURE nodes. (It still may not be an
 -- active-pattern result — hence the two lists legitimately differ here.)
-doKernelCarriers :: [Text]
-doKernelCarriers = ["IO", "Eff", "Elab"]
+doKernelCarriers :: [GName]
+doKernelCarriers = [prelIO, prelEff, prelElab]
 
 -- | Domains an integer literal defaults into / is admitted by directly,
 -- before falling back to @FromInteger@ witness resolution (§6.1.5).
@@ -577,6 +585,7 @@ wiredInPreludeNames =
     , (prelList, BKType)
     , (prelArray, BKType)
     , (prelOption, BKType)
+    , (prelMatch, BKType)
     , (prelThunk, BKType)
     , (prelNeed, BKType)
     , (prelZipper, BKType)
@@ -632,17 +641,19 @@ wiredInPreludeNames =
     , (prelEqType, BKType)
     , (prelShow, BKType)
     , (prelOrd, BKType)
+    , (prelApplicative, BKType)
     , (prelMonad, BKType)
+    , (prelMonadRef, BKType)
     , (prelReleasable, BKType)
     , (prelFromComprehensionRaw, BKType)
     , (prelFromComprehensionPlan, BKType)
     , (prelNot, BKValue)
     , (prelCompare, BKValue)
     , (prelReadRef, BKValue)
+    , (prelWriteRef, BKValue)
     , (prelCatchIO, BKValue)
     , (prelFinallyIO, BKValue)
     , (prelStringAppend, BKValue)
-    , (prelRunIO, BKIntrinsic)
     , (prelCaptures, BKIntrinsic)
     , (prelSizedOf, BKIntrinsic)
     , (prelEffBind, BKIntrinsic)
@@ -673,7 +684,7 @@ wiredInPreludeNames =
 -- its symbolic @KCT_*@ name map from it, the LLVM backend derives its numeric
 -- id map from it, and the runtime's @_Static_assert@ block is checked against
 -- it. Editing this list (or the header) without the other is caught by the
--- build — see the per-id assertions in @runtime/kappart.c@ and the contiguity
+-- build — see the per-id assertions in @runtime/value.c@ and the contiguity
 -- check in "Kappa.Pipeline".
 --
 -- The order and ids here mirror @kappart.h@ byte-for-byte (KCT_OTHER=0 is a

@@ -17,7 +17,9 @@ and those should be kept:
   cannot fold the loop away (research §5: the single most common microbenchmark error);
 - allocation gates on cumulative `total_bytes` (deterministic; sensitive to per-iteration churn
   that `heap_size` misses — a point its own adversarial review established);
-- two raw-C *ratio* gates (`tailsum`, `arithloop`) at ≤5× C.
+- raw-C *ratio* gates for current scalar-worker paths (`tailsum` at ≤5× C). Any
+  historical `arithloop` var-scalar gate is disabled while P0.2 is suspended for
+  S2.3b `MonadRef` correctness.
 
 Its shortcomings, mapped to methodology and to the gaps it cannot see:
 1. **No statistics.** A single timed run via `date +%s.%N`; no warmup, repetition, or confidence
@@ -71,7 +73,7 @@ bound), **report** (tracked, not gated yet).
 
 | # | Bench (proposed file) | Dimension | Gap it detects | Gate (initial) |
 |---|---|---|---|---|
-| 1 | `scalar_intloop.kp` | scalar Int loop | LR1/P0.2 regression | ratio ≤5× C, ~0 alloc/iter |
+| 1 | `scalar_intloop.kp` | scalar Int loop | LR1 regression; P0.2 var-loop scalarizer currently suspended | ratio ≤5× C for scalar-worker paths, ~0 alloc/iter where the worker path applies |
 | 2 | `scalar_doubleloop.kp` | scalar Double loop | P0-D (no Double worker) | report→ratio after R2.2 |
 | 3 | `adtbuild.kp` | ADT/list construction | **P0-A** eta-ctor closure storm | alloc/iter ≤ 1 cell+1 box |
 | 4 | `adtmatch.kp` | ADT/variant matching | **P1-C** if-chain (LR2 tags shipped) | report→`switch` after R1.2 |

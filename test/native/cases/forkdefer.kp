@@ -11,6 +11,6 @@ main : UIO Unit
 let main = do
     defer (printlnString "defer-1")
     defer (printlnString "defer-2")
-    f <- fork child
-    r <- await f
+    let f <- fork child
+    let r <- await f
     printlnString "body-end"

@@ -1,0 +1,9 @@
+module main
+
+main : UIO Unit
+let main = do
+    var later = cede
+    for i in 1 :: Nil do
+        printlnString "ok"
+
+--! assertStdout "ok\n"

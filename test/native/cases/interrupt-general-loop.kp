@@ -1,6 +1,6 @@
 --! mode run
 --! assertNoErrors
---! assertStdout "acquired\nreleased\nspin:interrupted\nmasked:completed\ndefer-done\n"
+--! assertStdout "acquired\ndefer-ran\nreleased\nspin:interrupted\nmasked:completed\ndefer-done\n"
 
 -- §32.2.6 safe points for the GENERAL (non-scalar) loop lowering (interp == C).
 -- The scalar fast path (a `var i; while … do i = addInt i 1` with a pure-int64
@@ -18,12 +18,10 @@
 -- and terminate the spinning fiber with Failure (Interrupt).
 --
 -- FINALIZER SEMANTICS on the safe-point abort (interp == native):
---   * a `using` resource held across the loop IS released on interrupt (the
---     interpreter runs the release via `onException`; the C backend runs the
---     scope's recorded using-release at the safe-point abort) — `released` prints;
---   * a plain `defer` is NOT run on the async interrupt (the interpreter runs
---     defers only via the exit queue on normal/abrupt completion) — its action is
---     NOT emitted by EITHER interp or native here.
+--   * a plain `defer` registered across the loop runs on interrupt — `defer-ran`
+--     prints;
+--   * a `using` resource held across the loop is released on interrupt —
+--     `released` prints.
 --
 -- FINDING B (ordering): the interpreter throws AT the back-edge, so the post-loop
 -- continuation NEVER runs.  The spinner loops forever, so normal completion is
@@ -39,6 +37,8 @@
 -- region) the pending interrupt is dropped — the fiber completes Success.
 module main
 
+import std.prelude.(type Exit(..))
+
 data Res : Type = MkRes (rid : Integer)
 
 instance Releasable (IO e) Res =
@@ -51,17 +51,18 @@ let acquireRes = do
 
 -- an UNMASKED infinite `while True` whose body is a readRef/writeRef do-bind (NOT
 -- the flat scalar shape), so it lowers to the general boxed loop — interruptible
--- only at the back-edge safe point.  It holds a `using` resource (released on
--- interrupt) and registers a `defer` (NOT run on interrupt).  After the
+-- only at the back-edge safe point.  It holds a `using` resource and registers a
+-- `defer`; both run on interrupt.  After the
 -- (unreachable) loop it would print a marker; the interrupt must abort BEFORE that
 -- continuation runs (FINDING B) yet AFTER running the using-release.
-spin : UIO Int
-let spin = do
+spin : Promise Void Unit -> UIO Int
+let spin ready = do
     using res <- acquireRes
-    defer (printlnString "defer-WRONG")
-    r <- newRef 0
+    defer (printlnString "defer-ran")
+    let _ <- completePromise ready (Success ())
+    let r <- newRef 0
     while True do
-        v <- readRef r
+        let v <- readRef r
         writeRef r (addInt v 1)
     -- unreachable on interrupt; must NOT be emitted before delivery (FINDING B)
     printlnString "spin:after-loop-WRONG"
@@ -75,10 +76,10 @@ let spin = do
 -- the suite timeout.  A trailing `defer` proves normal completion still runs it.
 loopTo : UIO Int
 let loopTo = do
-    r <- newRef 0
+    let r <- newRef 0
     var i = 0
     while ltInt i 1000000 do
-        v <- readRef r
+        let v <- readRef r
         writeRef r (addInt v 1)
         i = addInt i 1
     readRef r
@@ -91,13 +92,14 @@ let maskedLoopTo = uninterruptible loopTo
 main : UIO Unit
 let main = do
     -- (1) the unmasked general `while` spinner IS interrupted at a back-edge safe
-    --     point: its `using` release runs (`released`), its `defer` does NOT
-    --     (`defer-WRONG` absent), and its post-loop continuation does NOT run
+    --     point: its `defer` runs (`defer-ran`), its `using` release runs
+    --     (`released`), and its post-loop continuation does NOT run
     --     (`spin:after-loop-WRONG` absent) — all before delivery (FINDING B).
-    f <- fork spin
-    cede
+    let ready <- newPromise
+    let f <- fork (spin ready)
+    let _ <- awaitPromise ready
     interrupt f
-    ex <- await f
+    let ex <- await f
     match ex
     case Success v -> printlnString "spin:completed-WRONG"
     case Failure (Interrupt cause) -> printlnString "spin:interrupted"
@@ -107,10 +109,10 @@ let main = do
     -- that only the interrupt path (the spinner above) skips its defer.
     defer (printlnString "defer-done")
     -- (2) the MASKED finite general loop runs to completion (suppression holds).
-    h <- fork maskedLoopTo
+    let h <- fork maskedLoopTo
     cede
     interrupt h
-    ex3 <- await h
+    let ex3 <- await h
     match ex3
     case Success v -> printlnString "masked:completed"
     case Failure (Interrupt cause) -> printlnString "masked:interrupted-WRONG"

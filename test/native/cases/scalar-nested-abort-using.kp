@@ -1,0 +1,48 @@
+-- Native-only regression for §32.2.6 scalar-worker safe-point aborts inside a
+-- legacy synchronous do-frame that owns a `using` resource.
+--
+-- The scalar worker must not return a Unit sentinel and continue the do-frame,
+-- but it also must not jump past the active `using` release. This file stays in
+-- the LLVM-supported do-kernel subset; the C-only companion with a plain `defer`
+-- checks that async scalar abort also runs ordinary defers.
+module main
+
+import std.prelude.(type Exit(..))
+
+data Res : Type = MkRes (rid : Integer)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : UIO Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+spin : Int -> Int -> Int
+let spin acc n =
+    if leInt n 0
+    then acc
+    else spin (addInt acc 1) (subInt n 1)
+
+wrap : Int -> Int
+let wrap n = addInt (spin 0 n) 1
+
+child : Promise Void Unit -> UIO Unit
+let child ready = do
+    using r <- acquireRes
+    let _ <- completePromise ready (Success ())
+    let x = wrap 1000000000000
+    printlnString "AFTER-SCALAR-RAN"
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

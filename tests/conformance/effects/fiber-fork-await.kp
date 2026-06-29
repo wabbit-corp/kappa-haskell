@@ -19,14 +19,14 @@ let failing = do
 
 main : UIO Unit
 let main = do
-    f <- fork (worker 5)
-    ex <- await f
+    let f <- fork (worker 5)
+    let ex <- await f
     let _ = ex
     match ex
       case Success v -> printlnString (showInt v)
       case Failure _ -> printlnString "ok-failed"
-    g <- fork failing
-    ex2 <- await g
+    let g <- fork failing
+    let ex2 <- await g
     match ex2
       case Success v -> printlnString (stringAppend "ok " (showInt v))
       case Failure c -> match c

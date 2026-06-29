@@ -38,7 +38,7 @@ let sumJoin fs acc decreases fs =
     match fs
       case Nil -> pure acc
       case f :: rest -> do
-          r <- join f
+          let r <- join f
           sumJoin rest (addInt acc r)
 
 skynet : Int -> Int -> UIO Int
@@ -50,15 +50,15 @@ let skynet num size decreases size =
         var fibers = (Nil : List (Fiber Void Int))
         var i = 0
         while ltInt i 10 do
-            f <- fork (skynet (addInt num (mulInt i step)) step)
+            let f <- fork (skynet (addInt num (mulInt i step)) step)
             fibers = f :: fibers
             i = addInt i 1
         -- Pass 2: join all 10 and sum their ordinals.
-        total <- sumJoin fibers 0
+        let total <- sumJoin fibers 0
         pure total
 
 main : UIO Unit
 let main = do
     -- N = 1000000 leaf fibers (size), branching factor 10.
-    total <- skynet 0 1000000
+    let total <- skynet 0 1000000
     printlnString (showInt total)

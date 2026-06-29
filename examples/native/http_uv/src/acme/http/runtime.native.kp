@@ -23,11 +23,11 @@ let orNull o = match o
     case None -> ffi.rawPtr 0
 
 let listen host port backlog = do
-    r <- uv.http_uv_listen host port backlog
+    let r <- uv.http_uv_listen host port backlog
     pure (orNull r)
 
 let accept l = do
-    r <- uv.http_uv_accept (Some l)
+    let r <- uv.http_uv_accept (Some l)
     pure (orNull r)
 
 let readChunk c = uv.http_uv_read (Some c)

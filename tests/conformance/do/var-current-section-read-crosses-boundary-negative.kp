@@ -1,0 +1,11 @@
+--! assertDiagnostic error E_VAR_READ_CROSSES_BOUNDARY
+
+module main
+
+bad : UIO Unit
+let bad = do
+    var x = 1
+    let f = (+ x)
+    x = 10
+    let y = f 5
+    printlnString (showInt y)

@@ -1,0 +1,15 @@
+-- A deferred action is evaluated at scope exit and then run. If the action is a
+-- CK-only finalizer tree (`finallyIO` builds an OP_DOSCOPE), the C backend must
+-- drive it on the CK-machine rather than through the legacy synchronous bridge.
+module main
+
+body : UIO Unit
+let body = printlnString "body"
+
+cleanup : UIO Unit
+let cleanup = printlnString "cleanup"
+
+main : UIO Unit
+let main = do
+    defer (finallyIO body cleanup)
+    printlnString "main"

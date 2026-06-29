@@ -1,0 +1,14 @@
+module main
+
+bumpOld : (inout v : Int) -> UIO (1 v : Int, old : Int)
+let bumpOld (inout v : Int) : UIO (1 v : Int, old : Int) =
+    pure (v = addInt v 1, old = v)
+
+bad : UIO Unit
+let bad = do
+    var x = 5
+    let (v = after, old = before) <- bumpOld ~x
+    pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_INOUT_RESIDUAL_PATTERN

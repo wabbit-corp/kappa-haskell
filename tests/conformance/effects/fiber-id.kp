@@ -19,28 +19,28 @@ let showBool b = if b then "true" else "false"
 -- a worker that reports its OWN current fiber id as the result Integer
 selfId : UIO Integer
 let selfId = do
-    me <- currentFiberId
+    let me <- currentFiberId
     pure (fidInt me)
 
 main : UIO Unit
 let main = do
     -- the main fiber has an id (every fiber does; ids start at 1, so > 0)
-    self <- currentFiberId
+    let self <- currentFiberId
     printlnString (stringAppend "main-has-id " (showBool (ltInt 0 (fidInt self))))
     -- two forked fibers must get distinct ids
-    fa <- fork selfId
-    fb <- fork selfId
-    fida <- fiberId fa
-    fidb <- fiberId fb
+    let fa <- fork selfId
+    let fb <- fork selfId
+    let fida <- fiberId fa
+    let fidb <- fiberId fb
     let ida = fidInt fida
     let idb = fidInt fidb
     printlnString (stringAppend "distinct " (showBool (not (eqInt ida idb))))
     -- the id seen from INSIDE a fiber agrees with fiberId of its handle
-    exa <- await fa
+    let exa <- await fa
     match exa
       case Success innerA ->
         printlnString (stringAppend "agree " (showBool (eqInt innerA ida)))
       case Failure _ -> printlnString "agree false"
     -- drain the second fiber so the program ends cleanly
-    _ <- await fb
+    let _ <- await fb
     pure ()

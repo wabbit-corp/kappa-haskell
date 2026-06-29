@@ -28,11 +28,11 @@ let child = do
 
 main : UIO Unit
 let main = do
-    f <- fork child
+    let f <- fork child
     cede
     cede
     interrupt f
-    ex <- await f
+    let ex <- await f
     match ex
       case Success v -> printlnString "completed"
       case Failure c -> printlnString "interrupted"

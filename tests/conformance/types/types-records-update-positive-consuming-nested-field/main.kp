@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+type Outer = (sized : Sized, tag : Nat)
+
+restore : (1 outer : Outer) -> Outer
+let restore (1 outer : Outer) : Outer =
+    outer.{ sized.buffer = outer.sized.buffer }
+
+--! mode check
+--! assertNoErrors

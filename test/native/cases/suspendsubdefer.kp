@@ -10,8 +10,8 @@ let child = printlnString "child"
 
 main : UIO Unit
 let main = do
-    f <- fork child
-    _ <- await f
+    let f <- fork child
+    let _ <- await f
     do
         defer (printlnString "sub-defer")
         printlnString "in-sub"

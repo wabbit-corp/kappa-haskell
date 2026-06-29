@@ -1,0 +1,27 @@
+module lib.shadow
+
+data IO (a : Type) : Type =
+    MkIO (runShadowIO : UIO a)
+
+instance Applicative IO =
+    let pureA x = MkIO (pureIO x)
+    let liftA2 f ma mb =
+        match ma
+        case MkIO ioa ->
+            match mb
+            case MkIO iob ->
+                MkIO (bindIO ioa (\a -> bindIO iob (\b -> pureIO (f a b))))
+
+instance Monad IO =
+    let (>>=) ma f =
+        match ma
+        case MkIO ioa ->
+            MkIO (bindIO ioa (\a ->
+                match f a
+                case MkIO iob -> iob))
+
+instance MonadRef IO =
+    let Ref = __IORef
+    let newRef x = MkIO (__ioNewRef x)
+    let readRef r = MkIO (__ioReadRef r)
+    let writeRef r x = MkIO (__ioWriteRef r x)

@@ -28,6 +28,6 @@ let main = do
     printlnString older.name
     printlnString (showInt (diff (x = 10, y = 3)))
     -- a record round-tripped through a mutable ref
-    r <- newRef (a = 1, b = 2)
-    rec <- readRef r
+    let r <- newRef (a = 1, b = 2)
+    let rec <- readRef r
     printlnString (showInt (addInt rec.a rec.b))

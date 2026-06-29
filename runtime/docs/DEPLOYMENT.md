@@ -46,15 +46,17 @@ kappart2 already implements the recommended discipline; the Driver must back it:
 - **Thread creation.** `krt_init` → `GC_INIT()` then `GC_allow_register_threads()`;
   create reactor + worker + pool threads via `GC_pthread_create` so their stacks
   are located for stop-the-world. (kappart2 already uses `GC_pthread_create`.)
-- **The rt-blocking lane** (when built): a bounded pool + handoff queue; each
-  blocking foreign call runs inside `GC_do_blocking`; results come back as **raw
-  C** (`GC_MALLOC_ATOMIC` buffers / scalars), and the GC-active reactor converts
-  them to `KValue`s and resumes the fiber — pool threads must never allocate
-  `KValue`s. Only then advertise `rt-blocking`.
+- **The rt-blocking lane.** The current correctness lane parks the fiber and runs
+  blocking native work on a GC-registered off-worker pthread, so boxed
+  marshalling is safe and the scheduler worker is not monopolized. A future
+  high-throughput lane should use a bounded pool + handoff queue; if that pool
+  runs calls inside `GC_do_blocking`, results should come back as **raw C**
+  (`GC_MALLOC_ATOMIC` buffers / scalars) and be boxed by a GC-active runtime
+  thread before resuming the fiber.
 
 ## 3. Linking — default to self-contained, per-OS
 
-The current `Driver.hs` link line (`cc … kappart.c <gen>.c <shims> -lgc -lgmp
+The current `Driver.hs` link line (`cc … <boxed-runtime TUs> <gen>.c <shims> -lgc -lgmp
 <pkg-config libuv> -o out`) records `-lgc`/`-lgmp`/`-luv` as `DT_NEEDED` sonames
 with **system-loader** semantics and **no rpath** — correct for `systemLoader`,
 but *not* self-contained per §36.29 (the binary finds its deps only on the default

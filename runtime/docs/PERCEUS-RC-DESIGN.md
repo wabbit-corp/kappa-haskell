@@ -164,14 +164,13 @@ Pure RC cannot reclaim cycles. Kappa's totality makes this a small, isolated pro
 - Exactly **two cycle sources**, both confinable to small tracked sets:
   1. **Mutable refs** (`Ref`/`:=`, the main mutation per §31.5): programmer breaks the cycle (Swift's
      model), or a small incremental cycle collector over *only* ref-typed nodes.
-  2. **Opt-in `lazy data`** (tying the knot — `let xs = 1 :: lazy xs`): a memoized delayed head whose
-     closure points back at the cell forms a cycle the moment it is forced/updated. Because laziness is
-     **opt-in** ([lazy-data note](../../docs/kappa_lazy_data_semantics_note.md)), the cost is localized to
-     lazy nodes only — they carry the mutable-cell RC protocol + cycle-set membership; the strict 99% stays
-     on the cheap garbage-free path. The lazy-data note already fences the RC-relevant invariants (the
-     delayed-head *closure* is the capture point, not the fields; enter is a destructive in-place update RC
-     treats as a unique/owned mutation; quantity/borrow/region obligations hold at the delayed-head
-     boundary — note:90-103, 313-348).
+  2. **Future opt-in `lazy data`** (tying the knot — e.g. `let xs = 1 :: lazy xs`): a memoized delayed head
+     whose closure points back at the cell forms a cycle the moment it is forced/updated. Because this design
+     remains opt-in future-stage work, the intended cost is localized to lazy nodes only — they carry the
+     mutable-cell RC protocol + cycle-set membership; the strict 99% stays on the cheap garbage-free path.
+     The RC-relevant invariants are that the delayed-head *closure* is the capture point, enter is a
+     destructive in-place update RC treats as a unique/owned mutation, and quantity/borrow/region obligations
+     hold at the delayed-head boundary.
 
 ---
 
@@ -209,7 +208,7 @@ the publish points are **few and localized**:
   closure env plus the `aux` ExitStack.
 - **One-shot is the default** (the spec's default; `coro.id.retcon.once`) = move/in-place, no copy, no
   atomic. **Multi-shot** = dup the resumption object (children = captured frames) + copy on each use —
-  gated behind the compile-time escape-check + the not-yet-existing `rt-multishot` capability (CPS §170).
+  gated behind the compile-time escape-check + the not-yet-existing `rt-multishot-effects` capability (CPS §170).
 - **The slot-kind map (UNBOXING Stage 3) is the shared artifact**: the `Boxed | I64 | F64 | FixedFFI`
   layout kind threaded onto **every** continuation/do-scope frame, **joined with the already-landed
   `gsSuspenders` suspendability witness**, consumed by **both** Perceus dup/drop **and** LLVM CoroSplit.
@@ -293,4 +292,4 @@ quantity/borrow source of the owned/borrowed decisions).
 
 **Design** — [UNBOXING-DESIGN.md](UNBOXING-DESIGN.md) (slot-kind map, immediates-skip-RC, A1-A10),
 [CPS-DESIGN.md](CPS-DESIGN.md) (the seam, one-shot/multishot, Stage 5 Perceus), [TAGGING-RESEARCH.md](TAGGING-RESEARCH.md)
-(header-vs-tag ruling), the [lazy-data note](../../docs/kappa_lazy_data_semantics_note.md) (the lazy+RC boundary).
+(header-vs-tag ruling), plus the future lazy-data/RC boundary described above.

@@ -6,5 +6,5 @@ module main
 
 main : UIO Unit
 let main = do
-    x <- ioPure 5
+    let x <- ioPure 5
     printlnString (showInt x)

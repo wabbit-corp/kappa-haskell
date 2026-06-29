@@ -11,28 +11,28 @@ import std.prelude.(type Cause(..), type Exit(..))
 
 worker : Promise Void Int -> UIO Unit
 let worker p = do
-    done <- completePromise p (Success 21)
+    let done <- completePromise p (Success 21)
     let _ = done
     pure ()
 
 main : UIO Unit
 let main = do
-    p <- newPromise
-    ok <- completePromise p (Success 99)
-    again <- completePromise p (Success 1)
-    v <- awaitPromise p
+    let p <- newPromise
+    let ok <- completePromise p (Success 99)
+    let again <- completePromise p (Success 1)
+    let v <- awaitPromise p
     printlnString (stringAppend (showInt v) (stringAppend (if ok then " T" else " F") (if again then " T" else " F")))
-    q <- newPromise
-    qdone <- completePromise q (Failure (Fail 7))
+    let q <- newPromise
+    let qdone <- completePromise q (Failure (Fail 7))
     let _ = qdone
-    ex <- awaitPromiseExit q
+    let ex <- awaitPromiseExit q
     match ex
       case Success _ -> printlnString "ok"
       case Failure c -> match c
         case Fail e -> printlnString (stringAppend "failed " (showInt e))
         case _ -> printlnString "other"
-    r <- newPromise
-    child <- fork (worker r)
+    let r <- newPromise
+    let child <- fork (worker r)
     let _ = child
-    rv <- awaitPromise r
+    let rv <- awaitPromise r
     printlnString (stringAppend "fork " (showInt rv))

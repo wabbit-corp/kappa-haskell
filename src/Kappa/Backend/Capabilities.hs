@@ -16,16 +16,12 @@ module Kappa.Backend.Capabilities
 import Data.Text (Text)
 import Kappa.Build.Types (FfiClass (..))
 
--- | The runtime capabilities the native profile advertises (§27.6). The native
--- runtime is single-agent and synchronous: it realizes @rt-blocking@ as direct
--- execution on the sole agent (the agent IS the blocking lane, so a blocking
--- foreign call starves no concurrently-runnable fiber — §26.1.4:26304 holds
--- vacuously). It does NOT advertise @rt-blocking-cancel@ (no safe foreign-call
--- cancellation mechanism), so a @blocking-cancellable@ binding is rejected.
---
--- (This declares the binding-relevant capability subset; the full §27.6
--- obligations of @rt-core@'s concurrent scheduler are a separate runtime
--- concern tracked outside the native-binding path.)
+-- | The runtime capabilities the native profile advertises (§27.6). Classified
+-- @blocking@ native calls are preserved into blocking @K_NATIVE@ actions and
+-- routed through the runtime's off-worker blocking lane, so @rt-blocking@ is
+-- part of the native profile. @blocking-cancellable@ remains unavailable until a
+-- binding can name a safe cancellation mechanism and the runtime has a
+-- cancellation-aware bridge.
 nativeRuntimeCapabilities :: [Text]
 nativeRuntimeCapabilities = ["rt-core", "rt-blocking", "rt-atomics"]
 

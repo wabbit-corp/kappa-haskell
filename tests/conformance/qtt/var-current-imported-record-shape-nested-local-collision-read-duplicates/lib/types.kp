@@ -1,0 +1,10 @@
+module lib.types
+
+data Token : Type =
+    Token
+
+type Inner : Type =
+    (1 tok : Token)
+
+type Outer : Type =
+    (nested : (payload : Inner), count : Int)

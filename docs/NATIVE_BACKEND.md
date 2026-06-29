@@ -62,7 +62,7 @@ source ──front end──▶ KCore (Term, per global)
                   Kappa.Backend.C        (lower Term → C source)
                           │
                           ▼
-              <out>.c  +  runtime/kappart.c  +  runtime/kappart.h
+              <out>.c  +  split runtime/*.c  +  runtime/kappart.h
                           │
                        zig cc / cc           (compile + link, -lgc …)
                           ▼
@@ -204,9 +204,9 @@ lower and run equivalently to the interpreter. In particular:
 
 * **`defer` (§18.7)** runs at **any** scope depth (do-block, loop body, `if`
   body — per-scope frames) and is evaluated **lazily at scope exit** (a
-  suspended `kio` thunk capturing the environment, `compileDeferAction`), so a
-  deferred body observes state mutated between registration and the flush —
-  never a registration-time snapshot.
+  CK-machine action capturing the environment, `compileDeferAction`), so a
+  deferred body observes state mutated between registration and the flush,
+  can suspend during finalizer drain, and is never a registration-time snapshot.
 * **Binding or-patterns (§17.2.3)** are distributed into or-free alternatives
   (`distributePat`) in `match`, in `let?` (tried in source order, first match
   wins), and in a `let?` else residue.
@@ -263,8 +263,8 @@ silent fallback to interpreter behaviour. See
   *Not* tail position, hence bounded by the C stack like any deep non-tail
   recursion (the interpreter is also O(n) stack here, and O(n²) time): the
   recursive call in the **bound/first leg** of `bindIO`/`ioThen`/`ioBind`
-  (left-nested `>>=`), and a deeply-recursive `!`-splice (`__runIO`). These
-  are fail-stop (never a wrong answer) and `ulimit -s` raises the bound.
+  (left-nested `>>=`). These are fail-stop (never a wrong answer) and
+  `ulimit -s` raises the bound.
 * **`show` and the §29 text/Unicode surface are supported.** `showDouble`
   (shortest round-trip, Haskell format), `showStringLit`/`showScalar`
   (Haskell escaping), `Rational`, byte/bytes/grapheme literals + prims,
@@ -290,8 +290,10 @@ the hot paths avoid needless overhead:
   closure chain.
 * Small integers (`-16..256`) and the two `Bool` constructors are cached;
   a closure binds its environment once (not per variable reference); a
-  mutable-`var` read/write inside a loop lowers to a direct `kref_*` cell
-  access rather than the suspended-IO path.
+  mutable-`var` read/write inside a loop sequences the checker-selected
+  `MonadRef.readRef`/`MonadRef.writeRef` action instead of reconstructing a
+  backend-local raw cell access. Optimizations may elide representation overhead
+  only when they preserve that selected action semantics.
 
 A tail-recursive `sum 1..10_000_000` runs in ~4.2 s and a
 `var`-mutating `while` loop of 1,000,000 steps in ~0.4 s, both at flat

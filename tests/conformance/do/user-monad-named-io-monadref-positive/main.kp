@@ -1,0 +1,19 @@
+module main
+
+import lib.shadow as S
+import lib.shadow.(type IO(..))
+
+foo : S.IO Int
+let foo = do
+    var x = 1
+    x = addInt x 1
+    pureA x
+
+runShadow : forall (a : Type). S.IO a -> UIO a
+let runShadow m =
+    match m
+    case MkIO io -> io
+
+main : UIO Int
+let main =
+    runShadow foo

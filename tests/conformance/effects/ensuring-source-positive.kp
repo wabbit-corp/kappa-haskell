@@ -1,0 +1,9 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\nfinalizer\n"
+
+module main
+
+main : UIO Unit
+let main =
+    ensuring (printlnString "body") (printlnString "finalizer")

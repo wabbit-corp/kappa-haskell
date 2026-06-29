@@ -1,0 +1,11 @@
+-- LLVM parity regression: constructing a while action must not evaluate body
+-- pure lets before the condition is true. The body is unreachable, so the
+-- division-by-zero rhs must not run.
+module main
+
+main : UIO Unit
+let main = do
+    while False do
+        let q = divInt 1 0
+        printlnString (showInt q)
+    printlnString "ok"

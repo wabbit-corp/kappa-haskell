@@ -8,8 +8,9 @@ explicitly addressed in §11 (Required-fix ledger) with a pointer to where it is
 Two themes from the reviews reshaped the plan and are worth stating up front:
 
 1. **Stage 1 is not a "localized overlay."** Low-bit immediate tagging is a *whole-runtime
-   invariant change*. There are **299 raw `->tag`/`->as.*` dereference sites in
-   `runtime/kappart.c`** (plus 2 in `rt.c`, 6 in `atomic.c`); every one that can receive a
+   invariant change*. The old monolithic runtime audit found **299 raw
+   `->tag`/`->as.*` dereference sites** in the boxed-value runtime (now split
+   across `value.c`/`prims.c`/etc.; plus 2 in `rt.c`, 6 in `atomic.c`); every one that can receive a
    value we make immediate must tag-test before it dereferences, or it silently miscompiles
    or segfaults on an odd word. The cheap *codegen* delta does not imply a cheap *runtime*
    delta. Stage 1 is re-scoped accordingly (§5, §7).
@@ -226,7 +227,7 @@ side is genuinely near-zero — codegen already routes through accessors (`kas_b
 `kctor_tagid`, `kint`, `kp_addInt`), so the fear of "thread type info to every codegen site"
 does *not* apply to tagging. The runtime is where it bites:
 
-- **`runtime/kappart.c`: 299 `->tag`/`->as.*` sites.** Concrete must-convert sites the
+- **Split boxed runtime: 299 `->tag`/`->as.*` sites in the monolith audit.** Concrete must-convert sites the
   reviews named: `kctor_tagid` (`kappart.c:710`, the **primary** pattern-match dispatch —
   must return the tag of an immediate nullary ctor *without* deref, else garbage tagid →
   wrong arm → silent divergence); `klit_eq` (807); `kvalue_rep_eq` (1042, used by
@@ -672,12 +673,12 @@ time per stage; do not assume negligible.
 **Runtime**
 - `/Users/wabbit/ws/kappa-haskell/runtime/kappart.h` — `KValue`/`KEnv` layout; `kunbox_i64`/
   `kunbox_dbl`; **new `kis_imm`/`kderef`/`kimm_payload` accessors + tag-space macros** (Stage 0/1).
-- `/Users/wabbit/ws/kappa-haskell/runtime/kappart.c` — **GC contract** at `GC_INIT` (`:40`,
-  add `GC_set_all_interior_pointers(0)` + alignment asserts); `gmp_gc_alloc`/`kgc_alloc`
-  (`:21,46`); canonicalize `kbool`/`kunit`/`kint`/`kint_cache`/`the_*` (`:99,247,285`);
-  tag-safe `kctor_tagid` (`:710`), `klit_eq` (`:807`), `kvalue_rep_eq` (`:1042`), `kas_*`
-  (`:828–866`), all `kp_*` prims (`:1443+`); `kp_eqDouble` raw-bit invariant (`:1493`);
-  `kas_u64`/`mpz_export` for FixedFFI (`:855`). **The 299-site audit lives here.**
+- `/Users/wabbit/ws/kappa-haskell/runtime/gc.c` — **GC contract** at `GC_INIT`,
+  `GC_set_all_interior_pointers(0)`, alignment asserts, and `gmp_gc_alloc`/`kgc_alloc`.
+- `/Users/wabbit/ws/kappa-haskell/runtime/value.c` and
+  `/Users/wabbit/ws/kappa-haskell/runtime/prims.c` — canonical `kbool`/`kunit`/`kint`,
+  tag-safe `kctor_tagid`, `klit_eq`, `kvalue_rep_eq`, `kas_*`, and the direct `kp_*`
+  prim paths. **The old 299-site monolith audit is now split across these files.**
 - `/Users/wabbit/ws/kappa-haskell/runtime/rt.c` — scheduler `switch(cur->tag)` + 2 deref
   sites; `kapp`/`deliver`/`kvar`/`kpush`, park/resume (`do_await`, `OP_SLEEP`) carry tagged
   words; `KEnv` unchanged.

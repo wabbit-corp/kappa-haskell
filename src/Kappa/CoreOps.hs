@@ -75,17 +75,21 @@ foldTerm termF itemF = go
       KLet _ _ t -> go t
       KLetQ _ t m -> go t <> foldMap (go . snd) m
       KExpr t -> go t
-      KVarItem _ t -> go t
-      KAssign lhs _ rhs -> go lhs <> go rhs
+      KVarItem _ initT actT -> go initT <> go actT
+      KAssign lhs _ rhs actT -> go lhs <> go rhs <> go actT
       KReturn t -> go t
       KBreak _ -> mempty
       KContinue _ -> mempty
-      KWhile _ c b e -> go c <> foldMap goK b <> foldMap (foldMap goK) e
+      KWhile _ c b e -> goCond c <> foldMap goK b <> foldMap (foldMap goK) e
       KFor _ _ s b e -> go s <> foldMap goK b <> foldMap (foldMap goK) e
       KIf alts e -> foldMap (\(c, b) -> go c <> foldMap goK b) alts <> foldMap (foldMap goK) e
       KDefer _ t -> go t
       KUsing _ a r -> go a <> go r
       KSubDo _ b -> foldMap goK b
+
+    goCond = \case
+      KCondPure t -> go t
+      KCondAction t -> go t
 
 -- | Depth-aware fold over the pure Core term tree.  This intentionally treats
 -- suspended do-kernel bodies as opaque, matching the de Bruijn assumptions used
@@ -267,17 +271,21 @@ zonkTermWith resolveMeta = go
         , d + patBindersC p
         )
       KExpr t -> (KExpr (go d t), d)
-      KVarItem n t -> (KVarItem n (go d t), d + 1)
-      KAssign r monadic t -> (KAssign (go d r) monadic (go d t), d)
+      KVarItem n initT actT -> (KVarItem n (go d initT) (go d actT), d + 1)
+      KAssign r monadic rhs actT -> (KAssign (go d r) monadic (go d rhs) (go d actT), d)
       KReturn t -> (KReturn (go d t), d)
       k@KBreak {} -> (k, d)
       k@KContinue {} -> (k, d)
-      KWhile l c b e -> (KWhile l (go d c) (goItems d b) (fmap (goItems d) e), d)
+      KWhile l c b e -> (KWhile l (goCond d c) (goItems d b) (fmap (goItems d) e), d)
       KFor l p s b e -> (KFor l p (go d s) (goItems (d + patBindersC p) b) (fmap (goItems d) e), d)
       KIf alts e -> (KIf [(go d c, goItems d b) | (c, b) <- alts] (fmap (goItems d) e), d)
       KDefer ml t -> (KDefer ml (go d t), d)
       KUsing p a r -> (KUsing p (go d a) (go d r), d)
       KSubDo l b -> (KSubDo l (goItems d b), d)
+
+    goCond d = \case
+      KCondPure t -> KCondPure (go d t)
+      KCondAction t -> KCondAction (go d t)
 
     go d = \case
       CMeta m -> maybe (CMeta m) id (resolveMeta d m)
@@ -370,13 +378,13 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
           KLet _ _ t -> go (next n) t
           KLetQ _ t m -> go (next n) t || maybe False (go (next n) . snd) m
           KExpr t -> go (next n) t
-          KVarItem _ t -> go (next n) t
-          KAssign lhs _ rhs -> go (next n) lhs || go (next n) rhs
+          KVarItem _ initT actT -> go (next n) initT || go (next n) actT
+          KAssign lhs _ rhs actT -> go (next n) lhs || go (next n) rhs || go (next n) actT
           KReturn t -> go (next n) t
           KBreak _ -> False
           KContinue _ -> False
           KWhile _ c b e ->
-            go (next n) c
+            goCond (next n) c
               || any (goK (next n)) b
               || maybe False (any (goK (next n))) e
           KFor _ _ src b e ->
@@ -418,6 +426,10 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
           CQuote _ slots -> any (go (next n)) slots
           CDo _ items -> any (goK (next n)) items
           _ -> False
+
+    goCond n = \case
+      KCondPure t -> go n t
+      KCondAction t -> go n t
 
 -- | Global names mentioned by a term.  Constructor heads count as globals; do
 -- items are traversed through 'foldTerm'.

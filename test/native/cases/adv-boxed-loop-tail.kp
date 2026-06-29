@@ -1,0 +1,30 @@
+--! mode run
+
+-- Control: a NON-scalarizable (boxed CK-machine KK_LOOP) tight loop followed by a
+-- post-loop side effect.  The boxed loop delivers the interrupt at the fiber_step
+-- back-edge gate (unwind BEFORE the continuation), so this path should MATCH interp
+-- (no "AFTER-LOOP-RAN").  Isolates the scalar-loop divergence to the native scalar
+-- path, not the CK loop.
+--
+-- Non-scalarizable because the loop body reads an outer ref via a do-bind (a
+-- closure-bearing body), keeping the boxed lowering.
+module main
+
+spinThenPrint : UIO Unit
+let spinThenPrint = do
+    let r <- newRef 0
+    while (ioBind (readRef r) (\v -> ioPure (ltInt v 1000000000000))) do
+        let v <- readRef r
+        writeRef r (addInt v 1)
+    printlnString "AFTER-LOOP-RAN"
+
+main : UIO Unit
+let main = do
+    let f <- fork spinThenPrint
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

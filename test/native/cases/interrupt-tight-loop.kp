@@ -43,19 +43,19 @@ let maskedSpin = uninterruptible spinTo
 main : UIO Unit
 let main = do
     -- (1) the unmasked spinner IS interrupted at a loop safe point.
-    f <- fork spin
+    let f <- fork spin
     cede
     interrupt f
-    ex <- await f
+    let ex <- await f
     match ex
     case Success v -> printlnString "spin:completed"
     case Failure (Interrupt cause) -> printlnString "spin:interrupted"
     case Failure c -> printlnString "spin:other-failure"
     -- (2) the MASKED spinner runs to completion (suppression holds mid-loop).
-    g <- fork maskedSpin
+    let g <- fork maskedSpin
     cede
     interrupt g
-    ex2 <- await g
+    let ex2 <- await g
     match ex2
     case Success v -> printlnString "masked:completed"
     case Failure (Interrupt cause) -> printlnString "masked:interrupted-WRONG"

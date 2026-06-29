@@ -1,0 +1,13 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n"
+
+takeImplicit : (@ω n : Int) -> UIO Int
+let takeImplicit (@ω n : Int) : UIO Int =
+    pure n
+
+main : UIO Unit
+let main = do
+    var x = 42
+    let ω n <- takeImplicit @x
+    printlnString (showInt n)

@@ -10,18 +10,18 @@ module main
 
 bump : TVar Int -> STM Int
 let bump counter = do
-    cur <- readTVar counter
+    let cur <- readTVar counter
     writeTVar counter (cur + 100)
     readTVar counter
 
 main : UIO Unit
 let main = do
-    c <- atomically (newTVar 10)
+    let c <- atomically (newTVar 10)
     atomically (writeTVar c 25)
-    a <- atomically (readTVar c)
+    let a <- atomically (readTVar c)
     atomically (writeTVar c (a + 5))
-    v1 <- atomically (readTVar c)
+    let v1 <- atomically (readTVar c)
     printlnString (showInt v1)
-    d <- atomically (newTVar 10)
-    v2 <- atomically (bump d)
+    let d <- atomically (newTVar 10)
+    let v2 <- atomically (bump d)
     printlnString (showInt v2)

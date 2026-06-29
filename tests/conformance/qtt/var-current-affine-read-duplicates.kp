@@ -1,0 +1,16 @@
+--! assertErrorCount 1
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+type Box : Type =
+    (<=1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Box = (tok = Token)
+    let copy = cell
+    pure ()

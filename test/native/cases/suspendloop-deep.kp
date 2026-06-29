@@ -11,7 +11,7 @@ main : UIO Unit
 let main = do
     var i = 0
     while leInt i 100000 do
-        f <- fork (ioPure i)
-        _ <- await f
+        let f <- fork (ioPure i)
+        let _ <- await f
         i = addInt i 1
     printlnString (showInt i)

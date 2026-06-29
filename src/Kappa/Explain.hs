@@ -247,7 +247,7 @@ registry =
   , ent "E_FEATURE_INACTIVE" (Just "kappa.feature.gated")
       "An identifier uses Unicode characters outside the active name profile without the corresponding feature gate enabled."
   , ent "E_FEATURE_BACKEND_CAPABILITY_MISSING" (Just "kappa.feature.gated")
-      "A reachable multi-shot effect resumption requires the 'rt-multishot' runtime capability, which no targeted backend advertises; the multi-shot operation is rejected at compile time rather than executed with one-shot semantics (§18.1.17, §27.6, §34.3.3)."
+      "A reachable multi-shot effect resumption requires the 'rt-multishot-effects' runtime capability, which no targeted backend advertises; the multi-shot operation is rejected at compile time rather than executed with one-shot semantics (§18.1.17, §27.6, §34.3.3)."
   , ent "E_HOLE_UNSOLVED" (Just "kappa.hole.unsolved")
       "A typed hole '?' or '_' in expression position was not solved by elaboration; the expected type or value remains unknown."
   , ent "E_HOLE_INCONSISTENT_EXPECTED_TYPE" (Just "kappa.hole.inconsistent")
@@ -536,6 +536,10 @@ registry =
       "An argument flowing into an 'inout' parameter is not marked '~place' at the call site (§18.9.3)."
   , ent "E_QTT_INOUT_MARKER_UNEXPECTED" (Just "kappa-hs.qtt.inout-marker")
       "A call-site '~' marker is applied to an argument whose parameter is not declared 'inout' (§18.9.3)."
+  , ent "E_QTT_INOUT_BINDER_CONTEXT" (Just "kappa-hs.qtt.inout-marker")
+      "An 'inout' binder appears outside a named callable parameter context where §18.9.2 permits it."
+  , ent "E_QTT_INOUT_RESIDUAL_PATTERN" (Just "kappa.inout.restoration")
+      "An inout call residual pattern binds a threaded place result or is not a supported restoration record pattern (§18.9.4)."
   , ent "E_QTT_INOUT_THREADED_FIELD_MISSING" (Just "kappa.inout.restoration")
       "An 'inout' parameter's place is not threaded back through the declared result as a field of the same name (§18.9.3)."
   , ent "E_QTT_LINEAR_DROP" (Just "kappa.quantity.positive-lower-bound")
@@ -546,6 +550,19 @@ registry =
       "A place is borrowed or re-projected after the path was already consumed at quantity 1, without an intervening restoring record update (§12.4, §3.2.6)."
   , ent "E_QTT_USING_EXPLICIT_QUANTITY" (Just "kappa-hs.qtt.using-quantity")
       "A 'using' binding declares an explicit quantity; using-scoped resources have a fixed discipline (§19.5)."
+  , -- Mutable variables (§18.3.1, §18.6.1)
+    ent "E_VAR_IN_STATIC_POSITION" (Just "kappa.var.mutable-binding")
+      "A mutable variable current-value read appears in a type, static, proof, macro, or implicit-search position where object-phase reads are not available (§18.6.1)."
+  , ent "E_VAR_READ_CROSSES_BOUNDARY" (Just "kappa.var.mutable-binding")
+      "A mutable variable current-value read would have to cross a lambda, local function, quote, type, static, or macro boundary (§18.3.1)."
+  , ent "E_VAR_READ_DUPLICATES_LINEAR_VALUE" (Just "kappa.var.mutable-binding")
+      "Reading a mutable variable would duplicate a stored value that may contain a non-duplicable runtime component (§12.2.6, §18.6.1)."
+  , ent "E_VAR_READ_OUTSIDE_DO" (Just "kappa.var.mutable-binding")
+      "A mutable variable current-value read occurs outside the expression-lifting context of its enclosing do block (§18.3.1, §18.6.1)."
+  , ent "E_VAR_REF_REQUIRED" (Just "kappa.var.mutable-binding")
+      "A mutable variable reference cell is required; write 'ref x' to select the hidden cell instead of the current-value facet (§18.6.1)."
+  , ent "W_VAR_REF_ESCAPE_DISABLES_FLOW" (Just "kappa.var.mutable-binding")
+      "A mutable variable reference escapes, so current-value flow facts for that cell are no longer tracked (§18.6.2)."
   , -- Queries (§20)
     ent "E_QUERY_CARDINALITY_MISMATCH" (Just "kappa-hs.query.cardinality")
       "A comprehension's declared cardinality does not match what its pipeline can produce (§20.4)."

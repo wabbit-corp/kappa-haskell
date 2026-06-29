@@ -471,6 +471,7 @@ resolveExecutable manifestDir bc mTarget =
       -- actually DEFINES it (symbol-granular) — a non-shim-defined library
       -- symbol cannot ride the binding's shim past the ABI proof.
       let defined = Map.findWithDefault Set.empty (hb.name) shimDefs
+          cls = bindingFfiClass hb
           syms =
             [ ResolvedNativeSymbol
                 { moduleName = mn
@@ -478,12 +479,18 @@ resolveExecutable manifestDir bc mTarget =
                 , cSymbol = d.symbol
                 , params = d.params
                 , result = d.result
+                , ffiClass = cls
                 , shimProvided = d.symbol `Set.member` defined
                 }
             | mn <- mods
             , d <- decls
             ]
       Right (hb.name, syms)
+
+    bindingFfiClass :: HostBinding -> FfiClass
+    bindingFfiClass hb = case [c | ClassifyInput c <- hb.inputs] of
+      [] -> FfiNonblocking
+      cs -> last cs
 
     -- §26.1.5/§36.28: an explicit-symbolList symbol with a pointer/string/handle
     -- signature has no all-scalar conservative prototype the probe can check;

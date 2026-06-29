@@ -54,7 +54,7 @@ backstop for genuinely non-runtime forms (below).
 | **Real value globals** — a top-level *prefixed* binding (`let 1 x`/`let &x`, the PVar pattern path) and a §9.1.1 `projection` selector | `recordCoreBody` captures their elaborated core body so the backend lowers the real value; without it they reached the no-body accessor and were erased to unit (a silent miscompile, now both fixed and guarded — see the `no-core-body` note below). Verified native ≡ interpreter (`prefixbind`, `projection`). |
 | Stack-safe **local `let rec`**, mutual / value-indirect tail calls, AND **IO-`do` sequencing tail recursion incl. `defer`** | Trampoline `kbounce` for non-self tail calls; `kio_tail`/`kio_effect`/`kio_finally` for tail IO actions (the last carries §18.7 finalizers on a heap stack).  Constant C stack to depth 5,000,000 (§27.5A.3). |
 | **`defer` nested in a loop/`if` body** (§18.7 per-scope frames) | Each scope (do-block, loop iteration, `if` branch) gets its own defer frame, run LIFO at its exit and at every `break`/`continue`/`return` that unwinds it (`gsScopeDefers` + `lcScopeDepth`; verified: per-iteration defer, defer-before-break, labelled-break LIFO across two scopes, early-return unwinding — all native ≡ interpreter). |
-| **Lazy `defer` evaluation** (§18.7) | The deferred action is a suspended `kio` thunk (`compileDeferAction`) capturing the env, evaluated/run at scope exit — not eagerly at registration — so it observes mutations between registration and flush (verified `deferlazy`: mutated-var, running-accumulator, guarded-fault native ≡ interpreter). |
+| **Lazy `defer` evaluation** (§18.7) | The deferred action is a CK-machine action (`compileDeferAction`) that captures the env and evaluates the body at scope exit — not eagerly at registration — so it observes mutations between registration and flush and can itself suspend (verified `deferlazy` and `defer-sleep`: mutated-var, running-accumulator, guarded-fault, suspending cleanup native ≡ interpreter). |
 | **Nested binding or-pattern** (`CPOr` binding variables, §17.2.3) in `match`, `let?`, and the `let?` else residue | Distributed into the Cartesian product of or-free alternatives (`distributePat`); in `let?` the alternatives are tried in source order (first match wins) before the else (verified native ≡ interpreter — `letqor`). |
 | **`let?` else residue** (§18.2.1) | The else's refutation residue pattern is tested against the scrutinee (`patTest` + `krt_fail` on a refutable mismatch, mirroring the interpreter's `matchPat ec rp x`); never silently binds the wrong constructor's fields (verified `letqelse`/`letqmiss`). |
 | `__atomicRepEq` (§29.1 `atomicCompareExchange`) | Structural representation equality over canonical runtime values (`kvalue_rep_eq`). |
@@ -78,8 +78,8 @@ internal-invariant break is reported, never silently miscompiled:
 Genuinely non-tail recursion is bounded by the C stack like any deep
 non-tail recursion (the interpreter is also O(n) here; fail-stop, never a
 wrong answer; `ulimit -s` raises the bound): the recursive call in the
-**bound leg** of `bindIO`/`ioThen` (left-nested `>>=`), a deeply-recursive
-`!`-splice, and an `if`-branch recursion that is not the do-block's last
+**bound leg** of `bindIO`/`ioThen` (left-nested `>>=`), a deeply nested
+splice-lifted bind tree, and an `if`-branch recursion that is not the do-block's last
 item.  Multi-arg **mutual** recursion trampolines through the curried
 closure (one closure allocation per step; self- and arity-1 recursion are
 allocation-free).

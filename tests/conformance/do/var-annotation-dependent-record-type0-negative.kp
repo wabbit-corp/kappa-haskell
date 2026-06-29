@@ -1,0 +1,7 @@
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- A dependent record that stores a Type0-valued field lives in Type1, not
+-- Type0. This pins the current non-universe-polymorphic record behavior.
+module main
+
+type TypeValue : Type0 = (t : Type0, v : this.t)

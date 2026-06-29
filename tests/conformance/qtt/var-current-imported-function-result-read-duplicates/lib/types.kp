@@ -1,0 +1,12 @@
+module lib.types
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+mkBox : (1 tok : Token) -> Box
+let mkBox tok =
+    Full tok

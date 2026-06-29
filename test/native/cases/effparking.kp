@@ -25,13 +25,13 @@ let runHandled =
         case return x -> pure x
         case step n k ->
             do
-                child <- fork (pure (n * 10))
-                ex <- await child
+                let child <- fork (pure (n * 10))
+                let ex <- await child
                 printlnString (stringAppend "stepped-" (showInt n))
-                _ <- sleepFor (millis 2)
+                let _ <- sleepFor (millis 2)
                 k (n * 10)
 
 main : UIO Unit
 let main = do
-    v <- runHandled
+    let v <- runHandled
     printlnString (stringAppend "result-" (showInt v))

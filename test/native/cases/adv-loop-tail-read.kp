@@ -1,0 +1,28 @@
+--! mode run
+
+-- ADVERSARIAL companion: after an interrupted scalar loop, the continuation READS
+-- the loop var.  Tests that the flushed value the continuation sees is a valid
+-- iteration-boundary value (not a half-updated register), AND re-confirms the
+-- post-loop continuation runs at all on the native backend (it should not, per the
+-- interp oracle which delivers the interrupt at the loop safe point).
+module main
+
+spinThenRead : UIO Unit
+let spinThenRead = do
+    var i = 0
+    while ltInt i 1000000000000 do
+        i = addInt i 1
+    -- read the loop var post-abort; on interp this never runs.
+    let snap = i
+    printlnString (showInt snap)
+
+main : UIO Unit
+let main = do
+    let f <- fork spinThenRead
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

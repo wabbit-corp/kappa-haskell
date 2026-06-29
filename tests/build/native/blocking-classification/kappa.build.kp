@@ -1,0 +1,12 @@
+-- expect: BUILD_OK
+-- A binding classified as blocking requires rt-blocking. The native profile
+-- supports rt-blocking by routing the native action through the runtime
+-- blocking lane rather than running it directly on a scheduler worker.
+let buildConfig : BuildConfig = package { name = "blocking-classification"
+    , version = semver "1.0.0"
+    , sourceRoots = [sourceRoot "src"]
+    , fragmentAxes = []
+    , dependencies = []
+    , hostBindings = [nativeBinding { name = "blocking_shim", provides = [module "host.native.blocking_shim"], surface = symbolList [symbolDecl "wait" "blocking_wait" [] ctUnit], abi = cAbi, inputs = [classify blocking, shim ["shim.c"]], link = noLink, load = systemLoader }]
+    , targets = [executable { name = "app", backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }, fragments = tags [], main = module "app", modules = modulesUnder "app", dependencies = [], hostBindings = ["blocking_shim"] }]
+    }

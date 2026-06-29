@@ -1,0 +1,12 @@
+module lib.types
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+replace : (inout b : Box) -> UIO (1 b : Box)
+let replace (inout b : Box) : UIO (1 b : Box) =
+    pure (b = Full Token)

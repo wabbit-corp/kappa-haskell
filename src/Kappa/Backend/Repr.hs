@@ -342,7 +342,7 @@ patBinders = \case
 -- ── Static constructor layout ────────────────────────────────────────
 --
 -- 'CtorLayout' is the STATIC, compile-time-knowable shape of a constructor —
--- the classification the runtime's @kctor@ (runtime/kappart.c) seeds its
+-- the classification the runtime's @kctor@ (runtime/value.c) seeds its
 -- per-value packing from.  The runtime makes the FINAL per-VALUE call (a
 -- single-field ctor packs to @b011@ only if THAT value's field is itself a
 -- fitting immediate); this table records what the backends and the Stage-3/4
@@ -378,7 +378,7 @@ data CtorLayout
 -- caller computes them via 'scalarRep' on each field's head type); its LENGTH
 -- is the constructor's runtime arity.  The arity bound (≤ 2) and the
 -- "all fields immediate" gate mirror @kctor@'s @argc == 1@ / @argc == 2@
--- packing paths (runtime/kappart.c, UNBOXING Stage 1d/1e).
+-- packing paths (runtime/value.c, UNBOXING Stage 1d/1e).
 ctorLayout :: [Rep] -> CtorLayout
 ctorLayout fieldReps = case fieldReps of
   [] -> LayoutImmediate

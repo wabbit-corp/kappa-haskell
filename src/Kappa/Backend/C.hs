@@ -24,6 +24,7 @@
 module Kappa.Backend.C
   ( generateC
   , BackendError (..)
+  , backendUnsupported
   , backendDiagnostics
   , basePrims
     -- * Shared primitive registry (consumed by "Kappa.Backend.LLVM")
@@ -31,6 +32,10 @@ module Kappa.Backend.C
   , primEntries
   , primDirect
   , primRegistryDiagnostics
+  , suspenderGlobals
+  , suspenderGlobalsWith
+  , blockSuspends
+  , cpsEligible
     -- * §34.3.3 multi-shot backend legality (shared with "Kappa.Backend.LLVM")
   , multishotLegality
     -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
@@ -57,6 +62,7 @@ import Kappa.Backend.NativeFfi
   , wrapperCName
   , wrapperDefinition
   )
+import Kappa.Build.Types (FfiClass (..))
 import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
@@ -74,19 +80,26 @@ import Kappa.Ownership
 import qualified Kappa.PathScheme as P
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
-import System.Environment (lookupEnv)
-import System.IO (hPutStrLn, stderr)
-import System.IO.Unsafe (unsafePerformIO)
 
 -- | One reason the native backend cannot compile a definition: the global
 -- it occurred in, the unsupported construct, and a human detail.
 data BackendError = BackendError
   { beGlobal :: !GName
   , beSpan :: !Span
+  , beCode :: !Text
+  , beFamily :: !(Maybe Text)
   , beConstruct :: !Text
   , beDetail :: !Text
   }
   deriving stock (Eq, Show)
+
+backendUnsupported :: GName -> Span -> Text -> Text -> BackendError
+backendUnsupported g sp construct detail =
+  BackendError g sp "E_BACKEND_UNSUPPORTED" (Just "kappa-hs.backend.unsupported") construct detail
+
+backendFeatureMissing :: GName -> Span -> Text -> Text -> BackendError
+backendFeatureMissing g sp construct detail =
+  BackendError g sp "E_FEATURE_BACKEND_CAPABILITY_MISSING" (Just "kappa.feature.gated") construct detail
 
 -- | Render backend errors as structured diagnostics (§3.1): one
 -- @E_BACKEND_UNSUPPORTED@ per unsupported construct, citing the offending
@@ -95,7 +108,7 @@ backendDiagnostics :: [BackendError] -> Diagnostics
 backendDiagnostics = map one
   where
     one be =
-      diag SevError StageElaborate "E_BACKEND_UNSUPPORTED" (Just "kappa-hs.backend.unsupported")
+      diag SevError StageElaborate (beCode be) (beFamily be)
         (beSpan be)
         ( "the native backend cannot compile definition '"
             <> gnameText (beGlobal be)
@@ -120,12 +133,11 @@ data GenState = GenState
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBodies :: !(Map GName Term)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
-  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC Stage S1.0 (see "Kappa.Ownership"): the per-definition ownership side-table (owned/borrowed/last-use), carried verbatim from @csOwnership@ beside 'gsSuspenders'. At S1.0 it is the EMPTY map and NO consumer reads it — observe-only plumbing, exactly like the Stage-0 'CCtor'/'CMatch' annotations, so codegen is byte-identical.
-  , gsCurOwn :: !(Maybe OwnInfo) -- ^ Perceus RC Stage S2.1: the 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
+  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC side table (see "Kappa.Ownership"): per-definition binders, per-use last-use facts, and the S2.3b consume/read bit carried from @csOwnership@ beside 'gsSuspenders'. The OFF baseline ignores it; @KAPPA_PERCEUS_RC=1@ validates and emits RC operations from it.
+  , gsCurOwn :: !(Maybe OwnInfo) -- ^ The 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ and @oiUseConsumes@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
   , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
-  , gsRcEnabled :: !Bool -- ^ Perceus RC Stage S2.1: the master gate. Default OFF — the byte-identical baseline (the walk-and-lookup and its R-path assert are inert). A build flag / env toggle turns it ON for the validation run, where the walk-and-lookup ASSERTS every non-erased runtime 'CVar' resolves in @gsCurOwn@'s @oiUses@ but still EMITS NOTHING (no dup/drop) — so even ON the codegen output is unchanged. S2.2+ is where ON begins to emit ops.
-  , gsRcInErased :: !Bool -- ^ Perceus RC Stage S2.1: true while compiling inside a region "Kappa.Ownership"'s walk does NOT track — a 'CDo' body (opaque to the analysis, §1 carve-out / R-CDo) — so a 'CVar' there legitimately has no @oiUses@ entry and the R-path miss is TOLERATED rather than a loud path-bug. Default off.
-  , gsRcFindings :: ![Text] -- ^ Perceus RC Stage S2.1: the R-path validation log, populated ONLY when 'gsRcEnabled'. One entry per genuinely-suspicious walk-and-lookup MISS (a non-erased runtime 'CVar' whose threaded 'UseSite' path did not resolve and is not in a tolerated region) — the path-threading bug signal. Kept SEPARATE from 'gsErrs' so it never fails the build; the corpus driver inspects it / it is dumped under the ON validation run. Empty (and never read) under the default OFF baseline → byte-identical.
+  , gsRcEnabled :: !Bool -- ^ Perceus RC master gate. Default OFF — the byte-identical baseline. A build flag / env toggle turns it ON for the S2 validation/emission run: every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
+  , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path or missing consume/read bit for a resolved use). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -139,11 +151,7 @@ data GenState = GenState
   , gsDefer :: ![(Text, Text)] -- ^ §18.7 TAIL-scope defer frames (do-block + tail-if-branch), innermost first; flushed after the tail IO action via kio_finally
   , gsScopeDefers :: ![(Text, Text)] -- ^ §18.7 NESTED-scope defer frames (loop body / non-tail if branch), innermost first; flushed inline at scope exit + break/continue/return crossings
   , gsDeferLabels :: ![(Text, (Text, Text))] -- ^ §18.7 label ↦ (arr,cnt) frame of each enclosing LABELED do-scope (explicit `do`/loop), innermost first; a `defer@L` registers onto the frame of the scope labeled L (which may be outer) instead of the current scope.
-  , gsUsingReleases :: ![[Text]] -- ^ §19.5/§32.2.6 interrupt-release stack: one list of `using` release C-expressions per currently-open framed synchronous scope, innermost scope first (within a scope, registration order). A §32.2.6 loop-back-edge safe-point ABORT runs these LIFO (innermost release first) — mirroring the interpreter's `using`-via-`onException`, which runs the release on the interrupt-unwind path. Plain `defer`s are NOT here: the interpreter runs them ONLY via the exit queue (normal/abrupt completion), never on async interrupt, so they must NOT run at a safe-point abort.
-  , gsScalars :: !(Map Int (Text, Text)) -- ^ P0.2: in a scalarized var loop, the de-Bruijn index (relative to the push-free loop body) of each scalarized Int var -> (int64 C local, retained ref C-name). Consulted by the read/write peephole only while 'gsScalarRegion'.
-  , gsScalarRegion :: !Bool -- ^ P0.2: true only while emitting the SCALAR copy of a var loop, so the readRef/writeRef/KAssign peephole reads/writes the int64 local instead of kref_get/kref_set.
-  , gsCpsRefRegion :: !Bool -- ^ CPS loop family (§4 R7): true while building the @cond@/@body@ action trees of a SUSPENDING @while@ (or any CPS re-run scope). A @readRef@ then lowers to the @OP_READ_REF@ action NODE (a RUN-TIME cell access the CK-machine performs each iteration) rather than a build-time @kref_get@ captured once — so a re-run body never reads a stale snapshot, and read-after-write within an iteration is preserved.
-  , gsI64Escape :: !Text -- ^ the C statement spliced by scalarArith on int overflow / INT64_MIN: @*kovf = 1; return 0;@ for an unboxed scalar worker, or @flush all scalars; goto <boxed>;@ for a scalar var loop.
+  , gsI64Escape :: !Text -- ^ The C statement spliced by scalarArith on int overflow / INT64_MIN in an unboxed scalar worker: @*kovf = 1; return 0;@.
   , gsCollectCtors :: !(Set Text) -- ^ LR2: gKeys of USER constructors referenced (constructed or matched); builtins use the fixed @KCT_*@ ids so they are NOT collected. After codegen, @assemble@ assigns each a @KCT_USER_BASE+i@ id (sorted, deterministic) and emits a @KT_<mangle>@ enum.
   , gsCollectVars :: !(Set Text) -- ^ LR2: §13 variant member-identity tags referenced (injected or matched); @assemble@ emits a 0-based @KVT_<mangle>@ enum (variants are never runtime-built, so no fixed-id constraint).
   }
@@ -160,32 +168,6 @@ data LoopCtx = LoopCtx
   }
 
 type Gen = State GenState
-
--- | Perceus RC Stage S2.1: the master gate for the (currently emit-nothing)
--- ownership walk-and-lookup, read once from the @KAPPA_PERCEUS_RC@ environment
--- variable. OFF (the default, and any value other than @1@\/@on@\/@true@) is the
--- BYTE-IDENTICAL baseline: the walk-and-lookup and its R-path assert are inert.
--- ON (@KAPPA_PERCEUS_RC=1@) runs the walk-and-lookup so the R-path assert
--- validates the path-threading against the analysis side-table over the corpus —
--- but still emits no dup/drop, so even ON the codegen output is unchanged at S2.1.
---
--- Read via 'unsafePerformIO' (a build-time debug toggle, not a program input) so
--- the pure 'generateC' stays pure; the @NOINLINE@ pins a single evaluation.
-rcEnabledFromEnv :: Bool
-rcEnabledFromEnv = unsafePerformIO $ do
-  -- The name is ASSEMBLED (not a single @"KAPPA_…"@ literal) so the §3.1.2A
-  -- diagnostic-code registry scanner ('registryComplete' in the test suite) does
-  -- not mistake this env-var name for an unregistered @KAPPA_@ diagnostic code —
-  -- the same trick the @KAPPA_BACKEND@/@KAPPA_CC@ reads use in "Kappa.Backend.Driver".
-  mv <- lookupEnv ("KAPPA" <> "_PERCEUS_RC")
-  pure $ case fmap (map toLowerAscii) mv of
-    Just "1" -> True
-    Just "on" -> True
-    Just "true" -> True
-    _ -> False
-  where
-    toLowerAscii c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
-{-# NOINLINE rcEnabledFromEnv #-}
 
 freshN :: Text -> Gen Text
 freshN base = do
@@ -250,18 +232,6 @@ withSpineArg k j act = do
   modify' $ \st -> st {gsPath = saved}
   pure r
 
--- | Run an action inside a region "Kappa.Ownership" does not track (a 'CDo'
--- body), so the S2.1 walk-and-lookup TOLERATES a 'CVar' miss there (R-CDo). The
--- flag is restored afterwards (nested do-blocks compose). Inert under the OFF
--- baseline (it only gates the already-inert 'rcWalkLookupVar').
-rcInErased :: Gen a -> Gen a
-rcInErased act = do
-  saved <- gets gsRcInErased
-  modify' $ \st -> st {gsRcInErased = True}
-  r <- act
-  modify' $ \st -> st {gsRcInErased = saved}
-  pure r
-
 -- | Run an action with the given current-definition 'OwnInfo' and root path in
 -- scope (the body-entry seam), restoring both afterwards. @prefix@ is the
 -- reversed path from the global's body root down to the term about to be
@@ -284,32 +254,47 @@ withBodyOwn own prefix act = do
 curOwnInfo :: GName -> Gen (Maybe OwnInfo)
 curOwnInfo g = Map.lookup g <$> gets gsOwnership
 
--- | The S2.1 WALK-AND-LOOKUP at a 'CVar' occurrence (PERCEUS-S2-PLAN (b.2)/(d)).
--- INERT unless 'gsRcEnabled'. When on: build the 'UseSite' for this occurrence
--- (the current global plus @reverse gsPath@) and look it up in 'gsCurOwn'@'s
--- @oiUses@. EMITS NOTHING — no dup/drop; the codegen output is unchanged. Its
--- sole job is the R-path ASSERT: every NON-ERASED runtime 'CVar' MUST resolve.
+-- | Fetch the ownership table for a runtime body about to be compiled. In RC
+-- validation mode, absence is a hard finding: compiling without the side-table
+-- would make every CVar in the body fail open.
+requireOwnInfo :: GName -> Gen (Maybe OwnInfo)
+requireOwnInfo g = do
+  own <- curOwnInfo g
+  enabled <- gets gsRcEnabled
+  case (enabled, own) of
+    (True, Nothing) ->
+      rcRecordFinding $
+        rcUseSiteMiss
+          g
+          Nothing
+          []
+          "no OwnInfo entry for compiled runtime body"
+    _ -> pure ()
+  pure own
+
+-- | The Perceus RC walk-and-lookup at a 'CVar' occurrence
+-- (PERCEUS-S2-PLAN (b.2)/(d)). INERT unless 'gsRcEnabled'. When on: build the
+-- 'UseSite' for this occurrence (the current global plus @reverse gsPath@) and
+-- require both @oiUses@ and @oiUseConsumes@ entries in 'gsCurOwn'. This is the
+-- validation guard for the dup/drop decisions emitted elsewhere in S2.
 --
---   * A resolved 'UseSite' (any 'UseKind') is the expected case — the path
---     threading reached the same structural node the analysis keyed.
---   * A 'Nothing' is TOLERATED ONLY for an ERASED-argument-position 'CVar': an
---     @eraseQ0Args@ Q0 argument is rewritten to @CSort 0@ (a non-'CVar') during
---     'compileApp', so the only 'CVar's that survive into codegen inside an
---     erased argument never get here — but a 'CVar' that the analysis itself
---     classified as type-level (an untracked binder) legitimately has no
---     @oiUses@ entry, and a binder bound INSIDE a 'CDo' (opaque to the analysis)
---     likewise has none. These are the R-erase / R-CDo carve-outs.
---
--- At S2.1 we do not yet have the per-occurrence erased-vs-runtime discriminator
--- the emission stages (S2.2+) will use, so a tolerated MISS (a type-level /
--- erased-arg / CDo occurrence with no @oiUses@ entry) is logged to the SEPARATE
--- 'gsRcFindings' channel — never 'gsErrs', so it cannot fail the build and the
--- ON validation run still produces every executable byte-identically. The R-path
--- SUCCESS criterion is "zero MISattribution": every 'CVar' the analysis DID key
--- resolves at the threaded path, which is exactly what a divergent scheme would
--- break. The findings count being the known type-level/CDo residue (not growing
--- with a code change that did not add such occurrences) is the path-stability
--- signal. See 'gsRcFindings'.
+--   * A resolved 'UseSite' with a consume/read bit is the expected case — the
+--     path threading reached the same structural node the analysis keyed.
+--   * A missing @oiUses@ or @oiUseConsumes@ entry is a hard validation miss.
+--     Falling back to "no side-table fact" could silently suppress a required S2
+--     ownership action, so the ON build fails closed.
+rcRecordFinding :: Text -> Gen ()
+rcRecordFinding msg =
+  modify' $ \st -> st {gsRcFindings = msg : gsRcFindings st}
+
+rcUseSiteMiss :: GName -> Maybe Int -> [Int] -> Text -> Text
+rcUseSiteMiss g mi path detail =
+  gKey g
+    <> maybe "" (\i -> " CVar#" <> T.pack (show i)) mi
+    <> " @" <> T.pack (show (reverse path))
+    <> ": "
+    <> detail
+
 rcWalkLookupVar :: Int -> Gen ()
 rcWalkLookupVar i = do
   enabled <- gets gsRcEnabled
@@ -318,69 +303,94 @@ rcWalkLookupVar i = do
     case mown of
       Nothing -> pure () -- no per-definition table in scope (CAF prologue / lifted helper)
       Just own -> do
-        inErased <- gets gsRcInErased
-        unless inErased $ do
-          g <- gets gsCur
-          path <- gets gsPath
-          let us = UseSite g (reverse path)
-          case Map.lookup us (oiUses own) of
-            Just _ -> pure () -- resolved: the threaded path matches the analysis key
-            Nothing ->
-              -- Unresolved outside a CDo region. TOLERATED at S2.1: a 'CVar' that
-              -- the analysis classified as type-level (an untracked binder) or one
-              -- in a codegen-restructured region the structural path does not bridge
-              -- (an erased-arg position, a peephole/eta rewrite) legitimately has no
-              -- oiUses entry — R-erase. Logged to the non-failing findings channel so
-              -- the validation run can see it; a GROWING residue from a path-scheme
-              -- edit would flag a divergence. (Over the native corpus this set is
-              -- empty: every runtime CVar resolves.)
-              modify' $ \st ->
-                st
-                  { gsRcFindings =
-                      ( gKey g
-                          <> " CVar#" <> T.pack (show i)
-                          <> " @" <> T.pack (show (reverse path))
-                          <> ": no oiUses entry (type-level/erased/restructured — tolerated)"
-                      )
-                        : gsRcFindings st
-                  }
+        g <- gets gsCur
+        path <- gets gsPath
+        let us = UseSite g (reverse path)
+        case Map.lookup us (oiUses own) of
+          Just _
+            | Map.member us (oiUseConsumes own) -> pure () -- resolved: the threaded path and consume/read bit match the analysis key
+            | otherwise ->
+                rcRecordFinding $
+                  rcUseSiteMiss
+                    g
+                    (Just i)
+                    path
+                    "no oiUseConsumes entry for resolved oiUses key"
+          Nothing ->
+            rcRecordFinding $
+              rcUseSiteMiss
+                g
+                (Just i)
+                path
+                "no oiUses entry"
 
--- | The S2.2 emission decision at a 'CVar' occurrence: the 'UseKind' the analysis
+-- | The S2.2/S2.3b emission decision at a 'CVar' occurrence: the 'UseKind' the analysis
 -- assigned to THIS occurrence (keyed by 'gsCur' + @reverse gsPath@), or 'Nothing'
--- when RC is off / no table is in scope / the occurrence is inside a 'CDo' region
--- (the §1 carve-out — never dup/drop there) / the path does not resolve (a
--- type-level / erased / restructured occurrence, the tolerated R-erase residue).
--- A 'NonLast' verdict is the sole trigger for a @kdup@ wrap (the value is shared
--- downstream); 'LastUse' is a move (no dup), 'Borrowed' is a non-consuming read
--- (no dup). Inert under the OFF baseline (returns 'Nothing' without a lookup).
+-- when RC is off / no table is in scope / either side-table fact is absent.
+-- A consuming 'NonLast' verdict triggers a @kdup@ wrap (the value is shared
+-- downstream); a read-only 'NonLast' does not, because the consumer keeps no
+-- reference to balance. 'LastUse' is a move/read with no dup, 'Borrowed' is a
+-- non-consuming read. Inert under the OFF baseline (returns 'Nothing' without a
+-- lookup).
 rcUseKindHere :: Gen (Maybe UseKind)
 rcUseKindHere = do
+  fmap fst <$> rcUseInfoHere
+
+-- | The S2.3b use verdict plus the consume/read bit for THIS occurrence. The
+-- consume bit is required whenever a use verdict is present; validation records
+-- missing bits as side-table misses, and emission declines to act without both
+-- facts.
+rcUseInfoHere :: Gen (Maybe (UseKind, Bool))
+rcUseInfoHere = do
   enabled <- gets gsRcEnabled
   if not enabled
     then pure Nothing
     else do
       mown <- gets gsCurOwn
-      inErased <- gets gsRcInErased
       case mown of
-        Just own | not inErased -> do
+        Just own -> do
           g <- gets gsCur
           path <- gets gsPath
-          pure (Map.lookup (UseSite g (reverse path)) (oiUses own))
+          let us = UseSite g (reverse path)
+          pure $ do
+            k <- Map.lookup us (oiUses own)
+            consumes <- Map.lookup us (oiUseConsumes own)
+            pure (k, consumes)
         _ -> pure Nothing
 
 -- | Wrap a 'CVar' use-expression in @kdup(...)@ when the analysis classified the
--- occurrence as 'NonLast' (S2.2 / b.2): the value is used again downstream, so it
--- is SHARED here and its rc must be incremented. 'kdup' skips immediates (its
--- @kis_imm@ guard), so an immediate-valued binder wrap is a runtime no-op. Every
--- other verdict ('LastUse' = move, 'Borrowed' = read, 'Nothing' = off/erased/CDo)
--- leaves the bare expression. Under the Boehm differential backstop the increment
--- maintains rc but frees nothing, so program OUTPUT is byte-identical.
+-- occurrence as a consuming 'NonLast' (S2.2 / b.2 plus S2.3b): the value is used
+-- again downstream and the current consumer receives its own reference. Read-only
+-- 'NonLast' occurrences (projection bases, borrowed call args) leave the bare
+-- expression, since no consumer-side drop will balance a dup. 'kdup' skips
+-- immediates (its @kis_imm@ guard), so an immediate-valued binder wrap is a
+-- runtime no-op.
 rcDupVarUse :: Text -> Gen Text
 rcDupVarUse e = do
-  mk <- rcUseKindHere
-  pure $ case mk of
-    Just NonLast -> "kdup(" <> e <> ")"
+  mi <- rcUseInfoHere
+  pure $ case mi of
+    Just (NonLast, True) -> "kdup(" <> e <> ")"
     _ -> e
+
+-- | Conservative S2.3b ownership result check for a flat @let@ initializer.
+-- Scope-close drops are only safe when the local is known to hold an owned
+-- reference. Projection/call results can be borrowed until result ownership is
+-- modeled, so they stay leak-biased.
+rcTermProducesOwnedHere :: Term -> Gen Bool
+rcTermProducesOwnedHere = \case
+  CVar _ -> do
+    mi <- rcUseInfoHere
+    pure $ case mi of
+      Just (LastUse, True) -> True
+      Just (NonLast, True) -> True
+      _ -> False
+  CCtor {} -> pure True
+  CRecordV {} -> pure True
+  CInject {} -> pure True
+  CThunkE {} -> pure True
+  CLazyE {} -> pure True
+  CSealE _ e -> withChild P.childPos (rcTermProducesOwnedHere e)
+  _ -> pure False
 
 -- | The S2.3 drop DECISION for a binder introduced at the CURRENT 'gsPath' (its
 -- 'BinderId' is @gsCur@ + @reverse gsPath@) — the seam where the binder node is
@@ -391,20 +401,17 @@ rcDupVarUse e = do
 --   * the binder is 'boDroppable' (@0@\/@≤1@\/@ω@ — carries no consumption
 --     obligation) and NOT 'boBorrowed' (a borrowed value is the caller's; the
 --     callee never drops it — §1\/§3); AND
---   * the binder has NO 'LastUse' occurrence anywhere in its scope ('oiBinderUses'
---     holds only 'NonLast'\/'Borrowed', or the binder is unused). A 'LastUse'
---     MOVES the binder's owning reference to a consumer, so the binder no longer
---     holds it — dropping there is the DOUBLE-COUNT the underflow assert catches.
---     This is the self-balancing core: a no-'LastUse' binder still holds exactly
---     the one reference its allocation\/NonLast-dups account for, and the single
---     drop returns it. (Conservative on a branch that OMITS a binder some sibling
---     branch consumes at 'LastUse': we do NOT drop — a soft leak Boehm reclaims —
---     rather than risk an underflow on the consuming branch. The per-arm seam in
---     'consumeAlt' still catches the binder dropped on arms that never use it.)
+--   * the binder has NO 'LastUse' occurrence anywhere in its scope
+--     ('oiBinderUses' holds no 'LastUse'). A 'LastUse' may be a consuming move
+--     or a non-consuming read (projection base, borrowed call arg). Until S2
+--     models ownership of borrowed projection results, scope-close drops stay on
+--     the conservative all-last-use rule so a borrowed field cannot escape after
+--     its owner is dropped. Branches that omit a binder some sibling branch uses
+--     still leak softly under Boehm rather than risk an underflow; the later
+--     per-path drop stage will make that arm-local fact explicit.
 --
 -- Inert under the OFF baseline (returns 'False' without a lookup), so codegen is
--- byte-identical. 'Nothing' table / a 'CDo' region (§1 carve-out) also yields
--- 'False' (no drop inside an opaque do-block — the ExitStack drain owns those).
+-- byte-identical. A missing ownership table yields 'False'.
 rcBinderDroppableHere :: Gen Bool
 rcBinderDroppableHere = do
   enabled <- gets gsRcEnabled
@@ -412,9 +419,8 @@ rcBinderDroppableHere = do
     then pure False
     else do
       mown <- gets gsCurOwn
-      inErased <- gets gsRcInErased
       case mown of
-        Just own | not inErased -> do
+        Just own -> do
           g <- gets gsCur
           path <- gets gsPath
           let bid = BinderId g (reverse path)
@@ -439,9 +445,8 @@ rcPatSlotDroppableHere k = do
     then pure False
     else do
       mown <- gets gsCurOwn
-      inErased <- gets gsRcInErased
       case mown of
-        Just own | not inErased -> do
+        Just own -> do
           g <- gets gsCur
           path <- gets gsPath
           let bid = BinderId g (reverse (P.patSlotPos k : path))
@@ -479,23 +484,19 @@ rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
 --     incremented reference it received). NEVER drop for 'Borrowed' — the caller
 --     still owns the value (§1\/§3 borrow invariant), and a @kdrop@ here would be
 --     the decrement-below-floor the underflow assert exists to catch.
---   * a __'CCtor'__\/__'CApp'__ scrutinee — a FRESH owning value (@mkPair a b@,
---     a call result): rc==1, no other owner, dies at the match ⇒ ALWAYS drop.
---   * any __other__ shape (a 'CProj'\/'CForceE'\/… whose head is a borrowing
---     projection returning a non-owned reference, or an unresolvable 'CVar') —
---     do NOT drop: dropping a borrowed-out reference would underflow. A soft leak
---     Boehm reclaims; tighten later once the projection-result ownership flag
---     (S2.3b §c) lands.
+--   * a __'CCtor'__ scrutinee — a FRESH owning value (@mkPair a b@): rc==1, no
+--     other owner, dies at the match ⇒ ALWAYS drop.
+--   * any __other__ shape (a 'CApp' call result, 'CProj'\/'CForceE'\/… whose head
+--     may be a borrowing projection returning a non-owned reference, or an
+--     unresolvable 'CVar') — do NOT drop: dropping a borrowed-out reference would
+--     underflow. A soft leak Boehm reclaims; tighten later once result ownership
+--     is modeled.
 --
--- Inert under the OFF baseline and inside a 'CDo' region (§1 carve-out — a
--- K_FGN\/resource scrutinee reachable from a live ExitStack must never be
--- cell-dropped; the ExitStack drain owns its lifetime), so codegen is
--- byte-identical there.
+-- Inert under the OFF baseline, so codegen is byte-identical there.
 rcScrutDropDecision :: Term -> Gen Bool
 rcScrutDropDecision scrut = do
   enabled <- gets gsRcEnabled
-  inErased <- gets gsRcInErased
-  if not enabled || inErased
+  if not enabled
     then pure False
     else case scrut of
       CVar _ -> do
@@ -506,11 +507,10 @@ rcScrutDropDecision scrut = do
           Just LastUse -> True
           Just NonLast -> True
           _ -> False
-      -- a fresh owning allocation / call result: rc==1, dies at the match.
+      -- a fresh owning allocation: rc==1, dies at the match.
       CCtor {} -> pure True
-      CApp {} -> pure True
-      -- a borrowing projection (kproj/kctor_arg/…) or any other non-owning shape:
-      -- the value is borrowed from a parent, never owned here — do not drop.
+      -- Calls and projections can return borrowed references. Without result
+      -- ownership metadata, do not drop them as match-owned cells.
       _ -> pure False
 
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
@@ -542,8 +542,7 @@ rcScrutDropDecision scrut = do
 rcClassifyCallBoundary :: GName -> Gen ()
 rcClassifyCallBoundary g = do
   enabled <- gets gsRcEnabled
-  inErased <- gets gsRcInErased
-  when (enabled && not inErased) $ do
+  when enabled $ do
     globals <- gets gsGlobals
     ctx <- gets gsEvalCtx
     let convs = case Map.lookup g globals of
@@ -579,7 +578,7 @@ unsupported construct detail = do
   g <- gets gsCur
   sites <- gets gsDeclSites
   let sp = Map.findWithDefault noSpan g sites
-  modify' $ \st -> st {gsErrs = BackendError g sp construct detail : gsErrs st}
+  modify' $ \st -> st {gsErrs = backendUnsupported g sp construct detail : gsErrs st}
   pure "kunit()"
 
 -- | A construct that is provably NOT a runtime value of an accepted,
@@ -801,7 +800,7 @@ basePrims =
     , "__stringWords", "__stringSentences"
       -- §29.1 std.atomic bitwise + repr-equality + §29.3 std.hash FNV-1a
     , "__intAnd", "__intOr", "__intXor", "__atomicRepEq"
-      -- §29.1 std.atomic lock-free cell ops -> krt2_atomic_* (runtime/atomic.c)
+      -- §29.1 std.atomic boxed mutex-protected cell ops -> krt2_atomic_* (runtime/atomic.c)
     , "__newAtomicRef", "__atomicLoad", "__atomicStore", "__atomicExchange"
     , "__atomicCompareExchange", "__atomicFetchAdd", "__atomicFetchSub"
     , "__atomicFetchAnd", "__atomicFetchOr", "__atomicFetchXor"
@@ -818,10 +817,11 @@ basePrims =
     , "__reraiseCause" -- §18.1.4 re-raise a full Cause; lowered to a krt2_reraise node (compileAppGlob), no primEntry
     , "__race", "__timeout" -- §18.1.6 lowered to krt2_race/krt2_timeout nodes (compileAppGlob), no primEntry
     , "withScope", "__interruptWait", "__interruptNoWait", "__interruptForkAny" -- §19.5/§18.1.4 lowered to krt2_* nodes (compileAppGlob)
+    , "blocking" -- §18.1.11 rt-blocking source bridge; lowered to krt2_blocking (compileAppGlob)
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
-    , "newRef", "readRef", "writeRef"
+    , "newRef", "readRef", "writeRef", "__ioNewRef", "__ioReadRef", "__ioWriteRef"
       -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array (kpf_io___newArray/...)
     , "__newArray", "__arrayRead", "__arrayWrite", "__arrayLen"
       -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
@@ -842,10 +842,13 @@ basePrims =
 -- @ffiPrims@ are the additional primitive names the linked FFI runtime
 -- implements (empty for the no-FFI build).  Returns @Left errs@ when any
 -- reachable definition uses an unsupported construct (the caller renders
--- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success.
-generateC :: CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either [BackendError] Text
-generateC cs mainG ffiPrims hostSyms =
-  let st0 =
+-- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success. When
+-- Perceus RC validation is enabled, the result also carries the R-path findings
+-- so the IO driver can report them on both successful and failed builds.
+generateC :: Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
+generateC rcEnabled cs mainG ffiPrims hostSyms =
+  let evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
+      st0 =
         GenState
           { gsFresh = 0
           , gsStmts = []
@@ -858,14 +861,13 @@ generateC cs mainG ffiPrims hostSyms =
           , gsErrs = []
           , gsCur = mainG
           , gsGlobals = csGlobals cs
-          , gsEvalCtx = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
+          , gsEvalCtx = evalCtx0
           , gsBodies = csCoreBodies cs
-          , gsSuspenders = suspenderGlobals (csCoreBodies cs)
+          , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
           , gsOwnership = csOwnership cs
           , gsCurOwn = Nothing
           , gsPath = []
-          , gsRcEnabled = rcEnabledFromEnv
-          , gsRcInErased = False
+          , gsRcEnabled = rcEnabled
           , gsRcFindings = []
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
@@ -880,47 +882,39 @@ generateC cs mainG ffiPrims hostSyms =
           , gsDefer = []
           , gsScopeDefers = []
           , gsDeferLabels = []
-          , gsUsingReleases = []
-          , gsScalars = Map.empty
-          , gsScalarRegion = False
-          , gsCpsRefRegion = False
-          , gsI64Escape = "*kovf = 1; return 0;"
+          , gsI64Escape = "*kovf = KRT2_SCALAR_OVERFLOW; return 0;"
           , gsCollectCtors = Set.empty
           , gsCollectVars = Set.empty
           }
       final = execState (drainQueue >> emitMain mainG) st0
       -- §18.1.17/§27.6/§34.3.3 Stage-4a backend legality: this native backend's
-      -- KK_HANDLER runtime is ONE-SHOT (it omits `rt-multishot`: no persistent
+      -- KK_HANDLER runtime is ONE-SHOT (it omits `rt-multishot-effects`: no persistent
       -- copy-on-resume of a captured segment), so a reachable MULTI-SHOT effect
       -- operation is rejected at compile time rather than miscompiled to
       -- one-shot semantics.  The interpreter (the differential oracle) supports
       -- multi-shot, so this gate is backend-local — it does not fire under `run`.
       multishotErrs = multishotLegality cs (gsEmitted final)
-   in -- Perceus RC S2.1: under the ON validation gate, surface the R-path
-      -- walk-and-lookup result on stderr (a debug diagnostic — it does NOT touch
-      -- the returned C, so the .kappa.c stays byte-identical; the corpus driver
-      -- greps this). Inert under the OFF baseline (the findings list is empty and
-      -- the action is forced only when ON).
-      rcReportFindings (gsRcEnabled final) (reverse (gsRcFindings final)) `seq`
-        case reverse (gsErrs final) ++ multishotErrs of
-          [] -> Right (assemble final)
-          errs -> Left errs
+      rcFindings = reverse (gsRcFindings final)
+      rcErrs = rcFindingErrors (gsRcEnabled final) mainG (Map.findWithDefault noSpan mainG (csDeclSites cs)) rcFindings
+      mRcFindings = if gsRcEnabled final then Just rcFindings else Nothing
+   in case reverse (gsErrs final) ++ multishotErrs ++ rcErrs of
+        [] -> Right (assemble final, mRcFindings)
+        errs -> Left (errs, mRcFindings)
 
--- | Perceus RC S2.1: print the R-path walk-and-lookup result to stderr under the
--- ON validation gate. A summary line (@perceus-rc:@) plus, when present, each
--- tolerated-miss finding. Returns @()@; called via 'seq' so it fires once during
--- a generation under ON and never under OFF (the guard short-circuits before any
--- 'unsafePerformIO'). The C output is untouched — this is a side diagnostic only.
-rcReportFindings :: Bool -> [Text] -> ()
-rcReportFindings False _ = ()
-rcReportFindings True findings =
-  unsafePerformIO $ do
-    hPutStrLn stderr $
-      "perceus-rc: R-path walk-and-lookup complete; "
-        <> show (length findings)
-        <> " tolerated miss(es) (type-level/erased-arg/CDo — zero misattribution)"
-    mapM_ (hPutStrLn stderr . ("perceus-rc:   " <>) . T.unpack) findings
-{-# NOINLINE rcReportFindings #-}
+rcFindingErrors :: Bool -> GName -> Span -> [Text] -> [BackendError]
+rcFindingErrors False _ _ _ = []
+rcFindingErrors True _ _ [] = []
+rcFindingErrors True mainG sp findings =
+  [ backendUnsupported
+      mainG
+      sp
+      "Perceus RC R-path ownership lookup"
+      ( "KAPPA_PERCEUS_RC=1 found "
+          <> T.pack (show (length findings))
+          <> " ownership side-table path miss(es); S2.3b validation requires zero so a path drift cannot silently suppress dup/drop decisions. First misses: "
+          <> T.intercalate " | " (take 5 findings)
+      )
+  ]
 
 -- | Backend legality (§34.3.3): a reachable @__EffOp@ node naming a multi-shot
 -- operation is rejected, because the one-shot KK_HANDLER runtime cannot persist
@@ -931,9 +925,9 @@ multishotLegality :: CheckState -> Set GName -> [BackendError]
 multishotLegality cs emitted
   | Set.null multi = []
   | otherwise =
-      [ BackendError g (Map.findWithDefault noSpan g (csDeclSites cs)) "multi-shot effect operation"
+      [ backendFeatureMissing g (Map.findWithDefault noSpan g (csDeclSites cs)) "multi-shot effect operation"
           ( "the operation '" <> opn
-              <> "' declares a multi-shot resumption (quantity ω / 1+), which requires the 'rt-multishot' runtime capability the native backend does not advertise; declare it one-shot (quantity 1, the default) to resume at most once (§18.1.17, §27.6, §34.3.3)" )
+              <> "' declares a multi-shot resumption (quantity ω / 1+), which requires the 'rt-multishot-effects' runtime capability the native backend does not advertise; declare it one-shot (quantity 1, the default) to resume at most once (§18.1.17, §27.6, §34.3.3)" )
       | g <- Set.toList emitted
       , Just body <- [Map.lookup g (csCoreBodies cs)]
       , opn <- Set.toList (termMultishotOps multi body)
@@ -1044,7 +1038,7 @@ emitGlobal g = do
           (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
           _ -> do
             -- Perceus RC S2.1: a CAF body sits at the structural root (empty path).
-            own <- curOwnInfo g
+            own <- requireOwnInfo g
             (stmts, e) <- withBodyOwn own [] (captured "0" (compile tm))
             finishGlobal ident stmts e
 
@@ -1153,7 +1147,7 @@ compileFunctionGlobal g n inner = do
   -- including the @n@ leading 'CLam's the worker frame just stripped, so @inner@
   -- sits at the structural path @replicate n lamBodyPos@ from the body root — seed
   -- 'gsPath' with that prefix so the walk-and-lookup keys land at the right offset.
-  own <- curOwnInfo g
+  own <- requireOwnInfo g
   (bodyStmts, ()) <-
     withBodyOwn own (replicate n P.lamBodyPos) $
       captured "kw_env" (consume (SinkTail ti) inner)
@@ -1355,7 +1349,7 @@ scalarBodyMaySuspend susp = go
     -- are then walked too (a suspending op can hide in an argument position).
     -- Only an APPLICATION counts as a call here — a bare 'CVar'/'CGlob' LEAF
     -- (a value read, not an invocation) cannot itself park, so it is never
-    -- flagged (else every scalar var read would falsely read as may-suspend).
+    -- flagged (else every scalar local read would falsely read as may-suspend).
     headSusp t = case t of
       CApp {} -> case fst (spineOf t) of
         CGlob h -> isSuspendingPrim h || h `Set.member` susp
@@ -1472,14 +1466,8 @@ repScalarKind = \case
 -- value binders only), this walks the WHOLE telescope, since an erased
 -- argument can sit at an implicit OR explicit position.
 -- The pure core ('erasedSpinePositionsP' / 'eraseQ0ArgsP') is exported so the
--- LLVM backend ("Kappa.Backend.LLVM") shares the SAME erasure verdict (its 'Gen'
--- monad is a distinct type, so it cannot call the monadic wrappers — but it has
--- the same 'gsGlobals' / 'gsEvalCtx' to feed the pure version).
-erasedSpinePositions :: GName -> Gen [Bool]
-erasedSpinePositions g = do
-  globals <- gets gsGlobals
-  ctx <- gets gsEvalCtx
-  pure (erasedSpinePositionsP globals ctx g)
+-- LLVM backend ("Kappa.Backend.LLVM") shares the SAME erasure verdict with its
+-- own 'gsGlobals' / 'gsEvalCtx'.
 
 -- | The pure spine-erasure analysis (see 'erasedSpinePositions').
 -- FAIL-SAFE: an unknown global, or a 'gdType' that does not 'force' to a 'VPi'
@@ -1783,6 +1771,7 @@ compileScalarWorker g pks ret inner = do
   let fn =
         T.unlines $
           [ "static " <> cScalarTy ret <> " " <> worker <> "(" <> paramDecls <> ") {"
+          , "  int64_t kspc = KRT2_SP_QUANTUM;"
           , "  while (1) {"
           ]
             ++ map ("    " <>) bodyStmts
@@ -1839,6 +1828,7 @@ scalarTail g pks ret ps env dks term = case term of
           emit (cty <> " " <> t <> " = " <> ae <> ";")
           pure t
         forM_ (zip ps temps) $ \(p, t) -> emit (p <> " = " <> t <> ";")
+        emitScalarWorkerSafepoint
         emit "continue;"
     | otherwise -> do
         e <- scalarExpr g pks ret env dks ret term
@@ -1854,32 +1844,11 @@ letScalarKind g pks dks ret rhs = do
   mk <- scalarKindOf g pks dks ret rhs
   pure (maybe ret id mk)
 
--- | P0.2: if @term@ is a read of a scalarized var (@__runIO (readRef <var>)@,
--- the elaborator's auto-deref) while emitting the scalar loop region, the
--- int64 C local that shadows it; else 'Nothing'.  (For an unboxed scalar
--- worker 'gsScalarRegion' is false, so this never fires there.)
-scalarReadOf :: Term -> Gen (Maybe Text)
-scalarReadOf term = do
-  region <- gets gsScalarRegion
-  if not region
-    then pure Nothing
-    else case runIOSplice term of
-      Just action -> case spineOf action of
-        (CGlob h, sargs) -> do
-          mp <- globPrimName h
-          case (mp, [a | (Expl, a) <- sargs]) of
-            (Just "readRef", [CVar idx]) -> do
-              sc <- gets gsScalars
-              pure (fst <$> Map.lookup idx sc)
-            _ -> pure Nothing
-        _ -> pure Nothing
-      Nothing -> pure Nothing
-
--- | Compile a scalar-expressible value: a scalarized var read (P0.2), a
--- literal, a var, an arith op (int ops overflow-escaped, double ops plain
--- IEEE, @intToDouble@ a cast), or a (non-tail) self-call (whose @kovf@ is
--- propagated immediately).  Each int op that overflows sets @*kovf@ (or runs
--- 'gsI64Escape') and bails at once — never a wrapped value.
+-- | Compile a scalar-expressible value: a literal, a var, an arith op (int ops
+-- overflow-escaped, double ops plain IEEE, @intToDouble@ a cast), or a
+-- (non-tail) self-call (whose @kovf@ is propagated immediately). Each int op
+-- that overflows sets @*kovf@ (or runs 'gsI64Escape') and bails at once —
+-- never a wrapped value.
 -- | Worker-side unbox of a boxed value to a scalar: the worker's escape flag is
 -- the @int *kovf@ parameter (already a pointer), so pass it directly (unlike
 -- 'unboxScalar' at a call site, which takes @&@ of a local int).
@@ -1888,16 +1857,12 @@ unboxWorker KInt64 fb = "kunbox_i64(" <> fb <> ", kovf)"
 unboxWorker KDouble fb = "kunbox_dbl(" <> fb <> ", kovf)"
 
 -- | Compile a scalar-expressible value for the demanded scalar kind @dk@: a
--- scalarized var read (P0.2), a boxed-param field read coerced to @dk@ (R2.4),
--- a literal, a (scalar) param var, an arith op, or a (non-tail) self-call.
+-- boxed-param field read coerced to @dk@ (R2.4), a literal, a (scalar) param
+-- var, an arith op, or a (non-tail) self-call.
 -- @dk@ is only consulted for the boxed-field coercion; everything else is
 -- determined bottom-up (so all-scalar output is unaffected).
 scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
-scalarExpr g pks ret env dks dk term = do
-  msc <- scalarReadOf term
-  case msc of
-    Just sloc -> pure sloc
-    Nothing -> scalarExprBody g pks ret env dks dk term
+scalarExpr = scalarExprBody
 
 scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
 scalarExprBody g pks ret env dks dk term
@@ -1957,7 +1922,7 @@ scalarArith g pks ret env dks p expl = do
   let argks = maybe [] snd (arithPrim p)
   aes <- sequence (zipWith (\k a -> scalarExpr g pks ret env dks k a) argks expl)
   t <- freshN "ti_"
-  esc <- gets gsI64Escape -- worker: `*kovf=1; return 0;`; scalar loop: flush+goto boxed
+  esc <- gets gsI64Escape -- worker: `*kovf=1; return 0;`
   case (p, aes) of
     ("addInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_add_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
     ("subInt", [a, b]) -> emit ("int64_t " <> t <> "; if (__builtin_sub_overflow(" <> a <> ", " <> b <> ", &" <> t <> ")) { " <> esc <> " }")
@@ -1999,6 +1964,13 @@ lr1Unreachable = escalated "LR1-i64" "an int64-ineligible term reached the unbox
 lr1UnreachableStmt :: Gen ()
 lr1UnreachableStmt = lr1Unreachable >> pure ()
 
+emitScalarWorkerSafepoint :: Gen ()
+emitScalarWorkerSafepoint = do
+  emit "if (--kspc <= 0) {"
+  emit "  kspc = KRT2_SP_QUANTUM;"
+  emit "  if (krt2_safepoint()) { *kovf = KRT2_SCALAR_ABORT; return 0; }"
+  emit "}"
+
 -- | The saturated fast path at a call site: unbox each arg by its scalar kind,
 -- call the unboxed worker, and escape to the boxed @kw_g@ (from the ORIGINAL
 -- boxed args) on a wrong-tag arg or an int64 overflow.
@@ -2032,10 +2004,18 @@ compileScalarCall g pks ret sargs = do
   let boxed = "ktrampoline(" <> kw <> "(" <> T.intercalate ", " ts <> "))"
   emit ("KValue *" <> res <> ";")
   -- a wrong-tag arg short-circuits to boxed WITHOUT calling the unboxed worker
-  -- (so it never runs on garbage 0-args, e.g. a spurious /0 trap).
+  -- (so it never runs on garbage 0-args, e.g. a spurious /0 trap).  A worker-side
+  -- safe-point abort is distinct from overflow: it transfers control to the
+  -- runtime unwinder so active exit actions run before the pending interrupt is
+  -- delivered and before any enclosing generated pure/do frame can run more
+  -- source code. It must not rerun boxed code or fabricate a Unit result.
   emit ("if (" <> ovf <> ") { " <> res <> " = " <> boxed <> "; }")
   emit "else {"
   emit ("  " <> cScalarTy ret <> " " <> r <> " = " <> worker <> "(" <> T.intercalate ", " (avs ++ ["&" <> ovf]) <> ");")
+  emit ("  if (" <> ovf <> " == KRT2_SCALAR_ABORT) {")
+  emit "    krt2_scalar_abort();"
+  emit "    return kunit();"
+  emit "  }"
   emit ("  " <> res <> " = " <> ovf <> " ? " <> boxed <> " : " <> boxScalar ret r <> ";")
   emit "}"
   pure res
@@ -2141,10 +2121,6 @@ hostNativeBlock st
 -- | Compile a term: emit any needed statements into the current buffer and
 -- return a C expression (of type @KValue *@) for its value.
 compile :: Term -> Gen Text
-compile term
-  -- §18.3 monadic splice: `__runIO e` runs the embedded IO action inline
-  -- and yields its result as an ordinary value (matches runSplices).
-  | Just action <- runIOSplice term = compileRunIO action
 compile term = do
   -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global — a
   -- propositional-equality / h-prop lemma like 'isPropEq' / 'unsafeAssertProof'
@@ -2165,9 +2141,10 @@ compile term = do
 compileTerm :: Term -> Gen Text
 compileTerm term = case term of
   CVar i -> do
-    -- Perceus RC Stage S2.1 walk-and-lookup (R-path): assert this occurrence's
-    -- threaded UseSite resolves in the analysis side-table. EMITS NOTHING — pure
-    -- validation; inert unless 'gsRcEnabled'.
+    -- Perceus RC walk-and-lookup (R-path): assert this occurrence's threaded
+    -- UseSite resolves in the analysis side-table. This call itself emits no C,
+    -- but RC mode uses the validated fact for surrounding dup/drop decisions and
+    -- fails closed on any miss.
     rcWalkLookupVar i
     -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
     -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
@@ -2209,11 +2186,11 @@ compileTerm term = case term of
   CProjAt e _ i -> do
     ee <- withChild P.childPos (compile e)
     pure (recAtExpr ee i)
-  -- Perceus RC S2.1 R-CDo: the do-kernel is OPAQUE to "Kappa.Ownership"'s walk
-  -- (§1 carve-out), so binders/uses inside it carry no side-table entry. Mark the
-  -- region so the walk-and-lookup TOLERATES a CVar miss there (and S2.2+ emits no
-  -- dup/drop) — the ExitStack drain stays the sole resource authority.
-  CDo lbl items -> rcInErased (compileDo lbl items)
+  -- S2.3b: do-kernel bodies are no longer treated as an ownership-erased
+  -- island. Mutable-variable reads/writes are ordinary runtime uses, so the RC
+  -- validation path must see any CVar lowered while compiling the do body and
+  -- fail closed on missing side-table facts.
+  CDo lbl items -> compileDo lbl items
   -- §13 closed/open variants: injection is a tagged payload.
   CInject tag e -> do
     ee <- withChild P.childPos (compile e)
@@ -2397,21 +2374,6 @@ emitTailApp term = do
       e <- compile term
       emit ("return " <> e <> ";")
 
--- | Recognise a @__runIO e@ monadic-splice application (§18.3); returns
--- the single explicit IO-action argument.  Implicit type arguments are
--- ignored (erased).
-runIOSplice :: Term -> Maybe Term
-runIOSplice t = case spineOf t of
-  (hd, args)
-    | Just g <- headOf hd
-    , g == Builtins.prelRunIO -- §1.2: declaration-symbol identity, not the "__runIO" spelling
-    , [a] <- [x | (Expl, x) <- args] ->
-        Just a
-  _ -> Nothing
-  where
-    headOf (CGlob g) = Just g
-    headOf _ = Nothing
-
 -- | Is the implicit argument to this head erased at runtime? Primitive
 -- and constructor heads erase implicit arguments (§31.2).  Primitives are
 -- the @__prim@ module globals and the prelude globals whose value is a
@@ -2523,11 +2485,30 @@ emitHostNative :: GName -> ResolvedNativeSymbol -> Gen Text
 emitHostNative g rns = do
   markHostUsed g
   collectHostCtors rns
+  ctor <- hostNativeCtor rns
   pure
-    ( "knative(" <> wrapperCName rns <> ", "
+    ( ctor <> "(" <> wrapperCName rns <> ", "
         <> T.pack (show (length (rns.params))) <> ", "
         <> cStr (rns.cSymbol) <> ", 1)"
     )
+
+hostNativeCtor :: ResolvedNativeSymbol -> Gen Text
+hostNativeCtor rns = case rns.ffiClass of
+  FfiNonblocking -> pure "knative"
+  FfiBlocking -> pure "knative_blocking"
+  FfiBlockingCancellable ->
+    unsupported "native binding"
+      ("the native runtime does not implement cancellable blocking calls for '"
+        <> rns.cSymbol <> "'")
+
+hostNativeSatCtor :: ResolvedNativeSymbol -> Gen Text
+hostNativeSatCtor rns = case rns.ffiClass of
+  FfiNonblocking -> pure "knative_sat"
+  FfiBlocking -> pure "knative_sat_blocking"
+  FfiBlockingCancellable ->
+    unsupported "native binding"
+      ("the native runtime does not implement cancellable blocking calls for '"
+        <> rns.cSymbol <> "'")
 
 -- | Record a host member as referenced so 'assemble' emits its wrapper.
 markHostUsed :: GName -> Gen ()
@@ -2579,13 +2560,14 @@ primEntries = Map.fromList
   , ("__arrayToList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__absurd", PrimEntry "kpf___absurd" 1 False)
   , ("__atomicRepEq", PrimEntry "kpf___atomicRepEq" 2 False)
-  -- §29.1 std.atomic: TRUE lock-free atomic-cell ops.  Each is an IO prim whose
-  -- entry point (runtime/atomic.c) forwards to a krt2_atomic_* C11 atomic under
-  -- the requested memory_order, so a concurrent fetch-add / CAS across the worker
-  -- pool conserves every update.  isIO=True: a saturated call becomes a
-  -- knative_sat suspended action (the op runs when krun_io fires it); atomics
-  -- never park, so the synchronous bridge is the complete path (no CK-machine
-  -- node).  The arities match the prelude prim types (order + cell + payload).
+  -- §29.1 std.atomic: each IO prim enters runtime/atomic.c and performs one
+  -- indivisible operation on the boxed AtomicRef cell selected by std.atomic's
+  -- surface wrapper. The runtime validates the requested memory-order code, but
+  -- the current representation is mutex-backed rather than lock-free. isIO=True:
+  -- a saturated call becomes a knative_sat suspended action (the op runs when
+  -- krun_io fires it); atomics never park, so the synchronous bridge is the
+  -- complete path (no CK-machine node). The arities match the prelude prim types
+  -- (order + cell + payload).
   , ("__newAtomicRef", PrimEntry "kpf_io___newAtomicRef" 1 True)
   , ("__atomicLoad", PrimEntry "kpf_io___atomicLoad" 2 True)
   , ("__atomicStore", PrimEntry "kpf_io___atomicStore" 3 True)
@@ -2705,6 +2687,10 @@ primEntries = Map.fromList
   , ("throwIO", PrimEntry "kpf_io_throwIO" 1 True)
   , ("catchIO", PrimEntry "kpf_io_catchIO" 2 True)
   , ("finallyIO", PrimEntry "kpf_io_finallyIO" 2 True)
+  -- §18.1.11 source-level blocking bridge. Saturated calls lower directly to
+  -- krt2_blocking; this wrapper keeps a first-class/partially-applied
+  -- `blocking` value semantically identical.
+  , ("blocking", PrimEntry "kpf_blocking" 1 False)
   -- §12.4.3 first-class borrowed views (runtime borrow = value)
   , ("captureBorrow", PrimEntry "kpf_captureBorrow" 1 False)
   , ("withBorrowView", PrimEntry "kpf_withBorrowView" 2 False)
@@ -2742,12 +2728,14 @@ primEntries = Map.fromList
   , ("__nowNanos", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
   , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
+  , ("__ioNewRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("pow", PrimEntry "kpf_pow" 2 False)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
   , ("printString", PrimEntry "kpf_io_printString" 1 True)
   , ("printlnString", PrimEntry "kpf_io_printlnString" 1 True)
   , ("ratOfDouble", PrimEntry "kpf_ratOfDouble" 1 False)
   , ("readRef", PrimEntry "kpf_io_readRef" 1 True)
+  , ("__ioReadRef", PrimEntry "kpf_io_readRef" 1 True)
   , ("showByte", PrimEntry "kpf_showByte" 1 False)
   , ("showBytes", PrimEntry "kpf_showBytes" 1 False)
   , ("showDouble", PrimEntry "kpf_showDouble" 1 False)
@@ -2766,6 +2754,7 @@ primEntries = Map.fromList
   , ("tan", PrimEntry "kpf_tan" 1 False)
   , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
   , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
+  , ("__ioWriteRef", PrimEntry "kpf_io_writeRef" 2 True)
   -- §18.1.4/§18.1.6/§18.1.9 concurrency node builders (CPS do-kernel): each
   -- lowers to its krt2_* OP_* node so the CK-machine can park on it.  isIO=False
   -- because building the node is pure construction; the node IS the suspended
@@ -2974,8 +2963,9 @@ compileApp term0 = do
                   (take arity explIxH)
               arr <- freshN "na_"
               emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+              ctor <- hostNativeSatCtor rns
               pure
-                ( "knative_sat(" <> wrapperCName rns <> ", "
+                ( ctor <> "(" <> wrapperCName rns <> ", "
                     <> T.pack (show arity) <> ", " <> arr <> ", 1)"
                 )
         _ -> compileAppGlob g sargs term
@@ -3015,16 +3005,13 @@ compileAppGlob g sargs term = do
               nc <- peaIx jn n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
         -- §18.1.4 catchIO/finallyIO: ALWAYS the CK-machine node-builder, never
-        -- the kpf_io_* bridge.  finallyIO builds krt2_finally = an OP_DOSCOPE tree
-        -- the synchronous krun_io bridge (krt2_run_op_sync) has NO case for, so it
-        -- returns the node unevaluated and the body never runs (delve rendered
-        -- nothing: a do-tail `finallyIO body cleanup` dropped body + cleanup).
-        -- catchIO is OP_CATCH (which the bridge *can* drive) but is treated
-        -- identically for one uniform path — and unconditionally, so a may-suspend
-        -- body/handler (e.g. `catchIO (join f) h`) is driven on the CK-machine, not
-        -- mis-run on the bridge.  suspendingNames lists both, so any enclosing
-        -- block is force-CPS-lowered (compileDoCps) onto the CK-machine that drives
-        -- these nodes — mirroring onExit/onInterrupt below.
+        -- the kpf_io_* bridge.  finallyIO builds krt2_finally = an OP_DOSCOPE tree;
+        -- the synchronous bridge can now drive the non-suspending case for legacy
+        -- thunks, but source do-blocks that mention these structured-finalizer
+        -- nodes are still force-CPS-lowered so ordinary execution goes through the
+        -- documented OP_DOSCOPE/OP_DEFER path.  catchIO is grouped with finallyIO
+        -- for one uniform path, so a may-suspend body/handler (e.g. `catchIO
+        -- (join f) h`) is never mis-run on the bridge.
         Just "catchIO"
           | [(jb, body), (jh, h)] <- explIxG -> do
               bc <- peaIx jb body
@@ -3038,8 +3025,10 @@ compileAppGlob g sargs term = do
         -- §18.1.4 onExit/onInterrupt: reason-carrying finalizers — run the body,
         -- then on exit run the handler with the reconstructed Exit (onExit, every
         -- exit) or InterruptCause (onInterrupt, only on interrupt).  Always the
-        -- CK-machine node (an OP_DOSCOPE tree that krun_io's sync bridge does not
-        -- drive), so the enclosing block is always CPS-lowered (suspendingNames).
+        -- CK-machine node (an OP_DOSCOPE tree). The enclosing block is always
+        -- CPS-lowered (suspendingNames) so reason-carrying finalizers run on the
+        -- do-kernel path, while the sync bridge remains only a non-parking legacy
+        -- fallback.
         Just "onExit"
           | [(jb, body), (jh, h)] <- explIxG -> do
               bc <- peaIx jb body
@@ -3090,6 +3079,11 @@ compileAppGlob g sargs term = do
           | [(ju, use)] <- explIxG -> do
               uc <- peaIx ju use
               pure ("krt2_with_scope(" <> uc <> ")")
+        -- §18.1.11 blocking bridge: run the body on the rt-blocking lane.
+        Just "blocking"
+          | [(jb, body)] <- explIxG -> do
+              bc <- peaIx jb body
+              pure ("krt2_blocking(" <> bc <> ")")
         -- §18.1.12 masking: the OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL node builders.
         -- `uninterruptible body` raises mask_depth for the body (krt2_uninterruptible);
         -- `mask`'s surface wrapper forwards to `__mask f`, which the runtime applies
@@ -3207,50 +3201,6 @@ compileAppGlob g sargs term = do
           case ar of
             Just n | length sargs >= n -> compileDirectCall g n sargs
             _ -> compileAppDefault term
-
--- | Compile @__runIO action@.  A mutable-reference action (@readRef@ /
--- @writeRef@ / @newRef@, §18.6.1) run inline is lowered directly to the
--- @kref_*@ operation, skipping the suspend-as-action-then-krun_io path —
--- a mutable @var@ read/write in a loop is then a single cell access, not a
--- per-step primitive allocation + dispatch.  Any other action keeps the
--- general @krun_io@ lowering.
-compileRunIO :: Term -> Gen Text
-compileRunIO action = do
-  let (hd, sargs) = spineOf action
-      expl = [a | (Expl, a) <- sargs]
-  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
-  case (mp, expl) of
-    (Just "readRef", [r]) -> do
-      re <- compile r
-      pure ("kref_get(" <> re <> ")")
-    (Just "writeRef", [r, v]) -> do
-      re <- compile r
-      ve <- compile v
-      pure ("kref_set(" <> re <> ", " <> ve <> ")")
-    (Just "newRef", [v]) -> do
-      ve <- compile v
-      pure ("kref_new(" <> ve <> ")")
-    -- MUTABLE-ARRAY-DESIGN §7 Stage C: inline an array op run directly under
-    -- __runIO to a bare karr_* call (no K_NATIVE node alloc + krun_io dispatch),
-    -- mirroring the readRef/writeRef/newRef peephole above.  The boxed slab is
-    -- correct; this is the perf delta the general IO-prim path would otherwise
-    -- miss.  The index is an Int KValue*, decoded with kas_int for karr_get/set.
-    (Just "__newArray", [n, v]) -> do
-      ne <- compile n
-      ve <- compile v
-      pure ("karr_new(kas_int(" <> ne <> "), " <> ve <> ")")
-    (Just "__arrayRead", [buf, i]) -> do
-      be <- compile buf
-      ie <- compile i
-      pure ("karr_get(" <> be <> ", kas_int(" <> ie <> "))")
-    (Just "__arrayWrite", [buf, i, v]) -> do
-      be <- compile buf
-      ie <- compile i
-      ve <- compile v
-      pure ("karr_set(" <> be <> ", kas_int(" <> ie <> "), " <> ve <> ")")
-    _ -> do
-      ae <- compile action
-      pure ("krun_io_checked(" <> ae <> ")")
 
 -- | The worker arity of a function global @g@ — its leading-lambda count,
 -- if @g@ has a recorded core body that is lowered to a worker (≥ 1 binder
@@ -3635,10 +3585,8 @@ cpsNodeApp term = do
         -- node-builder (an OP_DOSCOPE / OP_CATCH tree), so in tail position the
         -- node must be RETURNED for the CK-machine to drive — exactly like
         -- onExit/onInterrupt.  (Unconditional, not gated on `mayActSuspend body`:
-        -- the OP_DOSCOPE that krt2_finally builds is NOT drivable by the
-        -- synchronous krun_io bridge regardless of whether the body suspends, so a
-        -- sequential finallyIO must not silently fall to the bridge — see the
-        -- suspendingNames note for finallyIO/catchIO.)
+        -- even though the sync bridge has a non-parking OP_DOSCOPE fallback,
+        -- structured finalizers belong on the documented do-kernel path.)
         (Just "catchIO", [_, _]) -> True
         (Just "finallyIO", [_, _]) -> True
         (Just "onExit", [_, _]) -> True
@@ -3687,12 +3635,15 @@ consume sink term = case term of
         -- (or the worker-body reset) restores the scope.
         -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken at the
         -- CLet node (gsPath = the let path → the binder's BinderId), against the
-        -- bound C LOCAL (R-flat). Emitted at the body's NORMAL completion — i.e.
-        -- only when the body sinks into a continuing result var ('SinkVar'); in a
-        -- 'SinkTail'/'SinkBounce' body the value 'return's, so a trailing drop is
-        -- unreachable (and the worker frame is reclaimed by Boehm) — we skip it
-        -- there rather than emit dead code.
-        drp <- rcBinderDroppableHere
+        -- bound C LOCAL (R-flat). The local is dropped only when the analysis says
+        -- it is droppable AND the initializer is manifestly owned; projection/call
+        -- results can be borrowed until result ownership is modeled. Emitted at
+        -- the body's NORMAL completion — i.e. only when the body sinks into a
+        -- continuing result var ('SinkVar'); in a 'SinkTail'/'SinkBounce' body the
+        -- value 'return's, so a trailing drop is unreachable.
+        drp0 <- rcBinderDroppableHere
+        rhsOwnsLocal <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
+        let drp = drp0 && rhsOwnsLocal
         lv <- bindFlatLocal "let_" re
         withChild P.letBodyPos (consume sink body)
         when (drp && isSinkVar sink) (rcEmitDrop lv)
@@ -3759,7 +3710,7 @@ consumeMatch sink scrut alts = do
   -- scrutinee CELL that it must discharge with a per-arm @kdrop(sv)@. Computed
   -- BEFORE compiling the scrutinee (so 'rcUseKindHere' for a 'CVar' scrutinee
   -- reads the same 'matchScrutPos' key the analysis recorded, and so the verdict
-  -- is fixed once for every arm). Inert under OFF / inside a 'CDo' (§1 carve-out).
+  -- is fixed once for every arm). Inert under OFF.
   dropCell <- rcScrutDropDecision scrut
   -- Perceus RC S2.1: the scrutinee sits at 'matchScrutPos' under the CMatch node.
   se <- withChild P.matchScrutPos (compile scrut)
@@ -3860,19 +3811,23 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- following @kdrop(sv)@ (which on a unique cell recursively frees the fields).
   -- So the field-dup must fire IFF the cell-drop does — dupping a kept field on an
   -- arm that then skips the cell-drop would be an UNPAIRED dup (a permanent rc
-  -- inflation / leak, never balanced). Hence both key on the single 'dropHere'.
-  let dropHere = dropCell && isSinkVar sink
+  -- inflation / leak, never balanced). Guarded arms bind fields before evaluating
+  -- the guard, so a failed guard cannot run the success-branch balancing drops;
+  -- keep guarded arms conservative until guard-failure cleanup is modeled.
+  let dropHere = dropCell && isSinkVar sink && maybe True (const False) mguard
   env' <- bindPatScrutDup dropHere sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
   -- binders HERE (gsPath = the arm path, so 'patSlotPos k' keys each slot), against
-  -- the bound flat C locals (R-flat). The slot's de Bruijn index @k@ is its
+  -- the bound flat C locals (R-flat). These drops only fire with 'dropHere',
+  -- because otherwise pattern locals are raw borrowed projections, not dup-owned
+  -- fields. The slot's de Bruijn index @k@ is its
   -- 'gsParamLvals' index right after binding (the LAST patBinding is index 0,
   -- matching the analysis's @depth+n-1-k@ levels). Computed BEFORE descending into
   -- the body so the lookup key is the arm path; emitted AFTER the body, only at a
   -- continuing 'SinkVar' seam (a 'SinkTail'/'SinkBounce' arm body returns — a
   -- trailing drop would be dead). Boxed (KEnv) arms have empty 'gsParamLvals' →
   -- no flat local → no drop (left to Boehm).
-  patDrops <- rcPatSlotDropLvals pat
+  patDrops <- if dropHere then rcPatSlotDropLvals pat else pure []
   -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
   -- body at 'altBodyPos' (the pattern-slot binders are at 'patSlotPos k', looked
   -- up only by the binder pass S2.3, not here).
@@ -3894,7 +3849,9 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
       emit "}"
 
 -- | Perceus RC S2.3: the bound flat C locals to @kdrop@ for the pattern-slot
--- binders of @pat@ that the analysis says are droppable with no 'LastUse' (b.4).
+-- binders of @pat@ that the analysis says are droppable with no 'LastUse'
+-- (b.4/S2.3b). This stays on the conservative all-last-use rule until
+-- projection-result ownership is modeled.
 -- The slot's de Bruijn index @k@ (0 = innermost, the LAST 'patBindings' entry) is
 -- its 'gsParamLvals' index in the just-bound arm scope. Returns @[]@ under the OFF
 -- baseline, in a boxed arm (empty 'gsParamLvals' — no flat local to drop against),
@@ -4090,26 +4047,30 @@ suspendingNames =
   Set.fromList
     [ "fork", "forkDaemon", "await", "awaitPromise" -- surface (std.prelude)
     , "__forkRun", "__forkDaemon", "__awaitFiber" -- prims (__prim)
-    , "cede", "__sleepForNanos", "newPromise", "completePromise", "awaitPromiseExit"
+    , "cede"
+      -- §18.1.6 clock/timers: the raw prims lower to native IO/OP nodes, and the
+      -- std.prelude wrappers are ordinary source heads that can appear directly
+      -- in a do item before transitive prelude bodies are available.
+    , "nowMonotonic", "__nowNanos", "sleepFor", "sleepUntil", "__sleepForNanos"
+    , "newPromise", "completePromise", "awaitPromiseExit"
     , "__race", "__timeout" -- §18.1.6 race/timeout (compile to krt2_race/krt2_timeout nodes)
     , "withScope", "__interruptWait", "__interruptNoWait" -- §19.5/§18.1.4 scope + interruption nodes
+    , "blocking" -- §18.1.11 source-level rt-blocking bridge
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking: OP_UNINTERRUPTIBLE/OP_MASK/OP_POLL nodes
       -- §18.1.8 structured scopes/monitors: not all "suspend" (newScope/forkIn/
       -- monitor build a node; shutdownScope/awaitMonitor park) but all are
       -- CK-machine OP_* nodes, so a block using them must be CPS-lowered.
     , "newScope", "forkIn", "shutdownScope", "monitor", "awaitMonitor"
     , "atomically", "stmBind" -- §18.1.13 STM: atomically retry-parks; stmBind builds the STM tree
-      -- §18.1.4 reason-carrying finalizers (build an OP_DOSCOPE tree the bridge cannot drive)
+      -- §18.1.4 reason-carrying finalizers: structured do-kernel nodes, forced
+      -- onto CPS for ordinary do-block execution; the sync bridge is only a
+      -- non-parking legacy fallback.
     , "onExit", "onInterrupt"
       -- §18.1.4 finallyIO/catchIO: `finallyIO body fin` lowers to krt2_finally =
-      -- krt2_doscope(then(defer fin) body) — an OP_DOSCOPE tree.  The synchronous
-      -- krun_io bridge (krt2_run_op_sync) drives OP_BIND/THEN/CATCH/THROW but has
-      -- NO OP_DOSCOPE case, so it returns the node UNEVALUATED and the body never
-      -- runs (the delve-renders-nothing bug: a do-tail `finallyIO body cleanup`
-      -- over a let-bound body dropped both the body and the cleanup).  Listing
-      -- them here force-CPS-lowers any block whose tail/body uses them onto the
-      -- full CK-machine (which DOES drive OP_DOSCOPE), exactly as onExit/onInterrupt
-      -- — the structurally identical finalizers that were already here.
+      -- krt2_doscope(then(defer fin) body) — an OP_DOSCOPE tree.  Listing them
+      -- here force-CPS-lowers any block whose tail/body uses them onto the full
+      -- CK-machine path, exactly as onExit/onInterrupt.  The sync bridge has a
+      -- non-parking fallback for legacy thunks, but this is the normal lowering.
       -- (catchIO is OP_CATCH, which the bridge *does* drive, but it is grouped with
       -- finallyIO for one uniform CK-machine path: its node builder is now
       -- unconditional too, so a may-suspend handler/body is never mis-run.)
@@ -4138,6 +4099,10 @@ isSuspendingPrim (GName m nm) =
 termGlobals :: Term -> Set GName
 termGlobals = goT
   where
+    goCond = \case
+      KCondPure t -> goT t
+      KCondAction t -> goT t
+
     goT t = case t of
       CVar {} -> Set.empty
       CGlob g -> Set.singleton g
@@ -4172,12 +4137,12 @@ termGlobals = goT
       KLet _ _ e -> goT e
       KLetQ _ e me -> goT e <> maybe Set.empty (goT . snd) me
       KExpr e -> goT e
-      KVarItem _ e -> goT e
-      KAssign r _ v -> goT r <> goT v
+      KVarItem _ _ actT -> goT actT
+      KAssign _ _ _ actT -> goT actT
       KReturn e -> goT e
       KBreak _ -> Set.empty
       KContinue _ -> Set.empty
-      KWhile _ c b me -> goT c <> goItems b <> maybe Set.empty goItems me
+      KWhile _ c b me -> goCond c <> goItems b <> maybe Set.empty goItems me
       KFor _ _ s b me -> goT s <> goItems b <> maybe Set.empty goItems me
       KIf alts me -> mconcat [goT c <> goItems b | (c, b) <- alts] <> maybe Set.empty goItems me
       KDefer _ e -> goT e
@@ -4185,21 +4150,85 @@ termGlobals = goT
       KSubDo _ items -> goItems items
 
 -- | §3.3 suspendability analysis: the least set of globals that TRANSITIVELY
--- reach a suspending primitive — a global whose body references one directly, or
--- that calls another such global (closed under the call graph).  Computed once
--- over all recorded core bodies.  This is the SOUND replacement for the old
--- syntactic spine-head check: it catches a user helper that forks/awaits, not
--- just a literal @fork@/@await@.  (Higher-order suspension through a value-passed
--- action is not modelled — a known limitation; such a head is treated as
--- non-suspending, never miscompiled silently since it falls to the diagnostic.)
+-- reach a suspending primitive — a global whose body references one directly,
+-- calls another such global (closed under the call graph), or returns an @IO@
+-- action built by applying a local higher-order parameter in action position.
+-- Computed once over all recorded core bodies.  This is the SOUND replacement
+-- for the old syntactic spine-head check: it catches a user helper that
+-- forks/awaits, and also wrappers such as @withBridge blocking@ where the
+-- suspending action transformer is passed as a value.
 suspenderGlobals :: Map GName Term -> Set GName
-suspenderGlobals bodies = fixpoint seed
+suspenderGlobals = suspenderGlobalsWith Set.empty emptySuspenderCtx Map.empty
+  where
+    emptySuspenderCtx = EvalCtx (Globals Map.empty) Map.empty False Map.empty
+
+suspenderGlobalsWith :: Set GName -> EvalCtx -> Map GName GlobalDef -> Map GName Term -> Set GName
+suspenderGlobalsWith extraSeed ctx globals bodies = fixpoint seed
   where
     refs = Map.map termGlobals bodies
-    seed = Map.keysSet (Map.filter (any isSuspendingPrim) refs)
+    seed =
+      extraSeed
+        <> Map.keysSet (Map.filter (any isSuspendingPrim) refs)
+        <> Map.keysSet (Map.filterWithKey higherOrderActionWrapper bodies)
     fixpoint s =
       let s' = s <> Map.keysSet (Map.filter (any (`Set.member` s)) refs)
        in if s' == s then s else fixpoint s'
+
+    higherOrderActionWrapper g body =
+      globalReturnsIO g && termReturnsLocalHeadedAction body
+
+    globalReturnsIO g =
+      maybe False (valueReturnsIO 0 . gdType) (Map.lookup g globals)
+
+    valueReturnsIO lvl ty =
+      case force ctx ty of
+        VPi _ _ _ _ _ (Closure env body) ->
+          valueReturnsIO (lvl + 1) (eval ctx (VRigid lvl [] : env) body)
+        VGlobN ioG args ->
+          ioG == Builtins.prelIO && length args == 2
+        _ -> False
+
+-- | True when a term's returned action can be a parameter-headed call.  This is
+-- intentionally narrower than "contains any local call": pure local calls inside
+-- an IO-producing helper do not force the helper into the suspender seed unless
+-- they appear in an action position.
+termReturnsLocalHeadedAction :: Term -> Bool
+termReturnsLocalHeadedAction = goTail
+  where
+    localHead = spineHeadIsLocal
+    goTail = \case
+      CLam _ _ _ b -> goTail b
+      CLet _ _ _ _ body -> goTail body
+      CLetRec _ _ _ _ body -> goTail body
+      CSealE _ e -> goTail e
+      CDo _ items -> any goItem items
+      t -> localHead t
+
+    goCond = \case
+      KCondPure _ -> False
+      KCondAction t -> localHead t || goTail t
+    goItems = any goItem
+    goItem = \case
+      KBind _ _ t -> localHead t || goTail t
+      KExpr t -> localHead t || goTail t
+      KVarItem _ _ t -> localHead t || goTail t
+      KAssign _ _ _ t -> localHead t || goTail t
+      KWhile _ c b me -> goCond c || goItems b || maybe False goItems me
+      KFor _ _ _ b me -> goItems b || maybe False goItems me
+      KIf alts me -> any (goItems . snd) alts || maybe False goItems me
+      KDefer _ t -> localHead t || goTail t
+      KUsing _ a r -> localHead a || goTail a || localHead r || goTail r
+      KSubDo _ b -> goItems b
+      _ -> False
+
+blockingHostGlobals :: Map GName ResolvedNativeSymbol -> Set GName
+blockingHostGlobals =
+  Map.keysSet . Map.filter (isBlockingClass . (.ffiClass))
+  where
+    isBlockingClass = \case
+      FfiNonblocking -> False
+      FfiBlocking -> True
+      FfiBlockingCancellable -> True
 
 -- | Does this action (its spine head) reach a suspending op?  A suspending prim,
 -- or a global in the §3.3 transitive-suspender set.
@@ -4240,17 +4269,26 @@ mayActSuspend susp t = spineHeadSuspends susp t || spineHeadIsLocal t
 blockSuspendsWith :: Bool -> Set GName -> [KItem] -> Bool
 blockSuspendsWith incLocal susp = any itemSuspends
   where
-    s t = spineHeadSuspends susp t || (incLocal && spineHeadIsLocal t)
+    s = \case
+      CDo _ items -> blockSuspendsWith incLocal susp items
+      t -> spineHeadSuspends susp t || (incLocal && spineHeadIsLocal t)
+    condSuspends (KCondPure _) = False
+    condSuspends (KCondAction t) = s t
     recur = blockSuspendsWith incLocal susp
     itemSuspends (KBind _ _ t) = s t
     itemSuspends (KExpr t) = s t
-    itemSuspends (KAssign _ True t) = s t
+    itemSuspends (KAssign _ _ _ actT) = s actT
     itemSuspends (KReturn t) = s t
-    itemSuspends (KVarItem _ t) = s t
-    itemSuspends (KWhile _ _ b me) = recur b || maybe False recur me
+    itemSuspends (KVarItem _ _ actT) = s actT
+    itemSuspends (KWhile _ c b me) = condSuspends c || recur b || maybe False recur me
     itemSuspends (KFor _ _ _ b me) = recur b || maybe False recur me
     itemSuspends (KIf alts me) = any (recur . snd) alts || maybe False recur me
-    itemSuspends (KUsing _ a _) = s a
+    itemSuspends (KDefer _ e) = s e
+    -- A `using` release is an action built from the selected release function
+    -- and the acquired resource at runtime. Even when the acquire action itself
+    -- is non-suspending, the release path must be installed and driven by the
+    -- CK doscope/finalizer machinery rather than the legacy raw bridge.
+    itemSuspends KUsing {} = True
     -- a transparent sub-do runs in THIS block's continuation chain, so a
     -- suspending op inside it makes this block suspend too (CPS LOOP FAMILY §4).
     itemSuspends (KSubDo _ b) = recur b
@@ -4270,7 +4308,7 @@ cpsEligible susp items =
   -- `all simpleLinear` guard keeps this from ever turning a non-CPS-able block
   -- into the fail-closed path — a non-simple block with a local-headed call stays
   -- legacy exactly as before.
-  blockSuspendsWith True susp items && all simpleLinear items
+  all simpleLinear items && (blockSuspendsWith True susp items || any needsRuntimeFinalizers items)
   where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
     -- the runtime's OP_DOSCOPE/OP_DEFER).  Stage 2.5 — the CPS LOOP FAMILY (§4):
@@ -4280,7 +4318,7 @@ cpsEligible susp items =
     -- fail-closed.  Scope discipline: the WELL-SCOPED CORE handles the unlabeled
     -- `while` (no else), `var`/`:=` (assign to a `var` cell), unlabeled
     -- `break`/`continue`, `return`, plain `defer`, statement-`if`, and a
-    -- transparent unlabeled sub-do, and `using` (§19.5 resource scope, lowered
+    -- transparent statement-position sub-do (labeled or unlabeled), and `using` (§19.5 resource scope, lowered
     -- through krt2_uninterruptible + krt2_finally, reusing the bracketM
     -- machinery).  Labeled loops, `for`, loop `else`, and `let?` remain
     -- fail-closed (DIAGNOSED in 'compileDo', not mis-lowered).
@@ -4290,15 +4328,23 @@ cpsEligible susp items =
     simpleLinear KUsing {} = True
     simpleLinear (KDefer Nothing _) = True
     simpleLinear KVarItem {} = True
-    simpleLinear (KAssign (CVar _) _ _) = True
+    simpleLinear (KAssign (CVar _) _ _ _) = True
     simpleLinear KReturn {} = True
     simpleLinear (KBreak Nothing) = True
     simpleLinear (KContinue Nothing) = True
     simpleLinear (KWhile Nothing _ body Nothing) = all simpleLinear body
     simpleLinear (KIf alts mels) =
       all (all simpleLinear . snd) alts && maybe True (all simpleLinear) mels
-    simpleLinear (KSubDo Nothing body) = all simpleLinear body
+    simpleLinear (KSubDo _ body) = all simpleLinear body
     simpleLinear _ = False
+    needsRuntimeFinalizers (KDefer Nothing _) = True
+    needsRuntimeFinalizers KUsing {} = True
+    needsRuntimeFinalizers (KWhile Nothing _ body mels) =
+      any needsRuntimeFinalizers body || maybe False (any needsRuntimeFinalizers) mels
+    needsRuntimeFinalizers (KIf alts mels) =
+      any (any needsRuntimeFinalizers . snd) alts || maybe False (any needsRuntimeFinalizers) mels
+    needsRuntimeFinalizers (KSubDo _ body) = any needsRuntimeFinalizers body
+    needsRuntimeFinalizers _ = False
 
 -- | Lower a CPS-eligible do-block: build its @krt2_*@ action tree, wrapping it
 -- in a @krt2_doscope@ when the block carries §18.7 defers (so they run LIFO and
@@ -4306,14 +4352,7 @@ cpsEligible susp items =
 -- scope frame — just the bind tree.
 compileDoCps :: [KItem] -> Gen Text
 compileDoCps items = do
-  -- §4 R7: once any `var` cell exists in the block, EVERY read of it must be a
-  -- RUN-TIME OP_READ_REF, not a build-time kref_get — not only inside the loop
-  -- but for the rest of the block, since a loop body mutates the cell and a
-  -- later read (e.g. `printlnString (showInt total)` after the loop) would
-  -- otherwise capture the cell's value at build time (before the loop ran).  So
-  -- the ref region spans the whole block whenever it declares a `var`.  A block
-  -- with no `var` keeps the build-time read fast path.
-  tree <- (if any hasVar items then withCpsRefRegion else id) (cpsItems items)
+  tree <- cpsItems items
   -- §18.8: a `return` exits THIS do-block (yielding its value), not the fiber.
   -- When CPS-lowered the block is inlined into a larger continuation chain, so a
   -- bare OP_RETURN would unwind past the block to the fiber's KK_DONE.  Wrap the
@@ -4324,13 +4363,6 @@ compileDoCps items = do
   where
     hasScope (KDefer _ _) = True
     hasScope _ = False
-    -- a `var` declared anywhere in THIS block (recursing into its own loop/if/
-    -- subdo bodies, but NOT into a nested do VALUE).
-    hasVar (KVarItem _ _) = True
-    hasVar (KWhile _ _ b mels) = any hasVar b || maybe False (any hasVar) mels
-    hasVar (KIf alts mels) = any (any hasVar . snd) alts || maybe False (any hasVar) mels
-    hasVar (KSubDo _ b) = any hasVar b
-    hasVar _ = False
     -- a `return` anywhere in THIS block (recursing into its own loop/if/subdo
     -- bodies, which return from this block, but NOT into a nested do VALUE).
     itemReturns (KReturn _) = True
@@ -4345,162 +4377,140 @@ compileDoCps items = do
 -- @krt2_then@; the tail action is returned directly (tail position — the
 -- CK-machine, not a nested bind, so the spine stays bounded).
 cpsItems :: [KItem] -> Gen Text
-cpsItems items = case items of
+cpsItems = cpsItemsFrom 0
+
+cpsItemsFrom :: Int -> [KItem] -> Gen Text
+cpsItemsFrom start items = case items of
   [] -> pure "krt2_pure(kunit())"
-  -- TAIL position: a self-tail-call / mutual-recursion / call-through-a-value
-  -- here is DEFERRED behind a continuation so the recursion is C-stack-bounded
-  -- (see 'cpsTailAction'); a CPS-node or primitive head is built directly.
-  [KExpr t] -> cpsTailAction t
-  [KBind _ _ t] -> cpsTailAction t
-  (KExpr t : rest) -> seqThen t rest
-  (KBind _ CPWild t : rest) -> seqThen t rest
-  (KBind _ pat t : rest) -> do
-    m <- cpsActionTerm t
-    contFn <- emitCpsCont pat rest
-    env <- gets gsEnv
-    pure ("krt2_bind(" <> m <> ", kclo(" <> contFn <> ", " <> env <> "))")
-  (KLet _ CPWild t : rest) -> compile t >> cpsItems rest
-  (KLet _ pat t : rest) -> do
-    -- a `let` binds a PURE value; its reads (if any, inside a ref region)
-    -- normalize to run-time OP_READ_REF so a re-run body re-reads the live cell,
-    -- exactly as a monadic bind does.  Outside the region this is plain krt2_pure.
-    bindA <- cpsActionOfPure t
-    contFn <- emitCpsCont pat rest
-    env <- gets gsEnv
-    pure ("krt2_bind(" <> bindA <> ", kclo(" <> contFn <> ", " <> env <> "))")
-  -- ── CPS LOOP FAMILY (CPS-DESIGN §4) ──────────────────────────────────
-  -- @var x = init@: allocate a cell via OP_NEW_REF and push it onto the captured
-  -- env (de Bruijn 0) for the continuation.  The cell lives in the KEnv, so it
-  -- survives a park (the "free liveness via KEnv" of §4) and every later read/
-  -- write addresses the SAME cell across iterations and across suspension.
-  (KVarItem _ t : rest) -> do
-    -- the initializer is normalized through the ref region too: a `var y = …`
-    -- whose initializer reads an enclosing var must read it at run time.  Bind
-    -- the (action) value, then OP_NEW_REF it and push the cell as de Bruijn 0.
-    initA <- withCpsRefRegion (cpsActionOfPure t)
-    contFn <- emitCpsNewRefCont rest
-    env <- gets gsEnv
-    pure ("krt2_bind(" <> initA <> ", kclo(" <> contFn <> ", " <> env <> "))")
-  -- @x := rhs@ / @x <- rhs@ (a var assignment): write the cell at RUN TIME via
-  -- OP_WRITE_REF so a re-run loop body re-writes the live cell, then continue.
-  -- The rhs value is normalized to run-time reads (§4 R7), bound, then written.
-  -- A monadic rhs additionally runs the rhs ACTION before the write.
-  (KAssign (CVar idx) monadic rhsT : rest) -> do
-    env <- gets gsEnv
-    rhsA <-
-      if monadic
-        -- a monadic rhs (`x <- m`) is an IO ACTION; its var reads must still be
-        -- hoisted to run-time OP_READ_REF (§4 R7) when in a ref region, exactly
-        -- as a discarded effect or bind is — `cpsActionTerm` normalizes iff the
-        -- ref region is on and the term reads a var, else plain compile.
-        then cpsActionTerm rhsT
-        else withCpsRefRegion (cpsActionOfPure rhsT)
-    contFn <- emitCpsAssignCont idx rest
-    pure ("krt2_bind(" <> rhsA <> ", kclo(" <> contFn <> ", " <> env <> "))")
-  -- @return v@: exit THIS do-block (OP_RETURN -> RK_RETURN, caught by the
-  -- enclosing KK_RETSCOPE — compileDoCps), running every crossed do-scope's
-  -- defers en route.  The value is normalized to run-time reads, bound, then
-  -- returned.  Tail (anything following `return` is dead, never reached).
-  (KReturn t : _) -> do
-    rv <- withCpsRefRegion (cpsActionOfPure t)
-    contFn <- emitCpsReturnCont
-    env <- gets gsEnv
-    pure ("krt2_bind(" <> rv <> ", kclo(" <> contFn <> ", " <> env <> "))")
-  -- @break@ / @continue@ (unlabeled): target the innermost OP_WHILE's KK_LOOP.
-  (KBreak Nothing : _) -> pure "krt2_break()"
-  (KContinue Nothing : _) -> pure "krt2_continue()"
-  -- @while c { body }@ (unlabeled, no else): OP_WHILE[condIO, bodyIO] -> KK_LOOP.
-  -- @cond@ is built as an ACTION that reads the loop vars at step time (so each
-  -- iteration re-tests the live cells — §4 R7), and @body@ is a CPS action tree
-  -- the runtime re-runs as a fresh per-iteration do-scope.
-  (KWhile Nothing cond body Nothing : rest) -> do
-    condA <- cpsCondAction cond
-    bodyA <- withCpsRefRegion (cpsItems body)
-    r <- cpsItems rest
-    pure ("krt2_then(krt2_while(" <> condA <> ", " <> bodyA <> "), " <> r <> ")")
-  -- a statement-`if` in a CPS block: each branch is a CPS action tree; the if's
-  -- normal completion is Unit (matching the interpreter's KIf), so a non-tail if
-  -- sequences its (Unit) result before the rest via krt2_then.
-  (KIf alts mels : rest) -> do
-    br <- cpsIf alts mels
-    if null rest
-      then pure br
-      else do
-        r <- cpsItems rest
-        pure ("krt2_then(" <> br <> ", " <> r <> ")")
-  -- a transparent nested do-statement (§18.8.3.1): its own bindings are SCOPED
-  -- to the sub-block (they do not leak into @rest@, matching the legacy Nested
-  -- handling), but abrupt control (break/continue/return) propagates outward —
-  -- automatically, since those lower to unwind NODES the CK-machine routes
-  -- through any scope nesting.  Build the sub-block as its own tree; if it
-  -- registers its own §18.7 defers, wrap it in krt2_doscope so those finalizers
-  -- run when the SUB-block exits (before @rest@), not the outer block's exit.
-  (KSubDo Nothing body : rest) -> do
-    sub0 <- cpsItems body
-    let sub = if any subDefers body then "krt2_doscope(" <> sub0 <> ")" else sub0
-    if null rest
-      then pure sub
-      else do
-        r <- cpsItems rest
-        pure ("krt2_then(" <> sub <> ", " <> r <> ")")
-  -- §18.7 plain defer: register the action on the enclosing do-scope's ExitStack
-  -- (OP_DEFER), then continue.  The whole block is wrapped in krt2_doscope
-  -- (compileDoCps), so cur_exits is this scope's stack — even in a continuation
-  -- that runs after a park, since OP_DOSCOPE set cur_exits and no suspending op
-  -- changes it.  Finalizers run LIFO, masked, on every exit (R1).
-  (KDefer Nothing t : rest) -> do
-    de <- compileDeferAction t
-    r <- cpsItems rest
-    pure ("krt2_then(krt2_defer(" <> de <> "), " <> r <> ")")
-  -- §19.5/§18.8.3 `using pat <- acquire`: lower through the runtime's
-  -- krt2_acquire_release (rt.c) — the SAME machinery `bracketM` uses (§18.1.12):
-  --   mask (\restore -> acquire >>= \res -> finally (restore (use res)) (release res))
-  -- with `use res = <bind pat=res; rest>` (the resource's protected scope is the
-  -- rest of the do-block).  The WHOLE acquire-and-finalizer-register region runs
-  -- MASKED, so a fiber carrying a pending interrupt cannot deliver it between
-  -- `acquire` returning and the `finally` frame being installed — `release` is
-  -- GUARANTEED registered before any interrupt can land (it lands only inside
-  -- `restore (use res)`, by which point the finalizer is in place).  `release
-  -- res` then runs on every exit of the scope (normal/abrupt/error/interrupt),
-  -- masked LIFO — mirroring the interpreter's KUsing.  This is the protected-scope
-  -- discipline of §19.5, NOT a source rewrite to `defer`.
-  (KUsing pat acquireT releaseT : rest) -> do
-    acqA <- cpsActionTerm acquireT
-    -- `release` is the Releasable.release function (it takes the owned resource);
-    -- pass it directly as krt2_acquire_release's `rel` argument.
-    relV <- compile releaseT
-    -- `use res = (bind pat = res; rest)`: a 1-arg closure over the using-site env;
-    -- reuse the ordinary bind-continuation emitter (binds `pat` to its argument,
-    -- then builds the rest as a CPS tree).
-    useFn <- emitCpsCont pat rest
-    env <- gets gsEnv
-    pure
-      ( "krt2_acquire_release(" <> acqA <> ", " <> relV
-          <> ", kclo(" <> useFn <> ", " <> env <> "))"
-      )
-  (item : _) ->
-    unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
+  item : rest ->
+    let ix = start
+        next = ix + 1
+        itemChild child = withChild (P.doItemPos ix) . withChild child
+        itemNode = withChild (P.doItemPos ix)
+        restTree = cpsItemsFrom next rest
+     in case item of
+          -- TAIL position: a self-tail-call / mutual-recursion /
+          -- call-through-a-value here is DEFERRED behind a continuation so the
+          -- recursion is C-stack-bounded (see 'cpsTailAction'); a CPS-node or
+          -- primitive head is built directly.
+          KExpr t
+            | null rest -> itemChild P.kExprActionPos (cpsTailAction t)
+            | otherwise -> seqThen [P.doItemPos ix, P.kExprActionPos] t restTree
+          KBind _ _ t
+            | null rest -> itemChild P.kBindActionPos (cpsTailAction t)
+          KBind _ CPWild t -> seqThen [P.doItemPos ix, P.kBindActionPos] t restTree
+          KBind _ pat t -> do
+            m <- itemChild P.kBindActionPos (cpsActionTerm t)
+            contFn <- emitCpsCont pat next rest
+            env <- gets gsEnv
+            pure ("krt2_bind(" <> m <> ", kclo(" <> contFn <> ", " <> env <> "))")
+          KLet _ CPWild t -> itemChild P.kLetValuePos (compile t) >> restTree
+          KLet _ pat t -> do
+            -- a `let` binds a PURE value. Current-value reads and splices have
+            -- already been lifted by the checker into preceding bind/action
+            -- items, so there is no hidden monadic read to discover here.
+            bindA <- itemChild P.kLetValuePos (cpsActionOfPure t)
+            contFn <- emitCpsCont pat next rest
+            env <- gets gsEnv
+            pure ("krt2_bind(" <> bindA <> ", kclo(" <> contFn <> ", " <> env <> "))")
+          -- ── CPS LOOP FAMILY (CPS-DESIGN §4) ──────────────────────────
+          -- @var x = init@: bind the MonadRef.newRef action chosen by
+          -- elaboration and push the resulting Ref onto the captured env
+          -- (de Bruijn 0) for the continuation.
+          KVarItem x _ actT -> do
+            refA <- itemChild P.kVarActionPos (cpsActionTerm actT)
+            contFn <- emitCpsCont (CPVar x) next rest
+            env <- gets gsEnv
+            pure ("krt2_bind(" <> refA <> ", kclo(" <> contFn <> ", " <> env <> "))")
+          -- @x := rhs@ / @x <- rhs@ (a var assignment): run the
+          -- MonadRef.writeRef action selected during elaboration, so CPS and
+          -- non-CPS paths use the same evidence.
+          KAssign _ _ _ actT -> do
+            writeA <- itemChild P.kAssignActionPos (cpsActionTerm actT)
+            r <- restTree
+            pure ("krt2_then(" <> writeA <> ", " <> r <> ")")
+          -- @return v@: exit THIS do-block (OP_RETURN -> RK_RETURN, caught by
+          -- the enclosing KK_RETSCOPE — compileDoCps), running every crossed
+          -- do-scope's defers en route.
+          KReturn t -> do
+            rv <- itemChild P.kReturnValuePos (cpsActionOfPure t)
+            contFn <- emitCpsReturnCont
+            env <- gets gsEnv
+            pure ("krt2_bind(" <> rv <> ", kclo(" <> contFn <> ", " <> env <> "))")
+          -- @break@ / @continue@ (unlabeled): target the innermost OP_WHILE's KK_LOOP.
+          KBreak Nothing -> pure "krt2_break()"
+          KContinue Nothing -> pure "krt2_continue()"
+          -- @while c { body }@ (unlabeled, no else): OP_WHILE[condIO, bodyIO] -> KK_LOOP.
+          KWhile Nothing cond body Nothing -> do
+            condA <- itemChild P.kWhileCondPos (cpsCondAction cond)
+            bodyA <- itemNode (withChild P.kWhileBodyPos (cpsItems body))
+            r <- restTree
+            pure ("krt2_then(krt2_while(" <> condA <> ", " <> bodyA <> "), " <> r <> ")")
+          -- a statement-`if` in a CPS block: each branch is a CPS action tree;
+          -- the if's normal completion is Unit, so a non-tail if sequences its
+          -- Unit result before the rest via krt2_then.
+          KIf alts mels -> do
+            br <- itemNode (cpsIf alts mels)
+            if null rest
+              then pure br
+              else do
+                r <- restTree
+                pure ("krt2_then(" <> br <> ", " <> r <> ")")
+          -- a transparent nested do-statement (§18.8.3.1): its own bindings
+          -- are scoped to the sub-block, but abrupt control propagates outward.
+          KSubDo _ body -> do
+            sub0 <- itemNode (withChild P.kSubDoBodyPos (cpsItems body))
+            let sub = if any directDefers body then "krt2_doscope(" <> sub0 <> ")" else sub0
+            if null rest
+              then pure sub
+              else do
+                r <- restTree
+                pure ("krt2_then(" <> sub <> ", " <> r <> ")")
+          -- §18.7 plain defer: register the action on the enclosing do-scope's
+          -- ExitStack (OP_DEFER), then continue.
+          KDefer Nothing t -> do
+            de <- itemChild P.kDeferActionPos (compileDeferAction t)
+            r <- restTree
+            pure ("krt2_then(krt2_defer(" <> de <> "), " <> r <> ")")
+          -- §19.5/§18.8.3 `using pat <- acquire`: lower through
+          -- krt2_acquire_release (rt.c), the same protected-scope machinery
+          -- `bracketM` uses.
+          KUsing pat acquireT releaseT -> do
+            acqA <- itemChild P.kUsingAcquirePos (cpsActionTerm acquireT)
+            relV <- itemChild P.kUsingReleasePos (compile releaseT)
+            useFn <- emitCpsCont pat next rest
+            env <- gets gsEnv
+            pure
+              ( "krt2_acquire_release(" <> acqA <> ", " <> relV
+                  <> ", kclo(" <> useFn <> ", " <> env <> "))"
+              )
+          _ ->
+            unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
   where
-    seqThen t rest = do
-      m <- cpsActionTerm t
-      r <- cpsItems rest
+    seqThen revPrefix t restTree = do
+      m <- withChildren revPrefix (cpsActionTerm t)
+      r <- restTree
       pure ("krt2_then(" <> m <> ", " <> r <> ")")
-    -- a §18.7 defer registered DIRECTLY in a sub-block (not in its own nested
-    -- loop/if/subdo, which carry their own per-iteration scope): such a defer
-    -- needs the sub-block wrapped in krt2_doscope so it runs at the sub-block's
-    -- exit, LIFO and masked (R1), rather than the enclosing block's.
-    subDefers (KDefer _ _) = True
-    subDefers _ = False
+
+    withChildren [] act = act
+    withChildren (p : ps) act = withChild p (withChildren ps act)
+
+-- | A §18.7 defer registered DIRECTLY in this item list, not in a nested
+-- loop/if/subdo. Such a branch/subdo list needs its own krt2_doscope so the
+-- finalizer runs at that list's exit, not at the enclosing do-scope exit.
+directDefers :: KItem -> Bool
+directDefers (KDefer _ _) = True
+directDefers _ = False
 
 -- | Emit a CPS continuation function @kdok_N(KEnv *cenv, KValue *karg)@: bind
 -- the delivered value @karg@ to @pat@ (extending the captured @cenv@), then
 -- build the rest of the block as a tree.
-emitCpsCont :: CorePat -> [KItem] -> Gen Text
-emitCpsCont pat rest = do
+emitCpsCont :: CorePat -> Int -> [KItem] -> Gen Text
+emitCpsCont pat next rest = do
   fnName <- freshFn "kdok_"
   (stmts, tree) <- captured "cenv" $ do
     e2 <- bindPatScrut "karg" "cenv" pat
-    withEnv e2 (cpsItems rest)
+    withEnv e2 (cpsItemsFrom next rest)
   let fn =
         T.unlines $
           ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
@@ -4515,22 +4525,10 @@ emitCpsCont pat rest = do
 
 -- ── CPS LOOP FAMILY helpers (CPS-DESIGN §4) ──────────────────────────────
 
--- | Run a build action with the §4 R7 ref-region flag set: while it is on, a
--- var read inside a value/action is normalized to a RUN-TIME OP_READ_REF
--- ('cpsNormalizeReads'), so a re-run loop body re-reads the live cell.
-withCpsRefRegion :: Gen a -> Gen a
-withCpsRefRegion act = do
-  saved <- gets gsCpsRefRegion
-  modify' $ \g -> g {gsCpsRefRegion = True}
-  r <- act
-  modify' $ \g -> g {gsCpsRefRegion = saved}
-  pure r
-
--- | Compile an IO ACTION term in a CPS block.  In a §4 R7 ref region (a
--- suspending loop body) its var reads are hoisted to run-time OP_READ_REF so a
--- re-run observes the live cell; outside the region this is plain 'compile'.
+-- | Compile an IO ACTION term in a CPS block. Current-value reads and splices
+-- have already been lifted by the checker into action terms or do-kernel binds.
 cpsActionTerm :: Term -> Gen Text
-cpsActionTerm = cpsNormalizeReads False
+cpsActionTerm = compile
 
 -- | Compile a CPS do-block's TAIL action (the last @KExpr@/@KBind@ in the
 -- block) — the position where an IO/STM tail self-call lives.
@@ -4600,187 +4598,37 @@ deferrableTailCall t = do
             _ -> pure True -- a call THROUGH a value (closure / local let-rec) → defer
       _ -> pure False -- not an application (a bare value / pure node) → no deferral
 
--- | §4 R7 var-read normalization (PURE result).  Build an ACTION node whose
--- stepped result is the VALUE of @term@, hoisting every var read to a RUN-TIME
--- OP_READ_REF bind so a re-run loop body re-reads the live cell.  Outside the
--- ref region (or for a read-free term) this is just @krt2_pure(<value>)@.
+-- | Lift a pure value into an IO action. Any current-value reads in source have
+-- already become preceding MonadRef.readRef binds during checking.
 cpsActionOfPure :: Term -> Gen Text
-cpsActionOfPure = cpsNormalizeReads True
-
--- | A var read @__runIO (readRef (CVar i))@ (the elaborator's auto-deref of a
--- surface @var@ read), if @term@ is exactly that shape; the de Bruijn index of
--- the cell otherwise 'Nothing'.
-varReadIdx :: Term -> Gen (Maybe Int)
-varReadIdx term = case runIOSplice term of
-  Just action -> case spineOf action of
-    (CGlob h, sargs) -> do
-      mp <- globPrimName h
-      pure $ case (mp, [a | (Expl, a) <- sargs]) of
-        (Just "readRef", [CVar i]) -> Just i
-        _ -> Nothing
-    _ -> pure Nothing
-  Nothing -> pure Nothing
-
--- | Does @term@ contain a var read (@__runIO (readRef …)@) anywhere?  Used to
--- decide whether a value must be hoisted into OP_READ_REF binds (§4 R7) — a
--- read-free value is built once and is safe to re-run as a @krt2_pure@ leaf.
-termHasVarRead :: Term -> Gen Bool
-termHasVarRead term = do
-  mi <- varReadIdx term
-  case mi of
-    Just _ -> pure True
-    Nothing -> case term of
-      CApp _ f a -> (||) <$> termHasVarRead f <*> termHasVarRead a
-      CCtor _ _ args -> orM (map termHasVarRead args)
-      CProj e _ -> termHasVarRead e
-      CProjAt e _ _ -> termHasVarRead e
-      CRecordV fs -> orM (map (termHasVarRead . snd) fs)
-      _ -> pure False
-  where
-    orM = foldr (\m acc -> do b <- m; if b then pure True else acc) (pure False)
-
--- | The shared §4 R7 normalizer.  Collect every var read in @term@ (left to
--- right), bind each via a RUN-TIME @krt2_read_ref(cell)@ onto a fresh KEnv slot,
--- then build the residual — @term@ with each read replaced by its bound slot and
--- all other free vars shifted past the pushes — wrapping it in @krt2_pure@ iff
--- @pureResult@.  A read-free term (or outside the ref region) short-circuits to
--- a plain @compile@ — no binds, preserving the build-time fast path.
-cpsNormalizeReads :: Bool -> Term -> Gen Text
-cpsNormalizeReads pureResult term = do
-  region <- gets gsCpsRefRegion
-  has <- if region then termHasVarRead term else pure False
-  if not has
-    then do
-      v <- compile term
-      pure (if pureResult then "krt2_pure(" <> v <> ")" else v)
-    else do
-      reads' <- collectReads term -- the original cell indices, in occurrence order
-      let n = length reads'
-      bindChain n reads' 0
-  where
-    -- bindChain n remaining done: bind each remaining read (its cell shifted past
-    -- the @done@ prior pushes), pushing the value as the next KEnv slot; once all
-    -- @n@ are bound, compile the rewritten residual under the extended env.
-    bindChain n [] _ = do
-      residual <- rewriteReads n term
-      v <- compile residual
-      pure (if pureResult then "krt2_pure(" <> v <> ")" else v)
-    bindChain n (cellIdx : more) done = do
-      -- the cell lives at original index @cellIdx@; @done@ pushes happened since,
-      -- so it is now at @cellIdx + done@.
-      cell <- compile (CVar (cellIdx + done))
-      contFn <- emitReadHoistCont $ bindChain n more (done + 1)
-      env <- gets gsEnv
-      pure ("krt2_bind(krt2_read_ref(" <> cell <> "), kclo(" <> contFn <> ", " <> env <> "))")
-
--- | Emit a read-hoist continuation @kdok_N(KEnv*, KValue *karg)@ that pushes the
--- delivered read value as de Bruijn 0, then runs @build@ under the extended env.
-emitReadHoistCont :: Gen Text -> Gen Text
-emitReadHoistCont build = do
+cpsActionOfPure term = do
   fnName <- freshFn "kdok_"
-  (stmts, tree) <- captured "cenv" $ do
-    e2 <- pushEnv "karg" "cenv"
-    withEnv e2 build
+  (stmts, v) <- captured "cenv" (compile term)
   let fn =
         T.unlines $
-          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
+          [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {"
+          , "  (void)cenv; (void)karg;"
+          ]
             ++ map ("  " <>) stmts
-            ++ ["  return " <> tree <> ";", "}"]
+            ++ [ "  return krt2_pure(" <> v <> ");"
+               , "}"
+               ]
   modify' $ \st ->
     st
       { gsTop = fn : gsTop st
       , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
       }
-  pure fnName
-
--- | Collect the cell de Bruijn indices of every var read in @term@, in
--- left-to-right occurrence order (with duplicates — each read site is bound
--- independently; a common-subexpression eliminator is a later refinement).
-collectReads :: Term -> Gen [Int]
-collectReads term = do
-  mi <- varReadIdx term
-  case mi of
-    Just i -> pure [i]
-    Nothing -> case term of
-      CApp _ f a -> (++) <$> collectReads f <*> collectReads a
-      CCtor _ _ args -> concat <$> mapM collectReads args
-      CProj e _ -> collectReads e
-      CProjAt e _ _ -> collectReads e
-      CRecordV fs -> concat <$> mapM (collectReads . snd) fs
-      _ -> pure []
-
--- | Rewrite @term@ for the residual of a read hoist: each var read at occurrence
--- @j@ (0-based, left to right, @n@ total) becomes @CVar (n-1-j)@ (its bound
--- slot), and every OTHER free var is shifted up by @n@ (past the @n@ pushes).
--- Stateful over the running occurrence counter so duplicate reads map to their
--- own slots in order.  Mirrors 'collectReads' exactly so slots line up.
-rewriteReads :: Int -> Term -> Gen Term
-rewriteReads n t0 = fst <$> runRW 0 t0
-  where
-    -- runRW j t = (rewritten t, next occurrence index after t's reads)
-    runRW :: Int -> Term -> Gen (Term, Int)
-    runRW j t = do
-      mi <- varReadIdx t
-      case mi of
-        Just _ -> pure (CVar (n - 1 - j), j + 1)
-        Nothing -> case t of
-          CVar i -> pure (CVar (i + n), j) -- a non-read free var shifts past the pushes
-          CApp ic f a -> do
-            (f', j') <- runRW j f
-            (a', j'') <- runRW j' a
-            pure (CApp ic f' a', j'')
-          CCtor g ann args -> do
-            (args', j') <- runList j args
-            pure (CCtor g ann args', j')
-          CProj e f -> do (e', j') <- runRW j e; pure (CProj e' f, j')
-          CProjAt e f i -> do (e', j') <- runRW j e; pure (CProjAt e' f i, j')
-          CRecordV fs -> do
-            (vs', j') <- runList j (map snd fs)
-            pure (CRecordV (zip (map fst fs) vs'), j')
-          _ -> pure (t, j) -- literals, globals, etc.: no reads, no free vars to shift
-    runList j [] = pure ([], j)
-    runList j (x : xs) = do
-      (x', j') <- runRW j x
-      (xs', j'') <- runList j' xs
-      pure (x' : xs', j'')
-
--- | Push a single value onto the current KEnv expression, returning the new env
--- C-name (a @kpush(val, env)@ local).
-pushEnv :: Text -> Text -> Gen Text
-pushEnv val env = do
-  n <- freshN "env_"
-  emit ("KEnv *" <> n <> " = kpush(" <> val <> ", " <> env <> ");")
-  pure n
+  env <- gets gsEnv
+  pure ("krt2_bind(krt2_pure(kunit()), kclo(" <> fnName <> ", " <> env <> "))")
 
 -- | Build the @cond@ action of a CPS @while@: an action whose stepped result is
--- the loop's Bool condition, with var reads normalized to run-time OP_READ_REF
--- (§4 R7) so each iteration re-tests the LIVE cells.
-cpsCondAction :: Term -> Gen Text
-cpsCondAction = withCpsRefRegion . cpsActionOfPure
-
--- | The @var x = init@ continuation: the delivered initializer value @karg@ is
--- placed into a fresh cell via run-time OP_NEW_REF, and the cell is pushed as de
--- Bruijn 0 for the rest of the block (so it lives in the KEnv — captured across
--- a park, §4 — and every read/write addresses the same cell).
-emitCpsNewRefCont :: [KItem] -> Gen Text
-emitCpsNewRefCont rest = do
-  fnName <- freshFn "kdok_"
-  (stmts, tree) <- captured "cenv" $ do
-    ref <- freshN "var_"
-    emit ("KValue *" <> ref <> " = kref_new(karg);")
-    e2 <- pushEnv ref "cenv"
-    withEnv e2 (cpsItems rest)
-  let fn =
-        T.unlines $
-          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
-            ++ map ("  " <>) stmts
-            ++ ["  return " <> tree <> ";", "}"]
-  modify' $ \st ->
-    st
-      { gsTop = fn : gsTop st
-      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
-      }
-  pure fnName
+-- the loop's Bool condition. Current reads in a source condition elaborate to
+-- 'KCondAction' so the runtime re-runs the selected MonadRef.readRef action on
+-- every iteration.
+cpsCondAction :: KCond -> Gen Text
+cpsCondAction = \case
+  KCondPure t -> cpsActionOfPure t
+  KCondAction t -> cpsActionTerm t
 
 -- | The @return v@ continuation: the delivered value @karg@ exits the do-block
 -- via OP_RETURN (the abrupt-control node unwinds crossed do-scopes, running
@@ -4801,46 +4649,28 @@ emitCpsReturnCont = do
       }
   pure fnName
 
--- | A continuation for a MONADIC var assignment @x <- rhs@ (or pure @x := rhs@):
--- the delivered rhs result @karg@ is written to the cell at de Bruijn @idx@ via
--- run-time OP_WRITE_REF, then the rest of the block runs.  @karg@ is NOT pushed
--- (the assignment introduces no binder), so indices in @rest@ are unchanged.
-emitCpsAssignCont :: Int -> [KItem] -> Gen Text
-emitCpsAssignCont idx rest = do
-  fnName <- freshFn "kdok_"
-  (stmts, tree) <- captured "cenv" $ do
-    cell <- compile (CVar idx)
-    r <- cpsItems rest
-    pure ("krt2_then(krt2_write_ref(" <> cell <> ", karg), " <> r <> ")")
-  let fn =
-        T.unlines $
-          ["static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {", "  (void)cenv; (void)karg;"]
-            ++ map ("  " <>) stmts
-            ++ ["  return " <> tree <> ";", "}"]
-  modify' $ \st ->
-    st
-      { gsTop = fn : gsTop st
-      , gsProtos = ("static KValue *" <> fnName <> "(KEnv *, KValue *);") : gsProtos st
-      }
-  pure fnName
-
 -- | A statement-@if@ in a CPS block: each branch is a CPS action tree.  The
 -- condition is a pure Bool (R7-normalized if it reads a var); the runtime picks
 -- the branch.  Built as @krt2_bind(<condAction>, kclo(select))@ where @select@
 -- dispatches in C on the delivered Bool to the chosen branch's tree.
 cpsIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen Text
-cpsIf alts mels = goAlts alts
+cpsIf alts mels = goAlts 0 alts
   where
-    goAlts [] = case mels of
-      Just els -> cpsItems els
+    armCount = length alts
+
+    goAlts _ [] = case mels of
+      Just els -> withChild (P.kIfElsePos armCount) (cpsScopedItems els)
       Nothing -> pure "krt2_pure(kunit())" -- no/exhausted else: Unit (§18.8)
-    goAlts ((c, body) : more) = do
-      condA <- cpsActionOfPure c
-      thenFn <- emitCpsBranchCont (cpsItems body)
-      elseFn <- emitCpsBranchCont (goAlts more)
+    goAlts ai ((c, body) : more) = do
+      condA <- withChild (P.kIfCondPos ai) (cpsActionOfPure c)
+      thenFn <- emitCpsBranchCont (withChild (P.kIfBodyPos ai) (cpsScopedItems body))
+      elseFn <- emitCpsBranchCont (goAlts (ai + 1) more)
       env <- gets gsEnv
       sel <- emitCpsIfSelect thenFn elseFn
       pure ("krt2_bind(" <> condA <> ", kclo(" <> sel <> ", " <> env <> "))")
+    cpsScopedItems body = do
+      tree <- cpsItems body
+      pure $ if any directDefers body then "krt2_doscope(" <> tree <> ")" else tree
 
 -- | Emit a branch builder @kdok_N(KEnv *cenv, KValue *karg)@ ignoring @karg@,
 -- returning the branch's CPS tree (built under the captured env, unextended).
@@ -4911,10 +4741,10 @@ compileDoLegacy lbl items = do
   -- cannot break out of, nor defer@L into, a do-block VALUE's outer scope),
   -- so reset those for the do-fn body. compileItems sets up this scope's
   -- §18.7 defer frame (tagged with `lbl` for defer@label routing).
-  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g, gsDeferLabels g, gsUsingReleases g)
-  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = [], gsDeferLabels = [], gsUsingReleases = []}
+  saved <- gets $ \g -> (gsDefer g, gsScopeDefers g, gsLoops g, gsDeferLabels g)
+  modify' $ \g -> g {gsDefer = [], gsScopeDefers = [], gsLoops = [], gsDeferLabels = []}
   (stmts, ()) <- captured "cenv" (compileItems lbl Tail items)
-  modify' $ \g -> let (d, s, l, dl, ur) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l, gsDeferLabels = dl, gsUsingReleases = ur}
+  modify' $ \g -> let (d, s, l, dl) = saved in g {gsDefer = d, gsScopeDefers = s, gsLoops = l, gsDeferLabels = dl}
   let fn =
         T.unlines $
           [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
@@ -4929,17 +4759,14 @@ compileDoLegacy lbl items = do
       }
   pure ("kio(" <> fnName <> ", " <> env <> ")")
 
--- | §18.7 @defer t@: lift the deferred IO action into a suspended @kio@
--- thunk that is /evaluated and run lazily at scope exit/, not eagerly at the
--- registration site.  The interpreter registers @evalK env t@ as an exit
--- thunk and runs it from the LIFO exit list, so @t@'s sub-expressions observe
--- any state mutated between here and the flush.  The thunk captures the
--- current environment (the @var@ cells, not their snapshots), so the body's
--- @kref_get@ reads — and any faulting sub-expression — happen at flush time,
--- matching the interpreter exactly.  @krun_finish@/@flushFramesInline@ pop the
--- registered @kio@ and @krun_io@ it; the thunk body itself drives @krun_io@ on
--- the freshly-evaluated action so the action actually executes (a returned
--- action value would otherwise not be run).
+-- | §18.7 @defer t@: register a CK-machine action that evaluates @t@ lazily at
+-- scope exit.  The interpreter stores @evalK env t@ in the exit list, so @t@'s
+-- sub-expressions observe state mutated between registration and finalizer
+-- drain.  The generated action therefore captures the current environment (the
+-- @var@ cells, not snapshots) and puts the actual @compile t@ work behind a
+-- one-shot continuation.  The finalizer driver executes that continuation under
+-- the CK machine; if @t@ parks (sleepFor/blocking/await/...), suspension is
+-- preserved instead of being forced through the synchronous @krun_io@ bridge.
 compileDeferAction :: Term -> Gen Text
 compileDeferAction t = do
   fnName <- freshFn "kdefer_"
@@ -4947,15 +4774,15 @@ compileDeferAction t = do
   (stmts, e) <- captured "cenv" (compile t)
   let fn =
         T.unlines $
-          [ "static KValue *" <> fnName <> "(KEnv *cenv) {"
-          , "  (void)cenv;"
+          [ "static KValue *" <> fnName <> "(KEnv *cenv, KValue *karg) {"
+          , "  (void)cenv; (void)karg;"
           ]
             ++ map ("  " <>) stmts
-            ++ [ "  return krun_io(" <> e <> ");"
+            ++ [ "  return " <> e <> ";"
                , "}"
                ]
-  emitTop ("static KValue *" <> fnName <> "(KEnv *);") fn
-  pure ("kio(" <> fnName <> ", " <> env <> ")")
+  emitTop ("static KValue *" <> fnName <> "(KEnv *, KValue *);") fn
+  pure ("krt2_bind(krt2_pure(kunit()), kclo(" <> fnName <> ", " <> env <> "))")
 
 -- | A §19 suspension: lift the delayed expression into a fresh thunk
 -- function capturing the current environment; @memo@ is 1 for Memo (cache
@@ -5038,7 +4865,7 @@ compileItems selfLabel mode items0 = do
         Nothing -> 0
       ndefer = ndirect + nlabeled
   if ndefer == 0
-    then go items0
+    then goAt 0 items0
     else do
       arr <- freshN "kdef_"
       cnt <- freshN "kdc_"
@@ -5049,26 +4876,24 @@ compileItems selfLabel mode items0 = do
         Nested -> modify' $ \g -> g {gsScopeDefers = frame : gsScopeDefers g}
         _ -> modify' $ \g -> g {gsDefer = frame : gsDefer g}
       forM_ selfLabel $ \l -> modify' $ \g -> g {gsDeferLabels = (l, frame) : gsDeferLabels g}
-      -- §32.2.6: open a fresh interrupt-release scope so a `using` in this scope
-      -- registers its release here (run at a safe-point abort, unlike `defer`).
-      modify' $ \g -> g {gsUsingReleases = [] : gsUsingReleases g}
-      go items0
-      modify' $ \g -> g {gsUsingReleases = drop 1 (gsUsingReleases g)}
+      goAt 0 items0
       forM_ selfLabel $ \_ -> modify' $ \g -> g {gsDeferLabels = drop 1 (gsDeferLabels g)}
       case mode of
         Nested -> do flushFramesInline [frame]; modify' $ \g -> g {gsScopeDefers = drop 1 (gsScopeDefers g)}
         _ -> modify' $ \g -> g {gsDefer = drop 1 (gsDefer g)}
   where
-    go [] = case mode of
+    itemChild ix child = withChild (P.doItemPos ix) . withChild child
+
+    goAt _ [] = case mode of
       -- both Tail and a discarded tail if-branch yield Unit here; route
       -- through emitTailReturn so any §18.7 defers are still flushed.
       Tail -> emitTailReturn "kunit()"
       TailEffect -> emitTailReturn "kunit()"
       Nested -> pure ()
-    go (item : rest) = case item of
+    goAt ix (item : rest) = case item of
       KExpr t
         | null rest -> do
-            te <- compile t
+            te <- itemChild ix P.kExprActionPos (compile t)
             case mode of
               -- The do-block's tail IO action is its result: defer it to the
               -- driving krun_io (constant C stack, §27.5A.3), carrying any
@@ -5079,59 +4904,50 @@ compileItems selfLabel mode items0 = do
               TailEffect -> emitTailIO True te
               Nested -> emitRunIODiscard te
       KExpr t -> do
-        te <- compile t
-        emitRunIODiscard te >> go rest
+        te <- itemChild ix P.kExprActionPos (compile t)
+        emitRunIODiscard te >> goAt (ix + 1) rest
       -- A wildcard binding introduces no name: emit the right-hand side
       -- for its effect (a bind runs the IO action; a let just evaluates)
       -- without an unused C variable (keeps the generated C -Wall clean).
       KLet _ CPWild t -> do
-        te <- compile t
+        te <- itemChild ix P.kLetValuePos (compile t)
         emit ("(void)(" <> te <> ");")
-        go rest
+        goAt (ix + 1) rest
       KLet _ pat t -> do
-        te <- compile t
+        te <- itemChild ix P.kLetValuePos (compile t)
         sv <- freshN "let_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         bindAndContinue sv pat
       KBind _ CPWild t -> do
-        te <- compile t
+        te <- itemChild ix P.kBindActionPos (compile t)
         emitRunIODiscard te
-        go rest
+        goAt (ix + 1) rest
       KBind _ pat t -> do
-        te <- compile t
+        te <- itemChild ix P.kBindActionPos (compile t)
         sv <- emitRunIOValue "bind_" te
         bindAndContinue sv pat
       -- §18 early non-local return: unwind every enclosing Nested scope
       -- (loop/if bodies) running their defers first, then return the value
       -- through emitTailReturn (which flushes the Tail-scope defer frames).
       KReturn t -> do
-        te <- compile t
+        te <- itemChild ix P.kReturnValuePos (compile t)
         scopeFrames <- gets gsScopeDefers
         flushFramesInline scopeFrames
         emitTailReturn te
-      KVarItem _ t -> do
-        -- P0.2: if this var begins an eligible scalarizable var+while pattern,
-        -- lower the whole group to int64 C locals; else the boxed `var` cell.
-        mplan <- scalarLoopPlan (item : rest)
-        case mplan of
-          Just plan -> emitScalarLoop plan
-          Nothing -> do
-            te <- compile t
-            ref <- freshN "var_"
-            emit ("KValue *" <> ref <> " = kref_new(" <> te <> ");")
-            env <- gets gsEnv
-            e2 <- freshN "env_"
-            emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
-            withEnv e2 (go rest)
-      KAssign refT monadic rhsT -> do
-        rhs <- compile rhsT
-        rhsv <-
-          if monadic
-            then emitRunIOValue "rhs_" rhs
-            else pure rhs
-        re <- compile refT
-        emit ("kref_set(" <> re <> ", " <> rhsv <> ");")
-        go rest
+      KVarItem _ _ actT -> do
+        -- S2.3b: run the checker-selected MonadRef.newRef action. The former
+        -- scalar-loop peephole bypassed MonadRef evidence, so mutable cells stay
+        -- on the generic boxed path until an optimizer can prove equivalence.
+        te <- itemChild ix P.kVarActionPos (compile actT)
+        ref <- emitRunIOValue "var_" te
+        env <- gets gsEnv
+        e2 <- freshN "env_"
+        emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
+        withEnv e2 (goAt (ix + 1) rest)
+      KAssign _ _ _ actT -> do
+        ae <- itemChild ix P.kAssignActionPos (compile actT)
+        emitRunIODiscard ae
+        goAt (ix + 1) rest
       -- A statement-`if` that is the do-block's tail: its branches are in
       -- tail position, so a recursive IO call in a branch must defer (not
       -- recurse through krun_io).  Compile the branches in 'TailEffect'
@@ -5142,10 +4958,10 @@ compileItems selfLabel mode items0 = do
         -- tail position, so compile them in 'TailEffect' (each path returns,
         -- deferring its tail IO action + finalizers via emitTailIO — stack
         -- safe and defer-correct).  A non-tail `if` runs for effect.
-        | null rest && (mode == Tail || mode == TailEffect) -> compileKIfTail mode alts mels
-        | otherwise -> compileKIf alts mels >> go rest
-      KWhile ml cond bdy mels -> compileLoop ml (LoopWhile cond) bdy mels >> go rest
-      KFor ml pat src bdy mels -> compileLoop ml (LoopFor pat src) bdy mels >> go rest
+        | null rest && (mode == Tail || mode == TailEffect) -> withChild (P.doItemPos ix) (compileKIfTail mode alts mels)
+        | otherwise -> withChild (P.doItemPos ix) (compileKIf alts mels) >> goAt (ix + 1) rest
+      KWhile ml cond bdy mels -> withChild (P.doItemPos ix) (compileLoop ml (LoopWhile cond) bdy mels) >> goAt (ix + 1) rest
+      KFor ml pat src bdy mels -> withChild (P.doItemPos ix) (compileLoop ml (LoopFor pat src) bdy mels) >> goAt (ix + 1) rest
       -- §18.8.3.1: a transparent nested do-statement compiles as a child scope
       -- (its own §18.7 defer frame and label) that inherits the enclosing
       -- loop/return targets.  If it is itself the tail item of a value-returning
@@ -5153,24 +4969,24 @@ compileItems selfLabel mode items0 = do
       -- branch must return the sub-do's final value, not discard it as an
       -- effect-only nested statement.
       KSubDo subLbl subItems
-        | null rest && (mode == Tail || mode == TailEffect) -> compileItems subLbl mode subItems
-        | otherwise -> compileItems subLbl Nested subItems >> go rest
+        | null rest && (mode == Tail || mode == TailEffect) -> withChild (P.doItemPos ix) (withChild P.kSubDoBodyPos (compileItems subLbl mode subItems))
+        | otherwise -> withChild (P.doItemPos ix) (withChild P.kSubDoBodyPos (compileItems subLbl Nested subItems)) >> goAt (ix + 1) rest
       KBreak ml -> gotoLoop ml lcBreak
       KContinue ml -> gotoLoop ml lcContinue
       -- §18 let? : bind the pattern and continue, or run the else block
       -- (which replaces the rest of this scope).
       KLetQ pat t mElse -> do
-        te <- compile t
+        te <- itemChild ix P.kLetQScrutPos (compile t)
         sv <- freshN "letq_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         env <- gets gsEnv
-        let onElse = compileLetQElse mode sv mElse
+        let onElse = withChild (P.doItemPos ix) (compileLetQElse mode sv mElse)
         case distributePat pat of
           -- Common case: a single (or-free) pattern.  Preserves the
           -- irrefutable fast path and the simple if\/else lowering.
           [single] -> do
             mtest <- patTest sv single
-            let onMatch = do env' <- bindPatScrut sv env single; withEnv env' (go rest)
+            let onMatch = do env' <- bindPatScrut sv env single; withEnv env' (goAt (ix + 1) rest)
             case mtest of
               Nothing -> onMatch -- irrefutable: always binds
               Just test -> do
@@ -5195,7 +5011,7 @@ compileItems selfLabel mode items0 = do
                 mtest <- patTest sv alt
                 let bindAndGo = do
                       env' <- bindPatScrut sv env alt
-                      withEnv env' (go rest)
+                      withEnv env' (goAt (ix + 1) rest)
                 case mtest of
                   Nothing -> bindAndGo >> emit (done <> " = 1;")
                   Just test -> do
@@ -5221,7 +5037,7 @@ compileItems selfLabel mode items0 = do
       -- here and the flush — matching the interpreter (`evalK ... t` is run
       -- lazily from the exit list).
       KDefer ml t -> do
-        de <- compileDeferAction t
+        de <- itemChild ix P.kDeferActionPos (compileDeferAction t)
         -- §18.7: `defer@L` registers onto the frame of the enclosing scope
         -- labeled L (which may be outer; its C arr/cnt locals are lexically
         -- in scope here). Plain `defer` uses the current scope's frame.
@@ -5230,27 +5046,33 @@ compileItems selfLabel mode items0 = do
           _ -> case mode of
             Nested -> head (gsScopeDefers g)
             _ -> head (gsDefer g)
-        registerDefer frame de
-        go rest
+        -- Legacy synchronous do-code can abort from a native safe point while C
+        -- helper frames are still active, before the ordinary C defer frame is
+        -- flushed. Register the same action with the runtime abort-exit stack
+        -- and put a token finalizer in the ordinary frame, so normal exit and
+        -- safe-point abort share the same exactly-once action.
+        deferTok <- freshN "udeftok_"
+        emit ("KValue *" <> deferTok <> " = krt2_abort_exit_push(" <> de <> ");")
+        registerDefer frame ("krt2_abort_exit_finalizer(" <> deferTok <> ")")
+        goAt (ix + 1) rest
       -- §19.5: acquire the owned resource, attach `release resource` to this
       -- scope's exit frame (run LIFO with defers via krun_io at exit, on every
       -- exit path), then bind `pat` (borrowed) for the rest of the scope.
       KUsing pat acquireT releaseT -> do
-        ae <- compile acquireT
+        ae <- itemChild ix P.kUsingAcquirePos (compile acquireT)
         rv <- emitRunIOValue "ures_" ae
-        re <- compile releaseT
+        re <- itemChild ix P.kUsingReleasePos (compile releaseT)
         frame <- gets $ \g -> case mode of
           Nested -> head (gsScopeDefers g)
           _ -> head (gsDefer g)
+        -- §32.2.6: register the release with the runtime abort-exit stack. The
+        -- ordinary finalizer captures the returned token; if a scalar/boxed
+        -- safe-point abort drains it first, the finalizer becomes a no-op, so a
+        -- `using` release runs at most once.
         let releaseExpr = "kapp(" <> re <> ", " <> rv <> ")"
-        registerDefer frame releaseExpr
-        -- §32.2.6: also record the release on this scope's interrupt-release list so
-        -- a loop-back-edge safe-point ABORT runs it (the resource must be freed on
-        -- interrupt — interp runs it via `onException`).  A plain `defer` is NOT
-        -- recorded here, so it runs only on normal/abrupt completion, never on abort.
-        modify' $ \g -> case gsUsingReleases g of
-          (cur : outer) -> g {gsUsingReleases = (releaseExpr : cur) : outer}
-          [] -> g -- defensive: a `using` always sits in a framed scope (counted in ndirect)
+        releaseTok <- freshN "ureltok_"
+        emit ("KValue *" <> releaseTok <> " = krt2_abort_exit_push(" <> releaseExpr <> ");")
+        registerDefer frame ("krt2_abort_exit_finalizer(" <> releaseTok <> ")")
         bindAndContinue rv pat
       where
         -- bind an irrefutable do-pattern (with a runtime check for any
@@ -5264,32 +5086,7 @@ compileItems selfLabel mode items0 = do
               emit ("if (!(" <> test <> ")) krt_fail(\"irrefutable binding failed at runtime\");")
             Nothing -> pure ()
           env' <- bindPatScrut sv env pat
-          withEnv env' (go rest)
-        -- P0.2: emit the scalarized var group: each var keeps its retained
-        -- heap ref (boxed fallback layout) AND gets an int64 shadow local;
-        -- gsScalars maps each var's de Bruijn index (at the push-free loop
-        -- body) to (local, ref); then the scalar+boxed loop, then the
-        -- continuation (reads the flushed refs, region off).
-        emitScalarLoop plan = goVars [] (slInits plan)
-          where
-            k = length (slInits plan)
-            goVars acc [] = do
-              let declOrder = reverse acc -- [(s0,ref0), (s1,ref1), …] in decl order
-                  scs = Map.fromList [(k - 1 - j, sr) | (j, sr) <- zip [0 ..] declOrder]
-              saved <- gets gsScalars
-              modify' $ \g -> g {gsScalars = scs}
-              compileScalarWhile (slLabel plan) (slCond plan) (slBody plan)
-              modify' $ \g -> g {gsScalars = saved}
-              go (slRest plan)
-            goVars acc (initLit : more) = do
-              ref <- freshN "var_"
-              emit ("KValue *" <> ref <> " = kref_new(kint(" <> cIntLit initLit <> "));")
-              env <- gets gsEnv
-              e2 <- freshN "env_"
-              emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
-              s <- freshN "sv_"
-              emit ("int64_t " <> s <> " = " <> cIntLit initLit <> ";")
-              withEnv e2 (goVars ((s, ref) : acc) more)
+          withEnv env' (goAt (ix + 1) rest)
 
 -- | §18.2.5: jump to a loop's continue\/break target. @ml@ selects the
 -- loop: 'Nothing' is the innermost; @Just l@ the enclosing loop labelled
@@ -5336,10 +5133,8 @@ flushFramesInline :: [(Text, Text)] -> Gen ()
 flushFramesInline frames =
   forM_ frames $ \(arr, cnt) -> do
     result <- freshN "defer_result"
-    emit ("while (" <> cnt <> " > 0) {")
-    emit ("  KValue *" <> result <> " = krun_io(" <> arr <> "[--" <> cnt <> "]);")
-    emit ("  if (kis_fail(" <> result <> ")) return " <> result <> ";")
-    emit "}"
+    emit ("KValue *" <> result <> " = krt2_run_legacy_finalizers(kunit(), " <> arr <> ", &" <> cnt <> ");")
+    emit ("if (kis_fail(" <> result <> ") || krt2_is_reraise_action(" <> result <> ")) return " <> result <> ";")
 
 -- | Run an IO action in generated do-kernel code and propagate typed native
 -- failures immediately.  A failure exits the current generated scope after
@@ -5361,14 +5156,16 @@ emitRunIODiscard action = do
 emitPropagateFailure :: Text -> Gen ()
 emitPropagateFailure v = do
   frames <- gets $ \g -> gsScopeDefers g ++ gsDefer g
-  emit ("if (kis_fail(" <> v <> ")) {")
+  result <- freshN "fail_result"
+  emit ("if (kis_fail(" <> v <> ") || krt2_is_reraise_action(" <> v <> ")) {")
+  emit ("  KValue *" <> result <> " = " <> v <> ";")
   forM_ frames $ \(arr, cnt) ->
-    emit ("  while (" <> cnt <> " > 0) krun_io(" <> arr <> "[--" <> cnt <> "]);")
-  emit ("  return " <> v <> ";")
+    emit ("  " <> result <> " = krt2_run_legacy_finalizers(" <> result <> ", " <> arr <> ", &" <> cnt <> ");")
+  emit ("  return " <> result <> ";")
   emit "}"
 
 -- | §32.2.6 back-edge safe point for a generated BOXED loop (the general
--- 'compileLoop' lowering and the scalar loop's deliverable-interrupt exit).
+-- 'compileLoop' lowering).
 -- These loops run synchronously under the @krun_io@ K_NATIVE bridge — the
 -- CK-machine is not iterating — so a pending interrupt is only OBSERVED when
 -- @krt2_safepoint()@ is called at the loop's back-edge.  A register counter,
@@ -5376,26 +5173,16 @@ emitPropagateFailure v = do
 -- pays only a decrement + predictable branch per iteration; every QUANTUM
 -- iterations it calls @krt2_safepoint()@, which sets @safepoint_hit@ and returns
 -- 1 iff @interrupt_pending && mask_depth==0@ (a masked fiber returns 0 —
--- suppression holds).  On a 1 we UNWIND OUT of the generated do-fn: a boxed loop
--- has already committed every mutation to its ref cells, so there is NOTHING to
--- flush for the loop state itself.  We do, however, run the active @using@
--- interrupt-releases (LIFO, innermost first) — the interpreter runs a @using@
--- release on the interrupt-unwind path (`onException`, Interp.hs ~697), so the
--- resource is never leaked.  Plain @defer@s are deliberately NOT run here: the
--- interpreter runs them ONLY via the exit queue on normal/abrupt completion, never
--- on an async interrupt at a safe point, so running them would diverge from interp.
--- We then @return kunit()@; the bridge returns to the post-K_NATIVE gate
--- (rt.c ~1794), which sees @safepoint_hit@ and delivers the interrupt — the
--- returned sentinel is discarded as the fiber unwinds.  Returning here (rather
--- than @goto@-ing past the loop into the continuation) is what skips the
--- post-loop continuation so native does NOT run side effects the interpreter,
--- which throws AT the back-edge, never runs (FINDING B's ordering invariant).
+-- suppression holds).  On a 1 we escape the generated do-fn through
+-- @krt2_scalar_abort()@; the runtime catches that at the current fiber-step
+-- boundary, drains active abort-exit tokens through @begin_finseq@ (masked,
+-- suspendable, failure-composing), and delivers the interrupt before any later
+-- source effects can run. Boxed loops have already committed every mutation to
+-- their ref cells, so there is no loop-state flush to perform here.
 emitSafepointAbort :: Text -> Gen ()
 emitSafepointAbort spc = do
-  -- innermost-scope-first, most-recent-registration-first ⇒ correct LIFO unwind.
-  releases <- gets (concat . gsUsingReleases)
   emit ("if (--" <> spc <> " <= 0) { " <> spc <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) {")
-  forM_ releases $ \rel -> emit ("  krun_io(" <> rel <> ");")
+  emit "  krt2_scalar_abort();"
   emit "  return kunit();"
   emit "} }"
 
@@ -5465,21 +5252,23 @@ bindFlatLocal prefix valExpr = do
   pure v
 
 compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
-compileKIf alts mels = go alts
+compileKIf alts mels = go 0 alts
   where
-    go [] = case mels of
-      Just els -> emitBlock els
+    armCount = length alts
+
+    go _ [] = case mels of
+      Just els -> withChild (P.kIfElsePos armCount) (emitBlock els)
       Nothing -> pure ()
-    go ((c, body) : more) = do
-      ce <- compile c
+    go ai ((c, body) : more) = do
+      ce <- withChild (P.kIfCondPos ai) (compile c)
       emit ("if (kas_bool(" <> ce <> ")) {")
       env <- gets gsEnv
-      (blk, ()) <- captured env (compileItems Nothing Nested body)
+      (blk, ()) <- withChild (P.kIfBodyPos ai) (captured env (compileItems Nothing Nested body))
       forM_ blk (emit . ("  " <>))
       emit "}"
       unless (null more && mels == Nothing) $ do
         emit "else {"
-        go more
+        go (ai + 1) more
         emit "}"
     emitBlock items = do
       env <- gets gsEnv
@@ -5494,24 +5283,31 @@ compileKIf alts mels = go alts
 -- §27.5A.3), and a missing/exhausted else yields Unit (§18.8 — the if's
 -- normal completion is discarded).
 compileKIfTail :: ScopeMode -> [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
-compileKIfTail tailMode alts mels = goAlts alts
+compileKIfTail tailMode alts mels = goAlts 0 alts
   where
-    goAlts [] = case mels of
-      Just els -> emitBranch els
+    armCount = length alts
+
+    goAlts _ [] = case mels of
+      Just els -> withChild (P.kIfElsePos armCount) (emitBranch els)
       Nothing -> emitTailReturn "kunit()" -- no/exhausted else: yield Unit, flush defers
-    goAlts ((c, body) : more) = do
-      ce <- compile c
+    goAlts ai ((c, body) : more) = do
+      ce <- withChild (P.kIfCondPos ai) (compile c)
       emit ("if (kas_bool(" <> ce <> ")) {")
-      emitBranch body
+      withChild (P.kIfBodyPos ai) (emitBranch body)
       emit "} else {"
-      goAlts more
+      goAlts (ai + 1) more
       emit "}"
     emitBranch items = do
       env <- gets gsEnv
       (blk, ()) <- captured env (compileItems Nothing tailMode items)
       forM_ blk (emit . ("  " <>))
 
-data LoopKind = LoopWhile !Term | LoopFor !CorePat !Term
+data LoopKind = LoopWhile !KCond | LoopFor !CorePat !Term
+
+compileLoopCond :: KCond -> Gen Text
+compileLoopCond = \case
+  KCondPure t -> compile t
+  KCondAction t -> compile t >>= emitRunIOValue "cond_"
 
 -- | Compile a @while@\/@for@ loop using explicit @goto@ labels, so §18.2.5
 -- labelled @break@\/@continue@ targeting an outer loop work uniformly and
@@ -5547,8 +5343,8 @@ compileLoop mlabel kind body mels = do
   emit ("int64_t " <> spc <> " = KRT2_SP_QUANTUM;")
   bodyBlk <- case kind of
     LoopWhile cond -> do
-      (condBlk, ce) <- captured env (compile cond)
-      (bb, ()) <- withLoop ctx (captured env (compileItems mlabel Nested body))
+      (condBlk, ce) <- withChild P.kWhileCondPos (captured env (compileLoopCond cond))
+      (bb, ()) <- withChild P.kWhileBodyPos (withLoop ctx (captured env (compileItems mlabel Nested body)))
       emit (contL <> ": ;")
       forM_ condBlk (emit . ("  " <>))
       emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
@@ -5557,10 +5353,10 @@ compileLoop mlabel kind body mels = do
       emit ("goto " <> contL <> ";")
       pure bb
     LoopFor pat src -> do
-      se <- compile src
+      se <- withChild P.kForSourcePos (compile src)
       it <- freshN "it_"
       emit ("KValue *" <> it <> " = " <> se <> ";")
-      (bb, ()) <- withLoop ctx $ captured env $ case pat of
+      (bb, ()) <- withChild P.kForBodyPos $ withLoop ctx $ captured env $ case pat of
         -- a wildcard element binds nothing: skip the unused element var
         CPWild -> compileItems mlabel Nested body
         _ -> do
@@ -5579,7 +5375,10 @@ compileLoop mlabel kind body mels = do
   emit (normL <> ": ;")
   elsBlk <- case mels of
     Just els -> do
-      (eb, ()) <- captured env (compileItems Nothing Nested els)
+      let elseChild = case kind of
+            LoopWhile _ -> P.kWhileElsePos
+            LoopFor {} -> P.kForElsePos
+      (eb, ()) <- withChild elseChild (captured env (compileItems Nothing Nested els))
       emit "{"
       forM_ eb (emit . ("  " <>))
       emit "}"
@@ -5595,216 +5394,6 @@ withLoop ctx act = do
   r <- act
   modify' $ \g -> g {gsLoops = saved}
   pure r
-
--- ── P0.2: scalarize a non-escaping Int `var` loop to int64 C locals ──────
--- (raw-C review P0.2).  A run of @var x = <in-range Int literal>@ declarations
--- IMMEDIATELY followed by a @while <int compare> do <flat int assignments>@,
--- where every such var is a non-escaping Int and the loop body / continuation
--- contain no closure-creating form, lowers to int64 C locals + a scalar while
--- loop with NO kref/kvar/kint per iteration.  On overflow / INT64_MIN the
--- scalar loop flushes EVERY var to its retained heap ref and jumps into the
--- EXISTING boxed loop, which continues with GMP promotion (§6) — bit-identical
--- to the interpreter.  Anything outside this exact shape keeps the (correct)
--- boxed lowering, so no deferral can regress.
-
-i64InRange :: Integer -> Bool
-i64InRange m = m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int)
-
--- | The de Bruijn index of a scalarized-var READ — @__runIO (readRef (CVar i))@
--- with @0 <= i < k@ (the elaborator auto-derefs a surface var read).
-scalarVarReadIdx :: Int -> Term -> Gen (Maybe Int)
-scalarVarReadIdx k term = case runIOSplice term of
-  Just action -> case spineOf action of
-    (CGlob h, sargs) -> do
-      mp <- globPrimName h
-      case (mp, [a | (Expl, a) <- sargs]) of
-        (Just "readRef", [CVar i]) | i >= 0 && i < k -> pure (Just i)
-        _ -> pure Nothing
-    _ -> pure Nothing
-  Nothing -> pure Nothing
-
--- | int64-expressible over scalar-var reads (idx<k), in-range Int literals,
--- and the int arith prims — and NOTHING else (an outer-var read, a non-listed
--- prim, a ctor, etc. fails, keeping the loop boxed).
-i64LoopExpr :: Int -> Term -> Gen Bool
-i64LoopExpr k term = do
-  sv <- scalarVarReadIdx k term
-  case sv of
-    Just _ -> pure True
-    Nothing -> case term of
-      CLit (LitInt m) -> pure (i64InRange m)
-      _ -> case spineOf term of
-        (CGlob h, sargs) -> do
-          let expl = [a | (Expl, a) <- sargs]
-          mp <- globPrimName h
-          case mp of
-            -- INT arith only (KInt64 result): a scalar var loop scalarizes Int
-            -- vars to int64 locals, so a double op must keep it boxed.
-            Just p | Just (KInt64, argks) <- arithPrim p, length expl == length argks -> andM (map (i64LoopExpr k) expl)
-            _ -> pure False
-        _ -> pure False
-
--- | A loop condition: a saturated INT compare over loop-expressible operands.
-i64LoopCond :: Int -> Term -> Gen Bool
-i64LoopCond k term = case spineOf term of
-  (CGlob h, sargs) -> do
-    let expl = [a | (Expl, a) <- sargs]
-    mp <- globPrimName h
-    case (mp >>= cmpPrim, expl) of
-      (Just (_, KInt64), [_, _]) -> andM (map (i64LoopExpr k) expl)
-      _ -> pure False
-  _ -> pure False
-
-data ScalarLoop = ScalarLoop
-  { slInits :: ![Integer] -- the k var initial literals, declaration order
-  , slLabel :: !(Maybe Text)
-  , slCond :: !Term
-  , slBody :: ![KItem] -- flat non-monadic @KAssign (CVar idx<k) _ rhs@
-  , slRest :: ![KItem] -- continuation after the loop
-  }
-
--- | Does any Term in this item (recursively) build a closure/thunk/do that
--- could capture an enclosing var by reference? (Reuses 'bodyCapturesEnv'.)
-itemHasClosure :: KItem -> Bool
-itemHasClosure item = case item of
-  KExpr t -> bodyCapturesEnv t
-  KBind _ _ t -> bodyCapturesEnv t
-  KLet _ _ t -> bodyCapturesEnv t
-  KLetQ _ t mels -> bodyCapturesEnv t || maybe False (bodyCapturesEnv . snd) mels
-  KVarItem _ t -> bodyCapturesEnv t
-  KAssign r _ t -> bodyCapturesEnv r || bodyCapturesEnv t
-  KReturn t -> bodyCapturesEnv t
-  KWhile _ c b mels -> bodyCapturesEnv c || any itemHasClosure b || maybe False (any itemHasClosure) mels
-  KFor _ _ s b mels -> bodyCapturesEnv s || any itemHasClosure b || maybe False (any itemHasClosure) mels
-  KIf alts mels -> any (\(c, b) -> bodyCapturesEnv c || any itemHasClosure b) alts || maybe False (any itemHasClosure) mels
-  KDefer _ t -> bodyCapturesEnv t
-  KUsing _ a r -> bodyCapturesEnv a || bodyCapturesEnv r
-  KSubDo _ b -> any itemHasClosure b
-  KBreak _ -> False
-  KContinue _ -> False
-
--- | Recognize the eligible scalarizable shape at the head of an item list.
-scalarLoopPlan :: [KItem] -> Gen (Maybe ScalarLoop)
-scalarLoopPlan items =
-  case span isKVar items of
-    (varRun@(_ : _), KWhile ml cond body Nothing : rest2)
-      | Just inits <- traverse initLit varRun ->
-          do
-            let k = length inits
-            okCond <- i64LoopCond k cond
-            okBody <- andM (map (bodyItemOk k) body)
-            -- v1: non-empty flat body, no closure anywhere in the loop or the
-            -- continuation (escape gate), no else (deferred).
-            let noClosure = not (any itemHasClosure (KWhile ml cond body Nothing : rest2))
-            pure $
-              if okCond && okBody && not (null body) && noClosure
-                then Just (ScalarLoop inits ml cond body rest2)
-                else Nothing
-    _ -> pure Nothing
-  where
-    isKVar (KVarItem _ _) = True
-    isKVar _ = False
-    initLit (KVarItem _ (CLit (LitInt m))) | i64InRange m = Just m
-    initLit _ = Nothing
-    bodyItemOk k (KAssign (CVar idx) False rhs) | idx >= 0 && idx < k = i64LoopExpr k rhs
-    bodyItemOk _ _ = pure False
-
--- | Emit a scalarized var loop: an int64 scalar fast-path loop, then the
--- EXISTING boxed loop as the overflow continuation.  Requires 'gsScalars' to
--- map each var's de Bruijn index (at the loop body) to its (int64 local, ref).
-compileScalarWhile :: Maybe Text -> Term -> [KItem] -> Gen ()
-compileScalarWhile mlabel cond body = do
-  scs <- gets gsScalars
-  cur <- gets gsCur
-  n <- freshN "sl_"
-  let scontL = "kscont_" <> n
-      sflushL = "ksflush_" <> n
-      sabortL = "ksabort_" <> n
-      boxedL = "ksbox_" <> n
-      afterL = "ksaft_" <> n
-  -- A SNAPSHOT int64 local per scalar var holds the var's value at the TOP of
-  -- the current iteration (pre-condition, pre-body).  The body commits each
-  -- assignment in place (so a later read in the same iteration sees the new
-  -- value — sequential semantics), but on overflow we flush the SNAPSHOTS, not
-  -- the partially-mutated scalars, then re-run the iteration boxed from the
-  -- top — so an earlier-committed assignment is NOT applied twice.  The
-  -- snapshots are register copies (no per-iteration allocation).
-  snaps <- forM (Map.elems scs) $ \(s, ref) -> do
-    snap <- freshN "snap_"
-    emit ("int64_t " <> snap <> ";")
-    pure (s, ref, snap)
-  let flushScalars = ["kref_set(" <> ref <> ", kint(" <> s <> "));" | (s, ref, _) <- snaps]
-      flushSnaps = ["kref_set(" <> ref <> ", kint(" <> snap <> "));" | (_, ref, snap) <- snaps]
-  -- §32.2.6 safe point (fix SP): this is a NATIVE loop — the CK-machine is not
-  -- iterating, so a pending interrupt would be ignored until the loop finishes.
-  -- A counter, reloaded to KRT2_SP_QUANTUM, gates a krt2_safepoint() call at the
-  -- back-edge so the hot unboxed loop pays only a register decrement + predictable
-  -- branch per iteration; the real (still cheap) interrupt check runs every
-  -- QUANTUM iterations.  On a deliverable interrupt krt2_safepoint() returns 1 and
-  -- the loop flushes its FINAL scalar values to the ref cells and exits via the
-  -- DEDICATED abort label sabortL (NOT sflushL): unlike normal completion, the abort
-  -- path must SKIP the loop's continuation (slRest) — the interpreter throws AT the
-  -- back-edge and never runs the post-loop do-block, so running it here would have
-  -- native emit a side effect interp never does (FINDING B).  sabortL flushes the
-  -- final scalars, runs the active `using` interrupt-releases (NOT plain defers —
-  -- see emitSafepointAbort), and returns out of the do-fn so the post-bridge gate
-  -- (rt.c ~1794) delivers the interrupt before any continuation.
-  spCtr <- freshN "spc_"
-  emit ("int64_t " <> spCtr <> " = KRT2_SP_QUANTUM;")
-  savedEsc <- gets gsI64Escape
-  -- the scalar copy: gsScalarRegion on; an overflow flushes the PRE-iteration
-  -- snapshots and jumps to the boxed loop, which re-runs this iteration with
-  -- GMP promotion (§6) — no double application of earlier assignments.
-  modify' $ \g ->
-    g
-      { gsScalarRegion = True
-      , gsI64Escape = T.concat (map (<> " ") flushSnaps) <> "goto " <> boxedL <> ";"
-      }
-  emit (scontL <> ": ;")
-  -- snapshot BEFORE the condition test (so even a condition-overflow flushes a
-  -- valid pre-iteration state, never an uninitialized snapshot).
-  forM_ snaps $ \(s, _, snap) -> emit (snap <> " = " <> s <> ";")
-  ce <- scalarCond cur [] KInt64 [] [] cond
-  emit ("if (!" <> ce <> ") goto " <> sflushL <> ";")
-  forM_ body $ \item -> case item of
-    KAssign (CVar idx) False rhs -> do
-      rhse <- scalarExpr cur [] KInt64 [] [] KInt64 rhs
-      case Map.lookup idx scs of
-        Just (s, _) -> emit (s <> " = " <> rhse <> ";")
-        Nothing -> lr1UnreachableStmt
-    _ -> lr1UnreachableStmt
-  -- §32.2.6 back-edge safe point: counter-gated krt2_safepoint().  On a deliverable
-  -- interrupt, branch to sabortL (flush FINAL scalars, skip the continuation, return
-  -- so the gate delivers).  Otherwise fall through to scontL.  (FINDING B: the abort
-  -- exit is sabortL, NOT the normal-completion sflushL, so slRest is skipped.)
-  emit ("if (--" <> spCtr <> " <= 0) { " <> spCtr <> " = KRT2_SP_QUANTUM; if (krt2_safepoint()) goto " <> sabortL <> "; }")
-  emit ("goto " <> scontL <> ";")
-  -- normal scalar completion: flush every scalar var's FINAL value, skip boxed,
-  -- and fall through to afterL → the loop's continuation (slRest) runs normally.
-  emit (sflushL <> ": ;")
-  forM_ flushScalars emit
-  emit ("goto " <> afterL <> ";")
-  -- §32.2.6 safe-point ABORT exit (FINDING B): a deliverable interrupt was observed
-  -- at the back-edge.  Flush the final scalar values to the ref cells (so the fiber
-  -- unwinds with a consistent state), run the active `using` interrupt-releases LIFO
-  -- (the interpreter frees them via `onException`; plain `defer`s do NOT run on an
-  -- async interrupt, so they are NOT run here), then RETURN out of the do-fn — this
-  -- skips slRest so the post-loop continuation does NOT run before the gate
-  -- (rt.c ~1794) delivers the interrupt.  Placed between the two `goto`s above so no
-  -- fall-through (normal completion / boxed completion both reach afterL) enters it;
-  -- the trailing `return` means it cannot fall through into boxedL either.
-  emit (sabortL <> ": ;")
-  forM_ flushScalars emit
-  abortReleases <- gets (concat . gsUsingReleases)
-  forM_ abortReleases $ \rel -> emit ("krun_io(" <> rel <> ");")
-  emit "return kunit();"
-  -- boxed continuation (overflow target): the EXISTING boxed lowering, region
-  -- off, reading the just-flushed (snapshot) refs and promoting to GMP (§6).
-  emit (boxedL <> ": ;")
-  modify' $ \g -> g {gsScalarRegion = False}
-  compileLoop mlabel (LoopWhile cond) body Nothing
-  emit (afterL <> ": ;")
-  modify' $ \g -> g {gsI64Escape = savedEsc}
 
 -- | §18 let? else branch: bind the residue pattern and run the else action
 -- as the scope's result (it replaces the rest of the scope).  With no
@@ -5824,7 +5413,7 @@ compileLetQElse mode sv mElse = case mElse of
       Just test -> emit ("if (!(" <> test <> ")) krt_fail(\"let? else: residue pattern failed\");")
       Nothing -> pure ()
     env' <- bindPatScrut sv env rp
-    fee <- withEnv env' (compile fe)
+    fee <- withEnv env' (withChild P.kLetQElsePos (compile fe))
     -- the else action replaces the rest of the scope, so it is the tail:
     -- defer it (stack-safe, §27.5A.3, with finalizers) the same way a
     -- trailing KExpr is.

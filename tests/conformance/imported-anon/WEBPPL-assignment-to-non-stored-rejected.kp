@@ -23,15 +23,14 @@ module test
 --! mode check
 
 -- POSITIVE: an explicit mutable variable accepts pure-assignment sugar.
--- Per §18.6.1 the var-bound identifier denotes the Ref itself, not the
--- contained value, so we explicitly read it before computing the next
--- value.
+-- Per §18.6.1 the var-bound identifier denotes the current value in
+-- ordinary do expressions; the hidden Ref is selected only with `ref x`.
 mutOk : Eff <[ ]> Int
 let mutOk = do
     var x = 0
-    let v <- readRef x
+    let v = x
     x = v + 1
-    let w <- readRef x
+    let w = x
     pure w
 
 --! assertType mutOk (Eff <[ ]> Int)

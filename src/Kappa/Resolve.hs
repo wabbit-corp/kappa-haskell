@@ -396,6 +396,8 @@ rExpr env = go
         let sp = exprSpan (EOpChain els)
         reassoc env sp els'
       e@EVar {} -> pure e
+      e@ERefFacet {} -> pure e
+      e@EVarRead {} -> pure e
       e@EHole {} -> pure e
       e@EIntLit {} -> pure e
       e@EFloatLit {} -> pure e
@@ -526,7 +528,7 @@ rExpr env = go
           <*> go e
           <*> mapM (\(rp, fe) -> (,) <$> rPattern env rp <*> go fe) mElse
           <*> pure sp
-      DoVar n e sp -> DoVar n <$> go e <*> pure sp
+      DoVar n mty e sp -> DoVar n <$> mapM go mty <*> go e <*> pure sp
       DoAssign n m e sp -> DoAssign n m <$> go e <*> pure sp
       DoExpr e -> DoExpr <$> go e
       DoUsing mq p e sp -> DoUsing mq <$> rPattern env p <*> go e <*> pure sp

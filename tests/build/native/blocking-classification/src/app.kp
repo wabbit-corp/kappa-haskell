@@ -1,0 +1,4 @@
+module app
+import host.native.blocking_shim as shim
+
+let main = shim.wait

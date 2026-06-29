@@ -236,7 +236,7 @@ data MutArray (a : Type) : Type = MkMutArray (buf : __ArrayBuf a)
 ```kappa
 newArray : forall (a : Type). (n : Nat) -> a -> UIO (MutArray a)
 let newArray n init = do
-    buf <- __newArray n init
+    let buf <- __newArray n init
     pure (MkMutArray buf)
 
 -- O(1), pure, total: length is stored in the buffer header
@@ -600,21 +600,23 @@ TWO read/write paths — a boxed-API path and a scalar-worker fast path:
 
 - **DOUBLE / INT64 slab, SCALAR-WORKER FAST path** (a hot loop over the array —
   the demanded case): when an array `read`/`write` sits inside an unboxed scalar
-  worker (`compileScalarWorker`, `C.hs:1216`+; the LLVM `kscalarloop_N`,
-  `LLVM.hs:3057`-`3074`), `read` feeds the **RAW** scalar (`slab[i]`, an
+  worker (`compileScalarWorker`, `C.hs:1751`+; the LLVM function scalar-worker
+  path around `LLVM.hs:2499`+), `read` feeds the **RAW** scalar (`slab[i]`, an
   `int64_t`/`double` C local) directly to the worker's arithmetic with NO box,
   and `write` stores the worker's raw scalar result into `slab[i]` with NO box.
   The worker already keeps its values in raw C locals (`int64_t`/`double`) that
-  `mem2reg` promotes to SSA registers (`LLVM.hs:3060`-`3067`), so an **unboxed
+  LLVM lowers as scalar SSA values, so an **unboxed
   numeric array + the scalar worker = an end-to-end unboxed hot loop with ZERO
   per-element allocation** and no per-element tag/immediate decode. This is the
-  exact analogue of the existing scalarized `var…while` peephole: there
-  `readRef`/`writeRef` in a scalar region read/write a raw `int64` C local
-  instead of `kref_get`/`kref_set` (`gsScalarRegion`, `C.hs:124`-`125`;
-  `scalarReadOf`, `C.hs:1275`-`1294`); here `arrayRead`/`arrayWrite` in a scalar
-  region read/write `slab[i]` instead of re-boxing. The seam is identical — an
-  array read/write peephole that, while `gsScalarRegion` (or the LLVM
-  scalar-loop body) is active, lowers to a raw slab access. This is the
+  intended analogue of a future evidence-preserving scalar optimization, not a
+  precedent for surface `var` lowering. The obsolete pre-S2.3b scalarized
+  var-ref peephole is suspended because it bypassed the checker-selected
+  `MonadRef` evidence; any replacement must prove it is semantically equivalent
+  to the selected `newRef`/`readRef`/`writeRef` actions before lowering to raw
+  locals. For arrays, the analogous future
+  peephole is an array read/write lowering that, while `gsScalarRegion` (or the
+  LLVM scalar-loop body) is active, reads/writes `slab[i]` instead of re-boxing.
+  This is the
   "extremely performant" path the design is built around; it is why the
   `elemkind`/`element_size` seam must exist from Stage A even though the boxed
   slab ships first.
@@ -745,20 +747,20 @@ specialization seam exist from Stage A.
   whole lowering. Register the `__*Int64Array`/`__*DoubleArray` `primEntries`
   rows in Stage H beside the boxed ones (same `PrimEntry` shape).
 
-### Stage C — C backend (boxed correctness + inline fast path)
+### Stage C — C backend (boxed correctness + action lowering)
 - The general IO-prim path already emits `knative_sat(kpf_io_*, args, 1)` for
   any `PrimEntry _ _ True`, so the ops get correct lowering for free.
-- **Perf delta:** add an inline fast path in `compileRunIO` (`C.hs:2478`-`2496`)
-  mirroring the existing `readRef`/`writeRef`/`newRef` peephole (which lowers
-  `__runIO (readRef r)` to a direct `kref_get(re)` — see the `case (mp, expl)`
-  there), so an array op inside a hot `__runIO` lowers to a direct
-  `karr_get(...)`/`karr_set(...)` with no node allocation.
+- **Perf delta:** keep array operations on the ordinary action-lowering path,
+  and add any direct-cell fast path at the action builder/codegen point that
+  already sees the `MonadRef`/array operation. Do not route this through a
+  value-position IO extraction: that is not part of the spec model, and backend
+  optimizations must not synthesize or depend on it.
 
 ### Stage D — LLVM backend (boxed)
-- Mirror the same recognitions in the LLVM `compileRunIO` (`LLVM.hs:2438`-
-  `2457`, which already special-cases `readRef`/`writeRef`/`newRef` →
-  `kref_get`/`kref_set`) so both backends agree. Default IO-prim lowering
-  already covers correctness; the inline path is the perf-only delta.
+- Mirror the same action-lowering recognitions in LLVM so both backends agree.
+  Default IO-prim lowering already covers correctness; any inline path is a
+  perf-only delta and must stay on the explicit action/`MonadRef`
+  representation.
 
 ### Stage E — prelude API
 - Add a `std.array.mutable` module (or fold into `std.prelude`) following the
@@ -799,9 +801,10 @@ boxed ops:
   the `__*Int64Array`/`__*DoubleArray` family for `RepInt`/`RepDouble`, the
   generic boxed family for `RepBoxed` (§5.3.1). **Wire the scalar-worker fast
   path:** when an array read/write sits in a scalar region (`gsScalarRegion`,
-  `C.hs:124`-`125`; the LLVM `kscalarloop_N` body, `LLVM.hs:3057`+) lower it to a
-  RAW slab access with no box (§5.3.4) — the array analogue of the existing
-  scalarized `readRef`/`writeRef` peephole (`scalarReadOf`, `C.hs:1275`-`1294`).
+  `C.hs:124`-`125`; the LLVM function scalar-worker path, `LLVM.hs:2499`+) lower it to a
+  RAW slab access with no box (§5.3.4) — the array analogue of a future
+  evidence-preserving var-ref optimization, never a revival of the obsolete
+  pre-S2.3b scalarized `readRef`/`writeRef` peephole.
 - **Verify with BOTH `llvm-parity.sh` AND `run-native-tests.sh`** (the latter
   has the alloc/scalar perf gates `llvm-parity.sh` misses, per the
   `backend-verify-native-perf-gates` memory note — parity passes on a
@@ -920,15 +923,13 @@ boxed ops:
   `typeScalarKinds` — the monomorphic-scalar gating the array unboxing mirrors;
   `:993` consumes `Repr.repSelect`), `:1006`-`1010` (`repScalarKind`:
   `RepInt`→`KInt64`, `RepDouble`→`KDouble`), `:1047`-`1101` (`erasedSpine
-  PositionsP`/`eraseQ0ArgsP` — erases the `forall a`), `:124`-`125`/`:1275`-`1294`
-  (`gsScalarRegion`/`scalarReadOf` — the scalar-region `readRef`/`writeRef`
-  peephole the array fast-path read/write mirrors), `:1216`+ (`compileScalar
+  PositionsP`/`eraseQ0ArgsP` — erases the `forall a`), `:1216`+ (`compileScalar
   Worker`), `:2063`/`:1906`-`1927` (primEntries / `newRef` / AtomicRef rows —
-  the registration template), `:2478`-`2496` (`compileRunIO` peephole:
-  `readRef`→`kref_get`, `writeRef`→`kref_set`).
-- `src/Kappa/Backend/LLVM.hs:2438`-`2457` (LLVM `compileRunIO` peephole mirror),
-  `:3002`-`3048` (`emitScalarLoopLL`), `:3057`-`3074` (`kscalarloop_N` — the
-  unboxed `int64`/`double` SSA-register loop the array scalar fast-path feeds).
+  the registration template), and the do/action lowering paths for explicit
+  mutable operations.
+- `src/Kappa/Backend/LLVM.hs:2499`+ (function scalar workers, including the
+  `kwi_`/`kwd_` unboxed `int64`/`double` SSA path the array scalar fast-path
+  would feed).
 - `docs/Spec.md` §12.2/§12.2.6/§12.2.7 (quantities; linear non-droppable;
   ownership-only, `:11428`), §15 (`:14930`, totality is about transparent
   defs), §18.1.2-18.1.3 (`:18558`+, Defect = IO effect, not partiality),

@@ -23,7 +23,7 @@ import Kappa.Build.Provenance (manifestProvenance, renderProvenance)
 import Kappa.Build.Reify (reifyBuildConfig)
 import qualified Kappa.Build.Types as B
 import Kappa.Backend.Repr (CtorLayout (..), CtorLayoutInfo (..), ctorLayoutOf)
-import Kappa.Check (AuditRecord (..), CheckState (..), UnsafeConfig (..), defaultUnsafeConfig)
+import Kappa.Check (AuditRecord (..), CheckState (..), CtorInfo (..), UnsafeConfig (..), defaultUnsafeConfig)
 import Kappa.Core (GName (..), Term (..), gKey)
 import Kappa.CoreOps (foldTermWithDepth)
 import Kappa.Ownership
@@ -144,7 +144,7 @@ cmdVerify cfg fmt path = do
 -- lowers, with @csOwnership@ populated by 'annotateOwnership'), then renders the
 -- 'OwnInfo' for each global defined in the file's own module(s): per binder its
 -- @(declQ, refined, borrowed, droppable)@ and per 'CVar' occurrence its
--- @LastUse|NonLast|Borrowed@ classification.
+-- @LastUse|NonLast|Borrowed@ classification plus @consumes=True|False@.
 --
 -- It also runs the S1.2 declared-quantity cross-check over the dumped globals
 -- and prints any mismatch (a wrong last-use analysis), so the dump is
@@ -169,8 +169,9 @@ cmdDumpOwnership cfg path = do
   -- (S1.1) and the §3a refinement tighten-only invariant (S1.4).
   let userBodies = Map.filterWithKey (\(GName m _) _ -> m == userMod) bodies
       ownCtx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      ctorTypes = Map.map ciType (csCtors st)
       mismatches =
-        crossCheckBodies ownCtx userBodies own
+        crossCheckBodies ownCtx ctorTypes userBodies own
       -- S1.3: the constructor layout 'Repr.ctorLayoutOf' resolves from each
       -- 'CCtor' head-type annotation in the user code (observe-only — consumed
       -- by S5 FBIP reuse, not by any current codegen).

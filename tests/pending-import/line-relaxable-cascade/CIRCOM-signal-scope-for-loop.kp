@@ -16,8 +16,8 @@
 let goodScope : IO e Int = do
     var acc = 0
     for i in 0 ..< 10 do
-        acc = !(readRef acc) + i
-    readRef acc
+        acc = acc + i
+    pure acc
 
 
 -- NEGATIVE: binding declared inside a for-loop body leaks out of scope.

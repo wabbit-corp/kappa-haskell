@@ -29,10 +29,10 @@ let handleConnection cfg env app conn =
         using conn <- pure conn
         var keepGoing = True
         var pending = bytes.emptyBytes
-        while !(readRef keepGoing) do
+        while keepGoing do
             try
                 do
-                    let prefix <- readRef pending
+                    let prefix = pending
                     let read <- wire.readRequest conn cfg prefix
                     pending = read.remaining
                     let start <- nowMonotonic

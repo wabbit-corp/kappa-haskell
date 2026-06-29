@@ -14,5 +14,5 @@ let double n = ioPure (addInt n n)
 
 main : UIO Unit
 let main = do
-    xs <- traverse double (1 :: 2 :: 3 :: Nil)
+    let xs <- traverse double (1 :: 2 :: 3 :: Nil)
     printlnString (showInt (sumList xs))

@@ -1,0 +1,9 @@
+module main
+
+main : UIO Unit
+let main = do
+    var x : Type = Bool
+    printlnString "ok"
+
+--! mode check
+--! assertNoErrors

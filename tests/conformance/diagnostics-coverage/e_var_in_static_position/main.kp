@@ -1,0 +1,19 @@
+module main
+
+bad : UIO Unit
+let bad = do
+    var x : Type = Bool
+    let y : x = True
+    printlnString "unreachable"
+
+--! mode check
+--! assertDiagnostic error E_VAR_IN_STATIC_POSITION
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/binding x
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/selectedFacet current-value
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/storedValueType Type
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/hiddenReferenceType "Ref Type"
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/enclosingMonad "IO Void"
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/monadRefEvidenceType "MonadRef (IO Void)"
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/occurrence user-written
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /payload/blockedBy static-position

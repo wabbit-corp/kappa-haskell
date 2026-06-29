@@ -98,8 +98,8 @@ let parseHeaderLine line =
     match bytes.bytesBreakOn colon line
     case None -> Err (ProtocolError statusBadRequest "malformed header line")
     case Some hit ->
-        let nameBytes = headers.normalizeNameBytes hit.prefix
-        let valueBytes = dropLeadingOws (bytes.bytesDrop (bytes.bytesLength colon) hit.suffix)
+        let ω nameBytes = headers.normalizeNameBytes hit.prefix
+        let ω valueBytes = dropLeadingOws (bytes.bytesDrop (bytes.bytesLength colon) hit.suffix)
         Ok (Header { name = unicode.decodeUtf8Lossy nameBytes, value = unicode.decodeUtf8Lossy valueBytes })
 
 parseHeaderLines : Bytes -> Result HttpError Headers
@@ -115,7 +115,7 @@ let parseHeaderLines block =
                     case Ok h -> Ok ((::) h acc)
                     case Err e -> Err e
                 case Some split ->
-                    let line = split.prefix
+                    let ω line = split.prefix
                     let tail = bytes.bytesDrop (bytes.bytesLength crlf) split.suffix
                     if bytes.bytesIsEmpty line then Ok acc
                     else
@@ -129,13 +129,13 @@ let splitRequestLine line =
     match bytes.bytesBreakOn space line
     case None -> Err (ProtocolError statusBadRequest "missing method delimiter")
     case Some first ->
-        let methodBytes = first.prefix
-        let afterMethod = bytes.bytesDrop (bytes.bytesLength space) first.suffix
+            let ω methodBytes = first.prefix
+            let ω afterMethod = bytes.bytesDrop (bytes.bytesLength space) first.suffix
         match bytes.bytesBreakOn space afterMethod
         case None -> Err (ProtocolError statusBadRequest "missing version delimiter")
         case Some second ->
-            let targetBytes = second.prefix
-            let versionBytes = bytes.bytesDrop (bytes.bytesLength space) second.suffix
+            let ω targetBytes = second.prefix
+            let ω versionBytes = bytes.bytesDrop (bytes.bytesLength space) second.suffix
             Ok (method = methodFromBytes methodBytes,
                 target = unicode.decodeUtf8Lossy targetBytes,
                 version = versionFromBytes versionBytes)
@@ -263,8 +263,8 @@ let readUntilHeaderEnd conn cfg initial =
     do
         var acc = initial
         var done = False
-        while not (!(readRef done)) do
-            let current <- readRef acc
+        while not done do
+            let current = acc
             if bytes.bytesLength current > cfg.maxHeaderBytes then
                 raise (HeaderTooLarge cfg.maxHeaderBytes)
             else
@@ -276,7 +276,7 @@ let readUntilHeaderEnd conn cfg initial =
                         if bytes.bytesIsEmpty current then raise ConnectionClosed
                         else raise (ProtocolError statusBadRequest "peer closed before completing request headers")
                     case ReadBytes chunk -> acc = bytes.bytesAppend current chunk
-        readRef acc
+        pure acc
 
 readFixedBody : (& conn : net.Connection) -> ServerConfig -> Nat -> Bytes -> IO HttpError FixedRead
 let readFixedBody conn cfg needed initial =
@@ -284,14 +284,14 @@ let readFixedBody conn cfg needed initial =
         if needed > cfg.maxStrictBodyBytes then raise (BodyTooLarge cfg.maxStrictBodyBytes) else pure ()
         var acc = initial
         var done = False
-        while not (!(readRef done)) do
-            let current <- readRef acc
+        while not done do
+            let current = acc
             if bytes.bytesLength current >= needed then done = True
             else
                 match !(net.readSome conn cfg.readChunkBytes)
                 case PeerClosed -> raise (ProtocolError statusBadRequest "peer closed before completing request body")
                 case ReadBytes chunk -> acc = bytes.bytesAppend current chunk
-        let full <- readRef acc
+        let full = acc
         let payload = bytes.bytesTake needed full
         let remaining = bytes.bytesDrop needed full
         pure (FixedRead { body = body.strict payload, remaining = remaining })

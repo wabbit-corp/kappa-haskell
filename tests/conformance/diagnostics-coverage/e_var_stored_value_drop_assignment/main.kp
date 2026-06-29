@@ -1,0 +1,25 @@
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full Token
+    cell = Empty
+    pure ()
+
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/kind mutable-binding
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/binding cell
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/selectedFacet assignment-target
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/sourceOperation assignment
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/storedValueType Cell
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/hiddenReferenceType "Ref Cell"
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/quantityFact stored-value
+--! assertDiagnosticPayload error E_QTT_LINEAR_DROP /payload/storedValuePath tok

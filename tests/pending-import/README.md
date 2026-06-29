@@ -5,6 +5,11 @@ corpus). These did **not** pass against the current Kappa compiler with a mechan
 convert (`mode analyze`→`check`, `anonlang.`→`kappa.`, `Anon`→`Kappa`). They are staged
 here — OUTSIDE `tests/conformance`, so the gate ignores them — to fix & import later.
 
+Some pending files predate S2.3b mutable-current facets. A staged fixture that
+still treats a `var` binding as though the source name itself were a `Ref` is
+invalid under the current spec until rewritten to use current-value occurrences,
+assignment, or explicit `ref x` for the hidden cell.
+
 **391** sibling tests now live in `tests/conformance/imported-anon/`: 360 that
 imported cleanly, plus 31 recovered after two compiler/harness fixes —
 6 rescued by the inline `--!! kappa.family` marker fix (§T.5.1 `matchCF`), and

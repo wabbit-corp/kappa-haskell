@@ -3,7 +3,7 @@ module macro_failure_related_origin
 makeBad : Syntax Int -> Elab (Syntax Int)
 let makeBad s =
     do
-        origin <- syntaxOrigin s
+        let origin <- syntaxOrigin s
         failElabWith "E_TEST_MACRO_FAILURE" "macro rejected this expression" [origin]
 
 bad : Int
