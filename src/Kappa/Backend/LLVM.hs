@@ -49,6 +49,7 @@ import qualified Kappa.Backend.Repr as Repr
 import Kappa.Build.Types (FfiClass (..))
 import Kappa.Check (CheckState (..))
 import Kappa.Core
+import Kappa.CoreOps (dropStaticGlobalPrefixArgs, dropStaticPrefixLams)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), quote)
 import Kappa.Source (Span, noSpan)
 import Numeric (showHex)
@@ -710,9 +711,8 @@ emitGlobal g = do
           -- (with a boxed escape).  Mirrors the C backend's 'emitGlobal' tail.
           mplan <- scalarFnPlanLL g
           case mplan of
-            Just (pks, ret) -> do
-              let (_, inner) = funcArity tm
-              compileScalarFnWorkerLL g pks ret inner
+            Just (_, pks, ret, scalarInner) ->
+              compileScalarFnWorkerLL g pks ret scalarInner
             Nothing -> pure ()
 
 -- | The leading-lambda arity of a term and the body beneath those binders
@@ -732,6 +732,7 @@ funcArity = go 0
 -- that block, and the @ret@ phi names it as the fresh value's predecessor.
 emitArity0Accessor :: Text -> [Text] -> Text -> Text -> Gen ()
 emitArity0Accessor ident buildInsns endBlock operand = do
+  declRuntime "declare void @krc_mark_shared_recursive(ptr)"
   let cacheG = "@" <> ident <> ".cache"
   modify' $ \st ->
     st {gsGlobalsExtra = (cacheG <> " = internal global ptr null, align 8") : gsGlobalsExtra st}
@@ -739,14 +740,15 @@ emitArity0Accessor ident buildInsns endBlock operand = do
         T.unlines $
           [ "define internal ptr @" <> ident <> "() {"
           , "entry:"
-          , "  %cached = load ptr, ptr " <> cacheG <> ", align 8"
+          , "  %cached = load atomic ptr, ptr " <> cacheG <> " acquire, align 8"
           , "  %hit = icmp ne ptr %cached, null"
           , "  br i1 %hit, label %ret, label %build"
           , ""
           , "build:"
           ]
             ++ map ("  " <>) buildInsns
-            ++ [ "  store ptr " <> operand <> ", ptr " <> cacheG <> ", align 8"
+            ++ [ "  call void @krc_mark_shared_recursive(ptr " <> operand <> ")"
+               , "  store atomic ptr " <> operand <> ", ptr " <> cacheG <> " release, align 8"
                , "  br label %ret"
                , ""
                , "ret:"
@@ -2954,12 +2956,14 @@ emitScalarLoopFnLL plan = do
     boxedL <- freshLabel "sbox_"
     abortL <- freshLabel "sabort_"
     doneL <- freshLabel "sdone_"
-    let flushSnapTo snapOf target = do
+    let flushSnapStores snapOf =
           forM_ cells $ \cid -> do
             bx <- freshReg
             emit (bx <> " = call ptr @kint(i64 " <> snapOf cid <> ")")
             dump <- freshReg
             emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! cid) <> ", ptr " <> bx <> ")")
+        flushSnapTo snapOf target = do
+          flushSnapStores snapOf
           emit ("br label %" <> target)
     emit ("br label %" <> contL)
     startBlock contL
@@ -2995,6 +2999,13 @@ emitScalarLoopFnLL plan = do
     emit (spAbort <> " = icmp ne i32 " <> spRc <> ", 0")
     emit ("br i1 " <> spAbort <> ", label %" <> abortL <> ", label %" <> contL)
     startBlock abortL
+    abortSnaps <-
+      fmap Map.fromList $
+        forM cells $ \cid -> do
+          v <- freshReg
+          emit (v <> " = load i64, ptr " <> (slotOf Map.! cid) <> ", align 8")
+          pure (cid, v)
+    flushSnapStores (\cid -> abortSnaps Map.! cid)
     declRuntime "declare void @krt2_scalar_abort()"
     emit "call void @krt2_scalar_abort()"
     emit "unreachable"
@@ -3249,13 +3260,13 @@ varKindLL dks i = if i >= 0 && i < length dks then Just (dks !! i) else Nothing
 -- telescope matching the binder count + a scalar result, at least one unboxed
 -- scalar param, and a scalar-expressible body.  @Nothing@ ⇒ boxed-only (never a
 -- miscompile).  Faithful port of C's 'scalarPlan' + 'typeScalarKinds'.
-scalarFnPlanLL :: GName -> Gen (Maybe ([ParamKindLL], ScalarKindLL))
+scalarFnPlanLL :: GName -> Gen (Maybe ([Bool], [ParamKindLL], ScalarKindLL, Term))
 scalarFnPlanLL g = do
   bodies <- gets gsBodies
   case Map.lookup g bodies of
     Nothing -> pure Nothing
     Just body -> do
-      let (binders, inner) = stripLamsQLL body
+      let (binders, _) = stripLamsQLL body
           n = length binders
       -- all binders explicit + relevant: an implicit/erased binder is passed the
       -- unit placeholder, which a scalar worker must never read.
@@ -3266,11 +3277,15 @@ scalarFnPlanLL g = do
             -- require at least one unboxed scalar param + an ALL-scalar slot set
             -- (the LLVM port does not emit the mixed @kwm_@ boxed-slot worker;
             -- any boxed slot ⇒ stay on the boxed path).
-            Just (pks, ret)
+            Just (mask, pks, ret)
               | any (/= PBoxedLL) pks
               , all (/= PBoxedLL) pks -> do
-                  ok <- scalarEligTailLL g pks (reverse pks) ret inner
-                  pure (if ok then Just (pks, ret) else Nothing)
+                  case dropStaticPrefixLams mask (dropStaticGlobalPrefixArgs g mask body) of
+                    Nothing -> pure Nothing
+                    Just scalarBody -> do
+                      let (_, scalarInner) = stripLamsQLL scalarBody
+                      ok <- scalarEligTailLL g pks (reverse pks) ret scalarInner
+                      pure (if ok then Just (mask, pks, ret, scalarInner) else Nothing)
             _ -> pure Nothing
         else pure Nothing
 
@@ -3279,17 +3294,20 @@ scalarFnPlanLL g = do
 -- 'typeScalarKinds' uses).  The result must be scalar; a count mismatch against
 -- the body's binder count yields 'Nothing' (so a kind is never assigned to the
 -- wrong binder).  Mirror of C's 'typeScalarKinds'.
-typeScalarKindsLL :: GName -> Int -> Gen (Maybe ([ParamKindLL], ScalarKindLL))
+typeScalarKindsLL :: GName -> Int -> Gen (Maybe ([Bool], [ParamKindLL], ScalarKindLL))
 typeScalarKindsLL g n = do
   globals <- gets gsGlobals
   ctx <- gets gsEvalCtx
   pure $ case Map.lookup g globals of
     Nothing -> Nothing
     Just gd -> do
+      mask <- Repr.runtimeParamMask ctx (gdType gd)
       (paramReps, retRep) <- Repr.repSelect ctx (gdType gd)
       ret <- repScalarKindLL retRep
       let pks = map (\r -> maybe PBoxedLL PScalarLL (repScalarKindLL r)) paramReps
-      if length pks == n then Just (pks, ret) else Nothing
+      if length mask == n && length pks == length (filter id mask)
+        then Just (mask, pks, ret)
+        else Nothing
 
 -- | Strip leading lambdas, recording each binder's (icity, quantity) (mirror of
 -- C's 'stripLamsQ' — the LLVM 'funcArity' discards them).
@@ -3762,9 +3780,8 @@ scalarFnCondLL g pks ret dslots dks term = case spineOf term of
 --     fit i64 (a non-fitting K_BIGINT reboxes to a DIFFERENT number ⇒ escape).
 --     @kis_int_any@ first rejects any non-Int (a defensive guard; a type-checked
 --     Int param never hits it).
---   * @kunbox_dbl_ll(v, ovf)@: a Double is always K_DBL for a type-checked
---     Double argument, so @kas_dbl@ is exact and never traps; the @ovf@ slot is
---     unused (kept for a uniform two-helper signature).
+--   * @kunbox_dbl_ll(v, ovf)@: mirrors @kunbox_dbl@'s wrong-tag ESCAPE via the
+--     linkable runtime wrapper, rather than @kas_dbl@'s aborting assertion.
 emitScalarUnboxHelpersLL :: Gen ()
 emitScalarUnboxHelpersLL = do
   done <- gets gsScalarHelpers
@@ -3774,7 +3791,7 @@ emitScalarUnboxHelpersLL = do
     declRuntime "declare i64 @kas_u64(ptr)"
     declRuntime "declare ptr @kint(i64)"
     declRuntime "declare i32 @klit_eq(ptr, ptr)"
-    declRuntime "declare double @kas_dbl(ptr)"
+    declRuntime "declare double @kunbox_dbl_runtime(ptr, ptr)"
     let i64Helper =
           T.unlines
             [ "define internal i64 @kunbox_i64_ll(ptr %v, ptr %ovf) {"
@@ -3799,7 +3816,7 @@ emitScalarUnboxHelpersLL = do
           T.unlines
             [ "define internal double @kunbox_dbl_ll(ptr %v, ptr %ovf) {"
             , "entry:"
-            , "  %d = call double @kas_dbl(ptr %v)"
+            , "  %d = call double @kunbox_dbl_runtime(ptr %v, ptr %ovf)"
             , "  ret double %d"
             , "}"
             ]
@@ -3810,19 +3827,20 @@ emitScalarUnboxHelpersLL = do
 -- worker, and select the boxed result (the curried @kg_@/@kapp@/@ktrampoline@
 -- chain over the ORIGINAL boxed args) on a wrong-tag arg OR an int64 overflow,
 -- else re-box the worker's scalar result.
-compileScalarFnCallLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [(Icit, Term)] -> Gen Text
-compileScalarFnCallLL g pks ret sargs = do
+compileScalarFnCallLL :: GName -> [ParamKindLL] -> ScalarKindLL -> [(Icit, Term)] -> [Int] -> Gen Text
+compileScalarFnCallLL g pks ret sargs runtimeIdxs = do
   emitScalarUnboxHelpersLL
   let worker = scalarFnWorkerNameLL g pks ret
   -- compile the boxed args once (used to unbox AND as the boxed-escape inputs).
   boxed <- mapM (compileErasableArg . snd) sargs
+  let runtimeBoxed = [boxed !! i | i <- runtimeIdxs, i >= 0, i < length boxed]
   -- a stack i32 for the unbox/overflow flag.
   ovfSlot <- freshReg
   emit (ovfSlot <> " = alloca i32, align 4")
   emit ("store i32 0, ptr " <> ovfSlot <> ", align 4")
   -- unbox each scalar slot via the @.ll@-local tag-checked helper (sets *ovfSlot
   -- on a wrong/out-of-range arg — the soundness net, mirroring C's @kunbox_*@).
-  uvs <- forM (zip pks boxed) $ \(pk, bx) -> case pk of
+  uvs <- forM (zip pks runtimeBoxed) $ \(pk, bx) -> case pk of
     PScalarLL KInt64L -> do
       r <- freshReg
       emit (r <> " = call i64 @kunbox_i64_ll(ptr " <> bx <> ", ptr " <> ovfSlot <> ")")
@@ -4261,11 +4279,11 @@ compileApp term0 = do
               -- calls keep the boxed path.  Mirrors C's 'compileDirectCall'.
               mplan <- scalarFnPlanLL g
               case mplan of
-                Just (pks, ret)
-                  | let explCount = length [() | (Expl, _) <- sargs]
-                  , explCount == length pks
-                  , length sargs == length pks ->
-                      compileScalarFnCallLL g pks ret sargs
+                Just (mask, pks, ret, _)
+                  | length sargs == length mask
+                  , let runtimeIdxs = [i | (i, keep) <- zip [0 :: Int ..] mask, keep]
+                  , length runtimeIdxs == length pks ->
+                      compileScalarFnCallLL g pks ret sargs runtimeIdxs
                 _ -> compileAppDefault term
     _ -> compileAppDefault term
 

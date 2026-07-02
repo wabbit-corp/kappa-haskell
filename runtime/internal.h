@@ -217,6 +217,37 @@ typedef struct AbortExit {
   struct AbortExit *next;
 } AbortExit;
 
+/* §32.2.20 KK_ABANDEND state: the clause's saved continuation/exit-state and
+ * original reason, resumed once the RK_DRAIN walk over the abandoned slice has
+ * run all its do-scope exit actions. */
+typedef struct AbandonEnd {
+  Cont      *kont;
+  ExitStack *saved_exits;
+  int        rkind;
+  KValue    *rval;
+  KValue    *rlabel;
+  struct AbandonEnd *prev_drain;
+} AbandonEnd;
+
+/* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason. */
+typedef struct {
+  ExitStack  *xs; int i; int rkind; KValue *rval; KValue *rlabel;
+  int origin_kind; KValue *origin_val;
+  AbandonEnd *drain_ae;
+} FinSeq;
+
+/* §18.1.21 a captured ONE-SHOT resumption. */
+typedef struct Resumption {
+  Cont      *head;
+  Cont      *tail;
+  ExitStack *cur_exits;
+  KValue    *label;
+  void      *handler;
+  void      *handler_exits;
+  int        used;
+  int        tail_res;
+} Resumption;
+
 /* ── fibers ─────────────────────────────────────────────────────────────── */
 typedef enum { F_RUNNABLE, F_RUNNING, F_PARKED, F_DONE } FStatus;
 
@@ -424,7 +455,9 @@ extern Rt *g_rt;
 
 /* ── cross-file internal entry points ───────────────────────────────────── */
 void    krt2i_rq_push(Rt *rt, Fiber *f);      /* enqueue a runnable fiber + signal */
-void    krt2i_resume(Rt *rt, Fiber *f);       /* status=RUNNABLE then rq_push (fork/cede; fiber not parked) */
+void    krt2i_resume(Rt *rt, Fiber *f);       /* mark fiber graph shared; status=RUNNABLE; rq_push */
+void    krt2i_mark_fiber_shared(Fiber *f);    /* mark fiber-owned values before publication */
+void    krt2i_mark_fgn_payload_shared(const char *kind, void *payload); /* mark runtime-private K_FGN payloads */
 /* Idempotent wake of a PARKED fiber (REVIEW.md B3d): CAS F_PARKED -> F_RUNNABLE;
  * only the winner enqueues, so two wakers racing (e.g. a promise completion and
  * an interrupt) cannot double-enqueue, and a late waker of an already-resumed or

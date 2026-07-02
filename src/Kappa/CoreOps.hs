@@ -14,6 +14,8 @@ module Kappa.CoreOps
   , shiftTerm
   , substTerm
   , substTopTerm
+  , dropStaticPrefixLams
+  , dropStaticGlobalPrefixArgs
   , zonkTermWith
   , maxFreeIndexTerm
   , metaIdsOf
@@ -245,6 +247,77 @@ substTerm target replacement = mapTermWithDepth rewrite 0
       CVar i
         | i == target + d -> Just (shiftTerm d 0 replacement)
       _ -> Nothing
+
+-- | Drop selected leading lambdas and rewrite de Bruijn indices accordingly.
+--
+-- The mask is in source telescope order: 'True' keeps the corresponding lambda,
+-- 'False' removes it. Removing a binder fails if the body actually references
+-- that binder; this is the conservative backend use case for runtime-erased
+-- kind-domain parameters. References to outer binders are shifted down, and
+-- binders introduced inside the body are respected.
+dropStaticPrefixLams :: [Bool] -> Term -> Maybe Term
+dropStaticPrefixLams mask0 = goMask mask0
+  where
+    goMask [] t = Just t
+    goMask (keep : rest) (CLam ic q n body)
+      | keep = CLam ic q n <$> goMask rest body
+      | otherwise = removeBinderAt 0 body >>= goMask rest
+    goMask (_ : _) _ = Nothing
+
+    removeBinderAt :: Int -> Term -> Maybe Term
+    removeBinderAt d = \case
+      CVar i
+        | i == d -> Nothing
+        | i > d -> Just (CVar (i - 1))
+        | otherwise -> Just (CVar i)
+      CGlob g -> Just (CGlob g)
+      CLam ic q n b -> CLam ic q n <$> removeBinderAt (d + 1) b
+      CPi ic q brw n a b -> CPi ic q brw n <$> removeBinderAt d a <*> removeBinderAt (d + 1) b
+      CApp ic f a -> CApp ic <$> removeBinderAt d f <*> removeBinderAt d a
+      CSort u -> Just (CSort u)
+      CLit l -> Just (CLit l)
+      CCtor g ann as -> CCtor g <$> traverse (removeBinderAt d) ann <*> traverse (removeBinderAt d) as
+      CMatch s ann alts -> CMatch <$> removeBinderAt d s <*> traverse (removeBinderAt d) ann <*> traverse (goAlt d) alts
+      CRecordT fs -> CRecordT <$> traverse (\(n, t) -> (\t' -> (n, t')) <$> removeBinderAt d t) fs
+      CRecordV fs -> CRecordV <$> traverse (\(n, t) -> (\t' -> (n, t')) <$> removeBinderAt d t) fs
+      CProj e n -> CProj <$> removeBinderAt d e <*> pure n
+      CProjAt e n i -> CProjAt <$> removeBinderAt d e <*> pure n <*> pure i
+      CVariantT ms -> CVariantT <$> traverse (removeBinderAt d) ms
+      CInject tag e -> CInject tag <$> removeBinderAt d e
+      CLet q n a b c -> CLet q n <$> removeBinderAt d a <*> removeBinderAt d b <*> removeBinderAt (d + 1) c
+      CLetRec q n a b c -> CLetRec q n <$> removeBinderAt d a <*> removeBinderAt (d + 1) b <*> removeBinderAt (d + 1) c
+      CMeta m -> Just (CMeta m)
+      CDo {} -> Nothing
+      CSealE ls e -> CSealE ls <$> removeBinderAt d e
+      CSigT ls e -> CSigT ls <$> removeBinderAt d e
+      CThunkE e -> CThunkE <$> removeBinderAt d e
+      CLazyE e -> CLazyE <$> removeBinderAt d e
+      CForceE e -> CForceE <$> removeBinderAt d e
+      CIf a b c -> CIf <$> removeBinderAt d a <*> removeBinderAt d b <*> removeBinderAt d c
+      CQuote qs slots -> CQuote qs <$> traverse (removeBinderAt d) slots
+
+    goAlt d (CaseAlt p gd b) =
+      let d' = d + patBindersC p
+       in CaseAlt p <$> traverse (removeBinderAt d') gd <*> removeBinderAt d' b
+
+-- | Drop static arguments from saturated-or-oversaturated applications of one
+-- global, using the same source-order mask as 'dropStaticPrefixLams'. This is
+-- used for scalar worker self-calls after runtime-erased prefix binders have
+-- been removed from the worker ABI.
+dropStaticGlobalPrefixArgs :: GName -> [Bool] -> Term -> Term
+dropStaticGlobalPrefixArgs target mask =
+  mapTermWithDepth rewrite 0
+  where
+    rewrite _ t =
+      let (hd, sargs) = spineOfTerm t
+       in case hd of
+            CGlob g
+              | g == target
+              , length sargs >= length mask ->
+                  let (prefix, rest) = splitAt (length mask) sargs
+                      kept = [arg | (True, arg) <- zip mask prefix]
+                   in Just (foldl (\f (ic, a) -> CApp ic f a) hd (kept ++ rest))
+            _ -> Nothing
 
 -- | Replace solved metavariables using a caller-supplied resolver.  The resolver
 -- receives the current binder depth so the caller can quote a meta solution at

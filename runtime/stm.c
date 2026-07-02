@@ -117,6 +117,7 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
       case STM_NEW: {
         TVar *tv = (TVar *)GC_MALLOC(sizeof(TVar));
         VBox *b = (VBox *)GC_MALLOC(sizeof(VBox));
+        krc_mark_shared_recursive(kctor_arg(cur, 0));
         b->val = kctor_arg(cur, 0); b->version = 0;
         atomic_store(&tv->box, b); tv->watchers = NULL;
         val = kfgn(tv, KRT2_KIND_TVAR);
@@ -193,6 +194,7 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
         if (j_newer_write(&j, i)) continue;                /* install each TVar once (newest) */
         TVar *tv = j.w[i].tv;
         VBox *nb = (VBox *)GC_MALLOC(sizeof(VBox));
+        krc_mark_shared_recursive(j.w[i].val);
         nb->val = j.w[i].val; nb->version = tick;
         atomic_store_explicit(&tv->box, nb, memory_order_release);
         Waiter *w = tv->watchers; tv->watchers = NULL;     /* take all watchers (de-duped by the wake CAS) */
@@ -216,6 +218,7 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
     int dp = krt2i_deliver_pending_before_park(rt, f);
     if (dp < 0) return 0;
     if (dp > 0) return 1;
+    krt2i_mark_fiber_shared(f);
     pthread_mutex_lock(&g_stm);
     stale = 0;
     for (int i = 0; i < j.nr; i++) {

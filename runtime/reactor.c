@@ -142,6 +142,7 @@ void krt2i_reactor_start(Rt *rt) {
 }
 
 void krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
+  krt2i_mark_fiber_shared(f);
   atomic_store(&f->status, F_PARKED);     /* f stays GC-live via rt->all */
   /* fix S2: mark the worker-visible mirror BEFORE enqueuing, so the abandonment
    * path (fiber_step) knows a timer may be live and routes a cancel.  The reactor

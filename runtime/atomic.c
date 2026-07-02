@@ -109,6 +109,7 @@ static memory_order cas_fail_order(KValue *o) {
 KValue *krt2_new_atomic_ref(KValue *v) {
   struct AtomicRef *r = (struct AtomicRef *)kgc_alloc(sizeof *r);
   pthread_mutex_init(&r->mu, NULL);
+  krc_mark_shared_recursive(v);
   r->cell = v;
   r->kind = atomic_kind_of(v);
   return kfgn(r, KRT2_KIND_ATOMIC);
@@ -128,6 +129,7 @@ KValue *krt2_atomic_store(KValue *order, KValue *ref, KValue *v) {
   struct AtomicRef *r = as_aref(ref);
   atomic_check_kind(r, v);
   pthread_mutex_lock(&r->mu);
+  krc_mark_shared_recursive(v);
   r->cell = v;
   pthread_mutex_unlock(&r->mu);
   return kunit();
@@ -139,6 +141,7 @@ KValue *krt2_atomic_exchange(KValue *order, KValue *ref, KValue *v) {
   atomic_check_kind(r, v);
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
+  krc_mark_shared_recursive(v);
   r->cell = v;
   pthread_mutex_unlock(&r->mu);
   return old;
@@ -158,6 +161,7 @@ KValue *krt2_atomic_compare_exchange(KValue *succ, KValue *fail,
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
   if (atomic_value_eq(r->kind, old, expected)) {
+    krc_mark_shared_recursive(desired);
     r->cell = desired;
   }
   pthread_mutex_unlock(&r->mu);
@@ -172,7 +176,9 @@ KValue *krt2_atomic_fetch_add(KValue *order, KValue *ref, KValue *v) {
   if (r->kind != AKIND_INT) krt_fail("atomicFetchAdd: AtomicRef is not an Integer cell");
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
-  r->cell = kp_addInt(old, v);
+  KValue *nv = kp_addInt(old, v);
+  krc_mark_shared_recursive(nv);
+  r->cell = nv;
   pthread_mutex_unlock(&r->mu);
   return old;
 }
@@ -183,7 +189,9 @@ KValue *krt2_atomic_fetch_sub(KValue *order, KValue *ref, KValue *v) {
   if (r->kind != AKIND_INT) krt_fail("atomicFetchSub: AtomicRef is not an Integer cell");
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
-  r->cell = kp_subInt(old, v);
+  KValue *nv = kp_subInt(old, v);
+  krc_mark_shared_recursive(nv);
+  r->cell = nv;
   pthread_mutex_unlock(&r->mu);
   return old;
 }
@@ -194,7 +202,9 @@ KValue *krt2_atomic_fetch_and(KValue *order, KValue *ref, KValue *v) {
   if (r->kind != AKIND_INT) krt_fail("atomicFetchAnd: AtomicRef is not an Integer cell");
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
-  r->cell = kp_intAnd(old, v);
+  KValue *nv = kp_intAnd(old, v);
+  krc_mark_shared_recursive(nv);
+  r->cell = nv;
   pthread_mutex_unlock(&r->mu);
   return old;
 }
@@ -205,7 +215,9 @@ KValue *krt2_atomic_fetch_or(KValue *order, KValue *ref, KValue *v) {
   if (r->kind != AKIND_INT) krt_fail("atomicFetchOr: AtomicRef is not an Integer cell");
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
-  r->cell = kp_intOr(old, v);
+  KValue *nv = kp_intOr(old, v);
+  krc_mark_shared_recursive(nv);
+  r->cell = nv;
   pthread_mutex_unlock(&r->mu);
   return old;
 }
@@ -216,7 +228,9 @@ KValue *krt2_atomic_fetch_xor(KValue *order, KValue *ref, KValue *v) {
   if (r->kind != AKIND_INT) krt_fail("atomicFetchXor: AtomicRef is not an Integer cell");
   pthread_mutex_lock(&r->mu);
   KValue *old = r->cell;
-  r->cell = kp_intXor(old, v);
+  KValue *nv = kp_intXor(old, v);
+  krc_mark_shared_recursive(nv);
+  r->cell = nv;
   pthread_mutex_unlock(&r->mu);
   return old;
 }

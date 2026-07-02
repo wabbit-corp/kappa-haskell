@@ -164,9 +164,17 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      Boehm still frees while a DEBUG assert checks
      `rc` against the collector (de-risks use-after-free). Last verified 2026-07-02: conformance 2094/0, with
      native RC parity covered by `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`; underflow-clean +
-     non-vacuous when those gates pass. **Before S3:** the returning-arm (`SinkTail`/`SinkBounce`) match cell-drop
+     non-vacuous when those gates pass. **Before S3.2/free-on-zero:** the returning-arm (`SinkTail`/`SinkBounce`) match cell-drop
      tighten, projection-result ownership for broader scope-close drops, and keeping the S2.3c storing-primitive audit current.
-   - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
+   - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC. Full plan:
+     [PERCEUS-S3-PLAN.md](runtime/docs/PERCEUS-S3-PLAN.md) — scope = RC-free the immutable acyclic thread-local
+     shapes only (`K_CTOR`/`K_REC`/`K_VARIANT`/`K_STR`/`K_BOUNCE`/`K_FAIL`), retain closures,
+     IO/action/native wrappers, `K_REF`/`K_ARRAY`/`K_THUNK`/`K_BIGINT`/`K_BYTE`/`K_BYTES`/`K_FGN`, and shared
+     values on Boehm until the later ownership/atomic stages; S3.0/S3.1 prereqs landed = `kis_rc_freeable` +
+     shared-bit encoding, `karr_new` per-slot dup, `krec_without` kept-field dup, `tshare` mark+shared-dup/drop-no-op,
+     disabled iterative drop-descent skeleton, and
+     arity-guard reconcile; S3.2 wires the actual `kdrop` free-on-zero branch under an ASan/double-free
+     oracle (the risk model inverts from leak/assert to UAF).
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.

@@ -49,6 +49,7 @@ void krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause) {
   int wake_now;
   pthread_mutex_lock(&target->lock);
   if (!atomic_load(&target->interrupt_pending)) {
+    krc_mark_shared_recursive(cause);
     target->interrupt_cause = cause;
     atomic_store_explicit(&target->interrupt_pending, 1, memory_order_release);
   }
@@ -77,6 +78,7 @@ int krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wa
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
+  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 0; w->next = target->waiters; target->waiters = w;
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&target->lock);
@@ -175,6 +177,7 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
   int parked = 0;
   if (atomic_load(&sc->live) > 0) {
     Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
+    krt2i_mark_fiber_shared(f);
     w->f = f; w->want_exit = 0; w->next = sc->drain_waiters; sc->drain_waiters = w;
     atomic_store(&f->status, F_PARKED);
     parked = 1;
@@ -275,6 +278,7 @@ int krt2i_op_await_monitor(Rt *rt, Fiber *f, KValue *mon_h) {
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
+  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = t->waiters; t->waiters = w;  /* observe Exit */
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&t->lock);

@@ -10,8 +10,8 @@ stay on the "no `LastUse` anywhere" rule until projection-result ownership is mo
 branch-entry drops for locally-owned binders proven dead on that selected path. Last verified on 2026-07-02 with
 `cabal test kappa-test --test-options='--hide-successes'` at conformance 2094/0; native RC parity is verified by
 `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`. The DEBUG underflow assert is live, non-vacuous, and clean
-over the corpus when those gates pass. Next before S3 free-on-zero: the returning-arm match cell-drop tighten and
-keeping the S2.3c storing-primitive audit current.
+over the corpus when those gates pass. Next before S3 free-on-zero: the returning-arm match cell-drop tighten,
+projection-result ownership for broader scope-close drops, and keeping the S2.3c storing-primitive audit current.
 Companion to [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) / [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md).
 
 ## 0. Diagnosis (empirical)
@@ -28,9 +28,11 @@ that cell. The move-at-LastUse transfers ownership *to the match*; the match nev
 
 Rule for `match s case C f₁…fₙ -> body` when the scrutinee's last use is the match:
 **dup each kept (bound, runtime-relevant) field, then `kdrop` the scrutinee cell.** Sound for both:
-- **unique** cell (rc 1→0 at S3): the surviving fields would be freed-by-recursion, so each kept field is
-  `kdup`'d to keep it alive; the cell shell is freed.
-- **shared** cell (rc>1): `kdrop` just decrements; the dup keeps the field count honest for the 2nd owner.
+- **unique** cell (rc 1→0 once S3.2 wires free-on-zero): the surviving fields would be freed by recursive
+  descent, so each kept field is `kdup`'d to keep it alive; the cell shell is only actually released after
+  the S3.2 flip.
+- **shared** cell (rc>1, or S3.1 shared-bit marked): `kdrop` either decrements the thread-local count or is a
+  shared no-op; the dup keeps the field count honest for another owner.
 - **discarded** fields (`_`, omitted record fields): NOT dup'd; the single `kdrop(scrut)` is their decrement.
 
 **Site:** the cell-`kdrop` goes in `consumeAltBody`, per-arm, against the `scrut_N` (`sv`)
@@ -121,29 +123,24 @@ and `argConvBodies`/the C RC-on accessor consume the same `argConvSelectGlobal` 
 
 **Runtime rc-discipline pin for S3 (runtime-side, distinct from the table — surfaced by the S2.3c review, and
 NOT covered by `R-prim-table-incomplete`, which is about compiler drop-placement/table completeness).** The
-table classifies the *caller* boundary correctly, but three runtime store bodies lack the rc discipline S3
-free-on-zero needs; each must land WITH the S3 flip (all inert now — `kdrop` never frees, Boehm traces the
-scanned cells). Empirically verified clean under the S2 backstop (RC-on == RC-off, 0 underflow):
-- **`karr_new` — the UAF-direction one.** `for i<n: slab[i]=init` broadcasts ONE `ArgOwned`
-  `init` (rc bumped once by the caller transfer) into N slots with no per-slot `kdup`; a naïve S3 free-on-zero
-  recursion over boxed slots drops `init` N times ⇒ rc 1→0 on the first slot, slots 2..N dangling ⇒
-  premature free / UAF for n≥2. Fix (runtime): `kdup(init)` ×(n−1) in `karr_new`, guarded by
-  `KAPPA_PERCEUS_RC`. The table classification (`[borrowed, owned]`) is CORRECT; this is a runtime store gap.
+table classifies the *caller* boundary correctly. S3.1 has closed the UAF-direction derived-container alias
+gaps before the free-on-zero flip: `karr_new` now stores the owned `init` in the first boxed slot and
+`kdup(init)`s each additional boxed slot, and `krec_without` now `kdup`s every kept residual-record field.
+The remaining runtime store bodies below are leak-direction precision work for S3.3; they must not be confused
+with UAF blockers for S3.2 because the overwritten/not-stored value stays Boehm-reachable while retained
+containers remain off the FREESET. Empirically verified clean under the S2 backstop (RC-on == RC-off, 0
+underflow):
 - **Overwriting stores** — `karr_set`, `kref_set`, `fiber_local_set`, `krt2_atomic_store`/`exchange` — overwrite a cell without dropping the
   OLD occupant (a write barrier). LEAK-only (safe even post-S3), but each needs a drop-old for a leak-free S3.
 - **Not-stored `ArgOwned` args** — `krt2_atomic_compare_exchange` stores `desired` only on
   success; `promise_complete` stores `exitv` only on first completion. On the CAS-fail /
   already-completed path the moved-in `ArgOwned` arg is neither stored nor dropped. LEAK-only; needs a drop.
 
-**Arity-guard alignment pin for S3 (compiler-side).** `argConvSelectGlobal`'s arity check counts params by
-`argConvSelect`'s rule (`Expl ∧ q≠Q0`, which *includes* an explicit non-`Q0` kind-domain param), while
-`Ownership.classifyCallArgs` consumes convs by `erasedOrKind` (`Q0 ∨ isKindDomainTerm`, which *skips*
-kind-domain params). They diverge only on an explicit non-`Q0` kind-domain parameter — INERT today (no table
-entry has one; only 4 erasure intrinsics in the prelude — `__effRowCons`/`__shapeInspectAdt`/
-`__shapeInspectRecord`/`__shapeRequireFieldInstances` — carry such a param, none listed; and S2.3c is
-observe-only). Before S3 enables caller-drops, make the override arity check count by the `erasedOrKind` rule
-(or add an S1.5 finding on mismatch) so a future kind-domain-param prim cannot left-shift a convention onto a
-real value position — which would land `ArgBorrowed` on a store, the one forbidden direction.
+**Arity-guard alignment pin for S3 (compiler-side).** S3.1 reconciles `argConvSelectGlobal` and `repSelect`
+with the ownership runtime-argument filter: implicit binders, `Q0` binders, and kind-domain binders are skipped
+by the same helper before an override convention is matched. The original mismatch was inert because no table
+entry used an explicit non-`Q0` kind-domain parameter, but the fix prevents a future primitive from
+left-shifting an `ArgBorrowed` convention onto a real storing position.
 
 ## (e) Owned/borrowed CALLER-drop completeness — folds into (c)
 
@@ -170,11 +167,11 @@ sibling per-path drop + a move on the same cell; guard by disjoint conditions (c
 received the reference; per-path drops only on omitting paths); the underflow assert catches overlap before
 S3. **R-prim-table-incomplete** — a storing prim missing from S2.3c becomes an S3 UAF risk once caller-drop
 completion is enabled; require the `value.c`/`prims.c`/`stm.c`/`rt.c`/`atomic.c` store audit to stay current
-before that switch. **R-runtime-store-discipline (NEW, S3-gating; see §(d)'s runtime pin)** — the *runtime*
-store bodies lack per-slot dup (`karr_new` — UAF-direction), drop-old write barriers, and CAS-fail/promise-
-recomplete drops; these are runtime-side, distinct from the table, and must land with the S3 flip. **R-arity-
-alignment (NEW; see §(d)'s arity pin)** — the override arity check counts kind-domain params differently from
-the conv consumer; inert today, but must be reconciled before S3 caller-drops.
+before that switch. **R-runtime-store-discipline (S3 precision; see §(d)'s runtime pin)** — S3.1 closes the
+`karr_new` and `krec_without` UAF-direction undercounts; drop-old write barriers and CAS-fail/promise-
+recomplete drops remain runtime-side leak-direction precision work. **R-arity-alignment (see §(d)'s arity
+pin)** — S3.1 reconciles the override arity check with the ownership/runtime-argument filter so future
+kind-domain-param prims cannot left-shift a convention onto a real value position.
 **R-param-provenance** — worker parameters are not S2.3d-droppable until caller-side transfer normalization
 proves borrowed/projection actuals have been converted to owned references; this intentionally preserves soundness
 at the cost of leaving param-dead branches as a visible restore item.
@@ -191,7 +188,8 @@ S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level
 
 1. **Underflow assert non-vacuous (primary):** after S2.3a, `grep -c kdrop( *.kappa.c` must be ≫0 (drops
    fire across every match-bearing program); the assert stays clean (drops never drive rc below the
-   Boehm-live floor). **This is what proves S3 free-on-zero will reclaim.**
+   Boehm-live floor). This proves the placement/backstop half is exercised; S3.2's free-on-zero flip still
+   needs its own UAF/oracle run before claiming actual reclamation.
 2. **Leak-trend net ≈ 0 per program** (`krc_report`), not monotonic-growth — modulo legitimately-never-
    dropped CAFs / `main`'s result. A persistently negative net with no live escapees = a missed drop.
 3. **Outputs byte-identical** (last checked 2026-07-02: conformance 2094/0; native RC parity by

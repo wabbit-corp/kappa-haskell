@@ -214,8 +214,8 @@ if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$CASES/blocking-source.kp" --emi
 else
   echo "   FAIL: blocking-source LLVM --emit-c build failed"; cat "$btmp/llvm.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
-echo "== rt-blocking runtime lane and foreign-handle kind gates =="
-if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind >"$btmp/runtime.log" 2>&1; then
+echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3 prereq gates =="
+if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq >"$btmp/runtime.log" 2>&1; then
   if timeout 30 "$ROOT/runtime/build/blocking_lane" >"$btmp/blocking_lane.out" 2>"$btmp/blocking_lane.err"; then
     echo "   ok (runtime blocking lane preserves scheduler progress and source interruption)"
   else
@@ -230,8 +230,15 @@ if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind >"$btm
     cat "$btmp/fgn_kind.out" "$btmp/fgn_kind.err" | sed 's/^/     /'
     fails=$((fails+1))
   fi
+  if timeout 30 "$ROOT/runtime/build/perceus_s3_prereq" >"$btmp/perceus_s3_prereq.out" 2>"$btmp/perceus_s3_prereq.err"; then
+    echo "   ok (Perceus S3 freeable/shared/array prerequisites hold with free-on-zero still off)"
+  else
+    echo "   FAIL: Perceus S3 runtime prerequisite harness failed"
+    cat "$btmp/perceus_s3_prereq.out" "$btmp/perceus_s3_prereq.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
 else
-  echo "   FAIL: runtime blocking/fgn harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
+  echo "   FAIL: runtime blocking/fgn/S3 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
@@ -362,26 +369,31 @@ llfile="$ROOT/test/native/bench/proposed/scalar_intwhile.kappa.ll"
 rm -f "$llfile"
 if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$lbench" --emit-c -o "$ltmp/siw" >"$ltmp/build.log" 2>&1; then
   check_perceus_rc_log "$ltmp/build.log"
-	  sp_count=0
-	  fast_sp=0
-	  boxed_sp=0
-	  scalar_worker=""
-	  if [ -f "$llfile" ]; then
-	    scalar_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$llfile")"
-	    sp_count="$(printf '%s' "$scalar_worker" | grep -cE 'call i32 @krt2_safepoint\(\)' || true)"
-	    fast_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*sspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sflush_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
-	    boxed_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*bxspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sdone_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
-	  fi
-	  if [ -f "$llfile" ] \
-	     && printf '%s' "$scalar_worker" | grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' \
-	     && ! grep -qE 'call ptr @krt2_while\(' "$llfile" \
-	     && [ "$fast_sp" = 1 ] \
-	     && [ "$boxed_sp" = 1 ]; then
-	    echo "   ok (evidence-aware scalar loop emitted; no krt2_while fallback; fast and boxed-fallback safepoints present)"
+  sp_count=0
+  fast_sp=0
+  boxed_sp=0
+  abort_flushes=0
+  scalar_worker=""
+  if [ -f "$llfile" ]; then
+    scalar_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$llfile")"
+    sp_count="$(printf '%s' "$scalar_worker" | grep -cE 'call i32 @krt2_safepoint\(\)' || true)"
+    fast_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*sspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sflush_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
+    boxed_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*bxspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sdone_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
+    abort_flushes="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*sabort_[0-9]+:/{f=1; n=0} f&&/call ptr @kref_set\(/{n++} f&&/call void @krt2_scalar_abort\(\)/{seen=1; print n; exit} END{if(!seen) print 0}')"
+  fi
+  if [ -f "$llfile" ] \
+     && printf '%s' "$scalar_worker" | grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' \
+     && ! grep -qE 'call ptr @krt2_while\(' "$llfile" \
+     && [ "$fast_sp" = 1 ] \
+     && [ "$boxed_sp" = 1 ] \
+     && [ "${abort_flushes:-0}" -ge 2 ]; then
+    echo "   ok (evidence-aware scalar loop emitted; no krt2_while fallback; fast/boxed safepoints and both hidden refs flushed before abort)"
 	  elif [ -f "$llfile" ] && grep -qE 'call ptr @krt2_while\(' "$llfile"; then
 	    echo "   FAIL: scalar_intwhile used boxed krt2_while fallback; evidence-aware scalarizer is required"; fails=$((fails+1))
 	  elif [ -f "$llfile" ] && { [ "$fast_sp" != 1 ] || [ "$boxed_sp" != 1 ]; }; then
 	    echo "   FAIL: scalar_intwhile scalar worker is missing a safepoint in either the fast path or boxed overflow fallback"; fails=$((fails+1))
+  elif [ -f "$llfile" ] && [ "${abort_flushes:-0}" -lt 2 ]; then
+    echo "   FAIL: scalar_intwhile scalar worker abort path flushed only ${abort_flushes:-0}/2 hidden refs before krt2_scalar_abort"; fails=$((fails+1))
 	  else
 	    echo "   FAIL: LLVM var/while Int loop emitted neither scalar worker nor krt2_while fallback"; fails=$((fails+1))
   fi
@@ -1050,13 +1062,15 @@ if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$vlsrc" --emit-c -o "$vltmp/scal
   if [ -f "$vlll" ]; then
     vl_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$vlll")"
   fi
+  vl_abort_flushes="$(printf '%s' "$vl_worker" | awk '/^[[:space:]]*sabort_[0-9]+:/{f=1; n=0} f&&/call ptr @kref_set\(/{n++} f&&/call void @krt2_scalar_abort\(\)/{seen=1; print n; exit} END{if(!seen) print 0}')"
   if [ -f "$vlll" ] \
      && printf '%s' "$vl_worker" | grep -qE 'call void @krt2_scalar_abort\(\)' \
      && printf '%s' "$vl_worker" | grep -qE 'call i32 @krt2_safepoint\(\)' \
+     && [ "${vl_abort_flushes:-0}" -ge 2 ] \
      && ! grep -qE 'call ptr @krt2_while\(' "$vlll"; then
-    echo "   ok-llvm-shape (scalar var-loop worker has safepoints and scalar abort hook)"
+    echo "   ok-llvm-shape (scalar var-loop worker has safepoints and flushes both hidden refs before scalar abort)"
   else
-    echo "   FAIL: LLVM scalar var-loop abort shape is missing worker safepoint, abort hook, or scalarization"
+    echo "   FAIL: LLVM scalar var-loop abort shape is missing worker safepoint, full abort flush (${vl_abort_flushes:-0}/2 hidden refs), hook, or scalarization"
     grep -nE '@kscalarloop_|krt2_safepoint|krt2_scalar_abort|krt2_while|AFTER-VARLOOP' "$vlll" | sed 's/^/     /'
     fails=$((fails+1))
   fi

@@ -78,6 +78,10 @@ void *kgc_alloc_atomic(size_t n) {
   return p;
 }
 
+void kgc_free(void *p) {
+  if (p) GC_FREE(p);
+}
+
 void krt_fail(const char *msg) {
   fflush(stdout);
   fprintf(stderr, "kappa: runtime failure: %s\n", msg);

@@ -49,6 +49,7 @@ module Kappa.Backend.Repr
 
     -- * Function rep/worker-plan selection (the single authority)
   , repSelect
+  , runtimeParamMask
 
     -- * S1.5 owned/borrowed calling convention (telescope-derived; observe-only)
   , ArgConv (..)
@@ -88,7 +89,7 @@ import Kappa.Core
   , Value (..)
   , gKey
   )
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 
 -- ── Runtime representation classes ───────────────────────────────────
 --
@@ -176,12 +177,14 @@ primScalarRep g
 
 -- | Walk a function's (whnf-forced) type telescope and return the rep plan:
 -- @(perParamReps, resultRep)@, where @perParamReps@ lists the 'scalarRep' of
--- every EXPLICIT, RUNTIME-RELEVANT (non-'Q0') parameter domain in telescope
--- order, and @resultRep@ is the 'scalarRep' of the final (non-Pi) result head.
+-- every EXPLICIT, RUNTIME-RELEVANT parameter domain in telescope order, and
+-- @resultRep@ is the 'scalarRep' of the final (non-Pi) result head.
 --
--- Implicit and 'Q0'-erased binders are skipped (they are passed @kunit()@ and a
--- scalar worker must never read them), exactly mirroring the eligible-binder
--- selection a scalar worker is built from.
+-- Implicit binders, 'Q0'-erased binders, and explicit kind-domain binders
+-- (@Type@, @Type -> Type@, …) are skipped: they have no runtime argument slot
+-- and a scalar worker must never read one. This exactly mirrors the
+-- owned/borrowed convention walk below and the ownership pass's
+-- @erasedOrKind@ zipper.
 --
 -- @Nothing@ is returned for a telescope whose codomain closure references a
 -- variable beyond its own environment (@closureHasBoundEnv@ fails) — a shape the
@@ -199,13 +202,35 @@ repSelect ctx = walk 0 []
             else
               let x = VRigid lvl []
                   cod = closApplyV x clo
-                  acc' = if ic == Expl && q /= Q0 then scalarRep dom : acc else acc
+                  acc' =
+                    if runtimeRelevantParam ctx lvl ic q dom
+                      then scalarRep dom : acc
+                      else acc
                in walk (lvl + 1) acc' cod
         other -> Just (reverse acc, scalarRep other)
     closApplyV v (Closure env body) = eval ctx (v : env) body
     -- The codomain closure may reference only variables BOUND in its own
     -- environment plus the binder just introduced; a reference beyond that is a
     -- shape this static walk cannot instantiate, so the whole plan is rejected.
+    closureHasBoundEnv env body = maxVar body < length env + 1
+
+-- | The same telescope walk as 'repSelect', but retaining one Boolean per Pi
+-- binder in source order. Backends that still see a leading Core lambda for a
+-- static/kind-domain parameter use this mask to drop that binder from optimized
+-- runtime ABIs while preserving de-Bruijn alignment in the body.
+runtimeParamMask :: EvalCtx -> Value -> Maybe [Bool]
+runtimeParamMask ctx = walk 0 []
+  where
+    walk lvl acc ty =
+      case force ctx ty of
+        VPi ic q _ _ dom (Closure env body) ->
+          if not (closureHasBoundEnv env body)
+            then Nothing
+            else
+              let x = VRigid lvl []
+                  cod = eval ctx (x : env) body
+               in walk (lvl + 1) (runtimeRelevantParam ctx lvl ic q dom : acc) cod
+        _ -> Just (reverse acc)
     closureHasBoundEnv env body = maxVar body < length env + 1
 
 -- ── S1.5 owned/borrowed calling convention (telescope-derived) ────────
@@ -246,12 +271,13 @@ data ArgConv
   deriving stock (Eq, Show)
 
 -- | Walk a callee's (whnf-forced) type telescope and return the owned\/borrowed
--- 'ArgConv' of every EXPLICIT, runtime-relevant (non-'Q0') parameter, in
--- telescope order — exactly the positions 'repSelect' returns a 'Rep' for, so
--- the two zip argument-for-argument. The borrow marker takes precedence (a
--- borrowed parameter is 'ArgBorrowed' regardless of its quantity); otherwise the
--- quantity decides owned (@1@\/@≥1@) vs shared (@ω@\/@≤1@). Implicit and
--- 'Q0'-erased binders carry no runtime argument and are skipped.
+-- 'ArgConv' of every EXPLICIT runtime-relevant parameter, in telescope order —
+-- exactly the positions 'repSelect' returns a 'Rep' for, so the two zip
+-- argument-for-argument. The borrow marker takes precedence (a borrowed
+-- parameter is 'ArgBorrowed' regardless of its quantity); otherwise the
+-- quantity decides owned (@1@\/@≥1@) vs shared (@ω@\/@≤1@). Implicit binders,
+-- 'Q0'-erased binders, and explicit kind-domain binders carry no runtime
+-- argument and are skipped.
 --
 -- @Nothing@ is returned for the same unwalkable-codomain shape 'repSelect'
 -- rejects (a codomain closure escaping its environment) — the caller then has no
@@ -262,14 +288,14 @@ argConvSelect ctx = walk 0 []
   where
     walk lvl acc ty =
       case force ctx ty of
-        VPi ic q borrowed _ _dom (Closure env body) ->
+        VPi ic q borrowed _ dom (Closure env body) ->
           if not (closureHasBoundEnv env body)
             then Nothing
             else
               let x = VRigid lvl []
                   cod = eval ctx (x : env) body
                   acc' =
-                    if ic == Expl && q /= Q0
+                    if runtimeRelevantParam ctx lvl ic q dom
                       then argConv q borrowed : acc
                       else acc
                in walk (lvl + 1) acc' cod
@@ -382,6 +408,24 @@ argConv q borrowed
       QW -> ArgShared
       QLe1 -> ArgShared
       Q0 -> ArgShared -- unreachable (Q0 is skipped); shared is the safe default
+
+-- | The shared runtime-argument filter for representation and ownership
+-- convention selection. A non-'Q0' explicit parameter whose domain is a kind is
+-- still a static/type argument, not a runtime value. Keeping this predicate in
+-- Repr prevents primitive override arity checks from counting a position that
+-- Ownership.classifyCallArgs will skip as @erasedOrKind@.
+runtimeRelevantParam :: EvalCtx -> Int -> Icit -> Q -> Value -> Bool
+runtimeRelevantParam ctx lvl ic q dom =
+  ic == Expl && q /= Q0 && not (isKindDomainValueAt ctx lvl dom)
+
+isKindDomainValueAt :: EvalCtx -> Int -> Value -> Bool
+isKindDomainValueAt ctx lvl v = isKindDomainTerm (quote ctx lvl (force ctx v))
+
+isKindDomainTerm :: Term -> Bool
+isKindDomainTerm = \case
+  CSort _ -> True
+  CPi _ _ _ _ _ cod -> isKindDomainTerm cod
+  _ -> False
 
 -- | The largest de-Bruijn INDEX a 'Term' references relative to its own top
 -- (a @CVar i@ contributes @i@; entering a binder subtracts one from the body's

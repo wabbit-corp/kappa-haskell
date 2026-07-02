@@ -496,10 +496,10 @@ We place real release/acquire edges at exactly the four mandated points:
 4. **STM commit → later txn**: the version bump (§11).
 
 Ordinary `K_REF`/`var` are **not** cross-fiber sync primitives (§32.2.10): races
-on them have no portable ordering and need no locks. They stay lock-free; pointer-
-slot writes are naturally atomic on aligned 64-bit, so racing is memory-safe (no
-torn pointers) even though it is semantically the program's responsibility. Same-
-fiber ref ordering is preserved (we never reorder same-fiber operations).
+on them have no portable ordering and are outside the synchronization contract.
+Same-fiber ref ordering is preserved (we never reorder same-fiber operations);
+cross-fiber coordination must use await/join, scopes/monitors, promises, STM, or
+atomics.
 
 ---
 
@@ -665,7 +665,7 @@ threaded `-lgc`, and `-pthread` when the target uses kappart2. Both `kappart` an
 | Reduction-budget cooperative safe points            | BEAM reductions, Tokio coop, Go | §6.4     |
 | Heap-reified return stack (stackless continuations)  | GHC RTS / STG           | §5               |
 | Reactor/executor split; Waker wakeups               | Tokio                   | §7               |
-| Future blocking-work offload lane                   | libuv / Node, BEAM dirty schedulers | §7   |
+| Blocking-work offload lane                          | libuv / Node, BEAM dirty schedulers | §7   |
 | Async-exception masking + finalizers-before-observe | GHC RTS                 | §8               |
 | Supervision trees = scopes; OTP restart strategies  | Erlang/BEAM             | §9               |
 | StructuredTaskScope / structured concurrency        | JVM Loom, Trio, Kotlin  | §9               |

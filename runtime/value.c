@@ -7,17 +7,20 @@
  * kbig_from_mpz, kfrom_mpz, kload_mpz, kint_cmp, krat, as_rat) lives in
  * bignum.c and is reached through boxed.h. */
 #include "kappart.h"
+#include "internal.h"
 #include "boxed.h"
 
 #include <gmp.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 KValue *alloc_val(KTag tag) {
   KValue *v = (KValue *)kgc_alloc(sizeof(KValue));
   v->tag = tag;
-  v->rc = 1;   /* Perceus RC Stage S0: every heap KValue is born with one owner.
-                * Reserved + initialized only — Boehm still frees; no dup/drop. */
+  atomic_init(&v->rc, 1); /* Perceus RC Stage S0: every heap KValue is born with one owner.
+                           * Reserved + initialized only — Boehm still frees; no dup/drop. */
   return v;
 }
 
@@ -41,8 +44,8 @@ KValue *alloc_val(KTag tag) {
 static KValue *alloc_val_atomic(KTag tag) {
   KValue *v = (KValue *)kgc_alloc_atomic(sizeof(KValue));
   v->tag = tag;
-  v->rc = 1;   /* Perceus RC Stage S0: born with one owner (see alloc_val).
-                * GC_MALLOC_ATOMIC does not zero, so set rc explicitly here. */
+  atomic_init(&v->rc, 1); /* Perceus RC Stage S0: born with one owner (see alloc_val).
+                           * GC_MALLOC_ATOMIC does not zero, so set rc explicitly here. */
   return v;
 }
 
@@ -52,16 +55,176 @@ static KValue *alloc_val_atomic(KTag tag) {
  * counter storage and stay byte-identical in cost.  `krc_report` is always
  * defined (a no-op under NDEBUG) so the symbol resolves regardless of build. */
 #ifndef NDEBUG
-unsigned long long k_dups_total = 0;
-unsigned long long k_drops_total = 0;
+_Atomic unsigned long long k_dups_total = 0;
+_Atomic unsigned long long k_drops_total = 0;
 #endif
 
 void krc_report(void) {
 #ifndef NDEBUG
+  unsigned long long dups = atomic_load_explicit(&k_dups_total, memory_order_relaxed);
+  unsigned long long drops = atomic_load_explicit(&k_drops_total, memory_order_relaxed);
   fprintf(stderr, "krc_report: dups=%llu drops=%llu net=%lld\n",
-          k_dups_total, k_drops_total,
-          (long long)k_drops_total - (long long)k_dups_total);
+          dups, drops, (long long)drops - (long long)dups);
 #endif
+}
+
+typedef struct KWork {
+  KValue *v;
+  struct KWork *next;
+} KWork;
+
+static pthread_mutex_t g_thunk_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void kwork_push(KWork **stack, KValue *v) {
+  if (!v || kis_imm(v)) return;
+  KWork *n = (KWork *)malloc(sizeof(KWork));
+  if (!n) krt_fail("out of memory (kfree worklist)");
+  n->v = v;
+  n->next = *stack;
+  *stack = n;
+}
+
+static KValue *kwork_pop(KWork **stack) {
+  KWork *n = *stack;
+  if (!n) return NULL;
+  KValue *v = n->v;
+  *stack = n->next;
+  free(n);
+  return v;
+}
+
+static void krc_mark_child(KWork **stack, KValue *v);
+
+static void krc_mark_env(KWork **stack, KEnv *env) {
+  for (KEnv *e = env; e; e = e->next) krc_mark_child(stack, e->val);
+}
+
+static void krc_mark_child(KWork **stack, KValue *v) {
+  if (!v || kis_imm(v) || krc_is_shared(v)) return;
+  krc_mark_shared_shallow(v);
+  kwork_push(stack, v);
+}
+
+static void krc_mark_children(KWork **stack, KValue *v) {
+  switch (v->tag) {
+    case K_CTOR:
+      for (int i = 0; i < v->as.ctor.argc; i++) krc_mark_child(stack, v->as.ctor.args[i]);
+      break;
+    case K_REC:
+      for (int i = 0; i < v->as.rec.n; i++) krc_mark_child(stack, v->as.rec.vals[i]);
+      break;
+    case K_CLO:
+      krc_mark_env(stack, v->as.clo.env);
+      break;
+    case K_IO:
+      krc_mark_env(stack, v->as.io.env);
+      break;
+    case K_REF:
+      krc_mark_child(stack, v->as.ref.cell ? v->as.ref.cell[0] : NULL);
+      break;
+    case K_ARRAY:
+      if (v->as.arr.elemkind == KARR_BOXED) {
+        KValue **slab = (KValue **)v->as.arr.elems;
+        for (int64_t i = 0; i < v->as.arr.len; i++) krc_mark_child(stack, slab[i]);
+      }
+      break;
+    case K_FGN:
+      krt2i_mark_fgn_payload_shared(v->as.fgn.kind, v->as.fgn.p);
+      break;
+    case K_VARIANT:
+      krc_mark_child(stack, v->as.var.payload);
+      break;
+    case K_THUNK:
+      krc_mark_env(stack, v->as.thunk.env);
+      if (v->as.thunk.cache) krc_mark_child(stack, v->as.thunk.cache[0]);
+      break;
+    case K_BOUNCE:
+    case K_IOTAIL:
+    case K_IOEFFECT:
+      krc_mark_child(stack, v->as.bounce.fn);
+      if (v->tag == K_BOUNCE) krc_mark_child(stack, v->as.bounce.arg);
+      break;
+    case K_IOFINALLY:
+      krc_mark_child(stack, v->as.iofin.action);
+      for (int i = 0; i < v->as.iofin.n; i++) krc_mark_child(stack, v->as.iofin.defers[i]);
+      break;
+    case K_FAIL:
+      krc_mark_child(stack, v->as.fail.err);
+      break;
+    case K_NATIVE:
+      for (int i = 0; i < v->as.native.argc; i++) krc_mark_child(stack, v->as.native.args[i]);
+      break;
+    default:
+      break;
+  }
+}
+
+void krc_mark_shared_recursive(KValue *root) {
+  KWork *stack = NULL;
+  krc_mark_child(&stack, root);
+  KValue *v;
+  while ((v = kwork_pop(&stack)) != NULL) krc_mark_children(&stack, v);
+}
+
+static void kfree_drop_child(KWork **stack, KValue *child) {
+  if (!child || kis_imm(child)) return;
+  if (krc_is_shared(child)) return;
+  uint32_t n = krc_count(child);
+#ifndef NDEBUG
+  assert(n > 0 && "kfree_recursive: child rc underflow");
+  atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
+#endif
+  if (n == 0) return;
+  krc_set_count(child, n - 1);
+  if (n == 1 && kis_rc_freeable(child)) kwork_push(stack, child);
+}
+
+static void kfree_visit(KWork **stack, KValue *v) {
+  switch (v->tag) {
+    case K_CTOR:
+      for (int i = 0; i < v->as.ctor.argc; i++) kfree_drop_child(stack, v->as.ctor.args[i]);
+      kgc_free(v->as.ctor.args);
+      break;
+    case K_REC:
+      for (int i = 0; i < v->as.rec.n; i++) kfree_drop_child(stack, v->as.rec.vals[i]);
+      kgc_free(v->as.rec.vals);
+      break;
+    case K_VARIANT:
+      kfree_drop_child(stack, v->as.var.payload);
+      break;
+    case K_STR:
+      kgc_free((void *)v->as.str.p);
+      break;
+    case K_BOUNCE:
+      kfree_drop_child(stack, v->as.bounce.fn);
+      kfree_drop_child(stack, v->as.bounce.arg);
+      break;
+    case K_FAIL:
+      kfree_drop_child(stack, v->as.fail.err);
+      break;
+    default:
+      break;
+  }
+  kgc_free(v);
+}
+
+static int kfree_recursive_enabled(void) {
+  return 0; /* S3.1 lands the skeleton; S3.2 flips the public free-on-zero path. */
+}
+
+static void kfree_recursive_impl(KValue *root) {
+  KWork *stack = NULL;
+  kwork_push(&stack, root);
+  KValue *v;
+  while ((v = kwork_pop(&stack)) != NULL) {
+    if (kis_rc_freeable(v) && krc_count(v) == 0) kfree_visit(&stack, v);
+  }
+}
+
+void kfree_recursive(KValue *root) {
+  if (!kis_rc_freeable(root) || krc_count(root) != 0) return;
+  if (!kfree_recursive_enabled()) return;
+  kfree_recursive_impl(root);
 }
 
 /* ── value constructors ────────────────────────────────────────────── */
@@ -266,7 +429,7 @@ KValue *karr_new(int64_t n, KValue *init) {
   /* SCANNED: the slab holds base KValue* pointers (boxed kind).  kgc_alloc of 0
    * bytes is avoided (request at least one slot) so `elems` is a valid base. */
   KValue **slab = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n > 0 ? n : 1));
-  for (int64_t i = 0; i < n; i++) slab[i] = init;
+  for (int64_t i = 0; i < n; i++) slab[i] = (i == 0 ? init : kdup(init));
   r->as.arr.elems = (void *)slab;
   r->as.arr.len = n;
   r->as.arr.cap = n;
@@ -282,6 +445,7 @@ KValue *karr_get(KValue *arr, int64_t i) {
 KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_set: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_set: index out of range");
+  if (krc_is_shared(arr)) krc_mark_shared_recursive(v);
   ((KValue **)arr->as.arr.elems)[i] = v;
   return kunit();
 }
@@ -685,12 +849,28 @@ KValue *kvariant_payload(KValue *v) {
 KValue *kforce(KValue *v) {
   if (kis_imm(v)) return v;   /* an immediate Int is already a value */
   if (v->tag != K_THUNK) return v;
-  if (v->as.thunk.memo && v->as.thunk.cache) return v->as.thunk.cache[0];
+  if (v->as.thunk.memo) {
+    pthread_mutex_lock(&g_thunk_cache_lock);
+    KValue **cached = v->as.thunk.cache;
+    if (cached) {
+      KValue *r = cached[0];
+      pthread_mutex_unlock(&g_thunk_cache_lock);
+      return r;
+    }
+    pthread_mutex_unlock(&g_thunk_cache_lock);
+  }
   KValue *r = v->as.thunk.fn(v->as.thunk.env);
   if (v->as.thunk.memo) {
-    KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
-    cell[0] = r;
-    v->as.thunk.cache = cell;
+    if (krc_is_shared(v)) krc_mark_shared_recursive(r);
+    pthread_mutex_lock(&g_thunk_cache_lock);
+    if (!v->as.thunk.cache) {
+      KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
+      cell[0] = r;
+      v->as.thunk.cache = cell;
+    } else {
+      r = v->as.thunk.cache[0];
+    }
+    pthread_mutex_unlock(&g_thunk_cache_lock);
   }
   return r;
 }
@@ -713,7 +893,7 @@ KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
     int excluded = 0;
     for (int j = 0; j < nexcl; j++)
       if (strcmp(rec->as.rec.names[i], excl[j]) == 0) { excluded = 1; break; }
-    if (!excluded) { names[k] = rec->as.rec.names[i]; vals[k] = rec->as.rec.vals[i]; k++; }
+    if (!excluded) { names[k] = rec->as.rec.names[i]; vals[k] = kdup(rec->as.rec.vals[i]); k++; }
   }
   KValue *r = alloc_val(K_REC);
   r->as.rec.n = k;
@@ -785,6 +965,10 @@ double kas_dbl(KValue *v) {
   if (kis_imm(v) || v->tag != K_DBL) krt_fail("kas_dbl: not a Double");
   return v->as.d;
 }
+
+double kunbox_dbl_runtime(KValue *v, int *ovf) {
+  return kunbox_dbl(v, ovf);
+}
 int kas_bool(KValue *v) {
   /* Stage 1b: True/False are b010 nullary immediates — read the id from the word
    * (no deref).  A retired boxed K_CTOR Bool is still accepted by id. */
@@ -838,6 +1022,7 @@ KValue *kref_get(KValue *r) {
 }
 KValue *kref_set(KValue *r, KValue *v) {
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_set: not a ref");
+  if (krc_is_shared(r)) krc_mark_shared_recursive(v);
   r->as.ref.cell[0] = v;
   return kunit();
 }

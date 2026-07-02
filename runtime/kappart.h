@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <assert.h>
+#include <stdatomic.h>
 
 typedef enum {
   K_INT,   /* Nat/Int/Integer (signed 64-bit; see docs §3) */
@@ -121,10 +122,11 @@ struct KValue {
    * alloc_val_atomic in value.c).  IMMEDIATES (kis_imm: b001 Int, b010 nullary
    * ctor, b011 packed ctor) are NOT heap objects — they carry no header and so
    * no rc.  This field is RESERVED + INITIALIZED ONLY at S0: Boehm remains the
-   * collector, there is no dup/drop and no RC reclamation yet.  Later stages
-   * ride the sign of this word for the thread-shared flag (Koka's negative-rc
-   * trick, §5). */
-  uint32_t rc;
+   * collector, there is no dup/drop and no RC reclamation yet.  Stage S3.0
+   * rides the high bit of this word for the thread-shared flag (Koka's
+   * negative-rc trick, PERCEUS-S3-PLAN §2.2); the low 31 bits remain the
+   * ordinary reference count. */
+  _Atomic uint32_t rc;
   union {
     int64_t  i;
     double   d;
@@ -267,35 +269,119 @@ static inline intptr_t kimm_payload(const KValue *v) {
 #ifndef NDEBUG
 /* DEBUG-only running totals (defined in value.c).  Behind NDEBUG so a release
  * build stays byte-identical in cost — no counter loads/stores in kdup/kdrop. */
-extern unsigned long long k_dups_total;
-extern unsigned long long k_drops_total;
+extern _Atomic unsigned long long k_dups_total;
+extern _Atomic unsigned long long k_drops_total;
 #endif
+
+/* S3.0 shared-bit encoding. The sign/high bit marks an object that has crossed
+ * a fiber/concurrency boundary; S3 free-on-zero must skip such objects until
+ * S4 adds counted shared-object RC.  The header word is atomic already in S3.1:
+ * the shared-bit transition can race with extant aliases, and even a no-op
+ * shared kdup/kdrop must read the bit without a C data race. The low count is
+ * intentionally ignored while the shared bit is set. */
+#define KRC_SHARED_BIT ((uint32_t)0x80000000u)
+#define KRC_COUNT_MASK ((uint32_t)0x7fffffffu)
+
+static inline uint32_t krc_word(const KValue *v) {
+  return atomic_load_explicit((_Atomic uint32_t *)&v->rc, memory_order_relaxed);
+}
+
+static inline uint32_t krc_count(const KValue *v) {
+  return kis_imm(v) ? 0u : (krc_word(v) & KRC_COUNT_MASK);
+}
+
+static inline int krc_is_shared(const KValue *v) {
+  return !kis_imm(v) && ((krc_word(v) & KRC_SHARED_BIT) != 0);
+}
+
+static inline void krc_set_count(KValue *v, uint32_t count) {
+  uint32_t cur = krc_word(v);
+  uint32_t next;
+  do {
+    next = (cur & KRC_SHARED_BIT) | (count & KRC_COUNT_MASK);
+  } while (!atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed));
+}
+
+static inline void krc_mark_shared_shallow(KValue *v) {
+  if (!kis_imm(v)) atomic_fetch_or_explicit(&v->rc, KRC_SHARED_BIT, memory_order_relaxed);
+}
+
+/* S3.0 free-on-zero partition. This is deliberately conservative and is used
+ * only to decide whether the future S3.2 free branch MAY reclaim a zero-count
+ * object. Mutable/lazy/foreign/shared objects remain Boehm-retained. Closures,
+ * IO/action wrappers, and native-action wrappers also stay retained until
+ * KEnv/action-finalizer/native-action ownership is represented at the free site. */
+static inline int kis_rc_freeable(const KValue *v) {
+  if (!v || kis_imm(v) || krc_is_shared(v)) return 0;
+  switch (v->tag) {
+    case K_CTOR:
+    case K_REC:
+    case K_VARIANT:
+    case K_STR:
+    case K_BOUNCE:
+    case K_FAIL:
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+void krc_mark_shared_recursive(KValue *v);
+void kfree_recursive(KValue *v);
 
 /* Increment the reference count of a heap value and RETURN it, so a dup can be
  * spliced inside an expression: `f(kdup(x), x)` shares `x` across both args.
  * An immediate is value-copied (no rc), so it is returned unchanged. */
 static inline KValue *kdup(KValue *v) {
   if (kis_imm(v)) return v;
+  uint32_t cur = krc_word(v);
+  for (;;) {
+    if (cur & KRC_SHARED_BIT) return v;
+    uint32_t n = cur & KRC_COUNT_MASK;
 #ifndef NDEBUG
-  k_dups_total++;
+    assert(n < KRC_COUNT_MASK && "kdup: rc count overflow");
 #endif
-  v->rc++;
-  return v;
+    if (n >= KRC_COUNT_MASK) return v;
+    uint32_t next = (cur & KRC_SHARED_BIT) | (n + 1);
+    if (atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
+                                              memory_order_relaxed,
+                                              memory_order_relaxed)) {
+#ifndef NDEBUG
+      atomic_fetch_add_explicit(&k_dups_total, 1, memory_order_relaxed);
+#endif
+      return v;
+    }
+  }
 }
 
-/* Decrement the reference count of a heap value.  EXPLICITLY DOES NOT FREE: S3
- * flips free-on-zero; S2 is maintain+assert only, Boehm owns reclamation.  The
- * DEBUG assert is the primary S2 differential-backstop check — a missed dup /
- * double drop drives rc below the Boehm-proven-live floor and trips HERE, before
- * any use-after-free is possible (nothing is freed).  Under NDEBUG the assert
- * compiles out but `rc--` stays, so the count is correct and ready for S3. */
+/* Decrement the reference count of a heap value.  EXPLICITLY DOES NOT FREE until
+ * S3.2 wires the free-on-zero branch.  Shared values are skipped until S4
+ * provides atomic shared-object RC.  The DEBUG assert is the primary
+ * differential-backstop check for thread-local values: a missed dup / double
+ * drop trips HERE before any use-after-free is possible.  Under NDEBUG the
+ * fail-closed zero guard avoids wrapping the low count. */
 static inline void kdrop(KValue *v) {
   if (kis_imm(v)) return;
+  uint32_t cur = krc_word(v);
+  for (;;) {
+    if (cur & KRC_SHARED_BIT) return;
+    uint32_t n = cur & KRC_COUNT_MASK;
 #ifndef NDEBUG
-  assert(v->rc > 0 && "kdrop: rc underflow (double-drop / missed-dup)");
-  k_drops_total++;
+    assert(n > 0 && "kdrop: rc underflow (double-drop / missed-dup)");
 #endif
-  v->rc--;
+    if (n == 0) return;
+    uint32_t next = (cur & KRC_SHARED_BIT) | (n - 1);
+    if (atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
+                                              memory_order_relaxed,
+                                              memory_order_relaxed)) {
+#ifndef NDEBUG
+      atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
+#endif
+      return;
+    }
+  }
   /* NO free-on-zero here — see the function comment. */
 }
 
@@ -520,6 +606,7 @@ void krt_init(void);                 /* GC_INIT once, at the top of main */
 /* ── allocation (Boehm GC) ─────────────────────────────────────────── */
 void *kgc_alloc(size_t n);           /* scanned: may contain pointers    */
 void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
+void  kgc_free(void *p);             /* S3 free-on-zero shell/slab release */
 
 /* ── value constructors ────────────────────────────────────────────── */
 KValue *kint(int64_t v);
@@ -543,8 +630,9 @@ KValue *kref_new(KValue *init);
  * later INT64/DOUBLE slabs slot in beside the boxed ops with no renumbering. */
 enum { KARR_BOXED = 0, KARR_INT64 = 1, KARR_DOUBLE = 2 };
 /* Boxed mutable array (MUTABLE-ARRAY-DESIGN §5.1): N-cell generalization of
- * K_REF.  `karr_new(n, init)` allocates a SCANNED n-slot KValue* slab filled
- * with `init`; get/set/len are O(1).  Index out of range / wrong tag traps via
+ * K_REF.  `karr_new(n, init)` allocates a SCANNED n-slot KValue* slab, transfers
+ * `init` into the first slot, and counts each additional boxed slot alias with
+ * kdup(init); get/set/len are O(1).  Index out of range / wrong tag traps via
  * krt_fail (the runtime floor, §6 tier 3). */
 KValue *karr_new(int64_t n, KValue *init);
 KValue *karr_get(KValue *arr, int64_t i);
@@ -615,6 +703,7 @@ static inline double kunbox_dbl(KValue *v, int *ovf) {
   *ovf = 1;
   return 0.0;
 }
+double kunbox_dbl_runtime(KValue *v, int *ovf); /* linkable LLVM mirror of kunbox_dbl */
 KValue *kbounce(KValue *fn, KValue *arg);  /* defer a tail-position application */
 KValue *ktrampoline(KValue *r);            /* drive bounces to a value     */
 KValue *kio_tail(KValue *action);          /* mark a do-block tail IO action for krun_io */

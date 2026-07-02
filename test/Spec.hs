@@ -12,6 +12,7 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
 import Kappa.Backend.C (generateC)
+import Kappa.Backend.LLVM (generateLL)
 import Kappa.Backend.Repr
   ( ArgConv (..)
   , CtorLayoutInfo (..)
@@ -77,11 +78,15 @@ main = do
   ownOk <- ownershipCrossCheckClean
   s23dOk <- perceusS23dDeadBinderDrops
   s23dDiagOk <- perceusS23dBranchDropMissFails
+  cachePubOk <- globalCachePublicationMarksShared
+  scalarKindParamOk <- scalarKindDomainParamKeepsWorkers
+  scalarDoubleEscapeOk <- llvmDoubleScalarUnboxEscapesWrongTag
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && primConvOk && ownOk && s23dOk && s23dDiagOk && ctorLayoutOk && reExportOk
+          && primConvOk && ownOk && s23dOk && s23dDiagOk && cachePubOk && scalarKindParamOk
+          && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -129,12 +134,13 @@ reprScalarIdentity = do
       )
   pure ok
 
--- | Perceus S2.3c regression: primitive call conventions are not the source
--- arrows' blanket @QW@. The shared Repr accessor must classify audited
--- runtime-cell publishers as owned at the published value positions and
--- confirmed read-only positions as borrowed, while leaving result-transfer
--- primitives on the conservative telescope fallback until result ownership is
--- modeled.
+-- | Perceus S2.3c/S3.1 regression: primitive call conventions are not the source
+-- arrows' blanket @QW@, and the ownership override arity check must skip the
+-- same implicit/Q0/kind-domain params as runtime argument lowering. The shared
+-- Repr accessor must classify audited runtime-cell publishers as owned at the
+-- published value positions and confirmed read-only positions as borrowed, while
+-- leaving result-transfer primitives on the conservative telescope fallback until
+-- result ownership is modeled.
 primArgConventionS23c :: IO Bool
 primArgConventionS23c = do
   let cu =
@@ -148,6 +154,21 @@ primArgConventionS23c = do
       ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
       conv name = argConvSelectGlobal ctx (gPrel (T.pack name))
       convDirect name = argConvSelectGlobal ctx (GName primModule (T.pack name))
+      fakePrimG = GName (ModuleName [T.pack "test"]) (T.pack "fakeWriteRefWithKindParam")
+      fakePrimTy =
+        CPi Expl Q1 False (T.pack "a") (CSort 0) $
+          CPi Expl QW False (T.pack "r") (CGlob prelInt) $
+            CPi Expl QW False (T.pack "v") (CGlob prelInt) $
+              CGlob prelUnit
+      fakePrimCtx =
+        let gd =
+              GlobalDef
+                { gdType = eval ctx [] fakePrimTy
+                , gdValue = Just (VPrim (T.pack "__ioWriteRef") [])
+                , gdReducible = False
+                }
+            Globals globals = ecGlobals ctx
+         in ctx {ecGlobals = Globals (Map.insert fakePrimG gd globals)}
       b = ArgBorrowed
       o = ArgOwned
       s = ArgShared
@@ -194,12 +215,21 @@ primArgConventionS23c = do
         | (name, want) <- exact ++ fallback
         , convDirect name /= Just want
         ]
-      ok = null failedExact && null failedFallback && null failedDirect
+      fakeKindDomainOk = argConvSelectGlobal fakePrimCtx fakePrimG == Just [b, o]
+      ok = null failedExact && null failedFallback && null failedDirect && fakeKindDomainOk
   unless ok $ do
     putStrLn "primArgConventionS23c FAILED:"
     mapM_
       (\(name, got, want) -> putStrLn ("  " <> name <> ": got " <> show got <> ", want " <> show (Just want)))
       (failedExact ++ failedFallback ++ failedDirect)
+    unless fakeKindDomainOk $
+      putStrLn
+        ( "  fakeWriteRefWithKindParam: got "
+            <> show (argConvSelectGlobal fakePrimCtx fakePrimG)
+            <> ", want "
+            <> show (Just [b, o])
+            <> " (explicit non-Q0 kind-domain params must be skipped before primitive override arity checks)"
+        )
   pure ok
 
 replaceGlobInSimpleApp :: GName -> GName -> Term -> Term
@@ -958,6 +988,203 @@ perceusS23dBranchDropMissFails = do
           unresolvedOk <- expectBranchFinding "unresolved branch drop site" site st'
           stalePathOk <- expectBranchFinding "stale branch drop path" staleSite stStalePath
           pure (unresolvedOk && stalePathOk)
+
+-- | Perceus S3.1 regression: arity-0/global caches are process-wide
+-- publication cells.  Before S3.2 free-on-zero they must mark the freshly-built
+-- value graph shared before writing the static C cache / LLVM @kg.cache global,
+-- otherwise the later S3.2 free branch could treat cached heap values as
+-- thread-local.
+globalCachePublicationMarksShared :: IO Bool
+globalCachePublicationMarksShared = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "let cached = \"cache-payload\""
+          , "let ident (x : String) = x"
+          , "main : UIO Unit"
+          , "let main = printlnString (ident cached)"
+          ]
+      cu = compileSourceWithPrelude "s31-cache-publication.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      checkC csrc =
+        "#include <stdatomic.h>" `T.isInfixOf` csrc
+          && "atomic_load_explicit(&cache, memory_order_acquire)" `T.isInfixOf` csrc
+          && allStoresMarkedImmediatelyBefore
+            "atomic_store_explicit(&cache, fresh, memory_order_release);"
+            "krc_mark_shared_recursive(fresh);"
+            csrc
+      checkLL llsrc =
+        "declare void @krc_mark_shared_recursive(ptr)" `T.isInfixOf` llsrc
+          && "load atomic ptr, ptr @" `T.isInfixOf` llsrc
+          && " acquire, align 8" `T.isInfixOf` llsrc
+          && " release, align 8" `T.isInfixOf` llsrc
+          && allStoresMarkedImmediatelyBefore
+            "store atomic ptr "
+            "call void @krc_mark_shared_recursive(ptr "
+            llsrc
+  cOk <-
+    case generateC True st mainG Set.empty Map.empty of
+      Left (errs, mLog) -> do
+        putStrLn ("globalCachePublicationMarksShared FAILED: generateC rejected: " <> show errs)
+        putStrLn ("  rcLog=" <> show mLog)
+        pure False
+      Right (csrc, _) -> do
+        unless (checkC csrc) $ do
+          putStrLn "globalCachePublicationMarksShared FAILED: C cache store did not mark fresh value shared"
+          putStrLn (T.unpack csrc)
+        pure (checkC csrc)
+  llOk <-
+    case generateLL True st mainG Set.empty Map.empty of
+      Left (errs, mLog) -> do
+        putStrLn ("globalCachePublicationMarksShared FAILED: generateLL rejected: " <> show errs)
+        putStrLn ("  rcLog=" <> show mLog)
+        pure False
+      Right (llsrc, _) -> do
+        unless (checkLL llsrc) $ do
+          putStrLn "globalCachePublicationMarksShared FAILED: LLVM cache store did not mark fresh value shared"
+          putStrLn (T.unpack llsrc)
+        pure (checkLL llsrc)
+  pure (cOk && llOk)
+
+-- | Scalar worker regression: explicit kind-domain binders are runtime-erased.
+-- A source function with type `(a : Type) -> Int -> Int` still has two leading
+-- Core lambdas, but the worker ABI has one runtime `Int` slot. Both backends
+-- must use the shared representation-table mask to drop the static binder
+-- instead of disabling the proven `kwi_` worker.
+scalarKindDomainParamKeepsWorkers :: IO Bool
+scalarKindDomainParamKeepsWorkers = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "let addOne (a : Type) (x : Int) = addInt x 1"
+          , "main : UIO Unit"
+          , "let main = printlnString (showInt (addOne Int 41))"
+          ]
+      cu = compileSourceWithPrelude "s31-scalar-kind-param.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      worker = "kwi_main_2e_addOne"
+      argsAfter needle line =
+        let mark = needle <> "("
+         in case T.breakOn mark line of
+              (_, rest) | T.null rest -> Nothing
+              (_, rest) ->
+                let after = T.drop (T.length mark) rest
+                    (inside, suffix) = T.breakOn ")" after
+                 in if T.null suffix then Nothing else Just (map T.strip (T.splitOn "," inside))
+      cCallShape csrc =
+        any
+          ( \line ->
+              " = " `T.isInfixOf` line
+                && case argsAfter worker line of
+                  Just [a, b] ->
+                    "lu_" `T.isPrefixOf` a
+                      && "&kovf_" `T.isPrefixOf` b
+                      && not ("la_" `T.isInfixOf` line)
+                  _ -> False
+          )
+          (T.lines csrc)
+      llCallShape llsrc =
+        any
+          ( \line ->
+              ("call i64 @" <> worker <> "(") `T.isInfixOf` line
+                && case argsAfter ("@" <> worker) line of
+                  Just [a, b] ->
+                    "i64 %" `T.isPrefixOf` a
+                      && "ptr %" `T.isPrefixOf` b
+                  _ -> False
+          )
+          (T.lines llsrc)
+      cHasWorker csrc =
+        ("static int64_t " <> worker <> "(int64_t p0, int *kovf)") `T.isInfixOf` csrc
+          && cCallShape csrc
+      llHasWorker llsrc =
+        ("define internal i64 @" <> worker <> "(i64 %p0, ptr %kovf)") `T.isInfixOf` llsrc
+          && llCallShape llsrc
+  cOk <-
+    case generateC False st mainG Set.empty Map.empty of
+      Left (errs, mLog) -> do
+        putStrLn ("scalarKindDomainParamKeepsWorkers FAILED: generateC rejected: " <> show errs)
+        putStrLn ("  rcLog=" <> show mLog)
+        pure False
+      Right (csrc, _) -> do
+        unless (cHasWorker csrc) $ do
+          putStrLn "scalarKindDomainParamKeepsWorkers FAILED: C omitted kwi_ worker"
+          putStrLn (T.unpack csrc)
+        pure (cHasWorker csrc)
+  llOk <-
+    case generateLL False st mainG Set.empty Map.empty of
+      Left (errs, mLog) -> do
+        putStrLn ("scalarKindDomainParamKeepsWorkers FAILED: generateLL rejected: " <> show errs)
+        putStrLn ("  rcLog=" <> show mLog)
+        pure False
+      Right (llsrc, _) -> do
+        unless (llHasWorker llsrc) $ do
+          putStrLn "scalarKindDomainParamKeepsWorkers FAILED: LLVM omitted kwi_ worker"
+          putStrLn (T.unpack llsrc)
+        pure (llHasWorker llsrc)
+  pure (cOk && llOk)
+
+llvmDoubleScalarUnboxEscapesWrongTag :: IO Bool
+llvmDoubleScalarUnboxEscapesWrongTag = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "let addHalf (x : Double) = addDouble x 0.5"
+          , "main : UIO Unit"
+          , "let main = printlnString (showDouble (addHalf 1.5))"
+          ]
+      cu = compileSourceWithPrelude "s31-double-scalar-escape.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      helper =
+        T.unlines
+          [ "define internal double @kunbox_dbl_ll(ptr %v, ptr %ovf) {"
+          , "entry:"
+          , "  %d = call double @kunbox_dbl_runtime(ptr %v, ptr %ovf)"
+          , "  ret double %d"
+          , "}"
+          ]
+      checkLL llsrc =
+        "declare double @kunbox_dbl_runtime(ptr, ptr)" `T.isInfixOf` llsrc
+          && helper `T.isInfixOf` llsrc
+          && not ("call double @kas_dbl(ptr %v)" `T.isInfixOf` llsrc)
+          && doubleUnboxFallbackBranches llsrc
+  case generateLL False st mainG Set.empty Map.empty of
+    Left (errs, mLog) -> do
+      putStrLn ("llvmDoubleScalarUnboxEscapesWrongTag FAILED: generateLL rejected: " <> show errs)
+      putStrLn ("  rcLog=" <> show mLog)
+      pure False
+    Right (llsrc, _) -> do
+      unless (checkLL llsrc) $ do
+        putStrLn "llvmDoubleScalarUnboxEscapesWrongTag FAILED: LLVM Double helper can still abort instead of escaping"
+        putStrLn (T.unpack llsrc)
+      pure (checkLL llsrc)
+
+doubleUnboxFallbackBranches :: T.Text -> Bool
+doubleUnboxFallbackBranches llsrc =
+  let ls = T.lines llsrc
+      windows = [take 8 (drop i ls) | (i, l) <- zip [0 :: Int ..] ls, "call double @kunbox_dbl_ll" `T.isInfixOf` l]
+      okPreFallback w =
+        any ("load i32, ptr" `T.isInfixOf`) w
+          && any ("icmp ne i32" `T.isInfixOf`) w
+          && any (\l -> "br i1" `T.isInfixOf` l && "label %kwboxed_" `T.isInfixOf` l) w
+      boxedBlocks = [take 8 (drop i ls) | (i, l) <- zip [0 :: Int ..] ls, T.isPrefixOf "  kwboxed_" l]
+      okBoxedBlock w =
+        any ("call ptr @kapp(" `T.isInfixOf`) w
+          && any ("call ptr @ktrampoline(" `T.isInfixOf`) w
+   in any okPreFallback windows && any okBoxedBlock boxedBlocks
+
+allStoresMarkedImmediatelyBefore :: T.Text -> T.Text -> T.Text -> Bool
+allStoresMarkedImmediatelyBefore storeNeedle markNeedle src =
+  let ls = T.lines src
+      storeIdxs = [i | (i, l) <- zip [0 :: Int ..] ls, storeNeedle `T.isInfixOf` l]
+      prevNonEmpty i =
+        case dropWhile T.null (reverse (take i (map T.strip ls))) of
+          p : _ -> p
+          [] -> T.empty
+   in not (null storeIdxs) && all (\i -> markNeedle `T.isInfixOf` prevNonEmpty i) storeIdxs
 
 -- | Perceus S1.3 regression: 'Kappa.Backend.Repr.ctorLayoutOf' must count a
 -- constructor's RUNTIME fields — the field set the backend actually builds the

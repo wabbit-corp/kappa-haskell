@@ -599,6 +599,8 @@ static void *blocking_worker_main(void *arg) {
 static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
   BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
   if (!req) return 0;
+  krc_mark_shared_recursive(action);
+  krt2i_mark_fiber_shared(f);
   req->rt = rt;
   req->fiber = f;
   req->action = action;
@@ -846,7 +848,10 @@ void krt2i_rq_push(Rt *rt, Fiber *f) {
 void krt2i_resume(Rt *rt, Fiber *f) {
   /* fix 2: this enqueue precedes a fiber_step (initial spawn / cede / re-enqueue),
    * which is an interruption point — mark it so a pending interrupt is observable
-   * on the first turn.  Published to the popping worker by rq_push's rq_lock. */
+   * on the first turn.  The whole fiber-owned value graph is also published
+   * across the run queue, so mark it shared before the rq_lock makes the fiber
+   * visible to another worker. */
+  krt2i_mark_fiber_shared(f);
   f->resumed = 1;
   atomic_store_explicit(&f->status, F_RUNNABLE, memory_order_release);
   krt2i_rq_push(rt, f);
@@ -863,6 +868,7 @@ void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
   if (atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNABLE,
                                               memory_order_acq_rel, memory_order_relaxed)) {
     if (resume_val) f->cur = resume_val;
+    krt2i_mark_fiber_shared(f);
     /* fix 2: a wake re-enters fiber_step at a genuine resume point (the park this
      * wakes was a suspension: sleep/await/STM-retry/scope-drain).  Mark it so a
      * pending interrupt is delivered on the first turn (only the CAS winner runs
@@ -977,68 +983,113 @@ static void exitstack_push(ExitStack *s, KValue *action) {
   s->items[s->n++] = action;
 }
 
-/* §32.2.20 KK_ABANDEND state: the clause's saved continuation/exit-state and
- * original reason, resumed once the RK_DRAIN walk over the abandoned slice has
- * run all its do-scope exit actions.  `kont` is the clause's post-handler
- * continuation; `saved_exits` is the cur_exits the clause result resumes under.
- * fix 1 (§32.2.21 cause symmetry): `rkind`/`rval` is the RUNNING composed reason
- * — it starts as the clause result and each abandoned do-scope's failing
- * finalizer is folded into it LEFT-ASSOCIATIVELY (compose_reason_into) as the
- * drain walks, so an abandoned-slice exit composes EXACTLY like ordinary scope
- * exit (Then(Then(clause,ce),cl)) rather than joining the clause late. */
-typedef struct AbandonEnd {
-  Cont      *kont;
-  ExitStack *saved_exits;
-  int        rkind;
-  KValue    *rval;
-  KValue    *rlabel;
-  /* fix 1: the drain that was active when THIS one began (H1 nesting), restored
-   * into f->drain_ae when this drain's terminal is reached.  NULL at top level. */
-  struct AbandonEnd *prev_drain;
-} AbandonEnd;
+static void mark_exit_stack_shared(ExitStack *xs);
+static void mark_cont_stack_shared(Cont *c);
+static void mark_abandon_end_shared(AbandonEnd *ae);
+static void mark_finseq_shared(FinSeq *fs);
+static void mark_resumption_shared(Resumption *r);
 
-/* KK_FINSEQ state: run xs[i], xs[i-1], ..., xs[0], then apply the saved Reason.
- * `drain_ae` (§32.2.21 cause symmetry, fix 1): NULL for an ordinary scope-exit
- * finseq; non-NULL when this finseq is draining ONE do-scope of an abandoned
- * slice (the RK_DRAIN walk).  In that case the finseq's PRIMARY reason is seeded
- * from the live drain reason (drain_ae->rkind/rval), so a failing finalizer
- * composes against the clause result left-associatively; on completion the
- * composed reason is written BACK into drain_ae and the walk CONTINUES as
- * RK_DRAIN (NOT apply_reason-ed) — RK_DRAIN must stay transparent at every
- * control frame (KK_CATCH/KK_LOOP/KK_RETSCOPE) and reach the slice's KK_ABANDEND
- * terminal, which threading the clause reason itself would violate. */
-typedef struct {
-  ExitStack  *xs; int i; int rkind; KValue *rval; KValue *rlabel;
-  int origin_kind; KValue *origin_val;
-  AbandonEnd *drain_ae;
-} FinSeq;
+static void mark_exit_stack_shared(ExitStack *xs) {
+  if (!xs || !xs->items) return;
+  for (int i = 0; i < xs->n; i++) krc_mark_shared_recursive(xs->items[i]);
+}
 
-/* §18.1.21 a captured ONE-SHOT resumption.  `head` is the op-site Cont frame;
- * `tail` is the LAST frame of the captured sub-chain (its `next` is severed and
- * points at &g_done at capture time so the slice is self-terminated).  `used`
- * enforces the one-shot discipline at runtime as a defense-in-depth backstop —
- * the compile-time E_QTT_CONTINUATION_CAPTURE gate already rejects >1 use, so a
- * second `resume` here is an internal invariant break, not a user error.  The
- * saved `cur_exits` is reinstated on splice so the resumed body re-enters under
- * the do-scope/exit-action state that held at capture (§32.2.13). */
-typedef struct Resumption {
-  Cont      *head;       /* op-site frame: the start of the captured sub-chain    */
-  Cont      *tail;       /* last captured frame (tail->next severed to &g_done)   */
-  ExitStack *cur_exits;  /* the fiber's cur_exits at the capture point (body's)   */
-  KValue    *label;      /* §32.2.22 deep reinstall: the handler's installed label */
-  void      *handler;    /* the Handler* to re-push on a deep resume; NULL=shallow */
-  void      *handler_exits; /* the cur_exits the reinstalled handler restores to   */
-  int        used;       /* 0 until resumed; one-shot guard                       */
-  /* §4b tail-resumptive fast path: this resumption was captured WITHOUT severing
-   * the op-site→handler segment (the clause resumes it exactly once, in tail
-   * position, so the segment is never abandoned).  When set, `head` is the live
-   * op-site frame whose `next` chain STILL runs through the installed KK_HANDLER
-   * to the handler's continuation — so do_resume restores it with a single
-   * pointer write (f->k = head): no re-link, no fresh KK_HANDLER, the deep
-   * reinstall is automatic because the prompt was never removed (constant Cont
-   * depth, no per-perform Cont allocation). */
-  int        tail_res;
-} Resumption;
+static void mark_handler_shared(Handler *h) {
+  if (!h) return;
+  krc_mark_shared_recursive(h->ret);
+  krc_mark_shared_recursive(h->ops);
+}
+
+static void mark_fiber_locals_shared(FiberLocals *locals) {
+  if (!locals || !locals->vals) return;
+  for (int i = 0; i < locals->n; i++) krc_mark_shared_recursive(locals->vals[i]);
+}
+
+static void mark_abort_exits_shared(AbortExit *ae) {
+  for (; ae; ae = ae->next)
+    if (ae->active) krc_mark_shared_recursive(ae->action);
+}
+
+static void mark_abandon_end_shared(AbandonEnd *ae) {
+  for (; ae; ae = ae->prev_drain) {
+    mark_cont_stack_shared(ae->kont);
+    mark_exit_stack_shared(ae->saved_exits);
+    krc_mark_shared_recursive(ae->rval);
+    krc_mark_shared_recursive(ae->rlabel);
+  }
+}
+
+static void mark_finseq_shared(FinSeq *fs) {
+  if (!fs) return;
+  mark_exit_stack_shared(fs->xs);
+  krc_mark_shared_recursive(fs->rval);
+  krc_mark_shared_recursive(fs->rlabel);
+  krc_mark_shared_recursive(fs->origin_val);
+  mark_abandon_end_shared(fs->drain_ae);
+}
+
+static void mark_resumption_shared(Resumption *r) {
+  if (!r) return;
+  mark_cont_stack_shared(r->head);
+  if (!r->head) mark_cont_stack_shared(r->tail);
+  mark_exit_stack_shared(r->cur_exits);
+  krc_mark_shared_recursive(r->label);
+  mark_handler_shared((Handler *)r->handler);
+  mark_exit_stack_shared((ExitStack *)r->handler_exits);
+}
+
+static void mark_cont_aux_shared(Cont *c) {
+  switch (c->kind) {
+    case KK_DOSCOPE:
+      mark_exit_stack_shared((ExitStack *)c->aux);
+      mark_exit_stack_shared((ExitStack *)c->aux2);
+      break;
+    case KK_FINSEQ:
+      mark_finseq_shared((FinSeq *)c->aux);
+      break;
+    case KK_HANDLER:
+      mark_handler_shared((Handler *)c->aux);
+      mark_exit_stack_shared((ExitStack *)c->aux2);
+      break;
+    case KK_ABANDON:
+      mark_resumption_shared((Resumption *)c->aux);
+      break;
+    case KK_ABANDEND:
+      mark_abandon_end_shared((AbandonEnd *)c->aux);
+      break;
+    default:
+      break;
+  }
+}
+
+static void mark_cont_stack_shared(Cont *c) {
+  for (; c; c = c->next) {
+    krc_mark_shared_recursive(c->a);
+    mark_cont_aux_shared(c);
+    if (c == &g_done) break;
+  }
+}
+
+void krt2i_mark_fiber_shared(Fiber *f) {
+  if (!f) return;
+  krc_mark_shared_recursive(f->cur);
+  krc_mark_shared_recursive(f->exit);
+  krc_mark_shared_recursive(f->interrupt_cause);
+  mark_cont_stack_shared(f->k);
+  mark_exit_stack_shared(f->cur_exits);
+  mark_fiber_locals_shared(f->locals);
+  mark_abort_exits_shared(f->abort_exits);
+  mark_abandon_end_shared((AbandonEnd *)f->drain_ae);
+}
+
+void krt2i_mark_fgn_payload_shared(const char *kind, void *payload) {
+  if (!kind || !payload) return;
+  if (strcmp(kind, KRT2_KIND_RESUMPTION) == 0) {
+    mark_resumption_shared((Resumption *)payload);
+  } else if (strcmp(kind, KRT2_KIND_ABORT_EXIT) == 0) {
+    mark_abort_exits_shared((AbortExit *)payload);
+  }
+}
 
 /* A non-failing record projection (kproj krt_fails on a missing field).  Used to
  * read the §4b reserved "__tailResumptive" marker off a handler's ops record:
@@ -1066,6 +1117,7 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel); /*
 
 /* Terminate `f` with `exitv`, wake its awaiters, drop it from the root set. */
 static void fiber_finish(Rt *rt, Fiber *f, KValue *exitv) {
+  krc_mark_shared_recursive(exitv);
   pthread_mutex_lock(&f->lock);
   f->exit = exitv;
   atomic_store_explicit(&f->status, F_DONE, memory_order_release);
@@ -1102,6 +1154,7 @@ static int      g_fref_cap = 0;
 
 /* Allocate a fresh FiberRef id recording `init`; returns the FiberRef handle. */
 static KValue *fiber_ref_new(KValue *init) {
+  krc_mark_shared_recursive(init);
   pthread_mutex_lock(&g_fref_lock);
   if (g_fref_n == g_fref_cap) {
     int nc = g_fref_cap ? g_fref_cap * 2 : 8;
@@ -1151,7 +1204,10 @@ static FiberLocals *fiber_locals_snapshot(FiberLocals *src) {
   FiberLocals *dst = (FiberLocals *)GC_MALLOC(sizeof(FiberLocals));
   dst->n = src->n;
   dst->vals = (KValue **)GC_MALLOC(sizeof(KValue *) * src->n); /* scanned */
-  for (int i = 0; i < src->n; i++) dst->vals[i] = src->vals[i];
+  for (int i = 0; i < src->n; i++) {
+    if (src->vals[i]) krc_mark_shared_recursive(src->vals[i]);
+    dst->vals[i] = src->vals[i];
+  }
   return dst;
 }
 
@@ -1161,6 +1217,7 @@ static FiberLocals *fiber_locals_snapshot(FiberLocals *src) {
  * scopes arrive with the do-kernel completion increment).  The child inherits a
  * SNAPSHOT of `parent`'s FiberRef overrides (§18.1.7); pass NULL for a root. */
 Fiber *krt2i_spawn_from(Rt *rt, Fiber *parent, KValue *action, Scope *attach, int daemon) {
+  krc_mark_shared_recursive(action);
   Fiber *child = fiber_new(rt, action);
   child->daemon = daemon;
   child->cur_scope = attach;
@@ -1199,6 +1256,7 @@ static int do_await(Rt *rt, Fiber *f, KValue *handle) {
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
+  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = child->waiters; child->waiters = w;
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&child->lock);
@@ -1219,6 +1277,7 @@ static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
   int first = !atomic_load(&p->completed);
   Waiter *w = NULL;
   if (first) {
+    krc_mark_shared_recursive(exitv);
     p->exit = exitv;
     atomic_store_explicit(&p->completed, 1, memory_order_release);
     w = p->waiters; p->waiters = NULL;
@@ -1238,6 +1297,7 @@ static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
+  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = p->waiters; p->waiters = w;
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&p->lock);
@@ -2711,6 +2771,7 @@ KValue *krt2_run_main(KValue *action) {
   Scope *daemons = krt2i_scope_new();
   KValue *wrapped = krt2_ensuring(action, krt2_shutdown_scope(root_h));
 
+  krc_mark_shared_recursive(wrapped);
   Fiber *m = fiber_new(rt, wrapped);
   m->cur_scope = root;
 

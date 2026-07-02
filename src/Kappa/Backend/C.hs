@@ -67,7 +67,7 @@ import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
-import Kappa.CoreOps (patBindersC)
+import Kappa.CoreOps (dropStaticGlobalPrefixArgs, dropStaticPrefixLams, patBindersC)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Ownership
@@ -1348,9 +1348,13 @@ compileFunctionGlobal g n inner = do
   let accessor =
         T.unlines
           [ "static KValue *" <> ident <> "(void) {"
-          , "  static KValue *cache = 0; if (cache) return cache;"
-          , "  cache = kclo(" <> head cloNames <> ", 0);"
-          , "  return cache;"
+          , "  static _Atomic(KValue *) cache = NULL;"
+          , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
+          , "  if (cached) return cached;"
+          , "  KValue *fresh = kclo(" <> head cloNames <> ", 0);"
+          , "  krc_mark_shared_recursive(fresh);"
+          , "  atomic_store_explicit(&cache, fresh, memory_order_release);"
+          , "  return fresh;"
           , "}"
           ]
   modify' $ \st -> st {gsTop = accessor : gsTop st}
@@ -1359,7 +1363,7 @@ compileFunctionGlobal g n inner = do
   -- the typed unboxed worker beside the boxed kw_g.
   mplan <- scalarPlan g
   case mplan of
-    Just (pks, ret) -> compileScalarWorker g pks ret inner
+    Just (_, pks, ret, scalarInner) -> compileScalarWorker g pks ret scalarInner
     Nothing -> pure ()
 
 -- ── LR1/R2.2: typed unboxed scalar workers (int64 / double) ──────────────
@@ -1537,14 +1541,14 @@ scalarBodyMaySuspend susp = go
         CProjAt e _ _ -> go e
         _ -> False
 
-scalarPlan :: GName -> Gen (Maybe ([ParamKind], ScalarKind))
+scalarPlan :: GName -> Gen (Maybe ([Bool], [ParamKind], ScalarKind, Term))
 scalarPlan g = do
   bodies <- gets gsBodies
   susp <- gets gsSuspenders
   case Map.lookup g bodies of
     Nothing -> pure Nothing
     Just body -> do
-      let (binders, inner) = stripLamsQ body
+      let (binders, _) = stripLamsQ body
           n = length binders
       -- all binders explicit + relevant: an implicit/erased binder is passed
       -- kunit() (compileErasableArg), which a scalar worker must never read.
@@ -1554,16 +1558,20 @@ scalarPlan g = do
           case mkinds of
             -- require at least one unboxed scalar param (else there is nothing
             -- to win — an all-boxed body stays on the boxed/flat path).
-            Just (pks, ret) | any (/= PBoxed) pks -> do
+            Just (mask, pks, ret) | any (/= PBoxed) pks -> do
               -- §7 Stage 1.5 SOUNDNESS GATE (before the body grammar check): a
               -- worker whose body may suspend would lose its raw-scalar C locals
               -- across a park (§6).  Refuse it (→ boxed) — never miscompile.
               -- Gates on BOTH the global's own transitive suspender membership
               -- (g ∈ gsSuspenders) and a per-body walk for an inlined/opaque
               -- suspending sub-term, so it stays sound once locals widen.
-              ok <- scalarEligTail g pks (reverse pks) ret inner
-              let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp inner
-              pure (if ok && not mayParK then Just (pks, ret) else Nothing)
+              case dropStaticPrefixLams mask (dropStaticGlobalPrefixArgs g mask body) of
+                Nothing -> pure Nothing
+                Just scalarBody -> do
+                  let (_, scalarInner) = stripLamsQ scalarBody
+                  ok <- scalarEligTail g pks (reverse pks) ret scalarInner
+                  let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp scalarInner
+                  pure (if ok && not mayParK then Just (mask, pks, ret, scalarInner) else Nothing)
             _ -> pure Nothing
         else pure Nothing
 
@@ -1575,7 +1583,7 @@ scalarPlan g = do
 -- binder count) is a HARD guard: a disagreement (point-free style, an
 -- unfoldable type alias, a function-typed result) yields @Nothing@, so a kind
 -- is never assigned to the wrong binder.
-typeScalarKinds :: GName -> Int -> Gen (Maybe ([ParamKind], ScalarKind))
+typeScalarKinds :: GName -> Int -> Gen (Maybe ([Bool], [ParamKind], ScalarKind))
 typeScalarKinds g n = do
   globals <- gets gsGlobals
   ctx <- gets gsEvalCtx
@@ -1589,10 +1597,13 @@ typeScalarKinds g n = do
       -- the per-param 'Rep' becomes a 'PScalar'/'PBoxed' slot, and the RESULT
       -- 'Rep' must be a scalar (a boxed-result worker is not eligible in this
       -- slice — so a non-scalar result rep yields @Nothing@).
+      mask <- Repr.runtimeParamMask ctx (gdType gd)
       (paramReps, retRep) <- Repr.repSelect ctx (gdType gd)
       ret <- repScalarKind retRep
       let pks = map paramRepKind paramReps
-      if length pks == n then Just (pks, ret) else Nothing
+      if length mask == n && length pks == length (filter id mask)
+        then Just (mask, pks, ret)
+        else Nothing
   where
     -- A param slot is an unboxed scalar (int/double) or a boxed pass-through
     -- (R2.4 mixed worker) for any non-scalar rep.
@@ -2136,8 +2147,8 @@ emitScalarWorkerSafepoint = do
 -- | The saturated fast path at a call site: unbox each arg by its scalar kind,
 -- call the unboxed worker, and escape to the boxed @kw_g@ (from the ORIGINAL
 -- boxed args) on a wrong-tag arg or an int64 overflow.
-compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [(Icit, Term)] -> Gen Text
-compileScalarCall g pks ret sargs = do
+compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [(Icit, Term)] -> [Int] -> Gen Text
+compileScalarCall g pks ret sargs runtimeIdxs = do
   let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
       k = length sargs
@@ -2152,10 +2163,11 @@ compileScalarCall g pks ret sargs = do
     t <- freshN "la_"
     emit ("KValue *" <> t <> " = " <> ae <> ";")
     pure t
+  let rtTs = [ts !! i | i <- runtimeIdxs, i >= 0, i < length ts]
   ovf <- freshN "kovf_"
   emit ("int " <> ovf <> " = 0;")
   -- scalar slots unbox (tag-checked → escape); boxed slots pass through.
-  avs <- forM (zip pks ts) $ \(pk, t) -> case pk of
+  avs <- forM (zip pks rtTs) $ \(pk, t) -> case pk of
     PScalar k -> do
       av <- freshN "lu_"
       emit (cScalarTy k <> " " <> av <> " = " <> unboxScalar k t ovf <> ";")
@@ -2191,12 +2203,16 @@ finishGlobal ident stmts e =
   let fn =
         T.unlines $
           [ "static KValue *" <> ident <> "(void) {"
-          , "  static KValue *cache = 0; if (cache) return cache;"
+          , "  static _Atomic(KValue *) cache = NULL;"
+          , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
+          , "  if (cached) return cached;"
           , "  KEnv *env = 0; (void)env;"
           ]
             ++ map ("  " <>) stmts
-            ++ [ "  cache = " <> e <> ";"
-               , "  return cache;"
+            ++ [ "  KValue *fresh = " <> e <> ";"
+               , "  krc_mark_shared_recursive(fresh);"
+               , "  atomic_store_explicit(&cache, fresh, memory_order_release);"
+               , "  return fresh;"
                , "}"
                ]
    in modify' $ \st -> st {gsTop = fn : gsTop st}
@@ -2223,6 +2239,7 @@ assemble st =
   T.unlines $
     [ "/* Generated by the Kappa native backend (Kappa.Backend.C). */"
     , "#include \"kappart2.h\"" -- the kappart2 runtime; pulls in kappart.h too
+    , "#include <stdatomic.h>"
     , ""
     ]
       -- LR2: per-program numeric constructor/variant tag ids (KT_/KVT_),
@@ -3451,7 +3468,11 @@ compileDirectCall g n sargs = do
     -- LR1/R2.2: an exactly-saturated call to a scalar-eligible worker takes the
     -- unboxed fast path (with a boxed escape).  Surplus args / partial calls
     -- keep the boxed worker.
-    Just (pks, ret) | length pks == n, length sargs == n -> compileScalarCall g pks ret sargs
+    Just (mask, pks, ret, _)
+      | length sargs == length mask
+      , let runtimeIdxs = [i | (i, keep) <- zip [0 :: Int ..] mask, keep]
+      , length runtimeIdxs == length pks ->
+          compileScalarCall g pks ret sargs runtimeIdxs
     _ -> do
       let k = length sargs
           (callArgs, extra) = splitAt n sargs
@@ -3988,7 +4009,8 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- soft leak Boehm reclaims; the trailing drop would be dead after the return).
   -- The kept-field DUP and the cell @kdrop@ are an ATOMIC PAIR: a field projected
   -- via a borrowing 'kctor_arg'/'kproj' (no incref) is dup'd so it survives the
-  -- following @kdrop(sv)@ (which on a unique cell recursively frees the fields).
+  -- following @kdrop(sv)@ (which S3.2 will let recursively free fields when the
+  -- cell is unique; in S3.1 it still only maintains the paired rc invariant).
   -- So the field-dup must fire IFF the cell-drop does — dupping a kept field on an
   -- arm that then skips the cell-drop would be an UNPAIRED dup (a permanent rc
   -- inflation / leak, never balanced). Guarded arms bind fields before evaluating
@@ -5400,9 +5422,11 @@ bindPatScrut = bindPatScrutDup False
 -- When @dupFields@ is 'True' (the arm both owns the scrutinee cell and will drop
 -- it at its 'SinkVar' seam — the 'dropHere' in 'consumeAltBody'), each bound field
 -- projection @kctor_arg(sv,…)@ is wrapped in @kdup(…)@ so the surviving field
--- keeps a reference of its own before the following @kdrop(sv)@ that — on a unique
--- cell — would recursively free it. @kdup@ skips immediates, so an immediate field
--- is a runtime no-op. With @dupFields@ 'False' this is exactly the old
+-- keeps a reference of its own before the following @kdrop(sv)@. S3.1 still only
+-- maintains the paired rc invariant; S3.2 will make this the guard against freeing
+-- a unique scrutinee cell while a projected field escapes. @kdup@ skips
+-- immediates, so an immediate field is a runtime no-op. With @dupFields@ 'False'
+-- this is exactly the old
 -- 'bindPatScrut' (byte-identical), so every non-match-destructure caller (the
 -- do-kernel\/closure-arg\/let-pattern paths) and every returning-arm match is
 -- unchanged.
