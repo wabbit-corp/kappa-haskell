@@ -1,0 +1,26 @@
+module main
+
+-- §18.6.2 NEGATIVE: recognized writeRef (ref x) invalidates the current-value
+-- fact even when the write is nested under an immediate action expression.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        let _ <-
+            match True
+            case True -> writeRef (ref cell) Empty
+            case False -> pureIO ()
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

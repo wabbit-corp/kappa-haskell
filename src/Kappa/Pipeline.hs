@@ -49,7 +49,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
-import Kappa.Core (GName (..), Term (..), gnameText)
+import Kappa.Core (GName (..), Q (..), Term (..), gnameText)
 import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
@@ -675,8 +675,9 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (usageImportedRecordShapes byName st1 ie)
                       (usageImportedRecordDeps byName st1 ie)
                       (resolvedCtorAliases `Map.union` usageImportedCtors byName st1 ie)
-                      (usageImportedRefOps st1 ie)
                       (usageRecognizedRefOps st1)
+                      (usageRecognizedMultishotOps st1)
+                      (usageHandlerOpQuantities st1)
                       (usageImportedBorrowViewHeads st1 ie)
                       (usageVisibleMonadicResultHeads st1 ie m')
                       (usageImportedProjections byName st1 ie)
@@ -1636,15 +1637,6 @@ qualifyStorageExpr alias sourceShapeNames = qualifyExpr
       ArgNamedBlock items sp ->
         ArgNamedBlock [(n, qualifyExpr <$> me) | (n, me) <- items] sp
 
-usageImportedRefOps :: CheckState -> ImportEnv -> Map.Map Text RefOp
-usageImportedRefOps st ie =
-  Map.mapMaybe refOpFor (usageImportedNames st ie)
-  where
-    refOpFor g
-      | g == prelReadRef = Just RefRead
-      | g == prelWriteRef = Just RefWrite
-      | otherwise = Nothing
-
 usageRecognizedRefOps :: CheckState -> Map.Map Span RefOp
 usageRecognizedRefOps st =
   Map.mapMaybe refOpFor (csRecognizedRefOps st)
@@ -1653,6 +1645,21 @@ usageRecognizedRefOps st =
       | op == T.pack "readRef" = Just RefRead
       | op == T.pack "writeRef" = Just RefWrite
       | otherwise = Nothing
+
+usageRecognizedMultishotOps :: CheckState -> Map.Map Span Text
+usageRecognizedMultishotOps st =
+  Map.map snd (csRecognizedMultishotOps st)
+
+usageHandlerOpQuantities :: CheckState -> Map.Map Span Quantity
+usageHandlerOpQuantities =
+  Map.map coreQuantity . csHandlerOpQuantities
+  where
+    coreQuantity = \case
+      Q0 -> QZero
+      Q1 -> QOne
+      QW -> QOmega
+      QLe1 -> QAtMostOne
+      QGe1 -> QAtLeastOne
 
 usageImportedBorrowViewHeads :: CheckState -> ImportEnv -> Set.Set Text
 usageImportedBorrowViewHeads st ie =

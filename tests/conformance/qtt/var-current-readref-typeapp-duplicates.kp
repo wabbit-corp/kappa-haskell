@@ -13,5 +13,5 @@ data Box : Type =
 bad : UIO Unit
 let bad = do
     var cell : Box = Full { tok = Token }
-    let copy <- readRef @Void @Box (ref cell)
+    let copy <- readRef @(IO Void) (ref cell)
     pure ()

@@ -485,8 +485,9 @@ data Env = Env
   , eResultTypes :: !(Map Text Expr)
   , eValueResultTypes :: !(Map Text Expr)
   , eResultStorage :: !(Map Text VInfo)
-  , eRefOps :: !(Map Text RefOp)
   , eRecognizedRefOps :: !(Map Span RefOp)
+  , eRecognizedMultishotOps :: !(Map Span Text)
+  , eHandlerOpQuantities :: !(Map Span Quantity)
   , eBorrows :: ![(Text, [Text], Span)]
   -- ^ live lexical borrows: root key, path, and the §3.1.1A
   -- borrow-introduction site (the @let &@ binding span) so the
@@ -589,15 +590,16 @@ usageDiagnostics ::
   Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
   Map Text [(Text, [CtorParamInfo])] ->
-  Map Text RefOp ->
   Map Span RefOp ->
+  Map Span Text ->
+  Map Span Quantity ->
   Set.Set Text ->
   Set.Set Text ->
   Map Text ProjUse ->
   Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors importedRefOps recognizedRefOps importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -632,8 +634,8 @@ usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutR
         inoutResults
         resultTypes
         valueResultTypes
-        refOps
         recognizedRefOps
+        recognizedMultishotOps
         aliases
         recordShapes
         aliasDeps
@@ -646,16 +648,12 @@ usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutR
         duplicableStorageHeads
         m
     duplicableStorageHeads = importedDuplicableStorageHeads Set.\\ localTypeHeads
-    -- Ref-operation recognition is semantic, not source-spelling based.
-    -- Imported Prelude/std ref operations are shadowed by same-module term
-    -- declarations before Usage sees application heads.
-    refOps = (importedRefOps `Map.difference` localFns) `Map.difference` localCtors
     fns = localFns `Map.union` builtinFns `Map.union` importedFnParams
     monadicResultHeads = visibleMonadicResultHeads
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
     localTypeHeads =
       Set.fromList $
@@ -785,8 +783,8 @@ moduleUsageResultStorage ::
   Map Text [FieldShape] ->
   Map Text Expr ->
   Map Text Expr ->
-  Map Text RefOp ->
   Map Span RefOp ->
+  Map Span Text ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
@@ -799,7 +797,7 @@ moduleUsageResultStorage ::
   Set.Set Text ->
   Module ->
   Map Text VInfo
-moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads m =
+moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads m =
   fixedPoint (length lets + 1) Map.empty
   where
     decls = modDecls m
@@ -831,8 +829,9 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes refOps re
               resultTypes
               valueResultTypes
               resultStorage
-              refOps
               recognizedRefOps
+              recognizedMultishotOps
+              Map.empty
               []
               aliases
               recordShapes
@@ -2010,8 +2009,9 @@ analyzeLet ::
   Map Text Expr ->
   Map Text Expr ->
   Map Text VInfo ->
-  Map Text RefOp ->
   Map Span RefOp ->
+  Map Span Text ->
+  Map Span Quantity ->
   Map Text [(Text, Maybe Quantity)] ->
   Map Text RecordShape ->
   Map Text [(Text, [Text])] ->
@@ -2024,7 +2024,7 @@ analyzeLet ::
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads msig ld = do
+analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -2038,7 +2038,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
   let env =
-        (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage refOps recognizedRefOps [] aliases recordShapes ctors projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads False)
+          (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities [] aliases recordShapes ctors projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads False)
           {ePendingSig = pendingSig}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
@@ -2723,22 +2723,17 @@ walkE env e0 = case e0 of
   -- §18.1.21/.22 handler: the scrutinee is used once; each clause is an
   -- alternative path. The clause's resumption binder `k` is counted at
   -- the operation's declared resumption quantity (§18.1.16).
-  EHandle _ lblE scrut cases _ -> do
+  EHandle _ _ scrut cases _ -> do
     r0 <- walkE env scrut
-    let mops = case lblE of
-          EVar n
-            | not (Map.member (nameText n) (eVars env)) ->
-                Map.lookup (nameText n) (eEffOps env)
-          _ -> Nothing
-        bindPats sp nms = mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
+    let bindPats sp nms = mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
     crs <- forM cases $ \case
       HandlerReturn pat body sp -> do
         shadow <- bindPats sp (patVars pat)
         fst . flatR <$> walkE (bindVars shadow env) body
-      HandlerOp opN argPats kN body sp -> do
+      HandlerOp _ argPats kN body sp -> do
         shadow <- bindPats sp (concatMap patVars argPats)
         kKey <- freshKey (nameText kN)
-        let q = maybe QOne (fromMaybe QOne . lookup (nameText opN)) mops
+        let q = Map.findWithDefault QOne (nameSpan kN) (eHandlerOpQuantities env)
             kvi = (plainV kKey (nameSpan kN)) {vQ = countedQ q}
             env' = bindVars (shadow ++ [(nameText kN, kvi)]) env
         u <- fst . flatR <$> walkE env' body
@@ -2853,27 +2848,33 @@ staticPathHead env = \case
   EAscription e _ _ -> staticPathHead env e
   _ -> Nothing
 
-refOpHead :: Env -> RefOp -> Expr -> Bool
-refOpHead env expected e =
-  case staticPathHead env e of
-    Just headKey -> Map.lookup headKey (eRefOps env) == Just expected
-    Nothing -> case e of
-      EApp g _ -> refOpHead env expected g
-      _ -> False
-
 recognizedRefRead :: Env -> Expr -> [Arg] -> Maybe (Name, Span)
-recognizedRefRead env f args = do
+recognizedRefRead env _ args = do
   (n, sp) <- refReadFacetArg args
-  if refOpHead env RefRead f || Map.lookup sp (eRecognizedRefOps env) == Just RefRead
+  if Map.lookup sp (eRecognizedRefOps env) == Just RefRead
     then Just (n, sp)
     else Nothing
 
 recognizedRefWrite :: Env -> Expr -> [Arg] -> Maybe (Name, Expr, Span)
-recognizedRefWrite env f args = do
+recognizedRefWrite env _ args = do
   (n, rhs, sp) <- refWriteFacetArgs args
-  if refOpHead env RefWrite f || Map.lookup sp (eRecognizedRefOps env) == Just RefWrite
+  if Map.lookup sp (eRecognizedRefOps env) == Just RefWrite
     then Just (n, rhs, sp)
     else Nothing
+
+recognizedRefReadExpr :: Env -> Expr -> Maybe (Name, Span)
+recognizedRefReadExpr env = \case
+  EApp f args -> recognizedRefRead env f args
+  EAscription e _ _ -> recognizedRefReadExpr env e
+  _ -> Nothing
+
+walkExecutedExpr :: Env -> Expr -> Analysis WalkResult
+walkExecutedExpr env e
+  | Just (n, sp) <- recognizedRefReadExpr env e
+  , Just vi <- Map.lookup (nameText n) (eVars env)
+  , vMutable vi =
+      rPlain <$> currentReadUsage env vi [] sp
+walkExecutedExpr env e = walkE env e
 
 refReadFacetArg :: [Arg] -> Maybe (Name, Span)
 refReadFacetArg args =
@@ -3355,11 +3356,6 @@ walkApp env (EDot recv (DotName m)) args
   , (i : _) <- [ix | (ix, pp) <- zip [0 ..] params, pReceiver pp] =
       walkApp env (EVar m) (take i args ++ [ArgExplicit recv] ++ drop i args)
 walkApp env f args
-  | Just (n, sp) <- recognizedRefRead env f args
-  , Just vi <- Map.lookup (nameText n) (eVars env)
-  , vMutable vi = do
-      rPlain <$> currentReadUsage env vi [] sp
-walkApp env f args
   -- a projection call in an ordinary value position is a non-consuming
   -- read of its yield leaves (§30.2.2.3 ReadProjector)
   | Just (places, aux) <- projPlacesOf env (EApp f args) = do
@@ -3756,7 +3752,10 @@ coreFnParams = \case
 -- binding (its RHS usage, the tracked bindings it introduces, and the
 -- borrows it opens) plus the fully-extended environment.
 walkBinds :: Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
-walkBinds env binds = go env binds
+walkBinds = walkBindsWith walkE
+
+walkBindsWith :: (Env -> Expr -> Analysis WalkResult) -> Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
+walkBindsWith walkRhs env binds = go env binds
   where
     bindsWholeRhs = \case
       PVar {} -> True
@@ -3804,7 +3803,7 @@ walkBinds env binds = go env binds
                       ]
                     )
             Nothing -> do
-              r <- walkE envc rhs
+              r <- walkRhs envc rhs
               let (u', t') = flatR r
               pure (u', t', Map.empty, [])
           else case (pat, rhs) of
@@ -3817,7 +3816,7 @@ walkBinds env binds = go env binds
               | isWildBinder p, Map.member (nameText n) (eVars envc) ->
                   pure (Map.empty, Nothing, Map.empty, [])
             _ -> do
-              WalkResult u' t' l' <- walkE envc rhs
+              WalkResult u' t' l' <- walkRhs envc rhs
               let forceRefEscape =
                     bindsWholeRhs pat
                       && not (isWildBinder pat)
@@ -3954,19 +3953,140 @@ countedQ = \case
   QOne -> Just QAtMostOne
   q -> Just q
 
--- | Is this right-hand side an invocation of a scoped effect's
--- multi-shot operation (declared quantity permitting more than one
--- resumption, §18.1.17)? Returns the operation's span and name.
+-- | Is this right-hand side an invocation of a resolved effect operation whose
+-- checker-selected operation metadata permits multi-shot resumption
+-- (§18.1.17)? Returns the operation's span and name for diagnostics.
 multishotOpCall :: Env -> Expr -> Maybe (Span, Text)
-multishotOpCall env = \case
-  EApp f _ -> multishotOpCall env f
-  EDot (EVar l) (DotName op)
-    | not (Map.member (nameText l) (eVars env))
-    , Just ops <- Map.lookup (nameText l) (eEffOps env)
-    , Just q <- lookup (nameText op) ops
-    , q `elem` [QOmega, QAtLeastOne] ->
-        Just (nameSpan op, nameText op)
-  _ -> Nothing
+multishotOpCall env = listToMaybe . multishotOpsInExecutedExpr env
+
+multishotOpsInExecutedExpr :: Env -> Expr -> [(Span, Text)]
+multishotOpsInExecutedExpr env = go
+  where
+    hit sp = [(sp, op) | Just op <- [Map.lookup sp (eRecognizedMultishotOps env)]]
+    hitMember = \case
+      DotName op -> hit (nameSpan op)
+      DotOperator op -> hit (nameSpan op)
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock fields _ -> concatMap (maybe [] go . snd) fields
+    goLet (LetBind _ _ _ _ rhs _) = go rhs
+    goCase = \case
+      MatchCase _ mg body _ -> maybe [] go mg ++ go body
+      MatchImpossible {} -> []
+    goExcept (ExceptCase _ mg body _) = maybe [] go mg ++ go body
+    goHandler = \case
+      HandlerReturn _ body _ -> go body
+      HandlerOp _ _ _ body _ -> go body
+    goDecl = \case
+      DLet _ ld _ -> go (ldBody ld)
+      DTopSplice e _ -> go e
+      DUnsafeAssert _ inner _ -> goDecl inner
+      _ -> []
+    goDo = \case
+      DoBind lb -> go (lbExpr lb)
+      DoLet lb -> go (lbExpr lb)
+      DoLetQ _ rhs mElse _ -> go rhs ++ maybe [] (go . snd) mElse
+      DoVar _ mty rhs _ -> maybe [] go mty ++ go rhs
+      DoAssign _ True rhs _ -> go rhs
+      DoAssign _ False rhs _ -> go rhs
+      DoExpr e -> go e
+      DoUsing _ _ rhs _ -> go rhs
+      DoDefer {} -> []
+      DoReturn _ me _ -> maybe [] go me
+      DoBreak {} -> []
+      DoContinue {} -> []
+      DoWhile _ cond body mels _ -> go cond ++ concatMap goDo body ++ maybe [] (concatMap goDo) mels
+      DoFor _ _ src body mels _ -> go src ++ concatMap goDo body ++ maybe [] (concatMap goDo) mels
+      DoIf alts mels _ ->
+        concatMap (\(cond, body) -> go cond ++ concatMap goDo body) alts
+          ++ maybe [] (concatMap goDo) mels
+      DoDecl d -> goDecl d
+    goCompClause = \case
+      CFor _ _ _ src _ -> go src
+      CLet _ _ mty rhs _ -> maybe [] go mty ++ go rhs
+      CIf e -> go e
+      COrderBy keys _ -> concatMap (go . snd) keys
+      CSkip e _ -> go e
+      CTake e _ -> go e
+      CDistinct me _ -> maybe [] go me
+      CGroupBy key aggs _ _ -> go key ++ concatMap (\(_, e, mu) -> go e ++ maybe [] go mu) aggs
+      CJoin _ _ src on _ _ -> go src ++ go on
+    goYield = \case
+      YieldExpr e -> go e
+      YieldPair k v -> go k ++ go v
+    go = \case
+      EVar {} -> []
+      ERefFacet {} -> []
+      EVarRead {} -> []
+      EHole {} -> []
+      EIntLit {} -> []
+      EFloatLit {} -> []
+      EStringLit _ parts _ -> concatMap (go . ipExpr) parts
+      EQuotedLit {} -> []
+      EUnit {} -> []
+      ETuple es _ -> concatMap go es
+      ERecordLit items _ -> concatMap (\(RecItem _ _ mv) -> maybe [] go mv) items
+      ERecordType {} -> []
+      eApp@(EApp f args) -> hit (exprSpan eApp) ++ go f ++ concatMap goArg args
+      EDot recv member -> hitMember member ++ go recv
+      EQDot recv member -> hitMember member ++ go recv
+      ERecordPatch recv items _ -> go recv ++ concatMap goPatch items
+      EReceiverSection _ args _ -> concatMap goArg args
+      ESectionLeft e _ _ -> go e
+      ESectionRight _ e _ -> go e
+      EOpRef {} -> []
+      EOpChain elems -> concatMap goOpElem elems
+      EElvis a b _ -> go a ++ go b
+      ELambda {} -> []
+      ELet binds body _ -> concatMap goLet binds ++ go body
+      EBlock decls mres _ -> concatMap goDecl decls ++ maybe [] go mres
+      EDo _ items _ -> concatMap goDo items
+      EIf alts mels _ -> concatMap (\(c, b) -> go c ++ go b) alts ++ maybe [] go mels
+      EMatch scrut cases _ -> go scrut ++ concatMap goCase cases
+      ETry scrut excepts mfin _ -> go scrut ++ concatMap goExcept excepts ++ maybe [] go mfin
+      ETryMatch scrut cases excepts mfin _ ->
+        go scrut ++ concatMap goCase cases ++ concatMap goExcept excepts ++ maybe [] go mfin
+      EHandle _ lbl scrut cases _ -> go lbl ++ go scrut ++ concatMap goHandler cases
+      EIs e _ -> go e
+      EThunk {} -> []
+      ELazy {} -> []
+      EForce e _ -> go e
+      ESeal a b _ -> go a ++ go b
+      EOpenExists e _ _ body _ -> go e ++ go body
+      ESealExists bs a b _ -> concatMap (go . snd) bs ++ go a ++ go b
+      EListLit es _ -> concatMap go es
+      ESetLit es _ -> concatMap go es
+      EMapLit kvs _ -> concatMap (\(k, v) -> go k ++ go v) kvs
+      EComprehension _ clauses yield _ -> concatMap goCompClause clauses ++ goYield yield
+      EArrow {} -> []
+      EForall {} -> []
+      EExists {} -> []
+      ETraitArrow {} -> []
+      EEffRow {} -> []
+      EVariant arms mtail _ -> concatMap (\(VariantArm e mty) -> go e ++ maybe [] go mty) arms ++ maybe [] go mtail
+      EOptionSugar {} -> []
+      EAscription e _ _ -> go e
+      ECaptures e _ _ -> go e
+      EBang _ e _ -> go e
+      EQuote {} -> []
+      ECodeQuote {} -> []
+      ECodeEscape e _ -> go e
+      ESplice e _ -> go e
+      ESpliceInQuote {} -> []
+      EQuoteHole {} -> []
+      EImpossible {} -> []
+      EKindQualified {} -> []
+      EModuleSig {} -> []
+    goPatch = \case
+      PatchUpdate _ (PatchValue e) -> go e
+      PatchExtend _ e -> go e
+      PatchSection a b -> go a ++ go b
+      PatchPun {} -> []
+    goOpElem = \case
+      ChainOperand e -> go e
+      ChainOp {} -> []
 
 -- | §4b tail-resumptive detector — the dual of 'multishotOpCall'.
 --
@@ -4232,28 +4352,24 @@ walkItems env0 items0 = go env0 items0
   where
     go env [] = pure (Flow (Just (PathState Map.empty (eVars env))) Nothing [] [])
     go env (item : rest) = case item of
-      DoExpr e
-        | Just (n, rhs, sp) <- recognizedWriteRef env e ->
-            mutableWrite (MutableCloseContext "reference" "writeRef") env n rhs sp rest
-        | otherwise -> do
-            r <- walkE env e
-            let (u, t) = flatR r
-            (restoreU, restored, envStable) <- applyStableExprVarInoutWrites env e
-            let env' = applyExprVarInoutWrites envStable e
-            fl <- go env' rest
-            forM_ restored $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
-            let flScoped = scopeFlowVars env (map fst restored) fl
-                fl' = prefixFlow (u `seqU` restoreU) flScoped
-            -- the final statement's value escapes the do-scope: report the
-            -- escape at that statement, not at the closure formation
-            pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
+      DoExpr e -> do
+        (u, t, envAction) <- walkExecutedAction env e
+        (restoreU, restored, envStable) <- applyStableExprVarInoutWrites envAction e
+        let env' = applyExprVarInoutWrites envStable e
+        fl <- go env' rest
+        forM_ restored $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
+        let flScoped = scopeFlowVars envAction (map fst restored) fl
+            fl' = prefixFlow (u `seqU` restoreU) flScoped
+        -- the final statement's value escapes the do-scope: report the
+        -- escape at that statement, not at the closure formation
+        pure fl' {fT = if null rest then (exprSpan e <$ t) else fT fl'}
       DoLet lb -> bindLike env lb rest
       DoBind lb
         | Just (n, rhs, sp) <- recognizedWriteRef env (lbExpr lb) ->
             mutableWriteBind env n rhs sp lb rest
       DoBind lb
         | otherwise -> do
-            (fl, suffixFl) <- bindLike' env lb rest
+            (fl, suffixFl) <- bindLikeAction' env lb rest
             -- §18.1.20 call-site capture rule: the suffix from a multi-shot
             -- operation site to the handler boundary is captured by a
             -- reusable resumption, so every runtime-relevant captured value
@@ -4264,13 +4380,14 @@ walkItems env0 items0 = go env0 items0
       DoUsing _ pat rhs sp -> do
         -- §19.5: the bound resource is borrowed for the rest of scope
         -- and may not itself escape the do-scope
-        (segs, env') <- walkBinds env [LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
+        (rhsU, _, envAction) <- walkExecutedAction env rhs
+        (segs, env') <- walkBindsWith (\_ _ -> pure rNone) envAction [LetBind False (BinderPrefix Nothing (Just (BorrowMark Nothing))) pat Nothing rhs sp]
         let bound = concat [b | (_, b, _) <- segs]
-            u = foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
+            u = rhsU `seqU` foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
             markUsing = foldr (\(nm, _) -> Map.adjust (\vi -> vi {vUsing = True}) nm) (eVars env') bound
         fl <- go env' {eVars = markUsing} rest
         forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
-        pure (prefixFlow u (scopeFlowVars env (map fst bound) fl))
+        pure (prefixFlow u (scopeFlowVars envAction (map fst bound) fl))
       DoLetQ pat rhs mElse sp -> do
         u <- fst . flatR <$> walkE env rhs
         -- the else handler is an alternative completion path (§18.2)
@@ -4321,55 +4438,54 @@ walkItems env0 items0 = go env0 items0
       DoBreak {} -> pure (Flow Nothing Nothing [PathState Map.empty (eVars env)] [])
       DoContinue {} -> pure (Flow Nothing Nothing [PathState Map.empty (eVars env)] [])
       DoWhile _ cond body mels _ -> do
-        cu <- fst . flatR <$> walkE env cond
-        bodyFl <- go env body
+        (cu, _, envCond) <- walkExecutedAction env cond
+        bodyFl <- go envCond body
         -- per-iteration paths: fall-through and break/continue exits;
         -- the loop may run zero times (§18.2.4)
         let iter = loopU (altUs (map psU (maybeToList (fU bodyFl) ++ fBC bodyFl)))
-            loopExitVars = joinPathVars env (PathState Map.empty (eVars env) : flowPathStates bodyFl)
-            loopEnv = env {eVars = loopExitVars}
+            loopExitVars = joinPathVars envCond (PathState Map.empty (eVars envCond) : flowPathStates bodyFl)
+            loopEnv = envCond {eVars = loopExitVars}
         elseFl <- traverse (go loopEnv) mels
         let eu = maybe Map.empty (altUs . flowPaths) elseFl
             elseRet = maybe [] fRet elseFl
             afterLoopVars =
               case elseFl of
                 Just ef | not (null (maybeToList (fU ef))) -> joinPathVars loopEnv (maybeToList (fU ef) ++ fBC bodyFl)
-                _ -> joinPathVars env (PathState Map.empty (eVars env) : fBC bodyFl)
-            restEnv = env {eVars = afterLoopVars}
+                _ -> joinPathVars envCond (PathState Map.empty (eVars envCond) : fBC bodyFl)
+            restEnv = envCond {eVars = afterLoopVars}
         fl <- go restEnv rest
         let fl' = prefixFlow (cu `seqU` iter `seqU` eu) fl
             loopRet = map (prefixPathState cu) (fRet bodyFl ++ elseRet)
         pure fl' {fRet = loopRet ++ fRet fl'}
       DoFor _ pat src body mels sp -> do
-        su <- fst . flatR <$> walkE env src
+        (su, _, envSrc) <- walkExecutedAction env src
         shadow <- shadowVars (patVars pat) sp
-        bodyFl0 <- go (bindVars shadow env) body
-        let bodyFl = scopeFlowVars env (map fst shadow) bodyFl0
+        bodyFl0 <- go (bindVars shadow envSrc) body
+        let bodyFl = scopeFlowVars envSrc (map fst shadow) bodyFl0
             iter = loopU (altUs (map psU (maybeToList (fU bodyFl) ++ fBC bodyFl)))
-            loopExitVars = joinPathVars env (PathState Map.empty (eVars env) : flowPathStates bodyFl)
-            loopEnv = env {eVars = loopExitVars}
+            loopExitVars = joinPathVars envSrc (PathState Map.empty (eVars envSrc) : flowPathStates bodyFl)
+            loopEnv = envSrc {eVars = loopExitVars}
         elseFl <- traverse (go loopEnv) mels
         let eu = maybe Map.empty (altUs . flowPaths) elseFl
             elseRet = maybe [] fRet elseFl
             afterLoopVars =
               case elseFl of
                 Just ef | not (null (maybeToList (fU ef))) -> joinPathVars loopEnv (maybeToList (fU ef) ++ fBC bodyFl)
-                _ -> joinPathVars env (PathState Map.empty (eVars env) : fBC bodyFl)
-            restEnv = env {eVars = afterLoopVars}
+                _ -> joinPathVars envSrc (PathState Map.empty (eVars envSrc) : fBC bodyFl)
+            restEnv = envSrc {eVars = afterLoopVars}
         fl <- go restEnv rest
         let fl' = prefixFlow (su `seqU` iter `seqU` eu) fl
             loopRet = map (prefixPathState su) (fRet bodyFl ++ elseRet)
         pure fl' {fRet = loopRet ++ fRet fl'}
       DoIf alts mels _ -> do
-        cus <- mapM (fmap (fst . flatR) . walkE env . fst) alts
-        bfs <- mapM (go env . snd) alts
-        mef <- traverse (go env) mels
-        let branchFls = bfs ++ maybeToList mef
+        (bfs, elsePrefix, elseEnv) <- walkIfAlts Map.empty env alts
+        mef0 <- traverse (go elseEnv) mels
+        let mef = prefixFlow elsePrefix <$> mef0
+            branchFls = bfs ++ maybeToList mef
             -- with no else there is an implicit empty fall-through path
             fallts =
               mapMaybe fU branchFls
-                ++ [PathState Map.empty (eVars env) | case mef of Nothing -> True; Just _ -> False]
-            condU = foldr seqU Map.empty cus
+                ++ [PathState elsePrefix (eVars elseEnv) | case mef of Nothing -> True; Just _ -> False]
             branchFall
               | null fallts = Nothing
               | otherwise = Just (altUs (map psU fallts))
@@ -4377,9 +4493,9 @@ walkItems env0 items0 = go env0 items0
         fl <- go joinedEnv rest
         let fl' = case branchFall of
               Nothing -> Flow Nothing (fT fl) [] []
-              Just bu -> prefixFlow (condU `seqU` bu) fl
-            exitsB = map (\ps -> ps {psU = condU `seqU` psU ps}) (concatMap fBC branchFls)
-            exitsR = map (\ps -> ps {psU = condU `seqU` psU ps}) (concatMap fRet branchFls)
+              Just bu -> prefixFlow bu fl
+            exitsB = concatMap fBC branchFls
+            exitsR = concatMap fRet branchFls
         pure fl' {fBC = exitsB ++ fBC fl', fRet = exitsR ++ fRet fl'}
       DoDefer _ e sp -> do
         u <- fst . flatR <$> walkE env e
@@ -4397,8 +4513,19 @@ walkItems env0 items0 = go env0 items0
         shadowVars nms sp =
           mapM (\nm -> (\k -> (nm, plainV k sp)) <$> freshKey nm) nms
         bindLike envc lb restItems = fst <$> bindLike' envc lb restItems
-        bindLike' envc lb@(LetBind {}) restItems = do
-          (segs, env') <- walkBinds envc [lb]
+        bindLike' = bindLikeWith walkE
+        bindLikeAction' envc lb@(LetBind {}) restItems = do
+          (actU, _, envAction) <- walkExecutedAction envc (lbExpr lb)
+          (segs, env') <- walkBindsWith (\_ _ -> pure rNone) envAction [lb]
+          let u = actU `seqU` foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
+              bound = concat [b | (_, b, _) <- segs]
+          fl <- go env' restItems
+          -- every path leaving the binding's scope must satisfy it
+          forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
+          let flScoped = scopeFlowVars envAction (map fst bound) fl
+          pure (prefixFlow u flScoped, flScoped)
+        bindLikeWith walkRhs envc lb@(LetBind {}) restItems = do
+          (segs, env') <- walkBindsWith walkRhs envc [lb]
           let u = foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
               bound = concat [b | (_, b, _) <- segs]
           fl <- go env' restItems
@@ -4406,7 +4533,127 @@ walkItems env0 items0 = go env0 items0
           forM_ bound $ \(_, vi) -> closeVar vi (altUs (flowPaths fl))
           let flScoped = scopeFlowVars envc (map fst bound) fl
           pure (prefixFlow u flScoped, flScoped)
-        mutableWrite closeCtx envc n rhs wsp restItems = do
+        walkExecutedAction envc = \case
+          EAscription e _ _ -> walkExecutedAction envc e
+          EBang _ e _ -> walkExecutedAction envc e
+          EDo _ items _ -> do
+            fl <- walkItems envc items
+            let paths = flowPathStates fl
+                usages = map psU paths
+                u = altUs usages
+                t = firstJust (maybeToList (fT fl) ++ mapMaybe (usageAnonBorrowIntro envc) usages)
+                env' =
+                  case paths of
+                    [] -> envc
+                    _ -> envc {eVars = joinPathVars envc paths}
+            pure (u, t, env')
+          EIf alts mels _ -> do
+            (branchFls, elsePrefix, elseEnv) <- walkIfAlts Map.empty envc [(cond, [DoExpr body]) | (cond, body) <- alts]
+            mef0 <- traverse (walkExecutedAction elseEnv) mels
+            let mef = (\(u, t, envElse) -> Flow (Just (PathState (elsePrefix `seqU` u) (eVars envElse))) t [] []) <$> mef0
+                paths =
+                  mapMaybe fU (branchFls ++ maybeToList mef)
+                    ++ [PathState elsePrefix (eVars elseEnv) | isNothing mef0]
+                u = altUs (map psU paths)
+                t = firstJust (mapMaybe fT (branchFls ++ maybeToList mef))
+                env' =
+                  case paths of
+                    [] -> envc
+                    _ -> envc {eVars = joinPathVars envc paths}
+            pure (u, t, env')
+          EMatch scrut cases _ -> do
+            (su, st, envScrut) <- walkExecutedAction envc scrut
+            caseRuns <- forM cases $ \case
+              MatchCase _ mg body _ -> do
+                (gu, _, envGuard) <- maybe (pure (Map.empty, Nothing, envScrut)) (walkExecutedAction envScrut) mg
+                (bu, bt, envBody) <- walkExecutedAction envGuard body
+                pure (gu `seqU` bu, bt, envBody)
+              MatchImpossible _ -> pure (Map.empty, Nothing, envScrut)
+            let paths = [PathState u (eVars envCase) | (u, _, envCase) <- caseRuns]
+                branchU = altUs (map psU paths)
+                env' =
+                  case paths of
+                    [] -> envScrut
+                    _ -> envScrut {eVars = joinPathVars envScrut paths}
+            pure (su `seqU` branchU, firstJust (maybeToList st ++ mapMaybe (\(_, t, _) -> t) caseRuns), env')
+          ETry scrut excepts mfin _ -> do
+            (su, st, envScrut) <- walkExecutedAction envc scrut
+            exceptRuns <- forM excepts $ \(ExceptCase pat mg body sp) -> do
+              shadow <- shadowVars (patVars pat) sp
+              (gu, _, envGuard) <- maybe (pure (Map.empty, Nothing, envScrut)) (walkExecutedAction envScrut) mg
+              (bu, bt, envBody0) <- walkExecutedAction (bindVars shadow envGuard) body
+              let envBody = restoreScopedEnv envGuard (map fst shadow) envBody0
+              forM_ shadow $ \(_, vi) -> closeVar vi bu
+              pure (gu `seqU` bu, bt, envBody)
+            let paths0 = PathState Map.empty (eVars envScrut) : [PathState u (eVars envCase) | (u, _, envCase) <- exceptRuns]
+                joined0 = envScrut {eVars = joinPathVars envScrut paths0}
+                branchU = altUs (map psU paths0)
+                branchT = firstJust (maybeToList st ++ mapMaybe (\(_, t, _) -> t) exceptRuns)
+            case mfin of
+              Nothing -> pure (su `seqU` branchU, branchT, joined0)
+              Just fin -> do
+                (fu, ft, envFin) <- walkExecutedAction joined0 fin
+                pure (su `seqU` branchU `seqU` fu, firstJust (catMaybes [branchT, ft]), envFin)
+          ETryMatch scrut cases excepts mfin _ -> do
+            (mu, mt, envMatched) <- walkExecutedAction envc (EMatch scrut cases (exprSpan scrut))
+            (tu, tt, envTry) <- walkExecutedAction envMatched (ETry (EUnit (exprSpan scrut)) excepts mfin (exprSpan scrut))
+            pure (mu `seqU` tu, firstJust (catMaybes [mt, tt]), envTry)
+          EHandle _ _ scrut cases _ -> do
+            (su, st, envScrut) <- walkExecutedAction envc scrut
+            caseRuns <- forM cases $ \case
+              HandlerReturn pat body sp -> do
+                shadow <- shadowVars (patVars pat) sp
+                (bu, bt, envBody0) <- walkExecutedAction (bindVars shadow envScrut) body
+                let envBody = restoreScopedEnv envScrut (map fst shadow) envBody0
+                forM_ shadow $ \(_, vi) -> closeVar vi bu
+                pure (bu, bt, envBody)
+              HandlerOp _ argPats kN body sp -> do
+                shadow <- shadowVars (concatMap patVars argPats) sp
+                kKey <- freshKey (nameText kN)
+                let q = Map.findWithDefault QOne (nameSpan kN) (eHandlerOpQuantities envc)
+                    kvi = (plainV kKey (nameSpan kN)) {vQ = countedQ q}
+                    envBody0 = bindVars (shadow ++ [(nameText kN, kvi)]) envScrut
+                (bu, bt, envBody1) <- walkExecutedAction envBody0 body
+                closeVar kvi bu
+                forM_ shadow $ \(_, vi) -> closeVar vi bu
+                let envBody = restoreScopedEnv envScrut (map fst shadow ++ [nameText kN]) envBody1
+                pure (bu, bt, envBody)
+            let paths = PathState Map.empty (eVars envScrut) : [PathState u (eVars envCase) | (u, _, envCase) <- caseRuns]
+                env' = envScrut {eVars = joinPathVars envScrut paths}
+            pure (su `seqU` altUs (map psU paths), firstJust (maybeToList st ++ mapMaybe (\(_, t, _) -> t) caseRuns), env')
+          EBlock decls mres _ -> do
+            let envBlock = addEffDecls envc decls
+            binds <- declsToBinds [d | d <- decls, not (isEffDecl d)]
+            (segs, envBound) <- walkBinds envBlock binds
+            let bindU = foldr (\(u, _, _) acc -> u `seqU` acc) Map.empty segs
+                bound = concat [b | (_, b, _) <- segs]
+            (ru, rt, envRes0) <- maybe (pure (Map.empty, Nothing, envBound)) (walkExecutedAction envBound) mres
+            forM_ bound $ \(_, vi) -> closeVar vi ru
+            let envRes = restoreScopedEnv envBlock (map fst bound) envRes0
+            pure (bindU `seqU` ru, rt, envRes)
+          e
+            | Just (n, rhs, sp) <- recognizedWriteRef envc e -> do
+              (u, env') <- recognizedWriteEffect (MutableCloseContext "reference" "writeRef") envc n rhs sp
+              pure (u, Nothing, env')
+            | otherwise -> do
+              r <- walkExecutedExpr envc e
+              let (u, t) = flatR r
+              pure (u, t, envc)
+        restoreScopedEnv base names envAfter =
+          envAfter {eVars = foldr restore (eVars envAfter) names}
+          where
+            restore nm vars = case Map.lookup nm (eVars base) of
+              Just vi -> Map.insert nm vi vars
+              Nothing -> Map.delete nm vars
+        walkIfAlts prefixU envc [] =
+          pure ([], prefixU, envc)
+        walkIfAlts prefixU envc ((cond, body) : more) = do
+          (cu, _, envCond) <- walkExecutedAction envc cond
+          let prefixU' = prefixU `seqU` cu
+          bodyFl <- prefixFlow prefixU' <$> go envCond body
+          (restFls, elsePrefix, elseEnv) <- walkIfAlts prefixU' envCond more
+          pure (bodyFl : restFls, elsePrefix, elseEnv)
+        recognizedWriteEffect closeCtx envc n rhs wsp =
           case Map.lookup (nameText n) (eVars envc) of
             Just oldInfo | vMutable oldInfo -> do
               closeVarWith
@@ -4416,26 +4663,28 @@ walkItems env0 items0 = go env0 items0
               u <- fst . flatR <$> walkE envc rhs
               let newInfo = (storedValueInfoForWrite envc oldInfo rhs) {vMutable = True}
                   env' = envc {eVars = Map.insert (nameText n) newInfo (eVars envc)}
-              fl <- go env' restItems
-              pure (prefixFlow u fl)
+              pure (u, env')
             _ -> do
               u <- fst . flatR <$> walkE envc rhs
-              prefixFlow u <$> go envc restItems
+              pure (u, envc)
+        mutableWrite closeCtx envc n rhs wsp restItems = do
+          (u, env') <- recognizedWriteEffect closeCtx envc n rhs wsp
+          fl <- go env' restItems
+          pure (prefixFlow u fl)
         mutableWriteAction envc n action wsp restItems = do
-          case Map.lookup (nameText n) (eVars envc) of
+          (u, _, envAction) <- walkExecutedAction envc action
+          case Map.lookup (nameText n) (eVars envAction) of
             Just oldInfo | vMutable oldInfo -> do
               closeVarWith
                 (Just (MutableCloseContext "assignment-target" "assignment"))
                 (oldInfo {vSpan = wsp})
                 Map.empty
-              u <- fst . flatR <$> walkE envc action
-              let newInfo = storedActionResultInfo envc oldInfo action
-                  env' = envc {eVars = Map.insert (nameText n) newInfo (eVars envc)}
+              let newInfo = storedActionResultInfo envAction oldInfo action
+                  env' = envAction {eVars = Map.insert (nameText n) newInfo (eVars envAction)}
               fl <- go env' restItems
               pure (prefixFlow u fl)
             _ -> do
-              u <- fst . flatR <$> walkE envc action
-              prefixFlow u <$> go envc restItems
+              prefixFlow u <$> go envAction restItems
         mutableWriteBind envc n rhs wsp lb restItems = do
           case Map.lookup (nameText n) (eVars envc) of
             Just oldInfo | vMutable oldInfo -> do

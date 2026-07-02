@@ -1,0 +1,10 @@
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while ltInt i 3 do
+        defer (printlnString (stringAppend "cleanup " (showInt i)))
+        printlnString (stringAppend "body " (showInt i))
+        i = addInt i 1
+    printlnString "done"

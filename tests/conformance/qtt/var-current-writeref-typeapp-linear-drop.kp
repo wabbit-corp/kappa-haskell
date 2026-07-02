@@ -13,5 +13,5 @@ data Cell : Type =
 bad : UIO Unit
 let bad = do
     var cell = Empty
-    writeRef @Void @Cell (ref cell) (Full Token)
+    writeRef @(IO Void) (ref cell) (Full Token)
     pure ()

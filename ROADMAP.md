@@ -36,7 +36,7 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
   strategy: independent oracles (imported elpi/cross-language corpora, F#↔Haskell +
   backend differential, generative fuzzing, internal property/subject-reduction
   checks); see the Testing track.
-- Native backend: [`NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md), [`LLVM-BACKEND.md`](runtime/docs/LLVM-BACKEND.md), [`NATIVE_FFI_DESIGN.md`](docs/NATIVE_FFI_DESIGN.md), [`NATIVE_BACKEND_OPTIMIZATION_GUIDE.md`](docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md).
+- Native backend: [`NATIVE_BACKEND.md`](docs/NATIVE_BACKEND.md), [`LLVM-BACKEND.md`](runtime/docs/LLVM-BACKEND.md), [`NATIVE_FFI_DESIGN.md`](docs/NATIVE_FFI_DESIGN.md), [`NATIVE_BACKEND_OPTIMIZATION_GUIDE.md`](docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md), [`scalarization_review.md`](docs/scalarization_review.md) (evidence-aware IO/`var` scalarization roadmap).
 
 ---
 
@@ -67,10 +67,11 @@ FOREIGN-terminal hang) — the adversarial-review-every-merge discipline paid fo
 are now recorded in the landed section below: LLVM curried CK-machine prims, let-blind/function
 scalar workers, FP/sqrt/transcendental + fixed-precision formatting, boxed `MutArray` Stage A,
 fiber identity, std.atomic, and several CPS/runtime edges have landed. The remaining active items are
-the explicit OPEN entries in the prioritized list: `MutArray` element unboxing and related array
-specialization, selected C-backend CPS edge cases, the `kctor` value-box multi-worker race, native
-harness concurrency-safety, remaining runtime spec-coverage stubs, and the Perceus precise-RC
-follow-up stages.
+the explicit OPEN entries in the prioritized list: evidence-aware IO/`var` scalarization (P0.2
+restore after S2.3b), `MutArray` element unboxing and related array specialization, selected
+C-backend CPS edge cases, the `kctor` value-box multi-worker race, native harness
+concurrency-safety, remaining runtime spec-coverage stubs, and the Perceus precise-RC follow-up
+stages.
 
 ---
 
@@ -81,7 +82,7 @@ The forward plan (Session 2026-06-27), in priority order. Disjoint items run in 
 adversarially reviewed, same discipline as the burst above.
 
 **✅ Landed (2026-06-28) — main `6756af1`, conformance 1916/0, parity 121/0:** Monoid
-lawful-by-default + `Pointed` for IO/STM (`5efbe3d`, #8); IO `MutArray` boxed (`e4f3378`, #2; unboxing
+lawful-by-default + `Pointed` for IO/STM (`5efbe3d`, #9); IO `MutArray` boxed (`e4f3378`, #2; unboxing
 deferred); `disconnect` (`8ea9f58`, PRIMITIVES #5); LLVM function scalar-worker (`555f50b`, #5); P1
 inhabitance/UIP suite (`93fbccf`, #7); runtime bugs — sleepFor-nonpositive + fiberId/currentFiberId
 (`339b8f7`, #4); the native backend now erases proof-typed defs (`b917f73` — the proper proof-system
@@ -146,13 +147,42 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
    lazy-data design.
-6. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
+6. **Evidence-aware IO/`var` scalarization (P0.2 restore)** — design plan **DONE**
+   ([`docs/scalarization_review.md`](docs/scalarization_review.md)); implementation **PARTIAL**. S2.3b
+   correctly retired the old raw-ref peephole because it bypassed selected `MonadRef` evidence, but the
+   boxed `krt2_while`/selected-action path is only the correctness fallback. Restore scalarization in this
+   order:
+   - **SCA-0 gates:** keep `arithloop` report numbers visible; add scoped generated-code negative fixtures
+     (named region/worker or planner rejection, not global scalar-worker absence) for user
+     `MonadRef`, STM, wrong carrier, `ref x` escape, suspension/finalizer constructs (`cede`, `sleep`,
+     `await`/`join`, `fork`, `blocking`, `mask`/`poll`, `catch`/`finally`, handlers, `defer`/`using`), and
+     overflow-after-prior-writes; run accepted/rejected fixtures with `KAPPA_PERCEUS_RC=true`.
+   - **SCA-1 checker witness:** have the checker attach compact `BuiltinIORef` action witnesses, tied by a
+     stable hidden-cell id, to compiler-elaborated `KVarItem`, `KAssign`, and generated current-read `KBind`
+     actions when the selected evidence is exactly the builtin `MonadRef (IO e)` instance. No backend
+     name/string recognition.
+   - **SCA-2 shared planner:** build a conservative scalar-region planner that proves non-escape,
+     source-order reads/writes, scalar-expressible condition/body, no suspension, and exact overflow
+     fallback; rejection means the existing boxed selected-action lowering.
+   - **SCA-3 backend restore:** LLVM first for `scalar_intwhile` (implemented in the current
+     evidence-aware LLVM lane), then C or shared C+LLVM. Hot path must have
+     scalar locals/SSA, no per-iteration `K_REF`/`readRef`/`writeRef`/`krt2_bind`/`krt2_while`, and only
+     counter-gated `krt2_safepoint`. Gate per backend: LLVM-only work flips LLVM codegen/perf checks; the
+     default `arithloop` raw-C ratio gate flips to `<=5x` only once the C/default backend scalarizes or the
+     harness has an explicit LLVM ratio lane. Keep a tracked `<=2x` target once the harness has
+     repetitions/CI.
+   - **SCA-4 bounded normalizer:** later, recognize simple indirect selected-action wrappers (typeapps,
+     eta, local renames, known dictionary projections) with fuel and whitelist; no user global unfolding or
+     monad-law rewriting.
+   - **SCA-5/SCA-6:** general direct no-suspend IO regions, then heap-framed native resumable loops for real
+     `cede`/park points. Until SCA-6, real suspension in a scalar region falls back.
+7. **Stack-safe deep recursion** — design **DONE** ([STACK-SAFETY-DESIGN.md](runtime/docs/STACK-SAFETY-DESIGN.md)).
    Layered: (L1) automatic TRMC — modulo-cons + accumulator-modulo-associative-op (kills the non-tail
    `count`/`sum` overflow, no runtime change); (L2) extend the IO CK machine to pure recursion; (L0, DONE
    `d01b8a7`) the lazily-committed 8 MiB worker-stack floor. `decreases` is the soundness *license*, not a
-   runtime depth oracle. The accumulator opt's prerequisite — **lawful Monoids** — is ✅ done (`5efbe3d`, #8);
+   runtime depth oracle. The accumulator opt's prerequisite — **lawful Monoids** — is ✅ done (`5efbe3d`, #9);
    the L1 TRMC and L2 CK-machine impl remain **OPEN**.
-7. **Inhabitance + h-level conformance suite** — [INHABITANCE_TESTS.md](docs/INHABITANCE_TESTS.md). The
+8. **Inhabitance + h-level conformance suite** — [INHABITANCE_TESTS.md](docs/INHABITANCE_TESTS.md). The
    §30.2.7 inhabitance analysis (`Inhabitance.hs`) is done (`63400fb`); this suite pins its summaries AND
    the h-level/equality soundness the IsProp/IsSet work rides on (summaries must stay strictly separate
    from source-level evidence synthesis — §13).
@@ -172,13 +202,13 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    - **P3 — coverage.** §9 trait-evidence (`IsSubsingleton (Eq Bool)` yes, `IsProp` no), §10 `IsSubsingleton`
      ≠ inhabitance, §12 runtime-shape-vs-source (erased impossible proofs stay `Empty`), §11 optional
      finite-function strengthening (gated mode; must NOT imply function h-levels).
-8. **Spec-conformant Monoid laws** — ✅ **DONE** (`5efbe3d`): the three laws (`appendAssoc`/`appendLeftIdentity`/
+9. **Spec-conformant Monoid laws** — ✅ **DONE** (`5efbe3d`): the three laws (`appendAssoc`/`appendLeftIdentity`/
    `appendRightIdentity`) are folded into the base `Monoid` trait (Spec.md:29828-29842 — every `Monoid` is
    lawful); `IO e a`/`STM a` moved off `Monoid` onto a minimal `Pointed` trait (`empty` only, for the §18.1.13
    `let?`/STM-`empty` desugaring); the separate `LawfulMonoid` is removed. List laws by induction, String
    asserted via `IsSet String`. NB: a *custom* user `Monoid` now must discharge the three laws (by real proof
    or behind `@AllowUnsafeIntrinsics`) — a `derive`-style law-by-`Eq`-reflection helper could ease this later.
-9. **Intrinsic h-level solver** *(IMPLEMENTATION, not spec work — surfaced by item 7's P1)* — the spec
+10. **Intrinsic h-level solver** *(IMPLEMENTATION, not spec work — surfaced by item 8's P1)* — the spec
    DEFINES `intrinsic trait IsNType (level : Nat) (a : Type)` (Spec.md:9250/14703) plus `IsContr`/`IsProp`/
    `IsSet`/`IsGroupoid`, with evidence "introduced by compiler-owned solvers" (9303), the `IsNType n`
    interpretation (14717-14722: 0=Contr, 1=Prop, 2=Set, 3=Groupoid, n+1 ⇔ all equalities are `IsNType n`),
@@ -187,7 +217,7 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    `instance IsSet String` marker; no `IsNType` trait). Build the compiler-owned h-level solver: the
    structural intrinsic rules (`IsSet` of finite / decidable-equality ADTs via Hedberg; `IsContr` of records
    of contractibles; `IsProp`/`IsSubsingleton`; the `IsNType` level lattice) consistent with the §30.2.7
-   `Inhabitance.hs` summaries. Unblocks INHABITANCE_TESTS.md §8's synth-PASS matrix (item 7). Cross-ref the
+   `Inhabitance.hs` summaries. Unblocks INHABITANCE_TESTS.md §8's synth-PASS matrix (item 8). Cross-ref the
    exact inhabitant-counter (`../datatron`) for the conservative rule-set; any precise-MUST-set ambiguity is
    minor spec-clarification pinned during impl.
 
@@ -356,19 +386,28 @@ the real Lint are both impossible without them.
       the unboxing worker/wrapper. **Test:** a user fn that forks, used in a
       do-block, suspends correctly; a proven-pure fn stays straight-line.
 - [x] **Loop family** (CPS-DESIGN §4, R5/R7/R12) — DONE (commit `67d4ce9`, merged
-      `411933d`). `var`/`:=`/`while`/`break`/`continue`/`return` now CPS-lower inside
-      a suspending do-block (previously fail-closed): `KVarItem`→`krt2_new_ref`+KEnv
-      push, `KAssign`→`krt2_write_ref`, `KWhile`→`krt2_while`/`KK_LOOP`,
-      `KBreak`/`KContinue`→`krt2_break`/`continue`, `KReturn`→`krt2_return` delimited
-      by a new `OP_RETSCOPE`/`KK_RETSCOPE` frame, statement-`if` via a selector
-      closure. **R7 var-read normalization** (the blocker): every var read hoists to
-      a run-time `krt2_read_ref` (`OP_READ_REF`) bind with de-Bruijn shifting, so a
-      re-run body re-reads the LIVE cell. Eligibility reuses the pure §3.3 witness.
-      VERIFIED: corpus 82/82 interp==C==LLVM, native suite green, conformance
-      1738/1738, the accept-loop / counter-fork-loop / read-after-write tests pass,
-      and R12 holds (flat ~4.9 MB RSS across 10⁴–10⁶ suspending iterations = constant
-      `f->k` depth). `for`/labeled loops/loop-`else`/`using`/`let?` in a suspending
-      block remain fail-closed (`E_BACKEND_UNSUPPORTED`), not silently dropped.
+      `411933d`; S2.3b updated the mutable-cell representation). `var`/`:=`/
+      `while`/`break`/`continue`/`return` now CPS-lower inside suspending do-blocks.
+      Mutable cells are checked through the selected `MonadRef m` evidence: `var`
+      elaborates to the selected `newRef`, assignment and recognized `writeRef`
+      use the selected `writeRef`, and current-value reads/recognized `readRef`
+      use the selected `readRef` action. Raw runtime refs (`krt2_new_ref`,
+      `krt2_read_ref`, `krt2_write_ref`) are an implementation detail only for
+      checker-witnessed builtin-IO/STM lowerings; they are not the source-level
+      semantics and are not used to bypass user `MonadRef` dictionaries.
+      **R7 var-read normalization**: current-value reads are hoisted to explicit
+      selected read actions at the nearest valid do-item boundary, with
+      VarCurrent facts invalidated by writes, escapes, joins, loop back-edges, and
+      multi-shot operation sites per §18.6.2. The LLVM backend restores the
+      unboxed mutable-var while scalar worker only for the subset whose selected
+      evidence is proven equivalent to builtin IO refs; unproven user evidence
+      falls back to the selected-action path. Follow-up work remains to recognize
+      more indirect aliases/eta-renamings of read/write actions without general
+      normalization (`docs/scalarization_review.md`).
+      VERIFIED: corpus interp==C==LLVM, native suite green, conformance green, the
+      accept-loop / counter-fork-loop / read-after-write tests pass, and R12 holds
+      for the suspending loop family. Unsupported loop subforms still fail closed
+      (`E_BACKEND_UNSUPPORTED`) rather than being silently dropped.
 - [ ] **`using`** (§19.5). Resource scope: acquire-bind + register `release` as a
       defer + bind the resource. (Needs the Resource-trait test surface.)
 - [ ] **`return`** (§18.8). Early non-local return — needs the do-block boundary so

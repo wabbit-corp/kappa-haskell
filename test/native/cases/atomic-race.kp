@@ -1,13 +1,14 @@
 -- §29.1 std.atomic under the real nproc-worker scheduler: the LOAD-BEARING
 -- atomicity test.  N fibers each do M `atomicFetchAdd 1` on ONE shared
--- AtomicRef; with a true lock-free atomic the final value is EXACTLY N*M with no
--- lost updates, regardless of how the workers interleave across the worker pool.
+-- AtomicRef; with a correct boxed atomic cell the final value is EXACTLY N*M
+-- with no lost updates, regardless of how the workers interleave across the
+-- worker pool.
 --
 -- This is deterministic by design: the answer is N*M iff atomicity holds, so the
 -- printed total matches under the interpreter (single-agent: trivially exact)
 -- AND the native multi-worker runtime (exact iff the fetch-add is really atomic).
--- The OLD plain-Ref lowering RACED here and lost updates; the lock-free wiring
--- does not.  N*M = 16 * 4000 = 64000.
+-- The OLD plain-Ref lowering RACED here and lost updates; the mutex-protected
+-- AtomicRef wiring does not.  N*M = 16 * 4000 = 64000.
 module main
 
 import std.atomic.(type AtomicRef)

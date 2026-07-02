@@ -1,0 +1,22 @@
+--! mode check
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+-- §18.1.15/§18.6.2: effect operation values are first-class. Applying an alias
+-- of a resolved multi-shot operation is still a multi-shot operation site, so
+-- it invalidates current-value facts captured in the continuation.
+module main
+
+data Cell = Box (value : Int) | Empty
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+bad : UIO Int
+let bad = do
+    var x = Box 1
+    if x is Box then
+        let choose = Choice.choose
+        let _ <- choose ()
+        pure x.value
+    else
+        pure 0

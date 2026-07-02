@@ -17,6 +17,10 @@ fails=0
 
 cd "$ROOT"
 
+# This suite has explicit LLVM lanes. All other builds are the default native
+# backend and must not inherit a caller's KAPPA_BACKEND.
+unset KAPPA_BACKEND
+
 perceus_rc_enabled() {
   case "${KAPPA_PERCEUS_RC:-}" in
     1|[Oo][Nn]|[Tt][Rr][Uu][Ee]) return 0 ;;
@@ -140,7 +144,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="
@@ -346,26 +350,155 @@ else
   echo "   FAIL: scalar_doubleloop --emit-c build failed"; cat "$dtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
-# S2.3b: the LLVM backend must not resurrect the old var-loop scalarizer. That
-# path bypassed checker-selected MonadRef evidence, so surface var/while loops
-# stay on the generic do-kernel path until a future optimizer proves equivalence.
-echo "== S2.3b LLVM: var/while Int loops stay on the boxed MonadRef do-kernel path =="
+# S2.3b/P0.2: track LLVM var/while scalarization. The old raw-ref peephole was
+# unsound because it bypassed checker-selected MonadRef evidence, but scalarizing
+# surface var loops is still required once the backend proves the selected
+# actions are equivalent to builtin IO refs. Until then, krt2_while is only the
+# correctness fallback.
+echo "== S2.3b LLVM: var/while Int scalarization status =="
 ltmp="$WORK/r22llvm"; mkdir -p "$ltmp"
 lbench="$ROOT/test/native/bench/proposed/scalar_intwhile.kp"
 llfile="$ROOT/test/native/bench/proposed/scalar_intwhile.kappa.ll"
 rm -f "$llfile"
 if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$lbench" --emit-c -o "$ltmp/siw" >"$ltmp/build.log" 2>&1; then
   check_perceus_rc_log "$ltmp/build.log"
-  if [ -f "$llfile" ] \
-     && ! grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$llfile" \
-     && grep -qE 'call ptr @krt2_while\(' "$llfile"; then
-    echo "   ok (no @kscalarloop_; loop lowers through krt2_while and checker-selected MonadRef actions)"
-  else
-    echo "   FAIL: LLVM var/while Int loop used or skipped the wrong S2.3b lowering path"; fails=$((fails+1))
+	  sp_count=0
+	  fast_sp=0
+	  boxed_sp=0
+	  scalar_worker=""
+	  if [ -f "$llfile" ]; then
+	    scalar_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$llfile")"
+	    sp_count="$(printf '%s' "$scalar_worker" | grep -cE 'call i32 @krt2_safepoint\(\)' || true)"
+	    fast_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*sspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sflush_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
+	    boxed_sp="$(printf '%s' "$scalar_worker" | awk '/^[[:space:]]*bxspchk_[0-9]+:/{f=1} f&&/call i32 @krt2_safepoint\(\)/{ok=1} /^[[:space:]]*sdone_[0-9]+:/{f=0} END{print ok ? 1 : 0}')"
+	  fi
+	  if [ -f "$llfile" ] \
+	     && printf '%s' "$scalar_worker" | grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' \
+	     && ! grep -qE 'call ptr @krt2_while\(' "$llfile" \
+	     && [ "$fast_sp" = 1 ] \
+	     && [ "$boxed_sp" = 1 ]; then
+	    echo "   ok (evidence-aware scalar loop emitted; no krt2_while fallback; fast and boxed-fallback safepoints present)"
+	  elif [ -f "$llfile" ] && grep -qE 'call ptr @krt2_while\(' "$llfile"; then
+	    echo "   FAIL: scalar_intwhile used boxed krt2_while fallback; evidence-aware scalarizer is required"; fails=$((fails+1))
+	  elif [ -f "$llfile" ] && { [ "$fast_sp" != 1 ] || [ "$boxed_sp" != 1 ]; }; then
+	    echo "   FAIL: scalar_intwhile scalar worker is missing a safepoint in either the fast path or boxed overflow fallback"; fails=$((fails+1))
+	  else
+	    echo "   FAIL: LLVM var/while Int loop emitted neither scalar worker nor krt2_while fallback"; fails=$((fails+1))
   fi
   rm -f "$llfile"
 else
   echo "   FAIL: scalar_intwhile (LLVM) --emit-c build failed"; cat "$ltmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== S2.3b LLVM: user MonadRef var/while does not scalarize =="
+utmp="$WORK/user-monadref-scalar"; mkdir -p "$utmp"
+usrc="$ROOT/tests/native/llvm/scalar-user-monadref-fallback.kp"
+ull="$ROOT/tests/native/llvm/scalar-user-monadref-fallback.kappa.ll"
+	rm -f "$ull"
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$usrc" --emit-c -o "$utmp/user-monadref-scalar" >"$utmp/build.log" 2>&1; then
+	  check_perceus_rc_log "$utmp/build.log"
+	  if [ -f "$ull" ] && grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$ull"; then
+	    echo "   FAIL: user MonadRef var/while loop scalarized despite non-prelude IO evidence"; fails=$((fails+1))
+  elif [ -f "$ull" ] \
+       && grep -qE 'call ptr @knative_sat\(ptr @kpf_io_newRef,' "$ull" \
+       && grep -qE 'call ptr @knative_sat\(ptr @kpf_io_readRef,' "$ull" \
+       && grep -qE 'call ptr @knative_sat\(ptr @kpf_io_writeRef,' "$ull"; then
+    echo "   ok (user MonadRef evidence stayed on the generic selected-action path)"
+  else
+    echo "   FAIL: user MonadRef fixture did not prove the generic selected-action fallback shape"; fails=$((fails+1))
+  fi
+  rm -f "$ull"
+else
+  echo "   FAIL: user MonadRef LLVM --emit-c build failed"; cat "$utmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== S2.3b LLVM: scalar reads and escaped refs preserve scalarization semantics =="
+wtmp="$WORK/scalar-wildcard"; mkdir -p "$wtmp"
+wsrc="$ROOT/tests/native/llvm/scalar-wildcard-read.kp"
+	wll="$ROOT/tests/native/llvm/scalar-wildcard-read.kappa.ll"
+	rm -f "$wll"
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$wsrc" --emit-c -o "$wtmp/scalar-wildcard" >"$wtmp/build.log" 2>&1; then
+	  check_perceus_rc_log "$wtmp/build.log"
+	  if [ -f "$wll" ] \
+	     && grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$wll" \
+     && ! grep -qE 'call ptr @krt2_while\(' "$wll"; then
+    echo "   ok (wildcard read bind preserves the scalar loop plan)"
+  else
+    echo "   FAIL: wildcard read fixture lost the evidence-aware scalar loop"; fails=$((fails+1))
+  fi
+  rm -f "$wll"
+else
+  echo "   FAIL: scalar wildcard read LLVM --emit-c build failed"; cat "$wtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+ftmp="$WORK/scalar-ref-freshness"; mkdir -p "$ftmp"
+fsrc="$ROOT/tests/native/llvm/scalar-ref-freshness.kp"
+	fll="$ROOT/tests/native/llvm/scalar-ref-freshness.kappa.ll"
+	rm -f "$fll"
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$fsrc" --emit-c -o "$ftmp/scalar-ref-freshness.llonly" >"$ftmp/emit.log" 2>&1; then
+	  check_perceus_rc_log "$ftmp/emit.log"
+	  maker_block=""
+	  if [ -f "$fll" ]; then
+    maker_block="$(awk '/^define internal ptr @kg_main_2e_makeRef\(\)/{f=1} f{print} f&&/^}/{exit}' "$fll")"
+  fi
+  if [ -f "$fll" ] \
+     && grep -qE 'define internal ptr @kscalarloop_[0-9]+\(ptr %args\)' "$fll" \
+     && grep -qE '^define internal ptr @kscalar_region_[0-9]+\(ptr %cenv, ptr %arg\)' "$fll" \
+     && ! grep -qE 'call ptr @kref_new\(' <<<"$maker_block"; then
+    :
+  else
+    echo "   FAIL: scalar ref-freshness fixture did not delay hidden ref allocation behind the scalar-region action"; fails=$((fails+1))
+  fi
+  rm -f "$fll"
+else
+	  echo "   FAIL: scalar ref-freshness LLVM --emit-c build failed"; cat "$ftmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+	fi
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$fsrc" -o "$ftmp/scalar-ref-freshness" >"$ftmp/build.log" 2>&1; then
+	  check_perceus_rc_log "$ftmp/build.log"
+	  out="$("$ftmp/scalar-ref-freshness" 2>"$ftmp/run.err")"
+	  if [ "$out" = "3" ]; then
+    echo "   ok (reused scalarized IO action allocates fresh refs per execution)"
+  else
+    echo "   FAIL: scalar ref-freshness output mismatch: expected 3, got '$out'"; cat "$ftmp/run.err" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar ref-freshness LLVM build failed"; cat "$ftmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+otmp="$WORK/scalar-overflow-replay"; mkdir -p "$otmp"
+osrc="$ROOT/tests/native/llvm/scalar-overflow-replay-ref.kp"
+	oll="$ROOT/tests/native/llvm/scalar-overflow-replay-ref.kappa.ll"
+	rm -f "$oll"
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$osrc" --emit-c -o "$otmp/scalar-overflow-replay.llonly" >"$otmp/emit.log" 2>&1; then
+	  check_perceus_rc_log "$otmp/emit.log"
+	  overflow_worker=""
+	  if [ -f "$oll" ]; then
+    overflow_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$oll")"
+  fi
+  if [ -f "$oll" ] \
+     && printf '%s' "$overflow_worker" | grep -qE 'llvm\.smul\.with\.overflow\.i64' \
+     && printf '%s' "$overflow_worker" | grep -qE 'llvm\.sadd\.with\.overflow\.i64' \
+     && printf '%s' "$overflow_worker" | grep -qE 'call ptr @kref_set\(' \
+     && printf '%s' "$overflow_worker" | grep -qE 'call i32 @krt2_safepoint\(\)' \
+     && ! grep -qE 'call ptr @krt2_while\(' "$oll"; then
+    :
+  else
+    echo "   FAIL: scalar overflow replay fixture lost the scalar worker, boxed replay stores, or worker safepoints"; fails=$((fails+1))
+  fi
+  rm -f "$oll"
+else
+	  echo "   FAIL: scalar overflow replay LLVM --emit-c build failed"; cat "$otmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+	fi
+	if KAPPA_BACKEND=llvm timeout 120 $KAPPA build "$osrc" -o "$otmp/scalar-overflow-replay" >"$otmp/build.log" 2>&1; then
+	  check_perceus_rc_log "$otmp/build.log"
+	  out="$("$otmp/scalar-overflow-replay" 2>"$otmp/run.err")"
+	  if [ "$out" = "15511210043330985984000000" ]; then
+    echo "   ok (scalar overflow fallback replays through boxed refs and preserves escaped result)"
+  else
+    echo "   FAIL: scalar overflow replay output mismatch: expected 15511210043330985984000000, got '$out'"; cat "$otmp/run.err" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar overflow replay LLVM build failed"; cat "$otmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== LLVM scalar workers: scalar let slots are entry-allocated, not loop-allocated =="
@@ -693,6 +826,45 @@ if KAPPA_BACKEND=llvm build_clean_for_source "$nasrc" timeout 240 $KAPPA build "
   fi
 else
   echo "   FAIL: scalar-nested-abort LLVM native build failed"; cat "$natmp/llvm-build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== §32.2.6: LLVM scalarized var-loop abort unwinds before later effects =="
+vltmp="$WORK/scalar-varloop-nested-abort"; mkdir -p "$vltmp"
+vlsrc="$CASES/scalar-varloop-nested-abort.kp"
+vlll="$CASES/scalar-varloop-nested-abort.kappa.ll"
+rm -f "$vlll"
+if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$vlsrc" --emit-c -o "$vltmp/scalar_varloop_abort_emit" >"$vltmp/llvm-emit.log" 2>&1; then
+  check_perceus_rc_log "$vltmp/llvm-emit.log"
+  vl_worker=""
+  if [ -f "$vlll" ]; then
+    vl_worker="$(awk '/^define internal ptr @kscalarloop_[0-9]+\(ptr %args\)/{f=1} f{print} f&&/^}/{exit}' "$vlll")"
+  fi
+  if [ -f "$vlll" ] \
+     && printf '%s' "$vl_worker" | grep -qE 'call void @krt2_scalar_abort\(\)' \
+     && printf '%s' "$vl_worker" | grep -qE 'call i32 @krt2_safepoint\(\)' \
+     && ! grep -qE 'call ptr @krt2_while\(' "$vlll"; then
+    echo "   ok-llvm-shape (scalar var-loop worker has safepoints and scalar abort hook)"
+  else
+    echo "   FAIL: LLVM scalar var-loop abort shape is missing worker safepoint, abort hook, or scalarization"
+    grep -nE '@kscalarloop_|krt2_safepoint|krt2_scalar_abort|krt2_while|AFTER-VARLOOP' "$vlll" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$vlll"
+else
+  echo "   FAIL: scalar-varloop-nested-abort LLVM --emit-c build failed"; cat "$vltmp/llvm-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_BACKEND=llvm build_clean_for_source "$vlsrc" timeout 240 $KAPPA build "$vlsrc" -o "$vltmp/scalar_varloop_abort_llvm" >"$vltmp/llvm-build.log" 2>&1; then
+  check_perceus_rc_log "$vltmp/llvm-build.log"
+  out="$(timeout 30 "$vltmp/scalar_varloop_abort_llvm" 2>/dev/null)"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$out" = "exit:interrupted" ]; then
+    echo "   ok-llvm-run (post-varloop effect skipped; interrupt delivered)"
+  else
+    echo "   FAIL: LLVM scalar var-loop abort did not stop the enclosing frame before later effects"
+    echo "     rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: scalar-varloop-nested-abort LLVM native build failed"; cat "$vltmp/llvm-build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== §32.2.6: scalar-worker abort releases active using scopes =="

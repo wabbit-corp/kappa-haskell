@@ -146,8 +146,11 @@ core value.
 **`var` cells.** `var x = e` allocates a `Ref`; a current-value read of `x`
 inside a `do` scope is lifted to a `MonadRef.readRef (ref x)` action using the
 same evidence that created the cell (§18.6.1), and assignments become
-`MonadRef.writeRef` actions. There is no §31.5 elision: cells are real refs at
-runtime.
+`MonadRef.writeRef` actions. This is the source-level contract. Optimized
+backends may scalarize non-escaping checker-witnessed builtin-IO var regions
+when they preserve the selected evidence and source order; any path that exposes
+`ref x` must materialize the same fresh real `Ref` cells the generic selected
+actions would expose.
 
 **Variant tags are canonical rendered member types.** A variant value
 carries the canonical rendering (after alias normalization) of its

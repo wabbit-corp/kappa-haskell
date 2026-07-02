@@ -32,7 +32,7 @@ All `file:line` references are to base `14b5393`.
 | Construct | Mechanism | Evidence |
 |---|---|---|
 | Linear & imperative do-kernel CPS | `cpsItemsLL` → `krt2_bind`/`krt2_then`/`krt2_pure` + `kdo_N` continuation closures | `LLVM.hs:1901-2066`, `emitDoCont` `LLVM.hs:2210-2231` |
-| `var`/`:=`/`while`/`break`/`continue`/`return` | `krt2_new_ref`/`krt2_write_ref`/`krt2_while`/`krt2_return` | `LLVM.hs:1968-2027` |
+| `var`/`:=`/`while`/`break`/`continue`/`return` | selected `MonadRef` actions; checker-witnessed builtin `IO` refs may lower to `krt2_new_ref`/`krt2_write_ref`/`krt2_while` or the scalar `@kscalarloop_N` fast path | `LLVM.hs` mutable-var and scalar-loop lowering |
 | `ioBind`/`ioThen`/`ioPure` as explicit applications | `ioNodeBuilder` → `krt2_bind`/`then`/`pure` | `LLVM.hs:3299-3301` |
 | `throwIO`/`catchIO`/`finallyIO`/`__reraiseCause` | `ioNodeBuilder` → `krt2_throw`/`catch`/`finally`/`reraise` | `LLVM.hs:3303-3306` |
 | `onExit`/`onInterrupt`/`locallyFiberRef` | `ioNodeBuilder` | `LLVM.hs:3310-3312` |
@@ -152,10 +152,12 @@ only `.ll` emission of the same symbols.
 
 ### 2.2 The KEnv / closure representation across a park
 
-`var` cells must survive a park, which is why a `var x = e` lowers to
-`krt2_new_ref` and is `kpush`ed onto the KEnv (so it lives in the heap env chain,
-reachable from the parked fiber's `Cont`). The LLVM backend already does this
-(`newRefAction` `LLVM.hs:2476+`, pushed in `emitDoCont`'s `bindPatDo`). No change.
+`var` cells must survive a park, which is why a `var x = e` lowers through the
+checker-selected `MonadRef.newRef` action and stores the resulting reference in
+the heap environment reachable from the parked fiber's `Cont`. For the
+checker-witnessed builtin `IO` lowering, that selected action is represented by
+`krt2_new_ref` and the ref is `kpush`ed onto the KEnv. User `MonadRef` evidence is
+not rewritten to raw runtime refs.
 
 ### 2.3 GC roots / statepoints under the conservative collector
 

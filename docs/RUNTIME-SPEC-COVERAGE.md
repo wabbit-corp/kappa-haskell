@@ -80,10 +80,11 @@ one-shot profile**, and the §18.1 structured-concurrency surface is
 
 ### Profile-scoped latitude (NOT conformance gaps)
 
-- **LLVM backend** blocklists `fork`/`scope`/`monitor`/`promise`/STM/`sleepFor`
-  as a clean unsupported (`ckMachinePrims`, LLVM.hs:560-578). §18.1 concurrency
-  is C-complete but LLVM-incomplete *by design* (uniform-boxed parity milestone).
-  LLVM *does* support the masking/finalizer ops.
+- **LLVM backend** parity is profile-scoped and implementation-tracked, not a
+  spec relaxation. The old CK-primitive blocklist is empty in current code, and
+  concurrency/STM/timer primitives lower through runtime nodes where implemented;
+  any remaining LLVM gaps must stay clean `E_BACKEND_UNSUPPORTED` failures or be
+  fixed, not described as incomplete by design.
 - **Multi-shot effects** correctly withheld; reachable multi-shot ops are
   statically rejected — the §32.2.14 ">1 use MUST be persistent" is satisfied
   vacuously by rejection, per the §32.2 cap-gating clause.
@@ -134,7 +135,7 @@ native blocking lane.
 | **UnhandledChildFailure — attached child failing-unacknowledged at scope exit → Defect (§18.1.3/.8)** | **MISSING** | MUST | Spec.md:18629. fiber_finish only stores Exit + wakes awaiters; scope_detach unlinks + decrements live (rt.c:477-496, scope.c:119-134) — neither inspects the child's Exit; root-scope shutdown discards exits (rt.c:1394-1423). | L |
 | **blocking : IO e a → IO e a — route through backend blocking bridge; gate on rt-blocking (§18.1.11)** | **IMPLEMENTED** | MUST | Spec.md:19030. `std.prelude.blocking` lowers to `krt2_blocking`, classified native calls lower to `knative_blocking` / `knative_sat_blocking`, and both park the fiber on an off-worker lane. The lane now drives arbitrary CK-machine IO, including timer suspension. Covered by `tests/conformance/effects/blocking-source-positive.kp`, `tests/conformance/effects/blocking-sleep-positive.kp`, `test/native/cases/blocking-source.kp`, `test/native/cases/blocking-sleep.kp`, and `runtime/tests/blocking_lane.c`. | none |
 | fork/forkIn captures () borrow-escape → E_QTT_BORROW_ESCAPE (§18.1.4) | PARTIAL | MUST | Spec.md:18708. Signatures carry `captures ()` (Prelude.hs:479-482,1510,1518) so the obligation is expressed; the E_QTT_BORROW_ESCAPE-emitting check was not located — **elaboration/QTT concern, defer to that audit lane.** | unknown |
-| LLVM backend parity for §18.1 concurrency | PARTIAL | profile-scoped | LLVM.hs:560-578 blocklists fork/scope/monitor/promise/STM/sleepFor; supports masking/finalizer ops (LLVM.hs:3310-3318). C-complete, LLVM-incomplete by design. | M-L/group |
+| LLVM backend parity for §18.1 concurrency | PARTIAL | profile-scoped | Current `ckMachinePrims` is empty; implemented fork/scope/monitor/promise/STM/timer primitives lower through runtime nodes, and remaining unsupported constructs must fail closed with `E_BACKEND_UNSUPPORTED`. This is a parity backlog, not a design exemption. | M-L/group |
 
 ---
 

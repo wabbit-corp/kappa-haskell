@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Full (1 tok : Token)
+
+good : UIO Unit
+let good = do
+    var cell : Box = Full Token
+    let action : UIO Box = readRef (ref cell)
+    pure ()

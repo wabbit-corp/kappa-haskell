@@ -1,0 +1,13 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+module main
+
+data Cell : Type =
+    Cell
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Cell
+    let copy <- readRef @STM (ref cell)
+    pure ()

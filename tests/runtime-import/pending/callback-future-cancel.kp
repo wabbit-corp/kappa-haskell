@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "cancel:T\n"
+
+-- Pending class: host-bridge-proposal (`std.future` / callback bridge)
+-- Pending import from cats-effect AsyncSuite:
+--   - "fromFutureCancelable should cancel on fiber cancelation"
+--   - "fromFutureCancelable should backpressure on cancelation"
+--
+-- This needs an explicit Kappa callback/Future bridge. The assertion is intentionally
+-- phrased so `interrupt` may not return until the host canceler has run.
+
+module main
+
+import std.future.(type Future)
+import std.future.(term neverFutureWithCancel, term fromFutureCancelable, term futureCancelObserved)
+
+showBool : Bool -> String
+let showBool b = match b
+    case True -> "T"
+    case False -> "F"
+
+main : UIO Unit
+let main = do
+  future <- neverFutureWithCancel @Unit
+  fiber <- fork (fromFutureCancelable future)
+  cede
+  interrupt fiber
+  canceled <- futureCancelObserved future
+  printlnString ("cancel:" ++ showBool canceled)

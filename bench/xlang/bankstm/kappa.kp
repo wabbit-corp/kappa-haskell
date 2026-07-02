@@ -16,8 +16,8 @@
 -- currently list-traversal-bound, not STM-throughput-bound. The number is honest
 -- (real parallel STM, conserved total) but is NOT a fair STM-throughput figure
 -- vs the array-backed Go/Haskell refs until a real array primitive lands. The
--- LLVM backend additionally cannot compile the STM primitives yet (atomically /
--- newTVar / stmPure are unimplemented as curried values), so kappa-llvm builderr.
+-- LLVM now lowers the STM surface too; kappa-llvm builds this port, but the
+-- residual list-backed account indexing makes the full-size run intractable.
 module main
 
 -- Build K TVars (all = initBal) into a cons list (no O(1) array exists).

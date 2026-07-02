@@ -619,7 +619,7 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
             let (aRest, liveRest) = go next d scs rest lo a
              in walk ctx ctorTypes [] owner child d scs uc t liveRest aRest
        in case item of
-            KBind q pat t ->
+            KBind q pat t _ ->
               let (n, newScopes, aBind) = bindPat q False pat Nothing a
                   (aRest, liveRest) = walkRest (d + n) (newScopes ++ scs) aBind
                   liveBeforeRest = dropLocal n liveRest
@@ -646,7 +646,7 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
 
             KExpr t -> doRestThen (P.kExprActionPos : ip) UseConsumes t
 
-            KVarItem _ _initT actT ->
+            KVarItem _ _initT actT _ ->
               let bid = BinderId owner (reverse ip)
                   sc = Scope d (Just bid) False Nothing
                   aBind = addBinder bid QW False a
@@ -654,7 +654,7 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
                   liveBeforeRest = Set.delete d liveRest
                in walk ctx ctorTypes [] owner (P.kVarActionPos : ip) d scs UseConsumes actT liveBeforeRest aRest
 
-            KAssign _ _ _ actT -> doRestThen (P.kAssignActionPos : ip) UseConsumes actT
+            KAssign _ _ _ actT _ -> doRestThen (P.kAssignActionPos : ip) UseConsumes actT
 
             KReturn t ->
               walk ctx ctorTypes [] owner (P.kReturnValuePos : ip) d scs UseConsumes t lo a
@@ -1421,7 +1421,7 @@ usageIntervals ctx ctorTypes owner body = snd (count (paramTelescope ctx owner) 
                     (uTerm, sTerm) = count [] d scs termPath UseConsumes term
                  in (addUses uTerm uRest, Map.union sTerm sRest)
            in case item of
-                KBind _ pat t -> bindThen pat (P.kBindActionPos : ip) t
+                KBind _ pat t _ -> bindThen pat (P.kBindActionPos : ip) t
                 KLet _ pat t -> bindThen pat (P.kLetValuePos : ip) t
                 KLetQ pat t mElse ->
                   let (n, newScopes) = bindPat pat
@@ -1439,14 +1439,14 @@ usageIntervals ctx ctorTypes owner body = snd (count (paramTelescope ctx owner) 
                       (uScrut, sScrut) = count [] d scs (P.kLetQScrutPos : ip) UseConsumes t
                    in (addUses uScrut (joinUses uSuccess uElse), Map.unions [sScrut, sSuccess, sElse])
                 KExpr t -> restThen (P.kExprActionPos : ip) t
-                KVarItem _ _ actT ->
+                KVarItem _ _ actT _ ->
                   let bid = BinderId owner (reverse ip)
                       sc = (d, Just bid, False, Nothing)
                       (uRest, sRest) = go next (d + 1) (sc : scs) rest
                       (uAct, sAct) = count [] d scs (P.kVarActionPos : ip) UseConsumes actT
                       uLocal = addUses uAct uRest
                    in (Map.delete bid uLocal, recordSelf bid uRest (Map.union sAct sRest))
-                KAssign _ _ _ actT -> restThen (P.kAssignActionPos : ip) actT
+                KAssign _ _ _ actT _ -> restThen (P.kAssignActionPos : ip) actT
                 KReturn t -> count [] d scs (P.kReturnValuePos : ip) UseConsumes t
                 KBreak _ -> (Map.empty, Map.empty)
                 KContinue _ -> (Map.empty, Map.empty)
@@ -1847,12 +1847,12 @@ argConvFindings ctx owner = goTerm
       CDo _ items -> concatMap goKItem items
 
     goKItem = \case
-      KBind _ _ t -> goTerm t
+      KBind _ _ t _ -> goTerm t
       KLet _ _ t -> goTerm t
       KLetQ _ t mElse -> goTerm t ++ maybe [] (goTerm . snd) mElse
       KExpr t -> goTerm t
-      KVarItem _ _ actT -> goTerm actT
-      KAssign _ _ _ actT -> goTerm actT
+      KVarItem _ _ actT _ -> goTerm actT
+      KAssign _ _ _ actT _ -> goTerm actT
       KReturn t -> goTerm t
       KBreak _ -> []
       KContinue _ -> []

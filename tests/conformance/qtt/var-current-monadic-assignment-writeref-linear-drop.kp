@@ -1,0 +1,18 @@
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Empty
+    var sink = ()
+    sink <- writeRef (ref cell) (Full Token)
+    pure ()

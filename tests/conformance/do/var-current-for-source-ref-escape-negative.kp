@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+module main
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+items : Ref Cell -> List Int
+let items r = 1 :: Nil
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        for value in items (ref cell) do
+            printlnString (showInt value)
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

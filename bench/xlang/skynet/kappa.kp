@@ -21,11 +21,8 @@
 -- termination still emits W_TERMINATION_UNVERIFIED (a warning, not an error) —
 -- the definition is accepted and runs.
 --
--- BACKENDS: the C backend runs this end-to-end. The LLVM backend currently
--- reports a build error — it does not yet implement the await/join primitives
--- (__awaitFiber / __reraiseCause) as curried values — so kappa-llvm is expected
--- to show `builderr` for this concurrency bench until those land. That is the
--- honest documented LLVM-backend concurrency gap, not a port bug.
+-- BACKENDS: the C and LLVM backends both run this end-to-end; the remaining
+-- cost is scheduler/boxing overhead rather than missing await/join lowering.
 --
 -- N = 1000000  =>  sum 0..999999 = 499999500000.
 module main

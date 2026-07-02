@@ -1,0 +1,11 @@
+module main
+
+main : UIO Unit
+let main = do
+    var i = 0
+    var acc = 0
+    while ltInt i 5 do
+        let _ <- readRef (ref i)
+        acc = addInt acc i
+        i = addInt i 1
+    printlnString (showInt acc)

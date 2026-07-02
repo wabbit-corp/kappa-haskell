@@ -6,11 +6,10 @@
 # We check:
 #   * the printed RESULT matches the expected value (a correctness gate — the
 #     optimized fast paths must compute the right answer), and
-#   * the steady-state HEAP stays under a bound for the non-retaining benches
+#   * cumulative TOTAL_BYTES stays under a bound for the non-retaining benches
 #     (an allocation gate: QW2 keeps a self-tail loop's parameter env out of
-#     the heap, so heap_size must stay tiny even as total_bytes grows with
-#     kint result boxing — a regression that reintroduced per-iteration env
-#     growth would blow this bound).
+#     the allocation stream — a regression that reintroduced per-iteration env
+#     growth would blow this bound even if steady-state heap_size stayed flat).
 #
 # These benches deliberately exercise the optimized paths (QW1 direct int
 # prims, QW2 in-place self-tail loops, constructor/match, record projection),
@@ -29,6 +28,11 @@ VS_INTERP=0
 [ "${1:-}" = "--vs-interp" ] && VS_INTERP=1
 
 cd "$ROOT"
+
+# This harness measures the default C/native lane. It must not inherit an
+# ambient LLVM backend from a caller; explicit LLVM lanes live in the native
+# suite/parity scripts.
+unset KAPPA_BACKEND
 
 if ! command -v timeout >/dev/null 2>&1; then
   timeout() {
@@ -93,9 +97,10 @@ BENCHES=(
   "recproj   7000000        1000000"
   "listfold  500000500000   620000000"
 )
-# arithloop is intentionally report-only under S2.3b: the old P0.2 var-loop
-# scalarizer bypassed checker-selected MonadRef evidence and is suspended, so
-# the safe current path is the boxed kref loop.
+# arithloop is report-only for the C/default lane until that backend has the
+# evidence-aware var-loop scalarizer, or this harness grows an explicit LLVM
+# ratio lane. The boxed selected-MonadRef path is the correctness fallback for
+# that lane and a measured regression, not the target fast path.
 # tailsum's bound is now ~1MB (was 260MB): LR1 lowers it to a scalar int64
 # worker that allocates ~zero per iteration (≈hundreds of bytes total), so a
 # regression back to per-iteration kint boxing (~193MB) blows this bound.
@@ -161,7 +166,7 @@ ratio_bench() {
   fi
 }
 ratio_bench tailsum   "$BENCH/ratio_tailsum.kp"   "$BENCH/raw/tailsum.c"   5  "(LR1 scalar int64 worker; GATED <=5x raw C)"
-ratio_bench arithloop "$BENCH/ratio_arithloop.kp" "$BENCH/raw/arithloop.c" 0  "(var-loop boxed MonadRef path under S2.3b; report-only until P0.2 replacement)"
+ratio_bench arithloop "$BENCH/ratio_arithloop.kp" "$BENCH/raw/arithloop.c" 0  "(C/default lane boxed MonadRef fallback; report-only until that lane scalarizes)"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL BENCHMARKS PASSED (results + allocation gates + raw-C ratio gate)"; else echo "$fails BENCHMARK GATE(S) FAILED"; exit 1; fi

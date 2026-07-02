@@ -286,14 +286,15 @@ machine class as before (Apple M-series, macOS Darwin 25.3.0; `go1.26.1`,
 - **`nbody` is unblocked.** It was `FAIL — blocked` on the missing `sqrt` prim;
   it now **builds and runs byte-identical on the C backend** (`-0.169075164` /
   `-0.169083134`, all 9 decimals) in ≈78 s at the full `N=5 000 000`. On LLVM it
-  builds but a single run is many minutes (uniform-boxed FP), so it is not timed.
+  builds but a single run is many minutes on the current boxed FP fallback, so
+  it is not timed.
 - **`spectralnorm` is no longer blocked on `sqrt` either** — it now builds and
   runs on **both** backends; it is still *intractable at `N=5500`* because the
   power method is O(n³) over list-backed vectors (the O(1)-array gap), so it is
   not timed.
 - **The LLVM integer-loop path collapsed.** Warm `sumloop` (`N=10 000 000`) is
   **kappa-llvm ≈ 26 ms vs kappa-c ≈ 25 ms** — essentially tied — where the
-  baseline section recorded kappa-llvm at **9077 ms (428×)**. The uniform-boxed
+  baseline section recorded kappa-llvm at **9077 ms (428×)**. The old boxed
   blow-up on the tight int loop is gone on LLVM.
 
 ## Correctness matrix (does it build + run byte-identical to `expected.txt`?)
@@ -362,27 +363,20 @@ before LLVM could not even compile them.
 
 The multipliers are the documented levers, surfaced honestly, and they have not
 fundamentally moved (only the *coverage* did). The two persistent compute gaps
-are **uniform boxing** (every `Int`/`Double`/ctor is a boxed `KValue*` with no
-Perceus reference-counted in-place reuse) and **the absence of an O(1) mutable
-array** (`Array a` is a cons-`List`, so `__arrayIndexUnsafe` is an O(n) walk).
-Together they explain the whole spread: `binarytrees` (pure alloc) is ≈1.1× C on
-kappa-c but ≈2.5× *that* on kappa-llvm because the LLVM backend has **no scalar
-worker** and allocates the most; `nbody`/`mandelbrot`/`fannkuch` are 150–460× the
-C ref on kappa-c because the **scalar-`Double`/`Int` worker does not fire** on the
-recursive monomorphic FP/int helpers (the emitted C keeps boxed
-`kp_mulDouble`/`kp_addDouble`, zero `kwd_` unboxed loops) — **mandelbrot's scalar
-path is pending a separate fix** and is the canonical tracker for it; and the
-STM/message Tier-2 rows (`pingpong` 164×, `philosophers` 192×, `bankstm` 56×) are
-dominated by per-operation fiber park/unpark + per-rendezvous Promise allocation
-on a single runtime agent — again the allocation lever, not a concurrency-model
-defect, compounded for `bankstm` by the O(K) cons-list account index that walks
-1000 accounts per transfer (which is precisely why `bankstm` is *intractable on
-LLVM*: the boxing multiplier × the O(K) walk pushes a single run past 300 s).
-The one genuinely *new* good-news datapoint is that the LLVM **integer-loop**
-path is now on par with C (`sumloop` 26 ms vs 25 ms, down from 9077 ms), showing
-the tight-loop blow-up is removable; the same treatment for `Double` and ctors
-(scalar worker + Perceus + layout, per the `representation-is-llvm-layout` /
-`stage2-layout-staging` tracks) is the headline-collapsing work that remains.
+are **residual materialization/allocation** (non-immediate values, boxed
+constructors, runtime continuations, and missing Perceus reuse) and **the absence
+of an O(1) mutable array** (`Array a` is a cons-`List`, so `__arrayIndexUnsafe` is
+an O(n) walk). LLVM now has scalar islands: `sumloop` is essentially tied with C,
+and the scalar-worker tracks prove the tight-loop blow-up is removable for
+recognized monomorphic shapes. The remaining spread comes from the parts that
+still miss those islands: allocation-heavy constructors in `binarytrees`,
+recursive FP/int helpers and carried boxed fallback in `nbody`/`mandelbrot`/
+`fannkuch`, and per-operation fiber park/unpark + Promise allocation in the
+STM/message Tier-2 rows. `bankstm` compounds that with the O(K) cons-list account
+index that walks 1000 accounts per transfer, which is precisely why it remains
+intractable on LLVM despite compiling. The headline-collapsing work that remains
+is to extend the scalar-worker/layout/Perceus treatment to those residual shapes,
+not to reclassify the existing scalar workers as absent.
 
 ---
 
@@ -415,11 +409,10 @@ byte-for-byte (the correctness gate). The harness is auto-discovering
   `binary-trees`; single-capability non-`-threaded` RTS for the concurrency
   refs), it is flagged inline. The goal is an honest "what does an idiomatic
   program compile to", not a leaderboard win.
-- **kappa-llvm is the uniform-boxed backend.** It has no scalar-`Double`/`Int`
-  worker and no concurrency/STM lowering yet, so on compute loops it is
-  ~2–3 orders slower than kappa-c, and on STM/await benches it does not build.
-  This is the documented boxing/concurrency lever surfaced honestly, not a
-  regression — read it as a Stage-progress datapoint per the tracks above.
+- **Historical kappa-llvm state.** In this first run, kappa-llvm was still on
+  the boxed-parity baseline and did not yet lower the Tier-2 concurrency/STM surface,
+  so the concurrency rows below show `builderr`. The newer re-run above is the
+  current state for those paths.
 
 ## The table
 
@@ -439,14 +432,14 @@ byte-for-byte (the correctness gate). The harness is auto-discovering
 | bankstm | 2 | 8517ms 90.6x | builderr | **94ms 1.00x** | 191ms 2.03x | — | go |
 | philosophers | 2 | 21072ms 251x | builderr | **84ms 1.00x** | 161ms 1.92x | — | go |
 
-`—` = ref not requested for that bench (`refs` line in `meta`). `builderr` =
-the LLVM backend cannot compile the port (documented gap, below). `FAIL` = the
-port cannot emit the gated output (blocked on a missing prim). `builds,
+`—` = ref not requested for that bench (`refs` line in `meta`). Historical
+`builderr` = the LLVM backend could not compile the port in this baseline run.
+`FAIL` = the port could not emit the gated output in this baseline. `builds,
 intractable` = the Kappa port compiles on both backends and is verified correct
 at small `N`, but the gated `N` is super-polynomially out of reach on the
 current data structures (so it is not timed). `≳20min (slow)` = the `fannkuch`
 kappa-llvm column builds and runs correctly (verified at small `N`) but a single
-`N=11` run is tens of minutes on the uniform-boxed backend over the list-backed
+`N=11` run is tens of minutes on the old boxed backend over the list-backed
 permutation; it is not separately timed because the row's story is already
 pinned by kappa-c (194× C) and by `mandelbrot`'s kappa-llvm/kappa-c ratio
 (388×/138×). `mandelbrot` and `fannkuch` are `REPS=1`.
@@ -487,7 +480,7 @@ Perceus reuse, so:
 
 Record these. `kappa-c ≈ 1.2× C` on the same allocation shape is the meaningful
 datapoint to watch collapse toward 1.0× (or below) as value-unboxing + RC-reuse
-land; `kappa-llvm/kappa-c ≈ 2.4×` is the uniform-boxed-backend gap to watch
+land; `kappa-llvm/kappa-c ≈ 2.4×` is the boxed-backend gap to watch
 collapse as the scalar worker lands. **Caveat:** GHC is fastest here (48 ms) but
 largely by *allocation elision* — the idiomatic lazy formulation lets
 strictness analysis fuse away most per-node allocation, so it is not an
@@ -512,29 +505,19 @@ comparison.**
   **138×** on `mandelbrot` (the scalar-Double worker does **not** fire on the
   recursive monomorphic Double helper — confirmed in the emitted C: boxed
   `KValue*` params + boxed `kp_mulDouble`/`kp_addDouble`, zero `kwd_` unboxed
-  workers). kappa-llvm is **428×** (`sumloop`) / **388×** (`mandelbrot`) — the
-  uniform-boxed backend. All four impls are bit-identical (explicit
+  workers). In this historical run kappa-llvm was **428×** (`sumloop`) /
+  **388×** (`mandelbrot`) on the boxed backend. All four impls are bit-identical (explicit
   non-FMA temporaries in every language). Read `mandelbrot`/`sumloop` as the
   unboxing progress gate, not a headline.
 
-## Blocked on a compiler/language gap (roadmap)
+## Remaining compiler/language gaps (roadmap)
 
 Concrete, prioritised items each of which currently blocks or kneecaps a port.
-The first three are **hard blockers** (no in-language workaround); the rest cap
-performance or the LLVM column.
+`sqrt`, `showFixed`, and the LLVM concurrency/STM node-builder paths are no
+longer blockers in this re-run; the remaining gaps are data representation,
+unboxing, and a few worked-around CPS shapes.
 
-1. **`sqrt` (and the FP transcendental set) is missing.** The entire `Double`
-   prim set is add/sub/mul/div/neg/eq/lt/`intToDouble`/`showDouble`/
-   `ratOfDouble` ([`src/Kappa/Prelude.hs`](../src/Kappa/Prelude.hs) ~L287–462) —
-   no `sqrt`/`pow`/`rsqrt`/transcendentals. A pure-Kappa Newton sqrt is not
-   IEEE-754 correctly-rounded, so it diverges in the low ULPs and fails any
-   byte-exact `%.9f` gate. **Blocks `nbody` and `spectralnorm` outright.**
-2. **No fixed-precision `Double` formatting.** `showDouble` (behind
-   `println @Double`) emits only the *shortest round-trip* decimal, and there is
-   no `%.9f` prim nor any `doubleToInt`/`floor`/`trunc`/`round` to hand-roll a
-   9-decimal formatter. So even with `sqrt`, the gated `-0.169075164` /
-   `1.274224153` forms are unprintable. **Co-blocks `nbody`, `spectralnorm`.**
-3. **No mutable / O(1) random-access array.** `Array a` is a `newtype` over a
+1. **No mutable / O(1) random-access array.** `Array a` is a `newtype` over a
    cons `List`; `__arrayIndexUnsafe` is an O(n) walk and there is no in-place
    update/swap (`runtime/prims.c`). This makes the archetypal in-place
    array benches super-linear: `fannkuch` becomes O(n) per "array write"
@@ -543,20 +526,16 @@ performance or the LLVM column.
    K=1000 accounts are walked O(K) per transfer so its wall-clock is
    list-traversal-bound, **not** STM-throughput-bound. **An unboxed mutable
    array primitive is the single highest-leverage missing data structure.**
-4. **LLVM backend lacks concurrency/STM lowering.** `await`/`__awaitFiber`/
-   `__reraiseCause` and the STM surface (`newTVar`/`readTVar`/`writeTVar`/
-   `atomically`/`retry`) are recognised by the LLVM backend only as node-builders
-   inside a `do`-block, never as curried/partially-applied values
-   ([`src/Kappa/Backend/LLVM.hs`](../src/Kappa/Backend/LLVM.hs) ~L564–582), so
-   any helper (`recv`, `makeBoxes`, `pong`, `spawnAll`) using them fails
-   `E_BACKEND_UNSUPPORTED`. **`builderr` on all six Tier-2 benches** under
-   `KAPPA_BACKEND=llvm`; the C backend runs them all.
-5. **Scalar-`Double` (and ctor) unboxing worker.** The boxing lever behind the
-   138× `mandelbrot` / 1.2× `binary-trees` / 35× `pidigits` gaps. Stage 1.5
-   witness + scalar worker (per `stage2-layout-staging` /
-   `representation-is-llvm-layout`) is the headline-collapsing item; until it
-   lands, present the compute/alloc rows as a tracked trend.
-6. **C-backend CPS gaps (worked around, worth fixing).** (a) A *suspending* op
+2. **Residual scalarization/layout gaps after LR1/R2.2.** Monomorphic
+   `Int`/`Double` scalar workers have landed for their proven first-order
+   shapes, but several benchmark families still fall off the scalar island:
+   C/default mutable-`var` loops remain on the boxed selected-`MonadRef`
+   fallback, constructor/record payloads and polymorphic containers still carry
+   boxed representation costs, and recursive/helper shapes can miss the current
+   worker proof. Present the affected compute/alloc rows as tracked trends until
+   the shared evidence-aware var-loop planner, C/default lane, and data-layout
+   stages land.
+3. **C-backend CPS gaps (worked around, worth fixing).** (a) A *suspending* op
    (`join`/`await`) inside a `for x in xs do …` loop is not yet CPS-lowered
    (`skynet` had to collect via a recursive helper). (b) An IO/STM `do`-block
    that tail-calls itself across an `atomically` bind is not flat-trampolined and
@@ -578,7 +557,6 @@ REPS=1 ./run-xbench.sh mandelbrot fannkuch   # the slow compute rows
 
 On Apple Silicon the C `pidigits` ref needs GMP on the include/lib path:
 `CPATH=/opt/homebrew/include LIBRARY_PATH=/opt/homebrew/lib make xbench`.
-The runner exits non-zero whenever any column FAILs the gate or fails to build
-(the Tier-2 `kappa-llvm` `builderr`s and the `nbody`/`spectralnorm` blocks make
-the full-suite exit non-zero by design — that is the CI signal for the gaps
-above, not a harness failure).
+The runner exits non-zero whenever any current column FAILs the gate or fails to
+build; historical `builderr`/`FAIL` rows in the baseline above should not be read
+as current LLVM or `sqrt` status.

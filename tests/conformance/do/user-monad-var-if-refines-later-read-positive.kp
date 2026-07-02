@@ -1,0 +1,59 @@
+module main
+
+-- §18.6.2 POSITIVE: VarCurrent flow facts apply for arbitrary lawful
+-- MonadRef carriers, not only the IO kernel. The condition's generated
+-- current read refines the same current-value version used by the later
+-- branch-local read.
+--! mode run
+--! assertNoErrors
+--! assertStdout "9\n"
+
+data Wrap (a : Type) : Type =
+    MkWrap (runWrap : UIO a)
+
+instance Applicative Wrap =
+    let pureA x = MkWrap (pureIO x)
+    let liftA2 f ma mb =
+        match ma
+        case MkWrap ioa ->
+            match mb
+            case MkWrap iob ->
+                MkWrap (bindIO ioa (\a -> bindIO iob (\b -> pureIO (f a b))))
+
+instance Monad Wrap =
+    let (>>=) ma f =
+        match ma
+        case MkWrap ioa ->
+            MkWrap (bindIO ioa (\a ->
+                match f a
+                case MkWrap iob -> iob))
+
+instance MonadRef Wrap =
+    let Ref = __IORef
+    let newRef x = MkWrap (__ioNewRef x)
+    let readRef r = MkWrap (__ioReadRef r)
+    let writeRef r x = MkWrap (__ioWriteRef r x)
+
+printW : String -> Wrap Unit
+let printW s = MkWrap (printlnString s)
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+foo : Wrap Unit
+let foo = do
+    var cell : Cell = Full 9
+    if cell is Full then
+        let cur <- readRef (ref cell)
+        let n =
+            match cur
+            case Full v -> v
+        printW (showInt n)
+    else
+        printW "empty"
+
+main : UIO Unit
+let main =
+    match foo
+    case MkWrap io -> io

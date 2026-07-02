@@ -1,0 +1,25 @@
+--! mode check
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Empty
+    Full (1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Empty
+    if match !(writeRef (ref cell) (Full Token))
+       case _ -> False
+    then
+        pure ()
+    elif True then
+        let _ <- readRef (ref cell)
+        pure ()
+    else
+        pure ()

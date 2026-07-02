@@ -70,7 +70,7 @@ The cut site is `compileItems` (~C.hs:2741) and its emit helpers `emitRunIOValue
 | Tail action (last `KExpr` in Tail mode) | `return kio_tail(m);` | `return m;` (the do-fn yields the action node directly; tail position, **not** a nested bind — preserves stack-safety, see §4) |
 | `defer t` / `using` | register on `gsDefer`/`gsScopeDefers` GC array; flush via `kio_finally`/inline | `krt2_defer(t)` → push onto the enclosing `KK_DOSCOPE`'s `ExitStack` (`OP_DEFER`/`OP_DOSCOPE`) |
 | do-scope boundary | C-side ExitStack array + `kio_finally` | wrap body in `OP_DOSCOPE` → `KK_DOSCOPE` frame (runs defers on every exit via `begin_finseq`/`KK_FINSEQ`) |
-| `while c { body }` / `for` | S2.3b uses the boxed selected-`MonadRef` do-kernel path for surface `var` loops; the old `emitScalarLoop` var-ref peephole is suspended | `OP_WHILE[condIO, bodyIO]` → `KK_LOOP`; **each iteration body is a fresh do-scope**; back-edge re-runs `iterate` via `KK_LOOP`. A future scalarized non-suspending loop fast-path is allowed only after it proves equivalence to the selected `MonadRef` actions and the body is suspension-free (§3.3, §4). |
+| `while c { body }` / `for` | S2.3b correctness uses selected `MonadRef` actions; the old evidence-oblivious `emitScalarLoop` var-ref peephole is retired | `OP_WHILE[condIO, bodyIO]` → `KK_LOOP`; **each iteration body is a fresh do-scope**; back-edge re-runs `iterate` via `KK_LOOP`. The boxed path is the correctness fallback. A scalarized non-suspending loop fast-path is required when the backend proves equivalence to the selected `MonadRef` actions and the body is suspension-free (§3.3, §4). |
 | `break`/`continue`/`return[L]` | inline defer-flush + C `return`/`goto` | `OP_BREAK`/`OP_CONTINUE`/`OP_RETURN` → `unwind(RK_BREAK/RK_CONTINUE/RK_RETURN)`, running crossed-scope defers |
 | `mask`/`uninterruptible`/`poll` | (not reachable from do-block today) | `OP_MASK`/`OP_UNINTERRUPTIBLE`/`OP_POLL` → `KK_SETMASK`/`KK_POPMASK` |
 | `fork`/`await`/`sleepFor`/`atomically`/`newPromise`/`cede`/`forkDaemon`/`forkIn`/`newScope`/`shutdownScope` | emittable via native builder entries | keep the `primEntries` mapping complete so each suspending action becomes an `OP_*` node the CK-machine parks on; new park/interrupt/cleanup actions must fail closed until they have a CK node or proof |
@@ -83,10 +83,11 @@ The cut site is `compileItems` (~C.hs:2741) and its emit helpers `emitRunIOValue
   bridge. New runtime actions must be added here fail-closed: if an action can
   park, interrupt, or install cleanup, it needs a CK node or an explicit proof
   that the straight-line lowering is equivalent.
-- **Preserve fast paths only when proven equivalent.** In current S2.3b,
-  surface `var` uses the boxed selected-`MonadRef` path; the old scalarized
-  `readRef`/`writeRef` loop peephole is suspended because it bypassed evidence.
-  Direct `kref_*`/scalar-local lowering may return only as an optimizer that
+- **Preserve fast paths only when proven equivalent.** Unsupported or rejected
+  surface `var` regions may fall back to the boxed selected-`MonadRef` path.
+  The old scalarized `readRef`/`writeRef` loop peephole was retired because it
+  bypassed evidence.
+  Direct `kref_*`/scalar-local lowering should return as an optimizer that
   proves equivalence to the selected `MonadRef` actions, preserves source-order
   effects, and satisfies the eligibility rule in §3.3 plus the ordering barrier
   in §4. A bind whose action provably cannot suspend can stay straight-line C;
@@ -149,9 +150,9 @@ Count from the review: ~29 call sites of the four legacy emit helpers, ~86 contr
 pre-S2.3b `emitScalarLoop` var-ref peephole lowered a var+while group to
 **int64 C locals** (`gsScalars`: de Bruijn index → (local, ref)) living on the C
 stack of `kdo_N`; `gsParamLvals` holds flat-worker pattern bindings as C locals
-read by index, **not via `KEnv`.** That var-ref peephole is now suspended:
-surface `var` lowers through the boxed selected-`MonadRef` actions unless a
-future optimizer proves an equivalent scalar lowering. The suspension caveat
+read by index, **not via `KEnv`.** That evidence-oblivious var-ref peephole is
+now retired; the current backend falls back to boxed selected-`MonadRef` actions
+unless it can prove an equivalent scalar lowering. The suspension caveat
 still governs any such future optimizer and the existing flat-worker locals: the
 moment a bind inside the affected region can suspend — including the
 `cede`/safepoint the fairness mandate itself requires on every back-edge — those
@@ -220,7 +221,19 @@ This directly tensions the "refs stay straight-line" rule: a ref op that is the 
 
 That is **4–5 `GC_MALLOC`s** (Boehm) and as many cache-cold loads per suspending bind — **not** "tens of bytes." For comparison: Go parks a goroutine with **zero** heap alloc on the common path; Rust `async` monomorphizes the whole future into one flat struct with **no per-`await` alloc.** So on the suspending path, pre-LLVM, the runtime is **not** in Go/Rust allocation class; the gap is roughly 4–5 allocations + linked-list/`Cont` walks per suspend.
 
-**KValue boxing is NOT orthogonal — it compounds with CPS.** Every value threaded through a continuation — the bound result `v` in `kapp(c->a,v)`, every captured local in the `KEnv`, every loop counter crossing a safepoint — is a ~40-byte boxed `KValue` (`kappart.h:92–125`; `kint` outside `[-16,256]` even allocates). The CPS rewrite **increases** the set of values that must be materialized as first-class boxed `KValue`s, because anything live across a suspend point must be a real `KValue` in the `KEnv` — defeating future unboxing/scalar-in-register opts *at exactly the suspension boundaries*. **Honest statement:** pre-LLVM, with `KValue` boxing in force, the runtime is not in Go/Rust allocation class on the suspending path, and the continuation representation pins values boxed across binds. Unboxing/specialization is a separate, larger effort; we bound the gap rather than dismiss it.
+**Value materialization is NOT orthogonal — it compounds with CPS.** Runtime APIs
+thread a `KValue*`-shaped word through continuations: the bound result `v` in
+`kapp(c->a,v)`, every captured local in the `KEnv`, and every loop counter
+crossing a safepoint must be representable in that tagged word. Immediate and
+packed values avoid heap boxes, but non-immediate values live as heap `KValue`
+objects, and live values crossing suspend points must be materialized in the
+`KEnv`. The CPS rewrite therefore still increases the set of values that must be
+first-class at suspension boundaries, even though small immediates no longer pay
+the old `kint` heap-cache cost. **Honest statement:** pre-Perceus/typed-spill,
+the suspending path is not in Go/Rust allocation class; the continuation
+representation pins live values in the runtime word across binds. Further
+unboxing/specialization is a separate, larger effort; we bound the gap rather
+than dismiss it.
 
 **Cache behavior.** `kvar(env, ix)` walks a singly-linked `KEnv` (`kappart.h:132–135`): O(index) cache-missing loads per variable read vs a constant-offset stack/register load in Go/Rust. The `Cont` chain is likewise a heap linked list walked on every deliver/unwind, with no locality guarantee (each `cont_new`/`kpush` is a fresh `GC_MALLOC`). LLVM `CoroSplit` flattens the `KEnv` spill into a contiguous frame — **but that is Stage 5; the conformance suite ships on the C backend for Stages 1–4**, during which the hot path eats linked-list latency.
 

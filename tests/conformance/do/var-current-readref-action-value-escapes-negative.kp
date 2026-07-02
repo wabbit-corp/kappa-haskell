@@ -1,0 +1,24 @@
+module main
+
+-- §18.6.2 NEGATIVE: constructing an action value that captures `ref cell` is
+-- not an executed recognized read. The reference facet escapes, so later
+-- current-value reads of `cell` must not reuse the pre-escape Full fact.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        let action : UIO Cell = readRef (ref cell)
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

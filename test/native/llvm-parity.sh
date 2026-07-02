@@ -19,6 +19,11 @@ cd "$(dirname "$0")/../.." || exit 2
 KAPPA=${KAPPA:-"cabal run -v0 kappa --"}
 PARITY_TIMEOUT=${KAPPA_LLVM_PARITY_TIMEOUT:-30}
 BUILD_TIMEOUT=${KAPPA_LLVM_PARITY_BUILD_TIMEOUT:-240}
+
+# The C/default leg must not inherit a caller-selected backend. The LLVM leg
+# below sets KAPPA_BACKEND explicitly per command.
+unset KAPPA_BACKEND
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -87,9 +92,11 @@ KP
   # §18.5/§18.6 through the CK machine: suspending loops with break,
   # continue, and return must scope return to the do-block value.
   CORPUS+=("test/native/cases/suspendbreak.kp")
+  CORPUS+=("test/native/cases/while-defer-scope.kp")
   # §32.2.6: scalar-worker safe-point aborts must agree with the interpreter,
   # including active release/finalizer scopes.
   CORPUS+=("test/native/cases/scalar-nested-abort.kp")
+  CORPUS+=("test/native/cases/scalar-varloop-nested-abort.kp")
   CORPUS+=("test/native/cases/scalar-nested-abort-using.kp")
   CORPUS+=("test/native/cases/scalar-nested-abort-using-defer.kp")
   CORPUS+=("test/native/cases/scalar-nested-abort-defer-before-pure.kp")

@@ -1,0 +1,1063 @@
+diff --git a/docs/Spec.md b/docs/Spec.md
+index 5325ebb..de010a6 100644
+--- a/docs/Spec.md
++++ b/docs/Spec.md
+@@ -836,6 +836,14 @@ E_APPLICATION_NON_CALLABLE
+ E_APPLICATION_ARGUMENT_MISMATCH
+
+ E_TYPE_MISMATCH
++
++E_VAR_REF_REQUIRED
++E_VAR_READ_OUTSIDE_DO
++E_VAR_READ_CROSSES_BOUNDARY
++E_VAR_IN_STATIC_POSITION
++E_VAR_READ_DUPLICATES_LINEAR_VALUE
++W_VAR_REF_ESCAPE_DISABLES_FLOW
++
+ E_MISSING_EXPLICIT_SIGNATURE
+ I_INFERRED_SIGNATURE_AVAILABLE
+
+@@ -919,6 +927,12 @@ Meanings:
+ * `E_APPLICATION_ARGUMENT_MISMATCH` is emitted when a callable value is applied to an argument that cannot satisfy the
+   selected binder.
+ * `E_TYPE_MISMATCH` is emitted for ordinary expected-versus-actual type mismatch diagnostics.
++* `E_VAR_REF_REQUIRED` is emitted when a mutable variable's reference cell is required but the source occurrence denotes its current value.
++* `E_VAR_READ_OUTSIDE_DO` is emitted when a current-value read of a mutable variable appears outside the expression-lifting context of its enclosing `do` block.
++* `E_VAR_READ_CROSSES_BOUNDARY` is emitted when elaborating a mutable-variable current-value occurrence would require moving the generated read across a user-written lambda, local-function, quote, type, or elaboration-time boundary.
++* `E_VAR_IN_STATIC_POSITION` is emitted when a mutable variable is used in a type, static-object, erased proof, elaboration-time macro, or implicit-search position that cannot perform object-phase reads.
++* `E_VAR_READ_DUPLICATES_LINEAR_VALUE` is emitted when a current-value read of a mutable variable would duplicate a non-duplicable runtime-relevant component of the stored value.
++* `W_VAR_REF_ESCAPE_DISABLES_FLOW` MAY be emitted when `ref x` escapes and therefore disables current-value flow typing for mutable variable `x`.
+ * `E_MISSING_EXPLICIT_SIGNATURE` is emitted when a declaration requires an explicit signature and none is available.
+ * `I_INFERRED_SIGNATURE_AVAILABLE` MAY be emitted as an informational diagnostic carrying an inferred signature that
+   tooling may insert.
+@@ -3929,6 +3943,51 @@ Payload MUST include, when applicable:
+ A diagnostic with portable alias `E_TARGET_PUBLIC_NAME_UNSUPPORTED` or `E_TARGET_PUBLIC_NAME_COLLISION` MUST use this
+ family.
+
++<!-- compiler.kfrontir.standard_diagnostic_families.mutable_variables -->
++#### 3.2.20 Mutable-variable diagnostics
++
++Family:
++
++```text
++kappa.var.mutable-binding
++```
++
++Used when a source occurrence involving a surface `var` mutable binding is rejected or downgraded because the occurrence
++selects the wrong mutable-binding facet, attempts an effectful current-value read where no such read is permitted, or
++would violate quantity/linearity by duplicating or discarding the stored value.
++
++Diagnostics in this family include at least:
++
++```text
++E_VAR_REF_REQUIRED
++E_VAR_READ_OUTSIDE_DO
++E_VAR_READ_CROSSES_BOUNDARY
++E_VAR_IN_STATIC_POSITION
++E_VAR_READ_DUPLICATES_LINEAR_VALUE
++W_VAR_REF_ESCAPE_DISABLES_FLOW
++```
++
++Payload MUST include, when applicable:
++
++* the mutable binding name;
++* the selected facet, among `current-value`, `reference`, `assignment-target`, and `var-place`;
++* the type of the hidden reference cell;
++* the stored value type;
++* the enclosing `do` block and selected `MonadRef` evidence;
++* whether the occurrence was user-written or compiler-generated;
++* the expression-lifting boundary that blocked the read;
++* the source operation that required a `Ref`, when `ref x` is the local repair;
++* the quantity or path-state fact that made the stored value non-duplicable or non-droppable;
++* whether `ref x` escaped and which flow facts were invalidated; and
++* a source-preserving repair when evident.
++
++A diagnostic in this family SHOULD prefer local repairs such as writing `ref x`, binding a snapshot with `let x0 = x`,
++placing a read inside an explicit `do`, or replacing a current-value read with an explicit low-level `readRef (ref x)`
++when that is the intended operation.
++
++A diagnostic in this family MUST NOT suggest using `!x` as mutable-variable read syntax. The `!` form remains monadic
++splice syntax under §18.3.
++
+ <!-- compiler.diagnostics.path_sensitive_diagnostics -->
+ ### 3.3 Diagnostics for path-sensitive, dependency-sensitive, and borrow-sensitive failures
+
+@@ -4662,7 +4721,7 @@ effectLabel, handle, deep,
+ with, scoped, pattern,
+ projection, place, get, set, sink,
+ infix, postfix, prefix, left, right,
+-var, while, break, continue, using, inout,
++var, ref, while, break, continue, using, inout,
+ yield, for, for?, group, by, distinct, order, skip, take, top, join, left, asc, desc,
+ public, private, opaque, seal, unhide, clarify,
+ ?., ?:
+@@ -6203,6 +6262,12 @@ ordinary member-selection form succeeds for that member step.
+
+ Receiver forms:
+
++* If the receiver is a mutable binding introduced by surface `var` and the dotted form occurs in an object-phase value
++  expression inside the nearest enclosing `do` block, the receiver is elaborated through its current-value facet under
++  §18.6.1 before the member step is resolved. Thus `x.f` reads the current value of `x` and then selects `f` from that
++  value. This rule does not apply in type, static-object, erased proof, quotation, macro, or implicit-search positions.
++  The underlying reference cell is selected only by `ref x`; `x.ref` remains ordinary member selection from the current
++  value.
+ * If the receiver denotes a module declaration or reified module value,
+   `recv.name` selects the exported member `name` of that module.
+ * If the receiver denotes a type, the type facet of a same-spelling data family, or a reified static-object term facet
+@@ -11408,6 +11473,61 @@ or `ω` are droppable for this purpose, subject to the ordinary borrow-escape an
+ Borrowed bindings are droppable when their interval quantity is droppable. For example, `(& x : A)` is droppable because
+ it is sugar for `(ω & x : A)`, while `(1 & x : A)` is not droppable.
+
++Duplication positions:
++
++A **duplication position** is a use that creates an additional live runtime-relevant value while preserving the original
++owner, place, cell, or container that already holds that value.
++
++A duplication position is well-typed only when every runtime-relevant component being duplicated is duplicable under the
++quantity and path-state rules.
++
++For ordinary v1 surface quantities, ignoring internal path state:
++
++```text
++duplicable quantities:      0, &, >=1, ω
++not duplicable quantities:  1, <=1
++```
++
++Compile-time-only components are duplicable for runtime-quantity purposes, but they still participate in dependency
++analysis, definitional equality, interface identity, and region-escape checking.
++
++Path-sensitive state may make a component non-duplicable even when its outer quantity would otherwise permit
++duplication. In particular, a partially consumed record path may not be duplicated.
++
++For records, tuple-like records, constructor payloads with visible field quantities, and other structurally visible
++values, the checker applies this duplicability test componentwise. For opaque, abstract, foreign, or representation-
++hidden values, the checker MUST be conservative: such a value is duplicable only when the visible interface, trusted
++summary, selected primitive, or an explicit library contract such as `Shareable A` justifies duplicability for the
++operation being checked.
++
++A mutable-variable current-value read under §18.6.1, and an explicit recognized `readRef (ref x)` of the same surface
++cell, are duplication positions: the cell retains its stored value and the read produces an additional value. Therefore
++a read of a mutable variable whose stored type may contain a non-duplicable runtime-relevant component is rejected.
++
++Examples:
++
++```kappa
++do
++    var r = (x = token)      -- suppose r : (1 x : Token,)
++    let y = r               -- rejected: the current-value read would duplicate `x`
++```
++
++```kappa
++do
++    var r = (x = token)      -- suppose r : (<=1 x : Token,)
++    let y = r               -- rejected: affine fields are droppable but not duplicable
++```
++
++A recognized write to a surface mutable cell, including assignment `x = rhs`, monadic assignment `x <- action`, and
++`writeRef (ref x) rhs`, discards the previous stored value unless it is part of a specified consuming cell operation.
++Such a write is accepted only when the previous stored value is droppable, or when the selected lower-level cell API
++explicitly consumes and returns/restores the old value according to its own type.
++
++For a non-escaped local mutable cell, the final stored value is discarded when the cell lifetime ends. That final discard
++is checked by the same droppability rule. If `ref x` escapes, the compiler no longer owns the cell lifetime for local
++flow typing; the escape itself is governed by the ordinary type, region, capture, and library API rules for the selected
++`Ref` type.
++
+ A type or module may expose an explicit destructor such as:
+
+ ```kappa
+@@ -11890,15 +12010,22 @@ Source forms that elaborate to stable places in v1 are:
+   makes that constructor field available, yielding the place `p.f`; and
+ * a fresh hidden temporary introduced by elaboration.
+
+-A `var`-bound name does not itself denote a stable place value root for pure elaboration, because under §18.6.1 it
+-denotes a `Ref`. A surface construct that admits a `var`-rooted place, such as `~x` or `~x.f`, first elaborates by
+-reading the current contents of that `Ref` into a fresh hidden temporary root and then forming the corresponding stable
+-place from that temporary.
++A mutable binding introduced by surface `var` does not itself denote an ordinary stable place root. In an ordinary
++value expression, the source name `x` denotes the current value of the mutable variable and elaborates to a generated
++read of the hidden cell under §18.6.1. The value produced by that read may be bound to a fresh ordinary variable, but the
++source occurrence `x` is not by itself an addressable place.
++
++Surface constructs that explicitly admit a mutable-variable root, such as assignment and `~x` or `~x.f`, use the
++mutable binding's var-place facet under §18.6.1. A var-place facet is a special mutable-place operation over the hidden
++cell. It is not an ordinary stable place and is not obtained by first reading `x` as a pure value.
+
+ The current-value representative `VarCurrent(x, n)` of §18.6.2 is not a stable
+-place. It may carry branch-local refinement evidence for recognized reads of
+-`x`, but it is not an addressable root for borrowing, path-sensitive
+-consumption, record update, or `inout` rewriting.
++place in portable v1. It may carry branch-local refinement evidence for
++recognized current-value reads of `x`, but it is not a source-visible addressable
++root for borrowing, path-sensitive consumption, record update, or `inout`
++rewriting. An implementation may internally model a current-version lifetime or
++region for optimization or diagnostics, but that internal model must not expose
++additional source programs beyond the rules stated here.
+
+ An ordinary value binding does not preserve place identity. If `e` elaborates to a stable place and the user writes
+ `let y = e`, then `y` is bound to the value currently read from that place, not to an alias of the place itself.
+@@ -13430,8 +13557,11 @@ Projection and use:
+   selection. Its compile-time transparency across the seal is governed by §31.1.
+ * The receiver of package-member selection may be any pure term of signature type. It need not be a syntactic variable
+   or a special stable path.
+-* This does not introduce implicit dereference through `var`; a `var`-bound name still denotes the underlying `Ref`
+-  object (§18.6.1), so selecting package members through mutable state requires an explicit read in the ordinary way.
++* In an object-phase value expression inside `do`, package/member selection from a mutable variable uses the
++  current-value facet of §18.6.1. Thus `p.f` reads the current value of mutable variable `p` and then selects `f` from
++  that value. In type, static-object, erased proof, and elaboration-time positions, no mutable-variable read is
++  inserted; bind a snapshot first or use an explicit ordinary value. The underlying reference cell is selected only by
++  `ref p`.
+
+ Equality and non-generativity:
+
+@@ -15591,6 +15721,12 @@ from the preceding signature declarations.
+
+ * Variable usage: `x`, `foo`, `map`, etc.
+
++* Mutable-reference selection: `ref x`, where `x` is a simple identifier resolving to a mutable binding introduced by
++  surface `var` (§18.6.1). This is a contextual source form, not ordinary function application. It selects the
++  reference facet of the mutable binding and has the hidden cell type `Ref A`. To call an ordinary term whose spelling
++  is `ref`, use normal name resolution in a context where this form is not syntactically admitted, or use a backtick
++  identifier if necessary.
++
+ * Surface application syntax is left-associative for parsing:
+
+   ```kappa
+@@ -16438,7 +16574,11 @@ Given selected binder `(@q x : T_dem)` and payload `payload`:
+
+    elaborate `payload` in static-object expression position against `T_dem`.
+
+-4. Otherwise, elaborate `payload` as an ordinary expression against `T_dem`.
++4. Otherwise, elaborate `payload` as an ordinary expression against `T_dem`. If this ordinary expression is
++   elaborated inside a `do` block and the selected implicit binder is object-phase runtime-relevant, mutable-variable
++   current-value occurrences inside the payload are governed by the expression-lifting rule of §18.3. If the selected
++   binder is erased, proof-only, type-level, or static-object classified, such occurrences are rejected by the no-read
++   rules of §18.6.1.
+
+ 5. During ordinary expression checking, expected-type information continues to propagate into subexpressions. For
+    example, when `T_dem` is a function type whose codomain is `Type`, a lambda payload is checked as an ordinary lambda,
+@@ -17141,6 +17281,10 @@ Rules:
+ When elaborating an application, if the callee expects an implicit argument `(@x : G)` and the call site does not supply
+ one, the compiler attempts to synthesize a term of type `G`.
+
++Implicit resolution never synthesizes a mutable-variable current-value read. A local implicit binding may of course be
++created by an explicit source binding such as `let (@ω d : T) = x` inside a `do` block; in that case the read belongs to
++the explicit binding expression, not to implicit search.
++
+ Resolution proceeds in this order:
+
+ 1. **Local implicit context**: search lexical implicit bindings from innermost scope to outermost scope. The local
+@@ -17518,13 +17662,18 @@ Definitions:
+   * `x` is not a `var`, and
+   * ordinary quantity checking judges that forming the binding does not consume `s`.
+
+-A simple local alias binding introduces erased local equality evidence:
++A simple local alias binding records `x` as a stable alias of the same scrutinee representative for flow-typing
++purposes.
++
++When the aliased scrutinee is source-denotable, the binding also introduces erased local equality evidence, schematically:
+
+ ```kappa
+ @alias : x = s
+ ```
+
+-and records `x` as a stable alias of the same scrutinee representative for flow-typing purposes.
++When the aliased scrutinee is a compile-time-only representative such as `VarCurrent(x, n)`, the implementation records
++an erased flow-alias fact instead of a source-level propositional equality whose right-hand side would not be a source
++expression.
+
+ Consequences:
+
+@@ -17547,10 +17696,11 @@ A stable-alias relation introduced by this section ceases to be available after
+
+ A current-value representative of a tracked local `var` cell participates only
+ in flow-sensitive typing and refinement transport. It does not make the `var`
+-name itself a stable place, does not preserve place identity for ordinary
+-bindings, does not introduce auto-dereferencing, and does not permit borrowing
+-or `inout` use of the current cell contents except through the ordinary rules
+-that already admit `var`-rooted places.
++name itself an ordinary stable place and does not preserve place identity for
++ordinary bindings. A local binding such as `let y = x`, where `x` is a mutable
++variable, may record `y` as a stable flow alias of `VarCurrent(x, n)` when the
++binding is elaborated from a recognized current-value read, but `y` is still an
++ordinary snapshot value, not an alias of the mutable cell.
+
+ This section affects only flow typing and refinement transport. It does not change the place-identity rule of
+ §12.4.1: an ordinary value binding remains not a place alias for borrowing or `inout`.
+@@ -19086,8 +19236,8 @@ Semantics:
+ * `poll` is an explicit interruption checkpoint. If the current fiber has a pending interruption request, `poll`
+   delivers it immediately, including from within `mask` or `uninterruptible`. Otherwise `poll` returns `Unit`.
+ * `uninterruptible body` suppresses interruption delivery while `body` executes, except that explicit `poll` may still
+-  deliver an already pending interruption. A pending interruption request is otherwise re-checked when `body` leaves the
+-  uninterruptible region.
++  deliver an already pending interruption. A pending interruption request otherwise remains pending when `body` leaves
++  the uninterruptible region and becomes observable at the next interruption point according to §32.2.5.
+ * `mask f` suppresses interruption while `f` executes. The `restore` function re-enables interruption for a selected
+   subcomputation.
+ * Once a pending interruption has been delivered to the current fiber, that pending request is consumed.
+@@ -20027,11 +20177,12 @@ Valid do-items inside `do`:
+   * This form is syntactic sugar for updating the reference with an effectful result.
+
+   Typing and Elaboration:
+-  * If `x` has type `Ref A` and `expr` has type `m A`, this elaborates to:
++  * If `x` is a mutable binding whose hidden cell has type `Ref A` and `expr` has type `m A`, this elaborates to:
+     ```kappa
+     let __tmp <- expr
+-    writeRef x __tmp
++    writeRef (ref x) __tmp
+     ```
++  * The write is a recognized write of `x` under §18.6.2 and is subject to the stored-value discard rule of §12.2.6.
+
+ * **Pure assignment (`=`)**:
+
+@@ -20043,10 +20194,15 @@ Valid do-items inside `do`:
+   * This form is syntactic sugar for updating the reference with a pure result.
+
+   Typing and Elaboration:
+-  * If `x` has type `Ref A` and `expr` has type `A`, this elaborates to:
++  * If `x` is a mutable binding whose hidden cell has type `Ref A`, the right-hand side is elaborated as an ordinary
++    do-lifted value expression of type `A` under §18.3. This permits current-value reads in the right-hand side.
++  * The assignment then writes the resulting value to the hidden cell:
+     ```kappa
+-    writeRef x expr
++    let __tmp = expr      -- schematic; do-lifting sequences generated reads first
++    writeRef (ref x) __tmp
+     ```
++  * The left-hand occurrence of `x` is an assignment-target facet, not a current-value read.
++  * The write is a recognized write of `x` under §18.6.2 and is subject to the stored-value discard rule of §12.2.6.
+
+ * **Expression item**:
+
+@@ -20522,14 +20678,20 @@ Abrupt control flow affects which do-items are executed, but it does not change
+ declarations that were already in scope.
+
+ <!-- types.splicing -->
+-### 18.3 Monadic splicing (`!`)
++### 18.3 Do-expression lifting and monadic splicing (`!`)
++
++A `do` block admits ordinary source expressions that contain effectful subexpressions belonging to the enclosing monad.
++In v1 those effectful subexpressions are:
+
+-The prefix operator `!` is used only within a `do` block as a monadic splice.
++* explicit monadic splices written `!e`; and
++* current-value occurrences of mutable variables introduced by surface `var` (§18.6.1).
+
+ Compile-time term and type generation use `Syntax` and top-level `$(...)` splicing (§21.2), not `!`.
+
++The prefix operator `!` remains only monadic splice syntax. It is not mutable-variable read syntax.
++
+ <!-- types.splicing.term_level_splice_monadic_contexts -->
+-#### 18.3.1 Term-level `!` in monadic contexts
++#### 18.3.1 Term-level `!` and current-value reads in monadic contexts
+
+ Within a `do` block (§18), `!e` runs the monadic computation `e` and yields its result in an expression context.
+
+@@ -20550,34 +20712,67 @@ It does not cross lambda, local-function, quote, or type boundaries.
+ If `!` appears inside a nested lambda or local function, that nested body must itself contain an enclosing `do`;
+ otherwise the occurrence is ill-formed.
+
++A current-value occurrence of a mutable variable obeys the same nearest-`do` boundary rule. A generated read of a
++mutable variable is inserted at the occurrence's ordinary evaluation point and must not be hoisted across a user-written
++lambda, local function, quote, type, static-object, erased-proof, or elaboration-time macro boundary.
++
+ Normative elaboration order:
+
+-* Before translating `!`, the compiler first lowers ordinary surface expression sugar inside the containing do-item to
+-  the core expression fragment used for expression elaboration.
++* Before translating effectful subexpressions, the compiler first lowers ordinary surface expression sugar inside the
++  containing do-item to the core expression fragment used for expression elaboration.
+   In particular, guarded cases, short-circuit boolean lowering, and similar constructs are lowered first.
+ * Fix a `do` block whose monad is `m`.
+-  Define a translation `Splice_m[e]` that turns an expression `e` containing zero or more occurrences of `!` into a
+-  monadic computation of type `m A`, where `A` is the ordinary value type of `e` after removing the `!` markers.
++  Define a translation `Lift_m[e]` that turns an expression `e` containing zero or more occurrences of `!` and zero or
++  more mutable-variable current-value occurrences into a monadic computation of type `m A`, where `A` is the ordinary
++  value type of `e` after replacing those effectful occurrences by their yielded values.
+
+ The translation is defined recursively and preserves Kappa's ordinary left-to-right evaluation order:
+
+-* Pure atom `a` with no evaluated subexpressions:
+-  `Splice_m[a] = pure a`
++* Pure atom `a` with no evaluated subexpressions and no mutable-variable current-value occurrence:
++  `Lift_m[a] = pure a`
++
++* Mutable-variable current-value occurrence:
++  if `x` resolves to a mutable binding introduced by `var`, and this occurrence selects its current-value facet under
++  §18.6.1, then:
++
++  ```text
++  Lift_m[x] = readRef (ref x)
++  ```
++
++  using the same `MonadRef` evidence selected for the declaration of `x`.
++
++* Mutable-reference selection:
++  `ref x` selects the reference facet of mutable binding `x` and is a pure atom:
++
++  ```text
++  Lift_m[ref x] = pure (cell x)
++  ```
++
++  where `cell x` denotes the hidden reference cell. The notation `cell x` is explanatory; source code writes `ref x`.
+
+ * Splice:
+-  `Splice_m[!e] = e`
++  translate the operand enough to account for any current-value reads or nested effectful subexpressions, then run the
++  resulting computation value:
++
++  ```text
++  Lift_m[!e] = Lift_m[e] >>= \__act -> __act
++  ```
++
++  In the common case where `e` is already a pure expression denoting a computation of type `m A`, this is
++  observationally equivalent to `e`.
+
+ * Immediate-application splice:
+   if `!` is followed by a callable head expression and one or more application arguments in the same maximal application
+-  site, the entire application spine is the splice operand. Thus `!f x y` is translated as `Splice_m[!(f x y)]`.
+-  The application `f x y` must elaborate directly to a computation of the enclosing monad type `m A`, after ordinary
+-  implicit insertion and named-argument elaboration. Failure of `f x y` to elaborate to `m A` is an error for this form.
++  site, the entire application spine is the splice operand. Thus `!f x y` is translated as `Lift_m[!(f x y)]`.
++  After lifting any effectful subexpressions inside the operand, the application `f x y` must yield a computation of the
++  enclosing monad type `m A`, after ordinary implicit insertion and named-argument elaboration. Failure of `f x y` to
++  yield `m A` is an error for this form.
+   If the user intends to splice a computation that returns a function and then apply the resulting function, they must
+   write `(!f) x`.
+
+ * Application spine `e0 e1 ... en`:
+   translate `e0, e1, ..., en` left-to-right, bind their results to fresh temporaries `t0, t1, ..., tn`, and return:
+-  `pure (t0 t1 ... tn)`
++  `pure (t0 t1 ... tn)`.
+
+ * Tuple, record, list, set, and map literals:
+   translate element or field expressions in the language's ordinary left-to-right evaluation order, bind fresh
+@@ -20588,37 +20783,60 @@ The translation is defined recursively and preserves Kappa's ordinary left-to-ri
+   temporaries in that same order, and rebuild the patch from those temporaries.
+   Canonical patch assembly is then performed as specified in §13.2.5.
+
+-* Pure projection or other non-short-circuiting expression form:
++* Pure projection, member selection, or other non-short-circuiting expression form:
+   translate subexpressions in ordinary left-to-right order and rebuild the pure form from the resulting temporaries.
++  Thus `x.f`, where `x` is a mutable variable whose current value is a record or package, reads `x` and then projects
++  `f` from the read value.
+
+ * Conditional:
+-  `Splice_m[if c then t else f] = Splice_m[c] >>= \c' -> if c' then Splice_m[t] else Splice_m[f]`
++  `Lift_m[if c then t else f] = Lift_m[c] >>= \c' -> if c' then Lift_m[t] else Lift_m[f]`
+
+ * Match:
+-  `Splice_m[match s case p1 -> e1 ... case pn -> en] =
+-     Splice_m[s] >>= \s' ->
++  `Lift_m[match s case p1 -> e1 ... case pn -> en] =
++     Lift_m[s] >>= \s' ->
+        match s'
+-       case p1 -> Splice_m[e1]
++       case p1 -> Lift_m[e1]
+        ...
+-       case pn -> Splice_m[en]`
++       case pn -> Lift_m[en]`
+
+ This translation is normative.
+ Implementations may realize it by an equivalent extraction algorithm, but they MUST preserve all of the following:
+
+ * left-to-right evaluation order of translated subexpressions;
+-* exactly-once evaluation of each splice operand;
+-* branch-local sequencing for `if` and `match`, so that splices in untaken branches are not executed.
++* exactly-once evaluation of each user-written effectful occurrence;
++* branch-local sequencing for `if` and `match`, so that effectful occurrences in untaken branches are not executed;
++* fresh hygienic temporaries and source provenance for generated reads and splices; and
++* the boundary restrictions above.
++
++Each source current-value occurrence of a mutable variable denotes a separate read. For example:
++
++```kappa
++addInt x x
++```
++
++where `x` is a mutable variable, elaborates observationally as two left-to-right reads. An implementation may common or
++eliminate repeated reads only when it proves that doing so is observationally equivalent in the selected monad and does
++not change quantity, borrow, flow-typing, or diagnostic behavior.
+
+ Use in do-items:
+
+-* If a do-item expression contains one or more occurrences of `!`, that expression is first translated by `Splice_m[-]`.
++* If a do-item expression contains one or more occurrences of `!` or one or more mutable-variable current-value
++  occurrences, that expression is first translated by `Lift_m[-]`.
+ * The resulting monadic computation is then elaborated by the ordinary do-item rule for that position.
+ * Consequently:
+-  * a final do-item expression containing `!` contributes the translated computation as the block result;
+-  * `let pat = expr` inside `do` may contain `!`, in which case the translated computation is sequenced first and `pat`
+-    is then bound to its value;
+-  * any other do-item form that syntactically contains an expression subterm uses the same translation on that subterm
+-    before applying its ordinary elaboration rule.
++  * a final do-item expression containing such occurrences contributes the translated computation as the block result;
++  * `let pat = expr` inside `do` may contain such occurrences, in which case the translated computation is sequenced
++    first and `pat` is then bound to its value;
++  * assignment right-hand sides, loop conditions, branch conditions, record fields, constructor arguments, explicit
++    implicit payloads that are ordinary runtime expressions, and other do-item subterms use the same translation before
++    applying their ordinary elaboration rule.
++
++No-read positions:
++
++The translation does not run in type positions, static-object positions, erased proof positions, implicit-search
++synthesis, quotation bodies, elaboration-time macro execution, or inside a nested lambda/local-function body unless that
++nested body has its own enclosing `do` block. A mutable-variable occurrence in such a position is rejected unless the
++source form explicitly selects a non-reading facet such as `ref x`.
+
+ <!-- effects.do_if_without_else -->
+ ### 18.4 `if` without `else` in `do`
+@@ -20905,72 +21123,245 @@ satisfy the following observational laws for cells created by `newRef`:
+ A `MonadRef` implementation that does not satisfy these laws is not a lawful
+ implementation of surface `var`, even if its methods have the right types.
+
++Surface mutable binding:
++
+ Elaboration of:
+
+ ```kappa
+-var x = e
++var x [: A] = e
+ ```
+
+-introduces a fresh reference cell:
++allocates a fresh hidden reference cell:
+
+ ```kappa
+-let x <- newRef e
++let __cell_x <- newRef e
+ ```
+
+-**Uniform Reference Semantics:** A `var`-bound identifier `x` uniformly denotes the underlying `Ref` object in all
+-expression contexts, regardless of lexical depth. There is no implicit auto-dereferencing.
++where `__cell_x` is fresh, inaccessible to source code, and has type `Ref A` for the annotated type `A`, if present, or
++for the inferred type `A` of `e` otherwise.  When an annotation is present, `e` is checked against it.
+
+-* To read the value, users must explicitly evaluate the read action (e.g., `let val <- readRef x` or using monadic
+-  splice `!(readRef x)`).
+-* To write to the value, users may use the explicit `writeRef x val`, or the statement-level assignment sugar (`x = val`
+-  and `x <- expr`) defined in §18.2.
++The source name `x` introduced by `var x = e` is a **mutable binding**, not an ordinary source variable of type
++`Ref A`. It contributes a term-level binding group entry whose source behavior is described by the facets below.
+
+-**Scope and Closure Capture:**
+-* The name `x` introduced by `var x = e` is lexically scoped to the enclosing `do` block.
+-* Because `x` strictly denotes the `Ref` itself, capturing `x` in a closure naturally captures the reference. Subsequent
+-  invocations of the closure observe mutations to that `Ref`, and mutations performed through that `Ref` are visible
+-  outside it.
+-* Escaping: It is entirely legal for a closure capturing a `Ref` (or the `Ref` itself) to escape the `do` block,
+-  provided the region discipline of the enclosing monad allows it (§18.6.4). If the enclosing monad is unrestricted
+-  (e.g., `IO`), the `Ref` escapes to the heap and behaves as standard shared mutable state.
++A mutable binding has these source facets:
+
+-**Examples:**
++1. **Current-value facet**
++
++   In an object-phase value expression elaborated as part of the nearest enclosing `do` block, a simple occurrence of
++   `x` denotes the current value stored in the hidden cell.
++
++   The occurrence has source type `A` and elaborates to a generated recognized read:
++
++   ```kappa
++   readRef (ref x)
++   ```
++
++   The generated read is sequenced by the do-expression lifting rule of §18.3 at the ordinary evaluation point of the
++   source occurrence.
++
++2. **Reference facet**
++
++   The form:
++
++   ```kappa
++   ref x
++   ```
++
++   denotes the hidden reference cell `__cell_x` and has type `Ref A`.
++
++   The operand of `ref` must be a simple identifier resolving to a mutable binding introduced by surface `var`. `ref` is
++   not ordinary function application and does not evaluate a current-value read.
++
++3. **Assignment-target facet**
++
++   In assignment-target position:
++
++   ```kappa
++   x = rhs
++   x <- action
++   ```
++
++   `x` denotes the mutable cell target. The left-hand occurrence is not a current-value read. Assignment elaboration is
++   specified by §18.2.
++
++4. **Var-place facet**
++
++   In a source context that explicitly admits a mutable-variable rooted place, such as `~x` or `~x.f` under §18.9, `x`
++   denotes a var-rooted mutable place over the hidden cell. The var-place facet is not an ordinary stable place under
++   §12.4.1. It is a special read/modify/write discipline over the hidden cell and is subject to the same quantity,
++   droppability, duplicability, and write-back rules as the corresponding lower-level cell operations.
++
++Consequences:
++
++```kappa
++do
++    var a = 0
++    var b = 1
++
++    let t = addInt a b
++```
++
++elaborates schematically as:
++
++```kappa
++do
++    let __a <- readRef (ref a)
++    let __b <- readRef (ref b)
++    let t = addInt __a __b
++```
++
++This is not expected-type-directed dereferencing. The name `a` in an ordinary value expression denotes the current value
++because `a` is a mutable binding. The underlying reference is obtained only by `ref a`.
++
++Low-level reference operations:
++
++```kappa
++readRef (ref x)
++writeRef (ref x) v
++```
++
++remain valid. They are the explicit low-level forms corresponding to generated current-value reads and recognized
++writes.
++
++By contrast:
++
++```kappa
++readRef x
++writeRef x v
++```
++
++are ill-formed for a mutable binding `x`, because `x` denotes the current value in ordinary expression position. The
++local repair is usually either plain `x` for a read, or `readRef (ref x)` / `writeRef (ref x) v` when the reference API
++itself is intended.
++
++`!` interaction:
++
++The form `!x` is not mutable-variable read syntax. It is monadic splice syntax. If `x` is a mutable variable whose
++current value has type `m A`, then `!x` first reads the current action stored in `x` and then runs that action according
++to §18.3.
++
++Scope and closure capture:
++
++* The mutable binding `x` is lexically scoped to the enclosing `do` block.
++* A bare occurrence of `x` inside a user-written lambda or local function body would require a generated read in that
++  nested body. Such a read is accepted only if the nested body itself has an enclosing `do` block for the same purpose.
++* A generated current-value read inside a nested user-written computation is a live read at the time that nested
++  computation runs. The generated read internally captures the hidden cell for lifetime, escape, and flow-invalidation
++  purposes; it is not a snapshot.
++* A generated current-value read MUST NOT be hoisted out of a user-written lambda or local function to create a snapshot
++  unless the user explicitly writes that snapshot.
++* Capturing the reference cell as a source-visible first-class value requires explicitly writing `ref x` or a value
++  derived from `ref x`. The internal cell capture required for a generated live current-value read is not itself a
++  source expression and does not make a `Ref` value available to user code.
++
++Examples:
++
++```kappa
++do
++    var x = 0
++
++    let snapshot = x
++    let f = \() -> snapshot
++    -- f : Unit -> Int
++```
++
++```kappa
++do
++    var x = 0
++
++    let live = \() -> do
++        x
++    -- live : Unit -> m Int
++```
+
+ ```kappa
+ do
+     var x = 0
+
+-    let f = \() -> do
+-        let curr = !(readRef x)
+-        pure curr
+-    -- f : Unit -> m Int
++    let r = ref x
++    let liveLowLevel = \() -> readRef r
++    -- liveLowLevel : Unit -> m Int
++```
++
++```kappa
++do
++    var x = 0
++
++    let bad = \() -> x
++    -- rejected unless the lambda body is itself elaborated inside a `do` block
++```
++
++Member access:
++
++In an object-phase value expression inside `do`, member access from a mutable variable uses the current-value facet:
+
+-    let g = \n -> do
+-        x = n  -- Valid sugar for: writeRef x n
+-    -- g : Int -> m Unit
++```kappa
++do
++    var user = User { name = "Ada", age = 36 }
++    printlnString user.name
++```
++
++This reads `user` and then projects `name` from the read value.
++
++The form `user.ref` is ordinary member selection from the current value of `user`. It does not select the hidden
++reference cell. Use `ref user` for the cell.
++
++No-read contexts:
+
+-    let pureClosure = \() -> x
+-    -- ERROR if used where an Int is expected; pureClosure returns a `Ref Int`.
++A mutable binding's current-value facet is not available in:
++
++* type positions;
++* static-object expression positions;
++* erased proof positions;
++* implicit-search synthesis;
++* elaboration-time macro execution;
++* quotation bodies, except as quoted object-language syntax to be elaborated later at a splice site;
++* assignment targets; or
++* any context where the generated read would have to cross a user-written lambda, local-function, quote, type, static,
++  or macro boundary.
++
++To mention the current value in a later type, bind a snapshot first:
++
++```kappa
++do
++    var n = 10
++    let n0 = n
++    let xs : Vec n0 Int = ...
+ ```
+
+-A `var`-bound identifier may not appear in type positions or elaboration-time macro positions.
++Quantity and linearity:
++
++A current-value read of a mutable variable, including an explicit recognized `readRef (ref x)`, is a duplication
++position under §12.2.6. The cell retains the stored value, and the read produces an additional value. Therefore the read
++is rejected if the stored value may contain a non-duplicable runtime-relevant component.
++
++Recognized writes and assignments discard the previous stored value unless a more specific consuming cell operation is
++selected. Therefore they are subject to the stored-value discard rule of §12.2.6.
++
++Ordinary `Ref` values:
++
++Only mutable bindings introduced by surface `var` receive the current-value facet. An ordinary value of type `Ref A`
++remains an ordinary reference value:
++
++```kappa
++do
++    var x = 0
++    let r = ref x
++    let sameRef = r       -- sameRef : Ref Int, no read
++    let y <- readRef r    -- explicit low-level read
++```
+
+ <!-- effects.loops.mutable_variables_tracked_current_values -->
+ #### 18.6.2 Tracked local `var` current values for flow typing
+
+-The `var` semantics of §18.6.1 are unchanged.
++This subsection defines flow-sensitive refinement for the current contents of certain local mutable variables.
+
+-A `var`-bound identifier still denotes the underlying `Ref` object. This
+-subsection does not introduce implicit auto-dereferencing, does not make a
+-`var` name a stable place, and does not affect borrowing, consumption, or
+-`inout` admissibility.
+-
+-This subsection adds only a flow-sensitive refinement representative for the
+-current contents of certain local `var` cells.
++The source semantics of §18.6.1 remain in force: a mutable binding's ordinary value occurrence denotes the current value,
++while `ref x` denotes the hidden reference cell.
+
+ Definitions:
+
+-A **tracked local var cell** is a `Ref` cell introduced by a surface declaration
++A **tracked local var cell** is the hidden `Ref` cell introduced by a surface declaration
+
+ ```kappa
+ var x = init
+@@ -20987,7 +21378,7 @@ VarCurrent(x, n)
+
+ where:
+
+-* `x` identifies the `var` cell introduced by the declaration; and
++* `x` identifies the mutable binding introduced by the declaration; and
+ * `n` is the current version of that cell in the enclosing control-flow graph.
+
+ `VarCurrent(x, n)` is a stable scrutinee representative for flow typing,
+@@ -20997,8 +21388,8 @@ projection.
+ `VarCurrent(x, n)` is not:
+
+ * a source-level expression;
+-* a stable place under §12.4.1;
+-* a borrow root;
++* an ordinary stable place under §12.4.1;
++* a source-visible borrow root;
+ * a first-class reference;
+ * a value that can be named, returned, captured, projected, or passed by user
+   code.
+@@ -21012,23 +21403,27 @@ hold:
+ * after overload resolution and implicit-evidence insertion, the callee is the
+   `readRef` member of the same `MonadRef` evidence used to elaborate the
+   enclosing `var`;
+-* the explicit cell argument is exactly the source binding `x`, not an alias,
+-  projection, field, package member, or computed expression;
++* the explicit cell argument is exactly `ref x`, not an alias, projection, field,
++  package member, computed expression, or unrelated `Ref` value;
+ * the read occurs in the same user-written function or lambda body as the
+-  `var` declaration;
+-* the read is written as either:
++  `var` declaration, or is generated from a current-value occurrence inside the
++  same body by §18.3;
++* the read is written as one of:
+
+   ```kappa
+-  let y <- readRef x
++  let y <- readRef (ref x)
+   ```
+
+-  or:
++  ```kappa
++  !(readRef (ref x))
++  ```
+
+   ```kappa
+-  !(readRef x)
++  x
+   ```
+
+-  or is an observationally equivalent compiler-generated form; and
++  where the final form means a generated current-value read under §18.6.1, or is an observationally equivalent
++  compiler-generated form; and
+ * no invalidation event for `x` occurs on any reachable control-flow path
+   between the source of the refinement fact and the read occurrence.
+
+@@ -21039,18 +21434,25 @@ When a later recognized read of the same tracked cell version appears in a
+ position that can use branch-local refinement evidence, that occurrence may use
+ the facts attached to `VarCurrent(x, n)`.
+
+-A monadic bind of a recognized read into a simple local identifier also records
+-that identifier as a flow-typing alias of the current-value representative:
++A recognized read into a simple local identifier also records that identifier as
++a flow-typing alias of the current-value representative:
++
++```kappa
++let y = x
++```
++
++or:
+
+ ```kappa
+-let y <- readRef x
++let y <- readRef (ref x)
+ ```
+
+ records `y` as a stable flow alias of `VarCurrent(x, n)` for the remainder of
+ the scope, subject to the same invalidation rules.
+
+ This is a flow-typing relation only. It does not introduce source-visible
+-propositional equality between two executions of `readRef x`.
++propositional equality between two executions of `readRef (ref x)`, and it does
++not make `y` a place alias of the mutable cell.
+
+ Invalidation:
+
+@@ -21072,20 +21474,20 @@ all prior current-value facts when any of the following occurs:
+ * a direct recognized write:
+
+   ```kappa
+-  writeRef x rhs
++  writeRef (ref x) rhs
+   ```
+
+-* an `inout` operation whose write-back footprint includes a place originating
++* an `inout` operation whose write-back footprint includes a var-place originating
+   from `x`;
+
+ * a record patch, projection-section update, accessor-bundle update, or
+-  computed place update whose write-back footprint includes a place originating
++  computed place update whose write-back footprint includes a var-place originating
+   from `x`;
+
+ * a control-flow join where reachable predecessor paths have different
+   current-value versions for `x`;
+
+-* a loop back-edge where the body may write to `x` or escape `x`;
++* a loop back-edge where the body may write to `x` or escape `ref x`;
+
+ * a multi-shot effect-operation invocation whose captured continuation includes
+   the current-value fact, as specified below.
+@@ -21102,29 +21504,27 @@ Escape:
+ The cell `x` is marked escaped, and stops participating in current-value flow
+ typing for the rest of its lexical lifetime, when any of the following occurs:
+
+-* the `Ref` value denoted by `x` is bound to another ordinary variable;
+-* the `Ref` value denoted by `x` is passed as an argument to any operation
+-  other than a direct recognized `readRef x` or direct recognized `writeRef x
+-  rhs`;
+-* the `Ref` value denoted by `x` is stored in a record, constructor, variant,
+-  package, existential package, array, collection, closure, handler clause,
+-  deferred action, finalizer, promise, fiber-local value, or other runtime
+-  value;
+-* the `Ref` value denoted by `x` is returned;
+-* the `Ref` value denoted by `x` is captured by a user-written lambda, local
+-  function, handler clause, `defer` action, `finally` body, resource-release
+-  action, or other user-written computation that may run outside the
+-  straight-line do-item sequence currently being checked;
+-* the `Ref` value denoted by `x` is made reachable from another dynamic control
+-  context, including through `fork`, `forkDaemon`, `forkIn`, a promise, a
+-  monitor, a callback, a bridge-bound package, or another construct that can
+-  run independently of the current do-item sequence.
++* `ref x` is bound to another ordinary variable;
++* `ref x` is passed as an argument to any operation other than a direct recognized
++  `readRef (ref x)` or direct recognized `writeRef (ref x) rhs`;
++* `ref x` is stored in a record, constructor, variant, package, existential package,
++  array, collection, closure, handler clause, deferred action, finalizer, promise,
++  fiber-local value, or other runtime value;
++* `ref x` is returned;
++* `ref x` is captured by a user-written lambda, local function, handler clause,
++  `defer` action, `finally` body, resource-release action, or other user-written
++  computation that may run outside the straight-line do-item sequence currently
++  being checked;
++* `ref x` is made reachable from another dynamic control context, including through
++  `fork`, `forkDaemon`, `forkIn`, a promise, a monitor, a callback, a bridge-bound
++  package, or another construct that can run independently of the current do-item
++  sequence.
+
+ Compiler-generated closures introduced solely by specified desugarings do not
+ by themselves count as escape, provided they do not make the `Ref` reachable
+ outside the dynamic extent required by the desugaring.
+
+-If `x` is escaped, recognized reads of `x` remain ordinary reads and recognized
++If `ref x` is escaped, recognized reads of `x` remain ordinary reads and recognized
+ writes remain ordinary writes, but neither participates in current-value flow
+ typing.
+
+@@ -21155,13 +21555,13 @@ Accepted:
+ do
+     var x = Some 1
+
+-    if !(readRef x) is Some then
+-        let n = (!(readRef x)).value
++    if x is Some then
++        let n = x.value
+         println n
+ ```
+
+-The first recognized read refines `VarCurrent(x, n)` with `HasCtor Some`.
+-The second recognized read is of the same tracked cell version, so the
++The first generated recognized read refines `VarCurrent(x, n)` with `HasCtor Some`.
++The second generated recognized read is of the same tracked cell version, so the
+ constructor-field projection is accepted.
+
+ Accepted with a bound read:
+@@ -21170,12 +21570,12 @@ Accepted with a bound read:
+ do
+     var x = Some 1
+
+-    if !(readRef x) is Some then
+-        let y <- readRef x
++    if x is Some then
++        let y = x
+         println y.value
+ ```
+
+-The monadic bind records `y` as a flow-typing alias of the same current-value
++The local binding records `y` as a flow-typing alias of the same current-value
+ representative.
+
+ Rejected:
+@@ -21184,9 +21584,9 @@ Rejected:
+ do
+     var x = Some 1
+
+-    if !(readRef x) is Some then
++    if x is Some then
+         x = None
+-        let n = (!(readRef x)).value
++        let n = x.value
+         println n
+ ```
+
+@@ -21199,10 +21599,10 @@ Rejected:
+ do
+     var x = Some 1
+
+-    let r = x
++    let r = ref x
+
+-    if !(readRef x) is Some then
+-        let n = (!(readRef x)).value
++    if x is Some then
++        let n = x.value
+         println n
+ ```
+
+@@ -21216,11 +21616,11 @@ Rejected:
+ do
+     var x = Some 1
+
+-    if x is Some then
+-        println x.value
++    let bad = \() -> x
+ ```
+
+-The name `x` has type `Ref (Option Int)`. There is no implicit dereference.
++The generated current-value read would have to cross the lambda boundary. Bind a snapshot before the lambda, write a
++nested `do` inside the lambda, or explicitly capture `ref x` and use the reference API.
+
+ <!-- effects.loops.else -->
+ #### 18.6.3 Loop `else`
+@@ -21278,10 +21678,10 @@ runST : forall a. (forall (s : Type). ST s a) -> a
+
+ Interaction with `var`:
+
+-If a user writes `var x = 1` inside an `ST s` block, `x` is backed by an `STRef s Int`.
++If a user writes `var x = 1` inside an `ST s` block, the hidden cell selected by `ref x` is backed by an `STRef s Int`.
+
+-If the user attempts to return a closure capturing `x` (e.g. `pure (\() -> readRef x)`), the inferred return type of the
+-block becomes `ST s (Unit -> ST s Int)`.
++If the user attempts to return a closure explicitly capturing the cell (e.g. `pure (\() -> readRef (ref x))`), the
++inferred return type of the block becomes `ST s (Unit -> ST s Int)`.
+
+ Because the return type `a` mentions the region parameter `s`, it violates the `forall (s : Type)` constraint of
+ `runST`. The compiler rejects this as a standard type-checking error (a rigid-variable / skolem escape error), thereby
+@@ -21938,8 +22338,8 @@ Rules:
+     field.
+ * Parentheses are required around a projection call, projector descriptor application, or accessor-bundle descriptor
+   application under `~`, for example `~(focusedBuffer editor)`, `~(foo editor)`, or `~(degrees angle)`.
+-* If the source place is rooted at a `var`-bound name, elaboration first reads the current contents of that `Ref` into a
+-  fresh hidden temporary root and then proceeds on that temporary root.
++* If the source place is rooted at a `var`-bound name, `~` denotes the mutable binding's var-place facet (§18.6.1).  It
++  does not first read the current contents of the cell merely to construct the place.
+ * A given stable place, or a given projection call occurrence, may appear in at most one `~` argument within a single
+   application.
+ * For a selector-form projection call or projector descriptor application, static disjointness checking uses the static
+@@ -32802,9 +33202,11 @@ Admissibility and path-state effects:
+   Non-consuming observation of such a path must instead elaborate through `WithBorrowPlace` or an observationally
+   equivalent internal representation.
+
+-A `var`-bound `Ref` is not itself a `Place`. Surface constructs that admit `var`-rooted paths elaborate by an explicit
+-`readRef` to a fresh hidden root, then ordinary `MovePlace` / `FillPlace` on that root, followed by `writeRef` when
+-write-back is required.
++A mutable binding introduced by surface `var` is not itself an ordinary `Place`. Its current-value facet elaborates to
++a generated recognized read of the hidden cell under §18.6.1, and that read is subject to the duplication restrictions
++of §12.2.6. Surface constructs that explicitly admit var-rooted paths use a separate var-place elaboration over the
++hidden cell; such constructs must preserve the same observable behavior as the corresponding read/modify/write sequence
++and must satisfy the stored-value discard, duplication, and write-back restrictions of §§12.2.6 and 18.6.1.
+
+ Path-sensitive field consumption, record update filling, safe-navigation borrowed-alias propagation, and `inout`
+ write-back are defined in terms of these place forms or an observationally equivalent internal representation.

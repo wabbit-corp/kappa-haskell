@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n"
+
+module main
+
+makeRef : UIO (Ref Int)
+let makeRef = do
+    var x = 0
+    while ltInt x 3 do
+        x = addInt x 1
+    pureIO (ref x)
+
+main : UIO Unit
+let main = do
+    let first <- makeRef
+    let second <- makeRef
+    writeRef first 10
+    let seen <- readRef second
+    printlnString (showInt seen)

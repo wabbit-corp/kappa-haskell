@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before\ncleanup\nhandled\n"
+
+-- Pending class: runtime-pending (handler abandonment cleanup)
+-- Spec target: docs/Spec.md §32.2.20/.21. If a handler clause completes without
+-- resuming, captured `do` scopes between the operation site and the handler must
+-- run their pending `defer`/`using` cleanup before the handler result is observed.
+
+module main
+
+effect Abort :
+  0 abort : Unit -> Unit
+
+body : Eff Abort Unit
+let body = do
+  defer (printlnString "cleanup")
+  printlnString "before"
+  Abort.abort ()
+  printlnString "after"
+
+main : UIO Unit
+let main = do
+  handle body with
+    case abort _ k -> printlnString "handled"

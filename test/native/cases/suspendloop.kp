@@ -1,8 +1,9 @@
 -- CPS LOOP FAMILY (CPS-DESIGN §4): a counter `while` loop that FORKS + AWAITS
 -- once per iteration.  The block reaches `fork`/`await`, so it is CPS-lowered:
--- `var`/`while`/`:=` become OP_NEW_REF/OP_WHILE/OP_WRITE_REF, and the suspending
--- bind inside the loop body actually PARKS the parent on `await`.  The loop var
--- read in the condition + body is hoisted to a run-time OP_READ_REF (§4 R7), so
+-- `var`/`while`/`:=` use selected builtin-IO MonadRef actions (OP_NEW_REF/
+-- OP_WHILE/OP_WRITE_REF in this path), and the suspending bind inside the loop
+-- body actually PARKS the parent on `await`.  The loop var read in the condition
+-- + body is hoisted to a selected read action (OP_READ_REF in this path), so
 -- each iteration re-tests and re-reads the LIVE cell — never a build-time
 -- snapshot.  Output is deterministic (each await is a happens-before edge), so
 -- it must match the interpreter, which runs `while` iteratively.

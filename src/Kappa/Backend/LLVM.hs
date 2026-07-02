@@ -32,6 +32,7 @@ module Kappa.Backend.LLVM
 
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.List (sort)
+import Data.Maybe (isJust, mapMaybe)
 import Data.Word (Word8)
 import GHC.Float (castDoubleToWord64)
 import Data.Map.Strict (Map)
@@ -288,12 +289,12 @@ userCtorKeys = goT
     -- WITHOUT this, a ctor used only inside a do-block was missed -> defaulted to
     -- 'kctUserBase' -> tag-id collision -> non-exhaustive/wrong match (the delve bug).
     goItem k = case k of
-      KBind _ pat t -> goPat pat <> goT t
+      KBind _ pat t _ -> goPat pat <> goT t
       KLet _ pat t -> goPat pat <> goT t
       KLetQ pat t m -> goPat pat <> goT t <> foldMap (\(p, e) -> goPat p <> goT e) m
       KExpr t -> goT t
-      KVarItem _ _ actT -> goT actT
-      KAssign _ _ _ actT -> goT actT
+      KVarItem _ _ actT _ -> goT actT
+      KAssign _ _ _ actT _ -> goT actT
       KReturn t -> goT t
       KBreak _ -> Set.empty
       KContinue _ -> Set.empty
@@ -543,7 +544,8 @@ hostFfiSidecar cs hostSyms
 -- INVARIANT: 'globPrimName' returns a name only when it is in @gsPrims@, and
 -- 'compilePrimApp'/'compilePrimValue' must then handle it — which they do for
 -- any 'primEntries' member.  The do-kernel monad/ref ops (@ioBind@/@ioThen@/
--- @ioPure@/@newRef@/@readRef@/@writeRef@) are still recognised here. In
+-- @ioPure@ and the internal @__ioNewRef@/@__ioReadRef@/@__ioWriteRef@) are
+-- still recognised here. In
 -- do-contexts, surface `var` / assignment already carry MonadRef-selected
 -- action terms, and 'compileMonadicAction' handles those as ordinary actions.
 -- Direct primitive calls outside that path fall to the generic @knative_sat@
@@ -1905,11 +1907,12 @@ compileDo _lbl items
   | Just bad <- firstUnsupportedItem items = unsupportedDoItem bad
   | otherwise = do
       susp <- gets gsSuspenders
+      mScalar <- scalarLoopPlanLL items
       -- `cpsEligible` is shared with the C backend and counts both named
       -- suspenders and local-headed restore-like actions. `using` builds
       -- mask/restore/finalizer nodes even when its acquire action itself cannot
       -- suspend, so it is also kept on the CK-machine path.
-      if cpsEligible susp items || blockUsesUsingLL items
+      if isJust mScalar || cpsEligible susp items || blockUsesUsingLL items
         then cpsItemsLL items >>= wrapDoActionLL items
         else compileDoLegacyLL items
 
@@ -2100,7 +2103,14 @@ doItemKind = \case
 -- continuation closure, so pure RHS work observes source order with defers,
 -- interrupts, and scalar safepoints.
 cpsItemsLL :: [KItem] -> Gen Text
-cpsItemsLL items = case items of
+cpsItemsLL items = do
+  mplan <- scalarLoopPlanLL items
+  case mplan of
+    Just plan -> emitScalarLoopLL plan
+    Nothing -> cpsItemsGenericLL items
+
+cpsItemsGenericLL :: [KItem] -> Gen Text
+cpsItemsGenericLL items = case items of
   [] -> do
     declRuntime "declare ptr @kunit()"
     declRuntime "declare ptr @krt2_pure(ptr)"
@@ -2113,7 +2123,7 @@ cpsItemsLL items = case items of
   -- result.  Compiled directly — the block's tail action, which the CK-machine
   -- drives (no surrounding bind, so the spine stays bounded).
   [KExpr t] -> compileMonadicAction t
-  [KBind _ _ t] -> compileMonadicAction t
+  [KBind _ _ t _] -> compileMonadicAction t
   -- FINAL let: a pure binding with no following action is degenerate (the block
   -- must end in an action), but lower it as a delayed pure action for totality.
   [KLet _ _pat t] -> pureValueActionLL t
@@ -2126,7 +2136,7 @@ cpsItemsLL items = case items of
   -- operand — that would eagerly build the tail and overflow on IO recursion).
   (KExpr t : rest) -> bindThen t CPWild rest
   -- A monadic bind: `x <- action; rest`.
-  (KBind _ pat t : rest) -> bindThen t pat rest
+  (KBind _ pat t _ : rest) -> bindThen t pat rest
   -- NON-final do-kernel `if` (Milestone F): build the if-action, then sequence
   -- it with REST as `_ <- ifAction; rest` (REST lazy inside a kdo_N closure),
   -- exactly the 'KExpr' shape — the if's own result is discarded (§18.8).
@@ -2149,23 +2159,23 @@ cpsItemsLL items = case items of
   -- A FINAL `var` is degenerate (a do-block ends in an action), but the newRef
   -- IS an action — return it directly.  A FINAL assignment is its writeRef
   -- action; a FINAL return/break/continue/while is its own action operand.
-  [KVarItem _ _ actT] -> do
+  [KVarItem _ _ actT _] -> do
     refAct <- compileMonadicAction actT
     unitAct <- unitAction
     declRuntime "declare ptr @krt2_then(ptr, ptr)"
     r <- freshReg
     emit (r <> " = call ptr @krt2_then(ptr " <> refAct <> ", ptr " <> unitAct <> ")")
     pure r
-  [KAssign _ _ _ actT] -> compileMonadicAction actT
+  [KAssign _ _ _ actT _] -> compileMonadicAction actT
   [KReturn e] -> returnAction e
   [KBreak Nothing] -> breakAction
   [KContinue Nothing] -> continueAction
   [KWhile Nothing cond body Nothing] -> whileAction cond body
   -- ── NON-final imperative items (sequenced with the rest) ──────────
-  KVarItem x _ actT : rest -> do
-    -- S2.3b: run the checker-selected MonadRef.newRef action. The former LLVM
-    -- scalar-loop peephole bypassed MonadRef evidence and rebuilt raw refs in
-    -- fallback paths, so mutable cells stay on the generic boxed path.
+  KVarItem x _ actT _ : rest -> do
+    -- S2.3b: run the checker-selected MonadRef.newRef action for shapes that
+    -- the evidence-aware scalar planner rejected. Rejected regions stay on the
+    -- generic selected-action path; the backend must not reconstruct raw refs.
     refAct <- compileMonadicAction actT
     seqActionThen refAct (CPVar x) rest
   -- `var x = e` ≡ `x <- MonadRef.newRef e`: the checker has already built the
@@ -2175,7 +2185,7 @@ cpsItemsLL items = case items of
   -- `x = e` / `x <- e`: sequence the checker-selected MonadRef.writeRef action.
   -- The action already encodes the selected evidence and any monadic RHS
   -- binding, so LLVM must not reconstruct a raw IO ref write here.
-  (KAssign _ _ _ actT : rest) -> do
+  (KAssign _ _ _ actT _ : rest) -> do
     writeAct <- compileMonadicAction actT
     seqActionThen writeAct CPWild rest
   -- `return e`: an early-return IO action (`krt2_return value`).  Whatever
@@ -2651,6 +2661,575 @@ cmpPrimLL2 = \case
   "floatEq" -> Just ("fcmp oeq", KDoubleL)
   _ -> Nothing
 
+-- ── Evidence-aware LLVM scalar var/while loop ────────────────────────
+
+data ScalarCondLoopLL = ScalarCondLoopLL !(Map Int RefCellId) !Term
+
+data ScalarAssignLoopLL = ScalarAssignLoopLL !RefCellId !(Map Int RefCellId) !Term
+
+data ScalarLoopLL = ScalarLoopLL
+  { sllCells :: ![RefCellId]
+  , sllInits :: ![Integer]
+  , sllCond :: !ScalarCondLoopLL
+  , sllBody :: ![ScalarAssignLoopLL]
+  , sllRest :: ![KItem]
+  }
+
+cellOfWitnessLL :: RefLoweringWitness -> RefCellId
+cellOfWitnessLL (BuiltinIORefWitness cid) = cid
+
+newWitnessCellLL :: Maybe RefActionWitness -> Maybe RefCellId
+newWitnessCellLL = \case
+  Just (BuiltinIORefNew w) -> Just (cellOfWitnessLL w)
+  _ -> Nothing
+
+readWitnessCellLL :: Maybe RefActionWitness -> Maybe RefCellId
+readWitnessCellLL = \case
+  Just (BuiltinIORefRead w) -> Just (cellOfWitnessLL w)
+  _ -> Nothing
+
+writeWitnessCellLL :: Maybe RefActionWitness -> Maybe RefCellId
+writeWitnessCellLL = \case
+  Just (BuiltinIORefWrite w) -> Just (cellOfWitnessLL w)
+  _ -> Nothing
+
+loopCellIndexLL :: Map RefCellId Int -> RefCellId -> Maybe Int
+loopCellIndexLL cells cid = Map.lookup cid cells
+
+shiftReadEnvLL :: Map Int RefCellId -> Map Int RefCellId
+shiftReadEnvLL = Map.mapKeysMonotonic (+ 1)
+
+bindReadEnvLL :: RefCellId -> Map Int RefCellId -> Map Int RefCellId
+bindReadEnvLL cid env = Map.insert 0 cid (shiftReadEnvLL env)
+
+intArithPrimLoopLL :: Text -> Maybe Int
+intArithPrimLoopLL p = case arithPrimLL2 p of
+  Just (KInt64L, args) | all (== KInt64L) args -> Just (length args)
+  _ -> Nothing
+
+intCmpPrimLoopLL :: Text -> Maybe Text
+intCmpPrimLoopLL p = case cmpPrimLL2 p of
+  Just (op, KInt64L)
+    | Just predTxt <- T.stripPrefix "icmp " op -> Just predTxt
+  _ -> Nothing
+
+scalarReadCellLL :: Map RefCellId Int -> Map Int RefCellId -> Term -> Maybe RefCellId
+scalarReadCellLL cells env = \case
+  CVar i -> do
+    cid <- Map.lookup i env
+    cid <$ loopCellIndexLL cells cid
+  _ -> Nothing
+
+i64LoopExprLL :: Map RefCellId Int -> Map Int RefCellId -> Term -> Gen Bool
+i64LoopExprLL cells env term = case scalarReadCellLL cells env term of
+  Just _ -> pure True
+  Nothing -> case term of
+    CLit (LitInt m) -> pure (i64InRangeLL m)
+    _ -> case spineOf term of
+      (CGlob g, sargs) -> do
+        mp <- globPrimName g
+        let expl = [a | (Expl, a) <- sargs]
+        case mp >>= intArithPrimLoopLL of
+          Just n | length expl == n -> andMLL (map (i64LoopExprLL cells env) expl)
+          _ -> pure False
+      _ -> pure False
+
+i64LoopCondLL :: Map RefCellId Int -> Map Int RefCellId -> Term -> Gen Bool
+i64LoopCondLL cells env term = case spineOf term of
+  (CGlob g, sargs) -> do
+    mp <- globPrimName g
+    let expl = [a | (Expl, a) <- sargs]
+    case (mp >>= intCmpPrimLoopLL, expl) of
+      (Just _, [a, b]) -> andMLL [i64LoopExprLL cells env a, i64LoopExprLL cells env b]
+      _ -> pure False
+  _ -> pure False
+
+scalarCondPlanLL :: Map RefCellId Int -> KCond -> Gen (Maybe ScalarCondLoopLL)
+scalarCondPlanLL cells = \case
+  KCondPure t -> do
+    ok <- i64LoopCondLL cells Map.empty t
+    pure (if ok then Just (ScalarCondLoopLL Map.empty t) else Nothing)
+  KCondAction (CDo _ items) -> scalarCondItemsLL cells Map.empty items
+  KCondAction _ -> pure Nothing
+
+scalarCondItemsLL :: Map RefCellId Int -> Map Int RefCellId -> [KItem] -> Gen (Maybe ScalarCondLoopLL)
+scalarCondItemsLL cells env = \case
+  [KExpr t] -> do
+    ok <- i64LoopCondLL cells env t
+    pure (if ok then Just (ScalarCondLoopLL env t) else Nothing)
+  [KReturn t] -> do
+    ok <- i64LoopCondLL cells env t
+    pure (if ok then Just (ScalarCondLoopLL env t) else Nothing)
+  KBind _ (CPVar _) _ w : rest
+    | Just cid <- readWitnessCellLL w
+    , Just _ <- loopCellIndexLL cells cid ->
+        scalarCondItemsLL cells (bindReadEnvLL cid env) rest
+  KBind _ CPWild _ w : rest
+    | Just cid <- readWitnessCellLL w
+    , Just _ <- loopCellIndexLL cells cid ->
+        scalarCondItemsLL cells env rest
+  _ -> pure Nothing
+
+scalarBodyPlanLL :: Map RefCellId Int -> [KItem] -> Gen (Maybe [ScalarAssignLoopLL])
+scalarBodyPlanLL cells = go Map.empty []
+  where
+    go env acc = \case
+      [] -> pure (Just (reverse acc))
+      KBind _ (CPVar _) _ w : rest
+        | Just cid <- readWitnessCellLL w
+        , Just _ <- loopCellIndexLL cells cid ->
+            go (bindReadEnvLL cid env) acc rest
+      KBind _ CPWild _ w : rest
+        | Just cid <- readWitnessCellLL w
+        , Just _ <- loopCellIndexLL cells cid ->
+            go env acc rest
+      KAssign _ False rhs _ w : rest
+        | Just cid <- writeWitnessCellLL w
+        , Just _ <- loopCellIndexLL cells cid -> do
+            ok <- i64LoopExprLL cells env rhs
+            if ok
+              then go Map.empty (ScalarAssignLoopLL cid env rhs : acc) rest
+              else pure Nothing
+      _ -> pure Nothing
+
+bodyCapturesEnvLL :: Term -> Bool
+bodyCapturesEnvLL = go
+  where
+    go = \case
+      CLam {} -> True
+      CLetRec {} -> True
+      CDo {} -> True
+      CThunkE {} -> True
+      CLazyE {} -> True
+      CQuote {} -> True
+      CApp _ f a -> go f || go a
+      CCtor _ _ args -> any go args
+      CMatch s _ alts -> go s || any goAlt alts
+      CProj e _ -> go e
+      CProjAt e _ _ -> go e
+      CInject _ e -> go e
+      CForceE e -> go e
+      CSealE _ e -> go e
+      CLet _ _ ty rhs body -> go ty || go rhs || go body
+      CIf c th el -> go c || go th || go el
+      CRecordV fs -> any (go . snd) fs
+      CRecordT fs -> any (go . snd) fs
+      CVariantT ts -> any go ts
+      CPi _ _ _ _ a b -> go a || go b
+      CVar {} -> False
+      CGlob {} -> False
+      CSort {} -> False
+      CLit {} -> False
+      CMeta {} -> False
+      CSigT _ e -> go e
+    goAlt (CaseAlt _ mg body) = maybe False go mg || go body
+
+itemHasClosureLL :: KItem -> Bool
+itemHasClosureLL = \case
+  KExpr t -> bodyCapturesEnvLL t
+  KBind _ _ t _ -> bodyCapturesEnvLL t
+  KLet _ _ t -> bodyCapturesEnvLL t
+  KLetQ _ t mels -> bodyCapturesEnvLL t || maybe False (bodyCapturesEnvLL . snd) mels
+  KVarItem _ initT actT _ -> bodyCapturesEnvLL initT || bodyCapturesEnvLL actT
+  KAssign lhs _ rhs actT _ -> bodyCapturesEnvLL lhs || bodyCapturesEnvLL rhs || bodyCapturesEnvLL actT
+  KReturn t -> bodyCapturesEnvLL t
+  KWhile _ c b mels -> bodyCapturesEnvLL (kCondTermLL c) || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
+  KFor _ _ s b mels -> bodyCapturesEnvLL s || any itemHasClosureLL b || maybe False (any itemHasClosureLL) mels
+  KIf alts mels -> any (\(c, b) -> bodyCapturesEnvLL c || any itemHasClosureLL b) alts || maybe False (any itemHasClosureLL) mels
+  KDefer _ t -> bodyCapturesEnvLL t
+  KUsing _ a r -> bodyCapturesEnvLL a || bodyCapturesEnvLL r
+  KSubDo _ b -> any itemHasClosureLL b
+  KBreak _ -> False
+  KContinue _ -> False
+
+scalarLoopPlanLL :: [KItem] -> Gen (Maybe ScalarLoopLL)
+scalarLoopPlanLL items =
+  case span isScalarVar items of
+    (varRun@(_ : _), KWhile Nothing cond body Nothing : rest2) -> do
+      let inits = mapMaybe initLit varRun
+      if length inits /= length varRun
+        then pure Nothing
+        else do
+          let cellsList = map fst inits
+              cells = Map.fromList (zip cellsList [0 :: Int ..])
+              noClosure = not (any itemHasClosureLL rest2)
+          mcond <- scalarCondPlanLL cells cond
+          mbody <- scalarBodyPlanLL cells body
+          pure $ case (mcond, mbody) of
+            (Just condPlan, Just bodyPlan)
+              | not (null bodyPlan)
+              , noClosure ->
+                  Just (ScalarLoopLL cellsList (map snd inits) condPlan bodyPlan rest2)
+            _ -> Nothing
+    _ -> pure Nothing
+  where
+    isScalarVar = \case
+      KVarItem _ _ _ w -> isJust (newWitnessCellLL w)
+      _ -> False
+    initLit = \case
+      KVarItem _ (CLit (LitInt m)) _ w
+        | i64InRangeLL m -> (\cid -> (cid, m)) <$> newWitnessCellLL w
+      _ -> Nothing
+
+emitScalarLoopLL :: ScalarLoopLL -> Gen Text
+emitScalarLoopLL plan =
+  -- Keep the optimized region as an IO action, not as eager action-tree
+  -- construction. The closure allocates the hidden refs and builds the scalar
+  -- native leaf only when the action is executed, so CAF/action reuse preserves
+  -- newRef freshness and ref identity.
+  deferActionTreeLL "kscalar_region_" (emitScalarLoopActionLL plan)
+
+emitScalarLoopActionLL :: ScalarLoopLL -> Gen Text
+emitScalarLoopActionLL plan = do
+  let inits = sllInits plan
+      cells = sllCells plan
+      k = length cells
+  declRuntime "declare ptr @kint(i64)"
+  declRuntime "declare ptr @kref_new(ptr)"
+  declRuntime "declare ptr @kpush(ptr, ptr)"
+  env0 <- gets gsEnv
+  (refsRev, envK) <-
+    foldM
+      ( \(acc, env) lit -> do
+          box <- freshReg
+          emit (box <> " = call ptr @kint(i64 " <> T.pack (show lit) <> ")")
+          ref <- freshReg
+          emit (ref <> " = call ptr @kref_new(ptr " <> box <> ")")
+          env' <- freshReg
+          emit (env' <> " = call ptr @kpush(ptr " <> ref <> ", ptr " <> env <> ")")
+          pure (ref : acc, env')
+      )
+      ([], env0)
+      inits
+  let refs = reverse refsRev
+  fnIdent <- emitScalarLoopFnLL plan
+  argv <- freshReg
+  emit (argv <> " = alloca [" <> T.pack (show k) <> " x ptr], align 8")
+  forM_ (zip [0 :: Int ..] refs) $ \(j, ref) -> do
+    slot <- freshReg
+    emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr " <> argv <> ", i64 0, i64 " <> T.pack (show j))
+    emit ("store ptr " <> ref <> ", ptr " <> slot <> ", align 8")
+  declRuntime "declare ptr @knative_sat(ptr, i32, ptr, i32)"
+  loopAct <- freshReg
+  emit (loopAct <> " = call ptr @knative_sat(ptr @" <> fnIdent <> ", i32 " <> T.pack (show k) <> ", ptr " <> argv <> ", i32 1)")
+  modify' $ \g -> g {gsEnv = envK}
+  r <- seqActionThen loopAct CPWild (sllRest plan)
+  modify' $ \g -> g {gsEnv = env0}
+  pure r
+
+emitScalarLoopFnLL :: ScalarLoopLL -> Gen Text
+emitScalarLoopFnLL plan = do
+  fnIdent <- freshLabel "kscalarloop_"
+  let cells = sllCells plan
+      inits = sllInits plan
+      k = length cells
+      cellIndex = Map.fromList (zip cells [0 :: Int ..])
+  (bodyInsns, _end, ()) <- captured "%args" $ do
+    declRuntime "declare ptr @kunit()"
+    declRuntime "declare ptr @kint(i64)"
+    declRuntime "declare ptr @kref_set(ptr, ptr)"
+    cellOf <-
+      fmap Map.fromList $
+        forM (zip [0 :: Int ..] cells) $ \(j, cid) -> do
+          slot <- freshReg
+          emit (slot <> " = getelementptr inbounds [" <> T.pack (show k) <> " x ptr], ptr %args, i64 0, i64 " <> T.pack (show j))
+          cell <- freshReg
+          emit (cell <> " = load ptr, ptr " <> slot <> ", align 8")
+          pure (cid, cell)
+    slotOf <-
+      fmap Map.fromList $
+        forM (zip cells inits) $ \(cid, lit) -> do
+          sl <- freshReg
+          emit (sl <> " = alloca i64, align 8")
+          emit ("store i64 " <> T.pack (show lit) <> ", ptr " <> sl <> ", align 8")
+          pure (cid, sl)
+    declRuntime "declare i32 @krt2_safepoint()"
+    spSlot <- freshReg
+    emit (spSlot <> " = alloca i64, align 8")
+    emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spSlot <> ", align 8")
+    contL <- freshLabel "scont_"
+    bodyL <- freshLabel "sbody_"
+    spchkL <- freshLabel "sspchk_"
+    flushL <- freshLabel "sflush_"
+    boxedL <- freshLabel "sbox_"
+    abortL <- freshLabel "sabort_"
+    doneL <- freshLabel "sdone_"
+    let flushSnapTo snapOf target = do
+          forM_ cells $ \cid -> do
+            bx <- freshReg
+            emit (bx <> " = call ptr @kint(i64 " <> snapOf cid <> ")")
+            dump <- freshReg
+            emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! cid) <> ", ptr " <> bx <> ")")
+          emit ("br label %" <> target)
+    emit ("br label %" <> contL)
+    startBlock contL
+    hdrSnaps <-
+      fmap Map.fromList $
+        forM cells $ \cid -> do
+          v <- freshReg
+          emit (v <> " = load i64, ptr " <> (slotOf Map.! cid) <> ", align 8")
+          pure (cid, v)
+    condBit <- scalarCondLoopLL cellIndex slotOf (flushSnapTo (\cid -> hdrSnaps Map.! cid) boxedL) (sllCond plan)
+    emit ("br i1 " <> condBit <> ", label %" <> bodyL <> ", label %" <> flushL)
+    startBlock bodyL
+    bodySnaps <-
+      fmap Map.fromList $
+        forM cells $ \cid -> do
+          v <- freshReg
+          emit (v <> " = load i64, ptr " <> (slotOf Map.! cid) <> ", align 8")
+          pure (cid, v)
+    scalarBodyLoopLL cellIndex slotOf (flushSnapTo (\cid -> bodySnaps Map.! cid) boxedL) (sllBody plan)
+    spCur <- freshReg
+    emit (spCur <> " = load i64, ptr " <> spSlot <> ", align 8")
+    spDec <- freshReg
+    emit (spDec <> " = sub i64 " <> spCur <> ", 1")
+    emit ("store i64 " <> spDec <> ", ptr " <> spSlot <> ", align 8")
+    spGate <- freshReg
+    emit (spGate <> " = icmp sle i64 " <> spDec <> ", 0")
+    emit ("br i1 " <> spGate <> ", label %" <> spchkL <> ", label %" <> contL)
+    startBlock spchkL
+    emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spSlot <> ", align 8")
+    spRc <- freshReg
+    emit (spRc <> " = call i32 @krt2_safepoint()")
+    spAbort <- freshReg
+    emit (spAbort <> " = icmp ne i32 " <> spRc <> ", 0")
+    emit ("br i1 " <> spAbort <> ", label %" <> abortL <> ", label %" <> contL)
+    startBlock abortL
+    declRuntime "declare void @krt2_scalar_abort()"
+    emit "call void @krt2_scalar_abort()"
+    emit "unreachable"
+    startBlock flushL
+    forM_ cells $ \cid -> do
+      v <- freshReg
+      emit (v <> " = load i64, ptr " <> (slotOf Map.! cid) <> ", align 8")
+      bx <- freshReg
+      emit (bx <> " = call ptr @kint(i64 " <> v <> ")")
+      dump <- freshReg
+      emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! cid) <> ", ptr " <> bx <> ")")
+    emit ("br label %" <> doneL)
+    startBlock boxedL
+    scalarBoxedLoopLL cellIndex cellOf (sllCond plan) (sllBody plan) doneL
+    startBlock doneL
+    u <- freshReg
+    emit (u <> " = call ptr @kunit()")
+    emit ("ret ptr " <> u)
+  let def =
+        T.unlines $
+          ["define internal ptr @" <> fnIdent <> "(ptr %args) {", "build:"]
+            ++ map ("  " <>) bodyInsns
+            ++ ["}"]
+  modify' $ \st -> st {gsTop = def : gsTop st}
+  pure fnIdent
+
+scalarCondLoopLL :: Map RefCellId Int -> Map RefCellId Text -> Gen () -> ScalarCondLoopLL -> Gen Text
+scalarCondLoopLL cells slotOf flushAndGoto (ScalarCondLoopLL env term) = case spineOf term of
+  (CGlob g, sargs) -> do
+    mp <- globPrimName g
+    case (mp >>= intCmpPrimLoopLL, [a | (Expl, a) <- sargs]) of
+      (Just pred_, [a, b]) -> do
+        ae <- scalarI64ExprLoopLL cells env slotOf flushAndGoto a
+        be <- scalarI64ExprLoopLL cells env slotOf flushAndGoto b
+        r <- freshReg
+        emit (r <> " = icmp " <> pred_ <> " i64 " <> ae <> ", " <> be)
+        pure r
+      _ -> escalateScalarLoopLL
+  _ -> escalateScalarLoopLL
+
+scalarI64ExprLoopLL :: Map RefCellId Int -> Map Int RefCellId -> Map RefCellId Text -> Gen () -> Term -> Gen Text
+scalarI64ExprLoopLL cells env slotOf flushAndGoto = goE
+  where
+    goE term = case scalarReadCellLL cells env term of
+      Just cid -> do
+        r <- freshReg
+        emit (r <> " = load i64, ptr " <> (slotOf Map.! cid) <> ", align 8")
+        pure r
+      Nothing -> case term of
+        CLit (LitInt m) -> pure (T.pack (show m))
+        _ -> case spineOf term of
+          (CGlob g, sargs) -> do
+            mp <- globPrimName g
+            let expl = [a | (Expl, a) <- sargs]
+            case (mp >>= intArithPrimLoopLL, mp, expl) of
+              (Just 2, Just nm, [a, b]) -> binOp nm a b
+              (Just 1, Just _nm, [a]) -> negOp a
+              _ -> escalateScalarLoopLL
+          _ -> escalateScalarLoopLL
+    binOp nm a b = do
+      ae <- goE a
+      be <- goE b
+      case nm of
+        "addInt" -> ovfOp "sadd" ae be
+        "subInt" -> ovfOp "ssub" ae be
+        "mulInt" -> ovfOp "smul" ae be
+        "divInt" -> divModOp True ae be
+        "modInt" -> divModOp False ae be
+        _ -> escalateScalarLoopLL
+    negOp a = do
+      ae <- goE a
+      ovfOp "ssub" "0" ae
+    ovfOp pfx ae be = do
+      declRuntime ("declare {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64, i64)")
+      pair <- freshReg
+      emit (pair <> " = call {i64, i1} @llvm." <> pfx <> ".with.overflow.i64(i64 " <> ae <> ", i64 " <> be <> ")")
+      val <- freshReg
+      emit (val <> " = extractvalue {i64, i1} " <> pair <> ", 0")
+      ovf <- freshReg
+      emit (ovf <> " = extractvalue {i64, i1} " <> pair <> ", 1")
+      okL <- freshLabel "sok_"
+      escL <- freshLabel "sesc_"
+      emit ("br i1 " <> ovf <> ", label %" <> escL <> ", label %" <> okL)
+      startBlock escL
+      flushAndGoto
+      startBlock okL
+      pure val
+    divModOp isDiv ae be = do
+      declRuntime "declare void @krt_fail(ptr)"
+      zchk <- freshReg
+      emit (zchk <> " = icmp eq i64 " <> be <> ", 0")
+      trapL <- freshLabel "sdz_"
+      contL <- freshLabel "sdc_"
+      emit ("br i1 " <> zchk <> ", label %" <> trapL <> ", label %" <> contL)
+      startBlock trapL
+      msgG <- internCStr (if isDiv then "divInt: division by zero" else "modInt: division by zero")
+      emit ("call void @krt_fail(ptr " <> msgG <> ")")
+      emit "unreachable"
+      startBlock contL
+      minChk <- freshReg
+      emit (minChk <> " = icmp eq i64 " <> ae <> ", -9223372036854775808")
+      negOneChk <- freshReg
+      emit (negOneChk <> " = icmp eq i64 " <> be <> ", -1")
+      edge <- freshReg
+      emit (edge <> " = and i1 " <> minChk <> ", " <> negOneChk)
+      if isDiv
+        then do
+          escL <- freshLabel "sde_"
+          okL <- freshLabel "sdo_"
+          emit ("br i1 " <> edge <> ", label %" <> escL <> ", label %" <> okL)
+          startBlock escL
+          flushAndGoto
+          startBlock okL
+          r <- freshReg
+          emit (r <> " = sdiv i64 " <> ae <> ", " <> be)
+          pure r
+        else do
+          remL <- freshLabel "smr_"
+          joinL <- freshLabel "smj_"
+          curBlk <- gets gsBlock
+          emit ("br i1 " <> edge <> ", label %" <> joinL <> ", label %" <> remL)
+          startBlock remL
+          rr <- freshReg
+          emit (rr <> " = srem i64 " <> ae <> ", " <> be)
+          emit ("br label %" <> joinL)
+          startBlock joinL
+          r <- freshReg
+          emit (r <> " = phi i64 [ 0, %" <> curBlk <> " ], [ " <> rr <> ", %" <> remL <> " ]")
+          pure r
+
+scalarBodyLoopLL :: Map RefCellId Int -> Map RefCellId Text -> Gen () -> [ScalarAssignLoopLL] -> Gen ()
+scalarBodyLoopLL cells slotOf flushAndGoto body =
+  forM_ body $ \(ScalarAssignLoopLL cid env rhs) -> do
+    v <- scalarI64ExprLoopLL cells env slotOf flushAndGoto rhs
+    emit ("store i64 " <> v <> ", ptr " <> (slotOf Map.! cid) <> ", align 8")
+
+scalarBoxedLoopLL :: Map RefCellId Int -> Map RefCellId Text -> ScalarCondLoopLL -> [ScalarAssignLoopLL] -> Text -> Gen ()
+scalarBoxedLoopLL cells cellOf cond body doneL = do
+  declRuntime "declare i32 @kas_bool(ptr)"
+  declRuntime "declare ptr @kref_get(ptr)"
+  declRuntime "declare ptr @kref_set(ptr, ptr)"
+  declRuntime "declare i32 @krt2_safepoint()"
+  spSlot <- freshReg
+  emit (spSlot <> " = alloca i64, align 8")
+  emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spSlot <> ", align 8")
+  contL <- freshLabel "bxcont_"
+  bodyL <- freshLabel "bxbody_"
+  spchkL <- freshLabel "bxspchk_"
+  abortL <- freshLabel "bxabort_"
+  emit ("br label %" <> contL)
+  startBlock contL
+  cv <- boxedCondExprLL cells cellOf cond
+  bb <- freshReg
+  emit (bb <> " = call i32 @kas_bool(ptr " <> cv <> ")")
+  bit <- freshReg
+  emit (bit <> " = icmp ne i32 " <> bb <> ", 0")
+  emit ("br i1 " <> bit <> ", label %" <> bodyL <> ", label %" <> doneL)
+  startBlock bodyL
+  forM_ body $ \(ScalarAssignLoopLL cid env rhs) -> do
+    rv <- boxedExprLoopLL cells env cellOf rhs
+    dump <- freshReg
+    emit (dump <> " = call ptr @kref_set(ptr " <> (cellOf Map.! cid) <> ", ptr " <> rv <> ")")
+  spCur <- freshReg
+  emit (spCur <> " = load i64, ptr " <> spSlot <> ", align 8")
+  spDec <- freshReg
+  emit (spDec <> " = sub i64 " <> spCur <> ", 1")
+  emit ("store i64 " <> spDec <> ", ptr " <> spSlot <> ", align 8")
+  spGate <- freshReg
+  emit (spGate <> " = icmp sle i64 " <> spDec <> ", 0")
+  emit ("br i1 " <> spGate <> ", label %" <> spchkL <> ", label %" <> contL)
+  startBlock spchkL
+  emit ("store i64 " <> scalarSpQuantumLL <> ", ptr " <> spSlot <> ", align 8")
+  spRc <- freshReg
+  emit (spRc <> " = call i32 @krt2_safepoint()")
+  spAbort <- freshReg
+  emit (spAbort <> " = icmp ne i32 " <> spRc <> ", 0")
+  emit ("br i1 " <> spAbort <> ", label %" <> abortL <> ", label %" <> contL)
+  startBlock abortL
+  declRuntime "declare void @krt2_scalar_abort()"
+  emit "call void @krt2_scalar_abort()"
+  emit "unreachable"
+
+boxedCondExprLL :: Map RefCellId Int -> Map RefCellId Text -> ScalarCondLoopLL -> Gen Text
+boxedCondExprLL cells cellOf (ScalarCondLoopLL env term) =
+  boxedExprLoopLL cells env cellOf term
+
+boxedExprLoopLL :: Map RefCellId Int -> Map Int RefCellId -> Map RefCellId Text -> Term -> Gen Text
+boxedExprLoopLL cells env cellOf = goE
+  where
+    goE term = case scalarReadCellLL cells env term of
+      Just cid -> do
+        declRuntime "declare ptr @kref_get(ptr)"
+        r <- freshReg
+        emit (r <> " = call ptr @kref_get(ptr " <> (cellOf Map.! cid) <> ")")
+        pure r
+      Nothing -> case term of
+        CLit (LitInt m)
+          | i64InRangeLL m -> do
+              declRuntime "declare ptr @kint(i64)"
+              r <- freshReg
+              emit (r <> " = call ptr @kint(i64 " <> T.pack (show m) <> ")")
+              pure r
+        _ -> case spineOf term of
+          (CGlob g, sargs) -> do
+            mp <- globPrimName g
+            case mp >>= boxedPrimSymLoopLL of
+              Just sym -> do
+                let expl = [a | (Expl, a) <- sargs]
+                aes <- mapM goE expl
+                declRuntime ("declare ptr @" <> sym <> "(" <> T.intercalate ", " (replicate (length aes) "ptr") <> ")")
+                r <- freshReg
+                emit (r <> " = call ptr @" <> sym <> "(" <> T.intercalate ", " ["ptr " <> a | a <- aes] <> ")")
+                pure r
+              Nothing -> escalateScalarLoopLL
+          _ -> escalateScalarLoopLL
+
+boxedPrimSymLoopLL :: Text -> Maybe Text
+boxedPrimSymLoopLL = \case
+  "addInt" -> Just "kp_addInt"
+  "subInt" -> Just "kp_subInt"
+  "mulInt" -> Just "kp_mulInt"
+  "divInt" -> Just "kp_divInt"
+  "modInt" -> Just "kp_modInt"
+  "negInt" -> Just "kp_negInt"
+  "eqInt" -> Just "kp_eqInt"
+  "ltInt" -> Just "kp_ltInt"
+  "leInt" -> Just "kp_leInt"
+  _ -> Nothing
+
+escalateScalarLoopLL :: Gen Text
+escalateScalarLoopLL =
+  unsupported
+    "scalar-loop"
+    "an int64-ineligible term reached the LLVM evidence-aware scalar loop (eligibility invariant violated)"
+
 -- | A saturated self-call: spine head is the worker's own global @self@ with
 -- exactly @n@ explicit args (mirror of C's 'lr1SelfArgs').
 lr1SelfArgsLL :: GName -> Int -> Term -> Maybe [Term]
@@ -2902,12 +3481,12 @@ scalarLetSlotCountLL = go
       KCondPure t -> go t
       KCondAction t -> go t
     goItem = \case
-      KBind _ _ t -> go t
+      KBind _ _ t _ -> go t
       KLet _ _ t -> go t
       KLetQ _ t me -> go t + maybe 0 (go . snd) me
       KExpr t -> go t
-      KVarItem _ _ t -> go t
-      KAssign _ _ _ t -> go t
+      KVarItem _ _ t _ -> go t
+      KAssign _ _ _ t _ -> go t
       KReturn t -> go t
       KBreak _ -> 0
       KContinue _ -> 0

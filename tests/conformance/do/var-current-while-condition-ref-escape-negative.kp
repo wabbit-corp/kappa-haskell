@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+module main
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+clobber : Ref Cell -> UIO Bool
+let clobber r = do
+    writeRef r Empty
+    pureIO False
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        while clobber (ref cell) do
+            printlnString "loop"
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

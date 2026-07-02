@@ -5,18 +5,17 @@
 -- measures fork/await throughput on the kappart2 M:N runtime, not raw compute.
 --
 -- DESIGN NOTES
---  * The per-fiber task is INTEGER, not sin/sqrt: Kappa exposes no transcendental
---    Double primitives (no sqrt/sin in the Prelude), and a float checksum would
---    not be byte-identical across Go/GHC/Kappa rounding anyway.  An exact modular
---    integer task is deterministic and reproducible everywhere.
---  * `modInt ... 2147483647` keeps every intermediate within a fixed-width Int —
---    the shared atomic cell holds a machine word (AtomicValue Integer is a 64-bit
---    slot), so an unbounded bignum result would be rejected at runtime — and makes
---    the result ORDER-INDEPENDENT, so the checksum is the same regardless of how
---    the workers interleave across the worker pool (addition is commutative).
---  * The checksum is accumulated through a lock-free `atomicFetchAdd`, so the
---    final total is exact with no lost updates; it equals the interpreter and is
---    deterministic across runs (verified).
+--  * The per-fiber task is INTEGER, not floating-point: a modular integer task is
+--    deterministic and reproducible across Go/GHC/Kappa without rounding-policy
+--    noise in a scheduler benchmark.
+--  * `modInt ... 2147483647` keeps every intermediate small and makes the result
+--    ORDER-INDEPENDENT, so the checksum is the same regardless of how the workers
+--    interleave across the worker pool (addition is commutative).
+--  * The checksum is accumulated through `atomicFetchAdd` on a boxed
+--    mutex-protected `AtomicRef Integer`, so the final total is exact with no lost
+--    updates; it equals the interpreter and is deterministic across runs
+--    (verified). This is an atomicity/scheduler test, not a lock-free hardware
+--    atomic microbenchmark.
 --  * `spawnAll` forks fiber i, recurses to fork the REST, and only then awaits i
 --    (the atomic-race idiom): every fiber is live before any join, which is the
 --    Savina fork-then-join-all shape.

@@ -40,6 +40,9 @@ module Kappa.Core
   , CorePat (..)
   , KItem (..)
   , KCond (..)
+  , RefCellId (..)
+  , RefLoweringWitness (..)
+  , RefActionWitness (..)
   , Literal (..)
   , Telescope
   , Value (..)
@@ -89,6 +92,31 @@ data Q = Q0 | Q1 | QW | QLe1 | QGe1
   deriving stock (Eq, Ord, Show)
 
 type MetaId = Int
+
+-- | Stable identity for a checker-created mutable cell within one elaborated
+-- Core body. Backends use it only as proof-carrying metadata; it is not a
+-- source-visible reference and does not affect runtime values.
+newtype RefCellId = RefCellId Int
+  deriving stock (Eq, Ord, Show)
+
+-- | A lowering witness proving that a source `var` cell was created through the
+-- checker-selected prelude `MonadRef (IO e)` dictionary, whose members are the
+-- builtin native IO-ref primitives. Absence of this witness means backend
+-- optimizations must use the generic selected-action path.
+data RefLoweringWitness
+  = BuiltinIORefWitness
+      { rlwCellId :: !RefCellId
+      }
+  deriving stock (Eq, Ord, Show)
+
+-- | Occurrence-level evidence for a mutable-reference action selected by the
+-- checker. The action term remains authoritative for semantics; the witness is
+-- only a conservative optimization proof for backends.
+data RefActionWitness
+  = BuiltinIORefNew !RefLoweringWitness
+  | BuiltinIORefRead !RefLoweringWitness
+  | BuiltinIORefWrite !RefLoweringWitness
+  deriving stock (Eq, Ord, Show)
 
 data Literal
   = LitInt !Integer -- Nat/Int/Integer share representation
@@ -281,12 +309,12 @@ data CorePat
 
 -- | do-kernel items (typed during elaboration, executed by Interp).
 data KItem
-  = KBind !Q !CorePat !Term -- ^ let pat <- e
+  = KBind !Q !CorePat !Term !(Maybe RefActionWitness) -- ^ let pat <- e
   | KLet !Q !CorePat !Term -- ^ let pat = e
   | KLetQ !CorePat !Term !(Maybe (CorePat, Term)) -- ^ let? with optional else
   | KExpr !Term
-  | KVarItem !Text !Term !Term -- ^ name, initializer value, MonadRef.newRef action
-  | KAssign !Term !Bool !Term !Term -- ^ ref-term, monadic?, rhs, MonadRef.writeRef action
+  | KVarItem !Text !Term !Term !(Maybe RefActionWitness) -- ^ name, initializer value, MonadRef.newRef action
+  | KAssign !Term !Bool !Term !Term !(Maybe RefActionWitness) -- ^ ref-term, monadic?, rhs, MonadRef.writeRef action
   | KReturn !Term
   | KBreak !(Maybe Text)
   | KContinue !(Maybe Text)

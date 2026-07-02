@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §18.1.15/§18.1.21: Usage must count a handler resumption binder from the
+-- resolved scoped label's operation metadata, not from source label spelling.
+module main
+
+good : Int
+let good : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        scoped effect label Alias : Choice
+
+        let comp : Eff <[Alias : Choice]> Int =
+            do
+                let b <- Alias.choose ()
+                if b then 1 else 2
+
+        let handled =
+            deep handle Alias comp with
+                case return x -> pure x
+                case choose _ k ->
+                    do
+                        let a <- k True
+                        let b <- k False
+                        pure (a + b)
+
+        runPure handled

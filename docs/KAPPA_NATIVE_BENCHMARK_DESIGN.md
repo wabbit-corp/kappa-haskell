@@ -17,9 +17,10 @@ and those should be kept:
   cannot fold the loop away (research §5: the single most common microbenchmark error);
 - allocation gates on cumulative `total_bytes` (deterministic; sensitive to per-iteration churn
   that `heap_size` misses — a point its own adversarial review established);
-- raw-C *ratio* gates for current scalar-worker paths (`tailsum` at ≤5× C). Any
-  historical `arithloop` var-scalar gate is disabled while P0.2 is suspended for
-  S2.3b `MonadRef` correctness.
+- raw-C *ratio* gates for current scalar-worker paths (`tailsum` at ≤5× C).
+  `arithloop` is report-only for the C/default lane until that backend has
+  evidence-aware `var`-loop scalarization or the harness adds an explicit LLVM
+  ratio lane; that is a tracked regression, not a design relaxation.
 
 Its shortcomings, mapped to methodology and to the gaps it cannot see:
 1. **No statistics.** A single timed run via `date +%s.%N`; no warmup, repetition, or confidence
@@ -73,8 +74,8 @@ bound), **report** (tracked, not gated yet).
 
 | # | Bench (proposed file) | Dimension | Gap it detects | Gate (initial) |
 |---|---|---|---|---|
-| 1 | `scalar_intloop.kp` | scalar Int loop | LR1 regression; P0.2 var-loop scalarizer currently suspended | ratio ≤5× C for scalar-worker paths, ~0 alloc/iter where the worker path applies |
-| 2 | `scalar_doubleloop.kp` | scalar Double loop | P0-D (no Double worker) | report→ratio after R2.2 |
+| 1 | `scalar_intloop.kp` | scalar Int loop | LR1 regression; P0.2 evidence-aware `var`-loop scalarizer parity | ratio ≤5× C for scalar-worker paths, ~0 alloc/iter where the worker path applies; LLVM `scalar_intwhile` remains a generated-code gate, C/default mutable-`var` loop ratio remains report-only until that lane scalarizes |
+| 2 | `scalar_doubleloop.kp` | scalar Double loop | R2.2 regression guard for the landed Double worker | active alloc gate; ratio remains methodology-dependent/report until a stable raw-C comparison lane is promoted |
 | 3 | `adtbuild.kp` | ADT/list construction | **P0-A** eta-ctor closure storm | alloc/iter ≤ 1 cell+1 box |
 | 4 | `adtmatch.kp` | ADT/variant matching | **P1-C** if-chain (LR2 tags shipped) | report→`switch` after R1.2 |
 | 5 | `mutualrec.kp` | mutual tail recursion | P1-E trampoline/bounce | constant stack; alloc bound |

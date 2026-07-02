@@ -1,0 +1,47 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "pending:T\nfirst:1\nrest:2,3\n"
+
+-- Pending class: library-proposal (`std.queue`)
+-- Pending import from zio QueueSpec and cats-effect QueueSuite:
+--   - bounded offer suspends while full
+--   - back-pressured offer completes after a take
+--   - no phantom/drop-on-full offer is allowed
+
+module main
+
+import std.prelude.(type Option(..))
+import std.queue.(type Queue)
+import std.queue.(term boundedQueue, term offerQueue, term takeQueue)
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+main : UIO Unit
+let main = do
+  q <- boundedQueue @Int 2
+  _ <- offerQueue q 1
+  _ <- offerQueue q 2
+
+  done <- newPromise @Unit
+  blocked <- fork (do
+    _ <- offerQueue q 3
+    completePromise done (Success Unit)
+  )
+
+  cede
+  cede
+  before <- pollPromise done
+  let wasPending = match before
+        case None -> True
+        case Some _ -> False
+  printlnString ("pending:" ++ showBool wasPending)
+
+  first <- takeQueue q
+  awaitPromise done
+  second <- takeQueue q
+  third <- takeQueue q
+
+  printlnString ("first:" ++ showInt first)
+  printlnString ("rest:" ++ showInt second ++ "," ++ showInt third)
+  interrupt blocked

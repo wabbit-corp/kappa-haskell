@@ -1,0 +1,19 @@
+--! mode check
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Full (1 tok : Token)
+
+instance Releasable (IO e) Box =
+    let release b = pure ()
+
+bad : UIO Unit
+let bad = do
+    var cell : Box = Full Token
+    using snapshot <- readRef (ref cell)
+    pure ()

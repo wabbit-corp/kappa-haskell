@@ -75,7 +75,9 @@ The old bundled native runtime was a **single-threaded, boxed-value,
 Boehm-GC trampoline**. Its boxed-value pieces now live in the split
 `gc.c`/`value.c`/`bignum.c`/`show.c`/`unicode.c`/`prims.c` files:
 
-- Every value is a uniformly boxed `KValue` on the GC heap (`kappart.h`).
+- Runtime APIs still pass a `KValue*`-shaped word, but not every value is a
+  heap `KValue`: immediates and packed small values live in the tag bits, while
+  non-immediate values are heap objects traced by Boehm (`kappart.h`).
 - An IO action is a *suspended* `KValue` (a saturated `K_PRIM`/`K_NATIVE`, or a
   `K_IO` thunk). It fires only under **`krun_io`**, a recursive C dispatch loop.
 - Sequencing (`ioBind`/`ioThen`), error handling (`catchIO`/`finallyIO`), and
@@ -419,12 +421,12 @@ acquire `Defect (DefectInfo UnhandledChildFailure …)`. Multiple such combine w
 
 ### 9.3 `std.supervisor` (§29.2)
 
-OTP-style supervision (`OneForOne`/`OneForAll`/`RestForOne`,
-`Permanent`/`Transient`/`Temporary`, `RestartIntensity` sliding window) is a
-**library** over Scope/Fiber/Monitor/Promise/timers (§29.2 permits runtime *or*
-library). We implement it as Kappa (`rt.supervisor`) over the primitives, so the
-runtime surface stays small. Restart-storm shutdown and original-child-order
-restart sequencing (BEAM) are reproduced; cause composition uses `Both`/`Then`.
+`std.supervisor` is intended to be a **library** over
+Scope/Fiber/Monitor/Promise/timers (§29.2 permits runtime *or* library), keeping
+the runtime surface small. The current tree exposes the module surface, but the
+OTP-style semantics (`OneForOne`/`OneForAll`/`RestForOne`,
+`Permanent`/`Transient`/`Temporary`, restart-intensity windows, and
+original-child-order restart sequencing) remain future-stage library work.
 
 ---
 
@@ -433,9 +435,7 @@ restart sequencing (BEAM) are reproduced; cause composition uses `Both`/`Then`.
 `AtomicRef a` is a **distinct cell kind** (not `Ref`/`TVar`/`var`), holding a
 boxed `KValue *` slot protected by a per-cell mutex. This preserves the current
 surface instances (`Bool` and arbitrary-precision `Integer`) exactly. The
-memory-order enums are validated at the runtime boundary and map to the
-corresponding C11 order values, but the current implementation does not promise
-lock-free hardware atomics:
+memory-order enums are validated at the runtime boundary:
 
 | Kappa order            | C11                       |
 |------------------------|---------------------------|
@@ -446,13 +446,13 @@ lock-free hardware atomics:
 | `RmwAcqRel`            | `memory_order_acq_rel`    |
 | `CasFail*`             | load-like only, never release |
 
-`atomicLoad/Store/Exchange/CompareExchange` operate on the pointer slot;
-`atomicFetchAdd/Sub/And/Or/Xor` require `AtomicInteger` and operate on
-fixed-width integer atomics (we provide instances for the `std.ffi` exact/pointer-
-width integer types; **not** for the arbitrary-precision `Int`, per §29.1).
-Compare-exchange uses **representation equality** of the `AtomicValue` instance.
-The §32.2.10 synchronizes-with / release-sequence / SeqCst-global-order semantics
-are exactly C11's, so the mapping is sound by construction.
+`atomicLoad/Store/Exchange/CompareExchange` operate on the boxed pointer slot.
+`atomicFetchAdd/Sub/And/Or/Xor` require `AtomicInteger`; the current provided
+surface covers arbitrary-precision `Integer` by performing the update while
+holding the cell mutex. Compare-exchange uses **representation equality** of the
+`AtomicValue` instance. The memory-order arguments are accepted and validated,
+but this implementation gives mutex-backed atomicity rather than lock-free C11
+integer operations. Fixed-width, lock-free specializations remain future work.
 
 ---
 

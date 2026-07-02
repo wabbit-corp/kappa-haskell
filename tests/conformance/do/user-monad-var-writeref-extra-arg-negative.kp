@@ -1,10 +1,11 @@
 --! assertErrorCount 2
---! assertDiagnostic error E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+--! assertDiagnostic error E_APPLICATION_NONCALLABLE
 
 module main
 
 bad : UIO Unit
 let bad = do
     var x = 1
+    -- Extra explicit argument before the recognized reference facet.
     writeRef 123 (ref x) 2
     pure ()

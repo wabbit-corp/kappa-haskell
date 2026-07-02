@@ -71,12 +71,12 @@ foldTerm termF itemF = go
     goAlt (CaseAlt _ gd b) = foldMap go gd <> go b
 
     goK k = itemF k <> case k of
-      KBind _ _ t -> go t
+      KBind _ _ t _ -> go t
       KLet _ _ t -> go t
       KLetQ _ t m -> go t <> foldMap (go . snd) m
       KExpr t -> go t
-      KVarItem _ initT actT -> go initT <> go actT
-      KAssign lhs _ rhs actT -> go lhs <> go rhs <> go actT
+      KVarItem _ initT actT _ -> go initT <> go actT
+      KAssign lhs _ rhs actT _ -> go lhs <> go rhs <> go actT
       KReturn t -> go t
       KBreak _ -> mempty
       KContinue _ -> mempty
@@ -264,15 +264,15 @@ zonkTermWith resolveMeta = go
        in k' : goItems d' ks
 
     goItem d = \case
-      KBind q p t -> (KBind q p (go d t), d + patBindersC p)
+      KBind q p t w -> (KBind q p (go d t) w, d + patBindersC p)
       KLet q p t -> (KLet q p (go d t), d + patBindersC p)
       KLetQ p t mElse ->
         ( KLetQ p (go d t) (fmap (\(rp, e) -> (rp, go (d + patBindersC rp) e)) mElse)
         , d + patBindersC p
         )
       KExpr t -> (KExpr (go d t), d)
-      KVarItem n initT actT -> (KVarItem n (go d initT) (go d actT), d + 1)
-      KAssign r monadic rhs actT -> (KAssign (go d r) monadic (go d rhs) (go d actT), d)
+      KVarItem n initT actT w -> (KVarItem n (go d initT) (go d actT) w, d + 1)
+      KAssign r monadic rhs actT w -> (KAssign (go d r) monadic (go d rhs) (go d actT) w, d)
       KReturn t -> (KReturn (go d t), d)
       k@KBreak {} -> (k, d)
       k@KContinue {} -> (k, d)
@@ -374,12 +374,12 @@ metaOccursInTermShallowFuel fuel0 target = go fuel0
     goK n
       | exhausted n = const True
       | otherwise = \case
-          KBind _ _ t -> go (next n) t
+          KBind _ _ t _ -> go (next n) t
           KLet _ _ t -> go (next n) t
           KLetQ _ t m -> go (next n) t || maybe False (go (next n) . snd) m
           KExpr t -> go (next n) t
-          KVarItem _ initT actT -> go (next n) initT || go (next n) actT
-          KAssign lhs _ rhs actT -> go (next n) lhs || go (next n) rhs || go (next n) actT
+          KVarItem _ initT actT _ -> go (next n) initT || go (next n) actT
+          KAssign lhs _ rhs actT _ -> go (next n) lhs || go (next n) rhs || go (next n) actT
           KReturn t -> go (next n) t
           KBreak _ -> False
           KContinue _ -> False

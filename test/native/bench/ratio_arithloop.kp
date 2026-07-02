@@ -1,4 +1,7 @@
--- Large-N var-while sum (still boxed/kref — P0.2 pending; reported, not gated).
+-- Large-N var-while sum. Report-only for the C/default lane until that backend
+-- has evidence-aware var-loop scalarization, or the benchmark harness grows an
+-- explicit LLVM ratio lane. Boxed/kref lowering is the correctness fallback for
+-- this lane, not the target.
 module main
 main : UIO Unit
 let main = do

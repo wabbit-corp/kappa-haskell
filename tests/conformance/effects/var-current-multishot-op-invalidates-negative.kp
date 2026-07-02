@@ -1,0 +1,23 @@
+--! mode check
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+-- §18.6.2: a current-value fact does not survive across a multi-shot effect
+-- operation site whose captured continuation includes that fact. The operation
+-- is resolved through the declared Choice label and its ω resumption quantity;
+-- after the bind, `x` must be treated as an ordinary current read with no
+-- retained `Box` refinement.
+module main
+
+data Cell = Box (value : Int) | Empty
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+bad : UIO Int
+let bad = do
+    var x = Box 1
+    if x is Box then
+        let _ <- Choice.choose ()
+        pure x.value
+    else
+        pure 0

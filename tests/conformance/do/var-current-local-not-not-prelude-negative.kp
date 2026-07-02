@@ -1,0 +1,22 @@
+module main
+
+--! mode check
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+-- A local value named `not` is not the prelude negation. Flow refinement must
+-- use semantic identity, so the else branch must not receive the prelude
+-- `not (cell is Full)` positive fact merely because the local function has the
+-- same spelling.
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Int
+let bad = do
+    var cell : Cell = Full 9
+    let not = \b -> b
+    if not (cell is Full) then
+        pureIO 0
+    else
+        pureIO cell.val

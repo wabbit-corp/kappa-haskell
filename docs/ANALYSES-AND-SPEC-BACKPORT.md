@@ -159,7 +159,7 @@ rejected (the first non-trivial `mask` body a user writes; cf. Cats-Effect `brac
 (`bracketM` applies restore once at the result type).
 **The fix:** lower `restore`-application to **drop** the erased `kappi(restore, ⟨x⟩)` type-app before
 the 1-arg closure — NOT a monomorphisation, no ABI/closure rewrite (the runtime restore is already
-type-erased + uniformly boxed). If deferred, ship rank-1 only as a **marked KNOWN RESTRICTION**
+type-erased over the tagged `KValue*` word ABI). If deferred, ship rank-1 only as a **marked KNOWN RESTRICTION**
 (restore cannot apply where the resource type differs from the mask result, breaking standard
 `bracket`), never justified by the false "never exercised" claim.
 

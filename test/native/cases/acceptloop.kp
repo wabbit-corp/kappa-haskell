@@ -2,9 +2,10 @@
 -- `while running { c <- <await a connection>; fork (handle c) }`.  The
 -- suspending bind (`await`) is NESTED in the loop body, so the block is
 -- CPS-lowered (OP_WHILE/KK_LOOP) and the loop body actually parks on each
--- `await`.  The `running` Bool var is a run-time cell (OP_NEW_REF), re-read each
--- iteration via OP_READ_REF (§4 R7) in the condition and flipped to False with
--- `:=` (OP_WRITE_REF) to terminate — so the loop does not spin forever and the
+-- `await`.  The `running` Bool var is a selected builtin-IO MonadRef cell,
+-- re-read each iteration via the selected read action (OP_READ_REF in this
+-- builtin path) in the condition and flipped to False with `:=` (selected
+-- write action / OP_WRITE_REF) to terminate — so the loop does not spin forever and the
 -- post-loop print observes the final value.  Deterministic ⇒ ≡ interpreter.
 module main
 

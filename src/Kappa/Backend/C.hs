@@ -821,7 +821,7 @@ basePrims =
     , "uninterruptible", "__mask", "poll" -- §18.1.12 masking; lowered to krt2_uninterruptible/krt2_mask/krt2_poll nodes (compileAppGlob)
     , "__restoreAt" -- §18.1.12 rank-2 restore adapter; lowered to a bare kapp(raw, act) onto the 1-arg runtime restore (compileAppGlob); no runtime entry of its own
     , "demonitor" -- §18.1.8 no-op; kpf_demonitor shim (primEntries)
-    , "newRef", "readRef", "writeRef", "__ioNewRef", "__ioReadRef", "__ioWriteRef"
+    , "__ioNewRef", "__ioReadRef", "__ioWriteRef"
       -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array (kpf_io___newArray/...)
     , "__newArray", "__arrayRead", "__arrayWrite", "__arrayLen"
       -- §18.1.7 fiber-local state (FiberRef cells; copy-on-fork at fork); kpf_*_fiber_ref shims
@@ -2727,14 +2727,12 @@ primEntries = Map.fromList
     -- §18.1 Duration/Instant arithmetic = signed-ns Int add/sub (reuse kp_addInt/subInt)
   , ("__nowNanos", PrimEntry "kpf_now" 0 True) -- UIO Instant: reads the monotonic clock
   , ("negRat", PrimEntry "kpf_negRat" 1 False)
-  , ("newRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("__ioNewRef", PrimEntry "kpf_io_newRef" 1 True)
   , ("pow", PrimEntry "kpf_pow" 2 False)
   , ("primitiveIntToString", PrimEntry "kpf_primitiveIntToString" 1 False)
   , ("printString", PrimEntry "kpf_io_printString" 1 True)
   , ("printlnString", PrimEntry "kpf_io_printlnString" 1 True)
   , ("ratOfDouble", PrimEntry "kpf_ratOfDouble" 1 False)
-  , ("readRef", PrimEntry "kpf_io_readRef" 1 True)
   , ("__ioReadRef", PrimEntry "kpf_io_readRef" 1 True)
   , ("showByte", PrimEntry "kpf_showByte" 1 False)
   , ("showBytes", PrimEntry "kpf_showBytes" 1 False)
@@ -2753,7 +2751,6 @@ primEntries = Map.fromList
   , ("subRat", PrimEntry "kpf_subRat" 2 False)
   , ("tan", PrimEntry "kpf_tan" 1 False)
   , ("unsafeConsume", PrimEntry "kpf_unsafeConsume" 1 False)
-  , ("writeRef", PrimEntry "kpf_io_writeRef" 2 True)
   , ("__ioWriteRef", PrimEntry "kpf_io_writeRef" 2 True)
   -- §18.1.4/§18.1.6/§18.1.9 concurrency node builders (CPS do-kernel): each
   -- lowers to its krt2_* OP_* node so the CK-machine can park on it.  isIO=False
@@ -4133,12 +4130,12 @@ termGlobals = goT
     goAll = mconcat . map goT
     goItems = mconcat . map goItem
     goItem it = case it of
-      KBind _ _ e -> goT e
+      KBind _ _ e _ -> goT e
       KLet _ _ e -> goT e
       KLetQ _ e me -> goT e <> maybe Set.empty (goT . snd) me
       KExpr e -> goT e
-      KVarItem _ _ actT -> goT actT
-      KAssign _ _ _ actT -> goT actT
+      KVarItem _ _ actT _ -> goT actT
+      KAssign _ _ _ actT _ -> goT actT
       KReturn e -> goT e
       KBreak _ -> Set.empty
       KContinue _ -> Set.empty
@@ -4209,10 +4206,10 @@ termReturnsLocalHeadedAction = goTail
       KCondAction t -> localHead t || goTail t
     goItems = any goItem
     goItem = \case
-      KBind _ _ t -> localHead t || goTail t
+      KBind _ _ t _ -> localHead t || goTail t
       KExpr t -> localHead t || goTail t
-      KVarItem _ _ t -> localHead t || goTail t
-      KAssign _ _ _ t -> localHead t || goTail t
+      KVarItem _ _ t _ -> localHead t || goTail t
+      KAssign _ _ _ t _ -> localHead t || goTail t
       KWhile _ c b me -> goCond c || goItems b || maybe False goItems me
       KFor _ _ _ b me -> goItems b || maybe False goItems me
       KIf alts me -> any (goItems . snd) alts || maybe False goItems me
@@ -4275,11 +4272,11 @@ blockSuspendsWith incLocal susp = any itemSuspends
     condSuspends (KCondPure _) = False
     condSuspends (KCondAction t) = s t
     recur = blockSuspendsWith incLocal susp
-    itemSuspends (KBind _ _ t) = s t
+    itemSuspends (KBind _ _ t _) = s t
     itemSuspends (KExpr t) = s t
-    itemSuspends (KAssign _ _ _ actT) = s actT
+    itemSuspends (KAssign _ _ _ actT _) = s actT
     itemSuspends (KReturn t) = s t
-    itemSuspends (KVarItem _ _ actT) = s actT
+    itemSuspends (KVarItem _ _ actT _) = s actT
     itemSuspends (KWhile _ c b me) = condSuspends c || recur b || maybe False recur me
     itemSuspends (KFor _ _ _ b me) = recur b || maybe False recur me
     itemSuspends (KIf alts me) = any (recur . snd) alts || maybe False recur me
@@ -4312,8 +4309,9 @@ cpsEligible susp items =
   where
     -- Stage 1: binds/lets/effects.  Stage 2: plus plain `defer` (lowered through
     -- the runtime's OP_DOSCOPE/OP_DEFER).  Stage 2.5 — the CPS LOOP FAMILY (§4):
-    -- var / := / while / break / continue / return now lower through the
-    -- CK-machine's OP_WHILE/KK_LOOP + OP_NEW_REF/OP_READ_REF/OP_WRITE_REF + the
+    -- var / := / while / break / continue / return now lower through selected
+    -- MonadRef actions; checker-witnessed builtin IO refs use the CK-machine's
+    -- OP_WHILE/KK_LOOP + OP_NEW_REF/OP_READ_REF/OP_WRITE_REF + the
     -- abrupt-control nodes, so a may-suspend block containing them is no longer
     -- fail-closed.  Scope discipline: the WELL-SCOPED CORE handles the unlabeled
     -- `while` (no else), `var`/`:=` (assign to a `var` cell), unlabeled
@@ -4328,7 +4326,7 @@ cpsEligible susp items =
     simpleLinear KUsing {} = True
     simpleLinear (KDefer Nothing _) = True
     simpleLinear KVarItem {} = True
-    simpleLinear (KAssign (CVar _) _ _ _) = True
+    simpleLinear (KAssign (CVar _) _ _ _ _) = True
     simpleLinear KReturn {} = True
     simpleLinear (KBreak Nothing) = True
     simpleLinear (KContinue Nothing) = True
@@ -4396,10 +4394,10 @@ cpsItemsFrom start items = case items of
           KExpr t
             | null rest -> itemChild P.kExprActionPos (cpsTailAction t)
             | otherwise -> seqThen [P.doItemPos ix, P.kExprActionPos] t restTree
-          KBind _ _ t
+          KBind _ _ t _
             | null rest -> itemChild P.kBindActionPos (cpsTailAction t)
-          KBind _ CPWild t -> seqThen [P.doItemPos ix, P.kBindActionPos] t restTree
-          KBind _ pat t -> do
+          KBind _ CPWild t _ -> seqThen [P.doItemPos ix, P.kBindActionPos] t restTree
+          KBind _ pat t _ -> do
             m <- itemChild P.kBindActionPos (cpsActionTerm t)
             contFn <- emitCpsCont pat next rest
             env <- gets gsEnv
@@ -4417,7 +4415,7 @@ cpsItemsFrom start items = case items of
           -- @var x = init@: bind the MonadRef.newRef action chosen by
           -- elaboration and push the resulting Ref onto the captured env
           -- (de Bruijn 0) for the continuation.
-          KVarItem x _ actT -> do
+          KVarItem x _ actT _ -> do
             refA <- itemChild P.kVarActionPos (cpsActionTerm actT)
             contFn <- emitCpsCont (CPVar x) next rest
             env <- gets gsEnv
@@ -4425,7 +4423,7 @@ cpsItemsFrom start items = case items of
           -- @x := rhs@ / @x <- rhs@ (a var assignment): run the
           -- MonadRef.writeRef action selected during elaboration, so CPS and
           -- non-CPS paths use the same evidence.
-          KAssign _ _ _ actT -> do
+          KAssign _ _ _ actT _ -> do
             writeA <- itemChild P.kAssignActionPos (cpsActionTerm actT)
             r <- restTree
             pure ("krt2_then(" <> writeA <> ", " <> r <> ")")
@@ -4918,11 +4916,11 @@ compileItems selfLabel mode items0 = do
         sv <- freshN "let_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         bindAndContinue sv pat
-      KBind _ CPWild t -> do
+      KBind _ CPWild t _ -> do
         te <- itemChild ix P.kBindActionPos (compile t)
         emitRunIODiscard te
         goAt (ix + 1) rest
-      KBind _ pat t -> do
+      KBind _ pat t _ -> do
         te <- itemChild ix P.kBindActionPos (compile t)
         sv <- emitRunIOValue "bind_" te
         bindAndContinue sv pat
@@ -4934,17 +4932,18 @@ compileItems selfLabel mode items0 = do
         scopeFrames <- gets gsScopeDefers
         flushFramesInline scopeFrames
         emitTailReturn te
-      KVarItem _ _ actT -> do
-        -- S2.3b: run the checker-selected MonadRef.newRef action. The former
-        -- scalar-loop peephole bypassed MonadRef evidence, so mutable cells stay
-        -- on the generic boxed path until an optimizer can prove equivalence.
+      KVarItem _ _ actT _ -> do
+        -- S2.3b: run the checker-selected MonadRef.newRef action on the
+        -- C/default fallback path. The former scalar-loop peephole bypassed
+        -- MonadRef evidence, so this backend must not reconstruct raw refs until
+        -- an evidence-aware C scalarizer proves equivalence.
         te <- itemChild ix P.kVarActionPos (compile actT)
         ref <- emitRunIOValue "var_" te
         env <- gets gsEnv
         e2 <- freshN "env_"
         emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
         withEnv e2 (goAt (ix + 1) rest)
-      KAssign _ _ _ actT -> do
+      KAssign _ _ _ actT _ -> do
         ae <- itemChild ix P.kAssignActionPos (compile actT)
         emitRunIODiscard ae
         goAt (ix + 1) rest

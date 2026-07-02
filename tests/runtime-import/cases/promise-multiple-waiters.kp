@@ -1,0 +1,54 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "before:None\ncomplete:T\nagain:F\nw1:41\nw2:41\nw3:41\n"
+
+-- Imported from:
+--   ZIO PromiseSpec / waiter stack safety
+--   Cats Effect DeferredSuite / get blocks until set
+-- Spec target: §18.1.9, completing a promise wakes all waiters.
+module main
+
+import std.prelude.(type Exit(..), type Option(..))
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+waiter : Promise Void Unit -> Promise Void Int -> UIO Int
+let waiter ready p = do
+    ok <- completePromise ready (Success Unit)
+    let _ = ok
+    v <- awaitPromise p
+    ioPure v
+
+main : UIO Unit
+let main = do
+    p <- newPromise
+    r1 <- newPromise
+    r2 <- newPromise
+    r3 <- newPromise
+    w1 <- fork (waiter r1 p)
+    w2 <- fork (waiter r2 p)
+    w3 <- fork (waiter r3 p)
+    awaitPromise r1
+    awaitPromise r2
+    awaitPromise r3
+    before <- pollPromise p
+    match before
+      case None -> printlnString "before:None"
+      case Some _ -> printlnString "before:Some"
+    ok <- completePromise p (Success 41)
+    printlnString ("complete:" ++ showBool ok)
+    again <- completePromise p (Success 99)
+    printlnString ("again:" ++ showBool again)
+    e1 <- await w1
+    e2 <- await w2
+    e3 <- await w3
+    match e1
+      case Success v -> printlnString ("w1:" ++ showInt v)
+      case Failure _ -> printlnString "w1:failed"
+    match e2
+      case Success v -> printlnString ("w2:" ++ showInt v)
+      case Failure _ -> printlnString "w2:failed"
+    match e3
+      case Success v -> printlnString ("w3:" ++ showInt v)
+      case Failure _ -> printlnString "w3:failed"

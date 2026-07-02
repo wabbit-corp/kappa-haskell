@@ -1,0 +1,52 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "permanent:2\ntransient-success:1\ntemporary-failure:1\n"
+
+-- Pending class: runtime-pending (`std.supervisor`)
+-- Pending import from Erlang/OTP supervisor_SUITE and Cats Effect SupervisorSuite.
+-- Spec target: docs/Spec.md §29.2 restart policies. This is the normative Kappa
+-- service-supervision target, distinct from ZIO hook-style SupervisorSpec tests.
+
+module main
+
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicFetchAdd)
+import std.supervisor.(type Supervisor, type ChildSpec, type SupervisorStrategy, type RestartPolicy, type RestartIntensity)
+import std.supervisor.(ctor OneForOne, ctor Permanent, ctor Transient, ctor Temporary)
+import std.supervisor.(term childSpec, term startSupervisor, term shutdownSupervisor)
+
+countAndFail : AtomicRef Int -> IO String Unit
+let countAndFail ref = do
+  _ <- atomicFetchAdd RmwSeqCst ref 1
+  raise "boom"
+
+countAndSucceed : AtomicRef Int -> UIO Unit
+let countAndSucceed ref = do
+  _ <- atomicFetchAdd RmwSeqCst ref 1
+  ioPure Unit
+
+main : UIO Unit
+let main = do
+  permanentCount <- newAtomicRef 0
+  transientSuccessCount <- newAtomicRef 0
+  temporaryFailureCount <- newAtomicRef 0
+
+  permanent <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+    ((childSpec "permanent" Permanent (countAndFail permanentCount)) :: Nil)
+  transient <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+    ((childSpec "transient-success" Transient (countAndSucceed transientSuccessCount)) :: Nil)
+  temporary <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+    ((childSpec "temporary-failure" Temporary (countAndFail temporaryFailureCount)) :: Nil)
+
+  cede
+  cede
+  shutdownSupervisor permanent
+  shutdownSupervisor transient
+  shutdownSupervisor temporary
+
+  pc <- atomicLoad LoadSeqCst permanentCount
+  tc <- atomicLoad LoadSeqCst transientSuccessCount
+  fc <- atomicLoad LoadSeqCst temporaryFailureCount
+  printlnString ("permanent:" ++ showInt pc)
+  printlnString ("transient-success:" ++ showInt tc)
+  printlnString ("temporary-failure:" ++ showInt fc)

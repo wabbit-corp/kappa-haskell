@@ -8,19 +8,22 @@ express cheaply — eventually have a home (see [CPS-DESIGN.md](CPS-DESIGN.md) S
 `KAPPA_BACKEND=llvm`; the default remains the C backend (`Kappa.Backend.C`, `generateC`),
 which is unchanged.
 
-## Strategy: parity first, perf later
+## Strategy: parity first, proved perf islands
 
 The buildout is in two phases:
 
-- **Phase 1 — uniform-boxed parity (current).** Same ~40-byte boxed `KValue` model as
-  the C backend, the **same kappart2 runtime**, the same `KEnv`/`kpush`/`kvar`
-  discipline, the same `kctor`/`kapp`/`knative_sat` ABI. *Only the emitted source
-  language differs.* The LLVM backend must match the C backend's observable behaviour
-  bit-for-bit; that is the entire correctness contract of Phase 1. There is no perf
-  advantage yet — the point is a correct end-to-end IR path to build the real work on.
+- **Phase 1 — boxed parity base (landed, still the fallback).** Same ~40-byte
+  boxed `KValue` model as the C backend, the **same kappart2 runtime**, the same
+  `KEnv`/`kpush`/`kvar` discipline, the same `kctor`/`kapp`/`knative_sat` ABI.
+  *Only the emitted source language differs.* The LLVM backend must match the C
+  backend's observable behaviour bit-for-bit; that remains the correctness
+  fallback, not a limit on current scalar-worker lowering. Tagged immediates,
+  packed constructor niches, and selected unboxed scalar workers have landed as
+  proved islands over this fallback.
 
-- **Phase 2 — the perf endgame (later, CPS-DESIGN Stage 5).** The LLVM-native layout
-  system (immediate-tagged ints, unboxed scalars, niche optimization, newtype erasure),
+- **Phase 2 — the remaining perf endgame (later, CPS-DESIGN Stage 5).** Generalizing
+  the LLVM-native layout system beyond the landed immediate/scalar islands
+  (broader unboxed regions, niche optimization, newtype erasure),
   Perceus precise RC (`dup`/`drop` + in-place reuse) **as the primary mechanism in a
   mixed/hybrid memory model** — *not* a wholesale GC replacement, since pure reference
   counting leaks cycles, so a tracing/cycle-collector (or region) backstop for cyclic
@@ -96,17 +99,21 @@ diverse corpus is the proof). The corpus lives in `tests/native/llvm/`.
 | **F–M** | do-kernel `KIf`/loops/cells/abrupt, records, recursive patterns, all literals + prim coverage, `letrec`/thunks, host FFI, exceptions, `KSubDo` — the delve-driven surface (see below) | ✅ → `0ec0078` |
 | **Phase 2** | layout system · Perceus RC (+ GC/cycle backstop, mixed model) · coroutine CPS | future |
 
-**Phase-1 core (M0–E) is complete** at interp == C == LLVM over 35 corpus programs:
-strings, integers (incl. big-Integer), pure prims, CAF graphs, local bindings,
-constructors/match/if, curried closures + general application + stack-safe tail
-recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
-`E_BACKEND_UNSUPPORTED` today, not a miscompile):
+**Phase-1 core (M0–E) is complete** at interp == C == LLVM over the default
+parity corpus: strings, integers (incl. big-Integer), pure prims, CAF graphs,
+local bindings, constructors/match/if, curried closures + general application,
+stack-safe tail recursion, IO do-blocks, concurrency/fiber basics, and STM
+operations covered by `tests/native/llvm/*.kp` and the promoted native cases.
+Remaining Phase-1 *surface* is deliberately fail-closed (`E_BACKEND_UNSUPPORTED`
+or equivalent), not a miscompile:
 
 - **do-kernel control flow** — ✅ `KIf` (`ee9064f`); ✅ `KWhile` + mutable cells
   (`KVarItem`/`KAssign`) + abrupt control (`KBreak`/`KContinue`/`KReturn`) via
-  `krt2_while`/`krt2_break`/`krt2_continue`/`krt2_return` + `newRef`/`readRef`/`writeRef`,
-  with `var`-read splices hoisted to monadic-normal-form (`b4ba6fa`); remaining: `KFor`
-  (list cursor), while-`else`, labeled loops, `KDefer`, `KUsing`, `KSubDo`, `KLetQ`, and
+  `krt2_while`/`krt2_break`/`krt2_continue`/`krt2_return` plus checker-selected
+  `MonadRef` actions, with `var`-read splices hoisted to monadic-normal-form
+  (`b4ba6fa`); ✅ plain `KDefer`, `KUsing`, and statement-position `KSubDo`
+  through the CK-machine scope/finalizer path. Remaining: `KFor` (list cursor),
+  while-`else`, labeled loops/break/continue, labeled `defer`, `KLetQ`, and
   function-scoped `return` (a runtime gap — `krt2_return` finishes the fiber).
 - **records** — ✅ `CRecordV` + `CProjAt`/`CProj` via `krec`/`krec_at`/`kproj`
   (`1b3770d`); ✅ type-level-global erasure so trait instances on builtin types
@@ -119,8 +126,11 @@ recursion, and IO do-blocks. Remaining Phase-1 *surface* (each a clean
   `wrapperCName`; the Driver emits the marshalling `.c`) (`5ac0e21`).
 - **exceptions + sub-do** — ✅ `catchIO`/`finallyIO`/`throwIO` as `krt2_catch`/`finally`/
   `throw` node-builders + `KSubDo` (`0ec0078`).
-- **remaining (not needed by delve/voxelcraft)** — concurrency/STM (`fork`/`await`/STM),
-  `KFor`/while-`else`/labeled loops, the worker/closure-chain + self-TCO perf path.
+- **remaining surface/perf work** — `KFor`, while-`else`, labeled loops/break/continue,
+  labeled `defer`, `KLetQ`, function-scoped `return`, and the remaining
+  worker/closure-chain + self-TCO perf path. Concurrency/STM are no longer in this
+  unsupported bucket; keep them in the parity corpus so regressions are executable,
+  not merely documented.
 
 **Empirically driven by building the real packages — Phase 1 surface DONE:** both real
 packages codegen fully LLVM-clean. voxelcraft was clean from the start; delve went from

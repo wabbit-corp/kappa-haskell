@@ -35,9 +35,9 @@ with O(1) get/set, rather than inventing a brand-new concept.
 
 The constraint that makes this interesting: Kappa is a **total, dependently
 typed, QTT language** (quantities 0/1/ω/affine/relevant, `docs/Spec.md` §12.2;
-totality §15; erasure §31.2). The runtime is **uniformly boxed** — every value
-is a 48-byte heap `KValue` reached through ordinary C pointers and traced
-conservatively by Boehm (`runtime/kappart.h:109`). A mutable array must:
+totality §15; erasure §31.2). Runtime APIs carry a `KValue*`-shaped tagged word:
+immediates and packed small values are not heap `KValue`s, while non-immediate
+objects are ordinary Boehm-traced heap values. A mutable array must:
 
 1. preserve **purity/totality** at the type level — no partial `get` in the
    pure fragment;
@@ -608,9 +608,9 @@ TWO read/write paths — a boxed-API path and a scalar-worker fast path:
   LLVM lowers as scalar SSA values, so an **unboxed
   numeric array + the scalar worker = an end-to-end unboxed hot loop with ZERO
   per-element allocation** and no per-element tag/immediate decode. This is the
-  intended analogue of a future evidence-preserving scalar optimization, not a
-  precedent for surface `var` lowering. The obsolete pre-S2.3b scalarized
-  var-ref peephole is suspended because it bypassed the checker-selected
+  intended analogue of an evidence-preserving scalar optimization, not a
+  precedent for evidence-oblivious surface `var` lowering. The obsolete pre-S2.3b scalarized
+  var-ref peephole is retired because it bypassed the checker-selected
   `MonadRef` evidence; any replacement must prove it is semantically equivalent
   to the selected `newRef`/`readRef`/`writeRef` actions before lowering to raw
   locals. For arrays, the analogous future
@@ -802,7 +802,7 @@ boxed ops:
   generic boxed family for `RepBoxed` (§5.3.1). **Wire the scalar-worker fast
   path:** when an array read/write sits in a scalar region (`gsScalarRegion`,
   `C.hs:124`-`125`; the LLVM function scalar-worker path, `LLVM.hs:2499`+) lower it to a
-  RAW slab access with no box (§5.3.4) — the array analogue of a future
+  RAW slab access with no box (§5.3.4) — the array analogue of an
   evidence-preserving var-ref optimization, never a revival of the obsolete
   pre-S2.3b scalarized `readRef`/`writeRef` peephole.
 - **Verify with BOTH `llvm-parity.sh` AND `run-native-tests.sh`** (the latter

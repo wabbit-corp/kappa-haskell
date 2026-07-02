@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+module main
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    var sink = ()
+    if cell is Full then
+        sink <- writeRef (ref cell) Empty
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

@@ -1,5 +1,5 @@
--- S2.3b: surface `var` loops stay on the boxed MonadRef path unless a backend
--- optimizer proves the selected evidence is preserved. These cases still pin
+-- S2.3b: surface `var` loops may fall back to boxed MonadRef actions unless a
+-- backend optimizer proves the selected evidence is preserved. These cases still pin
 -- interpreter/native equality for non-overflow, GMP-sized overflow, and
 -- effectful loop bodies.
 module main

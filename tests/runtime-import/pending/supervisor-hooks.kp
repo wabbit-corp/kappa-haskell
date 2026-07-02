@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "hooks:1,1\nend-before-await:T\n"
+
+-- Pending class: extension-proposal (`std.supervisor_hooks` or diagnostics)
+-- Pending import from zio SupervisorSpec hook-style tests:
+--   - onStart/onEnd are called exactly once
+--   - onEnd is observed before fiber awaiters resume
+--
+-- Kappa's normative `std.supervisor` surface is service supervision, not ZIO's hook
+-- API. This fixture records the hook-style behavior as a pending diagnostics/runtime
+-- extension so it can be consciously accepted, adapted, or replaced.
+
+module main
+
+import std.supervisor_hooks.(type SupervisorHook)
+import std.supervisor_hooks.(term countingSupervisorHook, term withSupervisorHook)
+import std.supervisor_hooks.(term hookStartCount, term hookEndCount, term hookEndBeforeAwait)
+
+showBool : Bool -> String
+let showBool b = match b
+    case True -> "T"
+    case False -> "F"
+
+main : UIO Unit
+let main = do
+  hook <- countingSupervisorHook
+  fiber <- withSupervisorHook hook (fork (ioPure Unit))
+
+  _ <- await fiber
+  starts <- hookStartCount hook
+  ends <- hookEndCount hook
+  endFirst <- hookEndBeforeAwait hook fiber
+
+  printlnString ("hooks:" ++ showInt starts ++ "," ++ showInt ends)
+  printlnString ("end-before-await:" ++ showBool endFirst)

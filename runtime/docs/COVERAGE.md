@@ -42,11 +42,12 @@ composition. So "as rich as ZIO" = finish the primitive set, then derive.
 | **`mask` + `restore`** (uninterruptibleMask) | `krt2_mask` | cancel |
 | **`acquireRelease`** (bracket) | `krt2_acquire_release` (= `mask`+`finally`+`bind`) | cancel |
 | **`ensuring` / `finally`** | `krt2_ensuring` / `krt2_finally` | cancel, completion |
+| **`onInterrupt` / `onExit`** | reason-carrying do-scope finalizers | on-exit-interrupt |
 | `defer` / do-scope finalizers | `krt2_defer` / `krt2_doscope` | completion |
 | `return` / `break` / `continue` / `while` | `krt2_return`/`break`/`continue`/`while` | completion |
-| promises | `krt2_new_promise`/`await`/`complete` | spine, race |
+| promises | `krt2_new_promise`/`await`/`complete`/`poll`/`isDone` | spine, race, promise-poll |
 | scopes + monitors | `krt2_new_scope`/`forkIn`/`shutdown_scope`/`monitor` | scopes |
-| refs | `krt2_new_ref`/`read`/`write` | completion |
+| builtin `IO`/`STM` refs | selected `MonadRef`; builtin evidence lowers to `krt2_new_ref`/`read`/`write` | completion |
 | `now`, `fiberId` | `krt2_now_monotonic`, `krt2_fiber_id` | — |
 
 The cancellation story already matches ZIO's hard cases (verified by `test/cancel.c`
@@ -57,13 +58,10 @@ masked.** (REVIEW.md: the deliver-interrupt-then-run-finalizers fix.)
 
 **Missing primitives to add (small, scheduler-touching):**
 
-- `onInterrupt` / `onExit` — a finalizer that receives the exit *reason* (run
-  only on interrupt / on every exit with the `Exit`). Needs the do-scope finalizer
-  to carry the `Reason` to its action — a small extension of `KK_FINSEQ`.
-- `disconnect` — detach a fiber's interruption so `interrupt` returns immediately
-  while finalization proceeds in the background (forkDaemon + a detached interrupt).
-- `Promise.poll` / `isDone` — non-blocking peek (we have `tryExit` for fibers; add
-  the promise analog).
+- `disconnect` — open correctness item. The existing prelude-level derivation is
+  not accepted as complete: it needs a masked, cause-preserving contract and a
+  stronger ordering test, or a runtime primitive if the derivation cannot satisfy
+  the required detach semantics.
 - `Fiber.status` / `interruptAll` / `awaitAll` — diagnostics + batch (over the
   primitives + `krt2_dump`).
 - ~~**STM**~~ — **DONE** (`native/stm.c`): `atomically`/`TVar`/`readTVar`/`writeTVar`/
@@ -90,8 +88,10 @@ already work here:
 - `Cause` projections (`failures`/`defects`/`interruptors`/`isDie`/`stripFailures`/
   `prettyPrint`/`filter`/`keepDefects`/…) — pure folds over the `Cause` tree
   (`Fail`/`Interrupt`/`Defect`/`Both`/`Then`).
-- `std.supervisor` (OTP one/all/rest-for-one + restart intensity) — over
-  `forkIn`/`interrupt`/`await`/`monitor`/`now` (DESIGN.md §9.3; RESEARCH.md §3).
+- `std.supervisor` (OTP one/all/rest-for-one + restart intensity) — surface
+  present, but restart semantics are still missing; the intended implementation
+  is a library/runtime layer over `forkIn`/`interrupt`/`await`/`monitor`/`now`
+  (DESIGN.md §9.3; RESEARCH.md §3).
 - `Memoize`, semaphores, queues, hubs — over promises + STM.
 
 ## The test-coverage plan

@@ -1,6 +1,6 @@
 # Kappa Native Backend — Optimization Guide (authoritative)
 
-Status: **authoritative, current to HEAD (R1.1/P0-A direct constructor lowering landed), 2026-06-18.**
+Status: **authoritative, current to HEAD (S2.3b `MonadRef` correctness landed; LLVM-first evidence-aware `var` scalarizer landed; shared/C-default P0.2 planner still open), 2026-07-01.**
 This document consolidates and **replaces** six prior native-backend performance documents,
 which have been **deleted** to reduce clutter (see §11 for the explicit old→new mapping; the
 three git-tracked ones remain recoverable from git history, and all non-stale content — including
@@ -28,20 +28,20 @@ older performance docs have been deleted and consolidated here (§11).
 
 ## 1. What is true today (one-paragraph verdict)
 
-The backend is genuinely **near raw C for first-order monomorphic scalar-worker code** and
-nothing else yet. The fast island is real and well-engineered: unboxed `int64` workers (LR1),
-fixed-offset closed-record projection (P0.4), and — landed
-during this study — **integer-tag constructor/variant pattern matching (LR2)**, which removed the
-`strcmp` dispatch the earlier reviews complained about — and, landed after it, **direct lowering of
-saturated constructor applications (R1.1/P0-A)**, which removed the eta-expanded closure storm that
-dominated `listfold`/`adtbuild`. **Outside that island the generic boxed/curried ABI is still the
-default**: using a non-`Int` scalar or passing a function falls back to per-element allocation and
-the arity-1 closure chain, one to two orders of magnitude from C. With P0-A fixed, `listfold`
-dropped from 2.0 s / 544 MB to **0.68 s / 240 MB**, and `adtbuild` from ~1.09 GB to **480 MB**
-(~240 B/iter) — the residual is now the genuine *data-representation* cost (one cons cell + one
-`kint` box per element: P0-D / P1-F), not closure overhead. The boxed `KValue`/`KEnv` ABI is
-correct as a *fallback* and must stay; the objection — repeated across all prior reviews and still
-valid — is that it remains the *default* for monomorphic non-`Int` code.
+The backend is genuinely **near raw C for first-order monomorphic scalar-worker code**. The fast
+island is real and well-engineered: unboxed `int64`/`double` workers (LR1/R2.2), mixed
+boxed/unboxed record workers (R2.4), fixed-offset closed-record projection (P0.4), integer-tag
+constructor/variant pattern matching (LR2), direct lowering of saturated constructor applications
+(R1.1/P0-A), immediate small `Int` values, and the LLVM-first evidence-aware `var`/`while`
+scalarizer for proven builtin-IO ref loops. **Outside those proven islands the generic
+boxed/curried ABI is still the correctness fallback**: higher-order/polymorphic code,
+env-capturing closures, unspecialized data construction, and the C/default `var` loop lane still
+allocate substantially more than C. With P0-A fixed, `listfold` dropped from 2.0 s / 544 MB to
+**0.28 s / 64 MB**, and `adtbuild` from ~1.09 GB to **480 MB** (~240 B/iter) — the residual is now
+the genuine data-representation cost of the list spine and payload values, not closure overhead.
+The boxed `KValue`/`KEnv` ABI is correct as a fallback and must stay; the objection — repeated
+across all prior reviews and still valid — is when it remains the hot default for shapes the
+compiler can prove scalar.
 
 **Can the output plausibly approach raw C?** Yes for what the typed IR can specialize to
 first-order monomorphic scalar/loop code (demonstrated: LR1 ≈1.03× `cc -O2` — a single-config
@@ -55,14 +55,15 @@ higher-order/polymorphic code; the boxed ABI as the never-miscompiling fallback.
 
 ## 2. Runtime representation (the starting point everything reacts to)
 
-Every Kappa value is a heap-boxed `KValue { KTag tag; union { … } }` (`runtime/kappart.h`),
-~48 bytes on LP64, traced by a conservative Boehm GC. Functions are curried arity-1 closures
-(`K_CLO`); multi-argument application is a chain of `kapp`. The de Bruijn environment is a
-linked list of `KEnv` nodes (`kpush`/`kvar`). A small-int cache covers `[-16, 256]`
-(`runtime/value.c`). `kbool` returns cached `the_true`/`the_false` singletons (so `Bool`-
-returning comparisons allocate nothing). Pointer-free string/byte *payloads* use
-`GC_MALLOC_ATOMIC`, but scalar boxes (`kint`/`kdbl`/`kchr`/`kbyte`) are allocated on the scanned
-path. This is the uniform representation the optimization work selectively escapes.
+Most heap values still use `KValue { KTag tag; union { ... } }` (`runtime/kappart.h`), traced by a
+conservative Boehm GC. Functions are curried arity-1 closures (`K_CLO`); multi-argument application
+is a chain of `kapp`. The de Bruijn environment is a linked list of `KEnv` nodes (`kpush`/`kvar`).
+Small `Int` values are immediate tagged words (`runtime/value.c`); out-of-immediate but in-range
+integer words and GMP `K_BIGINT` remain part of the canonical integer boundary. `kbool` and `kunit`
+return immediate/singleton values, so boolean and unit results allocate nothing. Pointer-free
+string/byte payloads use `GC_MALLOC_ATOMIC`; boxed `Double`/`Char`/`Byte` carriers remain allocated
+when code does not stay inside an unboxed worker. This is the uniform representation the
+optimization work selectively escapes.
 
 ---
 
@@ -76,8 +77,8 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 | QW2 — no per-iteration `KEnv` *allocation* in capture-free self-tail loops | **DONE** | in-place `kw_c*->val =` update; capturing bodies fall back to per-iter rebuild (`bodyCapturesEnv`) |
 | QW3 — source-faithful generated names + span comments | **DONE** | `kw_main_2e_range`, `kfn_main_2e_range_8`, `kmatch_*` |
 | QW4 — benchmark + allocation/GC gates | **DONE** | `test/native/bench.sh` (total_bytes + raw-C ratio gates) |
-| LR1 — unboxed `int64` `Int` workers (overflow escape to boxed/GMP) | **DONE (Int)** | `tailsum`: 193 MB → **368 B**, ≈**1.03× `cc -O2`**; scalar `kwi_*` worker, no `KEnv`/`kvar` |
-| P0.2 — scalarize non-escaping `Int` `var` while-loops to `int64` C locals | **SUSPENDED** | Disabled for S2.3b correctness: the old peephole bypassed checker-selected `MonadRef` evidence and rebuilt raw backend refs. Surface `var` loops use the generic boxed `MonadRef` path until an optimizer proves evidence-preserving equivalence. |
+| LR1 — unboxed `int64` `Int` workers (overflow escape to boxed/GMP) | **DONE (Int)** | `tailsum`: 193 MB → **17,520 B**, **1.2× raw C** in the current smoke; scalar `kwi_*` worker, no `KEnv`/`kvar` |
+| P0.2 — scalarize non-escaping `Int` `var` while-loops to `int64` locals | **PARTIAL (LLVM)** | The old peephole was retired because it bypassed checker-selected `MonadRef` evidence and rebuilt raw backend refs. LLVM now has a checker-witnessed builtin-IO scalarizer gated by `scalar_intwhile`, ref-freshness, fallback, and safepoint checks. The shared planner and C/default lane remain open; boxed selected-`MonadRef` lowering remains the correctness fallback for unproven shapes. |
 | P0.4 — fixed-offset closed-record projection (`krec_at`, no `kproj` strcmp) | **DONE (proj)** | named records + tuples <10; tuples ≥10 / open / sealed / dict stay `kproj` |
 | **LR2 — numeric ctor/variant pattern-match tags** | **DONE (match dispatch)** | `patTest` emits `kctor_tagid(v) == KCT_*` / `kvariant_tagid(v) == KT_*` **integer** compares; `kctor_is`/`strcmp` gone from the match path. **`switch`/jump-table shape deferred** (linear int-compare chain kept). Record-field-label tags for record *patterns* not done. |
 | **R1.1/P0-A — direct lowering of saturated constructor applications** | **DONE** | `etaCtorApp` (C.hs) beta-reduces a saturated eta-expanded ctor (`CApp…(CLam…(CCtor g …))`) to a direct `CCtor`; `compileApp`/`emitTailApp` emit `kctor(…)` with no `kclo`/`kapp`/`kappi`. Gated by `adtcons` (interpreter-equivalence) + a codegen-shape assertion (`kctor(KCT_CONS,` present, no `kappi(kclo(`). |
@@ -96,7 +97,7 @@ Legend: **DONE** = landed and gated; **PARTIAL** = landed for a subset; **OPEN**
 The historical `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` defined five P0 blockers; current
 state:
 - **P0.1** monomorphic numeric boxed → scalar workers: **MET for `Int`** (LR1) **and `Double`/mixed** (R2.2); `Bool` open (low value — cached singletons).
-- **P0.2** `var` loops are heap-ref loops: **NOT MET in the current S2.3b implementation**. The former non-escaping `Int` scalarizer is suspended because it bypassed `MonadRef` evidence; all surface `var` loops stay boxed until a replacement proves equivalence.
+- **P0.2** `var` loops are heap-ref loops: **PARTIALLY MET**. The former non-escaping `Int` scalarizer was unsound because it bypassed `MonadRef` evidence. The LLVM lane now scalarizes the proven builtin-IO `var`/`while` subset using checker-minted witnesses and falls back to boxed selected-`MonadRef` actions for user `MonadRef`, STM, abstract evidence, and unsupported shapes. The C/default lane still falls back, so `arithloop` remains a visible measured regression until the shared planner is reused there or the benchmark harness grows an LLVM ratio lane.
 - **P0.3** `KEnv`/`kvar` on hot paths: **MET for LR1/R2.2 scalar workers** (scalar locals) **and for ALL capture-free boxed workers** (R2.3 + R2.3-rest — params AND `let`/`match`-bound locals read as flat C locals, no `kvar`/`kpush`, no `KEnv`); only env-capturing (closure/thunk/do) workers still use `kvar`.
 - **P0.4** records/ADTs generic+string: **MET on the match/projection path** — projection is fixed-offset `krec_at`; ctor/variant matching is integer-tag (LR2). The `switch` shape and record-param boxing remain.
 - **P0.5** known calls carry trampoline/closure: **MET for LR1 `Int` self-calls** and **now for saturated constructor applications (R1.1/P0-A — a direct `kctor`, no eta-ctor closure chain)**; general known *function* calls drop `ktrampoline` when the callee provably cannot bounce (R3.1/P1-E); only a callee with a tail-call bounce effect is still trampolined.
@@ -119,7 +120,7 @@ chain whose body is `CCtor g [CVar …]`, with exactly `k` applied args) and bet
 field var names a binder, so the payload is just the applied arguments at those positions — to a
 direct `CCtor`, lowered by `compileApp`/`emitTailApp` via the existing `compileCtor` as a single
 `kctor(…)` with no closure/`kapp`. Verified on re-emitted `adtbuild.kappa.c` (`kctor(KCT_CONS,…)`,
-no `kclo`/`kappi`); `listfold` 544 MB → **240 MB**, 2.0 s → **0.68 s**; `adtbuild` ~1.09 GB →
+no `kclo`/`kappi`); `listfold` 544 MB → **64 MB**, 2.0 s → **0.28 s**; `adtbuild` ~1.09 GB →
 **480 MB**.
 
 **P0-B — A captured env disabled the QW2 in-place loop for the whole worker. RESOLVED (with R1.1).**
@@ -170,16 +171,16 @@ so the collector skips them during mark and they are no longer conservative-GC f
 sources. Sound because the payloads are genuinely pointer-free, the boxes are immutable / never
 re-tagged, and all readers dispatch on `tag` (so `GC_MALLOC_ATOMIC`'s non-zeroed inactive union
 bytes are never observed). `kstr`/`kbytes` (buffer pointer) and `kbigint` (mpz pointer) stay
-scanned; `kbool`/`kunit` are one-shot singletons (left scanned). The win is cheaper collections
-(less mark work) for `Double`/`Char`/`Byte` and out-of-cache integers — small ints in `[-16,256]`
-are cache-served and allocate nothing, so they see no change. Gated by a runtime source invariant
-in the native suite (the four scalar constructors must use `alloc_val_atomic`, never scanned
-`alloc_val`) plus the full interpreter-equivalence suite (which proves the non-zeroing alloc is
-correct). → **R2.1**.
+scanned; `kbool`/`kunit` are one-shot singleton/immediate values. The win is cheaper collections
+(less mark work) for `Double`/`Char`/`Byte` and boxed integer carriers that remain after the
+immediate-`Int` work. Gated by a runtime source invariant in the native suite (the scalar
+constructors that still allocate must use `alloc_val_atomic`, never scanned `alloc_val`) plus the
+full interpreter-equivalence suite (which proves the non-zeroing alloc is correct). → **R2.1**.
 
-**P1-G — Small-int cache is narrow (`[-16,256]`).** Any accumulator/counter outside that band
-allocates a fresh box per update on the boxed path. The principled fix is immediate-tagged small
-ints (with the Boehm tagging caveat, §5.1); the cache is a stopgap. → **R3.3**.
+**P1-G — Small-int cache was narrow (`[-16,256]`). RESOLVED (R3.3).** Small `Int` values now use
+immediate tagged words rather than the retired `kint_cache` carrier. Large integer values still
+escape to `K_BIGINT`/GMP at the documented §5.3 boundary; that is the semantic overflow path, not a
+small-int-cache regression. → **R3.3**.
 
 **P1-H — `KEnv` is a per-binding linked list, not a flat frame. RESOLVED for non-escaping scopes
 (R2.3 + R2.3-rest + R3.2).** `kpush`/`kvar` allocated one node per bound variable and walked the
@@ -218,11 +219,12 @@ at polymorphic boundaries that can *regress* hot polymorphic code `[measured]`. 
 unboxing must be gated (worker/wrapper + demand/boxity analysis to avoid "reboxing"), and making
 the *uniform* `KValue` cheaper is the lower-risk first move: low-bit **pointer tagging** of the
 constructor tag (Marlow et al., ~14%/2% — figure from abstract metadata, indicative) `[measured]`,
-**immediate small ints / NaN-boxing** (OCaml-style 63-bit tagged ints; LuaJIT/SpiderMonkey)
-`[design]`, and **niche/NPO** for two-variant types like `Option` (Rust) `[design]`. **Boehm
-caveat:** any low-bit tagging of the `KValue` word must guarantee the collector never mistakes an
-immediate for a heap pointer — a real GC-contract risk on a conservative collector, more than a
-footnote for the re-tag-the-word options. Whole-program **monomorphization + representation
+**immediate small ints** (landed here with the conservative-GC contract pinned), possible future
+NaN-boxing-style expansions (LuaJIT/SpiderMonkey) `[design]`, and **niche/NPO** for two-variant
+types like `Option` (Rust) `[design]`. **Boehm caveat:** any low-bit tagging of the `KValue` word
+must guarantee the collector never mistakes an immediate for a heap pointer — a real GC-contract
+risk on a conservative collector, more than a footnote for any future re-tag-the-word options.
+Whole-program **monomorphization + representation
 selection** (MLton: unbox single-ctor types, flatten products) is the maximal escape but a
 closed-world commitment.
 
@@ -484,7 +486,7 @@ an explicit lowered-IR requirement — see the header.)
 
 | Order | Item | Targets | Impact | Complexity | Risk |
 |------:|------|---------|:------:|:----------:|:----:|
-| ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop; arithloop is report-only while P0.2 is suspended — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
+| ◑ | **R0.1** rigorous bench harness + broad coverage — **PARTIAL** (median-of-N timing, per-iteration alloc, and enforced landed-wave alloc gates — adtbuild/scalar_doubleloop/scalar_intloop; arithloop is report-only for the C/default lane until that backend has evidence-aware var-loop scalarization or the harness adds an LLVM ratio lane — wired into the native suite; full CIs/setup-randomization still future) | P1-I | High | Med | Low |
 | ✓ | **R1.1** direct lowering of saturated constructor applications — **DONE** | P0-A/B | **Very high** | Med | Med |
 | ✓ | **R2.1** `GC_MALLOC_ATOMIC` for pointer-free scalar boxes — **DONE** | P1-F | Med | Low | Low |
 | ✓ | **R2.2** `Double`/mixed unboxed workers (LR1 generalized to per-param scalar kinds) — **DONE** (`Bool` deferred, low value) | P0-D | Med-High | Med | Med |
@@ -492,7 +494,7 @@ an explicit lowered-IR requirement — see the header.)
 | ✓ | **R2.4** mixed boxed/unboxed scalar workers (unbox scalar slots beside boxed record params + tag-checked field coercion) — **DONE** (recproj 96.8 MB → 544 B) | P0-D | Med | Med | Med |
 | ✓ | **R3.1** drop `ktrampoline` on known non-bouncing saturated calls — **DONE** | P1-E | Med | Med | Med |
 | ◑ | **R3.2** flat closures (capture-free lambda param as a register slot, no per-application `kpush`) — **DONE**; the multi-arg eval/apply half **rejected with rationale** (push/enter≈eval/apply parity §5.2; saturated calls already direct) | P0-D/P1-H | High | High | Med-High |
-| 9 | **R3.3** immediate-tagged small integers (Boehm tagging caveat) | P1-G | High | High | High |
+| ✓ | **R3.3** immediate-tagged small integers | P1-G | High | High | High |
 | 10 | **R1.2** `switch`/decision-tree match shape + record-field-pattern tags (LR2 core already shipped) | P1-C | Low-Med | Med | Low-Med |
 | — | **R4.x** architectural: escape analysis (R4.1), precise GC (R4.2), monomorphization/defunctionalization (R4.3), limited regions (R4.4) | P2-J/K/L/M | — | — | — |
 
@@ -503,8 +505,8 @@ unboxed workers); **R3.1** (trampoline elision), **R2.3** in full (flat C-parame
 capture-free workers — params + `let`/`match`-bound locals, including the binder-bearing rest), and
 **R2.4** (mixed boxed/unboxed scalar workers — recproj 96.8 MB → 544 B), and **R3.2** (flat
 closures — capture-free lambda param as a register slot, hofmap 353 → 289 MB; the multi-arg
-eval/apply half rejected with rationale) also landed; next is **R3.3** (immediate-tagged small
-ints — high-risk Boehm tagging) and **R1.2** (switch match, low). **R1.2 is
+eval/apply half rejected with rationale) and **R3.3** (immediate small `Int`) also landed; next is
+**R1.2** (switch match, low). **R1.2 is
 re-ranked to the bottom of the active list because LR2's core shipped** — only the `switch` shape
 remains, and a linear integer-`==` chain is already `-O2`-jump-table-able. Wave 2 is the pervasive
 non-`Int` calling-convention work where Leroy's regression warning bites — do the low-risk
@@ -525,20 +527,21 @@ currently one to two orders of magnitude from C, expected to reach a *bounded* f
 1–3 land, never as low as the `Int` island without architectural changes (§5/§7). The boxed ABI
 remains the correct fallback.
 
-**Current measured workloads** (native `-O2` vs conservative raw-C, from the historical raw-C
-review; re-measure under §5.5 before citing as proof):
+**Current measured workloads** (native `-O2` vs conservative raw-C where the
+live `test/native/bench.sh` includes a ratio row; fresh single-run smoke from
+2026-07-01, still subject to the §5.5 repetition/CI caveats):
 
 | Bench | Native time / alloc | Raw-C time | Note |
 |---|---|---|---|
-| `arithloop` 2e6 | historical 704 B (was 145 MB) | 0.0021 s | Historical pre-S2.3b P0.2 scalar `int64` var-loop result; not a current correctness gate while the scalarizer is suspended. |
-| `tailsum` 2e6 | 368 B (was 193 MB) | 0.0023 s | LR1 unboxed `Int` worker; ≈1.03× |
-| `recproj` 1e6 | **544 B / 0.02 s** (was 96.8 MB) | 0.0014 s | R2.4 mixed worker: unboxed `Int` counter/acc + tag-checked field coercion; zero `kint`/iter (gated ≤1 MB) |
-| `listfold` 1e6 | **240 MB / 0.68 s** (was 544 MB / 2.0 s) | 0.050 s | R1.1 removed the eta-ctor closure storm (P0-A); residual = cons cells + `kint` boxing (P0-D) |
+| `arithloop` 2e6 | **4,992,021,488 B / 2.87 s** C/default fallback; historical pre-S2.3b scalar result was 704 B | report-only | The C/default lane still lowers through boxed selected-`MonadRef`; this is the remaining P0.2 regression, not the target. Keep report-only until that lane scalarizes or an LLVM ratio lane is added. |
+| `tailsum` 2e6 | **17,520 B / 0.20 s** | **0.22 s native / 0.19 s raw-C = 1.2×** | LR1 unboxed `Int` worker; zero per-iteration allocation on the non-overflow path. |
+| `recproj` 1e6 | **17,584 B / 0.20 s** | report-only | R2.4 mixed worker: unboxed `Int` counter/acc + tag-checked field coercion; zero `kint`/iter (gated ≤1 MB). |
+| `listfold` 1e6 | **64,021,216 B / 0.28 s** (was 544 MB / 2.0 s) | report-only | R1.1 removed the eta-ctor closure storm (P0-A); residual = cons cells + remaining data-representation cost. |
 | `adtbuild` 2e6 | **480 MB / ~240 B/iter** (was ~1.09 GB) | 0.14 s | R1.1 direct `kctor`; the P0-A probe — now data-representation-bound |
 
 **Current gates (`test/native/bench.sh`, P1.1/P1.2 DONE):** native + raw-C built at `-O2`;
 `total_bytes` allocation bounds (`tailsum`/`recproj` ≤1 MB, `listfold`
-≤620 MB); raw-C ratio gates include `tailsum` ≤5×. `arithloop` is report-only while P0.2 is suspended. Gates are on cumulative `total_bytes`
+≤620 MB); raw-C ratio gates include `tailsum` ≤5×. `arithloop` is report-only for the C/default lane; the current ratio smoke at `N=100,000,000` is **130.77 s native / 0.39 s raw-C = 335.3×**. Gates are on cumulative `total_bytes`
 (not `heap_size`, which is insensitive to per-iteration churn). **Methodology gap (P1-I):** single
 timed run, no CIs/repetition, no setup randomization, narrow coverage — a regression gate, not a
 raw-C proof.
@@ -579,8 +582,9 @@ string building (quadratic check), IO boundary, defer/effects, a sqlite-shaped q
   capture-free worker (binder-bearing or not) as walking `kvar`/`kpush` — that is the pre-R2.3 state.
 - **LR1 = `Int`; R2.2 adds `Double` + mixed `Int`/`Double` scalar workers.** The unboxed
   worker is `kwi_` when all-`int64` (golden-stable), `kwd_` when any `double`. `Bool` and
-  record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer is suspended
-  until it can preserve selected `MonadRef` evidence. Never describe a monomorphic `Double` arithmetic loop as `kdbl`-per-iteration — that
+  record-/tuple-param scalars are still boxed (P0-D). The P0.2 *var-loop* scalarizer has an
+  LLVM-first evidence-aware implementation; the shared planner and C/default lane remain open.
+  Never describe a monomorphic `Double` arithmetic loop as `kdbl`-per-iteration — that
   is the pre-R2.2 state.
 - **P0.4 = projection only**, and only for sorted/closed layouts (named records, tuples <10);
   ctor/record-*pattern* field access and tuples ≥10 still use name-based paths.
@@ -611,7 +615,8 @@ adversarial completion signoffs were executed:
   drift; a shared `tailShape` classifier coupling `workerMayBounce`↔`emitTailApp`; fold the dual
   eligibility/emit grammar walk if a fourth worker shape is added.
 
-The remaining roadmap items (R3.3, R1.2, R0.1-rest, R4.x) are PERFORMANCE
+The remaining roadmap items (R1.2, R0.1-rest, R4.x, plus the open C/default var-loop scalar lane)
+are PERFORMANCE
 optimizations, not Spec.md gaps; R4.x carry the §5 documented architectural tradeoffs the project
 deliberately declines (whole-program monomorphization / precise moving GC).
 
@@ -656,7 +661,7 @@ in extended form, in the research workspace (`research/cluster{1..4}-*.md`, `sum
 | `FUNCTIONAL_NATIVE_BACKEND_OPTIMIZATION_RESEARCH.md` (research survey, ~40 cited sources, folklore/measured tags) | §5 (findings by theme) + §6 (full citation list) + §10 (provenance/tag corrections). Extended per-cluster notes remain in `research/cluster{1..4}-*.md`. |
 | `KAPPA_NATIVE_BACKEND_IMPLEMENTATION_GAP_ANALYSIS.md` (gaps P0-A…P2-M vs HEAD, answers to concerns) | §3 (status scorecard) + §4 (remaining issues, same IDs) + §1 (verdict / "approaches raw C") + §9 (invariants). |
 | `KAPPA_NATIVE_BACKEND_OPTIMIZATION_ROADMAP.md` (waves R0–R4, impact/complexity/risk) | §7 (priority table + rationale). |
-| `NATIVE_BACKEND_PERFORMANCE_PLAN.md` (QW1–QW4 + LR1/LR2/P0.2/P0.4 status, adversarial perf review) | §3 (scorecard, LR2-current, and current P0.2 suspension — supersedes the plan's internally-inconsistent status) + §8 (numbers/gates) + the raw-C P0.x reconciliation in §3. |
+| `NATIVE_BACKEND_PERFORMANCE_PLAN.md` (QW1–QW4 + LR1/LR2/P0.2/P0.4 status, adversarial perf review) | §3 (scorecard, LR2-current, and current P0.2 LLVM/C-default split — supersedes the plan's internally-inconsistent status) + §8 (numbers/gates) + the raw-C P0.x reconciliation in §3. |
 | `NATIVE_BACKEND_PERFORMANCE_REVIEW_NOTES.md` (original harsh review: string dispatch, boxing, KEnv, names, FFI) | §2 (representation) + §4 (P0-A/D, P1-C/E/F/G/H, names & FFI notes) — its §1 string-dispatch objection is recorded as RESOLVED (QW1 + LR2). |
 | `NATIVE_BACKEND_RAW_C_PERFORMANCE_REVIEW.md` (raw-C bar, P0.1–P0.5 blockers, gate proposals) | §3 (P0.1–P0.5 reconciliation) + §8 (raw-C expectations, numbers, gates) + §1 (verdict). |
 

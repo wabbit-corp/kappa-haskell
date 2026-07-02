@@ -83,8 +83,9 @@ aggregate via the §28 `Cause` tree (`Both`/`Then`).
 **Status:** the shipped increment implements exactly this latch-drain model
 (`shutdownScope`, `scope.c`). **Refinement noted:** run finalizers fully masked
 (currently the unwind clears the pending interrupt; full Trio-shield masking is a
-small follow-up). **std.supervisor** is a Kappa library over
-`forkIn`/`interrupt`/`await`/`monitor`/`now_monotonic` (not runtime code).
+small follow-up). **std.supervisor** is intended to be a Kappa library over
+`forkIn`/`interrupt`/`await`/`monitor`/`now_monotonic`, but the current source is
+only a surface stub; OTP restart semantics remain future work.
 
 ## 4. Work-stealing scheduler (drives v3 perf — replace the mutex+condvar queue)
 

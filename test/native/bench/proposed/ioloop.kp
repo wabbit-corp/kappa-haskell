@@ -5,8 +5,9 @@
 -- Expected optimized lowering: eligible inline ref ops become direct kref_get/
 --   kref_set where the backend can prove the MonadRef shape; the tail IO recursion runs in
 --   constant C stack via kio_tail without allocating a boxed action per step on
---   the common path. Surface `var` loops stay on the boxed MonadRef path unless
---   a backend optimizer can prove the selected evidence is preserved.
+--   the common path. Surface `var` loops may currently fall back to boxed
+--   MonadRef actions; the target fast path scalarizes when the backend proves
+--   the selected evidence is preserved.
 -- Raw-C baseline idea: a plain C loop with a local accumulator and a single
 --   final write — the IO boundary should add a small constant, not per-step
 --   allocation. Gate: total_bytes/iter bounded (no per-step K_IO/K_PRIM box).

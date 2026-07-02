@@ -841,9 +841,6 @@ builtinState =
           (tyV (piI Q0 "k" tType (piI Q0 "v" tType (listT (entryT (CVar 1) (CVar 0)) ~> mapT (CVar 2) (CVar 1)))))
       , prim "__mapToList"
           (tyV (piI Q0 "k" tType (piI Q0 "v" tType (mapT (CVar 1) (CVar 0) ~> listT (entryT (CVar 2) (CVar 1))))))
-      , prim "newRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
-      , prim "readRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
-      , prim "writeRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
       , prim "__ioNewRef" (tyV (forallEA (CVar 0 ~> io (CVar 2) (refT (CVar 1)))))
       , prim "__ioReadRef" (tyV (forallEA (refT (CVar 0) ~> io (CVar 2) (CVar 1))))
       , prim "__ioWriteRef" (tyV (forallEA (refT (CVar 0) ~> CVar 1 ~> io (CVar 3) tUnit)))
@@ -3772,8 +3769,9 @@ stdBridgeSource =
     ]
 
 -- | Embedded @std.supervisor@ source (§29.2): the OTP-style supervision
--- surface. The interpreter has no preemptive fiber runtime; children
--- run to completion in list order at start (check-mode fidelity).
+-- surface. This is currently a typechecking/import surface only; restart
+-- strategies, child execution, restart intensity, and shutdown semantics remain
+-- future-stage library/runtime work.
 stdSupervisorSource :: Text
 stdSupervisorSource =
   T.unlines

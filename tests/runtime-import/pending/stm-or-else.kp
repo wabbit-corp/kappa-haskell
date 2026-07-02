@@ -1,0 +1,53 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "retry-right:200\nrollback-marker:0\nleft-wins:1\n"
+
+-- Pending class: runtime-pending (`Alternative STM`)
+-- Pending import from zio ZSTMSpec:
+--   - `orElse` tries the right branch when the left branch retries
+--   - writes made by the retrying branch are rolled back
+--   - the right branch is not run when the left branch succeeds
+--
+-- docs/Spec.md section 18 requires `Alternative STM`, but the current source surface
+-- does not resolve `<|>` for STM yet.
+
+module main
+
+leftRetry : TVar Int -> TVar Int -> STM Unit
+let leftRetry ref marker = do
+  writeTVar ref 100
+  writeTVar marker 100
+  retry
+
+rightWins : TVar Int -> STM Unit
+let rightWins ref =
+  writeTVar ref 200
+
+leftWins : TVar Int -> TVar Int -> STM Unit
+let leftWins out marker = do
+  writeTVar out 1
+  writeTVar marker 99
+
+rightShouldNotRun : TVar Int -> STM Unit
+let rightShouldNotRun marker =
+  writeTVar marker 1000
+
+main : UIO Unit
+let main = do
+  retryRef <- atomically (newTVar 0)
+  rollbackMarker <- atomically (newTVar 0)
+  atomically (leftRetry retryRef rollbackMarker <|> rightWins retryRef)
+  retryValue <- atomically (readTVar retryRef)
+  markerAfterRetry <- atomically (readTVar rollbackMarker)
+  printlnString ("retry-right:" ++ showInt retryValue)
+  printlnString ("rollback-marker:" ++ showInt markerAfterRetry)
+
+  out <- atomically (newTVar 0)
+  marker <- atomically (newTVar 0)
+  atomically (leftWins out marker <|> rightShouldNotRun marker)
+  leftValue <- atomically (readTVar out)
+  markerValue <- atomically (readTVar marker)
+  if markerValue == 99 then
+    printlnString ("left-wins:" ++ showInt leftValue)
+  else
+    printlnString "left-wins:branch-leaked"

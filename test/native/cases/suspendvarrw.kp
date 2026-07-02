@@ -1,8 +1,9 @@
 -- CPS LOOP FAMILY (CPS-DESIGN §4) — read-after-write across iterations of a
 -- SUSPENDING loop.  `total` accumulates `i`; each iteration writes `total` then
 -- a later statement (and the next iteration) READS it.  Because the block
--- suspends (`fork`/`await`), it is CPS-lowered, and every read of `total`/`i` is
--- a run-time OP_READ_REF (§4 R7) against the LIVE cell — so the write THIS
+-- suspends (`fork`/`await`), it is CPS-lowered, and every read of `total`/`i` uses
+-- the selected builtin-IO MonadRef read (currently OP_READ_REF in this path)
+-- against the LIVE cell — so the write THIS
 -- iteration is visible to the read in the SAME iteration, and to all later
 -- iterations and the post-loop print, never a stale build-time snapshot.
 -- A build-time `kref_get` snapshot would print the wrong running sum.

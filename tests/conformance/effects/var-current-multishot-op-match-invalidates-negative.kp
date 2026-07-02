@@ -1,0 +1,24 @@
+--! mode check
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+
+-- §18.6.2: current-value facts are invalidated by resolved multi-shot
+-- operation sites even when the operation is nested under an immediate
+-- expression form such as match.
+module main
+
+data Cell = Box (value : Int) | Empty
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+bad : UIO Int
+let bad = do
+    var x = Box 1
+    if x is Box then
+        let _ <-
+            match True
+            case True -> Choice.choose ()
+            case False -> Choice.choose ()
+        pure x.value
+    else
+        pure 0

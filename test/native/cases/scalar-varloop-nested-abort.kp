@@ -1,0 +1,33 @@
+-- Native-only regression for §32.2.6 scalarized mutable-var while loops.
+--
+-- The inner action is the S2.3b LLVM var/while scalarization shape:
+-- builtin-IO `var` cells, native Int arithmetic, and no generic `krt2_while`
+-- loop. If the scalar-loop worker observes an interrupt safepoint, it must
+-- abort the enclosing generated frame through `krt2_scalar_abort()` before the
+-- following print runs.
+module main
+
+spin : UIO Unit
+let spin = do
+    var i = 0
+    var acc = 0
+    while ltInt i 1000000000000 do
+        acc = addInt acc i
+        i = addInt i 1
+    pure ()
+
+child : UIO Unit
+let child = do
+    spin
+    printlnString "AFTER-VARLOOP-RAN"
+
+main : UIO Unit
+let main = do
+    let f <- fork child
+    cede
+    interrupt f
+    let ex <- await f
+    match ex
+    case Success v -> printlnString "exit:success"
+    case Failure (Interrupt cause) -> printlnString "exit:interrupted"
+    case Failure c -> printlnString "exit:other-failure"

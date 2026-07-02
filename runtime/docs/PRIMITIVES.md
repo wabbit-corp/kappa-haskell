@@ -55,14 +55,14 @@ is a link-fail trap.
 | `nowMonotonic` / `sleepFor` / `timeout` / `race` (§18.1.6); `sleepUntil` *(prelude-derived; no C ABI yet)* | `krt2_now_monotonic` / `krt2_sleep_for` / `krt2_timeout` / `krt2_race` |
 | `newFiberRef` / `getFiberRef` / `setFiberRef` / `locallyFiberRef` (§18.1.7) | `krt2_new_fiber_ref` / `get_fiber_ref` / `set_fiber_ref` / `locally_fiber_ref` |
 | `newScope` / `withScope` / `forkIn` / `shutdownScope` / `monitor` / `awaitMonitor` / `demonitor` (§18.1.8) | `krt2_new_scope` / `with_scope` / `fork_in` / `shutdown_scope` / `monitor` / `await_monitor` / `demonitor` |
-| `newPromise` / `awaitPromiseExit` / `completePromise` (§18.1.9); `awaitPromise` *(prelude-derived; no C ABI yet)* | `krt2_new_promise` / `await_promise_exit` / `complete_promise` (**poll/isDone missing — ADD #3**) |
+| `newPromise` / `awaitPromiseExit` / `completePromise` / `pollPromise` / `isDonePromise` (§18.1.9); `awaitPromise` *(prelude-derived; no C ABI yet)* | `krt2_new_promise` / `await_promise_exit` / `complete_promise` / `poll_promise` / `is_done_promise` |
 | `fiberId` / `currentFiberId` (§18.1.10); labels *(no C ABI yet — needs a per-fiber label field)* | `krt2_fiber_id` / `krt2_current_fiber_id` |
 | `blocking` (§18.1.11) | `krt2_blocking` / blocking `K_NATIVE`: park fiber, run action on off-worker lane, wake with exact result |
 | `poll` / `uninterruptible` / `mask`+restore / `ensuring` / `acquireRelease` (§18.1.12) | `krt2_poll` / `uninterruptible` / `mask` / `ensuring` / `acquire_release` |
 | `sandbox` / `unsandbox` (§18.1.2) | *(prelude-derived; no `krt2_*` C ABI yet)* |
 | STM: `newTVar` / `readTVar` / `writeTVar` / `retry` / `check` / `atomically` / `orElse` + `stm_pure`/`stm_bind` (§18.1.13) | `krt2_new_tvar` / `read_tvar` / `write_tvar` / `retry` / `check` / `atomically` / `or_else` — implemented in `stm.c`, adversarially reviewed |
 | do-kernel: `defer` / `return` / `break` / `continue` / `while` + do-scope finalizers (§18.7/§18.8) | `krt2_defer` / `return` / `break` / `continue` / `while` / `doscope` |
-| MonadRef: `newRef` / `readRef` / `writeRef` (§18.6.1) | `krt2_new_ref` / `read_ref` / `write_ref` |
+| builtin `IO`/`STM` `MonadRef`: `newRef` / `readRef` / `writeRef` (§18.6.1) | selected `MonadRef` actions; builtin evidence lowers to `krt2_new_ref` / `read_ref` / `write_ref` |
 | IO kernel + Exit/Cause construction (§28) | `krt2_pure`/`bind`/`then`/`catch`/`finally`/`throw`; `krt2_success`/`failure`/`cause_fail`/`cause_interrupt`/`cause_defect`/`cause_both`/`cause_then`/`interrupt_cause` |
 
 The cancellation contract is verified by `tests/cancel.c`: interrupt waits for the
@@ -149,15 +149,16 @@ a pure Kappa library.
   parent/child-independence contract is the test oracle. **This is a semantic
   conformance gap, not just convenience.**
 
-### 5. `disconnect` (detach interruption)
-- **Ref:** ZIO `disconnect` (heavily exercised by disconnect/timeout-disconnect tests).
-- **Why a primitive:** changes who-waits-for-whom — `interrupt` on a disconnected
-  fiber must *return immediately* while finalization continues in the background
-  (vs. the default "wait for finalizers"). A scheduler-level reparenting of the
-  interrupt-completion edge.
-- **Approach:** "disconnect = forkDaemon + a detached interrupt." **Lower
-  confidence on 'pure library'** — first verify whether forkDaemon's existing
-  detach is sufficient; if so this drops to DERIVE.
+### 5. `disconnect` (detach interruption) — OPEN
+- **Status:** not accepted as complete. The current `Prelude.hs` derivation is a
+  useful sketch, but it is not yet a proven implementation: the fork/handler
+  installation region must be masked, the child interruption must preserve the
+  parent's `InterruptCause`, and tests must prove parent resumption is detached
+  from child finalizer completion rather than merely relying on a fast finalizer.
+- **Ref:** ZIO `disconnect` (detach interruption from the caller's wait edge).
+- **Decision needed:** first try a principled masked derivation over
+  `forkDaemon`/`join`/`onInterrupt`/`interruptFork`; promote to a runtime
+  primitive only if that derivation cannot satisfy the exact detach contract.
 
 ### 6. `interruptAll` / `awaitAll` (batch over a fiber set) — borderline
 - `interruptAll` over an explicit *scope* is already `krt2_shutdown_scope`.
@@ -225,12 +226,13 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
    markers detected by the `KK_FINSEQ` drain (reused the carried Reason).
 4. ~~**`Promise.poll` / `isDone` — ADD #3.**~~ ✅ DONE — `OP_POLL_PROMISE`/
    `OP_IS_DONE_PROMISE` read the cell non-blockingly.
-5. **`disconnect` — ADD #5 (verify-then-add).** Confirm it isn't already
-   expressible via forkDaemon + detached-interrupt before adding a primitive.
-6. **Derive the library layer** (zipPar/foreachPar/raceWith/raceAll/timeoutTo,
+5. **`disconnect` — OPEN.** Fix or replace the current prelude derivation with a
+   masked, cause-preserving implementation and strengthen the ordering tests
+   before calling it complete.
+6. **Derive the remaining library layer** (zipPar/foreachPar/raceWith/raceAll/timeoutTo,
    Cause projections as pure folds, `std.supervisor`, memoize, semaphores/queues).
-   Pure composition — gated only on #1–#5 and on the v2 codegen that lets `.kp`
-   call these primitives.
+   Pure composition — gated on the underlying primitive surfaces and on the v2
+   codegen that lets `.kp` call them.
 7. **Diagnostics (`Fiber.status`/`interruptAll`/`awaitAll` as structured queries)
    — last.** Observability, not semantics; `krt2_dump` covers the immediate need.
 
@@ -243,5 +245,5 @@ Things ZIO/CE have that Kappa's spec deliberately does **not** standardize:
   fixed); remaining source-level gaps are tracked in `docs/RUNTIME-SPEC-COVERAGE.md`.
 - The reference interpreter (`Interp.hs` `runPrimIO'`) is now in lockstep for
   onInterrupt/onExit, Promise.poll/isDone, modifyFiberRef, and `std.atomic`
-  `Bool`/`Integer` operations (ADD #1/#2/#3/#4); `disconnect` (#5) remains, and
-  atomics still need fixed-width/polymorphic surface completion.
+  `Bool`/`Integer` operations (ADD #1/#2/#3/#4); atomics still need
+  fixed-width/polymorphic surface completion, and `disconnect` remains open.

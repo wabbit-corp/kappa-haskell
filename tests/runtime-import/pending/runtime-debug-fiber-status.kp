@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "status:parked\nlabel:worker\n"
+
+-- Pending class: runtime-pending plus API proposal (`std.runtime_diagnostics`)
+-- Pending import from runtime-internal/debug style reference tests, including
+-- cats-effect IOFiberSuite observability checks. The portable Kappa target is
+-- docs/Spec.md section 32.2.11 runtime diagnostics rather than another runtime's
+-- exact string formatting.
+
+module main
+
+import std.prelude.(type Option(..))
+import std.runtime_diagnostics.(type RuntimeSnapshot)
+import std.runtime_diagnostics.(term snapshotRuntime, term fiberId, term findFiberSnapshot)
+import std.runtime_diagnostics.(term fiberSnapshotStatus, term fiberSnapshotLabel)
+
+main : UIO Unit
+let main = do
+  gate <- newPromise @Unit
+  fiber <- fork (do
+    setFiberLabel (Some "worker")
+    awaitPromise gate
+  )
+
+  cede
+  fid <- fiberId fiber
+  snapshot <- snapshotRuntime
+  fiberSnapshot <- findFiberSnapshot snapshot fid
+
+  printlnString ("status:" ++ fiberSnapshotStatus fiberSnapshot)
+  printlnString ("label:" ++ fiberSnapshotLabel fiberSnapshot)
+
+  interrupt fiber

@@ -168,7 +168,7 @@ INTENTIONALLY-UNSUPPORTED(cite) | SPEC-CONFLICT(cite) | UNCLEAR.
 | § | requirement (short) | status | evidence/probe | note |
 |---|---|---|---|---|
 | §29.1 | `std.atomic` provided **iff backend advertises `rt-atomics`** | IMPLEMENTED+PARTIAL | embedded `std.atomic` surface resolves; interpreter and native paths use atomic-cell operations | remaining gaps are fixed-width / polymorphic `AtomicValue` coverage, not atomic-cell semantics |
-| §29.2 | `std.supervisor` — **unconditional MUST** | IMPLEMENTED-WEAKLY-TESTED | `/tmp/kp/sup.kp` `import std.supervisor` resolves (no error) | embedded `stdSupervisorSource`; observable supervision semantics tied to `rt-core` (not interpreted) — surface present |
+| §29.2 | `std.supervisor` — **unconditional MUST** | SURFACE-PRESENT / SEMANTICS-MISSING | `/tmp/kp/sup.kp` `import std.supervisor` resolves (no error) | embedded `stdSupervisorSource`; OTP-style restart semantics remain future-stage library/runtime work |
 | §29.3 | `std.hash` — **unconditional MUST**; deterministic mixing | IMPLEMENTED+TESTED | `/tmp/kp/hd2.kp` `hashWith defaultHashSeed 42` deterministic ("equal"); `import std.hash` OK | `stdHashSource`; FNV-1a `Eval.hs:674` |
 | §29.3 | `Hashable` instances for Unit/Bool/Int/Integer/Nat/Double/String/Bytes/Byte/UnicodeScalar/Grapheme/Ordering | IMPLEMENTED-WEAKLY-TESTED | all instances in `stdHashSource` (`Prelude.hs:1361-1392`) | derivation/structural hashing not re-probed |
 | §29.4 | `std.unicode` — **unconditional MUST** | IMPLEMENTED-WEAKLY-TESTED | `/tmp/kp/uni2.kp` `byteLength "abc"` → 3 | `stdUnicodeSource`; doc admits incremental decoder/cursors NOT provided (UCD 15.0.0) |

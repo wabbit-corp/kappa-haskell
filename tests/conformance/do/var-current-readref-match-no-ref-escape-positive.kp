@@ -1,0 +1,25 @@
+module main
+
+-- §18.6.2 POSITIVE: a direct recognized readRef (ref x) is not a reference
+-- escape, even when nested under an immediate action expression.
+--! mode check
+--! assertNoErrors
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+good : UIO Unit
+let good = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        let _ <-
+            match True
+            case True -> readRef (ref cell)
+            case False -> pureIO Empty
+        let n =
+            match cell
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"

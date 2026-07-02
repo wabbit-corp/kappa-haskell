@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "15511210043330985984000000\n"
+
+module main
+
+makeRef : UIO (Ref Int)
+let makeRef = do
+    var prod = 1
+    var j = 1
+    while leInt j 25 do
+        prod = mulInt prod j
+        j = addInt j 1
+    pureIO (ref prod)
+
+main : UIO Unit
+let main = do
+    let r <- makeRef
+    let seen <- readRef r
+    printlnString (showInt seen)

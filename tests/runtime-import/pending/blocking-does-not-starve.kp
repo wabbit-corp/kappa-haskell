@@ -1,0 +1,46 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "poll:100\nreleased:T\n"
+
+-- Pending class: host-bridge-proposal (`std.testing.blocking` host shim)
+-- Pending import from cats-effect IOConcurrencySuite:
+--   - "blocking work does not starve poll"
+--
+-- Source-level `blocking` and the native rt-blocking lane are implemented. This
+-- imported fixture remains pending until there is a portable std.testing
+-- host-blocking shim that can distinguish an off-worker lane from ordinary
+-- cooperative effects. It intentionally does not assert that plain `blocking`
+-- makes the foreign call cancellable; docs/Spec.md §18.1.11 says it does not.
+
+module main
+
+import std.testing.blocking.(type BlockingLatch)
+import std.testing.blocking.(term newBlockingLatch, term awaitBlockingLatch, term releaseBlockingLatch)
+import std.testing.blocking.(term floodBlockingWorkers, term awaitBlockingWorkers)
+
+showBool : Bool -> String
+let showBool b = match b
+    case True -> "T"
+    case False -> "F"
+
+pollMany : Int -> UIO Int
+let pollMany n = do
+  if n <= 0 then
+    ioPure 0
+  else do
+    cede
+    rest <- pollMany (n - 1)
+    ioPure (rest + 1)
+
+main : UIO Unit
+let main = do
+  latch <- newBlockingLatch
+  workers <- floodBlockingWorkers 200 (blocking (awaitBlockingLatch latch))
+
+  poller <- fork (pollMany 100)
+  polled <- await poller
+  released <- releaseBlockingLatch latch
+  awaitBlockingWorkers workers
+
+  printlnString ("poll:" ++ showInt polled)
+  printlnString ("released:" ++ showBool released)

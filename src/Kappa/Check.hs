@@ -230,6 +230,23 @@ data CheckState = CheckState
   -- ^ Explicit @readRef (ref x)@ / @writeRef (ref x)@ occurrences accepted by
   -- checker after overload and MonadRef-evidence equality. Usage consumes these
   -- by the @ref x@ span instead of re-inferring dictionary projections.
+  , csRecognizedMultishotOps :: !(Map Span (GName, Text))
+  -- ^ Effect-operation selections whose resolved label identity and operation
+  -- metadata prove a multi-shot resumption quantity. Later flow/usage passes
+  -- consume the recorded source span instead of rediscovering @label.op@ from
+  -- source spelling.
+  , csEffectOpValueGlobals :: !(Map GName EffectOpValueInfo)
+  -- ^ Top-level globals whose definiens is a resolved effect operation value.
+  -- Application-site recognition consults this checker-owned table rather than
+  -- inferring operation identity from a function type or source spelling.
+  , csHandlerOpQuantities :: !(Map Span Q)
+  -- ^ Handler resumption binder span -> resolved operation resumption quantity.
+  -- Usage consumes this after checking so scoped labels and aliases cannot be
+  -- miscounted by source label text.
+  , csNextRefCellId :: !Int
+  -- ^ Fresh counter for optimization-only mutable-cell identities carried by
+  -- 'RefLoweringWitness'. These ids are local to the elaborated Core body and
+  -- never affect source semantics.
   , csDemand :: !PlaceDemand
   -- ^ surrounding place demand of the expression being elaborated
   -- (selects the §16.1.5/§16.1.6 eliminator and accessor capability)
@@ -546,6 +563,10 @@ initCheckState =
     , csAllowInoutBinderContext = False
     , csMutableBindingFields = Map.empty
     , csRecognizedRefOps = Map.empty
+    , csRecognizedMultishotOps = Map.empty
+    , csEffectOpValueGlobals = Map.empty
+    , csHandlerOpQuantities = Map.empty
+    , csNextRefCellId = 0
     , csDemand = DemandRead
     , csThis = Nothing
     , csTraitSupers = []
@@ -605,6 +626,7 @@ data VarRefInfo = VarRefInfo
   , vriMonadRefDict :: !Term
   , vriMonadType :: !Value
   , vriErrorType :: !Value
+  , vriLoweringWitness :: !(Maybe RefLoweringWitness)
   }
 
 data VarReadBlock
@@ -626,6 +648,11 @@ data CtxEntry = CtxEntry
   -- ^ Local alias of a projection declaration. This carries the projection's
   -- symbol-backed footprint through ordinary let bindings, so inout rewriting
   -- can reason about @~(proj x)@ without inspecting source spellings.
+  , ceOpValueInfo :: !(Maybe EffectOpValueInfo)
+  -- ^ Local alias of a resolved effect operation value. The operation's
+  -- first-class type does not retain its declared resumption quantity, so flow
+  -- and usage analyses must carry this checker-owned fact through simple
+  -- aliases instead of rediscovering @label.op@ from source spelling.
   , ceQ :: !(Maybe S.Quantity)
   -- ^ Quantity prefix of an implicit local binder (§16.3.3).
   , ceBorrow :: !Bool
@@ -711,6 +738,13 @@ data EffOpInfo = EffOpInfo
   , eoiResT :: !Term -- ^ the final result type @B@, de Bruijn under params + op-implicits
   }
 
+data EffectOpValueInfo = EffectOpValueInfo
+  { eoviLabel :: !GName
+  , eoviName :: !Text
+  , eoviQ :: !Q
+  , eoviArity :: !Int
+  }
+
 emptyCtx :: Ctx
 emptyCtx = Ctx [] [] Map.empty Map.empty Map.empty Set.empty [] Map.empty False Nothing Map.empty Map.empty 0 Nothing
 
@@ -741,7 +775,7 @@ bindEntry entry v ctx =
 
 bindCtx :: Text -> Bool -> Value -> Ctx -> Ctx
 bindCtx n implocal ty ctx =
-  bindEntry (CtxEntry n ty implocal Nothing Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
+  bindEntry (CtxEntry n ty implocal Nothing Nothing Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
 
 -- | Bind a local definition: the environment carries the definiens, so
 -- conversion sees through local lets (delta for locals, §15.1).
@@ -751,12 +785,16 @@ bindCtxLet n implocal ty v ctx =
 
 bindCtxLetProj :: Text -> Bool -> Value -> Value -> Maybe ProjInfo -> Ctx -> Ctx
 bindCtxLetProj n implocal ty v mpj ctx =
-  bindEntry (CtxEntry n ty implocal Nothing mpj Nothing False noSpan) v ctx
+  bindCtxLetProjOp n implocal ty v mpj Nothing ctx
+
+bindCtxLetProjOp :: Text -> Bool -> Value -> Value -> Maybe ProjInfo -> Maybe EffectOpValueInfo -> Ctx -> Ctx
+bindCtxLetProjOp n implocal ty v mpj mop ctx =
+  bindEntry (CtxEntry n ty implocal Nothing mpj mop Nothing False noSpan) v ctx
 
 -- | Bind a @var@ cell; the name denotes the cell itself (§18.6.1).
 bindCtxVar :: Text -> Value -> VarRefInfo -> Ctx -> Ctx
 bindCtxVar n ty info ctx =
-  let ctx' = bindEntry (CtxEntry n ty False (Just info) Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
+  let ctx' = bindEntry (CtxEntry n ty False (Just info) Nothing Nothing Nothing False noSpan) (VRigid (length (ctxEnv ctx)) []) ctx
    in ctx' {ctxVarCurrentVersions = Map.insert n 0 (ctxVarCurrentVersions ctx')}
 
 kCondTerm :: KCond -> Term
@@ -809,6 +847,12 @@ ctxRefinementOf ctx n = Map.lookup (refineRoot ctx n) (ctxRefines ctx)
 
 varCurrentKey :: Text -> Int -> Text
 varCurrentKey n v = "$var-current:" <> n <> ":" <> T.pack (show v)
+
+varCurrentKeyPrefix :: Text
+varCurrentKeyPrefix = "$var-current:"
+
+isVarCurrentKey :: Text -> Bool
+isVarCurrentKey = T.isPrefixOf varCurrentKeyPrefix
 
 varCurrentRootOf :: Ctx -> Text -> Maybe Text
 varCurrentRootOf ctx n = do
@@ -1046,6 +1090,19 @@ recordMutableBindingFields ctx sp hiddenRefTy info = do
 recordRecognizedRefOp :: Span -> Text -> CheckM ()
 recordRecognizedRefOp sp op =
   modify' $ \st -> st {csRecognizedRefOps = Map.insert sp op (csRecognizedRefOps st)}
+
+recordRecognizedMultishotOp :: Span -> EffectOpValueInfo -> CheckM ()
+recordRecognizedMultishotOp sp info =
+  modify' $ \st ->
+    st {csRecognizedMultishotOps = Map.insert sp (eoviLabel info, eoviName info) (csRecognizedMultishotOps st)}
+
+recordEffectOpValueGlobal :: GName -> EffectOpValueInfo -> CheckM ()
+recordEffectOpValueGlobal g info =
+  modify' $ \st -> st {csEffectOpValueGlobals = Map.insert g info (csEffectOpValueGlobals st)}
+
+recordHandlerOpQuantity :: Span -> Q -> CheckM ()
+recordHandlerOpQuantity sp q =
+  modify' $ \st -> st {csHandlerOpQuantities = Map.insert sp q (csHandlerOpQuantities st)}
 
 renderPayloadValue :: Ctx -> Value -> CheckM Text
 renderPayloadValue ctx v = do
@@ -1482,12 +1539,12 @@ metaOccursInValueSeen metas fuel0 seen0 target = goV fuel0 seen0
     goK n seen
       | exhausted n = const True
       | otherwise = \case
-      KBind _ _ t -> metaOccursInTerm metas (next n) seen target t
+      KBind _ _ t _ -> metaOccursInTerm metas (next n) seen target t
       KLet _ _ t -> metaOccursInTerm metas (next n) seen target t
       KLetQ _ t m -> metaOccursInTerm metas (next n) seen target t || maybe False (metaOccursInTerm metas (next n) seen target . snd) m
       KExpr t -> metaOccursInTerm metas (next n) seen target t
-      KVarItem _ initT actT -> metaOccursInTerm metas (next n) seen target initT || metaOccursInTerm metas (next n) seen target actT
-      KAssign lhs _ rhs actT ->
+      KVarItem _ initT actT _ -> metaOccursInTerm metas (next n) seen target initT || metaOccursInTerm metas (next n) seen target actT
+      KAssign lhs _ rhs actT _ ->
         metaOccursInTerm metas (next n) seen target lhs
           || metaOccursInTerm metas (next n) seen target rhs
           || metaOccursInTerm metas (next n) seen target actT
@@ -1524,12 +1581,12 @@ metaOccursInTerm metas fuel0 seen target = go fuel0
     goK n
       | exhausted n = const True
       | otherwise = \case
-      KBind _ _ t -> go (next n) t
+      KBind _ _ t _ -> go (next n) t
       KLet _ _ t -> go (next n) t
       KLetQ _ t m -> go (next n) t || maybe False (go (next n) . snd) m
       KExpr t -> go (next n) t
-      KVarItem _ initT actT -> go (next n) initT || go (next n) actT
-      KAssign lhs _ rhs actT -> go (next n) lhs || go (next n) rhs || go (next n) actT
+      KVarItem _ initT actT _ -> go (next n) initT || go (next n) actT
+      KAssign lhs _ rhs actT _ -> go (next n) lhs || go (next n) rhs || go (next n) actT
       KReturn t -> go (next n) t
       KBreak _ -> False
       KContinue _ -> False
@@ -1643,16 +1700,16 @@ metaOccursInValueShallow target = goV 512
     goK n
       | exhausted n = const True
       | otherwise = \case
-          KBind _ _ t -> metaOccursInTermShallowFuel (next n) target t
+          KBind _ _ t _ -> metaOccursInTermShallowFuel (next n) target t
           KLet _ _ t -> metaOccursInTermShallowFuel (next n) target t
           KLetQ _ t m ->
             metaOccursInTermShallowFuel (next n) target t
               || maybe False (metaOccursInTermShallowFuel (next n) target . snd) m
           KExpr t -> metaOccursInTermShallowFuel (next n) target t
-          KVarItem _ initT actT ->
+          KVarItem _ initT actT _ ->
             metaOccursInTermShallowFuel (next n) target initT
               || metaOccursInTermShallowFuel (next n) target actT
-          KAssign lhs _ rhs actT ->
+          KAssign lhs _ rhs actT _ ->
             metaOccursInTermShallowFuel (next n) target lhs
               || metaOccursInTermShallowFuel (next n) target rhs
               || metaOccursInTermShallowFuel (next n) target actT
@@ -4120,6 +4177,7 @@ infer ctx expr = case expr of
           _ -> do
             n0 <- gets (length . csDiags)
             (fTm, fTy) <- infer ctx f
+            recordMultishotOpApplication ctx f args (exprSpan expr)
             headUnresolved <- case f of
               EVar {} -> do
                 ds <- gets csDiags
@@ -5283,26 +5341,34 @@ data AppSlot
 
 elabAppChecked :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM Term
 elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
-  st0 <- get
-  (fTm, fTy) <- infer ctx f
-  plan <- peel fTy args []
-  done <- case plan of
-    Nothing -> pure Nothing
-    Just (slots, resTy) -> do
-      ok <- unify ctx resTy expected
-      if not ok
-        then pure Nothing
-        else do
-          tm <- foldM step fTm slots
-          pure (Just tm)
-  case done of
-    Just tm -> pure tm
-    Nothing -> do
-      put st0
-      (tm, ty) <- infer ctx (EApp f args)
-      (tm1, ty1) <- insertAllImplicits ctx sp tm ty
-      expectType ctx sp ty1 expected
-      pure tm1
+  explicitRefFacetApp ctx f args >>= \case
+    Just (tm, ty) -> do
+      expectType ctx sp ty expected
+      pure tm
+    Nothing ->
+      checkedMonadRefMethodApp ctx f args expected sp >>= \case
+        Just tm -> pure tm
+        Nothing -> do
+          st0 <- get
+          (fTm, fTy) <- infer ctx f
+          plan <- peel fTy args []
+          done <- case plan of
+            Nothing -> pure Nothing
+            Just (slots, resTy) -> do
+              ok <- unify ctx resTy expected
+              if not ok
+                then pure Nothing
+                else do
+                  tm <- foldM step fTm slots
+                  pure (Just tm)
+          case done of
+            Just tm -> pure tm
+            Nothing -> do
+              put st0
+              (tm, ty) <- infer ctx (EApp f args)
+              (tm1, ty1) <- insertAllImplicits ctx sp tm ty
+              expectType ctx sp ty1 expected
+              pure tm1
   where
     peel ty as0 acc = do
       tyF <- forceM ty
@@ -6402,7 +6468,7 @@ elabDot ctx e member = do
     EVar ln
       | Just eli <- Map.lookup (nameText ln) merged
       , Just op <- find ((== nameText mname) . eoiName) (eliOps eli) ->
-          effOpSelection eli op
+          effOpSelection (nameSpan mname) eli op
     _ -> elabDotOrdinary ctx e member mname
 
 elabDotOrdinary :: Ctx -> Expr -> DotMember -> Name -> CheckM (Term, Value)
@@ -8220,8 +8286,9 @@ elabLet ctx0 binds body mexpected = go ctx0 binds []
           rhsTyTm <- quoteIn ctx rhsTy
           rhsV <- evalIn ctx rhsTm
           mPj <- if implocal then pure Nothing else projectionInfoOfExpr ctx rhs
+          mOp <- if implocal then pure Nothing else operationValueInfoOfExpr ctx rhs
           let q = qOf (bpQuantity prefix)
-              ctx0' = bindCtxLetProj (nameText n) implocal rhsTy rhsV mPj ctx
+              ctx0' = bindCtxLetProjOp (nameText n) implocal rhsTy rhsV mPj mOp ctx
               ctx1 = if implocal then setTopPrefix sp prefix ctx0' else ctx0'
               -- §7.4.3 stable alias: `let q = p` transports refinement
               ctx' = case rhs of
@@ -8640,8 +8707,11 @@ tailResumptiveField = "__tailResumptive"
 -- §30.2.2.7 OpCall tree node with the identity continuation. For an
 -- unparameterized effect (@params = []@) this is just @argTy -> Eff <[label :
 -- E]> resTy@.
-effOpSelection :: EffLabelInfo -> EffOpInfo -> CheckM (Term, Value)
-effOpSelection eli op = do
+effOpSelection :: Span -> EffLabelInfo -> EffOpInfo -> CheckM (Term, Value)
+effOpSelection opSp eli op = do
+  let info = effectOpValueInfo eli op
+  when (isMultishotOpValue info) $
+    recordRecognizedMultishotOp opSp info
   let -- the implicit binders are the effect's type parameters followed by the
       -- operation's own forall-bound implicits; the interface in the row uses
       -- only the effect parameters (the first @ne@).
@@ -8683,6 +8753,57 @@ effOpSelection eli op = do
       tm = foldr (\(nm, _) acc -> CLam Impl Q0 nm acc) opBody allParams
   tyV <- evalIn emptyCtx tyTerm
   pure (tm, tyV)
+
+effectOpValueInfo :: EffLabelInfo -> EffOpInfo -> EffectOpValueInfo
+effectOpValueInfo eli op =
+  EffectOpValueInfo
+    { eoviLabel = eliLabel eli
+    , eoviName = eoiName op
+    , eoviQ = eoiQ op
+    , eoviArity = length (eoiArgsT op)
+    }
+
+isMultishotOpValue :: EffectOpValueInfo -> Bool
+isMultishotOpValue info = eoviQ info `elem` [QW, QGe1]
+
+operationValueInfoOfExpr :: Ctx -> Expr -> CheckM (Maybe EffectOpValueInfo)
+operationValueInfoOfExpr ctx = \case
+  EAscription e _ _ -> operationValueInfoOfExpr ctx e
+  EDot (EVar ln) member -> do
+    merged <- effMerged ctx
+    let opname = case member of
+          DotName n -> nameText n
+          DotOperator n -> nameText n
+    pure $ do
+      eli <- Map.lookup (nameText ln) merged
+      op <- find ((== opname) . eoiName) (eliOps eli)
+      pure (effectOpValueInfo eli op)
+  EVar n ->
+    case lookupCtx (nameText n) ctx of
+      Just (_, entry) -> pure (ceOpValueInfo entry)
+      Nothing -> do
+        mg <- lookupGlobalName (nameText n)
+        case mg of
+          Nothing -> pure Nothing
+          Just g -> gets (Map.lookup g . csEffectOpValueGlobals)
+  EApp f args
+    | all isImplicitArg args -> operationValueInfoOfExpr ctx f
+  _ -> pure Nothing
+  where
+    isImplicitArg = \case
+      ArgImplicit {} -> True
+      _ -> False
+
+recordMultishotOpApplication :: Ctx -> Expr -> [Arg] -> Span -> CheckM ()
+recordMultishotOpApplication ctx f args sp = do
+  minfo <- operationValueInfoOfExpr ctx f
+  forM_ minfo $ \info ->
+    when (isMultishotOpValue info && explicitArgCount args >= eoviArity info) $
+      recordRecognizedMultishotOp sp info
+  where
+    explicitArgCount = length . mapMaybe (\case
+      ArgExplicit _ -> Just ()
+      _ -> Nothing)
 
 -- | Split an effect-row value at a label: the matching interface and
 -- the residual row (§18.1.21 SplitEff, by §18.1.18 label identity).
@@ -8807,6 +8928,7 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                     -- bind the resumption `k` (at its declared quantity) and
                     -- check the body in the target carrier
                     mkK cArgs = do
+                      recordHandlerOpQuantity (nameSpan kn) (eoiQ op)
                       let cK = bindCtx (nameText kn) False kTy cArgs
                       inner <- check cK body resultTy
                       pure (CLam Expl (eoiQ op) (nameText kn) inner)
@@ -9109,7 +9231,11 @@ elabMonadDo ctx me items0 sp
 
     monadDoNeedsMutable = any go
       where
-        exprNeedsLift e = exprHasCurrentRead ctx e || exprHasBang e || exprHasGeneratedVarRead e
+        exprNeedsLift e =
+          exprHasCurrentRead ctx e
+            || exprHasBang e
+            || exprHasGeneratedVarRead e
+            || not (Set.null (collectRefFacets e))
         exprHasGeneratedVarRead = \case
           EVarRead {} -> True
           _ -> False
@@ -9152,13 +9278,24 @@ elabMonadDo ctx me items0 sp
       appDict <- resolveImplicit c sp (VGlobN prelApplicative [(Expl, mTy)])
       pure $ CApp Expl (CApp Impl (CProj appDict "pureA") aTm) val
 
-    bindDiscard target c a act rest = do
-      body <- directGo target (bindCtx "__u" False a c) rest
+    bindDiscard target c a act rest =
+      bindDiscardFrom target c c a act rest
+
+    bindDiscardFrom target c cCont a act rest = do
+      body <- directGo target (bindCtx "__u" False a cCont) rest
       monadBind c a target act (CLam Expl QW "__u" body)
 
-    bindPattern target c pat a act rest = do
-      checkIrrefutable c pat a (patternSpan pat)
-      lam <- handlerClauseLam c Q1 pat a (\c' -> directGo target c' rest)
+    bindPattern target c pat a act rest =
+      bindPatternFrom target c c pat a Nothing act rest
+
+    bindPatternFrom target c cCont pat a mrhs act rest = do
+      checkIrrefutable cCont pat a (patternSpan pat)
+      lam <-
+        handlerClauseLam cCont Q1 pat a $ \c' -> do
+          cAliased <- case mrhs of
+            Just rhs -> aliasCurrentReadPattern cCont pat rhs c'
+            Nothing -> pure c'
+          directGo target cAliased rest
       monadBind c a target act lam
 
     direct = directGo resT ctx
@@ -9182,15 +9319,21 @@ elabMonadDo ctx me items0 sp
             else do
               actT <- actionTy target
               st0 <- get
-              n0 <- gets (length . csDiags)
+              n0 <- gets (length . filter isError . csDiags)
               tm0 <- check c e actT
-              n1 <- gets (length . csDiags)
+              n1 <- gets (length . filter isError . csDiags)
               if n1 == n0
                 then pure tm0
                 else do
+                  stAction <- get
                   put st0
                   valTm <- check c e target
-                  monadPure c target valTm
+                  nPure <- gets (length . filter isError . csDiags)
+                  if nPure < n1
+                    then monadPure c target valTm
+                    else do
+                      put stAction
+                      pure tm0
     directGo target c (item : rest) = case item of
       DoExpr e0 -> do
         rewriteVarInoutStatement c e0 >>= \case
@@ -9203,7 +9346,10 @@ elabMonadDo ctx me items0 sp
                 a <- freshMetaV c
                 actT <- actionTy a
                 tm <- check c e actT
-                bindDiscard target c a tm rest
+                writes <- writtenRefFacetsExecutedExpr c e
+                escapes <- escapedRefFacetsExecutedExpr c e
+                let cAfter = applyVarCurrentEffects writes escapes c
+                bindDiscardFrom target c cAfter a tm rest
       DoBind (LetBind implocal prefix pat mty rhs0 bsp) -> do
         rewritten <-
           if isNothing mty && not implocal && prefix == emptyPrefix
@@ -9223,7 +9369,10 @@ elabMonadDo ctx me items0 sp
                   Nothing -> freshMetaV c
                 actT <- actionTy a
                 rhsTm <- check c rhs actT
-                bindPattern target c pat a rhsTm rest
+                writes <- writtenRefFacetsExecutedExpr c rhs
+                escapes <- escapedRefFacetsExecutedExpr c rhs
+                let cAfter = applyVarCurrentEffects writes escapes c
+                bindPatternFrom target c cAfter pat a (Just rhs) rhsTm rest
       DoLet (LetBind implocal prefix pat mty rhs0 bsp) -> do
         rewritten <-
           if isNothing mty && not implocal && prefix == emptyPrefix
@@ -9251,8 +9400,12 @@ elabMonadDo ctx me items0 sp
                   PVar qn -> do
                     rhsV <- evalIn c rhsTm
                     mPj <- if implocal then pure Nothing else projectionInfoOfExpr c rhs
-                    let cDef = bindCtxLetProj (nameText qn) implocal rhsTy rhsV mPj c
-                        cMarked = markImplicitLocal bsp implocal prefix c cDef
+                    escapes <- escapedRefFacetsExpr c rhs
+                    mOp <- if implocal then pure Nothing else operationValueInfoOfExpr c rhs
+                    let cDef = bindCtxLetProjOp (nameText qn) implocal rhsTy rhsV mPj mOp c
+                        cEsc = foldr escapeVarCurrent cDef (Set.toList escapes)
+                    cAliased <- aliasCurrentReadPattern c pat rhs cEsc
+                    let cMarked = markImplicitLocal bsp implocal prefix c cAliased
                     CLet (qOf (bpQuantity prefix)) (nameText qn) rhsTyTm rhsTm <$> directGo target cMarked rest
                   _ -> do
                     let c0 = bindCtx "__b" False rhsTy c
@@ -9277,9 +9430,11 @@ elabMonadDo ctx me items0 sp
                 insertAllImplicits c (nameSpan n) tm0 ty0
             rhsTyTm <- quoteIn c rhsTy
             refTy <- monadRefRefType c refDict rhsTyTm
+            loweringW <- builtinIOMonadRefLowering c mTy refDict
+            escapes <- escapedRefFacetsExpr c rhs
             let newAct = monadRefNewAction refDict rhsTyTm rhsTm
-                refInfo = VarRefInfo rhsTy rhsTyTm refDict mTy (VGlobN (GName preludeModule "Void") [])
-                cVar = bindCtxVar (nameText n) refTy refInfo c
+                refInfo = VarRefInfo rhsTy rhsTyTm refDict mTy (VGlobN (GName preludeModule "Void") []) loweringW
+                cVar = foldr escapeVarCurrent (bindCtxVar (nameText n) refTy refInfo c) (Set.toList escapes)
             recordMutableBindingFields c (nameSpan n) refTy refInfo
             body <- directGo target cVar rest
             monadBind c refTy target newAct (CLam Expl QW (nameText n) body)
@@ -9290,8 +9445,11 @@ elabMonadDo ctx me items0 sp
           _ -> directAssign target c n True rhs asp rest
       DoAssign n False rhs asp ->
         directAssign target c n False rhs asp rest
-      DoIf alts mels isp ->
-        directGo target c (DoExpr (ifToExpr alts mels isp) : rest)
+      DoIf alts mels isp -> do
+        lifted <- liftCurrentReadsStmtIf c alts mels isp
+        case lifted of
+          Just items -> directGo target c (items ++ rest)
+          Nothing -> directGo target c (DoExpr (ifToExpr alts mels isp) : rest)
       DoWhile ml cond0 body mels wsp ->
         directWhile target c ml cond0 body mels wsp rest
       other -> do
@@ -9306,25 +9464,35 @@ elabMonadDo ctx me items0 sp
         else case lookupCtx (nameText n) c of
           Just (i, entry)
             | Just info <- ceVarInfo entry -> do
-                let evidenceShift = i + 1
-                    refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
-                    aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
-                    a = vriStoredType info
-                    refTm = CVar i
-                rhsActTy <- actionTy a
-                rhsTm <- if monadic then check c rhs rhsActTy else check c rhs a
-                if monadic
-                  then do
-                    let cAssign = bindCtx "__assign" False a c
-                        refTm' = shiftTerm 1 0 refTm
-                        aTm' = shiftTerm 1 0 aTm
-                        refDict' = shiftTerm 1 0 refDict
-                        writeAct = monadRefWriteAction refDict' aTm' refTm' (CVar 0)
-                    writeThen <- bindDiscard target cAssign (VGlobN prelUnit []) writeAct rest
-                    monadBind c a target rhsTm (CLam Expl QW "__assign" writeThen)
-                  else do
-                    let writeAct = monadRefWriteAction refDict aTm refTm rhsTm
-                    bindDiscard target c (VGlobN prelUnit []) writeAct rest
+                        let evidenceShift = i + 1
+                            refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
+                            aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
+                            a = vriStoredType info
+                            refTm = CVar i
+                        rhsActTy <- actionTy a
+                        rhsTm <- if monadic then check c rhs rhsActTy else check c rhs a
+                        writes <-
+                          if monadic
+                            then Set.insert (nameText n) <$> writtenRefFacetsExecutedExpr c rhs
+                            else pure (Set.singleton (nameText n))
+                        escapes <-
+                          if monadic
+                            then escapedRefFacetsExecutedExpr c rhs
+                            else escapedRefFacetsExpr c rhs
+                        let cAfter = applyVarCurrentEffects writes escapes c
+                        if monadic
+                          then do
+                            let cAssign = bindCtx "__assign" False a c
+                                cAfterAssign = bindCtx "__assign" False a cAfter
+                                refTm' = shiftTerm 1 0 refTm
+                                aTm' = shiftTerm 1 0 aTm
+                                refDict' = shiftTerm 1 0 refDict
+                                writeAct = monadRefWriteAction refDict' aTm' refTm' (CVar 0)
+                            writeThen <- bindDiscardFrom target cAssign cAfterAssign (VGlobN prelUnit []) writeAct rest
+                            monadBind c a target rhsTm (CLam Expl QW "__assign" writeThen)
+                          else do
+                            let writeAct = monadRefWriteAction refDict aTm refTm rhsTm
+                            bindDiscardFrom target c cAfter (VGlobN prelUnit []) writeAct rest
           Just _ -> do
             errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
               ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
@@ -9362,14 +9530,29 @@ elabMonadDo ctx me items0 sp
             put st0
             condActTy <- actionTy boolT
             Right <$> check c condD condActTy
-      bodyAct <- directGo unitT c body
+      condWrites <- writtenRefFacetsExecutedExpr c condD
+      condEscapes <- case condEither of
+        Right {} -> escapedRefFacetsExecutedExpr c condD
+        Left {} -> escapedRefFacetsExpr c condD
+      let cCond = applyVarCurrentEffects condWrites condEscapes c
+      bodyAct <- directGo unitT cCond body
       elseAct <- case mels of
-        Just els -> directGo unitT c els
+        Just els -> directGo unitT cCond els
         Nothing -> monadPure c unitT (CCtor prelUnit Nothing [])
+      bodyWrites <- doItemsVarWrites cCond body
+      elseWrites <- maybe (pure Set.empty) (doItemsVarWrites cCond) mels
+      bodyEscapes <- doItemsVarEscapes cCond body
+      elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes cCond) mels
+      let cAfter =
+            applyVarCurrentEffects
+              (Set.union bodyWrites elseWrites)
+              (Set.union bodyEscapes elseEscapes)
+              cCond
       loopTy <- actionTy unitT
       loopTyTm <- quoteIn c loopTy
       loopName <- freshNameM "__loop"
       let cLoop = bindCtx loopName False loopTy c
+          cAfterLoop = bindCtx loopName False loopTy cAfter
           shiftTo c' = shiftTerm (ctxLen c' - ctxLen c) 0
           seqBodyThenLoop c' loopIx =
             monadBind c' unitT unitT (shiftTo c' bodyAct) (CLam Expl QW "__u" (CVar (loopIx + 1)))
@@ -9382,7 +9565,7 @@ elabMonadDo ctx me items0 sp
           thenAct <- seqBodyThenLoop cCond 1
           let branch = CIf (CVar 0) thenAct (shiftTo cCond elseAct)
           monadBind cLoop boolT unitT (shiftTo cLoop condAct) (CLam Expl QW "__cond" branch)
-      after <- bindDiscard target cLoop unitT (CVar 0) rest
+      after <- bindDiscardFrom target cLoop cAfterLoop unitT (CVar 0) rest
       pure (CLetRec QW loopName loopTyTm loopRhs after)
 
     isAbruptLoopItem = \case
@@ -9441,6 +9624,10 @@ checkIf :: Ctx -> [(Expr, Expr)] -> Maybe Expr -> Span -> Value -> CheckM Term
 checkIf ctx alts mels sp resT = go ctx alts
   where
     boolT = VGlobN prelBool []
+    applyCondEffects base cond = do
+      writes <- writtenRefFacetsExecutedExpr base cond
+      escapes <- escapedRefFacetsExecutedExpr base cond
+      pure (applyVarCurrentEffects writes escapes base)
     go c [] = case mels of
       Just e -> check c e resT
       Nothing -> do
@@ -9454,6 +9641,7 @@ checkIf ctx alts mels sp resT = go ctx alts
       refs <- condRefines c cnd
       let ctxR = refineCtx refs c
       cTm <- check ctxR cnd boolT
+      ctxREff <- applyCondEffects ctxR cnd
       -- §7.4.1/§16.1.8: a bare rigid Bool condition is branch-local
       -- equality evidence (b = True in then, b = False in else),
       -- consulted by conversion through the rigid-fact table
@@ -9482,13 +9670,14 @@ checkIf ctx alts mels sp resT = go ctx alts
                 pure r0
             modify' $ \st -> st {csBoolFacts = oldBool}
             pure r
-      tTm <- withFact "True" (check ctxR t resT)
+      tTm <- withFact "True" (check ctxREff t resT)
       -- the negative side refines the subject to the complementary
       -- constructors of its data type (§7.4.1 lacks-refinement); a bare
       -- `x is C` condition — or its §16.4.2 negation `not (x is C)` —
       -- licenses the complement
       negs <- condRefinesElse c cnd
-      eTm <- withFact "False" (go (refineCtx negs c) rest)
+      ctxFalseEff <- applyCondEffects (refineCtx negs c) cnd
+      eTm <- withFact "False" (go ctxFalseEff rest)
       pure (CIf cTm tTm eTm)
 
 -- | Only a whole-condition single `x is C` test yields a usable
@@ -9526,7 +9715,7 @@ condRefinesElse ctx = fmap snd . condRefinesBoth ctx
 -- checkers) means the negation laws compose through `&&`/`||`/thunks
 -- exactly as the positive refinements do.
 condRefinesBoth :: Ctx -> Expr -> CheckM ([(Text, [GName])], [(Text, [GName])])
-condRefinesBoth _ctx = go
+condRefinesBoth ctx = go
   where
     go = \case
       EIs (EVar n) cref -> do
@@ -9535,19 +9724,28 @@ condRefinesBoth _ctx = go
         neg <- complementRefines pos
         pure (pos, neg)
       -- §16.4.2 negation: `not e` swaps the then/else refinements.
-      EApp (EVar (Name "not" _)) [ArgExplicit e] -> do
-        (pos, neg) <- go e
-        pure (neg, pos)
-      EApp (EVar (Name op _)) [ArgExplicit l, ArgExplicit r]
-        | op == "&&" -> do
+      EApp f [ArgExplicit e] -> do
+        isNot <- exprResolvesToGlobal ctx f prelNot
+        if isNot
+          then do
+            (pos, neg) <- go e
+            pure (neg, pos)
+          else pure ([], [])
+      EApp f [ArgExplicit l, ArgExplicit r] -> do
+        isAnd <- exprResolvesToGlobal ctx f prelAnd
+        isOr <- if isAnd then pure False else exprResolvesToGlobal ctx f prelOr
+        if isAnd
+          then do
             (lp, _) <- go l
             (rp, _) <- go r
             -- a failed conjunction proves nothing positive (§7.4.1)
             pure (lp ++ rp, [])
-        | op == "||" -> do
-            (lp, _) <- go l
-            (rp, _) <- go r
-            pure ([(x, gs ++ gs') | (x, gs) <- lp, (x', gs') <- rp, x == x'], [])
+          else if isOr
+            then do
+              (lp, _) <- go l
+              (rp, _) <- go r
+              pure ([(x, gs ++ gs') | (x, gs) <- lp, (x', gs') <- rp, x == x'], [])
+            else pure ([], [])
       EThunk e _ -> go e
       _ -> pure ([], [])
     quietCtor (CtorRef mqual n) = do
@@ -9566,6 +9764,15 @@ condRefinesBoth _ctx = go
               , gnameText ctorG == nameText n
               ]
       pure (case cands of (g : _) -> Just g; [] -> Nothing)
+
+exprResolvesToGlobal :: Ctx -> Expr -> GName -> CheckM Bool
+exprResolvesToGlobal ctx expr expected = do
+  st0 <- get
+  n0 <- gets (length . csDiags)
+  tm <- fst <$> infer ctx expr
+  n1 <- gets (length . csDiags)
+  put st0
+  pure (n1 == n0 && headGlobalOf tm == Just expected)
 
 checkMatch :: Ctx -> Expr -> [MatchCase] -> Span -> Value -> CheckM Term
 checkMatch ctx scrut cases sp resT = do
@@ -10834,6 +11041,27 @@ monadResultType mTy a = case mTy of
   VRigid l args -> Just (VRigid l (args ++ [(Expl, a)]))
   _ -> Nothing
 
+monadActionView :: Value -> CheckM (Maybe (Value, Value))
+monadActionView ty0 = do
+  ty <- forceM ty0
+  pure $ case ty of
+    VGlobN g args
+      | Just (pre, (Expl, a)) <- unsnoc args ->
+          Just (VGlobN g pre, a)
+    VFlex m args
+      | Just (pre, (Expl, a)) <- unsnoc args ->
+          Just (VFlex m pre, a)
+    VRigid l args
+      | Just (pre, (Expl, a)) <- unsnoc args ->
+          Just (VRigid l pre, a)
+    _ -> Nothing
+  where
+    unsnoc [] = Nothing
+    unsnoc [x] = Just ([], x)
+    unsnoc (x : xs) = do
+      (pre, lastArg) <- unsnoc xs
+      Just (x : pre, lastArg)
+
 requireMonadRef :: Ctx -> Span -> Value -> CheckM Term
 requireMonadRef ctx sp mTyV =
   resolveImplicit ctx sp (VGlobN prelMonadRef [(Expl, mTyV)])
@@ -10854,72 +11082,240 @@ monadRefWriteAction :: Term -> Term -> Term -> Term -> Term
 monadRefWriteAction dictTm aTm refTm rhsTm =
   CApp Expl (CApp Expl (CApp Impl (CProj dictTm "writeRef") aTm) refTm) rhsTm
 
+freshRefCellId :: CheckM RefCellId
+freshRefCellId = do
+  n <- gets csNextRefCellId
+  modify' $ \st -> st {csNextRefCellId = n + 1}
+  pure (RefCellId n)
+
+termHeadGlob :: Term -> Maybe GName
+termHeadGlob = \case
+  CApp _ f _ -> termHeadGlob f
+  CGlob g -> Just g
+  _ -> Nothing
+
+isIOCarrierValue :: Value -> CheckM Bool
+isIOCarrierValue mTy0 = do
+  mTy <- forceM mTy0
+  pure $ case mTy of
+    VGlobN g [(Expl, _)] -> g == prelIO
+    _ -> False
+
+isIOMonadRefInstance :: InstanceEntry -> Bool
+isIOMonadRefInstance ie =
+  ieTrait ie == prelMonadRef
+    && case ieDict ie of
+      GName mn _ | mn == preludeModule -> case ieHead ie of
+        [CApp Expl (CGlob g) _] -> g == prelIO
+        _ -> False
+      _ -> False
+
+builtinIOMonadRefLowering :: Ctx -> Value -> Term -> CheckM (Maybe RefLoweringWitness)
+builtinIOMonadRefLowering _ctx mTy dictTm = do
+  isIO <- isIOCarrierValue mTy
+  insts <- gets csInstances
+  case termHeadGlob dictTm of
+    Just dictG
+      | isIO
+      , any (\ie -> ieDict ie == dictG && isIOMonadRefInstance ie) insts -> do
+          Just . BuiltinIORefWitness <$> freshRefCellId
+    _ -> pure Nothing
+
+refReadWitnessFromInfo :: VarRefInfo -> Maybe RefActionWitness
+refReadWitnessFromInfo info = BuiltinIORefRead <$> vriLoweringWitness info
+
+refWriteWitnessFromInfo :: VarRefInfo -> Maybe RefActionWitness
+refWriteWitnessFromInfo info = BuiltinIORefWrite <$> vriLoweringWitness info
+
 data ExplicitRefOp = ExplicitRefRead | ExplicitRefWrite
   deriving (Eq)
 
-refOpOfTerm :: Term -> Maybe (ExplicitRefOp, Maybe Term)
+data RefOpEvidence = RefOpBare | RefOpCarrier Term | RefOpDict Term
+
+refOpOfTerm :: Term -> Maybe (ExplicitRefOp, RefOpEvidence)
 refOpOfTerm = \case
-  CApp _ f _ -> refOpOfTerm f
-  CGlob g | g == prelReadRef -> Just (ExplicitRefRead, Nothing)
-  CGlob g | g == prelWriteRef -> Just (ExplicitRefWrite, Nothing)
-  CProj dict "readRef" -> Just (ExplicitRefRead, Just dict)
-  CProj dict "writeRef" -> Just (ExplicitRefWrite, Just dict)
-  CProjAt dict "readRef" _ -> Just (ExplicitRefRead, Just dict)
-  CProjAt dict "writeRef" _ -> Just (ExplicitRefWrite, Just dict)
+  -- Bare prelude `readRef`/`writeRef` are generated MonadRef member-projection
+  -- wrappers, not concrete IO primitives. Leading implicit carrier/evidence
+  -- applications are preserved as RefOpCarrier/RefOpDict and checked against the
+  -- hidden var evidence before recognition succeeds.
+  CApp ic f a -> case refOpOfTerm f of
+    Just (op, RefOpBare)
+      | ic == Impl -> Just (op, RefOpCarrier a)
+    Just (op, RefOpCarrier _)
+      | ic == Impl -> Just (op, RefOpDict a)
+    Just (op, ev@RefOpDict {}) -> Just (op, ev)
+    _ -> Nothing
+  CGlob g
+    | g == prelReadRef -> Just (ExplicitRefRead, RefOpBare)
+    | g == prelWriteRef -> Just (ExplicitRefWrite, RefOpBare)
+  CProj dict "readRef" -> Just (ExplicitRefRead, RefOpDict dict)
+  CProj dict "writeRef" -> Just (ExplicitRefWrite, RefOpDict dict)
+  CProjAt dict "readRef" _ -> Just (ExplicitRefRead, RefOpDict dict)
+  CProjAt dict "writeRef" _ -> Just (ExplicitRefWrite, RefOpDict dict)
   _ -> Nothing
 
-explicitArgExprs :: [Arg] -> [Expr]
-explicitArgExprs = mapMaybe $ \case
-  ArgExplicit e -> Just e
+termMatchesValue :: Ctx -> Term -> Value -> CheckM Bool
+termMatchesValue ctx actual0 expected0 = do
+  let d = ctxLen ctx
+  actualV <- forceM =<< evalIn ctx actual0
+  expectedV <- forceM expected0
+  actual <- quoteIn ctx actualV >>= zonkTermM d
+  expected <- quoteIn ctx expectedV >>= zonkTermM d
+  if actual == expected
+    then pure True
+    else do
+      actualN <- normalizeTermAt d actual
+      expectedN <- normalizeTermAt d expected
+      pure (actualN == expectedN)
+
+termMatchesTerm :: Ctx -> Term -> Term -> CheckM Bool
+termMatchesTerm ctx actual0 expected0 = do
+  expectedV <- forceM =<< evalIn ctx expected0
+  termMatchesValue ctx actual0 expectedV
+
+refEvidenceMatchesCarrierDict :: Ctx -> Value -> Term -> RefOpEvidence -> CheckM Bool
+refEvidenceMatchesCarrierDict ctx expectedCarrier expectedDict = \case
+  RefOpBare -> pure True
+  RefOpCarrier actualCarrier -> termMatchesValue ctx actualCarrier expectedCarrier
+  RefOpDict actualDict -> termMatchesTerm ctx actualDict expectedDict
+
+checkedMonadRefMethodApp :: Ctx -> Expr -> [Arg] -> Value -> Span -> CheckM (Maybe Term)
+checkedMonadRefMethodApp ctx f args expected sp =
+  case ordinaryRefReadArgs args of
+    Just (headArgs, refE) -> do
+      mop <- resolvedRefOpExpr ctx f headArgs
+      case mop of
+        Just (ExplicitRefRead, ev) -> checkedRead ev refE
+        _ -> pure Nothing
+    Nothing ->
+      case ordinaryRefWriteArgs args of
+        Just (headArgs, refE, rhsE) -> do
+          mop <- resolvedRefOpExpr ctx f headArgs
+          case mop of
+            Just (ExplicitRefWrite, ev) -> checkedWrite ev refE rhsE
+            _ -> pure Nothing
+        Nothing -> pure Nothing
+  where
+    checkedRead ev refE = do
+      monadActionView expected >>= \case
+        Just (mTy, aTy) -> do
+          refDict <- requireMonadRef ctx sp mTy
+          matches <- refEvidenceMatchesCarrierDict ctx mTy refDict ev
+          if not matches
+            then pure Nothing
+            else do
+              aTm <- quoteIn ctx aTy
+              refTy <- monadRefRefType ctx refDict aTm
+              refTm <- check ctx refE refTy
+              pure (Just (monadRefReadAction refDict aTm refTm))
+        Nothing -> pure Nothing
+    checkedWrite ev refE rhsE = do
+      monadActionView expected >>= \case
+        Just (mTy, resultTy) -> do
+          unitOk <- unify ctx resultTy (VGlobN prelUnit [])
+          if not unitOk
+            then pure Nothing
+            else do
+              refDict <- requireMonadRef ctx sp mTy
+              matches <- refEvidenceMatchesCarrierDict ctx mTy refDict ev
+              if not matches
+                then pure Nothing
+                else do
+                  aTm <- freshMeta
+                  aTy <- evalIn ctx aTm
+                  refTy <- monadRefRefType ctx refDict aTm
+                  refTm <- check ctx refE refTy
+                  rhsTm <- check ctx rhsE aTy
+                  pure (Just (monadRefWriteAction refDict aTm refTm rhsTm))
+        Nothing -> pure Nothing
+
+checkedMonadRefExpr :: Ctx -> Expr -> Value -> CheckM (Maybe Term)
+checkedMonadRefExpr ctx expr expected = case expr of
+  EAscription e _ _ -> checkedMonadRefExpr ctx e expected
+  EApp f args -> checkedMonadRefMethodApp ctx f args expected (exprSpan expr)
+  _ -> pure Nothing
+
+ordinaryRefReadArgs :: [Arg] -> Maybe ([Arg], Expr)
+ordinaryRefReadArgs = go []
+  where
+    go prefix = \case
+      ArgImplicit e : rest -> go (prefix ++ [ArgImplicit e]) rest
+      [ArgExplicit e]
+        | Nothing <- refFacetExpr e -> Just (prefix, e)
+      _ -> Nothing
+
+ordinaryRefWriteArgs :: [Arg] -> Maybe ([Arg], Expr, Expr)
+ordinaryRefWriteArgs = go []
+  where
+    go prefix = \case
+      ArgImplicit e : rest -> go (prefix ++ [ArgImplicit e]) rest
+      [ArgExplicit refE, ArgExplicit rhsE]
+        | Nothing <- refFacetExpr refE -> Just (prefix, refE, rhsE)
+      _ -> Nothing
+
+refFacetExpr :: Expr -> Maybe (Name, Span)
+refFacetExpr = \case
+  ERefFacet n sp -> Just (n, sp)
+  EAscription e _ _ -> refFacetExpr e
   _ -> Nothing
 
-refFacetReadArg :: [Arg] -> Maybe (Name, Span)
-refFacetReadArg args =
-  case explicitArgExprs args of
-    [ERefFacet n sp] -> Just (n, sp)
-    [EAscription (ERefFacet n sp) _ _] -> Just (n, sp)
-    _ -> Nothing
+refFacetReadArgs :: [Arg] -> Maybe ([Arg], Name, Span)
+refFacetReadArgs = go []
+  where
+    go prefix = \case
+      ArgImplicit e : rest -> go (prefix ++ [ArgImplicit e]) rest
+      [ArgExplicit e]
+        | Just (n, sp) <- refFacetExpr e -> Just (prefix, n, sp)
+      _ -> Nothing
 
-refFacetWriteArgs :: [Arg] -> Maybe (Name, Expr, Span)
-refFacetWriteArgs args =
-  case explicitArgExprs args of
-    [ERefFacet n sp, rhs] -> Just (n, rhs, sp)
-    [EAscription (ERefFacet n sp) _ _, rhs] -> Just (n, rhs, sp)
-    _ -> Nothing
+refFacetWriteArgsWithHead :: [Arg] -> Maybe ([Arg], Name, Expr, Span)
+refFacetWriteArgsWithHead = go []
+  where
+    go prefix = \case
+      ArgImplicit e : rest -> go (prefix ++ [ArgImplicit e]) rest
+      [ArgExplicit refE, ArgExplicit rhs]
+        | Just (n, sp) <- refFacetExpr refE -> Just (prefix, n, rhs, sp)
+      _ -> Nothing
 
 explicitRefFacetApp :: Ctx -> Expr -> [Arg] -> CheckM (Maybe (Term, Value))
 explicitRefFacetApp ctx f args = do
-  mop <- resolvedRefOp
-  case mop of
-    Just (ExplicitRefRead, mdict)
-      | Just (n, sp) <- refFacetReadArg args ->
-          withVar n sp mdict $ \_i info refDict aTm refTm -> do
+  case (refFacetReadArgs args, refFacetWriteArgsWithHead args) of
+    (Just (headArgs, n, sp), _) -> do
+      mop <- resolvedRefOp headArgs
+      case mop of
+        Just (ExplicitRefRead, ev) ->
+          withVar n sp ev $ \_i info refDict aTm refTm -> do
             case monadResultType (vriMonadType info) (vriStoredType info) of
               Just actionTy -> do
                 recordRecognizedRefOp sp "readRef"
                 pure (Just (monadRefReadAction refDict aTm refTm, actionTy))
               Nothing -> unsupportedRefFacet ctx n sp
-    Just (ExplicitRefWrite, mdict)
-      | Just (n, rhs, sp) <- refFacetWriteArgs args ->
-          withVar n sp mdict $ \_i info refDict aTm refTm -> do
+        _ -> pure Nothing
+    (_, Just (headArgs, n, rhs, sp)) -> do
+      mop <- resolvedRefOp headArgs
+      case mop of
+        Just (ExplicitRefWrite, ev) ->
+          withVar n sp ev $ \_i info refDict aTm refTm -> do
             rhsTm <- check ctx rhs (vriStoredType info)
             case monadResultType (vriMonadType info) (VGlobN prelUnit []) of
               Just actionTy -> do
                 recordRecognizedRefOp sp "writeRef"
                 pure (Just (monadRefWriteAction refDict aTm refTm rhsTm, actionTy))
               Nothing -> unsupportedRefFacet ctx n sp
+        _ -> pure Nothing
     _ -> pure Nothing
   where
-    resolvedRefOp = do
+    resolvedRefOp headArgs = do
       st0 <- get
       n0 <- gets (length . csDiags)
       r <- do
-        (tm, _) <- infer ctx f
+        let headExpr = if null headArgs then f else EApp f headArgs
+        (tm, _) <- infer ctx headExpr
         pure (refOpOfTerm tm)
       n1 <- gets (length . csDiags)
       put st0
       pure (if n1 == n0 then r else Nothing)
-    withVar n _sp mdict k =
+    withVar n _sp ev k =
       case lookupCtx (nameText n) ctx of
         Just (i, entry)
           | Just info <- ceVarInfo entry -> do
@@ -10927,90 +11323,295 @@ explicitRefFacetApp ctx f args = do
                   refDict = shiftTerm evidenceShift 0 (vriMonadRefDict info)
                   aTm = shiftTerm evidenceShift 0 (vriStoredTypeTerm info)
                   refTm = CVar i
-              matches <- maybe (pure True) (refDictMatches refDict) mdict
+              matches <- refEvidenceMatchesCarrierDict ctx (vriMonadType info) refDict ev
               if matches
                 then k i info refDict aTm refTm
                 else pure Nothing
         _ -> pure Nothing
-      where
-        refDictMatches expected0 actual0 = do
-          let d = ctxLen ctx
-          actualV <- forceM =<< evalIn ctx actual0
-          expectedV <- forceM =<< evalIn ctx expected0
-          actual <- quoteIn ctx actualV >>= zonkTermM d
-          expected <- quoteIn ctx expectedV >>= zonkTermM d
-          if actual == expected
-            then pure True
-            else do
-              actualN <- normalizeTermAt d actual
-              expectedN <- normalizeTermAt d expected
-              pure (actualN == expectedN)
 
 recognizedRefReadRoot :: Ctx -> Expr -> CheckM (Maybe Text)
 recognizedRefReadRoot ctx = \case
   EVarRead n _ -> pure (varCurrentRootOf ctx (nameText n))
   EAscription e _ _ -> recognizedRefReadRoot ctx e
   EApp f args
-    | Just (n, _) <- refFacetReadArg args -> do
-        mop <- resolvedRefOpExpr ctx f
+    | Just (headArgs, n, _) <- refFacetReadArgs args -> do
+        mop <- resolvedRefOpExpr ctx f headArgs
         case mop of
-          Just (ExplicitRefRead, mdict) -> do
-            ok <- refOpMatchesMutable ctx n mdict
+          Just (ExplicitRefRead, ev) -> do
+            ok <- refOpMatchesMutable ctx n ev
             pure (if ok then varCurrentRootOf ctx (nameText n) else Nothing)
           _ -> pure Nothing
   _ -> pure Nothing
+
+refReadWitnessOfExpr :: Ctx -> Expr -> CheckM (Maybe RefActionWitness)
+refReadWitnessOfExpr ctx = \case
+  EVarRead n _ -> pure (witnessFor n)
+  EAscription e _ _ -> refReadWitnessOfExpr ctx e
+  EApp f args
+    | Just (headArgs, n, _) <- refFacetReadArgs args -> do
+        mop <- resolvedRefOpExpr ctx f headArgs
+        case mop of
+          Just (ExplicitRefRead, ev) -> do
+            ok <- refOpMatchesMutable ctx n ev
+            pure (if ok then witnessFor n else Nothing)
+          _ -> pure Nothing
+  _ -> pure Nothing
+  where
+    witnessFor n =
+      case lookupCtx (nameText n) ctx of
+        Just (_, entry)
+          | Just info <- ceVarInfo entry -> refReadWitnessFromInfo info
+        _ -> Nothing
 
 recognizedRefWriteName :: Ctx -> Expr -> CheckM (Maybe Text)
 recognizedRefWriteName ctx = \case
   EAscription e _ _ -> recognizedRefWriteName ctx e
   EApp f args
-    | Just (n, _, _) <- refFacetWriteArgs args -> do
-        mop <- resolvedRefOpExpr ctx f
+    | Just (headArgs, n, _, _) <- refFacetWriteArgsWithHead args -> do
+        mop <- resolvedRefOpExpr ctx f headArgs
         case mop of
-          Just (ExplicitRefWrite, mdict) -> do
-            ok <- refOpMatchesMutable ctx n mdict
+          Just (ExplicitRefWrite, ev) -> do
+            ok <- refOpMatchesMutable ctx n ev
             pure (if ok then Just (nameText n) else Nothing)
           _ -> pure Nothing
   _ -> pure Nothing
 
-resolvedRefOpExpr :: Ctx -> Expr -> CheckM (Maybe (ExplicitRefOp, Maybe Term))
-resolvedRefOpExpr ctx f = do
+writtenRefFacetsExecutedExpr :: Ctx -> Expr -> CheckM (Set Text)
+writtenRefFacetsExecutedExpr ctx expr = do
+  base <- writtenRefWritesInExecutedExpr ctx expr
+  multi <- multishotOpExecutedExpr ctx expr
+  pure $
+    if multi
+      then Set.union base (Map.keysSet (ctxVarCurrentVersions ctx))
+      else base
+
+writtenRefWritesInExecutedExpr :: Ctx -> Expr -> CheckM (Set Text)
+writtenRefWritesInExecutedExpr ctx = go
+  where
+    unionsM = fmap Set.unions . sequence
+    goLet (LetBind {}) = pure Set.empty
+    goCase = \case
+      MatchCase _ mg body _ -> unionsM [maybe (pure Set.empty) go mg, go body]
+      MatchImpossible {} -> pure Set.empty
+    goExcept (ExceptCase _ mg body _) = unionsM [maybe (pure Set.empty) go mg, go body]
+    goHandler = \case
+      HandlerReturn _ body _ -> go body
+      HandlerOp _ _ _ body _ -> go body
+    goDecl = \case
+      DTopSplice e _ -> go e
+      DUnsafeAssert _ inner _ -> goDecl inner
+      _ -> pure Set.empty
+    go = \case
+      EAscription e _ _ -> go e
+      EBang _ e _ -> go e
+      EDo _ items _ -> doItemsVarWrites ctx items
+      EIf alts mels _ -> do
+        condWrites <- unionsM [go cond | (cond, _) <- alts]
+        branchWrites <- unionsM [go body | (_, body) <- alts]
+        elseWrites <- maybe (pure Set.empty) go mels
+        pure (Set.unions [condWrites, branchWrites, elseWrites])
+      EMatch scrut cases _ ->
+        unionsM (go scrut : map goCase cases)
+      ETry scrut excepts mfin _ ->
+        unionsM (go scrut : map goExcept excepts ++ [maybe (pure Set.empty) go mfin])
+      ETryMatch scrut cases excepts mfin _ ->
+        unionsM (go scrut : map goCase cases ++ map goExcept excepts ++ [maybe (pure Set.empty) go mfin])
+      EHandle _ _ scrut cases _ ->
+        unionsM (go scrut : map goHandler cases)
+      ELet binds body _ ->
+        unionsM (map goLet binds ++ [go body])
+      EBlock decls mres _ ->
+        unionsM (map goDecl decls ++ [maybe (pure Set.empty) go mres])
+      e -> maybe Set.empty Set.singleton <$> recognizedRefWriteName ctx e
+
+applyVarCurrentEffects :: Set Text -> Set Text -> Ctx -> Ctx
+applyVarCurrentEffects writes escapes ctx =
+  foldr escapeVarCurrent
+    (foldr invalidateVarCurrent ctx (Set.toList writes))
+    (Set.toList escapes)
+
+-- | §18.6.2 current-value facts do not survive an operation site whose
+-- declared resumption quantity permits multi-shot reuse. Recognition consumes
+-- checker-recorded spans produced by resolved effect-label identity and
+-- operation metadata, not by rediscovering @label.op@ source spelling.
+multishotOpExecutedExpr :: Ctx -> Expr -> CheckM Bool
+multishotOpExecutedExpr _ctx expr = do
+  ops <- gets csRecognizedMultishotOps
+  pure (recognizedMultishotInExpr ops expr)
+
+recognizedMultishotInExpr :: Map Span (GName, Text) -> Expr -> Bool
+recognizedMultishotInExpr ops = go
+  where
+    hit sp = Map.member sp ops
+    hitMember = \case
+      DotName op -> hit (nameSpan op)
+      DotOperator op -> hit (nameSpan op)
+    anyMap p = any p
+    goArg = \case
+      ArgExplicit e -> go e
+      ArgImplicit e -> go e
+      ArgInout e _ -> go e
+      ArgNamedBlock fields _ -> any (maybe False go . snd) fields
+    goLet (LetBind _ _ _ _ rhs _) = go rhs
+    goCase = \case
+      MatchCase _ mg body _ -> maybe False go mg || go body
+      MatchImpossible {} -> False
+    goExcept (ExceptCase _ mg body _) = maybe False go mg || go body
+    goHandler = \case
+      HandlerReturn _ body _ -> go body
+      HandlerOp _ _ _ body _ -> go body
+    goDecl = \case
+      DLet _ ld _ -> go (ldBody ld)
+      DTopSplice e _ -> go e
+      DUnsafeAssert _ inner _ -> goDecl inner
+      _ -> False
+    goDo = \case
+      DoBind lb -> go (lbExpr lb)
+      DoLet lb -> go (lbExpr lb)
+      DoLetQ _ rhs mElse _ -> go rhs || maybe False (go . snd) mElse
+      DoVar _ mty rhs _ -> maybe False go mty || go rhs
+      DoAssign _ _ rhs _ -> go rhs
+      DoExpr e -> go e
+      DoUsing _ _ rhs _ -> go rhs
+      DoDefer {} -> False
+      DoReturn _ me _ -> maybe False go me
+      DoBreak {} -> False
+      DoContinue {} -> False
+      DoWhile _ cond body mels _ -> go cond || any goDo body || maybe False (any goDo) mels
+      DoFor _ _ src body mels _ -> go src || any goDo body || maybe False (any goDo) mels
+      DoIf alts mels _ ->
+        any (\(cond, body) -> go cond || any goDo body) alts || maybe False (any goDo) mels
+      DoDecl d -> goDecl d
+    goCompClause = \case
+      S.CFor _ _ _ src _ -> go src
+      S.CLet _ _ mty rhs _ -> maybe False go mty || go rhs
+      S.CIf e -> go e
+      S.COrderBy keys _ -> any (go . snd) keys
+      S.CSkip e _ -> go e
+      S.CTake e _ -> go e
+      S.CDistinct me _ -> maybe False go me
+      S.CGroupBy key aggs _ _ -> go key || any (\(_, e, mu) -> go e || maybe False go mu) aggs
+      S.CJoin _ _ src on _ _ -> go src || go on
+    goYield = \case
+      YieldExpr e -> go e
+      YieldPair k v -> go k || go v
+    goPatch = \case
+      PatchUpdate _ (PatchValue e) -> go e
+      PatchExtend _ e -> go e
+      PatchSection a b -> go a || go b
+      PatchPun {} -> False
+    goOpElem = \case
+      ChainOperand e -> go e
+      ChainOp {} -> False
+    go = \case
+      EVar {} -> False
+      ERefFacet {} -> False
+      EVarRead {} -> False
+      EHole {} -> False
+      EIntLit {} -> False
+      EFloatLit {} -> False
+      EStringLit _ parts _ -> any (go . ipExpr) parts
+      EQuotedLit {} -> False
+      EUnit {} -> False
+      ETuple es _ -> any go es
+      ERecordLit items _ -> any (\(RecItem _ _ mv) -> maybe False go mv) items
+      ERecordType {} -> False
+      eApp@(EApp f args) -> hit (exprSpan eApp) || go f || any goArg args
+      EDot recv member -> hitMember member || go recv
+      EQDot recv member -> hitMember member || go recv
+      ERecordPatch recv items _ -> go recv || any goPatch items
+      EReceiverSection _ args _ -> any goArg args
+      ESectionLeft e _ _ -> go e
+      ESectionRight _ e _ -> go e
+      EOpRef {} -> False
+      EOpChain elems -> any goOpElem elems
+      EElvis a b _ -> go a || go b
+      ELambda {} -> False
+      ELet binds body _ -> any goLet binds || go body
+      EBlock decls mres _ -> any goDecl decls || maybe False go mres
+      EDo _ items _ -> any goDo items
+      EIf alts mels _ ->
+        anyMap (\(cond, body) -> go cond || go body) alts || maybe False go mels
+      EMatch scrut cases _ -> go scrut || any goCase cases
+      ETry scrut excepts mfin _ -> go scrut || any goExcept excepts || maybe False go mfin
+      ETryMatch scrut cases excepts mfin _ ->
+        go scrut || any goCase cases || any goExcept excepts || maybe False go mfin
+      EHandle _ lbl scrut cases _ -> go lbl || go scrut || any goHandler cases
+      EIs e _ -> go e
+      EThunk {} -> False
+      ELazy {} -> False
+      EForce e _ -> go e
+      ESeal a b _ -> go a || go b
+      EOpenExists e _ _ body _ -> go e || go body
+      ESealExists bs a b _ -> any (go . snd) bs || go a || go b
+      EListLit es _ -> any go es
+      ESetLit es _ -> any go es
+      EMapLit kvs _ -> any (\(k, v) -> go k || go v) kvs
+      EComprehension _ clauses yield _ -> any goCompClause clauses || goYield yield
+      EArrow {} -> False
+      EForall {} -> False
+      EExists {} -> False
+      ETraitArrow {} -> False
+      EEffRow {} -> False
+      EVariant arms mtail _ ->
+        any (\(VariantArm e mty) -> go e || maybe False go mty) arms || maybe False go mtail
+      EOptionSugar {} -> False
+      EAscription e _ _ -> go e
+      ECaptures e _ _ -> go e
+      EBang _ e _ -> go e
+      EQuote {} -> False
+      ECodeQuote {} -> False
+      ECodeEscape e _ -> go e
+      ESplice e _ -> go e
+      ESpliceInQuote {} -> False
+      EQuoteHole {} -> False
+      EImpossible {} -> False
+      EKindQualified {} -> False
+      EModuleSig {} -> False
+
+resolvedRefOpExpr :: Ctx -> Expr -> [Arg] -> CheckM (Maybe (ExplicitRefOp, RefOpEvidence))
+resolvedRefOpExpr ctx f headArgs = do
   st0 <- get
   n0 <- gets (length . csDiags)
   r <- do
-    (tm, _) <- infer ctx f
+    let headExpr = if null headArgs then f else EApp f headArgs
+    (tm, _) <- infer ctx headExpr
     pure (refOpOfTerm tm)
   n1 <- gets (length . csDiags)
   put st0
   pure (if n1 == n0 then r else Nothing)
 
-refOpMatchesMutable :: Ctx -> Name -> Maybe Term -> CheckM Bool
-refOpMatchesMutable _ _ Nothing = pure True
-refOpMatchesMutable ctx n (Just actual0) =
+refOpMatchesMutable :: Ctx -> Name -> RefOpEvidence -> CheckM Bool
+refOpMatchesMutable ctx n evidence =
   case lookupCtx (nameText n) ctx of
     Just (i, entry)
       | Just info <- ceVarInfo entry -> do
           let expected0 = shiftTerm (i + 1) 0 (vriMonadRefDict info)
-              d = ctxLen ctx
-          actualV <- forceM =<< evalIn ctx actual0
-          expectedV <- forceM =<< evalIn ctx expected0
-          actual <- quoteIn ctx actualV >>= zonkTermM d
-          expected <- quoteIn ctx expectedV >>= zonkTermM d
-          if actual == expected
-            then pure True
-            else do
-              actualN <- normalizeTermAt d actual
-              expectedN <- normalizeTermAt d expected
-              pure (actualN == expectedN)
+          case evidence of
+            RefOpBare -> pure True
+            RefOpCarrier actualM -> termMatchesValue ctx actualM (vriMonadType info)
+            RefOpDict actual0 -> termMatchesTerm ctx actual0 expected0
     _ -> pure False
 
 aliasCurrentReadPattern :: Ctx -> Pattern -> Expr -> Ctx -> CheckM Ctx
 aliasCurrentReadPattern before pat rhs after =
   case pat of
     PVar qn -> do
-      mroot <- recognizedRefReadRoot before rhs
+      mroot <- currentReadAliasRoot before rhs
       pure $ maybe after (\root -> addVarCurrentAlias (nameText qn) root after) mroot
     _ -> pure after
+
+currentReadAliasRoot :: Ctx -> Expr -> CheckM (Maybe Text)
+currentReadAliasRoot ctx rhs = do
+  direct <- recognizedRefReadRoot ctx rhs
+  pure $ direct <|> aliasRoot rhs
+  where
+    aliasRoot = \case
+      EAscription e _ _ -> aliasRoot e
+      EVar n ->
+        let root = refineRoot ctx (nameText n)
+         in if isVarCurrentKey root then Just root else Nothing
+      _ -> Nothing
 
 unsupportedRefFacet :: Ctx -> Name -> Span -> CheckM (Maybe (Term, Value))
 unsupportedRefFacet ctx n sp = do
@@ -11019,12 +11620,68 @@ unsupportedRefFacet ctx n sp = do
   Just <$> anyHole ctx
 
 escapedRefFacetsExpr :: Ctx -> Expr -> CheckM (Set Text)
-escapedRefFacetsExpr ctx e = do
-  mRead <- recognizedRefReadRoot ctx e
-  mWrite <- recognizedRefWriteName ctx e
-  if isJust mRead || isJust mWrite
-    then pure Set.empty
-    else pure (collectRefFacets e)
+escapedRefFacetsExpr _ e =
+  pure (collectRefFacets e)
+
+escapedRefFacetsExecutedExpr :: Ctx -> Expr -> CheckM (Set Text)
+escapedRefFacetsExecutedExpr ctx = go
+  where
+    unionsM = fmap Set.unions . sequence
+    pureEsc = pure . collectRefFacets
+    goLet (LetBind _ _ _ _ rhs _) = pureEsc rhs
+    goCase = \case
+      MatchCase _ mg body _ -> unionsM [maybe (pure Set.empty) pureEsc mg, go body]
+      MatchImpossible {} -> pure Set.empty
+    goExcept (ExceptCase _ mg body _) = unionsM [maybe (pure Set.empty) pureEsc mg, go body]
+    goHandler = \case
+      HandlerReturn _ body _ -> go body
+      HandlerOp _ _ _ body _ -> go body
+    goDecl = \case
+      DLet _ ld _ -> pureEsc (ldBody ld)
+      DTopSplice e _ -> go e
+      DUnsafeAssert _ inner _ -> goDecl inner
+      _ -> pure Set.empty
+    go = \case
+      EAscription e _ _ -> go e
+      EBang _ e _ -> go e
+      EDo _ items _ -> doItemsVarEscapes ctx items
+      EIf alts mels _ -> do
+        condEscapes <- unionsM [go cond | (cond, _) <- alts]
+        branchEscapes <- unionsM [go body | (_, body) <- alts]
+        elseEscapes <- maybe (pure Set.empty) go mels
+        pure (Set.unions [condEscapes, branchEscapes, elseEscapes])
+      EMatch scrut cases _ ->
+        unionsM (pureEsc scrut : map goCase cases)
+      ETry scrut excepts mfin _ ->
+        unionsM (go scrut : map goExcept excepts ++ [maybe (pure Set.empty) go mfin])
+      ETryMatch scrut cases excepts mfin _ ->
+        unionsM (go scrut : map goCase cases ++ map goExcept excepts ++ [maybe (pure Set.empty) go mfin])
+      EHandle _ lbl scrut cases _ ->
+        unionsM (pureEsc lbl : go scrut : map goHandler cases)
+      ELet binds body _ ->
+        unionsM (map goLet binds ++ [go body])
+      EBlock decls mres _ ->
+        unionsM (map goDecl decls ++ [maybe (pure Set.empty) go mres])
+      EApp f args
+        | Just (headArgs, n, _) <- refFacetReadArgs args -> do
+            mop <- resolvedRefOpExpr ctx f headArgs
+            case mop of
+              Just (ExplicitRefRead, ev) -> do
+                ok <- refOpMatchesMutable ctx n ev
+                if ok
+                  then pure (Set.unions (collectRefFacets f : map collectRefFacets headArgs))
+                  else pure (collectRefFacets (EApp f args))
+              _ -> pure (collectRefFacets (EApp f args))
+        | Just (headArgs, n, rhs, _) <- refFacetWriteArgsWithHead args -> do
+            mop <- resolvedRefOpExpr ctx f headArgs
+            case mop of
+              Just (ExplicitRefWrite, ev) -> do
+                ok <- refOpMatchesMutable ctx n ev
+                if ok
+                  then pure (Set.unions (collectRefFacets f : collectRefFacets rhs : map collectRefFacets headArgs))
+                  else pure (collectRefFacets (EApp f args))
+              _ -> pure (collectRefFacets (EApp f args))
+      e -> pure (collectRefFacets e)
 
 collectRefFacets :: Data a => a -> Set Text
 collectRefFacets x =
@@ -11035,34 +11692,33 @@ collectRefFacets x =
 doItemsVarWrites :: Ctx -> [DoItem] -> CheckM (Set Text)
 doItemsVarWrites ctx = foldM go Set.empty
   where
-    addExpr acc e = do
-      mw <- recognizedRefWriteName ctx e
-      pure $ maybe acc (`Set.insert` acc) mw
+    addExecuted acc e = Set.union acc <$> writtenRefFacetsExecutedExpr ctx e
     go acc = \case
-      DoAssign n _ _ _ -> pure (Set.insert (nameText n) acc)
-      DoExpr e -> addExpr acc e
-      DoBind lb -> addExpr acc (lbExpr lb)
-      DoLet lb -> addExpr acc (lbExpr lb)
-      DoLetQ _ rhs mElse _ -> do
-        acc1 <- addExpr acc rhs
-        maybe (pure acc1) (addExpr acc1 . snd) mElse
+      DoAssign n monadic rhs _ -> do
+        acc1 <- pure (Set.insert (nameText n) acc)
+        if monadic then addExecuted acc1 rhs else pure acc1
+      DoExpr e -> addExecuted acc e
+      DoBind lb -> addExecuted acc (lbExpr lb)
+      DoLet {} -> pure acc
+      DoLetQ {} -> pure acc
       DoIf alts mels _ -> do
+        condWrites <- foldM (\s (cond, _) -> addExecuted s cond) Set.empty alts
         branchWrites <- foldM (\s (_, body) -> Set.union s <$> doItemsVarWrites ctx body) Set.empty alts
         elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
-        pure (Set.unions [acc, branchWrites, elseWrites])
+        pure (Set.unions [acc, condWrites, branchWrites, elseWrites])
       DoWhile _ cond body mels _ -> do
-        acc1 <- addExpr acc cond
+        condWrites <- writtenRefFacetsExecutedExpr ctx cond
         bodyWrites <- doItemsVarWrites ctx body
         elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
-        pure (Set.unions [acc1, bodyWrites, elseWrites])
+        pure (Set.unions [acc, condWrites, bodyWrites, elseWrites])
       DoFor _ _ src body mels _ -> do
-        acc1 <- addExpr acc src
+        srcWrites <- writtenRefFacetsExecutedExpr ctx src
         bodyWrites <- doItemsVarWrites ctx body
         elseWrites <- maybe (pure Set.empty) (doItemsVarWrites ctx) mels
-        pure (Set.unions [acc1, bodyWrites, elseWrites])
-      DoUsing _ _ rhs _ -> addExpr acc rhs
-      DoDefer _ e _ -> addExpr acc e
-      DoReturn _ me _ -> maybe (pure acc) (addExpr acc) me
+        pure (Set.unions [acc, srcWrites, bodyWrites, elseWrites])
+      DoUsing _ _ rhs _ -> addExecuted acc rhs
+      DoDefer {} -> pure acc
+      DoReturn {} -> pure acc
       DoDecl _ -> pure acc
       DoBreak {} -> pure acc
       DoContinue {} -> pure acc
@@ -11072,20 +11728,23 @@ doItemsVarEscapes :: Ctx -> [DoItem] -> CheckM (Set Text)
 doItemsVarEscapes ctx = foldM go Set.empty
   where
     addExpr acc e = Set.union acc <$> escapedRefFacetsExpr ctx e
+    addExecuted acc e = Set.union acc <$> escapedRefFacetsExecutedExpr ctx e
     go acc = \case
-      DoAssign _ _ rhs _ -> addExpr acc rhs
-      DoExpr e -> addExpr acc e
-      DoBind lb -> addExpr acc (lbExpr lb)
+      DoAssign _ monadic rhs _ ->
+        if monadic then addExecuted acc rhs else addExpr acc rhs
+      DoExpr e -> addExecuted acc e
+      DoBind lb -> addExecuted acc (lbExpr lb)
       DoLet lb -> addExpr acc (lbExpr lb)
       DoLetQ _ rhs mElse _ -> do
         acc1 <- addExpr acc rhs
         maybe (pure acc1) (addExpr acc1 . snd) mElse
       DoIf alts mels _ -> do
+        condEscapes <- foldM (\s (cond, _) -> addExecuted s cond) Set.empty alts
         branchEscapes <- foldM (\s (_, body) -> Set.union s <$> doItemsVarEscapes ctx body) Set.empty alts
         elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
-        pure (Set.unions [acc, branchEscapes, elseEscapes])
+        pure (Set.unions [acc, condEscapes, branchEscapes, elseEscapes])
       DoWhile _ cond body mels _ -> do
-        acc1 <- addExpr acc cond
+        acc1 <- addExecuted acc cond
         bodyEscapes <- doItemsVarEscapes ctx body
         elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
         pure (Set.unions [acc1, bodyEscapes, elseEscapes])
@@ -11094,7 +11753,7 @@ doItemsVarEscapes ctx = foldM go Set.empty
         bodyEscapes <- doItemsVarEscapes ctx body
         elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes ctx) mels
         pure (Set.unions [acc1, bodyEscapes, elseEscapes])
-      DoUsing _ _ rhs _ -> addExpr acc rhs
+      DoUsing _ _ rhs _ -> addExecuted acc rhs
       DoDefer _ e _ -> addExpr acc e
       DoReturn _ me _ -> maybe (pure acc) (addExpr acc) me
       DoDecl _ -> pure acc
@@ -11168,14 +11827,14 @@ elabDo ctx0 mlabel items0 _sp mexpected = do
     -- (§18.1.14); it elaborates to __effBind chains, not the IO kernel
     Just (VGlobN g [(_, row), (_, a)])
       | g == prelEff -> do
-        items <- liftDoItems items0
+        items <- liftDoItems ctx items0
         elabEffDo ctx row a items _sp
     -- an Elab-typed do sequences elaboration-time actions (§21.9); it
     -- elaborates to __elabBind chains run by the Elab evaluator
     Just (VGlobN g [(_, a)])
       | g == prelElab ->
           do
-            items <- liftDoItems items0
+            items <- liftDoItems ctx items0
             elabElabDo ctx a items _sp
     -- §18.8: a do-block whose result is a user monad `m a` (m has a
     -- Monad instance) and is not a kernel carrier (IO/STM handled by
@@ -11396,18 +12055,22 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   SKRange -> prelApp1 fsp "rangeToList" [src']
                   _ -> src'
             srcTm <- check c listSrc (VGlobN prelList [(Expl, elemT)])
-            checkIrrefutable c pat elemT fsp
-            (patC, c', _) <- elabPattern c pat elemT
+            srcWrites <- writtenRefFacetsExecutedExpr c src'
+            srcEscapes <- escapedRefFacetsExpr c src'
+            let cSrc = applyVarCurrentEffects srcWrites srcEscapes c
+            checkIrrefutable cSrc pat elemT fsp
+            (patC, c', _) <- elabPattern cSrc pat elemT
             bodyKs <- goItems (withLoop ml) c' errT (VGlobN prelUnit []) body
-            elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
-            bodyWrites <- doItemsVarWrites c body
-            elseWrites <- maybe (pure Set.empty) (doItemsVarWrites c) mels
-            bodyEscapes <- doItemsVarEscapes c body
-            elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes c) mels
+            elsKs <- traverse (goItems loops cSrc errT (VGlobN prelUnit [])) mels
+            bodyWrites <- doItemsVarWrites c' body
+            elseWrites <- maybe (pure Set.empty) (doItemsVarWrites cSrc) mels
+            bodyEscapes <- doItemsVarEscapes c' body
+            elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes cSrc) mels
             let cAfter =
-                  foldr escapeVarCurrent
-                    (foldr invalidateVarCurrent c (Set.toList (Set.union bodyWrites elseWrites)))
-                    (Set.toList (Set.union bodyEscapes elseEscapes))
+                  applyVarCurrentEffects
+                    (Set.union bodyWrites elseWrites)
+                    (Set.union bodyEscapes elseEscapes)
+                    cSrc
             ks <- goItems loops cAfter errT resT rest
             pure (KFor (nameText <$> ml) patC srcTm bodyKs elsKs : ks)
           continueIf alts mels _isp = do
@@ -11435,19 +12098,24 @@ elabDoIOItems mlabel _sp ctx mexp items = do
             -- 'goAlts' threads the accumulated false-evidence forward and
             -- returns it (as 'elseBool'/'elseCtx') so the trailing else suite
             -- can reuse the same facts without re-elaborating the conditions.
-            let goAlts accBool accCtx [] = pure ([], accBool, accCtx)
+            let applyCondEffects base cond = do
+                  writes <- writtenRefFacetsExecutedExpr base cond
+                  escapes <- escapedRefFacetsExecutedExpr base cond
+                  pure (applyVarCurrentEffects writes escapes base)
+                goAlts accBool accCtx [] = pure ([], accBool, accCtx)
                 goAlts accBool accCtx ((cond, body) : moreAlts) = do
                   -- positive refinements of THIS condition, on top of the
                   -- complement refinements accumulated from earlier conditions
                   refs <- condRefines accCtx cond
                   let cR = refineCtx refs accCtx
                   condTm <- check cR (cond) (VGlobN prelBool [])
+                  cREff <- applyCondEffects cR cond
                   -- this suite runs with `c_k` True and every earlier `c_i`
                   -- False, so both kinds of fact hold (§3.2.3 proof source)
                   oldBool <- gets csBoolFacts
                   modify' $ \st ->
                     st {csBoolFacts = (condTm, True) : accBool ++ csBoolFacts st}
-                  bodyKs <- goItems loops cR errT (VGlobN prelUnit []) body
+                  bodyKs <- goItems loops cREff errT (VGlobN prelUnit []) body
                   modify' $ \st -> st {csBoolFacts = oldBool}
                   -- thread this condition's FALSE evidence into the remaining
                   -- elif suites and the final else: `accCtx` for the §7.4.1
@@ -11455,8 +12123,9 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   -- mirroring the if-expression else-branch), `accBool` for the
                   -- bare `(condTm, False)` boolean fact
                   negs <- condRefinesElse accCtx cond
-                  let accCtx' = refineCtx negs accCtx
+                  let accCtxFalse = refineCtx negs accCtx
                       accBool' = (condTm, False) : accBool
+                  accCtx' <- applyCondEffects accCtxFalse cond
                   (restAlts, elseBool, elseCtx) <- goAlts accBool' accCtx' moreAlts
                   pure ((condTm, bodyKs) : restAlts, elseBool, elseCtx)
             (alts', elseBool, elseCtx) <- goAlts [] c alts
@@ -11482,14 +12151,17 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                     negs <- condRefinesElse c cond
                     pure (refineCtx negs c)
               _ -> pure c
+            condWrites <- foldM (\s (cond, _) -> Set.union s <$> writtenRefFacetsExecutedExpr c cond) Set.empty alts
             altWrites <- foldM (\s (_, body) -> Set.union s <$> doItemsVarWrites c body) Set.empty alts
             elseWrites <- maybe (pure Set.empty) (doItemsVarWrites c) mels
+            condEscapes <- foldM (\s (cond, _) -> Set.union s <$> escapedRefFacetsExecutedExpr c cond) Set.empty alts
             altEscapes <- foldM (\s (_, body) -> Set.union s <$> doItemsVarEscapes c body) Set.empty alts
             elseEscapes <- maybe (pure Set.empty) (doItemsVarEscapes c) mels
             let cAfterJoin =
-                  foldr escapeVarCurrent
-                    (foldr invalidateVarCurrent cAfter (Set.toList (Set.union altWrites elseWrites)))
-                    (Set.toList (Set.union altEscapes elseEscapes))
+                  applyVarCurrentEffects
+                    (Set.unions [condWrites, altWrites, elseWrites])
+                    (Set.unions [condEscapes, altEscapes, elseEscapes])
+                    cAfter
             ks <- goItems loops cAfterJoin errT resT rest
             pure (KIf alts' elsKs : ks)
           continueDefer ml e _dsp = do
@@ -11533,8 +12205,9 @@ elabDoIOItems mlabel _sp ctx mexp items = do
             let releaseTm = CProj dictTm "release"
             checkIrrefutable c pat aT usp
             (patC, cBound, _) <- elabPattern c pat aT
-            escapes <- escapedRefFacetsExpr c rhs
-            let cAfter = foldr escapeVarCurrent cBound (Set.toList escapes)
+            writes <- writtenRefFacetsExecutedExpr c rhs
+            escapes <- escapedRefFacetsExecutedExpr c rhs
+            let cAfter = applyVarCurrentEffects writes escapes cBound
             ks <- goItems loops cAfter errT resT rest
             pure (KUsing patC acquireTm releaseTm : ks)
       case item of
@@ -11574,9 +12247,8 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                             else do
                               aT <- freshMetaV c
                               check c e aT
-                        cAfterWrite <- maybe c (`invalidateVarCurrent` c) <$> recognizedRefWriteName c e
                         escapes <- escapedRefFacetsExpr c e
-                        let cAfter = foldr escapeVarCurrent cAfterWrite (Set.toList escapes)
+                        let cAfter = foldr escapeVarCurrent c (Set.toList escapes)
                         (KExpr tm :) <$> goItems loops cAfter errT resT rest
                   _ -> do
                         aT <- if lastItem then pure resT else freshMetaV c
@@ -11588,35 +12260,38 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                         -- an inferable statement may also check at the bare type
                         tm <- case eD of
                           _ | statementInferable eD -> do
-                                (tm0, ty0) <- infer c eD
-                                (tm1, ty1) <- insertAllImplicits c (exprSpan eD) tm0 ty0
-                                okIO <- unify c ty1 ioT
-                                if okIO
-                                  then pure tm1
-                                  else do
-                                    okPure <- unify c ty1 aT
-                                    okDiscard <-
-                                      if okPure
-                                        then pure True
-                                        else do
-                                          -- a final action of unit-result do-scopes
-                                          -- may have a non-unit result; it is
-                                          -- discarded (corpus accommodation)
-                                          isUnit <-
-                                            forceM aT >>= \case
-                                              VGlobN (GName _ "Unit") [] -> pure True
-                                              _ -> pure False
-                                          if isUnit
-                                            then do
-                                              b <- freshMetaV c
-                                              unify c ty1 (ioType errT b)
-                                            else pure False
-                                    unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
-                                    pure tm1
+                                checkedMonadRefExpr c eD ioT >>= \case
+                                  Just tm0 -> pure tm0
+                                  Nothing -> do
+                                    (tm0, ty0) <- infer c eD
+                                    (tm1, ty1) <- insertAllImplicits c (exprSpan eD) tm0 ty0
+                                    okIO <- unify c ty1 ioT
+                                    if okIO
+                                      then pure tm1
+                                      else do
+                                        okPure <- unify c ty1 aT
+                                        okDiscard <-
+                                          if okPure
+                                            then pure True
+                                            else do
+                                              -- a final action of unit-result do-scopes
+                                              -- may have a non-unit result; it is
+                                              -- discarded (corpus accommodation)
+                                              isUnit <-
+                                                forceM aT >>= \case
+                                                  VGlobN (GName _ "Unit") [] -> pure True
+                                                  _ -> pure False
+                                              if isUnit
+                                                then do
+                                                  b <- freshMetaV c
+                                                  unify c ty1 (ioType errT b)
+                                                else pure False
+                                        unless okDiscard $ expectType c (exprSpan eD) ty1 ioT
+                                        pure tm1
                           _ -> check c eD ioT
-                        cAfterWrite <- maybe c (`invalidateVarCurrent` c) <$> recognizedRefWriteName c eD
-                        escapes <- escapedRefFacetsExpr c eD
-                        let cAfter = foldr escapeVarCurrent cAfterWrite (Set.toList escapes)
+                        writes <- writtenRefFacetsExecutedExpr c eD
+                        escapes <- escapedRefFacetsExecutedExpr c eD
+                        let cAfter = applyVarCurrentEffects writes escapes c
                         (KExpr tm :) <$> goItems loops cAfter errT resT rest
         DoBind (LetBind implocal prefix pat mty rhs0 bsp) -> do
           rewritten <-
@@ -11668,24 +12343,27 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                             -- not container-shaped: restore the IO/STM diagnosis
                             put st0
                             check c rhsD bindRhsTy
-                  checkIrrefutable c pat aT bsp
+                  writes <- writtenRefFacetsExecutedExpr c rhsD
+                  escapes <- escapedRefFacetsExecutedExpr c rhsD
+                  let cExec = applyVarCurrentEffects writes escapes c
+                  checkIrrefutable cExec pat aT bsp
                   mProj <- if implocal then pure Nothing else projectionPatternFields pat aT
                   case mProj of
                     Just (named, fs) -> do
                       validateProjectionPattern pat named
                       scrutN <- freshNameM "__scrut"
-                      let cScrut = bindCtx scrutN False aT c
+                      let cScrut = bindCtx scrutN False aT cExec
                           q = qOf (bpQuantity prefix)
                       (cFields, fieldItems) <- projectedFieldItems cScrut q named fs
                       ks <- goItems loops cFields errT resT rest
-                      pure (KBind QW (CPVar scrutN) rhsTm : fieldItems ++ ks)
+                      pure (KBind QW (CPVar scrutN) rhsTm Nothing : fieldItems ++ ks)
                     Nothing -> do
-                      (patC, cBound, _) <- elabPattern c pat aT
-                      cAliased <- aliasCurrentReadPattern c pat rhsD cBound
-                      escapes <- escapedRefFacetsExpr c rhsD
-                      let c' = foldr escapeVarCurrent (markImplicitLocal bsp implocal prefix c cAliased) (Set.toList escapes)
+                      (patC, cBound, _) <- elabPattern cExec pat aT
+                      cAliased <- aliasCurrentReadPattern cExec pat rhsD cBound
+                      let c' = markImplicitLocal bsp implocal prefix cExec cAliased
                       ks <- goItems loops c' errT resT rest
-                      pure (KBind (qOf (bpQuantity prefix)) patC rhsTm : ks)
+                      readW <- refReadWitnessOfExpr c rhsD
+                      pure (KBind (qOf (bpQuantity prefix)) patC rhsTm readW : ks)
         DoLet (LetBind implocal prefix pat mty rhs0 bsp) -> do
           rewritten <-
             if isNothing mty && not implocal && prefix == emptyPrefix
@@ -11731,10 +12409,10 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                         PVar qn -> do
                           rhsV <- evalIn c rhsTm
                           mPj <- if implocal then pure Nothing else projectionInfoOfExpr c rhs
-                          let cDef0 = bindCtxLetProj (nameText qn) implocal rhsTy rhsV mPj c
-                          cDef1 <- aliasCurrentReadPattern c pat rhs cDef0
+                          mOp <- if implocal then pure Nothing else operationValueInfoOfExpr c rhs
+                          let cDef0 = bindCtxLetProjOp (nameText qn) implocal rhsTy rhsV mPj mOp c
                           escapes <- escapedRefFacetsExpr c rhs
-                          pure (foldr escapeVarCurrent cDef1 (Set.toList escapes))
+                          aliasCurrentReadPattern c pat rhs (foldr escapeVarCurrent cDef0 (Set.toList escapes))
                         _ -> pure cBound
                       let cBound' = case (pat, rhs) of
                             -- §7.4.3 stable alias: `let q = p` transports refinement
@@ -11783,12 +12461,13 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                   rhsTyTm <- quoteIn c rhsTy1
                   refTy <- monadRefRefType c refDict rhsTyTm
                   escapes <- escapedRefFacetsExpr c rhs
+                  loweringW <- builtinIOMonadRefLowering c mTy refDict
                   let newAct = monadRefNewAction refDict rhsTyTm rhsTm1
-                      refInfo = VarRefInfo rhsTy1 rhsTyTm refDict mTy errT
+                      refInfo = VarRefInfo rhsTy1 rhsTyTm refDict mTy errT loweringW
                       c' = foldr escapeVarCurrent (bindCtxVar (nameText n) refTy refInfo c) (Set.toList escapes)
                   recordMutableBindingFields c (nameSpan n) refTy refInfo
                   ks <- goItems loops c' errT resT rest
-                  pure (KVarItem (nameText n) rhsTm1 newAct : ks)
+                  pure (KVarItem (nameText n) rhsTm1 newAct (BuiltinIORefNew <$> loweringW) : ks)
         DoAssign n monadic rhs0 asp -> do
           (pre, rhs) <- liftCurrentReadsExpr c (exprSpan rhs0) rhs0
           if not (null pre)
@@ -11809,8 +12488,15 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                         if monadic
                           then check c (rhs) rhsActionTy
                           else check c (rhs) a
-                      escapes <- escapedRefFacetsExpr c rhs
-                      let cAfter = foldr escapeVarCurrent (invalidateVarCurrent (nameText n) c) (Set.toList escapes)
+                      escapes <-
+                        if monadic
+                          then escapedRefFacetsExecutedExpr c rhs
+                          else escapedRefFacetsExpr c rhs
+                      writes <-
+                        if monadic
+                          then Set.insert (nameText n) <$> writtenRefFacetsExecutedExpr c rhs
+                          else pure (Set.singleton (nameText n))
+                      let cAfter = applyVarCurrentEffects writes escapes c
                       ks <- goItems loops cAfter errT resT rest
                       if monadic
                         then do
@@ -11818,11 +12504,11 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                               aTm' = shiftTerm 1 0 aTm
                               refDict' = shiftTerm 1 0 refDict
                               writeAct = monadRefWriteAction refDict' aTm' refTm' (CVar 0)
-                              writeItem = KAssign refTm' False (CVar 0) writeAct
-                          pure (KSubDo Nothing [KBind QW (CPVar "__assign") rhsTm, writeItem] : ks)
+                              writeItem = KAssign refTm' False (CVar 0) writeAct (refWriteWitnessFromInfo info)
+                          pure (KSubDo Nothing [KBind QW (CPVar "__assign") rhsTm Nothing, writeItem] : ks)
                         else do
                           let writeAct = monadRefWriteAction refDict aTm refTm rhsTm
-                          pure (KAssign refTm False rhsTm writeAct : ks)
+                          pure (KAssign refTm False rhsTm writeAct (refWriteWitnessFromInfo info) : ks)
                     Nothing -> do
                       errAt asp "E_ASSIGN_NOT_VAR" (Just "kappa-hs.do.assign-non-var")
                         ("'" <> nameText n <> "' is not a mutable var binding (§18.6.1)")
@@ -11872,16 +12558,22 @@ elabDoIOItems mlabel _sp ctx mexp items = do
                 put st0
                 actTm <- check c condD (wrapTy errT (VGlobN prelBool []))
                 pure (KCondAction actTm)
-          bodyKs <- goItems (withLoop ml) c errT (VGlobN prelUnit []) body
-          elsKs <- traverse (goItems loops c errT (VGlobN prelUnit [])) mels
-          written <- Set.unions . maybeToList <$> traverse (doItemsVarWrites c) mels
-          bodyWritten <- doItemsVarWrites c body
-          escaped <- Set.unions . maybeToList <$> traverse (doItemsVarEscapes c) mels
-          bodyEscaped <- doItemsVarEscapes c body
+          condWrites <- writtenRefFacetsExecutedExpr c condD
+          condEscapes <- case condTm of
+            KCondAction {} -> escapedRefFacetsExecutedExpr c condD
+            KCondPure {} -> escapedRefFacetsExpr c condD
+          let cCond = applyVarCurrentEffects condWrites condEscapes c
+          bodyKs <- goItems (withLoop ml) cCond errT (VGlobN prelUnit []) body
+          elsKs <- traverse (goItems loops cCond errT (VGlobN prelUnit [])) mels
+          written <- Set.unions . maybeToList <$> traverse (doItemsVarWrites cCond) mels
+          bodyWritten <- doItemsVarWrites cCond body
+          escaped <- Set.unions . maybeToList <$> traverse (doItemsVarEscapes cCond) mels
+          bodyEscaped <- doItemsVarEscapes cCond body
           let cAfter =
-                foldr escapeVarCurrent
-                  (foldr invalidateVarCurrent c (Set.toList (Set.union written bodyWritten)))
-                  (Set.toList (Set.union escaped bodyEscaped))
+                applyVarCurrentEffects
+                  (Set.union written bodyWritten)
+                  (Set.union escaped bodyEscaped)
+                  cCond
           ks <- goItems loops cAfter errT resT rest
           pure (KWhile (nameText <$> ml) condTm bodyKs elsKs : ks)
         DoFor ml pat src0 body mels fsp -> do
@@ -12396,18 +13088,24 @@ markImplicitLocal binderSp True (BinderPrefix mq mb) before after =
 -- do-items to sequence before the expression (left-to-right) and @residual@ is
 -- @e@ with every (unconditional) splice replaced by its bound temp.  Realizes
 -- @Splice_m[-]@.
-shortCircuitBoolApp :: Expr -> Maybe Expr
-shortCircuitBoolApp e@(EApp (EVar op) [ArgExplicit l, ArgExplicit r])
-  | nameText op == "&&" =
+shortCircuitBoolApp :: Ctx -> Expr -> CheckM (Maybe Expr)
+shortCircuitBoolApp ctx e@(EApp f [ArgExplicit l, ArgExplicit r]) = do
+  isAnd <- exprResolvesToGlobal ctx f prelAnd
+  if isAnd
+    then do
       let sp = exprSpan e
-       in Just (EIf [(l, r)] (Just (EVar (Name "False" sp))) sp)
-  | nameText op == "||" =
-      let sp = exprSpan e
-       in Just (EIf [(l, EVar (Name "True" sp))] (Just r) sp)
-shortCircuitBoolApp _ = Nothing
+      pure (Just (EIf [(l, r)] (Just (EVar (Name "False" sp))) sp))
+    else do
+      isOr <- exprResolvesToGlobal ctx f prelOr
+      if isOr
+        then do
+          let sp = exprSpan e
+          pure (Just (EIf [(l, EVar (Name "True" sp))] (Just r) sp))
+        else pure Nothing
+shortCircuitBoolApp _ _ = pure Nothing
 
-liftBangsExpr :: Span -> Expr -> CheckM ([DoItem], Expr)
-liftBangsExpr _ = go
+liftBangsExpr :: Ctx -> Span -> Expr -> CheckM ([DoItem], Expr)
+liftBangsExpr ctx _ = go
   where
     -- bind a (residual) computation to a fresh temp and yield the temp
     bindTo :: Span -> Expr -> CheckM ([DoItem], Expr)
@@ -12434,9 +13132,10 @@ liftBangsExpr _ = go
         (bsA, args') <- goArgs args
         (bs2, t) <- bindTo bsp (EApp f' args')
         pure (bsF ++ bsA ++ bs2, t)
-      e@(EApp f args)
-        | Just e' <- shortCircuitBoolApp e -> go e'
-        | otherwise -> do
+      e@(EApp f args) -> do
+        shortCircuitBoolApp ctx e >>= \case
+          Just e' -> go e'
+          Nothing -> do
             (bsF, f') <- go f
             (bsA, args') <- goArgs args
             pure (bsF ++ bsA, EApp f' args')
@@ -12928,9 +13627,10 @@ liftCurrentReadsExpr ctx _ = go Set.empty
         (bsA, args') <- goArgs shadow args0
         (bs2, t) <- bindToWith "__bang" bsp (EApp f' args')
         pure (bsF ++ bsA ++ bs2, t)
-      e@(EApp f args)
-        | Just e' <- shortCircuitBoolApp e -> go shadow e'
-        | otherwise -> do
+      e@(EApp f args) -> do
+        shortCircuitBoolApp ctx e >>= \case
+          Just e' -> go shadow e'
+          Nothing -> do
             args0 <- repairWrongFacet shadow f args
             (bsF, f') <- go shadow f
             modes <- implicitRuntimeModes shadow f args0
@@ -13073,10 +13773,15 @@ liftCurrentReadsExpr ctx _ = go Set.empty
 
     repairWrongFacet :: Set Text -> Expr -> [Arg] -> CheckM [Arg]
     repairWrongFacet shadow f args =
-      resolvedRefHead f >>= \case
+      let (headArgs, _) = span isImplicitArg args
+       in resolvedRefHead f headArgs >>= \case
         Nothing -> pure args
         Just api -> rewriteRefArg api args
       where
+        isImplicitArg = \case
+          ArgImplicit {} -> True
+          _ -> False
+
         rewriteRefArg _ [] = pure []
         rewriteRefArg api (ArgImplicit e : rest) =
           (ArgImplicit e :) <$> rewriteRefArg api rest
@@ -13111,42 +13816,31 @@ liftCurrentReadsExpr ctx _ = go Set.empty
             (\(n, rebuild) -> (n, \r -> EAscription (rebuild r) ty sp)) <$> currentRefArg e
           _ -> Nothing
 
-    resolvedRefHead :: Expr -> CheckM (Maybe (Text, Maybe Term))
-    resolvedRefHead f = do
+    resolvedRefHead :: Expr -> [Arg] -> CheckM (Maybe (Text, RefOpEvidence))
+    resolvedRefHead f headArgs = do
       st0 <- get
       n0 <- gets (length . csDiags)
       r <- do
-        (tm, _) <- infer ctx f
+        let headExpr = if null headArgs then f else EApp f headArgs
+        (tm, _) <- infer ctx headExpr
         pure (refHeadOfTerm tm)
       n1 <- gets (length . csDiags)
       put st0
       pure (if n1 == n0 then r else Nothing)
 
-    refHeadOfTerm :: Term -> Maybe (Text, Maybe Term)
-    refHeadOfTerm = \case
-      CApp _ f _ -> refHeadOfTerm f
-      CGlob g | g == prelReadRef -> Just ("readRef", Nothing)
-      CGlob g | g == prelWriteRef -> Just ("writeRef", Nothing)
-      CProj dict "readRef" -> Just ("readRef", Just dict)
-      CProj dict "writeRef" -> Just ("writeRef", Just dict)
-      _ -> Nothing
+    refHeadOfTerm :: Term -> Maybe (Text, RefOpEvidence)
+    refHeadOfTerm tm = case refOpOfTerm tm of
+      Just (ExplicitRefRead, ev) -> Just ("readRef", ev)
+      Just (ExplicitRefWrite, ev) -> Just ("writeRef", ev)
+      Nothing -> Nothing
 
-    refHeadMatchesMutable :: Name -> (Text, Maybe Term) -> CheckM Bool
-    refHeadMatchesMutable _ (_, Nothing) = pure True
-    refHeadMatchesMutable n (_, Just dictTm) =
+    refHeadMatchesMutable :: Name -> (Text, RefOpEvidence) -> CheckM Bool
+    refHeadMatchesMutable n (_, evidence) =
       case lookupCtx (nameText n) ctx of
         Just (i, entry)
           | Just info <- ceVarInfo entry -> do
               let expected0 = shiftTerm (i + 1) 0 (vriMonadRefDict info)
-                  d = ctxLen ctx
-              actual <- zonkTermM d dictTm
-              expected <- zonkTermM d expected0
-              if actual == expected
-                then pure True
-                else do
-                  actualN <- normalizeTermAt d actual
-                  expectedN <- normalizeTermAt d expected
-                  pure (actualN == expectedN)
+              refEvidenceMatchesCarrierDict ctx (vriMonadType info) expected0 evidence
         _ -> pure False
 
     goArgs shadow = fmap (\(bs, as) -> (concat bs, as)) . fmap unzip . traverse (goArg shadow)
@@ -13555,8 +14249,8 @@ liftCurrentReadsStmtIf ctx alts mels isp = do
 -- left-to-right operand order.  Nested do-suites carried inside @while@/@for@/
 -- statement-@if@ are RE-LIFTED in their own scope (so a bang inside a loop body
 -- runs each iteration, not once before the loop).
-liftDoItems :: [DoItem] -> CheckM [DoItem]
-liftDoItems = fmap concat . traverse liftOne
+liftDoItems :: Ctx -> [DoItem] -> CheckM [DoItem]
+liftDoItems ctx = fmap concat . traverse liftOne
   where
     -- lift one item: `pre ++ [item']` where `pre` are the hoisted binds.
     liftOne :: DoItem -> CheckM [DoItem]
@@ -13591,13 +14285,13 @@ liftDoItems = fmap concat . traverse liftOne
       -- otherwise keep it as-is.  Body and else suites are their own scopes.
       DoWhile ml cond body mels wsp -> do
         cond' <- liftWhileCond cond
-        body' <- liftDoItems body
-        mels' <- traverse liftDoItems mels
+        body' <- liftDoItems ctx body
+        mels' <- traverse (liftDoItems ctx) mels
         pure [DoWhile ml cond' body' mels' wsp]
       DoFor ml pat src body mels fsp ->
         withPre src $ \src' -> do
-          body' <- liftDoItems body
-          mels' <- traverse liftDoItems mels
+          body' <- liftDoItems ctx body
+          mels' <- traverse (liftDoItems ctx) mels
           pure [DoFor ml pat src' body' mels' fsp]
       DoIf alts mels isp -> do
         -- Later `elif` conditions are evaluated only when earlier conditions
@@ -13610,18 +14304,18 @@ liftDoItems = fmap concat . traverse liftOne
     -- the hoisted binds are prepended to whatever items the continuation yields.
     withPre :: Expr -> (Expr -> CheckM [DoItem]) -> CheckM [DoItem]
     withPre e k = do
-      (pre, e') <- liftBangsExpr (exprSpan e) e
+      (pre, e') <- liftBangsExpr ctx (exprSpan e) e
       rest <- k e'
       pure (pre ++ rest)
 
     liftStmtIf :: [(Expr, [DoItem])] -> Maybe [DoItem] -> Span -> CheckM [DoItem]
     liftStmtIf [] mels _ =
-      maybe (pure []) liftDoItems mels
+      maybe (pure []) (liftDoItems ctx) mels
     liftStmtIf ((c, body) : rest) mels isp = do
-      (pre, c') <- liftBangsExpr (exprSpan c) c
-      body' <- liftDoItems body
+      (pre, c') <- liftBangsExpr ctx (exprSpan c) c
+      body' <- liftDoItems ctx body
       falseItems <- case rest of
-        [] -> traverse liftDoItems mels
+        [] -> traverse (liftDoItems ctx) mels
         _ -> Just <$> liftStmtIf rest mels isp
       pure (pre ++ [DoIf [(c', body')] falseItems isp])
 
@@ -13632,7 +14326,7 @@ liftDoItems = fmap concat . traverse liftOne
     liftWhileCond :: Expr -> CheckM Expr
     liftWhileCond cond
       | exprHasBang cond = do
-          (pre, cond') <- liftBangsExpr (exprSpan cond) cond
+          (pre, cond') <- liftBangsExpr ctx (exprSpan cond) cond
           pure (EDo Nothing (pre ++ [DoExpr cond']) (exprSpan cond))
       | otherwise = pure cond
 
@@ -16299,10 +16993,9 @@ headerTrait (TraitDecl supers n params members) sp = do
     projV <- evalIn emptyCtx projTm
     mg <- ownName (Name mn sp)
     -- Install the bare member name only when it does not already denote a
-    -- wired-in declaration. MonadRef's spec member names intentionally coincide
-    -- with the concrete IO ref primitives; the dictionary projection remains
-    -- available through the qualified member global below, while ordinary
-    -- `readRef` / `writeRef` source keeps resolving to the primitive wrapper.
+    -- wired-in declaration. Public MonadRef operations are trait-member
+    -- projections; concrete IO ref primitives live under the internal
+    -- __io* names so ref-facet recognition is evidence-backed.
     bareExists <- gets (Map.member mg . csGlobals)
     unless bareExists $ do
       addGlobal mg (GlobalDef projTyV (Just projV) True)
@@ -17126,6 +17819,7 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   g <- ownName n
   noteDefinition g sp
   recordDefinitionInoutParams g binders
+  mOpAlias <- if null binders then operationValueInfoOfExpr emptyCtx body else pure Nothing
   -- §8.5.2: an 'opaque' term definition keeps its equation available for
   -- definitional equality inside this module, but it is sealed
   -- (gdReducible cleared) at module end so other modules treat it as an
@@ -17142,7 +17836,7 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   unless (null recvIdxs) $
     modify' $ \stM -> stM {csReceivers = Map.insert g recvIdxs (csReceivers stM)}
   st <- get
-  msig <- pure (Map.lookup g (csGlobals st))
+  let msig = Map.lookup g (csGlobals st)
   case msig of
     Just gd | Nothing <- gdValue gd -> pure ()
     _ ->
@@ -17151,16 +17845,37 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
   -- §13.2.10/§2.8: a signature-governed binding whose definiens is an
   -- identity-preserving form (record/seal/projection chain, not a
   -- function result) still preserves static-object identity
-  let markManifestIfShaped tm =
-        when (manifestShaped tm) $
-          modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
-      manifestShaped = \case
-        CGlob _ -> True
-        CRecordV _ -> True
-        CSealE _ x -> manifestShaped x
-        CProj x _ -> manifestShaped x
-        CProjAt x _ _ -> manifestShaped x
-        _ -> False
+  let { manifestShaped = \case
+          CGlob _ -> True
+          CRecordV _ -> True
+          CSealE _ x -> manifestShaped x
+          CProj x _ -> manifestShaped x
+          CProjAt x _ _ -> manifestShaped x
+          _ -> False
+      }
+  let duplicateOrInfer = do
+        -- a previous definition with a value: duplicate declaration (§9.2)
+        case msig of
+          Just gd' | isJust (gdValue gd') -> do
+            enrich <- duplicateRelated (nameText n) g sp
+            report $ enrich $
+              diag SevError StageElaborate "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") sp
+                ("duplicate declaration of '" <> nameText n <> "'")
+          _ -> pure ()
+        -- no preceding signature: pre-register the name so self-references
+        -- resolve and are reported as recursion-without-signature (§9.2)
+        placeholderTy <- freshMetaV emptyCtx
+        addGlobal g (GlobalDef placeholderTy Nothing False)
+        (tm0, ty) <- elabFunction (Just (nameText n)) binders mResTy body sp
+        flushPending
+        tm <- zonkTermM 0 tm0
+        when (occursGlobal g tm) $
+          errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.type.missing-signature")
+            "recursive definitions require a preceding signature declaration (§15, §9.2)"
+        tmV <- evalIn emptyCtx tm
+        recordCoreBody g tm
+        addGlobal g (GlobalDef ty (Just tmV) True)
+        forM_ mOpAlias (recordEffectOpValueGlobal g)
   case msig of
     Just gd | Nothing <- gdValue gd -> do
       -- Pending goals raised inside the signature may have been solved
@@ -17232,31 +17947,12 @@ elabLetDecl mods (LetDef (Just n) _ Nothing _ binders mResTy mdec body) sp = do
                 TerminationTotalOnly -> pure False
                 TerminationUnverified -> not <$> shouldDeferTermination g deps
             else pure True
-      markManifestIfShaped tm
+      when (manifestShaped tm) $
+        modify' $ \stM -> stM {csManifest = Map.insert g () (csManifest stM)}
       recordCoreBody g tm
       addGlobal g gd {gdType = sigTy, gdValue = Just tmV, gdReducible = reducible}
-    _ -> do
-      -- a previous definition with a value: duplicate declaration (§9.2)
-      case msig of
-        Just gd' | isJust (gdValue gd') -> do
-          enrich <- duplicateRelated (nameText n) g sp
-          report $ enrich $
-            diag SevError StageElaborate "E_DUPLICATE_DECLARATION" (Just "kappa-hs.name.duplicate") sp
-              ("duplicate declaration of '" <> nameText n <> "'")
-        _ -> pure ()
-      -- no preceding signature: pre-register the name so self-references
-      -- resolve and are reported as recursion-without-signature (§9.2)
-      placeholderTy <- freshMetaV emptyCtx
-      addGlobal g (GlobalDef placeholderTy Nothing False)
-      (tm0, ty) <- elabFunction (Just (nameText n)) binders mResTy body sp
-      flushPending
-      tm <- zonkTermM 0 tm0
-      when (occursGlobal g tm) $
-        errAt sp "E_RECURSION_REQUIRES_SIGNATURE" (Just "kappa.type.missing-signature")
-          "recursive definitions require a preceding signature declaration (§15, §9.2)"
-      tmV <- evalIn emptyCtx tm
-      recordCoreBody g tm
-      addGlobal g (GlobalDef ty (Just tmV) True)
+      forM_ mOpAlias (recordEffectOpValueGlobal g)
+    _ -> duplicateOrInfer
 elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
   -- top-level pattern binding: bind each variable to a projection
   (bodyTm, bodyTy) <- case mty of
@@ -17270,8 +17966,10 @@ elabLetDecl _ (LetDef Nothing _ (Just pat) _ [] mty Nothing body) sp = do
   case pat of
     PVar n -> do
       g <- ownName n
+      mOpAlias <- operationValueInfoOfExpr emptyCtx body
       tmV <- evalIn emptyCtx bodyTm
       addGlobal g (GlobalDef bodyTy (Just tmV) True)
+      forM_ mOpAlias (recordEffectOpValueGlobal g)
       -- Record the elaborated core body so the native backend lowers the
       -- real value (a top-level prefixed binding `let 1 x = e` / `let &x = e`
       -- reaches here as a PVar pattern); without this it has no recorded body
@@ -17943,16 +18641,16 @@ collectFunEdges funMap src =
 
     collectStrictSubtermEdgesK :: Int -> Map Int Int -> Map Int PartialCall -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
     collectStrictSubtermEdgesK d sub ho facts boolFacts = \case
-      KBind _ _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
+      KBind _ _ t _ -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KLet _ _ t -> collectStrictSubtermEdges d sub ho facts boolFacts t
       KLetQ _ t m -> do
         rt <- collectStrictSubtermEdges d sub ho facts boolFacts t
         rm <- maybe (pure (Just [])) (collectStrictSubtermEdges d sub ho facts boolFacts . snd) m
         pure (joinEdges rt rm)
       KExpr t -> collectStrictSubtermEdges d sub ho facts boolFacts t
-      KVarItem _ initT actT ->
+      KVarItem _ initT actT _ ->
         joinEdges <$> collectStrictSubtermEdges d sub ho facts boolFacts initT <*> collectStrictSubtermEdges d sub ho facts boolFacts actT
-      KAssign lhs _ rhs actT ->
+      KAssign lhs _ rhs actT _ ->
         joinManyEdges
           <$> sequence
             [ collectStrictSubtermEdges d sub ho facts boolFacts lhs
@@ -18050,12 +18748,12 @@ collectFunEdges funMap src =
 
     containsSccReferenceK :: Int -> Map Int PartialCall -> Set Int -> KItem -> Bool
     containsSccReferenceK d ho esc = \case
-      KBind _ _ t -> containsSccReference d ho esc t
+      KBind _ _ t _ -> containsSccReference d ho esc t
       KLet _ _ t -> containsSccReference d ho esc t
       KLetQ _ t m -> containsSccReference d ho esc t || maybe False (containsSccReference d ho esc . snd) m
       KExpr t -> containsSccReference d ho esc t
-      KVarItem _ initT actT -> containsSccReference d ho esc initT || containsSccReference d ho esc actT
-      KAssign lhs _ rhs actT ->
+      KVarItem _ initT actT _ -> containsSccReference d ho esc initT || containsSccReference d ho esc actT
+      KAssign lhs _ rhs actT _ ->
         containsSccReference d ho esc lhs
           || containsSccReference d ho esc rhs
           || containsSccReference d ho esc actT
@@ -18096,16 +18794,16 @@ collectFunEdges funMap src =
 
     goK :: Int -> Map Int Int -> Map Int PartialCall -> Set Int -> [AFact] -> [(Term, Bool)] -> KItem -> CheckM (Maybe [CallEdge])
     goK d sub ho esc facts boolFacts = \case
-      KBind _ _ t -> goArg d sub ho esc facts boolFacts t
+      KBind _ _ t _ -> goArg d sub ho esc facts boolFacts t
       KLet _ _ t -> goArg d sub ho esc facts boolFacts t
       KLetQ _ t m -> do
         rt <- goArg d sub ho esc facts boolFacts t
         rm <- maybe (pure (Just [])) (goArg d sub ho esc facts boolFacts . snd) m
         pure (joinEdges rt rm)
       KExpr t -> goArg d sub ho esc facts boolFacts t
-      KVarItem _ initT actT ->
+      KVarItem _ initT actT _ ->
         joinEdges <$> goArg d sub ho esc facts boolFacts initT <*> goArg d sub ho esc facts boolFacts actT
-      KAssign lhs _ rhs actT ->
+      KAssign lhs _ rhs actT _ ->
         joinManyEdges
           <$> sequence
             [ goArg d sub ho esc facts boolFacts lhs

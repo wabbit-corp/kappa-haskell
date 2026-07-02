@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "cancel:T\n"
+
+-- Pending class: host-bridge-proposal
+-- Pending import from cats-effect IOConcurrencySuite:
+--   - "interrupt well-behaved blocking synchronous effect"
+--
+-- This is deliberately separate from `blocking-does-not-starve.kp`: ordinary
+-- `blocking` prevents scheduler monopolization but does not make an arbitrary
+-- foreign operation cancellable. This fixture needs an explicit cancellable
+-- foreign-call classification or testing shim.
+
+module main
+
+import std.testing.blocking_cancellable.(term newCancelableBlock, term runCancelableBlock)
+import std.testing.blocking_cancellable.(term cancelObserved)
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+main : UIO Unit
+let main = do
+  op <- newCancelableBlock
+  fiber <- fork (runCancelableBlock op)
+  cede
+  interrupt fiber
+  canceled <- cancelObserved op
+  printlnString ("cancel:" ++ showBool canceled)

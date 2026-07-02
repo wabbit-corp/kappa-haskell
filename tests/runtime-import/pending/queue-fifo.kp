@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "seq:10,20\nordered:1,2,3\n"
+
+-- Pending class: library-proposal (`std.queue`)
+-- Pending import from zio QueueSpec:
+--   - "sequential offer and take"
+--   - "queue is ordered"
+--
+-- This requires a standard queue surface. The exact module name is provisional;
+-- the behavior is the proposed imported contract.
+
+module main
+
+import std.queue.(type Queue)
+import std.queue.(term boundedQueue, term unboundedQueue, term offerQueue, term takeQueue)
+
+main : UIO Unit
+let main = do
+  seqQ <- boundedQueue @Int 2
+  _ <- offerQueue seqQ 10
+  v1 <- takeQueue seqQ
+  _ <- offerQueue seqQ 20
+  v2 <- takeQueue seqQ
+  printlnString ("seq:" ++ showInt v1 ++ "," ++ showInt v2)
+
+  orderedQ <- unboundedQueue @Int
+  _ <- offerQueue orderedQ 1
+  _ <- offerQueue orderedQ 2
+  _ <- offerQueue orderedQ 3
+  a <- takeQueue orderedQ
+  b <- takeQueue orderedQ
+  c <- takeQueue orderedQ
+  printlnString ("ordered:" ++ showInt a ++ "," ++ showInt b ++ "," ++ showInt c)

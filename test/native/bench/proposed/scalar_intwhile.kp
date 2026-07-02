@@ -1,9 +1,12 @@
 -- Bench: scalar_intwhile
--- Purpose: the LLVM-backend mutable-var while-loop anchor. Under S2.3b the old
---   unboxed var-loop scalarizer is suspended because it bypassed selected
---   MonadRef evidence; this benchmark now guards the safe generic path.
--- Expected LLVM lowering: no mutable-var scalar worker; the loop is a `krt2_while`
---   do-kernel action using the checker-selected MonadRef read/write actions.
+-- Purpose: the LLVM-backend mutable-var while-loop anchor. Under S2.3b any
+--   scalarizer must preserve the checker-selected MonadRef evidence; the old
+--   evidence-oblivious raw-ref peephole is invalid, but scalarization remains
+--   required when equivalence can be proven.
+-- Expected LLVM lowering: an evidence-aware mutable-var scalar worker
+--   (`@kscalarloop_N`) with native int64 arithmetic and no per-iteration boxed
+--   `krt2_while`; unproven evidence/shapes must use the selected-action
+--   fallback instead of this worker.
 -- Result must equal: sum 0..10000000 inclusive = 50000005000000.
 module main
 

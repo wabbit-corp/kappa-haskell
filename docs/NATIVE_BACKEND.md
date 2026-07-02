@@ -91,10 +91,12 @@ environment), so we keep the real elaborator output instead.
 
 ## 3. Value representation
 
-Every Kappa value is a uniformly **boxed**, heap-allocated object
-(`KValue*`), so the generated code and the runtime can treat values
-uniformly (apply, match, project) without monomorphising. The header is
-a tag; the body is a tagged union:
+The generic fallback representation is a `KValue*` heap object, which lets
+generated code and the runtime treat values uniformly (apply, match, project)
+without monomorphising every path. Current native values are a tagged word:
+heap pointers keep the `b000` low-bit shape, while immediate integers,
+nullary constructors, and selected packed constructor values may live directly
+in the word. A boxed heap object has a tag header and a tagged-union body:
 
 ```
 struct KValue {
@@ -113,10 +115,11 @@ struct KValue {
 };
 ```
 
-* `K_INT` holds a 64-bit machine integer. The spec's `Integer` is
-  unbounded; the native backend supports the 64-bit range and reports
-  `E_BACKEND_UNSUPPORTED` if a literal does not fit (it never silently
-  wraps). See §5.
+* `K_INT` is the boxed fallback for integer values. Small `Int` values use the
+  immediate tagged representation on optimized paths; large `Integer` values
+  use the bignum fallback. Backend integer overflow either stays in the proved
+  scalar lane or escapes to the boxed representation; it must not silently wrap.
+  See §5.
 * `K_CTOR` carries the constructor's **fully-qualified name** (interned
   C string) and its boxed arguments; matching compares the name. Unit,
   `True`/`False`, list `Nil`/`Cons`, etc. are ordinary constructors.
@@ -147,12 +150,13 @@ collector** (`libgc`). Rationale, in the spirit of the requirement that
   → `GC_MALLOC_ATOMIC` (pointer-free, e.g. string/byte buffers) so the
   collector does not scan large blobs for spurious pointers.
   `kgc_init()` calls `GC_INIT()` once at startup (`main`).
-* **Object layout & scanning.** Every heap object is a `KValue` or a
+* **Object layout & scanning.** Every boxed heap object is a `KValue` or a
   `KValue*[]` (env / ctor-arg / record-value arrays) or a `char[]`
   (string bytes, atomic). Because the collector is conservative it needs
   no per-type maps; because the arrays are real C pointer arrays it
-  traces them precisely. There are no tagged/packed pointers that would
-  hide a reference from the collector.
+  traces them precisely. Tagged immediates and packed scalar-only values are
+  pointer-free words; boxed pointers remain aligned heap pointers, so the
+  representation does not hide collectable references from Boehm.
 * **Ownership / lifetime.** Kappa is GC'd: values have no owner and no
   scope-bound destructor at the C level. `defer`/`using` (§18) run their
   bodies for *effect* ordering, not for memory reclamation; the memory
@@ -276,8 +280,10 @@ silent fallback to interpreter behaviour. See
 
 ### Performance characteristics
 
-The representation is uniformly boxed (every value a GC'd `KValue`), but
-the hot paths avoid needless overhead:
+Runtime values use the tagged `KValue*` word representation: heap pointers keep
+the `b000` low-bit shape, while immediates such as small integers, nullary
+constructors, and selected packed values live directly in the word. The hot
+paths avoid needless overhead:
 
 * A saturated application whose spine head is a known builtin primitive
   lowers to a DIRECT call on that primitive's C entry point — a positional
@@ -288,18 +294,24 @@ the hot paths avoid needless overhead:
 * A saturated call to a known function global calls its worker `kw_…`
   directly (through the trampoline) instead of building a curried
   closure chain.
-* Small integers (`-16..256`) and the two `Bool` constructors are cached;
-  a closure binds its environment once (not per variable reference); a
-  mutable-`var` read/write inside a loop sequences the checker-selected
+* Small integers and the two `Bool` constructors use immediate/tagged
+  representation rather than per-use heap boxes; a closure binds its
+  environment once (not per variable reference); a mutable-`var` read/write
+  inside a loop sequences the checker-selected
   `MonadRef.readRef`/`MonadRef.writeRef` action instead of reconstructing a
   backend-local raw cell access. Optimizations may elide representation overhead
   only when they preserve that selected action semantics.
 
-A tail-recursive `sum 1..10_000_000` runs in ~4.2 s and a
-`var`-mutating `while` loop of 1,000,000 steps in ~0.4 s, both at flat
-~2.4 MB RSS (≈16× / ≈10× faster than the first cut). Residual cost is the
-inherent boxing/GC of the uniform representation; integer unboxing remains
-available future work (it would not change observable behaviour).
+The scalar-worker island is now split by proof obligation. First-order
+monomorphic `Int`/`Double` workers are live and gated (`tailsum` is near raw-C
+in the native benchmark harness), and the LLVM backend has an evidence-aware
+mutable-`var` `while` scalar worker for checker-witnessed builtin-IO refs. The
+C/default mutable-`var` loop lane is still on the boxed selected-`MonadRef`
+fallback: the current `arithloop` smoke is about 4.99 GB allocated and 2.8 s,
+report-only, while the LLVM `scalar_intwhile` generated-code gate requires
+`@kscalarloop_N` and no hot-path `krt2_while`. Residual boxed costs in ADT,
+record, closure, polymorphic, and unproven mutable-cell shapes are fallback
+costs, not a statement that integer or double unboxing is unavailable.
 
 ## 6. FFI and the HTTP + SQLite demo
 

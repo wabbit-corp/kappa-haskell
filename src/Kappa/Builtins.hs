@@ -127,6 +127,8 @@ module Kappa.Builtins
 
     -- * Prelude functions/helpers consulted by name
   , prelNot
+  , prelAnd
+  , prelOr
   , prelCompare
   , prelReadRef
   , prelWriteRef
@@ -393,8 +395,10 @@ prelIsSet = gPrel "IsSet"
 
 -- ── Prelude functions consulted by name ──────────────────────────────
 
-prelNot, prelCompare, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
+prelNot, prelAnd, prelOr, prelCompare, prelReadRef, prelWriteRef, prelCatchIO, prelFinallyIO, prelStringAppend :: GName
 prelNot = gPrel "not"
+prelAnd = gPrel "&&"
+prelOr = gPrel "||"
 prelCompare = gPrel "compare"
 prelReadRef = gPrel "readRef"
 prelWriteRef = gPrel "writeRef"

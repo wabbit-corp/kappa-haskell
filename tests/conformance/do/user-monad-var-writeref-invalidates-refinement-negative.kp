@@ -1,0 +1,50 @@
+module main
+
+-- §18.6.2 NEGATIVE: a direct recognized writeRef through a user MonadRef
+-- carrier advances the mutable cell's current-value version. The pre-write
+-- Full fact must not justify the later Full-only match.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+
+data Wrap (a : Type) : Type =
+    MkWrap (runWrap : UIO a)
+
+instance Applicative Wrap =
+    let pureA x = MkWrap (pureIO x)
+    let liftA2 f ma mb =
+        match ma
+        case MkWrap ioa ->
+            match mb
+            case MkWrap iob ->
+                MkWrap (bindIO ioa (\a -> bindIO iob (\b -> pureIO (f a b))))
+
+instance Monad Wrap =
+    let (>>=) ma f =
+        match ma
+        case MkWrap ioa ->
+            MkWrap (bindIO ioa (\a ->
+                match f a
+                case MkWrap iob -> iob))
+
+instance MonadRef Wrap =
+    let Ref = __IORef
+    let newRef x = MkWrap (__ioNewRef x)
+    let readRef r = MkWrap (__ioReadRef r)
+    let writeRef r x = MkWrap (__ioWriteRef r x)
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+bad : Wrap Unit
+let bad = do
+    var cell : Cell = Full 1
+    if cell is Full then
+        writeRef (ref cell) Empty
+        let n =
+            match cell
+            case Full v -> v
+        pureA ()
+    else
+        pureA ()

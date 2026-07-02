@@ -98,7 +98,7 @@ failed the correctness gate or failed to build — so it doubles as a CI gate.
 
 - `ns/op`/`ms` carry ~10–15% hardware/thermal variance — same-machine reference,
   not absolute (mirror the `runtime/bench` convention).
-- The Kappa LLVM backend is currently uniform-boxed (no scalar worker), so on a
-  tight arithmetic loop it is ~390x C while the C backend is ~1.1x C. That gap
-  is the **boxing lever** the unboxing/Perceus/layout tracks target — these
-  benchmarks are the external progress gate for that work, not a headline.
+- The Kappa LLVM backend has had both boxed-parity and scalar-worker phases; use
+  each row's recorded backend/version context before drawing a performance
+  conclusion. A boxed fallback result is a **boxing lever** for the
+  unboxing/Perceus/layout tracks, not the target capability.

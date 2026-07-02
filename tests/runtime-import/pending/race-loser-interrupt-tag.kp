@@ -1,0 +1,47 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "loser:RaceLost\n"
+
+-- Pending class: runtime-pending (race loser interrupt metadata)
+-- Spec target: docs/Spec.md §18.1.6 says the losing side of `race` is interrupted
+-- using interrupt tag `RaceLost`. This currently differs between interpreter and
+-- native when observed through `onInterrupt`.
+
+module main
+
+import std.prelude.(type InterruptCause(..), type InterruptTag(..))
+
+left : Promise Void Unit -> UIO Int
+let left ready = do
+    awaitPromise ready
+    ioPure 1
+
+recordLoserCause : Promise Void String -> InterruptCause -> UIO Unit
+let recordLoserCause out ic = do
+    let label = match ic
+          case InterruptCause RaceLost _ -> "RaceLost"
+          case InterruptCause _ _ -> "other"
+    ok <- completePromise out (Success label)
+    let _ = ok
+    ioPure Unit
+
+rightBody : Promise Void Unit -> UIO Int
+let rightBody ready = do
+    ok <- completePromise ready (Success Unit)
+    let _ = ok
+    sleepFor (seconds 10)
+    ioPure 2
+
+right : Promise Void Unit -> Promise Void String -> UIO Int
+let right ready loserCause =
+    onInterrupt (rightBody ready) (recordLoserCause loserCause)
+
+main : UIO Unit
+let main = do
+    ready <- newPromise
+    loserCause <- newPromise
+    f <- fork (race (left ready) (right ready loserCause))
+    ex <- await f
+    let _ = ex
+    cause <- awaitPromise loserCause
+    printlnString ("loser:" ++ cause)

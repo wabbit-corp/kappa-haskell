@@ -661,7 +661,7 @@ runScope rt reg0 selfLabel env0 items0 = do
         KLet _ pat t -> do
           x <- evalK rt env t
           bindOrDie pat x $ \bs -> go (reverse bs ++ env) rest
-        KBind _ pat t -> do
+        KBind _ pat t _ -> do
           x <- runIOValue rt =<< evalK rt env t
           bindOrDie pat x $ \bs -> go (reverse bs ++ env) rest
         KLetQ pat t mElse -> do
@@ -675,10 +675,10 @@ runScope rt reg0 selfLabel env0 items0 = do
                   leave (CplNormal r)
                 Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? else: residue pattern failed")))
               Nothing -> leave =<< throwIO (KappaError (VLit (LitStr "let? pattern failed and no Alternative is available")))
-        KVarItem _ _ actT -> do
+        KVarItem _ _ actT _ -> do
           ref <- runIOValue rt =<< evalK rt env actT
           go (ref : env) rest
-        KAssign _ _ _ actT -> do
+        KAssign _ _ _ actT _ -> do
           _ <- runIOValue rt =<< evalK rt env actT
           go env rest
         KReturn t -> leave . CplReturn =<< evalK rt env t
@@ -1154,9 +1154,6 @@ runPrimIO' rt p args = case (p, args) of
       -- interrupt wakes the sleep, then DELIVERS if unmasked / RE-PARKS (full
       -- duration) if masked.  unitV after the (possibly re-parked) full sleep.
       else interruptPoint (threadDelay (nanosToMicros ns) >> pure unitV)
-  ("newRef", [v]) -> VRef <$> newIORef v
-  ("readRef", [VRef r]) -> readIORef r
-  ("writeRef", [VRef r, v]) -> writeIORef r v >> pure unitV
   ("__ioNewRef", [v]) -> VRef <$> newIORef v
   ("__ioReadRef", [VRef r]) -> readIORef r
   ("__ioWriteRef", [VRef r, v]) -> writeIORef r v >> pure unitV
@@ -1185,8 +1182,9 @@ runPrimIO' rt p args = case (p, args) of
       else IOA.writeArray arr ix v >> pure unitV
   -- §29.1 std.atomic. Interpreter fibers are GHC threads, so AtomicRef
   -- read-modify-write operations must use IORef's atomic modifier as the oracle
-  -- for the native lock-free operations. Memory-order arguments still carry no
-  -- observable interpreter effect beyond the operation's required atomicity.
+  -- for the native boxed atomic-cell operations. Memory-order arguments still
+  -- carry no observable interpreter effect beyond the operation's required
+  -- atomicity.
   ("__newAtomicRef", [v]) -> VRef <$> newIORef v
   ("__atomicLoad", [_order, VRef r]) -> atomicModifyIORef' r (\old -> (old, old))
   ("__atomicStore", [_order, VRef r, v]) -> atomicModifyIORef' r (\_old -> (v, unitV))
