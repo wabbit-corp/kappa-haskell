@@ -139,15 +139,18 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      module-export), the owned/borrowed accessor — all observe-only/parity-identical, validated by the
      cross-check gate over 665 globals. → **S2** (dup/drop — the first stage that *consumes* `OwnInfo` +
      changes codegen; the Boehm-differential-backstop go/no-go).
-   - **S2 — dup/drop, Boehm differential backstop. ✅ S2.0–S2.3b LANDED + independently reviewed SOUND**
-     (`9c19790`→`272be14`): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
+   - **S2 — dup/drop, Boehm differential backstop. ✅ S2.0–S2.3b LANDED + independently reviewed SOUND;
+     S2.3c primitive convention table implemented**
+     (`9c19790`→`272be14` plus current S2.3c work): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
      emission (S2.2), the match-destructure cell-drop (S2.3a — `kdrop` now fires: 101 sites / 33 files, 315
      `kdup` / 66), and the consume-vs-read flag consumed CONSERVATIVELY (S2.3b — dup only a consuming
-     `NonLast`; scope-close stays on "no `LastUse` anywhere"). Boehm still frees while a DEBUG assert checks
+     `NonLast`; scope-close stays on "no `LastUse` anywhere"). S2.3c routes global call-boundary ownership
+     through `argConvSelectGlobal`, keyed by resolved primitive identity, with audited `ArgOwned` positions
+     for runtime-cell publishers and `ArgBorrowed` positions for confirmed read-only primitive handles.
+     Ambiguous result/action-transfer primitives remain conservative `ArgShared`. Boehm still frees while a DEBUG assert checks
      `rc` against the collector (de-risks use-after-free). RC-on == RC-off byte-identical (150/0, 2094/0),
-     underflow-clean + non-vacuous. **Before S3:** S2.3c (prim-convention table — MUST be
-     storing-prims-exhaustive or S3 free-on-zero is a UAF), S2.3d (per-path dead-binder drops), the
-     returning-arm (`SinkTail`/`SinkBounce`) drop tighten.
+     underflow-clean + non-vacuous. **Before S3:** S2.3d (per-path dead-binder drops), the returning-arm
+     (`SinkTail`/`SinkBounce`) drop tighten, and keeping the S2.3c storing-primitive audit current.
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).

@@ -11,13 +11,15 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
 import Kappa.Backend.Repr
-  ( CtorLayoutInfo (..)
+  ( ArgConv (..)
+  , CtorLayoutInfo (..)
   , Rep (..)
+  , argConvSelectGlobal
   , ctorLayoutOf
   , scalarRep
   )
 import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
-import Kappa.Builtins (prelDouble, prelInt, prelUnit)
+import Kappa.Builtins (gPrel, prelDouble, prelInt, prelUnit, primModule)
 import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
 import Kappa.Core
   ( GName (..)
@@ -33,6 +35,7 @@ import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
   , OwnInfo (..)
+  , annotateOwnership
   , argConvBodies
   , crossCheckBodies
   , renderOwnInfo
@@ -68,12 +71,13 @@ main = do
   jsonOk <- jsonEncoderSound
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
+  primConvOk <- primArgConventionS23c
   ownOk <- ownershipCrossCheckClean
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && ownOk && ctorLayoutOk && reExportOk
+          && primConvOk && ownOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -120,6 +124,88 @@ reprScalarIdentity = do
           ++ " (a user type spelling 'Double' must NOT unbox)"
       )
   pure ok
+
+-- | Perceus S2.3c regression: primitive call conventions are not the source
+-- arrows' blanket @QW@. The shared Repr accessor must classify audited
+-- runtime-cell publishers as owned at the published value positions and
+-- confirmed read-only positions as borrowed, while leaving result-transfer
+-- primitives on the conservative telescope fallback until result ownership is
+-- modeled.
+primArgConventionS23c :: IO Bool
+primArgConventionS23c = do
+  let cu =
+        compileSourceWithPrelude "prim-conventions.kp" $
+          T.unlines
+            [ "module main"
+            , "x : Int"
+            , "let x = 0"
+            ]
+      st = cuState cu
+      ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+      conv name = argConvSelectGlobal ctx (gPrel (T.pack name))
+      convDirect name = argConvSelectGlobal ctx (GName primModule (T.pack name))
+      b = ArgBorrowed
+      o = ArgOwned
+      s = ArgShared
+      exact =
+        [ ("__ioNewRef", [o])
+        , ("__ioReadRef", [b])
+        , ("__ioWriteRef", [b, o])
+        , ("__newArray", [b, o])
+        , ("__arrayRead", [b, b])
+        , ("__arrayWrite", [b, b, o])
+        , ("__arrayLen", [b])
+        , ("newTVar", [o])
+        , ("readTVar", [b])
+        , ("writeTVar", [b, o])
+        , ("__newAtomicRef", [o])
+        , ("__atomicLoad", [b, b])
+        , ("__atomicStore", [b, b, o])
+        , ("__atomicExchange", [b, b, o])
+        , ("__atomicCompareExchange", [b, b, b, b, o])
+        , ("__atomicFetchAdd", [b, b, b])
+        , ("__atomicFetchSub", [b, b, b])
+        , ("__atomicFetchAnd", [b, b, b])
+        , ("__atomicFetchOr", [b, b, b])
+        , ("__atomicFetchXor", [b, b, b])
+        , ("newFiberRef", [o])
+        , ("getFiberRef", [b])
+        , ("setFiberRef", [b, o])
+        , ("modifyFiberRef", [b, s])
+        , ("locallyFiberRef", [b, o, s])
+        , ("completePromise", [b, o])
+        , ("awaitPromiseExit", [b])
+        , ("pollPromise", [b])
+        , ("isDonePromise", [b])
+        ]
+      fallback =
+        [ ("__transport", [s])
+        , ("ioPure", [s])
+        , ("unsafeConsume", [o])
+        ]
+      failedExact = [(name, conv name, want) | (name, want) <- exact, conv name /= Just want]
+      failedFallback = [(name, conv name, want) | (name, want) <- fallback, conv name /= Just want]
+      failedDirect =
+        [ (name, convDirect name, want)
+        | (name, want) <- exact ++ fallback
+        , convDirect name /= Just want
+        ]
+      ok = null failedExact && null failedFallback && null failedDirect
+  unless ok $ do
+    putStrLn "primArgConventionS23c FAILED:"
+    mapM_
+      (\(name, got, want) -> putStrLn ("  " <> name <> ": got " <> show got <> ", want " <> show (Just want)))
+      (failedExact ++ failedFallback ++ failedDirect)
+  pure ok
+
+replaceGlobInSimpleApp :: GName -> GName -> Term -> Term
+replaceGlobInSimpleApp from to = go
+  where
+    go t = case t of
+      CGlob g | g == from -> CGlob to
+      CApp ic f a -> CApp ic (go f) (go a)
+      CLam ic q n body -> CLam ic q n (go body)
+      other -> other
 
 -- | Perceus RC Stage S1.2 gate: the ownership last-use analysis
 -- ("Kappa.Ownership") must be consistent with the declared quantities already
@@ -283,6 +369,18 @@ ownershipCrossCheckClean = do
           , "let peekBox x = x.v"
           , "useBorrowTwice : Box -> Int"
           , "let useBorrowTwice y = peekBox y + y.v"
+          , "primReadRefBorrow : Ref Int -> UIO Int"
+          , "let primReadRefBorrow r = __ioReadRef r"
+          , "primWriteRefTransfer : Ref Int -> Int -> UIO Unit"
+          , "let primWriteRefTransfer r v = __ioWriteRef r v"
+          , "tvarReadBorrow : TVar Int -> STM Int"
+          , "let tvarReadBorrow r = readTVar r"
+          , "tvarWriteTransfer : TVar Int -> Int -> STM Unit"
+          , "let tvarWriteTransfer r v = writeTVar r v"
+          , "fiberGetBorrow : FiberRef Int -> UIO Int"
+          , "let fiberGetBorrow r = getFiberRef r"
+          , "fiberSetTransfer : FiberRef Int -> Int -> UIO Unit"
+          , "let fiberSetTransfer r v = setFiberRef r v"
           ]
       focused =
         let cu = compileSourceWithPrelude "consume-vs-read.kp" consumeVsReadSrc
@@ -310,6 +408,12 @@ ownershipCrossCheckClean = do
             typeOnlyAliasG = GName mainMod (T.pack "typeOnlyAlias")
             projOnlyG = GName mainMod (T.pack "projOnly")
             useBorrowTwiceG = GName mainMod (T.pack "useBorrowTwice")
+            primReadRefBorrowG = GName mainMod (T.pack "primReadRefBorrow")
+            primWriteRefTransferG = GName mainMod (T.pack "primWriteRefTransfer")
+            tvarReadBorrowG = GName mainMod (T.pack "tvarReadBorrow")
+            tvarWriteTransferG = GName mainMod (T.pack "tvarWriteTransfer")
+            fiberGetBorrowG = GName mainMod (T.pack "fiberGetBorrow")
+            fiberSetTransferG = GName mainMod (T.pack "fiberSetTransfer")
             paramBid g = BinderId g []
             refinedOf g =
               case Map.lookup g (csOwnership st) of
@@ -361,6 +465,20 @@ ownershipCrossCheckClean = do
             driftBinderUsesMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinderUses
             driftBindersMsgs = crossCheckBodies ctx ctorTypes forcedBodies driftBinders
             focusedXc = crossCheckBodies ctx ctorTypes (csCoreBodies st) (csOwnership st)
+            directPrimReadBody =
+              replaceGlobInSimpleApp
+                (gPrel (T.pack "__ioReadRef"))
+                (GName primModule (T.pack "__ioReadRef"))
+                <$> Map.lookup primReadRefBorrowG (csCoreBodies st)
+            directPrimReadOwn =
+              maybe
+                Map.empty
+                (\body -> annotateOwnership ctx ctorTypes (Map.singleton primReadRefBorrowG body))
+                directPrimReadBody
+            directPrimReadDump =
+              case Map.lookup primReadRefBorrowG directPrimReadOwn of
+                Nothing -> T.empty
+                Just oi -> renderOwnInfo primReadRefBorrowG oi
             checks =
               [ ( "borrowed call arg records LastUse consumes=False"
                 , T.pack "LastUse consumes=False" `T.isInfixOf` passDump
@@ -433,6 +551,30 @@ ownershipCrossCheckClean = do
                 )
               , ( "read-only NonLast does not consume"
                 , T.pack "NonLast consumes=False" `T.isInfixOf` dumpOf useBorrowTwiceG
+                )
+              , ( "primitive IORef read arg records non-consuming use"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf primReadRefBorrowG
+                )
+              , ( "direct primModule IORef read arg records non-consuming use"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` directPrimReadDump
+                )
+              , ( "primitive IORef write borrows ref and transfers value"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf primWriteRefTransferG
+                    && T.pack "LastUse consumes=True" `T.isInfixOf` dumpOf primWriteRefTransferG
+                )
+              , ( "primitive TVar read arg records non-consuming use"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf tvarReadBorrowG
+                )
+              , ( "primitive TVar write borrows ref and transfers value"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf tvarWriteTransferG
+                    && T.pack "LastUse consumes=True" `T.isInfixOf` dumpOf tvarWriteTransferG
+                )
+              , ( "primitive FiberRef get arg records non-consuming use"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf fiberGetBorrowG
+                )
+              , ( "primitive FiberRef set borrows ref and transfers value"
+                , T.pack "LastUse consumes=False" `T.isInfixOf` dumpOf fiberSetTransferG
+                    && T.pack "LastUse consumes=True" `T.isInfixOf` dumpOf fiberSetTransferG
                 )
               , ( "linear cross-check rejects read-only LastUse"
                 , not (null forcedMsgs)

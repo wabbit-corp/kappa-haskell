@@ -103,7 +103,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Kappa.Backend.Repr (argConvSelect)
+import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal)
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
@@ -1037,10 +1037,10 @@ scopeTypeAt scopes lvl = lookupLevel lvl scopes >>= scType
 callArgConsumes :: EvalCtx -> Int -> (Int -> Maybe Value) -> Term -> [(Icit, Term)] -> [UseConsumes]
 callArgConsumes ctx depth localType hd args =
   case hd of
-    CGlob g -> classifyCallArgs GlobalCall (paramConvTelescope ctx g) args
+    CGlob g -> classifyCallArgs GlobalCall (argConvSelectGlobal ctx g) (paramConvTelescope ctx g) args
     _ ->
       case termTypeAt ctx depth localType hd of
-        Just ty -> classifyCallArgs LocalCall (paramConvTelescopeFromValueAt ctx depth ty) args
+        Just ty -> classifyCallArgs LocalCall Nothing (paramConvTelescopeFromValueAt ctx depth ty) args
         Nothing -> sharedFallback
   where
     -- S2 all-shared fallback for non-global/unknown function values. Shared is
@@ -1052,7 +1052,7 @@ termTypeAt :: EvalCtx -> Int -> (Int -> Maybe Value) -> Term -> Maybe Value
 termTypeAt ctx depth localType = go
   where
     go = \case
-      CGlob g -> gdType <$> Map.lookup g (globalsMap (ecGlobals ctx))
+      CGlob g -> argConvGlobalType ctx g
       CVar i -> localType (depth - 1 - i)
       CProj e field -> recordFieldType ctx field =<< go e
       CProjAt e field _ -> recordFieldType ctx field =<< go e
@@ -1084,9 +1084,9 @@ data CallMode = GlobalCall | LocalCall
 
 paramConvTelescope :: EvalCtx -> GName -> [ParamSite]
 paramConvTelescope ctx g =
-  case Map.lookup g (globalsMap (ecGlobals ctx)) of
+  case argConvGlobalType ctx g of
     Nothing -> []
-    Just gd -> paramConvTelescopeFromValue ctx (gdType gd)
+    Just ty -> paramConvTelescopeFromValue ctx ty
 
 paramConvTelescopeFromValue :: EvalCtx -> Value -> [ParamSite]
 paramConvTelescopeFromValue ctx = paramConvTelescopeFromValueAt ctx 0
@@ -1111,32 +1111,46 @@ paramConvTelescopeWithResultAt ctx = go
            in (ParamSite ic q borrowed domT domV : sites, resultTy)
         resultTy -> ([], resultTy)
 
-classifyCallArgs :: CallMode -> [ParamSite] -> [(Icit, Term)] -> [UseConsumes]
-classifyCallArgs mode tele0 = go tele0
+classifyCallArgs :: CallMode -> Maybe [ArgConv] -> [ParamSite] -> [(Icit, Term)] -> [UseConsumes]
+classifyCallArgs mode mConvs tele0 = go mConvs tele0
   where
-    go _ [] = []
-    go tele ((ic, _) : rest) =
+    go _ _ [] = []
+    go convs tele ((ic, _) : rest) =
       case takeMatching ic tele of
         Just (site, tele') ->
-          paramConsumes site : go tele' rest
+          let (use, convs') = paramConsumes convs site
+           in use : go convs' tele' rest
         Nothing ->
-          UseConsumes : go tele rest
+          UseConsumes : go convs tele rest
 
     takeMatching _ [] = Nothing
     takeMatching ic (p : ps)
       | ic == psIcit p = Just (p, ps)
       | otherwise = takeMatching ic ps
 
-    paramConsumes site
-      | mode == GlobalCall && (psQ site == Q0 || isKindDomainTerm (psDomain site)) = UseErased
-      | mode == LocalCall && (psQ site == Q0 || isKindDomainTerm (psDomain site)) = UseReads
-      | psBorrowed site = UseReads
-      | otherwise = case psQ site of
-          Q1 -> UseConsumes
-          QGe1 -> UseConsumes
-          QW -> UseConsumes
-          QLe1 -> UseConsumes
-          Q0 -> UseErased
+    paramConsumes convs site
+      | mode == GlobalCall && erasedOrKind site = (UseErased, convs)
+      | mode == LocalCall && erasedOrKind site = (UseReads, convs)
+      | Just (conv : rest) <- convs = (argConvConsumes conv, Just rest)
+      | Just [] <- convs = (UseConsumes, convs)
+      | psBorrowed site = (UseReads, convs)
+      | otherwise =
+          ( case psQ site of
+              Q1 -> UseConsumes
+              QGe1 -> UseConsumes
+              QW -> UseConsumes
+              QLe1 -> UseConsumes
+              Q0 -> UseErased
+          , convs
+          )
+
+    erasedOrKind site = psQ site == Q0 || isKindDomainTerm (psDomain site)
+
+argConvConsumes :: ArgConv -> UseConsumes
+argConvConsumes = \case
+  ArgBorrowed -> UseReads
+  ArgOwned -> UseConsumes
+  ArgShared -> UseConsumes
 
 -- ── S1.4 §3a whole-program usage refinement ──────────────────────────
 --
@@ -1771,16 +1785,18 @@ checkKinds g bid bo ks cks
 --
 -- The S1.5 deliverable (PERCEUS-S1-PLAN (d)\/(e)) is the OBSERVE-ONLY debug
 -- assert that every call site CAN classify each of its arguments under the
--- owned\/borrowed convention 'Kappa.Backend.Repr.argConvSelect' derives from the
--- callee telescope — the exact lookup a future S2 dup\/drop pass performs at each
+-- owned\/borrowed convention 'Kappa.Backend.Repr.argConvSelectGlobal' derives
+-- from the callee telescope plus the audited S2.3c primitive override — the
+-- exact lookup the S2 dup\/drop pass performs at each
 -- 'CApp'. NO codegen changes; this only checks that the data S2 will need is
 -- recoverable at every statically-resolvable call site.
 --
 -- \"Statically resolvable\" = a call spine whose head is a known GLOBAL
 -- ('CGlob') — the case S2 resolves via the callee 'CPi' telescope (PERCEUS-RC-
 -- DESIGN §3 / PERCEUS-S1-PLAN (d): \"at each 'CApp', resolve the callee 'CPi'
--- telescope (already done by 'repSelect')\"). For such a spine, 'argConvSelect'
--- on the callee's type MUST SUCCEED — the telescope is walkable — so S2 has a
+-- telescope (already done by 'repSelect')\"). For such a spine,
+-- 'argConvSelectGlobal' MUST SUCCEED — the telescope is walkable and any
+-- primitive override has the right arity — so S2 has a
 -- per-parameter owned\/borrowed convention list to zip against the spine. A
 -- non-global head (a local variable\/lambda\/partial application) carries no
 -- statically-known global telescope here and is not asserted — S2 classifies it
@@ -1791,7 +1807,7 @@ checkKinds g bid bo ks cks
 -- do not align position-for-position at the Core level — an erased ('Q0') or
 -- type-valued argument (e.g. a trait dictionary's @Type@ index, or a proof) is
 -- supplied EXPLICITLY on the spine but is 'Q0'\/implicit in the telescope, so
--- 'argConvSelect' (correctly) skips it. Matching spine arguments to telescope
+-- 'argConvSelectGlobal' (correctly) skips it. Matching spine arguments to telescope
 -- parameters — skipping the erased ones — is the lockstep zip S2 itself performs;
 -- the S1.5 deliverable is only that the convention list EXISTS at every such site.
 
@@ -1802,7 +1818,7 @@ argConvBodies :: EvalCtx -> Map GName Term -> [String]
 argConvBodies ctx = concatMap (\(g, body) -> argConvFindings ctx g body) . Map.toList
 
 -- | Call-site classification findings for one body: for every application spine
--- with a 'CGlob' head, check 'argConvSelect' classifies each supplied explicit
+-- with a 'CGlob' head, check 'argConvSelectGlobal' classifies each supplied explicit
 -- argument. Returns a list of human-readable findings (empty ⇒ clean).
 argConvFindings :: EvalCtx -> GName -> Term -> [String]
 argConvFindings ctx owner = goTerm
@@ -1867,21 +1883,22 @@ argConvFindings ctx owner = goTerm
       KCondPure t -> goTerm t
       KCondAction t -> goTerm t
 
-    -- assert the callee telescope is WALKABLE so S2 has a per-parameter
-    -- convention list. Only fired when the spine actually supplies an explicit
-    -- argument (a bare 'CGlob' with no args is not a consuming call site).
+    -- Assert the callee telescope/primitive override is WALKABLE so S2 has a
+    -- per-parameter convention list. Only fired when the spine actually supplies
+    -- an explicit argument (a bare 'CGlob' with no args is not a consuming call
+    -- site).
     checkCall g args =
-      case Map.lookup g (globalsMap (ecGlobals ctx)) of
+      case argConvGlobalType ctx g of
         -- an unknown global (e.g. a runtime prim with no recorded type) cannot be
         -- classified here; that is not a failure of the accessor — skip it.
         Nothing -> []
-        Just gd ->
+        Just _ ->
           let hasExpl = not (null [() | (Expl, _) <- args])
-              walkable = case argConvSelect ctx (gdType gd) of
+              walkable = case argConvSelectGlobal ctx g of
                 Just _ -> True
                 Nothing -> False
            in [ T.unpack (gKey owner) <> " → " <> T.unpack (gKey g)
-                  <> ": callee telescope is not walkable (argConvSelect = Nothing)"
+                  <> ": callee telescope/primitive convention is not walkable (argConvSelectGlobal = Nothing)"
               | hasExpl
               , not walkable
               ]

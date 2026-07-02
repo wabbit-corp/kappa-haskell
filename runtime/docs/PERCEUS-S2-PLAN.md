@@ -55,9 +55,10 @@ S0 substrate is present (`rc` field `kappart.h:127`; `alloc_val`/`_atomic` init 
   in `oiUses`: `NonLast` → `kdup(<expr>)`; `LastUse` → bare (consumed/moved here); `Borrowed`/`Nothing` →
   bare. A missing key is safe by the S1 invariant (stale key resolves to nothing, never a wrong binder).
 - **b.3 owned/borrowed call boundary** at each `CApp` `CGlob` head (`compileApp:2434`, after `eraseQ0Args`
-  :2467): `Repr.argConvSelect ctx (gdType gd)` (the S1.5-validated accessor) → zip `[ArgConv]` vs the
-  explicit runtime args: `ArgOwned` → caller transfers (no post-call drop); `ArgBorrowed` → callee never
-  drops (caller retains); `ArgShared` → conservative transfer. Non-`CGlob` head → all-shared fallback.
+  :2467): `Repr.argConvSelectGlobal ctx g` (the S1.5-validated accessor plus the S2.3c primitive override
+  table) → zip `[ArgConv]` vs the explicit runtime args: `ArgOwned` → caller transfers (no post-call drop);
+  `ArgBorrowed` → callee never drops (caller retains); `ArgShared` → conservative transfer.
+  Non-`CGlob` head → all-shared fallback.
   `boRefined` (§3a) is **observe-only in S2** — do not act on it (its gate is the dynamic-link interface;
   consuming it is S3+).
 - **b.4 drops** at statement seams: a `CLet`/match-arm binder that is `boDroppable` and unused-on-this-path

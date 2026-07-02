@@ -53,6 +53,8 @@ module Kappa.Backend.Repr
     -- * S1.5 owned/borrowed calling convention (telescope-derived; observe-only)
   , ArgConv (..)
   , argConvSelect
+  , argConvSelectGlobal
+  , argConvGlobalType
 
     -- * Static constructor layout
   , CtorLayout (..)
@@ -74,20 +76,19 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Kappa.Builtins (builtinCtorTagId, gPrel, kctUserBase, prelDouble, prelInt, prelInteger, prelNat)
+import Kappa.Builtins (builtinCtorTagId, gPrel, kctUserBase, prelDouble, prelInt, prelInteger, prelNat, primModule)
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
   , CorePat (..)
-  , Env
-  , GName
+  , GName (..)
   , Icit (..)
   , Q (..)
   , Term (..)
   , Value (..)
   , gKey
   )
-import Kappa.Eval (EvalCtx, eval, force)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force)
 
 -- ── Runtime representation classes ───────────────────────────────────
 --
@@ -274,6 +275,99 @@ argConvSelect ctx = walk 0 []
                in walk (lvl + 1) acc' cod
         _ -> Just (reverse acc)
     closureHasBoundEnv env body = maxVar body < length env + 1
+
+-- | Like 'argConvSelect', but with the S2.3c primitive convention override.
+--
+-- Primitive declarations use unrestricted surface arrows because the source
+-- language does not expose runtime ownership transfer at primitive boundaries.
+-- Perceus needs the lower-level convention: confirmed runtime-cell publishers
+-- take ownership of the published value; confirmed read-only cell/container
+-- operations borrow their handles and indices. This function keys the override
+-- from the resolved primitive identity: either a @primModule@ global or the
+-- canonical 'VPrim' identity stored in the prelude 'GlobalDef'. It does not
+-- inspect source spellings or user globals.
+--
+-- An override whose arity no longer matches the walked telescope returns
+-- 'Nothing'. The S1.5 verifier treats that as a hard drift finding, so adding
+-- a primitive argument cannot silently inherit a stale convention.
+argConvSelectGlobal :: EvalCtx -> GName -> Maybe [ArgConv]
+argConvSelectGlobal ctx g =
+  case primitiveGlobalDef (globalsMap (ecGlobals ctx)) g of
+    Nothing -> Nothing
+    Just gd ->
+      let base = argConvSelect ctx (gdType gd)
+       in case primitiveIdentity g gd >>= primArgConvOverride of
+            Nothing -> base
+            Just convs -> do
+              walked <- base
+              if length convs == length walked then Just convs else Nothing
+
+argConvGlobalType :: EvalCtx -> GName -> Maybe Value
+argConvGlobalType ctx g = gdType <$> primitiveGlobalDef (globalsMap (ecGlobals ctx)) g
+
+primitiveGlobalDef :: Map GName GlobalDef -> GName -> Maybe GlobalDef
+primitiveGlobalDef globals g@(GName m nm) =
+  case Map.lookup g globals of
+    Just gd -> Just gd
+    Nothing
+      | m == primModule -> Map.lookup (gPrel nm) globals
+      | otherwise -> Nothing
+
+primitiveIdentity :: GName -> GlobalDef -> Maybe Text
+primitiveIdentity (GName m nm) gd
+  | m == primModule = Just nm
+  | Just (VPrim p _) <- gdValue gd = Just p
+  | otherwise = Nothing
+
+-- | S2.3c audited primitive convention table.
+--
+-- 'ArgOwned' appears only at positions that publish the argument into a
+-- runtime-owned cell/container on the operation's semantic execution path.
+-- 'ArgBorrowed' appears for confirmed read-only handles, indices, memory-order
+-- codes, and compare operands. 'ArgShared' is deliberately retained for
+-- arguments whose ownership is tied to action-node/result transfer rather than
+-- this cell-publishing boundary; those remain conservative until result/action
+-- ownership is modeled.
+primArgConvOverride :: Text -> Maybe [ArgConv]
+primArgConvOverride p = Map.lookup p primArgConvOverrides
+
+primArgConvOverrides :: Map Text [ArgConv]
+primArgConvOverrides =
+  Map.fromList
+    [ ("__ioNewRef", [owned])
+    , ("__ioReadRef", [borrowed])
+    , ("__ioWriteRef", [borrowed, owned])
+    , ("__newArray", [borrowed, owned])
+    , ("__arrayRead", [borrowed, borrowed])
+    , ("__arrayWrite", [borrowed, borrowed, owned])
+    , ("__arrayLen", [borrowed])
+    , ("newTVar", [owned])
+    , ("readTVar", [borrowed])
+    , ("writeTVar", [borrowed, owned])
+    , ("__newAtomicRef", [owned])
+    , ("__atomicLoad", [borrowed, borrowed])
+    , ("__atomicStore", [borrowed, borrowed, owned])
+    , ("__atomicExchange", [borrowed, borrowed, owned])
+    , ("__atomicCompareExchange", [borrowed, borrowed, borrowed, borrowed, owned])
+    , ("__atomicFetchAdd", [borrowed, borrowed, borrowed])
+    , ("__atomicFetchSub", [borrowed, borrowed, borrowed])
+    , ("__atomicFetchAnd", [borrowed, borrowed, borrowed])
+    , ("__atomicFetchOr", [borrowed, borrowed, borrowed])
+    , ("__atomicFetchXor", [borrowed, borrowed, borrowed])
+    , ("newFiberRef", [owned])
+    , ("getFiberRef", [borrowed])
+    , ("setFiberRef", [borrowed, owned])
+    , ("modifyFiberRef", [borrowed, shared])
+    , ("locallyFiberRef", [borrowed, owned, shared])
+    , ("completePromise", [borrowed, owned])
+    , ("awaitPromiseExit", [borrowed])
+    , ("pollPromise", [borrowed])
+    , ("isDonePromise", [borrowed])
+    ]
+  where
+    owned = ArgOwned
+    borrowed = ArgBorrowed
+    shared = ArgShared
 
 -- | The owned\/borrowed verdict for one explicit runtime parameter from its
 -- declared quantity and borrow marker. Borrow wins; then quantity: @1@\/@≥1@ are

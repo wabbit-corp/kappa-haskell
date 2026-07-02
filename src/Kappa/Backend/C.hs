@@ -515,7 +515,8 @@ rcScrutDropDecision scrut = do
 
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
 -- head: read the callee's owned\/borrowed\/shared parameter convention from its
--- declared type ('Repr.argConvSelect', the S1.5-validated accessor). In S2 this is
+-- declared type plus S2.3c primitive overrides ('Repr.argConvSelectGlobal', the
+-- S1.5-validated accessor). In S2 this is
 -- OBSERVE-ONLY and emits NOTHING: every verdict resolves to NO caller-side
 -- post-call drop —
 --
@@ -532,7 +533,7 @@ rcScrutDropDecision scrut = do
 -- (a 'Borrowed' use is neither dup'd nor the binder's consuming 'LastUse'), and
 -- the drop discipline (b.4) never drops a @boBorrowed@ binder — so the convention
 -- is honoured WITHOUT any extra emission here. We still evaluate
--- 'Repr.argConvSelect' on the ON path (forcing it) so the S1.5-validated accessor
+-- 'Repr.argConvSelectGlobal' on the ON path (forcing it) so the S1.5-validated accessor
 -- is exercised over the corpus and a regression in it would surface; a non-'CGlob'
 -- head, or an unwalkable codomain ('Nothing'), is the all-shared fallback (still
 -- no drop). 'boRefined' (§3a) is observe-only and NOT consulted (that is S3+).
@@ -543,11 +544,8 @@ rcClassifyCallBoundary :: GName -> Gen ()
 rcClassifyCallBoundary g = do
   enabled <- gets gsRcEnabled
   when enabled $ do
-    globals <- gets gsGlobals
     ctx <- gets gsEvalCtx
-    let convs = case Map.lookup g globals of
-          Just gd -> Repr.argConvSelect ctx (gdType gd)
-          Nothing -> Nothing -- unknown global → all-shared fallback
+    let convs = Repr.argConvSelectGlobal ctx g -- unknown global → all-shared fallback
     -- Force the accessor so it is genuinely exercised on the ON path (a regression
     -- in the S1.5-validated convention walk would surface here); the verdict is
     -- otherwise unused in S2 (observe-only).

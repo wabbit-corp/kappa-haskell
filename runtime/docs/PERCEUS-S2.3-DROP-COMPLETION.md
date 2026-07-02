@@ -1,13 +1,14 @@
 # Perceus S2.3 redux — Drop Completion (under the Boehm differential backstop)
 
-Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`). S2.2 (dup) +
+Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`), with **S2.3c
+implemented in this stage** by the primitive convention table. S2.2 (dup) +
 S2.3-first-cut landed in `d5624e6` but `kdrop` fired ~0×; S2.3a completed the match-destructure cell-drop
 so `kdrop` now fires (101 sites / 33 files, 315 `kdup` / 66 files), and S2.3b records the consume-vs-read
 distinction and consumes it CONSERVATIVELY (dup only a consuming `NonLast`; scope-close drops stay on the
 "no `LastUse` anywhere" rule). Empirically: RC-on == RC-off byte-identical (parity 150/0, conformance
 2094/0), the DEBUG underflow assert is live, non-vacuous, and clean over the corpus (0 SIGABRT / 0
-underflow). Next: **S2.3c** (the prim-convention table — the storing-prims-exhaustive gate that S3
-free-on-zero depends on for no-UAF).
+underflow). Next: **S2.3d** (per-path dead-binder drops) plus the returning-arm drop tighten before S3
+free-on-zero.
 Companion to [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) / [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md).
 
 ## 0. Diagnosis (empirical)
@@ -72,22 +73,58 @@ or otherwise prove that the owner cannot be dropped before the result is owned.
 
 ## (d) S2.3c — the PRIM / runtime-ownership boundary (the one design decision)
 
-**Investigation:** `argConvSelect` reports `ArgShared` for **every** prim arg today — every prim arrow is
+**Investigation:** plain `argConvSelect` reported `ArgShared` for **every** prim arg — every prim arrow is
 `(~>) = CPi Expl QW False` (`Prelude.hs:37`) ⇒ `QW` ⇒ `ArgShared` (`Repr.hs:282`). Storing prims
-(`newRef`/`writeRef`/`__newArray`/`__arrayWrite`/`newTVar`) genuinely **move** the arg into a cell
-(`kref_new` `value.c:251`, `kref_set` `:809`, `karr_set` `:285` — `x = arg`, no incref); borrowing prims
-(`show*`/`print*`/arith/compare/`readRef`/`arrayRead`) **read, don't store**. No prim is *mis-declared
-owned-when-borrowing* (the dangerous case); the failure is uniform-shared ⇒ caller never drops.
+(`newRef`/`writeRef`/`__newArray`/`__arrayWrite`/`newTVar`, plus TVar/FiberRef/promise/atomic publishers)
+genuinely **move** the arg into a runtime cell/container (`kref_new`, `kref_set`, `karr_set`,
+`krt2_new_tvar`/`writeTVar`, `fiber_local_set`, `promise_complete`, `krt2_atomic_*` stores — `x = arg`,
+no incref). Borrowing positions (`readRef`, `arrayRead`, `arrayLen`, `readTVar`, `getFiberRef`,
+promise peeks/await, atomic load/order/ref/expected operands) **read or select**, not publish.
 
-**Decision (planned S2.3c):** a **prim-convention override table** in `Repr.argConvSelect` (~15 lines),
-`storingPrims ⇒ ArgOwned` (value moved in; **no caller drop**; the structure owns it; S3 recursive drop
-reclaims), everything else ⇒ `ArgBorrowed` for pointer args (**caller drops** at the binder's last-use
-seam). **No runtime-prim `kdrop` changes** — prims are C and can't see rc cleanly. Reject changing prim
-*types* (high-churn, changes the surface contract).
-**Unsoundness pin for S3:** a storing prim MISSING from the table ⇒ marked borrowing ⇒ caller drops a
-moved-in value ⇒ **S3 UAF**. The table must be **storing-prims-exhaustive** — audit every `x = arg` store
-in `value.c`/`prims.c`; bias toward `ArgOwned` only on confirmed stores. A borrowing prim mis-marked owned
-only *leaks* (safe under the backstop).
+**Decision (implemented S2.3c):** `Repr.argConvSelectGlobal` applies a **primitive-convention override table**
+keyed by resolved primitive identity (`primModule` or the prelude `VPrim` identity), then checks the override
+arity against the walked type telescope. The table marks confirmed published value positions `ArgOwned` and
+confirmed read-only positions `ArgBorrowed`; unmodeled result/action-transfer positions remain
+`ArgShared` as a conservative fallback until result/action ownership is explicit. This is intentionally not
+a blanket "all non-storing primitive args borrow" rule: alias-returning/result-transfer primitives such as
+`__transport`, `ioPure`, query/list identity shims, compact/finish helpers, and do-kernel action captures
+must not be silently converted to caller-retained borrows before their result ownership is modeled.
+**No runtime-prim `kdrop` changes** — prims are C and cannot see rc cleanly. Primitive *types* stay unchanged
+(lower churn, keeps the source contract stable).
+
+**Unsoundness pin for S3:** a storing prim MISSING from the table and later treated as borrowing would let a
+caller drop a moved-in value ⇒ **S3 UAF**. The table must stay **storing-prims-exhaustive** over audited
+runtime stores in `value.c`, `prims.c`, `stm.c`, `rt.c`, and `atomic.c`; bias toward `ArgOwned` only on
+confirmed publish positions, and leave ambiguous alias/action/result-transfer cases `ArgShared`. Gates:
+`primArgConventionS23c` pins the table, ownership focused tests pin read-vs-transfer for IORef/TVar/FiberRef,
+and `argConvBodies`/the C RC-on accessor consume the same `argConvSelectGlobal` path.
+
+**Runtime rc-discipline pin for S3 (runtime-side, distinct from the table — surfaced by the S2.3c review, and
+NOT covered by `R-prim-table-incomplete`, which is about compiler drop-placement/table completeness).** The
+table classifies the *caller* boundary correctly, but three runtime store bodies lack the rc discipline S3
+free-on-zero needs; each must land WITH the S3 flip (all inert now — `kdrop` never frees, Boehm traces the
+scanned cells). Empirically verified clean under the S2 backstop (RC-on == RC-off, 0 underflow):
+- **`karr_new` (`value.c:269`) — the UAF-direction one.** `for i<n: slab[i]=init` broadcasts ONE `ArgOwned`
+  `init` (rc bumped once by the caller transfer) into N slots with no per-slot `kdup`; a naïve S3 free-on-zero
+  recursion over boxed slots drops `init` N times ⇒ rc 1→0 on the first slot, slots 2..N dangling ⇒
+  premature free / UAF for n≥2. Fix (runtime): `kdup(init)` ×(n−1) in `karr_new`, guarded by
+  `KAPPA_PERCEUS_RC`. The table classification (`[borrowed, owned]`) is CORRECT; this is a runtime store gap.
+- **Overwriting stores** — `karr_set` (`value.c:285`), `kref_set` (`value.c:841`), `fiber_local_set`
+  (`rt.c:1145`), `krt2_atomic_store`/`exchange` (`atomic.c:131/142`) — overwrite a cell without dropping the
+  OLD occupant (a write barrier). LEAK-only (safe even post-S3), but each needs a drop-old for a leak-free S3.
+- **Not-stored `ArgOwned` args** — `krt2_atomic_compare_exchange` (`atomic.c:161`) stores `desired` only on
+  success; `promise_complete` (`rt.c:1222`) stores `exitv` only on first completion. On the CAS-fail /
+  already-completed path the moved-in `ArgOwned` arg is neither stored nor dropped. LEAK-only; needs a drop.
+
+**Arity-guard alignment pin for S3 (compiler-side).** `argConvSelectGlobal`'s arity check counts params by
+`argConvSelect`'s rule (`Expl ∧ q≠Q0`, which *includes* an explicit non-`Q0` kind-domain param), while
+`Ownership.classifyCallArgs` consumes convs by `erasedOrKind` (`Q0 ∨ isKindDomainTerm`, which *skips*
+kind-domain params). They diverge only on an explicit non-`Q0` kind-domain parameter — INERT today (no table
+entry has one; only 4 erasure intrinsics in the prelude — `__effRowCons`/`__shapeInspectAdt`/
+`__shapeInspectRecord`/`__shapeRequireFieldInstances` — carry such a param, none listed; and S2.3c is
+observe-only). Before S3 enables caller-drops, make the override arity check count by the `erasedOrKind` rule
+(or add an S1.5 finding on mismatch) so a future kind-domain-param prim cannot left-shift a convention onto a
+real value position — which would land `ArgBorrowed` on a store, the one forbidden direction.
 
 ## (e) Owned/borrowed CALLER-drop completeness — folds into (c)
 
@@ -106,14 +143,19 @@ value flows into*, not only the binder's marker.
 |---|---|---|
 | **S2.3a** | match-destructure cell drop (a) — the biggest fire-count win | underflow-assert clean; net → 0; byte-identical |
 | **S2.3b** | consuming-vs-read flag (c); close-drops stay conservative until projection-result ownership | assert clean; metadata pins transfer vs read |
-| **S2.3c** | prim-convention table (d): classify ArgOwned vs ArgBorrowed; full caller-drop completion still waits for projection-result ownership | ref/array cases byte-identical; assert clean |
+| **S2.3c** | prim-convention table (d): classify audited primitive publish/read positions; full caller-drop completion still waits for projection-result ownership | `primArgConventionS23c`; ref/TVar/FiberRef ownership regressions; assert clean |
 | **S2.3d** | per-path dead-binder drops (b)+(e), after the path-local ownership facts are explicit | assert clean; net trends down |
 
 **Risks (under the Boehm backstop: leak/assert now; S3 UAF risks called out explicitly):** **R-double-drop (highest)** — cell-drop +
 sibling per-path drop + a move on the same cell; guard by disjoint conditions (cell-drop only when scrutinee
 received the reference; per-path drops only on omitting paths); the underflow assert catches overlap before
 S3. **R-prim-table-incomplete** — a storing prim missing from S2.3c becomes an S3 UAF risk once caller-drop
-completion is enabled; require an exhaustive `value.c`/`prims.c` store audit before that switch.
+completion is enabled; require the `value.c`/`prims.c`/`stm.c`/`rt.c`/`atomic.c` store audit to stay current
+before that switch. **R-runtime-store-discipline (NEW, S3-gating; see §(d)'s runtime pin)** — the *runtime*
+store bodies lack per-slot dup (`karr_new` — UAF-direction), drop-old write barriers, and CAS-fail/promise-
+recomplete drops; these are runtime-side, distinct from the table, and must land with the S3 flip. **R-arity-
+alignment (NEW; see §(d)'s arity pin)** — the override arity check counts kind-domain params differently from
+the conv consumer; inert today, but must be reconciled before S3 caller-drops.
 **R-returning-arm leak** — SinkTail/SinkBounce arms skip the cell drop
 (soft leak); flag for later. **R-CDo** — S2.3b walks and validates `CDo` bodies so generated do-kernel paths are
 covered by RC checks; drops still do not cross a do-block boundary unless the lowered structure proves ownership transfer.
@@ -129,9 +171,9 @@ at S3). **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-ar
 2. **Leak-trend net ≈ 0 per program** (`krc_report`), not monotonic-growth — modulo legitimately-never-
    dropped CAFs / `main`'s result. A persistently negative net with no live escapees = a missed drop.
 3. **Outputs byte-identical** (2094/0, 150/0; RC-on == RC-off) — dup/drop are rc-maintenance while Boehm frees.
-4. **Static ground truth green** (`crossCheckBodies`/`argConvBodies`, `Spec.hs:192/198`) — new OwnInfo
-   fields additive; when the S2.3c prim table lands, it must keep `argConvBodies` consistent with the
-   audited storing-vs-borrowing primitive set.
+4. **Static ground truth green** (`crossCheckBodies`/`argConvBodies`, plus `primArgConventionS23c`) — new
+   OwnInfo fields additive; the S2.3c prim table must keep `argConvBodies` and the direct convention matrix
+   consistent with the audited storing-vs-borrowing primitive set.
 5. **RC path lookup is zero-miss** — under `KAPPA_PERCEUS_RC=1`, `generateC` rejects nonzero
    `gsRcFindings`, and the native/LLVM harnesses assert the zero-miss diagnostic in redirected build logs.
 6. **Resource regressions unchanged** (`usingsusp.kp`/`usinginterrupt.kp`) — no spurious drop inside a
@@ -145,8 +187,8 @@ at S3). **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-ar
 - `src/Kappa/Ownership.hs` — position-aware consuming flag in `walk`, forced global/local parameter
   telescopes, pattern-bound field type recovery, additive `OwnInfo` consume/read fields, and cross-check
   validation for the stored side tables.
-- `src/Kappa/Backend/Repr.hs` — `argConvSelect`/`argConv` (259/282); the storing-vs-borrowing prim table
-  is S2.3c.
+- `src/Kappa/Backend/Repr.hs` — `argConvSelect`/`argConv` plus `argConvSelectGlobal`; the audited
+  primitive convention table is S2.3c.
 - `src/Kappa/Prelude.hs` — storing `newRef`/`writeRef`/`__newArray`/`__arrayWrite` (838-848) vs borrowing
   `show*`/`print*` (497-511) the table classifies.
 - `runtime/value.c` / `runtime/kappart.h` — confirm-only: stores (`kref_new` 248, `karr_set` 282, `kctor`
