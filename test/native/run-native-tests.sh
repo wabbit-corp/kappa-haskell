@@ -695,6 +695,217 @@ else
   echo "   FAIL: rc_read_nonlast --emit-c build failed"; cat "$rtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
+# Perceus RC S2.3d: a locally-owned flat local consumed on one branch must be
+# dropped at branch entry on sibling branches that omit it. Incoming params are
+# not dropped by this stage until caller-side ownership transfer is normalized.
+echo "== Perceus S2.3d: branch-dead owned flat locals are dropped =="
+dtmp="$WORK/rc-branch-dead-drop"; mkdir -p "$dtmp"
+dsrc="$dtmp/rc_branch_dead_drop.kp"
+cat > "$dsrc" <<'KP'
+module main
+data Box : Type =
+    MkBox (value : Int)
+data Holder : Type =
+    Holder (box : Box)
+type RHolder : Type = (box : Box)
+consumeBox : Box -> Int
+let consumeBox b =
+    match b
+    case MkBox n -> n
+peekBox : (& b : Box) -> Bool
+let peekBox b = b.value == 4
+peekHolder : (& h : Holder) -> Int
+let peekHolder h = h.box.value
+peekRHolder : (& h : RHolder) -> Int
+let peekRHolder h = h.box.value
+alwaysFalseConsume : Box -> Bool
+let alwaysFalseConsume b =
+    match b
+    case MkBox n -> False
+branchIf : Bool -> Box -> Int
+let branchIf c x =
+    if c
+    then consumeBox x
+    else 0
+branchMatch : Option Int -> Box -> Int
+let branchMatch o x =
+    match o
+    case Some n -> consumeBox x
+    case None -> 0
+branchLetIf : Bool -> Int
+let branchLetIf c =
+    let x = MkBox 3
+    if c
+    then consumeBox x
+    else 0
+branchGuardLet : Option Int -> Int
+let branchGuardLet o =
+    let x = MkBox 4
+    match o
+    case Some n if peekBox x -> n
+    case Some n -> consumeBox x
+    case None -> consumeBox x
+branchAliasParam : Bool -> Box -> Int
+let branchAliasParam c x =
+    let y = x
+    if c
+    then consumeBox y
+    else 0
+branchBorrowedAlias : Bool -> Int
+let branchBorrowedAlias c =
+    let h = Holder (MkBox 6)
+    let y = h.box
+    if c
+    then consumeBox y
+    else peekHolder h
+branchBorrowedRecordAlias : Bool -> Int
+let branchBorrowedRecordAlias c =
+    let h : RHolder = (box = MkBox 9)
+    let y = h.box
+    if c
+    then consumeBox y
+    else peekRHolder h
+branchBorrowedNestedAlias : Bool -> Int
+let branchBorrowedNestedAlias c =
+    let h : RHolder = (box = MkBox 12)
+    let y = let z = 0 in h.box
+    if c
+    then consumeBox y
+    else peekRHolder h
+branchNestedClosure : Bool -> Int
+let branchNestedClosure c =
+    (\n -> let x = MkBox 11 in if c then consumeBox x else 0) 0
+branchGuardConsumeFallthrough : Option Int -> Box -> Int
+let branchGuardConsumeFallthrough o x =
+    match o
+    case Some n if alwaysFalseConsume x -> n
+    case Some n -> consumeBox x
+    case None -> 0
+branchGuardConsumeLocalFallthrough : Option Int -> Int
+let branchGuardConsumeLocalFallthrough o =
+    let x = MkBox 13
+    match o
+    case Some n if alwaysFalseConsume x -> n
+    case Some n -> 0
+    case None -> 0
+borrowedProjectionFalse : Int
+let borrowedProjectionFalse =
+    let h = Holder (MkBox 5)
+    branchIf False h.box
+main : UIO Unit
+let main = printInt (branchIf True (MkBox 1) + branchIf False (MkBox 10) + branchMatch (Some 2) (MkBox 2) + branchMatch None (MkBox 20) + branchLetIf True + branchLetIf False + branchGuardLet (Some 10) + branchGuardLet None + branchAliasParam True (MkBox 7) + branchAliasParam False (MkBox 70) + branchBorrowedAlias True + branchBorrowedAlias False + branchBorrowedRecordAlias True + branchBorrowedRecordAlias False + branchBorrowedNestedAlias True + branchBorrowedNestedAlias False + branchNestedClosure True + branchNestedClosure False + branchGuardConsumeFallthrough (Some 8) (MkBox 8) + branchGuardConsumeLocalFallthrough (Some 13) + branchGuardConsumeLocalFallthrough None + borrowedProjectionFalse)
+KP
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$dsrc" --emit-c -o "$dtmp/rc_branch_dead_drop_emit" >"$dtmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$dtmp/emit.log"
+  cfile="$dtmp/rc_branch_dead_drop.kappa.c"
+  if_worker="$(awk '/^static KValue \*kw_main_2e_branchIf\(KValue \*p0, KValue \*p1\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  match_worker="$(awk '/^static KValue \*kw_main_2e_branchMatch\(KValue \*p0, KValue \*p1\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  let_worker="$(awk '/^static KValue \*kw_main_2e_branchLetIf\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  guard_worker="$(awk '/^static KValue \*kw_main_2e_branchGuardLet\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  alias_worker="$(awk '/^static KValue \*kw_main_2e_branchAliasParam\(KValue \*p0, KValue \*p1\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  borrowed_worker="$(awk '/^static KValue \*kw_main_2e_branchBorrowedAlias\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  borrowed_record_worker="$(awk '/^static KValue \*kw_main_2e_branchBorrowedRecordAlias\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  borrowed_nested_worker="$(awk '/^static KValue \*kw_main_2e_branchBorrowedNestedAlias\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  guard_consume_worker="$(awk '/^static KValue \*kw_main_2e_branchGuardConsumeFallthrough\(KValue \*p0, KValue \*p1\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  guard_consume_local_worker="$(awk '/^static KValue \*kw_main_2e_branchGuardConsumeLocalFallthrough\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$cfile")"
+  let_then="$(printf '%s\n' "$let_worker" | awk '/} else \{/{exit} {print}')"
+  let_else="$(printf '%s\n' "$let_worker" | awk '/} else \{/{f=1; next} f{print}')"
+  guard_success="$(printf '%s\n' "$guard_worker" | awk '/kw_main_2e_peekBox\(let_[0-9]+\)/{f=1} f{print} f&&/matched_[0-9]+ = 1;/{exit}')"
+  borrowed_else="$(printf '%s\n' "$borrowed_worker" | awk '/} else \{/{f=1; next} f{print}')"
+  borrowed_before_peek="$(printf '%s\n' "$borrowed_else" | awk '/peekHolder/{exit} {print}')"
+  borrowed_record_then="$(printf '%s\n' "$borrowed_record_worker" | awk '/} else \{/{exit} {print}')"
+  borrowed_record_else="$(printf '%s\n' "$borrowed_record_worker" | awk '/} else \{/{f=1; next} f{print}')"
+  borrowed_record_before_consume="$(printf '%s\n' "$borrowed_record_then" | awk '/consumeBox/{exit} {print}')"
+  borrowed_record_before_peek="$(printf '%s\n' "$borrowed_record_else" | awk '/peekRHolder/{exit} {print}')"
+  borrowed_nested_then="$(printf '%s\n' "$borrowed_nested_worker" | awk '/} else \{/{exit} {print}')"
+  borrowed_nested_else="$(printf '%s\n' "$borrowed_nested_worker" | awk '/} else \{/{f=1; next} f{print}')"
+  borrowed_nested_before_consume="$(printf '%s\n' "$borrowed_nested_then" | awk '/consumeBox/{exit} {print}')"
+  borrowed_nested_before_peek="$(printf '%s\n' "$borrowed_nested_else" | awk '/peekRHolder/{exit} {print}')"
+  if printf '%s' "$guard_consume_local_worker" | grep -q 'alwaysFalseConsume' \
+     && { printf '%s' "$guard_consume_local_worker" | grep -qE 'alwaysFalseConsume\(kdup\(let_[0-9]+\)\)' \
+          || ! printf '%s' "$guard_consume_local_worker" | grep -qE 'kdrop\(let_[0-9]+\);'; }; then
+    guard_consume_local_safe=yes
+  else
+    guard_consume_local_safe=no
+  fi
+  nested_closure_ok="$(awk '
+    /^static KValue \*kfn_[A-Za-z0-9_]+\(KEnv \*cenv, KValue \*arg\) \{/ { f=1; body="" }
+    f { body = body $0 "\n" }
+    f && /^}/ {
+      if (body ~ /consumeBox/ && body ~ /kctor\(/) {
+        n=split(body, lines, "\n")
+        for (i=1; i<n; i++) {
+          if (lines[i] ~ /^[[:space:]]*kdrop\(let_[0-9]+\);[[:space:]]*$/ && lines[i+1] ~ /^[[:space:]]*return /) {
+            found=1
+          }
+        }
+      }
+      f=0
+    }
+    END { print found ? "yes" : "no" }
+  ' "$cfile")"
+  if [ -n "$if_worker" ] && [ -n "$match_worker" ] && [ -n "$let_worker" ] && [ -n "$guard_worker" ] \
+     && [ -n "$alias_worker" ] && [ -n "$borrowed_worker" ] && [ -n "$borrowed_record_worker" ] && [ -n "$borrowed_nested_worker" ] && [ -n "$guard_consume_worker" ] && [ -n "$guard_consume_local_worker" ] \
+     && ! printf '%s' "$if_worker" | grep -qE 'kdrop\(p1\);' \
+     && ! printf '%s' "$match_worker" | grep -qE 'kdrop\(p1\);' \
+     && ! printf '%s' "$let_then" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && printf '%s' "$let_else" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && printf '%s\n' "$guard_success" | awk '/^[[:space:]]*return / && prev ~ /^[[:space:]]*kdrop\(let_[0-9]+\);[[:space:]]*$/ { found=1 } { prev=$0 } END { exit found ? 0 : 1 }' \
+     && ! printf '%s' "$alias_worker" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && printf '%s' "$borrowed_worker" | grep -qE 'kdup\(kctor_arg' \
+     && ! printf '%s' "$borrowed_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && ! printf '%s' "$borrowed_record_before_consume" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && ! printf '%s' "$borrowed_record_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && printf '%s' "$borrowed_nested_worker" | grep -qE 'if \(kas_bool\(p0\)\)' \
+     && ! printf '%s' "$borrowed_nested_before_consume" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && ! printf '%s' "$borrowed_nested_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+	     && [ "$nested_closure_ok" = "yes" ] \
+     && printf '%s' "$guard_consume_worker" | grep -qE 'kw_main_2e_alwaysFalseConsume\(kdup\(p1\)\)' \
+     && [ "$guard_consume_local_safe" = "yes" ]; then
+    echo "   ok (omitting branches drop constructor let-locals; aliases/guards preserve ownership)"
+  else
+    echo "   FAIL: S2.3d branch-dead drops have the wrong generated-code shape"
+    printf '%s\n' "$if_worker" | sed 's/^/     IF: /'
+    printf '%s\n' "$match_worker" | sed 's/^/     MATCH: /'
+    printf '%s\n' "$let_worker" | sed 's/^/     LET: /'
+    printf '%s\n' "$guard_worker" | sed 's/^/     GUARD: /'
+    printf '%s\n' "$alias_worker" | sed 's/^/     ALIAS: /'
+    printf '%s\n' "$borrowed_worker" | sed 's/^/     BORROWED: /'
+    printf '%s\n' "$borrowed_record_worker" | sed 's/^/     RECORD: /'
+    printf '%s\n' "$borrowed_nested_worker" | sed 's/^/     NESTED-RECORD: /'
+    printf '     NESTED-CLOSURE-OK: %s\n' "$nested_closure_ok"
+    printf '%s\n' "$guard_consume_worker" | sed 's/^/     GUARD-CONSUME: /'
+    printf '     GUARD-CONSUME-LOCAL-SAFE: %s\n' "$guard_consume_local_safe"
+    printf '%s\n' "$guard_consume_local_worker" | sed 's/^/     GUARD-CONSUME-LOCAL: /'
+    fails=$((fails+1))
+  fi
+  rm -f "$cfile"
+else
+  echo "   FAIL: rc_branch_dead_drop --emit-c build failed"; cat "$dtmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if interp="$(timeout 120 $KAPPA run "$dsrc" 2>"$dtmp/interp.log")"; then
+  if KAPPA_PERCEUS_RC=true timeout 240 $KAPPA build "$dsrc" -o "$dtmp/rc_branch_dead_drop" >"$dtmp/build.log" 2>&1; then
+    KAPPA_PERCEUS_RC=true check_perceus_rc_log "$dtmp/build.log"
+    native="$(timeout 120 "$dtmp/rc_branch_dead_drop" 2>/dev/null)"; nrc=$?
+    if [ "$nrc" -eq 0 ] && [ "$interp" = "$native" ]; then
+      echo "   ok (RC executable output matches interpreter: $(printf '%s' "$native" | tr '\n' '|'))"
+    else
+      echo "   FAIL: rc_branch_dead_drop runtime mismatch"
+      echo "     interpreter: $(printf '%s' "$interp" | tr '\n' '|')"
+      echo "     native:      $(printf '%s' "$native" | tr '\n' '|')"
+      fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: rc_branch_dead_drop native build failed"
+    [ -f "$dtmp/build.log" ] && cat "$dtmp/build.log" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: rc_branch_dead_drop interpreter run failed"
+  [ -f "$dtmp/interp.log" ] && cat "$dtmp/interp.log" | sed 's/^/     /'
+  fails=$((fails+1))
+fi
+
 # Perceus RC S2.3b: mixed boxed/scalar fast workers must remain available under
 # RC. Boxed-field projections in this worker grammar are read-only and boxed
 # self-args are pass-through tail-loop state, so the ownership path validated by

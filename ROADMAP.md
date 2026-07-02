@@ -140,17 +140,32 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      cross-check gate over 665 globals. → **S2** (dup/drop — the first stage that *consumes* `OwnInfo` +
      changes codegen; the Boehm-differential-backstop go/no-go).
    - **S2 — dup/drop, Boehm differential backstop. ✅ S2.0–S2.3b LANDED + independently reviewed SOUND;
-     S2.3c primitive convention table implemented**
-     (`9c19790`→`272be14` plus current S2.3c work): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
+     S2.3c primitive convention table and S2.3d per-path dead-binder drops implemented**
+     (`9c19790`→`272be14` plus current S2.3c/S2.3d work): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
      emission (S2.2), the match-destructure cell-drop (S2.3a — `kdrop` now fires: 101 sites / 33 files, 315
      `kdup` / 66), and the consume-vs-read flag consumed CONSERVATIVELY (S2.3b — dup only a consuming
-     `NonLast`; scope-close stays on "no `LastUse` anywhere"). S2.3c routes global call-boundary ownership
+     `NonLast`; general scope-close stays on "no `LastUse` anywhere" until projection-result ownership is
+     modeled). S2.3c routes global call-boundary ownership
      through `argConvSelectGlobal`, keyed by resolved primitive identity, with audited `ArgOwned` positions
      for runtime-cell publishers and `ArgBorrowed` positions for confirmed read-only primitive handles.
-     Ambiguous result/action-transfer primitives remain conservative `ArgShared`. Boehm still frees while a DEBUG assert checks
-     `rc` against the collector (de-risks use-after-free). RC-on == RC-off byte-identical (150/0, 2094/0),
-     underflow-clean + non-vacuous. **Before S3:** S2.3d (per-path dead-binder drops), the returning-arm
-     (`SinkTail`/`SinkBounce`) drop tighten, and keeping the S2.3c storing-primitive audit current.
+     Ambiguous result/action-transfer primitives remain conservative `ArgShared`. S2.3d records branch-local
+     dead-binder drop sites in `OwnInfo` and emits drops only for current flat locals whose binder identity and
+     owned-reference bit prove the selected branch omitted an owned droppable value, including saturated
+     eta-expanded constructor let-locals that codegen lowers to fresh `kctor` allocations and guarded arms after
+     a non-consuming guard succeeds. It keeps raw borrowed record-projection owners live while the borrowed alias
+     is live, and analyzes guarded arms with the later-arm failure continuation so consuming guards get `kdup`
+     when fallthrough can still use the value; drop-only fallthrough after a consuming guard is leak-biased instead
+     of double-dropping until guard-result path ownership is modeled. Incoming worker parameters are intentionally not marked owning until caller-side
+     ownership transfer normalizes borrowed/projection actuals into owned refs; restoring param drops is an open
+     S2/S3 bridge item, not a permanent capability reduction. A recorded
+     droppable branch-drop binder that cannot resolve in a top-level flat worker frame is an RC validation
+     miss, not a silent leak; capture-free nested flat closures can drop their own resolved owned locals,
+     while missing outer/captured binders and CPS/boxed paths remain conservative no-drop sites.
+     Boehm still frees while a DEBUG assert checks
+     `rc` against the collector (de-risks use-after-free). Last verified 2026-07-02: conformance 2094/0, with
+     native RC parity covered by `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`; underflow-clean +
+     non-vacuous when those gates pass. **Before S3:** the returning-arm (`SinkTail`/`SinkBounce`) match cell-drop
+     tighten, projection-result ownership for broader scope-close drops, and keeping the S2.3c storing-primitive audit current.
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).

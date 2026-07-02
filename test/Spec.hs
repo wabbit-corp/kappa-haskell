@@ -7,9 +7,11 @@ module Main (main) where
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (isInfixOf, isSuffixOf, nub, sort)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Control.Monad (unless)
+import Kappa.Backend.C (generateC)
 import Kappa.Backend.Repr
   ( ArgConv (..)
   , CtorLayoutInfo (..)
@@ -73,11 +75,13 @@ main = do
   reprOk <- reprScalarIdentity
   primConvOk <- primArgConventionS23c
   ownOk <- ownershipCrossCheckClean
+  s23dOk <- perceusS23dDeadBinderDrops
+  s23dDiagOk <- perceusS23dBranchDropMissFails
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && primConvOk && ownOk && ctorLayoutOk && reExportOk
+          && primConvOk && ownOk && s23dOk && s23dDiagOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
   if not exists
@@ -618,6 +622,342 @@ ownershipCrossCheckClean = do
     putStrLn ("  forcedMsgs=" <> show focusedForcedMsgs)
     putStrLn ("  passDump=" <> T.unpack focusedPassDump)
   pure (null mismatches && focusedOK)
+
+-- | Perceus S2.3d regression: when a locally-owned droppable binder is consumed
+-- on one branch and omitted on a sibling branch, RC-on C codegen must drop the
+-- existing flat local on the omitting branch. This pins the codegen behavior,
+-- not just the ownership metadata: constructor let-locals whose Core reaches
+-- codegen as eta-constructor applications are droppable, including after a
+-- guarded arm's non-consuming guard succeeds. Incoming params are deliberately
+-- not treated as owned at this stage because caller-side ownership transfer is
+-- not yet normalized.
+perceusS23dDeadBinderDrops :: IO Bool
+perceusS23dDeadBinderDrops = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box : Type ="
+          , "    MkBox (value : Int)"
+          , "data Holder : Type ="
+          , "    Holder (box : Box)"
+          , "type RHolder : Type = (box : Box)"
+          , "consumeBox : Box -> Int"
+          , "let consumeBox b ="
+          , "    match b"
+          , "    case MkBox n -> n"
+          , "peekBox : (& b : Box) -> Bool"
+          , "let peekBox b = b.value == 4"
+          , "peekHolder : (& h : Holder) -> Int"
+          , "let peekHolder h = h.box.value"
+          , "peekRHolder : (& h : RHolder) -> Int"
+          , "let peekRHolder h = h.box.value"
+          , "alwaysFalseConsume : Box -> Bool"
+          , "let alwaysFalseConsume b ="
+          , "    match b"
+          , "    case MkBox n -> False"
+          , "branchIf : Bool -> Box -> Int"
+          , "let branchIf c x ="
+          , "    if c"
+          , "    then consumeBox x"
+          , "    else 0"
+          , "branchMatch : Option Int -> Box -> Int"
+          , "let branchMatch o x ="
+          , "    match o"
+          , "    case Some n -> consumeBox x"
+          , "    case None -> 0"
+          , "branchLetIf : Bool -> Int"
+          , "let branchLetIf c ="
+          , "    let x = MkBox 3"
+          , "    if c"
+          , "    then consumeBox x"
+          , "    else 0"
+          , "branchGuardLet : Option Int -> Int"
+          , "let branchGuardLet o ="
+          , "    let x = MkBox 4"
+          , "    match o"
+          , "    case Some n if peekBox x -> n"
+          , "    case Some n -> consumeBox x"
+          , "    case None -> consumeBox x"
+          , "branchAliasParam : Bool -> Box -> Int"
+          , "let branchAliasParam c x ="
+          , "    let y = x"
+          , "    if c"
+          , "    then consumeBox y"
+          , "    else 0"
+          , "branchBorrowedAlias : Bool -> Int"
+          , "let branchBorrowedAlias c ="
+          , "    let h = Holder (MkBox 6)"
+          , "    let y = h.box"
+          , "    if c"
+          , "    then consumeBox y"
+          , "    else peekHolder h"
+          , "branchBorrowedRecordAlias : Bool -> Int"
+          , "let branchBorrowedRecordAlias c ="
+          , "    let h : RHolder = (box = MkBox 9)"
+          , "    let y = h.box"
+          , "    if c"
+          , "    then consumeBox y"
+          , "    else peekRHolder h"
+          , "branchBorrowedNestedAlias : Bool -> Int"
+          , "let branchBorrowedNestedAlias c ="
+          , "    let h : RHolder = (box = MkBox 12)"
+          , "    let y = let z = 0 in h.box"
+          , "    if c"
+          , "    then consumeBox y"
+          , "    else peekRHolder h"
+          , "branchNestedClosure : Bool -> Int"
+          , "let branchNestedClosure c ="
+          , "    (\\n -> let x = MkBox 11 in if c then consumeBox x else 0) 0"
+          , "branchGuardConsumeFallthrough : Option Int -> Box -> Int"
+          , "let branchGuardConsumeFallthrough o x ="
+          , "    match o"
+          , "    case Some n if alwaysFalseConsume x -> n"
+          , "    case Some n -> consumeBox x"
+          , "    case None -> 0"
+          , "branchGuardConsumeLocalFallthrough : Option Int -> Int"
+          , "let branchGuardConsumeLocalFallthrough o ="
+          , "    let x = MkBox 13"
+          , "    match o"
+          , "    case Some n if alwaysFalseConsume x -> n"
+          , "    case Some n -> 0"
+          , "    case None -> 0"
+          , "borrowedProjectionFalse : Int"
+          , "let borrowedProjectionFalse ="
+          , "    let h = Holder (MkBox 5)"
+          , "    branchIf False h.box"
+          , "main : UIO Unit"
+          , "let main = printInt (branchIf True (MkBox 1) + branchIf False (MkBox 10) + branchMatch (Some 2) (MkBox 2) + branchMatch None (MkBox 20) + branchLetIf True + branchLetIf False + branchGuardLet (Some 10) + branchGuardLet None + branchAliasParam True (MkBox 7) + branchAliasParam False (MkBox 70) + branchBorrowedAlias True + branchBorrowedAlias False + branchBorrowedRecordAlias True + branchBorrowedRecordAlias False + branchBorrowedNestedAlias True + branchBorrowedNestedAlias False + branchNestedClosure True + branchNestedClosure False + branchGuardConsumeFallthrough (Some 8) (MkBox 8) + branchGuardConsumeLocalFallthrough (Some 13) + branchGuardConsumeLocalFallthrough None + borrowedProjectionFalse)"
+          ]
+      cu = compileSourceWithPrelude "perceus-s23d.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      worker signature csrc =
+        case T.breakOn marker csrc of
+          (_, "") -> Nothing
+          (_, rest) -> Just (takeBalancedWorkerFunction rest)
+        where
+          marker = "static KValue *" <> signature <> " {"
+      takeBalancedWorkerFunction txt =
+        T.unlines (go 0 [] (T.lines txt))
+        where
+          go _ acc [] = reverse acc
+          go depth acc (line : rest) =
+            let depth' = depth + T.count "{" line - T.count "}" line
+                acc' = line : acc
+             in if not (null acc) && depth' <= 0
+                  then reverse acc'
+                  else go depth' acc' rest
+      prefixedLineBefore needle stop body =
+        let ls = T.lines body
+            beforeStop = takeWhile (not . T.isInfixOf stop) ls
+         in any (T.isPrefixOf needle . T.strip) beforeStop
+      sliceFromUntil start stop body =
+        T.unlines $
+          takeWhile (not . T.isInfixOf stop) $
+            dropWhile (not . T.isInfixOf start) (T.lines body)
+      afterMarker marker body =
+        T.unlines $
+          drop 1 $
+            dropWhile (not . T.isInfixOf marker) (T.lines body)
+      noDropBefore needle body =
+        not (prefixedLineBefore "kdrop(let_" needle body)
+      dropLetBeforeReturn body =
+        let ls = T.lines body
+         in any
+              ( \ls' -> case ls' of
+                  a : b : _ -> "kdrop(let_" `T.isPrefixOf` T.strip a && "return " `T.isPrefixOf` T.strip b
+                  _ -> False
+              )
+              (tailsText ls)
+      tailsText [] = []
+      tailsText xs@(_ : rest) = xs : tailsText rest
+      report label body = do
+        putStrLn ("  " <> label <> " worker:")
+        putStrLn (T.unpack body)
+  case generateC True st mainG Set.empty Map.empty of
+    Left (errs, mLog) -> do
+      putStrLn ("perceusS23dDeadBinderDrops FAILED: generateC rejected: " <> show errs)
+      putStrLn ("  rcLog=" <> show mLog)
+      pure False
+    Right (csrc, _) -> do
+      let requiredWorkers :: [(String, T.Text)]
+          requiredWorkers =
+            [ ("branchIf", "kw_main_2e_branchIf(KValue *p0, KValue *p1)")
+            , ("branchMatch", "kw_main_2e_branchMatch(KValue *p0, KValue *p1)")
+            , ("branchLetIf", "kw_main_2e_branchLetIf(KValue *p0)")
+            , ("branchGuardLet", "kw_main_2e_branchGuardLet(KValue *p0)")
+            , ("branchAliasParam", "kw_main_2e_branchAliasParam(KValue *p0, KValue *p1)")
+            , ("branchBorrowedAlias", "kw_main_2e_branchBorrowedAlias(KValue *p0)")
+            , ("branchBorrowedRecordAlias", "kw_main_2e_branchBorrowedRecordAlias(KValue *p0)")
+            , ("branchBorrowedNestedAlias", "kw_main_2e_branchBorrowedNestedAlias(KValue *p0)")
+            , ("branchGuardConsumeFallthrough", "kw_main_2e_branchGuardConsumeFallthrough(KValue *p0, KValue *p1)")
+            , ("branchGuardConsumeLocalFallthrough", "kw_main_2e_branchGuardConsumeLocalFallthrough(KValue *p0)")
+            ]
+          extracted = [(label, worker sig csrc) | (label, sig) <- requiredWorkers]
+          missing = [label | (label, Nothing) <- extracted]
+          lookupWorker label =
+            case [body | (label', Just body) <- extracted, label' == label] of
+              body : _ -> body
+              [] -> ""
+          ifWorker = lookupWorker "branchIf"
+          matchWorker = lookupWorker "branchMatch"
+          letWorker = lookupWorker "branchLetIf"
+          guardWorker = lookupWorker "branchGuardLet"
+          aliasWorker = lookupWorker "branchAliasParam"
+          borrowedWorker = lookupWorker "branchBorrowedAlias"
+          borrowedRecordWorker = lookupWorker "branchBorrowedRecordAlias"
+          borrowedNestedWorker = lookupWorker "branchBorrowedNestedAlias"
+          guardConsumeWorker = lookupWorker "branchGuardConsumeFallthrough"
+          guardConsumeLocalWorker = lookupWorker "branchGuardConsumeLocalFallthrough"
+          guardSuccess = sliceFromUntil "kw_main_2e_peekBox(let_" "matched_" guardWorker
+          borrowedElse = afterMarker "} else {" borrowedWorker
+          borrowedRecordThen = sliceFromUntil "if (kas_bool" "} else {" borrowedRecordWorker
+          borrowedRecordElse = afterMarker "} else {" borrowedRecordWorker
+          borrowedNestedThen = sliceFromUntil "if (kas_bool" "} else {" borrowedNestedWorker
+          borrowedNestedElse = afterMarker "} else {" borrowedNestedWorker
+          nestedClosureOk =
+            any
+              ( \fn ->
+                  "consumeBox" `T.isInfixOf` fn
+                    && "kctor(" `T.isInfixOf` fn
+                    && dropLetBeforeReturn fn
+              )
+              (nestedClosureFunctions csrc)
+          paramsOk =
+            null missing
+              && not ("kdrop(p1);" `T.isInfixOf` ifWorker)
+              && not ("kdrop(p1);" `T.isInfixOf` matchWorker)
+          letOk =
+            not (prefixedLineBefore "kdrop(let_" "} else {" letWorker)
+              && "} else {" `T.isInfixOf` letWorker
+              && dropLetBeforeReturn (snd (T.breakOn "} else {" letWorker))
+          guardOk =
+            "if (kas_bool(ktrampoline(kw_main_2e_peekBox(let_" `T.isInfixOf` guardWorker
+              && dropLetBeforeReturn guardSuccess
+          aliasOk =
+            "consumeBox" `T.isInfixOf` aliasWorker
+              && not ("kdrop(let_" `T.isInfixOf` aliasWorker)
+          borrowedAliasOk =
+            "kdup(kctor_arg" `T.isInfixOf` borrowedWorker
+              && "consumeBox" `T.isInfixOf` borrowedWorker
+              && "peekHolder" `T.isInfixOf` borrowedWorker
+              && noDropBefore "peekHolder" borrowedElse
+          borrowedRecordAliasOk =
+            "consumeBox" `T.isInfixOf` borrowedRecordWorker
+              && "peekRHolder" `T.isInfixOf` borrowedRecordWorker
+              && noDropBefore "consumeBox" borrowedRecordThen
+              && noDropBefore "peekRHolder" borrowedRecordElse
+          borrowedNestedAliasOk =
+            "consumeBox" `T.isInfixOf` borrowedNestedWorker
+              && "peekRHolder" `T.isInfixOf` borrowedNestedWorker
+              && "if (kas_bool(p0))" `T.isInfixOf` borrowedNestedWorker
+              && noDropBefore "consumeBox" borrowedNestedThen
+              && noDropBefore "peekRHolder" borrowedNestedElse
+          guardConsumeOk =
+            "kw_main_2e_alwaysFalseConsume(kdup(p1))" `T.isInfixOf` guardConsumeWorker
+          guardConsumeLocalOk =
+            "alwaysFalseConsume" `T.isInfixOf` guardConsumeLocalWorker
+              && ( "alwaysFalseConsume(kdup(let_" `T.isInfixOf` guardConsumeLocalWorker
+                     || not ("kdrop(let_" `T.isInfixOf` guardConsumeLocalWorker)
+                 )
+          ok = paramsOk && letOk && guardOk && aliasOk && borrowedAliasOk && borrowedRecordAliasOk && borrowedNestedAliasOk && nestedClosureOk && guardConsumeOk && guardConsumeLocalOk
+      unless ok $ do
+        putStrLn "perceusS23dDeadBinderDrops FAILED:"
+        putStrLn ("  missingWorkers=" <> show missing)
+        putStrLn ("  paramsOk=" <> show paramsOk <> " letOk=" <> show letOk <> " guardOk=" <> show guardOk <> " aliasOk=" <> show aliasOk <> " borrowedAliasOk=" <> show borrowedAliasOk <> " borrowedRecordAliasOk=" <> show borrowedRecordAliasOk <> " borrowedNestedAliasOk=" <> show borrowedNestedAliasOk <> " nestedClosureOk=" <> show nestedClosureOk <> " guardConsumeOk=" <> show guardConsumeOk <> " guardConsumeLocalOk=" <> show guardConsumeLocalOk)
+        unless paramsOk (report "branchIf" ifWorker >> report "branchMatch" matchWorker)
+        unless letOk (report "branchLetIf" letWorker)
+        unless guardOk (report "branchGuardLet" guardWorker)
+        unless aliasOk (report "branchAliasParam" aliasWorker)
+        unless borrowedAliasOk (report "branchBorrowedAlias" borrowedWorker)
+        unless borrowedRecordAliasOk (report "branchBorrowedRecordAlias" borrowedRecordWorker)
+        unless borrowedNestedAliasOk (report "branchBorrowedNestedAlias" borrowedNestedWorker)
+        unless nestedClosureOk (putStrLn "  nested closure functions:" >> mapM_ (putStrLn . T.unpack) (nestedClosureFunctions csrc))
+        unless guardConsumeOk (report "branchGuardConsumeFallthrough" guardConsumeWorker)
+        unless guardConsumeLocalOk (report "branchGuardConsumeLocalFallthrough" guardConsumeLocalWorker)
+      pure ok
+  where
+    nestedClosureFunctions csrc =
+      let starts = T.breakOnAll "static KValue *kfn_" csrc
+       in [takeBalancedFunction rest | (_, rest) <- starts]
+
+    takeBalancedFunction txt =
+      T.unlines (go 0 [] (T.lines txt))
+      where
+        go _ acc [] = reverse acc
+        go depth acc (line : rest) =
+          let depth' = depth + T.count "{" line - T.count "}" line
+              acc' = line : acc
+           in if not (null acc) && depth' <= 0
+                then reverse acc'
+                else go depth' acc' rest
+
+-- | Perceus S2.3d diagnosability regression: if the ownership table records a
+-- branch-dead drop site but the backend cannot resolve any listed binder to a
+-- droppable owning flat local, RC-on codegen must fail closed with an ownership
+-- finding. This pins path-scheme drift detection for branch-drop metadata; the
+-- tampered table is intentionally not a valid compiler output.
+perceusS23dBranchDropMissFails :: IO Bool
+perceusS23dBranchDropMissFails = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box : Type ="
+          , "    MkBox Int"
+          , "consumeBox : Box -> Int"
+          , "let consumeBox b ="
+          , "    match b"
+          , "    case MkBox n -> n"
+          , "branchLetIf : Bool -> Int"
+          , "let branchLetIf c ="
+          , "    let x = MkBox 3"
+          , "    if c"
+          , "    then consumeBox x"
+          , "    else 0"
+          , "main : UIO Unit"
+          , "let main = printInt (branchLetIf False)"
+          ]
+      cu = compileSourceWithPrelude "perceus-s23d-branch-drop-miss.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      branchG = GName (ModuleName [T.pack "main"]) (T.pack "branchLetIf")
+  case Map.lookup branchG (csOwnership st) of
+    Nothing -> do
+      putStrLn "perceusS23dBranchDropMissFails FAILED: no ownership table for branchLetIf"
+      pure False
+    Just own ->
+      case Map.lookupMin (oiBranchDropSites own) of
+        Nothing -> do
+          putStrLn "perceusS23dBranchDropMissFails FAILED: no branch drop site in source program"
+          pure False
+        Just (site, bids) -> do
+          let fakeBid = BinderId branchG (site <> [9999])
+              fakeOwn = BinderOwn QW Nothing False True
+              own' =
+                own
+                  { oiBinders = Map.insert fakeBid fakeOwn (oiBinders own)
+                  , oiBranchDropSites = Map.singleton site [fakeBid]
+                  }
+              st' = st {csOwnership = Map.insert branchG own' (csOwnership st)}
+              staleSite = site <> [9999, 8888]
+              ownStalePath = own {oiBranchDropSites = Map.singleton staleSite bids}
+              stStalePath = st {csOwnership = Map.insert branchG ownStalePath (csOwnership st)}
+              expectBranchFinding label expectedPath stCase =
+                case generateC True stCase mainG Set.empty Map.empty of
+                  Left (_, Just findings)
+                    | any (\msg -> "branch drop site" `T.isInfixOf` msg && T.pack (show expectedPath) `T.isInfixOf` msg) findings -> pure True
+                  Left (errs, mFindings) -> do
+                    putStrLn ("perceusS23dBranchDropMissFails FAILED: " <> label <> " rejected for the wrong reason")
+                    putStrLn ("  errs=" <> show errs)
+                    putStrLn ("  findings=" <> show mFindings)
+                    putStrLn ("  expectedPath=" <> show expectedPath)
+                    pure False
+                  Right _ -> do
+                    putStrLn ("perceusS23dBranchDropMissFails FAILED: " <> label <> " was accepted")
+                    pure False
+          unresolvedOk <- expectBranchFinding "unresolved branch drop site" site st'
+          stalePathOk <- expectBranchFinding "stale branch drop path" staleSite stStalePath
+          pure (unresolvedOk && stalePathOk)
 
 -- | Perceus S1.3 regression: 'Kappa.Backend.Repr.ctorLayoutOf' must count a
 -- constructor's RUNTIME fields — the field set the backend actually builds the

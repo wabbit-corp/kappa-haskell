@@ -216,21 +216,30 @@ data OwnInfo = OwnInfo
   -- computes, surfaced here for the backend). The S2.3 drop discipline (b.4)
   -- needs ONE fact per binder that @oiUses@ (keyed by occurrence, not binder)
   -- cannot answer without the binder↔occurrence link: \"does this binder have a
-  -- 'LastUse'?\". Current scope-close codegen is deliberately conservative:
-  -- any 'LastUse', consuming or not, suppresses the close-drop until projection-
-  -- result ownership is modeled. Derivable from @oiUses@ + the body, but
-  -- accumulated during the single analysis walk so the backend needs no re-walk.
+  -- 'LastUse'?\". Ordinary whole-scope close-drop codegen is deliberately
+  -- conservative: any 'LastUse', consuming or not, suppresses that close-drop
+  -- until projection-result ownership is modeled. S2.3d branch-dead drops use
+  -- 'oiBranchDropSites' instead of this all-uses summary. Derivable from
+  -- @oiUses@ + the body, but accumulated during the single analysis walk so the
+  -- backend needs no re-walk.
   , oiBinderConsumingUses :: !(Map BinderId [UseKind])
   -- ^ The subset of 'oiBinderUses' whose occurrences are consuming. S2.3b uses
   -- this to distinguish transfer from read-only last-use at analysis and
-  -- validation time. Scope-close drops intentionally remain on 'oiBinderUses'
-  -- until projection-result ownership is modeled in codegen.
+  -- validation time. Whole-scope close drops intentionally remain on
+  -- 'oiBinderUses' until projection-result ownership is modeled in codegen.
+  , oiBranchDropSites :: !(Map [Int] [BinderId])
+  -- ^ Perceus RC Stage S2.3d: path-local dead-binder drops. Keyed by the
+  -- branch/arm structural path where a normal completion should drop existing
+  -- flat locals for the listed binders. A binder appears here when it is live in
+  -- a sibling branch (or after the join) but absent from this branch's live-in
+  -- set; the backend still re-checks droppability/borrowedness and whether the
+  -- current flat local owns a reference before emitting.
   }
   deriving stock (Eq, Show)
 
 -- | The empty side-table — no binders, no uses.
 emptyOwnInfo :: OwnInfo
-emptyOwnInfo = OwnInfo Map.empty Map.empty Map.empty Map.empty Map.empty
+emptyOwnInfo = OwnInfo Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
 
 -- | §12.2.6 droppability: @0@\/@≤1@\/@ω@ are droppable (may be silently
 -- decref-freed when dead); @1@\/@≥1@ carry a consumption obligation and are not
@@ -306,6 +315,18 @@ data Scope = Scope
   -- call arguments; unknown means the S2 all-shared fallback.
   }
 
+-- | A lightweight scope used only while computing S2.3d borrowed-result owner
+-- dependencies for one RHS. Local binders inside that RHS do not become public
+-- 'OwnInfo' binders here, but they must still occupy de Bruijn levels and carry
+-- any borrowed-owner dependencies of their initializer so aliases like
+-- @let y = let z = h.box in z@ keep @h@ live while @y@ is live.
+data BorrowDepScope = BorrowDepScope
+  { bdsLevel :: !Int
+  , bdsBid :: !(Maybe BinderId)
+  , bdsDeps :: !(Set BinderId)
+  , bdsType :: !(Maybe Value)
+  }
+
 -- | The output accumulated by the walk: the binder facts, the per-occurrence
 -- use classifications, and (for the S1.2 cross-check) the per-binder multiset of
 -- classifications its occurrences resolved to. The third map is derivable from
@@ -318,10 +339,12 @@ data Acc = Acc
   , accUseConsumes :: !(Map UseSite Bool)
   , accAssoc :: !(Map BinderId [UseKind])
   , accConsumingAssoc :: !(Map BinderId [UseKind])
+  , accBranchDropSites :: !(Map [Int] [BinderId])
+  , accBorrowDeps :: !(Map BinderId (Set BinderId))
   }
 
 emptyAcc :: Acc
-emptyAcc = Acc Map.empty Map.empty Map.empty Map.empty Map.empty
+emptyAcc = Acc Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
 
 -- | Analyze one top-level body into its 'OwnInfo' plus the binder→kinds
 -- association the cross-check consumes. @tele@ is the owner's declared parameter
@@ -336,6 +359,7 @@ analyzeBodyFull ctx ctorTypes tele owner body =
           (accUseConsumes acc)
           (accAssoc acc)
           (accConsumingAssoc acc)
+          (accBranchDropSites acc)
       , accAssoc acc
       , accConsumingAssoc acc
       )
@@ -387,6 +411,331 @@ addUse uc us bid k acc =
               then Map.insertWith (++) bid [k] (accConsumingAssoc acc)
               else accConsumingAssoc acc
         }
+
+addBorrowDeps :: BinderId -> Set BinderId -> Acc -> Acc
+addBorrowDeps bid deps acc
+  | Set.null deps = acc {accBorrowDeps = Map.delete bid (accBorrowDeps acc)}
+  | otherwise = acc {accBorrowDeps = Map.insert bid deps (accBorrowDeps acc)}
+
+-- | Record the S2.3d drop sites for binders that are live in the branch join
+-- but absent from this particular branch. The ownership walk already computes
+-- each branch against the same live-out set; this only preserves the path-local
+-- omission fact for codegen instead of collapsing it into the per-binder use
+-- multiset. Filtering by 'BinderOwn' is intentionally left to the backend so
+-- the same stored table can be drift-checked against a fresh walk.
+addBranchDeadDrops :: GName -> [Int] -> [Scope] -> Set Int -> Set Int -> Acc -> Acc
+addBranchDeadDrops owner branchPath scopes liveJoin liveBranch =
+  addBranchDeadDropsExcept owner branchPath scopes liveJoin liveBranch Set.empty
+
+addBranchDeadDropsExcept :: GName -> [Int] -> [Scope] -> Set Int -> Set Int -> Set BinderId -> Acc -> Acc
+addBranchDeadDropsExcept owner branchPath scopes liveJoin liveBranch excluded acc =
+  case bids of
+    [] -> acc
+    _ ->
+      acc
+        { accBranchDropSites =
+            Map.insertWith (++) (reverse branchPath) bids (accBranchDropSites acc)
+        }
+  where
+    liveBranchWithDeps = expandLiveWithBorrowDeps scopes (accBorrowDeps acc) liveBranch
+    deadHere = Set.toList (liveJoin `Set.difference` liveBranchWithDeps)
+    bids =
+      [ bid
+      | lvl <- deadHere
+      , Just sc <- [lookupLevel lvl scopes]
+      , Just bid <- [scId sc]
+      , biOwner bid == owner
+      , bid `Set.notMember` excluded
+      ]
+
+expandLiveWithBorrowDeps :: [Scope] -> Map BinderId (Set BinderId) -> Set Int -> Set Int
+expandLiveWithBorrowDeps scopes deps live =
+  live `Set.union` depLevels
+  where
+    levelByBid =
+      Map.fromList
+        [ (bid, scLevel sc)
+        | sc <- scopes
+        , Just bid <- [scId sc]
+        ]
+    liveBids =
+      Set.fromList
+        [ bid
+        | lvl <- Set.toList live
+        , Just sc <- [lookupLevel lvl scopes]
+        , Just bid <- [scId sc]
+        ]
+    closedBids = closeBids deps liveBids
+    depLevels =
+      Set.fromList
+        [ lvl
+        | bid <- Set.toList (closedBids `Set.difference` liveBids)
+        , Just lvl <- [Map.lookup bid levelByBid]
+        ]
+
+closeBids :: Map BinderId (Set BinderId) -> Set BinderId -> Set BinderId
+closeBids deps seeds = go seeds (Set.toList seeds)
+  where
+    go seen [] = seen
+    go seen (bid : rest) =
+      let next = Map.findWithDefault Set.empty bid deps `Set.difference` seen
+       in go (seen `Set.union` next) (Set.toList next ++ rest)
+
+rhsBorrowDeps :: EvalCtx -> Map GName Term -> Int -> [Scope] -> Map BinderId (Set BinderId) -> Term -> Set BinderId
+rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
+  closeBids deps (borrowedResultDeps depth (map liftScope scopes) term0)
+  where
+    liftScope sc =
+      BorrowDepScope
+        (scLevel sc)
+        (scId sc)
+        (maybe Set.empty (\bid -> closeBids deps (Map.findWithDefault Set.empty bid deps)) (scId sc))
+        (scType sc)
+
+    lookupDepLevel lvl = go
+      where
+        go [] = Nothing
+        go (sc : rest)
+          | bdsLevel sc == lvl = Just sc
+          | otherwise = go rest
+
+    scopeAt d scs i = lookupDepLevel (d - 1 - i) scs
+
+    scopeTypeAtDep scs lvl = lookupDepLevel lvl scs >>= bdsType
+
+    resultDepsOf sc = bdsDeps sc
+
+    readDepsOf uc sc
+      | useConsumesBool uc = bdsDeps sc
+      | otherwise = maybe id Set.insert (bdsBid sc) (bdsDeps sc)
+
+    freeDepsOf sc = maybe id Set.insert (bdsBid sc) (bdsDeps sc)
+
+    localScope lvl deps' mTy =
+      BorrowDepScope lvl Nothing (closeBids deps deps') mTy
+
+    borrowedResultDeps d scs = \case
+      CVar i -> maybe Set.empty resultDepsOf (scopeAt d scs i)
+      CProj e _ -> termFreeDeps d scs e
+      CProjAt e _ _ -> termFreeDeps d scs e
+      CSealE _ e -> borrowedResultDeps d scs e
+      t@CApp {} -> termFreeDeps d scs t
+      CIf c t e ->
+        termReadDeps d scs UseConsumes c
+          `Set.union` borrowedResultDeps d scs t
+          `Set.union` borrowedResultDeps d scs e
+      CMatch s ann alts ->
+        let scrutDeps = termReadDeps d scs UseReads s
+            armDeps (CaseAlt pat mg b) =
+              let n = patBindersC pat
+                  slotTypes = reverse (patBindingTypes ctx ctorTypes d pat Nothing)
+                  patScopes =
+                    [ localScope (d + n - 1 - k) scrutDeps (indexMaybe k slotTypes >>= id)
+                    | k <- [0 .. n - 1]
+                    ]
+                  scs' = patScopes ++ scs
+                  d' = d + n
+               in maybe Set.empty (termReadDeps d' scs' UseConsumes) mg
+                    `Set.union` borrowedResultDeps d' scs' b
+         in termReadDeps d scs UseConsumes s
+              `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
+              `Set.union` Set.unions (map armDeps alts)
+      CLet _ _ ty rhs b ->
+        let rhsDeps = borrowedResultDeps d scs rhs
+            rhsReads = termReadDeps d scs UseConsumes rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in rhsReads `Set.union` borrowedResultDeps (d + 1) (sc : scs) b
+      CLetRec _ _ ty rhs b ->
+        let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
+            rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
+            rhsReads = termReadDeps (d + 1) (sc0 : scs) UseConsumes rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in rhsReads `Set.union` borrowedResultDeps (d + 1) (sc : scs) b
+      CLam _ _ _ b ->
+        let sc = localScope d Set.empty Nothing
+         in termFreeDeps (d + 1) (sc : scs) b
+      CPi _ _ _ _ dom cod ->
+        let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
+         in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
+      CThunkE e -> termFreeDeps d scs e
+      CLazyE e -> termFreeDeps d scs e
+      CDo _ items -> freeDoItems d scs items
+      term -> termReadDeps d scs UseConsumes term
+
+    termFreeDeps d scs = closeBids deps . freeDeps d scs
+
+    freeDeps d scs = \case
+      CVar i -> maybe Set.empty freeDepsOf (scopeAt d scs i)
+      CApp _ f x -> freeDeps d scs f `Set.union` freeDeps d scs x
+      CLam _ _ _ b ->
+        let sc = localScope d Set.empty Nothing
+         in freeDeps (d + 1) (sc : scs) b
+      CPi _ _ _ _ dom cod ->
+        let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
+         in freeDeps d scs dom `Set.union` freeDeps (d + 1) (sc : scs) cod
+      CLet _ _ ty rhs b ->
+        let rhsDeps = borrowedResultDeps d scs rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in freeDeps d scs rhs `Set.union` freeDeps (d + 1) (sc : scs) b
+      CLetRec _ _ ty rhs b ->
+        let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
+            rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in freeDeps (d + 1) (sc : scs) rhs `Set.union` freeDeps (d + 1) (sc : scs) b
+      CMatch s ann alts ->
+        let scrutDeps = termReadDeps d scs UseReads s
+            freeAlt (CaseAlt pat mg b) =
+              let n = patBindersC pat
+                  slotTypes = reverse (patBindingTypes ctx ctorTypes d pat Nothing)
+                  patScopes =
+                    [ localScope (d + n - 1 - k) scrutDeps (indexMaybe k slotTypes >>= id)
+                    | k <- [0 .. n - 1]
+                    ]
+                  scs' = patScopes ++ scs
+                  d' = d + n
+               in maybe Set.empty (freeDeps d' scs') mg `Set.union` freeDeps d' scs' b
+         in freeDeps d scs s `Set.union` maybe Set.empty (freeDeps d scs) ann `Set.union` Set.unions (map freeAlt alts)
+      CIf c t e -> freeDeps d scs c `Set.union` freeDeps d scs t `Set.union` freeDeps d scs e
+      CCtor _ ann args -> maybe Set.empty (freeDeps d scs) ann `Set.union` Set.unions (map (freeDeps d scs) args)
+      CRecordT fs -> Set.unions (map (freeDeps d scs . snd) fs)
+      CRecordV fs -> Set.unions (map (freeDeps d scs . snd) fs)
+      CVariantT ms -> Set.unions (map (freeDeps d scs) ms)
+      CProj e _ -> freeDeps d scs e
+      CProjAt e _ _ -> freeDeps d scs e
+      CInject _ e -> freeDeps d scs e
+      CSealE _ e -> freeDeps d scs e
+      CSigT _ e -> freeDeps d scs e
+      CThunkE e -> freeDeps d scs e
+      CLazyE e -> freeDeps d scs e
+      CForceE e -> freeDeps d scs e
+      CQuote _ slots -> Set.unions (map (freeDeps d scs) slots)
+      CDo _ items -> freeDoItems d scs items
+      _ -> Set.empty
+
+    termReadDeps d scs uc = \case
+      CVar i -> maybe Set.empty (readDepsOf uc) (scopeAt d scs i)
+      t@CApp {} ->
+        let (hd, args) = spineOfTerm t
+            argConsumes = callArgConsumes ctx d (scopeTypeAtDep scs) hd args
+            argDeps =
+              Set.unions
+                [ termReadDeps d scs argUse arg
+                | ((_, arg), argUse) <- zip args argConsumes
+                ]
+         in termReadDeps d scs UseConsumes hd `Set.union` argDeps
+      CProj e _ -> termFreeDeps d scs e
+      CProjAt e _ _ -> termFreeDeps d scs e
+      CSealE _ e -> termReadDeps d scs uc e
+      CSigT _ e -> termReadDeps d scs uc e
+      CThunkE e -> termReadDeps d scs UseConsumes e
+      CLazyE e -> termReadDeps d scs UseConsumes e
+      CForceE e -> termReadDeps d scs UseConsumes e
+      CInject _ e -> termReadDeps d scs UseConsumes e
+      CCtor _ ann args -> maybe Set.empty (termReadDeps d scs UseErased) ann `Set.union` Set.unions (map (termReadDeps d scs UseConsumes) args)
+      CRecordT fs -> Set.unions (map (termReadDeps d scs UseErased . snd) fs)
+      CRecordV fs -> Set.unions (map (termReadDeps d scs UseConsumes . snd) fs)
+      CVariantT ms -> Set.unions (map (termReadDeps d scs UseErased) ms)
+      CIf c t e -> termReadDeps d scs UseConsumes c `Set.union` termReadDeps d scs uc t `Set.union` termReadDeps d scs uc e
+      CMatch s ann alts ->
+        let scrutDeps = termReadDeps d scs UseReads s
+            readAlt (CaseAlt pat mg b) =
+              let n = patBindersC pat
+                  slotTypes = reverse (patBindingTypes ctx ctorTypes d pat Nothing)
+                  patScopes =
+                    [ localScope (d + n - 1 - k) scrutDeps (indexMaybe k slotTypes >>= id)
+                    | k <- [0 .. n - 1]
+                    ]
+                  scs' = patScopes ++ scs
+                  d' = d + n
+               in maybe Set.empty (termReadDeps d' scs' UseConsumes) mg
+                    `Set.union` termReadDeps d' scs' uc b
+         in termReadDeps d scs UseConsumes s
+              `Set.union` maybe Set.empty (termReadDeps d scs UseErased) ann
+              `Set.union` Set.unions (map readAlt alts)
+      CLet _ _ ty rhs b ->
+        let rhsDeps = borrowedResultDeps d scs rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in termReadDeps d scs UseConsumes rhs `Set.union` termReadDeps (d + 1) (sc : scs) uc b
+      CLetRec _ _ ty rhs b ->
+        let sc0 = localScope d Set.empty (Just (evalTypeAt ctx d ty))
+            rhsDeps = borrowedResultDeps (d + 1) (sc0 : scs) rhs
+            sc = localScope d rhsDeps (Just (evalTypeAt ctx d ty))
+         in termReadDeps (d + 1) (sc : scs) UseConsumes rhs `Set.union` termReadDeps (d + 1) (sc : scs) uc b
+      CLam _ _ _ b ->
+        let sc = localScope d Set.empty Nothing
+         in termReadDeps (d + 1) (sc : scs) uc b
+      CPi _ _ _ _ dom cod ->
+        let sc = localScope d Set.empty (Just (evalTypeAt ctx d dom))
+         in termReadDeps d scs UseErased dom `Set.union` termReadDeps (d + 1) (sc : scs) UseErased cod
+      CQuote _ slots -> Set.unions (map (termReadDeps d scs UseErased) slots)
+      CDo _ items -> readDoItems d scs items
+      _ -> Set.empty
+
+    bindPatScopes d scs pat mTy valDeps =
+      let n = patBindersC pat
+          slotTypes = reverse (patBindingTypes ctx ctorTypes d pat mTy)
+          newScopes =
+            [ localScope (d + n - 1 - k) valDeps (indexMaybe k slotTypes >>= id)
+            | k <- [0 .. n - 1]
+            ]
+       in (n, newScopes ++ scs)
+
+    freeDoItems d scs = \case
+      [] -> Set.empty
+      item : rest ->
+        case item of
+          KBind _ pat t _ ->
+            let valDeps = borrowedResultDeps d scs t
+                (n, scs') = bindPatScopes d scs pat Nothing valDeps
+             in termReadDeps d scs UseConsumes t `Set.union` freeDoItems (d + n) scs' rest
+          KLet _ pat t ->
+            let valDeps = borrowedResultDeps d scs t
+                (n, scs') = bindPatScopes d scs pat Nothing valDeps
+             in termReadDeps d scs UseConsumes t `Set.union` freeDoItems (d + n) scs' rest
+          KLetQ pat t mElse ->
+            let valDeps = borrowedResultDeps d scs t
+                (n, scs') = bindPatScopes d scs pat Nothing valDeps
+                success = freeDoItems (d + n) scs' rest
+                failure = maybe Set.empty (\(_, e) -> termReadDeps d scs UseConsumes e `Set.union` freeDoItems d scs rest) mElse
+             in termReadDeps d scs UseConsumes t `Set.union` success `Set.union` failure
+          KVarItem _ initT actT _ ->
+            let sc = localScope d Set.empty Nothing
+             in termReadDeps d scs UseErased initT `Set.union` termReadDeps d scs UseConsumes actT `Set.union` freeDoItems (d + 1) (sc : scs) rest
+          KExpr t -> termReadDeps d scs UseConsumes t `Set.union` freeDoItems d scs rest
+          KAssign _ _ _ actT _ -> termReadDeps d scs UseConsumes actT `Set.union` freeDoItems d scs rest
+          KReturn t -> termReadDeps d scs UseConsumes t
+          KBreak _ -> Set.empty
+          KContinue _ -> Set.empty
+          KWhile _ cond body mElse ->
+            readKCond d scs cond
+              `Set.union` freeDoItems d scs body
+              `Set.union` maybe Set.empty (freeDoItems d scs) mElse
+              `Set.union` freeDoItems d scs rest
+          KFor _ pat src body mElse ->
+            let valDeps = termFreeDeps d scs src
+                (n, scs') = bindPatScopes d scs pat Nothing valDeps
+             in termReadDeps d scs UseConsumes src
+                  `Set.union` freeDoItems (d + n) scs' body
+                  `Set.union` maybe Set.empty (freeDoItems d scs) mElse
+                  `Set.union` freeDoItems d scs rest
+          KIf alts mElse ->
+            Set.unions [termReadDeps d scs UseConsumes c `Set.union` freeDoItems d scs body | (c, body) <- alts]
+              `Set.union` maybe Set.empty (freeDoItems d scs) mElse
+              `Set.union` freeDoItems d scs rest
+          KDefer _ t -> termReadDeps d scs UseConsumes t `Set.union` freeDoItems d scs rest
+          KUsing pat acquireT releaseT ->
+            let valDeps = borrowedResultDeps d scs acquireT
+                (n, scs') = bindPatScopes d scs pat Nothing valDeps
+             in termReadDeps d scs UseConsumes acquireT
+                  `Set.union` termReadDeps d scs UseConsumes releaseT
+                  `Set.union` freeDoItems (d + n) scs' rest
+          KSubDo _ items -> freeDoItems d scs items `Set.union` freeDoItems d scs rest
+
+    readDoItems d scs items = freeDoItems d scs items
+
+    readKCond d scs = \case
+      KCondPure t -> termReadDeps d scs UseConsumes t
+      KCondAction t -> termReadDeps d scs UseConsumes t
 
 -- | The core backward liveness walk.
 --
@@ -482,7 +831,8 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     let tyV = evalTypeAt ctx depth _ty
         rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
         bid = BinderId owner (reverse path)
-        acc0 = addBinder bid q False acc
+        deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
+        acc0 = addBorrowDeps bid deps (addBinder bid q False acc)
         sc = Scope depth (Just bid) False (Just tyV)
         (acc1, liveBody) = walk ctx ctorTypes [] owner (P.letBodyPos : path) (depth + 1) (sc : scopes) useConsumes b liveOut acc0
         liveBody' = dropLevel depth liveBody
@@ -515,7 +865,10 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     let (acc1, liveT) = walk ctx ctorTypes [] owner (P.ifThenPos : path) depth scopes useConsumes t liveOut acc
         (acc2, liveE) = walk ctx ctorTypes [] owner (P.ifElsePos : path) depth scopes useConsumes e liveOut acc1
         liveBranches = Set.union liveT liveE
-        (acc3, liveC) = walk ctx ctorTypes [] owner (P.ifCondPos : path) depth scopes UseConsumes c liveBranches acc2
+        accDrops =
+          addBranchDeadDrops owner (P.ifElsePos : path) scopes liveBranches liveE $
+            addBranchDeadDrops owner (P.ifThenPos : path) scopes liveBranches liveT acc2
+        (acc3, liveC) = walk ctx ctorTypes [] owner (P.ifCondPos : path) depth scopes UseConsumes c liveBranches accDrops
      in (acc3, liveC)
 
   -- Sequential, multi-child nodes ------------------------------------------
@@ -740,13 +1093,56 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
 -- joined against the same @liveOut@; the returned live set is the union over
 -- arms (an outer binder is live before the match iff some arm uses it). @ai@ is
 -- the running arm index (its child-position under the match node).
+data AltLive = AltLive
+  { altLiveIndex :: !Int
+  , altLiveEntry :: !(Set Int)
+  , altLiveBody :: !(Set Int)
+  , altLiveGuardConsumes :: !(Set BinderId)
+  , altLiveHasGuard :: !Bool
+  }
+
 walkAlts
   :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Maybe Term -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
 walkAlts _ctx _ctorTypes _owner _path _depth _scopes _useConsumes _mScrutTy [] _liveOut acc _ai = (acc, Set.empty)
-walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy (alt : rest) liveOut acc ai =
-  let (acc1, liveAlt) = walkAlt ctx ctorTypes owner (P.matchArmPos ai : path) depth scopes useConsumes mScrutTy alt liveOut acc
-      (acc2, liveRest) = walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy rest liveOut acc1 (ai + 1)
-   in (acc2, Set.union liveAlt liveRest)
+walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy alts liveOut acc ai0 =
+  let (accWalk, armLives) = go ai0 alts acc
+      liveAll = Set.unions (map altLiveEntry armLives)
+      (_, accDrops) =
+        foldl
+          ( \(fallthroughConsumes, a) alt ->
+              let liveAtDrop =
+                    if altLiveHasGuard alt
+                      then altLiveBody alt
+                      else altLiveEntry alt
+                  -- A consuming LastUse in an earlier guard may have transferred
+                  -- the original value before this later arm is reached by guard
+                  -- fallthrough. Until guard result/path-sensitive ownership is
+                  -- modeled, suppress those later branch-dead drops rather than
+                  -- risk a duplicate drop. If a later arm really uses the value,
+                  -- 'guardFailLive' already makes the guard occurrence NonLast
+                  -- and codegen emits a kdup, so it will not appear here.
+                  excluded = fallthroughConsumes `Set.union` altLiveGuardConsumes alt
+                  a' =
+                    addBranchDeadDropsExcept
+                      owner
+                      (P.matchArmPos (altLiveIndex alt) : path)
+                      scopes
+                      liveAll
+                      liveAtDrop
+                      excluded
+                      a
+               in (fallthroughConsumes `Set.union` altLiveGuardConsumes alt, a')
+          )
+          (Set.empty, accWalk)
+          armLives
+   in (accDrops, liveAll)
+  where
+    go _ [] a = (a, [])
+    go ai (alt : rest) a =
+      let (aRest, liveRestAlts) = go (ai + 1) rest a
+          liveRest = Set.unions (map altLiveEntry liveRestAlts)
+          (aAlt, liveAlt) = walkAlt ctx ctorTypes owner (P.matchArmPos ai : path) depth scopes useConsumes mScrutTy alt liveOut liveRest aRest
+       in (aAlt, liveAlt {altLiveIndex = ai} : liveRestAlts)
 
 -- | Walk one match arm. The pattern introduces @n = patBindersC@ binders that
 -- are in scope for the guard and body, pushed innermost-LAST (so in the arm
@@ -759,8 +1155,8 @@ walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy (alt : rest)
 -- assertions therefore apply to 'CLam'\/'CLet'\/'CPi' binders, which DO carry
 -- their 'Q'; pattern binders carry no linearity claim to validate.)
 walkAlt
-  :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Acc -> (Acc, Set Int)
-walkAlt ctx ctorTypes owner path depth scopes useConsumes mScrutTy (CaseAlt pat mguard body) liveOut acc =
+  :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Set Int -> Acc -> (Acc, AltLive)
+walkAlt ctx ctorTypes owner path depth scopes useConsumes mScrutTy (CaseAlt pat mguard body) liveOut guardFailLive acc =
   let n = patBindersC pat
       slotTypes = reverse (patBindingTypes ctx ctorTypes depth pat (evalTypeAt ctx depth <$> mScrutTy))
       -- pattern slots, innermost-first as they sit in the arm-body de Bruijn
@@ -780,12 +1176,36 @@ walkAlt ctx ctorTypes owner path depth scopes useConsumes mScrutTy (CaseAlt pat 
       scopes' = newScopes ++ scopes
       -- guard (if any) runs before the body; both are under the pattern binders
       (acc1, liveBody) = walk ctx ctorTypes [] owner (P.altBodyPos : path) depth' scopes' useConsumes body liveOut acc0
+      consumingBeforeGuard = accConsumingAssoc acc1
       (acc2, liveArm) = case mguard of
         Nothing -> (acc1, liveBody)
-        Just g -> walk ctx ctorTypes [] owner (P.altGuardPos : path) depth' scopes' UseConsumes g liveBody acc1
+        Just g -> walk ctx ctorTypes [] owner (P.altGuardPos : path) depth' scopes' UseConsumes g (liveBody `Set.union` guardFailLive) acc1
+      guardConsumes = case mguard of
+        Nothing -> Set.empty
+        Just _ -> consumingLastUseAssocDelta consumingBeforeGuard (accConsumingAssoc acc2)
       -- drop the pattern-bound levels: they are local to the arm
+      liveBody' = foldr Set.delete liveBody [depth .. depth + n - 1]
       liveArm' = foldr Set.delete liveArm [depth .. depth + n - 1]
-   in (acc2, liveArm')
+   in ( acc2
+      , AltLive
+          { altLiveIndex = 0
+          , altLiveEntry = liveArm'
+          , altLiveBody = liveBody'
+          , altLiveGuardConsumes = guardConsumes
+          , altLiveHasGuard = case mguard of Nothing -> False; Just _ -> True
+          }
+      )
+
+consumingLastUseAssocDelta :: Map BinderId [UseKind] -> Map BinderId [UseKind] -> Set BinderId
+consumingLastUseAssocDelta before after =
+  Map.keysSet $
+    Map.filterWithKey
+      ( \bid uses ->
+          count LastUse uses > count LastUse (Map.findWithDefault [] bid before)
+      )
+      after
+  where
+    count k = length . filter (== k)
 
 -- | Best-effort types for pattern-bound runtime slots, returned in the same
 -- structural binding order as 'patBindings'. This is intentionally narrow:
@@ -1706,6 +2126,7 @@ checkConsumeTables g supplied fresh =
     ++ compareMap "oiUseConsumes" (oiUseConsumes supplied) (oiUseConsumes fresh)
     ++ compareMap "oiBinderUses" (oiBinderUses supplied) (oiBinderUses fresh)
     ++ compareMap "oiBinderConsumingUses" (oiBinderConsumingUses supplied) (oiBinderConsumingUses fresh)
+    ++ compareMap "oiBranchDropSites" (oiBranchDropSites supplied) (oiBranchDropSites fresh)
   where
     unrefined bo = bo {boRefined = Nothing}
 
@@ -1924,6 +2345,9 @@ renderOwnInfo g oi =
       ++ [ "  use " <> renderPath (usPath us) <> " " <> renderKind k
              <> " consumes=" <> renderConsumes us
          | (us, k) <- sortOn (usPath . fst) (Map.toList (oiUses oi))
+         ]
+      ++ [ "  drop-site " <> renderPath p <> " binders=" <> T.pack (show (map biPath bids))
+         | (p, bids) <- sortOn fst (Map.toList (oiBranchDropSites oi))
          ]
   where
     tshow :: Show a => a -> Text

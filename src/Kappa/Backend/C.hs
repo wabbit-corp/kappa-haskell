@@ -123,6 +123,9 @@ data GenState = GenState
   , gsStmts :: ![Text] -- ^ current function body, reversed
   , gsEnv :: !Text -- ^ C expression for the current KEnv*
   , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free) first-order worker, the C lvalue for each de Bruijn index — the params (index @i@ = source param @n-1-i@) plus any @let@/@match@-bound locals prepended at index 0 (R2.3-rest); a 'CVar' reads the C local directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
+  , gsParamBinders :: ![Maybe BinderId] -- ^ Parallel to 'gsParamLvals': the ownership binder identity for each flat local when known. Needed by S2.3d branch-dead drops so codegen drops the already-bound C local for exactly the binder the ownership walk named.
+  , gsParamOwns :: ![Bool] -- ^ Parallel to 'gsParamLvals': whether the flat local currently owns a reference. Incoming params are not marked owning until caller-side ownership transfer is normalized; constructor let-locals are owning when their RHS is a proven fresh allocation; pattern locals are owning only on the match cell-drop path that first @kdup@s the field; projection/call-result locals stay non-owning until result ownership is modeled.
+  , gsTopFlatFrame :: !Bool -- ^ True only while compiling a top-level flat worker body. S2.3d can treat a missing branch-dead binder mapping as path/metadata drift in this frame; nested flat closures may deliberately omit outer captured binders and therefore keep missing branch-drop locals leak-biased.
   , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
   , gsProtos :: ![Text] -- ^ forward declarations, reversed
   , gsEmitted :: !(Set GName) -- ^ globals already emitted or enqueued
@@ -137,7 +140,8 @@ data GenState = GenState
   , gsCurOwn :: !(Maybe OwnInfo) -- ^ The 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ and @oiUseConsumes@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
   , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
   , gsRcEnabled :: !Bool -- ^ Perceus RC master gate. Default OFF — the byte-identical baseline. A build flag / env toggle turns it ON for the S2 validation/emission run: every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
-  , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path or missing consume/read bit for a resolved use). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
+  , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path, missing consume/read bit for a resolved use, or S2.3d branch-drop binder metadata drift). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
+  , gsRcBranchVisited :: !(Set (GName, [Int])) -- ^ S2.3d branch-drop paths that codegen reached under the current ownership table. Compared with @oiBranchDropSites@ at the end of RC-on generation so a stale path key cannot silently leak.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -155,6 +159,28 @@ data GenState = GenState
   , gsCollectCtors :: !(Set Text) -- ^ LR2: gKeys of USER constructors referenced (constructed or matched); builtins use the fixed @KCT_*@ ids so they are NOT collected. After codegen, @assemble@ assigns each a @KCT_USER_BASE+i@ id (sorted, deterministic) and emits a @KT_<mangle>@ enum.
   , gsCollectVars :: !(Set Text) -- ^ LR2: §13 variant member-identity tags referenced (injected or matched); @assemble@ emits a 0-based @KVT_<mangle>@ enum (variants are never runtime-built, so no fixed-id constraint).
   }
+
+data FlatLocalScope = FlatLocalScope
+  { flsLvals :: ![Text]
+  , flsBinders :: ![Maybe BinderId]
+  , flsOwns :: ![Bool]
+  }
+
+saveFlatLocalScope :: Gen FlatLocalScope
+saveFlatLocalScope =
+  FlatLocalScope
+    <$> gets gsParamLvals
+    <*> gets gsParamBinders
+    <*> gets gsParamOwns
+
+restoreFlatLocalScope :: FlatLocalScope -> Gen ()
+restoreFlatLocalScope saved =
+  modify' $ \g ->
+    g
+      { gsParamLvals = flsLvals saved
+      , gsParamBinders = flsBinders saved
+      , gsParamOwns = flsOwns saved
+      }
 
 -- | A loop's labelled control targets: its source label (if any), the C
 -- goto label a @continue@ jumps to, the one a @break@ jumps to, and the
@@ -372,16 +398,30 @@ rcDupVarUse e = do
     Just (NonLast, True) -> "kdup(" <> e <> ")"
     _ -> e
 
--- | Conservative S2.3b ownership result check for a flat @let@ initializer.
+flatLocalOwnsAt :: Int -> Gen Bool
+flatLocalOwnsAt i = do
+  owns <- gets gsParamOwns
+  pure $ case drop i owns of
+    own : _ -> own
+    [] -> False
+
+-- | Conservative S2.3b/S2.3d ownership result check for a flat @let@
+-- initializer.
 -- Scope-close drops are only safe when the local is known to hold an owned
 -- reference. Projection/call results can be borrowed until result ownership is
--- modeled, so they stay leak-biased.
+-- modeled, so they stay leak-biased. A saturated eta-expanded constructor
+-- application is accepted because this same structural recognizer is what
+-- codegen beta-reduces to a direct fresh @kctor@ allocation; this is symbolically
+-- tied to the Core shape, not to a source spelling.
 rcTermProducesOwnedHere :: Term -> Gen Bool
-rcTermProducesOwnedHere = \case
-  CVar _ -> do
+rcTermProducesOwnedHere t = case t of
+  CApp {}
+    | Just {} <- etaCtorApp t -> pure True
+  CVar i -> do
     mi <- rcUseInfoHere
+    sourceOwns <- flatLocalOwnsAt i
     pure $ case mi of
-      Just (LastUse, True) -> True
+      Just (LastUse, True) -> sourceOwns
       Just (NonLast, True) -> True
       _ -> False
   CCtor {} -> pure True
@@ -406,9 +446,10 @@ rcTermProducesOwnedHere = \case
 --     or a non-consuming read (projection base, borrowed call arg). Until S2
 --     models ownership of borrowed projection results, scope-close drops stay on
 --     the conservative all-last-use rule so a borrowed field cannot escape after
---     its owner is dropped. Branches that omit a binder some sibling branch uses
---     still leak softly under Boehm rather than risk an underflow; the later
---     per-path drop stage will make that arm-local fact explicit.
+--     its owner is dropped. S2.3d branch-dead drops are handled separately by
+--     'rcEmitBranchDeadDropsHere', using explicit path-local drop sites and the
+--     current flat-local ownership metadata; this helper remains the ordinary
+--     whole-scope close-drop gate.
 --
 -- Inert under the OFF baseline (returns 'False' without a lookup), so codegen is
 -- byte-identical. A missing ownership table yields 'False'.
@@ -465,6 +506,83 @@ rcPatSlotDroppableHere k = do
 -- the primary S2 differential check (it trips on an underflow before any UAF).
 rcEmitDrop :: Text -> Gen ()
 rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
+
+-- | The binder introduced at the current structural path.
+currentBinderIdHere :: Gen BinderId
+currentBinderIdHere = do
+  g <- gets gsCur
+  path <- gets gsPath
+  pure (BinderId g (reverse path))
+
+-- | The pattern-slot binder introduced at slot @k@ under the current structural
+-- path.
+currentPatSlotBinderId :: Int -> Gen BinderId
+currentPatSlotBinderId k = do
+  g <- gets gsCur
+  path <- gets gsPath
+  pure (BinderId g (reverse (P.patSlotPos k : path)))
+
+-- | S2.3d branch-dead drop emission. The ownership table names binders that
+-- are absent from this selected branch while live in a sibling path; this
+-- helper resolves those binder identities to the current flat C locals and
+-- emits drops only when the local is known to own a reference and the binder is
+-- droppable/non-borrowed. In a top-level flat worker frame, missing
+-- binder-to-local metadata for a droppable site is a validation finding.
+-- Capture-free nested flat closures may drop their own resolved owned locals;
+-- missing outer captured binders and boxed/CPS paths remain conservative
+-- no-drops. A resolved local with unproven ownership also remains a
+-- conservative no-drop. No guessed @kvar@ reread, no name-based match.
+rcEmitBranchDeadDropsHere :: Gen ()
+rcEmitBranchDeadDropsHere = do
+  enabled <- gets gsRcEnabled
+  when enabled $ do
+    mown <- gets gsCurOwn
+    case mown of
+      Nothing -> pure ()
+      Just own -> do
+        path <- reverse <$> gets gsPath
+        g <- gets gsCur
+        modify' $ \st -> st {gsRcBranchVisited = Set.insert (g, path) (gsRcBranchVisited st)}
+        lvals <- gets gsParamLvals
+        bids <- gets gsParamBinders
+        owns <- gets gsParamOwns
+        topFlat <- gets gsTopFlatFrame
+        let siteBids = Map.findWithDefault [] path (oiBranchDropSites own)
+            flat = zip3 lvals bids owns
+            knownFlatBids = [bid | (_, Just bid, _) <- flat]
+            lvalFor bid =
+              case [lv | (lv, Just bid', True) <- flat, bid' == bid] of
+                lv : _ -> Just lv
+                [] -> Nothing
+            droppable bid =
+              case Map.lookup bid (oiBinders own) of
+                Just bo -> boDroppable bo && not (boBorrowed bo)
+                Nothing -> False
+            targets =
+              [ lv
+              | bid <- siteBids
+              , droppable bid
+              , Just lv <- [lvalFor bid]
+              ]
+            unresolvedDroppable =
+              [ bid
+              | bid <- siteBids
+              , droppable bid
+              , bid `notElem` knownFlatBids
+              ]
+        case unresolvedDroppable of
+          _ | not topFlat -> pure ()
+          [] -> pure ()
+          _ ->
+            rcRecordFinding $
+              rcUseSiteMiss
+                g
+                Nothing
+                (reverse path)
+                ( "branch drop site listed droppable binder(s) with no top-level flat-local metadata: "
+                    <> T.intercalate ", " (map (T.pack . show) unresolvedDroppable)
+                )
+        mapM_ rcEmitDrop targets
 
 -- | Perceus RC S2.3a (§a) — the MATCH-DESTRUCTURE cell-drop DECISION.
 --
@@ -562,11 +680,16 @@ captured env act = do
   -- gsParamLvals; restoring it here scopes those bindings to this block (an
   -- if-branch / match-alt), exactly as the KEnv tail did for the boxed path.
   -- A no-op for the boxed path (gsParamLvals is empty there).
-  savedLvals <- gets gsParamLvals
+  savedFlat <- saveFlatLocalScope
   modify' $ \g -> g {gsStmts = [], gsEnv = env}
   r <- act
   produced <- gets gsStmts
-  modify' $ \g -> g {gsStmts = saved, gsEnv = savedEnv, gsParamLvals = savedLvals}
+  modify' $ \g ->
+    g
+      { gsStmts = saved
+      , gsEnv = savedEnv
+      }
+  restoreFlatLocalScope savedFlat
   pure (reverse produced, r)
 
 -- | Record an unsupported-construct finding and return a placeholder C
@@ -852,6 +975,9 @@ generateC rcEnabled cs mainG ffiPrims hostSyms =
           , gsStmts = []
           , gsEnv = "0"
           , gsParamLvals = []
+          , gsParamBinders = []
+          , gsParamOwns = []
+          , gsTopFlatFrame = False
           , gsTop = []
           , gsProtos = []
           , gsEmitted = Set.singleton mainG
@@ -867,6 +993,7 @@ generateC rcEnabled cs mainG ffiPrims hostSyms =
           , gsPath = []
           , gsRcEnabled = rcEnabled
           , gsRcFindings = []
+          , gsRcBranchVisited = Set.empty
           , gsCtors = csCtors cs
           , gsDatas = Map.keysSet (csDatas cs)
           , gsTraits = Map.keysSet (csTraits cs)
@@ -892,12 +1019,27 @@ generateC rcEnabled cs mainG ffiPrims hostSyms =
       -- one-shot semantics.  The interpreter (the differential oracle) supports
       -- multi-shot, so this gate is backend-local — it does not fire under `run`.
       multishotErrs = multishotLegality cs (gsEmitted final)
-      rcFindings = reverse (gsRcFindings final)
+      rcFindings = reverse (gsRcFindings final) ++ rcBranchSiteFindings final
       rcErrs = rcFindingErrors (gsRcEnabled final) mainG (Map.findWithDefault noSpan mainG (csDeclSites cs)) rcFindings
       mRcFindings = if gsRcEnabled final then Just rcFindings else Nothing
    in case reverse (gsErrs final) ++ multishotErrs ++ rcErrs of
         [] -> Right (assemble final, mRcFindings)
         errs -> Left (errs, mRcFindings)
+
+rcBranchSiteFindings :: GenState -> [Text]
+rcBranchSiteFindings st
+  | not (gsRcEnabled st) = []
+  | otherwise =
+      [ rcUseSiteMiss
+          g
+          Nothing
+          (reverse site)
+          "branch drop site key was not visited by C codegen"
+      | g <- Set.toList (gsEmitted st)
+      , Just own <- [Map.lookup g (gsOwnership st)]
+      , site <- Map.keys (oiBranchDropSites own)
+      , (g, site) `Set.notMember` gsRcBranchVisited st
+      ]
 
 rcFindingErrors :: Bool -> GName -> Span -> [Text] -> [BackendError]
 rcFindingErrors False _ _ _ = []
@@ -906,12 +1048,12 @@ rcFindingErrors True mainG sp findings =
   [ backendUnsupported
       mainG
       sp
-      "Perceus RC R-path ownership lookup"
-      ( "KAPPA_PERCEUS_RC=1 found "
-          <> T.pack (show (length findings))
-          <> " ownership side-table path miss(es); S2.3b validation requires zero so a path drift cannot silently suppress dup/drop decisions. First misses: "
-          <> T.intercalate " | " (take 5 findings)
-      )
+        "Perceus RC R-path ownership lookup"
+        ( "KAPPA_PERCEUS_RC=1 found "
+            <> T.pack (show (length findings))
+            <> " ownership side-table path miss(es); S2.3 validation requires zero so a path drift cannot silently suppress dup/drop decisions. First misses: "
+            <> T.intercalate " | " (take 5 findings)
+        )
   ]
 
 -- | Backend legality (§34.3.3): a reachable @__EffOp@ node naming a multi-shot
@@ -1139,17 +1281,39 @@ compileFunctionGlobal g n inner = do
   -- let/match binding prepends a C local; the mapping is reset for a capturing
   -- worker so CVar/binders fall back to kvar/kpush.  (A flat body has no
   -- env-capturing form, so a lifted closure can never read it.)
-  saved <- gets gsParamLvals
-  modify' $ \st -> st {gsParamLvals = if flat then reverse ps else []}
   -- Perceus RC S2.1: enter the body-own scope. The analysis walks the WHOLE body
   -- including the @n@ leading 'CLam's the worker frame just stripped, so @inner@
   -- sits at the structural path @replicate n lamBodyPos@ from the body root — seed
   -- 'gsPath' with that prefix so the walk-and-lookup keys land at the right offset.
   own <- requireOwnInfo g
+  saved <- gets gsParamLvals
+  savedBinders <- gets gsParamBinders
+  savedOwns <- gets gsParamOwns
+  savedTopFlat <- gets gsTopFlatFrame
+  let paramBids = reverse [BinderId g (replicate j P.lamBodyPos) | j <- [0 .. n - 1]]
+      -- The binder table says which parameters are droppable in the source
+      -- contract, but the worker ABI has not yet normalized every incoming
+      -- actual to an owned reference. Keep the BinderIds for exact resolution and
+      -- future caller-transfer completion; do not let S2.3d drop params from the
+      -- callee frame yet.
+      paramOwns = replicate n False
+  modify' $ \st ->
+    st
+      { gsParamLvals = if flat then reverse ps else []
+      , gsParamBinders = if flat then map Just paramBids else []
+      , gsParamOwns = if flat then paramOwns else []
+      , gsTopFlatFrame = flat
+      }
   (bodyStmts, ()) <-
     withBodyOwn own (replicate n P.lamBodyPos) $
       captured "kw_env" (consume (SinkTail ti) inner)
-  modify' $ \st -> st {gsParamLvals = saved}
+  modify' $ \st ->
+    st
+      { gsParamLvals = saved
+      , gsParamBinders = savedBinders
+      , gsParamOwns = savedOwns
+      , gsTopFlatFrame = savedTopFlat
+      }
   let workerFn =
         T.unlines $
           ["static KValue *" <> worker <> "(" <> paramDecls <> ") {"]
@@ -3447,11 +3611,27 @@ compileLam body = do
   -- before and read everything via it (gsParamLvals empty).
   let flat = not (bodyCapturesEnv body)
   saved <- gets gsParamLvals
+  savedBinders <- gets gsParamBinders
+  savedOwns <- gets gsParamOwns
+  savedTopFlat <- gets gsTopFlatFrame
+  bid <- currentBinderIdHere
   bodyEnv <- if flat then pure "cenv" else freshN "lenv_"
-  modify' $ \st -> st {gsParamLvals = if flat then ["arg"] else []}
+  modify' $ \st ->
+    st
+      { gsParamLvals = if flat then ["arg"] else []
+      , gsParamBinders = if flat then [Just bid] else []
+      , gsParamOwns = if flat then [False] else []
+      , gsTopFlatFrame = False
+      }
   -- Perceus RC S2.1: the lambda body sits at 'lamBodyPos' under the CLam node.
   (stmts, ()) <- withChild P.lamBodyPos (captured bodyEnv (consume SinkBounce body))
-  modify' $ \st -> st {gsParamLvals = saved}
+  modify' $ \st ->
+    st
+      { gsParamLvals = saved
+      , gsParamBinders = savedBinders
+      , gsParamOwns = savedOwns
+      , gsTopFlatFrame = savedTopFlat
+      }
   -- non-flat: materialise kpush(arg, cenv) only when a variable is read (a
   -- constant lambda references neither — keeps the C -Wall clean).
   let usesEnv = (not flat) && any (T.isInfixOf bodyEnv) stmts
@@ -3626,8 +3806,10 @@ consume sink term = case term of
         withEnv e2 (withChild P.letBodyPos (consume sink body))
       else do
         -- R2.3-rest FLAT worker: bind a C local (no KEnv); 'bindFlatLocal'
-        -- prepends it as de Bruijn index 0 and the enclosing 'captured' block
-        -- (or the worker-body reset) restores the scope.
+        -- prepends it as de Bruijn index 0 for exactly the lexical body of this
+        -- CLet. This explicit scope is required even inside a 'captured' block:
+        -- a nested expression let in an RHS must not shift later outer CVar
+        -- lookups (for example an enclosing if condition or else branch).
         -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken at the
         -- CLet node (gsPath = the let path → the binder's BinderId), against the
         -- bound C LOCAL (R-flat). The local is dropped only when the analysis says
@@ -3639,8 +3821,11 @@ consume sink term = case term of
         drp0 <- rcBinderDroppableHere
         rhsOwnsLocal <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
         let drp = drp0 && rhsOwnsLocal
-        lv <- bindFlatLocal "let_" re
+        bid <- currentBinderIdHere
+        savedFlat <- saveFlatLocalScope
+        lv <- bindFlatLocal "let_" (Just bid) rhsOwnsLocal re
         withChild P.letBodyPos (consume sink body)
+        restoreFlatLocalScope savedFlat
         when (drp && isSinkVar sink) (rcEmitDrop lv)
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
@@ -3689,8 +3874,8 @@ consumeIf sink c t e = do
   -- Perceus RC S2.1: cond/then/else at 'ifCondPos'/'ifThenPos'/'ifElsePos'.
   ce <- withChild P.ifCondPos (compile c)
   env <- gets gsEnv
-  (tStmts, ()) <- withChild P.ifThenPos (captured env (consume sink t))
-  (eStmts, ()) <- withChild P.ifElsePos (captured env (consume sink e))
+  (tStmts, ()) <- withChild P.ifThenPos (captured env (rcEmitBranchDeadDropsHere >> consume sink t))
+  (eStmts, ()) <- withChild P.ifElsePos (captured env (rcEmitBranchDeadDropsHere >> consume sink e))
   emit ("if (kas_bool(" <> ce <> ")) {")
   forM_ tStmts (emit . ("  " <>))
   emit "} else {"
@@ -3828,6 +4013,7 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
+      rcEmitBranchDeadDropsHere
       withEnv env' (withChild P.altBodyPos (consume sink body))
       when (isSinkVar sink) $ do
         mapM_ rcEmitDrop patDrops
@@ -3836,6 +4022,7 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
     Just gd -> do
       ge <- withEnv env' (withChild P.altGuardPos (compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
+      rcEmitBranchDeadDropsHere
       withEnv env' (withChild P.altBodyPos (consume sink body))
       when (isSinkVar sink) $ do
         mapM_ rcEmitDrop patDrops
@@ -5229,7 +5416,11 @@ bindPatScrutDup dupFields sv env pat = do
       -- R2.3-rest FLAT worker: bind each pattern variable to a C local via
       -- 'bindFlatLocal' (the LAST binding becomes de Bruijn index 0, matching
       -- the kpush order); the scope is restored by the enclosing 'captured'.
-      forM_ (patBindings sv pat) (bindFlatLocal "pat_" . wrap)
+      let vals = patBindings sv pat
+          n = length vals
+      forM_ (zip [0 ..] vals) $ \(j, valExpr) -> do
+        bid <- currentPatSlotBinderId (n - 1 - j)
+        void (bindFlatLocal "pat_" (Just bid) dupFields (wrap valExpr))
       gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
     push e valExpr = do
@@ -5241,11 +5432,16 @@ bindPatScrutDup dupFields sv env pat = do
 -- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
 -- it to 'gsParamLvals' as de Bruijn index 0 (params and earlier binders shift
 -- up); the enclosing 'captured' block restores the scope.  Returns the C name.
-bindFlatLocal :: Text -> Text -> Gen Text
-bindFlatLocal prefix valExpr = do
+bindFlatLocal :: Text -> Maybe BinderId -> Bool -> Text -> Gen Text
+bindFlatLocal prefix mbid ownsRef valExpr = do
   v <- freshN prefix
   emit ("KValue *" <> v <> " = " <> valExpr <> ";")
-  modify' $ \st -> st {gsParamLvals = v : gsParamLvals st}
+  modify' $ \st ->
+    st
+      { gsParamLvals = v : gsParamLvals st
+      , gsParamBinders = mbid : gsParamBinders st
+      , gsParamOwns = ownsRef : gsParamOwns st
+      }
   pure v
 
 compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
