@@ -1,8 +1,13 @@
 # Perceus S2.3 redux — Drop Completion (under the Boehm differential backstop)
 
-Status: **scoped; implementing.** S2.2 (dup) + S2.3-first-cut landed in `d5624e6` but `kdrop` fires ~0×
-(rc monotonic-growth ⇒ S3 free-on-zero would reclaim nothing). The full S2.3 sequence completes drop
-PLACEMENT; S2.3b only records and conservatively consumes the transfer-vs-read distinction.
+Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`). S2.2 (dup) +
+S2.3-first-cut landed in `d5624e6` but `kdrop` fired ~0×; S2.3a completed the match-destructure cell-drop
+so `kdrop` now fires (101 sites / 33 files, 315 `kdup` / 66 files), and S2.3b records the consume-vs-read
+distinction and consumes it CONSERVATIVELY (dup only a consuming `NonLast`; scope-close drops stay on the
+"no `LastUse` anywhere" rule). Empirically: RC-on == RC-off byte-identical (parity 150/0, conformance
+2094/0), the DEBUG underflow assert is live, non-vacuous, and clean over the corpus (0 SIGABRT / 0
+underflow). Next: **S2.3c** (the prim-convention table — the storing-prims-exhaustive gate that S3
+free-on-zero depends on for no-UAF).
 Companion to [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) / [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md).
 
 ## 0. Diagnosis (empirical)
@@ -123,7 +128,7 @@ at S3). **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-ar
    Boehm-live floor). **This is what proves S3 free-on-zero will reclaim.**
 2. **Leak-trend net ≈ 0 per program** (`krc_report`), not monotonic-growth — modulo legitimately-never-
    dropped CAFs / `main`'s result. A persistently negative net with no live escapees = a missed drop.
-3. **Outputs byte-identical** (1916/0, 121/0) — dup/drop are rc-maintenance while Boehm frees.
+3. **Outputs byte-identical** (2094/0, 150/0; RC-on == RC-off) — dup/drop are rc-maintenance while Boehm frees.
 4. **Static ground truth green** (`crossCheckBodies`/`argConvBodies`, `Spec.hs:192/198`) — new OwnInfo
    fields additive; when the S2.3c prim table lands, it must keep `argConvBodies` consistent with the
    audited storing-vs-borrowing primitive set.

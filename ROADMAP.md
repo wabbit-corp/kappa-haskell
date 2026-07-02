@@ -139,8 +139,15 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      module-export), the owned/borrowed accessor — all observe-only/parity-identical, validated by the
      cross-check gate over 665 globals. → **S2** (dup/drop — the first stage that *consumes* `OwnInfo` +
      changes codegen; the Boehm-differential-backstop go/no-go).
-   - **S2 — dup/drop, Boehm differential backstop.** Perceus dup/drop on the strict core; Boehm still frees
-     while a debug mode asserts `rc` counts against the collector (de-risks the use-after-free failure mode).
+   - **S2 — dup/drop, Boehm differential backstop. ✅ S2.0–S2.3b LANDED + independently reviewed SOUND**
+     (`9c19790`→`272be14`): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
+     emission (S2.2), the match-destructure cell-drop (S2.3a — `kdrop` now fires: 101 sites / 33 files, 315
+     `kdup` / 66), and the consume-vs-read flag consumed CONSERVATIVELY (S2.3b — dup only a consuming
+     `NonLast`; scope-close stays on "no `LastUse` anywhere"). Boehm still frees while a DEBUG assert checks
+     `rc` against the collector (de-risks use-after-free). RC-on == RC-off byte-identical (150/0, 2094/0),
+     underflow-clean + non-vacuous. **Before S3:** S2.3c (prim-convention table — MUST be
+     storing-prims-exhaustive or S3 free-on-zero is a UAF), S2.3d (per-path dead-binder drops), the
+     returning-arm (`SinkTail`/`SinkBounce`) drop tighten.
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC.
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
@@ -148,23 +155,26 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
    lazy-data design.
 6. **Evidence-aware IO/`var` scalarization (P0.2 restore)** — design plan **DONE**
-   ([`docs/scalarization_review.md`](docs/scalarization_review.md)); implementation **PARTIAL**. S2.3b
-   correctly retired the old raw-ref peephole because it bypassed selected `MonadRef` evidence, but the
-   boxed `krt2_while`/selected-action path is only the correctness fallback. Restore scalarization in this
-   order:
-   - **SCA-0 gates:** keep `arithloop` report numbers visible; add scoped generated-code negative fixtures
+   ([`docs/scalarization_review.md`](docs/scalarization_review.md)); **SCA-0→SCA-3 (LLVM) RESTORED +
+   reviewed SOUND** (`4f5df2f`). S2.3b correctly retired the old raw-ref peephole (it bypassed selected
+   `MonadRef` evidence); 4f5df2f restored scalarization on the LLVM lane via a checker-owned,
+   evidence-verified witness (never name-based): `scalar_intwhile` emits `@kscalarloop` with no `krt2_while`,
+   the alloc gates pass, and a user `MonadRef` is provably never scalarized (parity 150/0 incl.
+   `monadref-user-evidence`). **Remaining:** the C backend still uses the boxed `krt2_while`/selected-action
+   fallback (SCA-3 C), plus SCA-4→SCA-6. Stage map (LLVM done unless noted):
+   - **SCA-0 gates ✅:** keep `arithloop` report numbers visible; add scoped generated-code negative fixtures
      (named region/worker or planner rejection, not global scalar-worker absence) for user
      `MonadRef`, STM, wrong carrier, `ref x` escape, suspension/finalizer constructs (`cede`, `sleep`,
      `await`/`join`, `fork`, `blocking`, `mask`/`poll`, `catch`/`finally`, handlers, `defer`/`using`), and
      overflow-after-prior-writes; run accepted/rejected fixtures with `KAPPA_PERCEUS_RC=true`.
-   - **SCA-1 checker witness:** have the checker attach compact `BuiltinIORef` action witnesses, tied by a
+   - **SCA-1 checker witness ✅:** have the checker attach compact `BuiltinIORef` action witnesses, tied by a
      stable hidden-cell id, to compiler-elaborated `KVarItem`, `KAssign`, and generated current-read `KBind`
      actions when the selected evidence is exactly the builtin `MonadRef (IO e)` instance. No backend
      name/string recognition.
-   - **SCA-2 shared planner:** build a conservative scalar-region planner that proves non-escape,
+   - **SCA-2 shared planner ✅:** build a conservative scalar-region planner that proves non-escape,
      source-order reads/writes, scalar-expressible condition/body, no suspension, and exact overflow
      fallback; rejection means the existing boxed selected-action lowering.
-   - **SCA-3 backend restore:** LLVM first for `scalar_intwhile` (implemented in the current
+   - **SCA-3 backend restore (LLVM ✅ / C ⏳):** LLVM first for `scalar_intwhile` (implemented in the current
      evidence-aware LLVM lane), then C or shared C+LLVM. Hot path must have
      scalar locals/SSA, no per-iteration `K_REF`/`readRef`/`writeRef`/`krt2_bind`/`krt2_while`, and only
      counter-gated `krt2_safepoint`. Gate per backend: LLVM-only work flips LLVM codegen/perf checks; the
