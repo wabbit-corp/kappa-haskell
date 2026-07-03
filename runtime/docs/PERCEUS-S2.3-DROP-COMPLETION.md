@@ -2,16 +2,17 @@
 
 Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`), with **S2.3c
 implemented by the primitive convention table** and **S2.3d implemented for locally-proven path-local dead
-owned flat locals**. S2.2 (dup) +
+owned flat locals**. S3.2 has since tightened the C backend entry gates needed by free-on-zero: returning-arm
+match cleanup and owned projection results through nested/control expressions. S2.2 (dup) +
 S2.3-first-cut landed in `d5624e6` but `kdrop` fired ~0×; S2.3a completed the match-destructure cell-drop
 so `kdrop` now fires (101 sites / 33 files, 315 `kdup` / 66 files), S2.3b records the consume-vs-read
 distinction and consumes it CONSERVATIVELY (dup only a consuming `NonLast`; general scope-close drops still
-stay on the "no `LastUse` anywhere" rule until projection-result ownership is modeled), and S2.3d emits
+stay conservative outside the S3.2-proven projection-result subset), and S2.3d emits
 branch-entry drops for locally-owned binders proven dead on that selected path. Last verified on 2026-07-02 with
 `cabal test kappa-test --test-options='--hide-successes'` at conformance 2094/0; native RC parity is verified by
 `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`. The DEBUG underflow assert is live, non-vacuous, and clean
-over the corpus when those gates pass. Next before S3 free-on-zero: the returning-arm match cell-drop tighten,
-projection-result ownership for broader scope-close drops, and keeping the S2.3c storing-primitive audit current.
+over the corpus when those gates pass. The S2.3c storing-primitive audit remains a standing invariant for
+later runtime-store precision work.
 Companion to [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) / [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md).
 
 ## 0. Diagnosis (empirical)
@@ -39,11 +40,11 @@ Rule for `match s case C f₁…fₙ -> body` when the scrutinee's last use is t
 lvalue, alongside the existing `mapM_ rcEmitDrop patDrops`. The kept-field dups go in `bindPatScrut`
 and `patBindings`: a surviving slot `pat_k = kctor_arg(scrut,…)` becomes
 `pat_k = kdup(kctor_arg(scrut,…))`, keyed by `P.patSlotPos k`. **Decision helper** `rcScrutDropDecision`
-in `consumeMatch`: look up the scrutinee `CVar`'s `UseKind` at `matchScrutPos` — drop the cell for
-`LastUse`/`NonLast` of a **non-borrowed** scrutinee; never for `Borrowed`; a **fresh** scrutinee (`CCtor`,
-rc==1, no binder) always drops. Thread the decision into each arm; fire at the `SinkVar` seam only.
-**SinkTail/SinkBounce (returning) arms:** skip the cell drop for S2 (a soft leak Boehm reclaims) — tighten
-later (drop before the `return`). **Emit the cell-drop as a distinct statement against `sv`** (never folded
+in `consumeMatch`: look up the scrutinee `CVar`'s use verdict plus consume bit at `matchScrutPos` — drop the
+cell for consuming `LastUse` only when the source flat local owns the value, and for consuming `NonLast` when
+the compiled scrutinee use first received its own `kdup`; never for read-only/borrowed scrutinees. A **fresh**
+scrutinee (`CCtor`, rc==1, no binder) always drops. Thread the decision into each arm; S3.2 also emits the
+paired cleanup before returning-arm `return`s. **Emit the cell-drop as a distinct statement against `sv`** (never folded
 into the body) so S5 FBIP swaps the `{dup kept fields; kdrop cell}` pair for `{token=drop_reuse; kreuse}`
 as a peephole on the unique path.
 
@@ -65,10 +66,11 @@ constructor applications, because the same `etaCtorApp` recognizer is used by co
 allocations.
 
 The backend still re-checks `boDroppable` and `boBorrowed`, and it refuses to guess: boxed/KEnv-only binders,
-borrowed binders, incoming worker parameters whose caller-side transfer has not been normalized, locals whose
-initializer may be a borrowed projection/call result, and pattern fields that were not first `kdup`'d by the
-match cell-drop path do not get S2.3d drops. This keeps the change disjoint from S2.3a cell drops, caller-side
-ownership transfer, and the still-deferred projection-result ownership work. If a branch-drop site
+borrowed binders, incoming worker parameters whose caller-side transfer has not been normalized, unproven
+call/projection shapes, and pattern fields that were not first `kdup`'d by the match cell-drop path do not get
+S2.3d drops. S3.2 proves owned projection results for the structural subset whose base is an owned flat local
+read through the validated read-only use side table, and it materializes those results with `kdup` before any
+owner cleanup. If a branch-drop site
 lists a droppable binder that no longer resolves inside a top-level flat worker frame, the RC-on backend
 records a `gsRcFindings` miss and rejects generation. Capture-free nested flat closures may drop their own
 resolved owned flat locals under the same proof; missing outer/captured binders, boxed/CPS paths, and flat
@@ -88,10 +90,10 @@ locals whose ownership is resolved but unproven still intentionally emit no drop
 S2.3b records this in `OwnInfo`; the cross-check validates both the consuming subset used for linear
 binders and the stored consume/read side tables. `C.hs` consumes the flag only where it is locally safe
 (for example, read-only `NonLast` uses do not get an RC dup). Scope-close drops remain conservative:
-they require a manifestly-owned local and still use the "no `LastUse` anywhere" rule until
-projection-result ownership is modeled; otherwise `let x = rec in x.f` could return a borrowed field
-after dropping `rec`. The later codegen step must either duplicate escaping borrowed projection results
-or otherwise prove that the owner cannot be dropped before the result is owned.
+they require a manifestly-owned local and still use the "no consuming `LastUse`" rule only for the subset
+whose result ownership is proven. S3.2 duplicates escaping structural projection results when the base is an
+owned flat local read through the validated read-only use table; unproven call/projection shapes remain
+leak-biased instead of dropping an owner before a borrowed result is materialized.
 
 ## (d) S2.3c — the PRIM / runtime-ownership boundary (the one design decision)
 
@@ -158,8 +160,8 @@ value flows into*, not only the binder's marker.
 | sub | what | gate |
 |---|---|---|
 | **S2.3a** | match-destructure cell drop (a) — the biggest fire-count win | underflow-assert clean; net → 0; byte-identical |
-| **S2.3b** | consuming-vs-read flag (c); close-drops stay conservative until projection-result ownership | assert clean; metadata pins transfer vs read |
-| **S2.3c** | prim-convention table (d): classify audited primitive publish/read positions; full caller-drop completion still waits for projection-result ownership | `primArgConventionS23c`; ref/TVar/FiberRef ownership regressions; assert clean |
+| **S2.3b** | consuming-vs-read flag (c); close-drops stay conservative outside the S3.2-proven projection-result subset | assert clean; metadata pins transfer vs read |
+| **S2.3c** | prim-convention table (d): classify audited primitive publish/read positions; full caller-drop completion still waits for caller-side transfer normalization | `primArgConventionS23c`; ref/TVar/FiberRef ownership regressions; assert clean |
 | **S2.3d** | per-path dead-binder drops (b)+(e) for locally-owned flat constructor let-locals, including guarded post-guard omissions, after the path-local ownership facts are explicit | `perceusS23dDeadBinderDrops`; branch-drop miss diagnostic; assert clean; net trends down |
 
 **Risks (under the Boehm backstop: leak/assert now; S3 UAF risks called out explicitly):** **R-double-drop (highest)** — cell-drop +
@@ -175,12 +177,12 @@ kind-domain-param prims cannot left-shift a convention onto a real value positio
 **R-param-provenance** — worker parameters are not S2.3d-droppable until caller-side transfer normalization
 proves borrowed/projection actuals have been converted to owned references; this intentionally preserves soundness
 at the cost of leaving param-dead branches as a visible restore item.
-**R-returning-arm leak** — SinkTail/SinkBounce arms still skip the match cell drop
-(soft leak); flag for later. S2.3d branch-dead drops are emitted before a tail return on omitted paths, which
-does not discharge the match scrutinee cell itself. **R-CDo** — S2.3b walks and validates `CDo` bodies so generated do-kernel paths are
+**R-returning-arm cleanup** — closed in S3.2 for proven-owned match cells by materializing kept fields and
+emitting cleanup before `return`; guarded arms still stay conservative where guard-failure ownership is not
+modeled. **R-CDo** — S2.3b walks and validates `CDo` bodies so generated do-kernel paths are
 covered by RC checks; drops still do not cross a do-block boundary unless the lowered structure proves ownership transfer.
-K_FGN/resource scrutinees must not be cell-dropped (structurally safe at S2 since `kdrop` never frees; re-pin
-at S3). **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-arm) uses the shared
+K_FGN/resource scrutinees must not be cell-dropped because S3.2 free-on-zero deliberately excludes resource
+cells from the FREESET. **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-arm) uses the shared
 `PathScheme` constants; `gsRcFindings` miss-log is fail-closed under `KAPPA_PERCEUS_RC=1`, including
 S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level flat worker frame.
 
@@ -200,7 +202,7 @@ S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level
 5. **RC path lookup is zero-miss** — under `KAPPA_PERCEUS_RC=1`, `generateC` rejects nonzero
    `gsRcFindings`, and the native/LLVM harnesses assert the zero-miss diagnostic in redirected build logs.
 6. **Resource regressions unchanged** (`usingsusp.kp`/`usinginterrupt.kp`) — no spurious drop inside a
-   do-scope; a K_FGN scrutinee not cell-dropped (re-verify at the S3 flip).
+   do-scope; S3.2 keeps `K_FGN` out of the FREESET and pins runtime-private FGN payload marking.
 
 ## Critical files
 - `src/Kappa/Backend/C.hs` — cell-drop in `consumeAltBody`/`consumeMatch`; kept-field dups in
@@ -215,5 +217,5 @@ S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level
   primitive convention table is S2.3c.
 - `src/Kappa/Prelude.hs` — storing `newRef`/`writeRef`/`__newArray`/`__arrayWrite` vs borrowing
   `show*`/`print*` positions the table classifies.
-- `runtime/value.c` / `runtime/kappart.h` — confirm-only: stores (`kref_new`, `karr_set`, `kctor`), reads
-  (`kctor_arg`, `kproj`), and the `kdrop` no-free assert.
+- `runtime/value.c` / `runtime/kappart.h` — stores (`kref_new`, `karr_set`, `kctor`), reads
+  (`kctor_arg`, `kproj`), `kdrop` free-on-zero for the S3.2 FREESET, and the poison-on-free runtime oracle.

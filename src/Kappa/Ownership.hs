@@ -209,7 +209,8 @@ data OwnInfo = OwnInfo
   -- (projection base, borrowed call argument) is only a read, so the binder
   -- still owns its reference. S2.3b records that distinction for callers that
   -- can prove a safe ownership transfer; scope-close codegen remains
-  -- conservative for projection-result escapes until that later S2 step lands.
+  -- conservative outside the S3.2 structural projection subset that C codegen
+  -- can materialize with a balancing @kdup@.
   , oiBinderUses :: !(Map BinderId [UseKind])
   -- ^ Perceus RC Stage S2.3: the per-binder MULTISET of use classifications its
   -- occurrences resolved to (the @accAssoc@ the cross-check S1.2 already
@@ -217,16 +218,17 @@ data OwnInfo = OwnInfo
   -- needs ONE fact per binder that @oiUses@ (keyed by occurrence, not binder)
   -- cannot answer without the binder↔occurrence link: \"does this binder have a
   -- 'LastUse'?\". Ordinary whole-scope close-drop codegen is deliberately
-  -- conservative: any 'LastUse', consuming or not, suppresses that close-drop
-  -- until projection-result ownership is modeled. S2.3d branch-dead drops use
+  -- conservative: any consuming 'LastUse' suppresses that close-drop, while
+  -- read-only projection results are only accepted where C codegen can prove and
+  -- materialize owned results. S2.3d branch-dead drops use
   -- 'oiBranchDropSites' instead of this all-uses summary. Derivable from
   -- @oiUses@ + the body, but accumulated during the single analysis walk so the
   -- backend needs no re-walk.
   , oiBinderConsumingUses :: !(Map BinderId [UseKind])
   -- ^ The subset of 'oiBinderUses' whose occurrences are consuming. S2.3b uses
   -- this to distinguish transfer from read-only last-use at analysis and
-  -- validation time. Whole-scope close drops intentionally remain on
-  -- 'oiBinderUses' until projection-result ownership is modeled in codegen.
+  -- validation time. Whole-scope close drops intentionally consult this
+  -- consuming subset plus codegen's separate owned-result proof.
   , oiBranchDropSites :: !(Map [Int] [BinderId])
   -- ^ Perceus RC Stage S2.3d: path-local dead-binder drops. Keyed by the
   -- branch/arm structural path where a normal completion should drop existing

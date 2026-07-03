@@ -6,6 +6,7 @@
  * interruption/masking, atomics, and race/timeout are the next increments. */
 #include "internal.h"
 
+#include <assert.h>
 #include <gc.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -1088,6 +1089,31 @@ void krt2i_mark_fgn_payload_shared(const char *kind, void *payload) {
     mark_resumption_shared((Resumption *)payload);
   } else if (strcmp(kind, KRT2_KIND_ABORT_EXIT) == 0) {
     mark_abort_exits_shared((AbortExit *)payload);
+  } else if (strcmp(kind, KRT2_KIND_FIBER) == 0) {
+    /* Fiber payloads are marked at spawn/resume/park publication sites. Do not
+     * recursively walk from the handle: this function can run while a waiter is
+     * being enqueued under another object's mutex and the fiber's current action
+     * may contain that same handle. */
+  } else if (strcmp(kind, KRT2_KIND_SCOPE) == 0) {
+    /* Scope child/waiter fibers are marked at attach/shutdown park sites under
+     * the scope lock; recursive handle walking here would self-deadlock there. */
+  } else if (strcmp(kind, KRT2_KIND_PROMISE) == 0) {
+    /* Promise exits are marked at completePromise and waiters before enqueue. */
+  } else if (strcmp(kind, KRT2_KIND_MONITOR) == 0) {
+    /* Monitor targets are ordinary Fiber handles; the target fiber is rooted in
+     * rt->all and publication marks happen at the fiber boundary. */
+  } else if (strcmp(kind, KRT2_KIND_TVAR) == 0) {
+    /* TVar values are marked on newTVar/commit before the versioned box publish. */
+  } else if (strcmp(kind, KRT2_KIND_ATOMIC) == 0) {
+    /* AtomicRef cells mark incoming values while holding the cell mutex before
+     * store/exchange/CAS/fetch-* publication. */
+  } else if (strcmp(kind, KRT2_KIND_FIBERREF) == 0) {
+    /* FiberRef handles are immediate ids today; this branch pins the exported
+     * kind as carrying no hidden KValue payload if a host wraps one as K_FGN. */
+#ifndef NDEBUG
+  } else if (strncmp(kind, "rt.", 3) == 0 || strncmp(kind, "krt2.", 5) == 0) {
+    assert(!"unhandled runtime K_FGN kind in krt2i_mark_fgn_payload_shared");
+#endif
   }
 }
 
@@ -1243,10 +1269,33 @@ Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
   return krt2i_spawn_from(rt, NULL, action, attach, daemon);
 }
 
+/* Companion to krt2i_deliver_pending_before_park (§18.1.12): called by an
+ * indefinite park-op AFTER it has committed f->status = F_PARKED and registered
+ * its waiter.  Closes the lost-interrupt race — an interrupt whose wake CAS ran
+ * while `f` was still F_RUNNING had its wake DROPPED (the CAS needs F_PARKED),
+ * and the pre-park check had already passed; now that `f` is observably F_PARKED
+ * we re-check the flag and reclaim the park if interrupted.  The seq_cst fence
+ * pairs with the one in krt2i_interrupt_request so {store F_PARKED; fence; load
+ * pending} and {store pending; fence; CAS status} cannot both miss (Dekker).
+ * Returns 1 if it reclaimed the park and delivered (caller CONTINUES stepping,
+ * f->cur updated), 0 if `f` stays parked or was already un-parked+enqueued by
+ * another waker (caller SUSPENDS this turn — same disposition as return 0 from
+ * the park-op). */
+static int krt2i_deliver_pending_after_park(Rt *rt, Fiber *f) {
+  atomic_thread_fence(memory_order_seq_cst);
+  if (!atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
+      || f->mask_depth != 0)
+    return 0;
+  int expected = F_PARKED;
+  if (!atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNING,
+                                               memory_order_acq_rel, memory_order_relaxed))
+    return 0;  /* another waker already un-parked + enqueued us; suspend here */
+  return deliver_interrupt(rt, f) ? 1 : 0;
+}
+
 /* await: returns 1 if the child is already done (continue stepping with its
  * Exit), 0 if `f` parked onto the child's waiter list (suspended). */
 static int do_await(Rt *rt, Fiber *f, KValue *handle) {
-  (void)rt;
   Fiber *child = (Fiber *)kas_fgn_kind(handle, KRT2_KIND_FIBER);
   pthread_mutex_lock(&child->lock);
   if (atomic_load_explicit(&child->status, memory_order_acquire) == F_DONE) {
@@ -1260,7 +1309,7 @@ static int do_await(Rt *rt, Fiber *f, KValue *handle) {
   w->f = f; w->want_exit = 1; w->next = child->waiters; child->waiters = w;
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&child->lock);
-  return 0;
+  return krt2i_deliver_pending_after_park(rt, f);
 }
 
 /* ── promises ───────────────────────────────────────────────────────────── */
@@ -1287,7 +1336,6 @@ static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
   return kbool(first);
 }
 static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
-  (void)rt;
   Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   pthread_mutex_lock(&p->lock);
   if (atomic_load_explicit(&p->completed, memory_order_acquire)) {
@@ -1301,7 +1349,7 @@ static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
   w->f = f; w->want_exit = 1; w->next = p->waiters; p->waiters = w;
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&p->lock);
-  return 0;
+  return krt2i_deliver_pending_after_park(rt, f);
 }
 /* §18.11 non-blocking peek: NEVER parks.  poll -> Some Exit iff completed, else
  * None; isDone -> Bool.  A single acquire-load of the cell's state suffices (the

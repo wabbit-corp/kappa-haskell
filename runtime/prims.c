@@ -16,15 +16,22 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+static inline void kassert_args_live(KValue **a, int n) {
+  for (int i = 0; i < n; i++) kassert_live(a[i]);
+}
+
 /* §34.5.3 IO builtin direct entry points (codegen calls these via K_NATIVE,
  * never by name).  The pure builtins are the kp_ and kpf_ helpers below; these
  * kpf_io_ entries are the effectful ones the do-kernel sequences. */
 KValue *kpf_io_printString(KValue **a) {
+  kassert_live(a[0]);
   if (a[0]->tag != K_STR) krt_fail("printString: argument is not a String");
   fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
   return kunit();
 }
 KValue *kpf_io_printlnString(KValue **a) {
+  kassert_live(a[0]);
   if (a[0]->tag != K_STR) krt_fail("printlnString: argument is not a String");
   fwrite(a[0]->as.str.p, 1, a[0]->as.str.len, stdout);
   fputc('\n', stdout);
@@ -155,6 +162,8 @@ static KValue *eff_reinstall_k(KEnv *env, KValue *x) {
   return kpf___handleEff(args);
 }
 static int eff_label_eq(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
   return x->tag == K_STR && y->tag == K_STR && x->as.str.len == y->as.str.len &&
          memcmp(x->as.str.p, y->as.str.p, x->as.str.len) == 0;
 }
@@ -169,6 +178,8 @@ KValue *kpf___handleEff(KValue **a) {
            *pay = kctor_arg(comp, 2), *cont = kctor_arg(comp, 3);
     KEnv *renv = kpush(cont, kpush(ops, kpush(ret, kpush(label, kpush(deepV, 0)))));
     if (eff_label_eq(l, label)) {
+      kassert_live(op);
+      if (kis_imm(op) || op->tag != K_STR) krt_fail("__handleEff: operation label is not a String");
       KValue *clause = kproj(ops, op->as.str.p); /* op is a null-terminated KString */
       KValue *k = (kctor_tagid(deepV) == KCT_TRUE) ? kclo(eff_reinstall_k, renv) : cont;
       return kapp(kapp(clause, pay), k);
@@ -191,6 +202,8 @@ static long bytes_index_of(const unsigned char *hay, size_t hl, const unsigned c
 }
 
 static int bytes_cmp(KValue *a, KValue *b) { /* lexicographic by byte */
+  kassert_live(a);
+  kassert_live(b);
   size_t la = a->as.bytes.len, lb = b->as.bytes.len, m = la < lb ? la : lb;
   int c = memcmp(a->as.bytes.p, b->as.bytes.p, m);
   if (c != 0) return c < 0 ? -1 : 1;
@@ -227,6 +240,8 @@ int kvalue_rep_eq(KValue *a, KValue *b) {
    * immediates of different value, already ruled out by a==b) is unequal — guard
    * the deref. */
   if (kis_imm(a) || kis_imm(b)) return 0;
+  kassert_live(a);
+  kassert_live(b);
   if (a->tag != b->tag) return 0;
   switch (a->tag) {
     case K_DBL: return a->as.d == b->as.d;
@@ -272,6 +287,7 @@ static uint64_t fnv_mix_bytes(uint64_t s, const unsigned char *p, size_t n) {
  * complement); K_BIGINT reduces modulo 2^64. */
 static uint64_t kint_low64(KValue *v) {
   if (kis_imm_int(v)) return (uint64_t)kimm_int_val(v);   /* Stage 1 immediate */
+  kassert_live(v);
   if (v->tag == K_INT) return (uint64_t)v->as.i;
   if (v->tag == K_BIGINT) {
     mpz_t r; mpz_init(r);
@@ -373,7 +389,10 @@ KValue *kpf_natToInt(KValue **a) {
 KValue *kpf_intToNat(KValue **a) {
   int neg;
   if (kis_int_word(a[0])) neg = kint_word(a[0]) < 0;       /* immediate or inline */
-  else neg = mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0;
+  else {
+    kassert_live(a[0]);
+    neg = mpz_sgn((const __mpz_struct *)a[0]->as.big.mpz) < 0;
+  }
   if (neg) krt_fail("intToNat: negative Int has no Nat image");
   return a[0];
 }
@@ -464,6 +483,7 @@ KValue *kpf_ltByte(KValue **a) {
   return kp_ltByte(a[0], a[1]);
 }
 KValue *kpf_showByte(KValue **a) {
+  kassert_args_live(a, 1);
   char t[8]; snprintf(t, sizeof t, "b'\\x%02x'", a[0]->as.byte); return kstr0(t);
 }
 KValue *kpf_eqBytes(KValue **a) {
@@ -473,6 +493,7 @@ KValue *kpf_ltBytes(KValue **a) {
   return kbool(bytes_cmp(a[0], a[1]) < 0);
 }
 KValue *kpf_showBytes(KValue **a) {
+  kassert_args_live(a, 1);
   sbuf b; sb_init(&b); sb_puts(&b, "0x");
     for (size_t i = 0; i < a[0]->as.bytes.len; i++) { char t[3]; snprintf(t, 3, "%02x", a[0]->as.bytes.p[i]); sb_puts(&b, t); }
     return sb_to_str(&b);
@@ -487,31 +508,38 @@ KValue *kpf___bytesEmpty(KValue **a) {
   return kbytes((const unsigned char *)"", 0);
 }
 KValue *kpf___bytesSingleton(KValue **a) {
+  kassert_args_live(a, 1);
   unsigned char w = a[0]->as.byte; return kbytes(&w, 1);
 }
 KValue *kpf___bytesLength(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)a[0]->as.bytes.len);
 }
 KValue *kpf___bytesIsEmpty(KValue **a) {
+  kassert_args_live(a, 1);
   return kbool(a[0]->as.bytes.len == 0);
 }
 KValue *kpf___bytesGet(KValue **a) {
+  kassert_args_live(a, 1);
   int64_t i = kas_int(a[1]);
     if (i >= 0 && i < (int64_t)a[0]->as.bytes.len) return ksome(kbyte(a[0]->as.bytes.p[i]));
     return knone();
 }
 KValue *kpf___bytesIndexUnsafe(KValue **a) {
+  kassert_args_live(a, 1);
   int64_t i = kas_int(a[1]);
     if (i < 0 || i >= (int64_t)a[0]->as.bytes.len) krt_fail("__bytesIndexUnsafe: out of range");
     return kbyte(a[0]->as.bytes.p[i]);
 }
 KValue *kpf___bytesAppend(KValue **a) {
+  kassert_args_live(a, 2);
   size_t la = a[0]->as.bytes.len, lb = a[1]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(la + lb ? la + lb : 1);
     memcpy(buf, a[0]->as.bytes.p, la); memcpy(buf + la, a[1]->as.bytes.p, lb);
     return kbytes(buf, la + lb);
 }
 KValue *kpf___bytesSlice(KValue **a) {
+  kassert_args_live(a, 1);
   int64_t st = kas_int(a[1]), ln = kas_int(a[2]); size_t len = a[0]->as.bytes.len;
     if (st < 0) st = 0;
     if (st > (int64_t)len) st = (int64_t)len;
@@ -520,34 +548,42 @@ KValue *kpf___bytesSlice(KValue **a) {
     return kbytes(a[0]->as.bytes.p + st, (size_t)ln);
 }
 KValue *kpf___bytesTake(KValue **a) {
+  kassert_live(a[1]);
   int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
     return kbytes(a[1]->as.bytes.p, (size_t)n);
 }
 KValue *kpf___bytesDrop(KValue **a) {
+  kassert_live(a[1]);
   int64_t n = kas_int(a[0]); size_t len = a[1]->as.bytes.len; if (n < 0) n = 0; if (n > (int64_t)len) n = (int64_t)len;
     return kbytes(a[1]->as.bytes.p + n, len - (size_t)n);
 }
 KValue *kpf___bytesStartsWith(KValue **a) {
+  kassert_args_live(a, 2);
   size_t pl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
     return kbool(pl <= hl && memcmp(a[1]->as.bytes.p, a[0]->as.bytes.p, pl) == 0);
 }
 KValue *kpf___bytesEndsWith(KValue **a) {
+  kassert_args_live(a, 2);
   size_t sl = a[0]->as.bytes.len, hl = a[1]->as.bytes.len;
     return kbool(sl <= hl && memcmp(a[1]->as.bytes.p + (hl - sl), a[0]->as.bytes.p, sl) == 0);
 }
 KValue *kpf___bytesContains(KValue **a) {
+  kassert_args_live(a, 2);
   return kbool(bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len) >= 0);
 }
 KValue *kpf___bytesFind(KValue **a) {
+  kassert_args_live(a, 2);
   unsigned char w = a[0]->as.byte;
     for (size_t i = 0; i < a[1]->as.bytes.len; i++) if (a[1]->as.bytes.p[i] == w) return ksome(kint((int64_t)i));
     return knone();
 }
 KValue *kpf___bytesBreakIndex(KValue **a) {
+  kassert_args_live(a, 2);
   long ix = bytes_index_of(a[1]->as.bytes.p, a[1]->as.bytes.len, a[0]->as.bytes.p, a[0]->as.bytes.len);
     return ix < 0 ? knone() : ksome(kint((int64_t)ix));
 }
 KValue *kpf___bytesToList(KValue **a) {
+  kassert_args_live(a, 1);
   KValue *acc = knil();
     for (size_t i = a[0]->as.bytes.len; i > 0; i--) acc = kcons(kbyte(a[0]->as.bytes.p[i - 1]), acc);
     return acc;
@@ -556,7 +592,11 @@ KValue *kpf___bytesFromList(KValue **a) {
   /* count then fill */
     size_t n = 0; for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) n++;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n ? n : 1); size_t i = 0;
-    for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) buf[i++] = kctor_arg(v, 0)->as.byte;
+    for (KValue *v = a[0]; kis_cons(v); v = kctor_arg(v, 1)) {
+      KValue *b = kctor_arg(v, 0);
+      kassert_live(b);
+      buf[i++] = b->as.byte;
+    }
     return kbytes(buf, n);
 }
 KValue *kpf___bytesCompact(KValue **a) {
@@ -566,6 +606,7 @@ KValue *kpf___newBytesBuilder(KValue **a) {
   return kbytes((const unsigned char *)"", 0);
 }
 KValue *kpf___bytesBuilderByte(KValue **a) {
+  kassert_args_live(a, 2);
   /* (byte, builder) -> builder */
     size_t n = a[1]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(n + 1);
@@ -573,6 +614,7 @@ KValue *kpf___bytesBuilderByte(KValue **a) {
     return kbytes(buf, n + 1);
 }
 KValue *kpf___bytesBuilderBytes(KValue **a) {
+  kassert_args_live(a, 2);
   /* (bytes, builder) -> builder */
     size_t na = a[1]->as.bytes.len, nb = a[0]->as.bytes.len;
     unsigned char *buf = (unsigned char *)kgc_alloc_atomic(na + nb ? na + nb : 1);
@@ -583,12 +625,15 @@ KValue *kpf___finishBytesBuilder(KValue **a) {
   return a[0];
 }
 KValue *kpf___utf8Bytes(KValue **a) {
+  kassert_args_live(a, 1);
   return kbytes((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len);
 }
 KValue *kpf___utf8Valid(KValue **a) {
+  kassert_args_live(a, 1);
   return kbool(utf8_valid_all(a[0]->as.bytes.p, a[0]->as.bytes.len));
 }
 KValue *kpf___decodeUtf8Lossy(KValue **a) {
+  kassert_args_live(a, 1);
   /* Lenient decode (one U+FFFD per ill-formed maximal subpart).  The
      * std.unicode wrapper only calls this after __utf8Valid succeeds, so
      * the reachable case is the exact identity decode of valid UTF-8. */
@@ -602,9 +647,11 @@ KValue *kpf___decodeUtf8Lossy(KValue **a) {
     return sb_to_str(&b);
 }
 KValue *kpf___byteLength(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)a[0]->as.str.len);
 }
 KValue *kpf___uniScalarValue(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)a[0]->as.chr);
 }
 KValue *kpf___scalarInRange(KValue **a) {
@@ -617,12 +664,15 @@ KValue *kpf___scalarOfValue(KValue **a) {
     krt_fail("__scalarOfValue: value is not a Unicode scalar");
 }
 KValue *kpf___scalarToString(KValue **a) {
+  kassert_args_live(a, 1);
   sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return sb_to_str(&b);
 }
 KValue *kpf___scalarCount(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
 }
 KValue *kpf___stringScalars(KValue **a) {
+  kassert_args_live(a, 1);
   const unsigned char *p = (const unsigned char *)a[0]->as.str.p, *end = p + a[0]->as.str.len;
     KValue *acc = knil();
     /* collect codepoints then fold right-to-left into a cons list */
@@ -634,6 +684,7 @@ KValue *kpf___stringScalars(KValue **a) {
     return acc;
 }
 KValue *kpf___byteToNat(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)a[0]->as.byte);
 }
 KValue *kpf___natToByte(KValue **a) {
@@ -655,6 +706,7 @@ KValue *kpf___arrayIndexUnsafe(KValue **a) {
 }
 KValue *kpf___rangeEnum(KValue **a) {
   int ex = kas_bool(a[2]); KValue *acc = knil();
+    kassert_args_live(a, 2);
     if (!kis_imm(a[0]) && a[0]->tag == K_CHR) {   /* Char range; else Int (immediate) */
       int64_t lo = (int64_t)a[0]->as.chr, hi = (int64_t)a[1]->as.chr, top = ex ? hi - 1 : hi;
       for (int64_t c = top; c >= lo; c--) { if (c >= 0xD800 && c <= 0xDFFF) continue; acc = kcons(kchr((uint32_t)c), acc); }
@@ -677,13 +729,16 @@ KValue *kpf___hashMixInt(KValue **a) {
   return ku64(fnv_mix_u64(kint_low64(a[0]), kint_low64(a[1])));
 }
 KValue *kpf___hashMixDouble(KValue **a) {
+  kassert_live(a[1]);
   uint64_t bits; double d = a[1]->as.d; memcpy(&bits, &d, sizeof bits);
     return ku64(fnv_mix_u64(kint_low64(a[0]), bits));
 }
 KValue *kpf___hashMixString(KValue **a) {
+  kassert_live(a[1]);
   return ku64(fnv_mix_bytes(kint_low64(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len));
 }
 KValue *kpf___hashMixBytes(KValue **a) {
+  kassert_live(a[1]);
   return ku64(fnv_mix_bytes(kint_low64(a[0]), a[1]->as.bytes.p, a[1]->as.bytes.len));
 }
 KValue *kpf___newStringBuilder(KValue **a) {
@@ -693,6 +748,7 @@ KValue *kpf___stringBuilderString(KValue **a) {
   return str_append(a[1], a[0]);
 }
 KValue *kpf___stringBuilderScalar(KValue **a) {
+  kassert_live(a[0]);
   sbuf b; sb_init(&b); utf8_encode(a[0]->as.chr, &b); return str_append(a[1], sb_to_str(&b));
 }
 KValue *kpf___stringBuilderGrapheme(KValue **a) {
@@ -705,13 +761,16 @@ KValue *kpf___stringStart(KValue **a) {
   return kint(0);
 }
 KValue *kpf___stringEnd(KValue **a) {
+  kassert_args_live(a, 1);
   return kint((int64_t)utf8_scalar_count((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len));
 }
 KValue *kpf___stringCursorOffset(KValue **a) {
+  kassert_live(a[0]);
   int64_t i = kas_int(a[1]); if (i < 0) i = 0;
     return kint((int64_t)utf8_scalar_byte_offset((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, (size_t)i));
 }
 KValue *kpf___stringNextScalar(KValue **a) {
+  kassert_live(a[0]);
   const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
     if (i >= 0 && i < (int64_t)cnt) {
@@ -724,6 +783,7 @@ KValue *kpf___stringNextScalar(KValue **a) {
     return knone();
 }
 KValue *kpf___stringPrevScalar(KValue **a) {
+  kassert_live(a[0]);
   const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t i = kas_int(a[1]); size_t cnt = utf8_scalar_count(p, len);
     if (i > 0 && i <= (int64_t)cnt) {
@@ -736,6 +796,7 @@ KValue *kpf___stringPrevScalar(KValue **a) {
     return knone();
 }
 KValue *kpf___stringSpan(KValue **a) {
+  kassert_live(a[0]);
   const unsigned char *p = (const unsigned char *)a[0]->as.str.p; size_t len = a[0]->as.str.len;
     int64_t aa = kas_int(a[1]), bb = kas_int(a[2]); size_t cnt = utf8_scalar_count(p, len);
     if (aa >= 0 && bb <= (int64_t)cnt && aa <= bb) {
@@ -749,6 +810,7 @@ KValue *kpf___newUtf8Decoder(KValue **a) {
   return kbytes((const unsigned char *)"", 0);
 }
 KValue *kpf___decodeUtf8Chunk(KValue **a) {
+  kassert_args_live(a, 2);
   size_t pl = a[1]->as.bytes.len, cl = a[0]->as.bytes.len, total = pl + cl;
     unsigned char *comb = (unsigned char *)kgc_alloc_atomic(total ? total : 1);
     if (pl) memcpy(comb, a[1]->as.bytes.p, pl);
@@ -760,34 +822,41 @@ KValue *kpf___decodeUtf8Chunk(KValue **a) {
     return ksome(krec(2, nm, vals));
 }
 KValue *kpf___finishUtf8Decoder(KValue **a) {
+  kassert_args_live(a, 1);
   return a[0]->as.bytes.len == 0 ? ksome(kstr0("")) : knone();
 }
 KValue *kpf___atomicRepEq(KValue **a) {
   return kbool(kvalue_rep_eq(a[0], a[1]));
 }
 KValue *kpf___normalize(KValue **a) {
+  kassert_live(a[1]);
   return ku_normalize((int)kas_int(a[0]), (const unsigned char *)a[1]->as.str.p, a[1]->as.str.len);
 }
 KValue *kpf___caseFold(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf out; cp_init(&out);
     for (size_t i = 0; i < in.len; i++) ku_casefold_scalar(in.p[i], &out);
     sbuf b; sb_init(&b); for (size_t i = 0; i < out.len; i++) utf8_encode(out.p[i], &b); return sb_to_str(&b);
 }
 KValue *kpf___graphemeCount(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     return kint((int64_t)ku_grapheme_count(in.p, in.len));
 }
 KValue *kpf___graphemeValid(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     return kbool(ku_grapheme_count(in.p, in.len) == 1);
 }
 KValue *kpf___graphemeOfString(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     if (ku_grapheme_count(in.p, in.len) == 1) return a[0];
     krt_fail("__graphemeOfString: string is not a single grapheme");
 }
 KValue *kpf___stringGraphemes(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf bounds; cp_init(&bounds);
     size_t i = 0; while (i < in.len) { cp_push(&bounds, (uint32_t)i); size_t l = ku_grapheme_len(in.p, in.len, i); i += (l ? l : 1); }
@@ -799,6 +868,7 @@ KValue *kpf___stringGraphemes(KValue **a) {
     return acc;
 }
 KValue *kpf___stringNextGrapheme(KValue **a) {
+  kassert_live(a[0]);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     int64_t i = kas_int(a[1]);
     if (i >= 0 && i < (int64_t)in.len) {
@@ -810,6 +880,7 @@ KValue *kpf___stringNextGrapheme(KValue **a) {
     return knone();
 }
 KValue *kpf___stringWords(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf ws, we; cp_init(&ws); cp_init(&we);
     size_t i = 0;
@@ -824,6 +895,7 @@ KValue *kpf___stringWords(KValue **a) {
     return acc;
 }
 KValue *kpf___stringSentences(KValue **a) {
+  kassert_args_live(a, 1);
   cpbuf in; cp_init(&in); ku_decode((const unsigned char *)a[0]->as.str.p, a[0]->as.str.len, &in);
     cpbuf ps, pe; cp_init(&ps); cp_init(&pe);
     size_t start = 0, i = 0;
@@ -879,6 +951,7 @@ KValue *krun_io(KValue *action) {
    * (e.g. `do { …; pure n }` yielding a small Int) — never an IO node — so it
    * finishes the loop directly, never dereferencing the odd word. */
   if (kis_imm(action)) return krun_finish(action, discard, defers);
+  kassert_live(action);
   switch (action->tag) {
     case K_IOTAIL:
       action = action->as.bounce.fn;
@@ -897,6 +970,7 @@ KValue *krun_io(KValue *action) {
     case K_IO: {
       KValue *r = action->as.io.fn(action->as.io.env);
       if (kis_imm(r)) return krun_finish(r, discard, defers); /* immediate result */
+      kassert_live(r);
       if (r->tag == K_IOTAIL) { action = r->as.bounce.fn; continue; }
       if (r->tag == K_IOEFFECT) { discard = 1; action = r->as.bounce.fn; continue; }
       if (r->tag == K_IOFINALLY) {

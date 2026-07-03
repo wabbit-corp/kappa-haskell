@@ -144,8 +144,8 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      (`9c19790`→`272be14` plus current S2.3c/S2.3d work): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
      emission (S2.2), the match-destructure cell-drop (S2.3a — `kdrop` now fires: 101 sites / 33 files, 315
      `kdup` / 66), and the consume-vs-read flag consumed CONSERVATIVELY (S2.3b — dup only a consuming
-     `NonLast`; general scope-close stays on "no `LastUse` anywhere" until projection-result ownership is
-     modeled). S2.3c routes global call-boundary ownership
+     `NonLast`; scope-close consults consuming uses, while S3.2 supplies the proved projection-result ownership
+     subset needed by free-on-zero). S2.3c routes global call-boundary ownership
      through `argConvSelectGlobal`, keyed by resolved primitive identity, with audited `ArgOwned` positions
      for runtime-cell publishers and `ArgBorrowed` positions for confirmed read-only primitive handles.
      Ambiguous result/action-transfer primitives remain conservative `ArgShared`. S2.3d records branch-local
@@ -164,17 +164,22 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      Boehm still frees while a DEBUG assert checks
      `rc` against the collector (de-risks use-after-free). Last verified 2026-07-02: conformance 2094/0, with
      native RC parity covered by `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`; underflow-clean +
-     non-vacuous when those gates pass. **Before S3.2/free-on-zero:** the returning-arm (`SinkTail`/`SinkBounce`) match cell-drop
-     tighten, projection-result ownership for broader scope-close drops, and keeping the S2.3c storing-primitive audit current.
+     non-vacuous when those gates pass. S3.2 tightened returning-arm (`SinkTail`/`SinkBounce`) match cell drops
+     and owned projection results through nested/control expressions; the S2.3c storing-primitive audit remains
+     a standing invariant for later runtime-store precision.
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC. Full plan:
      [PERCEUS-S3-PLAN.md](runtime/docs/PERCEUS-S3-PLAN.md) — scope = RC-free the immutable acyclic thread-local
      shapes only (`K_CTOR`/`K_REC`/`K_VARIANT`/`K_STR`/`K_BOUNCE`/`K_FAIL`), retain closures,
      IO/action/native wrappers, `K_REF`/`K_ARRAY`/`K_THUNK`/`K_BIGINT`/`K_BYTE`/`K_BYTES`/`K_FGN`, and shared
      values on Boehm until the later ownership/atomic stages; S3.0/S3.1 prereqs landed = `kis_rc_freeable` +
      shared-bit encoding, `karr_new` per-slot dup, `krec_without` kept-field dup, `tshare` mark+shared-dup/drop-no-op,
-     disabled iterative drop-descent skeleton, and
-     arity-guard reconcile; S3.2 wires the actual `kdrop` free-on-zero branch under an ASan/double-free
-     oracle (the risk model inverts from leak/assert to UAF).
+     iterative drop-descent skeleton, and
+     arity-guard reconcile. **S3.2 landed for the C/runtime path:** `kdrop` now frees zero-count values in the
+     conservative FREESET using an inline/scanned-overflow iterative worklist, while LLVM and retained/shared
+     shapes remain Boehm-backed. Remaining S3.3/S3.4 work: drop-old/write-barrier precision, LLVM `kdup`/`kdrop`
+     parity, heap-high-water validation, broader Boehm-debug plus supplemental sanitizer corpus lanes, and
+     default-on policy. The current native RC corpus lane runs generated C binaries with `KAPPA_POISON=1`
+     and includes a non-vacuous generated-drop fixture.
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.

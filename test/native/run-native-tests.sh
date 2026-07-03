@@ -92,10 +92,30 @@ build_clean_for_source() {
 run_diff_case() {
   local name="$1"; local src="$CASES/$name.kp"
   echo "-- case: $name (native output must match the interpreter)"
-  local interp native exe irc nrc
+  local interp native exe irc nrc off_native off_exe off_rc native_err
   interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?
   if [ "$irc" -ne 0 ]; then
     echo "   FAIL: interpreter exited with $irc"; fails=$((fails+1)); return
+  fi
+  if perceus_rc_enabled; then
+    off_exe="$WORK/$name.rcoff"
+    cleanup_generated_for_source "$src"
+    if ! timeout 240 env -u KAPPA_PERCEUS_RC $KAPPA build "$src" -o "$off_exe" >"$WORK/$name.rcoff.build.log" 2>&1; then
+      cleanup_generated_for_source "$src"
+      echo "   FAIL: native RC-off baseline build failed"; cat "$WORK/$name.rcoff.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+    fi
+    cleanup_generated_for_source "$src"
+    off_native="$(timeout 120 env -u KAPPA_POISON "$off_exe" 2>/dev/null)"; off_rc=$?
+    if [ "$off_rc" -ne 0 ]; then
+      echo "   FAIL: native RC-off baseline exited with $off_rc"; fails=$((fails+1)); return
+    fi
+    if [ "$interp" != "$off_native" ]; then
+      echo "   FAIL: RC-off native baseline output mismatch"
+      echo "     interpreter: $(printf '%s' "$interp" | tr '\n' '|')"
+      echo "     native-off:  $(printf '%s' "$off_native" | tr '\n' '|')"
+      fails=$((fails+1))
+      return
+    fi
   fi
   exe="$WORK/$name"
   cleanup_generated_for_source "$src"
@@ -105,17 +125,31 @@ run_diff_case() {
   fi
   cleanup_generated_for_source "$src"
   check_perceus_rc_log "$WORK/$name.build.log" || return
-  native="$(timeout 120 "$exe" 2>/dev/null)"; nrc=$?
-  if [ "$nrc" -ne 0 ]; then
-    echo "   FAIL: native executable exited with $nrc"; fails=$((fails+1)); return
-  fi
-  if [ "$interp" = "$native" ]; then
-    echo "   ok ($(printf '%s' "$native" | tr '\n' '|'))"
+  native_err="$WORK/$name.native.err"
+  if perceus_rc_enabled; then
+    native="$(timeout 120 env KAPPA_POISON=1 "$exe" 2>"$native_err")"; nrc=$?
   else
+    native="$(timeout 120 "$exe" 2>"$native_err")"; nrc=$?
+  fi
+  if [ "$nrc" -ne 0 ]; then
+    echo "   FAIL: native executable exited with $nrc"
+    sed 's/^/     /' "$native_err" | head -40
+    fails=$((fails+1)); return
+  fi
+  if [ "$interp" != "$native" ]; then
     echo "   FAIL: output mismatch"
     echo "     interpreter: $(printf '%s' "$interp" | tr '\n' '|')"
     echo "     native:      $(printf '%s' "$native" | tr '\n' '|')"
     fails=$((fails+1))
+  elif perceus_rc_enabled && [ "$off_native" != "$native" ]; then
+    echo "   FAIL: RC-on output differs from RC-off native baseline"
+    echo "     native-off:  $(printf '%s' "$off_native" | tr '\n' '|')"
+    echo "     native-on:   $(printf '%s' "$native" | tr '\n' '|')"
+    fails=$((fails+1))
+  elif perceus_rc_enabled; then
+    echo "   ok ($(printf '%s' "$native" | tr '\n' '|'); RC-on == RC-off; poison)"
+  else
+    echo "   ok ($(printf '%s' "$native" | tr '\n' '|'))"
   fi
 }
 
@@ -144,7 +178,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="
@@ -214,8 +248,8 @@ if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$CASES/blocking-source.kp" --emi
 else
   echo "   FAIL: blocking-source LLVM --emit-c build failed"; cat "$btmp/llvm.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
-echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3 prereq gates =="
-if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq >"$btmp/runtime.log" 2>&1; then
+echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3 gates =="
+if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq build/perceus_s3_free build/perceus_s3_poison >"$btmp/runtime.log" 2>&1; then
   if timeout 30 "$ROOT/runtime/build/blocking_lane" >"$btmp/blocking_lane.out" 2>"$btmp/blocking_lane.err"; then
     echo "   ok (runtime blocking lane preserves scheduler progress and source interruption)"
   else
@@ -231,15 +265,63 @@ if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/
     fails=$((fails+1))
   fi
   if timeout 30 "$ROOT/runtime/build/perceus_s3_prereq" >"$btmp/perceus_s3_prereq.out" 2>"$btmp/perceus_s3_prereq.err"; then
-    echo "   ok (Perceus S3 freeable/shared/array prerequisites hold with free-on-zero still off)"
+    echo "   ok (Perceus S3 freeable/shared/array prerequisites hold)"
   else
     echo "   FAIL: Perceus S3 runtime prerequisite harness failed"
     cat "$btmp/perceus_s3_prereq.out" "$btmp/perceus_s3_prereq.err" | sed 's/^/     /'
     fails=$((fails+1))
   fi
+  if timeout 30 "$ROOT/runtime/build/perceus_s3_free" >"$btmp/perceus_s3_free.out" 2>"$btmp/perceus_s3_free.err"; then
+    echo "   ok (Perceus S3.2 free-on-zero runtime harness passed)"
+  else
+    echo "   FAIL: Perceus S3.2 free-on-zero runtime harness failed"
+    cat "$btmp/perceus_s3_free.out" "$btmp/perceus_s3_free.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  if timeout 30 "$ROOT/runtime/build/perceus_s3_poison" >"$btmp/perceus_s3_poison.out" 2>"$btmp/perceus_s3_poison.err"; then
+    echo "   ok (Perceus S3.2 poison-on-free UAF oracle harness passed)"
+  else
+    echo "   FAIL: Perceus S3.2 poison-on-free UAF oracle harness failed"
+    cat "$btmp/perceus_s3_poison.out" "$btmp/perceus_s3_poison.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
 else
   echo "   FAIL: runtime blocking/fgn/S3 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
+
+echo "== Perceus S3.2: generated drops are non-vacuous and poison-clean =="
+s32tmp="$WORK/perceus-s32-generated-drops"; mkdir -p "$s32tmp"
+s32src="$CASES/perceus-s3-generated-drops.kp"
+s32c="${s32src%.kp}.kappa.c"
+rm -f "$s32c"
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s32src" --emit-c -o "$s32tmp/perceus_s3_generated_drops_emit" >"$s32tmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s32tmp/emit.log"
+  s32_scrut_drops="$(grep -cF 'kdrop(scrut_' "$s32c" 2>/dev/null || true)"
+  if [ "${s32_scrut_drops:-0}" -ge 2 ]; then
+    echo "   ok-shape ($s32_scrut_drops generated scrutinee drops in the standing corpus fixture)"
+  else
+    echo "   FAIL: perceus-s3-generated-drops did not emit the expected generated scrutinee drops"
+    [ -f "$s32c" ] && grep -nE 'kdrop|scrut_' "$s32c" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s32c"
+else
+  echo "   FAIL: perceus-s3-generated-drops --emit-c build failed"; cat "$s32tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+if KAPPA_PERCEUS_RC=true timeout 240 $KAPPA build "$s32src" -o "$s32tmp/perceus_s3_generated_drops" >"$s32tmp/build.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s32tmp/build.log"
+  s32out="$(timeout 120 env KAPPA_POISON=1 "$s32tmp/perceus_s3_generated_drops" 2>"$s32tmp/run.err")"; s32rc=$?
+  if [ "$s32rc" -eq 0 ] && [ "$s32out" = "10200" ]; then
+    echo "   ok-run (generated free-on-zero drops ran under KAPPA_POISON=1)"
+  else
+    echo "   FAIL: generated-drop fixture failed under KAPPA_POISON=1 rc=$s32rc stdout=$(printf '%s' "$s32out" | tr '\n' '|')"
+    sed 's/^/     /' "$s32tmp/run.err" | head -40
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: perceus-s3-generated-drops native build failed"; cat "$s32tmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s32c"
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -833,6 +915,24 @@ if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$dsrc" --emit-c -o "$dtmp/rc_
   borrowed_nested_else="$(printf '%s\n' "$borrowed_nested_worker" | awk '/} else \{/{f=1; next} f{print}')"
   borrowed_nested_before_consume="$(printf '%s\n' "$borrowed_nested_then" | awk '/consumeBox/{exit} {print}')"
   borrowed_nested_before_peek="$(printf '%s\n' "$borrowed_nested_else" | awk '/peekRHolder/{exit} {print}')"
+  borrowed_owner="$(printf '%s\n' "$borrowed_worker" | sed -nE 's/.*KValue \*(let_[0-9]+) = kctor\(.*/\1/p' | head -n 1)"
+  borrowed_record_owner="$(printf '%s\n' "$borrowed_record_worker" | sed -nE 's/.*KValue \*(let_[0-9]+) = krec\(.*/\1/p' | head -n 1)"
+  borrowed_nested_owner="$(printf '%s\n' "$borrowed_nested_worker" | sed -nE 's/.*KValue \*(let_[0-9]+) = krec\(.*/\1/p' | head -n 1)"
+  if [ -n "$borrowed_owner" ] && ! printf '%s' "$borrowed_before_peek" | grep -qF "kdrop($borrowed_owner);"; then
+    borrowed_owner_peek_safe=yes
+  else
+    borrowed_owner_peek_safe=no
+  fi
+  if [ -n "$borrowed_record_owner" ] && ! printf '%s' "$borrowed_record_before_peek" | grep -qF "kdrop($borrowed_record_owner);"; then
+    borrowed_record_owner_peek_safe=yes
+  else
+    borrowed_record_owner_peek_safe=no
+  fi
+  if [ -n "$borrowed_nested_owner" ] && ! printf '%s' "$borrowed_nested_before_peek" | grep -qF "kdrop($borrowed_nested_owner);"; then
+    borrowed_nested_owner_peek_safe=yes
+  else
+    borrowed_nested_owner_peek_safe=no
+  fi
   if printf '%s' "$guard_consume_local_worker" | grep -q 'alwaysFalseConsume' \
      && { printf '%s' "$guard_consume_local_worker" | grep -qE 'alwaysFalseConsume\(kdup\(let_[0-9]+\)\)' \
           || ! printf '%s' "$guard_consume_local_worker" | grep -qE 'kdrop\(let_[0-9]+\);'; }; then
@@ -860,17 +960,20 @@ if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$dsrc" --emit-c -o "$dtmp/rc_
      && [ -n "$alias_worker" ] && [ -n "$borrowed_worker" ] && [ -n "$borrowed_record_worker" ] && [ -n "$borrowed_nested_worker" ] && [ -n "$guard_consume_worker" ] && [ -n "$guard_consume_local_worker" ] \
      && ! printf '%s' "$if_worker" | grep -qE 'kdrop\(p1\);' \
      && ! printf '%s' "$match_worker" | grep -qE 'kdrop\(p1\);' \
+     && ! printf '%s' "$match_worker" | grep -qE 'kdrop\(scrut_[0-9]+\);' \
      && ! printf '%s' "$let_then" | grep -qE 'kdrop\(let_[0-9]+\);' \
      && printf '%s' "$let_else" | grep -qE 'kdrop\(let_[0-9]+\);' \
      && printf '%s\n' "$guard_success" | awk '/^[[:space:]]*return / && prev ~ /^[[:space:]]*kdrop\(let_[0-9]+\);[[:space:]]*$/ { found=1 } { prev=$0 } END { exit found ? 0 : 1 }' \
      && ! printf '%s' "$alias_worker" | grep -qE 'kdrop\(let_[0-9]+\);' \
      && printf '%s' "$borrowed_worker" | grep -qE 'kdup\(kctor_arg' \
-     && ! printf '%s' "$borrowed_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && [ "$borrowed_owner_peek_safe" = "yes" ] \
+     && printf '%s' "$borrowed_record_worker" | grep -qE 'kdup\(krec_at' \
      && ! printf '%s' "$borrowed_record_before_consume" | grep -qE 'kdrop\(let_[0-9]+\);' \
-     && ! printf '%s' "$borrowed_record_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && [ "$borrowed_record_owner_peek_safe" = "yes" ] \
      && printf '%s' "$borrowed_nested_worker" | grep -qE 'if \(kas_bool\(p0\)\)' \
+     && printf '%s' "$borrowed_nested_worker" | grep -qE 'kdup\(krec_at' \
      && ! printf '%s' "$borrowed_nested_before_consume" | grep -qE 'kdrop\(let_[0-9]+\);' \
-     && ! printf '%s' "$borrowed_nested_before_peek" | grep -qE 'kdrop\(let_[0-9]+\);' \
+     && [ "$borrowed_nested_owner_peek_safe" = "yes" ] \
 	     && [ "$nested_closure_ok" = "yes" ] \
      && printf '%s' "$guard_consume_worker" | grep -qE 'kw_main_2e_alwaysFalseConsume\(kdup\(p1\)\)' \
      && [ "$guard_consume_local_safe" = "yes" ]; then
@@ -885,6 +988,8 @@ if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$dsrc" --emit-c -o "$dtmp/rc_
     printf '%s\n' "$borrowed_worker" | sed 's/^/     BORROWED: /'
     printf '%s\n' "$borrowed_record_worker" | sed 's/^/     RECORD: /'
     printf '%s\n' "$borrowed_nested_worker" | sed 's/^/     NESTED-RECORD: /'
+    printf '     RECORD-OWNER-PEEK-SAFE: %s (%s)\n' "$borrowed_record_owner_peek_safe" "$borrowed_record_owner"
+    printf '     NESTED-OWNER-PEEK-SAFE: %s (%s)\n' "$borrowed_nested_owner_peek_safe" "$borrowed_nested_owner"
     printf '     NESTED-CLOSURE-OK: %s\n' "$nested_closure_ok"
     printf '%s\n' "$guard_consume_worker" | sed 's/^/     GUARD-CONSUME: /'
     printf '     GUARD-CONSUME-LOCAL-SAFE: %s\n' "$guard_consume_local_safe"

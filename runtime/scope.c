@@ -55,9 +55,16 @@ void krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause) {
   }
   wake_now = !target->blocking_armed;
   pthread_mutex_unlock(&target->lock);
+  /* Pair with the seq_cst fence in krt2i_deliver_pending_after_park: order this
+   * interrupt_pending store before the wake's F_PARKED->F_RUNNABLE CAS so a fiber
+   * committing F_PARKED concurrently cannot BOTH miss our wake (CAS fails because
+   * it is still F_RUNNING) AND miss our flag (it re-checks after parking).  Closes
+   * the lost-interrupt / scope-drain hang (§18.1.12). */
+  atomic_thread_fence(memory_order_seq_cst);
   if (wake_now) {
-    krt2i_wake(rt, target, NULL); /* no-op if RUNNING/DONE; the running fiber
-                                   * observes the flag at its next step */
+    krt2i_wake(rt, target, NULL); /* no-op if RUNNING/DONE; a fiber that is still
+                                   * RUNNING observes the flag at its next step or
+                                   * in its post-park re-check */
   }
 }
 

@@ -1,11 +1,11 @@
 # Perceus Stage S3 — Implementation Plan (flip free-on-zero)
 
-Status: **S3.0 + S3.1 landed; S3.2+ pending.** S0→S2.3d have landed and been independently reviewed sound
+Status: **S3.0 + S3.1 + S3.2 landed for the C/runtime path; S3.3+ pending.** S0→S2.3d have landed and been independently reviewed sound
 ([PERCEUS-S2.3-DROP-COMPLETION.md](PERCEUS-S2.3-DROP-COMPLETION.md)): dup/drop placement is correct and
-`rc` is maintained. The S3.0/S3.1 prerequisites are now in place: the freeable-tag partition, the shared-bit
-encoding and marking, per-slot array init counts, a disabled iterative `kfree_recursive` skeleton, and the
-compiler/runtime-argument arity alignment. `kdrop` still **never frees** — Boehm reclaims until S3.2 wires
-the free-on-zero branch. Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc, §4 cycles / §5
+`rc` is maintained. The S3.0/S3.1 prerequisites are in place, and S3.2 wires the guarded `kdrop` free-on-zero
+branch for the conservative strict-immutable FREESET in the C backend/runtime path. Retained tags, shared
+objects, cycles, resources, and LLVM output remain Boehm-backed until their later stages. Companion to
+[PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc, §4 cycles / §5
 thread-shared / §7 staging) and [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) (the dup/drop layer S3 turns live).
 
 ## 0. The transition that reshapes everything — the risk model inverts
@@ -20,7 +20,8 @@ must start catching *double-frees*.
 So S3 is not "add `GC_FREE` to `kdrop`." It is gated on three things, in order:
 1. **A conservative scope** — free-on-zero only the shapes where reclamation is provably safe (§1).
 2. **The runtime prerequisites** — the counting/concurrency/stack-safety facts the flip depends on (§2).
-3. **A differential flip** — free-on-zero ON while a double-free oracle (Boehm + ASan) still watches (§4).
+3. **A differential flip** — free-on-zero ON while an effective UAF oracle (poison-on-free / Boehm debug,
+   with ASan/UBSan as a supplemental native sanitizer) watches (§4).
 
 The S2.3 reviews already discharged the *placement* half (dup/drop are correct under the backstop). S3 adds
 the *reclamation* half and re-validates it with a UAF detector instead of an underflow assert.
@@ -98,16 +99,14 @@ ordinary refs/arrays/thunks are not cross-fiber synchronization primitives (§32
 publication boundaries. Shared objects preserve their existing low count but S3.1 dup/drop does not mutate it,
 and `kis_rc_freeable` rejects them so S3.2 will not free them.
 
-### 2.3 Iterative drop-descent — SKELETON LANDED for robustness
+### 2.3 Iterative drop-descent — LANDED for S3.2 robustness
 A recursive `kfree` of a long list / deep tree recurses O(depth) on the C stack. The design's own criterion
 is *"a big list is freed incrementally as it is consumed"* (RC-DESIGN §3). Implement `kfree_recursive` with
 an **explicit worklist** (or the classic freed-node-as-worklist-link trick), not native recursion, so
-freeing an N-element spine is O(N) time and O(1) stack. The 8 MiB fiber stack (L0) would mask this on the
-current corpus, so S3.2 should add a deep-structure stress fixture that would overflow a naïve recursive
-drop. S3.1 has the explicit-worklist free skeleton and child traversal in place, but the public entry is
-fail-closed/no-op and is not called from `kdrop` until S3.2.
-Before that flip, the worklist allocation itself must be made GC-root-safe or non-allocating so Boehm cannot
-miss children that are reachable only from the pending free stack.
+freeing an N-element spine is O(N) time and O(1) stack. The S3.2 runtime harness includes a deep-structure
+stress fixture that would overflow a naïve recursive drop. S3.2 uses an explicit worklist with stack-scanned inline storage for ordinary shallow frees and a
+scanned heap overflow buffer only for deeper graphs. That keeps the common free-on-zero path non-allocating
+while preserving Boehm visibility for pending children during dynamic growth.
 
 ### 2.4 Write barriers / CAS-fail / promise-recomplete drops — NON-blocking (leak-direction), sound to add
 `karr_set`/`kref_set`/`writeTVar`/`setFiberRef`/atomic store+exchange overwrite without dropping the old
@@ -130,8 +129,8 @@ runtime-argument filter.
 ### 2.6 S3.0/S3.1 re-review findings — hardening carried to S3.2 (all LOW; inert under the current backstop)
 
 The S3.0/S3.1 re-review (four adversarial lenses, all SOUND; the prior shared-`KEnv` UAF and FREESET-overreach
-blockers both resolved) surfaced five low-severity, forward-looking items. None is a defect while free-on-zero
-is off; each is a thing to settle before or during S3.2.
+blockers both resolved) surfaced five low-severity, forward-looking items. S3.2 settled the FGN payload pin
+and free-visitor assert; the remaining items stay scoped to later precision/backend stages.
 
 1. **The free-on-zero win is C-backend-only until the LLVM backend emits `kdup`/`kdrop` (scope, not a bug).**
    `generateLL` (`LLVM.hs` ~459) runs the C backend purely as the R-path validator, then emits RC-op-free
@@ -140,14 +139,12 @@ is off; each is a thing to settle before or during S3.2.
    state that free-on-zero covers the C backend only**; extending reclamation to LLVM is a separate task (grow
    LLVM dup/drop emission), and the §5.3 garbage-free trend applies to C until then.
 2. **Pin the FGN-payload mark-shared exhaustiveness (the S2.3c-style invariant).**
-   `krt2i_mark_fgn_payload_shared` (`rt.c`) handles only `RESUMPTION` and `ABORT_EXIT`; the other six `K_FGN`
-   kinds are safe *only because* each marks its embedded `KValue`s at its own synchronized write site
-   (Promise→exit at complete, TVar box→val at commit, AtomicRef→cell at store/CAS/fetch-*, Fiber→exit at
-   finish; SCOPE/MONITOR carry no user `KValue`). That is an unstated cross-cutting invariant: a future FGN
-   kind, or a create-time-set field reachable via a shared handle, becomes a silent S3.2 UAF. Before the flip,
-   either mark the value-bearing kinds defensively at the recursive FGN site, or add an assert/comment pinning
-   *"every FGN-embedded `KValue` is marked at its write site"* — the analog of the S2.3c
-   storing-prims-exhaustive pin.
+   Landed in S3.2: `krt2i_mark_fgn_payload_shared` (`rt.c`) now handles the known runtime `K_FGN` kinds
+   explicitly. It recursively marks the unprotected `RESUMPTION` and `ABORT_EXIT` continuation payloads, and
+   pins the lock-owned `Fiber`/`Scope`/`Promise`/`Monitor`/`TVar`/`AtomicRef` kinds to their synchronized
+   publication-site marks instead of recursively taking locks from the generic value walker. `FiberRef` is
+   documented as carrying no hidden payload today, and DEBUG builds assert for unhandled `rt.*`/`krt2.*`
+   kinds. User FFI handles remain outside this runtime-private exhaustiveness pin.
 3. **Make `kfree_visit`'s `default` assert-unreachable in DEBUG.** The switch falls through to `kgc_free(v)`
    for any tag without an explicit case (`value.c` ~205). Inert now (every FREESET tag has a case), but a
    future FREESET addition that forgets its `kfree_visit` case would free the shell while leaking its boxed
@@ -164,11 +161,11 @@ is off; each is a thing to settle before or during S3.2.
 
 ## 3. The free-on-zero mechanism (Phase C) — `kappart.h` + `value.c`
 
-- **`kdrop`** (`kappart.h`): after the thread-local count decrement, add
-  `if (krc_count(v) == 0 && kis_rc_freeable(v)) kfree_recursive(v);`. Immediate/shared/retained-tag/resource
-  cases fall through exactly as today; shared values remain no-op until S4 reclamation. Guard the whole free
-  branch on the S3 build/flag so the OFF path still performs no reclamation.
-- **`kfree_recursive(v)`** (new, `value.c`): per-tag, `kdrop` each boxed child, then release the shell:
+- **`kdrop`** (`kappart.h`): after the thread-local count decrement, calls
+  `kfree_recursive(v)` when the old count was 1 and `kis_rc_freeable(v)` holds. Immediate/shared/retained-tag/resource
+  cases fall through exactly as before; shared values remain no-op until S4 reclamation.
+- **`kfree_recursive(v)`** (`value.c`): per-tag, decrements each boxed child, pushes zero-count freeable
+  children onto the iterative worklist, then releases the shell:
   - children: `K_CTOR` `as.ctor.args[0..argc-1]`; `K_REC` `as.rec.vals[0..n-1]`; `K_VARIANT`
     `as.var.payload`; `K_BOUNCE` `fn`+`arg`; `K_FAIL` `err`. `K_CLO`/`K_IO`/action/native wrappers stay out
     of the FREESET until env/action ownership is represented.
@@ -176,7 +173,7 @@ is off; each is a thing to settle before or during S3.2.
   - shell + slabs: `GC_FREE` the args/vals/env slab and the `KValue` (`gc.c` — add a thin `kgc_free`
     wrapper; a per-size free-list is the S5 FBIP reuse target, out of scope here). Never `GC_FREE` a
     retained-tag or `K_FGN` cell.
-  - **iterative** (§2.3): push children onto the worklist rather than recursing.
+  - **iterative** (§2.3): push children onto the inline/scanned-overflow worklist rather than recursing.
 - **Immediates** (`kis_imm`) already short-circuit both ops. **`K_FGN`** is never reached (excluded by
   `kis_rc_freeable`) — re-pin the §1 carve-out at the free site with a comment + a `usingsusp` regression.
 
@@ -184,13 +181,14 @@ is off; each is a thing to settle before or during S3.2.
 
 The flip is staged so free-on-zero is exercised under a watchdog before it is trusted:
 - **D1 — mechanism, still OFF.** Land `kfree_recursive` + `kis_rc_freeable` but keep the public entry disabled
-  and do not call the free branch. Observable behavior remains RC-on == RC-off; nothing frees.
-- **D2 — ON under the oracle.** Enable free-on-zero **in the C backend** (per §2.6.1 — LLVM stays fully
-  Boehm-backed until it grows its own `kdup`/`kdrop` emission) in a build compiled with **AddressSanitizer**
-  (`Driver.hs` gains an S3/ASan rtCFlags lane) — ASan is the UAF/double-free detector that replaces the
-  underflow assert as the *primary* gate. Run the full corpus: RC-on must be **ASan-clean** and
-  **RC-on == RC-off output-identical**. Optionally keep a "poison-on-free + shadow-set" double-free check for
-  non-ASan builds.
+  and do not call the free branch. Observable behavior remains RC-on == RC-off; nothing frees. **Landed in S3.1.**
+- **D2 — ON in the C/runtime path.** Enable free-on-zero **in the C backend/runtime path** (per §2.6.1 —
+  LLVM stays fully Boehm-backed until it grows its own `kdup`/`kdrop` emission). S3.2 is validated by the
+  runtime free-on-zero harness, the generated-code ownership gates, native RC-on-vs-RC-off output parity, and
+  allocation gates. A dedicated poison-on-free harness is the effective Boehm-heap UAF oracle shipped with
+  S3.2; the native RC corpus lane runs generated binaries with `KAPPA_POISON=1`, including a non-vacuous
+  generated-drop fixture. ASan remains useful for ordinary native memory bugs but is not sufficient by itself
+  for `GC_FREE` managed cells.
 - **D3 — garbage-free validation.** With free-on-zero ON, confirm the RC-freed shapes' live set does **not**
   monotonically grow (`KAPPA_GC_STATS` heap-high-water on an allocation-heavy loop) — this is the payoff and
   the proof that drops actually reclaim.
@@ -200,13 +198,17 @@ The flip is staged so free-on-zero is exercised under a watchdog before it is tr
 
 ## 5. Verification
 
-1. **ASan/UBSan corpus, RC-on (primary).** Every `test/native/cases/*` + the conformance drop-site programs
-   run clean under ASan — the S3 replacement for the S2 underflow-assert gate.
+1. **Poison-on-free / Boehm-debug UAF oracle (primary for Boehm-managed cells).** The S3.2 poison harness
+   retains freed shells, stamps them `K_FREED`, and verifies runtime accessors plus raw primitive/show readers
+   trap deliberately injected stale aliases. `KAPPA_POISON=1` enables the same oracle from `krt_init` for
+   generated binaries. This is the replacement for the S2 underflow-only backstop; ASan/UBSan is supplemental
+   because Boehm `GC_FREE` is outside ASan's normal heap.
 2. **RC-on == RC-off output-identical** (the S2 invariant persists — reclamation must not change observable
-   behavior) + **conformance 2094/0** + **llvm-parity 150/0**.
+   behavior) + **conformance 2094/0** + **llvm-parity 150/0**. The native RC lane builds each corpus case
+   with RC off and RC on, then compares both native outputs with the interpreter.
 3. **Garbage-free trend** (`KAPPA_GC_STATS`): RC-freed-shape heap-high-water bounded on a tight
    alloc/drop loop; not monotonic growth.
-4. **Concurrency stress under ASan** (`fork`/`promise`/`stm`/`race`/`fiber-*` cases): exercises the
+4. **Concurrency stress under the sanitizer/oracle lanes** (`fork`/`promise`/`stm`/`race`/`fiber-*` cases): exercises the
    `tshare` mark + skip; a shared object must never be RC-freed.
 5. **Resource carve-out (§1)** (`usingsusp.kp`/`usinginterrupt.kp`/`defer-*`): no `K_FGN`/resource cell is
    freed by RC; the ExitStack still owns handle release.
@@ -215,8 +217,8 @@ The flip is staged so free-on-zero is exercised under a watchdog before it is tr
 ## 6. Risks
 
 - **R-UAF (the whole category, now live).** Mitigated by the conservative FREESET (§1), the proven S2.3
-  placement, `karr_new`/`tshare` prerequisites, and ASan-as-gate (§4). This is *the* risk S3 exists to
-  manage.
+  placement, `karr_new`/`tshare` prerequisites, the poison-on-free/Boehm-debug oracle, and supplemental
+  native sanitizers (§4). This is *the* risk S3 exists to manage.
 - **R-derived-container-undercount** → `karr_new` per-slot dup + `krec_without` kept-field dup, §2.1
   (mitigated before S3.2).
 - **R-shared-race** → atomic header ops + `tshare` mark + no-op shared dup/drop, §2.2 (blocking);
@@ -235,44 +237,41 @@ The flip is staged so free-on-zero is exercised under a watchdog before it is tr
 | sub | what | gate |
 |---|---|---|
 | **S3.0** | `kis_rc_freeable` tag partition (§1) + `tshare` sign encoding infra; free-on-zero still OFF | landed; no reclamation |
-| **S3.1** | Phase A prereqs: `karr_new` per-slot dup (§2.1), atomic header + `tshare` mark + no-op shared dup/drop (§2.2), disabled iterative `kfree_recursive` skeleton (§2.3), arity-guard reconcile (§2.5) | landed; RC-on == RC-off, underflow-clean, nothing frees yet |
-| **S3.2** | after the S2.3 ownership entry gates below are green, wire the free branch in `kdrop`; free-on-zero ON under the ASan oracle (§4 D2) | ASan-clean, RC-on == RC-off, no double-free, garbage-free trend (§5.1–5.4) |
-| **S3.3** | precision: write-barrier drop-old + CAS/promise drops (§2.4) | ASan-clean; leak-trend improves; still byte-identical output |
-| **S3.4** | default-on; Boehm retained for un-RC'd tags; oracle build stays in CI (§4 D4) | full-corpus ASan-clean; heap-high-water bounded; resource carve-out (§5.5) |
+| **S3.1** | Phase A prereqs: `karr_new` per-slot dup (§2.1), atomic header + `tshare` mark + no-op shared dup/drop (§2.2), iterative `kfree_recursive` skeleton (§2.3), arity-guard reconcile (§2.5) | landed; RC-on == RC-off, underflow-clean, nothing frees yet |
+| **S3.2** | wire the guarded free branch in `kdrop`; make the worklist root-safe/non-allocating on the common path; close the returning-arm match and projection-result ownership entry gates; run generated drops under poison | landed for C/runtime; runtime S3.2 harness + native RC/generated-code/allocation gates pass; LLVM remains Boehm-backed |
+| **S3.3** | precision: write-barrier drop-old + CAS/promise drops (§2.4) | oracle/sanitizer-clean; leak-trend improves; still byte-identical output |
+| **S3.4** | default-on; Boehm retained for un-RC'd tags; oracle build stays in CI (§4 D4) | full-corpus poison/Boehm-debug + sanitizer clean; heap-high-water bounded; resource carve-out (§5.5) |
 
 Ordering rationale: the tag partition + `tshare` infra must precede any free; the
-Phase A prerequisites must ALL be in before the free branch is wired (S3.2), because each closes a distinct
-UAF path (array under-count, shared race, stack overflow). S3.2 also inherits the still-open S2.3 ownership
-entry gates recorded in ROADMAP/S2.3d: returning-arm (`SinkTail`/`SinkBounce`) match cell-drop tightening,
-projection-result ownership before broader scope-close drops, and a current audit of S2.3c storing primitives.
-Those are not runtime S3.1 prerequisites, but they are free-on-zero prerequisites: enabling recursive
-reclamation before the ownership layer can prove those aliases would turn formerly leak-biased omissions into
-UAF risks. Precision write-barriers (S3.3) are safe to defer because their absence is a leak, not a UAF;
-default-on (S3.4) waits until the full corpus is ASan-clean.
+Phase A prerequisites all precede S3.2 because each closes a distinct UAF path (array under-count, shared
+race, stack overflow). S3.2 also closed the ownership entry gates recorded in ROADMAP/S2.3d: returning-arm
+match cell-drop tightening, projection-result ownership through nested/control expressions, and the current
+S2.3c storing-primitive audit. Precision write-barriers (S3.3) are safe to defer because their absence is a
+leak, not a UAF; default-on (S3.4) waits until the dedicated poison/Boehm-debug oracle lane is in CI.
 
 ## Critical files
 
-**Landed S3.1 prerequisites:**
-- `runtime/kappart.h` — `kis_rc_freeable`, the shared-bit accessors, `kfree_recursive` prototype, and
-  `kdup`/`kdrop` immediate + shared no-op guards. The `kdrop` free branch is still pending.
-- `runtime/value.c` — disabled `kfree_recursive` per-tag child traversal + shell release, `karr_new` per-slot
-  dup (§2.1), record-rest kept-field dups, and shared ref/array/thunk incoming-value marks.
-- `runtime/gc.c` — `kgc_free` (`GC_FREE`) wrapper, currently used only by the disabled free skeleton.
+**Landed S3.1/S3.2 runtime/backend files:**
+- `runtime/kappart.h` — `kis_rc_freeable`, the shared-bit accessors, `kfree_recursive` prototype, the poison
+  sentinel/API, and `kdup`/`kdrop` immediate + shared no-op guards. S3.2 enables the guarded `kdrop` free branch.
+- `runtime/value.c` — iterative `kfree_recursive` per-tag child traversal + shell release, stack-inline/scanned
+  overflow worklist, poison-on-free shell retention for the oracle lane, `karr_new` per-slot dup (§2.1),
+  record-rest kept-field dups, and shared ref/array/thunk incoming-value marks.
+- `runtime/gc.c` — `kgc_free` (`GC_FREE`) wrapper and debug free counter for the S3.2 runtime harness.
 - `runtime/rt.c` / `runtime/stm.c` / `runtime/scope.c` / `runtime/atomic.c` / `runtime/reactor.c` —
-  recursive shared marking before runtime publication points (§2.2).
+  recursive shared marking before runtime publication points (§2.2), plus the runtime-private `K_FGN`
+  payload-marking exhaustiveness pin.
 - `src/Kappa/Backend/C.hs` / `src/Kappa/Backend/LLVM.hs` — mark generated global/CAF cache values shared
   before process-wide publication.
 - `src/Kappa/Backend/Repr.hs` / `src/Kappa/CoreOps.hs` — runtime-argument mask alignment for kind-domain
   parameters (§2.5) and scalar-worker static-prefix rewrites.
-- `runtime/tests/perceus_s3_prereq.c`, `test/Spec.hs`, `test/native/run-native-tests.sh` — S3.1 prerequisite
-  and generated-code gates.
+- `runtime/tests/perceus_s3_prereq.c`, `runtime/tests/perceus_s3_free.c`, `runtime/tests/perceus_s3_poison.c`,
+  `test/Spec.hs`,
+  `test/native/run-native-tests.sh` — S3.1/S3.2 prerequisite, free-on-zero, generated-code, and allocation gates.
 
-**S3.2+ work:**
-- `src/Kappa/Backend/C.hs` / `src/Kappa/Usage.hs` / `src/Kappa/Ownership.hs` — close the S2.3 ownership entry
-  gates before enabling free-on-zero: returning-arm match cell drops, projection-result ownership for broader
-  scope-close drops, and the storing-primitive audit.
-- `runtime/kappart.h` / `runtime/value.c` — wire the guarded `kdrop` free branch and make the free worklist
-  non-allocating or GC-root-safe before enabling it.
-- `runtime/gc.c` / `src/Kappa/Backend/Driver.hs` — ASan/double-free oracle build lanes.
-- `test/native/run-native-tests.sh` — ASan corpus run, garbage-free heap-high-water check, deep-structure
-  stress, concurrency-under-ASan, and resource carve-out regressions.
+**S3.3+ work:**
+- `src/Kappa/Backend/LLVM.hs` — emit and validate LLVM `kdup`/`kdrop` before claiming LLVM free-on-zero.
+- `runtime/gc.c` / `src/Kappa/Backend/Driver.hs` — broader Boehm-debug/poison corpus lane plus supplemental
+  ASan/UBSan build lanes beyond the current `KAPPA_POISON=1` native RC generated-binary lane.
+- `test/native/run-native-tests.sh` — garbage-free heap-high-water check, broader oracle/sanitizer corpus
+  runs, concurrency stress, and resource carve-out regressions.

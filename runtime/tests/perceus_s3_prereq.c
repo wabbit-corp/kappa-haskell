@@ -79,12 +79,12 @@ static void check_freeable_partition(void) {
   check(!kis_rc_freeable(kbytes((const unsigned char *)"abc", 3)), "K_BYTES must stay Boehm-retained");
 }
 
-static void check_kdrop_no_free_and_shared_noop(void) {
+static void check_kdrop_free_on_zero_and_shared_noop(void) {
   KValue *unique = kstr0("unique");
   check(krc_count(unique) == 1, "fresh unique value must start with rc count 1");
+  unsigned long long before_unique = kgc_debug_free_count();
   kdrop(unique);
-  check(krc_count(unique) == 0, "S3.1 kdrop must be allowed to reach zero");
-  check(unique->tag == K_STR, "S3.1 kdrop must not free zero-count unique values yet");
+  check(kgc_debug_free_count() > before_unique, "S3.2 kdrop must free unique freeable values at zero");
 
   KValue *shared = kstr0("shared");
   krc_mark_shared_recursive(shared);
@@ -129,15 +129,14 @@ static void check_shared_header_ops_are_atomic(void) {
   check(krc_count(v) == before, "shared kdup/kdrop must remain no-op after concurrent marking");
 }
 
-static void check_public_kfree_is_disabled(void) {
+static void check_public_kfree_reclaims_zero_root(void) {
   KValue *child = kstr0("child");
   KValue *args[1] = { child };
   KValue *parent = kctor(KCT_USER_BASE, "Parent", 1, args);
-  kdrop(parent);
-  check(krc_count(parent) == 0, "test parent should be a zero-count freeable root");
-  check(krc_count(child) == 1, "test child starts with the parent-owned reference");
+  krc_set_count(parent, 0);
+  unsigned long long before = kgc_debug_free_count();
   kfree_recursive(parent);
-  check(krc_count(child) == 1, "S3.1 public kfree_recursive entry must be disabled/no-op");
+  check(kgc_debug_free_count() > before, "S3.2 public kfree_recursive must reclaim zero-count freeable roots");
 }
 
 static void check_record_rest_counts_kept_fields(void) {
@@ -493,9 +492,9 @@ static void check_scheduler_publication_paths_mark_shared(void) {
 int main(void) {
   krt_init();
   check_freeable_partition();
-  check_kdrop_no_free_and_shared_noop();
+  check_kdrop_free_on_zero_and_shared_noop();
   check_shared_header_ops_are_atomic();
-  check_public_kfree_is_disabled();
+  check_public_kfree_reclaims_zero_root();
   check_record_rest_counts_kept_fields();
   check_interrupt_publication_marks_shared();
   check_atomic_publication_marks_shared();

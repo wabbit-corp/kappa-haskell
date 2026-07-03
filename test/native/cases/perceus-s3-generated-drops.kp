@@ -1,0 +1,28 @@
+-- Perceus S3.2 native corpus anchor: this program must emit generated
+-- match-scrutinee drops that reach kfree_recursive under RC-on.  The native
+-- harness also runs it with KAPPA_POISON=1, so generated free-on-zero paths are
+-- exercised under the UAF oracle rather than only in hand-written runtime tests.
+module main
+
+data BigBox : Type =
+    MkBigBox String Int
+
+inlineDrop : Int -> Int
+let inlineDrop n =
+    match MkBigBox (showInt n) n
+    case MkBigBox label value -> value
+
+letDrop : Int -> Int
+let letDrop n =
+    let box = MkBigBox (showInt (addInt n 1)) (addInt n 1)
+    match box
+    case MkBigBox label value -> value
+
+sumDrops : Int -> Int -> Int
+let sumDrops i acc =
+    if leInt i 0
+    then acc
+    else sumDrops (subInt i 1) (addInt acc (addInt (inlineDrop i) (letDrop i)))
+
+main : UIO Unit
+let main = printlnString (showInt (sumDrops 100 0))

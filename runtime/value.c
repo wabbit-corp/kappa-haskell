@@ -57,6 +57,11 @@ static KValue *alloc_val_atomic(KTag tag) {
 #ifndef NDEBUG
 _Atomic unsigned long long k_dups_total = 0;
 _Atomic unsigned long long k_drops_total = 0;
+_Atomic int k_rc_poison_enabled = 0;
+
+void krc_poison_set_enabled(int enabled) {
+  atomic_store_explicit(&k_rc_poison_enabled, enabled ? 1 : 0, memory_order_relaxed);
+}
 #endif
 
 void krc_report(void) {
@@ -68,44 +73,72 @@ void krc_report(void) {
 #endif
 }
 
-typedef struct KWork {
-  KValue *v;
-  struct KWork *next;
+typedef struct {
+  KValue **items;
+  KValue **inline_items;
+  size_t len;
+  size_t cap;
+  size_t inline_cap;
 } KWork;
 
 static pthread_mutex_t g_thunk_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void kwork_push(KWork **stack, KValue *v) {
-  if (!v || kis_imm(v)) return;
-  KWork *n = (KWork *)malloc(sizeof(KWork));
-  if (!n) krt_fail("out of memory (kfree worklist)");
-  n->v = v;
-  n->next = *stack;
-  *stack = n;
+static void kwork_init(KWork *stack, KValue **inline_items, size_t inline_cap) {
+  stack->items = inline_items;
+  stack->inline_items = inline_items;
+  stack->len = 0;
+  stack->cap = inline_cap;
+  stack->inline_cap = inline_cap;
+  for (size_t i = 0; i < inline_cap; i++) inline_items[i] = NULL;
 }
 
-static KValue *kwork_pop(KWork **stack) {
-  KWork *n = *stack;
-  if (!n) return NULL;
-  KValue *v = n->v;
-  *stack = n->next;
-  free(n);
+static void kwork_dispose(KWork *stack) {
+  if (stack->items && stack->items != stack->inline_items) kgc_free(stack->items);
+  stack->items = NULL;
+  stack->inline_items = NULL;
+  stack->len = 0;
+  stack->cap = 0;
+  stack->inline_cap = 0;
+}
+
+static void kwork_grow(KWork *stack) {
+  size_t old_cap = stack->cap;
+  size_t new_cap = old_cap ? old_cap * 2 : 64;
+  KValue **items = (KValue **)kgc_alloc(sizeof(KValue *) * new_cap);
+  for (size_t i = 0; i < stack->len; i++) items[i] = stack->items[i];
+  for (size_t i = stack->len; i < new_cap; i++) items[i] = NULL;
+  KValue **old_items = stack->items;
+  stack->items = items;
+  stack->cap = new_cap;
+  if (old_items && old_items != stack->inline_items) kgc_free(old_items);
+}
+
+static void kwork_push(KWork *stack, KValue *v) {
+  if (!v || kis_imm(v)) return;
+  if (stack->len == stack->cap) kwork_grow(stack);
+  stack->items[stack->len++] = v;
+}
+
+static KValue *kwork_pop(KWork *stack) {
+  if (stack->len == 0) return NULL;
+  KValue *v = stack->items[--stack->len];
+  stack->items[stack->len] = NULL;
   return v;
 }
 
-static void krc_mark_child(KWork **stack, KValue *v);
+static void krc_mark_child(KWork *stack, KValue *v);
 
-static void krc_mark_env(KWork **stack, KEnv *env) {
+static void krc_mark_env(KWork *stack, KEnv *env) {
   for (KEnv *e = env; e; e = e->next) krc_mark_child(stack, e->val);
 }
 
-static void krc_mark_child(KWork **stack, KValue *v) {
+static void krc_mark_child(KWork *stack, KValue *v) {
   if (!v || kis_imm(v) || krc_is_shared(v)) return;
   krc_mark_shared_shallow(v);
   kwork_push(stack, v);
 }
 
-static void krc_mark_children(KWork **stack, KValue *v) {
+static void krc_mark_children(KWork *stack, KValue *v) {
   switch (v->tag) {
     case K_CTOR:
       for (int i = 0; i < v->as.ctor.argc; i++) krc_mark_child(stack, v->as.ctor.args[i]);
@@ -160,13 +193,16 @@ static void krc_mark_children(KWork **stack, KValue *v) {
 }
 
 void krc_mark_shared_recursive(KValue *root) {
-  KWork *stack = NULL;
+  KWork stack;
+  KValue *inline_items[64];
+  kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
   krc_mark_child(&stack, root);
   KValue *v;
   while ((v = kwork_pop(&stack)) != NULL) krc_mark_children(&stack, v);
+  kwork_dispose(&stack);
 }
 
-static void kfree_drop_child(KWork **stack, KValue *child) {
+static void kfree_drop_child(KWork *stack, KValue *child) {
   if (!child || kis_imm(child)) return;
   if (krc_is_shared(child)) return;
   uint32_t n = krc_count(child);
@@ -179,7 +215,7 @@ static void kfree_drop_child(KWork **stack, KValue *child) {
   if (n == 1 && kis_rc_freeable(child)) kwork_push(stack, child);
 }
 
-static void kfree_visit(KWork **stack, KValue *v) {
+static void kfree_visit(KWork *stack, KValue *v) {
   switch (v->tag) {
     case K_CTOR:
       for (int i = 0; i < v->as.ctor.argc; i++) kfree_drop_child(stack, v->as.ctor.args[i]);
@@ -203,27 +239,35 @@ static void kfree_visit(KWork **stack, KValue *v) {
       kfree_drop_child(stack, v->as.fail.err);
       break;
     default:
-      break;
+#ifndef NDEBUG
+      assert(!"kfree_visit: non-freeable tag reached the S3.2 free visitor");
+#endif
+      return;
   }
+#ifndef NDEBUG
+  if (atomic_load_explicit(&k_rc_poison_enabled, memory_order_relaxed)) {
+    atomic_store_explicit(&v->rc, 0, memory_order_relaxed);
+    v->tag = K_FREED;
+    return;
+  }
+#endif
   kgc_free(v);
 }
 
-static int kfree_recursive_enabled(void) {
-  return 0; /* S3.1 lands the skeleton; S3.2 flips the public free-on-zero path. */
-}
-
 static void kfree_recursive_impl(KValue *root) {
-  KWork *stack = NULL;
+  KWork stack;
+  KValue *inline_items[64];
+  kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
   kwork_push(&stack, root);
   KValue *v;
   while ((v = kwork_pop(&stack)) != NULL) {
     if (kis_rc_freeable(v) && krc_count(v) == 0) kfree_visit(&stack, v);
   }
+  kwork_dispose(&stack);
 }
 
 void kfree_recursive(KValue *root) {
   if (!kis_rc_freeable(root) || krc_count(root) != 0) return;
-  if (!kfree_recursive_enabled()) return;
   kfree_recursive_impl(root);
 }
 
@@ -406,7 +450,10 @@ KValue *kfail(KValue *err) {
   return r;
 }
 
-int kis_fail(KValue *v) { return v && !kis_imm(v) && v->tag == K_FAIL; }
+int kis_fail(KValue *v) {
+  kassert_live(v);
+  return v && !kis_imm(v) && v->tag == K_FAIL;
+}
 
 KValue *kref_new(KValue *init) {
   KValue *r = alloc_val(K_REF);
@@ -438,11 +485,13 @@ KValue *karr_new(int64_t n, KValue *init) {
   return r;
 }
 KValue *karr_get(KValue *arr, int64_t i) {
+  kassert_live(arr);
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_get: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_get: index out of range");
   return ((KValue **)arr->as.arr.elems)[i];
 }
 KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
+  kassert_live(arr);
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_set: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_set: index out of range");
   if (krc_is_shared(arr)) krc_mark_shared_recursive(v);
@@ -450,6 +499,7 @@ KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
   return kunit();
 }
 int64_t karr_len(KValue *arr) {
+  kassert_live(arr);
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_len: not an array");
   return arr->as.arr.len;
 }
@@ -585,6 +635,7 @@ void kenv_set_val(KEnv *e, KValue *v) { e->val = v; }
 
 /* §27.1.1: accumulate one argument onto a curried native action. */
 static KValue *native_append_arg(KValue *f, KValue *x) {
+  kassert_live(f);
   int n = f->as.native.argc;
   KValue *r = alloc_val(K_NATIVE);
   r->as.native.fn = f->as.native.fn;
@@ -605,6 +656,7 @@ static KValue *native_append_arg(KValue *f, KValue *x) {
  * lowering); the caller drives it via ktrampoline. */
 static KValue *kapply_once(KValue *f, KValue *x) {
   if (kis_imm(f)) krt_fail("kapp: applying a non-function value");
+  kassert_live(f);
   switch (f->tag) {
     case K_CLO:
       return f->as.clo.fn(f->as.clo.env, x);
@@ -627,7 +679,9 @@ static KValue *kapply_once(KValue *f, KValue *x) {
  * stack for mutual recursion, calls through a function value, and local
  * let-rec tail recursion (direct self-recursion already loops in-worker). */
 KValue *ktrampoline(KValue *r) {
-  while (!kis_imm(r) && r->tag == K_BOUNCE) {   /* an immediate value is never a bounce */
+  while (!kis_imm(r)) {   /* an immediate value is never a bounce */
+    kassert_live(r);
+    if (r->tag != K_BOUNCE) break;
     KValue *fn = r->as.bounce.fn;
     KValue *arg = r->as.bounce.arg;
     r = kapply_once(fn, arg);
@@ -677,6 +731,7 @@ KValue *kapp(KValue *f, KValue *x) { return ktrampoline(kapply_once(f, x)); }
 
 KValue *kappi(KValue *f, KValue *x) {
   if (kis_imm(f)) return f;   /* implicit arg erased onto an immediate value */
+  kassert_live(f);
   switch (f->tag) {
     /* implicit args are erased at runtime for constructors and primitives
      * (§31.2); an implicit lambda is a real binder and is applied. */
@@ -746,6 +801,7 @@ int kctor_is(KValue *v, const char *name) {
     return want >= 0 && kimm_packed_tagid(v) == want;
   }
   if (kis_imm(v)) return 0;   /* an immediate Int is never a constructor */
+  kassert_live(v);
   /* Unit's boxed spelling is retired as a carrier but still accepted by readers. */
   if (v->tag == K_UNIT) return strcmp(name, "std.prelude.Unit") == 0;
   return v->tag == K_CTOR && strcmp(v->as.ctor.name, name) == 0;
@@ -760,6 +816,7 @@ int kctor_tagid(KValue *v) {
   if (kis_imm_ctor(v)) return kimm_ctor_id(v);   /* Stage 1b: id from the word */
   if (kis_imm_packed(v)) return kimm_packed_tagid(v); /* Stage 1d: id from the word */
   if (kis_imm(v)) return -1;   /* an immediate Int matches no ctor id */
+  kassert_live(v);
   if (v->tag == K_UNIT) return KCT_UNIT;
   if (v->tag == K_CTOR) return v->as.ctor.tagid;
   return -1;
@@ -783,6 +840,7 @@ const char *kctor_name(KValue *v) {
       default:       return "<packed>";
     }
   }
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_name: not a constructor");
   return v->as.ctor.name;
 }
@@ -790,6 +848,7 @@ int kctor_argc(KValue *v) {
   if (kis_imm_ctor(v)) return 0;        /* Stage 1b: a nullary immediate has 0 args */
   /* Stage 1d/1e: a packed ctor has 1 arg (nfields=0) or 2 args (nfields=1). */
   if (kis_imm_packed(v)) return kimm_packed_is2(v) ? 2 : 1;
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_CTOR) krt_fail("kctor_argc: not a constructor");
   return v->as.ctor.argc;
 }
@@ -808,12 +867,14 @@ KValue *kctor_arg(KValue *v, int i) {
   }
   /* A b010 immediate has 0 args, so any index into it is a codegen bug. */
   assert(!kis_imm_ctor(v) && "kctor_arg on a nullary immediate (0 args)");
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_CTOR || i < 0 || i >= v->as.ctor.argc)
     krt_fail("kctor_arg: out of range");
   return v->as.ctor.args[i];
 }
 
 KValue *kproj(KValue *rec, const char *name) {
+  kassert_live(rec);
   if (kis_imm(rec) || rec->tag != K_REC) {
     char msg[128];
     snprintf(msg, sizeof msg, "kproj: field '%s' on non-record (tag %d)", name,
@@ -830,15 +891,21 @@ KValue *kproj(KValue *rec, const char *name) {
 }
 
 int kvariant_is(KValue *v, const char *tag) {
+  kassert_live(v);
   return !kis_imm(v) && v->tag == K_VARIANT && strcmp(v->as.var.tag, tag) == 0;
 }
 /* LR2: numeric §13 variant dispatch; -1 for a non-variant value (matches no
  * tag id, so a variant pattern test on a non-variant fails). */
 int kvariant_tagid(KValue *v) {
+  kassert_live(v);
   return (!kis_imm(v) && v->tag == K_VARIANT) ? v->as.var.tagid : -1;
 }
-int kis_variant(KValue *v) { return !kis_imm(v) && v->tag == K_VARIANT; }
+int kis_variant(KValue *v) {
+  kassert_live(v);
+  return !kis_imm(v) && v->tag == K_VARIANT;
+}
 KValue *kvariant_payload(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_VARIANT) krt_fail("kvariant_payload: not a variant");
   return v->as.var.payload;
 }
@@ -848,6 +915,7 @@ KValue *kvariant_payload(KValue *v) {
  * forces through already-evaluated values). */
 KValue *kforce(KValue *v) {
   if (kis_imm(v)) return v;   /* an immediate Int is already a value */
+  kassert_live(v);
   if (v->tag != K_THUNK) return v;
   if (v->as.thunk.memo) {
     pthread_mutex_lock(&g_thunk_cache_lock);
@@ -876,6 +944,7 @@ KValue *kforce(KValue *v) {
 }
 
 int krec_size(KValue *rec) {
+  kassert_live(rec);
   if (kis_imm(rec) || rec->tag != K_REC) krt_fail("krec_size: not a record");
   return rec->as.rec.n;
 }
@@ -884,6 +953,7 @@ int krec_size(KValue *rec) {
  * are NOT among excl[0..nexcl). Kept field names alias the original
  * record's (static) name pointers, so no copying of label strings. */
 KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
+  kassert_live(rec);
   if (kis_imm(rec) || rec->tag != K_REC) krt_fail("krec_without: not a record");
   int n = rec->as.rec.n;
   const char **names = (const char **)kgc_alloc(sizeof(char *) * (size_t)(n ? n : 1));
@@ -903,6 +973,7 @@ KValue *krec_without(KValue *rec, int nexcl, const char **excl) {
 }
 
 KValue *krec_at(KValue *rec, int i) {
+  kassert_live(rec);
   if (kis_imm(rec) || rec->tag != K_REC || i < 0 || i >= rec->as.rec.n)
     krt_fail("krec_at: out of range");
   return rec->as.rec.vals[i];
@@ -915,10 +986,13 @@ KValue *krec_at(KValue *rec, int i) {
 int kis_int_any(KValue *v) {
   if (kis_imm_int(v)) return 1;
   if (kis_imm(v)) return 0;          /* other immediate kinds: not an Int */
+  kassert_live(v);
   return v->tag == K_INT || v->tag == K_BIGINT;
 }
 
 int klit_eq(KValue *a, KValue *b) {
+  kassert_live(a);
+  kassert_live(b);
   /* §5.3: an Int in [2^60, 2^63) is an immediate-overflowed K_BIGINT here but
    * an inline K_INT on the interpreter — different tags, same number.  Route any
    * Int/Int pair through the value-normalizing kint_cmp, NEVER the tag shortcut,
@@ -953,6 +1027,7 @@ int klit_eq(KValue *a, KValue *b) {
 int64_t kas_int(KValue *v) {
   if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1 immediate */
   if (kis_imm(v)) krt_fail("kas_int: not an Int");
+  kassert_live(v);
   if (v->tag == K_INT) return v->as.i;
   if (v->tag == K_BIGINT) {
     const __mpz_struct *z = (const __mpz_struct *)v->as.big.mpz;
@@ -962,6 +1037,7 @@ int64_t kas_int(KValue *v) {
   krt_fail("kas_int: not an Int");
 }
 double kas_dbl(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_DBL) krt_fail("kas_dbl: not a Double");
   return v->as.d;
 }
@@ -974,7 +1050,11 @@ int kas_bool(KValue *v) {
    * (no deref).  A retired boxed K_CTOR Bool is still accepted by id. */
   int id;
   if (kis_imm_ctor(v)) id = kimm_ctor_id(v);
-  else if (!kis_imm(v) && v->tag == K_CTOR) id = v->as.ctor.tagid;
+  else if (!kis_imm(v)) {
+    kassert_live(v);
+    if (v->tag == K_CTOR) id = v->as.ctor.tagid;
+    else krt_fail("kas_bool: not a Bool");
+  }
   else krt_fail("kas_bool: not a Bool");
   if (id == KCT_TRUE) return 1;
   if (id == KCT_FALSE) return 0;
@@ -982,6 +1062,7 @@ int kas_bool(KValue *v) {
 }
 
 const char *kas_str(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_STR) krt_fail("kas_str: not a String");
   return v->as.str.p; /* kstr() NUL-terminates; length stays authoritative */
 }
@@ -990,6 +1071,7 @@ const char *kas_str(KValue *v) {
  * the >= 2^63 range that kas_int rejects — the low 64 bits of the magnitude. */
 uint64_t kas_u64(KValue *v) {
   if (kis_imm_int(v)) return (uint64_t)kimm_int_val(v);   /* Stage 1 immediate */
+  kassert_live(v);
   if (!kis_imm(v) && v->tag == K_INT) return (uint64_t)v->as.i;
   mpz_t z; mpz_init(z); kload_mpz(v, z);
   uint64_t u = 0; size_t cnt = 0;
@@ -999,11 +1081,13 @@ uint64_t kas_u64(KValue *v) {
 }
 
 void *kas_fgn(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_FGN) krt_fail("kas_fgn: not a foreign handle");
   return v->as.fgn.p;
 }
 
 void *kas_fgn_kind(KValue *v, const char *kind) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_FGN) krt_fail("kas_fgn_kind: not a foreign handle");
   if (strcmp(v->as.fgn.kind, kind) != 0) {
     char msg[256];
@@ -1017,10 +1101,12 @@ void *kas_fgn_kind(KValue *v, const char *kind) {
 /* ── references ────────────────────────────────────────────────────── */
 
 KValue *kref_get(KValue *r) {
+  kassert_live(r);
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_get: not a ref");
   return r->as.ref.cell[0];
 }
 KValue *kref_set(KValue *r, KValue *v) {
+  kassert_live(r);
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_set: not a ref");
   if (krc_is_shared(r)) krc_mark_shared_recursive(v);
   r->as.ref.cell[0] = v;

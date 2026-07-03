@@ -24,6 +24,7 @@ KValue *show_int_val(KValue *v) {
     return kstr(buf, (size_t)n);
   }
   if (kis_imm(v)) krt_fail("showInt: not an Int");
+  kassert_live(v);
   if (v->tag == K_BIGINT) {
     char *s = mpz_get_str(NULL, 10, (const __mpz_struct *)v->as.big.mpz);
     return kstr0(s); /* s is GC-allocated by the GMP allocator */
@@ -32,6 +33,8 @@ KValue *show_int_val(KValue *v) {
 }
 
 KValue *str_append(KValue *a, KValue *b) {
+  kassert_live(a);
+  kassert_live(b);
   if (kis_imm(a) || kis_imm(b) || a->tag != K_STR || b->tag != K_STR)
     krt_fail("stringAppend: argument is not a String");
   size_t la = a->as.str.len, lb = b->as.str.len;
@@ -66,6 +69,7 @@ static void show_lit_char(sbuf *b, uint32_t cp, int *numeric, int *so) {
 }
 
 KValue *show_scalar(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_CHR) krt_fail("showScalar: not a scalar");
   sbuf b; sb_init(&b); sb_putc(&b, '\'');
   if (v->as.chr == '\'') sb_puts(&b, "\\'");
@@ -74,6 +78,7 @@ KValue *show_scalar(KValue *v) {
 }
 
 KValue *show_string_lit(KValue *v) {
+  kassert_live(v);
   if (kis_imm(v) || v->tag != K_STR) krt_fail("showStringLit: not a String");
   sbuf b; sb_init(&b); sb_putc(&b, '"');
   const unsigned char *p = (const unsigned char *)v->as.str.p;
@@ -335,6 +340,8 @@ KValue *kp_showFixed(KValue *prec, KValue *x) {
 KValue *kp_stringAppend(KValue *x, KValue *y) { return str_append(x, y); }
 KValue *kp_eqStr(KValue *x, KValue *y) { return kbool(klit_eq(x, y)); }
 KValue *kp_ltStr(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
   if (kis_imm(x) || kis_imm(y) || x->tag != K_STR || y->tag != K_STR)
     krt_fail("ltStr: argument is not a String");
   size_t la = x->as.str.len, lb = y->as.str.len, m = la < lb ? la : lb;
@@ -342,11 +349,15 @@ KValue *kp_ltStr(KValue *x, KValue *y) {
   return kbool(c < 0 || (c == 0 && la < lb));
 }
 KValue *kp_eqScalar(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
   if (kis_imm(x) || kis_imm(y) || x->tag != K_CHR || y->tag != K_CHR)
     krt_fail("eqScalar: argument is not a scalar");
   return kbool(x->as.chr == y->as.chr);
 }
 KValue *kp_ltScalar(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
   if (kis_imm(x) || kis_imm(y) || x->tag != K_CHR || y->tag != K_CHR)
     krt_fail("ltScalar: argument is not a scalar");
   return kbool(x->as.chr < y->as.chr);
@@ -358,5 +369,13 @@ KValue *kp_showScalar(KValue *x) { return show_scalar(x); }
 KValue *kp_showStringLit(KValue *x) { return show_string_lit(x); }
 /* §6.5 byte compares + §29.1 bitwise (hot in hashing / byte loops).  Byte values
  * are always boxed (K_BYTE) — never immediates — so the deref is sound. */
-KValue *kp_eqByte(KValue *x, KValue *y) { return kbool(x->as.byte == y->as.byte); }
-KValue *kp_ltByte(KValue *x, KValue *y) { return kbool(x->as.byte < y->as.byte); }
+KValue *kp_eqByte(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
+  return kbool(x->as.byte == y->as.byte);
+}
+KValue *kp_ltByte(KValue *x, KValue *y) {
+  kassert_live(x);
+  kassert_live(y);
+  return kbool(x->as.byte < y->as.byte);
+}

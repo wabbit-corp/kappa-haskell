@@ -58,7 +58,7 @@ typedef enum {
              /* on a heap stack so the recursion stays C-stack-bounded.    */
   K_FAIL,   /* internal typed IO failure: carries the thrown error value     */
             /* and propagates through krun_io until catchIO handles it.      */
-  K_NATIVE  /* §26/§27.1.1 native host-binding action: a CODEGEN-EMITTED   */
+  K_NATIVE, /* §26/§27.1.1 native host-binding action: a CODEGEN-EMITTED   */
             /* direct C wrapper pointer + accumulated args.  Replaces the  */
             /* former string-named FFI primitive: there is NO runtime name */
             /* table and NO strcmp dispatch — krun_io fires the action by  */
@@ -66,6 +66,8 @@ typedef enum {
             /* manifest's symbol.  Curries by accumulating args (argc<     */
             /* arity is a partial value); a saturated K_NATIVE is the      */
             /* suspended UIO action that krun_io runs.                     */
+  K_FREED   /* DEBUG poison sentinel: only written after S3.2 RC free when */
+            /* krc_poison_set_enabled(1) is active. Never user-observable. */
 } KTag;
 
 /* LR2 constructor tag ids (numeric pattern-match dispatch).  These FIXED ids
@@ -187,6 +189,17 @@ struct KEnv {
   KEnv   *next;
 };
 
+/* abort with a runtime error message (mirrors a Kappa runtime defect).  Kept
+ * early so inline debug checks can fail through the normal runtime path. */
+void     krt_fail(const char *msg) __attribute__((noreturn));
+
+#ifndef NDEBUG
+extern _Atomic int k_rc_poison_enabled;
+void krc_poison_set_enabled(int enabled);
+#else
+static inline void krc_poison_set_enabled(int enabled) { (void)enabled; }
+#endif
+
 /* ── UNBOXING Stage 0: KValue* word tag space (UNBOXING-DESIGN §5.4) ─────────
  * The native backend will (Stage 1) carry small Int / Bool / Char / Unit /
  * nullary-ctor values as IMMEDIATES packed into the KValue*-sized word instead
@@ -236,12 +249,22 @@ _Static_assert(_Alignof(max_align_t) >= 8,
 static inline int kis_imm(const KValue *v) {
   return ((uintptr_t)v & KIMM_TAG_MASK) != KIMM_PTR;
 }
+static inline void kassert_live(const KValue *v) {
+#ifndef NDEBUG
+  if (!v || kis_imm(v)) return;
+  if (atomic_load_explicit(&k_rc_poison_enabled, memory_order_relaxed) && v->tag == K_FREED)
+    krt_fail("use after RC free");
+#else
+  (void)v;
+#endif
+}
 /* Confirm-and-return a heap pointer.  Stage 1 routes every ->tag/->as.* deref
  * through this; the debug-build assert trips if a tagged immediate is ever
  * dereferenced as a pointer (caught in CI before it segfaults on an odd word). */
 static inline KValue *kderef(KValue *v) {
   assert(((uintptr_t)v & KIMM_TAG_MASK) == KIMM_PTR &&
          "kderef on a tagged immediate (UNBOXING invariant)");
+  kassert_live(v);
   return v;
 }
 /* The payload of an immediate, sign-extended (arithmetic >> drops the 3-bit
@@ -253,18 +276,17 @@ static inline intptr_t kimm_payload(const KValue *v) {
 /* ── Perceus RC Stage S2.0: dup / drop (PERCEUS-RC-DESIGN §2/§7, S2-PLAN (a)) ──
  *
  * The two rc-maintenance primitives the S2 codegen will emit, landed here under
- * the BOEHM DIFFERENTIAL BACKSTOP: `kdrop` NEVER frees — Boehm still owns
- * reclamation — so a wrong dup/drop placement is a LEAK (missed drop) or an
- * rc-UNDERFLOW assert (extra drop / missed dup), never a use-after-free.  S3 is
- * what flips `kdrop` to free-on-zero; until then these only maintain + assert
- * the `rc` word `alloc_val` initialised to 1.
+ * the BOEHM DIFFERENTIAL BACKSTOP through S2: S3.2 flips `kdrop` to free unique,
+ * unshared values in the conservative `kis_rc_freeable` partition when their
+ * count reaches zero. Boehm still retains the deliberately excluded shapes, so
+ * a missed drop remains a leak, while an extra drop trips the rc-underflow assert.
  *
  * IMMEDIATES (kis_imm: b001 Int, b010 nullary ctor, b011 packed ctor) are not
  * heap objects — they carry no header and so no `rc` — so both ops skip them via
  * the single `kis_imm` guard.
  *
- * Nothing CALLS these at S2.0 (they are uncalled inline functions, so the output
- * is byte-identical); S2.2/S2.3 begin emitting them from the C backend. */
+ * S2.2/S2.3 begin emitting them from the C backend; S3.2 makes the zero branch
+ * reclaim the proved-safe subset. */
 
 #ifndef NDEBUG
 /* DEBUG-only running totals (defined in value.c).  Behind NDEBUG so a release
@@ -283,6 +305,7 @@ extern _Atomic unsigned long long k_drops_total;
 #define KRC_COUNT_MASK ((uint32_t)0x7fffffffu)
 
 static inline uint32_t krc_word(const KValue *v) {
+  kassert_live(v);
   return atomic_load_explicit((_Atomic uint32_t *)&v->rc, memory_order_relaxed);
 }
 
@@ -305,11 +328,12 @@ static inline void krc_set_count(KValue *v, uint32_t count) {
 }
 
 static inline void krc_mark_shared_shallow(KValue *v) {
+  kassert_live(v);
   if (!kis_imm(v)) atomic_fetch_or_explicit(&v->rc, KRC_SHARED_BIT, memory_order_relaxed);
 }
 
-/* S3.0 free-on-zero partition. This is deliberately conservative and is used
- * only to decide whether the future S3.2 free branch MAY reclaim a zero-count
+/* S3.0/S3.2 free-on-zero partition. This is deliberately conservative and is
+ * the single guard deciding whether the S3.2 free branch MAY reclaim a zero-count
  * object. Mutable/lazy/foreign/shared objects remain Boehm-retained. Closures,
  * IO/action wrappers, and native-action wrappers also stay retained until
  * KEnv/action-finalizer/native-action ownership is represented at the free site. */
@@ -336,6 +360,7 @@ void kfree_recursive(KValue *v);
  * An immediate is value-copied (no rc), so it is returned unchanged. */
 static inline KValue *kdup(KValue *v) {
   if (kis_imm(v)) return v;
+  kassert_live(v);
   uint32_t cur = krc_word(v);
   for (;;) {
     if (cur & KRC_SHARED_BIT) return v;
@@ -356,14 +381,14 @@ static inline KValue *kdup(KValue *v) {
   }
 }
 
-/* Decrement the reference count of a heap value.  EXPLICITLY DOES NOT FREE until
- * S3.2 wires the free-on-zero branch.  Shared values are skipped until S4
- * provides atomic shared-object RC.  The DEBUG assert is the primary
- * differential-backstop check for thread-local values: a missed dup / double
- * drop trips HERE before any use-after-free is possible.  Under NDEBUG the
- * fail-closed zero guard avoids wrapping the low count. */
+/* Decrement the reference count of a heap value.  Shared values are skipped until
+ * S4 provides atomic shared-object RC.  When a non-shared value reaches zero,
+ * S3.2 recursively frees only the `kis_rc_freeable` strict-immutable partition;
+ * excluded shapes stay Boehm-retained.  Under NDEBUG the fail-closed zero guard
+ * avoids wrapping the low count. */
 static inline void kdrop(KValue *v) {
   if (kis_imm(v)) return;
+  kassert_live(v);
   uint32_t cur = krc_word(v);
   for (;;) {
     if (cur & KRC_SHARED_BIT) return;
@@ -379,10 +404,10 @@ static inline void kdrop(KValue *v) {
 #ifndef NDEBUG
       atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
 #endif
+      if (n == 1 && kis_rc_freeable(v)) kfree_recursive(v);
       return;
     }
   }
-  /* NO free-on-zero here — see the function comment. */
 }
 
 /* DEBUG leak-trend probe: print the dup/drop totals and their net (drops - dups).
@@ -607,6 +632,7 @@ void krt_init(void);                 /* GC_INIT once, at the top of main */
 void *kgc_alloc(size_t n);           /* scanned: may contain pointers    */
 void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
 void  kgc_free(void *p);             /* S3 free-on-zero shell/slab release */
+unsigned long long kgc_debug_free_count(void);
 
 /* ── value constructors ────────────────────────────────────────────── */
 KValue *kint(int64_t v);
@@ -688,6 +714,7 @@ KValue *kp_eqByte(KValue *, KValue *); KValue *kp_ltByte(KValue *, KValue *);
  * fast path is only taken when every argument is an inline K_INT. */
 static inline int64_t kunbox_i64(KValue *v, int *ovf) {
   if (kis_imm_int(v)) return kimm_int_val(v);   /* Stage 1: immediate Int */
+  kassert_live(v);
   if (!kis_imm(v) && v->tag == K_INT) return v->as.i;
   *ovf = 1;
   return 0;
@@ -699,6 +726,7 @@ static inline int64_t kunbox_i64(KValue *v, int *ovf) {
  * mirroring `kunbox_i64`'s tag-checked escape (never a crash on the wrong
  * tag). */
 static inline double kunbox_dbl(KValue *v, int *ovf) {
+  kassert_live(v);
   if (!kis_imm(v) && v->tag == K_DBL) return v->as.d;  /* immediates are never K_DBL */
   *ovf = 1;
   return 0.0;
@@ -756,9 +784,6 @@ int      krt2_is_reraise_action(KValue *v); /* raw OP_RERAISE value returned thr
 KValue  *knil(void);
 KValue  *kcons(KValue *h, KValue *t);
 int      kis_cons(KValue *v);
-
-/* abort with a runtime error message (mirrors a Kappa runtime defect). */
-void     krt_fail(const char *msg) __attribute__((noreturn));
 
 /* ── native host-binding actions (§26/§27.1.1) ─────────────────────── */
 /* A native action carries a DIRECT C function pointer emitted by the

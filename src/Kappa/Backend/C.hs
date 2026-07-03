@@ -350,18 +350,6 @@ rcWalkLookupVar i = do
                 path
                 "no oiUses entry"
 
--- | The S2.2/S2.3b emission decision at a 'CVar' occurrence: the 'UseKind' the analysis
--- assigned to THIS occurrence (keyed by 'gsCur' + @reverse gsPath@), or 'Nothing'
--- when RC is off / no table is in scope / either side-table fact is absent.
--- A consuming 'NonLast' verdict triggers a @kdup@ wrap (the value is shared
--- downstream); a read-only 'NonLast' does not, because the consumer keeps no
--- reference to balance. 'LastUse' is a move/read with no dup, 'Borrowed' is a
--- non-consuming read. Inert under the OFF baseline (returns 'Nothing' without a
--- lookup).
-rcUseKindHere :: Gen (Maybe UseKind)
-rcUseKindHere = do
-  fmap fst <$> rcUseInfoHere
-
 -- | The S2.3b use verdict plus the consume/read bit for THIS occurrence. The
 -- consume bit is required whenever a use verdict is present; validation records
 -- missing bits as side-table misses, and emission declines to act without both
@@ -398,6 +386,31 @@ rcDupVarUse e = do
     Just (NonLast, True) -> "kdup(" <> e <> ")"
     _ -> e
 
+-- | A projection such as @p.left@ borrows its field from the owning aggregate
+-- @p@. When that projection result is itself going to be returned, stored in an
+-- owning local, or transferred to a consuming call, codegen must materialise an
+-- owned reference with @kdup@ before any later cleanup can drop @p@. The proof is
+-- the structural base term plus the ownership side table for that exact base use:
+-- an owned flat local read in a non-consuming position. No field-name recognition.
+rcProjectionResultCanOwn :: Term -> Gen Bool
+rcProjectionResultCanOwn = \case
+  CVar i -> do
+    mi <- rcUseInfoHere
+    sourceOwns <- flatLocalOwnsAt i
+    pure $ sourceOwns && case mi of
+      Just (_, False) -> True
+      _ -> False
+  CSealE _ e -> withChild P.childPos (rcProjectionResultCanOwn e)
+  _ -> pure False
+
+rcOwnProjectionResult :: Bool -> Term -> Text -> Gen Text
+rcOwnProjectionResult needOwned base raw =
+  if not needOwned
+    then pure raw
+    else do
+      canOwn <- withChild P.childPos (rcProjectionResultCanOwn base)
+      pure $ if canOwn then "kdup(" <> raw <> ")" else raw
+
 flatLocalOwnsAt :: Int -> Gen Bool
 flatLocalOwnsAt i = do
   owns <- gets gsParamOwns
@@ -405,14 +418,33 @@ flatLocalOwnsAt i = do
     own : _ -> own
     [] -> False
 
+withFlatLocalOwnership :: Maybe BinderId -> Bool -> Gen a -> Gen a
+withFlatLocalOwnership mbid ownsRef act = do
+  lvals <- gets gsParamLvals
+  if null lvals
+    then act
+    else do
+      saved <- saveFlatLocalScope
+      modify' $ \st ->
+        st
+          { gsParamLvals = "proof_local" : gsParamLvals st
+          , gsParamBinders = mbid : gsParamBinders st
+          , gsParamOwns = ownsRef : gsParamOwns st
+          }
+      r <- act
+      restoreFlatLocalScope saved
+      pure r
+
 -- | Conservative S2.3b/S2.3d ownership result check for a flat @let@
 -- initializer.
 -- Scope-close drops are only safe when the local is known to hold an owned
--- reference. Projection/call results can be borrowed until result ownership is
--- modeled, so they stay leak-biased. A saturated eta-expanded constructor
--- application is accepted because this same structural recognizer is what
--- codegen beta-reduces to a direct fresh @kctor@ allocation; this is symbolically
--- tied to the Core shape, not to a source spelling.
+-- reference. Projection results are accepted only when their base-use side-table
+-- proves an owned aggregate is read in a non-consuming position and the result
+-- site can materialise an owned @kdup@; unproven call/projection shapes stay
+-- leak-biased. A saturated eta-expanded constructor application is accepted
+-- because this same structural recognizer is what codegen beta-reduces to a
+-- direct fresh @kctor@ allocation; this is symbolically tied to the Core shape,
+-- not to a source spelling.
 rcTermProducesOwnedHere :: Term -> Gen Bool
 rcTermProducesOwnedHere t = case t of
   CApp {}
@@ -430,7 +462,36 @@ rcTermProducesOwnedHere t = case t of
   CThunkE {} -> pure True
   CLazyE {} -> pure True
   CSealE _ e -> withChild P.childPos (rcTermProducesOwnedHere e)
+  CProj e _ -> withChild P.childPos (rcProjectionResultCanOwn e)
+  CProjAt e _ _ -> withChild P.childPos (rcProjectionResultCanOwn e)
+  CIf _ th el ->
+    (&&)
+      <$> withChild P.ifThenPos (rcTermProducesOwnedHere th)
+      <*> withChild P.ifElsePos (rcTermProducesOwnedHere el)
+  CLet _ _ _ rhs body -> do
+    rhsOwns <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
+    bid <- currentBinderIdHere
+    withFlatLocalOwnership (Just bid) rhsOwns $
+      withChild P.letBodyPos (rcTermProducesOwnedHere body)
+  CLetRec _ _ _ rhs body -> do
+    rhsOwns <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
+    bid <- currentBinderIdHere
+    withFlatLocalOwnership (Just bid) rhsOwns $
+      withChild P.letBodyPos (rcTermProducesOwnedHere body)
+  CMatch _ _ alts ->
+    withChild P.matchArmsPos $
+      and
+        <$> forM
+          (zip [0 ..] alts)
+          ( \(ai, CaseAlt _ _ body) ->
+              withChild (P.matchArmPos ai) $
+                withChild P.altBodyPos (rcTermProducesOwnedHere body)
+          )
   _ -> pure False
+
+binderHasConsumingLastUse :: OwnInfo -> BinderId -> Bool
+binderHasConsumingLastUse own bid =
+  any (== LastUse) (Map.findWithDefault [] bid (oiBinderConsumingUses own))
 
 -- | The S2.3 drop DECISION for a binder introduced at the CURRENT 'gsPath' (its
 -- 'BinderId' is @gsCur@ + @reverse gsPath@) — the seam where the binder node is
@@ -441,12 +502,11 @@ rcTermProducesOwnedHere t = case t of
 --   * the binder is 'boDroppable' (@0@\/@≤1@\/@ω@ — carries no consumption
 --     obligation) and NOT 'boBorrowed' (a borrowed value is the caller's; the
 --     callee never drops it — §1\/§3); AND
---   * the binder has NO 'LastUse' occurrence anywhere in its scope
---     ('oiBinderUses' holds no 'LastUse'). A 'LastUse' may be a consuming move
---     or a non-consuming read (projection base, borrowed call arg). Until S2
---     models ownership of borrowed projection results, scope-close drops stay on
---     the conservative all-last-use rule so a borrowed field cannot escape after
---     its owner is dropped. S2.3d branch-dead drops are handled separately by
+  --   * the binder has NO consuming 'LastUse' occurrence in its scope
+  --     ('oiBinderConsumingUses' holds no 'LastUse'). Non-consuming projection
+  --     reads may coexist with the close-drop because projection results are now
+  --     owned at the result/let/consuming-call sites that can outlive the aggregate.
+  --     S2.3d branch-dead drops are handled separately by
 --     'rcEmitBranchDeadDropsHere', using explicit path-local drop sites and the
 --     current flat-local ownership metadata; this helper remains the ordinary
 --     whole-scope close-drop gate.
@@ -469,7 +529,7 @@ rcBinderDroppableHere = do
             Just bo
               | boDroppable bo
               , not (boBorrowed bo)
-              , not (any (== LastUse) (Map.findWithDefault [] bid (oiBinderUses own))) ->
+              , not (binderHasConsumingLastUse own bid) ->
                   True
             _ -> False
         _ -> pure False
@@ -495,7 +555,7 @@ rcPatSlotDroppableHere k = do
             Just bo
               | boDroppable bo
               , not (boBorrowed bo)
-              , not (any (== LastUse) (Map.findWithDefault [] bid (oiBinderUses own))) ->
+              , not (binderHasConsumingLastUse own bid) ->
                   True
             _ -> False
         _ -> pure False
@@ -590,25 +650,29 @@ rcEmitBranchDeadDropsHere = do
 -- (@kctor_arg@\/@kproj@\/@krec_at@\/@kvariant_payload@ all return the field
 -- without an incref), so once the bound fields are dup'd-out the scrutinee CELL
 -- itself is leaked unless the match drops it. This decides, from the SCRUTINEE
--- shape and (for a 'CVar' scrutinee) its 'UseKind' at the 'matchScrutPos' seam,
+-- shape and (for a 'CVar' scrutinee) its use verdict plus consume bit at the
+-- 'matchScrutPos' seam,
 -- whether the match owns a reference to the cell that it must discharge with a
 -- @kdrop(sv)@:
 --
---   * a __'CVar'__ scrutinee — look up its 'UseKind' at @matchScrutPos : gsPath@
---     (the exact key "Kappa.Ownership"'s walk records for the scrutinee
---     occurrence). Drop for 'LastUse' (the binder's only owning reference moved
---     INTO the match — the match now owns it) and for 'NonLast' (the occurrence
---     was already @kdup@'d at its 'CVar' site, so the match consumes the freshly
---     incremented reference it received). NEVER drop for 'Borrowed' — the caller
---     still owns the value (§1\/§3 borrow invariant), and a @kdrop@ here would be
---     the decrement-below-floor the underflow assert exists to catch.
---   * a __'CCtor'__ scrutinee — a FRESH owning value (@mkPair a b@): rc==1, no
---     other owner, dies at the match ⇒ ALWAYS drop.
---   * any __other__ shape (a 'CApp' call result, 'CProj'\/'CForceE'\/… whose head
+--   * a __'CVar'__ scrutinee — look up its use verdict and consume bit at
+--     current @matchScrutPos@ (the exact key "Kappa.Ownership"'s walk records
+--     for the scrutinee occurrence). Drop for consuming 'LastUse' only when the
+--     source flat local itself owns the value. Drop for consuming 'NonLast'
+--     because the occurrence was already @kdup@'d at its 'CVar' site, so the
+--     match consumes the freshly incremented reference it received. NEVER drop
+--     for read-only/borrowed occurrences — the caller or enclosing owner still
+--     owns the value (§1\/§3 borrow invariant), and a @kdrop@ here would be the
+--     decrement-below-floor the underflow assert exists to catch.
+--   * a fresh structural scrutinee — 'CCtor', 'CRecordV', 'CInject', or the
+--     saturated eta-expanded constructor application that codegen lowers to the
+--     same direct @kctor@ as 'CCtor' — is an owning value: rc==1, no other owner,
+--     dies at the match ⇒ ALWAYS drop. 'CSealE' is transparent to this decision.
+--   * any __other__ shape (a general 'CApp' call result, 'CProj'\/'CForceE'\/… whose head
 --     may be a borrowing projection returning a non-owned reference, or an
 --     unresolvable 'CVar') — do NOT drop: dropping a borrowed-out reference would
---     underflow. A soft leak Boehm reclaims; tighten later once result ownership
---     is modeled.
+--     underflow. This remains leak-biased until the producer shape has a local
+--     ownership proof like the structural constructor cases above.
 --
 -- Inert under the OFF baseline, so codegen is byte-identical there.
 rcScrutDropDecision :: Term -> Gen Bool
@@ -616,19 +680,29 @@ rcScrutDropDecision scrut = do
   enabled <- gets gsRcEnabled
   if not enabled
     then pure False
-    else case scrut of
-      CVar _ -> do
-        -- the scrutinee occurrence sits at 'matchScrutPos' under this match node;
-        -- look up exactly that 'UseSite' (a non-'Borrowed', resolved verdict drops).
-        mk <- withChild P.matchScrutPos rcUseKindHere
-        pure $ case mk of
-          Just LastUse -> True
-          Just NonLast -> True
+    else withChild P.matchScrutPos (go scrut)
+  where
+    go = \case
+      CVar i -> do
+        -- Drop only when the resolved occurrence is consuming and the
+        -- match owns the reference it compiled: a consuming NonLast has been
+        -- dup'd at the CVar site, while a consuming LastUse is droppable only
+        -- if the source flat local itself owns the value.
+        mi <- rcUseInfoHere
+        sourceOwns <- flatLocalOwnsAt i
+        pure $ case mi of
+          Just (LastUse, True) -> sourceOwns
+          Just (NonLast, True) -> True
           _ -> False
-      -- a fresh owning allocation: rc==1, dies at the match.
+      t@CApp {}
+        | Just {} <- etaCtorApp t -> pure True
+      -- Fresh owning allocations: rc==1, die at the match.
       CCtor {} -> pure True
-      -- Calls and projections can return borrowed references. Without result
-      -- ownership metadata, do not drop them as match-owned cells.
+      CRecordV {} -> pure True
+      CInject {} -> pure True
+      CSealE _ e -> withChild P.childPos (go e)
+      -- General calls and projections can return borrowed references. Without
+      -- result ownership metadata, do not drop them as match-owned cells.
       _ -> pure False
 
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
@@ -2152,13 +2226,14 @@ compileScalarCall g pks ret sargs runtimeIdxs = do
   let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
       k = length sargs
+  ownedFlags <- callArgNeedsOwnedForGlobal g sargs
   -- Perceus RC S2.1: thread each saturating arg's spine path so its CVar uses
   -- resolve in the analysis side-table (this is an exactly-saturated call, so the
   -- list position is the spine index).
   aes <-
     mapM
-      (\(j, (_, a)) -> withSpineArg k j (compileErasableArg a))
-      (zip [0 ..] sargs)
+      (\(j, needOwned, (_, a)) -> withSpineArg k j (compileCallArg needOwned a))
+      (zip3 [0 ..] ownedFlags sargs)
   ts <- forM aes $ \ae -> do
     t <- freshN "la_"
     emit ("KValue *" <> t <> " = " <> ae <> ";")
@@ -2499,8 +2574,8 @@ selfTailArgs ti term = case spineOf term of
 -- | Lower a self-tail-call to a loop step: recompute the arguments into
 -- fresh temporaries (they may read the current parameters), rebind the
 -- worker's parameter variables, and @continue@.
-emitTailLoop :: TailInfo -> [(Icit, Term)] -> Gen ()
-emitTailLoop ti args = do
+emitTailLoop :: [Text] -> TailInfo -> [(Icit, Term)] -> Gen ()
+emitTailLoop cleanup ti args = do
   -- Evaluate every new argument into a temp FIRST (an arg may read a current
   -- parameter via @kvar@), THEN update the parameter cells in place — so the
   -- loop reuses the cells built once in 'compileFunctionGlobal' rather than
@@ -2514,6 +2589,7 @@ emitTailLoop ti args = do
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
+  mapM_ emit cleanup
   -- reassign the C parameters (FLAT: read directly; REBUILD: the loop top
   -- rebuilds kw_env from them).  Temps first, so an arg may read a current param.
   forM_ (zip (tiSlots ti) temps) $ \(slot, t) -> emit (slot <> " = " <> t <> ";")
@@ -2529,28 +2605,32 @@ emitTailLoop ti args = do
 -- 'workerMayBounce' mirrors the @kbounce@ condition below and must be kept in
 -- lock-step (a new @kbounce@ arm here without updating it would make R3.1's
 -- trampoline elision unsound).
-emitTailApp :: Term -> Gen ()
-emitTailApp term
+emitTailApp :: [Text] -> Term -> Gen ()
+emitTailApp cleanup term
   -- P0-A: a saturated eta-expanded constructor in tail position is a final
   -- data value (it cannot bounce or recurse), so build it directly and
   -- return it rather than trampolining through the closure chain.
   | Just (g, k, picks) <- etaCtorAppSpine term = do
       e <- compileEtaCtorApp g k picks
+      mapM_ emit cleanup
       emit ("return " <> e <> ";")
-emitTailApp term = do
+emitTailApp cleanup term = do
   let (hd, _) = spineOf term
   mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
   case (mp, term) of
     (Just _, _) -> do
       e <- compile term -- prim spine: direct helper / entry-point call, computed here, no trampoline
+      mapM_ emit cleanup
       emit ("return " <> e <> ";")
     (Nothing, CApp Expl f a) -> do
       -- Perceus RC S2.1: head/arg at the shared 'appHeadPos'/'appArgPos'.
       fe <- withChild P.appHeadPos (compile f)
-      ae <- withChild P.appArgPos (compileErasableArg a)
+      ae <- withChild P.appArgPos (compileCallArg True a)
+      mapM_ emit cleanup
       emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
     _ -> do
       e <- compile term
+      mapM_ emit cleanup
       emit ("return " <> e <> ";")
 
 -- | Is the implicit argument to this head erased at runtime? Primitive
@@ -2599,9 +2679,56 @@ isErasableArg = \case
 -- arity (so positional field projection stays aligned) while avoiding the
 -- type-level guards in 'compile'.
 compileErasableArg :: Term -> Gen Text
-compileErasableArg a = do
+compileErasableArg = compileErasableArgOwned False
+
+compileErasableArgOwned :: Bool -> Term -> Gen Text
+compileErasableArgOwned needOwned a = do
   er <- isErasableArg a
-  if er then pure "kunit()" else compile a
+  if er then pure "kunit()" else compileOwnedResult needOwned a
+
+compileOwnedResult :: Bool -> Term -> Gen Text
+compileOwnedResult needOwned = \case
+  CProj e f -> do
+    ee <- withChild P.childPos (compile e)
+    rcOwnProjectionResult needOwned e ("kproj(" <> ee <> ", " <> cStr f <> ")")
+  CProjAt e _ i -> do
+    ee <- withChild P.childPos (compile e)
+    rcOwnProjectionResult needOwned e (recAtExpr ee i)
+  CSealE _ e -> withChild P.childPos (compileOwnedResult needOwned e)
+  t@CIf {} -> sinkToExprOwned needOwned t
+  t@CMatch {} -> sinkToExprOwned needOwned t
+  t@CLet {} -> sinkToExprOwned needOwned t
+  t@CLetRec {} -> sinkToExprOwned needOwned t
+  t -> compile t
+
+compileCallArg :: Bool -> Term -> Gen Text
+compileCallArg needOwned = compileErasableArgOwned needOwned
+
+flagAt :: [Bool] -> Int -> Bool
+flagAt flags i = case drop i flags of
+  flag : _ -> flag
+  [] -> True
+
+callArgNeedsOwnedForGlobal :: GName -> [(Icit, Term)] -> Gen [Bool]
+callArgNeedsOwnedForGlobal g sargs = do
+  ctx <- gets gsEvalCtx
+  go (Repr.argConvSelectGlobal ctx g) sargs
+  where
+    go _ [] = pure []
+    go convs ((ic, a) : rest)
+      | ic /= Expl = (False :) <$> go convs rest
+      | otherwise = do
+          erased <- isErasableArg a
+          if erased
+            then (False :) <$> go convs rest
+            else do
+              let (needsOwned, convs') =
+                    case convs of
+                      Just (Repr.ArgBorrowed : cs) -> (False, Just cs)
+                      Just (_ : cs) -> (True, Just cs)
+                      Just [] -> (True, convs)
+                      Nothing -> (True, Nothing)
+              (needsOwned :) <$> go convs' rest
 
 -- | A global that denotes a type or trait (so a reference to it in
 -- argument position is computationally erased): a declared data type or
@@ -3133,9 +3260,10 @@ compileApp term0 = do
               collectHostCtors rns
               -- Perceus RC S2.1: thread each host arg's spine path.
               let kH = length sargs
+              ownedFlags <- callArgNeedsOwnedForGlobal g sargs
               aes <-
                 mapM
-                  (\(j, a) -> withSpineArg kH j (compileErasableArg a))
+                  (\(j, a) -> withSpineArg kH j (compileCallArg (flagAt ownedFlags j) a))
                   (take arity explIxH)
               arr <- freshN "na_"
               emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
@@ -3157,9 +3285,10 @@ compileAppGlob g sargs term = do
       -- implicit dictionary/type arg, so the explicit-arg position is NOT the spine
       -- index — 'explIxG' pairs each explicit arg with its real spine index, and
       -- 'peaIx j t' threads that index. Inert under the OFF baseline.
+      ownedFlags <- callArgNeedsOwnedForGlobal g sargs
       let kk = length sargs
           explIxG = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
-          peaIx j t = withSpineArg kk j (compileErasableArg t)
+          peaIx j t = withSpineArg kk j (compileCallArg (flagAt ownedFlags j) t)
       case mp of
         -- §3.1 general CPS: an @ioBind@/@ioThen@ EXPRESSION (not a do-block —
         -- e.g. the prelude @join@/@race@/@timeout@ bodies) whose FIRST action may
@@ -3283,8 +3412,8 @@ compileAppGlob g sargs term = do
         -- compiled, not erased.
         Just "__restoreAt"
           | [(jraw, raw), (jact, act)] <- explIxG -> do
-              rawc <- withSpineArg kk jraw (compile raw)
-              actc <- withSpineArg kk jact (compile act)
+              rawc <- withSpineArg kk jraw (compileOwnedResult (flagAt ownedFlags jraw) raw)
+              actc <- withSpineArg kk jact (compileOwnedResult (flagAt ownedFlags jact) act)
               pure ("kapp(" <> rawc <> ", " <> actc <> ")")
         Just "poll"
           | null [a | (Expl, a) <- sargs] -> pure "krt2_poll()"
@@ -3356,7 +3485,7 @@ compileAppGlob g sargs term = do
               let k = length sargs
               aes <-
                 mapM
-                  (\(j, a) -> withSpineArg k j (compileErasableArg a))
+                  (\(j, a) -> withSpineArg k j (compileCallArg (flagAt ownedFlags j) a))
                   explIx
               if isio
                 then do
@@ -3477,11 +3606,12 @@ compileDirectCall g n sargs = do
       let k = length sargs
           (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
+      ownedFlags <- callArgNeedsOwnedForGlobal g sargs
       -- Perceus RC S2.1: thread each saturating argument's nested-CApp spine path
       -- ('withSpineArg') so its CVar uses resolve in the analysis side-table.
       aes <-
         mapM
-          (\(j, (_, a)) -> withSpineArg k j (compileErasableArg a))
+          (\(j, (_, a)) -> withSpineArg k j (compileCallArg (flagAt ownedFlags j) a))
           (zip [0 ..] callArgs)
       bodies <- gets gsBodies
       mayBounce <- case Map.lookup g bodies of
@@ -3493,7 +3623,7 @@ compileDirectCall g n sargs = do
       foldM (applyExtra k) base (zip [n ..] extra)
   where
     applyExtra k acc (j, (Expl, a)) = do
-      ae <- withSpineArg k j (compileErasableArg a)
+      ae <- withSpineArg k j (compileCallArg True a)
       pure ("kapp(" <> acc <> ", " <> ae <> ")")
     applyExtra k acc (j, (Impl, a)) = do
       ae <- withSpineArg k j (compileErasableArg a)
@@ -3508,7 +3638,7 @@ compileAppDefault = \case
   -- index bookkeeping needed). Inert under the OFF baseline.
   CApp Expl f a -> do
     fe <- withChild P.appHeadPos (compile f)
-    ae <- withChild P.appArgPos (compileErasableArg a) -- §31.2: an explicit type-level/staging arg is erased
+    ae <- withChild P.appArgPos (compileCallArg True a) -- §31.2: an explicit type-level/staging arg is erased
     pure ("kapp(" <> fe <> ", " <> ae <> ")")
   CApp Impl f a -> do
     erased <- isErasedHead f
@@ -3690,7 +3820,7 @@ compileCtorPaths argPath g args = do
   -- never inspects).
   argEs <-
     mapM
-      (\(i, a) -> argPath i (compileErasableArg a))
+      (\(i, a) -> argPath i (compileCallArg True a))
       (zip [0 ..] args)
   tc <- ctorTagConst g
   -- KBackendIR Stage 2: the nullary ⇒ canonical @b010@ immediate decision is
@@ -3707,7 +3837,7 @@ compileRecord :: [(Text, Term)] -> Gen Text
 compileRecord fs = do
   valEs <-
     mapM
-      (\(i, (_, v)) -> withChild (P.recordFieldPos i) (compileErasableArg v))
+      (\(i, (_, v)) -> withChild (P.recordFieldPos i) (compileCallArg True v))
       (zip [0 ..] fs)
   namesArr <- freshN "rnames_"
   valsArr <- freshN "rvals_"
@@ -3746,21 +3876,58 @@ data TailInfo = TailInfo
 -- let-rec lambda body in tail position (where a tail application becomes a
 -- trampoline 'kbounce' so local/mutual tail recursion runs in constant C
 -- stack, §27.5A.3 — there are no worker params to loop on).
-data Sink = SinkVar !Text | SinkTail !TailInfo | SinkBounce
+data Sink = SinkVar !Text | SinkOwnedVar !Bool !Text | SinkTail !TailInfo | SinkBounce | SinkCleanup ![Text] !Sink
 
--- | Whether a sink's continuation is reachable after the consumed term — i.e. the
--- value flows into a C variable and control FALLS THROUGH ('SinkVar'), rather than
--- leaving the worker via @return@/@continue@ ('SinkTail'/'SinkBounce'). Perceus
--- RC S2.3 emits a trailing @kdrop@ only at a 'SinkVar' seam, where the drop is
--- actually reached (a drop after a @return@ is dead code).
-isSinkVar :: Sink -> Bool
-isSinkVar (SinkVar _) = True
-isSinkVar _ = False
+sinkWithCleanup :: [Text] -> Sink -> Sink
+sinkWithCleanup [] sink = sink
+sinkWithCleanup ds (SinkCleanup ds' sink) = SinkCleanup (ds <> ds') sink
+sinkWithCleanup ds sink = SinkCleanup ds sink
+
+sinkCleanupLines :: Sink -> [Text]
+sinkCleanupLines (SinkCleanup ds sink) = ds <> sinkCleanupLines sink
+sinkCleanupLines _ = []
+
+sinkHasCleanup :: Sink -> Bool
+sinkHasCleanup = not . null . sinkCleanupLines
+
+sinkTailInfo :: Sink -> Maybe TailInfo
+sinkTailInfo (SinkTail ti) = Just ti
+sinkTailInfo (SinkCleanup _ sink) = sinkTailInfo sink
+sinkTailInfo _ = Nothing
+
+sinkIsTail :: Sink -> Bool
+sinkIsTail sink = case sinkTailInfo sink of
+  Just _ -> True
+  Nothing -> False
+
+sinkIsBounce :: Sink -> Bool
+sinkIsBounce SinkBounce = True
+sinkIsBounce (SinkCleanup _ sink) = sinkIsBounce sink
+sinkIsBounce _ = False
+
+sinkNeedsOwnedResult :: Sink -> Bool
+sinkNeedsOwnedResult (SinkOwnedVar needOwned _) = needOwned
+sinkNeedsOwnedResult (SinkCleanup _ sink) = sinkNeedsOwnedResult sink
+sinkNeedsOwnedResult _ = False
+
+sinkStoresBeforeCleanup :: Sink -> Bool
+sinkStoresBeforeCleanup (SinkVar _) = True
+sinkStoresBeforeCleanup (SinkOwnedVar _ _) = True
+sinkStoresBeforeCleanup _ = False
 
 sinkResult :: Sink -> Text -> Gen ()
 sinkResult (SinkVar r) e = emit (r <> " = " <> e <> ";")
+sinkResult (SinkOwnedVar _ r) e = emit (r <> " = " <> e <> ";")
 sinkResult (SinkTail _) e = emit ("return " <> e <> ";")
 sinkResult SinkBounce e = emit ("return " <> e <> ";")
+sinkResult (SinkCleanup ds sink) e | sinkStoresBeforeCleanup sink = do
+  sinkResult sink e
+  mapM_ emit ds
+sinkResult (SinkCleanup ds sink) e = do
+  tmp <- freshN "ret_"
+  emit ("KValue *" <> tmp <> " = " <> e <> ";")
+  mapM_ emit ds
+  sinkResult sink tmp
 
 -- | Does @term@ compile to a CK-machine action NODE (krt2_bind/then/reraise) via
 -- 'compileAppGlob's special cases?  In tail position such a node must be RETURNED
@@ -3816,7 +3983,8 @@ consume sink term = case term of
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
     -- Perceus RC S2.1: rhs at 'letRhsPos', body at 'letBodyPos'.
-    re <- withChild P.letRhsPos (compileErasableArg rhs)
+    rhsOwnsLocal <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
+    re <- withChild P.letRhsPos (compileErasableArgOwned rhsOwnsLocal rhs)
     lvals <- gets gsParamLvals
     if null lvals
       then do
@@ -3834,20 +4002,21 @@ consume sink term = case term of
         -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken at the
         -- CLet node (gsPath = the let path → the binder's BinderId), against the
         -- bound C LOCAL (R-flat). The local is dropped only when the analysis says
-        -- it is droppable AND the initializer is manifestly owned; projection/call
-        -- results can be borrowed until result ownership is modeled. Emitted at
+        -- it is droppable AND the initializer is manifestly owned. Structural
+        -- projection results become manifestly owned only where the base-use
+        -- side table proves a read from an owned aggregate and codegen emitted
+        -- the balancing kdup; unproven call/projection shapes stay leak-biased. Emitted at
         -- the body's NORMAL completion — i.e. only when the body sinks into a
         -- continuing result var ('SinkVar'); in a 'SinkTail'/'SinkBounce' body the
         -- value 'return's, so a trailing drop is unreachable.
         drp0 <- rcBinderDroppableHere
-        rhsOwnsLocal <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
         let drp = drp0 && rhsOwnsLocal
         bid <- currentBinderIdHere
         savedFlat <- saveFlatLocalScope
         lv <- bindFlatLocal "let_" (Just bid) rhsOwnsLocal re
-        withChild P.letBodyPos (consume sink body)
+        let bodySink = if drp then sinkWithCleanup ["kdrop(" <> lv <> ");"] sink else sink
+        withChild P.letBodyPos (consume bodySink body)
         restoreFlatLocalScope savedFlat
-        when (drp && isSinkVar sink) (rcEmitDrop lv)
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
   -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
@@ -3861,33 +4030,38 @@ consume sink term = case term of
     withEnv e2 (withChild P.letBodyPos (consume sink body))
   _ -> do
     isCps <- cpsNodeApp term
-    case sink of
+    case sinkTailInfo sink of
       -- Direct saturated self-call: loop in the worker (no allocation).
-      SinkTail ti | Just args <- selfTailArgs ti term -> emitTailLoop ti args
+      Just ti | Just args <- selfTailArgs ti term -> emitTailLoop (sinkCleanupLines sink) ti args
+      _ | sinkIsTail sink, CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
+      _ | sinkIsTail sink, CApp Expl _ _ <- term, sinkHasCleanup sink -> compile term >>= sinkResult sink
+      _ | sinkIsTail sink, CApp Expl _ _ <- term -> emitTailApp (sinkCleanupLines sink) term
+      _ | sinkIsBounce sink, CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
+      _ | sinkIsBounce sink, CApp Expl _ _ <- term, sinkHasCleanup sink -> compile term >>= sinkResult sink
+      _ | sinkIsBounce sink, CApp Expl _ _ <- term -> emitTailApp (sinkCleanupLines sink) term
       -- A suspending ioBind/ioThen or __reraiseCause in tail position lowers to a
       -- CK-machine NODE (compileAppGlob): RETURN it so the machine drives it, not
       -- emitTailApp (which would lose the lowering — see 'cpsNodeApp').
-      SinkTail _ | CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
       -- Any other tail-position explicit application: return a trampoline
       -- bounce so the chain (mutual recursion, calls through a value, local
       -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
       -- is the kapp/kappi at the non-tail site that demanded the value.
-      SinkTail _ | CApp Expl _ _ <- term -> emitTailApp term
       -- A closure / local let-rec lambda body in tail position: the same bounce,
       -- so a tail self-call defers to the driving trampoline (constant C stack).
-      SinkBounce | CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
-      SinkBounce | CApp Expl _ _ <- term -> emitTailApp term
       _ -> do
-        e <- compile term
+        e <- compileOwnedResult (sinkHasCleanup sink || sinkNeedsOwnedResult sink) term
         sinkResult sink e
 
 -- | Compile an if/match/let in expression context: declare a fresh result
 -- variable and consume into it.
 sinkToExpr :: Term -> Gen Text
-sinkToExpr term = do
+sinkToExpr = sinkToExprOwned False
+
+sinkToExprOwned :: Bool -> Term -> Gen Text
+sinkToExprOwned needOwned term = do
   r <- freshN "r_"
   emit ("KValue *" <> r <> " = 0;")
-  consume (SinkVar r) term
+  consume (SinkOwnedVar needOwned r) term
   pure r
 
 consumeIf :: Sink -> Term -> Term -> Term -> Gen ()
@@ -4003,20 +4177,20 @@ consumeAlt sink sv dropCell env done (CaseAlt pat mguard body) = do
 consumeAltBody :: Sink -> Text -> Bool -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
 consumeAltBody sink sv dropCell env done pat mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
-  -- Perceus RC S2.3a (§a): the cell-drop fires for THIS arm only when the match
-  -- owns the scrutinee cell ('dropCell') AND control falls through to a continuing
-  -- result var ('SinkVar') — a returning 'SinkTail'/'SinkBounce' arm skips it (a
-  -- soft leak Boehm reclaims; the trailing drop would be dead after the return).
+  -- Perceus RC S2.3a/S3.2 (§a): the cell-drop fires for THIS arm only when the
+  -- match owns the scrutinee cell ('dropCell'). S3.2 routes that cleanup through
+  -- the sink, so returning 'SinkTail'/'SinkBounce' arms emit the drop before the
+  -- return instead of leaving the scrutinee to Boehm.
   -- The kept-field DUP and the cell @kdrop@ are an ATOMIC PAIR: a field projected
   -- via a borrowing 'kctor_arg'/'kproj' (no incref) is dup'd so it survives the
-  -- following @kdrop(sv)@ (which S3.2 will let recursively free fields when the
-  -- cell is unique; in S3.1 it still only maintains the paired rc invariant).
+  -- following @kdrop(sv)@ (which S3.2 lets recursively free fields when the cell
+  -- is unique).
   -- So the field-dup must fire IFF the cell-drop does — dupping a kept field on an
   -- arm that then skips the cell-drop would be an UNPAIRED dup (a permanent rc
   -- inflation / leak, never balanced). Guarded arms bind fields before evaluating
   -- the guard, so a failed guard cannot run the success-branch balancing drops;
   -- keep guarded arms conservative until guard-failure cleanup is modeled.
-  let dropHere = dropCell && isSinkVar sink && maybe True (const False) mguard
+  let dropHere = dropCell && maybe True (const False) mguard
   env' <- bindPatScrutDup dropHere sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
   -- binders HERE (gsPath = the arm path, so 'patSlotPos k' keys each slot), against
@@ -4025,37 +4199,33 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- fields. The slot's de Bruijn index @k@ is its
   -- 'gsParamLvals' index right after binding (the LAST patBinding is index 0,
   -- matching the analysis's @depth+n-1-k@ levels). Computed BEFORE descending into
-  -- the body so the lookup key is the arm path; emitted AFTER the body, only at a
-  -- continuing 'SinkVar' seam (a 'SinkTail'/'SinkBounce' arm body returns — a
-  -- trailing drop would be dead). Boxed (KEnv) arms have empty 'gsParamLvals' →
-  -- no flat local → no drop (left to Boehm).
+  -- the body so the lookup key is the arm path; emitted through the sink cleanup
+  -- after normal body evaluation and before any tail return. Boxed (KEnv) arms
+  -- have empty 'gsParamLvals' → no flat local → no drop (left to Boehm).
   patDrops <- if dropHere then rcPatSlotDropLvals pat else pure []
+  let altCleanup = map (\lv -> "kdrop(" <> lv <> ");") patDrops <> ["kdrop(" <> sv <> ");" | dropHere]
+      bodySink = sinkWithCleanup altCleanup sink
   -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
   -- body at 'altBodyPos' (the pattern-slot binders are at 'patSlotPos k', looked
   -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
       rcEmitBranchDeadDropsHere
-      withEnv env' (withChild P.altBodyPos (consume sink body))
-      when (isSinkVar sink) $ do
-        mapM_ rcEmitDrop patDrops
-        when dropHere (rcEmitDrop sv)
+      withEnv env' (withChild P.altBodyPos (consume bodySink body))
       emit (done <> " = 1;")
     Just gd -> do
       ge <- withEnv env' (withChild P.altGuardPos (compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
       rcEmitBranchDeadDropsHere
-      withEnv env' (withChild P.altBodyPos (consume sink body))
-      when (isSinkVar sink) $ do
-        mapM_ rcEmitDrop patDrops
-        when dropHere (rcEmitDrop sv)
+      withEnv env' (withChild P.altBodyPos (consume bodySink body))
       emit ("  " <> done <> " = 1;")
       emit "}"
 
 -- | Perceus RC S2.3: the bound flat C locals to @kdrop@ for the pattern-slot
--- binders of @pat@ that the analysis says are droppable with no 'LastUse'
--- (b.4/S2.3b). This stays on the conservative all-last-use rule until
--- projection-result ownership is modeled.
+-- binders of @pat@ that the analysis says are droppable without a consuming
+-- 'LastUse' (b.4/S2.3b/S3.2). Non-consuming projection reads are only allowed
+-- to coexist with these drops when the result is materialized as owned at the
+-- result site.
 -- The slot's de Bruijn index @k@ (0 = innermost, the LAST 'patBindings' entry) is
 -- its 'gsParamLvals' index in the just-bound arm scope. Returns @[]@ under the OFF
 -- baseline, in a boxed arm (empty 'gsParamLvals' — no flat local to drop against),

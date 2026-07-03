@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 /* ── lifecycle / allocation ────────────────────────────────────────── */
 
 /* Route GMP allocation through the Boehm collector so bignum limbs are
@@ -45,6 +46,15 @@ static void krt_assert_gc_alignment(void) {
   }
 }
 
+static _Atomic unsigned long long g_kgc_frees_total = 0;
+
+static int env_truthy(const char *s) {
+  return s && strcmp(s, "0") != 0 && strcmp(s, "false") != 0
+         && strcmp(s, "FALSE") != 0 && strcmp(s, "off") != 0
+         && strcmp(s, "OFF") != 0 && strcmp(s, "no") != 0
+         && strcmp(s, "NO") != 0 && s[0] != '\0';
+}
+
 void krt_init(void) {
   /* UNBOXING Stage 0 (§5.4): turn OFF interior-pointer recognition BEFORE
    * GC_INIT, so the collector roots only BASE pointers.  The (future) immediate
@@ -64,6 +74,7 @@ void krt_init(void) {
    * newly-positive net.  GATED so the default run prints NOTHING (byte-identical
    * output preserved); the env var is read once here, not a program input. */
   if (getenv("KAPPA_RC_REPORT")) atexit(krc_report);
+  if (env_truthy(getenv("KAPPA_POISON"))) krc_poison_set_enabled(1);
 }
 
 void *kgc_alloc(size_t n) {
@@ -79,7 +90,13 @@ void *kgc_alloc_atomic(size_t n) {
 }
 
 void kgc_free(void *p) {
-  if (p) GC_FREE(p);
+  if (!p) return;
+  atomic_fetch_add_explicit(&g_kgc_frees_total, 1, memory_order_relaxed);
+  GC_FREE(p);
+}
+
+unsigned long long kgc_debug_free_count(void) {
+  return atomic_load_explicit(&g_kgc_frees_total, memory_order_relaxed);
 }
 
 void krt_fail(const char *msg) {

@@ -78,6 +78,7 @@ main = do
   ownOk <- ownershipCrossCheckClean
   s23dOk <- perceusS23dDeadBinderDrops
   s23dDiagOk <- perceusS23dBranchDropMissFails
+  s32Ok <- perceusS32FreeOnZeroEntryGates
   cachePubOk <- globalCachePublicationMarksShared
   scalarKindParamOk <- scalarKindDomainParamKeepsWorkers
   scalarDoubleEscapeOk <- llvmDoubleScalarUnboxEscapesWrongTag
@@ -85,7 +86,7 @@ main = do
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && primConvOk && ownOk && s23dOk && s23dDiagOk && cachePubOk && scalarKindParamOk
+          && primConvOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && scalarKindParamOk
           && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
@@ -791,6 +792,26 @@ perceusS23dDeadBinderDrops = do
             dropWhile (not . T.isInfixOf marker) (T.lines body)
       noDropBefore needle body =
         not (prefixedLineBefore "kdrop(let_" needle body)
+      firstLetAssignedBy rhs body =
+        case
+          [ name
+          | line <- T.lines body
+          , let s = T.strip line
+          , rhs `T.isInfixOf` s
+          , Just name <- [letLocalName s]
+          ] of
+          name : _ -> Just name
+          [] -> Nothing
+      letLocalName s =
+        case T.stripPrefix "KValue *" s of
+          Just rest
+            | "let_" `T.isPrefixOf` rest ->
+                Just (T.takeWhile (/= ' ') rest)
+          _ -> Nothing
+      noOwnerDropBefore rhs needle fullBody branchBody =
+        case firstLetAssignedBy rhs fullBody of
+          Nothing -> False
+          Just owner -> not (prefixedLineBefore ("kdrop(" <> owner <> ");") needle branchBody)
       dropLetBeforeReturn body =
         let ls = T.lines body
          in any
@@ -857,6 +878,7 @@ perceusS23dDeadBinderDrops = do
             null missing
               && not ("kdrop(p1);" `T.isInfixOf` ifWorker)
               && not ("kdrop(p1);" `T.isInfixOf` matchWorker)
+              && not ("kdrop(scrut_" `T.isInfixOf` matchWorker)
           letOk =
             not (prefixedLineBefore "kdrop(let_" "} else {" letWorker)
               && "} else {" `T.isInfixOf` letWorker
@@ -871,18 +893,20 @@ perceusS23dDeadBinderDrops = do
             "kdup(kctor_arg" `T.isInfixOf` borrowedWorker
               && "consumeBox" `T.isInfixOf` borrowedWorker
               && "peekHolder" `T.isInfixOf` borrowedWorker
-              && noDropBefore "peekHolder" borrowedElse
+              && noOwnerDropBefore " = kctor(" "peekHolder" borrowedWorker borrowedElse
           borrowedRecordAliasOk =
             "consumeBox" `T.isInfixOf` borrowedRecordWorker
               && "peekRHolder" `T.isInfixOf` borrowedRecordWorker
+              && "kdup(krec_at" `T.isInfixOf` borrowedRecordWorker
               && noDropBefore "consumeBox" borrowedRecordThen
-              && noDropBefore "peekRHolder" borrowedRecordElse
+              && noOwnerDropBefore " = krec(" "peekRHolder" borrowedRecordWorker borrowedRecordElse
           borrowedNestedAliasOk =
             "consumeBox" `T.isInfixOf` borrowedNestedWorker
               && "peekRHolder" `T.isInfixOf` borrowedNestedWorker
               && "if (kas_bool(p0))" `T.isInfixOf` borrowedNestedWorker
+              && "kdup(krec_at" `T.isInfixOf` borrowedNestedWorker
               && noDropBefore "consumeBox" borrowedNestedThen
-              && noDropBefore "peekRHolder" borrowedNestedElse
+              && noOwnerDropBefore " = krec(" "peekRHolder" borrowedNestedWorker borrowedNestedElse
           guardConsumeOk =
             "kw_main_2e_alwaysFalseConsume(kdup(p1))" `T.isInfixOf` guardConsumeWorker
           guardConsumeLocalOk =
@@ -988,6 +1012,138 @@ perceusS23dBranchDropMissFails = do
           unresolvedOk <- expectBranchFinding "unresolved branch drop site" site st'
           stalePathOk <- expectBranchFinding "stale branch drop path" staleSite stStalePath
           pure (unresolvedOk && stalePathOk)
+
+-- | Perceus S3.2 generated-code entry gate: before runtime free-on-zero is
+-- enabled, the C backend must own escaping projections and attach proven
+-- scope/match drops to every tail exit. Otherwise recursive freeing can turn a
+-- borrowed field return into a use-after-free or let a tail return bypass the
+-- last drop.
+perceusS32FreeOnZeroEntryGates :: IO Bool
+perceusS32FreeOnZeroEntryGates = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box : Type ="
+          , "    MkBox Int"
+          , "data BigBox : Type ="
+          , "    MkBigBox String Int"
+          , "type Pair : Type = (left : Box, right : Box)"
+          , "consumeBox : Box -> Int"
+          , "let consumeBox b ="
+          , "    match b"
+          , "    case MkBox n -> n"
+          , "inlineEtaCtorMatch : Int -> Int"
+          , "let inlineEtaCtorMatch n ="
+          , "    match MkBigBox (showInt n) n"
+          , "    case MkBigBox s m -> m"
+          , "returnRecordProjection : Bool -> Box"
+          , "let returnRecordProjection c ="
+          , "    let p : Pair = (left = MkBox 1, right = MkBox 2)"
+          , "    if c"
+          , "    then p.left"
+          , "    else p.right"
+          , "returnNestedProjection : Bool -> Box"
+          , "let returnNestedProjection c ="
+          , "    let p : Pair = (left = MkBox 7, right = MkBox 8)"
+          , "    let y = let z = 0 in if c then p.left else p.right"
+          , "    y"
+          , "consumeRecordProjection : Bool -> Int"
+          , "let consumeRecordProjection c ="
+          , "    let p : Pair = (left = MkBox 3, right = MkBox 4)"
+          , "    if c"
+          , "    then consumeBox p.left"
+          , "    else consumeBox p.right"
+          , "returnMatchedField : Bool -> Box"
+          , "let returnMatchedField c ="
+          , "    let o = if c then Some (MkBox 5) else Some (MkBox 6)"
+          , "    match o"
+          , "    case Some b -> b"
+          , "    case None -> MkBox 0"
+          , "main : UIO Unit"
+          , "let main = printInt (inlineEtaCtorMatch 9 + consumeBox (returnRecordProjection True) + consumeBox (returnNestedProjection False) + consumeRecordProjection False + consumeBox (returnMatchedField True))"
+          ]
+      cu = compileSourceWithPrelude "perceus-s32-entry-gates.kp" src
+      st = cuState cu
+      mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
+      worker signature csrc =
+        case T.breakOn marker csrc of
+          (_, "") -> Nothing
+          (_, rest) -> Just (takeBalancedWorkerFunction rest)
+        where
+          marker = "static KValue *" <> signature <> " {"
+      takeBalancedWorkerFunction txt =
+        T.unlines (go 0 [] (T.lines txt))
+        where
+          go _ acc [] = reverse acc
+          go depth acc (line : rest) =
+            let depth' = depth + T.count "{" line - T.count "}" line
+                acc' = line : acc
+             in if not (null acc) && depth' <= 0
+                  then reverse acc'
+                  else go depth' acc' rest
+      dropBeforeReturn body =
+        any
+          ( \ls -> case ls of
+              a : b : _ -> "kdrop(" `T.isPrefixOf` T.strip a && "return " `T.isPrefixOf` T.strip b
+              _ -> False
+          )
+          (tailsText (T.lines body))
+      tailsText [] = []
+      tailsText xs@(_ : rest) = xs : tailsText rest
+      report label body = do
+        putStrLn ("  " <> label <> " worker:")
+        putStrLn (T.unpack body)
+  case generateC True st mainG Set.empty Map.empty of
+    Left (errs, mLog) -> do
+      putStrLn ("perceusS32FreeOnZeroEntryGates FAILED: generateC rejected: " <> show errs)
+      putStrLn ("  rcLog=" <> show mLog)
+      pure False
+    Right (csrc, _) -> do
+      let requiredWorkers :: [(String, T.Text)]
+          requiredWorkers =
+            [ ("returnRecordProjection", "kw_main_2e_returnRecordProjection(KValue *p0)")
+            , ("returnNestedProjection", "kw_main_2e_returnNestedProjection(KValue *p0)")
+            , ("consumeRecordProjection", "kw_main_2e_consumeRecordProjection(KValue *p0)")
+            , ("inlineEtaCtorMatch", "kw_main_2e_inlineEtaCtorMatch(KValue *p0)")
+            , ("returnMatchedField", "kw_main_2e_returnMatchedField(KValue *p0)")
+            ]
+          extracted = [(label, worker sig csrc) | (label, sig) <- requiredWorkers]
+          missing = [label | (label, Nothing) <- extracted]
+          lookupWorker label =
+            case [body | (label', Just body) <- extracted, label' == label] of
+              body : _ -> body
+              [] -> ""
+          returnProjWorker = lookupWorker "returnRecordProjection"
+          returnNestedWorker = lookupWorker "returnNestedProjection"
+          consumeProjWorker = lookupWorker "consumeRecordProjection"
+          inlineEtaWorker = lookupWorker "inlineEtaCtorMatch"
+          returnMatchWorker = lookupWorker "returnMatchedField"
+          projectionOwnsOk =
+            "kdup(krec_at(let_" `T.isInfixOf` returnProjWorker
+              && "kdup(krec_at(let_" `T.isInfixOf` returnNestedWorker
+              && "kdup(krec_at(let_" `T.isInfixOf` consumeProjWorker
+          tailDropsOk =
+            dropBeforeReturn returnProjWorker
+              && dropBeforeReturn returnNestedWorker
+              && dropBeforeReturn consumeProjWorker
+              && dropBeforeReturn returnMatchWorker
+          matchFieldsOk =
+            "kdup(kctor_arg" `T.isInfixOf` returnMatchWorker
+              && "kdrop(scrut_" `T.isInfixOf` returnMatchWorker
+          inlineEtaMatchDropsOk =
+            "kdrop(scrut_" `T.isInfixOf` inlineEtaWorker
+          ok = null missing && projectionOwnsOk && tailDropsOk && matchFieldsOk
+            && inlineEtaMatchDropsOk
+      unless ok $ do
+        putStrLn "perceusS32FreeOnZeroEntryGates FAILED:"
+        putStrLn ("  missingWorkers=" <> show missing)
+        putStrLn ("  projectionOwnsOk=" <> show projectionOwnsOk <> " tailDropsOk=" <> show tailDropsOk <> " matchFieldsOk=" <> show matchFieldsOk <> " inlineEtaMatchDropsOk=" <> show inlineEtaMatchDropsOk)
+        report "returnRecordProjection" returnProjWorker
+        report "returnNestedProjection" returnNestedWorker
+        report "consumeRecordProjection" consumeProjWorker
+        report "inlineEtaCtorMatch" inlineEtaWorker
+        report "returnMatchedField" returnMatchWorker
+      pure ok
 
 -- | Perceus S3.1 regression: arity-0/global caches are process-wide
 -- publication cells.  Before S3.2 free-on-zero they must mark the freshly-built
