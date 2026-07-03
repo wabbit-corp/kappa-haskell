@@ -101,7 +101,7 @@ buildNative cs mainG inputPath opts = do
   envBackend <- lookupEnv ("KAPPA" <> "_BACKEND") -- assembled: see detectCC
   envPerceus <- lookupEnv ("KAPPA" <> "_PERCEUS_RC") -- assembled: avoid diagnostic-code scanner false positives
   let useLLVM = envBackend == Just "llvm"
-      rcEnabled = envFlagEnabled envPerceus
+      rcEnabled = envFlagDefaultOn envPerceus
       ext = if useLLVM then ".kappa.ll" else ".kappa.c"
       -- Native host bindings lower to direct typed call sites generated from
       -- the resolved symbol map (no FFI prim set); the runtime needs no extra
@@ -447,12 +447,13 @@ verifyDeclName d =
       idChar c = c == '_' || ('0' <= c && c <= '9') || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z')
    in T.takeWhileEnd idChar (T.dropWhileEnd (not . idChar) before)
 
-envFlagEnabled :: Maybe String -> Bool
-envFlagEnabled mv = case fmap (map lowerAscii) mv of
-  Just "1" -> True
-  Just "on" -> True
-  Just "true" -> True
-  _ -> False
+envFlagDefaultOn :: Maybe String -> Bool
+envFlagDefaultOn mv = case fmap (map lowerAscii) mv of
+  Just "0" -> False
+  Just "off" -> False
+  Just "false" -> False
+  Just "no" -> False
+  _ -> True
   where
     lowerAscii c = if c >= 'A' && c <= 'Z' then toEnum (fromEnum c + 32) else c
 

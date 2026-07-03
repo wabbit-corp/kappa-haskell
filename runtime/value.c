@@ -54,6 +54,12 @@ static KValue *alloc_val_atomic(KTag tag) {
  * `krc_report` leak-trend probe.  Behind NDEBUG so release builds carry no
  * counter storage and stay byte-identical in cost.  `krc_report` is always
  * defined (a no-op under NDEBUG) so the symbol resolves regardless of build. */
+_Atomic int k_rc_enabled = 1;
+
+void krc_set_enabled(int enabled) {
+  atomic_store_explicit(&k_rc_enabled, enabled ? 1 : 0, memory_order_relaxed);
+}
+
 #ifndef NDEBUG
 _Atomic unsigned long long k_dups_total = 0;
 _Atomic unsigned long long k_drops_total = 0;
@@ -193,6 +199,7 @@ static void krc_mark_children(KWork *stack, KValue *v) {
 }
 
 void krc_mark_shared_recursive(KValue *root) {
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return;
   KWork stack;
   KValue *inline_items[64];
   kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
@@ -477,6 +484,7 @@ KValue *karr_new(int64_t n, KValue *init) {
    * bytes is avoided (request at least one slot) so `elems` is a valid base. */
   KValue **slab = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n > 0 ? n : 1));
   for (int64_t i = 0; i < n; i++) slab[i] = (i == 0 ? init : kdup(init));
+  if (n == 0) kdrop(init);
   r->as.arr.elems = (void *)slab;
   r->as.arr.len = n;
   r->as.arr.cap = n;
@@ -495,7 +503,10 @@ KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_set: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_set: index out of range");
   if (krc_is_shared(arr)) krc_mark_shared_recursive(v);
-  ((KValue **)arr->as.arr.elems)[i] = v;
+  KValue **elems = (KValue **)arr->as.arr.elems;
+  KValue *old = elems[i];
+  elems[i] = v;
+  kdrop(old);
   return kunit();
 }
 int64_t karr_len(KValue *arr) {
@@ -1109,6 +1120,8 @@ KValue *kref_set(KValue *r, KValue *v) {
   kassert_live(r);
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_set: not a ref");
   if (krc_is_shared(r)) krc_mark_shared_recursive(v);
+  KValue *old = r->as.ref.cell[0];
   r->as.ref.cell[0] = v;
+  kdrop(old);
   return kunit();
 }

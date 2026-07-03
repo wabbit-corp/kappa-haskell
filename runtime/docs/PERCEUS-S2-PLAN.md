@@ -53,7 +53,8 @@ S0 substrate is present (`rc` field in `kappart.h`; `alloc_val`/`_atomic` init `
 - **b.1** Read `gsOwnership` for `gsCur` at body entry into a new `gsCurOwn :: Maybe OwnInfo`
   (set in `emitGlobal`/`compileFunctionGlobal`). Add `gsPath :: [Int]` pushed/popped at each
   descent, **mirroring `Ownership.walk` positions exactly** (shared constants). Gate the whole pass on
-  `gsRcEnabled` (default OFF → byte-identical baseline).
+  `gsRcEnabled` (default ON as of S3.4; `KAPPA_PERCEUS_RC=0` keeps the explicit byte-identical baseline by
+  disabling both generated ownership maintenance and runtime RC effects in the generated binary).
 - **b.2 walk-and-lookup** at `CVar i` (`compileTerm`): build `UseSite gsCur (reverse gsPath)`, look up
   in `oiUses`: `NonLast` → `kdup(<expr>)`; `LastUse` → bare (consumed/moved here); `Borrowed`/`Nothing` →
   bare. A missing key is safe by the S1 invariant (stale key resolves to nothing, never a wrong binder).

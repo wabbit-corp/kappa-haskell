@@ -9,10 +9,17 @@
 -- semantics). Before the masking fix the interrupt could be delivered between
 -- acquire returning and the release being installed, skipping the finalizer.
 --
--- The `cede`s hand the agent to the child so it reaches `use` (the sleep) before
--- the interrupt is requested; the interrupt is then taken at that suspension
--- point and unwinds through the registered release (run masked, §32.2.5).
+-- A Promise handshake makes the parent interrupt only after the child reaches
+-- `use` and is about to park in the sleep; the interrupt is then taken at that
+-- suspension point and unwinds through the registered release (run masked,
+-- §32.2.5).
 module main
+
+import std.prelude.(type Exit(..))
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
 
 acquireR : IO String Integer
 let acquireR = do
@@ -22,16 +29,17 @@ let acquireR = do
 releaseR : Integer -> IO String Unit
 let releaseR r = printlnString "released-on-interrupt"
 
-useSleep : Integer -> IO String Integer
-let useSleep r = do
+useSleep : Promise Void Unit -> Integer -> IO String Integer
+let useSleep ready r = do
+    let _ <- weakenVoidIO (completePromise ready (Success ()))
     sleepFor (seconds 10)
     ioPure r
 
 main : UIO Unit
 let main = do
-    let f <- fork (bracket acquireR releaseR useSleep)
-    cede
-    cede
+    let ready <- newPromise
+    let f <- fork (bracket acquireR releaseR (useSleep ready))
+    let _ <- awaitPromise ready
     interrupt f
     let ex <- await f
     match ex

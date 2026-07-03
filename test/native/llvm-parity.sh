@@ -46,8 +46,8 @@ fi
 
 perceus_rc_enabled() {
   case "${KAPPA_PERCEUS_RC:-}" in
-    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]) return 0 ;;
-    *) return 1 ;;
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -172,6 +172,28 @@ for kp in "${CORPUS[@]}"; do
     fail=$((fail+1))
   fi
 done
+
+echo "== LLVM Perceus RC runtime gate =="
+gate_src="${CORPUS[0]}"
+gate_ll="${gate_src%.kp}.kappa.ll"
+cleanup_generated_for_source "$gate_src"
+KAPPA_BACKEND=llvm timeout "$BUILD_TIMEOUT" $KAPPA build "$gate_src" --emit-c -o "$TMP/llvm_rc_gate" >/dev/null 2>"$TMP/llvm-rc-gate.err"; gate_rc=$?
+if [ "$gate_rc" -ne 0 ]; then
+  echo "[FAIL] LLVM RC gate — emit build failed"
+  sed 's/^/    /' "$TMP/llvm-rc-gate.err" | head -8
+  fail=$((fail+1))
+elif [ ! -f "$gate_ll" ]; then
+  echo "[FAIL] LLVM RC gate — emitted .ll file missing"
+  fail=$((fail+1))
+elif grep -q 'call void @krc_set_enabled(i32 0)' "$gate_ll" \
+     && ! grep -q 'krc_mark_shared_recursive' "$gate_ll"; then
+  echo "[PASS] LLVM RC gate — runtime RC disabled until LLVM emits ownership maintenance"
+else
+  echo "[FAIL] LLVM RC gate — expected krc_set_enabled(0) and no generated RC markers"
+  grep -nE 'krc_set_enabled|krc_mark_shared_recursive' "$gate_ll" | sed 's/^/    /' || true
+  fail=$((fail+1))
+fi
+cleanup_generated_for_source "$gate_src"
 
 echo "---"
 echo "LLVM parity: $pass passed, $fail failed"

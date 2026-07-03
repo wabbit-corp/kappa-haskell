@@ -23,8 +23,8 @@ unset KAPPA_BACKEND
 
 perceus_rc_enabled() {
   case "${KAPPA_PERCEUS_RC:-}" in
-    1|[Oo][Nn]|[Tt][Rr][Uu][Ee]) return 0 ;;
-    *) return 1 ;;
+    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
+    *) return 0 ;;
   esac
 }
 
@@ -100,7 +100,7 @@ run_diff_case() {
   if perceus_rc_enabled; then
     off_exe="$WORK/$name.rcoff"
     cleanup_generated_for_source "$src"
-    if ! timeout 240 env -u KAPPA_PERCEUS_RC $KAPPA build "$src" -o "$off_exe" >"$WORK/$name.rcoff.build.log" 2>&1; then
+    if ! timeout 240 env KAPPA_PERCEUS_RC=0 $KAPPA build "$src" -o "$off_exe" >"$WORK/$name.rcoff.build.log" 2>&1; then
       cleanup_generated_for_source "$src"
       echo "   FAIL: native RC-off baseline build failed"; cat "$WORK/$name.rcoff.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
     fi
@@ -178,7 +178,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="
@@ -308,6 +308,21 @@ if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s32src" --emit-c -o "$s32tmp
 else
   echo "   FAIL: perceus-s3-generated-drops --emit-c build failed"; cat "$s32tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
+rm -f "$s32c"
+if KAPPA_PERCEUS_RC=0 timeout 120 $KAPPA build "$s32src" --emit-c -o "$s32tmp/perceus_s3_generated_drops_off_emit" >"$s32tmp/emit-off.log" 2>&1; then
+  s32_off_main="$(awk '/^int main\(void\) \{/{f=1} f{print} f&&/^}/{exit}' "$s32c")"
+  if printf '%s' "$s32_off_main" | grep -qE 'krc_set_enabled\(0\);' \
+     && ! grep -qE 'kdrop\(|kdup\(|krc_mark_shared_recursive' "$s32c"; then
+    echo "   ok-off-shape (explicit RC-off suppresses generated ownership maintenance)"
+  else
+    echo "   FAIL: explicit RC-off generated-drop fixture still emitted ownership maintenance or missed runtime RC gate"
+    [ -f "$s32c" ] && grep -nE 'kdrop|kdup|krc_mark_shared_recursive|krc_set_enabled' "$s32c" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s32c"
+else
+  echo "   FAIL: perceus-s3-generated-drops RC-off --emit-c build failed"; cat "$s32tmp/emit-off.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
 if KAPPA_PERCEUS_RC=true timeout 240 $KAPPA build "$s32src" -o "$s32tmp/perceus_s3_generated_drops" >"$s32tmp/build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s32tmp/build.log"
   s32out="$(timeout 120 env KAPPA_POISON=1 "$s32tmp/perceus_s3_generated_drops" 2>"$s32tmp/run.err")"; s32rc=$?
@@ -318,10 +333,73 @@ if KAPPA_PERCEUS_RC=true timeout 240 $KAPPA build "$s32src" -o "$s32tmp/perceus_
     sed 's/^/     /' "$s32tmp/run.err" | head -40
     fails=$((fails+1))
   fi
+  s32out_heap="$(timeout 120 env -u KAPPA_POISON KAPPA_GC_STATS=1 "$s32tmp/perceus_s3_generated_drops" 2>"$s32tmp/run-heap.err")"; s32heap_rc=$?
+  if [ "$s32heap_rc" -ne 0 ] || [ "$s32out_heap" != "10200" ]; then
+    echo "   FAIL: generated-drop fixture failed in real-free heap lane rc=$s32heap_rc stdout=$(printf '%s' "$s32out_heap" | tr '\n' '|')"
+    sed 's/^/     /' "$s32tmp/run-heap.err" | head -40
+    fails=$((fails+1))
+  fi
+  s32_heap="$(grep -oE 'heap_size=[0-9]+' "$s32tmp/run-heap.err" | tail -1 | cut -d= -f2)"
+  s32_frees="$(grep -oE 'frees=[0-9]+' "$s32tmp/run-heap.err" | tail -1 | cut -d= -f2)"
+  if [ -z "${s32_frees:-}" ] || [ "$s32_frees" -le 0 ]; then
+    echo "   FAIL: generated-drop real-free lane did not report positive RC frees"
+    sed 's/^/     /' "$s32tmp/run-heap.err" | head -40
+    fails=$((fails+1))
+  fi
 else
   echo "   FAIL: perceus-s3-generated-drops native build failed"; cat "$s32tmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -f "$s32c"
+
+echo "== Perceus S3.4: generated free-on-zero heap stays bounded by default =="
+s34src="$s32tmp/perceus-s3-generated-drops-100k.kp"
+sed 's/sumDrops 100 0/sumDrops 100000 0/' "$s32src" >"$s34src"
+if [ -z "${s32_heap:-}" ]; then
+  echo "   FAIL: missing small-fixture heap_size GC statistic; S3.4 heap gate cannot be evaluated"
+  fails=$((fails+1))
+elif timeout 240 env -u KAPPA_PERCEUS_RC $KAPPA build "$s34src" -o "$s32tmp/perceus_s3_generated_drops_100k" >"$s32tmp/build-100k.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s32tmp/build-100k.log"
+  s34out="$(timeout 120 env -u KAPPA_POISON KAPPA_GC_STATS=1 "$s32tmp/perceus_s3_generated_drops_100k" 2>"$s32tmp/run-100k.err")"; s34rc=$?
+  s34_heap="$(grep -oE 'heap_size=[0-9]+' "$s32tmp/run-100k.err" | tail -1 | cut -d= -f2)"
+  s34_frees="$(grep -oE 'frees=[0-9]+' "$s32tmp/run-100k.err" | tail -1 | cut -d= -f2)"
+  if [ "$s34rc" -ne 0 ] || [ "$s34out" != "10000200000" ]; then
+    echo "   FAIL: generated-drop 100k fixture failed under default RC real-free lane rc=$s34rc stdout=$(printf '%s' "$s34out" | tr '\n' '|')"
+    sed 's/^/     /' "$s32tmp/run-100k.err" | head -40
+    fails=$((fails+1))
+  elif [ -z "${s34_heap:-}" ]; then
+    echo "   FAIL: missing 100k heap_size GC statistic; S3.4 heap gate cannot be evaluated"
+    sed 's/^/     /' "$s32tmp/run-100k.err" | head -40
+    fails=$((fails+1))
+  elif [ -z "${s34_frees:-}" ] || [ "$s34_frees" -lt 200000 ]; then
+    echo "   FAIL: generated-drop 100k fixture did not perform enough RC frees (frees=${s34_frees:-missing}, expected >=200000)"
+    sed 's/^/     /' "$s32tmp/run-100k.err" | head -40
+    fails=$((fails+1))
+  elif s34_rel_limit=$((s32_heap * 4)); [ "$s34_rel_limit" -lt 2097152 ] && s34_rel_limit=2097152; [ "$s34_heap" -le 4194304 ] && [ "$s34_heap" -le "$s34_rel_limit" ]; then
+    echo "   ok-heap (N=100 heap=${s32_heap}B/frees=${s32_frees:-?}, N=100000 heap=${s34_heap}B/frees=${s34_frees}; default RC real-free lane bounded)"
+  else
+    echo "   FAIL: generated-drop heap grew with N in real-free lane (N=100 ${s32_heap}B -> N=100000 ${s34_heap}B; limits abs=4194304B rel=${s34_rel_limit}B)"
+    fails=$((fails+1))
+  fi
+  if timeout 240 env KAPPA_PERCEUS_RC=0 $KAPPA build "$s34src" -o "$s32tmp/perceus_s3_generated_drops_100k_off" >"$s32tmp/build-100k-off.log" 2>&1; then
+    s34off_out="$(timeout 120 env KAPPA_GC_STATS=1 "$s32tmp/perceus_s3_generated_drops_100k_off" 2>"$s32tmp/run-100k-off.err")"; s34off_rc=$?
+    s34off_frees="$(grep -oE 'frees=[0-9]+' "$s32tmp/run-100k-off.err" | tail -1 | cut -d= -f2)"
+    if [ "$s34off_rc" -ne 0 ] || [ "$s34off_out" != "10000200000" ]; then
+      echo "   FAIL: generated-drop 100k explicit RC-off baseline failed rc=$s34off_rc stdout=$(printf '%s' "$s34off_out" | tr '\n' '|')"
+      sed 's/^/     /' "$s32tmp/run-100k-off.err" | head -40
+      fails=$((fails+1))
+    elif [ "${s34off_frees:-missing}" = "0" ]; then
+      echo "   ok-off-heap (explicit RC-off produced zero RC frees, so the default-on free-count gate is discriminating)"
+    else
+      echo "   FAIL: explicit RC-off generated-drop baseline performed RC frees (frees=${s34off_frees:-missing})"
+      sed 's/^/     /' "$s32tmp/run-100k-off.err" | head -40
+      fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: perceus-s3-generated-drops 100k explicit RC-off native build failed"; cat "$s32tmp/build-100k-off.log" | sed 's/^/     /'; fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: perceus-s3-generated-drops 100k default-RC native build failed"; cat "$s32tmp/build-100k.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert
@@ -787,6 +865,68 @@ if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$rcsrc" --emit-c -o "$rtmp/rc
   rm -f "$cfile"
 else
   echo "   FAIL: rc_read_nonlast --emit-c build failed"; cat "$rtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== Perceus S3.3: public MonadRef ref transfers use selected primitive conventions =="
+rftmp="$WORK/rc-ref-transfer"; mkdir -p "$rftmp"
+rfsrc="$CASES/perceus-s3-ref-transfer.kp"
+rfc="${rfsrc%.kp}.kappa.c"
+rm -f "$rfc"
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$rfsrc" --emit-c -o "$rftmp/perceus_s3_ref_transfer" >"$rftmp/build.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$rftmp/build.log"
+  rfbody="$(awk '/^static KValue \*kdo_main.*\(KEnv \*cenv\) \{/{f=1} f{print} f&&/^}/{exit}' "$rfc")"
+  if printf '%s' "$rfbody" | grep -qE 'knative_sat\(kpf_io_readRef, 1,' \
+     && printf '%s' "$rfbody" | grep -qE 'knative_sat\(kpf_io_writeRef, 2,' \
+     && printf '%s' "$rfbody" | grep -qE 'KValue \*na_[0-9]+\[\] = \{kvar\(env_[0-9]+, 1\)\};' \
+     && printf '%s' "$rfbody" | grep -qE 'KValue \*na_[0-9]+\[\] = \{kvar\(env_[0-9]+, 1\), kdup\(kvar\(env_[0-9]+, 0\)\)\};' \
+     && ! printf '%s' "$rfbody" | grep -qE 'kproj\(.*"(readRef|writeRef)"|kapp\(kappi\(kproj'; then
+    echo "   ok (selected MonadRef evidence direct-lowers; borrowed ref handles stay borrowed)"
+  else
+    echo "   FAIL: public MonadRef read/write did not preserve selected primitive conventions"
+    printf '%s\n' "$rfbody" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$rfc"
+else
+  echo "   FAIL: perceus-s3-ref-transfer --emit-c build failed"; cat "$rftmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+# Perceus S3.4: the explicit RC-off baseline must keep ownership helpers and
+# runtime RC effects inert. This focuses a consuming variable use that RC-on may
+# materialize with kdup, but `KAPPA_PERCEUS_RC=0` must preserve the old baseline
+# code shape and disable runtime kdrop/kdup effects.
+echo "== Perceus S3.4: explicit RC-off generated C has no ownership kdup =="
+offtmp="$WORK/rc-off-owned-use"; mkdir -p "$offtmp"
+offsrc="$offtmp/rc_off_owned_use.kp"
+cat > "$offsrc" <<'KP'
+module main
+type Box = (v : Int)
+consume : Box -> Box
+let consume x = x
+use : Box -> Box
+let use x = consume x
+main : UIO Unit
+let main = printInt (use (v = 7)).v
+KP
+if KAPPA_PERCEUS_RC=0 timeout 120 $KAPPA build "$offsrc" --emit-c -o "$offtmp/rc_off_owned_use" >"$offtmp/build.log" 2>&1; then
+  offc="$offtmp/rc_off_owned_use.kappa.c"
+  offworker="$(awk '/^static KValue \*kw_main_2e_use\(KValue \*p0\) \{/{f=1} f{print} f&&/^}/{exit}' "$offc")"
+  offmain="$(awk '/^int main\(void\) \{/{f=1} f{print} f&&/^}/{exit}' "$offc")"
+  if printf '%s' "$offworker" | grep -qE 'kg_main_2e_consume\(\), p0' \
+     && ! printf '%s' "$offworker" | grep -qE 'kdup\(' \
+     && ! grep -qE 'kdrop\(|krc_mark_shared_recursive' "$offc" \
+     && printf '%s' "$offmain" | grep -qE 'krc_set_enabled\(0\);'; then
+    echo "   ok (explicit RC-off disables runtime RC and leaves ownership maintenance out of generated C)"
+  else
+    echo "   FAIL: explicit RC-off did not disable runtime RC or generated ownership maintenance"
+    printf '%s\n' "$offmain" | sed 's/^/     /'
+    printf '%s\n' "$offworker" | sed 's/^/     /'
+    grep -nE 'kdrop|kdup|krc_mark_shared_recursive' "$offc" | sed 's/^/     /' || true
+    fails=$((fails+1))
+  fi
+  rm -f "$offc"
+else
+  echo "   FAIL: rc_off_owned_use --emit-c build failed"; cat "$offtmp/build.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 # Perceus RC S2.3d: a locally-owned flat local consumed on one branch must be

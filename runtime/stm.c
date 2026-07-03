@@ -85,7 +85,18 @@ static void j_write(Journal *j, TVar *tv, KValue *v) {
     WEnt *na = (WEnt *)GC_MALLOC(sizeof(WEnt) * nc);
     memcpy(na, j->w, sizeof(WEnt) * j->nw); j->w = na; j->capw = nc;
   }
-  j->w[j->nw].tv = tv; j->w[j->nw].val = v; j->nw++;
+  /* The STM syntax tree may be rerun after conflict/retry.  The journal owns a
+   * separate counted reference so rollback/conflict drops cannot stale the tree. */
+  j->w[j->nw].tv = tv; j->w[j->nw].val = kdup(v); j->nw++;
+}
+static void j_truncate_writes(Journal *j, int nw) {
+  if (nw < 0) nw = 0;
+  if (nw > j->nw) nw = j->nw;
+  for (int i = nw; i < j->nw; i++) kdrop(j->w[i].val);
+  j->nw = nw;
+}
+static void j_drop_all_writes(Journal *j) {
+  j_truncate_writes(j, 0);
 }
 static KValue *j_read(Journal *j, TVar *tv) {
   for (int i = j->nw - 1; i >= 0; i--) if (j->w[i].tv == tv) return j->w[i].val; /* read-after-write (newest) */
@@ -112,7 +123,7 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
     KValue *val = NULL; int retry = 0;
     switch (op) {
       case STM_PURE:  val = kctor_arg(cur, 0); break;
-      case STM_READ:  val = j_read(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR)); break;
+      case STM_READ:  val = kdup(j_read(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR))); break;
       case STM_WRITE: j_write(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR), kctor_arg(cur, 1)); val = kunit(); break;
       case STM_NEW: {
         TVar *tv = (TVar *)GC_MALLOC(sizeof(TVar));
@@ -148,7 +159,7 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
         if (nf == 0) return 0;             /* whole transaction retries */
         Frame f = fr[--nf];
         if (f.kind == FK_ORELSE) {
-          j->nw = f.saved_nw;              /* roll back left's WRITES; keep its READS (M17) */
+          j_truncate_writes(j, f.saved_nw); /* roll back left's WRITES; keep its READS (M17) */
           cur = f.a; break;
         }
         /* FK_BIND: discarded by a retry */
@@ -186,17 +197,26 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
         VBox *b = atomic_load_explicit(&j.r[i].tv->box, memory_order_acquire);
         if (b->version != j.r[i].ver) { valid = 0; break; }
       }
-      if (!valid) { pthread_mutex_unlock(&g_stm); continue; }   /* conflict: re-run */
+      if (!valid) {
+        pthread_mutex_unlock(&g_stm);
+        j_drop_all_writes(&j);
+        continue;
+      }   /* conflict: re-run */
 
       uint64_t tick = atomic_fetch_add_explicit(&g_tick, 1, memory_order_relaxed) + 1;
       Waiter *wake = NULL;
       for (int i = 0; i < j.nw; i++) {
-        if (j_newer_write(&j, i)) continue;                /* install each TVar once (newest) */
+        if (j_newer_write(&j, i)) {
+          kdrop(j.w[i].val);
+          continue;
+        }                /* install each TVar once (newest) */
         TVar *tv = j.w[i].tv;
+        VBox *old = atomic_load_explicit(&tv->box, memory_order_acquire);
         VBox *nb = (VBox *)GC_MALLOC(sizeof(VBox));
         krc_mark_shared_recursive(j.w[i].val);
         nb->val = j.w[i].val; nb->version = tick;
         atomic_store_explicit(&tv->box, nb, memory_order_release);
+        if (old && old->val != j.w[i].val) kdrop(old->val);
         Waiter *w = tv->watchers; tv->watchers = NULL;     /* take all watchers (de-duped by the wake CAS) */
         while (w) { Waiter *nx = w->next; w->next = wake; wake = w; w = nx; }
       }
@@ -213,11 +233,15 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
       VBox *b = atomic_load_explicit(&j.r[i].tv->box, memory_order_acquire);
       if (b->version != j.r[i].ver) { stale = 1; break; }
     }
-    if (stale) { pthread_mutex_unlock(&g_stm); continue; }      /* changed: re-run, don't park */
+    if (stale) {
+      pthread_mutex_unlock(&g_stm);
+      j_drop_all_writes(&j);
+      continue;
+    }      /* changed: re-run, don't park */
     pthread_mutex_unlock(&g_stm);
     int dp = krt2i_deliver_pending_before_park(rt, f);
-    if (dp < 0) return 0;
-    if (dp > 0) return 1;
+    if (dp < 0) { j_drop_all_writes(&j); return 0; }
+    if (dp > 0) { j_drop_all_writes(&j); return 1; }
     krt2i_mark_fiber_shared(f);
     pthread_mutex_lock(&g_stm);
     stale = 0;
@@ -225,7 +249,11 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
       VBox *b = atomic_load_explicit(&j.r[i].tv->box, memory_order_acquire);
       if (b->version != j.r[i].ver) { stale = 1; break; }
     }
-    if (stale) { pthread_mutex_unlock(&g_stm); continue; }
+    if (stale) {
+      pthread_mutex_unlock(&g_stm);
+      j_drop_all_writes(&j);
+      continue;
+    }
     TVar **rds = j.nr ? (TVar **)GC_MALLOC(sizeof(TVar *) * j.nr) : NULL;
     for (int i = 0; i < j.nr; i++) {
       Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
@@ -235,6 +263,7 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
     f->stm_reads = rds; f->stm_nreads = j.nr;   /* recorded for stm_unpark on re-entry */
     atomic_store(&f->status, F_PARKED);
     pthread_mutex_unlock(&g_stm);
+    j_drop_all_writes(&j);
     return 0;   /* parked; f->cur is still the OP_ATOMICALLY node -> re-runs on wake */
   }
 }

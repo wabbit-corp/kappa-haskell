@@ -5,9 +5,9 @@
 -- §18.1.4 onExit / onInterrupt (reason-carrying finalizers):
 --   * onExit runs on EVERY exit, receiving the reconstructed terminal Exit;
 --   * onInterrupt runs ONLY when the scope exits via interrupt, with the cause.
--- The interrupt path mirrors `using-interrupt.kp`: the `cede`s hand the agent to
--- the child so it reaches the body's `sleepFor` (finalizers installed) before the
--- interrupt is requested; the interrupt unwinds through the masked-LIFO drain.
+-- The interrupt path uses a Promise handshake rather than timing guesses: the
+-- child completes `ready` from inside the protected body, after both finalizers
+-- have been registered and before it parks in `sleepFor`.
 module main
 
 import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
@@ -32,13 +32,15 @@ let okBody = printlnString "body-ok"
 normalChild : UIO Unit
 let normalChild = onInterrupt (onExit okBody (\ex -> printlnString (classifyExit ex))) (\ic -> printlnString (classifyCause ic))
 
-sleepBody : UIO Unit
-let sleepBody = sleepFor (seconds 10)
+sleepBody : Promise Void Unit -> UIO Unit
+let sleepBody ready = do
+    let _ <- completePromise ready (Success ())
+    sleepFor (seconds 10)
 
 -- interrupt path: onInterrupt fires with the cause (inner, LIFO first); onExit
 -- then sees the Interrupt exit (outer).
-sleeper : UIO Unit
-let sleeper = onExit (onInterrupt sleepBody (\ic -> printlnString (classifyCause ic))) (\ex -> printlnString (classifyExit ex))
+sleeper : Promise Void Unit -> UIO Unit
+let sleeper ready = onExit (onInterrupt (sleepBody ready) (\ic -> printlnString (classifyCause ic))) (\ex -> printlnString (classifyExit ex))
 
 main : UIO Unit
 let main = do
@@ -48,9 +50,9 @@ let main = do
     let _ = en
     printlnString "normal-done"
     -- 2) interrupt exit: int:Requested (onInterrupt), exit:Interrupt (onExit)
-    let s <- fork sleeper
-    cede
-    cede
+    let ready <- newPromise
+    let s <- fork (sleeper ready)
+    let _ <- awaitPromise ready
     interrupt s
     let ex <- await s
     match ex

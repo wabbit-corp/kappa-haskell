@@ -10,7 +10,7 @@ distinction and consumes it CONSERVATIVELY (dup only a consuming `NonLast`; gene
 stay conservative outside the S3.2-proven projection-result subset), and S2.3d emits
 branch-entry drops for locally-owned binders proven dead on that selected path. Last verified on 2026-07-02 with
 `cabal test kappa-test --test-options='--hide-successes'` at conformance 2094/0; native RC parity is verified by
-`KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`. The DEBUG underflow assert is live, non-vacuous, and clean
+`test/native/run-native-tests.sh` (default RC-on, explicit RC-off baseline that disables generated+runtime RC effects). The DEBUG underflow assert is live, non-vacuous, and clean
 over the corpus when those gates pass. The S2.3c storing-primitive audit remains a standing invariant for
 later runtime-store precision work.
 Companion to [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) / [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md).
@@ -128,15 +128,14 @@ NOT covered by `R-prim-table-incomplete`, which is about compiler drop-placement
 table classifies the *caller* boundary correctly. S3.1 has closed the UAF-direction derived-container alias
 gaps before the free-on-zero flip: `karr_new` now stores the owned `init` in the first boxed slot and
 `kdup(init)`s each additional boxed slot, and `krec_without` now `kdup`s every kept residual-record field.
-The remaining runtime store bodies below are leak-direction precision work for S3.3; they must not be confused
-with UAF blockers for S3.2 because the overwritten/not-stored value stays Boehm-reachable while retained
-containers remain off the FREESET. Empirically verified clean under the S2 backstop (RC-on == RC-off, 0
-underflow):
-- **Overwriting stores** — `karr_set`, `kref_set`, `fiber_local_set`, `krt2_atomic_store`/`exchange` — overwrite a cell without dropping the
-  OLD occupant (a write barrier). LEAK-only (safe even post-S3), but each needs a drop-old for a leak-free S3.
-- **Not-stored `ArgOwned` args** — `krt2_atomic_compare_exchange` stores `desired` only on
-  success; `promise_complete` stores `exitv` only on first completion. On the CAS-fail /
-  already-completed path the moved-in `ArgOwned` arg is neither stored nor dropped. LEAK-only; needs a drop.
+The runtime store bodies below were leak-direction precision work for S3.3, not UAF blockers for S3.2, because
+the overwritten/not-stored value stayed Boehm-reachable while retained containers remained off the FREESET.
+S3.3 has now landed the precision side:
+- **No-return overwriting stores** — `karr_set`, `kref_set`, `fiber_local_set`, and `krt2_atomic_store` drop the
+  displaced old occupant and consume owned self-assignment arguments. `krt2_atomic_exchange` is intentionally
+  excluded from this drop-old rule because it returns the displaced old value to the caller.
+- **Not-stored `ArgOwned` args** — `krt2_atomic_compare_exchange` drops `desired` on CAS failure, and
+  `promise_complete` drops `exitv` on an already-completed promise.
 
 **Arity-guard alignment pin for S3 (compiler-side).** S3.1 reconciles `argConvSelectGlobal` and `repSelect`
 with the ownership runtime-argument filter: implicit binders, `Q0` binders, and kind-domain binders are skipped
@@ -170,8 +169,8 @@ received the reference; per-path drops only on omitting paths); the underflow as
 S3. **R-prim-table-incomplete** — a storing prim missing from S2.3c becomes an S3 UAF risk once caller-drop
 completion is enabled; require the `value.c`/`prims.c`/`stm.c`/`rt.c`/`atomic.c` store audit to stay current
 before that switch. **R-runtime-store-discipline (S3 precision; see §(d)'s runtime pin)** — S3.1 closes the
-`karr_new` and `krec_without` UAF-direction undercounts; drop-old write barriers and CAS-fail/promise-
-recomplete drops remain runtime-side leak-direction precision work. **R-arity-alignment (see §(d)'s arity
+`karr_new` and `krec_without` UAF-direction undercounts; S3.3 lands the retained-container drop-old write
+barriers plus CAS-fail/promise-recomplete drops. **R-arity-alignment (see §(d)'s arity
 pin)** — S3.1 reconciles the override arity check with the ownership/runtime-argument filter so future
 kind-domain-param prims cannot left-shift a convention onto a real value position.
 **R-param-provenance** — worker parameters are not S2.3d-droppable until caller-side transfer normalization
@@ -183,7 +182,7 @@ modeled. **R-CDo** — S2.3b walks and validates `CDo` bodies so generated do-ke
 covered by RC checks; drops still do not cross a do-block boundary unless the lowered structure proves ownership transfer.
 K_FGN/resource scrutinees must not be cell-dropped because S3.2 free-on-zero deliberately excludes resource
 cells from the FREESET. **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-arm) uses the shared
-`PathScheme` constants; `gsRcFindings` miss-log is fail-closed under `KAPPA_PERCEUS_RC=1`, including
+`PathScheme` constants; `gsRcFindings` miss-log is fail-closed under default-on Perceus validation, including
 S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level flat worker frame.
 
 ## (g) Verification — the backstop now genuinely exercised
@@ -195,11 +194,13 @@ S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level
 2. **Leak-trend net ≈ 0 per program** (`krc_report`), not monotonic-growth — modulo legitimately-never-
    dropped CAFs / `main`'s result. A persistently negative net with no live escapees = a missed drop.
 3. **Outputs byte-identical** (last checked 2026-07-02: conformance 2094/0; native RC parity by
-   `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`) — dup/drop are rc-maintenance while Boehm frees.
+   `test/native/run-native-tests.sh`, which keeps an explicit whole-binary RC-off baseline). In S2 this was
+   only rc-maintenance while Boehm freed; current S3 C/native builds turn the same proved maintenance into
+   free-on-zero for the conservative FREESET, and the explicit RC-off lane keeps the old Boehm baseline.
 4. **Static ground truth green** (`crossCheckBodies`/`argConvBodies`, plus `primArgConventionS23c`) — new
    OwnInfo fields additive; the S2.3c prim table must keep `argConvBodies` and the direct convention matrix
    consistent with the audited storing-vs-borrowing primitive set.
-5. **RC path lookup is zero-miss** — under `KAPPA_PERCEUS_RC=1`, `generateC` rejects nonzero
+5. **RC path lookup is zero-miss** — with default-on Perceus validation, `generateC` rejects nonzero
    `gsRcFindings`, and the native/LLVM harnesses assert the zero-miss diagnostic in redirected build logs.
 6. **Resource regressions unchanged** (`usingsusp.kp`/`usinginterrupt.kp`) — no spurious drop inside a
    do-scope; S3.2 keeps `K_FGN` out of the FREESET and pins runtime-private FGN payload marking.

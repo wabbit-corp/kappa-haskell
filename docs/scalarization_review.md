@@ -215,7 +215,7 @@ Add or tighten tests before changing lowering:
   fallback continued from current scalar slot values rather than rerunning from
   original boxed inputs.
 - RC-on validation must run for accepted and rejected scalar-region fixtures
-  (`KAPPA_PERCEUS_RC=true`), and generated-code checks must cover dup/drop
+  (now default-on; use `KAPPA_PERCEUS_RC=0` only for explicit whole-binary off baselines), and generated-code checks must cover dup/drop
   boundaries around scalar-region entry/exit where ownership metadata changes.
 
 ### SCA-1: Checker Witness

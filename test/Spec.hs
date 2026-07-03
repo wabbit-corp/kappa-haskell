@@ -1145,11 +1145,12 @@ perceusS32FreeOnZeroEntryGates = do
         report "returnMatchedField" returnMatchWorker
       pure ok
 
--- | Perceus S3.1 regression: arity-0/global caches are process-wide
--- publication cells.  Before S3.2 free-on-zero they must mark the freshly-built
--- value graph shared before writing the static C cache / LLVM @kg.cache global,
--- otherwise the later S3.2 free branch could treat cached heap values as
--- thread-local.
+-- | Perceus S3.1/S3.4 regression: arity-0/global caches are process-wide
+-- publication cells.  The C backend, which emits ownership maintenance and can
+-- free on zero, must mark the freshly-built value graph shared before writing
+-- the static cache.  LLVM currently emits no matching ownership maintenance, so
+-- its generated binaries must explicitly disable runtime RC effects and avoid
+-- emitting cache-publication RC markers until LLVM dup/drop emission lands.
 globalCachePublicationMarksShared :: IO Bool
 globalCachePublicationMarksShared = do
   let src =
@@ -1171,14 +1172,12 @@ globalCachePublicationMarksShared = do
             "krc_mark_shared_recursive(fresh);"
             csrc
       checkLL llsrc =
-        "declare void @krc_mark_shared_recursive(ptr)" `T.isInfixOf` llsrc
+        "declare void @krc_set_enabled(i32)" `T.isInfixOf` llsrc
+          && "call void @krc_set_enabled(i32 0)" `T.isInfixOf` llsrc
+          && not ("krc_mark_shared_recursive" `T.isInfixOf` llsrc)
           && "load atomic ptr, ptr @" `T.isInfixOf` llsrc
           && " acquire, align 8" `T.isInfixOf` llsrc
           && " release, align 8" `T.isInfixOf` llsrc
-          && allStoresMarkedImmediatelyBefore
-            "store atomic ptr "
-            "call void @krc_mark_shared_recursive(ptr "
-            llsrc
   cOk <-
     case generateC True st mainG Set.empty Map.empty of
       Left (errs, mLog) -> do
@@ -1198,7 +1197,7 @@ globalCachePublicationMarksShared = do
         pure False
       Right (llsrc, _) -> do
         unless (checkLL llsrc) $ do
-          putStrLn "globalCachePublicationMarksShared FAILED: LLVM cache store did not mark fresh value shared"
+          putStrLn "globalCachePublicationMarksShared FAILED: LLVM cache publication did not keep runtime RC disabled"
           putStrLn (T.unpack llsrc)
         pure (checkLL llsrc)
   pure (cOk && llOk)

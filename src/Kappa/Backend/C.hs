@@ -67,7 +67,7 @@ import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
 import Kappa.Check (CheckState (..), CtorInfo (..))
 import Kappa.Core
-import Kappa.CoreOps (dropStaticGlobalPrefixArgs, dropStaticPrefixLams, patBindersC)
+import Kappa.CoreOps (dropStaticGlobalPrefixArgs, dropStaticPrefixLams, patBindersC, substTopTerm)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Ownership
@@ -136,10 +136,10 @@ data GenState = GenState
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
   , gsBodies :: !(Map GName Term)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
-  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC side table (see "Kappa.Ownership"): per-definition binders, per-use last-use facts, and the S2.3b consume/read bit carried from @csOwnership@ beside 'gsSuspenders'. The OFF baseline ignores it; @KAPPA_PERCEUS_RC=1@ validates and emits RC operations from it.
+  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC side table (see "Kappa.Ownership"): per-definition binders, per-use last-use facts, and the S2.3b consume/read bit carried from @csOwnership@ beside 'gsSuspenders'. The explicit OFF baseline ignores it and disables runtime RC effects in the generated entry point; the default native path validates and emits RC operations from it.
   , gsCurOwn :: !(Maybe OwnInfo) -- ^ The 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ and @oiUseConsumes@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
   , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
-  , gsRcEnabled :: !Bool -- ^ Perceus RC master gate. Default OFF — the byte-identical baseline. A build flag / env toggle turns it ON for the S2 validation/emission run: every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
+  , gsRcEnabled :: !Bool -- ^ Perceus RC master gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so S3 runtime barriers do not act without matching generated ownership maintenance. When enabled, every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
   , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path, missing consume/read bit for a resolved use, or S2.3d branch-drop binder metadata drift). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
   , gsRcBranchVisited :: !(Set (GName, [Int])) -- ^ S2.3d branch-drop paths that codegen reached under the current ownership table. Compared with @oiBranchDropSites@ at the end of RC-on generation so a stale path key cannot silently leak.
   , gsCtors :: !(Map GName CtorInfo)
@@ -385,6 +385,44 @@ rcDupVarUse e = do
   pure $ case mi of
     Just (NonLast, True) -> "kdup(" <> e <> ")"
     _ -> e
+
+-- | Compile the raw C expression for a variable occurrence after validating the
+-- ownership side-table path. This intentionally does not apply a dup/move
+-- policy; callers choose that policy according to the value-flow context.
+compileVarRef :: Int -> Gen Text
+compileVarRef i = do
+  rcWalkLookupVar i
+  lvals <- gets gsParamLvals
+  if not (null lvals) && i >= 0 && i < length lvals
+    then pure (lvals !! i)
+    else do
+      env <- gets gsEnv
+      pure ("kvar(" <> env <> ", " <> T.pack (show (i - length lvals)) <> ")")
+
+-- | Compile a variable occurrence whose value flows into a position that
+-- requires an owned reference. A consuming NonLast use already needs a dup; a
+-- consuming LastUse can move only when the current flat local is known to own
+-- the reference. Borrowed/non-owning locals, including values just read from a
+-- mutable cell, must be materialized with kdup before the callee/store consumes
+-- the argument. Non-flat/unknown locals are treated conservatively: an extra dup
+-- is leak-biased, while moving a borrowed cell read becomes a UAF after S3.3
+-- drop-old barriers.
+compileOwnedVarUse :: Int -> Gen Text
+compileOwnedVarUse i = do
+  e <- compileVarRef i
+  rcOn <- gets gsRcEnabled
+  if not rcOn
+    then pure e
+    else do
+      mi <- rcUseInfoHere
+      sourceOwns <- flatLocalOwnsAt i
+      let needsDup = case mi of
+            Just (_, False) -> False
+            Just (NonLast, True) -> True
+            Just (LastUse, True) -> not sourceOwns
+            Just (Borrowed, True) -> True
+            Nothing -> not sourceOwns
+      pure $ if needsDup then "kdup(" <> e <> ")" else e
 
 -- | A projection such as @p.left@ borrows its field from the owning aggregate
 -- @p@. When that projection result is itself going to be returned, stored in an
@@ -708,8 +746,10 @@ rcScrutDropDecision scrut = do
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
 -- head: read the callee's owned\/borrowed\/shared parameter convention from its
 -- declared type plus S2.3c primitive overrides ('Repr.argConvSelectGlobal', the
--- S1.5-validated accessor). In S2 this is
--- OBSERVE-ONLY and emits NOTHING: every verdict resolves to NO caller-side
+-- S1.5-validated accessor). This helper remains validation-only: current codegen
+-- consumes the same convention at argument lowering sites via
+-- 'callArgNeedsOwnedForGlobal'/'compileCallArg', where owned arguments are
+-- materialized and borrowed arguments stay bare. There is still NO caller-side
 -- post-call drop —
 --
 --   * 'Repr.ArgOwned' — the caller TRANSFERS ownership; the callee consumes
@@ -721,10 +761,10 @@ rcScrutDropDecision scrut = do
 --     This is the §1\/§3 borrow invariant — a borrowed value (e.g. one reachable
 --     from a live ExitStack) is never dropped by the callee.
 --
--- The argument's own dup\/move is already decided per-occurrence at its 'CVar'
--- (a 'Borrowed' use is neither dup'd nor the binder's consuming 'LastUse'), and
--- the drop discipline (b.4) never drops a @boBorrowed@ binder — so the convention
--- is honoured WITHOUT any extra emission here. We still evaluate
+-- The argument's own dup\/move is decided at the lowering point for that argument
+-- (or, for ordinary expression reads, per-occurrence at its 'CVar'), and the drop
+-- discipline (b.4) never drops a @boBorrowed@ binder — so the convention is
+-- honoured WITHOUT any extra emission here. We still evaluate
 -- 'Repr.argConvSelectGlobal' on the ON path (forcing it) so the S1.5-validated accessor
 -- is exercised over the corpus and a regression in it would surface; a non-'CGlob'
 -- head, or an unwalkable codomain ('Nothing'), is the all-shared fallback (still
@@ -740,7 +780,7 @@ rcClassifyCallBoundary g = do
     let convs = Repr.argConvSelectGlobal ctx g -- unknown global → all-shared fallback
     -- Force the accessor so it is genuinely exercised on the ON path (a regression
     -- in the S1.5-validated convention walk would surface here); the verdict is
-    -- otherwise unused in S2 (observe-only).
+    -- otherwise unused by this validation-only helper.
     length (show convs) `seq` pure ()
 
 -- | Run an action with a fresh (empty) statement buffer and the given
@@ -1123,7 +1163,7 @@ rcFindingErrors True mainG sp findings =
       mainG
       sp
         "Perceus RC R-path ownership lookup"
-        ( "KAPPA_PERCEUS_RC=1 found "
+        ( "Perceus RC validation found "
             <> T.pack (show (length findings))
             <> " ownership side-table path miss(es); S2.3 validation requires zero so a path drift cannot silently suppress dup/drop decisions. First misses: "
             <> T.intercalate " | " (take 5 findings)
@@ -1419,18 +1459,22 @@ compileFunctionGlobal g n inner = do
     emitTop ("static KValue *" <> nm <> "(KEnv *, KValue *);") fn
   -- accessor: the memoised curried closure value (its forward declaration
   -- was already emitted by 'emitGlobal').
-  let accessor =
+  rcOn <- gets gsRcEnabled
+  let shareFresh = ["  krc_mark_shared_recursive(fresh);" | rcOn]
+      accessor =
         T.unlines
-          [ "static KValue *" <> ident <> "(void) {"
-          , "  static _Atomic(KValue *) cache = NULL;"
-          , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
-          , "  if (cached) return cached;"
-          , "  KValue *fresh = kclo(" <> head cloNames <> ", 0);"
-          , "  krc_mark_shared_recursive(fresh);"
-          , "  atomic_store_explicit(&cache, fresh, memory_order_release);"
-          , "  return fresh;"
-          , "}"
-          ]
+          ( [ "static KValue *" <> ident <> "(void) {"
+            , "  static _Atomic(KValue *) cache = NULL;"
+            , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
+            , "  if (cached) return cached;"
+            , "  KValue *fresh = kclo(" <> head cloNames <> ", 0);"
+            ]
+              ++ shareFresh
+              ++ [ "  atomic_store_explicit(&cache, fresh, memory_order_release);"
+                 , "  return fresh;"
+                 , "}"
+                 ]
+          )
   modify' $ \st -> st {gsTop = accessor : gsTop st}
   -- LR1/R2.2: if g is a monomorphic first-order scalar function (Int and/or
   -- Double params + scalar result) with a scalar-expressible body, ALSO emit
@@ -2274,8 +2318,10 @@ emitTop :: Text -> Text -> Gen ()
 emitTop proto fn = modify' $ \st -> st {gsTop = fn : gsTop st, gsProtos = proto : gsProtos st}
 
 finishGlobal :: Text -> [Text] -> Text -> Gen ()
-finishGlobal ident stmts e =
-  let fn =
+finishGlobal ident stmts e = do
+  rcOn <- gets gsRcEnabled
+  let shareFresh = ["  krc_mark_shared_recursive(fresh);" | rcOn]
+      fn =
         T.unlines $
           [ "static KValue *" <> ident <> "(void) {"
           , "  static _Atomic(KValue *) cache = NULL;"
@@ -2285,29 +2331,34 @@ finishGlobal ident stmts e =
           ]
             ++ map ("  " <>) stmts
             ++ [ "  KValue *fresh = " <> e <> ";"
-               , "  krc_mark_shared_recursive(fresh);"
-               , "  atomic_store_explicit(&cache, fresh, memory_order_release);"
+               ]
+            ++ shareFresh
+            ++ [ "  atomic_store_explicit(&cache, fresh, memory_order_release);"
                , "  return fresh;"
                , "}"
                ]
-   in modify' $ \st -> st {gsTop = fn : gsTop st}
+  modify' $ \st -> st {gsTop = fn : gsTop st}
 
 -- | The C @main@: initialise the GC and run @main@'s IO action.
 -- | The kappart2 runtime owns the scheduler: @main@ runs as the root fiber and
 -- returns its terminal Exit (Success a | Failure cause); the process exit code
 -- is 0 on Success, 1 on Failure.
 emitMain :: GName -> Gen ()
-emitMain g =
+emitMain g = do
+  rcOn <- gets gsRcEnabled
   let ident = cGlobIdent g
+      rcGate = ["  krc_set_enabled(0);" | not rcOn]
       fn =
         T.unlines
-          [ "int main(void) {"
-          , "  krt2_new(0);"
-          , "  KValue *kexit = krt2_run_main(" <> ident <> "());"
-          , "  return krt2_exit_is_success(kexit) ? 0 : 1;"
-          , "}"
-          ]
-   in modify' $ \st -> st {gsTop = fn : gsTop st}
+          ( [ "int main(void) {" ]
+              ++ rcGate
+              ++ [ "  krt2_new(0);"
+                 , "  KValue *kexit = krt2_run_main(" <> ident <> "());"
+                 , "  return krt2_exit_is_success(kexit) ? 0 : 1;"
+                 , "}"
+                 ]
+          )
+  modify' $ \st -> st {gsTop = fn : gsTop st}
 
 assemble :: GenState -> Text
 assemble st =
@@ -2395,31 +2446,13 @@ compile term = do
 compileTerm :: Term -> Gen Text
 compileTerm term = case term of
   CVar i -> do
-    -- Perceus RC walk-and-lookup (R-path): assert this occurrence's threaded
-    -- UseSite resolves in the analysis side-table. This call itself emits no C,
-    -- but RC mode uses the validated fact for surrounding dup/drop decisions and
-    -- fails closed on any miss.
-    rcWalkLookupVar i
-    -- R2.3: in a flat worker, read the C local for de Bruijn index @i@ directly
-    -- (no kvar chain walk) — a parameter or a let/match-bound local prepended
-    -- onto gsParamLvals (R2.3-rest).  gsParamLvals is empty outside a flat
-    -- body; the kvar fallback is the general (boxed-KEnv) path.
-    lvals <- gets gsParamLvals
-    e <-
-      if not (null lvals) && i >= 0 && i < length lvals
-        then pure (lvals !! i)
-        else do
-          -- R3.2: in a FLAT CLOSURE the flat prefix (the param + any let/match
-          -- locals, 'gsParamLvals') covers the innermost de Bruijn indices and
-          -- the captured env @cenv@ covers the rest, so a captured-var index is
-          -- shifted PAST the flat prefix.  For a worker this branch is never
-          -- taken (all indices are flat); for the boxed path @lvals@ is empty so
-          -- the shift is 0 (unchanged @kvar(env,i)@).
-          env <- gets gsEnv
-          pure ("kvar(" <> env <> ", " <> T.pack (show (i - length lvals)) <> ")")
+    -- Perceus RC walk-and-lookup (R-path) plus R2.3 flat-local resolution. The
+    -- ownership policy for ordinary expression reads is only the S2.2 NonLast
+    -- dup; owned call/store positions use 'compileOwnedVarUse' instead.
+    e <- compileVarRef i
     -- Perceus RC S2.2 (b.2): a 'NonLast' occurrence is SHARED downstream → wrap in
-    -- @kdup@ (rc increment, immediates skipped). Inert under the OFF baseline and a
-    -- runtime no-op while Boehm frees, so program output is byte-identical.
+    -- @kdup@ (rc increment, immediates skipped). Inert under the OFF baseline,
+    -- whose generated entry point also disables runtime RC effects.
     rcDupVarUse e
   CGlob g -> compileGlob g
   CLit l -> compileLit l
@@ -2686,8 +2719,22 @@ compileErasableArgOwned needOwned a = do
   er <- isErasableArg a
   if er then pure "kunit()" else compileOwnedResult needOwned a
 
+compileBorrowedCallArg :: Term -> Gen Text
+compileBorrowedCallArg = \case
+  CVar i -> compileVarRef i
+  CProj e f -> do
+    ee <- withChild P.childPos (compileBorrowedCallArg e)
+    pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
+  CProjAt e _ i -> do
+    ee <- withChild P.childPos (compileBorrowedCallArg e)
+    pure (recAtExpr ee i)
+  CSealE _ e -> withChild P.childPos (compileBorrowedCallArg e)
+  t -> compile t
+
 compileOwnedResult :: Bool -> Term -> Gen Text
 compileOwnedResult needOwned = \case
+  CVar i
+    | needOwned -> compileOwnedVarUse i
   CProj e f -> do
     ee <- withChild P.childPos (compile e)
     rcOwnProjectionResult needOwned e ("kproj(" <> ee <> ", " <> cStr f <> ")")
@@ -2702,7 +2749,11 @@ compileOwnedResult needOwned = \case
   t -> compile t
 
 compileCallArg :: Bool -> Term -> Gen Text
-compileCallArg needOwned = compileErasableArgOwned needOwned
+compileCallArg needOwned a = do
+  er <- isErasableArg a
+  if er
+    then pure "kunit()"
+    else if needOwned then compileOwnedResult True a else compileBorrowedCallArg a
 
 flagAt :: [Bool] -> Int -> Bool
 flagAt flags i = case drop i flags of
@@ -2729,6 +2780,55 @@ callArgNeedsOwnedForGlobal g sargs = do
                       Just [] -> (True, convs)
                       Nothing -> (True, Nothing)
               (needsOwned :) <$> go convs' rest
+
+betaApplyArgs :: Term -> [(Icit, Term)] -> Maybe Term
+betaApplyArgs = foldM step
+  where
+    step (CLam lamIc _ _ body) (argIc, arg)
+      | lamIc == argIc = Just (substTopTerm arg body)
+    step _ _ = Nothing
+
+selectedGlobalRecord :: Term -> Gen (Maybe Term)
+selectedGlobalRecord dict = case spineOf dict of
+  (CGlob g, args) -> do
+    bodies <- gets gsBodies
+    pure $ do
+      body <- Map.lookup g bodies
+      betaApplyArgs body args
+  (CRecordV {}, []) -> pure (Just dict)
+  (CSealE _ inner, []) -> selectedGlobalRecord inner
+  _ -> pure Nothing
+
+selectedProjectedMember :: Term -> Text -> Gen (Maybe Term)
+selectedProjectedMember dict fld =
+  selectedGlobalRecord dict >>= \case
+    Just (CRecordV fs) -> pure (lookup fld fs)
+    Just (CSealE _ inner) -> selectedProjectedMember inner fld
+    _ -> pure Nothing
+
+-- | A selected dictionary/member projection whose KNOWN dictionary body is just
+-- an eta wrapper around a runtime primitive can be lowered as that primitive
+-- call.  This is the principled version of the S2.3c/S3.3 "readRef/writeRef via
+-- MonadRef evidence" fast path: the decision is keyed by the selected evidence
+-- body's Core and the resolved primitive identity ('globPrimName'), never by the
+-- projected field spelling alone.  Unknown/local evidence and non-primitive
+-- member bodies stay on the ordinary curried 'kapp' path.
+compileSelectedProjectedPrimitiveApp :: Term -> Gen (Maybe Text)
+compileSelectedProjectedPrimitiveApp term = case spineOf term of
+  (CProj dict fld, sargs) -> go dict fld sargs
+  (CProjAt dict fld _, sargs) -> go dict fld sargs
+  _ -> pure Nothing
+  where
+    go dict fld sargs = do
+      mmember <- selectedProjectedMember dict fld
+      case mmember >>= (`betaApplyArgs` sargs) of
+        Just reduced
+          | reduced /= term
+          , (CGlob g, _reducedArgs) <- spineOf reduced -> do
+              globPrimName g >>= \case
+                Just _ -> Just <$> compileApp reduced
+                Nothing -> pure Nothing
+        _ -> pure Nothing
 
 -- | A global that denotes a type or trait (so a reference to it in
 -- argument position is computationally erased): a declared data type or
@@ -3237,43 +3337,45 @@ compileApp term0 = do
         CGlob g -> eraseQ0Args g term0
         _ -> pure term0
   let (hd, sargs) = spineOf term
-  case hd of
-    CGlob g -> do
-      -- Perceus RC S2.3 (b.3): classify the callee's owned/borrowed/shared
-      -- parameter convention at this CGlob head (observe-only in S2 — every
-      -- verdict resolves to NO caller-side post-call drop; the arg's own dup/move
-      -- is decided per-occurrence at its CVar).
-      rcClassifyCallBoundary g
-      hostSyms <- gets gsHostSyms
-      case Map.lookup g hostSyms of
+  compileSelectedProjectedPrimitiveApp term >>= \case
+    Just e -> pure e
+    Nothing -> case hd of
+      CGlob g -> do
+      -- Perceus RC S2.3 (b.3): validate the callee's owned/borrowed/shared
+      -- parameter convention at this CGlob head. Argument materialization happens
+      -- at each call argument so selected primitive wrappers can preserve borrowed
+      -- handles and own transferred values.
+        rcClassifyCallBoundary g
+        hostSyms <- gets gsHostSyms
+        case Map.lookup g hostSyms of
         -- §27.1.1: a saturated host-member application is a DIRECT native
         -- action — collect the args and build a saturated 'knative_sat'
         -- (the suspended UIO action krun_io fires by calling the emitted
         -- wrapper). A partial application falls through to the curried
         -- bare-reference path (compileGlob → knative + kapp).
-        Just rns
-          | let arity = length (rns.params)
-                explIxH = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
-          , length explIxH >= arity
-          , arity > 0 -> do
-              markHostUsed g
-              collectHostCtors rns
-              -- Perceus RC S2.1: thread each host arg's spine path.
-              let kH = length sargs
-              ownedFlags <- callArgNeedsOwnedForGlobal g sargs
-              aes <-
-                mapM
-                  (\(j, a) -> withSpineArg kH j (compileCallArg (flagAt ownedFlags j) a))
-                  (take arity explIxH)
-              arr <- freshN "na_"
-              emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
-              ctor <- hostNativeSatCtor rns
-              pure
-                ( ctor <> "(" <> wrapperCName rns <> ", "
-                    <> T.pack (show arity) <> ", " <> arr <> ", 1)"
-                )
-        _ -> compileAppGlob g sargs term
-    _ -> compileAppDefault term
+          Just rns
+            | let arity = length (rns.params)
+                  explIxH = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
+            , length explIxH >= arity
+            , arity > 0 -> do
+                markHostUsed g
+                collectHostCtors rns
+                -- Perceus RC S2.1: thread each host arg's spine path.
+                let kH = length sargs
+                ownedFlags <- callArgNeedsOwnedForGlobal g sargs
+                aes <-
+                  mapM
+                    (\(j, a) -> withSpineArg kH j (compileCallArg (flagAt ownedFlags j) a))
+                    (take arity explIxH)
+                arr <- freshN "na_"
+                emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+                ctor <- hostNativeSatCtor rns
+                pure
+                  ( ctor <> "(" <> wrapperCName rns <> ", "
+                      <> T.pack (show arity) <> ", " <> arr <> ", 1)"
+                  )
+          _ -> compileAppGlob g sargs term
+      _ -> compileAppDefault term
 
 -- | The non-host global application spine (primitive / direct-call / default).
 compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text

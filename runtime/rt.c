@@ -223,7 +223,7 @@ KValue *kpf_is_done_promise(KValue **a) { return krt2_is_done_promise(a[0]); }
 static KValue *locally_with_old(KEnv *env, KValue *old) { /* env = [ref, val, body] */
   KValue *ref = kvar(env, 0), *val = kvar(env, 1), *body = kvar(env, 2);
   return krt2_then(krt2_set_fiber_ref(ref, val),
-                   krt2_finally(body, krt2_set_fiber_ref(ref, old)));
+                   krt2_finally(body, krt2_set_fiber_ref(ref, kdup(old))));
 }
 KValue *krt2_locally_fiber_ref(KValue *ref, KValue *val, KValue *body) {
   return krt2_bind(krt2_get_fiber_ref(ref),
@@ -536,7 +536,7 @@ static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *contr
       case OP_NEW_REF:
         return kref_new(kctor_arg(action, 0));
       case OP_READ_REF:
-        return kref_get(kctor_arg(action, 0));
+        return kdup(kref_get(kctor_arg(action, 0)));
       case OP_WRITE_REF:
         kref_set(kctor_arg(action, 0), kctor_arg(action, 1));
         return kunit();
@@ -1221,7 +1221,9 @@ static void fiber_local_set(Fiber *f, int id, KValue *v) {
     for (int i = 0; i < f->locals->n; i++) nv[i] = f->locals->vals[i];
     f->locals->vals = nv; f->locals->n = nc;
   }
+  KValue *old = f->locals->vals[id];
   f->locals->vals[id] = v;
+  if (old) kdrop(old);
 }
 /* §18.1.7 copy-on-fork: deep-copy the parent's override array into the child so
  * the two diverge independently after fork. */
@@ -1332,6 +1334,7 @@ static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
     w = p->waiters; p->waiters = NULL;
   }
   pthread_mutex_unlock(&p->lock);
+  if (!first) kdrop(exitv);
   for (; w; w = w->next) krt2i_wake(rt, w->f, krt2_pure(exitv));
   return kbool(first);
 }
@@ -1671,6 +1674,8 @@ static int finish_abandon_drain(Rt *rt, Fiber *f, Cont *c,
  * ctor-id compare would be WRONG: every label is a K_STR, so kctor_tagid yields
  * -1 for all of them and distinct effects would falsely match. */
 static int eff_label_same(KValue *a, KValue *b) {
+  kassert_live(a);
+  kassert_live(b);
   return a && b && a->tag == K_STR && b->tag == K_STR &&
          a->as.str.len == b->as.str.len &&
          memcmp(a->as.str.p, b->as.str.p, a->as.str.len) == 0;
@@ -1705,6 +1710,7 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
       /* no enclosing handler for this label: an escaped operation.  The type
        * system forbids this (a handled row), so it is an internal mis-lowering;
        * fail the fiber rather than silently dropping the op. */
+      kassert_live(op);
       const char *nm = (op && op->tag == K_STR) ? (const char *)op->as.str.p : "?";
       char msg[160];
       snprintf(msg, sizeof msg,
@@ -1713,6 +1719,9 @@ static int do_perform(Rt *rt, Fiber *f, KValue *label, KValue *op, KValue *paylo
     }
     if (c->kind == KK_HANDLER && eff_label_same(c->a, label)) {
       Handler *h = (Handler *)c->aux;
+      kassert_live(op);
+      if (!op || op->tag != K_STR)
+        return unwind(rt, f, RK_FAIL, kstr0("internal: effect operation name is not a string"), NULL);
       KValue *clause = h->ops ? kproj(h->ops, (const char *)op->as.str.p) : NULL;
       if (!clause) {
         char msg[160];
@@ -2373,7 +2382,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, kref_new(kctor_arg(cur, 0)))) return;
         break;
       case OP_READ_REF:
-        if (!deliver(rt, f, kref_get(kctor_arg(cur, 0)))) return;
+        if (!deliver(rt, f, kdup(kref_get(kctor_arg(cur, 0))))) return;
         break;
       case OP_WRITE_REF:
         kref_set(kctor_arg(cur, 0), kctor_arg(cur, 1));
@@ -2393,7 +2402,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, fiber_ref_new(kctor_arg(cur, 0)))) return;
         break;
       case OP_GET_FIBER_REF:
-        if (!deliver(rt, f, fiber_local_get(f, (int)kas_int(kctor_arg(cur, 0))))) return;
+        if (!deliver(rt, f, kdup(fiber_local_get(f, (int)kas_int(kctor_arg(cur, 0)))))) return;
         break;
       case OP_SET_FIBER_REF:
         fiber_local_set(f, (int)kas_int(kctor_arg(cur, 0)), kctor_arg(cur, 1));
@@ -2406,8 +2415,10 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         int id = (int)kas_int(kctor_arg(cur, 0));
         KValue *old = fiber_local_get(f, id);
         KValue *nv = kapp(kctor_arg(cur, 1), old);  /* fn old (pure) */
-        fiber_local_set(f, id, nv);
-        if (!deliver(rt, f, nv)) return;
+        /* If fn returns the old cell by alias, storage and result need distinct owns. */
+        KValue *ret = (nv == old) ? kdup(nv) : nv;
+        fiber_local_set(f, id, kdup(nv));
+        if (!deliver(rt, f, ret)) return;
         break;
       }
       /* ── §18.11 Promise non-blocking peek (never parks) ─────────────────── */

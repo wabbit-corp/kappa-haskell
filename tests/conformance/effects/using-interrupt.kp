@@ -12,10 +12,16 @@
 -- (the interrupt lands inside the body, by which point the finalizer is in
 -- place), and the release therefore RUNS on interrupt.
 --
--- The `cede`s hand the agent to the child so it reaches the body's `sleepFor`
--- before the interrupt is requested; the interrupt is taken at that suspension
--- point and unwinds through the registered release (run masked, §32.2.5).
+-- A Promise handshake makes the parent interrupt only after the child has entered
+-- the protected body; the interrupt is taken at the sleep suspension point and
+-- unwinds through the registered release (run masked, §32.2.5).
 module main
+
+import std.prelude.(type Exit(..))
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
 
 data Res : Type = MkRes (rid : Integer)
 
@@ -27,17 +33,18 @@ let acquireRes = do
     printlnString "acquired"
     ioPure (MkRes 1)
 
-child : IO String Unit
-let child = do
+child : Promise Void Unit -> IO String Unit
+let child ready = do
     using r <- acquireRes
+    let _ <- weakenVoidIO (completePromise ready (Success ()))
     sleepFor (seconds 10)
     printlnString "body-done"
 
 main : UIO Unit
 let main = do
-    let f <- fork child
-    cede
-    cede
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
     interrupt f
     let ex <- await f
     match ex

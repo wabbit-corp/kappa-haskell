@@ -6,20 +6,21 @@ runtime tag, the prims, both backends, the prelude surface, and the tests.
 This document synthesizes four research passes (linear/uniqueness arrays,
 monadic ST/IO arrays, representation/RC/bounds, and Kappa-internal fit) into a
 single principled design grounded in the actual runtime and `docs/Spec.md`. All
-cited line numbers were checked against the tree at the time of writing.
+runtime references below are symbolic unless a short snippet is shown, so
+unrelated edits do not stale the design evidence.
 
 ---
 
 ## 1. Motivation
 
 Kappa today has **no O(1) mutable array**. The `Array a` type declared in
-`docs/Spec.md` §29 (`docs/Spec.md:29206`) is backed by a **cons-list facade**:
+`docs/Spec.md` §29 is backed by a **cons-list facade**:
 `__arrayFromList`/`__arrayToList` are the identity over a `List`
-(`runtime/prims.c:618`, `kpf___queryFromList`), and `__arrayIndexUnsafe`
+(`runtime/prims.c`, `kpf___queryFromList`), and `__arrayIndexUnsafe`
 **walks the linked list** one cons at a time:
 
 ```c
-/* runtime/prims.c:624 */
+/* runtime/prims.c, kpf___arrayIndexUnsafe */
 KValue *kpf___arrayIndexUnsafe(KValue **a) {
   KValue *v = a[0]; int64_t i = kas_int(a[1]);
   while (kis_cons(v)) { if (i <= 0) return kctor_arg(v, 0); v = kctor_arg(v, 1); i--; }
@@ -102,7 +103,7 @@ forces the body polymorphic in `s`, so no `STRef s`/`STArray s` (nor a closure
 capturing one) can appear in the result — a skolem-escape **type error**. This
 makes local mutation **observably pure** despite in-place writes.
 
-**This is already specified.** `docs/Spec.md` §18.6.4 (`docs/Spec.md:21247`)
+**This is already specified.** `docs/Spec.md` §18.6.4
 gives, nearly verbatim, `expect data ST (s) (a)`, `expect data STRef (s) (a)`,
 `instance MonadRef (ST s)`, and `runST : forall a. (forall s. ST s a) -> a`,
 states the skolem-escape proof explicitly, and even authorizes a **bump-arena
@@ -118,7 +119,7 @@ allocator** tied to the `runST` frame for zero-cost deallocation.
 ### Option C — IO / STM array (the user's second proposal)
 
 A `MutArray a` whose ops are `UIO` actions, structurally identical to the
-existing `Ref`/`TVar`. This is `MonadRef` (§18.6.1, `docs/Spec.md:20878`) with
+existing `Ref`/`TVar`. This is `MonadRef` (§18.6.1) with
 an index — `var`-style mutation one categorical step up. Concurrent sharing is
 a separate `TArray` (a `TVar`-wrapped array, journaled by the kappart2
 scheduler, §18.1.13).
@@ -141,15 +142,18 @@ to keep usage single-threaded.
   silently degrades O(1) to O(n) (Lean issue 2218: "if-then-else breaks
   apparent linearity"). For a **total language whose entire value proposition is
   type-level guarantees**, a silent performance cliff is the wrong default.
-  Also requires Perceus precise RC, which the runtime does not have yet (Boehm
-  is the current collector). **Keep D as a future optimization** of the
-  immutable `Array`, not the headline mechanism.
+  Also requires Perceus precision for immutable-array reuse, which is not part
+  of the current S3 freeable partition: C/runtime Perceus RC is default-on for
+  the conservative strict-immutable shapes, but arrays remain Boehm-retained
+  until the later FREESET/FBIP stages prove array-element reuse and reclamation.
+  **Keep D as a future optimization** of the immutable `Array`, not the
+  headline mechanism.
 
 ### What is the same across A/B/C
 
 All three compile to **one runtime object** (`K_ARRAY` = `K_REF`'s single cell
 generalized to N cells) with the **same three ops**. Linearity (`1`) and the
-region tag (`s`) are erased under §31.2 (`docs/Spec.md:34629`) exactly like
+region tag (`s`) are erased under §31.2 (`docs/Spec.md`) exactly like
 Haskell's `%1` and `s`. **Do not build three runtime arrays.** Build one, and
 wrap it in the cheapest-to-prove typed front-end first.
 
@@ -213,7 +217,7 @@ designed in from Stage A precisely so the unboxed payoff is additive.
 ## 4. The API (Kappa surface syntax)
 
 All three front-ends follow the **AtomicRef precedent** exactly
-(`src/Kappa/Prelude.hs:3149`+): an opaque `data` wraps an opaque cell, and each
+(`src/Kappa/Prelude.hs`+): an opaque `data` wraps an opaque cell, and each
 surface op `match`-unwraps it and forwards **only values** to a `__`-prim. The
 element type is a `forall (a : Type)` = **quantity-0 erased** parameter that
 **never reaches the prim** (this is the erasure-safety contract; see §6).
@@ -314,14 +318,14 @@ linear story.
 
 ### 5.1 The `K_ARRAY` tag — `K_REF` generalized from 1 cell to N
 
-A `Ref` is a length-1 `KValue*` buffer (`runtime/kappart.h:124`,
-`struct { KValue **cell; }`; `kref_new` at `runtime/value.c:226` allocates a
+A `Ref` is a length-1 `KValue*` buffer (`runtime/kappart.h`,
+`struct { KValue **cell; }`; `runtime/value.c` `kref_new` allocates a
 1-slot block). **An array is its N-ary generalization, as a SINGLE object** —
 not N separate `Ref` boxes (that would be N allocations, no length, and no
 locality).
 
-Add to the `KTag` enum (`runtime/kappart.h:27`) and the union
-(`runtime/kappart.h:111`, beside `as.ref` at line 124 and `as.fgn` at 125):
+Add to the `KTag` enum and the `KValue` union in `runtime/kappart.h`, beside
+`as.ref` and `as.fgn`:
 
 ```c
 K_ARRAY,   /* mutable array: length-prefixed slab; elemkind picks the rep (§5.3) */
@@ -331,7 +335,7 @@ struct { void *elems; int64_t len; int64_t cap;
 ```
 
 `elems` is **one** allocation — for the boxed slab a `kgc_alloc(len *
-sizeof(KValue*))` block, exactly like `K_CTOR`'s args array (`runtime/value.c:169`)
+sizeof(KValue*))` block, exactly like `K_CTOR`'s args array in `runtime/value.c`
 and `K_REF`'s cell; for a scalar slab a `kgc_alloc_atomic(len * element_size)`
 block (§5.2/§5.3). `len` makes `arrayLen` O(1) and pure.
 
@@ -345,8 +349,8 @@ so the unboxed slabs are a new prim + a new dispatch arm, NOT a struct change.
 `KValue*[]`, an `int64_t[]`, or a `double[]` without reinterpretation games. `cap`
 remains the growth seed (ship `cap == len`).
 
-Ops mirror `kref_new`/`kref_get`/`kref_set` (`runtime/value.c:226`, `:746`-`754`)
-with the same `kis_imm(v) || v->tag != K_ARRAY` tag guard:
+Ops mirror `kref_new`/`kref_get`/`kref_set` in `runtime/value.c` with the same
+`kis_imm(v) || v->tag != K_ARRAY` tag guard:
 
 ```c
 /* BOXED slab (Stage A): elems = kgc_alloc(n*sizeof(KValue*)) [SCANNED], fill init */
@@ -364,21 +368,21 @@ void    karr_set_i64(KValue *arr, int64_t i, int64_t v);   /* raw word, no box  
 KValue *karr_new_dbl(int64_t n, double init);    void karr_set_dbl(KValue *arr, int64_t i, double v);
 ```
 
-The boxed `karr_*` ops mirror `kref_new`/`kref_get`/`kref_set`
-(`value.c:226`-`232`, `:746`-`754`) with the same `kis_imm(v) || v->tag !=
-K_ARRAY` tag guard. The scalar `karr_*_i64`/`_dbl` ops are the following stage;
+The boxed `karr_*` ops mirror `kref_new`/`kref_get`/`kref_set` in
+`runtime/value.c`, with the same `kis_imm(v) || v->tag != K_ARRAY` tag guard.
+The scalar `karr_*_i64`/`_dbl` ops are the following stage;
 their *existence in the API surface from the start* is what makes the seam
 first-class — the boxed prim never needs reshaping when they arrive.
 
 ### 5.2 GC correctness — the binding constraint
 
 Boehm runs with `GC_set_all_interior_pointers(0)` set **before** `GC_INIT`
-(`runtime/gc.c:48`-`58`, the call at `:56`): the collector roots only **base**
+(`runtime/gc.c`): the collector roots only **base**
 pointers, and the immediate-tag contract requires 8-byte alignment with the low
-3 bits free (`runtime/kappart.h:154`-`189`; asserted at startup by
-`krt_assert_gc_alignment`, `gc.c:40`-`46`). The two public allocators are
-`kgc_alloc` = `GC_MALLOC` (scanned, `gc.c:63`-`67`) and `kgc_alloc_atomic` =
-`GC_MALLOC_ATOMIC` (NOT scanned, `gc.c:69`-`73`). Three hard rules, all
+3 bits free (`runtime/kappart.h`; asserted at startup by
+`krt_assert_gc_alignment` in `runtime/gc.c`). The two public allocators are
+`kgc_alloc` = `GC_MALLOC` (scanned) and `kgc_alloc_atomic` =
+`GC_MALLOC_ATOMIC` (NOT scanned). Three hard rules, all
 non-negotiable — and the FIRST is the explicit, `elemkind`-driven
 performance+correctness property at the heart of the unboxing design:
 
@@ -386,9 +390,9 @@ performance+correctness property at the heart of the unboxing design:
    is BOTH a correctness and a performance property.**
    - **BOXED slab → non-atomic `kgc_alloc` (SCANNED), NEVER atomic.** Every slot
      is a base `KValue*`, so element liveness is correct for free with no custom
-     mark routine — traced exactly like `K_REF`'s cell (`value.c:228`) and
-     `K_CTOR`'s args (`value.c:169`). If a boxed slab were allocated atomic (the
-     `kgc_alloc_atomic` / `alloc_val_atomic` path, `value.c:39`-`43`, `:299`,
+     mark routine — traced exactly like `K_REF`'s cell (`value.c`) and
+     `K_CTOR`'s args (`value.c`). If a boxed slab were allocated atomic (the
+    `kgc_alloc_atomic` / `alloc_val_atomic` path in `runtime/value.c`,
      used for byte/scalar LEAVES that hold no pointers), live elements would be
      **collected out from under the array** — a use-after-free. So a boxed slab
      MUST be scanned.
@@ -409,16 +413,16 @@ performance+correctness property at the heart of the unboxing design:
    array-level statement of the same rule the runtime already follows: pointer-
    bearing values (`K_REF`, `K_CTOR`) use `kgc_alloc`; pointer-free leaves
    (`K_BYTE`, `K_BYTES`, `K_DBL`, `K_CHR`) use the atomic path
-   (`value.c:39`-`43`, `:291`-`304`).
+   (`runtime/value.c`).
 
 2. **Store the buffer BASE pointer in the box and index via `base + i*element_size`.**
    Never hand the GC only an interior/offset pointer — interior-pointer
-   recognition is OFF (`gc.c:56`), so an interior-only reference would not keep
+   recognition is OFF (`gc.c`), so an interior-only reference would not keep
    the block alive. The base is in `arr.elems`; every index is computed from it.
 
 3. **Scan-safety of immediates in a boxed slab.** Immediate-tagged small Ints /
    nullary ctors (b001/b010, Stage 1) stored in a SCANNED boxed slab are already
-   scan-safe by the low-3-bits contract (`kappart.h:154`-`199`): an odd word is
+   scan-safe by the low-3-bits contract in `runtime/kappart.h`: an odd word is
    treated as a non-pointer and never followed. (The unboxed INT64 slab side-steps
    this entirely — it is unscanned and holds the bare untagged `int64`.)
 
@@ -427,7 +431,7 @@ performance+correctness property at the heart of the unboxing design:
 Unboxing is NOT a vague "later slab swap." It is the headline performance
 property of `K_ARRAY`, designed in from day one. The boxed slab ships first
 **only because every element is still a b000 boxed `KValue*` under UNBOXING
-Stage 0** (`runtime/kappart.h:154`-`185`: `kis_imm()` is always false today) — so
+Stage 0** (`runtime/kappart.h`: `kis_imm` is always false today) — so
 the boxed `K_ARRAY` is what is *correct to run* on the current runtime. But the
 representation tag (`elemkind`), the `element_size`, the GC-alloc choice, and the
 backend specialization SEAM all exist from Stage A, so the unboxed scalar slabs
@@ -436,8 +440,8 @@ land as a *following stage with zero `K_ARRAY` redesign* (§7).
 #### 5.3.1 THE CRUX — sound unboxed-rep selection under erasure (no monomorphization)
 
 The element type `a` is a `forall (a : Type)` = **quantity-0 erased** parameter
-(§4.1): it is dropped by `eraseQ0ArgsP` (`C.hs:1086`-`1101`, via
-`erasedSpinePositionsP` at `C.hs:1047`-`1077`) before codegen and **never reaches
+(§4.1): it is dropped by `eraseQ0ArgsP` (`C.hs`, via
+`erasedSpinePositionsP` at `C.hs`) before codegen and **never reaches
 the `kpf_*` op**. So the runtime op CANNOT inspect `a` to choose a slab rep. The
 question is: *where does the element kind come from soundly?* There are exactly
 two candidate sources, and only one is sound.
@@ -457,9 +461,9 @@ element type head        emitted prim                              slab
 
 This is **the existing scalar-worker mechanism applied to arrays**, not a new
 analysis. The scalar worker already decides "is this type head an unboxed scalar?"
-in exactly one place — `Repr.scalarRep` (`Repr.hs:123`-`126`), which matches a
+in exactly one place — `Repr.scalarRep` (`Repr.hs`), which matches a
 bare fully-applied primitive type head (`VGlobN T []`) against the canonical
-prelude numeric globals via `primScalarRep` (`Repr.hs:139`-`149`: `RepInt` for
+prelude numeric globals via `primScalarRep` (`Repr.hs`: `RepInt` for
 `Int`/`Nat`/`Integer`, `RepDouble` for `Double`/`Float`), and `RepBoxed`
 otherwise. The array call-site specializer calls the SAME `Repr.scalarRep` on the
 *element type's* whnf head and maps its `Rep` to the prim family:
@@ -468,12 +472,12 @@ otherwise. The array call-site specializer calls the SAME `Repr.scalarRep` on th
 - `RepDouble` → the `__*DoubleArray` family (DOUBLE slab),
 - `RepBoxed`  → the generic `__array*` family (BOXED slab).
 
-The C backend's `typeScalarKinds` (`C.hs:979`-`996`) already consumes
-`Repr.repSelect` (`Repr.hs:182`-`195`) — the one authority that walks a function
+The C backend's `typeScalarKinds` (`C.hs`) already consumes
+`Repr.repSelect` (`Repr.hs`) — the one authority that walks a function
 type telescope — and projects each `Rep` to its `ParamKind`/`ScalarKind` via
-`repScalarKind` (`C.hs:1006`-`1010`). The array element-kind decision is the same
+`repScalarKind` (`C.hs`). The array element-kind decision is the same
 projection applied to a single type (the element type), not a whole telescope.
-The boxing/unboxing helpers `boxScalar`/`unboxScalar` (`C.hs:799`-`807`:
+The boxing/unboxing helpers `boxScalar`/`unboxScalar` (`C.hs`:
 `kint`/`kdbl` to box, `kunbox_i64`/`kunbox_dbl` to unbox) are exactly the
 get/set-boundary conversions the DOUBLE/INT64 slabs need on the boxed-API path
 (§5.3.4).
@@ -482,9 +486,9 @@ get/set-boundary conversions the DOUBLE/INT64 slabs need on the boxed-API path
 itself** (`__newDoubleArray` vs `__newInt64Array` vs `__newArray`). No `Type`, no
 dict, no witness, no quantity reaches the runtime — the symbol *is* the kind. This
 is the identical erasure-safety contract the AtomicRef surface already honours
-(§4.1; `src/Kappa/Prelude.hs:3149`-`3249`): the opaque `data` wraps an erased-
+(§4.1; `src/Kappa/Prelude.hs`): the opaque `data` wraps an erased-
 element cell and each op forwards only values. The §31.2 KBackendIR legality
-verifier (`docs/Spec.md:34688`) sees no runtime dependency on erased data,
+verifier sees no runtime dependency on erased data,
 because the kind was resolved *before* erasure and baked into the symbol. This is
 also why it is *not* the bug class that caused the prior native IO crash (an
 ERASED-TYPE-APPLICATION reaching the runtime as `kapp(unit,unit)`; see the
@@ -499,11 +503,11 @@ non-uniform element representation**, and the immediate-tagging scheme makes the
 failure concrete. Consider `Array (Maybe Int)`:
 
 - `None` is a NULLARY ctor → the canonical **b010 immediate** word
-  (`kctor0` → `kmk_imm_ctor`, `runtime/value.c:175`-`181`; `runtime/kappart.h:257`-
-  `280`). It is not a pointer and not an `int64`.
+  (`kctor0` → `kmk_imm_ctor` in `runtime/value.c`/`runtime/kappart.h`). It is
+  not a pointer and not an `int64`.
 - `Some n` is a 1-field ctor → either a **b011 packed** word (if `n` is a fitting
-  immediate, `runtime/value.c:153`-`154`; `runtime/kappart.h:282`-`316`) or a
-  **b000 boxed `K_CTOR`** pointer (`value.c:165`-`172`).
+  immediate, per `runtime/value.c`/`runtime/kappart.h`) or a **b000 boxed
+  `K_CTOR`** pointer.
 
 So the elements of one `Maybe Int` array carry **three different word kinds**
 (b010, b011, b000) — there is no single uniform machine rep. A slab rep picked
@@ -512,7 +516,7 @@ mis-store every `Some (bigPointer)`. Only **monomorphic, uniform-rep element
 types** (a bare `Int`/`Double` whose *every* value is the same machine word
 shape) qualify — and that is *exactly* what `Repr.scalarRep` recognizes
 (`VGlobN T []` with `T ∈ {Int,Nat,Integer,Double,Float}`; a type with arguments
-like `Maybe Int` or `Option a` is `RepBoxed`, `Repr.hs:119`-`126`). Runtime
+like `Maybe Int` or `Option a` is `RepBoxed`, `Repr.hs`). Runtime
 sniffing cannot distinguish "uniform scalar" from "non-uniform sum that happens
 to start with a small-looking element," so it is rejected outright.
 
@@ -522,7 +526,7 @@ polymorphic / sum-typed / boxed-element arrays (`MutArray (Maybe Int)`,
 `MutArray a` under an abstract `a`, `MutArray String`) stay boxed and correct.
 This is the **same monomorphic gating** the scalar worker already uses
 (`scalarPlan`/`typeScalarKinds` reject anything but a known scalar head,
-`C.hs:941`-`996`) — so the array unboxing inherits the scalar worker's proven
+`C.hs`) — so the array unboxing inherits the scalar worker's proven
 soundness boundary rather than inventing a new one.
 
 #### 5.3.2 OPEN: how the backend NAMES and dispatches the elemkind at the call site
@@ -540,7 +544,7 @@ array-op call site. Two threads to nail down in implementation:
    read on a whole telescope; the array case is the single-type projection.
 2. **A non-obvious uniform-scalar caveat.** `Repr.scalarRep` is deliberately
    conservative: a transparent prelude alias (`type Float = Double`) is unfolded
-   by the elaborator before this point (`Repr.hs:146`-`149` matches both the
+   by the elaborator before this point (`Repr.hs` matches both the
    `Double` and the `Float` alias identity to be safe), but a *user* type whose
    representation is "morally a Double" (a `newtype`-like single-field record over
    `Double`, or a units-of-measure wrapper) is `RepBoxed` and stays boxed. That is
@@ -563,15 +567,15 @@ array-op call site. Two threads to nail down in implementation:
 Indexing is uniform: `addr = base + i * element_size`, with an
 `elemkind`-dispatched load/store (a `KValue*` load for BOXED, a raw `int64_t`/
 `double` load for the scalar slabs). The packed BYTE/BIT slab for `Bool` /
-small-enum (`RepImmCtor`, `Repr.hs:103`-`111`) is a natural future elemkind —
+small-enum (`RepImmCtor` in `src/Kappa/Backend/Repr.hs`) is a natural future elemkind —
 the same call-site mechanism would emit it when `Repr.scalarRep`/the ctor-layout
 table reports a nullary-immediate element — but it is out of scope for the first
 unboxed stage (INT64/DOUBLE).
 
-Relation to the immediate-tagging scheme (`runtime/kappart.h:154`-`243`): a
+Relation to the immediate-tagging scheme (`runtime/kappart.h`): a
 b001 immediate `Int` rides INSIDE a `KValue*` word as `(value << 3) | KIMM_INT`
-(`kmk_imm_int`, `kappart.h:241`-`243`) and is recovered with an arithmetic
-`>> 3` (`kimm_int_val`, `:232`-`234`). The **INT64 slab is the raw machine word
+(`kmk_imm_int`) and is recovered with an arithmetic
+`>> 3` (`kimm_int_val`). The **INT64 slab is the raw machine word
 WITHOUT the 3-bit tag** — a plain `int64_t[i]`, the full 64-bit value, no shift,
 no `KIMM_INT` tag, no `K_INT` box. The boxed slab would instead hold either a
 b001 immediate `Int` word or a b000 `K_INT` pointer per element; the INT64 slab
@@ -585,14 +589,14 @@ The get/set behaviour is `elemkind`-dispatched, and the DOUBLE/INT64 slabs have
 TWO read/write paths — a boxed-API path and a scalar-worker fast path:
 
 - **BOXED slab.** `read` returns the stored `KValue*` verbatim; `write` stores
-  the `KValue*` verbatim. Exactly `kref_get`/`kref_set` (`value.c:746`-`754`)
+  the `KValue*` verbatim. Exactly `kref_get`/`kref_set` (`value.c`)
   generalized to N cells. No conversion.
 
 - **DOUBLE / INT64 slab, BOXED-API path** (a one-off `arrayRead`/`arrayWrite`
   outside a hot loop): `read` loads the raw scalar from the slab and
-  **RE-BOXES** it into a `KValue` (`boxScalar`, `C.hs:799`-`801`:
+  **RE-BOXES** it into a `KValue` (`boxScalar`, `C.hs`:
   `kint(slab[i])` / `kdbl(slab[i])`); `write` **UNBOXES** the incoming `KValue`
-  to a raw scalar (`unboxScalar`, `C.hs:805`-`807`: `kunbox_i64`/`kunbox_dbl`)
+  to a raw scalar (`unboxScalar`, `C.hs`: `kunbox_i64`/`kunbox_dbl`)
   and stores it. Critically, **storage stays unboxed** — 8 bytes/element, NO
   per-element heap box — even though the API boundary trades in `KValue`s. So
   even the slow path already wins the per-element allocation (a boxed slab of
@@ -600,8 +604,8 @@ TWO read/write paths — a boxed-API path and a scalar-worker fast path:
 
 - **DOUBLE / INT64 slab, SCALAR-WORKER FAST path** (a hot loop over the array —
   the demanded case): when an array `read`/`write` sits inside an unboxed scalar
-  worker (`compileScalarWorker`, `C.hs:1751`+; the LLVM function scalar-worker
-  path around `LLVM.hs:2499`+), `read` feeds the **RAW** scalar (`slab[i]`, an
+  worker (`compileScalarWorker`, `C.hs`+; the LLVM function scalar-worker
+  path around `LLVM.hs`+), `read` feeds the **RAW** scalar (`slab[i]`, an
   `int64_t`/`double` C local) directly to the worker's arithmetic with NO box,
   and `write` stores the worker's raw scalar result into `slab[i]` with NO box.
   The worker already keeps its values in raw C locals (`int64_t`/`double`) that
@@ -628,16 +632,20 @@ whose `elemkind` is INT64/DOUBLE, which is set ONLY by a specialized prim, which
 is emitted ONLY when `Repr.scalarRep` reports a uniform scalar element at the
 call site (§5.3.1). Never attempt scalar packing while the element type is an
 erased type variable or a sum/applied type (RuntimeErased discipline; the same
-`Repr.scalarRep` ⇒ `RepBoxed` gate the scalar worker uses, `C.hs:941`-`996`).
+`Repr.scalarRep` ⇒ `RepBoxed` gate the scalar worker uses).
 `Array a` and `SizedArray n a` share this representation (§29 permits it,
-`docs/Spec.md:29254`), with `n` erased.
+with `n` erased).
 
 ### 5.4 GC/Perceus migration
 
-- **Today (Boehm):** the array object and the slab are two `GC_MALLOC`s;
-  element retain/drop is automatic; `set` just overwrites a slot (the old
-  element becomes unreachable iff no other root holds it). No write barrier, no
-  RC.
+- **Original Boehm-only path:** the array object and the slab are two `GC_MALLOC`s;
+  element retain/drop is automatic; `set` just overwrote a slot (the old element
+  became unreachable iff no other root held it); no Perceus barrier existed on
+  that path.
+- **Current S3 C/runtime path:** `K_ARRAY` remains outside the FREESET, but boxed
+  `set` is now an owned-transfer barrier: it stores the owned new element and
+  drops the displaced slot reference, including the self-assignment case where
+  the drop consumes the incoming owned duplicate while leaving the slot live.
 - **Future (Perceus precise RC, post-LLVM-layout):** the array carries a header
   RC. `set` on a **unique (RC==1)** array mutates in place AND drops the old
   slot value / retains the new (the Koka/Lean discipline) — the FBIP reuse win;
@@ -655,22 +663,22 @@ erased type variable or a sum/applied type (RuntimeErased discipline; the same
 
 - **Double-unboxing is an ARRAY-LEVEL win available BEFORE general LLVM-layout
   Double unboxing.** A scalar `Double` is, today, a boxed `K_DBL` leaf
-  (`alloc_val_atomic(K_DBL)`, `value.c:39`-`43`, `:67`-`69`) — Doubles are not
+  (`alloc_val_atomic(K_DBL)` in `runtime/value.c`) — Doubles are not
   yet immediates (the b001/b010/b011 immediate kinds are Int/ctor only,
-  `kappart.h:189`-`316`; a future immediate Double would need a b1xx kind or
+  per `runtime/kappart.h`; a future immediate Double would need a b1xx kind or
   NaN-boxing, deliberately deferred per the tagging research). The **DOUBLE slab
   IS the array-level Double unboxing**: a `MutArray Double` stores N contiguous
   raw `double`s with zero `K_DBL` boxes, achieving for arrays the density that
   scalar Double unboxing will later achieve for individual values — and it lands
   with the rest of the scalar-slab stage, not gated on the LLVM-layout Double
   work. The two efforts share the `Repr.RepDouble`/`scalarRep` classification
-  (`Repr.hs:101`-`102`, `:123`-`126`) but are independently shippable.
+  (`Repr.hs`) but are independently shippable.
 
 ---
 
 ## 6. Indexing discipline — staying total
 
-Kappa is total (§15, `docs/Spec.md:14930`): totality is a property of
+Kappa is total (§15): totality is a property of
 *transparent definitions / compile-time conversion*, and effectful runtime
 computations MAY fail in the Cause/Defect channel (§18.1.2-18.1.3). **A panic is
 an IO effect, not partiality.** So adopt the **three-tier** discipline the spec
@@ -679,8 +687,8 @@ already half-specifies for the immutable array (mirroring Lean's `a[i]` /
 
 1. **Proof-carrying total (PRIMARY).** `arrayRead`/`arrayWrite` carry an
    **erased** `(i < arrayLen arr) = True` witness, copying the existing
-   `arrayIndex`/`sizedArrayIndex` shape (`docs/Spec.md:29295`, `:29237`). Under
-   §31.2 (`docs/Spec.md:34658`-`34664`) the proof erases to nothing — `subst`/
+   `arrayIndex`/`sizedArrayIndex` shape in §29. Under
+   §31.2 the proof erases to nothing — `subst`/
    `pathInd` compile as type-directed coercion, not a runtime branch — so the
    emitted code is a **bare O(1) load/store with NO bounds check**. This is the
    Lean `a[i]` / Idris2 `Fin n` discipline, and it is the spec's chosen design.
@@ -692,7 +700,7 @@ already half-specifies for the immutable array (mirroring Lean's `a[i]` /
 3. **Bounds-throwing (RUNTIME FLOOR ONLY).** The `kpf_*` prim itself bounds-
    checks and `krt_fail`s on OOB (exactly like `__arrayIndexUnsafe` and
    `kref_get`'s tag check). This raises a `Defect` in the IO channel
-   (`docs/Spec.md:18558`-`18639`). **CRITICAL:** throwing is acceptable ONLY on
+   (§18.1.2-18.1.3). **CRITICAL:** throwing is acceptable ONLY on
    the effectful/IO path, **NEVER** as a pure total function. The pure total
    path MUST be proof-carrying (tier 1); only IO/Eff may panic.
 
@@ -711,13 +719,13 @@ purely additive change — a new `elemkind`, new prims, a new dispatch arm — w
 specialization seam exist from Stage A.
 
 ### Stage A — runtime representation + ops (born unboxing-ready)
-- `runtime/kappart.h`: add `K_ARRAY` to the `KTag` enum (`:27`) and the
-  `as.arr` union member (`:111`, beside `as.ref` at `:124`). The struct carries
+- `runtime/kappart.h`: add `K_ARRAY` to the `KTag` enum and the
+  `as.arr` union member beside `as.ref`. The struct carries
   `elemkind` + `element_size` FROM THE START (§5.1) — `void *elems` (not
   `KValue **`) so the same box later holds `int64_t[]`/`double[]` with no
   reshape. Boxed = `elemkind == BOXED`, `element_size == 8`.
 - `runtime/value.c`: add `karr_new`/`karr_get`/`karr_set`/`karr_len` right
-  after `kref_*` (`:226`, `:746`-`754`), each with the `kis_imm || tag !=
+  after `kref_*`, each with the `kis_imm || tag !=
   K_ARRAY` guard. The boxed slab is **non-atomic** `kgc_alloc` (§5.2 rule 1).
   `karr_get`/`karr_set` index `((KValue**)arr.elems)[i]`. Leave the scalar
   `karr_*_i64`/`_dbl` entry points UNwritten but their *shape* designed (§5.1)
@@ -728,14 +736,14 @@ specialization seam exist from Stage A.
 
 ### Stage B — prim entry points + registration (the specialization seam)
 - `runtime/prims.c`: add `kpf_io_newArray`/`arrayRead`/`arrayWrite` and the
-  pure `kpf_arrayLen` next to the `kref` block (`:57`-`59`). Each sees only
+  pure `kpf_arrayLen` next to the `kref` block. Each sees only
   `a[0]`, `a[1]`, ... values (no type, no dict).
 - `src/Kappa/Backend/C.hs`: register them in `primEntries` next to `newRef`
-  (`:2063`) and the **AtomicRef rows** (`:1906`+, `:1918`-`1927`) — copy those
+  and the **AtomicRef rows** — copy those
   rows verbatim as the template: `PrimEntry "kpf_io_newArray" 2 True`,
   `... "kpf_io_arrayRead" 2 True`, `... "kpf_io_arrayWrite" 3 True`,
   `... "kpf_arrayLen" 1 False`. The `forall (a : Type)` is Q0 and is dropped by
-  `eraseQ0ArgsP` (`C.hs:1086`-`1101`) before codegen, exactly as for STM's
+  `eraseQ0ArgsP` (`C.hs`) before codegen, exactly as for STM's
   `forall (a : Type)` signatures — **no type/dict/proof ever reaches a `kpf_*`
   symbol** (the erasure-safety contract, §31.2, the prior-crash class).
 - **SHAPE the specialization seam now (even though only the boxed prim is
@@ -764,7 +772,7 @@ specialization seam exist from Stage A.
 
 ### Stage E — prelude API
 - Add a `std.array.mutable` module (or fold into `std.prelude`) following the
-  **AtomicRef wrapper shape** (`src/Kappa/Prelude.hs:3149`-`3249`): opaque
+  **AtomicRef wrapper shape** (`src/Kappa/Prelude.hs`): opaque
   `data MutArray (a) = MkMutArray (buf : __ArrayBuf a)`, the `__array*` prims
   declared with `forall (a : Type)` erased signatures, and the §4.2 total
   surface (proof-carrying + Option). Then `ST`/`STArray` per §18.6.4 (Stage E2).
@@ -780,7 +788,7 @@ specialization seam exist from Stage A.
 ### Stage G — benchmark (the unboxing target)
 - Add an array micro-bench under `test/native/bench` (sum-of-N, fill-then-read,
   in-place map) comparing against the cons-list `Array`, wired through
-  `bench.sh` (gated by `$KAPPA_GC_STATS`, `gc.c:27`-`33`, for the alloc count),
+  `bench.sh` (gated by `$KAPPA_GC_STATS`, `gc.c`, for the alloc count),
   to demonstrate the O(1) win and guard the Stage C/D inline fast path against
   regression. Bench a `MutArray Double`/`MutArray Int` loop specifically — this
   is the bench that will SHOW the Stage H unboxing win (allocation count drops
@@ -793,15 +801,15 @@ boxed ops:
 - `runtime/value.c`: add `karr_new_i64`/`karr_get_i64`/`karr_set_i64` and the
   `_dbl` trio, allocating `elems` with **atomic** `kgc_alloc_atomic` (§5.2 rule
   1) and setting `elemkind = INT64`/`DOUBLE`. Boxed-API `get`/`set` box/unbox at
-  the boundary (`boxScalar`/`unboxScalar`, `C.hs:799`-`807`).
+  the boundary (`boxScalar`/`unboxScalar`, `C.hs`).
 - `runtime/prims.c`: add the `kpf_io___newInt64Array`/`…DoubleArray` and
   read/write entry points; register their `primEntries` rows (Stage B seam).
 - `src/Kappa/Backend/C.hs` + `LLVM.hs`: turn the Stage-B element-type helper on
-  — consult `Repr.scalarRep` (`Repr.hs:123`-`126`) on the element type and emit
+  — consult `Repr.scalarRep` (`Repr.hs`) on the element type and emit
   the `__*Int64Array`/`__*DoubleArray` family for `RepInt`/`RepDouble`, the
   generic boxed family for `RepBoxed` (§5.3.1). **Wire the scalar-worker fast
   path:** when an array read/write sits in a scalar region (`gsScalarRegion`,
-  `C.hs:124`-`125`; the LLVM function scalar-worker path, `LLVM.hs:2499`+) lower it to a
+  `C.hs`; the LLVM function scalar-worker path, `LLVM.hs`+) lower it to a
   RAW slab access with no box (§5.3.4) — the array analogue of an
   evidence-preserving var-ref optimization, never a revival of the obsolete
   pre-S2.3b scalarized `readRef`/`writeRef` peephole.
@@ -826,10 +834,10 @@ boxed ops:
    via `base[i]` (`GC_set_all_interior_pointers(0)`).
 3. **Erasure-safety.** The array ops take ONLY value arguments. Thread the
    `(i < len) = True` proof so the KBackendIR legality verifier
-   (`docs/Spec.md:34688`) sees no runtime dependency on erased data. This is the
+   sees no runtime dependency on erased data. This is the
    exact contract whose violation caused the prior native IO crash.
 4. **MonadRef laws.** `MutArray` must obey the §18.6.1 freshness/aliasing laws
-   (`docs/Spec.md:20890`): a fresh array reachable only through its handle.
+   in `docs/Spec.md`: a fresh array reachable only through its handle.
 5. **Cross-fiber writes.** A plain `Ref`-style store is fine for fiber-local
    arrays; cross-fiber sharing belongs on the STM/`TArray` path, not raw
    `MutArray` (use release semantics there).
@@ -889,55 +897,35 @@ boxed ops:
 
 ## 10. References (verified against the tree)
 
-- `runtime/kappart.h:27` (KTag enum), `:109`-`142` (48-byte KValue union;
-  `as.ref` at `:124`), `:154`-`189` (UNBOXING Stage-0 tag/alignment contract +
-  the b000/b001/b010/b011 word-tag budget), `:214`-`243` (immediate-Int encoding
-  `kmk_imm_int`/`kimm_int_val`), `:257`-`280` (immediate nullary-ctor b010 —
-  `None`), `:282`-`316` (packed b011 — `Some`).
-- `runtime/value.c:226`-`232` (`kref_new`, the 1-cell seed), `:746`-`754`
-  (`kref_get`/`kref_set` tag-guarded O(1) store), `:39`-`43` (`alloc_val_atomic`
-  via `kgc_alloc_atomic` — the scalar-LEAF path the scalar slabs reuse), `:169`
-  (non-atomic `kgc_alloc` for `K_CTOR` args — the boxed-slab template), `:153`-
-  `181` (`None`=b010 `kctor0`, `Some`=b011/box — the non-uniform-rep proof for
-  §5.3.1), `:291`-`304` (`K_BYTE`/`K_BYTES` atomic leaves).
-- `runtime/gc.c:40`-`46` (`krt_assert_gc_alignment`), `:48`-`58` (`GC_set_all_
-  interior_pointers(0)` at `:56`; base-pointer-only rooting), `:63`-`67`
-  (`kgc_alloc` = `GC_MALLOC`, SCANNED), `:69`-`73` (`kgc_alloc_atomic` =
-  `GC_MALLOC_ATOMIC`, UNSCANNED), `:27`-`33` (`$KAPPA_GC_STATS` alloc report).
-- `runtime/prims.c:57`-`59` (`kpf_io_newRef`/`readRef`/`writeRef` = `kref_*`
-  templates), `:618`/`:624`-`627` (cons-list `Array` facade — the O(n) gap this
-  closes).
-- `runtime/stm.c` (multi-fiber TVar as K_FGN handle — the TArray path).
-- `runtime/atomic.c` + `src/Kappa/Prelude.hs:3149`-`3249` (AtomicRef: opaque
-  `data AtomicRef (a:Type) = MkAtomicRef (cell : __AtomicCell a)` + `forall
-  (a:Type)` erased surface, each op `match`-unwraps and forwards only values —
-  the API and erasure-safety template the array surface copies).
-- `src/Kappa/Backend/Repr.hs:107`-`112` (`Rep` = `RepBoxed`/`RepInt`/`RepDouble`/
-  `RepImmCtor`), `:123`-`126` (`scalarRep` — the single head-type rep authority
-  the array call-site specializer consults), `:139`-`149` (`primScalarRep` —
-  `Int`/`Nat`/`Integer`→`RepInt`, `Double`/`Float`→`RepDouble`, by `GName`
-  identity not spelling), `:182`-`195` (`repSelect` — the telescope walk the
-  array case projects to a single element type).
-- `src/Kappa/Backend/C.hs:799`-`807` (`boxScalar`/`unboxScalar` — the get/set-
-  boundary box/unbox the scalar slabs reuse), `:941`-`996` (`scalarPlan`/
-  `typeScalarKinds` — the monomorphic-scalar gating the array unboxing mirrors;
-  `:993` consumes `Repr.repSelect`), `:1006`-`1010` (`repScalarKind`:
-  `RepInt`→`KInt64`, `RepDouble`→`KDouble`), `:1047`-`1101` (`erasedSpine
-  PositionsP`/`eraseQ0ArgsP` — erases the `forall a`), `:1216`+ (`compileScalar
-  Worker`), `:2063`/`:1906`-`1927` (primEntries / `newRef` / AtomicRef rows —
-  the registration template), and the do/action lowering paths for explicit
-  mutable operations.
-- `src/Kappa/Backend/LLVM.hs:2499`+ (function scalar workers, including the
-  `kwi_`/`kwd_` unboxed `int64`/`double` SSA path the array scalar fast-path
-  would feed).
-- `docs/Spec.md` §12.2/§12.2.6/§12.2.7 (quantities; linear non-droppable;
-  ownership-only, `:11428`), §15 (`:14930`, totality is about transparent
-  defs), §18.1.2-18.1.3 (`:18558`+, Defect = IO effect, not partiality),
-  §18.1.13 (STM/TVar), §18.6.1 (`:20878`, MonadRef + var laws), §18.6.4
-  (`:21247`, ST/STRef/runST + skolem escape + bump-arena), §29 (`:29206`+,
-  Array/SizedArray, proof-carrying `arrayIndex`/`sizedArrayIndex`, sharing at
-  `:29254`), §31.2 (`:34629`+, erasure; subst/pathInd as coercion;
-  KBackendIR legality verifier at `:34688`).
+- `runtime/kappart.h` — `KTag`, the 48-byte `KValue` union, `as.ref`, the
+  Stage-0 tag/alignment contract, immediate-Int encoding, immediate nullary
+  constructors, and packed b011 constructors.
+- `runtime/value.c` — `alloc_val_atomic`/`kgc_alloc_atomic` scalar leaves,
+  `kctor0`/`kctor`, `K_BYTE`/`K_BYTES`, `kref_new`, `kref_get`, `kref_set`,
+  `karr_new`, `karr_get`, and `karr_set`.
+- `runtime/gc.c` — `krt_assert_gc_alignment`, `GC_set_all_interior_pointers(0)`,
+  `kgc_alloc`/`kgc_alloc_atomic`, and `$KAPPA_GC_STATS` allocation reports.
+- `runtime/prims.c` — `kpf_io_newRef`/`kpf_io_readRef`/`kpf_io_writeRef` as
+  `kref_*` templates, plus the cons-list `Array` facade whose O(n) gap this
+  design closes.
+- `runtime/stm.c` — multi-fiber TVar as a `K_FGN` handle, which is the TArray
+  precedent.
+- `runtime/atomic.c` + `src/Kappa/Prelude.hs` — `AtomicRef` as an opaque
+  `__AtomicCell` wrapper whose surface ops `match`-unwrap and forward only
+  values; this is the API and erasure-safety template the array surface copies.
+- `src/Kappa/Backend/Repr.hs` — `Rep`, `scalarRep`, `primScalarRep`, and
+  `repSelect`, which are the representation authorities the array call-site
+  specializer consults.
+- `src/Kappa/Backend/C.hs` — `boxScalar`/`unboxScalar`, scalar planning,
+  `erasedSpinePositionsP`/`eraseQ0ArgsP`, scalar workers, primitive
+  registration, and do/action lowering for explicit mutable operations.
+- `src/Kappa/Backend/LLVM.hs` — function scalar workers, including the `kwi_` /
+  `kwd_` unboxed SSA paths the array scalar fast path would feed.
+- `docs/Spec.md` — §12.2/§12.2.6/§12.2.7 (quantities and linear
+  non-droppable/ownership-only rules), §15 (totality), §18.1.2-18.1.3 (Defect
+  as IO effect), §18.1.13 (STM/TVar), §18.6.1 (MonadRef + var laws), §18.6.4
+  (ST/STRef/runST), §29 (Array/SizedArray), and §31.2 (erasure and BackendIR
+  legality).
 - External: Marshall et al. ESOP'22 (linearity=output / uniqueness=input,
   dual); Idris2 `Data.Linear.Array` + stefan-hoeck/idris2-array (the QTT
   template); linear-base `Data.Array.Mutable.Linear`; Tweag Linear Constraints

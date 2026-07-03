@@ -87,6 +87,7 @@ data GenState = GenState
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ Milestone L (§27.1.1/§36.28): each provided @host.native.*@ member ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings. A reference to such a member is lowered like a PRIM over the codegen-emitted C-wrapper symbol ('wrapperCName') — a saturated reference to a @knative_sat@ over the wrapper, a curried/bare reference to a @knative@ closure — and the wrapper is compiled+linked from a sidecar @.c@ the Driver emits ('hostFfiSidecar'). Mirrors C's @gsHostSyms@; recognised at the REFERENCE so a host member is NEVER enqueued as a no-core-body CAF.
   , gsScalarHelpers :: !(Set Text) -- ^ names of scalar-worker helper @define@s already emitted (the @.ll@-local arg-unbox @kunbox_i64_ll@/@kunbox_dbl_ll@), so each is emitted exactly once.
   , gsScalarLetSlots :: ![Text] -- ^ entry-block scratch slots reserved for scalar-worker 'CLet' binders. Popped during scalar worker emission so tail loops store into fixed slots instead of executing 'alloca' on every iteration.
+  , gsRcRuntimeEnabled :: !Bool -- ^ Whether this LLVM binary may run runtime RC effects. LLVM still delegates RC validation to C when requested, but until LLVM emits ownership maintenance itself, generated LLVM binaries keep the runtime RC gate off.
   }
 
 type Gen = State GenState
@@ -443,6 +444,7 @@ generateLL rcEnabled cs mainG ffiPrims hostSyms =
             , gsHostSyms = hostSyms
             , gsScalarHelpers = Set.empty
             , gsScalarLetSlots = []
+            , gsRcRuntimeEnabled = False
             }
         final = execState (drainQueue >> emitMain mainG) st0
         -- §18.1.17/§27.6/§34.3.3 Stage-4a: the LLVM backend links the SAME one-shot
@@ -732,7 +734,9 @@ funcArity = go 0
 -- that block, and the @ret@ phi names it as the fresh value's predecessor.
 emitArity0Accessor :: Text -> [Text] -> Text -> Text -> Gen ()
 emitArity0Accessor ident buildInsns endBlock operand = do
-  declRuntime "declare void @krc_mark_shared_recursive(ptr)"
+  rcRuntimeOn <- gets gsRcRuntimeEnabled
+  when rcRuntimeOn $
+    declRuntime "declare void @krc_mark_shared_recursive(ptr)"
   let cacheG = "@" <> ident <> ".cache"
   modify' $ \st ->
     st {gsGlobalsExtra = (cacheG <> " = internal global ptr null, align 8") : gsGlobalsExtra st}
@@ -747,8 +751,8 @@ emitArity0Accessor ident buildInsns endBlock operand = do
           , "build:"
           ]
             ++ map ("  " <>) buildInsns
-            ++ [ "  call void @krc_mark_shared_recursive(ptr " <> operand <> ")"
-               , "  store atomic ptr " <> operand <> ", ptr " <> cacheG <> " release, align 8"
+            ++ [ "  call void @krc_mark_shared_recursive(ptr " <> operand <> ")" | rcRuntimeOn ]
+            ++ [ "  store atomic ptr " <> operand <> ", ptr " <> cacheG <> " release, align 8"
                , "  br label %ret"
                , ""
                , "ret:"
@@ -767,29 +771,38 @@ reportArity0Failure ident detail = do
   (insns, endBlock, operand) <- captured "null" (unsupported "definition" detail)
   emitArity0Accessor ident insns endBlock operand
 
--- | The @\@main@ entry point.  Mirrors C's 'emitMain' (C.hs:1280) EXACTLY,
--- including: @krt2_new(0)@ (which calls @krt_init@ internally — there is NO
--- separate @krt_init@ call), @krt2_run_main(kg_main())@, and the
--- success-to-exit-code mapping (0 on success, 1 on failure).
+-- | The @\@main@ entry point.  It follows the C runtime entry protocol
+-- (@krt2_new(0)@, @krt2_run_main(kg_main())@, success -> process 0) but keeps
+-- runtime RC effects disabled until LLVM emits matching ownership operations.
+-- Default LLVM builds still run the C-side RC validator when requested; only
+-- C currently claims generated free-on-zero execution.
 emitMain :: GName -> Gen ()
 emitMain g = do
+  rcRuntimeOn <- gets gsRcRuntimeEnabled
   let ident = cGlobIdent g
   declRuntime "declare ptr @krt2_new(i32)"
   declRuntime "declare ptr @krt2_run_main(ptr)"
   declRuntime "declare i32 @krt2_exit_is_success(ptr)"
+  unless rcRuntimeOn $
+    declRuntime "declare void @krc_set_enabled(i32)"
+  let rcGate =
+        [ "  call void @krc_set_enabled(i32 0)" | not rcRuntimeOn ]
+      body =
+        [ "define i32 @main() {"
+        , "entry:"
+        ]
+          ++ rcGate
+          ++ [ "  %rt = call ptr @krt2_new(i32 0)"
+             , "  %m = call ptr @" <> ident <> "()"
+             , "  %exit = call ptr @krt2_run_main(ptr %m)"
+             , "  %ok = call i32 @krt2_exit_is_success(ptr %exit)"
+             , "  %fail = icmp eq i32 %ok, 0"
+             , "  %code = select i1 %fail, i32 1, i32 0"
+             , "  ret i32 %code"
+             , "}"
+             ]
   let def =
-        T.unlines
-          [ "define i32 @main() {"
-          , "entry:"
-          , "  %rt = call ptr @krt2_new(i32 0)"
-          , "  %m = call ptr @" <> ident <> "()"
-          , "  %exit = call ptr @krt2_run_main(ptr %m)"
-          , "  %ok = call i32 @krt2_exit_is_success(ptr %exit)"
-          , "  %fail = icmp eq i32 %ok, 0"
-          , "  %code = select i1 %fail, i32 1, i32 0"
-          , "  ret i32 %code"
-          , "}"
-          ]
+        T.unlines body
   modify' $ \st -> st {gsTop = def : gsTop st}
 
 -- | Concatenate the translation unit: header, string-constant pool, the

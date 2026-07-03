@@ -1,0 +1,14 @@
+-- Perceus S3.3/S3.4 regression: a value read from a mutable Ref is borrowed
+-- from that cell. Passing it to an owned writeRef argument must materialize a
+-- duplicate before any later overwrite of the source Ref can drop/free it.
+module main
+
+main : UIO Unit
+let main = do
+    let source <- newRef "kept-through-transfer"
+    let dest <- newRef "old-destination"
+    let x <- readRef source
+    writeRef dest x
+    writeRef source "source-overwritten"
+    let y <- readRef dest
+    printlnString y

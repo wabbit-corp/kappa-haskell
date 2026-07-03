@@ -13,12 +13,13 @@
 -- behavior is "the interrupter waits for the target's finalizers").
 --
 -- Deterministic observation (no reliance on a particular interleaving):
---   * `slowChild` parks; its onInterrupt finalizer completes a Promise, recording
---     the InterruptCause tag it was interrupted with.
---   * `parent` runs `disconnect (slowChild done)`. We `cede` it onto the child's
---     sleep, then `interrupt parent` (the WAITING form). Because the join is
---     detached, `interrupt` only waits for `parent`'s own (trivial) unwind, NOT
---     for the child's finalizer — so main reaches "parent-resumed" without hanging.
+--   * `slowChild` completes a readiness Promise before parking; its onInterrupt
+--     finalizer completes a second Promise, recording the InterruptCause tag it
+--     was interrupted with.
+--   * `parent` runs `disconnect (slowChild ready done)`. Main waits for `ready`,
+--     then `interrupt parent` (the WAITING form). Because the join is detached,
+--     `interrupt` only waits for `parent`'s own (trivial) unwind, NOT for the
+--     child's finalizer — so main reaches "parent-resumed" without hanging.
 --   * We then `awaitPromiseExit done`: the child's finalizer completed it in the
 --     BACKGROUND after parent had already left, proving finalization continued
 --     post-detach. The `Requested` tag confirms it was the detach interrupt.
@@ -42,16 +43,21 @@ recordTag : Promise Void String -> InterruptCause -> UIO Unit
 let recordTag done ic =
     ioBind (completePromise done (Success (tagOf ic))) (\b -> ioPure Unit)
 
-slowChild : Promise Void String -> UIO Unit
-let slowChild done = onInterrupt (sleepFor (seconds 10)) (recordTag done)
+slowBody : Promise Void Unit -> UIO Unit
+let slowBody ready = do
+    let _ <- completePromise ready (Success ())
+    sleepFor (seconds 10)
+
+slowChild : Promise Void Unit -> Promise Void String -> UIO Unit
+let slowChild ready done = onInterrupt (slowBody ready) (recordTag done)
 
 main : UIO Unit
 let main = do
     let done <- newPromise
+    let ready <- newPromise
     -- run the child DETACHED inside `parent`: parent's interrupt won't wait on it.
-    let p <- fork (disconnect (slowChild done))
-    cede
-    cede
+    let p <- fork (disconnect (slowChild ready done))
+    let _ <- awaitPromise ready
     interrupt p
     -- `interrupt` (waiting) returns once `parent` itself has terminated; the
     -- detached join makes that prompt — no blocking on the child's finalizer.

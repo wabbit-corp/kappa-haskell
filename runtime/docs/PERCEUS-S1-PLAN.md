@@ -1,7 +1,10 @@
 # Perceus Stage S1 — Implementation Plan: Threading Ownership onto the Backend IR
 
-Status: **S1 COMPLETE** (`71e6639`→`b26ef7c`; conformance 1916/0, parity 121/0; the full ownership-analysis
-layer, fully observe-only, Boehm untouched). **S2 (dup/drop — the first *consuming* stage) is next.**
+Status: **historical S1 COMPLETE** (`71e6639`→`b26ef7c`; conformance 1916/0, parity 121/0; the full
+ownership-analysis layer was observe-only and Boehm untouched at this stage). Later stages have since landed:
+S2 consumes this metadata for dup/drop/drop-site emission, and S3.4 makes the C/runtime path RC-on by default
+with free-on-zero for the conservative freeable partition. This document records the S1 design constraints; use
+[PERCEUS-S3-PLAN.md](PERCEUS-S3-PLAN.md) and [ROADMAP.md](../../ROADMAP.md) for current runtime status.
 Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc) — this is the detailed S1 blueprint.
 
 ## The framing that drives every decision
@@ -68,8 +71,9 @@ the Stage-0 `CCtor`/`CMatch` `Maybe Term` annotation precedent (observe-only; `E
 ## (c) The CCtor/CMatch layout gap (for S5 FBIP reuse) — close in `Repr.hs`, no Term change
 
 FBIP needs the field count/layout at a `CMatch` arm (scrutinee side) and `CCtor` (construct side). The
-construct side already has it (`compileCtor`, `C.hs:3012`). The scrutinee side is in the `CMatch` head-type
-annotation (`Core.hs:132`) — already produced, no backend reads it. Close via `Repr.ctorLayoutOf ::
+construct side already has it (`compileCtor` in `src/Kappa/Backend/C.hs`). The scrutinee side is in the
+`CMatch` head-type annotation in `Kappa.Core.Term` — already produced, no backend reads it. Close via
+`Repr.ctorLayoutOf ::
 EvalCtx -> Maybe Term -> Maybe CtorLayout` (observe-only in S1, consumed by S5), plus populating the
 `CCtor` annotation where it's currently `Nothing`. `Nothing ⇒ conservatively skip reuse` (sound, slower).
 No `Term` arity change.
@@ -81,17 +85,20 @@ No `Term` arity change.
   Owned runtime positions consume; borrowed, `Q0`, and kind-domain positions read/erase as appropriate.
 - **dup** before a consuming `NonLast` use; read-only `NonLast` occurrences stay bare because no consumer-side
   drop balances a dup.
-- **drop** at the conservative S2.3 structural seams only when the value is known owned. `CDo` remains opaque to
-  the ownership walk, so resource lifetime is protected structurally by the do-kernel/defer/using lowering rather
-  than by a stored resource flag in `OwnInfo`.
-- Placement precedent: the `gsSuspenders` threading (`C.hs:110/474`, consulted at `:935/983/2497`).
+- **drop** at conservative structural seams only when the value is known owned. In the original S1 framing,
+  `CDo` was still treated as an opaque future seam; S2.3b closed that gap by walking and validating do-kernel
+  bodies, while resource-specific lifetime is still protected structurally by the do-kernel/defer/using lowering
+  rather than by a stored resource flag in `OwnInfo`.
+- Placement precedent: the `gsSuspenders` threading in `src/Kappa/Backend/C.hs`, computed once from Core bodies
+  and consulted by application/do lowering instead of being rediscovered at each call site.
 
 **S2 consumption discipline (from the S1.1 R1 review).** The `OwnInfo` keys are structural child-position
 paths. S2 must consume them by **walking the lowered term and looking up each node's path** (visit node →
 compute its path → query the table), NOT by iterating the table. A stale key naming an erased subterm
 resolves to a `CSort 0` childless leaf (safe — it addresses nothing, never a wrong binder), but
-walk-and-lookup never queries a deleted key at all. S2.3b pins this with the `KAPPA_PERCEUS_RC=1` validation
-gate: every non-erased runtime lookup must resolve both `oiUses` and `oiUseConsumes`, or the backend fails.
+walk-and-lookup never queries a deleted key at all. S2.3b pins this with the default-on Perceus validation
+gate: every non-erased runtime lookup must resolve both `oiUses` and `oiUseConsumes`, or the backend fails
+(`KAPPA_PERCEUS_RC=0` is reserved for explicit RC-off differential baselines that also disable runtime RC effects).
 
 ## (e) Sub-stages, ordering, risks
 
@@ -108,7 +115,7 @@ Ordering: S1.0 → S1.1 → S1.2 gates everything (the audit trail must exist + 
 it). S1.3/S1.5 are telescope-derived, independent of S1.1. S1.4 depends on S1.1.
 
 **Risks.** **R1 (highest) — de-Bruijn identity stability**: the side-table keys must survive post-elaboration
-`Term` rewriting (zonking `Pipeline.hs:727`, the `eraseQ0Args` spine rewrite `C.hs:1110`). Mitigate: compute
+`Term` rewriting (zonking in `Pipeline.hs`, the `eraseQ0Args` spine rewrite in `Backend/C.hs`). Mitigate: compute
 `OwnInfo` *after* zonking; re-key after `eraseQ0Args` (verify the de-Bruijn shift; `Q0` binders are
 non-runtime). **R2 — §31.2 erasure**: keep `OwnInfo` strictly out of `Term`; register it with the
 `verify-kbackendir` legality check. **R3 — surface/Core last-use divergence** (partially-consumed records,

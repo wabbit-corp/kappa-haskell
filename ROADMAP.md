@@ -160,10 +160,12 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      S2/S3 bridge item, not a permanent capability reduction. A recorded
      droppable branch-drop binder that cannot resolve in a top-level flat worker frame is an RC validation
      miss, not a silent leak; capture-free nested flat closures can drop their own resolved owned locals,
-     while missing outer/captured binders and CPS/boxed paths remain conservative no-drop sites.
-     Boehm still frees while a DEBUG assert checks
-     `rc` against the collector (de-risks use-after-free). Last verified 2026-07-02: conformance 2094/0, with
-     native RC parity covered by `KAPPA_PERCEUS_RC=true test/native/run-native-tests.sh`; underflow-clean +
+     while missing outer/captured binders and CPS/boxed paths remain conservative no-drop sites. Through S2
+     this was a Boehm-backed maintenance layer with an underflow assert. S3 has since made the C/native path
+     default to RC validation/emission plus free-on-zero for the conservative strict-data FREESET, while
+     `KAPPA_PERCEUS_RC=0` remains the explicit whole-binary RC-off/Boehm baseline and LLVM generated output
+     keeps runtime RC disabled until it emits matching ownership ops. Last verified 2026-07-02: conformance
+     2094/0, with native RC parity covered by `test/native/run-native-tests.sh`; underflow-clean +
      non-vacuous when those gates pass. S3.2 tightened returning-arm (`SinkTail`/`SinkBounce`) match cell drops
      and owned projection results through nested/control expressions; the S2.3c storing-primitive audit remains
      a standing invariant for later runtime-store precision.
@@ -174,13 +176,22 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      values on Boehm until the later ownership/atomic stages; S3.0/S3.1 prereqs landed = `kis_rc_freeable` +
      shared-bit encoding, `karr_new` per-slot dup, `krec_without` kept-field dup, `tshare` mark+shared-dup/drop-no-op,
      iterative drop-descent skeleton, and
-     arity-guard reconcile. **S3.2 landed for the C/runtime path:** `kdrop` now frees zero-count values in the
-     conservative FREESET using an inline/scanned-overflow iterative worklist, while LLVM and retained/shared
-     shapes remain Boehm-backed. Remaining S3.3/S3.4 work: drop-old/write-barrier precision, LLVM `kdup`/`kdrop`
-     parity, heap-high-water validation, broader Boehm-debug plus supplemental sanitizer corpus lanes, and
-     default-on policy. The current native RC corpus lane runs generated C binaries with `KAPPA_POISON=1`
-     and includes a non-vacuous generated-drop fixture.
-   - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points.
+     arity-guard reconcile. **S3.2-S3.4 landed for the C/runtime path:** `kdrop` now frees zero-count values in
+     the conservative FREESET using an inline/scanned-overflow iterative worklist; S3.3 drops displaced runtime
+     cell values and failed-publication arguments (`Ref`/array/FiberRef/STM/promise/failed CAS); S3.4 makes native
+     RC validation/emission default-on with `KAPPA_PERCEUS_RC=0` reserved for explicit RC-off differential baselines
+     that disable runtime RC effects as well as generated maintenance.
+     LLVM and retained/shared shapes remain Boehm-backed until their later stages. The native corpus lane runs
+     generated C binaries with `KAPPA_POISON=1`, includes a non-vacuous generated-drop fixture, and gates the
+     generated-drop heap high-water trend in a separate real-free lane with `KAPPA_POISON` unset.
+   - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points. Full plan:
+     [PERCEUS-S4-PLAN.md](runtime/docs/PERCEUS-S4-PLAN.md) — two deliverables: (A) the **biased fast/slow
+     split** (thread-local RC goes non-atomic — recovers the 20–130% atomic-everywhere tax S3.4 pays live) and
+     (B) **shared-object reclamation** (atomic count + acquire-before-free extends free-on-zero to the shared
+     set, currently Boehm-retained). Runtime-only, backend-agnostic — needs neither LLVM-RC nor the
+     KBackendIR split. Primary gate: **ThreadSanitizer** over the RC-on concurrency corpus (a data-race
+     surface) + poison-under-load + a perf-recovery gate. Highest-value next step: RC is default-on now, so
+     the atomic tax is live.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
@@ -197,7 +208,8 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      (named region/worker or planner rejection, not global scalar-worker absence) for user
      `MonadRef`, STM, wrong carrier, `ref x` escape, suspension/finalizer constructs (`cede`, `sleep`,
      `await`/`join`, `fork`, `blocking`, `mask`/`poll`, `catch`/`finally`, handlers, `defer`/`using`), and
-     overflow-after-prior-writes; run accepted/rejected fixtures with `KAPPA_PERCEUS_RC=true`.
+     overflow-after-prior-writes; run accepted/rejected fixtures under the default RC-on native gate
+     (`KAPPA_PERCEUS_RC=0` only for explicit whole-binary off baselines).
    - **SCA-1 checker witness ✅:** have the checker attach compact `BuiltinIORef` action witnesses, tied by a
      stable hidden-cell id, to compiler-elaborated `KVarItem`, `KAssign`, and generated current-read `KBind`
      actions when the selected evidence is exactly the builtin `MonadRef (IO e)` instance. No backend

@@ -61,7 +61,7 @@ KValue *kpf_io_finallyIO(KValue **a) {
   return krt2_run_op_sync(krt2_finally(a[0], a[1]));
 }
 KValue *kpf_io_newRef(KValue **a) { return kref_new(a[0]); }
-KValue *kpf_io_readRef(KValue **a) { return kref_get(a[0]); }
+KValue *kpf_io_readRef(KValue **a) { return kdup(kref_get(a[0])); }
 KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
 
 /* Mutable array IO ops (MUTABLE-ARRAY-DESIGN §4.1).  Each sees ONLY value args
@@ -71,7 +71,7 @@ KValue *kpf_io_writeRef(KValue **a) { return kref_set(a[0], a[1]); }
  * surface), read with kas_int; the array carries its own length, so the prim
  * itself is the bounds-checking IO floor (krt_fail on OOB, §6 tier 3). */
 KValue *kpf_io___newArray(KValue **a) { return karr_new(kas_int(a[0]), a[1]); }
-KValue *kpf_io___arrayRead(KValue **a) { return karr_get(a[0], kas_int(a[1])); }
+KValue *kpf_io___arrayRead(KValue **a) { return kdup(karr_get(a[0], kas_int(a[1]))); }
 KValue *kpf_io___arrayWrite(KValue **a) { return karr_set(a[0], kas_int(a[1]), a[2]); }
 /* arrayLen is PURE (not IO): O(1) read of the stored length. */
 KValue *kpf___arrayLen(KValue **a) { return kint(karr_len(a[0])); }
@@ -85,7 +85,7 @@ KValue *kpf___arrayLen(KValue **a) { return kint(karr_len(a[0])); }
  * scheduler (stm.c) and is reached once the do-kernel is CPS-lowered so a
  * transaction can suspend a fiber. */
 KValue *kpf_io_newTVar(KValue **a) { return kref_new(a[0]); }
-KValue *kpf_io_readTVar(KValue **a) { return kref_get(a[0]); }
+KValue *kpf_io_readTVar(KValue **a) { return kdup(kref_get(a[0])); }
 KValue *kpf_io_writeTVar(KValue **a) { return kref_set(a[0], a[1]); }
 KValue *kpf_io_atomically(KValue **a) { return krun_io(a[0]); }
 KValue *kpf_io_retry(KValue **a) {

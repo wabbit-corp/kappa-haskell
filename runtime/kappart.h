@@ -193,6 +193,13 @@ struct KEnv {
  * early so inline debug checks can fail through the normal runtime path. */
 void     krt_fail(const char *msg) __attribute__((noreturn));
 
+/* Whole-runtime RC maintenance gate for generated binaries. The default native
+ * path leaves this ON; an explicit KAPPA_PERCEUS_RC=0 build calls
+ * krc_set_enabled(0) from generated main so runtime S3 barriers do not
+ * decrement/free values without matching compiler-emitted ownership maintenance. */
+extern _Atomic int k_rc_enabled;
+void krc_set_enabled(int enabled);
+
 #ifndef NDEBUG
 extern _Atomic int k_rc_poison_enabled;
 void krc_poison_set_enabled(int enabled);
@@ -360,6 +367,7 @@ void kfree_recursive(KValue *v);
  * An immediate is value-copied (no rc), so it is returned unchanged. */
 static inline KValue *kdup(KValue *v) {
   if (kis_imm(v)) return v;
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return v;
   kassert_live(v);
   uint32_t cur = krc_word(v);
   for (;;) {
@@ -388,6 +396,7 @@ static inline KValue *kdup(KValue *v) {
  * avoids wrapping the low count. */
 static inline void kdrop(KValue *v) {
   if (kis_imm(v)) return;
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return;
   kassert_live(v);
   uint32_t cur = krc_word(v);
   for (;;) {

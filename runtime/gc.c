@@ -25,11 +25,14 @@ static void gmp_gc_free(void *p, size_t n) { (void)p; (void)n; }
 /* QW4: optional allocation/GC report at exit, gated by $KAPPA_GC_STATS, for
  * the native benchmark gates (test/native/bench.sh).  Off unless the env var
  * is set, so normal runs are unaffected. */
+static _Atomic unsigned long long g_kgc_frees_total = 0;
+
 static void krt_at_exit(void) {
   if (getenv("KAPPA_GC_STATS")) {
-    fprintf(stderr, "[kappa-gc] total_bytes=%zu heap_size=%zu collections=%lu\n",
+    fprintf(stderr, "[kappa-gc] total_bytes=%zu heap_size=%zu collections=%lu frees=%llu\n",
             (size_t)GC_get_total_bytes(), (size_t)GC_get_heap_size(),
-            (unsigned long)GC_get_gc_no());
+            (unsigned long)GC_get_gc_no(),
+            atomic_load_explicit(&g_kgc_frees_total, memory_order_relaxed));
   }
 }
 
@@ -45,8 +48,6 @@ static void krt_assert_gc_alignment(void) {
       krt_fail("UNBOXING: GC_MALLOC returned a non-8-aligned pointer (tag-bit contract violated)");
   }
 }
-
-static _Atomic unsigned long long g_kgc_frees_total = 0;
 
 static int env_truthy(const char *s) {
   return s && strcmp(s, "0") != 0 && strcmp(s, "false") != 0

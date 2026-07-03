@@ -11,9 +11,9 @@
 -- WHOLE body is masked and there is no interruption point AFTER the region exit,
 -- the pending interrupt is DROPPED and the fiber completes Success.
 --
--- The `cede`s hand the agent to the child so it parks in `inner`'s `sleepFor`
--- before main interrupts it; the masked sleep then runs its full duration and the
--- child completes normally.
+-- Each case uses a Promise handshake so the parent interrupts only after the child
+-- has entered `inner` and is about to park in its `sleepFor`; the masked sleep then
+-- runs its full duration and the child completes normally.
 --
 --   Body A1 (uninterruptible whole-body): the interrupt is suppressed for the whole
 --     body and dropped at exit            => Success "completed-masked"
@@ -24,41 +24,46 @@
 --                                          => Failure (interrupted)
 module main
 
+import std.prelude.(type Exit(..))
+
 -- the masked work: a 300ms sleep then a value. Under a whole-body mask the sleep
 -- runs full duration (suppression holds) and the value is produced.  (Written with
--- `ioBind`, not do-notation, so `restore inner` in body B applies `restore` to a
--- single sub-action of the rank-2 capability, the canonical mask/restore idiom.)
-inner : UIO String
-let inner = ioBind (sleepFor (millis 300)) (\u -> ioPure "completed-masked")
+-- `ioBind`, not do-notation, so `restore (inner ready)` in body B applies
+-- `restore` to a single sub-action of the rank-2 capability, the canonical
+-- mask/restore idiom.)
+inner : Promise Void Unit -> UIO String
+let inner ready = do
+    let _ <- completePromise ready (Success ())
+    ioBind (sleepFor (millis 300)) (\u -> ioPure "completed-masked")
 
 -- A1: the entire body is uninterruptible. No interruption point after the region
 -- exit, so a pending interrupt is dropped => Success.
-childA1 : UIO String
-let childA1 = uninterruptible inner
+childA1 : Promise Void Unit -> UIO String
+let childA1 ready = uninterruptible (inner ready)
 
 -- A2: the entire body is masked via `mask`; the sleep is NOT run through `restore`,
 -- so it stays masked — identical suppression to A1.
-maskedWhole : (forall (x : Type). IO Void x -> IO Void x) -> UIO String
-let maskedWhole restore = inner
-childA2 : UIO String
-let childA2 = mask maskedWhole
+maskedWhole : Promise Void Unit -> (forall (x : Type). IO Void x -> IO Void x) -> UIO String
+let maskedWhole ready restore = inner ready
+childA2 : Promise Void Unit -> UIO String
+let childA2 ready = mask (maskedWhole ready)
 
 -- B (control): the sleep IS run through `restore`, re-enabling interruption for
 -- that suspension. The interrupt is delivered there, so "after" never runs and the
 -- child fails. This proves the gate change did NOT make masking swallow interrupts
 -- delivered at a genuine (restored) interruption point.
-maskedRestored : (forall (x : Type). IO Void x -> IO Void x) -> UIO String
-let maskedRestored restore = ioBind (restore inner) (\n -> ioPure "after")
-childB : UIO String
-let childB = mask maskedRestored
+maskedRestored : Promise Void Unit -> (forall (x : Type). IO Void x -> IO Void x) -> UIO String
+let maskedRestored ready restore = ioBind (restore (inner ready)) (\n -> ioPure "after")
+childB : Promise Void Unit -> UIO String
+let childB ready = mask (maskedRestored ready)
 
--- fork the child, cede twice so it parks in the masked sleep, interrupt it, await
--- its Exit, and report Success/Failure with the given label.
-runCase : String -> UIO String -> UIO Unit
+-- fork the child, wait for its readiness signal, interrupt it, await its Exit, and
+-- report Success/Failure with the given label.
+runCase : String -> (Promise Void Unit -> UIO String) -> UIO Unit
 let runCase label body = do
-    let f <- fork body
-    cede
-    cede
+    let ready <- newPromise
+    let f <- fork (body ready)
+    let _ <- awaitPromise ready
     interrupt f
     let ex <- await f
     match ex
