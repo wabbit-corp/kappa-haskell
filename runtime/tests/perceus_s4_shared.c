@@ -212,6 +212,14 @@ static void check_shared_atomic_ref_returned_old_owners(void) {
                                          kbigint_str("1"));
 }
 
+static void check_run_main_returns_owned_exit(void) {
+  KValue *exit = krt2_run_main(krt2_pure(kstr0("s4-run-main-owned-exit")));
+  CHECK(krt2_exit_is_success(exit), "run_main ownership test must complete successfully");
+  CHECK(krc_is_shared(exit), "run_main returned Exit must be shared after fiber publication");
+  CHECK(krc_count(exit) == 2, "run_main must return exactly one distinct counted Exit owner for the caller");
+  if (krc_count(exit) > 0) kdrop(exit);
+}
+
 typedef struct {
   KValue *ref;
   KValue *arr;
@@ -311,6 +319,12 @@ static KValue *slow_memo_thunk(KEnv *env) {
   return kstr0("s4-shared-memo");
 }
 
+static KValue *env_must_be_shared_memo_thunk(KEnv *env) {
+  KValue *captured = kvar(env, 0);
+  CHECK(krc_is_shared(captured), "shared memo thunk body must not observe private captured env");
+  return kstr0("s4-shared-env");
+}
+
 static void *shared_memo_thunk_marker(void *arg) {
   SharedMemoThunkRace *r = (SharedMemoThunkRace *)arg;
   while (!atomic_load_explicit(&r->start, memory_order_acquire)) sched_yield();
@@ -335,7 +349,6 @@ static void check_shared_memo_thunk_mark_force_race(void) {
   SharedMemoThunkRace r;
   memset(&r, 0, sizeof r);
   r.thunk = kthunk(slow_memo_thunk, NULL, 1);
-  krc_mark_shared_recursive(r.thunk);
 
   pthread_t marker;
   pthread_t forcer;
@@ -346,6 +359,125 @@ static void check_shared_memo_thunk_mark_force_race(void) {
 
   CHECK(r.thunk->as.thunk.cache != NULL, "shared memo thunk race test must populate the cache");
   CHECK(krc_is_shared(r.thunk->as.thunk.cache[0]), "shared memo thunk cached value must be marked shared");
+}
+
+static void check_shared_memo_existing_private_cache_is_marked_before_return(void) {
+  KValue *thunk = kthunk(slow_memo_thunk, NULL, 1);
+  KValue *first = kforce(thunk);
+  CHECK(thunk->as.thunk.cache != NULL, "private memo thunk precondition must populate the cache");
+  KValue *cached = thunk->as.thunk.cache ? thunk->as.thunk.cache[0] : NULL;
+  CHECK(cached == first, "private memo thunk force should return the cached value owner");
+  CHECK(cached && !krc_is_shared(cached), "private memo cache precondition must start thread-local");
+  kdrop(first);
+
+  __atomic_fetch_or(&thunk->rc, KRC_SHARED_BIT, __ATOMIC_RELAXED);
+  KValue *second = kforce(thunk);
+  CHECK(krc_is_shared(cached), "forcing an already-shared memo thunk must mark its existing cache before returning it");
+  CHECK(second == cached, "shared memo cached fast path should return the cached value");
+  kdrop(second);
+}
+
+typedef struct {
+  KValue **thunks;
+  int n;
+  _Atomic int start;
+} SharedMemoExistingCacheRace;
+
+static void install_memo_cache_for_test(KValue *thunk, KValue *cached);
+
+static void *shared_memo_existing_cache_marker(void *arg) {
+  SharedMemoExistingCacheRace *r = (SharedMemoExistingCacheRace *)arg;
+  while (!atomic_load_explicit(&r->start, memory_order_acquire)) sched_yield();
+  for (int i = 0; i < r->n; i++) {
+    krc_mark_shared_recursive(r->thunks[i]);
+    if ((i & 7) == 0) sched_yield();
+  }
+  return NULL;
+}
+
+static void *shared_memo_existing_cache_forcer(void *arg) {
+  SharedMemoExistingCacheRace *r = (SharedMemoExistingCacheRace *)arg;
+  atomic_store_explicit(&r->start, 1, memory_order_release);
+  for (int i = 0; i < r->n; i++) {
+    KValue *v = kforce(r->thunks[i]);
+    CHECK(!kis_imm(v) && v->tag == K_STR, "existing shared memo cache force must return a string");
+    kdrop(v);
+    if ((i & 7) == 0) sched_yield();
+  }
+  return NULL;
+}
+
+static void check_shared_memo_existing_cache_mark_force_race(void) {
+#ifdef KRT2_TSAN
+  enum { N = 512 };
+#else
+  enum { N = 2048 };
+#endif
+  SharedMemoExistingCacheRace r;
+  memset(&r, 0, sizeof r);
+  r.n = N;
+  r.thunks = (KValue **)kgc_alloc(sizeof(KValue *) * N);
+  for (int i = 0; i < N; i++) {
+    KValue *cached = kstr0("s4-existing-cache-race");
+    r.thunks[i] = kthunk(slow_memo_thunk, NULL, 1);
+    install_memo_cache_for_test(r.thunks[i], cached);
+  }
+
+  pthread_t marker;
+  pthread_t forcer;
+  GC_pthread_create(&marker, NULL, shared_memo_existing_cache_marker, &r);
+  GC_pthread_create(&forcer, NULL, shared_memo_existing_cache_forcer, &r);
+  GC_pthread_join(forcer, NULL);
+  GC_pthread_join(marker, NULL);
+
+  for (int i = 0; i < N; i++) {
+    KValue *cached = r.thunks[i]->as.thunk.cache ? r.thunks[i]->as.thunk.cache[0] : NULL;
+    CHECK(cached && krc_is_shared(cached), "existing memo cache race must leave cached value shared");
+  }
+}
+
+static void check_shared_memo_force_marks_env_before_body(void) {
+  KValue *captured = kstr0("s4-env-private");
+  KValue *thunk = kthunk(env_must_be_shared_memo_thunk, kpush(captured, NULL), 1);
+  __atomic_fetch_or(&thunk->rc, KRC_SHARED_BIT, __ATOMIC_RELAXED);
+  KValue *forced = kforce(thunk);
+  CHECK(krc_is_shared(captured), "forcing an already-shared memo thunk must mark captured env before body");
+  CHECK(!kis_imm(forced) && forced->tag == K_STR, "shared env memo thunk must return a string");
+  kdrop(forced);
+}
+
+static void install_memo_cache_for_test(KValue *thunk, KValue *cached) {
+  KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
+  cell[0] = cached;
+  thunk->as.thunk.cache = cell;
+}
+
+static void check_shared_memo_cache_cycle_marks_without_recursing_forever(void) {
+  KValue *a = kthunk(slow_memo_thunk, NULL, 1);
+  KValue *b = kthunk(slow_memo_thunk, NULL, 1);
+  install_memo_cache_for_test(a, b);
+  install_memo_cache_for_test(b, a);
+  krc_mark_shared_recursive(a);
+  CHECK(krc_is_shared(a), "cache-cycle root memo thunk must be marked shared");
+  CHECK(krc_is_shared(b), "cache-cycle cached memo thunk must be marked shared");
+}
+
+static void check_shared_memo_deep_cache_chain_marks_iteratively(void) {
+#ifdef KRT2_TSAN
+  enum { N = 4096 };
+#else
+  enum { N = 100000 };
+#endif
+  KValue **nodes = (KValue **)kgc_alloc(sizeof(KValue *) * N);
+  KValue *leaf = kstr0("s4-deep-memo-cache-leaf");
+  for (int i = 0; i < N; i++) nodes[i] = kthunk(slow_memo_thunk, NULL, 1);
+  for (int i = 0; i < N - 1; i++) install_memo_cache_for_test(nodes[i], nodes[i + 1]);
+  install_memo_cache_for_test(nodes[N - 1], leaf);
+
+  krc_mark_shared_recursive(nodes[0]);
+  CHECK(krc_is_shared(nodes[0]), "deep memo cache root must be marked shared");
+  CHECK(krc_is_shared(nodes[N - 1]), "deep memo cache tail thunk must be marked shared");
+  CHECK(krc_is_shared(leaf), "deep memo cache leaf must be marked shared");
 }
 
 static void check_stm_same_pointer_write_consumes_journal_owner(void) {
@@ -642,6 +774,11 @@ int main(void) {
   check_cleanup_unlinks_registered_waiters();
   check_shared_ref_array_concurrent_read_write();
   check_shared_memo_thunk_mark_force_race();
+  check_shared_memo_existing_private_cache_is_marked_before_return();
+  check_shared_memo_existing_cache_mark_force_race();
+  check_shared_memo_force_marks_env_before_body();
+  check_shared_memo_cache_cycle_marks_without_recursing_forever();
+  check_shared_memo_deep_cache_chain_marks_iteratively();
 #ifndef KRT2_TSAN
   expect_no_poison_trap("promise poll result drop does not stale promise",
                         trigger_promise_poll_result_drop_does_not_stale_promise);
@@ -652,6 +789,7 @@ int main(void) {
   expect_no_poison_trap("fiber fan-out waiters share completed Exit safely",
                         trigger_fiber_fanout_waiters_share_exit);
 #endif
+  check_run_main_returns_owned_exit();
   check_stm_same_pointer_write_consumes_journal_owner();
   if (fails) {
     fprintf(stderr, "FAIL: perceus_s4_shared (%d)\n", fails);

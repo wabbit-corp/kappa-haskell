@@ -23,10 +23,10 @@ The bundled parser implements the Delve JSON profile used by these assets: objec
 ```text
 main menu             new game / continue / quit
 JSON save/load        versioned save file at the configured path
-file facade           read/write/exists/mkdir behind expect + native Linux fragment
+file facade           read/write/exists/mkdir behind expect + native fragments
 content packs         JSON-driven actors/items/spawns/worldgen/systems/lore
 ECS mirror            Entity + Component projection synchronized from authoritative game state
-resource roots        assets/ and saves/ recorded in the build manifest
+package manifest      source roots, native fragments, and generated host bindings
 ```
 
 ## Controls
@@ -74,24 +74,25 @@ src/delve/ecs.kp                   entity/component mirror synchronized from gam
 src/delve/save.kp                  versioned JSON save/load
 src/delve/content.kp               typed content-pack lookup helpers
 src/delve/gen.kp                   config-driven dungeon generation
-src/delve/ai.kp                    hostile/friendly/neutral actor turns
-src/delve/combat.kp                tactics-aware attacks, wounds, XP
+src/delve/ai.game.kp               hostile/friendly/neutral actor turns
+src/delve/combat.game.kp           tactics-aware attacks, wounds, XP
 src/delve/corruption.kp            corruption clock and mutations
-src/delve/faith.kp                 altars, prayer, offerings, cleansing
+src/delve/faith.game.kp            altars, prayer, offerings, cleansing
 src/delve/knowledge.kp             item identification and beatitude display
 src/delve/tactics.kp               combat stance config lookup
-src/delve/interact.kp              engraving, talking, aimed attacks
-src/delve/inventory.kp             pickup/drop/use inventory actions
+src/delve/interact.game.kp         engraving, talking, aimed attacks
+src/delve/inventory.game.kp        pickup/drop/use inventory actions
 src/delve/input.kp                 menu/game key mapping
-src/delve/render.kp                ANSI menu/map/status rendering
-src/delve/engine.kp                main menu, command loop, save/load integration
-src/delve/terminal.kp              expect terminal facade
-src/delve/terminal.native.linux.kp native Linux terminal fragment
-src/delve/terminal.native.macos.kp native macOS terminal fragment
+src/delve/render.game.kp           ANSI menu/map/status rendering
+src/delve/engine.game.kp           main menu, command loop, save/load integration
+src/delve/terminal.game.kp         expect terminal facade
+src/delve/terminal.native.linux.game.kp native Linux terminal fragment
+src/delve/terminal.native.macos.game.kp native macOS terminal fragment
+native/delve_terminal_adapter.h/.c generated conservative terminal/file surface
 native/delve_terminal.c            POSIX terminal + file shim
-native/delve_terminal.h            C ABI header
-bindings/delve-terminal.summary    trusted binding summary
-build.kp                           native Linux target manifest
+bindings/*.summary                 provenance notes for trusted host surfaces
+kappa.build.kp                     active package manifest
+build.kp                           older schematic manifest kept for provenance
 ```
 
 ## Build intent
@@ -99,19 +100,19 @@ build.kp                           native Linux target manifest
 Build the Linux target with:
 
 ```text
-kappa build --manifest examples/packages/delve --target delve-linux -o delve
+kappa build --manifest examples/packages/delve --target delve-linux --update -o delve
 ```
 
 Build the macOS arm64 target with Homebrew `bdw-gc`, `gmp`, and `pkg-config` installed:
 
 ```text
 KAPPA_CC="cc $(pkg-config --cflags --libs bdw-gc gmp)" \
-  kappa build --manifest examples/packages/delve --target delve-macos-arm64 -o delve
+  kappa build --manifest examples/packages/delve --target delve-macos-arm64 --update -o delve
 ```
 
 The release archives currently contain dynamically linked executables. Linux systems need compatible `libgc` and `libgmp` runtime libraries installed. macOS systems need Homebrew `bdw-gc` and `gmp` runtime libraries unless the binaries are rebuilt with a static or bundled dependency strategy.
 
-The native boundary is still tiny. `terminal.kp` and `files.kp` declare backend-neutral facades with `expect`; selected `.native.*.kp` fragments satisfy them through `host.native.delve_terminal.Raw`. The build manifest records `assets` and `saves` as resource roots so JSON packs and save paths are explicit build/deployment inputs.
+The native boundary is still small. `terminal.game.kp` and `files.kp` declare backend-neutral facades with `expect`; selected `.native.*.kp` fragments satisfy them through the generated `host.native.delve_terminal.Raw` adapter surface. `kappa.build.kp` records the source roots, fragment axes, target-specific host bindings, headers, shims, and string-return classifications. Assets and saves remain explicit package-relative runtime paths.
 
 ## Status
 

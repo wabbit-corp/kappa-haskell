@@ -39,7 +39,7 @@ import Kappa.Interp (RunResult (..), runMain)
 import Kappa.Pipeline
 import Kappa.Source (ModuleName, Pos (..), Span (..), moduleNameText)
 import Kappa.TestHarness (Summary (..), TestReport, runTestPath, runTestSuitePath, summarize)
-import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, removeFile)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.FilePath (takeDirectory, takeFileName, (</>))
@@ -325,13 +325,13 @@ cmdBuildManifest ma = do
           -- a --target dispatches on the named target's kind (executable
           -- build / test suite / aggregate of members); no --target builds
           -- the default executable. The dependency lock is verified/updated
-          -- ONCE for the whole invocation against the union of every reached
-          -- exe/bench target's closure (see runInvocation) — never per
-          -- target, which would let aggregate members overwrite each other.
+          -- once for the invocation's resolved target closure. Aggregate
+          -- targets still contribute every reached exe/bench member, but
+          -- unrelated sibling targets are not probed.
           | otherwise -> runInvocation file bc ma (maTarget ma)
 
 -- | Run a build invocation (default executable, or a named --target) with a
--- single package-scoped lock step. §36.7:39662/:39664: package-mode ordinary
+-- single invocation-scoped lock step. §36.7:39662/:39664: package-mode ordinary
 -- compilation uses @locked@ — the lock is VERIFIED up front and a missing or
 -- stale required entry is a fail-closed error — UNLESS the build explicitly
 -- selects an update mode (@--update@/@--lockfile-update@), which is the only
@@ -340,12 +340,11 @@ cmdBuildManifest ma = do
 runInvocation :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO ()
 runInvocation file bc ma mtgt = do
   let manifestDir = takeDirectory file
-  -- The lockfile is a PACKAGE-WIDE artifact: its entries are the union over
-  -- every exe/bench target (§36.7), not just the one named by --target. A
-  -- per-target closure would make a binding-free target (e.g. a test runner)
-  -- spuriously mismatch a sibling target's host-binding pin, and a per-target
-  -- --update would drop sibling entries. So verify/update against the union.
-  closure <- collectPackageLockClosure file bc
+  -- The lockfile records the resolved closure for this build request. A named
+  -- target does not force unrelated sibling executables to resolve their host
+  -- bindings; an aggregate request explicitly reaches each member and combines
+  -- those members' closures.
+  closure <- collectLockClosure file bc (maCC ma) mtgt
   case closure of
     Left ds -> emitDiags Human ds >> exitFailure
     Right (manages, entries) -> do
@@ -354,37 +353,9 @@ runInvocation file bc ma mtgt = do
       ok <- case mtgt of
         Just nm -> runNamedTarget file bc ma Set.empty nm
         Nothing -> runExecutable file bc ma Nothing
-      -- only an explicit update mode may write the lock (§36.7).
+      -- only an explicit update mode may write the invocation closure (§36.7).
       when (manages && ok && maUpdate ma) (updateLock manifestDir entries)
       if ok then exitSuccess else exitFailure
-
--- | The package-wide lock closure: the de-duplicated union of every
--- exe/bench target's closure (§36.7 — the lockfile pins the whole package,
--- not one target). @managesLock@ is True iff the package has at least one
--- exe/bench target (only those carry a closure / pin the lock); a pure
--- library/test package manages no lock. A discovery failure in any target's
--- native-binding pin propagates (fail-closed).
-collectPackageLockClosure :: FilePath -> B.BuildConfig -> IO (Either Diagnostics (Bool, [LockEntry]))
-collectPackageLockClosure file bc = do
-  let isExeBench t = case t.spec of
-        B.Executable {} -> True
-        B.Benchmark {} -> True
-        _ -> False
-      names = [t.name | t <- bc.targets, isExeBench t]
-  results <- mapM (\nm -> collectLockClosure file bc (Just nm)) names
-  case sequence results of
-    Left ds -> pure (Left ds)
-    Right rs ->
-      let entries = dedupEntries (concatMap snd rs)
-       in pure (Right (not (null names), entries))
-  where
-    dedupEntries = go Set.empty
-      where
-        go _ [] = []
-        go seen (e : es)
-          | k `Set.member` seen = go seen es
-          | otherwise = e : go (Set.insert k seen) es
-          where k = (e.kind, e.key, e.identity)
 
 -- | Resolve (without building) the dependency-lock closure of an
 -- invocation, mirroring 'runNamedTarget' dispatch. Returns @(managesLock,
@@ -393,9 +364,9 @@ collectPackageLockClosure file bc = do
 -- contribute nothing and must not touch the package lock. A not-found or
 -- cyclic target is reported as carrying no closure here — the build pass
 -- emits the real diagnostic.
-collectLockClosure :: FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Either Diagnostics (Bool, [LockEntry]))
-collectLockClosure file bc mtgt = case mtgt of
-  Nothing -> resolveExecutable manifestDir bc Nothing >>= oneIO
+collectLockClosure :: FilePath -> B.BuildConfig -> Maybe String -> Maybe T.Text -> IO (Either Diagnostics (Bool, [LockEntry]))
+collectLockClosure file bc mccSpec mtgt = case mtgt of
+  Nothing -> resolveExecutable manifestDir bc mccSpec Nothing >>= oneIO
   Just nm -> go Set.empty nm
   where
     manifestDir = takeDirectory file
@@ -407,9 +378,12 @@ collectLockClosure file bc mtgt = case mtgt of
     oneIO :: Either Diagnostics ResolvedExe -> IO (Either Diagnostics (Bool, [LockEntry]))
     oneIO (Left ds) = pure (Left ds)
     oneIO (Right rx)
-      | null (rxNativeBindings rx) = pure (Right (True, rxLockEntries rx))
+      | null (rxNativeBindings rx) =
+          pure $ case dedupLockEntries file (rxLockEntries rx) of
+            Left ds -> Left ds
+            Right entries -> Right (True, entries)
       | otherwise = do
-          mcc <- detectCC Nothing
+          mcc <- detectCC mccSpec
           case mcc of
             Nothing -> pure (Right (True, rxLockEntries rx)) -- no toolchain: build step reports it
             Just cc -> do
@@ -420,7 +394,9 @@ collectLockClosure file bc mtgt = case mtgt of
               r <- hostBindingLockEntries cc manifestDir (rxTargetTriple rx) bindings
               pure $ case r of
                 Left ds -> Left ds
-                Right hbs -> Right (True, rxLockEntries rx ++ hbs)
+                Right hbs -> case dedupLockEntries file (rxLockEntries rx ++ hbs) of
+                  Left ds -> Left ds
+                  Right entries -> Right (True, entries)
     renderSym s =
       s.member <> " " <> s.cSymbol <> " "
         <> T.pack (show (s.params)) <> "->" <> T.pack (show (s.result))
@@ -429,8 +405,8 @@ collectLockClosure file bc mtgt = case mtgt of
       | otherwise = case [t | t <- bc.targets, t.name == nm] of
           [] -> pure (Right (False, []))
           (t : _) -> case t.spec of
-            B.Executable {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
-            B.Benchmark {} -> resolveExecutable manifestDir bc (Just nm) >>= oneIO
+            B.Executable {} -> resolveExecutable manifestDir bc mccSpec (Just nm) >>= oneIO
+            B.Benchmark {} -> resolveExecutable manifestDir bc mccSpec (Just nm) >>= oneIO
             B.Test {} -> pure (Right (False, []))
             B.Library {} -> pure (Right (False, []))
             B.Alias (B.AliasSpec aliased) -> go (Set.insert nm visited) aliased
@@ -438,7 +414,22 @@ collectLockClosure file bc mtgt = case mtgt of
               rs <- mapM (go (Set.insert nm visited)) members
               pure $ case sequence rs of
                 Left ds -> Left ds
-                Right parts -> Right (any fst parts, concatMap snd parts)
+                Right parts -> do
+                  entries <- dedupLockEntries file (concatMap snd parts)
+                  Right (any fst parts, entries)
+
+dedupLockEntries :: FilePath -> [LockEntry] -> Either Diagnostics [LockEntry]
+dedupLockEntries file = go Map.empty []
+  where
+    go _ acc [] = Right (reverse acc)
+    go seen acc (e : es) =
+      case Map.lookup k seen of
+        Just old
+          | old.identity == e.identity -> go seen acc es
+          | otherwise -> Left [lockKeyConflictDiag file old e]
+        Nothing -> go (Map.insert k e seen) (e : acc) es
+      where
+        k = (e.kind, e.key)
 
 -- | Run one manifest target by name, dispatching on its kind. Returns
 -- whether it succeeded (so an aggregate can combine its members). @visited@
@@ -496,10 +487,10 @@ runTest manifestFile bc nm = do
 -- invocation by 'runInvocation', not here.)
 -- Returns the checked state, the @main@ GName, the gname→prim map, and the
 -- resolved plan — or 'Nothing' (diagnostics already emitted) on any error.
-prepareUnit :: UnsafeConfig -> FilePath -> B.BuildConfig -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName ResolvedNativeSymbol, ResolvedExe))
-prepareUnit cfg manifestFile bc mname = do
+prepareUnit :: UnsafeConfig -> FilePath -> B.BuildConfig -> Maybe String -> Maybe T.Text -> IO (Maybe (CheckState, GName, Map.Map GName ResolvedNativeSymbol, ResolvedExe))
+prepareUnit cfg manifestFile bc mccSpec mname = do
   let manifestDir = takeDirectory manifestFile
-  resolved <- resolveExecutable manifestDir bc mname
+  resolved <- resolveExecutable manifestDir bc mccSpec mname
   case resolved of
     Left ds -> emitDiags Human ds >> pure Nothing
     Right rx -> do
@@ -524,7 +515,7 @@ prepareUnit cfg manifestFile bc mname = do
 -- | Native build of an executable target. Returns whether it succeeded.
 runExecutable :: FilePath -> B.BuildConfig -> ManifestArgs -> Maybe T.Text -> IO Bool
 runExecutable manifestFile bc ma mname = do
-  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc mname
+  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc (maCC ma) mname
   case prep of
     Nothing -> pure False
     Just (st, mainG, hostSyms, rx) -> do
@@ -554,7 +545,7 @@ runExecutable manifestFile bc ma mname = do
 -- fails honestly since the interpreter supplies no foreign operations.
 runBenchmark :: FilePath -> B.BuildConfig -> ManifestArgs -> T.Text -> IO Bool
 runBenchmark manifestFile bc ma nm = do
-  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc (Just nm)
+  prep <- prepareUnit (manifestUnsafeConfig ma) manifestFile bc (maCC ma) (Just nm)
   case prep of
     Nothing -> pure False
     Just (st, mainG, _, _) -> do
@@ -576,34 +567,65 @@ lookupEntry rx = case [(p, mn) | (p, mn) <- rxSourceFiles rx, mn == rxEntryModul
 lockFileName :: FilePath
 lockFileName = "kappa" <> ".lock"
 
--- | Verify the resolved package dependency closure against @kappa.lock@ and
+-- | Verify the resolved build-request dependency closure against @kappa.lock@ and
 -- fail (E_DEPENDENCY_LOCK_MISMATCH, §3.2.15) if the lock is missing, corrupt,
 -- or stale. Called once per invocation by 'runInvocation' under @--locked@
--- (the @entries@ are the union over every reached exe/bench target), so it
--- never compares a single target's partial closure against the package lock.
+-- (the @entries@ are the invocation's resolved closure, or an aggregate's
+-- reached exe/bench member closure), so unrelated sibling targets do not make
+-- a selected-target build depend on their host environment.
 verifyLock :: FilePath -> [LockEntry] -> IO ()
 verifyLock manifestDir entries = do
   let lockPath = manifestDir </> lockFileName
       desired = parseLock (renderLock entries) -- normalized + sorted
-      -- §8.3.5/§27.1.1: a host-binding (host.native) entry that is missing or
-      -- changed in the lock is an UNPINNED native binding — emit the
-      -- native-specific diagnostic rather than the dependency one.
+      entryKey e = (e.kind, e.key)
+      entryId e = (e.kind, e.key, e.identity)
+      -- §8.3.5/§27.1.1: a selected host-binding (host.native) entry that is
+      -- missing or changed in the lock is an UNPINNED native binding — emit
+      -- the native-specific diagnostic rather than the dependency one. Extra
+      -- lock entries for targets outside this build request are tolerated, but
+      -- another entry for the same selected @(kind,key)@ with a stale identity
+      -- is a contradiction, not an unrelated extra.
       reject ex actual =
-        let actualSet = Set.fromList [(e.kind, e.key, e.identity) | e <- actual]
-            hbBad = [e | e <- desired, e.kind == "host-binding", not ((e.kind, e.key, e.identity) `Set.member` actualSet)]
-            depBad = any (\e -> e.kind /= "host-binding") desired
-                       && parseLock (renderLock [e | e <- desired, e.kind /= "host-binding"])
-                          /= [e | e <- actual, e.kind /= "host-binding"]
+        let desiredIds = Set.fromList (map entryId desired)
+            desiredKeys = Set.fromList (map entryKey desired)
+            actualSet = Set.fromList (map entryId actual)
+            missingSelected = [e | e <- desired, not (entryId e `Set.member` actualSet)]
+            staleActualKeys =
+              Set.fromList
+                [ entryKey e
+                | e <- actual
+                , entryKey e `Set.member` desiredKeys
+                , not (entryId e `Set.member` desiredIds)
+                ]
+            staleSelected = [e | e <- desired, entryKey e `Set.member` staleActualKeys]
+            badSelected =
+              Map.elems $
+                Map.fromList
+                  [ (entryId e, e)
+                  | e <- missingSelected ++ staleSelected
+                  ]
+            hbBad = [e | e <- badSelected, e.kind == "host-binding"]
+            depBad = any (\e -> e.kind /= "host-binding") badSelected
             ds = [nativeUnpinnedDiag lockPath e | e <- hbBad]
                    ++ [lockMismatchDiag lockPath ex | depBad || (null hbBad)]
          in emitDiags Human ds >> exitFailure
   exists <- doesFileExist lockPath
   if not exists
-    then when (not (null entries)) (reject False [])
+    then when (not (null desired)) (reject False ([] :: [LockEntry]))
     else do
       txt <- TIO.readFile lockPath
       let actual = parseLock txt
-      when (not (lockWellFormed txt) || actual /= desired) (reject True actual)
+          desiredIds = Set.fromList (map entryId desired)
+          desiredKeys = Set.fromList (map entryKey desired)
+          actualSet = Set.fromList (map entryId actual)
+          missingSelected = [e | e <- desired, not (entryId e `Set.member` actualSet)]
+          staleSelected =
+            [ e
+            | e <- actual
+            , entryKey e `Set.member` desiredKeys
+            , not (entryId e `Set.member` desiredIds)
+            ]
+      when (not (lockWellFormed txt) || not (null missingSelected) || not (null staleSelected)) (reject True actual)
 
 nativeUnpinnedDiag :: FilePath -> LockEntry -> Diagnostic
 nativeUnpinnedDiag lockPath e =
@@ -614,22 +636,34 @@ nativeUnpinnedDiag lockPath e =
         <> "identity in '" <> T.pack lockPath <> "' (its pkg-config version, header/shim "
         <> "digests, symbol surface, or target triple changed, or no entry exists); a "
         <> "package-mode host.native build MUST be pinned (Spec §8.3.5, §27.1.1, §36.7) — "
-        <> "re-run 'kappa build --manifest' without --locked to update the lockfile"
+        <> "re-run 'kappa build --manifest ... --update' to update the selected build request lockfile"
     )
 
--- | Create/update @kappa.lock@ when the resolved package closure differs
--- from it, and clear a now-stale lock when the closure is empty. Called once
--- per invocation by 'runInvocation' after a successful build (without
--- @--locked@); the @entries@ are the package-wide union.
+lockKeyConflictDiag :: FilePath -> LockEntry -> LockEntry -> Diagnostic
+lockKeyConflictDiag file old new =
+  diag SevError StageImports "E_DEPENDENCY_LOCK_MISMATCH"
+    (Just "kappa.package.reproducibility")
+    (Span file (Pos 1 1) (Pos 1 1))
+    ( "the selected build request produced conflicting lock identities for "
+        <> old.kind <> " entry '" <> old.key <> "' (" <> old.identity <> " vs "
+        <> new.identity <> "); a lockfile key must identify exactly one resolved "
+        <> "external fact (Spec §36.7)"
+    )
+
+-- | Create/update @kappa.lock@ when the selected invocation closure differs
+-- from it. Entries outside the selected build request are preserved; selected
+-- entries with the same @(kind,key)@ are replaced. Called once per invocation by
+-- 'runInvocation' after a successful @--update@ build.
 updateLock :: FilePath -> [LockEntry] -> IO ()
 updateLock manifestDir entries = do
   let lockPath = manifestDir </> lockFileName
       desired = parseLock (renderLock entries)
+      entryKey e = (e.kind, e.key)
   exists <- doesFileExist lockPath
   existing <- if exists then parseLock <$> TIO.readFile lockPath else pure []
-  if null entries
-    then when exists (removeFile lockPath) -- closure now empty: drop stale lock
-    else when (desired /= existing) (TIO.writeFile lockPath (renderLock entries))
+  let desiredKeys = Set.fromList (map entryKey desired)
+      merged = parseLock (renderLock (desired ++ [e | e <- existing, not (entryKey e `Set.member` desiredKeys)]))
+  when (not (null desired) && parseLock (renderLock merged) /= existing) (TIO.writeFile lockPath (renderLock merged))
 
 lockMismatchDiag :: FilePath -> Bool -> Diagnostic
 lockMismatchDiag lockPath exists =
@@ -641,8 +675,8 @@ lockMismatchDiag lockPath exists =
           else "a locked build was requested but no lockfile exists at '"
       )
         <> T.pack lockPath
-        <> "' (Spec §36.4, §36.23.2, §3.2.15); re-run 'kappa build --manifest' "
-        <> "without --locked to update the lockfile"
+        <> "' (Spec §36.4, §36.23.2, §3.2.15); re-run 'kappa build --manifest "
+        <> "... --update' to update the selected build request lockfile"
     )
 
 -- | Resolve the manifest path: an explicit file, a directory (look for

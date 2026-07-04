@@ -95,9 +95,10 @@ data ResolvedExe = ResolvedExe
 resolveExecutable ::
   FilePath ->
   BuildConfig ->
+  Maybe String ->
   Maybe Text ->
   IO (Either Diagnostics ResolvedExe)
-resolveExecutable manifestDir bc mTarget =
+resolveExecutable manifestDir bc mccSpec mTarget =
   case selectTarget of
     Left ds -> pure (Left ds)
     Right tgt
@@ -255,7 +256,7 @@ resolveExecutable manifestDir bc mTarget =
             if null gens
               then k Map.empty shimDefMap
               else do
-                mcc <- detectCC Nothing
+                mcc <- detectCC mccSpec
                 case mcc of
                   Nothing -> pure (Left [genNeedsCc (head gens).name])
                   Just cc -> do

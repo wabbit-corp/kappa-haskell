@@ -12,7 +12,7 @@ on it". The whole movement rule is a single transaction:
 
 ```kappa
 moveTo here next = do
-    occ <- readTVar next
+    let occ <- readTVar next
     if occ then retry
     else do
         writeTVar next True
@@ -43,10 +43,11 @@ the move counter is a lock-free `atomicFetchAdd`, so it sums every hop exactly
 once with no lost updates; each cart publishes its receipt only *after* its last
 move commits, and the dispatcher reads the counter only *after* every receipt has
 arrived (`awaitPromise` on all of them), establishing the happens-before edge. So
-`atomic counter == Σ receipts == carts × hops` on every run, and every segment is
-clear once all receipts are in.
+`atomic counter == Σ receipts == carts × hops` on every run, and the shared main
+line is clear once all receipts are in. Delivered carts still occupy their private
+exit sidings by design.
 
-Primitives exercised: `fork`/`forkDaemon`, `atomically` + `TVar` + `retry`,
+Primitives exercised: `forkDaemon`, `atomically` + `TVar` + `retry`,
 `Promise` (`newPromise`/`completePromise`/`awaitPromise`), and `std.atomic`
 (`atomicFetchAdd`/`atomicLoad`).
 
@@ -108,9 +109,9 @@ type system carries the termination argument; the runtime carries the safety one
 - **No O(1) array.** `Array` is a cons list with O(n) indexing, so the design
   stores a `TVar` reference directly inside each route hop; route execution walks
   the hop list and never indexes a global grid.
-- **No exceptions on the native backend.** All effects are `UIO`/`STM`; failure
-  is never raised. There's no error channel to model here, which suits the
-  conserved-invariant framing.
+- **No error path in this example.** All effects are `UIO`/`STM`; failure is not
+  raised even though the native backend supports typed error channels. There's no
+  error channel to model here, which suits the conserved-invariant framing.
 - **No `Fin`/`Vec` in the prelude.** "Dependent types" in practice means Nat
   indices + `decreases` + erased indices + existentials, all of which this
   example uses; it defines its own indexed `Route` rather than reaching for a

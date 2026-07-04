@@ -11,7 +11,7 @@ let buildConfig : BuildConfig = package
     , targets =
         [ executable
             { name = "railyard"
-            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags ["native", "game"]
             , main = module "railyard.dispatch"
             , modules = modulesUnder "railyard"
@@ -20,7 +20,7 @@ let buildConfig : BuildConfig = package
             }
         , executable
             { name = "railyard-tests"
-            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags ["native", "test"]
             , main = module "railyard.run_tests"
             , modules = modulesUnder "railyard"

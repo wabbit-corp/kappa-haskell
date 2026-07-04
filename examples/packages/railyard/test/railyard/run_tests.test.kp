@@ -12,20 +12,20 @@ main : UIO Unit
 let main = do
     -- route.lengthIsHopsPlusExit: a route across 3 main segments to an exit has
     -- 4 hops, and the existential index round-trips through buildRoute/routeLen.
-    s1 <- track.newSegFree
-    s2 <- track.newSegFree
-    s3 <- track.newSegFree
-    ex <- track.newSegFree
+    let s1 <- track.newSegFree
+    let s2 <- track.newSegFree
+    let s3 <- track.newSegFree
+    let ex <- track.newSegFree
     let c1 = match route.buildRoute (s1 :: s2 :: s3 :: Nil) ex
              case Pack r -> eqInt (route.routeLen r) 4
 
     -- track.moveReservesNextFreesHere: one atomic move flips occupancy from
     -- `here` to `next` and never leaves both set.
-    here <- track.newSegOcc
-    next <- track.newSegFree
+    let here <- track.newSegOcc
+    let next <- track.newSegFree
     atomically (track.moveTo here next)
-    hereOcc <- track.segOccupied here
-    nextOcc <- track.segOccupied next
+    let hereOcc <- track.segOccupied here
+    let nextOcc <- track.segOccupied next
     let c2 = nextOcc && (if hereOcc then False else True)
 
     -- track.moveKeepsOneOccupant: occupancy is conserved by a move — exactly one
@@ -37,7 +37,7 @@ let main = do
     -- invariant — receipts == atomic counter == carts*hops, and the track is
     -- clear. This exercises fibers, STM retry-contention and the atomic counter,
     -- not just the sequential helpers above.
-    res <- yard.runYard 3 2
+    let res <- yard.runYard 3 2
     let c4 = yard.yardOk 3 res
     let c5 = eqInt res.total 9     -- 3 carts * (2 main + 1 exit) = 9 moves
 

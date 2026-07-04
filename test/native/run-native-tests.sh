@@ -64,6 +64,19 @@ have_driver() {
   for c in zig cc gcc clang; do command -v "$c" >/dev/null 2>&1 && return 0; done
   return 1
 }
+
+explicit_c_driver() {
+  if command -v cc >/dev/null 2>&1; then
+    command -v cc
+  elif command -v gcc >/dev/null 2>&1; then
+    command -v gcc
+  elif command -v clang >/dev/null 2>&1; then
+    command -v clang
+  elif command -v zig >/dev/null 2>&1; then
+    printf '%s cc\n' "$(command -v zig)"
+  fi
+}
+
 if ! have_driver; then
   echo "SKIP: no C driver found (set \$KAPPA_CC or install zig/cc/gcc/clang)."
   echo "      The native backend test suite needs a C toolchain; skipping."
@@ -311,12 +324,8 @@ if runtime_tsan_supported; then
     fails=$((fails+1))
   fi
 else
-  if [ "${KAPPA_REQUIRE_TSAN:-0}" = "1" ]; then
-    echo "   FAIL: ThreadSanitizer is not supported by the detected C driver"
-    fails=$((fails+1))
-  else
-    echo "   skip (ThreadSanitizer unsupported by detected C driver; set KAPPA_REQUIRE_TSAN=1 to make this fatal)"
-  fi
+  echo "   FAIL: ThreadSanitizer is not supported by the detected C driver"
+  fails=$((fails+1))
 fi
 
 echo "== Perceus S4: poison shared-RC concurrency corpus =="
@@ -337,6 +346,197 @@ else
   sed 's/^/     /' "$btmp/runtime-s4-rc-bench.log" | head -80
   fails=$((fails+1))
 fi
+
+echo "== package lock closure: unused sibling host bindings are not resolved =="
+SEL="$WORK/selected-target-lock"; rm -rf "$SEL"; mkdir -p "$SEL/src/app"
+printf 'module app.main\nmain : UIO Unit\nlet main = printlnString "selected-ok"\n' > "$SEL/src/app/main.kp"
+cat > "$SEL/kappa.build.kp" <<'KP'
+let buildConfig : BuildConfig = package
+  { name = "selected-lock"
+  , version = semver "1"
+  , sourceRoots = [sourceRoot "src"]
+  , fragmentAxes = []
+  , dependencies = []
+  , hostBindings =
+      [ nativeBinding
+          { name = "missing-sibling"
+          , provides = [module "host.native.missing"]
+          , surface = symbolList [symbolDecl "missing" "missing" [] ctUnit]
+          , abi = cAbi
+          , inputs = [headers ["definitely_missing_kappa_s4_sibling.h"], pkgConfig "definitely-missing-kappa-s4-sibling" None]
+          , link = noLink
+          , load = systemLoader
+          }
+      ]
+  , targets =
+      [ executable
+          { name = "selected"
+          , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+          , fragments = tags []
+          , main = module "app.main"
+          , modules = modulesUnder "app"
+          , dependencies = []
+          , hostBindings = []
+          }
+      , executable
+          { name = "needs-missing"
+          , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+          , fragments = tags []
+          , main = module "app.main"
+          , modules = modulesUnder "app"
+          , dependencies = []
+          , hostBindings = ["missing-sibling"]
+          }
+      ]
+  }
+KP
+if timeout 200 $KAPPA build --update --manifest "$SEL" --target selected -o "$SEL/selected" >"$SEL/build.log" 2>&1; then
+  selout="$(timeout 60 "$SEL/selected" 2>"$SEL/run.err")"; selrc=$?
+  if [ "$selrc" -eq 0 ] && [ "$selout" = "selected-ok" ] && [ ! -e "$SEL/kappa.lock" ]; then
+    echo "   ok (selected target ignores unused sibling host-binding closure)"
+    printf '# kappa.lock v1 (test extra sibling entry)\nhost-binding fakeid missing-sibling\n' > "$SEL/kappa.lock"
+    if timeout 200 $KAPPA build --manifest "$SEL" --target selected -o "$SEL/selected-locked" >"$SEL/locked.log" 2>&1; then
+      echo "   ok (selected target tolerates unrelated sibling lock entries)"
+    else
+      echo "   FAIL: selected target rejected an unrelated sibling lock entry"
+      cat "$SEL/locked.log" | sed 's/^/     /'
+      fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: selected target lock closure produced wrong result"
+    printf '     rc=%s out=%s lock=%s\n' "$selrc" "$selout" "$(test -e "$SEL/kappa.lock" && echo yes || echo no)"
+    sed 's/^/     /' "$SEL/run.err" | head -40
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: selected target build resolved an unused missing sibling host binding"
+  cat "$SEL/build.log" | sed 's/^/     /'
+  fails=$((fails+1))
+fi
+
+LOCKD="$WORK/selected-lock-duplicate"; rm -rf "$LOCKD"; mkdir -p "$LOCKD/src/app"
+printf 'module app.main\nmain : UIO Unit\nlet main = printlnString "pin-ok"\n' > "$LOCKD/src/app/main.kp"
+printf 'int pin_id(void);\n' > "$LOCKD/src/pin.h"
+printf '#include "pin.h"\nint pin_id(void) { return 1; }\n' > "$LOCKD/src/pin.c"
+cat > "$LOCKD/kappa.build.kp" <<'KP'
+let buildConfig : BuildConfig = package
+  { name = "selected-lock-duplicate"
+  , version = semver "1"
+  , sourceRoots = [sourceRoot "src"]
+  , fragmentAxes = []
+  , dependencies = []
+  , hostBindings =
+      [ nativeBinding
+          { name = "pin"
+          , provides = [module "host.native.pin.Raw"]
+          , surface = symbolList [symbolDecl "pinId" "pin_id" [] ctInt]
+          , abi = cAbi
+          , inputs = [headers ["src/pin.h"], shim ["src/pin.c"], verify ["int pin_id(void)"]]
+          , link = noLink
+          , load = systemLoader
+          }
+      ]
+  , targets =
+      [ executable
+          { name = "app"
+          , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+          , fragments = tags []
+          , main = module "app.main"
+          , modules = modulesUnder "app"
+          , dependencies = []
+          , hostBindings = ["pin"]
+          }
+      ]
+  }
+KP
+if timeout 200 $KAPPA build --update --manifest "$LOCKD" --target app -o "$LOCKD/app" >"$LOCKD/build.log" 2>&1; then
+  pin_line="$(grep '^host-binding ' "$LOCKD/kappa.lock" | head -1 || true)"
+  pin_key="$(printf '%s\n' "$pin_line" | awk '{$1=""; $2=""; sub(/^  */, ""); print}')"
+  if [ -n "$pin_key" ]; then
+    if grep -q '^host-binding .* pin@x86_64-linux-gnu$' "$LOCKD/kappa.lock"; then
+      echo "   ok (host-binding lock key includes the selected target ABI)"
+    else
+      echo "   FAIL: selected host-binding lock key is not target-qualified"
+      cat "$LOCKD/kappa.lock" 2>/dev/null | sed 's/^/     /'
+      fails=$((fails+1))
+    fi
+    printf 'host-binding stale-selected-identity %s\n' "$pin_key" >> "$LOCKD/kappa.lock"
+    dupout="$(timeout 200 $KAPPA build --manifest "$LOCKD" --target app -o "$LOCKD/app2" 2>&1)"; duprc=$?
+    if [ "$duprc" -ne 0 ] && grep -q "E_NATIVE_BINDING_UNPINNED" <<<"$dupout"; then
+      echo "   ok (selected target rejects stale duplicate lock entry for the same host-binding key)"
+    else
+      echo "   FAIL: selected target accepted stale duplicate lock entry rc=$duprc"
+      echo "$dupout" | sed 's/^/     /'
+      fails=$((fails+1))
+    fi
+
+    explicit_cc="$(explicit_c_driver)"
+    if [ -n "$explicit_cc" ]; then
+      rm -f "$LOCKD/kappa.lock" "$LOCKD/app-explicit" "$LOCKD/app-explicit2"
+      if KAPPA_CC=false timeout 200 $KAPPA build --cc "$explicit_cc" --update --manifest "$LOCKD" --target app -o "$LOCKD/app-explicit" >"$LOCKD/explicit-update.log" 2>&1 \
+        && KAPPA_CC=false timeout 200 $KAPPA build --cc "$explicit_cc" --manifest "$LOCKD" --target app -o "$LOCKD/app-explicit2" >"$LOCKD/explicit-locked.log" 2>&1; then
+        echo "   ok (explicit --cc drives lock discovery even when KAPPA_CC is stale)"
+      else
+        echo "   FAIL: explicit --cc was not honored consistently by lock discovery"
+        cat "$LOCKD/explicit-update.log" "$LOCKD/explicit-locked.log" 2>/dev/null | sed 's/^/     /'
+        fails=$((fails+1))
+      fi
+    else
+      echo "   skip (no explicit cc/gcc/clang/zig driver found for --cc lock-discovery check)"
+    fi
+  else
+    echo "   FAIL: selected host-binding build did not write a host-binding lock entry"
+    cat "$LOCKD/kappa.lock" "$LOCKD/build.log" 2>/dev/null | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+else
+  echo "   FAIL: selected host-binding lock setup build failed"
+  cat "$LOCKD/build.log" | sed 's/^/     /'
+  fails=$((fails+1))
+fi
+
+echo "== Perceus S4: example package test targets build and run under default RC =="
+case "$(uname -s)" in
+  Darwin) DELVE_PACKAGE_TEST_TARGET="delve-tests-macos-arm64" ;;
+  Linux) DELVE_PACKAGE_TEST_TARGET="delve-tests-linux" ;;
+  *)
+    echo "   FAIL: no host-runnable Delve package smoke target for $(uname -s)"
+    fails=$((fails+1))
+    DELVE_PACKAGE_TEST_TARGET=""
+    ;;
+esac
+
+package_smoke() {
+  local label="$1" manifest="$2" target="$3" expected="$4"
+  local pkg="$WORK/${target}.pkg-src"
+  local exe="$WORK/${target}.pkg-smoke"
+  local log="$WORK/${target}.pkg-build.log"
+  local err="$WORK/${target}.pkg-run.err"
+  rm -rf "$pkg"
+  mkdir -p "$pkg"
+  cp -R "$manifest/." "$pkg/"
+  rm -f "$pkg/kappa.lock"
+  if timeout 300 env -u KAPPA_PERCEUS_RC $KAPPA build --update --manifest "$pkg" --target "$target" -o "$exe" >"$log" 2>&1; then
+    KAPPA_PERCEUS_RC= check_perceus_rc_log "$log" || return
+    local out rc
+    out="$(cd "$pkg" && timeout 180 env -u KAPPA_PERCEUS_RC KAPPA_POISON=1 "$exe" 2>"$err")"; rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qxF "$expected" && ! printf '%s\n' "$out" | grep -q ': FAIL'; then
+      echo "   ok ($label package test target; default RC + poison)"
+    else
+      echo "   FAIL: $label package test executable did not report success rc=$rc"
+      printf '%s\n' "$out" | sed 's/^/     /'
+      sed 's/^/     /' "$err" | head -40
+      fails=$((fails+1))
+    fi
+  else
+    echo "   FAIL: $label package test target build failed"
+    cat "$log" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+}
+[ -n "$DELVE_PACKAGE_TEST_TARGET" ] && package_smoke "delve" "$ROOT/examples/packages/delve" "$DELVE_PACKAGE_TEST_TARGET" "DELVE TESTS: ALL PASS"
+package_smoke "railyard" "$ROOT/examples/packages/railyard" "railyard-tests" "RAILYARD TESTS: ALL PASS"
+package_smoke "voxelcraft" "$ROOT/examples/packages/voxelcraft" "voxelcraft-tests" "VOXELCRAFT TESTS: ALL PASS"
 
 echo "== Perceus S3.2: generated drops are non-vacuous and poison-clean =="
 s32tmp="$WORK/perceus-s32-generated-drops"; mkdir -p "$s32tmp"
@@ -1952,7 +2152,7 @@ if pkg-config --exists sqlite3 2>/dev/null; then
   LK="$WORK/lockpin"; rm -rf "$LK"; mkdir -p "$LK"
   cp "$ROOT/examples/native/http_sqlite/server.kp" "$ROOT/examples/native/http_sqlite/kappa.build.kp" "$ROOT/examples/native/http_sqlite/native_shim.c" "$LK/"
   timeout 200 $KAPPA build --update --manifest "$LK" --emit-c -o "$WORK/lp" >"$LK/b1.log" 2>&1
-  if grep -q "^host-binding .* sqlite3$" "$LK/kappa.lock" 2>/dev/null && grep -q "^host-binding .* posixnet$" "$LK/kappa.lock" 2>/dev/null; then
+  if grep -q "^host-binding .* sqlite3@" "$LK/kappa.lock" 2>/dev/null && grep -q "^host-binding .* posixnet@" "$LK/kappa.lock" 2>/dev/null; then
     if timeout 200 $KAPPA build --manifest "$LK" --emit-c --locked -o "$WORK/lp" >/dev/null 2>&1; then
       printf '/* drift */\n' >> "$LK/native_shim.c"
       dout="$(timeout 200 $KAPPA build --manifest "$LK" --emit-c --locked -o "$WORK/lp" 2>&1)"; drc=$?
@@ -2016,8 +2216,8 @@ if pkg-config --exists libuv 2>/dev/null; then
     # the (const char *, int, int) -> void* prototype.  Neither was typed by hand.
     grep -q "extern const char \* uv_version_string(void);" <<<"$ext" || { echo "   FAIL: uv_version_string not generated from uv.h"; okg=0; }
     grep -q "extern void \* http_uv_listen(const char \*, int, int);" <<<"$ext" || { echo "   FAIL: http_uv_listen not generated from native_uv_shim.h"; okg=0; }
-    grep -q "^host-binding .* libuv$" "$GE/kappa.lock" || { echo "   FAIL: generated libuv surface not pinned"; okg=0; }
-    grep -q "^host-binding .* uvnet$" "$GE/kappa.lock" || { echo "   FAIL: generated uvnet surface not pinned"; okg=0; }
+    grep -q "^host-binding .* libuv@" "$GE/kappa.lock" || { echo "   FAIL: generated libuv surface not pinned"; okg=0; }
+    grep -q "^host-binding .* uvnet@" "$GE/kappa.lock" || { echo "   FAIL: generated uvnet surface not pinned"; okg=0; }
     # BROAD surface (§26.1.2): the libuv binding generates the whole mappable
     # uv_* surface from uv.h (many functions, not a curated handful), and the
     # callback/struct/variadic functions are skipped (reported, not guessed).
@@ -2052,6 +2252,17 @@ if pkg-config --exists zlib 2>/dev/null; then
   zN="$(grep -oE "generated [0-9]+ function" <<<"$zout" | head -1 | grep -oE "[0-9]+")"
   if [ -n "$zN" ] && [ "$zN" -ge 5 ]; then
     echo "   ok (zlib deflate* surface = $zN functions; z_streamp pointer typedef resolved — general, not libuv-specific)"
+    explicit_cc="$(explicit_c_driver)"
+    if [ -n "$explicit_cc" ]; then
+      rm -f "$ZL/kappa.lock"
+      zout2="$(KAPPA_CC=false timeout 120 $KAPPA build --cc "$explicit_cc" --update --manifest "$ZL" -o "$WORK/zexe-explicit" 2>&1)"
+      zN2="$(grep -oE "generated [0-9]+ function" <<<"$zout2" | head -1 | grep -oE "[0-9]+")"
+      if [ -n "$zN2" ] && [ "$zN2" -ge 5 ]; then
+        echo "   ok (generated header surfaces honor explicit --cc even when KAPPA_CC is stale)"
+      else
+        echo "   FAIL: generated header surface did not honor explicit --cc"; echo "$zout2" | sed 's/^/     /'; fails=$((fails+1))
+      fi
+    fi
   else
     echo "   FAIL: zlib deflate* surface too small (got '${zN:-0}'); pointer typedefs not resolved?"; echo "$zout" | sed 's/^/     /'; fails=$((fails+1))
   fi
@@ -2205,7 +2416,7 @@ if pkg-config --exists libuv 2>/dev/null && command -v curl >/dev/null 2>&1; the
   cp -r "$ROOT/examples/native/http_uv/." "$HU/"
   HUEXE="$WORK/httpuvd"
   if timeout 240 $KAPPA build --update --manifest "$HU" -o "$HUEXE" >"$HU/b.log" 2>&1; then
-    if grep -q "^host-binding .* uvnet$" "$HU/kappa.lock" 2>/dev/null; then
+    if grep -q "^host-binding .* uvnet@" "$HU/kappa.lock" 2>/dev/null; then
       "$HUEXE" >"$HU/srv.log" 2>&1 &
       srv=$!
       ok=1

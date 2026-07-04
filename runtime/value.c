@@ -107,15 +107,63 @@ typedef struct {
   size_t inline_cap;
 } KWork;
 
-static pthread_mutex_t g_thunk_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_thunk_cache_lock;
+static pthread_once_t g_thunk_cache_lock_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t g_shared_mark_lock;
+static pthread_once_t g_shared_mark_lock_once = PTHREAD_ONCE_INIT;
+
+static void kthunk_cache_lock_init(void) {
+  pthread_mutex_init(&g_thunk_cache_lock, NULL);
+}
+
+static void kthunk_cache_lock(void) {
+  pthread_once(&g_thunk_cache_lock_once, kthunk_cache_lock_init);
+  pthread_mutex_lock(&g_thunk_cache_lock);
+}
+
+static void kthunk_cache_unlock(void) {
+  pthread_mutex_unlock(&g_thunk_cache_lock);
+}
+
+static void kshared_mark_lock_init(void) {
+  pthread_mutexattr_t attr;
+  pthread_mutexattr_init(&attr);
+  pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+  pthread_mutex_init(&g_shared_mark_lock, &attr);
+  pthread_mutexattr_destroy(&attr);
+}
+
+static void kshared_mark_lock(void) {
+  pthread_once(&g_shared_mark_lock_once, kshared_mark_lock_init);
+  pthread_mutex_lock(&g_shared_mark_lock);
+}
+
+static void kshared_mark_unlock(void) {
+  pthread_mutex_unlock(&g_shared_mark_lock);
+}
 
 static KValue *kthunk_cached_value_snapshot(KValue *v) {
   if (!v->as.thunk.memo) return NULL;
-  pthread_mutex_lock(&g_thunk_cache_lock);
+  kthunk_cache_lock();
   KValue **cached = v->as.thunk.cache;
   KValue *r = cached ? cached[0] : NULL;
-  pthread_mutex_unlock(&g_thunk_cache_lock);
+  kthunk_cache_unlock();
   return r;
+}
+
+static KValue *kdup_thunk_cached_value(KValue *thunk, KValue *cached) {
+  if (!cached) return NULL;
+  if (!krc_is_shared(thunk)) {
+    kshared_mark_lock();
+    if (!krc_is_shared(thunk)) {
+      KValue *owned = kdup(cached);
+      kshared_mark_unlock();
+      return owned;
+    }
+    kshared_mark_unlock();
+  }
+  if (!kis_imm(cached)) krc_mark_shared_recursive(cached);
+  return kdup(cached);
 }
 
 static void kwork_init(KWork *stack, KValue **inline_items, size_t inline_cap) {
@@ -167,15 +215,23 @@ static void krc_mark_env(KWork *stack, KEnv *env) {
   for (KEnv *e = env; e; e = e->next) krc_mark_child(stack, e->val);
 }
 
-static void krc_mark_child(KWork *stack, KValue *v) {
-  if (!v || kis_imm(v) || krc_is_shared(v)) return;
+static void krc_mark_shared_env_recursive(KEnv *env) {
+  for (KEnv *e = env; e; e = e->next) krc_mark_shared_recursive(e->val);
+}
+
+static int krc_mark_shared_child_for_publish(KValue *v) {
+  if (!v || kis_imm(v) || krc_is_shared(v)) return 0;
   krc_mark_shared_shallow(v);
+  return 1;
+}
+
+static void krc_mark_child(KWork *stack, KValue *v) {
+  if (!krc_mark_shared_child_for_publish(v)) return;
   kwork_push(stack, v);
 }
 
 static void krc_mark_mutable_child(KWork *stack, KWork *owned, KValue *v) {
-  if (!v || kis_imm(v) || krc_is_shared(v)) return;
-  krc_mark_shared_shallow(v);
+  if (!krc_mark_shared_child_for_publish(v)) return;
   kwork_push(stack, v);
   kwork_push(owned, kdup(v));
 }
@@ -365,6 +421,7 @@ static void krc_assert_shared_recursive(KValue *root) {
 #endif
 
 void krc_mark_shared_recursive(KValue *root) {
+  kshared_mark_lock();
   KWork stack, owned;
   KValue *inline_items[64];
   KValue *owned_inline[64];
@@ -379,6 +436,7 @@ void krc_mark_shared_recursive(KValue *root) {
 #ifndef NDEBUG
   krc_assert_shared_recursive(root);
 #endif
+  kshared_mark_unlock();
 }
 
 static void kfree_drop_child(KWork *stack, KValue *child) {
@@ -1128,30 +1186,48 @@ KValue *kforce(KValue *v) {
   kassert_live(v);
   if (v->tag != K_THUNK) return v;
   if (v->as.thunk.memo) {
-    pthread_mutex_lock(&g_thunk_cache_lock);
+    kthunk_cache_lock();
     KValue **cached = v->as.thunk.cache;
     if (cached) {
       KValue *r = cached[0];
-      pthread_mutex_unlock(&g_thunk_cache_lock);
-      return kdup(r);
+      kthunk_cache_unlock();
+      return kdup_thunk_cached_value(v, r);
     }
-    pthread_mutex_unlock(&g_thunk_cache_lock);
+    KEnv *env = v->as.thunk.env;
+    int markEnv = krc_is_shared(v);
+    kthunk_cache_unlock();
+    if (markEnv) krc_mark_shared_env_recursive(env);
   }
   KValue *r = v->as.thunk.fn(v->as.thunk.env);
   if (v->as.thunk.memo) {
-    if (krc_is_shared(v)) krc_mark_shared_recursive(r);
-    pthread_mutex_lock(&g_thunk_cache_lock);
-    if (!v->as.thunk.cache) {
+    int resultMarked = 0;
+    if (krc_is_shared(v)) {
+      krc_mark_shared_recursive(r);
+      resultMarked = 1;
+    }
+    for (;;) {
+      kthunk_cache_lock();
+      if (v->as.thunk.cache) {
+        KValue *lost = r;
+        KValue *existing = v->as.thunk.cache[0];
+        kthunk_cache_unlock();
+        r = kdup_thunk_cached_value(v, existing);
+        kdrop(lost);
+        break;
+      }
+      if (!resultMarked && krc_is_shared(v)) {
+        kthunk_cache_unlock();
+        krc_mark_shared_recursive(r);
+        resultMarked = 1;
+        continue;
+      }
       KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
       cell[0] = r;
       v->as.thunk.cache = cell;
       r = kdup(r);
-    } else {
-      KValue *lost = r;
-      r = kdup(v->as.thunk.cache[0]);
-      kdrop(lost);
+      kthunk_cache_unlock();
+      break;
     }
-    pthread_mutex_unlock(&g_thunk_cache_lock);
   }
   return r;
 }

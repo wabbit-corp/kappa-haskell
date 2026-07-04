@@ -1460,20 +1460,17 @@ compileFunctionGlobal g n inner = do
     emitTop ("static KValue *" <> nm <> "(KEnv *, KValue *);") fn
   -- accessor: the memoised curried closure value (its forward declaration
   -- was already emitted by 'emitGlobal').
-  let shareFresh = ["  krc_mark_shared_recursive(fresh);"]
-      accessor =
+  (cacheHit, publishFresh) <- globalCacheOwnershipPlan
+  let accessor =
         T.unlines
           ( [ "static KValue *" <> ident <> "(void) {"
             , "  static _Atomic(KValue *) cache = NULL;"
             , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
-            , "  if (cached) return cached;"
+            , cacheHit
             , "  KValue *fresh = kclo(" <> head cloNames <> ", 0);"
             ]
-              ++ shareFresh
-              ++ [ "  atomic_store_explicit(&cache, fresh, memory_order_release);"
-                 , "  return fresh;"
-                 , "}"
-                 ]
+              ++ publishFresh
+              ++ [ "}" ]
           )
   modify' $ \st -> st {gsTop = accessor : gsTop st}
   -- LR1/R2.2: if g is a monomorphic first-order scalar function (Int and/or
@@ -2317,25 +2314,52 @@ compileScalarCall g pks ret sargs runtimeIdxs = do
 emitTop :: Text -> Text -> Gen ()
 emitTop proto fn = modify' $ \st -> st {gsTop = fn : gsTop st, gsProtos = proto : gsProtos st}
 
+-- Global/CAF caches are process-wide publish points. RC-on accessors return a
+-- distinct counted owner for the caller while the cache keeps its own owner;
+-- RC-off keeps the legacy raw return, but still marks the cached graph shared so
+-- storage fast paths see the same publication discriminator.
+globalCacheOwnershipPlan :: Gen (Text, [Text])
+globalCacheOwnershipPlan = do
+  rcOn <- gets gsRcEnabled
+  let shareFresh = ["  krc_mark_shared_recursive(fresh);"]
+      cacheHit
+        | rcOn = "  if (cached) return kdup(cached);"
+        | otherwise = "  if (cached) return cached;"
+      publishFresh
+        | rcOn =
+            [ "  KValue *expected = NULL;" ]
+              ++ shareFresh
+              ++ [ "  if (atomic_compare_exchange_strong_explicit(&cache, &expected, fresh,"
+                 , "                                            memory_order_release,"
+                 , "                                            memory_order_acquire)) {"
+                 , "    return kdup(fresh);"
+                 , "  }"
+                 , "  kdrop(fresh);"
+                 , "  return kdup(expected);"
+                 ]
+        | otherwise =
+            shareFresh
+              ++ [ "  atomic_store_explicit(&cache, fresh, memory_order_release);"
+                 , "  return fresh;"
+                 ]
+  pure (cacheHit, publishFresh)
+
 finishGlobal :: Text -> [Text] -> Text -> Gen ()
 finishGlobal ident stmts e = do
-  let shareFresh = ["  krc_mark_shared_recursive(fresh);"]
-      fn =
+  (cacheHit, publishFresh) <- globalCacheOwnershipPlan
+  let fn =
         T.unlines $
           [ "static KValue *" <> ident <> "(void) {"
           , "  static _Atomic(KValue *) cache = NULL;"
           , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
-          , "  if (cached) return cached;"
+          , cacheHit
           , "  KEnv *env = 0; (void)env;"
           ]
             ++ map ("  " <>) stmts
             ++ [ "  KValue *fresh = " <> e <> ";"
                ]
-            ++ shareFresh
-            ++ [ "  atomic_store_explicit(&cache, fresh, memory_order_release);"
-               , "  return fresh;"
-               , "}"
-               ]
+            ++ publishFresh
+            ++ [ "}" ]
   modify' $ \st -> st {gsTop = fn : gsTop st}
 
 -- | The C @main@: initialise the GC and run @main@'s IO action.

@@ -6,4 +6,4 @@ The diagnostics do not match the draft spec. `docs/Spec.md` states that omitted 
 
 The Voxelcraft `x <- action` failures are different: section 18.2 reserves bare `x <- expr` for mutable-variable assignment, while monadic bind must be written `let x <- expr`.
 
-Status: the QTT/default-omega regression is now covered by focused conformance tests and both packages advance past usage checking. The remaining package-build failures are native-backend Perceus RC validation misses, not QTT binder-default diagnostics.
+Status: the QTT/default-omega regression is now covered by focused conformance tests, and the native package test targets now build with zero Perceus RC validation misses. The native suite also gates the current Delve, Railyard, and Voxelcraft package test targets by building them under default RC and running their `ALL PASS` sentinels with poison enabled. Full interactive game targets remain host-dependency/TTY or SDL-renderer gates rather than QTT regressions.

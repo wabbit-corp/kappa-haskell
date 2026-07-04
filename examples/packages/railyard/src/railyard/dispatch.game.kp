@@ -7,7 +7,7 @@ main : UIO Unit
 let main = do
     let carts   = 5
     let mainLen = 4
-    r <- yard.runYard carts mainLen
+    let r <- yard.runYard carts mainLen
     printlnString "RAILYARD — single-track STM signalling"
     printlnString (stringAppend "  carts dispatched:         " (showInt r.dispatched))
     printlnString (stringAppend "  hops per cart (main + 1): " (showInt r.perCart))

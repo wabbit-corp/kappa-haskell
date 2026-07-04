@@ -25,8 +25,8 @@ buildMain : Int -> UIO (List (TVar Bool))
 let buildMain count =
     if leInt count 0 then pure Nil
     else do
-        s  <- track.newSegFree
-        ss <- buildMain (subInt count 1)
+        let s  <- track.newSegFree
+        let ss <- buildMain (subInt count 1)
         pure (s :: ss)
 
 -- Spawn carts numbered [1..i]. Each gets a private entry siding (already
@@ -39,13 +39,13 @@ spawnCarts : Int -> List (TVar Bool) -> AtomicRef Integer -> UIO (List (Promise 
 let spawnCarts i mainSegs counter =
     if leInt i 0 then pure Nil
     else do
-        entry <- track.newSegOcc
-        exit  <- track.newSegFree
-        p     <- newPromise
+        let entry <- track.newSegOcc
+        let exit  <- track.newSegFree
+        let p     <- newPromise
         let r = route.buildRoute mainSegs exit
-        f <- forkDaemon (cart.runCart i r entry counter p)
+        let f <- forkDaemon (cart.runCart i r entry counter p)
         let _ = f
-        rest <- spawnCarts (subInt i 1) mainSegs counter
+        let rest <- spawnCarts (subInt i 1) mainSegs counter
         pure (p :: rest)
 
 -- Await every cart's receipt and sum the moves they report. Total by recursion
@@ -55,8 +55,8 @@ let collectMoves ps decreases listLength ps =
     match ps
     case Nil -> pure 0
     case p :: rest -> do
-        rc   <- awaitPromise p
-        more <- collectMoves rest
+        let rc   <- awaitPromise p
+        let more <- collectMoves rest
         pure (addInt rc.moves more)
 
 -- How many promises we hold (= carts dispatched). Total by list recursion.
@@ -73,8 +73,8 @@ let countOccupied segs decreases listLength segs =
     match segs
     case Nil -> pure 0
     case s :: rest -> do
-        occ  <- track.segOccupied s
-        more <- countOccupied rest
+        let occ  <- track.segOccupied s
+        let more <- countOccupied rest
         pure (addInt (if occ then 1 else 0) more)
 
 -- Run the whole simulation: `carts` carts over a `mainLen`-segment shared track.
@@ -83,12 +83,12 @@ let countOccupied segs decreases listLength segs =
 -- all receipts is what makes the result interleaving-independent.
 runYard : Int -> Int -> UIO YardResult
 let runYard carts mainLen = do
-    counter  <- newAtomicRef 0
-    mainSegs <- buildMain mainLen
-    promises <- spawnCarts carts mainSegs counter
-    sumMoves <- collectMoves promises
-    total    <- atomicLoad LoadSeqCst counter
-    occMain  <- countOccupied mainSegs
+    let counter  <- newAtomicRef 0
+    let mainSegs <- buildMain mainLen
+    let promises <- spawnCarts carts mainSegs counter
+    let sumMoves <- collectMoves promises
+    let total    <- atomicLoad LoadSeqCst counter
+    let occMain  <- countOccupied mainSegs
     pure (YardResult (countPromises promises) (addInt mainLen 1) sumMoves total occMain)
 
 -- The run is correct iff every move is counted exactly once (receipts == atomic

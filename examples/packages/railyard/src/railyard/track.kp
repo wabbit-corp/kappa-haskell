@@ -25,7 +25,7 @@ let newSegOcc = atomically (newTVar True)
 -- would corrupt the occupancy count.
 moveTo : TVar Bool -> TVar Bool -> STM Unit
 let moveTo here next = do
-    occ <- readTVar next
+    let occ <- readTVar next
     if occ then retry
     else do
         writeTVar next True

@@ -43,7 +43,7 @@ let buildConfig : BuildConfig = package
     , targets =
         [ executable
             { name = "voxelcraft-tests"
-            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags ["native", "test"]
             , main = module "voxelcraft.run_tests"
             , modules = modulesUnder "voxelcraft"

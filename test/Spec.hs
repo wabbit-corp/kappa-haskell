@@ -1166,12 +1166,10 @@ globalCachePublicationMarksShared = do
       st = cuState cu
       mainG = GName (ModuleName [T.pack "main"]) (T.pack "main")
       checkC csrc =
-        "#include <stdatomic.h>" `T.isInfixOf` csrc
-          && "atomic_load_explicit(&cache, memory_order_acquire)" `T.isInfixOf` csrc
-          && allStoresMarkedImmediatelyBefore
-            "atomic_store_explicit(&cache, fresh, memory_order_release);"
-            "krc_mark_shared_recursive(fresh);"
-            csrc
+        let accessors = cacheAccessorBodies csrc
+         in "#include <stdatomic.h>" `T.isInfixOf` csrc
+              && length accessors >= 2
+              && all cacheAccessorReturnsCountedOwner accessors
       checkLL llsrc =
         "declare void @krc_set_enabled(i32)" `T.isInfixOf` llsrc
           && "call void @krc_set_enabled(i32 0)" `T.isInfixOf` llsrc
@@ -1187,7 +1185,7 @@ globalCachePublicationMarksShared = do
         pure False
       Right (csrc, _) -> do
         unless (checkC csrc) $ do
-          putStrLn "globalCachePublicationMarksShared FAILED: C cache store did not mark fresh value shared"
+          putStrLn "globalCachePublicationMarksShared FAILED: C cache accessor did not publish and return distinct counted owners"
           putStrLn (T.unpack csrc)
         pure (checkC csrc)
   llOk <-
@@ -1331,6 +1329,38 @@ doubleUnboxFallbackBranches llsrc =
         any ("call ptr @kapp(" `T.isInfixOf`) w
           && any ("call ptr @ktrampoline(" `T.isInfixOf`) w
    in any okPreFallback windows && any okBoxedBlock boxedBlocks
+
+balancedFunctionBody :: T.Text -> T.Text
+balancedFunctionBody txt = T.unlines (go (0 :: Int) [] (T.lines txt))
+  where
+    go _ acc [] = reverse acc
+    go depth acc (l : ls) =
+      let depth' = depth + T.count "{" l - T.count "}" l
+          acc' = l : acc
+       in if not (null acc) && depth' <= 0 then reverse acc' else go depth' acc' ls
+
+cacheAccessorBodies :: T.Text -> [T.Text]
+cacheAccessorBodies csrc =
+  [ body
+  | (_, start) <- T.breakOnAll "static KValue *" csrc
+  , let body = balancedFunctionBody start
+  , "static _Atomic(KValue *) cache = NULL;" `T.isInfixOf` body
+  ]
+
+cacheAccessorReturnsCountedOwner :: T.Text -> Bool
+cacheAccessorReturnsCountedOwner body =
+  "atomic_load_explicit(&cache, memory_order_acquire)" `T.isInfixOf` body
+    && "if (cached) return kdup(cached);" `T.isInfixOf` body
+    && "atomic_compare_exchange_strong_explicit(&cache, &expected, fresh" `T.isInfixOf` body
+    && "return kdup(fresh);" `T.isInfixOf` body
+    && "kdrop(fresh);" `T.isInfixOf` body
+    && "return kdup(expected);" `T.isInfixOf` body
+    && not ("return cached;" `T.isInfixOf` body)
+    && not ("atomic_store_explicit(&cache, fresh" `T.isInfixOf` body)
+    && allStoresMarkedImmediatelyBefore
+      "if (atomic_compare_exchange_strong_explicit(&cache, &expected, fresh,"
+      "krc_mark_shared_recursive(fresh);"
+      body
 
 allStoresMarkedImmediatelyBefore :: T.Text -> T.Text -> T.Text -> Bool
 allStoresMarkedImmediatelyBefore storeNeedle markNeedle src =

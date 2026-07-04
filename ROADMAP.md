@@ -194,7 +194,13 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      focused `runtime` `tsan-rc` shared-RC concurrency corpus, `perceus_s4_shared` poison/reclamation
      regressions, a debug recursive publish-mark assertion, and `bench-s4-rc` for biased fast-path recovery.
      Mutable/lazy/foreign/resource tags remain Boehm-retained until the later cycle/resource ownership stages.
-   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
+   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class). Full
+     plan: [PERCEUS-S5-PLAN.md](runtime/docs/PERCEUS-S5-PLAN.md). **Decision: split-first** — Phase A lands the
+     KCore/KBackendIR split ([KCORE-KBACKENDIR-SCOPING.md](docs/KCORE-KBACKENDIR-SCOPING.md): A0 thread erasure
+     classification / kill `quote∘force`, A1 stable identities / **retire R-path**, A2 materialize KBackendIR,
+     A3 representation classes), then Phase B the FBIP reuse pass (`drop_reuse`/`reuse_alloc`, reuse only a
+     unique cell — the S4 shared bit is the concurrency guard, so shared cells are never reused). The split is
+     one investment that also unblocks LLVM-RC + the layout program.
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
    lazy-data design.

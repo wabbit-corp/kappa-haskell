@@ -1,13 +1,14 @@
 /* delve_audio_adapter.h — conservative-ABI surface for delve's chiptune audio.
  *
  * This header is the SINGLE source of truth for the host.native.delve_audio
- * raw surface: the build plan generates it by PREPROCESSING + PARSING this
- * header (generateAllFromHeader "…/delve_audio_adapter.h" "delve_audio_").
+ * raw surface: the build plan generates it by PREPROCESSING + PARSING the
+ * selected `delve_audio_*` prototypes from this header.
  * The implementation (delve_audio.c) includes this header so its definitions
  * are checked against these prototypes.
  *
- * Every prototype is conservatively representable (only `int`), so the broad
- * generator binds all of them as `Integer`-returning calls.
+ * Every exported prototype is conservatively representable (only `int`), so the
+ * manifest's explicit `generateFromHeader` list binds them as Integer-returning
+ * calls.
  *
  * Design: a self-contained chiptune synthesizer (square / triangle / noise +
  * AD envelope) renders short 8-bit-style SFX and a longform theme to 16-bit PCM
@@ -46,10 +47,10 @@ extern "C" {
 #define DELVE_MUSIC_DANGER  2
 #define DELVE_MUSIC_COUNT   3
 
-/* Render all SFX/music to temp WAVs and prepare playback. Returns 0 when audio
- * is enabled, or a nonzero code when it is unavailable/disabled (the caller
- * then simply skips further calls — every other entry point is a safe no-op
- * when audio is off). */
+/* Render all SFX/music to in-memory PCM and prepare playback. Returns 0 when
+ * audio is enabled, or a nonzero code when it is unavailable/disabled. Later
+ * entry points remain safe no-ops when audio is off, so callers may ignore the
+ * status when they only need best-effort sound. */
 int delve_audio_init(void);
 
 /* Play a one-shot sound effect by id. No-op for an out-of-range id or when

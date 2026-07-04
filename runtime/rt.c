@@ -3086,7 +3086,7 @@ KValue *krt2_run_main(KValue *action) {
 
   /* Do NOT shut down: the pool, reactor, loop, and rt->all stay alive for the
    * next run_main (persistence is the default; krt2_shutdown is explicit-only). */
-  return m->exit;
+  return kdup(m->exit);
 }
 
 /* Explicit FINAL teardown (atexit / process exit).  NOT called per run_main —

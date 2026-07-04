@@ -104,7 +104,7 @@ let buildConfig : BuildConfig = package
     , targets =
         [ executable
             { name = "delve-tests-linux"
-            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags ["native", "linux", "test"]
             , main = module "delve.run_tests"
             , modules = modulesUnder "delve"
@@ -122,7 +122,7 @@ let buildConfig : BuildConfig = package
             }
         , executable
             { name = "delve-tests-macos-arm64"
-            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , backend = native { toolchain = "cc", targetTriple = "" }
             , fragments = tags ["native", "macos", "test"]
             , main = module "delve.run_tests"
             , modules = modulesUnder "delve"

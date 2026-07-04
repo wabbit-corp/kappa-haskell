@@ -32,7 +32,7 @@ RAILYARD — single-track STM signalling
   receipts (sum of moves):  25
   atomic move counter:      25
   main line still occupied: 0
-RAILYARD: ALL DELIVERED, TRACK CLEAR, MOVES CONSERVED
+RAILYARD: ALL DELIVERED, MAIN LINE CLEAR, MOVES CONSERVED
 ```
 
 `receipts == atomic counter == 5 × 5` and `main line still occupied == 0` are the
@@ -48,7 +48,7 @@ From the repository root:
 cabal run -v0 kappa -- build --manifest examples/packages/railyard -o /tmp/railyard --target railyard
 /tmp/railyard
 
-# the pure-logic tests
+# the package tests
 cabal run -v0 kappa -- build --manifest examples/packages/railyard -o /tmp/railyard-tests --target railyard-tests
 /tmp/railyard-tests   # -> RAILYARD TESTS: ALL PASS
 ```
@@ -72,6 +72,6 @@ total and warning-free. See `DESIGN.md` for why.
 | `test/railyard/run_tests.test.kp` | route-length and move-invariant checks **plus** a real concurrent run asserting the conserved invariants |
 | `kappa.build.kp` | manifest: a `railyard` (game) and a `railyard-tests` (test) executable target |
 
-Target backend is `aarch64-apple-darwin` (C backend); change `targetTriple` in
-`kappa.build.kp` for other hosts. The concurrency primitives are exercised on the
-C backend.
+The package targets use the host C backend (`targetTriple = ""`) so the dispatcher
+and tests are runnable by the native suite on both Linux and macOS hosts. The
+concurrency primitives are exercised on the C backend.

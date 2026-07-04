@@ -42,6 +42,7 @@ import System.Directory (canonicalizePath, doesFileExist, findExecutable, pathIs
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, splitDirectories, splitSearchPath, takeFileName, (</>))
+import System.Info (arch, os)
 import System.Process (readProcessWithExitCode)
 
 -- | The recorded identity of a build's resolved native bindings: ordered,
@@ -448,15 +449,19 @@ pErr msg =
 -- For each selected native binding this runs the same discovery + fail-closed
 -- ABI verification ('discoverAndVerifyNative') and digests the binding's shim
 -- sources, then composites the pkg-config/header/verified-decl identity with
--- the binding's declared symbol surface and the target triple into a single
--- content id. The result is a @host-binding@ 'LockEntry' (key = binding name)
--- so a package-mode build PINS — and a later @--locked@ build VERIFIES — every
--- input that can affect the generated host module interface / ABI.
+-- the binding's declared symbol surface and effective target ABI into a single
+-- content id. The result is a @host-binding@ 'LockEntry' keyed by binding name
+-- plus effective target, so a package-mode build can pin Linux, macOS, and
+-- host-native realizations of the same binding independently.
 hostBindingLockEntries
   :: (String, [String]) -> FilePath -> Text -> [(Text, [Text], [NativeInput], [Text])]
   -> IO (Either Diagnostics [LockEntry])
 hostBindingLockEntries cc baseDir triple = goB []
   where
+    targetKey
+      | T.null triple = "host-" <> T.pack arch <> "-" <> T.pack os
+      | otherwise = triple
+    entryKey name = name <> "@" <> targetKey
     goB acc [] = pure (Right (reverse acc))
     goB acc ((name, symLines, inputs, scalarExterns) : rest) = do
       -- §26.1.5: verify the binding's all-scalar symbolDecls against the real
@@ -475,13 +480,14 @@ hostBindingLockEntries cc baseDir triple = goB []
                   ++ shims
                   ++ ["symbol " <> s | s <- symLines]
                   ++ ["target-triple " <> triple]
+                  ++ ["effective-target-key " <> targetKey]
                   -- §26.1.3: the adapter mode participates in host-binding
                   -- identity. The zig native profile realizes only native.direct
                   -- (the sole mode the manifest schema can select today), so it is
                   -- a constant identity input here.
                   ++ ["adapter native.direct"]
               cid = contentId [("host-binding:" <> T.unpack name, encU (T.intercalate "\n" idLines))]
-          goB (LockEntry "host-binding" name cid : acc) rest
+          goB (LockEntry "host-binding" (entryKey name) cid : acc) rest
     encU = encodeUtf8
 
 -- | Digest each shim source's content (§27.1.1 shim-source digests) so a shim
