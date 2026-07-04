@@ -3,10 +3,12 @@
  * krt2_atomic_fetch_add does not.
  *
  * The OLD prelude lowered atomicFetchAdd to `old <- readRef cell; writeRef cell
- * (old + n); pure old` — a NON-ATOMIC read-modify-write over a plain Ref.  This
- * test reproduces exactly that lowering against a plain rt Ref cell (kref_*),
- * forks NFIBERS fibers each doing NITERS such increments on one shared cell, and
- * reports the final total.  Under true 12-core contention the read-modify-write
+ * (old + n); pure old` — a logically NON-ATOMIC read-modify-write over a plain
+ * Ref.  S4 synchronizes each individual kref_get/kref_set for ownership safety,
+ * but it intentionally does not make this two-operation sequence indivisible.
+ * This test reproduces exactly that lowering against a plain rt Ref cell
+ * (kref_*), forks NFIBERS fibers each doing NITERS such increments on one shared
+ * cell, and reports the final total.  Under true contention the read-modify-write
  * interleaves and updates are lost, so the OLD total is < NFIBERS*NITERS.  The
  * NEW path (krt2_atomic_fetch_add on an atomic cell) conserves every update.
  *
@@ -25,14 +27,16 @@
 
 static int64_t iv(KValue *v) { return kas_int(v); }
 
-/* ── OLD lowering: a NON-ATOMIC read-modify-write over a plain Ref ─────────
+/* ── OLD lowering: a logically NON-ATOMIC read-modify-write over a plain Ref ─
  * This is precisely what `atomicFetchAdd` desugared to before the fix
  * (readRef; writeRef (old+1)).  env[0] = shared Ref cell. */
 static KValue *old_worker_io(KEnv *env) {
   KValue *cell = kvar(env, 0);
   for (int i = 0; i < NITERS; i++) {
     KValue *old = kref_get(cell);          /* readRef cell           */
-    kref_set(cell, kint(iv(old) + 1));     /* writeRef cell (old+1)  */
+    int64_t n = iv(old);
+    kdrop(old);
+    kref_set(cell, kint(n + 1));           /* writeRef cell (old+1)  */
   }
   return kunit();
 }
@@ -65,12 +69,16 @@ int main(void) {
   /* OLD: plain-Ref non-atomic RMW. */
   KValue *cell = kref_new(kint(0));
   krt2_run_main(spawn(NFIBERS, old_worker_io, kpush(cell, NULL)));
-  int64_t oldTotal = iv(kref_get(cell));
+  KValue *oldTotalV = kref_get(cell);
+  int64_t oldTotal = iv(oldTotalV);
+  kdrop(oldTotalV);
 
   /* NEW: indivisible atomic fetch_add. */
   KValue *ref = krt2_new_atomic_ref(kint(0));
   krt2_run_main(spawn(NFIBERS, new_worker_io, kpush(ref, kpush(kint(4 /*RmwSeqCst*/), NULL))));
-  int64_t newTotal = iv(krt2_atomic_load(kint(0 /*LoadRelaxed*/), ref));
+  KValue *newTotalV = krt2_atomic_load(kint(0 /*LoadRelaxed*/), ref);
+  int64_t newTotal = iv(newTotalV);
+  kdrop(newTotalV);
 
   fprintf(stderr, "expected = %lld\n", (long long)expected);
   fprintf(stderr, "OLD plain-Ref  total = %lld  (lost %lld updates)\n",

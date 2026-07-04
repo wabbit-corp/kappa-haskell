@@ -1,0 +1,17 @@
+@NoPrelude
+module main
+
+data Token : Type =
+    Token
+
+data Int : Type =
+    MkInt (1 tok : Token)
+
+dup : Int -> Int
+let dup x =
+    block
+        let _ = x
+        x
+
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_DROP

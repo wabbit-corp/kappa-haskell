@@ -1,0 +1,82 @@
+module voxelcraft.player
+
+import voxelcraft.core.*
+import voxelcraft.input as input
+import voxelcraft.natutil.*
+import voxelcraft.world as world
+
+angleUnits : Int
+let angleUnits = 4096
+
+public cameraScale : Int
+let cameraScale = 1000
+
+normalizeAngle : Int -> Int
+let normalizeAngle yaw =
+    modPos yaw angleUnits
+
+axis : Bool -> Bool -> Int
+let axis positive negative =
+    (if positive then 1 else 0) - (if negative then 1 else 0)
+
+sin1024 : Int -> Int
+let sin1024 yaw =
+    let sector = divInt (normalizeAngle (yaw + 128)) 256
+    in
+        match sector
+        case 0 -> 0
+        case 1 -> 392
+        case 2 -> 724
+        case 3 -> 946
+        case 4 -> 1024
+        case 5 -> 946
+        case 6 -> 724
+        case 7 -> 392
+        case 8 -> 0
+        case 9 -> -392
+        case 10 -> -724
+        case 11 -> -946
+        case 12 -> -1024
+        case 13 -> -946
+        case 14 -> -724
+        case _ -> -392
+
+cos1024 : Int -> Int
+let cos1024 yaw =
+    sin1024 (yaw + 1024)
+
+public blockPosFromCamera : Camera -> Vec3
+let blockPosFromCamera camera =
+    Vec3 (floorDiv camera.position.x cameraScale) (floorDiv camera.position.y cameraScale) (floorDiv camera.position.z cameraScale)
+
+public updatePlayer : Int -> input.InputFrame -> Player -> Player
+let updatePlayer seed frame player =
+    let cam0 = player.camera
+    let dt = clamp 1 50 frame.dtMs
+    let yawKeys = (axis (input.wantsTurnRight frame) (input.wantsTurnLeft frame) * 1500 * dt) / 1000
+    let pitchKeys = (axis (input.wantsLookUp frame) (input.wantsLookDown frame) * 975 * dt) / 1000
+    let yaw = normalizeAngle (cam0.yaw + yawKeys + (frame.mouseDx * 2))
+    let pitch = clamp (-770) 770 (cam0.pitch + pitchKeys - (frame.mouseDy * 2))
+    let forward = axis (input.wantsForward frame) (input.wantsBack frame)
+    let strafe = axis (input.wantsRight frame) (input.wantsLeft frame)
+    let speed = if input.wantsFast frame then 18000 else 8000
+    let rawStep = divInt (speed * dt) 1000
+    let step = if forward != 0 && strafe != 0 then divInt (rawStep * 724) 1024 else rawStep
+    let sy = sin1024 yaw
+    let cy = cos1024 yaw
+    let dx = divInt (((sy * forward) + (cy * strafe)) * step) 1024
+    let dz = divInt (((cy * forward) - (sy * strafe)) * step) 1024
+    let x = cam0.position.x + dx
+    let z = cam0.position.z + dz
+    let groundHeight = world.heightAt seed (floorDiv x cameraScale) (floorDiv z cameraScale)
+    let ground = ((groundHeight + 2) * cameraScale) + 400
+    let verticalStep = divInt (speed * 65 * dt) 100000
+    let yRaw =
+        if input.wantsUp frame then cam0.position.y + verticalStep
+        elif input.wantsDown frame then cam0.position.y - verticalStep
+        else
+            let blend = clamp 0 1000 (dt * 8)
+            in cam0.position.y + divInt ((ground - cam0.position.y) * blend) 1000
+    let y = clamp (ground - 8000) (ground + 28000) yRaw
+    let cam = Camera (Vec3 x y z) yaw pitch
+    in Player (blockPosFromCamera cam) cam player.selected

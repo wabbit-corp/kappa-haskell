@@ -1,0 +1,6 @@
+module lib.rng
+
+type Rng = Int
+
+seed : Nat -> Rng
+let seed n = natToInt n

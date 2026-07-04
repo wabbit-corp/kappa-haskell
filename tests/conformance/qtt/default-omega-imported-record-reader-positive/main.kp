@@ -1,0 +1,32 @@
+module main
+
+import lib.input as input
+import lib.player as player
+
+step : input.InputFrame -> Int
+let step frame =
+    if input.wantsQuit frame then
+        0
+    else
+        frame.dtMs
+
+stepAction : UIO Int
+let stepAction =
+    do
+        let frame <- input.poll
+        if input.wantsQuit frame then
+            pure 0
+        else
+            pure frame.dtMs
+
+stepLoop : UIO Unit
+let stepLoop =
+    do
+        var running = True
+        while running do
+            let frame <- input.poll
+            if input.wantsQuit frame then
+                running = False
+            else
+                let dt = player.update frame
+                printlnString (showInt dt)

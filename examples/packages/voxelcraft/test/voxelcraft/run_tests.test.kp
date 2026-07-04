@@ -1,0 +1,34 @@
+module voxelcraft.run_tests
+
+import voxelcraft.mesh_test as m
+import voxelcraft.player_test as p
+import voxelcraft.world_test as w
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main =
+    do
+        let c1 = w.testGeneratedChunkHasTerrain
+        let c2 = w.testSpawnAboveSurface
+        let c3 = w.testOutOfBoundsIsEmpty
+        let c4 = m.testMeshHasVisibleFaces
+        let c5 = m.testMeshCountsAreConsistent
+        let c6 = m.testWorldMeshesOneChunk
+        let c7 = p.testForwardMovesPlayer
+        let c8 = p.testMouseTurnsCamera
+        let c9 = p.testPitchIsClamped
+        printlnString (line "world.generatedChunkHasTerrain" c1)
+        printlnString (line "world.spawnAboveSurface" c2)
+        printlnString (line "world.outOfBoundsIsEmpty" c3)
+        printlnString (line "mesh.hasVisibleFaces" c4)
+        printlnString (line "mesh.countsAreConsistent" c5)
+        printlnString (line "mesh.worldMeshesOneChunk" c6)
+        printlnString (line "player.forwardMoves" c7)
+        printlnString (line "player.mouseTurns" c8)
+        printlnString (line "player.pitchClamps" c9)
+        if c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 then
+            printlnString "VOXELCRAFT TESTS: ALL PASS"
+        else
+            printlnString "VOXELCRAFT TESTS: FAIL"

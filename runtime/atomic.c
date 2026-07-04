@@ -119,9 +119,9 @@ KValue *krt2_atomic_load(KValue *order, KValue *ref) {
   (void)load_order(order);
   struct AtomicRef *r = as_aref(ref);
   pthread_mutex_lock(&r->mu);
-  KValue *v = r->cell;
+  KValue *v = kdup(r->cell);
   pthread_mutex_unlock(&r->mu);
-  return kdup(v);
+  return v;
 }
 
 KValue *krt2_atomic_store(KValue *order, KValue *ref, KValue *v) {
@@ -166,12 +166,13 @@ KValue *krt2_atomic_compare_exchange(KValue *succ, KValue *fail,
   if (exchanged) {
     krc_mark_shared_recursive(desired);
     r->cell = desired;
+  } else {
+    old = kdup(old);
   }
   pthread_mutex_unlock(&r->mu);
   if (!exchanged) {
-    KValue *witness = kdup(old);
     kdrop(desired);
-    return witness;
+    return old;
   }
   return old;
 }

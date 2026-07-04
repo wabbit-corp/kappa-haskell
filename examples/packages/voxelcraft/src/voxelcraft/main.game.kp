@@ -1,0 +1,31 @@
+module voxelcraft.main
+
+import voxelcraft.core.*
+import voxelcraft.game_loop as game
+import voxelcraft.mesh as mesh
+import voxelcraft.renderer as renderer
+import voxelcraft.world as world
+
+main : UIO Unit
+let main =
+    do
+        let seed = 8675309
+        let state0 = world.newGame seed
+        let stats = mesh.meshWorld state0.world
+        let state = GameState state0.world state0.player stats
+        let r <- renderer.open 1280 720
+        let delegate <- renderer.shouldDelegate r
+        if delegate then
+            renderer.delegate r seed
+        else
+            let backend <- renderer.backendName r
+            renderer.present r state.mesh
+            printlnString (stringAppend "VOXELCRAFT backend=" backend)
+            printlnString (meshSummary state.mesh)
+            let sx = showInt state.player.position.x
+            let sy = showInt state.player.position.y
+            let sz = showInt state.player.position.z
+            let spawn = stringAppend "spawn=" (stringAppend sx (stringAppend "," (stringAppend sy (stringAppend "," sz))))
+            printlnString spawn
+            game.run r state
+        renderer.close r

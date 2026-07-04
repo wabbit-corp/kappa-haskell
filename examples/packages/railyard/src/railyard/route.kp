@@ -1,0 +1,25 @@
+module railyard.route
+
+import railyard.core.*
+
+-- Build a cart's route from the shared main-line segments plus the cart's own
+-- exit siding. The list length is a runtime value, so the result's static index
+-- isn't known here and must be sealed in SomeRoute. `decreases listLength segs`
+-- is the termination measure: each recursive call drops the head, so the proof
+-- is structural and the compiler accepts the function as total.
+buildRoute : List (TVar Bool) -> TVar Bool -> SomeRoute
+let buildRoute segs exit decreases listLength segs =
+    match segs
+    case Nil -> Pack (RHop exit RDone)
+    case s :: rest ->
+        match buildRoute rest exit
+        case Pack r -> Pack (RHop s r)
+
+-- The hop count of a route. Total by structural recursion on the route's index
+-- alone — there is no separate measure to supply, because the index itself is
+-- the decreasing quantity.
+routeLen : forall (n : PNat). Route n -> Int
+let routeLen r =
+    match r
+    case RDone -> 0
+    case RHop seg rest -> addInt 1 (routeLen rest)

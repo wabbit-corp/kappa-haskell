@@ -1,0 +1,15 @@
+module main
+
+type Rng : Type = Int
+
+make : UIO Rng
+let make = pure 1
+
+main : UIO Int
+let main = do
+    let x <- make
+    pure (x + x)
+
+--! mode check
+--! assertNoErrors
+--! assertType main UIO Int

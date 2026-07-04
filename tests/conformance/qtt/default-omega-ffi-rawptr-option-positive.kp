@@ -1,0 +1,16 @@
+module main
+
+import std.ffi as ffi
+
+data Terminal : Type =
+    Terminal (handle : Option ffi.RawPtr)
+
+wrap : Option ffi.RawPtr -> Option Terminal
+let wrap handle =
+    match handle
+    case Some _ -> Some (Terminal handle)
+    case None -> None
+
+--! mode check
+--! assertNoErrors
+--! assertType wrap (Option ffi.RawPtr -> Option Terminal)

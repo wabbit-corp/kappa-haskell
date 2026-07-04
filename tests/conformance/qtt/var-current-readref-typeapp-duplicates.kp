@@ -1,4 +1,4 @@
---! assertErrorCount 2
+--! assertErrorCount 3
 --! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
 --! assertDiagnostic error E_QTT_LINEAR_DROP
 

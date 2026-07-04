@@ -5,10 +5,13 @@ Status: **S3.0 through S3.4 landed for the C/runtime path.** S0→S2.3d have lan
 `rc` is maintained. S3 wires the guarded `kdrop` free-on-zero branch for the conservative strict-immutable
 FREESET, adds S3.3 overwrite/publication-failure precision drops, and makes RC validation/emission default-on
 for native builds with `KAPPA_PERCEUS_RC=0` as the explicit RC-off differential baseline. That baseline disables
-both generated ownership maintenance and runtime RC effects in the generated binary. Retained tags, shared
-objects, cycles, resources, and LLVM output remain Boehm-backed until their later stages. Companion to
+both generated ownership maintenance and runtime RC effects in the generated binary. At the S3 boundary, retained
+tags, shared objects, cycles, resources, and LLVM output remained Boehm-backed until their later stages. Companion to
 [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc, §4 cycles / §5
 thread-shared / §7 staging) and [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) (the dup/drop layer S3 turns live).
+Historical note: this document describes S3's landed boundary. S4 has since replaced S3's shared-value
+dup/drop no-op with counted shared atomic RC for the strict immutable FREESET; see
+[PERCEUS-S4-PLAN.md](PERCEUS-S4-PLAN.md) for the current shared-object state.
 
 ## 0. The transition that reshapes everything — the risk model inverts
 
@@ -30,7 +33,7 @@ the *reclamation* half and re-validates it with a UAF detector instead of an und
 
 ## 1. The central decision — WHICH shapes free-on-zero at S3
 
-Free-on-zero is only sound for **acyclic, non-shared, non-resource** objects. Partition the runtime tags
+At the S3 boundary, free-on-zero was only sound for **acyclic, non-shared, non-resource** objects. Partition the runtime tags
 (counted shapes per RC-DESIGN §2):
 
 **RC-freed at S3 (the strict, immutable, acyclic core — "most of the win"):**
@@ -81,12 +84,13 @@ precisely owned, but it is not a child-value UAF path.
 
 ### 2.2 Thread-shared mark + no-op shared dup/drop — LANDED for S3.1, concurrency soundness
 The runtime is M:N concurrent; an RC-freed immutable object can be **published** across fibers and then
-concurrently dropped ⇒ non-atomic `rc--` races ⇒ premature/double free. The full atomic split is S4, but its
+concurrently dropped ⇒ non-atomic `rc--` races ⇒ premature/double free. At the S3 boundary the full atomic split was S4, but its
 **cheap half must move forward into S3**: the one-time recursive **mark-shared** at publication boundaries,
-riding the **sign of the header `rc`** (Koka's negative-rc trick). Then `kis_rc_freeable` returns false for
-`tshare==1`, so shared objects **defer to Boehm**. S3.1 also makes `kdup`/`kdrop` on already-shared objects
-no-ops, because the low count is ignored until S4's counted shared-object RC.
-S4 later gives shared objects real counted atomic RC *and* extends free-on-zero to them. (This is a deliberate
+riding the **sign of the header `rc`** (Koka's negative-rc trick). Then `kis_rc_freeable` returned false for
+`tshare==1`, so shared objects **deferred to Boehm**. S3.1 also made `kdup`/`kdrop` on already-shared objects
+no-ops, because the low count was ignored until S4's counted shared-object RC.
+S4 supersedes this boundary: shared objects now use counted atomic RC and can be free-on-zero reclaimed when
+their tag is in the strict immutable FREESET. (This is a deliberate
 refinement of RC-DESIGN §7, which lumps mark+atomic-ops together in S4; S3.1 already makes the header word
 atomic so the shared-bit transition and no-op shared dup/drop are data-race-free, while counted shared-object
 RC remains a later perf/reclamation recovery.)
@@ -97,9 +101,11 @@ fiber-local snapshot publication, TVar commit/new, AtomicRef creation/store/exch
 FiberRef init, generated global/CAF caches, and stored interrupt causes. Generated caches use acquire/release
 atomic publication so a reader cannot observe the cached pointer without also observing the prior shared marks.
 Writes into already-shared plain refs/arrays/thunks mark the incoming value as a conservative RC aid, but
-ordinary refs/arrays/thunks are not cross-fiber synchronization primitives (§32.2.10) and are not claimed as
-publication boundaries. Shared objects preserve their existing low count but S3.1 dup/drop does not mutate it,
-and `kis_rc_freeable` rejects them so S3.2 will not free them.
+ordinary refs/arrays/thunks were not claimed as high-level publication APIs in S3. S4 later added storage
+synchronization for Ref/array ownership safety; that lock does not turn every plain cell operation into a
+semantic publish point. At S3, shared objects preserved their existing low count, S3.1 dup/drop did not mutate
+it, and `kis_rc_freeable` rejected them so S3.2 would not free them. S4 replaces that historical no-op policy
+with atomic counted shared dup/drop for the same strict immutable FREESET.
 
 ### 2.3 Iterative drop-descent — LANDED for S3.2 robustness
 A recursive `kfree` of a long list / deep tree recurses O(depth) on the C stack. The design's own criterion
@@ -118,7 +124,7 @@ journal-owned writes. No-return stores also consume an owned self-assignment arg
 the same as the old occupant, the barrier drops one counted reference while keeping the cell value live.
 `krt2_atomic_exchange` is deliberately different: it returns the displaced old value to the caller, so it does
 not drop that returned ownership. For publication paths that mark contents shared (`AtomicRef`, TVar commit),
-the S3 drop is mostly correctness scaffolding because shared `kdrop` is a no-op until S4 shared RC; unique
+the S3 drop was mostly correctness scaffolding because shared `kdrop` was a no-op until S4 shared RC; unique
 `Ref`/array/FiberRef cells get current free-on-zero reclamation for displaced strict immutable values. These
 barriers remain scoped to retained mutable containers; refs/arrays themselves are still outside the S3 FREESET
 until the post-S3 cycle/container protocol.
@@ -141,8 +147,9 @@ and free-visitor assert; the remaining items stay scoped to later precision/back
 
 1. **The free-on-zero win is C-backend-only until the LLVM backend emits `kdup`/`kdrop` (scope, not a bug).**
    `generateLL` runs the C backend purely as the R-path validator, then emits LLVM with an explicit
-   `krc_set_enabled(0)` runtime gate and no generated RC markers. So RC-on == RC-off on LLVM is trivial today
-   (identical ownership effects), but the C backend reclaims on `rc==0` while LLVM emits no `kdrop` and stays
+   `krc_set_enabled(0)` runtime counting/freeing gate. S4 publish marking may still be emitted because
+   shared bits are synchronization metadata, not ownership maintenance. So RC-on == RC-off on LLVM is trivial
+   today for ownership effects, but the C backend reclaims on `rc==0` while LLVM emits no `kdrop` and stays
    fully Boehm-backed — an *under*-free, never a UAF. Free-on-zero therefore covers the C backend only;
    extending reclamation to LLVM is a separate task (grow LLVM dup/drop emission), and the §5.3 garbage-free
    trend applies to C until then.
@@ -171,7 +178,8 @@ and free-visitor assert; the remaining items stay scoped to later precision/back
 
 - **`kdrop`** (`kappart.h`): after the thread-local count decrement, calls
   `kfree_recursive(v)` when the old count was 1 and `kis_rc_freeable(v)` holds. Immediate/shared/retained-tag/resource
-  cases fall through exactly as before; shared values remain no-op until S4 reclamation.
+  cases fall through exactly as before. In S3, shared values remained no-op until S4 reclamation; S4 has since
+  replaced that with atomic counted shared dup/drop and guarded shared free-on-zero for FREESET tags.
 - **`kfree_recursive(v)`** (`value.c`): per-tag, decrements each boxed child, pushes zero-count freeable
   children onto the iterative worklist, then releases the shell:
   - children: `K_CTOR` `as.ctor.args[0..argc-1]`; `K_REC` `as.rec.vals[0..n-1]`; `K_VARIANT`
@@ -219,7 +227,7 @@ The flip is staged so free-on-zero is exercised under a watchdog before it is tr
 3. **Garbage-free trend** (`KAPPA_GC_STATS`): RC-freed-shape heap-high-water bounded on a tight
    alloc/drop loop; not monotonic growth.
 4. **Concurrency stress under the sanitizer/oracle lanes** (`fork`/`promise`/`stm`/`race`/`fiber-*` cases): exercises the
-   `tshare` mark + skip; a shared object must never be RC-freed.
+   S3 `tshare` mark + skip boundary and, after S4, the counted atomic shared-RC path.
 5. **Resource carve-out (§1)** (`usingsusp.kp`/`usinginterrupt.kp`/`defer-*`): no `K_FGN`/resource cell is
    freed by RC; the ExitStack still owns handle release.
 6. **Deep-structure stress** (§2.3): a million-node spine frees without stack overflow.
@@ -231,8 +239,8 @@ The flip is staged so free-on-zero is exercised under a watchdog before it is tr
   native sanitizers (§4). This is *the* risk S3 exists to manage.
 - **R-derived-container-undercount** → `karr_new` per-slot dup + `krec_without` kept-field dup, §2.1
   (mitigated before S3.2).
-- **R-shared-race** → atomic header ops + `tshare` mark + no-op shared dup/drop, §2.2 (blocking);
-  counted shared-object reclamation is S4.
+- **R-shared-race** → atomic header ops + `tshare` mark + no-op shared dup/drop at S3, §2.2 (blocking);
+  counted shared-object reclamation is S4 and supersedes the no-op shared policy.
 - **R-stack-overflow** → iterative drop-descent, §2.3.
 - **R-mixed-collector.** An RC-freed cell must not be Boehm-reachable. It is not: `rc==0` means no counted
   reference — *provided* every reference is counted, which is exactly what `karr_new` (§2.1) and the owned
@@ -263,7 +271,8 @@ default native path; the landed default-on gate keeps the poison oracle and expl
 
 **Landed S3.0-S3.4 runtime/backend files:**
 - `runtime/kappart.h` — `kis_rc_freeable`, the shared-bit accessors, `kfree_recursive` prototype, the poison
-  sentinel/API, and `kdup`/`kdrop` immediate + shared no-op guards. S3.2 enables the guarded `kdrop` free branch.
+  sentinel/API, and the S3 `kdup`/`kdrop` immediate + shared no-op guards that S4 later supersedes with
+  counted atomic shared RC. S3.2 enables the guarded `kdrop` free branch.
 - `runtime/value.c` — iterative `kfree_recursive` per-tag child traversal + shell release, stack-inline/scanned
   overflow worklist, poison-on-free shell retention for the oracle lane, `karr_new` per-slot dup (§2.1),
   zero-length owned-init consumption, record-rest kept-field dups, shared ref/array/thunk incoming-value marks,
@@ -274,12 +283,14 @@ default native path; the landed default-on gate keeps the poison oracle and expl
   exhaustiveness pins, and the S3.3 barriers for FiberRef overwrite/modify aliasing, STM journal truncation,
   promise recomplete, failed CAS, and AtomicRef store.
 - `src/Kappa/Backend/C.hs` / `src/Kappa/Backend/LLVM.hs` — mark generated global/CAF cache values shared
-  before process-wide publication when runtime RC is enabled. C validates/emits RC by default while preserving
-  an explicit RC-off baseline; LLVM runs the C-side RC validator but emits `krc_set_enabled(0)` and no runtime
-  RC markers until LLVM ownership emission lands.
+  before process-wide publication. S4 made this mark independent of the RC counting/freeing gate because the
+  shared bit also selects synchronized Ref/Array storage access. C validates/emits ownership maintenance by
+  default while preserving an explicit RC-off baseline; LLVM runs the C-side RC validator but emits
+  `krc_set_enabled(0)` and no generated ownership `kdup`/`kdrop` until LLVM ownership emission lands, while
+  still emitting publication marks.
 - `src/Kappa/Backend/Driver.hs` / `src/Kappa/Backend/C.hs` — `KAPPA_PERCEUS_RC=0` is the explicit off baseline;
   unset/true/on keep native RC validation and emission enabled by default, while off builds emit
-  `krc_set_enabled(0)` so runtime barriers are inert too.
+  `krc_set_enabled(0)` so runtime counting/freeing barriers are inert too.
 - `src/Kappa/Backend/Repr.hs` / `src/Kappa/CoreOps.hs` — runtime-argument mask alignment for kind-domain
   parameters (§2.5) and scalar-worker static-prefix rewrites.
 - `runtime/tests/perceus_s3_prereq.c`, `runtime/tests/perceus_s3_free.c`, `runtime/tests/perceus_s3_poison.c`,

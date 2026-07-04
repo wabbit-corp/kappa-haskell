@@ -1,0 +1,10 @@
+module main
+
+import lib.handles as handles
+
+main : UIO Unit
+let main =
+    do
+        let r <- handles.open
+        handles.use r
+        handles.close r

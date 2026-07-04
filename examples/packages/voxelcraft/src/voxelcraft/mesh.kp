@@ -1,0 +1,75 @@
+module voxelcraft.mesh
+
+import voxelcraft.core.*
+import voxelcraft.natutil.*
+import voxelcraft.world as world
+
+data MeshAccum : Type =
+    MeshAccum
+        (solidBlocks : Int)
+        (visibleFaces : Int)
+
+emptyAccum : MeshAccum
+let emptyAccum = MeshAccum 0 0
+
+addAccum : MeshAccum -> Int -> Int -> MeshAccum
+let addAccum acc solid faces =
+    MeshAccum (acc.solidBlocks + solid) (acc.visibleFaces + faces)
+
+visibleAgainst : Chunk -> Int -> Int -> Int -> Int
+let visibleAgainst chunk x y z =
+    match world.blockAt chunk x y z
+    case None -> 1
+    case Some other -> if isOpaque other.kind then 0 else 1
+
+blockFaces : Chunk -> Int -> Int -> Int -> Int
+let blockFaces chunk x y z =
+    match world.blockAt chunk x y z
+    case None -> 0
+    case Some b ->
+        if not (isRenderable b.kind) then 0
+        else
+            visibleAgainst chunk (x + 1) y z +
+            visibleAgainst chunk (x - 1) y z +
+            visibleAgainst chunk x (y + 1) z +
+            visibleAgainst chunk x (y - 1) z +
+            visibleAgainst chunk x y (z + 1) +
+            visibleAgainst chunk x y (z - 1)
+
+blockSolid : Chunk -> Int -> Int -> Int -> Int
+let blockSolid chunk x y z =
+    match world.blockAt chunk x y z
+    case None -> 0
+    case Some b -> if isRenderable b.kind then 1 else 0
+
+scanX : Chunk -> Int -> Int -> Int -> MeshAccum -> MeshAccum
+let scanX chunk y z x acc decreases max 0 (world.chunkWidth - x) =
+    if x >= world.chunkWidth then acc
+    else
+        let next = addAccum acc (blockSolid chunk x y z) (blockFaces chunk x y z)
+        in scanX chunk y z (x + 1) next
+
+scanZ : Chunk -> Int -> Int -> MeshAccum -> MeshAccum
+let scanZ chunk y z acc decreases max 0 (world.chunkDepth - z) =
+    if z >= world.chunkDepth then acc
+    else scanZ chunk y (z + 1) (scanX chunk y z 0 acc)
+
+scanY : Chunk -> Int -> MeshAccum -> MeshAccum
+let scanY chunk y acc decreases max 0 (world.chunkHeight - y) =
+    if y >= world.chunkHeight then acc
+    else scanY chunk (y + 1) (scanZ chunk y 0 acc)
+
+public meshChunk : Chunk -> MeshStats
+let meshChunk chunk =
+    let acc = scanY chunk 0 emptyAccum
+    in meshStatsFromFaces 1 acc.solidBlocks acc.visibleFaces
+
+meshChunks : List Chunk -> MeshStats -> MeshStats
+let meshChunks chunks acc decreases listLength chunks =
+    match chunks
+    case Nil -> acc
+    case h :: t -> meshChunks t (mergeMeshStats acc (meshChunk h))
+
+public meshWorld : World -> MeshStats
+let meshWorld world =
+    meshChunks world.chunks emptyMeshStats

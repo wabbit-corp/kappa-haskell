@@ -1,0 +1,185 @@
+module voxelcraft.game_loop
+
+import voxelcraft.core.*
+import voxelcraft.input as input
+import voxelcraft.natutil.*
+import voxelcraft.player as player
+import voxelcraft.renderer as render
+import voxelcraft.world as world
+
+viewRadius : Int
+let viewRadius = 18
+
+sideDepth : Int
+let sideDepth = 5
+
+emitTop : render.Renderer -> BlockKind -> Int -> Int -> Int -> Int -> UIO Unit
+let emitTop r kind x y z shade =
+    render.pushFace r FaceTop kind x y z shade
+
+emitSide : render.Renderer -> FaceDir -> Int -> Int -> Int -> Int -> Int -> UIO Int
+let emitSide r dir seed x y z shade =
+    do
+        let kind = (world.blockFor seed x y z).kind
+        render.pushFace r dir kind x y z shade
+        pure 1
+
+emitColumn : render.Renderer -> Int -> Int -> Int -> UIO Int
+let emitColumn r seed x z =
+    do
+        var faces = 0
+        let top = world.heightAt seed x z
+        let topKind = (world.blockFor seed x top z).kind
+        emitTop r topKind x top z 102
+        faces = faces + 1
+        if top < world.seaLevel then
+            emitTop r Water x world.seaLevel z 88
+            faces = faces + 1
+        let minSide = max 0 (top - sideDepth)
+        let hn = world.heightAt seed x (z - 1)
+        var yn = top
+        while yn > hn && yn >= minSide do
+            let added <- emitSide r FaceNorth seed x yn z 70
+            faces = faces + added
+            yn = yn - 1
+        let hs = world.heightAt seed x (z + 1)
+        var ys = top
+        while ys > hs && ys >= minSide do
+            let added <- emitSide r FaceSouth seed x ys z 76
+            faces = faces + added
+            ys = ys - 1
+        let hw = world.heightAt seed (x - 1) z
+        var yw = top
+        while yw > hw && yw >= minSide do
+            let added <- emitSide r FaceWest seed x yw z 60
+            faces = faces + added
+            yw = yw - 1
+        let he = world.heightAt seed (x + 1) z
+        var ye = top
+        while ye > he && ye >= minSide do
+            let added <- emitSide r FaceEast seed x ye z 64
+            faces = faces + added
+            ye = ye - 1
+        pure faces
+
+emitColumnStats : render.Renderer -> Int -> Int -> Int -> UIO MeshStats
+let emitColumnStats r seed x z =
+    do
+        let h = world.heightAt seed x z
+        let faces <- emitColumn r seed x z
+        pure (meshStatsFromFaces 0 (h + 1) faces)
+
+emitZStrip : render.Renderer -> Int -> Int -> Int -> Int -> UIO MeshStats
+let emitZStrip r seed x z0 z1 =
+    do
+        var stats = emptyMeshStats
+        var z = z0
+        while z <= z1 do
+            let column <- emitColumnStats r seed x z
+            stats = mergeMeshStats stats column
+            z = z + 1
+        pure stats
+
+emitXStrip : render.Renderer -> Int -> Int -> Int -> Int -> UIO MeshStats
+let emitXStrip r seed z x0 x1 =
+    do
+        var stats = emptyMeshStats
+        var x = x0
+        while x <= x1 do
+            let column <- emitColumnStats r seed x z
+            stats = mergeMeshStats stats column
+            x = x + 1
+        pure stats
+
+emitView : render.Renderer -> Int -> Player -> UIO MeshStats
+let emitView r seed p =
+    do
+        render.beginMesh r
+        var solid = 0
+        var faces = 0
+        let cameraBlock = player.blockPosFromCamera p.camera
+        let minX = cameraBlock.x - viewRadius
+        let maxX = cameraBlock.x + viewRadius
+        let minZ = cameraBlock.z - viewRadius
+        let maxZ = cameraBlock.z + viewRadius
+        var z = minZ
+        while z <= maxZ do
+            var x = minX
+            while x <= maxX do
+                let dx = x - cameraBlock.x
+                let dz = z - cameraBlock.z
+                if (dx * dx) + (dz * dz) <= viewRadius * viewRadius then
+                    let h = world.heightAt seed x z
+                    solid = solid + h + 1
+                    let columnFaces <- emitColumn r seed x z
+                    faces = faces + columnFaces
+                x = x + 1
+            z = z + 1
+        pure (meshStatsFromFaces 1 solid faces)
+
+emitDelta : render.Renderer -> Int -> Vec3 -> Vec3 -> UIO MeshStats
+let emitDelta r seed oldCenter newCenter =
+    do
+        var stats = emptyMeshStats
+        if newCenter.x > oldCenter.x then
+            var x = oldCenter.x + viewRadius + 1
+            while x <= newCenter.x + viewRadius do
+                let strip <- emitZStrip r seed x (newCenter.z - viewRadius) (newCenter.z + viewRadius)
+                stats = mergeMeshStats stats strip
+                x = x + 1
+        elif newCenter.x < oldCenter.x then
+            var x = newCenter.x - viewRadius
+            while x <= oldCenter.x - viewRadius - 1 do
+                let strip <- emitZStrip r seed x (newCenter.z - viewRadius) (newCenter.z + viewRadius)
+                stats = mergeMeshStats stats strip
+                x = x + 1
+        if newCenter.z > oldCenter.z then
+            var z = oldCenter.z + viewRadius + 1
+            while z <= newCenter.z + viewRadius do
+                let strip <- emitXStrip r seed z (newCenter.x - viewRadius) (newCenter.x + viewRadius)
+                stats = mergeMeshStats stats strip
+                z = z + 1
+        elif newCenter.z < oldCenter.z then
+            var z = newCenter.z - viewRadius
+            while z <= oldCenter.z - viewRadius - 1 do
+                let strip <- emitXStrip r seed z (newCenter.x - viewRadius) (newCenter.x + viewRadius)
+                stats = mergeMeshStats stats strip
+                z = z + 1
+        pure stats
+
+public run : render.Renderer -> GameState -> UIO Unit
+let run r state0 =
+    do
+        render.openWindow r
+        var state = state0
+        var meshCenterX = 999999
+        var meshCenterZ = 999999
+        var cachedStats = state0.mesh
+        var haveMesh = False
+        var running = True
+        while running do
+            let frame <- render.pollInput r
+            if input.wantsQuit frame then
+                running = False
+            else
+                let nextPlayer = player.updatePlayer state.world.seed frame state.player
+                let cameraBlock = player.blockPosFromCamera nextPlayer.camera
+                let terrainHeight = world.heightAt state.world.seed cameraBlock.x cameraBlock.z
+                var frameStats = cachedStats
+                if not haveMesh then
+                    let rebuilt <- emitView r state.world.seed nextPlayer
+                    cachedStats = rebuilt
+                    frameStats = rebuilt
+                    meshCenterX = cameraBlock.x
+                    meshCenterZ = cameraBlock.z
+                    haveMesh = True
+                elif cameraBlock.x != meshCenterX || cameraBlock.z != meshCenterZ then
+                    let added <- emitDelta r state.world.seed (Vec3 meshCenterX 0 meshCenterZ) cameraBlock
+                    cachedStats = mergeMeshStats cachedStats added
+                    frameStats = cachedStats
+                    meshCenterX = cameraBlock.x
+                    meshCenterZ = cameraBlock.z
+                let keepGoing <- render.drawFrame r nextPlayer frameStats terrainHeight
+                state = GameState state.world nextPlayer frameStats
+                if not keepGoing then
+                    running = False

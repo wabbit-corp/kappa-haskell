@@ -46,8 +46,10 @@
    more than one host thread at a time and contains cross-worker STM and hardware
    atomics. The build profile exposes the corresponding capability tokens only
    when the compiler/backend profile treats those semantics as authoritative.
-4. Reuse the existing boxed `KValue` model and Boehm GC unchanged, so the
-   runtime is a *layer over* `runtime/kappart.{c,h}`, not a fork of it.
+4. Reuse the existing boxed `KValue` representation and Boehm allocation/rooting
+   infrastructure while layering Perceus RC bookkeeping and strict-FREESET
+   reclamation into `runtime/kappart.h`/`value.c`, rather than forking the value
+   model.
 5. Be a clean, documented C ABI the native backend can target (§17), and a
    self-contained, testable artifact *before* that integration lands.
 6. Borrow deliberately and creditably from Go, GHC's RTS, Erlang/BEAM,
@@ -466,9 +468,10 @@ GHC-style optimistic STM, valid across parallel workers:
 - **Commit** (§32.2.9, uninterruptible once begun): take a global commit lock (or
   lock the write-set's TVars in address order — fine-grained, v2), validate that
   every read TVar's version is unchanged; if valid, install writes, bump
-  versions, wake watchers; else abort and retry. (v1 uses a single global commit
-  mutex — correct and simple; the read phase is lock-free and parallel. v2 moves
-  to per-TVar locks for commit scalability.)
+  versions, wake watchers; else abort and retry. (v1 uses a single global STM
+  mutex — correct and simple; S4 also samples read values under that mutex so
+  `readTVar` can return an owned value without racing a shared drop. v2 moves to
+  per-TVar locks for commit/read scalability.)
 - `retry` aborts the attempt and **parks** the fiber on the watcher lists of
   every TVar it read (an interruption point, §32.2.5); a later commit that bumps
   one of those versions wakes it.
@@ -495,11 +498,14 @@ We place real release/acquire edges at exactly the four mandated points:
    `Exit`; `awaitPromise*` acquires.
 4. **STM commit → later txn**: the version bump (§11).
 
-Ordinary `K_REF`/`var` are **not** cross-fiber sync primitives (§32.2.10): races
-on them have no portable ordering and are outside the synchronization contract.
-Same-fiber ref ordering is preserved (we never reorder same-fiber operations);
-cross-fiber coordination must use await/join, scopes/monitors, promises, STM, or
-atomics.
+Ordinary `K_REF`/`var` storage has runtime ownership safety (`kref_get` returns
+an owned value and `kref_set` drops the displaced occupant). Private refs use
+the direct S4 thread-local path; shared refs take the storage lock while
+acquiring/replacing the occupant. Plain refs are still **not** one of the spec's
+cross-fiber publication points (§32.2.10). Same-fiber ref ordering is preserved
+(we never reorder same-fiber operations); cross-fiber coordination that needs a
+portable happens-before edge must use await/join, scopes/monitors, promises,
+STM, or atomics.
 
 ---
 
@@ -590,8 +596,10 @@ channel; `unsandbox` re-raises it.
 ## 16. Garbage collection (§32.2.8, §34.4.1)
 
 - **Boehm GC in thread/parallel mode** (`GC_THREADS`, `GC_MARKERS`), reusing the
-  existing `KValue` model unchanged. Every worker, the reactor, and each
-  blocking-pool thread calls `GC_register_my_thread`. Stop-the-world parallel
+  existing `KValue` representation while Perceus RC reclaims the strict immutable
+  FREESET when counts reach zero. Retained mutable/resource/lazy/cycle shapes
+  remain Boehm-backed. Every worker, the reactor, and each blocking-pool thread
+  calls `GC_register_my_thread`. Stop-the-world parallel
   mark; all thread stacks + the heap are roots. Because fibers are heap-reified
   (§5), a parked fiber's entire state is reachable from the fiber table /
   promise / scope / timer that holds it — no stack scanning of suspended fibers

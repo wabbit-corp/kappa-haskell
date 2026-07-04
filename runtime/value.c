@@ -16,11 +16,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct KRefCell {
+  pthread_mutex_t mu;
+  KValue *val;
+};
+
+typedef struct KArrayBox {
+  pthread_mutex_t mu;
+  KValue *slots[];
+} KArrayBox;
 KValue *alloc_val(KTag tag) {
   KValue *v = (KValue *)kgc_alloc(sizeof(KValue));
   v->tag = tag;
-  atomic_init(&v->rc, 1); /* Perceus RC Stage S0: every heap KValue is born with one owner.
-                           * Reserved + initialized only — Boehm still frees; no dup/drop. */
+  v->rc = 1; /* Every heap KValue is born with one owner. S4 kdup/kdrop maintain
+              * this header for strict-FREESET reclamation; Boehm remains the
+              * allocation/rooting backstop for retained shapes. */
   return v;
 }
 
@@ -44,8 +55,8 @@ KValue *alloc_val(KTag tag) {
 static KValue *alloc_val_atomic(KTag tag) {
   KValue *v = (KValue *)kgc_alloc_atomic(sizeof(KValue));
   v->tag = tag;
-  atomic_init(&v->rc, 1); /* Perceus RC Stage S0: born with one owner (see alloc_val).
-                           * GC_MALLOC_ATOMIC does not zero, so set rc explicitly here. */
+  v->rc = 1; /* Born with one owner (see alloc_val). GC_MALLOC_ATOMIC does not
+              * zero, so set rc explicitly here. */
   return v;
 }
 
@@ -55,9 +66,18 @@ static KValue *alloc_val_atomic(KTag tag) {
  * counter storage and stay byte-identical in cost.  `krc_report` is always
  * defined (a no-op under NDEBUG) so the symbol resolves regardless of build. */
 _Atomic int k_rc_enabled = 1;
+static _Atomic unsigned long long k_rc_reclaims_total = 0;
 
 void krc_set_enabled(int enabled) {
   atomic_store_explicit(&k_rc_enabled, enabled ? 1 : 0, memory_order_relaxed);
+}
+
+unsigned long long krc_debug_reclaim_count(void) {
+  return atomic_load_explicit(&k_rc_reclaims_total, memory_order_relaxed);
+}
+
+static void krc_note_reclaim(void) {
+  atomic_fetch_add_explicit(&k_rc_reclaims_total, 1, memory_order_relaxed);
 }
 
 #ifndef NDEBUG
@@ -88,6 +108,15 @@ typedef struct {
 } KWork;
 
 static pthread_mutex_t g_thunk_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static KValue *kthunk_cached_value_snapshot(KValue *v) {
+  if (!v->as.thunk.memo) return NULL;
+  pthread_mutex_lock(&g_thunk_cache_lock);
+  KValue **cached = v->as.thunk.cache;
+  KValue *r = cached ? cached[0] : NULL;
+  pthread_mutex_unlock(&g_thunk_cache_lock);
+  return r;
+}
 
 static void kwork_init(KWork *stack, KValue **inline_items, size_t inline_cap) {
   stack->items = inline_items;
@@ -144,7 +173,14 @@ static void krc_mark_child(KWork *stack, KValue *v) {
   kwork_push(stack, v);
 }
 
-static void krc_mark_children(KWork *stack, KValue *v) {
+static void krc_mark_mutable_child(KWork *stack, KWork *owned, KValue *v) {
+  if (!v || kis_imm(v) || krc_is_shared(v)) return;
+  krc_mark_shared_shallow(v);
+  kwork_push(stack, v);
+  kwork_push(owned, kdup(v));
+}
+
+static void krc_mark_children(KWork *stack, KWork *owned, KValue *v) {
   switch (v->tag) {
     case K_CTOR:
       for (int i = 0; i < v->as.ctor.argc; i++) krc_mark_child(stack, v->as.ctor.args[i]);
@@ -159,12 +195,18 @@ static void krc_mark_children(KWork *stack, KValue *v) {
       krc_mark_env(stack, v->as.io.env);
       break;
     case K_REF:
-      krc_mark_child(stack, v->as.ref.cell ? v->as.ref.cell[0] : NULL);
+      if (v->as.ref.cell) {
+        pthread_mutex_lock(&v->as.ref.cell->mu);
+        krc_mark_mutable_child(stack, owned, v->as.ref.cell->val);
+        pthread_mutex_unlock(&v->as.ref.cell->mu);
+      }
       break;
     case K_ARRAY:
       if (v->as.arr.elemkind == KARR_BOXED) {
-        KValue **slab = (KValue **)v->as.arr.elems;
-        for (int64_t i = 0; i < v->as.arr.len; i++) krc_mark_child(stack, slab[i]);
+        KArrayBox *box = (KArrayBox *)v->as.arr.elems;
+        pthread_mutex_lock(&box->mu);
+        for (int64_t i = 0; i < v->as.arr.len; i++) krc_mark_mutable_child(stack, owned, box->slots[i]);
+        pthread_mutex_unlock(&box->mu);
       }
       break;
     case K_FGN:
@@ -175,7 +217,7 @@ static void krc_mark_children(KWork *stack, KValue *v) {
       break;
     case K_THUNK:
       krc_mark_env(stack, v->as.thunk.env);
-      if (v->as.thunk.cache) krc_mark_child(stack, v->as.thunk.cache[0]);
+      krc_mark_child(stack, kthunk_cached_value_snapshot(v));
       break;
     case K_BOUNCE:
     case K_IOTAIL:
@@ -198,27 +240,165 @@ static void krc_mark_children(KWork *stack, KValue *v) {
   }
 }
 
+#ifndef NDEBUG
+static int kwork_contains(KWork *work, KValue *v) {
+  for (size_t i = 0; i < work->len; i++) {
+    if (work->items[i] == v) return 1;
+  }
+  return 0;
+}
+
+static void krc_assert_shared_child(KWork *stack, KWork *seen, KValue *v);
+
+static void krc_assert_shared_env(KWork *stack, KWork *seen, KEnv *env) {
+  for (KEnv *e = env; e; e = e->next) krc_assert_shared_child(stack, seen, e->val);
+}
+
+static void krc_assert_shared_child(KWork *stack, KWork *seen, KValue *v) {
+  if (!v || kis_imm(v)) return;
+  assert(krc_is_shared(v) && "publish point reached an unshared KValue after recursive mark");
+  if (kwork_contains(seen, v)) return;
+  kwork_push(seen, v);
+  kwork_push(stack, v);
+}
+
+static KValue *krc_assert_owned_mutable_child(KWork *owned, KValue *v) {
+  if (!v || kis_imm(v)) return v;
+  assert(krc_is_shared(v) && "publish point reached an unshared mutable-storage child");
+  KValue *snapshot = kdup(v);
+  kwork_push(owned, snapshot);
+  return snapshot;
+}
+
+typedef struct {
+  KWork *stack;
+  KWork *seen;
+} KAssertSharedCtx;
+
+static void krc_assert_fgn_child(void *ctx_, KValue *v) {
+  KAssertSharedCtx *ctx = (KAssertSharedCtx *)ctx_;
+  krc_assert_shared_child(ctx->stack, ctx->seen, v);
+}
+
+static void krc_assert_shared_children(KWork *stack, KWork *seen, KWork *owned, KValue *v) {
+  switch (v->tag) {
+    case K_CTOR:
+      for (int i = 0; i < v->as.ctor.argc; i++) krc_assert_shared_child(stack, seen, v->as.ctor.args[i]);
+      break;
+    case K_REC:
+      for (int i = 0; i < v->as.rec.n; i++) krc_assert_shared_child(stack, seen, v->as.rec.vals[i]);
+      break;
+    case K_CLO:
+      krc_assert_shared_env(stack, seen, v->as.clo.env);
+      break;
+    case K_IO:
+      krc_assert_shared_env(stack, seen, v->as.io.env);
+      break;
+    case K_REF:
+      if (v->as.ref.cell) {
+        pthread_mutex_lock(&v->as.ref.cell->mu);
+        KValue *child = krc_assert_owned_mutable_child(owned, v->as.ref.cell->val);
+        pthread_mutex_unlock(&v->as.ref.cell->mu);
+        krc_assert_shared_child(stack, seen, child);
+      }
+      break;
+    case K_ARRAY:
+      if (v->as.arr.elemkind == KARR_BOXED) {
+        KArrayBox *box = (KArrayBox *)v->as.arr.elems;
+        pthread_mutex_lock(&box->mu);
+        for (int64_t i = 0; i < v->as.arr.len; i++) {
+          KValue *child = krc_assert_owned_mutable_child(owned, box->slots[i]);
+          krc_assert_shared_child(stack, seen, child);
+        }
+        pthread_mutex_unlock(&box->mu);
+      }
+      break;
+    case K_FGN: {
+      KAssertSharedCtx ctx = { stack, seen };
+      krt2i_assert_fgn_payload_shared(v->as.fgn.kind, v->as.fgn.p, krc_assert_fgn_child, &ctx);
+      break;
+    }
+    case K_VARIANT:
+      krc_assert_shared_child(stack, seen, v->as.var.payload);
+      break;
+    case K_THUNK:
+      krc_assert_shared_env(stack, seen, v->as.thunk.env);
+      krc_assert_shared_child(stack, seen, kthunk_cached_value_snapshot(v));
+      break;
+    case K_BOUNCE:
+    case K_IOTAIL:
+    case K_IOEFFECT:
+      krc_assert_shared_child(stack, seen, v->as.bounce.fn);
+      if (v->tag == K_BOUNCE) krc_assert_shared_child(stack, seen, v->as.bounce.arg);
+      break;
+    case K_IOFINALLY:
+      krc_assert_shared_child(stack, seen, v->as.iofin.action);
+      for (int i = 0; i < v->as.iofin.n; i++) krc_assert_shared_child(stack, seen, v->as.iofin.defers[i]);
+      break;
+    case K_FAIL:
+      krc_assert_shared_child(stack, seen, v->as.fail.err);
+      break;
+    case K_NATIVE:
+      for (int i = 0; i < v->as.native.argc; i++) krc_assert_shared_child(stack, seen, v->as.native.args[i]);
+      break;
+    default:
+      break;
+  }
+}
+
+static void krc_assert_shared_recursive(KValue *root) {
+  KWork stack, seen, owned;
+  KValue *stack_inline[64];
+  KValue *seen_inline[64];
+  KValue *owned_inline[64];
+  kwork_init(&stack, stack_inline, sizeof stack_inline / sizeof stack_inline[0]);
+  kwork_init(&seen, seen_inline, sizeof seen_inline / sizeof seen_inline[0]);
+  kwork_init(&owned, owned_inline, sizeof owned_inline / sizeof owned_inline[0]);
+  krc_assert_shared_child(&stack, &seen, root);
+  KValue *v;
+  while ((v = kwork_pop(&stack)) != NULL) krc_assert_shared_children(&stack, &seen, &owned, v);
+  while ((v = kwork_pop(&owned)) != NULL) kdrop(v);
+  kwork_dispose(&owned);
+  kwork_dispose(&seen);
+  kwork_dispose(&stack);
+}
+#endif
+
 void krc_mark_shared_recursive(KValue *root) {
-  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return;
-  KWork stack;
+  KWork stack, owned;
   KValue *inline_items[64];
+  KValue *owned_inline[64];
   kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
+  kwork_init(&owned, owned_inline, sizeof owned_inline / sizeof owned_inline[0]);
   krc_mark_child(&stack, root);
   KValue *v;
-  while ((v = kwork_pop(&stack)) != NULL) krc_mark_children(&stack, v);
+  while ((v = kwork_pop(&stack)) != NULL) krc_mark_children(&stack, &owned, v);
+  while ((v = kwork_pop(&owned)) != NULL) kdrop(v);
+  kwork_dispose(&owned);
   kwork_dispose(&stack);
+#ifndef NDEBUG
+  krc_assert_shared_recursive(root);
+#endif
 }
 
 static void kfree_drop_child(KWork *stack, KValue *child) {
   if (!child || kis_imm(child)) return;
-  if (krc_is_shared(child)) return;
-  uint32_t n = krc_count(child);
+  uint32_t cur = krc_word(child);
+  if (cur & KRC_SATURATED_BIT) return;
+  uint32_t n = cur & KRC_COUNT_MASK;
 #ifndef NDEBUG
   assert(n > 0 && "kfree_recursive: child rc underflow");
-  atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
 #endif
   if (n == 0) return;
-  krc_set_count(child, n - 1);
+  if (cur & KRC_SHARED_BIT) {
+    n = krc_shared_release_decrement(child, "kfree_recursive: shared child rc underflow");
+    if (n == 0) return;
+  } else {
+    child->rc = n - 1u;
+  }
+#ifndef NDEBUG
+  atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
+#endif
   if (n == 1 && kis_rc_freeable(child)) kwork_push(stack, child);
 }
 
@@ -253,11 +433,13 @@ static void kfree_visit(KWork *stack, KValue *v) {
   }
 #ifndef NDEBUG
   if (atomic_load_explicit(&k_rc_poison_enabled, memory_order_relaxed)) {
-    atomic_store_explicit(&v->rc, 0, memory_order_relaxed);
+    krc_note_reclaim();
+    __atomic_store_n(&v->rc, 0u, __ATOMIC_RELAXED);
     v->tag = K_FREED;
     return;
   }
 #endif
+  krc_note_reclaim();
   kgc_free(v);
 }
 
@@ -464,28 +646,32 @@ int kis_fail(KValue *v) {
 
 KValue *kref_new(KValue *init) {
   KValue *r = alloc_val(K_REF);
-  KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
-  cell[0] = init;
+  KRefCell *cell = (KRefCell *)kgc_alloc(sizeof(KRefCell));
+  pthread_mutex_init(&cell->mu, NULL);
+  cell->val = init;
   r->as.ref.cell = cell;
   return r;
 }
 
 /* ── mutable arrays (MUTABLE-ARRAY-DESIGN §5.1) ─────────────────────────────
- * K_REF generalized from 1 cell to N, as a SINGLE object.  The boxed slab is a
- * non-atomic (SCANNED) kgc_alloc block of `n` base KValue* — every slot is a
- * pointer the collector must trace, exactly like K_CTOR's args (§5.2 rule 1).
- * Allocating it atomic would let Boehm collect live elements out from under the
- * array, so the boxed kind MUST be scanned.  `len` is stored, so karr_len is
- * O(1) and pure; index is `base[i]`, never an interior pointer (§5.2 rule 2). */
+ * K_REF generalized from 1 cell to N.  The boxed storage is a synchronized,
+ * scanned slot box: every slot is a base KValue* the collector must trace,
+ * exactly like K_CTOR's args (§5.2 rule 1).  Private arrays read/write slots
+ * directly under the S4 thread-local invariant; shared arrays take the box mutex
+ * while acquiring or replacing a counted slot owner.  Allocating it atomic would let Boehm collect live
+ * elements out from under the array, so the boxed kind MUST be scanned.  `len`
+ * is stored, so karr_len is O(1) and pure; each slot is reached from the storage
+ * base, never from an interior-only pointer (§5.2 rule 2). */
 KValue *karr_new(int64_t n, KValue *init) {
   if (n < 0) krt_fail("karr_new: negative length");
   KValue *r = alloc_val(K_ARRAY);
-  /* SCANNED: the slab holds base KValue* pointers (boxed kind).  kgc_alloc of 0
-   * bytes is avoided (request at least one slot) so `elems` is a valid base. */
-  KValue **slab = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)(n > 0 ? n : 1));
-  for (int64_t i = 0; i < n; i++) slab[i] = (i == 0 ? init : kdup(init));
+  /* SCANNED: the box holds base KValue* pointers (boxed kind).  kgc_alloc of 0
+   * slots is avoided (request at least one slot) so `elems` is a valid base. */
+  KArrayBox *box = (KArrayBox *)kgc_alloc(sizeof(KArrayBox) + sizeof(KValue *) * (size_t)(n > 0 ? n : 1));
+  pthread_mutex_init(&box->mu, NULL);
+  for (int64_t i = 0; i < n; i++) box->slots[i] = (i == 0 ? init : kdup(init));
   if (n == 0) kdrop(init);
-  r->as.arr.elems = (void *)slab;
+  r->as.arr.elems = (void *)box;
   r->as.arr.len = n;
   r->as.arr.cap = n;
   r->as.arr.elemkind = KARR_BOXED;
@@ -496,16 +682,29 @@ KValue *karr_get(KValue *arr, int64_t i) {
   kassert_live(arr);
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_get: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_get: index out of range");
-  return ((KValue **)arr->as.arr.elems)[i];
+  KArrayBox *box = (KArrayBox *)arr->as.arr.elems;
+  if (!krc_is_shared(arr)) return kdup(box->slots[i]);
+  pthread_mutex_lock(&box->mu);
+  KValue *v = kdup(box->slots[i]);
+  pthread_mutex_unlock(&box->mu);
+  return v;
 }
 KValue *karr_set(KValue *arr, int64_t i, KValue *v) {
   kassert_live(arr);
   if (kis_imm(arr) || arr->tag != K_ARRAY) krt_fail("karr_set: not an array");
   if (i < 0 || i >= arr->as.arr.len) krt_fail("karr_set: index out of range");
-  if (krc_is_shared(arr)) krc_mark_shared_recursive(v);
-  KValue **elems = (KValue **)arr->as.arr.elems;
-  KValue *old = elems[i];
-  elems[i] = v;
+  KArrayBox *box = (KArrayBox *)arr->as.arr.elems;
+  if (!krc_is_shared(arr)) {
+    KValue *old = box->slots[i];
+    box->slots[i] = v;
+    kdrop(old);
+    return kunit();
+  }
+  krc_mark_shared_recursive(v);
+  pthread_mutex_lock(&box->mu);
+  KValue *old = box->slots[i];
+  box->slots[i] = v;
+  pthread_mutex_unlock(&box->mu);
   kdrop(old);
   return kunit();
 }
@@ -934,7 +1133,7 @@ KValue *kforce(KValue *v) {
     if (cached) {
       KValue *r = cached[0];
       pthread_mutex_unlock(&g_thunk_cache_lock);
-      return r;
+      return kdup(r);
     }
     pthread_mutex_unlock(&g_thunk_cache_lock);
   }
@@ -946,8 +1145,11 @@ KValue *kforce(KValue *v) {
       KValue **cell = (KValue **)kgc_alloc(sizeof(KValue *));
       cell[0] = r;
       v->as.thunk.cache = cell;
+      r = kdup(r);
     } else {
-      r = v->as.thunk.cache[0];
+      KValue *lost = r;
+      r = kdup(v->as.thunk.cache[0]);
+      kdrop(lost);
     }
     pthread_mutex_unlock(&g_thunk_cache_lock);
   }
@@ -1114,14 +1316,26 @@ void *kas_fgn_kind(KValue *v, const char *kind) {
 KValue *kref_get(KValue *r) {
   kassert_live(r);
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_get: not a ref");
-  return r->as.ref.cell[0];
+  if (!krc_is_shared(r)) return kdup(r->as.ref.cell->val);
+  pthread_mutex_lock(&r->as.ref.cell->mu);
+  KValue *v = kdup(r->as.ref.cell->val);
+  pthread_mutex_unlock(&r->as.ref.cell->mu);
+  return v;
 }
 KValue *kref_set(KValue *r, KValue *v) {
   kassert_live(r);
   if (kis_imm(r) || r->tag != K_REF) krt_fail("kref_set: not a ref");
-  if (krc_is_shared(r)) krc_mark_shared_recursive(v);
-  KValue *old = r->as.ref.cell[0];
-  r->as.ref.cell[0] = v;
+  if (!krc_is_shared(r)) {
+    KValue *old = r->as.ref.cell->val;
+    r->as.ref.cell->val = v;
+    kdrop(old);
+    return kunit();
+  }
+  krc_mark_shared_recursive(v);
+  pthread_mutex_lock(&r->as.ref.cell->mu);
+  KValue *old = r->as.ref.cell->val;
+  r->as.ref.cell->val = v;
+  pthread_mutex_unlock(&r->as.ref.cell->mu);
   kdrop(old);
   return kunit();
 }

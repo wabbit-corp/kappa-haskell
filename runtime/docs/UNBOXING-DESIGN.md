@@ -1,10 +1,14 @@
 # Value-Representation Specialization (Unboxing) for the Kappa Native Backend
 
-Status: Proposed (final) · Owner: compiler architecture · Audience: backend + runtime
+Status: Landed design note with historical proposal text · Owner: compiler architecture · Audience: backend + runtime
 
-This is the FINAL design. It incorporates the adversarial correctness, performance, and
-feasibility reviews. Where a review demanded a fix, it is either applied below or
-explicitly addressed in §11 (Required-fix ledger) with a pointer to where it is handled.
+This document records the unboxing design and its review history. The current runtime has
+landed the Stage 0/1/1b/1d/1e value-layout work: low 3 bits are immediate-kind tags, small
+Int is `b001`, nullary ctors are `b010`, packed 1/2-field ctors are `b011`, and Perceus RC
+state lives in the heap `KValue` header. Some paragraphs below retain proposal-era wording
+for context, but current implementation facts are called out where they supersede it.
+Where a review demanded a fix, it is either applied below or explicitly addressed in §11
+(Required-fix ledger) with a pointer to where it is handled.
 Two themes from the reviews reshaped the plan and are worth stating up front:
 
 1. **Stage 1 is not a "localized overlay."** Low-bit immediate tagging is a *whole-runtime
@@ -27,9 +31,10 @@ Two themes from the reviews reshaped the plan and are worth stating up front:
 Do **both**, in this order, because they attack different halves of the same gap and one
 unblocks the other:
 
-1. **Stage 1 — low-bit immediate tagging of `Int` (and `Bool`/`Char`/`Unit`/nullary ctors)
-   in the native backend only.** A small `Int` rides *inside* the `KValue*`-sized word as
-   `(i<<1)|1`. Uniform representation change — no type analysis, no specialization. It
+1. **Stage 1 — low-bit immediate tagging of `Int`, Unit/Bool/nullary ctors, and packed
+   1/2-field ctors in the native backend only.** A small `Int` rides *inside* the
+   `KValue*`-sized word as `(i<<3)|b001` with a 61-bit signed payload. Uniform
+   representation change — no type analysis, no specialization. It
    closes the per-`addInt` allocation everywhere a value flows (calls, `KEnv`, across CPS
    parks), composes with conservative Boehm (odd words are non-pointers), and pre-installs
    the ptr-vs-scalar discriminator a future Perceus RC needs. **Caveat now made central:**
@@ -61,7 +66,7 @@ the static "this slot is a scalar, not a pointer" map — which is also what Per
 LLVM precise GC require.
 
 **Explicitly rejected** (see §10 for full reasoning): NaN-boxing, full Rust-style
-monomorphization, and changing the shared 40-byte `KValue` layout.
+monomorphization, and changing the shared 48-byte `KValue` layout.
 
 ---
 
@@ -70,11 +75,11 @@ monomorphization, and changing the shared 40-byte `KValue` layout.
 | Constraint | Consequence for the design |
 |---|---|
 | **Effect-typed trait polymorphism, possibly unbounded/dependent instantiation** | No whole-program monomorphization. The uniform boxed `KValue` stays the single calling convention for all polymorphic code (compile once over pointers). Unboxing is a *per-monomorphic-instantiation, per-call-site* backend decision. A polymorphic position stays boxed *by construction* — a type variable presents as a non-scalar head in `scalarHeadKindV` and falls through to `PBoxed`, the safe default. |
-| **Boxed `KValue` shared with the interpreter** | Unboxing is a **native-backend overlay only** for *codegen*. The 40-byte box layout (`kappart.h`, K_CTOR/K_REC/K_CLO/K_NATIVE union) never changes, so the interpreter's boxed model is unaffected. Immediate tagging reinterprets the native `KValue*` *word* but the runtime's deref discipline must be made tag-safe at all 299+ sites (§5.1). |
+| **Boxed `KValue` shared with the interpreter** | Unboxing is a **native-backend overlay only** for *codegen*. The 48-byte box layout (`kappart.h`, K_CTOR/K_REC/K_CLO/K_NATIVE union plus the zero-growth RC header in the former padding slot) remains the shared heap object shape, so the interpreter's boxed model is unaffected. Immediate tagging reinterprets the native `KValue*` *word* but the runtime's deref discipline must be made tag-safe at all 299+ sites (§5.1). |
 | **CPS do-kernel + values-across-suspension (`KEnv`)** | Tagged immediates fit the `KValue*` `KEnv` slot → they cross a park natively (Stage 1's biggest *structural* win, though second-order in bytes against the 832 B/fork frame, §8). Worker/wrapper unboxed scalars live in C locals (`gsScalars`/`gsParamLvals`), are *lost across a park* (CPS-DESIGN R5), so they stay gated to provably suspension-free regions; at a real safepoint they re-box into the `KEnv`. |
 | **Future Perceus precise RC + LLVM** | The layout kind / low-bit tag is exactly the per-slot ptr-vs-scalar map RC needs: `dup`/`drop` adjust only boxed pointers (LSB 0), skip immediates (LSB 1) and scalar-typed slots. **Stage 1 reserves the full low 3 bits** (not just 1, §5.4) for immediate KINDS; the Perceus RC count + borrow/thread-shared discriminator live in the heap-object header, NOT the tag (§5.4 correction / TAGGING-RESEARCH / PERCEUS-RC-DESIGN §2). |
 | **`emitScalarLoop` precedent** | Stage 2 is the generalization of it: replace the syntactic prim-name/shape gate with the type-directed `scalarHeadKindV`-over-`gdType` decision the backend *already computes*; reuse `kunbox_i64`/`kunbox_dbl`/`*ovf` as the escape net. The new eligibility must *independently* re-prove suspension-freedom via §3.3, because the prim-name allowlist previously guaranteed that implicitly (§7, Stage 2a). |
-| **Portable `Int = int64 + GMP`** | The overflow-escape (`__builtin_*_overflow` → `K_BIGINT`/GMP) is preserved in both stages. Stage 1's immediate is a 63-bit int with an overflow check to the existing boxed bignum path; Stage 2's int64 worker has the identical escape. This is OCaml/Zarith's exact shape — *with the added obligation* that Int equality/match normalizes across the inline/bignum boundary (§5.3). |
+| **Portable `Int = int64 + GMP`** | The overflow-escape (`__builtin_*_overflow` → `K_BIGINT`/GMP) is preserved in both stages. Stage 1's immediate is a 61-bit signed Int with an escape to the existing boxed bignum path outside `[-2^60, 2^60)`. Stage 2's int64 worker has the identical escape. This is OCaml/Zarith's exact shape — *with the added obligation* that Int equality/match normalizes across the inline/bignum boundary (§5.3). |
 
 ---
 
@@ -82,10 +87,11 @@ monomorphization, and changing the shared 40-byte `KValue` layout.
 
 ### (a) Immediate-int tagging — the cheap near-term lever (with the now-explicit caveats)
 
-`kgc_alloc` is `GC_MALLOC` (`kappart.c:46`); on 64-bit targets it returns ≥8-byte-aligned
-pointers, so the low 3 bits of any real `KValue*` are 0. Steal them: low bit `1` ⇒ immediate
-(payload `(i<<1)|1`, a 63-bit signed Int); low bit `0` ⇒ ordinary `KValue*`. `Bool`/`Char`/
-`Unit`/nullary constructors (`Nil`/`None`) also become immediates in the remaining tag space.
+`kgc_alloc` is `GC_MALLOC` (`runtime/gc.c`); on 64-bit targets it returns ≥8-byte-aligned
+pointers, so the low 3 bits of any real `KValue*` are 0. The landed encoding uses:
+`b000` ordinary heap pointer, `b001` 61-bit signed immediate Int, `b010` immediate nullary
+ctor, and `b011` packed 1/2-field ctor. `Bool`, `Unit`, `Nil`, `None`, and other nullary
+constructors are canonical immediates; `Char` is not part of the landed immediate set yet.
 This is the OCaml/V8-Smi model, **not** GHC's pointer tagging (no info-tables — that is the
 whole point of the uniform box).
 
@@ -100,20 +106,21 @@ Why this is the right *first* move:
   is recovered by an untag on resume. Strictly better than `emitScalarLoop`, which must wall
   scalars off from suspension and flush to boxed refs on escape. Directly answers
   CPS-DESIGN R5 for the common Int case.
-- **It composes with both GC eras.** Boehm ignores odd words as non-pointers — *given the
-  interior-pointer config is locked down* (Stage 0). For Perceus the same low bits are the
-  "no refcount" discriminator.
+- **It composes with both GC eras.** Boehm ignores tagged immediate words as non-pointers —
+  *given the interior-pointer config is locked down* (Stage 0). Immediate low tags mean
+  "no heap header / no RC"; heap-object sharedness and counts live in the `KValue` header.
 
 Costs, accepted and now made load-bearing prerequisites rather than footnotes:
 
-- **Range shrinks to 63-bit.** Values in `[2^62, 2^63)` spuriously promote to bignum. This
+- **Range shrinks to 61-bit.** Values outside the signed 61-bit immediate payload promote to bignum. This
   is not merely a perf cost — it is an *observable representation divergence* unless every
-  Int equality/match path normalizes across inline/bignum (`klit_eq` short-circuits on tag
-  inequality, `kappart.c:807`). Fixed by §5.3.
-- **Two encodings for one value.** The interpreter-shared `the_true`/`the_false`/`the_unit`/
-  `kint_cache` boxed singletons (`kappart.c:247,285,99`) collide with the new immediates.
-  Pointer-identity shortcuts (`kvalue_rep_eq` `a==b`, `kforce`) break. Fixed by
-  canonicalization, §5.2.
+  Int equality/match path normalizes across inline/bignum (`klit_eq` historically
+  short-circuited on tag inequality). Fixed by §5.3.
+- **Two encodings for one value (resolved by the landed runtime).** The old boxed
+  `the_true`/`the_false`/`the_unit`/`kint_cache` carriers would collide with the new
+  immediates. The landed runtime canonicalizes these values as immediates and routes
+  equality/matching through immediate-aware helpers, so pointer identity is not the value
+  equality authority.
 - **`Double` and full-width FFI int64 cannot be immediates** and stay boxed (Stage 2's job).
 - **Every deref gains a tag-test branch** — pure overhead on boxed-heavy ctor/record/closure
   code, which dominates real programs. This is a *potential net regression* on realistic
@@ -122,7 +129,7 @@ Costs, accepted and now made load-bearing prerequisites rather than footnotes:
 - **The `KValue*` reinterpretation is a 299-site audit**, not a "thread the convention
   through." Every load that derefs must tag-test first via disciplined `kis_imm`/`kderef`
   accessors plus a debug-build assert (OCaml's `Is_long`/`Is_block` discipline) covering
-  `rt.c` and `kappart.c`, not just codegen (§5.1).
+  `rt.c` and the split runtime translation units, not just codegen (§5.1).
 
 ### (b) Type-directed unboxing (worker/wrapper per representation class) — the principled scheme
 
@@ -166,14 +173,14 @@ working instance of it.
 ### Which path closes the gap?
 
 - **Int arithmetic:** allocation closed by **both**; tagging closes it uniformly and across
-  parks, the I64 worker closes the residual *and* the >63-bit case inside fused
+  parks for the 61-bit immediate range, and the I64 worker closes the residual signed-64 case inside fused
   suspension-free monomorphic regions. Residual per-op tag arithmetic remains (§8).
 - **`Double` arithmetic:** closed **only** by the F64 worker, **only in fused regions**
   (tagging cannot help; boundaries re-box).
-- **Record/ctor field indirection and per-field box allocation:** closed by **neither in
-  scope here** — needs flattened/unboxed fields inside `K_CTOR`, which means changing the
-  shared `KValue` layout; explicitly deferred (§10). This is *most of real allocation
-  volume* and stays Boehm-bound until precise RC.
+- **Record/ctor field indirection and per-field box allocation:** closed only for the landed
+  packed 1/2-field immediate-ctor subset. Larger records/ctors still need flattened/unboxed
+  fields or FBIP reuse; S3/S4 can reclaim strict FREESET shells at zero RC, but that is not
+  the same as eliminating n-ary field allocation.
 
 ---
 
@@ -228,9 +235,9 @@ side is genuinely near-zero — codegen already routes through accessors (`kas_b
 does *not* apply to tagging. The runtime is where it bites:
 
 - **Split boxed runtime: 299 `->tag`/`->as.*` sites in the monolith audit.** Concrete must-convert sites the
-  reviews named: `kctor_tagid` (`kappart.c:710`, the **primary** pattern-match dispatch —
+  reviews named: `kctor_tagid` (`runtime/value.c`, the **primary** pattern-match dispatch —
   must return the tag of an immediate nullary ctor *without* deref, else garbage tagid →
-  wrong arm → silent divergence); `klit_eq` (807); `kvalue_rep_eq` (1042, used by
+  wrong arm → silent divergence); `klit_eq`; `kvalue_rep_eq` (used by
   `atomicCompareExchange`); `kas_int`/`kas_dbl`/`kas_u64`/`kas_bool`/`kas_fgn` (828–866);
   **every** `kp_*` arithmetic/compare prim (1443+, each tests `x->tag==K_INT` then
   `x->as.i`).
@@ -241,19 +248,17 @@ does *not* apply to tagging. The runtime is where it bites:
 Mechanism: introduce `kis_imm(v)` / `kderef(v)` (and `kimm_payload(v)`) accessors in
 `kappart.h`; route all 299+2+6 sites through them; add a **debug-build assert in `kderef`
 that the LSB is 0**, so any raw deref that bypasses the tag-test trips in CI. The Stage 0
-assert must cover `rt.c` and `kappart.c`, not just worker codegen. Realistic Stage 1 runtime
+assert must cover `rt.c` and the split runtime translation units, not just worker codegen. Realistic Stage 1 runtime
 diff: **400–800 lines + a full deref audit.** Budget it as such.
 
 ### 5.2 Canonical value encoding — exactly one representation per value (blocking)
 
-`kbool` returns boxed `the_true`/`the_false` (`kappart.c:286`); `kunit` returns boxed
-`the_unit` (249); `kint_cache` serves `[-16,256]` as boxed `K_INT` singletons (99). Stage 1
-makes `Bool`/`Unit`/`Nil`/`None`/small-`Int` *immediates*. Two encodings for one value breaks
-every pointer-identity shortcut (`a==b` in `kvalue_rep_eq:1043`, `kforce`, ref aliasing) and
-every site that *assumes* the boxed encoding (FFI returning `kbool`, the interpreter-shared
-`kint_cache`).
+The old runtime carried `Bool`/`Unit`/small-`Int` through boxed singleton/cache objects. Stage 1
+makes `Bool`/`Unit`/`Nil`/`None`/small-`Int` *immediates*. Two encodings for one value would break
+pointer-identity shortcuts and every site that assumes boxed encoding, so the landed runtime
+retired those boxed carriers and made immediates canonical for these values.
 
-**Fix (chosen):** make the immediate encoding **canonical** — rewrite `kbool`/`kunit`/`kint`
+**Fix (chosen and landed):** make the immediate encoding **canonical** — rewrite `kbool`/`kunit`/`kint`
 and retire `kint_cache`/`the_*` as value carriers so these values are *always* immediates with
 no surviving boxed singleton. (`kint_cache` was a per-step allocation dodge; immediates make it
 obsolete for the in-range case — net simplification.) Audit every `a==b` identity shortcut:
@@ -265,34 +270,35 @@ n-ary ctors. **Acceptance:** no code path may produce a boxed `K_UNIT`/`True`/`F
 
 ### 5.3 Int equality/match normalizes across inline/bignum (blocking)
 
-`klit_eq` (`kappart.c:807`) returns 0 on `a->tag != b->tag` *before* comparing values. A
-native value in `[2^62, 2^63)` is an immediate that overflows to `K_BIGINT`, while the
+`klit_eq` historically returned 0 on `a->tag != b->tag` *before* comparing values. A
+native value in `[2^60, 2^63)` is outside the immediate range and canonicalizes to `K_BIGINT`, while the
 interpreter's 64-bit boxed `K_INT` represents the same number inline → different tags → any
 literal-match (`CPLit`) or eq prim routed through `klit_eq`'s shortcut returns **not-equal**
-for equal numbers. `kint_cmp` already normalizes across the boundary (and the `kp_eqInt`
-family routes through it, `kappart.c:1482`); `klit_eq` does **not**.
+for equal numbers. `kint_cmp` normalizes across the boundary, and the `kp_eqInt`
+family routes through it; `klit_eq` must not bypass that for Int values.
 
 **Fix:** route Int literal-match and Int equality through a normalizing comparison
 (`kint_cmp`-style: compare *numeric value*, not tag), never through `klit_eq`'s tag shortcut,
 for the Int/Integer case. `klit_eq`'s tag shortcut is fine for `K_STR`/`K_BYTES`/`K_CHR`/
 `K_BYTE` (no inline/bignum duality) — scope the change to the Int arms. **Conformance:** add a
-test that an `Int` literal in `[2^62, 2^63)` is matched against, and `==`-compared with, an
+test that an `Int` literal in `[2^60, 2^63)` is matched against, and `==`-compared with, an
 equal `Int` produced via the boxed/bignum path; assert native == interpreter.
 
 ### 5.4 Reserve the full low 3 bits; lock the GC/alignment contract (blocking, Stage 0)
 
 The whole scheme rests on `GC_MALLOC` returning ≥8-byte-aligned pointers *and* Boehm not
-scanning unaligned/interior pointers. Neither is currently asserted in-tree: `GC_INIT()` is
-called bare at `kappart.c:40` with **no** `GC_set_all_interior_pointers(0)`, and there is no
-`_Static_assert` on alignment. With interior pointers ON (Boehm's historical default on some
-builds), a tagged immediate `(i<<1)|1` whose bit pattern lands inside a live object's address
-range becomes a **false interior root** (leak); the scheme also assumes aligned-only scanning.
+scanning unaligned/interior pointers. This is now asserted in-tree: `krt_init` calls
+`GC_set_all_interior_pointers(0)` before `GC_INIT`, startup samples allocator alignment, and
+the runtime has a static alignment assertion. With interior pointers ON (Boehm's historical
+default on some builds), a tagged immediate whose bit pattern lands inside a live object's
+address range could become a **false interior root** (leak); the landed runtime fails closed
+against that configuration.
 
-**Fix (Stage 0 code, not documentation):**
+**Fix (Stage 0 code, landed):**
 - Call `GC_set_all_interior_pointers(0)` **before** `GC_INIT()` and add a runtime assert that
   the config took.
 - Add `_Static_assert(alignof(max_align_t) >= 8, ...)` and a runtime check that `kgc_alloc`
-  and `gmp_gc_alloc` (`kappart.c:21,46`, both `GC_MALLOC`) return 8-aligned pointers (sample
+  and `gmp_gc_alloc` (both backed by `GC_MALLOC`) return 8-aligned pointers (sample
   a few allocations at init, assert LSB-3 == 0).
 - **Reserve all low 3 bits** for immediate KINDS, documenting the tag-space budget so a future
   immediate kind is not boxed in by a 1-bit convention baked into ~299 sites. Budget (as
@@ -308,8 +314,8 @@ range becomes a **false interior root** (leak); the scheme also assumes aligned-
 
 ### 5.5 Floating-point semantics for the F64 worker (Stage 2b)
 
-The interpreter's `Double` equality is **raw-bit** (`kp_eqDouble`, `kappart.c:1493–1496`,
-memcpy-to-uint64 then compare), distinct from `kp_floatEq` (`==`, line 1491). Lowering
+The interpreter's `Double` equality is **raw-bit** (`kp_eqDouble` in `runtime/prims.c`,
+memcpy-to-uint64 then compare), distinct from `kp_floatEq` (`==`). Lowering
 `eqDouble`/`leDouble` to C `==`/`<=` on an unboxed F64 worker would make `NaN != NaN` and
 `+0.0 == -0.0`, diverging. The existing denylist already keeps `eqDouble`/`leDouble` *out* of
 the unboxed allowlist (verified: `arithPrim`/`cmpPrim` list `ltDouble`/`floatEq` but **not**
@@ -327,7 +333,7 @@ signed-zero corners green.
 
 ### 5.6 FixedFFI<n> unbox primitive and carrier semantics (Stage 2c)
 
-`kas_u64` (`kappart.c:855`) reads the full unsigned 64-bit magnitude including the `≥2^63`
+`kas_u64` reads the full unsigned 64-bit magnitude including the `≥2^63`
 range that `kas_int` rejects, via `mpz_export` for bignums; such a `U64` lives as a
 `K_BIGINT` box. The FixedFFI path **must not reuse `kunbox_i64`** (`kappart.h`), which accepts
 only `K_INT` and escapes on `K_BIGINT` — that would wrongly reject every `U64 ≥ 2^63` to the
@@ -346,9 +352,10 @@ Two mechanisms, matching the two stages.
 
 **Tagged immediates cross a park natively.** The `KEnv` cons cell stays
 `{ KValue *val; KEnv *next; }`; the `val` word may now hold a tagged immediate. A small Int /
-Bool / Char live across `do_await`/`fork`/`OP_SLEEP` sits in the `KEnv` chain (kept live by
+Bool live across `do_await`/`fork`/`OP_SLEEP` sits in the `KEnv` chain (kept live by
 the `rt->all` strong set) and is recovered on resume by a tag-test. Boehm skips it (odd word,
-*given* the §5.4 config). For Perceus the low bits are the "no RC" discriminator. `kapp`/
+*given* the §5.4 config). Immediate low tags mean "no heap header / no RC"; heap-object
+RC/sharedness lives in the header. `kapp`/
 `deliver` feed it as a `KValue*`-shaped word unchanged — nothing derefs without a tag-test
 (§5.1). **This is the cross-suspension story for the common scalar case and requires no
 frame-layout change.** The review confirmed this as the design's strongest claim. (Caveat:
@@ -421,7 +428,7 @@ Stage 0 adds the benches that detect where it *isn't* representative.
   `GC_INIT()`; `_Static_assert` + runtime alignment check on `kgc_alloc`/`gmp_gc_alloc`;
   reserve the low 3 tag bits and document the budget.
 - **Accessor layer:** `kis_imm`/`kderef`/`kimm_payload` in `kappart.h`; debug-build assert in
-  `kderef` (LSB 0) covering `rt.c` + `kappart.c`.
+  `kderef` (LSB 0) covering `rt.c` plus the split runtime translation units.
 - **Benches (all three must land and record baselines BEFORE Stage 1 ships):** (1) `Double`
   add; (2) **ctor-build** and (3) a **match/projection-heavy** microbench (the tag-test tax
   detectors); (4) "value live across a park" (counter through `await`).
@@ -429,7 +436,8 @@ Stage 0 adds the benches that detect where it *isn't* representative.
 
 ### Stage 1 — Immediate-int tagging (the cheap lever)
 - Canonicalize encoding (§5.2): rewrite `kbool`/`kunit`/`kint`, retire `kint_cache`/`the_*` as
-  carriers; `(i<<1)|1` for in-range Int; immediate `Bool`/`Char`/`Unit`/`Nil`/`None`.
+  carriers; `(i<<3)|b001` for in-range Int; immediate `Bool`/`Unit`/`Nil`/`None` and other
+  nullary ctors.
 - Tag-dispatch arithmetic: `kp_addInt`/`subInt`/`mulInt`/compares become `a+b-1`-style with
   `__builtin_*_overflow` → `K_BIGINT` escape; `kctor_tagid` returns the immediate tag without
   deref.
@@ -445,7 +453,7 @@ Stage 0 adds the benches that detect where it *isn't* representative.
 - *Independently shippable:* yes (interpreter `KValue` layout untouched; native codegen
   near-zero delta). *Measurable:* `addInt` bench drops to **0 B/op** and **~1–3 ns/op**
   (residual tag arithmetic, §8); "counter across a park" shows zero allocation. *Invariant:*
-  conformance green, including the §5.3 `[2^62,2^63)` test.
+  conformance green, including the §5.3 `[2^60,2^63)` test.
 
 ### Stage 1.5 — CPS-DESIGN §3.3 suspendability analysis (named prerequisite for Stage 2) — **LANDED**
 Today `suspendingNames` is syntactic and does not see transitive suspension (`C.hs:2656–2658`).
@@ -552,7 +560,7 @@ The microbench bundles allocation and arithmetic; the reviews require separating
 | Stage | What it measurably wins | What it does NOT win |
 |---|---|---|
 | **0** | Baselines for Double-add, ctor-build, match-heavy, across-park. GC contract enforced. | No behavior/perf change. |
-| **1 (Int tagging)** | `addInt` loop: **64 B → 0 B/op** (allocation half eliminated); **~13 ns → ~1–3 ns/op**, i.e. **~5–13× of raw** (residual = untag/retag `a+b-1` + 2 LSB tests + overflow check, and loss of the autovectorization raw int64 enjoys). Net captured: **~80–90% of the Int-microbench gap**, *not* 100%. "Counter across a park": **0 B** for the carried scalar. | Does **not** reach raw (per-op tag arithmetic remains). Does **not** help `Double`, FFI int64, or >63-bit Int. **Risks net regression** on ctor/record/closure-heavy code (extra LSB test per deref, zero offsetting win) — held to ≤~5–10% by the go/no-go gate, else reworked. Fork path: **≈0%** (832 B/fork frame is untouched; the across-park scalar saving is real but second-order in bytes). |
+| **1 (Int tagging)** | `addInt` loop: **64 B → 0 B/op** (allocation half eliminated); **~13 ns → ~1–3 ns/op**, i.e. **~5–13× of raw** (residual = untag/retag `a+b-1` + 2 LSB tests + overflow check, and loss of the autovectorization raw int64 enjoys). Net captured: **~80–90% of the Int-microbench gap**, *not* 100%. "Counter across a park": **0 B** for the carried scalar. | Does **not** reach raw (per-op tag arithmetic remains). Does **not** help `Double`, FFI int64, or Int values outside the 61-bit immediate range. **Risks net regression** on ctor/record/closure-heavy code (extra LSB test per deref, zero offsetting win) — held to ≤~5–10% by the go/no-go gate, else reworked. Fork path: **≈0%** (832 B/fork frame is untouched; the across-park scalar saving is real but second-order in bytes). |
 | **2a (I64 worker)** | A **fused, suspension-free** monomorphic int64 loop: **0 B/op at near-raw-add speed past 63 bits**. | An **isolated** unboxed call still allocates one box (`boxScalar`, `C.hs:1221`). No win at non-fused boundaries or polymorphic positions. Blocked on Stage 1.5. |
 | **2b (F64 worker)** | **Double add inside fused suspension-free regions: 0 B/op.** This is the *only* path for `Double` (tagging cannot help). | Every `Double` flowing to a polymorphic position / record field / ctor arg / non-fused boundary is **re-boxed** and does not improve. The Double win is materially *fusion-bounded* — quantify per workload; do not assume whole-program. Blocked on Stage 1.5. |
 | **2c (FixedFFI)** | FFI int64 round-trip: **no box for in-carrier values**. | Out-of-carrier (`≥2^63` where the carrier is signed) re-boxes to `K_BIGINT` as the interpreter expects. |
@@ -575,9 +583,9 @@ time per stage; do not assume negligible.
 
 | # | Risk | Severity | Mitigation |
 |---|---|---|---|
-| R1 | **Missed deref site** among the 299+8 → silent miscompile (wrong match arm via a garbage tagid) or segfault on an odd word. The boxed-fallback floor does **not** catch this (these are fast-path derefs, not worker-escape). | Critical | Mechanical audit routed through `kis_imm`/`kderef`; debug-build assert in `kderef` (LSB 0) covering `rt.c`+`kappart.c` (§5.1); conformance suite + a fuzz pass that forces immediatized ctors through every match. Treat as a 400–800-line change, reviewed line-by-line. |
+| R1 | **Missed deref site** among the 299+8 → silent miscompile (wrong match arm via a garbage tagid) or segfault on an odd word. The boxed-fallback floor does **not** catch this (these are fast-path derefs, not worker-escape). | Critical | Mechanical audit routed through `kis_imm`/`kderef`; debug-build assert in `kderef` (LSB 0) covering `rt.c` plus the split runtime translation units (§5.1); conformance suite + a fuzz pass that forces immediatized ctors through every match. Treat as a 400–800-line change, reviewed line-by-line. |
 | R2 | **Dual encoding** (immediate vs boxed singleton) → `a==b` identity fails for equal values; FFI returns boxed where caller tag-tests immediate. | High | Canonicalize: immediates are the *only* encoding for in-range Int / Bool / Unit / Nil / None; retire `kint_cache`/`the_*` as carriers; debug assert that no boxed `K_UNIT`/`True`/`False`/in-range `K_INT` is ever allocated post-Stage-1 (§5.2). |
-| R3 | **63-bit promotion divergence**: `[2^62,2^63)` immediate→`K_BIGINT` vs interpreter inline `K_INT`; `klit_eq` tag-shortcut returns not-equal for equal numbers. | High | Route Int literal-match/eq through `kint_cmp`-style numeric normalization, never `klit_eq`'s tag shortcut for Int; conformance test in `[2^62,2^63)` (§5.3). |
+| R3 | **61-bit promotion divergence**: `[2^60,2^63)` canonical `K_BIGINT` vs any legacy boxed `K_INT`; `klit_eq` tag-shortcut returns not-equal for equal numbers. | High | Route Int literal-match/eq through `kint_cmp`-style numeric normalization, never `klit_eq`'s tag shortcut for Int; conformance test in `[2^60,2^63)` (§5.3). |
 | R4 | **Boehm interior-pointer / alignment** unset → false interior roots (leak) / unaligned mis-scan; the whole low-bit scheme is unsound. | High | Stage 0 *code*: `GC_set_all_interior_pointers(0)` before `GC_INIT`; `_Static_assert` + runtime alignment check on `kgc_alloc`/`gmp_gc_alloc`; reserve low 3 bits (§5.4). |
 | R5 | **Tag-test tax** net-regresses boxed-heavy real code while the Int microbench improves. | High | Stage 0 ctor-build + match-heavy benches as a **go/no-go gate** (≤~5–10%); if exceeded, restrict immediates to Int-only or rework before merge (§7, §8). |
 | R6 | **§3.3 does not exist** — Stage-2 C-local unboxing is unsound across transitive suspension; `suspendingNames` is syntactic (`C.hs:2656–2658`). | High | Reclassify §3.3 as **Stage 1.5**, a named prerequisite blocking 2a–2c; err-toward-may-suspend; per-binding granularity; conformance test of a Double counter across `await` through a polymorphic indirection (§6, §7). |
@@ -603,7 +611,7 @@ time per stage; do not assume negligible.
   set to enumerate. Code-bloat on a still-churning codebase. The per-representation-class
   worker scheme gets most of the speed at ~4× (not #types×) emitted code, with boxed fallback
   for everything unresolved.
-- **Changing the shared 40-byte `KValue` layout (e.g. heap-unboxing `K_CTOR`/`K_REC` fields).**
+- **Changing the shared 48-byte `KValue` layout (e.g. heap-unboxing `K_CTOR`/`K_REC` fields).**
   The box is shared with the reference interpreter, which must stay boxed; flattening fields
   would force a layout change across both or risk semantic drift. This is *the* item that would
   attack record/ctor per-field indirection (most of real allocation volume), but it is deferred
@@ -625,12 +633,12 @@ time per stage; do not assume negligible.
 
 **Correctness lens**
 1. 299-site deref audit, not just `kp_addInt`/`kctor_tagid`; convert all `->tag`/`->as.*` in
-   `rt.c`/`kappart.c`/`atomic.c` through `kis_imm`/`kderef`; debug assert covers runtime not
+   `rt.c`/the split runtime translation units through `kis_imm`/`kderef`; debug assert covers runtime not
    just codegen → **§5.1, Stage 0/1, R1.**
 2. Canonicalize value encoding (one representation per value); rewrite `kbool`/`kunit`/`kint`/
    `kint_cache`/`the_*` → **§5.2, R2.**
 3. Prove Int eq/match normalizes across inline/bignum; fix `klit_eq` tag-shortcut; conformance
-   in `[2^62,2^63)` → **§5.3, R3.**
+   in `[2^60,2^63)` → **§5.3, R3.**
 4. Harden & demonstrate the §3.3 suspendability witness (err-to-may-suspend; per-binding;
    polymorphic/opaque = may-suspend); Double-across-await-through-indirection test → **§6,
    Stage 1.5, R6.**

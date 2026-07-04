@@ -1,0 +1,12 @@
+module lib.input
+
+data InputFrame : Type =
+    InputFrame
+        (flags : Int)
+        (dtMs : Int)
+
+public wantsQuit : InputFrame -> Bool
+let wantsQuit input = input.flags == 1
+
+public poll : UIO InputFrame
+let poll = pure (InputFrame 0 16)

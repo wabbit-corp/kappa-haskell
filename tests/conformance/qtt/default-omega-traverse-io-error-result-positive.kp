@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data GameError : Type =
+    GameError (message : String)
+
+parseString : Int -> IO GameError String
+let parseString n = pure (showInt n)
+
+parseAll : List Int -> IO GameError (List String)
+let parseAll xs = do
+    let strs <- traverse parseString xs
+    let same = strs
+    if listLength strs == listLength same then pure strs else pure same

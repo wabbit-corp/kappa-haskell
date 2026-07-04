@@ -1,0 +1,30 @@
+module voxelcraft.rng
+
+import voxelcraft.natutil.*
+
+type Rng = Int
+
+modulus : Int
+let modulus = 9223372036854775783
+
+seed : Int -> Rng
+let seed n =
+    let s = if n == 0 then 88172645463393265 else abs n
+    in modInt s modulus
+
+next : Rng -> (value : Int, rng : Rng)
+let next s =
+    let x = modInt ((s * 6364136223846793005) + 1442695040888963407) modulus
+    in (value = x, rng = x)
+
+range : Int -> Int -> Rng -> (value : Int, rng : Rng)
+let range lo hi rng =
+    let span = max 1 (hi - lo + 1)
+    let n = next rng
+    in (value = lo + modInt n.value span, rng = n.rng)
+
+noise2 : Int -> Int -> Int -> Int
+let noise2 seed x z =
+    let h1 = seed + (x * 374761393) + (z * 668265263)
+    let h2 = h1 * (h1 + 1274126177)
+    in modInt (abs h2) 1024

@@ -1,0 +1,4 @@
+module lib.json
+
+data JsonValue : Type =
+    JsonString (value : String)

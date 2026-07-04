@@ -1,0 +1,22 @@
+module railyard.dispatch
+
+import railyard.core.*
+import railyard.yard as yard
+
+main : UIO Unit
+let main = do
+    let carts   = 5
+    let mainLen = 4
+    r <- yard.runYard carts mainLen
+    printlnString "RAILYARD — single-track STM signalling"
+    printlnString (stringAppend "  carts dispatched:         " (showInt r.dispatched))
+    printlnString (stringAppend "  hops per cart (main + 1): " (showInt r.perCart))
+    printlnString (stringAppend "  receipts (sum of moves):  " (showInt r.sumMoves))
+    printlnString (stringAppend "  atomic move counter:      " (showInt r.total))
+    printlnString (stringAppend "  main line still occupied: " (showInt r.occMain))
+    -- "main line clear" is the precise claim: each delivered cart still sits on
+    -- its own private exit siding, by design; only the shared track must empty.
+    if yard.yardOk carts r then
+        printlnString "RAILYARD: ALL DELIVERED, MAIN LINE CLEAR, MOVES CONSERVED"
+    else
+        printlnString "RAILYARD: FAIL (invariant violated)"

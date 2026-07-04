@@ -1,0 +1,17 @@
+module lib.handles
+
+import std.ffi as ffi
+
+public data Renderer : Type =
+    Renderer (handle : Option ffi.RawPtr)
+
+public open : UIO Renderer
+let open = pure (Renderer None)
+
+public use : Renderer -> UIO Unit
+let use r = pure ()
+
+public close : (1 r : Renderer) -> UIO Unit
+let close r =
+    match r
+    case Renderer _ -> pure ()

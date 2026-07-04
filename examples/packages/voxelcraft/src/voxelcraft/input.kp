@@ -1,0 +1,90 @@
+module voxelcraft.input
+
+data InputFrame : Type =
+    InputFrame
+        (flags : Int)
+        (mouseDx : Int)
+        (mouseDy : Int)
+        (dtMs : Int)
+
+inputQuitBit : Int
+let inputQuitBit = 1
+
+inputForwardBit : Int
+let inputForwardBit = 2
+
+inputBackBit : Int
+let inputBackBit = 4
+
+inputLeftBit : Int
+let inputLeftBit = 8
+
+inputRightBit : Int
+let inputRightBit = 16
+
+inputUpBit : Int
+let inputUpBit = 32
+
+inputDownBit : Int
+let inputDownBit = 64
+
+inputFastBit : Int
+let inputFastBit = 128
+
+inputTurnLeftBit : Int
+let inputTurnLeftBit = 256
+
+inputTurnRightBit : Int
+let inputTurnRightBit = 512
+
+inputLookUpBit : Int
+let inputLookUpBit = 1024
+
+inputLookDownBit : Int
+let inputLookDownBit = 2048
+
+inputMouseLockedBit : Int
+let inputMouseLockedBit = 4096
+
+public flagSet : Int -> Int -> Bool
+let flagSet flags bit =
+    modInt (divInt flags bit) 2 == 1
+
+public wantsQuit : InputFrame -> Bool
+let wantsQuit input = flagSet input.flags inputQuitBit
+
+public wantsForward : InputFrame -> Bool
+let wantsForward input = flagSet input.flags inputForwardBit
+
+public wantsBack : InputFrame -> Bool
+let wantsBack input = flagSet input.flags inputBackBit
+
+public wantsLeft : InputFrame -> Bool
+let wantsLeft input = flagSet input.flags inputLeftBit
+
+public wantsRight : InputFrame -> Bool
+let wantsRight input = flagSet input.flags inputRightBit
+
+public wantsUp : InputFrame -> Bool
+let wantsUp input = flagSet input.flags inputUpBit
+
+public wantsDown : InputFrame -> Bool
+let wantsDown input = flagSet input.flags inputDownBit
+
+public wantsFast : InputFrame -> Bool
+let wantsFast input = flagSet input.flags inputFastBit
+
+public wantsTurnLeft : InputFrame -> Bool
+let wantsTurnLeft input = flagSet input.flags inputTurnLeftBit
+
+public wantsTurnRight : InputFrame -> Bool
+let wantsTurnRight input = flagSet input.flags inputTurnRightBit
+
+public wantsLookUp : InputFrame -> Bool
+let wantsLookUp input = flagSet input.flags inputLookUpBit
+
+public wantsLookDown : InputFrame -> Bool
+let wantsLookDown input = flagSet input.flags inputLookDownBit
+
+public mouseLocked : InputFrame -> Bool
+let mouseLocked input = flagSet input.flags inputMouseLockedBit

@@ -55,6 +55,7 @@
 -- docs/CONCEPTS.md.
 module Kappa.Usage
   ( PInfo
+  , mapPInfoTypes
   , CtorParamInfo (..)
   , FieldShape (..)
   , RecordShape (..)
@@ -72,6 +73,9 @@ module Kappa.Usage
   , moduleUsageResultTypesWith
   , moduleUsageValueResultTypes
   , moduleUsageSignatures
+  , isKnownDuplicableStorageHead
+  , isKnownUnaryStorageHead
+  , isKnownBinaryStorageHead
   , usageDiagnostics
   , tailResumptiveClause
   ) where
@@ -89,7 +93,7 @@ import qualified Data.Text as T
 import Kappa.Core (Term)
 import qualified Kappa.Core as Core
 import Kappa.Diagnostic
-import Kappa.Source (Span)
+import Kappa.Source (ModuleName (..), Span, noSpan)
 import Kappa.Syntax
 import Kappa.SyntaxOps (renderExprSrc)
 
@@ -99,6 +103,7 @@ import Kappa.SyntaxOps (renderExprSrc)
 data PInfo = PInfo
   { pName :: !(Maybe Text)
   , pQuantity :: !(Maybe Quantity)
+  , pType :: !(Maybe Expr)
   , pBorrow :: !Bool
   , pInout :: !Bool
   , pKnown :: !Bool -- ^ from a same-module signature (vs. assumed)
@@ -115,7 +120,10 @@ data EscapeKind = EscapeOrdinaryParam | EscapeFork | EscapeForkDaemon | EscapeFo
   deriving (Eq)
 
 defaultP :: PInfo
-defaultP = PInfo Nothing Nothing False False False True False CapAny EscapeOrdinaryParam
+defaultP = PInfo Nothing Nothing Nothing False False False True False CapAny EscapeOrdinaryParam
+
+mapPInfoTypes :: (Expr -> Expr) -> PInfo -> PInfo
+mapPInfoTypes f p = p {pType = f <$> pType p}
 
 data CtorParamInfo = CtorParamInfo
   { cpiName :: !(Maybe Text)
@@ -496,6 +504,13 @@ data Env = Env
   , eRecordShapes :: !(Map Text RecordShape)
   , eCtors :: !(Map Text [(Text, [CtorParamInfo])])
   -- ^ ctor name → all sibling ctors of its data type with field quantities
+  , eCtorTypeHeads :: !(Set.Set Text)
+  -- ^ Data-type heads with constructor summaries in 'eCtors'.  Unknown-type
+  -- checks need this fact often, so keep it indexed instead of scanning every
+  -- constructor key for every occurrence.
+  , eCtorGroupsByType :: !(Map Text [[(Text, [CtorParamInfo])]])
+  -- ^ Data-type head → deduplicated constructor sibling groups.  Constructor
+  -- payload storage queries are frequent in large imported environments.
   , eProjs :: !(Map Text ProjUse)
   -- ^ §9.1.1 projection definitions of the module
   , eDescs :: !(Map Text ProjUse)
@@ -524,6 +539,12 @@ data Env = Env
   , eDuplicableStorageHeads :: !(Set.Set Text)
   -- ^ Source heads that import resolution proved denote primitive duplicable
   -- storage types. Same-spelling local types are removed before the Env is built.
+  , eUnaryStorageHeads :: !(Set.Set Text)
+  -- ^ Source heads that import resolution proved denote payload-propagating
+  -- unary storage types such as the prelude List/Option.
+  , eBinaryStorageHeads :: !(Set.Set Text)
+  -- ^ Source heads that import resolution proved denote payload-propagating
+  -- binary storage types such as the prelude Result/Exit.
   , eLatentCurrentReadEscape :: !Bool
   -- ^ While walking the body of a user-written closure/thunk/code quote,
   -- a generated current-value read captures the hidden cell. Keep ordinary
@@ -597,9 +618,11 @@ usageDiagnostics ::
   Set.Set Text ->
   Map Text ProjUse ->
   Set.Set Text ->
+  Set.Set Text ->
+  Set.Set Text ->
   Module ->
   [Diagnostic]
-usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads m = concatMap analyzeDecl lets
+usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutResults importedResultTypes importedValueResultTypes importedAliases importedRecordShapes importedRecordDeps importedCtors recognizedRefOps recognizedMultishotOps handlerOpQuantities importedBorrowViewHeads visibleMonadicResultHeads importedProjs importedDuplicableStorageHeads importedUnaryStorageHeads importedBinaryStorageHeads m = concatMap analyzeDecl lets
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
@@ -646,15 +669,36 @@ usageDiagnostics expansions mutableBindingFields importedFnParams importedInoutR
         borrowViewHeads
         monadicResultHeads
         duplicableStorageHeads
+        unaryStorageHeads
+        binaryStorageHeads
         m
-    duplicableStorageHeads = importedDuplicableStorageHeads Set.\\ localTypeHeads
+    duplicableStorageHeads = (importedDuplicableStorageHeads Set.\\ localTypeHeads) `Set.union` localDuplicableAliasHeads
+    unaryStorageHeads = importedUnaryStorageHeads Set.\\ localTypeHeads
+    binaryStorageHeads = importedBinaryStorageHeads Set.\\ localTypeHeads
     fns = localFns `Map.union` builtinFns `Map.union` importedFnParams
     monadicResultHeads = visibleMonadicResultHeads
     analyzeDecl ld =
       let nm = maybe "" nameText (ldName ld)
           sigTy = Map.lookup nm sigs
-          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads sigTy ld) (AnalysisState [] False 0)
+          final = execState (analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs topEffOps borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads sigTy ld) (AnalysisState [] False 0)
        in if sBail final then [] else reverse (sDiags final)
+    localDuplicableAliasHeads =
+      fixedAliasHeads Set.empty (length localAliasDecls + 1)
+    localAliasDecls =
+      [(nameText n, rhs) | DTypeAlias _ n _ _ (Just rhs) _ <- decls]
+    fixedAliasHeads acc fuel
+      | fuel <= 0 = acc
+      | next == acc = acc
+      | otherwise = fixedAliasHeads next (fuel - 1)
+      where
+        next =
+          Set.fromList
+            [ nm
+            | (nm, rhs) <- localAliasDecls
+            , Just hd <- [typePathHead rhs]
+            , hd `Set.member` ((importedDuplicableStorageHeads Set.\\ localTypeHeads) `Set.union` acc)
+                || isKnownDuplicableStorageHead hd
+            ]
     localTypeHeads =
       Set.fromList $
         [nameText (ddName dd) | DData _ dd _ <- decls]
@@ -795,14 +839,17 @@ moduleUsageResultStorage ::
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
+  Set.Set Text ->
+  Set.Set Text ->
   Module ->
   Map Text VInfo
-moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads m =
+moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognizedRefOps recognizedMultishotOps aliases recordShapes aliasDeps ctors projs effs mutableBindingFields borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads m =
   fixedPoint (length lets + 1) Map.empty
   where
     decls = modDecls m
     sigs = Map.fromList [(nameText n, ty) | DSig _ n ty _ <- decls]
     lets = [ld | DLet _ ld _ <- decls, Just _ <- [ldName ld]]
+    ctorGroups = ctorGroupsByType ctors
 
     fixedPoint fuel prev
       | fuel <= 0 = prev
@@ -836,6 +883,8 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               aliases
               recordShapes
               ctors
+              (Map.keysSet ctorGroups)
+              ctorGroups
               projs
               Map.empty
               Map.empty
@@ -846,6 +895,8 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
               mutableBindingFields
               monadicResultHeads
               duplicableStorageHeads
+              unaryStorageHeads
+              binaryStorageHeads
               False
        in storedValueInfo env ("$result:" <> nameText n) (exprSpan (ldBody ld)) (ldBody ld)
 
@@ -873,7 +924,7 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
           ty = bType b `orElse` (bType =<< ms)
           borrowViewed = maybe False (isBorrowViewTy borrowViewHeads) ty
           anon = mark == Just (BorrowMark Nothing) || borrowViewed
-          pathFields = maybe [] (recordPathFieldsWith recordShapes ctors) ty
+          pathFields = maybe [] (recordPathFieldsWithStorage duplicableStorageHeads unaryStorageHeads binaryStorageHeads recordShapes ctorGroups) ty
           fields = mergeFieldQuantities (maybe [] (resolveFields aliases) ty) (topFieldsFromPaths pathFields)
           deps = maybe [] (resolveDeps aliasDeps) ty
           pathDeps = maybe [] (recordPathDepsWith recordShapes) ty
@@ -894,6 +945,8 @@ moduleUsageResultStorage fns inoutResults resultTypes valueResultTypes recognize
             , vDeps = deps
             , vPathDeps = pathDeps
             , vOpenTail = openTail
+            , vStoredTypeText = renderExprSrc <$> ty
+            , vStoredTypeExpr = ty
             }
         )
 
@@ -917,6 +970,30 @@ moduleUsageCtors m =
               ]
             | c <- ddCtors dd
             ]
+
+ctorGroupsByType :: Map Text [(Text, [CtorParamInfo])] -> Map Text [[(Text, [CtorParamInfo])]]
+ctorGroupsByType ctors =
+  Map.map dedupCtorGroups $
+    Map.fromListWith
+      (++)
+      [ (ty, [siblings])
+      | (key, siblings) <- Map.toList ctors
+      , Just ty <- [ctorKeyTypeHead key]
+      ]
+  where
+    dedupCtorGroups = goGroups Set.empty
+    goGroups _ [] = []
+    goGroups seenKeys (siblings : rest)
+      | key `Set.member` seenKeys = goGroups seenKeys rest
+      | otherwise = siblings : goGroups (Set.insert key seenKeys) rest
+      where
+        key = map fst siblings
+
+ctorKeyTypeHead :: Text -> Maybe Text
+ctorKeyTypeHead key =
+  case T.breakOnEnd "." key of
+    ("", _) -> Nothing
+    (prefix, _) -> Just (T.dropEnd 1 prefix)
 
 moduleUsageRecordAliases :: Module -> Map Text [(Text, Maybe Quantity)]
 moduleUsageRecordAliases m =
@@ -1031,10 +1108,16 @@ typePathHead = \case
   _ -> Nothing
 
 recordPathFields :: Env -> Expr -> [(FieldPath, Maybe Quantity)]
-recordPathFields env = recordPathFieldsWith (eRecordShapes env) (eCtors env)
+recordPathFields env =
+  recordPathFieldsWithStorage
+    (eDuplicableStorageHeads env)
+    (eUnaryStorageHeads env)
+    (eBinaryStorageHeads env)
+    (eRecordShapes env)
+    (eCtorGroupsByType env)
 
-recordPathFieldsWith :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Expr -> [(FieldPath, Maybe Quantity)]
-recordPathFieldsWith shapesByName ctorsByName = go (0 :: Int) Set.empty
+recordPathFieldsWithStorage :: Set.Set Text -> Set.Set Text -> Set.Set Text -> Map Text RecordShape -> Map Text [[(Text, [CtorParamInfo])]] -> Expr -> [(FieldPath, Maybe Quantity)]
+recordPathFieldsWithStorage duplicableHeads unaryHeads binaryHeads shapesByName ctorGroups = go (0 :: Int) Set.empty
   where
     go depth seen e
       | depth > 32 = []
@@ -1076,18 +1159,21 @@ recordPathFieldsWith shapesByName ctorsByName = go (0 :: Int) Set.empty
       joinFieldQuantities
         [ fsQuantity s
         , if null childPaths
-            then fsType s >>= typeStorageQuantityWithDepth shapesByName ctorsByName (depth + 1)
+            then fsType s >>= typeStorageQuantityWithDepth duplicableHeads unaryHeads binaryHeads shapesByName ctorGroups (depth + 1)
             else Nothing
         ]
 
-typeStorageQuantityWith :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Expr -> Maybe Quantity
-typeStorageQuantityWith shapesByName ctorsByName = typeStorageQuantityWithDepth shapesByName ctorsByName 0
+typeStorageQuantityWithGroups :: Set.Set Text -> Set.Set Text -> Set.Set Text -> Map Text RecordShape -> Map Text [[(Text, [CtorParamInfo])]] -> Expr -> Maybe Quantity
+typeStorageQuantityWithGroups duplicableHeads unaryHeads binaryHeads shapesByName ctorGroups =
+  typeStorageQuantityWithDepth duplicableHeads unaryHeads binaryHeads shapesByName ctorGroups 0
 
-typeStorageQuantityWithDepth :: Map Text RecordShape -> Map Text [(Text, [CtorParamInfo])] -> Int -> Expr -> Maybe Quantity
-typeStorageQuantityWithDepth shapesByName ctorsByName startDepth = go startDepth Set.empty
+typeStorageQuantityWithDepth :: Set.Set Text -> Set.Set Text -> Set.Set Text -> Map Text RecordShape -> Map Text [[(Text, [CtorParamInfo])]] -> Int -> Expr -> Maybe Quantity
+typeStorageQuantityWithDepth duplicableHeads unaryHeads binaryHeads shapesByName ctorGroups startDepth = go startDepth Set.empty
   where
     go depth seen ty
       | depth > 32 = Nothing
+      | Just qs <- standardStorageQuantities depth seen ty =
+          joinFieldQuantities qs
       | otherwise =
           joinFieldQuantities $
             case ty of
@@ -1098,6 +1184,8 @@ typeStorageQuantityWithDepth shapesByName ctorsByName startDepth = go startDepth
                     shapeQuantities depth seen [FieldShape (nameText n) Nothing (Just fieldTy)]
               EAscription e _ _ -> [go depth seen e]
               ECaptures e _ _ -> [go depth seen e]
+              EVariant arms mtail _ ->
+                map (go (depth + 1) seen) (map variantMemberType arms ++ maybeToList mtail)
               e
                 | Just hd <- typePathHead e ->
                     if Set.member hd seen
@@ -1108,6 +1196,19 @@ typeStorageQuantityWithDepth shapesByName ctorsByName startDepth = go startDepth
                               ++ ctorQuantities depth seen' e hd
               EApp f _ -> [go depth seen f]
               _ -> []
+    standardStorageQuantities depth seen ty = do
+      hd <- typePathHead ty
+      let args = typeAppArgs ty
+      case () of
+        _
+          | knownDuplicableStorageHeadIn duplicableHeads hd -> Just []
+          | standardUnaryStorageHeadIn unaryHeads hd
+          , [a] <- args ->
+              Just [go (depth + 1) seen a]
+          | standardBinaryStorageHeadIn binaryHeads hd
+          , [a, b] <- args ->
+              Just [go (depth + 1) seen a, go (depth + 1) seen b]
+          | otherwise -> Nothing
     shapeQuantities depth seen shapes =
       [ fsQuantity s
       | s <- shapes
@@ -1123,20 +1224,7 @@ typeStorageQuantityWithDepth shapesByName ctorsByName startDepth = go startDepth
       , (_, params) <- siblings
       , p <- map (substCtorParamInfoForType ty) params
       ]
-    ctorsForType hd =
-      dedupCtorGroups
-        [ siblings
-        | (k, siblings) <- Map.toList ctorsByName
-        , (hd <> ".") `T.isPrefixOf` k
-        ]
-    dedupCtorGroups = goGroups Set.empty
-      where
-        goGroups _ [] = []
-        goGroups seenKeys (siblings : rest)
-          | key `Set.member` seenKeys = goGroups seenKeys rest
-          | otherwise = siblings : goGroups (Set.insert key seenKeys) rest
-          where
-            key = map fst siblings
+    ctorsForType hd = Map.findWithDefault [] hd ctorGroups
     ctorParamStorageQuantity depth seen p =
       joinFieldQuantities
         [ cpiQuantity p
@@ -1518,6 +1606,8 @@ storedRootQuantity env e = case placeOf env e of
     ERecordLit {} -> Nothing
     EAscription e' _ _ -> storedRootQuantity env e'
     ECaptures e' _ _ -> storedRootQuantity env e'
+    EVariant arms _ _ ->
+      joinFieldQuantities (map (positiveTransferQuantity env . vaExpr) arms)
     EApp f args ->
       joinFieldQuantities $
         ctorStoresQuantityWith positiveLowerQuantity env f args
@@ -1525,6 +1615,9 @@ storedRootQuantity env e = case placeOf env e of
     _ -> if transfersLinear env e then Just QOne else Nothing
 
 storedValueInfo :: Env -> Text -> Span -> Expr -> VInfo
+storedValueInfo env key sp (EAscription _ ty _)
+  | isActionStorageType env ty =
+      storedValueInfoFromType env key sp ty
 storedValueInfo env key sp rhs =
   let storedTyExpr = storedValueTypeExpr env rhs
       typeInfo =
@@ -1536,7 +1629,11 @@ storedValueInfo env key sp rhs =
       deps = maybe [] vDeps typeInfo
       pathDeps = maybe [] vPathDeps typeInfo
       nonDupFieldNames = dedupPaths (storedNonDupFields env rhs ++ maybe [] vNonDupFields typeInfo)
-      rootQuantity = joinFieldQuantities [storedRootQuantity env rhs, typeInfo >>= vQ]
+      typedFactsComplete = maybe False (not . typeStorageFactsUnknown env) storedTyExpr
+      rootQuantity =
+        if typedFactsComplete
+          then typeInfo >>= vQ
+          else joinFieldQuantities [storedRootQuantity env rhs, typeInfo >>= vQ]
       diagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
       storedTyText = case lookup "storedValueType" diagFields of
         Just t -> Just t
@@ -1593,7 +1690,16 @@ storedValueTypeExpr :: Env -> Expr -> Maybe Expr
 storedValueTypeExpr env = \case
   EAscription _ ty _ -> Just ty
   ECaptures e _ _ -> storedValueTypeExpr env e
-  EApp f _ -> calleeDemandName env f >>= (`Map.lookup` eValueResultTypes env)
+  EIf branches melse _ ->
+    listToMaybe (mapMaybe (storedValueTypeExpr env . snd) branches ++ maybeToList (melse >>= storedValueTypeExpr env))
+  EListLit (x : _) _ -> do
+    elemTy <- exprValueType env x
+    pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
+  EApp f args -> do
+    n <- calleeDemandName env f
+    ty <- Map.lookup n (eValueResultTypes env)
+    let params = Map.findWithDefault [] n (eFns env)
+    pure (instantiateResultTypeFromArgs env params args ty)
   _ -> Nothing
 
 storedValueInfoFromType :: Env -> Text -> Span -> Expr -> VInfo
@@ -1624,21 +1730,63 @@ storedValueInfoFromType env key sp ty =
 
 storedActionResultInfo :: Env -> VInfo -> Expr -> VInfo
 storedActionResultInfo env oldInfo action =
-  case actionResultValueExpr env action of
-    Just valueExpr ->
-      inheritStoredCellType env oldInfo False (storedValueInfo env key sp valueExpr)
-    Nothing -> case actionResultType env action <|> vStoredTypeExpr oldInfo of
-      Just ty -> storedValueInfoFromType env key sp ty
-      Nothing ->
-        (plainV key sp)
-            { vMutable = True
-            , vStoredTypeText = vStoredTypeText oldInfo
-            , vStoredTypeExpr = vStoredTypeExpr oldInfo
-            , vMutableDiagFields = vMutableDiagFields oldInfo
-            }
+  case recognizedRefReadResultInfo env (vKey oldInfo) (vSpan oldInfo) action of
+    Just vi -> vi
+    Nothing -> case actionResultValueExpr env action of
+      Just valueExpr ->
+        inheritStoredCellType env oldInfo False (storedValueInfo env key sp valueExpr)
+      Nothing -> case actionResultType env action <|> vStoredTypeExpr oldInfo of
+        Just ty -> storedValueInfoFromType env key sp ty
+        Nothing ->
+          (plainV key sp)
+              { vMutable = True
+              , vStoredTypeText = vStoredTypeText oldInfo
+              , vStoredTypeExpr = vStoredTypeExpr oldInfo
+              , vMutableDiagFields = vMutableDiagFields oldInfo
+              }
   where
     key = vKey oldInfo
     sp = vSpan oldInfo
+
+storedActionResultBindingInfo :: Env -> Text -> Span -> Expr -> VInfo
+storedActionResultBindingInfo env key sp action =
+  case recognizedRefReadResultInfo env key sp action of
+    Just vi -> vi
+    Nothing -> case actionResultValueExpr env action of
+      Just valueExpr ->
+        storedValueInfo env key sp valueExpr
+      Nothing -> case actionResultType env action of
+        Just ty -> storedValueInfoFromType env key sp ty
+        Nothing ->
+          (plainV key sp)
+              { vMutable = True
+              , vMutableDiagFields = Map.findWithDefault [] sp (eMutableBindingFields env)
+              }
+
+recognizedRefReadResultInfo :: Env -> Text -> Span -> Expr -> Maybe VInfo
+recognizedRefReadResultInfo env key sp action = do
+  (n, _) <- recognizedRefReadExpr env action
+  vi <- Map.lookup (nameText n) (eVars env)
+  if vMutable vi
+    then Just (storedReadResultInfo env key sp vi)
+    else Nothing
+
+storedReadResultInfo :: Env -> Text -> Span -> VInfo -> VInfo
+storedReadResultInfo env key sp vi =
+  case vStoredTypeExpr vi of
+    Just ty -> storedValueInfoFromType env key sp ty
+    Nothing ->
+      (plainV key sp)
+        { vQ = vQ vi
+        , vFields = vFields vi
+        , vPathFields = vPathFields vi
+        , vDeps = vDeps vi
+        , vPathDeps = vPathDeps vi
+        , vNonDupValue = vNonDupValue vi
+        , vNonDupFields = vNonDupFields vi
+        , vStoredTypeText = vStoredTypeText vi
+        , vStoredTypeExpr = vStoredTypeExpr vi
+        }
 
 storedValueInfoForWrite :: Env -> VInfo -> Expr -> VInfo
 storedValueInfoForWrite env oldInfo rhs =
@@ -1685,8 +1833,242 @@ actionResultType :: Env -> Expr -> Maybe Expr
 actionResultType env = \case
   EAscription _ ty _ -> Just (unwrapActionType (eMonadicResultHeads env) ty)
   ECaptures e _ _ -> actionResultType env e
-  EApp f _ -> calleeDemandName env f >>= (`Map.lookup` eResultTypes env)
+  EApp f args -> do
+    n <- calleeDemandName env f
+    ty <- Map.lookup n (eResultTypes env)
+    let params = Map.findWithDefault [] n (eFns env)
+        instantiated = instantiateResultTypeFromArgs env params args ty
+        result = unwrapActionType (eMonadicResultHeads env) instantiated
+    pure result
   e -> calleeDemandName env e >>= (`Map.lookup` eResultTypes env)
+
+instantiateResultTypeFromArgs :: Env -> [PInfo] -> [Arg] -> Expr -> Expr
+instantiateResultTypeFromArgs env params args resultTy =
+  substExpr subst resultTy
+  where
+    pairs = alignArgParams params args
+    wanted = freeLowerTypeVars resultTy
+    shallowSubst = foldr (addArgSubst exprValueTypeShallow actionResultTypeShallow) Map.empty pairs
+    missingAfterShallow = wanted Set.\\ Map.keysSet shallowSubst
+    deepSubst
+      | Set.null missingAfterShallow = Map.empty
+      | otherwise = foldr (addArgSubst exprValueType actionResultType) Map.empty pairs
+    subst = shallowSubst `Map.union` deepSubst
+
+    addArgSubst valueTy actionTy (arg, p) acc =
+      case (pType p, arg) of
+        (Just paramTy, ArgExplicit actual) ->
+          inferResultSubst valueTy actionTy paramTy actual `Map.union` acc
+        (Just paramTy, ArgInout actual _) ->
+          inferResultSubst valueTy actionTy paramTy actual `Map.union` acc
+        _ -> acc
+
+    inferResultSubst valueTy actionTy paramTy actual =
+      let actionSubst =
+            case actionTy env actual of
+              Just actualResultTy ->
+                unifyTypePattern (unwrapActionType (eMonadicResultHeads env) paramTy) actualResultTy
+              Nothing -> Map.empty
+          valueSubst =
+            case valueTy env actual of
+              Just actualTy ->
+                unifyTypePattern (dropBinders paramTy) actualTy
+              Nothing -> Map.empty
+       in actionSubst `Map.union` valueSubst
+
+unifyTypePattern :: Expr -> Expr -> Map Text Expr
+unifyTypePattern pat actual =
+  let pat' = expandUsageTypeAlias pat
+      actual' = expandUsageTypeAlias actual
+   in if renderExprSrc pat' /= renderExprSrc pat || renderExprSrc actual' /= renderExprSrc actual
+        then unifyTypePattern pat' actual'
+        else unifyTypePatternExpanded pat actual
+
+unifyTypePatternExpanded :: Expr -> Expr -> Map Text Expr
+unifyTypePatternExpanded pat actual =
+  case (pat, actual) of
+    (EVar n, _)
+      | isLowerName (nameText n) -> Map.singleton (nameText n) actual
+    (EAscription p _ _, _) -> unifyTypePattern p actual
+    (ECaptures p _ _, _) -> unifyTypePattern p actual
+    (_, EAscription a _ _) -> unifyTypePattern pat a
+    (_, ECaptures a _ _) -> unifyTypePattern pat a
+    _
+      | Just (var, patArgs) <- typeConstructorPattern pat
+      , let (actualHead, actualArgs) = typeAppSpine actual
+      , length actualArgs >= length patArgs ->
+          let (headArgs, tailArgs) = splitAt (length actualArgs - length patArgs) actualArgs
+              headSubst = Map.singleton var (rebuildTypeApp actualHead headArgs)
+              argSubst =
+                Map.unionsWith const $
+                  zipWith unifyTypePattern patArgs tailArgs
+           in headSubst `Map.union` argSubst
+    (EApp pf pargs, EApp af aargs)
+      | sameTypeHead (typePathHead pf) (typePathHead af) ->
+          Map.unionsWith const $
+            zipWith unifyTypePattern (explicitExprs pargs) (explicitExprs aargs)
+    (EArrow pb pbody, EArrow ab abody) ->
+      maybe Map.empty id (liftA2 unifyTypePattern (bType pb) (bType ab))
+        `Map.union` unifyTypePattern pbody abody
+    _ -> Map.empty
+
+expandUsageTypeAlias :: Expr -> Expr
+expandUsageTypeAlias = \case
+  EApp f [ArgExplicit a]
+    | Just hd <- typePathHead f
+    , canonicalPreludeHead hd == "UIO" ->
+        EApp (EVar (Name "IO" noSpan)) [ArgExplicit (EVar (Name "Void" noSpan)), ArgExplicit a]
+  EAscription e ty sp -> EAscription (expandUsageTypeAlias e) (expandUsageTypeAlias ty) sp
+  ECaptures e caps sp -> ECaptures (expandUsageTypeAlias e) caps sp
+  EApp f args -> EApp (expandUsageTypeAlias f) (map expandArg args)
+  e -> e
+  where
+    expandArg = \case
+      ArgExplicit e -> ArgExplicit (expandUsageTypeAlias e)
+      ArgImplicit e -> ArgImplicit (expandUsageTypeAlias e)
+      ArgInout e sp -> ArgInout (expandUsageTypeAlias e) sp
+      ArgNamedBlock items sp -> ArgNamedBlock [(n, expandUsageTypeAlias <$> me) | (n, me) <- items] sp
+
+exprValueType :: Env -> Expr -> Maybe Expr
+exprValueType env = \case
+  EAscription _ ty _ -> Just ty
+  ECaptures e _ _ -> exprValueType env e
+  EIntLit {} -> Just (EVar (Name "Integer" noSpan))
+  EFloatLit {} -> Just (EVar (Name "Double" noSpan))
+  EStringLit {} -> Just (EVar (Name "String" noSpan))
+  EListLit (x : _) _ -> do
+    elemTy <- exprValueType env x
+    pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
+  ELambda _ bs body _ -> do
+    bodyTy <- exprValueType env body
+    pure (foldr EArrow bodyTy bs)
+  EIf branches melse _ ->
+    listToMaybe (mapMaybe (exprValueType env . snd) branches ++ maybeToList (melse >>= exprValueType env))
+  e
+    | Just (vi, path, _) <- placeOf env e ->
+        valueTypeAtPath env path =<< vStoredTypeExpr vi
+  EApp f args -> do
+    n <- calleeDemandName env f
+    ty <- Map.lookup n (eValueResultTypes env)
+    let params = Map.findWithDefault [] n (eFns env)
+    pure (instantiateResultTypeFromArgs env params args ty)
+  e -> calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
+
+exprValueTypeShallow :: Env -> Expr -> Maybe Expr
+exprValueTypeShallow env = \case
+  EAscription _ ty _ -> Just ty
+  ECaptures e _ _ -> exprValueTypeShallow env e
+  EIntLit {} -> Just (EVar (Name "Integer" noSpan))
+  EFloatLit {} -> Just (EVar (Name "Double" noSpan))
+  EStringLit {} -> Just (EVar (Name "String" noSpan))
+  EListLit (x : _) _ -> do
+    elemTy <- exprValueTypeShallow env x
+    pure (EApp (EVar (Name "List" noSpan)) [ArgExplicit elemTy])
+  ELambda _ bs body _ -> do
+    bodyTy <- exprValueTypeShallow env body
+    pure (foldr EArrow bodyTy bs)
+  e
+    | Just (vi, path, _) <- placeOf env e ->
+        valueTypeAtPath env path =<< vStoredTypeExpr vi
+  EApp f _ -> do
+    n <- calleeDemandName env f
+    ty <- Map.lookup n (eValueResultTypes env)
+    if Set.null (freeLowerTypeVars ty)
+      then Just ty
+      else Nothing
+  e -> do
+    ty <- calleeDemandName env e >>= (`Map.lookup` eValueResultTypes env)
+    if Set.null (freeLowerTypeVars ty)
+      then Just ty
+      else Nothing
+
+actionResultTypeShallow :: Env -> Expr -> Maybe Expr
+actionResultTypeShallow env = \case
+  EAscription _ ty _ -> Just (unwrapActionType (eMonadicResultHeads env) ty)
+  ECaptures e _ _ -> actionResultTypeShallow env e
+  EApp f _ -> do
+    n <- calleeDemandName env f
+    ty <- Map.lookup n (eResultTypes env)
+    let result = unwrapActionType (eMonadicResultHeads env) ty
+    if Set.null (freeLowerTypeVars result)
+      then Just result
+      else Nothing
+  e -> do
+    ty <- calleeDemandName env e >>= (`Map.lookup` eResultTypes env)
+    let result = unwrapActionType (eMonadicResultHeads env) ty
+    if Set.null (freeLowerTypeVars result)
+      then Just result
+      else Nothing
+
+freeLowerTypeVars :: Expr -> Set.Set Text
+freeLowerTypeVars = go Set.empty
+  where
+    go bound = \case
+      EVar n
+        | isLowerName (nameText n)
+        , not (Set.member (nameText n) bound) ->
+            Set.singleton (nameText n)
+      EApp f args ->
+        go bound f `Set.union` Set.unions [goArg bound a | a <- args]
+      EAscription e ty _ ->
+        go bound e `Set.union` go bound ty
+      ECaptures e _ _ -> go bound e
+      ETuple es _ -> Set.unions (map (go bound) es)
+      ERecordType fs mtail _ ->
+        Set.unions (map (go bound . rtfType) fs ++ maybeToList (go bound <$> mtail))
+      EArrow b body ->
+        maybe Set.empty (go bound) (bType b) `Set.union` go (bindOne b bound) body
+      EForall bs body _ ->
+        let bound' = foldr bindOne bound bs
+         in Set.unions (mapMaybe (fmap (go bound) . bType) bs) `Set.union` go bound' body
+      EExists bs body _ ->
+        let bound' = foldr bindOne bound bs
+         in Set.unions (mapMaybe (fmap (go bound) . bType) bs) `Set.union` go bound' body
+      ETraitArrow c body -> go bound c `Set.union` go bound body
+      EEffRow fields mtail _ ->
+        Set.unions (map (go bound . snd) fields ++ maybeToList (go bound <$> mtail))
+      EVariant arms mtail _ ->
+        Set.unions ([go bound v `Set.union` maybe Set.empty (go bound) ty | VariantArm v ty <- arms] ++ maybeToList (go bound <$> mtail))
+      EOptionSugar e _ -> go bound e
+      _ -> Set.empty
+
+    goArg bound = \case
+      ArgExplicit e -> go bound e
+      ArgImplicit e -> go bound e
+      ArgInout e _ -> go bound e
+      ArgNamedBlock items _ -> Set.unions [maybe Set.empty (go bound) me | (_, me) <- items]
+
+    bindOne b bound =
+      case bName b of
+        Just n -> Set.insert (nameText n) bound
+        Nothing -> bound
+
+valueTypeAtPath :: Env -> [Text] -> Expr -> Maybe Expr
+valueTypeAtPath _ [] ty = Just ty
+valueTypeAtPath env (field : rest) ty = do
+  shape <- find ((== field) . fsName) (recordShapeFieldsWith (eRecordShapes env) ty)
+  fieldTy <- fsType shape
+  valueTypeAtPath env rest fieldTy
+
+typeConstructorPattern :: Expr -> Maybe (Text, [Expr])
+typeConstructorPattern pat = do
+  let (headExpr, args) = typeAppSpine pat
+  var <- case headExpr of
+    EVar n | isLowerName (nameText n) -> Just (nameText n)
+    _ -> Nothing
+  if null args then Nothing else Just (var, args)
+
+typeAppSpine :: Expr -> (Expr, [Expr])
+typeAppSpine = go []
+  where
+    go args = \case
+      EApp f as -> go (explicitExprs as ++ args) f
+      EAscription e _ _ -> go args e
+      ECaptures e _ _ -> go args e
+      e -> (e, args)
+
+rebuildTypeApp :: Expr -> [Expr] -> Expr
+rebuildTypeApp = foldl (\f a -> EApp f [ArgExplicit a])
 
 -- | Does this expression transfer ownership of a quantity-1 value? True
 -- for a place that is a linear binding or a quantity-1 field path of a
@@ -1700,6 +2082,7 @@ transfersLinear env e = case placeOf env e of
     ERecordLit items _ -> any (maybe False (transfersLinear env) . riValue) items
     EAscription e' _ _ -> transfersLinear env e'
     ECaptures e' _ _ -> transfersLinear env e'
+    EVariant arms _ _ -> any (transfersLinear env . vaExpr) arms
     EApp f args ->
       ctorStoresWith positiveLowerQuantity env f args
         || maybe False summaryHasPositive (calleeStorageInfo env f)
@@ -1714,6 +2097,7 @@ transfersNonDuplicable env e = case placeOf env e of
     ERecordLit items _ -> any (maybe False (transfersNonDuplicable env) . riValue) items
     EAscription e' _ _ -> transfersNonDuplicable env e'
     ECaptures e' _ _ -> transfersNonDuplicable env e'
+    EVariant arms _ _ -> any (transfersNonDuplicable env . vaExpr) arms
     EApp f args ->
       ctorStoresWith nonDupQuantity env f args
         || maybe False valueMayContainNonDuplicable (calleeStorageInfo env f)
@@ -1723,6 +2107,23 @@ transfersNonDuplicable env e = case placeOf env e of
 valueMayContainNonDuplicable :: VInfo -> Bool
 valueMayContainNonDuplicable vi =
   vQ vi `elem` [Just QOne, Just QAtMostOne] || vNonDupValue vi || not (null (nonDupFields vi))
+
+isActionStorageType :: Env -> Expr -> Bool
+isActionStorageType env ty =
+  maybe False (isActionStorageHead env) (typePathHead ty)
+
+isActionStorageHead :: Env -> Text -> Bool
+isActionStorageHead env hd =
+  hd `Set.member` eMonadicResultHeads env
+    || isKnownQualifiedActionHead hd
+    || (hd `Set.member` eDuplicableStorageHeads env && hd `elem` barePreludeActionHeads)
+
+isKnownQualifiedActionHead :: Text -> Bool
+isKnownQualifiedActionHead hd =
+  hd `elem` ["std.prelude.IO", "std.prelude.UIO", "std.prelude.STM", "std.prelude.Elab", "std.prelude.Eff"]
+
+barePreludeActionHeads :: [Text]
+barePreludeActionHeads = ["IO", "UIO", "STM", "Elab", "Eff"]
 
 summaryHasPositive :: VInfo -> Bool
 summaryHasPositive vi =
@@ -1963,6 +2364,7 @@ fnParams msig ld =
        in defaultP
             { pName = nameText <$> bName b
             , pQuantity = if bInout b then Just QOne else mq
+            , pType = bType b
             , pBorrow = isJust mb
             , pInout = bInout b
             , pKnown = True
@@ -1975,6 +2377,7 @@ fnParams msig ld =
       defaultP
         { pName = pName p1 `orElse` pName p2
         , pQuantity = pQuantity p1 `orElse` pQuantity p2
+        , pType = pType p1 `orElse` pType p2
         , pBorrow = pBorrow p1 || pBorrow p2
         , pInout = pInout p1 || pInout p2
         , pKnown = pKnown p1 || pKnown p2
@@ -2021,10 +2424,12 @@ analyzeLet ::
   Set.Set Text ->
   Set.Set Text ->
   Set.Set Text ->
+  Set.Set Text ->
+  Set.Set Text ->
   Maybe Expr ->
   LetDef ->
   Analysis ()
-analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads msig ld = do
+analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities aliases recordShapes aliasDeps ctors projs effs borrowViewHeads monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads msig ld = do
   let sigPs = maybe [] sigBinders msig
       aligned = alignParams (ldBinders ld) sigPs
       -- §12.2.5: signature binders the equation-head params did not
@@ -2038,7 +2443,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
         _ -> []
   binds <- catMaybes <$> mapM paramBind aligned
   let env =
-          (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities [] aliases recordShapes ctors projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads False)
+          (Env (Map.fromList binds) fns inoutResults resultTypes valueResultTypes resultStorage recognizedRefOps recognizedMultishotOps handlerOpQuantities [] aliases recordShapes ctors (Map.keysSet ctorGroups) ctorGroups projs Map.empty Map.empty aliasDeps effs expansions [] mutableBindingFields monadicResultHeads duplicableStorageHeads unaryStorageHeads binaryStorageHeads False)
           {ePendingSig = pendingSig}
   checkInoutResult aliases monadicResultHeads msig ld
   r <- walkE env (ldBody ld)
@@ -2061,6 +2466,8 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
         ]
         "a closure capturing a borrowed binding escapes through the result (§12.3.2)"
   where
+    ctorGroups = ctorGroupsByType ctors
+
     paramBind (b, ms) = case bName b of
       Nothing -> pure Nothing
       Just n -> do
@@ -2074,7 +2481,7 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
             -- same escape as capturing an anonymous borrowed binding
             borrowViewed = maybe False (isBorrowViewTy borrowViewHeads) ty
             anon = mark == Just (BorrowMark Nothing) || borrowViewed
-            pathFields = maybe [] (recordPathFieldsWith recordShapes ctors) ty
+            pathFields = maybe [] (recordPathFieldsWithStorage duplicableStorageHeads unaryStorageHeads binaryStorageHeads recordShapes ctorGroups) ty
             fields = mergeFieldQuantities (maybe [] (resolveFields aliases) ty) (topFieldsFromPaths pathFields)
             deps = maybe [] (resolveDeps aliasDeps) ty
             pathDeps = maybe [] (recordPathDepsWith recordShapes) ty
@@ -2101,6 +2508,8 @@ analyzeLet expansions mutableBindingFields fns inoutResults resultTypes valueRes
                     , vDeps = deps
                     , vPathDeps = pathDeps
                     , vOpenTail = openTail
+                    , vStoredTypeText = renderExprSrc <$> ty
+                    , vStoredTypeExpr = ty
                     }
                 )
             )
@@ -2990,6 +3399,8 @@ lamBind env (b, ms) = case bName b of
                   , vDeps = deps
                   , vPathDeps = pathDeps
                   , vOpenTail = openTail
+                  , vStoredTypeText = renderExprSrc <$> ty
+                  , vStoredTypeExpr = ty
                   }
           )
       )
@@ -3003,22 +3414,30 @@ walkMatch env scrut cases = do
   let scrutV = case scrut of
         EVar n -> Map.lookup (nameText n) (eVars env)
         _ -> Nothing
-  rs <- mapM (walkCase scrutV) [c | c@MatchCase {} <- cases]
+      scrutTy = exprValueType env scrut <|> (vStoredTypeExpr =<< scrutV)
+  rs <- mapM (walkCase scrutV scrutTy) [c | c@MatchCase {} <- cases]
   pure ((rPlain (su `seqU` altUs (map fst rs))) {wrTaint = firstJust (mapMaybe snd rs)})
   where
-    walkCase scrutV (MatchCase pat mguard body csp) = do
+    walkCase scrutV scrutTy (MatchCase pat mguard body csp) = do
       when (hasActive pat) bailOut
       checkRecordRest scrutV pat csp
-      shadow <- forM (patBindings scrutV pat) $ \(nm, mq) -> do
+      shadow <- forM (patBindings env scrutV scrutTy pat) $ \(nm, mq, mty) -> do
         k <- freshKey nm
-        pure (nm, (plainV k csp) {vQ = mq})
+        pure
+          ( nm
+          , (plainV k csp)
+              { vQ = mq
+              , vStoredTypeText = renderExprSrc <$> mty
+              , vStoredTypeExpr = mty
+              }
+          )
       let envC = bindVars shadow env
       gu <- maybe (pure Map.empty) (fmap (fst . flatR) . walkE envC) mguard
       r <- walkE envC body
       let (bu, t) = flatR r
       forM_ shadow $ \(_, vi) -> closeVar vi bu
       pure (gu `seqU` bu, t)
-    walkCase _ (MatchImpossible _) = pure (Map.empty, Nothing)
+    walkCase _ _ (MatchImpossible _) = pure (Map.empty, Nothing)
     hasActive = \case
       PActive {} -> True
       PAs _ p -> hasActive p
@@ -3032,24 +3451,96 @@ walkMatch env scrut cases = do
       _ -> False
 
 -- | Pattern-bound names, with quantity-1 fields of a tracked record
--- scrutinee inherited by the bindings that receive them (§12.4).
-patBindings :: Maybe VInfo -> Pattern -> [(Text, Maybe Quantity)]
-patBindings scrutV pat = case (scrutV, pat) of
+-- scrutinee inherited by the bindings that receive them (§12.4), and
+-- constructor payload types propagated from the constructor metadata when
+-- available.  The scrutinee type matters for polymorphic constructors such as
+-- @Ok : a -> Result e a@; without it a @case Ok xs@ binder loses that @xs@ is
+-- the instantiated payload type.
+patBindings :: Env -> Maybe VInfo -> Maybe Expr -> Pattern -> [(Text, Maybe Quantity, Maybe Expr)]
+patBindings env scrutV scrutTy pat = case (scrutV, pat) of
   (Just vi, PRecord fs rest _) ->
     concat
       [ case mp of
-          Nothing -> [(fld, fieldPatternQuantity vi [fld])]
-          Just (PVar x) -> [(nameText x, fieldPatternQuantity vi [fld])]
-          Just p -> patBindings (Just (sliceVInfo vi [fld])) p
+          Nothing -> [(fld, fieldPatternQuantity vi [fld], fieldType fld)]
+          Just (PVar x) -> [(nameText x, fieldPatternQuantity vi [fld], fieldType fld)]
+          Just p -> patBindings env (Just (sliceVInfo vi [fld])) (fieldType fld) p
       | (_, f, mp) <- fs
       , let fld = nameText f
       ]
-      ++ [ (nameText n, if any (`notElem` named fs) (linTopFields vi) then Just QOne else Nothing)
+      ++ [ (nameText n, if any (`notElem` named fs) (linTopFields vi) then Just QOne else Nothing, restType)
          | Just (PatRestBind n) <- [rest]
          ]
-  _ -> map (\nm -> (nm, Nothing)) (patVars pat)
+    where
+      fieldType fld = do
+        ty <- scrutTy
+        valueTypeAtPath env [fld] ty
+      restType = scrutTy
+  _ -> patBindingsByType env scrutTy pat
   where
     named fs = [nameText f | (_, f, _) <- fs]
+
+patBindingsByType :: Env -> Maybe Expr -> Pattern -> [(Text, Maybe Quantity, Maybe Expr)]
+patBindingsByType env scrutTy = \case
+  PVar n -> [(nameText n, Nothing, scrutTy)]
+  PAs n p -> (nameText n, Nothing, scrutTy) : patBindingsByType env scrutTy p
+  PCtor cr ps _ ->
+    case ctorPatternParams env scrutTy cr of
+      [] -> [(nm, Nothing, Nothing) | nm <- concatMap patVars ps]
+      params ->
+        concat $
+          zipWith
+            (\p pat -> patBindingsByType env (cpiType p) pat)
+            params
+            ps
+  PCtorNamed cr fs _ ->
+    case ctorPatternParams env scrutTy cr of
+      [] -> [(nm, Nothing, Nothing) | nm <- concatMap patVars [p | (_, Just p) <- fs]]
+      params ->
+        concat
+          [ patBindingsByType env (cpiType p) pat
+          | (field, Just pat) <- fs
+          , p <- maybeToList (find ((== Just (nameText field)) . cpiName) params)
+          ]
+  PTuple ps _ -> concatMap (patBindingsByType env Nothing) ps
+  PRecord fs _ _ ->
+    concat
+      [ maybe [(nameText f, Nothing, fieldType (nameText f))] (patBindingsByType env (fieldType (nameText f))) mp
+      | (_, f, mp) <- fs
+      ]
+    where
+      fieldType fld = scrutTy >>= valueTypeAtPath env [fld]
+  PTyped p ty _ -> patBindingsByType env (Just ty) p
+  POr ps _ -> concatMap (patBindingsByType env scrutTy) ps
+  POpChain p chain _ -> patBindingsByType env scrutTy p ++ concatMap (patBindingsByType env Nothing . snd) chain
+  PVariant mb _ _ mrest _ ->
+    [(nameText n, Nothing, scrutTy) | n <- maybeToList mb ++ maybeToList mrest]
+  PActive _ _ p _ -> patBindingsByType env scrutTy p
+  PWild _ -> []
+  PLit _ _ -> []
+  PUnit _ -> []
+
+ctorPatternParams :: Env -> Maybe Expr -> CtorRef -> [CtorParamInfo]
+ctorPatternParams env scrutTy cr =
+  case listToMaybe matches of
+    Just params -> maybe params (\ty -> map (substCtorParamInfoForType ty) params) scrutTy
+    Nothing -> []
+  where
+    ctorName = nameText (crName cr)
+    keys =
+      maybe [] (\q -> [nameText q <> "." <> ctorName]) (crQualifier cr)
+        ++ [ctorName]
+    matches =
+      [ params
+      | key <- keys
+      , siblings <- maybeToList (Map.lookup key (eCtors env))
+      , (cn, params) <- siblings
+      , ctorLeafText cn == ctorName
+      ]
+
+ctorLeafText :: Text -> Text
+ctorLeafText nm =
+  let leaf = snd (T.breakOnEnd "." nm)
+   in if T.null leaf then nm else leaf
 
 patVars :: Pattern -> [Text]
 patVars = \case
@@ -3314,38 +3805,209 @@ typeMayContainNonDuplicable = typeMayContainQuantity nonDupQuantity
 
 typeMayContainQuantity :: (Maybe Quantity -> Bool) -> Env -> Expr -> Bool
 typeMayContainQuantity qPred env ty =
-  case typeStorageQuantityWith (eRecordShapes env) (eCtors env) ty of
+  case typeStorageQuantityWithGroups (eDuplicableStorageHeads env) (eUnaryStorageHeads env) (eBinaryStorageHeads env) (eRecordShapes env) (eCtorGroupsByType env) ty of
     Just q -> qPred (Just q)
     Nothing ->
       typeStorageFactsUnknown env ty
         && (qPred (Just QOne) || qPred (Just QAtMostOne))
 
 typeStorageFactsUnknown :: Env -> Expr -> Bool
-typeStorageFactsUnknown env = \case
-  ERecordType {} -> False
-  EAscription (EVar n) _ _
-    | isLowerName (nameText n) -> False
-  EAscription e _ _ -> typeStorageFactsUnknown env e
-  ECaptures e _ _ -> typeStorageFactsUnknown env e
-  EApp f _ -> typeStorageFactsUnknown env f
-  ty
-    | Just hd <- typePathHead ty ->
-        not (knownDuplicableStorageHead env hd)
-          && isNothing (shapeFieldsForType (eRecordShapes env) ty)
-          && null
-              [ ()
-              | (k, _) <- Map.toList (eCtors env)
-              , (hd <> ".") `T.isPrefixOf` k
-              ]
-  _ -> False
+typeStorageFactsUnknown env = go (0 :: Int) Set.empty
+  where
+    go depth seen ty
+      | depth > 32 = True
+      | otherwise =
+          case ty of
+            ERecordType {} -> False
+            EAscription (EVar n) _ _
+              | isLowerName (nameText n) -> False
+            EAscription e _ _ -> go depth seen e
+            ECaptures e _ _ -> go depth seen e
+            EVariant arms mtail _ ->
+              any (go (depth + 1) seen) (map variantMemberType arms ++ maybeToList mtail)
+            EApp f _ -> headUnknown depth seen ty f
+            _
+              | Just _ <- typePathHead ty ->
+                  headUnknown depth seen ty (typeHeadExpr ty)
+            _ -> False
+
+    headUnknown depth seen ty f
+      | Just hd <- typePathHead ty
+      , knownDuplicableStorageHead env hd =
+          False
+      | Just hd <- typePathHead ty
+      , standardUnaryStorageHeadIn (eUnaryStorageHeads env) hd =
+          case typeAppArgs ty of
+            [a] -> go (depth + 1) seen a
+            _ -> True
+      | Just hd <- typePathHead ty
+      , standardBinaryStorageHeadIn (eBinaryStorageHeads env) hd =
+          case typeAppArgs ty of
+            [a, b] -> go (depth + 1) seen a || go (depth + 1) seen b
+            _ -> True
+      | Just hd <- typePathHead ty
+      , hd `Set.member` seen =
+          False
+      | Just hd <- typePathHead ty
+      , Just shape <- shapeFieldsForType (eRecordShapes env) ty =
+          let seen' = Set.insert hd seen
+           in any (maybe False (go (depth + 1) seen') . fsType) shape
+      | Just hd <- typePathHead ty
+      , hd `Set.member` eCtorTypeHeads env =
+          let seen' = Set.insert hd seen
+           in any (ctorGroupUnknown (depth + 1) seen' ty) (Map.findWithDefault [] hd (eCtorGroupsByType env))
+      | Just _ <- typePathHead ty =
+          False
+      | otherwise =
+          go depth seen f
+
+    ctorGroupUnknown depth seen ty siblings =
+      any
+        ( \(_, params) ->
+            any (ctorParamUnknown depth seen ty) params
+        )
+        siblings
+
+    ctorParamUnknown depth seen ty p =
+      case substCtorParamInfoForType ty p of
+        CtorParamInfo _ _ mty _ -> maybe False (go depth seen) mty
+
+    typeHeadExpr = fst . typeAppSpine
+
+variantMemberType :: VariantArm -> Expr
+variantMemberType (VariantArm e mty) =
+  fromMaybe e mty
 
 knownDuplicableStorageHead :: Env -> Text -> Bool
 knownDuplicableStorageHead env hd =
-  hd `Set.member` eDuplicableStorageHeads env || builtinSortHead hd
-  where
-    -- Universe spellings are parser/kernel syntax, not user-definable storage
-    -- type constructors imported through a module scope.
-    builtinSortHead t = t `elem` ["Type", "Type0", "Type1"]
+  knownDuplicableStorageHeadIn (eDuplicableStorageHeads env) hd
+
+knownDuplicableStorageHeadIn :: Set.Set Text -> Text -> Bool
+knownDuplicableStorageHeadIn heads hd =
+  hd `Set.member` heads || isKnownDuplicableStorageHead hd
+
+standardUnaryStorageHeadIn :: Set.Set Text -> Text -> Bool
+standardUnaryStorageHeadIn heads hd =
+  hd `Set.member` heads || isKnownUnaryStorageHead hd
+
+standardBinaryStorageHeadIn :: Set.Set Text -> Text -> Bool
+standardBinaryStorageHeadIn heads hd =
+  hd `Set.member` heads || isKnownBinaryStorageHead hd
+
+sameTypeHead :: Maybe Text -> Maybe Text -> Bool
+sameTypeHead (Just a) (Just b) = canonicalPreludeHead a == canonicalPreludeHead b
+sameTypeHead _ _ = False
+
+canonicalPreludeHead :: Text -> Text
+canonicalPreludeHead t =
+  fromMaybe t (T.stripPrefix "std.prelude." t)
+
+isKnownDuplicableStorageHead :: Text -> Bool
+isKnownDuplicableStorageHead t =
+  t
+    `elem`
+      [ -- Universe spellings are parser/kernel syntax, not user-definable
+        -- storage type constructors imported through a module scope.
+        "Type"
+      , "Type0"
+      , "Type1"
+      , "std.prelude.Type"
+      , "std.prelude.Type0"
+      , "std.prelude.Type1"
+      , "std.prelude.Unit"
+      , "std.prelude.Void"
+      , "std.prelude.Bool"
+      , "std.prelude.Ordering"
+      , "std.prelude.String"
+      , "std.prelude.Nat"
+      , "std.prelude.Int"
+      , "std.prelude.Integer"
+      , "std.prelude.Float"
+      , "std.prelude.Double"
+      , "std.prelude.Byte"
+      , "std.prelude.Bytes"
+      , "std.prelude.UnicodeScalar"
+      , "std.prelude.Grapheme"
+      , "std.prelude.Region"
+      , "std.prelude.Duration"
+      , "std.prelude.Instant"
+      , "std.prelude.IO"
+      , "std.prelude.UIO"
+      , "std.prelude.STM"
+      , "std.prelude.Elab"
+      , "std.prelude.Eff"
+      , "std.prelude.Ref"
+      , "std.prelude.TVar"
+      , "std.prelude.Fiber"
+      , "std.prelude.FiberId"
+      , "std.prelude.FiberRef"
+      , "std.prelude.Promise"
+      , "std.prelude.Scope"
+      , "std.prelude.Monitor"
+      , "std.prelude.BorrowView"
+      , "std.prelude.Syntax"
+      , "std.prelude.SyntaxOrigin"
+      , "std.prelude.Symbol"
+      , "std.prelude.CoreCtx"
+      , "std.prelude.Core"
+      , "std.prelude.CoreEq"
+      , "std.prelude.Code"
+      , "std.prelude.ClosedCode"
+      , "std.prelude.InterruptTag"
+      , "std.prelude.InterruptCause"
+      , "std.prelude.DefectTag"
+      , "std.prelude.DefectInfo"
+      , "std.deriving.shape.ShapeAdtKind"
+      , "std.deriving.shape.ShapeVisibility"
+      , "std.deriving.shape.ShapeField"
+      , "std.deriving.shape.ShapeConstructor"
+      , "std.deriving.shape.AdtShape"
+      , "std.deriving.shape.RecordShape"
+      , "std.deriving.shape.BoundField"
+      , "std.deriving.shape.BoundFieldPair"
+      , "std.atomic.AtomicRef"
+      , "std.atomic.LoadOrder"
+      , "std.atomic.StoreOrder"
+      , "std.atomic.RmwOrder"
+      , "std.atomic.CasFailureOrder"
+      , "std.array.mutable.MutArray"
+      , "std.supervisor.SupervisorStrategy"
+      , "std.supervisor.RestartPolicy"
+      , "std.supervisor.RestartIntensity"
+      , "std.supervisor.Supervisor"
+      , "std.ffi.I8"
+      , "std.ffi.I16"
+      , "std.ffi.I32"
+      , "std.ffi.I64"
+      , "std.ffi.U8"
+      , "std.ffi.U16"
+      , "std.ffi.U32"
+      , "std.ffi.U64"
+      , "std.ffi.Isize"
+      , "std.ffi.Usize"
+      , "std.ffi.F32"
+      , "std.ffi.F64"
+      , "std.ffi.RawPtr"
+      , "std.ffi.OpaqueHandle"
+      ]
+
+isKnownUnaryStorageHead :: Text -> Bool
+isKnownUnaryStorageHead t =
+  t
+    `elem`
+      [ "std.prelude.List"
+      , "std.prelude.Option"
+      , "std.prelude.Cause"
+      , "std.atomic.CompareExchangeResult"
+      ]
+
+isKnownBinaryStorageHead :: Text -> Bool
+isKnownBinaryStorageHead t =
+  t
+    `elem`
+      [ "std.prelude.Result"
+      , "std.prelude.Exit"
+      ]
 
 walkApp :: Env -> Expr -> [Arg] -> Analysis WalkResult
 walkApp env (EDot recv (DotName m)) args
@@ -3733,18 +4395,75 @@ calleeStorageInfo env f = do
         else Just ()
 
 coreFnParams :: Term -> [PInfo]
-coreFnParams = \case
-  Core.CPi Core.Expl q brw nm _ body -> coreP nm q brw : coreFnParams body
-  Core.CPi Core.Impl _ _ _ _ body -> coreFnParams body
-  _ -> []
+coreFnParams = go []
   where
-    coreP nm q brw = defaultP {pName = Just nm, pQuantity = coreQuantity q, pBorrow = brw, pKnown = True}
-    coreQuantity = \case
-      Core.Q0 -> Just QZero
-      Core.Q1 -> Just QOne
-      Core.QW -> Just QOmega
-      Core.QLe1 -> Just QAtMostOne
-      Core.QGe1 -> Just QAtLeastOne
+    go env = \case
+      Core.CPi Core.Expl q brw nm dom body ->
+        coreP nm q brw (coreUsageTypeExpr env dom) : go (nm : env) body
+      Core.CPi Core.Impl _ _ nm _ body -> go (nm : env) body
+      _ -> []
+    coreP nm q brw ty =
+      defaultP
+        { pName = Just nm
+        , pQuantity = coreQuantity q
+        , pType = ty
+        , pBorrow = brw
+        , pKnown = True
+        }
+
+coreUsageTypeExpr :: [Text] -> Term -> Maybe Expr
+coreUsageTypeExpr binders = \case
+  Core.CSort _ -> Just (EVar (Name "Type" noSpan))
+  Core.CGlob g -> Just (coreGNameExpr g)
+  Core.CVar i
+    | i >= 0
+    , i < length binders ->
+        Just (EVar (Name (binders !! i) noSpan))
+  Core.CApp Core.Impl f _ -> coreUsageTypeExpr binders f
+  Core.CApp Core.Expl f a -> do
+    fExpr <- coreUsageTypeExpr binders f
+    aExpr <- coreUsageTypeExpr binders a
+    pure (EApp fExpr [ArgExplicit aExpr])
+  Core.CPi ic q brw nm dom body -> do
+    domExpr <- coreUsageTypeExpr binders dom
+    bodyExpr <- coreUsageTypeExpr (nm : binders) body
+    let binder =
+          Binder
+            { bImplicit = ic == Core.Impl
+            , bPrefix = BinderPrefix (coreQuantity q) (if brw then Just (BorrowMark Nothing) else Nothing)
+            , bSusp = Nothing
+            , bReceiver = NoReceiver
+            , bInout = False
+            , bName = if nm == "_" then Nothing else Just (Name nm noSpan)
+            , bUnitBinder = False
+            , bType = Just domExpr
+            , bDefault = Nothing
+            , bSpan = noSpan
+            }
+    pure (EArrow binder bodyExpr)
+  Core.CForceE t -> coreUsageTypeExpr binders t
+  _ -> Nothing
+
+coreQuantity :: Core.Q -> Maybe Quantity
+coreQuantity = \case
+  Core.Q0 -> Just QZero
+  Core.Q1 -> Just QOne
+  Core.QW -> Just QOmega
+  Core.QLe1 -> Just QAtMostOne
+  Core.QGe1 -> Just QAtLeastOne
+
+coreGNameExpr :: Core.GName -> Expr
+coreGNameExpr (Core.GName (ModuleName segs) nm) =
+  foldl
+    (\acc seg -> EDot acc (DotName (Name seg noSpan)))
+    (EVar (Name root noSpan))
+    rest
+  where
+    path = segs ++ [nm]
+    (root, rest) =
+      case path of
+        [] -> (nm, [])
+        x : xs -> (x, xs)
 
 -- ── Bindings and do items ────────────────────────────────────────────
 
@@ -3755,7 +4474,15 @@ walkBinds :: Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Te
 walkBinds = walkBindsWith walkE
 
 walkBindsWith :: (Env -> Expr -> Analysis WalkResult) -> Env -> [LetBind] -> Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
-walkBindsWith walkRhs env binds = go env binds
+walkBindsWith walkRhs = walkBindsWithStorage walkRhs storedValueInfo
+
+walkBindsWithStorage ::
+  (Env -> Expr -> Analysis WalkResult) ->
+  (Env -> Text -> Span -> Expr -> VInfo) ->
+  Env ->
+  [LetBind] ->
+  Analysis ([(Usage, [(Text, VInfo)], [(Text, [Text], Span)])], Env)
+walkBindsWithStorage walkRhs storageInfo env binds = go env binds
   where
     bindsWholeRhs = \case
       PVar {} -> True
@@ -3860,7 +4587,11 @@ walkBindsWith walkRhs env binds = go env binds
           mk nm = do
             k <- freshKey nm
             let storedInfo
-                  | wholeRhsBinder, not borrowed, not (isWildBinder pat) = Just (storedValueInfo envc k bsp rhs)
+                  | wholeRhsBinder, not borrowed, not (isWildBinder pat) =
+                      Just $
+                        case mty of
+                          Just ty | isActionStorageType envc ty -> storedValueInfoFromType envc k bsp ty
+                          _ -> storageInfo envc k bsp rhs
                   | otherwise = Nothing
                 q' = q `orElse` (storedInfo >>= vQ)
                 pathFields' = maybe annotatedPathFields (mergePathQuantities annotatedPathFields . vPathFields) storedInfo
@@ -3873,6 +4604,8 @@ walkBindsWith walkRhs env binds = go env binds
                 nonDupValue' = maybe False vNonDupValue storedInfo
                 nonDupFields' = maybe [] vNonDupFields storedInfo
                 openTail' = storedInfo >>= vOpenTail
+                storedTypeText' = storedInfo >>= vStoredTypeText
+                storedTypeExpr' = storedInfo >>= vStoredTypeExpr
             pure
               ( nm
               , (plainV k bsp)
@@ -3888,6 +4621,8 @@ walkBindsWith walkRhs env binds = go env binds
                   , vNonDupFields = nonDupFields'
                   , vDeps = fdeps
                   , vOpenTail = openTail'
+                  , vStoredTypeText = storedTypeText'
+                  , vStoredTypeExpr = storedTypeExpr'
                   }
               )
       -- every pattern name is bound (untracked entries still shadow
@@ -4516,7 +5251,7 @@ walkItems env0 items0 = go env0 items0
         bindLike' = bindLikeWith walkE
         bindLikeAction' envc lb@(LetBind {}) restItems = do
           (actU, _, envAction) <- walkExecutedAction envc (lbExpr lb)
-          (segs, env') <- walkBindsWith (\_ _ -> pure rNone) envAction [lb]
+          (segs, env') <- walkBindsWithStorage (\_ _ -> pure rNone) storedActionResultBindingInfo envAction [lb]
           let u = actU `seqU` foldr (\(su, _, _) acc -> su `seqU` acc) Map.empty segs
               bound = concat [b | (_, b, _) <- segs]
           fl <- go env' restItems

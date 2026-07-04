@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- §9.3/§12.2: an unprefixed local binder for an ordinary List result remains
+-- unrestricted. The result may be used through ordinary omega parameters.
+module main
+
+mkItems : Unit -> List Int
+let mkItems _ = [1, 2, 3]
+
+count : List Int -> Int
+let count xs = listLength xs
+
+ok : Int
+let ok =
+    let xs = mkItems ()
+    count xs + count xs

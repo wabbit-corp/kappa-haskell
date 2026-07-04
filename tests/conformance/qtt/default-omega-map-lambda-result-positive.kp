@@ -1,0 +1,15 @@
+module main
+
+label : Int -> String
+let label n = show n
+
+joined : List String
+let joined =
+    block
+        let takes = map (\x -> label x) [1, 2]
+        let puts = map (\x -> label x) [3]
+        listAppend takes puts
+
+--! mode check
+--! assertNoErrors
+--! assertType joined (List String)

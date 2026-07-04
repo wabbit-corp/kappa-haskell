@@ -1,0 +1,72 @@
+let buildConfig : BuildConfig = package
+    { name = "voxelcraft"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes =
+        [ axis "backend" [tag "native"]
+        , axis "os" [tag "linux", tag "macos"]
+        , axis "role" [tag "game", tag "test"]
+        ]
+    , dependencies = []
+    , hostBindings =
+        [ nativeBinding
+            { name = "voxel-renderer-vulkan"
+            , provides = [module "host.native.voxel_renderer.Raw"]
+            , surface = generateAllFromHeader "native/voxel_renderer.h" "vc_"
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/voxel_renderer.h"]
+                , pkgConfig "sdl3" None
+                , shim ["native/voxel_renderer.c"]
+                , cstrings ["vc_renderer_backend", "vc_renderer_last_error"]
+                , classify nonblocking
+                ]
+            , link = dynamicLink ["m", "dl"]
+            , load = systemLoader
+            }
+        , nativeBinding
+            { name = "voxel-renderer-metal"
+            , provides = [module "host.native.voxel_renderer.Raw"]
+            , surface = generateAllFromHeader "native/voxel_renderer.h" "vc_"
+            , abi = cAbi
+            , inputs =
+                [ headers ["native/voxel_renderer.h"]
+                , pkgConfig "sdl3" None
+                , shim ["native/voxel_renderer.c"]
+                , cstrings ["vc_renderer_backend", "vc_renderer_last_error"]
+                , classify nonblocking
+                ]
+            , link = dynamicLink ["m"]
+            , load = systemLoader
+            }
+        ]
+    , targets =
+        [ executable
+            { name = "voxelcraft-tests"
+            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , fragments = tags ["native", "test"]
+            , main = module "voxelcraft.run_tests"
+            , modules = modulesUnder "voxelcraft"
+            , dependencies = []
+            , hostBindings = []
+            }
+        , executable
+            { name = "voxelcraft-vulkan-linux"
+            , backend = native { toolchain = "cc", targetTriple = "x86_64-linux-gnu" }
+            , fragments = tags ["native", "linux", "game"]
+            , main = module "voxelcraft.main"
+            , modules = modulesUnder "voxelcraft"
+            , dependencies = []
+            , hostBindings = ["voxel-renderer-vulkan"]
+            }
+        , executable
+            { name = "voxelcraft-metal-macos-arm64"
+            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , fragments = tags ["native", "macos", "game"]
+            , main = module "voxelcraft.main"
+            , modules = modulesUnder "voxelcraft"
+            , dependencies = []
+            , hostBindings = ["voxel-renderer-metal"]
+            }
+        ]
+    }

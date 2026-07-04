@@ -18,7 +18,7 @@
 /* A live sleep timer.  malloc'd (not GC) — the parked fiber it resumes is kept
  * alive by rt->all (REVIEW.md B4), so this struct need not be GC-scanned; it is
  * freed in the uv_close callback after the timer fires. */
-typedef struct { uv_timer_t timer; Fiber *f; Rt *rt; } SleepTimer;
+typedef struct { uv_timer_t timer; Fiber *f; Rt *rt; uint64_t sleep_seq; } SleepTimer;
 
 /* Live-SleepTimer accounting — a test signal: after a clean shutdown this is 0.
  * Incremented once per malloc in start_sleep, decremented once per close here;
@@ -37,14 +37,22 @@ static void sleep_close_cb(uv_handle_t *h) {
 static void sleep_timer_cb(uv_timer_t *t) {
   SleepTimer *st = (SleepTimer *)t->data;            /* sleepFor returns Unit */
   Fiber *f = st->f;
-  /* This timer fired normally: it is no longer this fiber's pending sleep.  Clear
-   * the reactor-owned pointer + the worker-visible mirror BEFORE the wake so the
-   * resumed fiber never sees a stale-armed timer (fix S2).  start_sleep already
-   * cancels a replaced timer, so a fired one is always the fiber's current one. */
-  if (f->sleep_timer == t) f->sleep_timer = NULL;
-  atomic_store_explicit(&f->sleep_armed, 0, memory_order_release);
-  krt2i_wake(st->rt, f, krt2_pure(krt2i_unit())); /* idempotent: an interrupt
-                                                   * may have woken it first */
+  /* This timer callback owns its uv handle and will close it below. If it still
+   * occupies f->sleep_timer, clear that reactor-owned slot even when the generation
+   * check rejects the callback as stale; otherwise a queued cancel could later read
+   * the dangling pointer and close the same handle twice. For the current callback,
+   * also clear the worker-visible mirror BEFORE the wake so the resumed fiber never
+   * sees a stale-armed timer. */
+  int owns_slot = (f->sleep_timer == st);
+  int current = owns_slot
+      && atomic_load_explicit(&f->sleep_armed, memory_order_acquire)
+      && atomic_load_explicit(&f->sleep_seq, memory_order_acquire) == st->sleep_seq;
+  if (owns_slot) f->sleep_timer = NULL;
+  if (current) {
+    atomic_store_explicit(&f->sleep_armed, 0, memory_order_release);
+    krt2i_wake(st->rt, f, krt2_pure(krt2i_unit())); /* idempotent: an interrupt
+                                                     * may have woken it first */
+  }
   uv_close((uv_handle_t *)t, sleep_close_cb);
 }
 
@@ -54,7 +62,9 @@ static void sleep_timer_cb(uv_timer_t *t) {
  * FIRST so it cannot fire and orphan-resume.  The fresh timer below re-arms the
  * FULL `nanos` from now, matching the interpreter's masked-re-park semantics
  * (Interp.interruptPoint re-runs the whole threadDelay). */
-static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
+static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos, uint64_t seq) {
+  if (!atomic_load_explicit(&f->sleep_armed, memory_order_acquire)) return;
+  if (atomic_load_explicit(&f->sleep_seq, memory_order_acquire) != seq) return;
   SleepTimer *old = (SleepTimer *)f->sleep_timer;
   if (old) {
     f->sleep_timer = NULL;
@@ -62,7 +72,7 @@ static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
     uv_close((uv_handle_t *)&old->timer, sleep_close_cb);
   }
   SleepTimer *st = (SleepTimer *)malloc(sizeof(SleepTimer));
-  st->f = f; st->rt = rt;
+  st->f = f; st->rt = rt; st->sleep_seq = seq;
   uv_timer_init(&rt->loop, &st->timer);
   st->timer.data = st;
   f->sleep_timer = st;
@@ -75,10 +85,11 @@ static void start_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
  * (masked re-park or unmasked unwind); cancel the original timer so it cannot fire
  * later and CAS-win an unrelated park.  Idempotent: NULL if it already fired or was
  * replaced by start_sleep. */
-static void cancel_sleep(Rt *rt, Fiber *f) {
+static void cancel_sleep(Rt *rt, Fiber *f, uint64_t seq) {
   (void)rt;
   SleepTimer *st = (SleepTimer *)f->sleep_timer;
   if (!st) return;
+  if (st->sleep_seq != seq) return;
   f->sleep_timer = NULL;
   uv_timer_stop(&st->timer);
   uv_close((uv_handle_t *)&st->timer, sleep_close_cb);
@@ -107,8 +118,8 @@ static void reactor_async_cb(uv_async_t *h) {
     pthread_mutex_unlock(&rt->io_lock);
     if (!r) break;
     switch (r->op) {
-      case IO_SLEEP:        start_sleep(rt, r->f, r->nanos); break;
-      case IO_CANCEL_SLEEP: cancel_sleep(rt, r->f);          break;
+      case IO_SLEEP:        start_sleep(rt, r->f, r->nanos, r->sleep_seq); break;
+      case IO_CANCEL_SLEEP: cancel_sleep(rt, r->f, r->sleep_seq);          break;
     }
   }
   if (atomic_load_explicit(&rt->reactor_stop, memory_order_acquire)) {
@@ -143,13 +154,14 @@ void krt2i_reactor_start(Rt *rt) {
 
 void krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
   krt2i_mark_fiber_shared(f);
-  atomic_store(&f->status, F_PARKED);     /* f stays GC-live via rt->all */
   /* fix S2: mark the worker-visible mirror BEFORE enqueuing, so the abandonment
    * path (fiber_step) knows a timer may be live and routes a cancel.  The reactor
    * owns the actual SleepTimer* via f->sleep_timer. */
+  uint64_t seq = atomic_fetch_add_explicit(&f->sleep_seq, 1, memory_order_acq_rel) + 1;
   atomic_store_explicit(&f->sleep_armed, 1, memory_order_release);
+  atomic_store(&f->status, F_PARKED);     /* f stays GC-live via rt->all */
   IoReq *r = (IoReq *)GC_MALLOC(sizeof(IoReq)); /* scanned: keeps f reachable */
-  r->op = IO_SLEEP; r->f = f; r->nanos = nanos; r->next = NULL;
+  r->op = IO_SLEEP; r->f = f; r->nanos = nanos; r->sleep_seq = seq; r->next = NULL;
   pthread_mutex_lock(&rt->io_lock);
   if (rt->io_tail) rt->io_tail->next = r; else rt->io_head = r;
   rt->io_tail = r;
@@ -162,9 +174,11 @@ void krt2i_submit_sleep(Rt *rt, Fiber *f, uint64_t nanos) {
  * worker-visible mirror immediately; the reactor stops+closes the real timer. */
 void krt2i_cancel_sleep(Rt *rt, Fiber *f) {
   if (!atomic_load_explicit(&f->sleep_armed, memory_order_acquire)) return;
+  uint64_t seq = atomic_load_explicit(&f->sleep_seq, memory_order_acquire);
+  atomic_fetch_add_explicit(&f->sleep_seq, 1, memory_order_acq_rel);
   atomic_store_explicit(&f->sleep_armed, 0, memory_order_release);
   IoReq *r = (IoReq *)GC_MALLOC(sizeof(IoReq)); /* scanned: keeps f reachable */
-  r->op = IO_CANCEL_SLEEP; r->f = f; r->nanos = 0; r->next = NULL;
+  r->op = IO_CANCEL_SLEEP; r->f = f; r->nanos = 0; r->sleep_seq = seq; r->next = NULL;
   pthread_mutex_lock(&rt->io_lock);
   if (rt->io_tail) rt->io_tail->next = r; else rt->io_head = r;
   rt->io_tail = r;

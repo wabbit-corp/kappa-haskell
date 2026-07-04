@@ -9,6 +9,14 @@ and — the distinctive asset — a static substrate (QTT quantities, §12
 borrow/region system, purity, totality) that several of these techniques have to
 *reconstruct* by whole-program inference.
 
+Current-state note (post Perceus S4): this research synthesis predates some of
+the landed runtime work. The C/runtime path now has immediate Int/nullary/packed
+ctor values, a heap `KValue` RC header with shared+saturation flags, and
+free-on-zero reclamation for the strict immutable FREESET under the Boehm
+allocation/rooting backstop. The remaining "full Perceus" work here means
+drop-guided reuse/FBIP, precise container/cycle/resource protocols, and the
+LLVM/precise-root endgame, not the absence of any RC header or any RC freeing.
+
 The grounding fact, from `docs/RUNTIME-EFFICIENCY-REVIEW.md`: **"allocation, not
 indirection, is the dominant cost ... almost nothing is recycled."** Fork is
 ~832 B/op and the fork/await ping-pong ~704 B/op, versus Go's ~128 B/op (Go
@@ -300,13 +308,13 @@ not conflate them; they have different fixes.
    landed suspendability analysis (Stage 1.5) keeps *non-suspending* binds as
    straight-line C, so this cost hits only the genuinely-suspending path.
 
-3. **Ctor/record/KValue boxing.** Every value is a ~40 B boxed `KValue`;
-   per-field box indirection for records/ctors is "most of real allocation
-   volume" and stays Boehm-bound until precise RC. Immediate tagging
-   (`kappart.h`: b001 Int / b010 nullary / b011 packed single/two-field) already
-   kills the Int-allocation half and gives FIP "atoms" for free, but does
-   nothing for n-ary ctor fields (the missing piece is FIP "unboxed tuples" —
-   the deferred LLVM-layout work).
+3. **Ctor/record/KValue boxing.** Non-immediate heap values are `KValue`
+   objects; small Ints, nullary ctors, and packed 1/2-field ctors now ride in
+   the tagged value word. S3/S4 also reclaim the strict immutable FREESET at RC
+   zero, including shared FREESET values after publication. The dominant
+   residual is still n-ary ctor/record field indirection and retained
+   mutable/lazy/foreign/resource/container shapes; those need FBIP reuse,
+   precise container protocols, or the deferred LLVM-layout work.
 
 ### 2.1 The distinctive static asset — verified present, under-exploited
 
@@ -442,11 +450,15 @@ escaping Tofte–Talpin's region-bloat/LIFO limit without dynamic regions.
 The common limit, stated honestly and threaded throughout: **every reuse /
 in-place / frame-local / region win concentrates on the linear, non-escaping,
 acyclic, suspension-free surface.** Multishot and branch-join-shared
-continuations, fork/promise/`TVar`-crossing values, and n-ary ctor field boxing
-stay Boehm-bound until precise RC. And without a runtime RC header Kappa
-*cannot* do Roc/Koka-style "adapts dynamically when shared" — it must choose
-statically. That is the correct trade for a total, pure, dependently-typed
-language optimizing for *predictable* zero-allocation.
+continuations, container/lazy/resource protocols, and n-ary ctor field boxing
+still need later ownership protocols before they can participate in reuse or
+container-specific reclamation. Strict immutable FREESET values are different:
+after S4, fork/promise/`TVar`/AtomicRef/FiberRef and other publish-point-crossing
+values carry counted shared RC and can be reclaimed at zero. Kappa now has a
+runtime RC header for dynamic sharedness/counting decisions on heap values, so
+the old "must choose statically" limitation applies only to reuse/in-place
+decisions that still lack the FBIP/container protocol, not to S4 shared
+FREESET reclamation.
 
 ---
 
@@ -611,16 +623,19 @@ thread-shared-across-fork facts supplying the **non-atomic-vs-atomic RC split**
 (`f->k` is thread-local → non-atomic; fork/promise/`TVar` crossings → atomic).
 Only the back half (drop/reuse insertion) must be built.
 
-**Hard prerequisite, stated plainly: a precise / non-conservative collector.**
-Boehm cannot do Perceus. The path is (a) the LLVM `coro.id.retcon.once`
-flat-frame seam + precise slot-kind map (UNBOXING Stage 3), or (b) a bespoke
-precise collector. **Effort: high. Risk: high** (new collector + RC correctness
-under concurrency). **Payoff: drives per-bind alloc toward zero on the linear
-non-escaping path — but honestly, that is largely the path Stage 1 already
-covers; the incremental Perceus win is the *ω/shared* values Stage 1 can't prove
-statically.** Kappa's QTT (linearity proven, not inferred) + acyclicity-by-purity
-make this RC *substantially cheaper to build correctly* than for any conventional
-language — but it remains research-grade.
+**Hard prerequisite, stated plainly: precise roots/layout for the full endgame.**
+S3/S4 already run conservative Perceus-style RC for the strict immutable FREESET
+under Boehm, but full drop-guided reuse on continuation frames, containers,
+cycles, and retained resource/foreign/lazy shapes still needs (a) the LLVM
+`coro.id.retcon.once` flat-frame seam + precise slot-kind map, or (b) a bespoke
+precise collector/root protocol. **Effort: high. Risk: high** (new collector/root
+protocol + RC correctness under concurrency). **Payoff: drives per-bind alloc
+toward zero on the linear non-escaping path — but honestly, that is largely the
+path Stage 1 already covers; the incremental Perceus win is the *ω/shared*
+values Stage 1 can't prove statically.** Kappa's QTT (linearity proven, not
+inferred) + acyclicity-by-purity make this RC *substantially cheaper to build
+correctly* than for any conventional language — but the remaining reuse work
+remains research-grade.
 
 ### Stage 3 — RC + GC hybrid for cycles; regions on §12 (END STATE)
 

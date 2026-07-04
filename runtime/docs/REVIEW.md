@@ -83,16 +83,20 @@ only when its evidence exists (§27.6 forbids advertising an unbacked flag).
   at back-edges; non-tail-recursive pure SCCs exceeding the C stack must be
   lowered stack-safely or rejected (native analog of the §27.5A.4 safe-point
   obligation). (§6.4.)
-- **M6/M7/M15/D10 — value-layer parallelism.** Singletons
-  (`kint_cache`/`the_unit`/`the_true`/`the_false`) are **eagerly pre-populated in
-  `krt2_new` before workers start** (closes the lazy-init store-store race —
-  `kappart.c:99-103,247-289`). Ordinary `K_REF`/`var` slots are accessed via
-  **relaxed atomics** (`_Atomic(KValue*)`), giving §32.2.10's "no ordering, no
-  tearing" portably (not the "aligned 64-bit" hand-wave). `kappart` and `kappart2`
-  **must** be compiled with identical `-D_GNU_SOURCE -DGC_THREADS -pthread`; a build-time
-  `_Static_assert`/runtime `GC_get_parallel()` check fails closed on mismatch. The
-  linked GMP must be the reentrant build. "Reuse the value layer *unchanged*" is
-  downgraded to "reuse with startup pre-population + atomic ref accessors."
+- **M6/M7/M15/D10 — value-layer parallelism.** The old boxed singleton carriers
+  (`kint_cache`/`the_unit`/`the_true`/`the_false`) have been retired for canonical
+  immediates: in-range Ints, Unit, Bool, and nullary ctors are encoded as tagged
+  words rather than lazily initialized process globals. Ordinary `K_REF`/`var` slots have owned runtime
+  storage: private refs use direct S4 thread-local reads/writes, while shared
+  refs duplicate or swap under the cell lock before dropping the displaced owner.
+  This is an ownership safety mechanism, not an extra §32.2.10 publication point;
+  cross-fiber ordering still belongs to await/join, scopes/monitors, promises,
+  STM, or atomics.
+  `kappart` and `kappart2` **must** be compiled with identical `-D_GNU_SOURCE
+  -DGC_THREADS -pthread`; a build-time `_Static_assert`/runtime
+  `GC_get_parallel()` check fails closed on mismatch. The linked GMP must be the
+  reentrant build. "Reuse the value layer *unchanged*" is downgraded to "reuse
+  with startup pre-population + synchronized ref accessors."
 - **M16-M19/D8 — STM correctness.** `readTVar` samples `(value,version)`
   **atomically** (seqlock / single-pointer snapshot), not two independent loads.
   `orElse` **accumulates the left branch's read-set** (keep `l`'s reads, roll back

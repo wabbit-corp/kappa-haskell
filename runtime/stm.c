@@ -2,10 +2,10 @@
  *
  * GHC-style optimistic STM (RESEARCH.md §1; REVIEW.md M16–M19): a transaction is
  * a pure tree of reads/writes run against a thread-local journal, then committed
- * under a global lock with read-set validation.  Reads are LOCK-FREE (a single
- * acquire-load of an immutable {value,version} box gives a consistent snapshot),
- * so read-heavy transactions run in parallel across workers; only commit and
- * retry-park take the global mutex.
+ * under a global lock with read-set validation.  S4 samples TVars and duplicates
+ * their values under that same global lock so shared counted-RC cannot free a
+ * sampled value before the journal owns it; only the transaction body itself runs
+ * outside the lock.
  *
  *  - serializable: commit validates that every read TVar's version is unchanged;
  *    if so it installs the writes and bumps versions atomically under the lock,
@@ -28,12 +28,6 @@
  *    fiber_step only checks interrupt_pending between dispatches.  ZIO makes the
  *    run phase interruptible; threading interrupt_pending into stm_run's loop is
  *    the fix.  Transactions are short in practice, so this is acceptable for v1.
- *  - A lock-free reader can observe a TORN snapshot across a multi-write commit
- *    in-flight (X's new box + Y's old box); such an attempt can NEVER commit (the
- *    read-set version check rejects it), so serializability of COMMITTED
- *    transactions holds, but a pure closure forced on the torn pair must be total
- *    (it could otherwise diverge before reaching validation — the GHC motivation
- *    for periodic revalidation; the run-interruptibility fix above bounds it).
  */
 #include "internal.h"
 
@@ -99,10 +93,13 @@ static void j_drop_all_writes(Journal *j) {
   j_truncate_writes(j, 0);
 }
 static KValue *j_read(Journal *j, TVar *tv) {
-  for (int i = j->nw - 1; i >= 0; i--) if (j->w[i].tv == tv) return j->w[i].val; /* read-after-write (newest) */
+  for (int i = j->nw - 1; i >= 0; i--) if (j->w[i].tv == tv) return kdup(j->w[i].val); /* read-after-write (newest) */
+  pthread_mutex_lock(&g_stm);
   VBox *b = atomic_load_explicit(&tv->box, memory_order_acquire);
   j_read_record(j, tv, b->version);
-  return b->val;
+  KValue *v = kdup(b->val);
+  pthread_mutex_unlock(&g_stm);
+  return v;
 }
 /* Has this TVar already been installed by a NEWER write-log entry (index > i)? */
 static int j_newer_write(Journal *j, int i) {
@@ -123,7 +120,7 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
     KValue *val = NULL; int retry = 0;
     switch (op) {
       case STM_PURE:  val = kctor_arg(cur, 0); break;
-      case STM_READ:  val = kdup(j_read(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR))); break;
+      case STM_READ:  val = j_read(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR)); break;
       case STM_WRITE: j_write(j, (TVar *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_TVAR), kctor_arg(cur, 1)); val = kunit(); break;
       case STM_NEW: {
         TVar *tv = (TVar *)GC_MALLOC(sizeof(TVar));
@@ -169,9 +166,10 @@ static int stm_run(KValue *stm, Journal *j, KValue **out) {
 }
 
 /* Unlink every watcher node of `f` from the TVars it was last retry-parked on.
- * Called on re-entry to atomically (and never re-runs leave stale watchers) and
- * makes a moved-on fiber leave no spurious-wakeup hazard (STM review MAJOR). */
-static void stm_unpark(Fiber *f) {
+ * Called on re-entry to atomically and before interrupt unwinds a retry-parked
+ * fiber, so moved-on fibers leave neither stale watchers nor spurious wakeups
+ * behind (STM review MAJOR). */
+void krt2i_stm_unpark(Fiber *f) {
   if (f->stm_nreads == 0) return;
   pthread_mutex_lock(&g_stm);
   for (int i = 0; i < f->stm_nreads; i++) {
@@ -184,7 +182,7 @@ static void stm_unpark(Fiber *f) {
 
 /* ── atomically (the IO boundary) ───────────────────────────────────────── */
 int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
-  stm_unpark(f);   /* drop watchers from any previous retry-park of this fiber */
+  krt2i_stm_unpark(f);   /* drop watchers from any previous retry-park of this fiber */
   for (;;) {
     Journal j; memset(&j, 0, sizeof j);
     KValue *result;
@@ -216,7 +214,10 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
         krc_mark_shared_recursive(j.w[i].val);
         nb->val = j.w[i].val; nb->version = tick;
         atomic_store_explicit(&tv->box, nb, memory_order_release);
-        if (old && old->val != j.w[i].val) kdrop(old->val);
+        if (old) {
+          if (old->val != j.w[i].val) kdrop(old->val);
+          else kdrop(j.w[i].val);
+        }
         Waiter *w = tv->watchers; tv->watchers = NULL;     /* take all watchers (de-duped by the wake CAS) */
         while (w) { Waiter *nx = w->next; w->next = wake; wake = w; w = nx; }
       }
@@ -261,9 +262,14 @@ int krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm) {
       rds[i] = j.r[i].tv;
     }
     f->stm_reads = rds; f->stm_nreads = j.nr;   /* recorded for stm_unpark on re-entry */
+    int park_unmasked = (f->mask_depth == 0);
     atomic_store(&f->status, F_PARKED);
     pthread_mutex_unlock(&g_stm);
     j_drop_all_writes(&j);
+    if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+      krt2i_stm_unpark(f);
+      return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+    }
     return 0;   /* parked; f->cur is still the OP_ATOMICALLY node -> re-runs on wake */
   }
 }

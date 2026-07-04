@@ -22,23 +22,24 @@ static void check_unique_tree_frees_on_zero(void) {
   KValue *leaf = kstr0("leaf");
   KValue *args[1] = { leaf };
   KValue *root = kctor(KCT_USER_BASE, "Root", 1, args);
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   kdrop(root);
-  unsigned long long after = kgc_debug_free_count();
+  unsigned long long after = krc_debug_reclaim_count();
   check(after > before, "S3.2 kdrop of a unique freeable tree must release at least one object");
 }
 
-static void check_shared_and_retained_tags_do_not_free(void) {
+static void check_shared_freeable_tags_reclaim_and_retained_tags_do_not_free(void) {
   KValue *shared = kstr0("shared");
   krc_mark_shared_recursive(shared);
-  unsigned long long before_shared = kgc_debug_free_count();
+  unsigned long long before_shared = krc_debug_reclaim_count();
   kdrop(shared);
-  check(kgc_debug_free_count() == before_shared, "shared freeable-tag values must remain retained until S4");
+  check(krc_debug_reclaim_count() > before_shared, "S4 shared freeable-tag values must reclaim on last atomic drop");
 
   KValue *ref = kref_new(kunit());
-  unsigned long long before_ref = kgc_debug_free_count();
+  krc_mark_shared_recursive(ref);
+  unsigned long long before_ref = krc_debug_reclaim_count();
   kdrop(ref);
-  check(kgc_debug_free_count() == before_ref, "mutable refs must not be freed by S3.2 kdrop");
+  check(krc_debug_reclaim_count() == before_ref, "mutable refs must not be freed by S4 shared kdrop");
 }
 
 static void check_deep_free_is_iterative(void) {
@@ -48,9 +49,9 @@ static void check_deep_free_is_iterative(void) {
     KValue *args[1] = { spine };
     spine = kctor(KCT_USER_BASE + 1, "Cons", 1, args);
   }
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   kdrop(spine);
-  unsigned long long after = kgc_debug_free_count();
+  unsigned long long after = krc_debug_reclaim_count();
   check(after > before + 1000, "deep S3.2 free must walk iteratively and release nested objects");
 }
 
@@ -71,45 +72,49 @@ static void check_record_rest_keeps_field_alive(void) {
 static void check_ref_set_drops_old_value(void) {
   KValue *old = kstr0("s33-ref-old");
   KValue *ref = kref_new(old);
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   kref_set(ref, kstr0("s33-ref-new"));
-  check(kgc_debug_free_count() > before, "S3.3 kref_set must drop the displaced old value");
+  check(krc_debug_reclaim_count() > before, "S3.3 kref_set must drop the displaced old value");
 }
 
 static void check_ref_set_self_assignment_consumes_owned_arg(void) {
   KValue *v = kstr0("s33-ref-self");
   KValue *ref = kref_new(v);
-  KValue *owned = kdup(kref_get(ref));
+  KValue *owned = kref_get(ref);
   check(owned == v && krc_count(v) == 2, "ref self-assignment setup must pass an owned duplicate");
   kref_set(ref, owned);
-  check(kref_get(ref) == v, "S3.3 kref_set self-assignment must keep the slot value");
+  KValue *got = kref_get(ref);
+  check(got == v, "S3.3 kref_set self-assignment must keep the slot value");
+  kdrop(got);
   check(krc_count(v) == 1, "S3.3 kref_set self-assignment must consume the owned write arg");
 }
 
 static void check_array_set_drops_old_slot_reference(void) {
   KValue *old = kstr0("s33-array-old");
   KValue *arr = karr_new(1, old);
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   karr_set(arr, 0, kstr0("s33-array-new"));
-  check(kgc_debug_free_count() > before, "S3.3 karr_set must drop the displaced slot reference");
+  check(krc_debug_reclaim_count() > before, "S3.3 karr_set must drop the displaced slot reference");
 }
 
 static void check_array_set_self_assignment_consumes_owned_arg(void) {
   KValue *v = kstr0("s33-array-self");
   KValue *arr = karr_new(1, v);
-  KValue *owned = kdup(karr_get(arr, 0));
+  KValue *owned = karr_get(arr, 0);
   check(owned == v && krc_count(v) == 2, "array self-assignment setup must pass an owned duplicate");
   karr_set(arr, 0, owned);
-  check(karr_get(arr, 0) == v, "S3.3 karr_set self-assignment must keep the slot value");
+  KValue *got = karr_get(arr, 0);
+  check(got == v, "S3.3 karr_set self-assignment must keep the slot value");
+  kdrop(got);
   check(krc_count(v) == 1, "S3.3 karr_set self-assignment must consume the owned write arg");
 }
 
 static void check_array_new_zero_consumes_init(void) {
   KValue *init = kstr0("s33-array-zero-init");
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   KValue *arr = karr_new(0, init);
   check(karr_len(arr) == 0, "zero-length array setup must produce an empty array");
-  check(kgc_debug_free_count() > before, "S3.3 karr_new(0, init) must consume the owned init it cannot store");
+  check(krc_debug_reclaim_count() > before, "S3.3 karr_new(0, init) must consume the owned init it cannot store");
 }
 
 static void check_atomic_store_self_assignment_consumes_owned_arg(void) {
@@ -117,8 +122,10 @@ static void check_atomic_store_self_assignment_consumes_owned_arg(void) {
   KValue *ref = krt2_new_atomic_ref(v);
   KValue *owned = kdup(v);
   krt2_atomic_store(kint(2), ref, owned);
-  check(krt2_atomic_load(kint(2), ref) == v, "S3.3 atomic store self-assignment must keep the cell value");
-  check(krc_is_shared(v), "AtomicRef cells remain shared-marked under S3.1");
+  KValue *loaded = krt2_atomic_load(kint(2), ref);
+  check(loaded == v, "S3.3 atomic store self-assignment must keep the cell value");
+  kdrop(loaded);
+  check(krc_is_shared(v), "AtomicRef cells stay shared-marked for S4 counted RC");
 }
 
 static void check_atomic_cas_failure_drops_desired(void) {
@@ -126,18 +133,28 @@ static void check_atomic_cas_failure_drops_desired(void) {
   KValue *expected = kbigint_str("200000000000000000000000000000000000002");
   KValue *desired = kbigint_str("300000000000000000000000000000000000003");
   check(krc_count(desired) == 1, "CAS desired setup must be uniquely owned by the call");
-  (void)krt2_atomic_compare_exchange(kint(4), kint(2), ref, expected, desired);
+  KValue *witnessed = krt2_atomic_compare_exchange(kint(4), kint(2), ref, expected, desired);
   check(krc_count(desired) == 0, "S3.3 failed CAS must drop the desired value it did not publish");
+  kdrop(witnessed);
+  kdrop(expected);
 }
 
 static void check_atomic_cas_failure_alias_desired_contract(void) {
   KValue *v = kbigint_str("555555555555555555555555555555555555555");
   KValue *ref = krt2_new_atomic_ref(v);
   KValue *expected = kbigint_str("666666666666666666666666666666666666666");
-  KValue *witnessed = krt2_atomic_compare_exchange(kint(4), kint(2), ref, expected, v);
+  KValue *desired = kdup(v);
+  unsigned before = krc_count(v);
+  KValue *witnessed = krt2_atomic_compare_exchange(kint(4), kint(2), ref, expected, desired);
   check(witnessed == v, "failed CAS with desired==old must return the witnessed old value");
-  check(krt2_atomic_load(kint(2), ref) == v, "failed CAS with desired==old must leave the cell unchanged");
-  check(krc_is_shared(v), "AtomicRef alias-failure desired remains shared-marked until S4 shared RC");
+  check(krc_count(v) == before, "failed CAS with desired==old must drop desired and return one witnessed owner");
+  KValue *loaded = krt2_atomic_load(kint(2), ref);
+  check(loaded == v, "failed CAS with desired==old must leave the cell unchanged");
+  kdrop(loaded);
+  kdrop(witnessed);
+  kdrop(expected);
+  check(krc_count(v) == 1, "failed CAS alias cleanup must leave exactly the AtomicRef cell owner");
+  check(krc_is_shared(v), "AtomicRef alias-failure desired stays shared-marked after failed CAS");
 }
 
 static KValue *complete_promise_twice(KEnv *env, KValue *promise) {
@@ -147,10 +164,10 @@ static KValue *complete_promise_twice(KEnv *env, KValue *promise) {
 }
 
 static void check_promise_recomplete_drops_losing_exit(void) {
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   KValue *exit = krt2_run_main(krt2_bind(krt2_new_promise(), kclo(complete_promise_twice, NULL)));
   check(krt2_exit_is_success(exit), "promise recomplete test program must succeed");
-  check(kgc_debug_free_count() > before, "S3.3 promise recomplete must drop the losing Exit value");
+  check(krc_debug_reclaim_count() > before, "S3.3 promise recomplete must drop the losing Exit value");
 }
 
 static KValue *overwrite_fiber_ref(KEnv *env, KValue *ref) {
@@ -160,11 +177,11 @@ static KValue *overwrite_fiber_ref(KEnv *env, KValue *ref) {
 }
 
 static void check_fiber_ref_overwrite_drops_old_override(void) {
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   KValue *exit = krt2_run_main(krt2_bind(krt2_new_fiber_ref(kstr0("s33-fiber-init")),
                                          kclo(overwrite_fiber_ref, NULL)));
   check(krt2_exit_is_success(exit), "FiberRef overwrite test program must succeed");
-  check(kgc_debug_free_count() > before, "S3.3 setFiberRef must drop the displaced override");
+  check(krc_debug_reclaim_count() > before, "S3.3 setFiberRef must drop the displaced override");
 }
 
 static KValue *stm_second_write(KEnv *env, KValue *ignored) {
@@ -185,7 +202,7 @@ static void check_stm_duplicate_write_drops_skipped_value(void) {
                               kclo(run_stm_duplicate_write, NULL));
   KValue *exit = krt2_run_main(program);
   check(krt2_exit_is_success(exit), "STM duplicate-write test program must succeed");
-  check(debug_drop_count() == before + 1, "S3.3 STM commit must drop exactly the write-log reference skipped by a newer write");
+  check(debug_drop_count() >= before + 2, "S4 STM commit must drop the skipped write-log owner and displaced old TVar value");
 }
 
 static KValue *stm_retry_after_write(KEnv *env, KValue *ignored) {
@@ -213,7 +230,7 @@ static void check_stm_orelse_rollback_drops_truncated_write(void) {
 int main(void) {
   krt_init();
   check_unique_tree_frees_on_zero();
-  check_shared_and_retained_tags_do_not_free();
+  check_shared_freeable_tags_reclaim_and_retained_tags_do_not_free();
   check_deep_free_is_iterative();
   check_record_rest_keeps_field_alive();
   check_ref_set_drops_old_value();

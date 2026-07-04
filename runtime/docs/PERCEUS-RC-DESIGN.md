@@ -1,10 +1,12 @@
 # Perceus Reference Counting + Boehm→Precise-GC Migration — Design
 
-Status: **Proposed (design pass, no code).** Owner: compiler architecture · Audience: backend + runtime
+Status: **Staged implementation in progress; S0→S4 landed for the C/runtime path.** Owner: compiler architecture · Audience: backend + runtime
 
-This is the design for replacing the native runtime's conservative Boehm collector with **Perceus
+This is the design for moving the native runtime from conservative Boehm-backed allocation toward **Perceus
 precise reference counting** (Reinking/Xie/de Moura/Leijen 2021; drop-guided reuse, Lorenzen/Leijen
-2022). It is the back half of the "Perceus + value-unboxing" lever: immediate tagging (UNBOXING Stages
+2022). Boehm remains the allocation/rooting backstop for retained shapes and future stages, while S3/S4
+already reclaim the strict immutable FREESET on the C/runtime path. It is the back half of the
+"Perceus + value-unboxing" lever: immediate tagging (UNBOXING Stages
 0/1/1b/1d/1e) and the scalar workers (Stage 2b) already landed and captured the cheap Int/ctor allocation
 wins; this arc targets the *dominant residual* allocation those cannot touch — **n-ary record/ctor
 per-field box indirection** and the **~832 B/fork CPS frame** — via RC drop + FBIP reuse on the CPS seam.
@@ -78,22 +80,23 @@ sequenced so the finalizer holds the last reference and runs before the drop.
 
 ## 2. Heap-object layout — the home for the RC word
 
-- `KValue` is `{ KTag tag; union as; }` (kappart.h:114), `sizeof = 48`, with a **free 4-byte hole at
-  offset 4** (tag is 4 bytes at 0; the union is 8-aligned starting at 8). Put a **32-bit RC count +
-  thread-shared bit** there — **zero struct growth**. (Shrink `KTag` to `uint8` to free 3 more header
-  bytes if wanted.)
+- `KValue` is `{ KTag tag; uint32_t rc; union as; }` (kappart.h), `sizeof = 48`, using the old **free
+  4-byte hole at offset 4** (tag is 4 bytes at 0; the union is 8-aligned starting at 8). The header word
+  stores `KRC_SHARED_BIT` in the high bit, `KRC_SATURATED_BIT` below it, and a low-30-bit owner count —
+  **zero struct growth**. (Shrink `KTag` to `uint8` to free 3 more header bytes if wanted.)
 - **The RC count + borrow/thread-shared discriminator live in the HEADER, not the pointer tag.** This
-  resolves the one doc conflict (see §9 Reconcile-first): UNBOXING-DESIGN's "reserve low tag bits b011+
-  for Perceus" is **superseded by** TAGGING-RESEARCH:29-41 — the low 3 tag bits are *immediate kinds only*;
+  resolves the former doc conflict: UNBOXING-DESIGN now follows TAGGING-RESEARCH:29-41 — the low 3 tag bits
+  are *immediate kinds only*;
   an RC discriminator in the pointer would **alias** (the same object reached via a borrowed vs an owned
-  reference would carry different tags). Koka-style: the thread-shared flag rides the **sign** of the
-  header rc field so one inlined `if (rc <= 1) slowpath` handles both the free-check and the shared-check.
+  reference would carry different tags). S4 deliberately kept an explicit shared-bit branch instead of the
+  Koka-style signed-compare fold; the extra saturation bit makes overflow sticky and fail-closed.
 - **Immediates skip RC entirely** (b001 Int, b010 nullary ctor, b011 packed 1/2-field ctor) — they are
   value-copied, never counted (TAGGING-RESEARCH:38-40). Every `dup`/`drop` is guarded by `kis_imm` (an
   extra hot-path branch — measure its tax, §8).
-- **Counted shapes** (kappart.h / value.c): `K_CTOR` (n-ary only; value.c:137), `K_REC` (190), `K_REF`
-  (226), `K_CLO` (204 — its captured `KEnv` env is the dup/drop unit), `K_THUNK` (319 — memo cell, §4),
-  `K_ARRAY`, `K_BIGINT`, `K_FGN` (271 — resource handle, never auto-released, §1).
+- **Heap-header shapes**: every non-immediate `KValue` has the `rc` word. S4 free-on-zero is deliberately
+  narrower than "has a header": only the strict immutable FREESET (`K_CTOR`, `K_REC`, `K_VARIANT`, `K_STR`,
+  `K_BOUNCE`, `K_FAIL`) may be reclaimed by `kdrop`. Mutable, lazy, foreign/resource, closure/env,
+  bigint/bytes, and action-wrapper shapes remain Boehm-retained until their later ownership protocols land.
 
 ---
 
@@ -177,18 +180,22 @@ Pure RC cannot reclaim cycles. Kappa's totality makes this a small, isolated pro
 ## 5. Thread-shared / atomic RC
 
 Non-atomic by default; flip to atomic only where a value genuinely crosses fibers. The runtime study found
-the publish points are **few and localized**:
+the publish points are **few and localized**, but S4 treats the list as soundness-critical and exhaustive:
 
-- **tshare triggers** (one-time recursive mark-shared): `fork`/`forkDaemon` (the action closure + captured
-  env — `krt2i_spawn_from` rt.c:1561 + `fiber_locals_snapshot` rt.c:659), **Promise completion**
-  (rt.c:726), **fiber exit** delivered to awaiters (rt.c:578), and **TVar publish** (`stm.c:197`, the
-  `_Atomic(VBox*)` cell). `AtomicRef` is scalar-only (unbox/rebox, atomic.c:40) and already sidesteps
-  shared-pointer RC.
-- **Encoding**: thread-shared rides the sign of the header rc (Koka's negative-rc trick) so one inlined
-  branch covers free-check + shared-check. `dup` = relaxed atomic increment; `drop` = release decrement
-  with an **acquire before free** (so child counts are synchronized before the recursive drop).
+- **tshare triggers** (one-time recursive mark-shared): generated global/CAF cache release-stores,
+  `fork`/`forkDaemon` (the action closure + captured env), Promise completion, fiber exit delivered to
+  awaiters, wake/resume, stored interrupt causes, FiberRef init/snapshot, blocking-lane payloads, TVar
+  creation/commit, AtomicRef creation/store/exchange/CAS-success/fetch-update, and writes into already-shared
+  Ref/Array/thunk storage. Current `AtomicRef` stores boxed `KValue*` occupants behind a mutex; load and
+  CAS-failure duplicate witnessed values while protected. The earlier scalar-only prototype is historical.
+- **Encoding**: the header word has an explicit shared flag, a sticky saturation flag, and a low-30-bit
+  owner count. Thread-local `dup`/`drop` use the biased direct path after an atomic discriminator load;
+  shared `dup` = relaxed atomic increment on the common path; shared `drop` = release decrement with an
+  **acquire before free** (so child counts are synchronized before the recursive drop). The Koka
+  negative-RC trick remains design background, not the landed S4 encoding.
 - This matches the borrow/thread-shared split already named as a design axis (UNBOXING A4, CPS §182): a
-  fiber's own `f->k` is thread-local ⇒ non-atomic; only fork/promise/TVar-crossing values pay atomic.
+  fiber's own unpublished values are thread-local ⇒ non-atomic; any value crossing one of the publish points
+  above pays atomic/shared storage costs after the recursive mark.
 - **Cost warning** (lit): uniform atomic RC is 20-130% slower even single-threaded — the biased split is
   load-bearing, not optional.
 
@@ -223,8 +230,9 @@ the publish points are **few and localized**:
 The collector contract (interior-pointers OFF, 8-byte alignment) is already enforced in `krt_init`
 (gc.c:48-58). The migration:
 
-- **S0 — Reconcile + header.** Adopt TAGGING-RESEARCH's ruling (§9); add the `rc`+`shared` word to the
-  KValue header hole (offset 4); update UNBOXING-DESIGN's stale "reserve low bits for Perceus" lines.
+- **S0/S4 — Reconcile + header.** Adopt TAGGING-RESEARCH's ruling (§9); add the `rc` header word to the
+  KValue header hole (offset 4), later refined by S4 into explicit shared + saturation flags plus low count;
+  update UNBOXING-DESIGN's stale "reserve low bits for Perceus" lines.
 - **S1 — Thread ownership to the IR.** Carry the elaborated owned(`1`)/borrowed(`&`)/last-use decisions
   onto KBackendIR (`Core.hs`); give CCtor/CMatch the type/size info reuse needs. *This is the real
   foundational cost.*
@@ -259,18 +267,18 @@ fork-captured values break linearity and don't reuse.
 
 ---
 
-## 9. Open questions / reconcile-first
+## 9. Open questions / resolved reconcile notes
 
-- **RECONCILE FIRST (blocks any tag work):** UNBOXING-DESIGN:74/298-300/581 still reserves low tag bits
-  "for Perceus"; TAGGING-RESEARCH:29-41 corrects this — RC/discriminator live in the **header**, low bits
-  are immediate kinds only. Adopt TAGGING-RESEARCH; fix the UNBOXING-DESIGN lines.
+- **Resolved tag/RC placement:** UNBOXING-DESIGN now follows TAGGING-RESEARCH:29-41 — RC/discriminator live
+  in the **header**, low bits are immediate kinds only. Keep future tag work from reintroducing a pointer-tag
+  RC discriminator, because that would alias owned/borrowed views of the same heap object.
 - **Borrow-through-IO gap** ([D6](../../docs/notes/BORROW_THROUGH_IO_MONAD.md)): `ioBind` is monomorphic in
   its capture set, so a borrowed region cannot thread through a recursive IO do-block. The borrow *side* of
   the borrow/thread-shared split therefore has a hole at the IO-monad boundary. Likely **not** a v1 blocker
   (borrowing is S6, opt-in), but Perceus borrow inference must eventually agree with the region system.
 - **Precise stack rooting** for deep non-tail recursion: stack maps / shadow stack, or keep fiber pthread
   stacks as conservative regions.
-- **K_THUNK memoization** (cache[0] write, value.c:319): model as a write-barriered ref-set; concurrent
+- **K_THUNK memoization** (cache write): model as a write-barriered ref-set; concurrent
   force of a shared lazy head needs the atomic-force CAS path.
 - **Tag reclamation (post-RC)**: once precise RC no longer needs odd words GC-invisible, can the 2 stolen
   low bits be reclaimed (61→63-bit Int)? (TAGGING-RESEARCH:94-96.) Revisitable, not now.

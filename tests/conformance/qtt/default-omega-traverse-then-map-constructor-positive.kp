@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data GameError : Type =
+    GameError (message : String)
+
+data JsonValue : Type =
+    JsonString (value : String)
+
+data Rumor : Type =
+    Rumor (text : String)
+
+decodeStringFromJson : JsonValue -> IO GameError String
+let decodeStringFromJson value =
+    match value
+    case JsonString text -> pure text
+
+loadLore : List JsonValue -> IO GameError (List Rumor)
+let loadLore values =
+    do
+        let texts <- traverse decodeStringFromJson values
+        if listLength texts == listLength texts then pure (map Rumor texts) else pure Nil

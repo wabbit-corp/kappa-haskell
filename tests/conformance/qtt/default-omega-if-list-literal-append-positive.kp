@@ -1,0 +1,11 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+combine : Bool -> Bool -> Int
+let combine a b =
+    let left = if a then Nil else ["left"]
+    let right = if b then Nil else ["right"]
+    let both = listAppend left right
+    in if listLength both == listLength both then listLength both else 0

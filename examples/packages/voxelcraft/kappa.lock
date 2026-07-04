@@ -1,0 +1,3 @@
+# kappa.lock v1 (generated) — entry kinds: path/git/registry/url/host-binding; digest: fnv1a-64 (length-prefixed, sorted; §36.6A change-detection identity)
+host-binding 920ce45c9f51b228 voxel-renderer-metal
+host-binding e6ce760cf742765b voxel-renderer-vulkan

@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+acc : UIO Int
+let acc =
+    do
+        var n = 0
+        n = n + 1
+        n = n + 2
+        pure n

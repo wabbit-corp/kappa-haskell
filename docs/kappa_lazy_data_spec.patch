@@ -1,0 +1,508 @@
+--- a/Spec.md
++++ b/Spec.md
+@@ -21,8 +21,13 @@
+ - **There should be one – and preferably only one – obvious way to do it.**
+ - **Minimize unnecessary punctuation and syntax noise.**
+ - Default stance: **totality, purity, parametricity** are desirable and encouraged.
+-- Non-strictness is represented by explicit suspension types and suspension terms, not by a distinct family of core
+-  arrow types. Surface non-strict binder syntax is only sugar over those suspension types.
++- Kappa has one ordinary core function space. Non-strict function parameters are represented by explicit suspension
++  types and suspension terms, not by a distinct family of core arrow types. Surface non-strict binder syntax is sugar
++  over those suspension types.
++- Selected algebraic data families may be declared with `lazy data`. Lazy data is a datatype evaluation strategy, not
++  an arrow strategy: the source constructors remain ordinary constructors, while values of the declared family are
++  enterable runtime cells that may contain either one evaluated constructor head or one delayed computation producing
++  that head.
+ - Named semantic objects are first-class unless this specification explicitly says otherwise.
+   In particular, named types, type constructors, trait constructors, modules, effect labels, projections, and other
+   compile-time semantic objects may be rebound, stored in records or packages, passed as arguments, returned, sealed,
+@@ -8099,7 +8104,7 @@
+
+ expectForm ::= 'term' name ':' type
+              | 'type' typeHeader
+-             | 'data' dataHeader
++             | ['lazy'] 'data' dataHeader
+              | 'trait' traitHeader
+
+ typeHeader  ::= ident dataParam* [':' type]
+@@ -8113,6 +8118,7 @@
+ expect type Int
+ expect type String
+ expect data Nat : Type
++expect lazy data Stream (a : Type) : Type
+ expect data IO (e : Type) (a : Type) : Type
+ expect trait Eq a
+ expect term toFloat : (this : Int) -> Float
+@@ -8125,6 +8131,8 @@
+ * `expect type T ...` introduces an expected type-level declaration.
+ * `expect data T ... : U` introduces an expected algebraic-data type constructor whose constructors are not known from
+   this declaration.
++* `expect lazy data T ... : U` introduces an expected lazy algebraic-data type constructor. The declaration exports the
++  lazy-data capability of §10.1.1B even when no constructors are known from this declaration.
+ * `expect trait C ...` introduces an expected trait constructor.
+ * An `expect` declaration contributes to name resolution as if it were an ordinary declaration of the corresponding
+   declaration kind.
+@@ -8150,8 +8158,12 @@
+ * `expect data` by itself does not make any constructor name available. Constructors of an expected data type are
+   available only if the satisfying artifact or backend interface exports constructor metadata and the ordinary
+   visibility and opacity rules make those constructors visible.
+-* Pattern matching on an `expect data` type whose constructors are unavailable is not permitted, except through ordinary
+-  eliminators or trait operations exported for that type.
++* `expect lazy data` additionally requires the satisfying artifact or backend interface to record lazy-data metadata
++  compatible with §10.1.1B. If the satisfying artifact exposes an ordinary non-lazy data family for the same expected
++  declaration, the expectation is not satisfied.
++* Pattern matching on an `expect data` or `expect lazy data` type whose constructors are unavailable is not permitted,
++  except through ordinary eliminators or trait operations exported for that type. The lazy-data capability by itself
++  does not reveal constructors.
+
+ A non-`expect` top-level definitionless term signature is not an external requirement. Outside trait bodies and other
+ signature-like contexts, it must be satisfied by a matching definition in the same source file as specified by §9.1.
+@@ -8175,8 +8187,8 @@
+ dataName ::= ident | '(' operator_token ')' | '(' '=' ')'
+
+ dataDecl ::=
+-    [public|private] [opaque] 'data' dataName dataParam* ':' type
+-  | [public|private] [opaque] 'data' dataName dataParam* ':' type '=' constructorBlock
++    [public|private] [opaque] ['lazy'] 'data' dataName dataParam* ':' type
++  | [public|private] [opaque] ['lazy'] 'data' dataName dataParam* ':' type '=' constructorBlock
+
+ constructorBlock ::=
+     NEWLINE INDENT constructorDecl+ DEDENT
+@@ -8189,6 +8201,9 @@
+   positions according to the ordinary type-name resolution rules. It does not by itself introduce a term-level operator
+   or fixity declaration.
+ * A `data` declaration without `=` declares an empty algebraic data type with no constructors.
++* A declaration prefixed with `lazy` is a lazy data declaration governed by §10.1.1B. The `lazy` modifier is opt-in per
++  data family. It does not change the evaluation strategy of unrelated data families and does not introduce a distinct
++  family of function arrows.
+ * An empty data declaration is a definition, not an external requirement.
+ * Empty data declarations satisfy strict positivity vacuously.
+ * Pattern matching on an empty data type has no constructor cases. A match whose scrutinee type is known empty is
+@@ -8208,6 +8223,10 @@
+ data Result (e : Type) (a : Type) : Type =
+     Ok a
+     Err e
++
++lazy data List (a : Type) : Type =
++    Nil
++    Cons a (List a)
+ ```
+
+ Constructors may declare named parameters. Two equivalent forms are supported:
+@@ -8230,12 +8249,14 @@
+                   | '(' implicitBinderBody ')'
+                   | '{' fieldDecl (',' fieldDecl)* '}'
+
+-ctorPositionalField ::= ident
+-                      | '(' type ')'
+-
+-ctorParam       ::= [quantity] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
+-
+-fieldDecl       ::= [quantity] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
++ctorStrictness ::= '!'
++
++ctorPositionalField ::= [ctorStrictness] ident
++                      | '(' [ctorStrictness] type ')'
++
++ctorParam       ::= [quantity] [ctorStrictness] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
++
++fieldDecl       ::= [quantity] [ctorStrictness] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
+
+ defaultClause   ::= '=' expr
+ ```
+@@ -8261,7 +8282,17 @@
+ * `(thunk x : A)` is sugar for `(x : Thunk A)`,
+ * `(lazy x : A)` is sugar for `(x : Need A)`.
+
+-No distinct constructor-level evaluation strategy exists in the core.
++This suspension sugar changes the field type exactly as written above. It is independent of the `lazy data` modifier.
++A field written `(lazy x : A)` has type `Need A` even inside ordinary `data`; a field written `(x : A)` inside
++`lazy data` still has field type `A`.
++
++The `!` marker is a constructor-field strictness marker. It does not change the field type. In a `lazy data`
++constructor, a field marked `!` is WHNF-entered before being stored in the constructor head; an unmarked field is stored
++without WHNF-normalization. In an ordinary `data` constructor, fields are already strict by the ordinary constructor
++rule, so `!` is redundant and implementations MAY warn.
++
++For ordinary `data`, no distinct constructor-level evaluation strategy exists in the core. `lazy data` is the explicit
++exception, specified by §10.1.1B.
+
+ A `defaultClause` is permitted only on explicit named constructor parameters.
+
+@@ -8481,7 +8512,10 @@
+ * Extra labels not present in the constructor's argument list are an error.
+ * Field order in named constructor application is not semantically significant for argument identity, default insertion,
+   or constructor identity.
+-* Supplied field expressions are evaluated exactly once in source order.
++* Supplied field expressions are accounted for exactly once in source order for dependency, quantity, borrow,
++  capture, and provenance purposes. For ordinary `data` constructors, construction demands supplied runtime fields
++  according to the ordinary strict constructor rule. For `lazy data` constructors, §10.1.1B determines when the
++  constructor head is entered and which fields, if any, are WHNF-normalized before storage.
+ * Defaults are instantiated in constructor-parameter order after supplied fields have been checked for duplicates and
+   extra labels.
+ * The final positional constructor application is assembled in constructor-parameter order.
+@@ -8570,19 +8604,25 @@
+
+ ```text
+ ConstructorApplicationMetadata =
+-    (constructorId       : SemanticObjectId,
+-     explicitParameters  : List ConstructorParameterMetadata,
+-     defaultExpressions  : List OptionalDefaultMetadata,
+-     resultType          : Type,
+-     sourceOrigin        : Origin)
++    (constructorId          : SemanticObjectId,
++     explicitParameters     : List ConstructorParameterMetadata,
++     defaultExpressions     : List OptionalDefaultMetadata,
++     resultType             : Type,
++     dataFamilyEvaluation   : DataFamilyEvaluation,
++     constructorHeadId      : Option SemanticObjectId,
++     sourceOrigin           : Origin)
+
+ ConstructorParameterMetadata =
+-    (name        : Option Label,
+-     position    : Nat,
+-     explicitness: Explicitness,
+-     quantity    : Quantity,
+-     type        : Type,
+-     hasDefault  : Bool)
++    (name            : Option Label,
++     position        : Nat,
++     explicitness    : Explicitness,
++     quantity        : Quantity,
++     type            : Type,
++     hasDefault      : Bool,
++     fieldStrictness : ConstructorFieldStrictness)
++
++DataFamilyEvaluation ::= ordinary-data | lazy-data
++ConstructorFieldStrictness ::= strict | nonStrict
+ ```
+
+ Rules:
+@@ -8603,6 +8643,211 @@
+
+ A module interface artifact MUST record constructor application metadata for every exported value whose source-level use
+ may validly preserve named constructor application across the module boundary.
++
++<!-- data_types.data_declarations.lazy_data -->
++#### 10.1.1B Lazy data declarations and enterable head semantics
++
++A `lazy data` declaration opts one algebraic data family into enterable-head semantics.
++
++Example:
++
++```kappa
++lazy data List (a : Type) : Type =
++    Nil
++    Cons a (List a)
++
++lazy data StrictHeadList (a : Type) : Type =
++    Nil
++    Cons (!head : a) (tail : StrictHeadList a)
++```
++
++The modifier is local to the declared data family. It does not make every type in the language lazy, does not create
++lazy function arrows, and does not rewrite constructor fields to `Thunk` or `Need`.
++
++Conceptual hidden representation:
++
++For a declaration:
++
++```kappa
++lazy data T Δ : Type =
++    C1 fields1...
++    C2 fields2...
++```
++
++elaboration behaves as if the implementation creates a hidden head representation:
++
++```text
++T# Δ =
++    C1# fields1...
++    C2# fields2...
++```
++
++and treats source values of type `T Δ` as enterable cells producing exactly one `T# Δ` head.
++
++This notation is explanatory only:
++
++* `T#` is not a source-visible type constructor;
++* `C1#`, `C2#`, ... are not source-visible constructors;
++* source pattern matching sees only the declared source constructors `C1`, `C2`, ...;
++* the hidden delayed state is not a constructor and never participates in exhaustiveness checking.
++
++A runtime value of lazy data type `T Δ` is in exactly one of the following observable implementation states:
++
++```text
++evaluated head : T# Δ
++delayed head   : memoized computation producing T# Δ
++```
++
++The delayed state stores a computation that produces one constructor head, not a value of type `T Δ`. Thus a lazy data
++cell is not a recursive chain of hidden `Delay (T Δ)` wrappers. Operationally, entering a lazy data cell performs one
++outer representation check; if the cell is delayed, the implementation evaluates the stored head computation, updates
++the cell with the resulting head when sharing is used, and returns that head.
++
++The delayed computation may itself perform arbitrary total computation before producing the head. That internal
++computation may enter other lazy values, call functions, allocate, or pattern match. The invariant is only that the cell
++being entered is updated with one `T# Δ` head, not with another hidden delayed `T Δ` value.
++
++Hidden operation:
++
++```text
++enter_T : T Δ -> T# Δ
++```
++
++Pattern matching, constructor-tag tests, and constructor-field projection on a lazy data family implicitly enter the
++scrutinee enough to reveal one hidden head. For example:
++
++```kappa
++match xs
++case Nil -> e_nil
++case Cons h t -> e_cons
++```
++
++behaves as if it first performed `enter_List xs` and then matched the resulting `List#` head. No source branch for the
++hidden delayed state is permitted or required.
++
++Source constructor types:
++
++Source constructors keep their ordinary source types. For the list example:
++
++```kappa
++Nil  : List a
++Cons : a -> List a -> List a
++```
++
++The field types are exactly the declared types. In particular, `Cons` does not have source type:
++
++```kappa
++Need a -> Need (List a) -> List a
++```
++
++unless the declaration explicitly writes such field types with ordinary `lazy` suspension-binder sugar.
++
++Constructor application and field demand:
++
++* Creating or entering a lazy data constructor head does not WHNF-normalize unmarked fields.
++* A field marked `!` is WHNF-entered before it is stored in the hidden constructor head.
++* The `!` marker does not force through `Thunk A` or `Need A`; it normalizes the field value itself to WHNF at its field
++  type.
++* Constructor defaults follow the same rule: an omitted default for a `!` field is WHNF-entered before storage, while an
++  omitted default for an unmarked field is not.
++* Putting an already constructed value into a field does not create a new suspension merely because the field is
++  unmarked. Capture happens when a delayed constructor-head computation is formed, not when a field slot receives an
++  already existing value.
++
++Lazy-data delay formation:
++
++The surface expression:
++
++```kappa
++lazy expr
++```
++
++keeps the suspension meaning of §16.2.2 when it synthesizes a type, or when it is checked against an expected type
++`Need A`.
++
++Additionally, when `lazy expr` is checked against an expected type whose head is known to be a `lazy data` family
++application `T Δ`, it may elaborate to a hidden delayed `T Δ` cell. The delayed computation is checked in a
++head-demanding context for `T# Δ`: running it evaluates `expr` far enough to produce one hidden constructor head for
++`T Δ`.
++
++This rule is expected-type-directed. If the expected type is absent or is not known to be a lazy data family, `lazy expr`
++does not silently produce a value of arbitrary type `A`; it uses the ordinary `Need A` rule of §16.2.2 or is rejected.
++
++Abstract and polymorphic lazy data:
++
++The compiler may form a lazy-data delay only when the expected type is known to carry lazy-data metadata. This knowledge
++may come from:
++
++* the concrete data-family head in the current module;
++* an imported module interface that exports the lazy-data capability for an opaque or abstract data family;
++* an `expect lazy data` declaration satisfied by an artifact that records compatible lazy-data metadata; or
++* explicit compiler-recognized evidence required by a future extension.
++
++Kappa does not infer this capability from erased type arguments at runtime. If source code is polymorphic over
++`a : Type` and attempts to form `lazy expr : a`, the program is rejected unless the type carries explicit lazy-data
++capability evidence in the source interface. The compiler is not permitted to perform runtime representation guessing
++based only on an erased type parameter.
++
++Quantities, captures, and positive lower bounds:
++
++A delayed lazy-data head is a closure boundary for quantity and capture checking.
++
++* Constructing a delayed head does not demand the variables mentioned by its body.
++* Uses inside the delayed head do not discharge positive lower-bound obligations unless the lazy data cell is entered
++  sufficiently before those obligations leave scope.
++* A delayed head may not allow a borrowed view or anonymous region to escape the region that validates it.
++* A delayed head that is memoized must not duplicate or retain linear or borrowed state except as allowed by the ordinary
++  quantity, borrow, capture, and memoization rules.
++
++These obligations attach to the delayed constructor-head computation. They do not attach to constructor fields merely
++because those fields are unmarked. Once a head is in WHNF, its fields are ordinary stored values of their declared
++source types.
++
++Totality and productivity:
++
++`lazy data` does not license arbitrary recursive definitions.
++
++A recursive delayed lazy-data definition is accepted only when the ordinary termination/productivity checker accepts the
++recursive SCC. Unguarded lazy recursion such as:
++
++```kappa
++bad : List Int
++let bad = lazy bad
++```
++
++is rejected unless a future extension explicitly supplies a productive interpretation. Guarded productive definitions
++such as cyclic or infinite lists must pass the same guarded-corecursion or productivity discipline used by the rest of
++Kappa.
++
++Constructor metadata preservation:
++
++Lazy-data constructor behavior is constructor metadata. It is preserved by the same metadata-preserving paths as named
++constructor application metadata:
++
++* direct constructor references;
++* transparent local bindings whose right-hand side is a single metadata-preserving constructor value;
++* record or package fields whose stored value records the metadata;
++* projection from such fields; and
++* import/export through module interfaces that record the metadata.
++
++Eta-expansion, ordinary lambda wrapping, sealing behind a signature that omits constructor metadata, conversion to an
++ordinary function type that does not record metadata, or storage through a field whose interface omits metadata destroys
++lazy-data constructor metadata. Positional application of the resulting ordinary function remains governed by ordinary
++function application.
++
++Definitional equality and normalization:
++
++The hidden delayed state of a lazy data value is not a source constructor and is not part of source-level pattern
++coverage. Definitional equality may enter a lazy data value only when the ordinary normalization rules require a
++constructor head and the delayed head computation is accepted as total and reducible in that normalization context.
++Entering a lazy data value reveals at most one hidden head for the current scrutinee.
++
++Implementation latitude:
++
++An implementation may choose whether a direct lazy-data constructor application allocates an already evaluated head cell
++or a delayed head cell, provided it preserves the source-visible demand behavior above. It may use update-in-progress
++markers, indirections, pointer tags, or other runtime machinery internally. Such machinery is not part of the source
++semantics and does not add constructors to the source data family.
+
+ <!-- data_types.data_declarations.naming_diagnostics -->
+ #### 10.1.2 Naming diagnostics for variable-like data and constructor names
+@@ -16849,6 +17094,9 @@
+   `lazy expr : Need A`.
+ * If `expr : Thunk A`, then `force expr : A`.
+ * If `expr : Need A`, then `force expr : A`.
++* If `lazy expr` is checked against an expected type headed by a known `lazy data` family `T`, it may instead elaborate
++  to the lazy-data delayed-head form of §10.1.1B. This rule is expected-type-directed and does not change the ordinary
++  synthesized type of `lazy expr`.
+
+ Capture restriction for `lazy`:
+
+@@ -16900,11 +17148,13 @@
+ * `lazy expr` does not evaluate `expr` at construction time.
+ * `force (thunk expr)` evaluates `expr` each time it is forced.
+ * `force (lazy expr)` evaluates `expr` at most once and memoizes the result.
++* When `lazy expr` elaborates to a lazy-data delayed head, entering the resulting data value evaluates `expr` far enough
++  to produce one hidden constructor head for the expected lazy data family and memoizes that head when sharing is used.
+
+ Control-flow boundary:
+
+-* `thunk expr` and `lazy expr` behave as user-written closure boundaries for `return`, `break`, and `continue`
+-  resolution.
++* `thunk expr`, ordinary `lazy expr : Need A`, and lazy-data delayed-head formation behave as user-written closure
++  boundaries for `return`, `break`, and `continue` resolution.
+
+ <!-- expressions.implicit_parameters -->
+ ### 16.3 Implicit parameters (`@`)
+@@ -32744,6 +32994,48 @@
+ * Surface `thunk expr`, `lazy expr`, and `force expr` elaborate to `Delay`, `Memo`, and `Force` respectively, or to an
+   observationally equivalent internal representation.
+
++<!-- compiler.kcore.lazy_data_head_cells -->
++#### 30.2.2A KCore lazy-data head cells
++
++A conforming implementation that accepts `lazy data` MUST behave as if each lazy data family has a hidden head
++representation and an enter operation.
++
++For a source declaration:
++
++```kappa
++lazy data T Δ : Type =
++    C1 fields1...
++    C2 fields2...
++```
++
++KCore behaves as if it contains a compiler-private head representation:
++
++```text
++T# Δ = C1# fields1... | C2# fields2...
++```
++
++and compiler-private operations observationally equivalent to:
++
++```text
++DelayHead_T : Need (T# Δ) -> T Δ
++Enter_T     : T Δ -> T# Δ
++```
++
++`T#`, `C#`, `DelayHead_T`, and `Enter_T` are explanatory names for required behavior. They are not source names, are not
++ordinary importable declarations, and need not exist with these spellings in an implementation.
++
++Rules:
++
++* `DelayHead_T` stores a memoized computation producing one hidden head `T# Δ`, not a computation producing `T Δ`.
++* `Enter_T` performs one outer enter operation on the supplied `T Δ` cell. If the cell already stores a head, that head
++  is returned. If the cell stores a delayed head computation, the computation is evaluated, the cell is updated with the
++  produced head when sharing is used, and that head is returned.
++* Pattern matching, constructor-tag tests, and constructor-field projections on `T Δ` elaborate through `Enter_T` before
++  selecting among the hidden heads.
++* `Enter_T` is not `Force` on `Need (T Δ)`. Lazy data does not add a source-visible suspension wrapper to the data type.
++* Ordinary `Thunk A` / `Need A` values remain governed by §30.2.2.
++
++
+ <!-- compiler.kcore.application_spines.places_path_operations -->
+ ##### 30.2.2.1 KCore places and path operations
+
+@@ -34338,7 +34630,9 @@
+   `unhide`, and `clarify` environment.
+ * ι-reduction: reducing `match`, `if`, constructor-tag tests, and case-tree decisions on known constructors/literals.
+   Knowledge may come either from the normalized scrutinee itself or from the active refinement context, as specified in
+-  §31.1.2.
++  §31.1.2. For a scrutinee whose type is headed by a `lazy data` family, normalization may enter the scrutinee to one
++  hidden constructor head when a constructor decision is required; the hidden delayed state is not a source constructor
++  and does not appear in residual case trees.
+ * η-equality (definitional):
+     * Functions: `f ≡ (\(x : A) -> f x)` when `x` is not free in `f`.
+     * Records: a record is definitionally equal to a record reconstructed from its projections (field-wise η), up to
+@@ -36314,6 +36608,7 @@
+      associatedNormalization    : List AssociatedNormalizationSummary,
+      projectionAccessorMetadata : List ProjectionAccessorSummary,
+      constructorApplicationData : List ConstructorApplicationMetadata,
++     lazyDataMetadata           : List LazyDataMetadata,
+      hLevelAndProofMetadata     : List ProofClassificationSummary,
+      featureGateProvenance      : List FeatureGateProvenance,
+      unsafeDebugLedgerSummary   : Option UnsafeDebugAuditLedgerSummary)
+@@ -36372,10 +36667,20 @@
+     bodies;
+ * the signatures of exported types, traits, constructors, associated static members, effect interfaces, and effect
+   operations, insofar as those entities are available to downstream code;
++* for each exported `lazy data` family, enough metadata for downstream checking to preserve §10.1.1B without consulting
++  source bodies, including:
++  * the data-family semantic identity;
++  * the fact that the family is `lazy-data` rather than `ordinary-data`;
++  * the hidden head-representation identity or an observationally equivalent fingerprint;
++  * whether the lazy-data capability is exported through an opaque or expected data interface;
++  * the exported constructor-head identities when constructors are visible;
++  * each exported constructor field's `ConstructorFieldStrictness`; and
++  * the metadata required to form and enter delayed heads at abstract lazy-data types when the interface exports that
++    capability.
+ * for each exported constructor:
+   * the ordered list of explicit constructor parameters;
+   * each parameter's source name, if any;
+-  * each parameter's quantity, implicitness, and suspension-sugar-expanded type;
++  * each parameter's quantity, implicitness, suspension-sugar-expanded type, and constructor-field strictness;
+   * whether each parameter has a default;
+   * for each defaulted parameter, the elaborated default expression in the defining module's context;
+   * the dependency prefix of each defaulted parameter, i.e. which earlier constructor parameters are in scope for that

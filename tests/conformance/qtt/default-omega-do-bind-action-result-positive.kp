@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+-- §9.3/§12.2: an omitted local binder quantity defaults to omega.
+-- The monadic action carrier itself is not the value bound by `let x <-`;
+-- storage facts must be computed for the action result.
+module main
+
+echo : String -> UIO String
+let echo s = pure s
+
+ok : UIO Unit
+let ok = do
+    let message <- echo "hello"
+    if message == "hello" then pure () else pure ()

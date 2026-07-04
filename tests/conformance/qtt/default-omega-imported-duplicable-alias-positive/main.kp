@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+import lib.rng as rand
+
+useRng : rand.Rng -> Int
+let useRng r = r + 1
+
+ok : Nat -> Int
+let ok seed0 =
+    let r0 = rand.seed seed0
+    useRng r0 + useRng r0

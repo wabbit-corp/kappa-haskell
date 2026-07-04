@@ -1,0 +1,124 @@
+module voxelcraft.world
+
+import voxelcraft.core.*
+import voxelcraft.natutil.*
+import voxelcraft.rng as rng
+
+public chunkWidth : Int
+let chunkWidth = 8
+
+public chunkHeight : Int
+let chunkHeight = 16
+
+public chunkDepth : Int
+let chunkDepth = 8
+
+public seaLevel : Int
+let seaLevel = 5
+
+public indexOf : Vec3 -> Int -> Int -> Int -> Int
+let indexOf size x y z =
+    x + (size.x * (z + (size.z * y)))
+
+public inBounds : Vec3 -> Int -> Int -> Int -> Bool
+let inBounds size x y z =
+    x >= 0 && y >= 0 && z >= 0 && x < size.x && y < size.y && z < size.z
+
+smoothStep : Int -> Int -> Int
+let smoothStep t scale =
+    divInt (t * t * ((3 * scale) - (2 * t))) (scale * scale)
+
+lerpScaled : Int -> Int -> Int -> Int -> Int
+let lerpScaled a b t scale =
+    divInt ((a * (scale - t)) + (b * t)) scale
+
+valueNoise : Int -> Int -> Int -> Int -> Int
+let valueNoise seed x z scale =
+    let ix = floorDiv x scale
+    let iz = floorDiv z scale
+    let fx = smoothStep (modPos x scale) scale
+    let fz = smoothStep (modPos z scale) scale
+    let a = rng.noise2 seed ix iz
+    let b = rng.noise2 seed (ix + 1) iz
+    let c = rng.noise2 seed ix (iz + 1)
+    let d = rng.noise2 seed (ix + 1) (iz + 1)
+    let ab = lerpScaled a b fx scale
+    let cd = lerpScaled c d fx scale
+    in lerpScaled ab cd fz scale
+
+public heightAt : Int -> Int -> Int -> Int
+let heightAt seed x z =
+    let continent = divInt (valueNoise seed x z 34 * 6) 1023
+    let hills = divInt (valueNoise (seed + 31) x z 13 * 4) 1023
+    let detail = divInt (valueNoise (seed + 99) x z 6 * 2) 1023
+    in clamp 4 15 (4 + continent + hills + detail)
+
+public blockFor : Int -> Int -> Int -> Int -> Block
+let blockFor seed x y z =
+    let surface = heightAt seed x z
+    in
+        if y > surface && y <= seaLevel then block Water
+        elif y > surface then block Air
+        elif y == surface then
+            if y <= seaLevel + 1 then block Sand else block Grass
+        elif y >= surface - 3 then block Dirt
+        else block Stone
+
+genX : Int -> ChunkCoord -> Int -> Int -> Int -> List Block -> List Block
+let genX seed coord y z x acc decreases max 0 (chunkWidth - x) =
+    if x >= chunkWidth then acc
+    else
+        let wx = (coord.cx * chunkWidth) + x
+        let wz = (coord.cz * chunkDepth) + z
+        in genX seed coord y z (x + 1) (blockFor seed wx y wz :: acc)
+
+genZ : Int -> ChunkCoord -> Int -> Int -> List Block -> List Block
+let genZ seed coord y z acc decreases max 0 (chunkDepth - z) =
+    if z >= chunkDepth then acc
+    else genZ seed coord y (z + 1) (genX seed coord y z 0 acc)
+
+genY : Int -> ChunkCoord -> Int -> List Block -> List Block
+let genY seed coord y acc decreases max 0 (chunkHeight - y) =
+    if y >= chunkHeight then reverse acc
+    else genY seed coord (y + 1) (genZ seed coord y 0 acc)
+
+public generateBlocks : Int -> ChunkCoord -> List Block
+let generateBlocks seed coord =
+    genY seed coord 0 Nil
+
+public generateChunk : Int -> Int -> Int -> Chunk
+let generateChunk seed cx cz =
+    let coord = ChunkCoord cx cz
+    in Chunk coord (Vec3 chunkWidth chunkHeight chunkDepth) (generateBlocks seed coord)
+
+public blockAt : Chunk -> Int -> Int -> Int -> Option Block
+let blockAt chunk x y z =
+    if inBounds chunk.size x y z then
+        listGet chunk.blocks (indexOf chunk.size x y z)
+    else None
+
+public spawnPosition : Int -> Vec3
+let spawnPosition seed =
+    let x = 4
+    let z = 4
+    let y = heightAt seed x z + 2
+    in Vec3 x y z
+
+public initialCamera : Int -> Camera
+let initialCamera seed =
+    let p = spawnPosition seed
+    in Camera (Vec3 ((p.x * 1000) + 500) (p.y * 1000) ((p.z * 1000) + 500)) 424 (-143)
+
+public initialPlayer : Int -> Player
+let initialPlayer seed =
+    Player (spawnPosition seed) (initialCamera seed) Grass
+
+public generateWorld : Int -> World
+let generateWorld seed =
+    World seed [generateChunk seed 0 0]
+
+public newGame : Int -> GameState
+let newGame seed =
+    let world = generateWorld seed
+    let player = initialPlayer seed
+    in GameState world player emptyMeshStats

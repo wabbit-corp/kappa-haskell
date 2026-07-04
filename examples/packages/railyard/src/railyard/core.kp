@@ -1,0 +1,30 @@
+module railyard.core
+
+-- Peano naturals. We use these only as the *static length index* of a route, so
+-- a route's type records exactly how many hops it has. They are erased at
+-- runtime — the index exists purely to let the type checker reason about length.
+data PNat : Type =
+    PZero
+    PSucc (pred : PNat)
+
+-- A route is a length-indexed list of the segments a cart must move onto, in
+-- order. The index `n` is the hop count: RDone is an empty route of length zero,
+-- and RHop prepends one segment, raising the index by one. Because the index
+-- shrinks on every constructor, any structural recursion over a Route is
+-- automatically total — the interpreter in `railyard.cart` needs no termination
+-- hint, and a malformed never-ending cart script simply cannot be expressed.
+data Route (n : PNat) : Type =
+    RDone : Route PZero
+    RHop  : (seg : TVar Bool) -> (rest : Route n) -> Route (PSucc n)
+
+-- Routes built from runtime data (a list whose length isn't known until the
+-- program runs) have a length the compiler can't see, so we seal the index
+-- existentially. `Pack` still *carries* the concrete length inside; it is only
+-- hidden from the outside. That hiding is exactly what lets one homogeneous
+-- `List SomeRoute` hold routes of different lengths.
+data SomeRoute : Type =
+    Pack : forall (n : PNat). Route n -> SomeRoute
+
+-- A delivery receipt a cart publishes when it parks at its destination siding.
+data Receipt : Type =
+    Receipt (cartId : Int) (moves : Int)

@@ -1,0 +1,46 @@
+module voxelcraft.natutil
+
+public abs : Int -> Int
+let abs n = if n < 0 then negInt n else n
+
+public max : Int -> Int -> Int
+let max a b = if a >= b then a else b
+
+public min : Int -> Int -> Int
+let min a b = if a <= b then a else b
+
+public clamp : Int -> Int -> Int -> Int
+let clamp lo hi n =
+    if n < lo then lo elif n > hi then hi else n
+
+public floorDiv : Int -> Int -> Int
+let floorDiv n d =
+    if d <= 0 then 0
+    elif n >= 0 then divInt n d
+    else negInt (divInt ((negInt n) + d - 1) d)
+
+public modPos : Int -> Int -> Int
+let modPos n d =
+    let r = modInt n d
+    in if r < 0 then r + d else r
+
+reverseGo : forall (a : Type). List a -> List a -> List a
+let reverseGo acc xs decreases listLength xs =
+    match xs
+    case Nil -> acc
+    case h :: t -> reverseGo (h :: acc) t
+
+public reverse : forall (a : Type). List a -> List a
+let reverse xs = reverseGo Nil xs
+
+public listGet : forall (a : Type). List a -> Int -> Option a
+let listGet xs i decreases listLength xs =
+    match xs
+    case Nil -> None
+    case h :: t -> if i <= 0 then Some h else listGet t (subInt i 1)
+
+public listIsEmpty : forall (a : Type). List a -> Bool
+let listIsEmpty xs =
+    match xs
+    case Nil -> True
+    case _ :: _ -> False

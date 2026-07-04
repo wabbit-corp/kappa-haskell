@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+type Vec2 : Type =
+    (x : Int, y : Int)
+
+data Direction : Type =
+    North
+    | South
+    | East
+    | West
+
+sign : Int -> Int
+let sign n = if n < 0 then -1 elif n > 0 then 1 else 0
+
+dirToward : Vec2 -> Vec2 -> Direction
+let dirToward from to =
+    let dx = sign (to.x - from.x)
+    let dy = sign (to.y - from.y)
+    in
+        if dx == 0 && dy < 0 then North
+        elif dx == 0 && dy > 0 then South
+        elif dx > 0 && dy == 0 then East
+        else West

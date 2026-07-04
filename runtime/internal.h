@@ -256,10 +256,27 @@ typedef struct Fiber  Fiber;
 typedef struct Scope  Scope;
 typedef struct ScopeLink ScopeLink;
 
+typedef enum {
+  KPARK_NONE = 0,
+  KPARK_FIBER_WAITERS,
+  KPARK_PROMISE_WAITERS,
+  KPARK_SCOPE_DRAIN
+} KParkKind;
+
 /* A parked fiber on a waiter list.  `want_exit` selects the resume value when
  * the awaited entity terminates: 1 => the terminal Exit (await/awaitPromise/
  * awaitMonitor); 0 => Unit (interrupt-wait, shutdownScope-wait). */
 struct Waiter { Fiber *f; int want_exit; Waiter *next; };
+
+static inline void krt2i_unlink_waiter(Waiter **head, Waiter *target) {
+  for (Waiter **p = head; *p; p = &(*p)->next) {
+    if (*p == target) {
+      *p = target->next;
+      target->next = NULL;
+      return;
+    }
+  }
+}
 
 /* A child's membership node in its supervision scope's child set (§32.2.3). */
 struct ScopeLink { Fiber *f; ScopeLink *prev, *next; };
@@ -308,6 +325,9 @@ struct Fiber {
                                       * moved-on fiber leaves no stale watchers (STM
                                       * review MAJOR). */
   int             stm_nreads;
+  KParkKind       park_kind;          /* non-STM waiter-list registration, if parked */
+  void           *park_owner;         /* Fiber*, Promise*, or Scope* selected above  */
+  Waiter         *park_waiter;        /* exact node owned by the selected list       */
   /* structured concurrency: the scope this fiber is ATTACHED to (its parent's
    * scope at fork), and its O(1) membership node therein. */
   Scope          *att_scope;
@@ -322,11 +342,12 @@ struct Fiber {
    * sets it; sleep_timer_cb / cancel_sleep clear it) — workers never deref it.
    * `sleep_armed` is the worker-visible mirror: set when a sleep is submitted,
    * cleared when the timer fires or the sleep is abandoned, so the abandonment
-   * path can route a cancel without touching libuv.  Without the dedup, a masked
-   * sleep woken by an interrupt re-armed a FRESH timer and orphaned the original,
-   * whose later callback could CAS-win an unrelated park and spuriously resume it. */
+   * path can route a cancel without touching libuv.  `sleep_seq` is the
+   * generation token for start/cancel/callback: a stale timer may close itself,
+   * but it must not wake a newer unrelated park. */
   void           *sleep_timer;       /* reactor-owned: the active SleepTimer*, or NULL */
   _Atomic int     sleep_armed;       /* worker-visible: a sleep timer may be live      */
+  _Atomic uint64_t sleep_seq;        /* sleep generation for stale timer rejection     */
   int             blocking_armed;    /* guarded by lock: parked in non-cancellable rt-blocking */
   _Atomic int     blocking_depth;    /* source-level blocking dynamic extent depth      */
   /* §32.2.6 safe points (fix SP).  A long-running NON-CEDING loop (a CK-machine
@@ -378,6 +399,7 @@ struct TVar {
  * Returns 1 if the transaction committed (value placed in f->cur via pure), 0 if
  * the fiber parked on `retry`. */
 int     krt2i_op_atomically(Rt *rt, Fiber *f, KValue *stm);
+void    krt2i_stm_unpark(Fiber *f);
 
 /* ── promises (§18.1.9) ─────────────────────────────────────────────────── */
 typedef struct Promise {
@@ -396,7 +418,13 @@ typedef struct RQNode { Fiber *f; struct RQNode *next; } RQNode;
  * ABANDONED by an interrupt (masked re-park OR unmasked unwind) so the original
  * timer cannot fire later and spuriously resume an unrelated park. */
 typedef enum { IO_SLEEP, IO_CANCEL_SLEEP } IoOp;
-typedef struct IoReq { IoOp op; Fiber *f; uint64_t nanos; struct IoReq *next; } IoReq;
+typedef struct IoReq {
+  IoOp op;
+  Fiber *f;
+  uint64_t nanos;
+  uint64_t sleep_seq;
+  struct IoReq *next;
+} IoReq;
 
 /* ── the runtime ────────────────────────────────────────────────────────── */
 struct Rt {
@@ -458,13 +486,24 @@ void    krt2i_rq_push(Rt *rt, Fiber *f);      /* enqueue a runnable fiber + sign
 void    krt2i_resume(Rt *rt, Fiber *f);       /* mark fiber graph shared; status=RUNNABLE; rq_push */
 void    krt2i_mark_fiber_shared(Fiber *f);    /* mark fiber-owned values before publication */
 void    krt2i_mark_fgn_payload_shared(const char *kind, void *payload); /* mark runtime-private K_FGN payloads */
+#ifndef NDEBUG
+typedef void (*Krt2AssertSharedChild)(void *ctx, KValue *v);
+void    krt2i_assert_fgn_payload_shared(const char *kind, void *payload,
+                                        Krt2AssertSharedChild assert_child,
+                                        void *ctx);
+#endif
 /* Idempotent wake of a PARKED fiber (REVIEW.md B3d): CAS F_PARKED -> F_RUNNABLE;
  * only the winner enqueues, so two wakers racing (e.g. a promise completion and
  * an interrupt) cannot double-enqueue, and a late waker of an already-resumed or
- * DONE fiber is a safe no-op.  `resume_val`, if non-NULL, becomes the fiber's
- * next `cur` (interrupt delivery, checked at step entry, takes precedence). */
+ * DONE fiber is a safe no-op.  `resume_val`, if non-NULL, is owned by this call:
+ * the CAS winner installs it as the fiber's next `cur`, and a stale loser drops it. */
 void    krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val);
+void    krt2i_register_park_waiter(Fiber *f, KParkKind kind, void *owner, Waiter *w);
+void    krt2i_clear_park_waiter(Fiber *f);
+void    krt2i_cleanup_parked_wait(Fiber *f);
 int     krt2i_deliver_pending_before_park(Rt *rt, Fiber *f);
+int     krt2i_claim_pending_after_park(Fiber *f, int park_unmasked);
+int     krt2i_deliver_claimed_interrupt(Rt *rt, Fiber *f);
 void    krt2i_all_add(Rt *rt, Fiber *f);      /* add to strong root set             */
 void    krt2i_all_remove(Rt *rt, Fiber *f);   /* drop from strong root set          */
 

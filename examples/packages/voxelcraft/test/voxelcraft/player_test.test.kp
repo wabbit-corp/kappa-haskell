@@ -1,0 +1,24 @@
+module voxelcraft.player_test
+
+import voxelcraft.core.*
+import voxelcraft.input.*
+import voxelcraft.player as player
+import voxelcraft.world as world
+
+public testForwardMovesPlayer : Bool
+let testForwardMovesPlayer =
+    let p0 = world.initialPlayer 42
+    let p1 = player.updatePlayer 42 (InputFrame 2 0 0 16) p0
+    in p1.camera.position.z != p0.camera.position.z || p1.camera.position.x != p0.camera.position.x
+
+public testMouseTurnsCamera : Bool
+let testMouseTurnsCamera =
+    let p0 = world.initialPlayer 42
+    let p1 = player.updatePlayer 42 (InputFrame 0 12 0 16) p0
+    in p1.camera.yaw != p0.camera.yaw
+
+public testPitchIsClamped : Bool
+let testPitchIsClamped =
+    let p0 = world.initialPlayer 42
+    let p1 = player.updatePlayer 42 (InputFrame 0 0 (-10000) 16) p0
+    in p1.camera.pitch <= 770

@@ -186,11 +186,12 @@ elif [ ! -f "$gate_ll" ]; then
   echo "[FAIL] LLVM RC gate — emitted .ll file missing"
   fail=$((fail+1))
 elif grep -q 'call void @krc_set_enabled(i32 0)' "$gate_ll" \
-     && ! grep -q 'krc_mark_shared_recursive' "$gate_ll"; then
-  echo "[PASS] LLVM RC gate — runtime RC disabled until LLVM emits ownership maintenance"
+     && grep -q 'krc_mark_shared_recursive' "$gate_ll" \
+     && ! grep -qE 'call .*@kdup|call .*@kdrop' "$gate_ll"; then
+  echo "[PASS] LLVM RC gate — counting/freeing disabled; publish marking retained"
 else
-  echo "[FAIL] LLVM RC gate — expected krc_set_enabled(0) and no generated RC markers"
-  grep -nE 'krc_set_enabled|krc_mark_shared_recursive' "$gate_ll" | sed 's/^/    /' || true
+  echo "[FAIL] LLVM RC gate — expected krc_set_enabled(0), publish marking, and no ownership kdup/kdrop"
+  grep -nE 'krc_set_enabled|krc_mark_shared_recursive|kdup|kdrop' "$gate_ll" | sed 's/^/    /' || true
   fail=$((fail+1))
 fi
 cleanup_generated_for_source "$gate_src"

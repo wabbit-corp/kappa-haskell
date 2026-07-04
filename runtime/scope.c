@@ -55,7 +55,7 @@ void krt2i_interrupt_request(Rt *rt, Fiber *target, KValue *cause) {
   }
   wake_now = !target->blocking_armed;
   pthread_mutex_unlock(&target->lock);
-  /* Pair with the seq_cst fence in krt2i_deliver_pending_after_park: order this
+  /* Pair with the seq_cst fence in krt2i_claim_pending_after_park: order this
    * interrupt_pending store before the wake's F_PARKED->F_RUNNABLE CAS so a fiber
    * committing F_PARKED concurrently cannot BOTH miss our wake (CAS fails because
    * it is still F_RUNNING) AND miss our flag (it re-checks after parking).  Closes
@@ -78,6 +78,7 @@ int krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wa
   if (!wait) return 1;
   int dp = krt2i_deliver_pending_before_park(rt, f);
   if (dp != 0) return dp > 0 ? 1 : 0;
+  krt2i_mark_fiber_shared(f);
   pthread_mutex_lock(&target->lock);
   if (atomic_load_explicit(&target->status, memory_order_acquire) == F_DONE) {
     pthread_mutex_unlock(&target->lock);
@@ -85,10 +86,18 @@ int krt2i_op_interrupt(Rt *rt, Fiber *f, KValue *target_h, KValue *cause, int wa
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
-  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 0; w->next = target->waiters; target->waiters = w;
+  krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, target, w);
+  int park_unmasked = (f->mask_depth == 0);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&target->lock);
+  if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+    pthread_mutex_lock(&target->lock);
+    krt2i_unlink_waiter(&target->waiters, w);
+    pthread_mutex_unlock(&target->lock);
+    krt2i_clear_park_waiter(f);
+    return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+  }
   return 0;
 }
 
@@ -174,6 +183,7 @@ KValue *krt2i_op_fork_in(Rt *rt, Fiber *parent, KValue *scope_h, KValue *action)
 int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
   Scope *sc = (Scope *)kas_fgn_kind(scope_h, KRT2_KIND_SCOPE);
 
+  krt2i_mark_fiber_shared(f);
   pthread_mutex_lock(&sc->lock);
   atomic_store(&sc->shutting, 1);
   int n = 0;
@@ -182,10 +192,13 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
   int i = 0;
   for (ScopeLink *l = sc->children; l; l = l->next) kids[i++] = l->f;
   int parked = 0;
+  int park_unmasked = 0;
+  Waiter *w = NULL;
   if (atomic_load(&sc->live) > 0) {
-    Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
-    krt2i_mark_fiber_shared(f);
+    w = (Waiter *)GC_MALLOC(sizeof(Waiter));
     w->f = f; w->want_exit = 0; w->next = sc->drain_waiters; sc->drain_waiters = w;
+    krt2i_register_park_waiter(f, KPARK_SCOPE_DRAIN, sc, w);
+    park_unmasked = (f->mask_depth == 0);
     atomic_store(&f->status, F_PARKED);
     parked = 1;
   }
@@ -195,7 +208,16 @@ int krt2i_op_shutdown_scope(Rt *rt, Fiber *f, KValue *scope_h) {
   KValue *cause = krt2i_interrupt_cause("ScopeShutdown", krt2i_some(kint((int64_t)f->id)));
   for (i = 0; i < n; i++) krt2i_interrupt_request(rt, kids[i], cause);
 
-  if (parked) return 0;       /* a detach will wake us when live hits 0       */
+  if (parked) {
+    if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+      pthread_mutex_lock(&sc->lock);
+      krt2i_unlink_waiter(&sc->drain_waiters, w);
+      pthread_mutex_unlock(&sc->lock);
+      krt2i_clear_park_waiter(f);
+      return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+    }
+    return 0;                 /* a detach will wake us when live hits 0       */
+  }
   f->cur = krt2_pure(krt2i_unit());
   return 1;
 }
@@ -277,17 +299,26 @@ int krt2i_op_await_monitor(Rt *rt, Fiber *f, KValue *mon_h) {
   Fiber *t = m->target;
   int dp = krt2i_deliver_pending_before_park(rt, f);
   if (dp != 0) return dp > 0 ? 1 : 0;
+  krt2i_mark_fiber_shared(f);
   pthread_mutex_lock(&t->lock);
   if (atomic_load_explicit(&t->status, memory_order_acquire) == F_DONE) {
     KValue *ex = t->exit;
     pthread_mutex_unlock(&t->lock);
-    f->cur = krt2_pure(ex);
+    f->cur = krt2_pure(kdup(ex));
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
-  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = t->waiters; t->waiters = w;  /* observe Exit */
+  krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, t, w);
+  int park_unmasked = (f->mask_depth == 0);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&t->lock);
+  if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+    pthread_mutex_lock(&t->lock);
+    krt2i_unlink_waiter(&t->waiters, w);
+    pthread_mutex_unlock(&t->lock);
+    krt2i_clear_park_waiter(f);
+    return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+  }
   return 0;
 }

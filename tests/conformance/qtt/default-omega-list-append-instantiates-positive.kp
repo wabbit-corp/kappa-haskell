@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Entity : Type =
+    Entity (id : Int)
+
+mkEntity : Int -> Entity
+let mkEntity n = Entity n
+
+combine : List Int -> List Int -> Int
+let combine xs ys =
+    let left = map mkEntity xs
+    let right = map mkEntity ys
+    let all = listAppend left right
+    in if listLength all == listLength all then listLength all else 0

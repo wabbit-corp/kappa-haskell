@@ -1,0 +1,174 @@
+module voxelcraft.core
+
+data GameError : Type =
+    RendererError (message : String)
+
+data Vec3 : Type =
+    Vec3 (x : Int) (y : Int) (z : Int)
+
+data BlockKind : Type =
+    Air
+    Grass
+    Dirt
+    Stone
+    Sand
+    Water
+    Wood
+    Leaves
+    Glass
+    Torch
+
+data FaceDir : Type =
+    FaceTop
+    FaceNorth
+    FaceSouth
+    FaceWest
+    FaceEast
+    FaceBottom
+
+data Block : Type =
+    Block
+        (kind : BlockKind)
+        (light : Int)
+
+data ChunkCoord : Type =
+    ChunkCoord (cx : Int) (cz : Int)
+
+data Chunk : Type =
+    Chunk
+        (coord : ChunkCoord)
+        (size : Vec3)
+        (blocks : List Block)
+
+data Camera : Type =
+    Camera
+        (position : Vec3)
+        (yaw : Int)
+        (pitch : Int)
+
+data Player : Type =
+    Player
+        (position : Vec3)
+        (camera : Camera)
+        (selected : BlockKind)
+
+data World : Type =
+    World
+        (seed : Int)
+        (chunks : List Chunk)
+
+data MeshStats : Type =
+    MeshStats
+        (chunks : Int)
+        (solidBlocks : Int)
+        (visibleFaces : Int)
+        (vertexCount : Int)
+        (indexCount : Int)
+
+data GameState : Type =
+    GameState
+        (world : World)
+        (player : Player)
+        (mesh : MeshStats)
+
+blockKindCode : BlockKind -> Int
+let blockKindCode kind =
+    match kind
+    case Air -> 0
+    case Grass -> 1
+    case Dirt -> 2
+    case Stone -> 3
+    case Sand -> 4
+    case Water -> 5
+    case Wood -> 6
+    case Leaves -> 7
+    case Glass -> 8
+    case Torch -> 9
+
+instance Eq BlockKind =
+    let (==) a b = blockKindCode a == blockKindCode b
+
+public blockName : BlockKind -> String
+let blockName kind =
+    match kind
+    case Air -> "air"
+    case Grass -> "grass"
+    case Dirt -> "dirt"
+    case Stone -> "stone"
+    case Sand -> "sand"
+    case Water -> "water"
+    case Wood -> "wood"
+    case Leaves -> "leaves"
+    case Glass -> "glass"
+    case Torch -> "torch"
+
+public faceDirCode : FaceDir -> Int
+let faceDirCode dir =
+    match dir
+    case FaceTop -> 0
+    case FaceNorth -> 1
+    case FaceSouth -> 2
+    case FaceWest -> 3
+    case FaceEast -> 4
+    case FaceBottom -> 5
+
+public faceDirName : FaceDir -> String
+let faceDirName dir =
+    match dir
+    case FaceTop -> "top"
+    case FaceNorth -> "north"
+    case FaceSouth -> "south"
+    case FaceWest -> "west"
+    case FaceEast -> "east"
+    case FaceBottom -> "bottom"
+
+public block : BlockKind -> Block
+let block kind =
+    let light =
+        match kind
+        case Torch -> 14
+        case _ -> 0
+    in Block kind light
+
+public isRenderable : BlockKind -> Bool
+let isRenderable kind =
+    kind != Air
+
+public isOpaque : BlockKind -> Bool
+let isOpaque kind =
+    match kind
+    case Air -> False
+    case Water -> False
+    case Leaves -> False
+    case Glass -> False
+    case Torch -> False
+    case _ -> True
+
+public isLiquid : BlockKind -> Bool
+let isLiquid kind =
+    kind == Water
+
+public addVec3 : Vec3 -> Vec3 -> Vec3
+let addVec3 a b =
+    Vec3 (a.x + b.x) (a.y + b.y) (a.z + b.z)
+
+public emptyMeshStats : MeshStats
+let emptyMeshStats =
+    MeshStats 0 0 0 0 0
+
+public mergeMeshStats : MeshStats -> MeshStats -> MeshStats
+let mergeMeshStats a b =
+    MeshStats (a.chunks + b.chunks) (a.solidBlocks + b.solidBlocks) (a.visibleFaces + b.visibleFaces) (a.vertexCount + b.vertexCount) (a.indexCount + b.indexCount)
+
+public meshStatsFromFaces : Int -> Int -> Int -> MeshStats
+let meshStatsFromFaces chunks solid faces =
+    MeshStats chunks solid faces (faces * 4) (faces * 6)
+
+public meshSummary : MeshStats -> String
+let meshSummary stats =
+    let chunks = stringAppend "chunks=" (showInt stats.chunks)
+    let blocks = stringAppend " blocks=" (showInt stats.solidBlocks)
+    let faces = stringAppend " faces=" (showInt stats.visibleFaces)
+    let vertices = stringAppend " vertices=" (showInt stats.vertexCount)
+    let indices = stringAppend " indices=" (showInt stats.indexCount)
+    in stringAppend chunks (stringAppend blocks (stringAppend faces (stringAppend vertices indices)))

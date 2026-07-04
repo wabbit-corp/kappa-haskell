@@ -1,0 +1,36 @@
+module railyard.track
+
+-- A segment is one block of single-lane track, modelled as a one-slot
+-- transactional cell: True means a cart is currently on it, False means it's
+-- clear. All access goes through `atomically`, so the runtime serialises
+-- conflicting moves for us.
+
+newSegFree : UIO (TVar Bool)
+let newSegFree = atomically (newTVar False)
+
+newSegOcc : UIO (TVar Bool)
+let newSegOcc = atomically (newTVar True)
+
+-- The signalling rule of the whole simulation, in a single transaction: a cart
+-- may step from `here` onto `next` only when `next` is clear. If `next` is
+-- occupied the transaction calls `retry`, which parks this cart until some other
+-- transaction frees that segment — the STM equivalent of a block signal holding
+-- a train until the line ahead is empty. Claiming `next` and releasing `here`
+-- in one atomic step is what makes it impossible for two carts to share a
+-- segment, even though many carts are moving at once.
+--
+-- Precondition (preserved by construction in `railyard.yard`, not checked here):
+-- the caller holds `here` and `here` is distinct from `next`. The function only
+-- guards `next`; calling it with `here == next` or a `here` it doesn't occupy
+-- would corrupt the occupancy count.
+moveTo : TVar Bool -> TVar Bool -> STM Unit
+let moveTo here next = do
+    occ <- readTVar next
+    if occ then retry
+    else do
+        writeTVar next True
+        writeTVar here False
+
+-- Read a segment's occupancy on its own (used by the dispatcher's final audit).
+segOccupied : TVar Bool -> UIO Bool
+let segOccupied s = atomically (readTVar s)

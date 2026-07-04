@@ -1,0 +1,37 @@
+module railyard.cart
+
+import railyard.core.*
+import railyard.track as track
+import std.prelude.(type Exit(..))
+import std.atomic.(type AtomicRef)
+import std.atomic.(ctor RmwSeqCst)
+import std.atomic.(term atomicFetchAdd)
+
+-- Drive a cart along a length-indexed route, one atomic hop at a time, tallying
+-- every move into the shared lock-free counter. This is the function the
+-- dependent index pays off in: the recursion is structural on the route's static
+-- length, so the compiler certifies it total with no hint — a cart's script
+-- provably terminates. `atomicFetchAdd` accumulates the move count without locks
+-- and without lost updates across all the cart fibers.
+runRoute : forall (n : PNat). Route n -> TVar Bool -> AtomicRef Integer -> UIO Int
+let runRoute route here counter =
+    match route
+    case RDone -> pure 0
+    case RHop next rest -> do
+        atomically (track.moveTo here next)
+        old <- atomicFetchAdd RmwSeqCst counter 1
+        let _ = old
+        steps <- runRoute rest next counter
+        pure (addInt 1 steps)
+
+-- One cart, as a fiber: unwrap its sealed route, drive it from its starting
+-- siding `start`, then publish a receipt so the dispatcher can confirm delivery
+-- and tally the conserved move total.
+runCart : Int -> SomeRoute -> TVar Bool -> AtomicRef Integer -> Promise Void Receipt -> UIO Unit
+let runCart cid sr start counter done =
+    match sr
+    case Pack route -> do
+        moves <- runRoute route start counter
+        d <- completePromise done (Success (Receipt cid moves))
+        let _ = d
+        pure ()

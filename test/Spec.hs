@@ -1149,8 +1149,9 @@ perceusS32FreeOnZeroEntryGates = do
 -- publication cells.  The C backend, which emits ownership maintenance and can
 -- free on zero, must mark the freshly-built value graph shared before writing
 -- the static cache.  LLVM currently emits no matching ownership maintenance, so
--- its generated binaries must explicitly disable runtime RC effects and avoid
--- emitting cache-publication RC markers until LLVM dup/drop emission lands.
+  -- its generated binaries must explicitly disable runtime counting/freeing
+  -- effects; publication marking still emits because the shared bit is
+  -- synchronization metadata for process-wide caches.
 globalCachePublicationMarksShared :: IO Bool
 globalCachePublicationMarksShared = do
   let src =
@@ -1174,7 +1175,7 @@ globalCachePublicationMarksShared = do
       checkLL llsrc =
         "declare void @krc_set_enabled(i32)" `T.isInfixOf` llsrc
           && "call void @krc_set_enabled(i32 0)" `T.isInfixOf` llsrc
-          && not ("krc_mark_shared_recursive" `T.isInfixOf` llsrc)
+          && "krc_mark_shared_recursive" `T.isInfixOf` llsrc
           && "load atomic ptr, ptr @" `T.isInfixOf` llsrc
           && " acquire, align 8" `T.isInfixOf` llsrc
           && " release, align 8" `T.isInfixOf` llsrc
@@ -1197,7 +1198,7 @@ globalCachePublicationMarksShared = do
         pure False
       Right (llsrc, _) -> do
         unless (checkLL llsrc) $ do
-          putStrLn "globalCachePublicationMarksShared FAILED: LLVM cache publication did not keep runtime RC disabled"
+          putStrLn "globalCachePublicationMarksShared FAILED: LLVM cache publication did not mark shared while keeping runtime RC disabled"
           putStrLn (T.unpack llsrc)
         pure (checkLL llsrc)
   pure (cOk && llOk)

@@ -1,0 +1,6 @@
+module lib.player
+
+import lib.input as input
+
+public update : input.InputFrame -> Int
+let update frame = frame.dtMs + 1

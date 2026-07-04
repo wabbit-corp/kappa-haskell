@@ -1,0 +1,10 @@
+/dist-newstyle/
+/out/
+/src/**/*.kappa.c
+/src/**/*.kappa.h
+/src/**/*.native.prov
+/test/**/*.kappa.c
+/test/**/*.kappa.h
+/test/**/*.native.prov
+/voxelcraft
+/voxelcraft-tests

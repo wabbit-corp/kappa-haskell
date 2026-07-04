@@ -94,8 +94,8 @@ right one*).
   interruptible, release **always** runs even on interrupt), and `ensuring`.
 - *Parallel STM* (`rt-shared-stm`) — GHC-style optimistic transactions
   ([`stm.c`](../stm.c)): `atomically`/`TVar`/`readTVar`/`writeTVar`/
-  `retry`/`check`/`orElse`, with lock-free versioned reads, commit-lock
-  validation, and `retry` parking on watcher lists. Verified **serializable under
+  `retry`/`check`/`orElse`, with read sampling and value duplication under the
+  STM lock, commit-time validation, and `retry` parking on watcher lists. Verified **serializable under
   real parallelism** — 16 fibers × 200 transfers contending on 2 TVars across 12
   cores conserve their total (60× clean).
 

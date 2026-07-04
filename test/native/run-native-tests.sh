@@ -71,6 +71,11 @@ if ! have_driver; then
 fi
 
 rm -rf "$WORK"; mkdir -p "$WORK"
+
+runtime_tsan_supported() {
+  make -C "$ROOT/runtime" tsan-supported >/dev/null 2>&1
+}
+
 echo "== building the kappa CLI =="
 timeout 600 cabal build -v0 exe:kappa || { echo "FAIL: cabal build"; exit 1; }
 
@@ -178,7 +183,7 @@ run_expected_fail_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path; do run_diff_case "$c"; done
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="
@@ -248,8 +253,8 @@ if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$CASES/blocking-source.kp" --emi
 else
   echo "   FAIL: blocking-source LLVM --emit-c build failed"; cat "$btmp/llvm.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
-echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3 gates =="
-if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq build/perceus_s3_free build/perceus_s3_poison >"$btmp/runtime.log" 2>&1; then
+echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3/S4 gates =="
+if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq build/perceus_s3_free build/perceus_s3_poison build/perceus_s4_shared >"$btmp/runtime.log" 2>&1; then
   if timeout 30 "$ROOT/runtime/build/blocking_lane" >"$btmp/blocking_lane.out" 2>"$btmp/blocking_lane.err"; then
     echo "   ok (runtime blocking lane preserves scheduler progress and source interruption)"
   else
@@ -285,8 +290,52 @@ if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/
     cat "$btmp/perceus_s3_poison.out" "$btmp/perceus_s3_poison.err" | sed 's/^/     /'
     fails=$((fails+1))
   fi
+  if timeout 30 "$ROOT/runtime/build/perceus_s4_shared" >"$btmp/perceus_s4_shared.out" 2>"$btmp/perceus_s4_shared.err"; then
+    echo "   ok (Perceus S4 shared counted-RC runtime harness passed)"
+  else
+    echo "   FAIL: Perceus S4 shared counted-RC runtime harness failed"
+    cat "$btmp/perceus_s4_shared.out" "$btmp/perceus_s4_shared.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
 else
-  echo "   FAIL: runtime blocking/fgn/S3 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
+  echo "   FAIL: runtime blocking/fgn/S3/S4 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+
+echo "== Perceus S4: ThreadSanitizer shared-RC concurrency corpus =="
+if runtime_tsan_supported; then
+  if timeout 300 make -C "$ROOT/runtime" tsan-rc >"$btmp/runtime-tsan-rc.log" 2>&1; then
+    echo "   ok (TSan-clean shared-RC concurrency corpus)"
+  else
+    echo "   FAIL: Perceus S4 TSan shared-RC concurrency corpus failed"
+    sed 's/^/     /' "$btmp/runtime-tsan-rc.log" | head -80
+    fails=$((fails+1))
+  fi
+else
+  if [ "${KAPPA_REQUIRE_TSAN:-0}" = "1" ]; then
+    echo "   FAIL: ThreadSanitizer is not supported by the detected C driver"
+    fails=$((fails+1))
+  else
+    echo "   skip (ThreadSanitizer unsupported by detected C driver; set KAPPA_REQUIRE_TSAN=1 to make this fatal)"
+  fi
+fi
+
+echo "== Perceus S4: poison shared-RC concurrency corpus =="
+if timeout 300 make -C "$ROOT/runtime" poison-rc >"$btmp/runtime-poison-rc.log" 2>&1; then
+  echo "   ok (poison-clean shared-RC concurrency corpus under KAPPA_POISON=1)"
+else
+  echo "   FAIL: Perceus S4 poison shared-RC concurrency corpus failed"
+  sed 's/^/     /' "$btmp/runtime-poison-rc.log" | head -80
+  fails=$((fails+1))
+fi
+
+echo "== Perceus S4: biased RC fast-path performance gate =="
+if timeout 120 make -C "$ROOT/runtime" bench-s4-rc >"$btmp/runtime-s4-rc-bench.log" 2>&1; then
+  sed 's/^/   /' "$btmp/runtime-s4-rc-bench.log"
+  echo "   ok (thread-local RC fast path beats shared atomic slow path)"
+else
+  echo "   FAIL: Perceus S4 biased RC performance gate failed"
+  sed 's/^/     /' "$btmp/runtime-s4-rc-bench.log" | head -80
+  fails=$((fails+1))
 fi
 
 echo "== Perceus S3.2: generated drops are non-vacuous and poison-clean =="
@@ -312,10 +361,11 @@ rm -f "$s32c"
 if KAPPA_PERCEUS_RC=0 timeout 120 $KAPPA build "$s32src" --emit-c -o "$s32tmp/perceus_s3_generated_drops_off_emit" >"$s32tmp/emit-off.log" 2>&1; then
   s32_off_main="$(awk '/^int main\(void\) \{/{f=1} f{print} f&&/^}/{exit}' "$s32c")"
   if printf '%s' "$s32_off_main" | grep -qE 'krc_set_enabled\(0\);' \
-     && ! grep -qE 'kdrop\(|kdup\(|krc_mark_shared_recursive' "$s32c"; then
-    echo "   ok-off-shape (explicit RC-off suppresses generated ownership maintenance)"
+     && grep -qE 'krc_mark_shared_recursive' "$s32c" \
+     && ! grep -qE 'kdrop\(|kdup\(' "$s32c"; then
+    echo "   ok-off-shape (explicit RC-off suppresses generated ownership maintenance but keeps publish marking)"
   else
-    echo "   FAIL: explicit RC-off generated-drop fixture still emitted ownership maintenance or missed runtime RC gate"
+    echo "   FAIL: explicit RC-off generated-drop fixture emitted ownership maintenance or missed runtime RC/publish gates"
     [ -f "$s32c" ] && grep -nE 'kdrop|kdup|krc_mark_shared_recursive|krc_set_enabled' "$s32c" | sed 's/^/     /'
     fails=$((fails+1))
   fi
@@ -893,8 +943,9 @@ fi
 
 # Perceus S3.4: the explicit RC-off baseline must keep ownership helpers and
 # runtime RC effects inert. This focuses a consuming variable use that RC-on may
-# materialize with kdup, but `KAPPA_PERCEUS_RC=0` must preserve the old baseline
-# code shape and disable runtime kdrop/kdup effects.
+# materialize with kdup, but `KAPPA_PERCEUS_RC=0` must preserve the old ownership
+# baseline shape, disable runtime kdrop/kdup effects, and still keep S4 publish
+# marking for shared-bit synchronization.
 echo "== Perceus S3.4: explicit RC-off generated C has no ownership kdup =="
 offtmp="$WORK/rc-off-owned-use"; mkdir -p "$offtmp"
 offsrc="$offtmp/rc_off_owned_use.kp"
@@ -914,9 +965,10 @@ if KAPPA_PERCEUS_RC=0 timeout 120 $KAPPA build "$offsrc" --emit-c -o "$offtmp/rc
   offmain="$(awk '/^int main\(void\) \{/{f=1} f{print} f&&/^}/{exit}' "$offc")"
   if printf '%s' "$offworker" | grep -qE 'kg_main_2e_consume\(\), p0' \
      && ! printf '%s' "$offworker" | grep -qE 'kdup\(' \
-     && ! grep -qE 'kdrop\(|krc_mark_shared_recursive' "$offc" \
+     && grep -qE 'krc_mark_shared_recursive' "$offc" \
+     && ! grep -qE 'kdrop\(' "$offc" \
      && printf '%s' "$offmain" | grep -qE 'krc_set_enabled\(0\);'; then
-    echo "   ok (explicit RC-off disables runtime RC and leaves ownership maintenance out of generated C)"
+    echo "   ok (explicit RC-off disables runtime RC and leaves ownership maintenance out of generated C while keeping publish marking)"
   else
     echo "   FAIL: explicit RC-off did not disable runtime RC or generated ownership maintenance"
     printf '%s\n' "$offmain" | sed 's/^/     /'

@@ -139,7 +139,7 @@ data GenState = GenState
   , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC side table (see "Kappa.Ownership"): per-definition binders, per-use last-use facts, and the S2.3b consume/read bit carried from @csOwnership@ beside 'gsSuspenders'. The explicit OFF baseline ignores it and disables runtime RC effects in the generated entry point; the default native path validates and emits RC operations from it.
   , gsCurOwn :: !(Maybe OwnInfo) -- ^ The 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ and @oiUseConsumes@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
   , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
-  , gsRcEnabled :: !Bool -- ^ Perceus RC master gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so S3 runtime barriers do not act without matching generated ownership maintenance. When enabled, every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
+  , gsRcEnabled :: !Bool -- ^ Perceus RC maintenance gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so generated @kdup@/@kdrop@ maintenance has no runtime counting/freeing effect. S4 publish marking still emits because shared bits are synchronization metadata for Ref/Array storage. When enabled, every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
   , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path, missing consume/read bit for a resolved use, or S2.3d branch-drop binder metadata drift). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
   , gsRcBranchVisited :: !(Set (GName, [Int])) -- ^ S2.3d branch-drop paths that codegen reached under the current ownership table. Compared with @oiBranchDropSites@ at the end of RC-on generation so a stale path key cannot silently leak.
   , gsCtors :: !(Map GName CtorInfo)
@@ -599,9 +599,9 @@ rcPatSlotDroppableHere k = do
         _ -> pure False
 
 -- | Emit a @kdrop(<lval>)@ statement against a bound C LOCAL (b.4 / R-flat:
--- ALWAYS the bound local, never a fresh @kvar(env,i)@ rvalue re-read). A runtime
--- rc decrement that frees nothing under the Boehm backstop; the @kdrop@ assert is
--- the primary S2 differential check (it trips on an underflow before any UAF).
+-- ALWAYS the bound local, never a fresh @kvar(env,i)@ rvalue re-read). The
+-- runtime decrements RC and, in S3/S4, may reclaim strict FREESET values at zero;
+-- the @kdrop@ assert remains the primary differential check for underflow.
 rcEmitDrop :: Text -> Gen ()
 rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
 
@@ -981,7 +981,8 @@ utf8Bytes c =
 -- ── Top-level driver ─────────────────────────────────────────────────
 
 -- | The primitive names implemented by the base @kappart@ runtime
--- (kappart.c).  Kept in lock-step with that file: emitting a primitive
+-- (the split C runtime under @runtime/@). Kept in lock-step with that runtime:
+-- emitting a primitive
 -- outside this set (plus any FFI extension) is a compile-time
 -- 'E_BACKEND_UNSUPPORTED'.
 basePrims :: Set Text
@@ -1459,8 +1460,7 @@ compileFunctionGlobal g n inner = do
     emitTop ("static KValue *" <> nm <> "(KEnv *, KValue *);") fn
   -- accessor: the memoised curried closure value (its forward declaration
   -- was already emitted by 'emitGlobal').
-  rcOn <- gets gsRcEnabled
-  let shareFresh = ["  krc_mark_shared_recursive(fresh);" | rcOn]
+  let shareFresh = ["  krc_mark_shared_recursive(fresh);"]
       accessor =
         T.unlines
           ( [ "static KValue *" <> ident <> "(void) {"
@@ -2319,8 +2319,7 @@ emitTop proto fn = modify' $ \st -> st {gsTop = fn : gsTop st, gsProtos = proto 
 
 finishGlobal :: Text -> [Text] -> Text -> Gen ()
 finishGlobal ident stmts e = do
-  rcOn <- gets gsRcEnabled
-  let shareFresh = ["  krc_mark_shared_recursive(fresh);" | rcOn]
+  let shareFresh = ["  krc_mark_shared_recursive(fresh);"]
       fn =
         T.unlines $
           [ "static KValue *" <> ident <> "(void) {"
@@ -2603,6 +2602,21 @@ selfTailArgs :: TailInfo -> Term -> Maybe [(Icit, Term)]
 selfTailArgs ti term = case spineOf term of
   (CGlob g, args) | g == tiName ti && length args == tiArity ti -> Just args
   _ -> Nothing
+
+-- | The self-tail-loop path is a direct global call in disguise, so it must
+-- apply the same static/Q0 argument rewrite as 'compileApp' before compiling
+-- argument temporaries. Otherwise an erased implicit type argument whose source
+-- is a 'CVar' is lowered as a runtime read at a path the ownership walk correctly
+-- omitted.
+selfTailArgsForLoop :: TailInfo -> Term -> Gen (Maybe [(Icit, Term)])
+selfTailArgsForLoop ti term =
+  case spineOf term of
+    (CGlob g, args)
+      | g == tiName ti
+      , length args == tiArity ti -> do
+          term' <- eraseQ0Args g term
+          pure (selfTailArgs ti term')
+    _ -> pure Nothing
 
 -- | Lower a self-tail-call to a loop step: recompute the arguments into
 -- fresh temporaries (they may read the current parameters), rebind the
@@ -4132,27 +4146,49 @@ consume sink term = case term of
     withEnv e2 (withChild P.letBodyPos (consume sink body))
   _ -> do
     isCps <- cpsNodeApp term
+    let fallback
+          | sinkIsTail sink
+          , CApp Expl _ _ <- term
+          , isCps =
+              compile term >>= sinkResult sink
+          | sinkIsTail sink
+          , CApp Expl _ _ <- term
+          , sinkHasCleanup sink =
+              compile term >>= sinkResult sink
+          | sinkIsTail sink
+          , CApp Expl _ _ <- term =
+              emitTailApp (sinkCleanupLines sink) term
+          | sinkIsBounce sink
+          , CApp Expl _ _ <- term
+          , isCps =
+              compile term >>= sinkResult sink
+          | sinkIsBounce sink
+          , CApp Expl _ _ <- term
+          , sinkHasCleanup sink =
+              compile term >>= sinkResult sink
+          | sinkIsBounce sink
+          , CApp Expl _ _ <- term =
+              emitTailApp (sinkCleanupLines sink) term
+          -- A suspending ioBind/ioThen or __reraiseCause in tail position lowers to a
+          -- CK-machine NODE (compileAppGlob): RETURN it so the machine drives it, not
+          -- emitTailApp (which would lose the lowering — see 'cpsNodeApp').
+          -- Any other tail-position explicit application: return a trampoline
+          -- bounce so the chain (mutual recursion, calls through a value, local
+          -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
+          -- is the kapp/kappi at the non-tail site that demanded the value.
+          -- A closure / local let-rec lambda body in tail position: the same bounce,
+          -- so a tail self-call defers to the driving trampoline (constant C stack).
+          | otherwise = do
+              e <- compileOwnedResult (sinkHasCleanup sink || sinkNeedsOwnedResult sink) term
+              sinkResult sink e
     case sinkTailInfo sink of
-      -- Direct saturated self-call: loop in the worker (no allocation).
-      Just ti | Just args <- selfTailArgs ti term -> emitTailLoop (sinkCleanupLines sink) ti args
-      _ | sinkIsTail sink, CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
-      _ | sinkIsTail sink, CApp Expl _ _ <- term, sinkHasCleanup sink -> compile term >>= sinkResult sink
-      _ | sinkIsTail sink, CApp Expl _ _ <- term -> emitTailApp (sinkCleanupLines sink) term
-      _ | sinkIsBounce sink, CApp Expl _ _ <- term, isCps -> compile term >>= sinkResult sink
-      _ | sinkIsBounce sink, CApp Expl _ _ <- term, sinkHasCleanup sink -> compile term >>= sinkResult sink
-      _ | sinkIsBounce sink, CApp Expl _ _ <- term -> emitTailApp (sinkCleanupLines sink) term
-      -- A suspending ioBind/ioThen or __reraiseCause in tail position lowers to a
-      -- CK-machine NODE (compileAppGlob): RETURN it so the machine drives it, not
-      -- emitTailApp (which would lose the lowering — see 'cpsNodeApp').
-      -- Any other tail-position explicit application: return a trampoline
-      -- bounce so the chain (mutual recursion, calls through a value, local
-      -- let-rec) runs in constant C stack (§27.5A.3); the driving trampoline
-      -- is the kapp/kappi at the non-tail site that demanded the value.
-      -- A closure / local let-rec lambda body in tail position: the same bounce,
-      -- so a tail self-call defers to the driving trampoline (constant C stack).
-      _ -> do
-        e <- compileOwnedResult (sinkHasCleanup sink || sinkNeedsOwnedResult sink) term
-        sinkResult sink e
+      Just ti -> do
+        margs <- selfTailArgsForLoop ti term
+        case margs of
+          -- Direct saturated self-call: loop in the worker (no allocation).
+          Just args -> emitTailLoop (sinkCleanupLines sink) ti args
+          Nothing -> fallback
+      Nothing -> fallback
 
 -- | Compile an if/match/let in expression context: declare a fresh result
 -- variable and consume into it.

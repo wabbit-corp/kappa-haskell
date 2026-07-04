@@ -1,0 +1,52 @@
+module railyard.run_tests
+
+import railyard.core.*
+import railyard.track as track
+import railyard.route as route
+import railyard.yard as yard
+
+line : String -> Bool -> String
+let line name ok = stringAppend name (if ok then ": PASS" else ": FAIL")
+
+main : UIO Unit
+let main = do
+    -- route.lengthIsHopsPlusExit: a route across 3 main segments to an exit has
+    -- 4 hops, and the existential index round-trips through buildRoute/routeLen.
+    s1 <- track.newSegFree
+    s2 <- track.newSegFree
+    s3 <- track.newSegFree
+    ex <- track.newSegFree
+    let c1 = match route.buildRoute (s1 :: s2 :: s3 :: Nil) ex
+             case Pack r -> eqInt (route.routeLen r) 4
+
+    -- track.moveReservesNextFreesHere: one atomic move flips occupancy from
+    -- `here` to `next` and never leaves both set.
+    here <- track.newSegOcc
+    next <- track.newSegFree
+    atomically (track.moveTo here next)
+    hereOcc <- track.segOccupied here
+    nextOcc <- track.segOccupied next
+    let c2 = nextOcc && (if hereOcc then False else True)
+
+    -- track.moveKeepsOneOccupant: occupancy is conserved by a move — exactly one
+    -- of the two segments is occupied afterwards (no duplication, no loss).
+    let c3 = (if hereOcc then 1 else 0) + (if nextOcc then 1 else 0) == 1
+
+    -- yard.concurrentRunConservesMoves: actually run the concurrent simulation
+    -- (3 carts contending over a 2-segment shared track) and assert the headline
+    -- invariant — receipts == atomic counter == carts*hops, and the track is
+    -- clear. This exercises fibers, STM retry-contention and the atomic counter,
+    -- not just the sequential helpers above.
+    res <- yard.runYard 3 2
+    let c4 = yard.yardOk 3 res
+    let c5 = eqInt res.total 9     -- 3 carts * (2 main + 1 exit) = 9 moves
+
+    printlnString (line "route.lengthIsHopsPlusExit" c1)
+    printlnString (line "track.moveReservesNextFreesHere" c2)
+    printlnString (line "track.moveKeepsOneOccupant" c3)
+    printlnString (line "yard.concurrentRunConservesMoves" c4)
+    printlnString (line "yard.concurrentRunMakesExpectedMoves" c5)
+    if c1 && c2 && c3 && c4 && c5 then
+        printlnString "RAILYARD TESTS: ALL PASS"
+    else
+        printlnString "RAILYARD TESTS: FAIL"

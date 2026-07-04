@@ -1,5 +1,6 @@
 #include "internal.h"
 
+#include <gc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,15 @@ static void destroy_test_rt(Rt *rt) {
   pthread_mutex_destroy(&rt->rq_lock);
 }
 
+static void init_stack_fiber(Fiber *f) {
+  memset(f, 0, sizeof *f);
+  pthread_mutex_init(&f->lock, NULL);
+}
+
+static void destroy_stack_fiber(Fiber *f) {
+  pthread_mutex_destroy(&f->lock);
+}
+
 static void check_freeable_partition(void) {
   const char *names[1] = { "field" };
   KValue *vals[1] = { kstr0("rec") };
@@ -79,21 +89,51 @@ static void check_freeable_partition(void) {
   check(!kis_rc_freeable(kbytes((const unsigned char *)"abc", 3)), "K_BYTES must stay Boehm-retained");
 }
 
-static void check_kdrop_free_on_zero_and_shared_noop(void) {
+static void check_kdrop_free_on_zero_and_shared_counted(void) {
   KValue *unique = kstr0("unique");
   check(krc_count(unique) == 1, "fresh unique value must start with rc count 1");
-  unsigned long long before_unique = kgc_debug_free_count();
+  unsigned long long before_unique = krc_debug_reclaim_count();
   kdrop(unique);
-  check(kgc_debug_free_count() > before_unique, "S3.2 kdrop must free unique freeable values at zero");
+  check(krc_debug_reclaim_count() > before_unique, "S3.2 kdrop must free unique freeable values at zero");
 
   KValue *shared = kstr0("shared");
   krc_mark_shared_recursive(shared);
   unsigned before = krc_count(shared);
   kdup(shared);
-  check(krc_count(shared) == before, "shared kdup must be a no-op until S4 atomic shared RC");
+  check(krc_count(shared) == before + 1, "S4 shared kdup must atomically increment the count bits");
   kdrop(shared);
-  check(krc_count(shared) == before, "shared kdrop must be a no-op until S4 atomic shared RC");
+  check(krc_count(shared) == before, "S4 shared kdrop must atomically decrement the count bits");
   check(krc_is_shared(shared), "shared kdrop must preserve the shared bit");
+
+  KValue *saturated = kstr0("shared-saturation");
+  __atomic_store_n(&saturated->rc, KRC_SHARED_BIT | KRC_COUNT_MASK, __ATOMIC_RELAXED);
+  check(krc_is_shared(saturated), "saturation setup must be shared");
+  check(!krc_is_saturated(saturated), "saturation setup starts at max count without sticky saturation");
+  kdup(saturated);
+  check(krc_is_shared(saturated), "shared kdup saturation must preserve the shared bit");
+  check(krc_is_saturated(saturated), "shared kdup at max count must enter sticky saturation");
+  check(krc_count(saturated) == KRC_COUNT_MASK, "saturated values report the max representable count");
+  kdrop(saturated);
+  check(krc_is_saturated(saturated), "saturated shared kdrop must fail closed as a no-op");
+
+  KValue *racy_saturated = kstr0("racy-shared-saturation");
+  __atomic_store_n(&racy_saturated->rc,
+                   KRC_SHARED_BIT | KRC_SATURATED_BIT | (KRC_COUNT_MASK - 1u),
+                   __ATOMIC_RELAXED);
+  krc_shared_relaxed_increment(racy_saturated);
+  check(__atomic_load_n(&racy_saturated->rc, __ATOMIC_RELAXED) == (KRC_SHARED_BIT | KRC_SATURATED_BIT),
+        "shared kdup on an already saturated header must normalize instead of approaching flag wrap");
+
+  KValue *private_saturated = kstr0("private-saturation");
+  __atomic_store_n(&private_saturated->rc, KRC_COUNT_MASK, __ATOMIC_RELAXED);
+  check(!krc_is_shared(private_saturated), "private saturation setup must not be shared");
+  check(!krc_is_saturated(private_saturated), "private saturation setup starts at max count without sticky saturation");
+  kdup(private_saturated);
+  check(!krc_is_shared(private_saturated), "private saturation must not invent the shared bit");
+  check(krc_is_saturated(private_saturated), "private kdup at max count must enter sticky saturation");
+  check(krc_count(private_saturated) == KRC_COUNT_MASK, "private saturated values report the max representable count");
+  kdrop(private_saturated);
+  check(krc_is_saturated(private_saturated), "saturated private kdrop must fail closed as a no-op");
 }
 
 typedef struct {
@@ -115,18 +155,31 @@ static void *dup_drop_thread(void *arg) {
 
 static void check_shared_header_ops_are_atomic(void) {
   KValue *v = kstr0("shared-header-atomic");
-  check(atomic_is_lock_free(&v->rc), "rc header must be an atomic lock-free word");
+  check(__atomic_always_lock_free(sizeof(v->rc), &v->rc), "rc header must be lock-free for shared atomic ops");
+  krc_mark_shared_recursive(v);
 
   RcRaceArgs args = { v, 20000 };
   pthread_t threads[6];
-  for (int i = 0; i < 3; i++) pthread_create(&threads[i], NULL, mark_shared_thread, &args);
-  for (int i = 3; i < 6; i++) pthread_create(&threads[i], NULL, dup_drop_thread, &args);
-  for (int i = 0; i < 6; i++) pthread_join(threads[i], NULL);
+  for (int i = 0; i < 3; i++) GC_pthread_create(&threads[i], NULL, mark_shared_thread, &args);
+  for (int i = 3; i < 6; i++) GC_pthread_create(&threads[i], NULL, dup_drop_thread, &args);
+  for (int i = 0; i < 6; i++) GC_pthread_join(threads[i], NULL);
 
-  check(krc_is_shared(v), "concurrent shared marking must preserve the shared bit");
+  check(krc_is_shared(v), "concurrent shared marking and shared RC ops must preserve the shared bit");
   unsigned before = krc_count(v);
   kdrop(kdup(v));
-  check(krc_count(v) == before, "shared kdup/kdrop must remain no-op after concurrent marking");
+  check(krc_count(v) == before, "shared kdup/kdrop must stay paired after concurrent marking");
+}
+
+static void check_waiter_unlink_removes_registered_node(void) {
+  Waiter a = {0}, b = {0}, c = {0};
+  a.next = &b; b.next = &c;
+  Waiter *head = &a;
+  krt2i_unlink_waiter(&head, &b);
+  check(head == &a && a.next == &c && b.next == NULL, "waiter unlink must remove a middle node");
+  krt2i_unlink_waiter(&head, &a);
+  check(head == &c && a.next == NULL, "waiter unlink must remove the head node");
+  krt2i_unlink_waiter(&head, &c);
+  check(head == NULL && c.next == NULL, "waiter unlink must remove the tail node");
 }
 
 static void check_public_kfree_reclaims_zero_root(void) {
@@ -134,9 +187,9 @@ static void check_public_kfree_reclaims_zero_root(void) {
   KValue *args[1] = { child };
   KValue *parent = kctor(KCT_USER_BASE, "Parent", 1, args);
   krc_set_count(parent, 0);
-  unsigned long long before = kgc_debug_free_count();
+  unsigned long long before = krc_debug_reclaim_count();
   kfree_recursive(parent);
-  check(kgc_debug_free_count() > before, "S3.2 public kfree_recursive must reclaim zero-count freeable roots");
+  check(krc_debug_reclaim_count() > before, "S3.2 public kfree_recursive must reclaim zero-count freeable roots");
 }
 
 static void check_record_rest_counts_kept_fields(void) {
@@ -183,43 +236,64 @@ static void check_atomic_publication_marks_shared(void) {
   check(krc_is_shared(stored), "AtomicRef store must mark the stored value shared");
 
   KValue *exchanged = kbigint_str("100000000000000000000000000000000000000005");
-  krt2_atomic_exchange(kint(0), aref, exchanged);
+  KValue *old = krt2_atomic_exchange(kint(0), aref, exchanged);
+  kdrop(old);
   check(krc_is_shared(exchanged), "AtomicRef exchange must mark the new value shared");
 
   KValue *desired = kbigint_str("100000000000000000000000000000000000000007");
-  krt2_atomic_compare_exchange(kint(0), kint(0), aref, exchanged, desired);
+  old = krt2_atomic_compare_exchange(kint(0), kint(0), aref, exchanged, desired);
+  kdrop(old);
   check(krc_is_shared(desired), "AtomicRef successful CAS must mark desired shared");
 
-  KValue *rmwBase = kbigint_str("1267650600228229401496703205376"); /* 2^100, definitely boxed. */
   KValue *delta = kbigint_str("100000000000000000000000000000000000000011");
-  krt2_atomic_store(kint(0), aref, rmwBase);
-  krt2_atomic_fetch_add(kint(0), aref, delta);
-  check(krc_is_shared(krt2_atomic_load(kint(0), aref)), "AtomicRef fetch_add result must be stored shared");
+  krt2_atomic_store(kint(0), aref, kbigint_str("1267650600228229401496703205376"));
+  old = krt2_atomic_fetch_add(kint(0), aref, delta);
+  kdrop(old);
+  kdrop(delta);
+  KValue *loaded = krt2_atomic_load(kint(0), aref);
+  check(krc_is_shared(loaded), "AtomicRef fetch_add result must be stored shared");
+  kdrop(loaded);
 
   KValue *sub = kbigint_str("100000000000000000000000000000000000000013");
-  krt2_atomic_store(kint(0), aref, rmwBase);
-  krt2_atomic_fetch_sub(kint(0), aref, sub);
-  check(krc_is_shared(krt2_atomic_load(kint(0), aref)), "AtomicRef fetch_sub result must be stored shared");
+  krt2_atomic_store(kint(0), aref, kbigint_str("1267650600228229401496703205376"));
+  old = krt2_atomic_fetch_sub(kint(0), aref, sub);
+  kdrop(old);
+  kdrop(sub);
+  loaded = krt2_atomic_load(kint(0), aref);
+  check(krc_is_shared(loaded), "AtomicRef fetch_sub result must be stored shared");
+  kdrop(loaded);
 
   KValue *andv = kbigint_str("1267650600228229401496703205376");
-  krt2_atomic_store(kint(0), aref, rmwBase);
-  krt2_atomic_fetch_and(kint(0), aref, andv);
-  check(krc_is_shared(krt2_atomic_load(kint(0), aref)), "AtomicRef fetch_and result must be stored shared");
+  krt2_atomic_store(kint(0), aref, kbigint_str("1267650600228229401496703205376"));
+  old = krt2_atomic_fetch_and(kint(0), aref, andv);
+  kdrop(old);
+  kdrop(andv);
+  loaded = krt2_atomic_load(kint(0), aref);
+  check(krc_is_shared(loaded), "AtomicRef fetch_and result must be stored shared");
+  kdrop(loaded);
 
   KValue *orv = kbigint_str("1");
-  krt2_atomic_store(kint(0), aref, rmwBase);
-  krt2_atomic_fetch_or(kint(0), aref, orv);
-  check(krc_is_shared(krt2_atomic_load(kint(0), aref)), "AtomicRef fetch_or result must be stored shared");
+  krt2_atomic_store(kint(0), aref, kbigint_str("1267650600228229401496703205376"));
+  old = krt2_atomic_fetch_or(kint(0), aref, orv);
+  kdrop(old);
+  kdrop(orv);
+  loaded = krt2_atomic_load(kint(0), aref);
+  check(krc_is_shared(loaded), "AtomicRef fetch_or result must be stored shared");
+  kdrop(loaded);
 
   KValue *xorv = kbigint_str("1");
-  krt2_atomic_store(kint(0), aref, rmwBase);
-  krt2_atomic_fetch_xor(kint(0), aref, xorv);
-  check(krc_is_shared(krt2_atomic_load(kint(0), aref)), "AtomicRef fetch_xor result must be stored shared");
+  krt2_atomic_store(kint(0), aref, kbigint_str("1267650600228229401496703205376"));
+  old = krt2_atomic_fetch_xor(kint(0), aref, xorv);
+  kdrop(old);
+  kdrop(xorv);
+  loaded = krt2_atomic_load(kint(0), aref);
+  check(krc_is_shared(loaded), "AtomicRef fetch_xor result must be stored shared");
+  kdrop(loaded);
 }
 
 static void check_stm_publication_marks_shared(void) {
   Fiber f;
-  memset(&f, 0, sizeof f);
+  init_stack_fiber(&f);
 
   KValue *init = kstr0("stm-init");
   check(krt2i_op_atomically(NULL, &f, krt2_new_tvar(init)), "newTVar transaction should commit");
@@ -229,6 +303,7 @@ static void check_stm_publication_marks_shared(void) {
   KValue *written = kstr0("stm-written");
   check(krt2i_op_atomically(NULL, &f, krt2_write_tvar(tvar, written)), "writeTVar transaction should commit");
   check(krc_is_shared(written), "STM commit must mark written TVar values shared");
+  destroy_stack_fiber(&f);
 }
 
 static void check_shared_mutation_marks_new_values(void) {
@@ -258,17 +333,28 @@ static KValue *boxed_publication_payload(const char *label) {
   return kctor(KCT_USER_BASE, "PublishBox", 1, args);
 }
 
+static void check_shared_marking_survives_rc_disabled(void) {
+  KValue *stored = boxed_publication_payload("rc-off-marking-stored");
+  KValue *ref = kref_new(stored);
+  krc_set_enabled(0);
+  krc_mark_shared_recursive(ref);
+  check(krc_is_shared(ref), "publication marking must set the shared bit even when RC maintenance is disabled");
+  check(krc_is_shared(stored), "publication marking must traverse storage payloads even when RC maintenance is disabled");
+  krc_set_enabled(1);
+}
+
 static void check_resume_publication_marks_current_action(void) {
   Rt rt;
   init_test_rt(&rt);
   Fiber f;
-  memset(&f, 0, sizeof f);
+  init_stack_fiber(&f);
   KValue *action = boxed_publication_payload("resume-current-action");
   f.cur = action;
 
   krt2i_resume(&rt, &f);
   check(krc_is_shared(action), "run-queue resume must mark the current fiber action shared");
   check(krc_is_shared(kctor_arg(action, 0)), "run-queue resume must mark nested current-action payloads shared");
+  destroy_stack_fiber(&f);
   destroy_test_rt(&rt);
 }
 
@@ -276,7 +362,7 @@ static void check_resume_publication_marks_fiber_graph(void) {
   Rt rt;
   init_test_rt(&rt);
   Fiber f;
-  memset(&f, 0, sizeof f);
+  init_stack_fiber(&f);
 
   KValue *action = boxed_publication_payload("resume-graph-current");
   KValue *contAction = boxed_publication_payload("resume-graph-cont");
@@ -325,6 +411,7 @@ static void check_resume_publication_marks_fiber_graph(void) {
   check(krc_is_shared(abortAction), "resume must mark abort-exit actions shared");
   check(krc_is_shared(interruptCause), "resume must mark pending interrupt causes shared");
   check(krc_is_shared(terminalExit), "resume must mark terminal exit side channel shared if present");
+  destroy_stack_fiber(&f);
   destroy_test_rt(&rt);
 }
 
@@ -332,7 +419,7 @@ static void check_wake_publication_marks_existing_current_action(void) {
   Rt rt;
   init_test_rt(&rt);
   Fiber f;
-  memset(&f, 0, sizeof f);
+  init_stack_fiber(&f);
   KValue *action = boxed_publication_payload("wake-existing-current-action");
   KValue *contAction = boxed_publication_payload("wake-existing-cont-action");
   Cont cont;
@@ -350,12 +437,13 @@ static void check_wake_publication_marks_existing_current_action(void) {
   check(krc_is_shared(action), "wake without resume value must mark the existing current action shared");
   check(krc_is_shared(kctor_arg(action, 0)), "wake without resume value must mark nested current-action payloads shared");
   check(krc_is_shared(contAction), "wake without resume value must mark the continuation stack shared");
+  destroy_stack_fiber(&f);
   destroy_test_rt(&rt);
 }
 
 static void check_fiber_shared_marks_continuation_aux_variants(void) {
   Fiber f;
-  memset(&f, 0, sizeof f);
+  init_stack_fiber(&f);
 
   KValue *doscopeAction = boxed_publication_payload("aux-doscope-action");
   KValue *doscopeSaved = boxed_publication_payload("aux-doscope-saved");
@@ -432,6 +520,7 @@ static void check_fiber_shared_marks_continuation_aux_variants(void) {
   check(krc_is_shared(abandExit), "KK_ABANDEND saved exits must be shared-marked");
   check(krc_is_shared(abandRval), "KK_ABANDEND saved value must be shared-marked");
   check(krc_is_shared(abandRlabel), "KK_ABANDEND saved label must be shared-marked");
+  destroy_stack_fiber(&f);
 }
 
 static void check_foreign_resumption_marks_private_payload(void) {
@@ -492,14 +581,16 @@ static void check_scheduler_publication_paths_mark_shared(void) {
 int main(void) {
   krt_init();
   check_freeable_partition();
-  check_kdrop_free_on_zero_and_shared_noop();
+  check_kdrop_free_on_zero_and_shared_counted();
   check_shared_header_ops_are_atomic();
+  check_waiter_unlink_removes_registered_node();
   check_public_kfree_reclaims_zero_root();
   check_record_rest_counts_kept_fields();
   check_interrupt_publication_marks_shared();
   check_atomic_publication_marks_shared();
   check_stm_publication_marks_shared();
   check_shared_mutation_marks_new_values();
+  check_shared_marking_survives_rc_disabled();
   check_resume_publication_marks_current_action();
   check_resume_publication_marks_fiber_graph();
   check_wake_publication_marks_existing_current_action();
@@ -523,13 +614,13 @@ int main(void) {
   check(krc_is_shared(arr), "shared mark must mark the array shell");
   check(krc_is_shared(box), "shared mark must traverse boxed array elements");
   check(krc_is_shared(field), "shared mark must traverse constructor payloads");
-  check(!kis_rc_freeable(box), "shared boxed ctor must be skipped by S3 free-on-zero");
-  check(!kis_rc_freeable(field), "shared String must be skipped by S3 free-on-zero");
+  check(kis_rc_freeable(box), "S4 shared boxed ctor must stay in the counted freeable partition");
+  check(kis_rc_freeable(field), "S4 shared String must stay in the counted freeable partition");
 
   unsigned before = krc_count(box);
   kdrop(box);
   check(krc_is_shared(box), "kdrop must preserve the shared bit");
-  check(krc_count(box) == before, "shared kdrop must not mutate the rc count bits until S4");
+  check(krc_count(box) + 1 == before, "S4 shared kdrop must decrement the rc count bits");
 
   KValue *fg = kfgn(NULL, "test.handle");
   KValue *ref = kref_new(kunit());

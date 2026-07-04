@@ -87,7 +87,7 @@ data GenState = GenState
   , gsHostSyms :: !(Map GName ResolvedNativeSymbol) -- ^ Milestone L (§27.1.1/§36.28): each provided @host.native.*@ member ↦ its resolved native symbol (C symbol + ABI signature), built per build from the manifest's native bindings. A reference to such a member is lowered like a PRIM over the codegen-emitted C-wrapper symbol ('wrapperCName') — a saturated reference to a @knative_sat@ over the wrapper, a curried/bare reference to a @knative@ closure — and the wrapper is compiled+linked from a sidecar @.c@ the Driver emits ('hostFfiSidecar'). Mirrors C's @gsHostSyms@; recognised at the REFERENCE so a host member is NEVER enqueued as a no-core-body CAF.
   , gsScalarHelpers :: !(Set Text) -- ^ names of scalar-worker helper @define@s already emitted (the @.ll@-local arg-unbox @kunbox_i64_ll@/@kunbox_dbl_ll@), so each is emitted exactly once.
   , gsScalarLetSlots :: ![Text] -- ^ entry-block scratch slots reserved for scalar-worker 'CLet' binders. Popped during scalar worker emission so tail loops store into fixed slots instead of executing 'alloca' on every iteration.
-  , gsRcRuntimeEnabled :: !Bool -- ^ Whether this LLVM binary may run runtime RC effects. LLVM still delegates RC validation to C when requested, but until LLVM emits ownership maintenance itself, generated LLVM binaries keep the runtime RC gate off.
+  , gsRcRuntimeEnabled :: !Bool -- ^ Whether this LLVM binary may run runtime RC counting/freeing effects. LLVM still delegates RC validation to C when requested, but until LLVM emits ownership maintenance itself, generated LLVM binaries keep the runtime @kdup@/@kdrop@ gate off. S4 publish marking still emits because shared bits are synchronization metadata.
   }
 
 type Gen = State GenState
@@ -734,9 +734,7 @@ funcArity = go 0
 -- that block, and the @ret@ phi names it as the fresh value's predecessor.
 emitArity0Accessor :: Text -> [Text] -> Text -> Text -> Gen ()
 emitArity0Accessor ident buildInsns endBlock operand = do
-  rcRuntimeOn <- gets gsRcRuntimeEnabled
-  when rcRuntimeOn $
-    declRuntime "declare void @krc_mark_shared_recursive(ptr)"
+  declRuntime "declare void @krc_mark_shared_recursive(ptr)"
   let cacheG = "@" <> ident <> ".cache"
   modify' $ \st ->
     st {gsGlobalsExtra = (cacheG <> " = internal global ptr null, align 8") : gsGlobalsExtra st}
@@ -751,7 +749,7 @@ emitArity0Accessor ident buildInsns endBlock operand = do
           , "build:"
           ]
             ++ map ("  " <>) buildInsns
-            ++ [ "  call void @krc_mark_shared_recursive(ptr " <> operand <> ")" | rcRuntimeOn ]
+            ++ [ "  call void @krc_mark_shared_recursive(ptr " <> operand <> ")" ]
             ++ [ "  store atomic ptr " <> operand <> ", ptr " <> cacheG <> " release, align 8"
                , "  br label %ret"
                , ""
@@ -773,7 +771,7 @@ reportArity0Failure ident detail = do
 
 -- | The @\@main@ entry point.  It follows the C runtime entry protocol
 -- (@krt2_new(0)@, @krt2_run_main(kg_main())@, success -> process 0) but keeps
--- runtime RC effects disabled until LLVM emits matching ownership operations.
+-- runtime RC counting/freeing effects disabled until LLVM emits matching ownership operations.
 -- Default LLVM builds still run the C-side RC validator when requested; only
 -- C currently claims generated free-on-zero execution.
 emitMain :: GName -> Gen ()

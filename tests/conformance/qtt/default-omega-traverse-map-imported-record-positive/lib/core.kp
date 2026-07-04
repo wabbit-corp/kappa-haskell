@@ -1,0 +1,7 @@
+module lib.core
+
+data GameError : Type =
+    GameError (message : String)
+
+data Rumor : Type =
+    Rumor (text : String)

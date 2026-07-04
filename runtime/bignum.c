@@ -87,9 +87,12 @@ KValue *kfrom_mpz(const mpz_t z) {
 void kload_mpz(KValue *v, mpz_t out) {
   if (kis_imm_int(v)) kmpz_set_i64(out, kimm_int_val(v));   /* Stage 1 immediate */
   else if (kis_imm(v)) krt_fail("integer operation on a non-integer immediate");
-  else if (v->tag == K_INT) kmpz_set_i64(out, v->as.i);
-  else if (v->tag == K_BIGINT) mpz_set(out, (const __mpz_struct *)v->as.big.mpz);
-  else krt_fail("integer operation on a non-integer value");
+  else {
+    kassert_live(v);
+    if (v->tag == K_INT) kmpz_set_i64(out, v->as.i);
+    else if (v->tag == K_BIGINT) mpz_set(out, (const __mpz_struct *)v->as.big.mpz);
+    else krt_fail("integer operation on a non-integer value");
+  }
 }
 
 KValue *kbigint_str(const char *decimal) {

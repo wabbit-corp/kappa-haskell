@@ -49,7 +49,7 @@ import Kappa.Backend.NativeFfi
 import Kappa.Builtins
 import Kappa.Check
 import Kappa.Config (ConfigProfile (..), checkConfigUnit)
-import Kappa.Core (GName (..), Q (..), Term (..), gnameText)
+import Kappa.Core (GName (..), Icit (..), Q (..), Term (..), gnameText)
 import Kappa.CoreLint (lintCoreBodies)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), Globals (..), eval, quote)
@@ -78,7 +78,7 @@ import Kappa.Source
 import Kappa.Syntax
 import Kappa.Unicode (confusableWithAscii, isBidiControl, isNfcQuick)
 import Kappa.Usage
-  ( CtorParamInfo
+  ( CtorParamInfo (..)
   , FieldShape (..)
   , PInfo
   , ProjUse
@@ -94,6 +94,7 @@ import Kappa.Usage
   , moduleUsageRecordDeps
   , moduleUsageRecordShapes
   , moduleUsageSignatures
+  , mapPInfoTypes
   , usageDiagnostics
   )
 
@@ -681,7 +682,9 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
                       (usageImportedBorrowViewHeads st1 ie)
                       (usageVisibleMonadicResultHeads st1 ie m')
                       (usageImportedProjections byName st1 ie)
-                      (usageImportedDuplicableStorageHeads st1 ie)
+                      (usageImportedDuplicableStorageHeads byName st1 ie)
+                      (usageImportedUnaryStorageHeads st1 ie)
+                      (usageImportedBinaryStorageHeads st1 ie)
                       m'
               ftrace =
                 concatMap (const (fileTrace True)) frs ++ [("lowerKCore", "module")]
@@ -1262,7 +1265,7 @@ importScopeForWithConfig cfg st m =
 
 usageImportedParams :: Map.Map ModuleName (Module, [Fragment]) -> CheckState -> ImportEnv -> Map.Map Text [PInfo]
 usageImportedParams byName st ie =
-  Map.mapMaybe paramsFor importedNames
+  Map.mapMaybeWithKey paramsFor importedNames
   where
     ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
     sourceParams =
@@ -1272,9 +1275,15 @@ usageImportedParams byName st ie =
         , (nm, ps) <- Map.toList (moduleUsageSignatures sm)
         ]
     importedNames = usageImportedNames st ie
-    paramsFor g@(GName mn nm) =
+    paramsFor local g@(GName mn nm) =
       case Map.lookup (mn, nm) sourceParams of
-        Just ps -> Just ps
+        Just ps ->
+          let sourceNames = sourceStorageTypeNamesIn byName mn
+              qualifier = resultQualifier local mn
+              qualify =
+                qualifyStorageExpr qualifier sourceNames
+                  . sourceImportQualifyStorageExpr byName st mn
+           in Just (map (mapPInfoTypes qualify) ps)
         Nothing -> coreFnParams . quote ctx 0 . gdType <$> Map.lookup g (csGlobals st)
 
 usageImportedInoutResults ::
@@ -1293,8 +1302,10 @@ usageImportedInoutResults byName st ie =
         , (nm, shapes) <- Map.toList (moduleUsageInoutResultsWith (usageModuleMonadicResultHeads st mn) sm)
         ]
     resultsFor local (GName mn nm) =
-      qualifyFieldShapeTypes (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
-        <$> Map.lookup (mn, nm) sourceResults
+      let sourceNames = sourceStorageTypeNamesIn byName mn
+       in qualifyFieldShapeTypes (resultQualifier local mn) sourceNames
+            . sourceImportQualifyFieldShapeTypes byName st mn
+            <$> Map.lookup (mn, nm) sourceResults
 
 usageImportedResultTypes ::
   Map.Map ModuleName (Module, [Fragment]) ->
@@ -1304,6 +1315,8 @@ usageImportedResultTypes ::
 usageImportedResultTypes byName st ie =
   Map.mapMaybeWithKey resultFor importedNames
   where
+    ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
+    monadicCarriers = usageMonadicCarrierGlobals st
     importedNames = usageImportedNames st ie
     sourceResults =
       Map.fromList
@@ -1311,9 +1324,14 @@ usageImportedResultTypes byName st ie =
         | (mn, (sm, _)) <- Map.toList byName
         , (nm, ty) <- Map.toList (moduleUsageResultTypesWith (usageModuleMonadicResultHeads st mn) sm)
         ]
-    resultFor local (GName mn nm) =
-      qualifyStorageExpr (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
-        <$> Map.lookup (mn, nm) sourceResults
+    resultFor local g@(GName mn nm) =
+      case Map.lookup (mn, nm) sourceResults of
+        Just ty ->
+          let sourceNames = sourceStorageTypeNamesIn byName mn
+              ty' = sourceImportQualifyStorageExpr byName st mn ty
+           in Just (qualifyStorageExpr (resultQualifier local mn) sourceNames ty')
+        Nothing ->
+          coreImportedResultType monadicCarriers (quote ctx 0 . gdType <$> Map.lookup g (csGlobals st))
 
 usageImportedValueResultTypes ::
   Map.Map ModuleName (Module, [Fragment]) ->
@@ -1323,6 +1341,7 @@ usageImportedValueResultTypes ::
 usageImportedValueResultTypes byName st ie =
   Map.mapMaybeWithKey resultFor importedNames
   where
+    ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
     importedNames = usageImportedNames st ie
     sourceResults =
       Map.fromList
@@ -1330,9 +1349,111 @@ usageImportedValueResultTypes byName st ie =
         | (mn, (sm, _)) <- Map.toList byName
         , (nm, ty) <- Map.toList (moduleUsageValueResultTypes sm)
         ]
-    resultFor local (GName mn nm) =
-      qualifyStorageExpr (resultQualifier local mn) (sourceStorageTypeNamesIn byName mn)
-        <$> Map.lookup (mn, nm) sourceResults
+    resultFor local g@(GName mn nm) =
+      case Map.lookup (mn, nm) sourceResults of
+        Just ty ->
+          let sourceNames = sourceStorageTypeNamesIn byName mn
+              ty' = sourceImportQualifyStorageExpr byName st mn ty
+           in Just (qualifyStorageExpr (resultQualifier local mn) sourceNames ty')
+        Nothing ->
+          coreImportedValueResultType (quote ctx 0 . gdType <$> Map.lookup g (csGlobals st))
+
+coreImportedResultType :: Set.Set GName -> Maybe Term -> Maybe Expr
+coreImportedResultType monadicCarriers mty = do
+  ty <- mty
+  let (binders, resultTy) = coreDropBinders [] ty
+  coreUsageTypeExpr binders (coreUnwrapActionType monadicCarriers resultTy)
+
+coreImportedValueResultType :: Maybe Term -> Maybe Expr
+coreImportedValueResultType mty = do
+  ty <- mty
+  let (binders, resultTy) = coreDropBinders [] ty
+  coreUsageTypeExpr binders resultTy
+
+coreCtorFact :: Text -> CtorInfo -> Maybe (Text, [(Text, [CtorParamInfo])])
+coreCtorFact nm ci =
+  let params = coreCtorParamInfos (ciType ci)
+   in if null params
+        then Nothing
+        else Just (nm, [(nm, params)])
+
+coreCtorParamInfos :: Term -> [CtorParamInfo]
+coreCtorParamInfos = go [] []
+  where
+    go env dataParams = \case
+      CPi Impl _ _ nm _ body ->
+        go (nm : env) (nm : dataParams) body
+      CPi Expl q _ nm dom body ->
+        CtorParamInfo
+          (if nm == "_" then Nothing else Just nm)
+          (coreQuantityExpr q)
+          (coreUsageTypeExpr env dom)
+          (reverse dataParams)
+          : go (nm : env) dataParams body
+      _ -> []
+
+coreDropBinders :: [Text] -> Term -> ([Text], Term)
+coreDropBinders env = \case
+  CPi _ _ _ nm _ body -> coreDropBinders (nm : env) body
+  ty -> (env, ty)
+
+coreUnwrapActionType :: Set.Set GName -> Term -> Term
+coreUnwrapActionType monadicCarriers ty =
+  case coreSpine ty of
+    (CGlob g, args)
+      | isMonadicCarrier g
+      , (arg : _) <- reverse [arg | (Expl, arg) <- args] ->
+          arg
+    _ -> ty
+  where
+    isMonadicCarrier g =
+      g == prelIO
+        || g == prelSTM
+        || g `Set.member` monadicCarriers
+
+coreUsageTypeExpr :: [Text] -> Term -> Maybe Expr
+coreUsageTypeExpr binders = \case
+  CSort _ -> Just (EVar (Name "Type" noSpan))
+  CGlob g -> Just (exprForGName g)
+  CVar i
+    | i >= 0
+    , i < length binders ->
+        Just (EVar (Name (binders !! i) noSpan))
+  CApp Impl f _ -> coreUsageTypeExpr binders f
+  CApp Expl f a -> do
+    fExpr <- coreUsageTypeExpr binders f
+    aExpr <- coreUsageTypeExpr binders a
+    pure (EApp fExpr [ArgExplicit aExpr])
+  CForceE t -> coreUsageTypeExpr binders t
+  _ -> Nothing
+
+exprForGName :: GName -> Expr
+exprForGName (GName (ModuleName segs) nm) =
+  foldl
+    (\acc seg -> EDot acc (DotName (Name seg noSpan)))
+    (EVar (Name root noSpan))
+    rest
+  where
+    path = segs ++ [nm]
+    (root, rest) =
+      case path of
+        [] -> (nm, [])
+        x : xs -> (x, xs)
+
+coreSpine :: Term -> (Term, [(Icit, Term)])
+coreSpine = go []
+  where
+    go args = \case
+      CApp ic f a -> go ((ic, a) : args) f
+      h -> (h, args)
+
+coreQuantityExpr :: Q -> Maybe Quantity
+coreQuantityExpr = \case
+  Q0 -> Just QZero
+  Q1 -> Just QOne
+  QW -> Just QOmega
+  QLe1 -> Just QAtMostOne
+  QGe1 -> Just QAtLeastOne
 
 usageImportedCtors ::
   Map.Map ModuleName (Module, [Fragment]) ->
@@ -1390,7 +1511,10 @@ usageImportedCtors byName st ie =
         , ctor <- ctors
         , Just siblings <- [Map.lookup (mn, sourceTy <> "." <> ctor) sourceCtors]
         ]
-    ctorsFor (GName mn nm) = (\siblings -> (nm, siblings)) <$> Map.lookup (mn, nm) sourceCtors
+    ctorsFor g@(GName mn nm) =
+      case Map.lookup (mn, nm) sourceCtors of
+        Just siblings -> Just (nm, siblings)
+        Nothing -> coreCtorFact nm =<< Map.lookup g (csCtors st)
     sourceDataTypeNames mn =
       [ ty
       | ((mn', ty), _) <- Map.toList sourceDataCtors
@@ -1507,13 +1631,19 @@ usageImportedRecordShapes byName st ie =
         ]
     directClosure =
       Map.fromList
-        [ (sourceKey mn nm, qualifyRecordShapeTypes (moduleNameText mn) (sourceStorageTypeNamesIn byName mn) shapes)
+        [ ( sourceKey mn nm
+          , qualifyRecordShapeTypes (moduleNameText mn) (sourceStorageTypeNamesIn byName mn)
+              (sourceImportQualifyRecordShape byName st mn shapes)
+          )
         | ((mn, nm), shapes) <- Map.toList sourceShapes
         , mn `elem` directShapeModules
         ]
     qualifiedAliasShapes =
       Map.fromList
-        [ (alias <> "." <> nm, qualifyRecordShapeTypes alias sourceShapeNames shapes)
+        [ ( alias <> "." <> nm
+          , qualifyRecordShapeTypes alias sourceShapeNames
+              (sourceImportQualifyRecordShape byName st mn shapes)
+          )
         | (alias, mn) <- Map.toList (ieAliases ie)
         , nm <- exportedMemberNames st mn
         , let sourceShapeNames = sourceStorageTypeNamesIn byName mn
@@ -1521,7 +1651,10 @@ usageImportedRecordShapes byName st ie =
         ]
     shapesFor (GName mn nm) = Map.lookup (mn, nm) sourceShapes
     directShapeFor _local (GName mn nm) =
-      qualifyRecordShapeTypes (moduleNameText mn) (sourceStorageTypeNamesIn byName mn) <$> Map.lookup (mn, nm) sourceShapes
+      let sourceNames = sourceStorageTypeNamesIn byName mn
+       in qualifyRecordShapeTypes (moduleNameText mn) sourceNames
+            . sourceImportQualifyRecordShape byName st mn
+            <$> Map.lookup (mn, nm) sourceShapes
     sourceKey mn nm = moduleNameText mn <> "." <> nm
 
 usageBuiltinRecordShape :: GName -> Maybe RecordShape
@@ -1579,9 +1712,84 @@ resultQualifier local mn =
     (prefix, _) | not (T.null prefix) -> T.dropEnd 1 prefix
     _ -> moduleNameText mn
 
+sourceImportQualifyRecordShape ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ModuleName ->
+  RecordShape ->
+  RecordShape
+sourceImportQualifyRecordShape byName st mn shape =
+  shape {rsFields = sourceImportQualifyFieldShapeTypes byName st mn (rsFields shape)}
+
+sourceImportQualifyFieldShapeTypes ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ModuleName ->
+  [FieldShape] ->
+  [FieldShape]
+sourceImportQualifyFieldShapeTypes byName st mn =
+  map $ \s -> s {fsType = sourceImportQualifyStorageExpr byName st mn <$> fsType s}
+
+sourceImportQualifyStorageExpr ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ModuleName ->
+  Expr ->
+  Expr
+sourceImportQualifyStorageExpr byName st mn expr =
+  case Map.lookup mn byName of
+    Nothing -> expr
+    Just (sourceModule, _) ->
+      qualifyExpr (buildImports st sourceModule) expr
+  where
+    storageGlobals =
+      knownStorageGlobals
+        `Set.union` Set.fromList
+          [ GName smn nm
+          | smn <- Map.keys byName
+          , nm <- sourceStorageTypeNamesIn byName smn
+          ]
+
+    qualifyExpr sourceIe e =
+      case e of
+        EVar {} -> qualifyHead e e
+        EDot base m -> qualifyHead e (EDot (go base) m)
+        ETuple es sp -> ETuple (map go es) sp
+        ERecordType fs mtail sp ->
+          ERecordType [f {rtfType = go (rtfType f)} | f <- fs] (go <$> mtail) sp
+        EApp f args -> EApp (go f) (map goArg args)
+        EQDot base m -> EQDot (go base) m
+        EArrow b body -> EArrow (goBinder b) (go body)
+        EForall bs body sp -> EForall (map goBinder bs) (go body) sp
+        EExists bs body sp -> EExists (map goBinder bs) (go body) sp
+        ETraitArrow c body -> ETraitArrow (go c) (go body)
+        EEffRow fields mtail sp -> EEffRow [(n, go t) | (n, t) <- fields] (go <$> mtail) sp
+        EVariant arms mtail sp -> EVariant (map goVariant arms) (go <$> mtail) sp
+        EAscription v ty sp -> EAscription (go v) (go ty) sp
+        ECaptures v caps sp -> ECaptures (go v) caps sp
+        EOptionSugar v sp -> EOptionSugar (go v) sp
+        other -> other
+      where
+        go = qualifyExpr sourceIe
+        qualifyHead original fallback =
+          maybe fallback exprForGName (importedStorageHead sourceIe original)
+        goBinder b = b {bType = go <$> bType b, bDefault = go <$> bDefault b}
+        goVariant (VariantArm v ty) = VariantArm (go v) (go <$> ty)
+        goArg = \case
+          ArgExplicit a -> ArgExplicit (go a)
+          ArgImplicit a -> ArgImplicit (go a)
+          ArgInout a sp -> ArgInout (go a) sp
+          ArgNamedBlock items sp -> ArgNamedBlock [(n, go <$> ma) | (n, ma) <- items] sp
+
+    importedStorageHead sourceIe e = do
+      g@(GName gm _) <- resolveStoragePath st sourceIe =<< storagePath e
+      if gm /= mn && Set.member g storageGlobals
+        then Just g
+        else Nothing
+
 sourceStorageTypeNamesIn :: Map.Map ModuleName (Module, [Fragment]) -> ModuleName -> [Text]
 sourceStorageTypeNamesIn byName mn =
-  sourceRecordShapeNames ++ sourceDataTypeNames
+  sourceRecordShapeNames ++ sourceDataTypeNames ++ sourceTypeAliasNames
   where
     sourceRecordShapeNames =
       [ nm
@@ -1594,6 +1802,12 @@ sourceStorageTypeNamesIn byName mn =
       | (mn', (sm, _)) <- Map.toList byName
       , mn' == mn
       , DData _ dd _ <- modDecls sm
+      ]
+    sourceTypeAliasNames =
+      [ nameText n
+      | (mn', (sm, _)) <- Map.toList byName
+      , mn' == mn
+      , DTypeAlias _ n _ _ _ _ <- modDecls sm
       ]
 
 qualifyRecordShapeTypes :: Text -> [Text] -> RecordShape -> RecordShape
@@ -1692,7 +1906,7 @@ usageMonadicCarrierGlobals st =
   Set.fromList
     [ g
     | inst <- csInstances st
-    , ieTrait inst == prelMonad || ieTrait inst == prelMonadRef
+    , ieTrait inst == prelMonadRef
     , Just g <- [monadicCarrierHead (ieHead inst)]
     ]
 
@@ -1729,36 +1943,209 @@ usageImportedProjections byName st ie =
         ]
     projFor (GName mn nm) = Map.lookup (mn, nm) sourceProjs
 
-usageImportedDuplicableStorageHeads :: CheckState -> ImportEnv -> Set.Set Text
-usageImportedDuplicableStorageHeads st ie =
+usageImportedDuplicableStorageHeads ::
+  Map.Map ModuleName (Module, [Fragment]) ->
+  CheckState ->
+  ImportEnv ->
+  Set.Set Text
+usageImportedDuplicableStorageHeads byName st ie =
+  visibleStorageHeads st ie (duplicableStorageGlobals `Set.union` duplicableAliasTypes)
+  where
+    duplicableAliasTypes = storageAliasGlobals byName st duplicableStorageGlobals
+
+usageImportedUnaryStorageHeads :: CheckState -> ImportEnv -> Set.Set Text
+usageImportedUnaryStorageHeads st ie =
+  visibleStorageHeads st ie unaryStorageGlobals
+
+usageImportedBinaryStorageHeads :: CheckState -> ImportEnv -> Set.Set Text
+usageImportedBinaryStorageHeads st ie =
+  visibleStorageHeads st ie binaryStorageGlobals
+
+visibleStorageHeads :: CheckState -> ImportEnv -> Set.Set GName -> Set.Set Text
+visibleStorageHeads st ie globals =
   Set.fromList
     [ alias
     | (alias, g) <- Map.toList (usageImportedNames st ie)
-    , g `Set.member` duplicableStorageTypes
+    , g `Set.member` globals
     ]
+    `Set.union` implicitPreludeHeads
   where
-    duplicableStorageTypes =
-      Set.fromList
-        [ prelUnit
-        , prelBool
-        , prelString
-        , prelNat
-        , prelInt
-        , prelInteger
-        , prelDouble
-        , prelByte
-        , prelGrapheme
-        , prelUnicodeScalar
-        , gPrel "Ordering"
-        , prelRegion
-        , prelRef
-        , gPrel "TVar"
-        , gPrel "Fiber"
-        , gPrel "Promise"
-        , gPrel "Scope"
-        , gPrel "Duration"
-        , gPrel "Instant"
+    preludeActive =
+      or
+        [ Map.lookup "Int" (ieScope ie) == Just prelInt
+        , Map.lookup "String" (ieScope ie) == Just prelString
+        , Map.lookup "IO" (ieScope ie) == Just prelIO
         ]
+    implicitPreludeHeads =
+      Set.fromList
+        [ nm
+        | preludeActive
+        , GName mn nm <- Set.toList globals
+        , mn == preludeModule
+        ]
+
+storageAliasGlobals :: Map.Map ModuleName (Module, [Fragment]) -> CheckState -> Set.Set GName -> Set.Set GName
+storageAliasGlobals byName st seed =
+  fixed Set.empty (length aliases + 1)
+  where
+    aliases =
+      [ (GName mn (nameText n), mn, rhs)
+      | (mn, (sm, _)) <- Map.toList byName
+      , DTypeAlias _ n [] _ (Just rhs) _ <- modDecls sm
+      ]
+    fixed acc fuel
+      | fuel <= 0 = acc
+      | next == acc = acc
+      | otherwise = fixed next (fuel - 1)
+      where
+        known = seed `Set.union` acc
+        next =
+          Set.fromList
+            [ g
+            | (g, mn, rhs) <- aliases
+            , Just rhsHead <- [resolveStorageExprHead byName st mn rhs]
+            , rhsHead `Set.member` known
+            ]
+
+resolveStorageExprHead :: Map.Map ModuleName (Module, [Fragment]) -> CheckState -> ModuleName -> Expr -> Maybe GName
+resolveStorageExprHead byName st mn rhs = do
+  (sourceModule, _) <- Map.lookup mn byName
+  resolveStoragePath st (buildImports st sourceModule) =<< storagePath rhs
+
+duplicableStorageGlobals :: Set.Set GName
+duplicableStorageGlobals =
+  Set.fromList
+    [ prelUnit
+    , gPrel "Void"
+    , prelBool
+    , prelString
+    , prelNat
+    , prelInt
+    , prelInteger
+    , prelDouble
+    , prelByte
+    , prelGrapheme
+    , prelUnicodeScalar
+    , gPrel "Ordering"
+    , prelRegion
+    , prelRef
+    , prelIO
+    , gPrel "UIO"
+    , prelSTM
+    , prelElab
+    , prelEff
+    , gPrel "TVar"
+    , gPrel "Fiber"
+    , gPrel "FiberId"
+    , gPrel "FiberRef"
+    , gPrel "Promise"
+    , gPrel "Scope"
+    , gPrel "Monitor"
+    , prelBorrowView
+    , prelSyntax
+    , gPrel "SyntaxOrigin"
+    , gPrel "Symbol"
+    , gPrel "CoreCtx"
+    , gPrel "Core"
+    , gPrel "CoreEq"
+    , prelCode
+    , gPrel "ClosedCode"
+    , gPrel "InterruptTag"
+    , gPrel "InterruptCause"
+    , gPrel "DefectTag"
+    , gPrel "DefectInfo"
+    , gPrel "Duration"
+    , gPrel "Instant"
+    , GName modDerivingShape "ShapeAdtKind"
+    , GName modDerivingShape "ShapeVisibility"
+    , GName modDerivingShape "ShapeField"
+    , GName modDerivingShape "ShapeConstructor"
+    , GName modDerivingShape "AdtShape"
+    , GName modDerivingShape "RecordShape"
+    , GName modDerivingShape "BoundField"
+    , GName modDerivingShape "BoundFieldPair"
+    , GName modAtomic "AtomicRef"
+    , GName modAtomic "LoadOrder"
+    , GName modAtomic "StoreOrder"
+    , GName modAtomic "RmwOrder"
+    , GName modAtomic "CasFailureOrder"
+    , GName modArrayMutable "MutArray"
+    , GName modSupervisor "SupervisorStrategy"
+    , GName modSupervisor "RestartPolicy"
+    , GName modSupervisor "RestartIntensity"
+    , GName modSupervisor "Supervisor"
+    ]
+    `Set.union` Set.fromList [GName modFfi nm | nm <- ffiStorageNames]
+
+unaryStorageGlobals :: Set.Set GName
+unaryStorageGlobals =
+  Set.fromList
+    [ prelList
+    , prelOption
+    , gPrel "Cause"
+    , GName modAtomic "CompareExchangeResult"
+    ]
+
+binaryStorageGlobals :: Set.Set GName
+binaryStorageGlobals =
+  Set.fromList
+    [ gPrel "Result"
+    , gPrel "Exit"
+    ]
+
+knownStorageGlobals :: Set.Set GName
+knownStorageGlobals =
+  duplicableStorageGlobals `Set.union` unaryStorageGlobals `Set.union` binaryStorageGlobals
+
+ffiStorageNames :: [Text]
+ffiStorageNames =
+  [ "I8"
+  , "I16"
+  , "I32"
+  , "I64"
+  , "U8"
+  , "U16"
+  , "U32"
+  , "U64"
+  , "Isize"
+  , "Usize"
+  , "F32"
+  , "F64"
+  , "RawPtr"
+  , "OpaqueHandle"
+  ]
+
+storagePath :: Expr -> Maybe [Text]
+storagePath = \case
+  EVar n -> Just [nameText n]
+  EDot base (DotName n) -> (++ [nameText n]) <$> storagePath base
+  EApp f _ -> storagePath f
+  EAscription e _ _ -> storagePath e
+  ECaptures e _ _ -> storagePath e
+  _ -> Nothing
+
+resolveStoragePath :: CheckState -> ImportEnv -> [Text] -> Maybe GName
+resolveStoragePath st sourceIe = \case
+  [x] -> Map.lookup x (ieScope sourceIe)
+  [alias, member] -> do
+    targetModule <- Map.lookup alias (ieAliases sourceIe)
+    let g = usageExportTarget st targetModule member
+    if member `elem` exportedMemberNames st targetModule
+      then Just g
+      else Nothing
+  xs@(_ : _ : _) ->
+    let (mods, member) = splitLast xs
+        mn = ModuleName mods
+        g = usageExportTarget st mn member
+     in if member `elem` exportedMemberNames st mn
+          then Just g
+          else Nothing
+  _ -> Nothing
+  where
+    splitLast xs =
+      case reverse xs of
+        y : ys -> (reverse ys, y)
+        [] -> ([], "")
 
 usageImportedNames :: CheckState -> ImportEnv -> Map.Map Text GName
 usageImportedNames st ie =

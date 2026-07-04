@@ -47,8 +47,12 @@ static _Atomic int  g_loop_started = 0;               /* loop is spinning       
  * scalar loop: i64 registers, in-place commit, FINAL-value flush on safepoint. */
 static KValue *scalar_loop_fn(KValue **args) {
   KValue *xref = args[0], *yref = args[1];
-  int64_t x = kas_int(kref_get(xref));            /* load cells -> registers       */
-  int64_t y = kas_int(kref_get(yref));
+  KValue *xv = kref_get(xref);                    /* load cells -> registers       */
+  KValue *yv = kref_get(yref);
+  int64_t x = kas_int(xv);
+  int64_t y = kas_int(yv);
+  kdrop(xv);
+  kdrop(yv);
   int64_t bound  = atomic_load(&g_bound);
   int masked = atomic_load(&g_masked);
   int64_t spc = 256;  /* small quantum: responsive but still amortized             */
@@ -161,8 +165,12 @@ int main(void) {
   CHECK(fx > 0, "T1: the loop ran at least one iteration before aborting");
   CHECK(fy == 2 * fx, "T1: iteration-boundary invariant y==2x held in the FLUSHED cells (no half-updated state)");
   CHECK(ac == 1, "T1: the loop flushed-and-exited EXACTLY ONCE (no double-apply / re-entry)");
-  long cx = (long)kas_int(kref_get(g_xref));
-  long cy = (long)kas_int(kref_get(g_yref));
+  KValue *cxv = kref_get(g_xref);
+  KValue *cyv = kref_get(g_yref);
+  long cx = (long)kas_int(cxv);
+  long cy = (long)kas_int(cyv);
+  kdrop(cxv);
+  kdrop(cyv);
   fprintf(stderr, "  T1: ref cells x=%ld y=%ld\n", cx, cy);
   CHECK(cx == fx && cy == fy, "T1: ref cells hold the flushed boundary values");
   CHECK(cy == 2 * cx, "T1: ref cells satisfy y==2x (exactly-once, boundary-exact flush)");

@@ -1,0 +1,15 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Entry : Type =
+    Entry (name : String) (level : Int)
+
+mkEntry : Int -> Entry
+let mkEntry n = Entry (showInt n) n
+
+twice : List Int -> Int
+let twice xs =
+    let entries = map mkEntry xs
+    listLength entries + listLength entries

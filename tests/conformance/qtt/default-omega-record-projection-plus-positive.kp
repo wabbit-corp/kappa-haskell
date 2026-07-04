@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+type Player : Type =
+    (corruption : Int)
+
+type GameState : Type =
+    (player : Player)
+
+corrupt : Int -> GameState -> Int
+let corrupt amount game =
+    let c0 = game.player.corruption
+    let c1 = c0 + amount
+    in if c1 >= 100 then c1 else c1

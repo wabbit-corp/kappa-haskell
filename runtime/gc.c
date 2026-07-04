@@ -66,6 +66,13 @@ void krt_init(void) {
    * base-only rooting is safe — verified by the native suite + parity corpus. */
   GC_set_all_interior_pointers(0);
   GC_INIT();
+#ifdef KRT2_TSAN
+  /* ThreadSanitizer does not understand Boehm's custom heap reuse as malloc/free
+   * lifetime boundaries, so it can report independent writes to recycled cells as
+   * races. The TSan lane is for scheduler/header data races, not reclamation;
+   * normal and poison lanes still exercise real GC_FREE. */
+  GC_disable();
+#endif
   krt_assert_gc_alignment();
   mp_set_memory_functions(gmp_gc_alloc, gmp_gc_realloc, gmp_gc_free);
   atexit(krt_at_exit);
@@ -93,7 +100,11 @@ void *kgc_alloc_atomic(size_t n) {
 void kgc_free(void *p) {
   if (!p) return;
   atomic_fetch_add_explicit(&g_kgc_frees_total, 1, memory_order_relaxed);
+#ifdef KRT2_TSAN
+  (void)p;
+#else
   GC_FREE(p);
+#endif
 }
 
 unsigned long long kgc_debug_free_count(void) {

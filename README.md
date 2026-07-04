@@ -221,8 +221,10 @@ links a native executable.
   [`HeaderGen`](src/Kappa/Backend/HeaderGen.hs),
   [`NativeProbe`](src/Kappa/Backend/NativeProbe.hs) — resolve `host.native.*`
   bindings, generate adapter headers, and probe/verify the host ABI.
-- [`runtime/kappart.c`](runtime/kappart.c) — the C runtime the generated code
-  links against.
+- [`runtime/kappart.h`](runtime/kappart.h), [`runtime/value.c`](runtime/value.c),
+  [`runtime/gc.c`](runtime/gc.c), [`runtime/prims.c`](runtime/prims.c), and
+  [`runtime/rt.c`](runtime/rt.c) — the split C runtime the generated code links
+  against.
 
 Single-file mode compiles one program with no host bindings:
 
@@ -299,7 +301,7 @@ src/Kappa/           the compiler library
   Backend/           C codegen, native FFI, build driver
   Build/             package manifest, lockfile, provenance, plan
   ...                lexer, parser, resolver, checker, interpreter, prelude, diagnostics
-runtime/             C runtime (kappart.c) for the native backend
+runtime/             split C runtime for the native backend
 tests/conformance/   the in-tree conformance suite (.kp fixtures)
 examples/            example packages (Delve, image-loader) and native demos
 docs/                Spec.md and backend/design documentation

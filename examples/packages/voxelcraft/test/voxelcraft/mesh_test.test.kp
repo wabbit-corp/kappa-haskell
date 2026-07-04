@@ -1,0 +1,21 @@
+module voxelcraft.mesh_test
+
+import voxelcraft.core.*
+import voxelcraft.mesh as mesh
+import voxelcraft.world as world
+
+public testMeshHasVisibleFaces : Bool
+let testMeshHasVisibleFaces =
+    let chunk = world.generateChunk 99 0 0
+    let stats = mesh.meshChunk chunk
+    in stats.visibleFaces > 0 && stats.solidBlocks > 0
+
+public testMeshCountsAreConsistent : Bool
+let testMeshCountsAreConsistent =
+    let stats = mesh.meshWorld (world.generateWorld 99)
+    in stats.vertexCount == stats.visibleFaces * 4 && stats.indexCount == stats.visibleFaces * 6
+
+public testWorldMeshesOneChunk : Bool
+let testWorldMeshesOneChunk =
+    let stats = mesh.meshWorld (world.generateWorld 99)
+    in stats.chunks == 1

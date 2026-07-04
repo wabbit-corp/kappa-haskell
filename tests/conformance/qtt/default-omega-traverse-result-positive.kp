@@ -1,0 +1,13 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+parseString : Int -> UIO String
+let parseString n = pure (showInt n)
+
+parseAll : List Int -> UIO (List String)
+let parseAll xs = do
+    let strs <- traverse parseString xs
+    let same = strs
+    if listLength strs == listLength same then pure strs else pure same

@@ -1,7 +1,10 @@
 # Mutable Arrays for Kappa — Design
 
-Status: design (no code yet). Audience: the implementer who will land the
-runtime tag, the prims, both backends, the prelude surface, and the tests.
+Status: design plus landed boxed-runtime floor. The `K_ARRAY` boxed storage tag,
+owned get/set/len runtime operations, and S4 shared-storage synchronization are
+implemented; scalar/unboxed slabs, linear arrays, and `TArray` remain design work.
+Audience: implementers extending the runtime tag, prims, both backends, the
+prelude surface, and the tests.
 
 This document synthesizes four research passes (linear/uniqueness arrays,
 monadic ST/IO arrays, representation/RC/bounds, and Kappa-internal fit) into a
@@ -13,8 +16,10 @@ unrelated edits do not stale the design evidence.
 
 ## 1. Motivation
 
-Kappa today has **no O(1) mutable array**. The `Array a` type declared in
-`docs/Spec.md` §29 is backed by a **cons-list facade**:
+Kappa now has an O(1) boxed mutable-array runtime floor (`K_ARRAY` with get/set/len);
+the remaining design work in this document is scalar/unboxed slabs, linear arrays,
+and richer prelude/backend surfaces. The older immutable `Array a` facade declared in
+`docs/Spec.md` §29 was backed by a **cons-list facade**:
 `__arrayFromList`/`__arrayToList` are the identity over a `List`
 (`runtime/prims.c`, `kpf___queryFromList`), and `__arrayIndexUnsafe`
 **walks the linked list** one cons at a time:
@@ -318,11 +323,12 @@ linear story.
 
 ### 5.1 The `K_ARRAY` tag — `K_REF` generalized from 1 cell to N
 
-A `Ref` is a length-1 `KValue*` buffer (`runtime/kappart.h`,
-`struct { KValue **cell; }`; `runtime/value.c` `kref_new` allocates a
-1-slot block). **An array is its N-ary generalization, as a SINGLE object** —
-not N separate `Ref` boxes (that would be N allocations, no length, and no
-locality).
+Current `Ref` storage is a `KRefCell*`: a mutex plus one owned `KValue*`
+occupant. Private refs use direct owned get/set under the S4 thread-local
+invariant; shared refs take the cell lock while acquiring or replacing the
+counted occupant. **An array is the N-slot sibling of that storage discipline,
+as a SINGLE object** — not N separate `Ref` boxes (that would be N allocations,
+no length, and no locality).
 
 Add to the `KTag` enum and the `KValue` union in `runtime/kappart.h`, beside
 `as.ref` and `as.fgn`:
@@ -334,10 +340,13 @@ struct { void *elems; int64_t len; int64_t cap;
          uint8_t elemkind; uint8_t element_size; } arr;
 ```
 
-`elems` is **one** allocation — for the boxed slab a `kgc_alloc(len *
-sizeof(KValue*))` block, exactly like `K_CTOR`'s args array in `runtime/value.c`
-and `K_REF`'s cell; for a scalar slab a `kgc_alloc_atomic(len * element_size)`
-block (§5.2/§5.3). `len` makes `arrayLen` O(1) and pure.
+`elems` is the storage base. In the current boxed runtime it points at a
+small array box containing a mutex plus the `KValue*` slots; the slots are
+scanned and have the same owned-transfer/drop-barrier discipline as `K_REF`.
+Private arrays use direct slot access under the S4 thread-local invariant;
+shared arrays take the storage lock while acquiring or replacing a counted
+owner. The future scalar slabs remain direct `kgc_alloc_atomic(len *
+element_size)` buffers (§5.2/§5.3). `len` makes `arrayLen` O(1) and pure.
 
 **`elemkind` and `element_size` are FIRST-CLASS from Stage A — not "ignored
 seeds."** They are the discriminator the load/store path dispatches on and the
@@ -355,8 +364,8 @@ Ops mirror `kref_new`/`kref_get`/`kref_set` in `runtime/value.c` with the same
 ```c
 /* BOXED slab (Stage A): elems = kgc_alloc(n*sizeof(KValue*)) [SCANNED], fill init */
 KValue *karr_new(int64_t n, KValue *init);
-KValue *karr_get(KValue *arr, int64_t i);             /* O(1): ((KValue**)elems)[i]      */
-KValue *karr_set(KValue *arr, int64_t i, KValue *v);  /* O(1) in place: ((KValue**)elems)[i]=v */
+KValue *karr_get(KValue *arr, int64_t i);             /* O(1): returns an owned slot value */
+KValue *karr_set(KValue *arr, int64_t i, KValue *v);  /* O(1): owned-transfer store + drop-old */
 int64_t karr_len(KValue *arr);                        /* O(1): arr.len                   */
 
 /* UNBOXED scalar slabs (following stage): elems = kgc_alloc_atomic(n*8) [UNSCANNED].
@@ -429,13 +438,13 @@ performance+correctness property at the heart of the unboxing design:
 ### 5.3 Element unboxing — a FIRST-CLASS concern (boxed ships first, but the seam is built in)
 
 Unboxing is NOT a vague "later slab swap." It is the headline performance
-property of `K_ARRAY`, designed in from day one. The boxed slab ships first
-**only because every element is still a b000 boxed `KValue*` under UNBOXING
-Stage 0** (`runtime/kappart.h`: `kis_imm` is always false today) — so
-the boxed `K_ARRAY` is what is *correct to run* on the current runtime. But the
-representation tag (`elemkind`), the `element_size`, the GC-alloc choice, and the
-backend specialization SEAM all exist from Stage A, so the unboxed scalar slabs
-land as a *following stage with zero `K_ARRAY` redesign* (§7).
+property of `K_ARRAY`, designed in from day one. The boxed slab shipped first
+because it is the uniform representation that can hold every current `KValue`
+word, including b000 heap pointers and b001/b010/b011 immediates; scanned Boehm
+slabs are safe because immediate words are non-pointers by the low-3-bit tag
+contract. The representation tag (`elemkind`), the `element_size`, the GC-alloc
+choice, and the backend specialization boundary all exist from Stage A, so the
+unboxed scalar slabs land as a following stage with zero `K_ARRAY` redesign (§7).
 
 #### 5.3.1 THE CRUX — sound unboxed-rep selection under erasure (no monomorphization)
 
@@ -559,7 +568,7 @@ array-op call site. Two threads to nail down in implementation:
 
 | elemkind | slab type    | element_size | alloc (§5.2)          |
 |----------|--------------|--------------|------------------------|
-| BOXED    | `KValue*[]`  | 8            | non-atomic `kgc_alloc` (scanned)   |
+| BOXED    | synchronized `KValue*[]` box | 8 | non-atomic `kgc_alloc` (scanned) |
 | INT64    | `int64_t[]`  | 8            | atomic `kgc_alloc_atomic` (unscanned) |
 | DOUBLE   | `double[]`   | 8            | atomic `kgc_alloc_atomic` (unscanned) |
 | (future) BYTE/BIT | packed bytes | 1 / sub-byte | atomic | — for `Bool`/small-enum |
@@ -588,9 +597,11 @@ scalar-worker fast path reads/writes it with no immediate-decode step (§5.3.4).
 The get/set behaviour is `elemkind`-dispatched, and the DOUBLE/INT64 slabs have
 TWO read/write paths — a boxed-API path and a scalar-worker fast path:
 
-- **BOXED slab.** `read` returns the stored `KValue*` verbatim; `write` stores
-  the `KValue*` verbatim. Exactly `kref_get`/`kref_set` (`value.c`)
-  generalized to N cells. No conversion.
+- **BOXED slab.** `read` returns an owned duplicate of the stored `KValue*`;
+  `write` consumes the owned incoming `KValue*`, stores it, and drops the
+  displaced occupant exactly once. Exactly `kref_get`/`kref_set` (`value.c`)
+  generalized to N cells: direct on private arrays, locked on shared arrays.
+  No representation conversion.
 
 - **DOUBLE / INT64 slab, BOXED-API path** (a one-off `arrayRead`/`arrayWrite`
   outside a hot loop): `read` loads the raw scalar from the slab and
@@ -642,11 +653,14 @@ with `n` erased).
   element retain/drop is automatic; `set` just overwrote a slot (the old element
   became unreachable iff no other root held it); no Perceus barrier existed on
   that path.
-- **Current S3 C/runtime path:** `K_ARRAY` remains outside the FREESET, but boxed
-  `set` is now an owned-transfer barrier: it stores the owned new element and
-  drops the displaced slot reference, including the self-assignment case where
-  the drop consumes the incoming owned duplicate while leaving the slot live.
-- **Future (Perceus precise RC, post-LLVM-layout):** the array carries a header
+- **Current S4 C/runtime path:** `K_REF`, `TVar`, and `K_ARRAY` containers remain
+  outside the FREESET as retained mutable shells/cycle sources, but their boxed
+  occupants are counted. `get` returns an owned occupant; `set`/write barriers
+  store the owned new occupant and drop the displaced slot reference, including
+  the self-assignment case where the drop consumes the incoming owned duplicate
+  while leaving the slot live. Private storage uses direct S4 thread-local access;
+  shared storage uses the storage lock while acquiring or replacing the owner.
+- **Future (Perceus precise container RC, post-LLVM-layout):** the array carries a header
   RC. `set` on a **unique (RC==1)** array mutates in place AND drops the old
   slot value / retains the new (the Koka/Lean discipline) — the FBIP reuse win;
   `set` on a **shared** array copies. The **linear `LinArray`** (Option A)
@@ -658,8 +672,9 @@ with `n` erased).
   retain/drop at all** (the words are not pointers), so its FBIP in-place `set`
   is a bare store with no RC traffic, while a boxed slab's in-place `set` must
   drop-old/retain-new. So the unboxed-element design *reduces* the Perceus work,
-  it does not complicate it. Until precise RC lands, Boehm is the safety net for
-  the whole `Ref`/`TVar`/array region.
+  it does not complicate it. Until precise container/cycle reclamation lands,
+  Boehm remains the safety net for the mutable container shells, not for every
+  strict immutable occupant stored in them.
 
 - **Double-unboxing is an ARRAY-LEVEL win available BEFORE general LLVM-layout
   Double unboxing.** A scalar `Double` is, today, a boxed `K_DBL` leaf
@@ -726,8 +741,9 @@ specialization seam exist from Stage A.
   reshape. Boxed = `elemkind == BOXED`, `element_size == 8`.
 - `runtime/value.c`: add `karr_new`/`karr_get`/`karr_set`/`karr_len` right
   after `kref_*`, each with the `kis_imm || tag !=
-  K_ARRAY` guard. The boxed slab is **non-atomic** `kgc_alloc` (§5.2 rule 1).
-  `karr_get`/`karr_set` index `((KValue**)arr.elems)[i]`. Leave the scalar
+  K_ARRAY` guard. The boxed slots are scanned; `karr_get` duplicates directly
+  while the array is private and under the lock once it is shared. `karr_set`
+  mirrors that split, dropping the displaced occupant exactly once. Leave the scalar
   `karr_*_i64`/`_dbl` entry points UNwritten but their *shape* designed (§5.1)
   so Stage H slots them in beside the boxed ops.
 - **Grep every `K_REF` case site** (`show.c`, any GC-trace switch,

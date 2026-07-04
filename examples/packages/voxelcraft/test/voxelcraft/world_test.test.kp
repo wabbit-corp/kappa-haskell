@@ -1,0 +1,28 @@
+module voxelcraft.world_test
+
+import voxelcraft.core.*
+import voxelcraft.world as world
+
+countKind : BlockKind -> List Block -> Int
+let countKind kind blocks decreases listLength blocks =
+    match blocks
+    case Nil -> 0
+    case b :: rest -> (if b.kind == kind then 1 else 0) + countKind kind rest
+
+public testGeneratedChunkHasTerrain : Bool
+let testGeneratedChunkHasTerrain =
+    let chunk = world.generateChunk 42 0 0
+    in countKind Grass chunk.blocks > 0 && countKind Stone chunk.blocks > 0
+
+public testSpawnAboveSurface : Bool
+let testSpawnAboveSurface =
+    let pos = world.spawnPosition 42
+    in pos.y > world.heightAt 42 pos.x pos.z
+
+public testOutOfBoundsIsEmpty : Bool
+let testOutOfBoundsIsEmpty =
+    let chunk = world.generateChunk 42 0 0
+    in
+        match world.blockAt chunk (-1) 0 0
+        case None -> True
+        case Some _ -> False

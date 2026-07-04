@@ -1,5 +1,9 @@
 # Perceus S2.3 redux — Drop Completion (under the Boehm differential backstop)
 
+Historical note: this file documents the S2.3/S3 transition. S4 has since replaced the S3-era shared
+dup/drop no-op policy with counted atomic shared RC for the strict immutable FREESET; see
+[`PERCEUS-S4-PLAN.md`](PERCEUS-S4-PLAN.md) for the current shared-object behavior.
+
 Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`), with **S2.3c
 implemented by the primitive convention table** and **S2.3d implemented for locally-proven path-local dead
 owned flat locals**. S3.2 has since tightened the C backend entry gates needed by free-on-zero: returning-arm
@@ -32,8 +36,9 @@ Rule for `match s case C f₁…fₙ -> body` when the scrutinee's last use is t
 - **unique** cell (rc 1→0 once S3.2 wires free-on-zero): the surviving fields would be freed by recursive
   descent, so each kept field is `kdup`'d to keep it alive; the cell shell is only actually released after
   the S3.2 flip.
-- **shared** cell (rc>1, or S3.1 shared-bit marked): `kdrop` either decrements the thread-local count or is a
-  shared no-op; the dup keeps the field count honest for another owner.
+- **shared** cell (rc>1, or S3.1 shared-bit marked): at S2/S3, `kdrop` either decremented the thread-local
+  count or was a shared no-op; S4 now uses counted atomic shared `kdrop` for strict FREESET values. In both
+  cases the dup keeps the field count honest for another owner.
 - **discarded** fields (`_`, omitted record fields): NOT dup'd; the single `kdrop(scrut)` is their decrement.
 
 **Site:** the cell-`kdrop` goes in `consumeAltBody`, per-arm, against the `scrut_N` (`sv`)

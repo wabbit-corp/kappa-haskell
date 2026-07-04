@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+data GameError : Type =
+    GameError (message : String)
+
+data JsonValue : Type =
+    JsonString (value : String)
+
+arrayField : String -> JsonValue -> IO GameError (List JsonValue)
+let arrayField _ value = pure [value]
+
+decodeStringFromJson : JsonValue -> IO GameError String
+let decodeStringFromJson value =
+    match value
+    case JsonString text -> pure text
+
+loadLore : JsonValue -> IO GameError Int
+let loadLore root =
+    do
+        let rumorJson <- arrayField "rumors" root
+        let texts <- traverse decodeStringFromJson rumorJson
+        if listLength texts == listLength texts then pure (listLength texts) else pure 0

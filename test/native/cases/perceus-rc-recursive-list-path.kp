@@ -1,0 +1,43 @@
+-- Perceus S2 R-path regression: recursive list functions whose tail calls live
+-- inside match arms must not drift away from the ownership side-table paths.
+module main
+
+reverseGo : forall (a : Type). List a -> List a -> List a
+let reverseGo acc xs decreases listLength xs =
+    match xs
+    case Nil -> acc
+    case h :: t -> reverseGo (h :: acc) t
+
+listGet : forall (a : Type). List a -> Int -> Option a
+let listGet xs i decreases listLength xs =
+    match xs
+    case Nil -> None
+    case h :: t -> if leInt i 0 then Some h else listGet t (subInt i 1)
+
+dropN : forall (a : Type). Int -> List a -> List a
+let dropN n xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case h :: t -> if leInt n 0 then xs else dropN (subInt n 1) t
+
+replicateGo : forall (a : Type). Int -> a -> List a -> List a
+let replicateGo n x acc decreases n =
+    if leInt n 0 then acc else replicateGo (subInt n 1) x (x :: acc)
+
+lastOr : a -> List a -> a
+let lastOr fallback xs decreases listLength xs =
+    match xs
+    case Nil -> fallback
+    case x :: Nil -> x
+    case _ :: rest -> lastOr fallback rest
+
+main : UIO Unit
+let main = do
+    let xs = 1 :: 2 :: 3 :: 4 :: Nil
+    printlnString (showInt (listLength (reverseGo Nil xs)))
+    match listGet xs 2
+    case None -> printlnString "missing"
+    case Some n -> printlnString (showInt n)
+    printlnString (showInt (listLength (dropN 2 xs)))
+    printlnString (showInt (listLength (replicateGo 5 7 Nil)))
+    printlnString (showInt (lastOr 99 xs))

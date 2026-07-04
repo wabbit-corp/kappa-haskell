@@ -59,7 +59,7 @@ FOREIGN-terminal hang) — the adversarial-review-every-merge discipline paid fo
 - **std.atomic** (§29.1) — boxed mutex-protected atomic cells, proven exact under an N×M race.
 - **delve renders on C** + `restore`-over-suspending-do-block — both the sync-bridge `OP_*`
   gap (`finallyIO`/`catchIO`/`OP_RESTORE` returned unrun; fixed in `C.hs suspendingNames`).
-- **kappart.c split** (6 prefix-free TUs, `-flto`) + synchronous bridge fixes for curried IO values.
+- **Runtime split** (`kappart.h` plus cohesive value/gc/prims/scheduler TUs, `-flto`) + synchronous bridge fixes for curried IO values.
 - **LLVM Int while-loop scalar-unboxing** — sumloop ~1195× → C parity.
 - **Cross-language benchmark suite** ([`bench/xlang`](bench/xlang), `make xbench`, [`CROSS-LANGUAGE-BENCHMARKING.md`](docs/CROSS-LANGUAGE-BENCHMARKING.md)) — 13 CLBG/Savina ports; concurrency runs the full suite correct + byte-identical to Go/GHC (the alloc-lever multiplier is not a model defect).
 
@@ -172,26 +172,28 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
    - **S3 — flip free-on-zero** for strict (acyclic ⇒ garbage-free) data; immediates skip RC. Full plan:
      [PERCEUS-S3-PLAN.md](runtime/docs/PERCEUS-S3-PLAN.md) — scope = RC-free the immutable acyclic thread-local
      shapes only (`K_CTOR`/`K_REC`/`K_VARIANT`/`K_STR`/`K_BOUNCE`/`K_FAIL`), retain closures,
-     IO/action/native wrappers, `K_REF`/`K_ARRAY`/`K_THUNK`/`K_BIGINT`/`K_BYTE`/`K_BYTES`/`K_FGN`, and shared
-     values on Boehm until the later ownership/atomic stages; S3.0/S3.1 prereqs landed = `kis_rc_freeable` +
-     shared-bit encoding, `karr_new` per-slot dup, `krec_without` kept-field dup, `tshare` mark+shared-dup/drop-no-op,
+     IO/action/native wrappers, `K_REF`/`K_ARRAY`/`K_THUNK`/`K_BIGINT`/`K_BYTE`/`K_BYTES`/`K_FGN`, and S3-era
+     shared values on Boehm until the S4 ownership/atomic stage; S3.0/S3.1 prereqs landed = `kis_rc_freeable` +
+     shared-bit encoding, `karr_new` per-slot dup, `krec_without` kept-field dup, S3-era `tshare`
+     marking that deferred shared RC to S4,
      iterative drop-descent skeleton, and
      arity-guard reconcile. **S3.2-S3.4 landed for the C/runtime path:** `kdrop` now frees zero-count values in
      the conservative FREESET using an inline/scanned-overflow iterative worklist; S3.3 drops displaced runtime
      cell values and failed-publication arguments (`Ref`/array/FiberRef/STM/promise/failed CAS); S3.4 makes native
      RC validation/emission default-on with `KAPPA_PERCEUS_RC=0` reserved for explicit RC-off differential baselines
      that disable runtime RC effects as well as generated maintenance.
-     LLVM and retained/shared shapes remain Boehm-backed until their later stages. The native corpus lane runs
+     LLVM and retained mutable/lazy/foreign/resource shapes remain Boehm-backed until their later stages; S4 below
+     now covers shared strict immutable FREESET reclamation. The native corpus lane runs
      generated C binaries with `KAPPA_POISON=1`, includes a non-vacuous generated-drop fixture, and gates the
      generated-drop heap high-water trend in a separate real-free lane with `KAPPA_POISON` unset.
    - **S4 — thread-shared atomic split** at the fork / promise / fiber-exit / TVar publish points. Full plan:
-     [PERCEUS-S4-PLAN.md](runtime/docs/PERCEUS-S4-PLAN.md) — two deliverables: (A) the **biased fast/slow
-     split** (thread-local RC goes non-atomic — recovers the 20–130% atomic-everywhere tax S3.4 pays live) and
-     (B) **shared-object reclamation** (atomic count + acquire-before-free extends free-on-zero to the shared
-     set, currently Boehm-retained). Runtime-only, backend-agnostic — needs neither LLVM-RC nor the
-     KBackendIR split. Primary gate: **ThreadSanitizer** over the RC-on concurrency corpus (a data-race
-     surface) + poison-under-load + a perf-recovery gate. Highest-value next step: RC is default-on now, so
-     the atomic tax is live.
+     [PERCEUS-S4-PLAN.md](runtime/docs/PERCEUS-S4-PLAN.md) — **landed for the C/runtime path**: thread-local
+     RC uses an atomic discriminator load followed by direct non-RMW count updates, shared values use counted
+     atomic RC with acquire-before-free, and the strict immutable FREESET is reclaimable even after publication.
+     Runtime-only, backend-agnostic — needs neither LLVM-RC nor the KBackendIR split. Gates now include the
+     focused `runtime` `tsan-rc` shared-RC concurrency corpus, `perceus_s4_shared` poison/reclamation
+     regressions, a debug recursive publish-mark assertion, and `bench-s4-rc` for biased fast-path recovery.
+     Mutable/lazy/foreign/resource tags remain Boehm-retained until the later cycle/resource ownership stages.
    - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class).
    - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
@@ -588,9 +590,10 @@ the real Lint are both impossible without them.
       a startup `krt_assert_gc_alignment` (sampled `GC_MALLOC` all 8-aligned,
       fail-closed); `_Static_assert(_Alignof(max_align_t) >= 8)`. The **low-3-bit
       tag budget is reserved + documented** (`b000` ptr / `b001` imm-Int / `b010`
-      imm-ctor / `b011..` Perceus) with the `kis_imm`/`kderef`/`kimm_payload`
-      discriminator API in `kappart.h` — a debug `kderef` assert pins "no immediate
-      yet (every value is a b000 pointer)" ahead of the Stage-1 deref audit.
+      imm-ctor / `b011` packed ctor / `b1xx` future immediates; Perceus RC lives in
+      the heap header) with the `kis_imm`/`kderef`/`kimm_payload` discriminator API in
+      `kappart.h` — a debug `kderef` assert pinned immediate-safety ahead of the
+      Stage-1 deref audit.
       VERIFIED safe under heavy collection: **corpus 81/81**, a 1M-cons-cell
       **251-collection GC stress** (interp == C == LLVM, correct), full native suite
       green. **Stage-0 BENCHES LANDED** (`bench/rt_bench.c` rows 3, 6–10 + the
@@ -599,11 +602,10 @@ the real Lint are both impossible without them.
       (nullary `None`, 48 B/op — the immediate WIN that should drop to 0), `ctor
       deref boxed` + `ctor0 dispatch` (the tag-test tax/win = the go/no-go gate),
       and a sum-checked `scalar across a park` (1184 B/op, asserts the carried Int
-      survives) — bytes/op bit-identical across runs. **REMAINING:** canonicalize
-      `kbool`/`kunit`/`kint`/nullary-ctor encoding to a single form, which folds
-      into the Stage-1 deref audit.
-- [~] **Stage 1 — immediate tagging** (UNBOXING §1/§5/§7). **Immediate INT (b001)
-      DONE** (commit `a074259`, merged `4cdd181`): a small Int rides the `KValue*`
+      survives) — bytes/op bit-identical across runs. The canonical value encoding
+      work later landed with Stage 1 / layout packing.
+- [x] **Stage 1 — immediate tagging and uniform small ctor packing** (UNBOXING §1/§5/§7).
+      **Immediate INT (b001) DONE** (commit `a074259`, merged `4cdd181`): a small Int rides the `KValue*`
       word as `(value<<3)|b001`, a 61-bit signed immediate (the **3-bit** tag of
       `docs/TAGGING-RESEARCH.md`, not the original `(i<<1)|1`); out-of-range escapes
       to boxed `K_BIGINT`; `kint()` canonical (`kint_cache` retired as a carrier,
@@ -615,8 +617,9 @@ the real Lint are both impossible without them.
       interp==C==LLVM (incl. the §5.3 boundary test at 2^60), full native suite
       green, **boxed `addInt` 48 -> 0 B/op** (the ~50x allocation lever; `ctor-build`
       112 -> 64 B as its `kint` head is now immediate too), the go/no-go ctor-deref
-      tax flat in isolation. **REMAINING:** the secondary `b010` immediate-CTOR
-      (`Bool`/`Unit`/`Nil`/`None` -> 0-alloc; `ctor0-build` 48 -> 0) deferred.
+      tax flat in isolation. The later layout pass completed the secondary `b010`
+      immediate nullary ctors and `b011` packed one-/two-field ctors; see the current
+      value-layout completion item above.
 - [ ] **Stage 1.5** = the §3.3 analysis above (shared).
 - [ ] **Stage 2 — worker/wrapper specialization** (UNBOXING §1/§7). Generalize
       `scalarPlan`/`kwi_`/`kwd_` to a layout kind (`Boxed|I64|F64|FixedFFI`) on Core
@@ -911,8 +914,10 @@ and tested; the remaining open items below are still real spec gaps.
       flat per-fiber scope); §29.1 missing `std.ffi` fixed-width `AtomicValue`
       instances. Multi-shot rejection now emits the mandated
       `E_FEATURE_BACKEND_CAPABILITY_MISSING` / `kappa.feature.gated`
-      diagnostic naming `rt-multishot-effects`. The STM RUN-phase /
-      torn-read-snapshot SHOULD deviations are self-documented (`stm.c:25-37`).
+      diagnostic naming `rt-multishot-effects`. The remaining STM RUN-phase
+      interruptibility SHOULD deviation is self-documented (`stm.c:25-30`);
+      S4 removed the earlier multi-TVar snapshot inconsistency by sampling TVars
+      under the STM lock.
 
 ### Shortcuts & over-claims to review (the "DONE"/"advertised" may not be real)
 
@@ -936,12 +941,12 @@ they are shortcuts that *look* finished. **Audit each before trusting it:**
 - [ ] **`Alternative STM` / `orElse`** — the runtime `STM_ORELSE` path exists, but the surface still
       lacks an `Alternative STM` instance mapping `<|>` to it. `Pointed (STM a)` only supplies
       `empty = retry`.
-- [ ] **Unproven parallelism claims** — the C runtime advertises `rt-parallel` /
-      `rt-shared-stm`, yet cross-worker STM commit-serialization (§32.2.9) and
-      cross-fiber happens-before (§32.2.10) have **no stress test** (`rt.c:1350-1352`
-      REVIEW note); the Haskell profile disagrees and calls the runtime
-      single-agent. "Tested" here means single-worker only — re-verify under real
-      parallelism or stop advertising.
+- [ ] **Parallelism claims need sharper coverage boundaries** — the C runtime advertises
+      `rt-parallel` / `rt-shared-stm`. STM now has real cross-worker conservation
+      stress in `runtime/tests/stm.c` and is part of the S4 TSan/poison RC corpus.
+      Remaining open work: broader cross-fiber happens-before (§32.2.10) stress and
+      profile-authority cleanup where the Haskell profile still describes the runtime
+      as single-agent.
 - [ ] **Verification-methodology shortcut — parity-only checks mask silent boxing
       regressions.** A codegen change can keep `interp==C==LLVM` byte-identical
       while quietly regressing a scalar worker to the **boxed** path (the result is

@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+
+-- A polymorphic action adapter must instantiate the bound result type from
+-- the argument action. The local binder itself has omitted quantity, hence
+-- omega, not a hidden linear obligation from the type variable `a`.
+module main
+
+lift : forall (a : Type). UIO a -> UIO a
+let lift action = action
+
+stringAction : Unit -> UIO String
+let stringAction _ = pure "hello"
+
+ok : UIO Unit
+let ok = do
+    let message <- lift (stringAction ())
+    if message == "hello" then pure () else pure ()

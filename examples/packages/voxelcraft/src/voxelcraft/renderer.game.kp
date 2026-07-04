@@ -1,0 +1,18 @@
+module voxelcraft.renderer
+
+import voxelcraft.core.*
+import voxelcraft.input.*
+
+expect data Renderer : Type
+
+expect term open : Int -> Int -> UIO Renderer
+expect term backendName : (& renderer : Renderer) -> UIO String
+expect term present : (& renderer : Renderer) -> MeshStats -> UIO Unit
+expect term shouldDelegate : (& renderer : Renderer) -> UIO Bool
+expect term delegate : (& renderer : Renderer) -> Int -> UIO Unit
+expect term openWindow : (& renderer : Renderer) -> UIO Unit
+expect term pollInput : (& renderer : Renderer) -> UIO InputFrame
+expect term beginMesh : (& renderer : Renderer) -> UIO Unit
+expect term pushFace : (& renderer : Renderer) -> FaceDir -> BlockKind -> Int -> Int -> Int -> Int -> UIO Unit
+expect term drawFrame : (& renderer : Renderer) -> Player -> MeshStats -> Int -> UIO Bool
+expect term close : (1 renderer : Renderer) -> UIO Unit

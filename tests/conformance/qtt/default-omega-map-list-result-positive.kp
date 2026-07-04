@@ -1,0 +1,12 @@
+--! mode check
+--! assertNoErrors
+
+module main
+
+mkText : Int -> String
+let mkText n = showInt n
+
+twiceMapped : List Int -> Int
+let twiceMapped xs =
+    let texts = map mkText xs
+    listLength texts + listLength texts

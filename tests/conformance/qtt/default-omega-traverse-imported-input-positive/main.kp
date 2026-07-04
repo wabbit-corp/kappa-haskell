@@ -1,0 +1,17 @@
+module main
+
+import lib.json as json
+
+data GameError : Type =
+    GameError (message : String)
+
+decodeStringFromJson : json.JsonValue -> IO GameError String
+let decodeStringFromJson _ = pure "x"
+
+decodeDamageType : String -> IO GameError String
+let decodeDamageType s = pure s
+
+ok : List json.JsonValue -> IO GameError (List String)
+let ok xs = do
+    let strs <- traverse decodeStringFromJson xs
+    traverse decodeDamageType strs

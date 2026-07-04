@@ -1,9 +1,10 @@
-/* kappart.h — Kappa native runtime (boxed values, Boehm GC, primitives).
+/* kappart.h — Kappa native runtime (values, Boehm backstop, primitives).
  *
  * This is the runtime the native backend (Kappa.Backend.C) links against.
- * Every Kappa value is a uniformly boxed, heap-allocated `KValue` reached
- * through ordinary C pointers, so the Boehm conservative collector traces
- * the whole graph precisely without per-type metadata. See
+ * Heap values are ordinary `KValue*` objects. Small Ints, nullary ctors, and
+ * packed 1/2-field ctors may be immediate tagged words instead; those carry no
+ * header and skip RC. Boehm remains the allocation/rooting backstop for heap
+ * storage, while Perceus RC can reclaim the strict FREESET at count zero. See
  * docs/NATIVE_BACKEND.md for the GC model, value layout, and the
  * supported-subset / honest-unsupported contract.
  *
@@ -108,6 +109,7 @@ enum {
 
 typedef struct KValue KValue;
 typedef struct KEnv KEnv;
+typedef struct KRefCell KRefCell;
 
 /* arity-1 closure body: receives the captured env and one argument */
 typedef KValue *(*KFn)(KEnv *env, KValue *arg);
@@ -116,19 +118,18 @@ typedef KValue *(*KIOFn)(KEnv *env);
 
 struct KValue {
   KTag tag;
-  /* Perceus RC Stage S0 (PERCEUS-RC-DESIGN §2/§7): a 32-bit reference count
-   * occupying the previously-free 4-byte hole at offset 4 — `tag` is a 4-byte
-   * KTag at offset 0 and the union is 8-aligned starting at offset 8, so this
-   * field fills the padding with ZERO struct growth (sizeof stays 48; asserted
-   * below).  Every heap allocation initializes it to 1 (alloc_val /
-   * alloc_val_atomic in value.c).  IMMEDIATES (kis_imm: b001 Int, b010 nullary
-   * ctor, b011 packed ctor) are NOT heap objects — they carry no header and so
-   * no rc.  This field is RESERVED + INITIALIZED ONLY at S0: Boehm remains the
-   * collector, there is no dup/drop and no RC reclamation yet.  Stage S3.0
-   * rides the high bit of this word for the thread-shared flag (Koka's
-   * negative-rc trick, PERCEUS-S3-PLAN §2.2); the low 31 bits remain the
-   * ordinary reference count. */
-  _Atomic uint32_t rc;
+  /* Perceus RC header word (PERCEUS-RC-DESIGN §2/§7): a 32-bit reference-count
+   * word occupying the previously-free 4-byte hole at offset 4 — `tag` is a
+   * 4-byte KTag at offset 0 and the union is 8-aligned starting at offset 8, so
+   * this field fills the padding with ZERO struct growth (sizeof stays 48;
+   * asserted below). Every heap allocation initializes it to one owner
+   * (alloc_val / alloc_val_atomic in value.c). IMMEDIATES (kis_imm: b001 Int,
+   * b010 nullary ctor, b011 packed ctor) are NOT heap objects — they carry no
+   * header and so no rc. S4 uses the high bit as the thread-shared flag, the
+   * next bit as sticky saturation, and the low 30 bits as the counted owner
+   * total. Boehm remains the allocation/rooting backstop for retained shapes;
+   * strict FREESET values can be reclaimed by kdrop/free-on-zero. */
+  uint32_t rc;
   union {
     int64_t  i;
     double   d;
@@ -142,15 +143,17 @@ struct KValue {
     struct { int n; const char **names; KValue **vals; } rec;
     struct { KFn fn; KEnv *env; } clo;
     struct { KIOFn fn; KEnv *env; } io;
-    struct { KValue **cell; } ref;             /* cell[0] is the contents */
-    /* K_ARRAY (MUTABLE-ARRAY-DESIGN §5.1): `elems` is ONE allocation —
-     * the boxed slab is a kgc_alloc(len*sizeof(KValue*)) SCANNED block, exactly
-     * like K_CTOR's args.  `len` makes arrayLen O(1) and pure; `cap` is the
-     * growth seed (cap == len today).  `elemkind`/`element_size` are the slab-
-     * rep discriminator and the GC-alloc selector: BOXED (==8) scanned today;
-     * INT64/DOUBLE atomic slabs slot in later with NO struct change.  `elems`
-     * is `void *` (not `KValue **`) precisely so the same box later holds an
-     * int64_t[]/double[] without reinterpretation. */
+    struct { KRefCell *cell; } ref;            /* owned get/set; direct private path, locked shared path */
+    /* K_ARRAY (MUTABLE-ARRAY-DESIGN §5.1): `elems` is the storage base.  For
+     * the boxed runtime today it points at a scanned array box whose slots
+     * follow K_REF's owned get/set discipline: direct while private, locked once
+     * shared.  `len` makes
+     * arrayLen O(1) and pure; `cap` is the growth seed (cap == len today).
+     * `elemkind`/`element_size` are the slab-rep discriminator and the future
+     * GC-alloc selector: BOXED (==8) scanned today; INT64/DOUBLE atomic slabs
+     * slot in later with NO struct change.  `elems` is `void *` (not
+     * `KValue **`) precisely so the same field later holds an int64_t[]/double[]
+     * without reinterpretation. */
     struct { void *elems; int64_t len; int64_t cap;
              uint8_t elemkind; uint8_t element_size; } arr;
     struct { void *p; const char *kind; } fgn;
@@ -195,8 +198,10 @@ void     krt_fail(const char *msg) __attribute__((noreturn));
 
 /* Whole-runtime RC maintenance gate for generated binaries. The default native
  * path leaves this ON; an explicit KAPPA_PERCEUS_RC=0 build calls
- * krc_set_enabled(0) from generated main so runtime S3 barriers do not
- * decrement/free values without matching compiler-emitted ownership maintenance. */
+ * krc_set_enabled(0) from generated main so runtime kdup/kdrop maintenance does
+ * not count/free values without matching compiler-emitted ownership operations.
+ * S4 publish marking remains active because shared bits also select synchronized
+ * mutable-storage access. */
 extern _Atomic int k_rc_enabled;
 void krc_set_enabled(int enabled);
 
@@ -302,50 +307,107 @@ extern _Atomic unsigned long long k_dups_total;
 extern _Atomic unsigned long long k_drops_total;
 #endif
 
-/* S3.0 shared-bit encoding. The sign/high bit marks an object that has crossed
- * a fiber/concurrency boundary; S3 free-on-zero must skip such objects until
- * S4 adds counted shared-object RC.  The header word is atomic already in S3.1:
- * the shared-bit transition can race with extant aliases, and even a no-op
- * shared kdup/kdrop must read the bit without a C data race. The low count is
- * intentionally ignored while the shared bit is set. */
+/* S4 shared-bit encoding. The sign/high bit marks an object that has crossed a
+ * fiber/concurrency boundary; the next bit is a sticky overflow/saturation bit;
+ * the low 30 bits remain its counted owner total. We use an atomic relaxed
+ * discriminator load so shared objects never race on the first read of the
+ * header. Thread-local objects then take a non-RMW direct count update; shared
+ * objects take the atomic slow path. Saturation is fail-closed: once set, drops
+ * no-op and the object leaks to Boehm rather than wrapping into an unsafe count. */
 #define KRC_SHARED_BIT ((uint32_t)0x80000000u)
-#define KRC_COUNT_MASK ((uint32_t)0x7fffffffu)
+#define KRC_SATURATED_BIT ((uint32_t)0x40000000u)
+#define KRC_FLAG_MASK ((uint32_t)0xc0000000u)
+#define KRC_COUNT_MASK ((uint32_t)0x3fffffffu)
 
 static inline uint32_t krc_word(const KValue *v) {
   kassert_live(v);
-  return atomic_load_explicit((_Atomic uint32_t *)&v->rc, memory_order_relaxed);
+  return __atomic_load_n(&v->rc, __ATOMIC_RELAXED);
 }
 
 static inline uint32_t krc_count(const KValue *v) {
-  return kis_imm(v) ? 0u : (krc_word(v) & KRC_COUNT_MASK);
+  if (kis_imm(v)) return 0u;
+  uint32_t w = krc_word(v);
+  return (w & KRC_SATURATED_BIT) ? KRC_COUNT_MASK : (w & KRC_COUNT_MASK);
 }
 
 static inline int krc_is_shared(const KValue *v) {
   return !kis_imm(v) && ((krc_word(v) & KRC_SHARED_BIT) != 0);
 }
 
+static inline int krc_is_saturated(const KValue *v) {
+  return !kis_imm(v) && ((krc_word(v) & KRC_SATURATED_BIT) != 0);
+}
+
 static inline void krc_set_count(KValue *v, uint32_t count) {
   uint32_t cur = krc_word(v);
   uint32_t next;
   do {
-    next = (cur & KRC_SHARED_BIT) | (count & KRC_COUNT_MASK);
-  } while (!atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
-                                                  memory_order_relaxed,
-                                                  memory_order_relaxed));
+    uint32_t flags = cur & KRC_SHARED_BIT;
+    next = (count >= KRC_COUNT_MASK) ? (flags | KRC_SATURATED_BIT) : (flags | (count & KRC_COUNT_MASK));
+  } while (!__atomic_compare_exchange_n(&v->rc, &cur, next, 1,
+                                        __ATOMIC_RELAXED,
+                                        __ATOMIC_RELAXED));
 }
 
 static inline void krc_mark_shared_shallow(KValue *v) {
   kassert_live(v);
-  if (!kis_imm(v)) atomic_fetch_or_explicit(&v->rc, KRC_SHARED_BIT, memory_order_relaxed);
+  if (!kis_imm(v)) __atomic_fetch_or(&v->rc, KRC_SHARED_BIT, __ATOMIC_RELAXED);
 }
 
-/* S3.0/S3.2 free-on-zero partition. This is deliberately conservative and is
- * the single guard deciding whether the S3.2 free branch MAY reclaim a zero-count
- * object. Mutable/lazy/foreign/shared objects remain Boehm-retained. Closures,
+static inline void krc_store_shared_saturated(KValue *v) {
+  __atomic_store_n(&v->rc, KRC_SHARED_BIT | KRC_SATURATED_BIT, __ATOMIC_RELAXED);
+}
+
+static inline uint32_t krc_shared_release_decrement(KValue *v, const char *who) {
+  uint32_t cur = krc_word(v);
+  for (;;) {
+    if (cur & KRC_SATURATED_BIT) return 0;
+    uint32_t n = cur & KRC_COUNT_MASK;
+#ifndef NDEBUG
+    assert((cur & KRC_SHARED_BIT) && "shared rc decrement called on a thread-local value");
+    assert(n > 0 && who);
+#else
+    (void)who;
+#endif
+    if ((cur & KRC_SHARED_BIT) == 0 || n == 0) return 0;
+    uint32_t next = (cur & KRC_SHARED_BIT) | (n - 1u);
+    if (__atomic_compare_exchange_n(&v->rc, &cur, next, 0,
+                                    __ATOMIC_RELEASE,
+                                    __ATOMIC_RELAXED)) {
+      if (n == 1) __atomic_thread_fence(__ATOMIC_ACQUIRE);
+      return n;
+    }
+  }
+}
+
+static inline void krc_shared_relaxed_increment_from(KValue *v, uint32_t cur) {
+#ifndef NDEBUG
+  assert((cur & KRC_SHARED_BIT) && "shared rc increment called on a thread-local value");
+#endif
+  if ((cur & KRC_SATURATED_BIT) || ((cur & KRC_COUNT_MASK) >= KRC_COUNT_MASK)) {
+    krc_store_shared_saturated(v);
+    return;
+  }
+  uint32_t old = __atomic_fetch_add(&v->rc, 1u, __ATOMIC_RELAXED);
+#ifndef NDEBUG
+  assert((old & KRC_SHARED_BIT) && "shared rc increment called on a thread-local value");
+#endif
+  if ((old & KRC_SATURATED_BIT) || ((old & KRC_COUNT_MASK) >= KRC_COUNT_MASK)) {
+    krc_store_shared_saturated(v);
+  }
+}
+
+static inline void krc_shared_relaxed_increment(KValue *v) {
+  krc_shared_relaxed_increment_from(v, krc_word(v));
+}
+
+/* S3.0/S4 free-on-zero partition. This is deliberately conservative and is the
+ * single guard deciding whether the free branch MAY reclaim a zero-count object.
+ * Mutable/lazy/foreign objects remain Boehm-retained even when shared. Closures,
  * IO/action wrappers, and native-action wrappers also stay retained until
  * KEnv/action-finalizer/native-action ownership is represented at the free site. */
 static inline int kis_rc_freeable(const KValue *v) {
-  if (!v || kis_imm(v) || krc_is_shared(v)) return 0;
+  if (!v || kis_imm(v)) return 0;
   switch (v->tag) {
     case K_CTOR:
     case K_REC:
@@ -370,52 +432,53 @@ static inline KValue *kdup(KValue *v) {
   if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return v;
   kassert_live(v);
   uint32_t cur = krc_word(v);
-  for (;;) {
-    if (cur & KRC_SHARED_BIT) return v;
-    uint32_t n = cur & KRC_COUNT_MASK;
+  if (cur & KRC_SATURATED_BIT) return v;
+  uint32_t n = cur & KRC_COUNT_MASK;
 #ifndef NDEBUG
-    assert(n < KRC_COUNT_MASK && "kdup: rc count overflow");
+  assert(n > 0 && "kdup: resurrecting a zero-count value");
 #endif
-    if (n >= KRC_COUNT_MASK) return v;
-    uint32_t next = (cur & KRC_SHARED_BIT) | (n + 1);
-    if (atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
-                                              memory_order_relaxed,
-                                              memory_order_relaxed)) {
-#ifndef NDEBUG
-      atomic_fetch_add_explicit(&k_dups_total, 1, memory_order_relaxed);
-#endif
+  if (cur & KRC_SHARED_BIT) {
+    krc_shared_relaxed_increment_from(v, cur);
+  } else {
+    if (n >= KRC_COUNT_MASK) {
+      v->rc = KRC_SATURATED_BIT;
       return v;
     }
+    v->rc = n + 1u;
   }
+#ifndef NDEBUG
+  atomic_fetch_add_explicit(&k_dups_total, 1, memory_order_relaxed);
+#endif
+  return v;
 }
 
-/* Decrement the reference count of a heap value.  Shared values are skipped until
- * S4 provides atomic shared-object RC.  When a non-shared value reaches zero,
- * S3.2 recursively frees only the `kis_rc_freeable` strict-immutable partition;
- * excluded shapes stay Boehm-retained.  Under NDEBUG the fail-closed zero guard
+/* Decrement the reference count of a heap value. Thread-local values use a direct
+ * non-RMW count update. Shared values use a checked release RMW decrement and an
+ * acquire fence before recursive free, so child counts are synchronized before reclamation.
+ * Excluded shapes stay Boehm-retained. Under NDEBUG the fail-closed zero guard
  * avoids wrapping the low count. */
 static inline void kdrop(KValue *v) {
   if (kis_imm(v)) return;
   if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return;
   kassert_live(v);
   uint32_t cur = krc_word(v);
-  for (;;) {
-    if (cur & KRC_SHARED_BIT) return;
-    uint32_t n = cur & KRC_COUNT_MASK;
+  if (cur & KRC_SATURATED_BIT) return;
+  uint32_t n = cur & KRC_COUNT_MASK;
 #ifndef NDEBUG
-    assert(n > 0 && "kdrop: rc underflow (double-drop / missed-dup)");
+  assert(n > 0 && "kdrop: rc underflow (double-drop / missed-dup)");
 #endif
+  if (n == 0) return;
+  if (cur & KRC_SHARED_BIT) {
+    n = krc_shared_release_decrement(v, "kdrop: shared rc underflow (double-drop / missed-dup)");
     if (n == 0) return;
-    uint32_t next = (cur & KRC_SHARED_BIT) | (n - 1);
-    if (atomic_compare_exchange_weak_explicit(&v->rc, &cur, next,
-                                              memory_order_relaxed,
-                                              memory_order_relaxed)) {
+  } else {
+    v->rc = n - 1u;
+  }
 #ifndef NDEBUG
-      atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
+  atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
 #endif
-      if (n == 1 && kis_rc_freeable(v)) kfree_recursive(v);
-      return;
-    }
+  if (n == 1 && kis_rc_freeable(v)) {
+    kfree_recursive(v);
   }
 }
 
@@ -642,6 +705,7 @@ void *kgc_alloc(size_t n);           /* scanned: may contain pointers    */
 void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
 void  kgc_free(void *p);             /* S3 free-on-zero shell/slab release */
 unsigned long long kgc_debug_free_count(void);
+unsigned long long krc_debug_reclaim_count(void); /* logical RC object reclaims, including poison */
 
 /* ── value constructors ────────────────────────────────────────────── */
 KValue *kint(int64_t v);
@@ -665,10 +729,12 @@ KValue *kref_new(KValue *init);
  * later INT64/DOUBLE slabs slot in beside the boxed ops with no renumbering. */
 enum { KARR_BOXED = 0, KARR_INT64 = 1, KARR_DOUBLE = 2 };
 /* Boxed mutable array (MUTABLE-ARRAY-DESIGN §5.1): N-cell generalization of
- * K_REF.  `karr_new(n, init)` allocates a SCANNED n-slot KValue* slab, transfers
- * `init` into the first slot, and counts each additional boxed slot alias with
- * kdup(init); get/set/len are O(1).  Index out of range / wrong tag traps via
- * krt_fail (the runtime floor, §6 tier 3). */
+ * K_REF.  `karr_new(n, init)` allocates a scanned slot box,
+ * transfers `init` into the first slot, and counts each additional boxed slot
+ * alias with kdup(init); get/set/len are O(1).  `karr_get` returns an owned
+ * value directly on private arrays and under the array lock on shared arrays,
+ * matching `kref_get`.  Index out of range
+ * / wrong tag traps via krt_fail (the runtime floor, §6 tier 3). */
 KValue *karr_new(int64_t n, KValue *init);
 KValue *karr_get(KValue *arr, int64_t i);
 KValue *karr_set(KValue *arr, int64_t i, KValue *v);  /* returns Unit */
@@ -778,7 +844,7 @@ uint64_t kas_u64(KValue *v);      /* Integer as unsigned 64-bit (§26 U64/Usize)
 KValue  *ku64(uint64_t u);        /* box an unsigned 64-bit as a non-negative Integer */
 
 /* ── references ────────────────────────────────────────────────────── */
-KValue  *kref_get(KValue *r);
+KValue  *kref_get(KValue *r);                  /* returns an owned value */
 KValue  *kref_set(KValue *r, KValue *v);         /* returns Unit          */
 
 /* ── IO execution ──────────────────────────────────────────────────── */

@@ -8,11 +8,17 @@
 #
 #   make            build build/libkappart2.a and the test harnesses
 #   make test       build + run the harnesses
-#   make tsan       build with ThreadSanitizer (catch the parallel races early)
+#   make tsan-supported
+#                   probe the same compiler/flag/link setup used by TSan lanes
+#   make tsan       build all harnesses with ThreadSanitizer
+#   make tsan-rc    build the S4 shared-RC concurrency corpus with ThreadSanitizer
+#   make poison-rc  run the S4 shared-RC concurrency corpus under KAPPA_POISON=1
+#   make bench-s4-rc run the S4 biased-RC fast/slow-path performance gate
 #   make clean
 
 CC      ?= cc
 AR      ?= ar
+BUILD   ?= build
 # -fno-strict-aliasing: the KValue union is type-punned, like kappart itself.
 CFLAGS  ?= -std=c11 -O2 -g -Wall -Wextra -fno-strict-aliasing -pthread
 # -flto: recover cross-TU inlining of the hot boxed-value ops now that kappart.c
@@ -57,44 +63,86 @@ LIBS      := $(UV_LIBS) -lgc -lgmp
 RT_SRC  := gc.c value.c bignum.c show.c \
            unicode.c prims.c \
            rt.c reactor.c scope.c race.c stm.c atomic.c
-RT_OBJ  := $(RT_SRC:%.c=build/%.o)
+RT_OBJ  := $(RT_SRC:%.c=$(BUILD)/%.o)
 RT_HDRS := kappart.h boxed.h kappart2.h internal.h kappa_ucd.h kappart2_harness.h
 
-LIB := build/libkappart2.a
+LIB := $(BUILD)/libkappart2.a
 
 TEST_SRC := $(wildcard tests/*.c)
-TEST_BIN := $(TEST_SRC:tests/%.c=build/%)
+TEST_BIN := $(TEST_SRC:tests/%.c=$(BUILD)/%)
+TSAN_TEST_BIN := $(filter-out $(BUILD)/atomic_lostproof,$(TEST_BIN))
+S4_RC_CORPUS := $(BUILD)/atomic $(BUILD)/fiberref_promise $(BUILD)/parallel $(BUILD)/race \
+                $(BUILD)/stm $(BUILD)/stm_retry $(BUILD)/stm_orelse \
+                $(BUILD)/blocking_lane $(BUILD)/perceus_s3_prereq $(BUILD)/perceus_s4_shared
 
-.PHONY: all test clean tsan bench
+.PHONY: all test clean tsan-supported tsan _tsan tsan-rc _tsan-rc poison-rc _poison-rc bench bench-s4-rc _bench-s4-rc
 all: $(LIB) $(TEST_BIN)
 
 $(LIB): $(RT_OBJ)
 	$(AR) rcs $@ $^
 
-build/%.o: %.c $(RT_HDRS) | build
+$(BUILD)/%.o: %.c $(RT_HDRS) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-build/%: tests/%.c $(LIB) | build
+$(BUILD)/%: tests/%.c $(LIB) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< $(LIB) $(LIBS) -o $@
 
-build:
-	mkdir -p build
+$(BUILD):
+	mkdir -p $(BUILD)
 
 test: all
 	@set -e; for t in $(TEST_BIN); do echo "=== $$t ==="; $$t; done
 
 # Microbenchmark: isolate the runtime cost sources (suspension, CPS node, value
 # boxing) vs raw C and a Go goroutine baseline.  See bench/README.md.
-bench: $(LIB) | build
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) bench/rt_bench.c $(LIB) $(LIBS) -o build/rt_bench
-	@./build/rt_bench
+bench: $(LIB) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) bench/rt_bench.c $(LIB) $(LIBS) -o $(BUILD)/rt_bench
+	@./$(BUILD)/rt_bench
 	@command -v go >/dev/null 2>&1 && (cd bench && go run go_pingpong.go) || echo "(go not found — skipping the goroutine comparison)"
 
+$(BUILD)/rc_biased_bench: bench/rc_biased.c $(LIB) | $(BUILD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) $< $(LIB) $(LIBS) -o $@
+
+bench-s4-rc:
+	@$(MAKE) BUILD=build-bench-s4-rc CFLAGS='$(CFLAGS) -DNDEBUG -O3' _bench-s4-rc
+
+_bench-s4-rc: $(BUILD)/rc_biased_bench
+	@./$(BUILD)/rc_biased_bench
+
 # ThreadSanitizer build — the scheduler/STM/reactor are concurrent; run the
-# harnesses under tsan in CI to catch data races the design must avoid.
-tsan: CFLAGS += -fsanitize=thread -DKRT2_TSAN
-tsan: clean all
-	@set -e; for t in $(TEST_BIN); do echo "=== tsan $$t ==="; $$t; done
+# harnesses under tsan in CI to catch data races the design must avoid. The
+# atomic_lostproof is a scheduler-level diagnostic for the old plain-Ref
+# read/write RMW lowering: under S4 the individual Ref operations are
+# ownership-synchronized, but the two-operation sequence is still logically
+# non-atomic and is intentionally not part of the TSan corpus.
+tsan-supported:
+	@tmp="$${TMPDIR:-/tmp}/kappa-runtime-tsan-probe-$$$$"; \
+	  mkdir -p "$$tmp"; \
+	  printf 'int main(void) { return 0; }\n' > "$$tmp/probe.c"; \
+	  $(CC) $(CFLAGS) -fsanitize=thread -DKRT2_TSAN $(CPPFLAGS) $(LDFLAGS) "$$tmp/probe.c" $(LIBS) -o "$$tmp/probe" >/dev/null 2>&1; \
+	  rc=$$?; rm -rf "$$tmp"; exit $$rc
+
+tsan:
+	@$(MAKE) BUILD=build-tsan CFLAGS='$(CFLAGS) -fsanitize=thread -DKRT2_TSAN' _tsan
+
+_tsan: all
+	@rc=0; for t in $(TSAN_TEST_BIN); do echo "=== tsan $$t ==="; $$t || { rc=$$?; break; }; done; \
+	  exit $$rc
+
+tsan-rc:
+	@$(MAKE) BUILD=build-tsan-rc CFLAGS='$(CFLAGS) -fsanitize=thread -DKRT2_TSAN' _tsan-rc
+
+_tsan-rc: $(S4_RC_CORPUS)
+	@rc=0; for t in $(S4_RC_CORPUS); do echo "=== tsan-rc $$t ==="; $$t || { rc=$$?; break; }; done; \
+	  exit $$rc
+
+poison-rc:
+	@$(MAKE) BUILD=build-poison-rc _poison-rc
+
+_poison-rc: $(S4_RC_CORPUS)
+	@rc=0; for t in $(S4_RC_CORPUS); do echo "=== poison-rc $$t ==="; \
+	  KAPPA_POISON=1 KAPPA_RT_WORKERS=8 $$t || { rc=$$?; break; }; done; \
+	  exit $$rc
 
 clean:
-	rm -rf build
+	rm -rf build build-tsan build-tsan-rc build-poison-rc build-bench-s4-rc

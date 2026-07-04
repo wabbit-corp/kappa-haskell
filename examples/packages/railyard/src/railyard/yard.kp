@@ -1,0 +1,97 @@
+module railyard.yard
+
+import railyard.core.*
+import railyard.track as track
+import railyard.route as route
+import railyard.cart as cart
+import std.atomic.(type AtomicRef)
+import std.atomic.(ctor LoadSeqCst)
+import std.atomic.(term newAtomicRef, term atomicLoad)
+
+-- The audited outcome of a yard run. Kept deliberately as plain Ints so the same
+-- run can be both printed (the dispatcher) and asserted on (the test runner).
+data YardResult : Type =
+    YardResult
+        (dispatched : Int)   -- carts that published a receipt
+        (perCart : Int)      -- hops each cart was supposed to make (main + 1)
+        (sumMoves : Int)     -- Σ moves reported across receipts
+        (total : Int)        -- moves seen by the lock-free atomic counter
+        (occMain : Int)      -- main-line segments still occupied at the end
+
+-- Lay down `count` clear main-line segments — the single shared track every cart
+-- must cross. (Counts down a plain Int, so the front end records but cannot
+-- verify termination here; the dependent-typed route functions carry the proofs.)
+buildMain : Int -> UIO (List (TVar Bool))
+let buildMain count =
+    if leInt count 0 then pure Nil
+    else do
+        s  <- track.newSegFree
+        ss <- buildMain (subInt count 1)
+        pure (s :: ss)
+
+-- Spawn carts numbered [1..i]. Each gets a private entry siding (already
+-- occupied — the cart waits there) and a private exit siding (clear), plus a
+-- route across the shared main line to its own exit. Each cart is a fiber; we
+-- return the list of receipt promises. Going the same way down one track, a cart
+-- only ever waits on the segment directly ahead, which the cart in front will
+-- vacate, so the pipeline drains without deadlock.
+spawnCarts : Int -> List (TVar Bool) -> AtomicRef Integer -> UIO (List (Promise Void Receipt))
+let spawnCarts i mainSegs counter =
+    if leInt i 0 then pure Nil
+    else do
+        entry <- track.newSegOcc
+        exit  <- track.newSegFree
+        p     <- newPromise
+        let r = route.buildRoute mainSegs exit
+        f <- forkDaemon (cart.runCart i r entry counter p)
+        let _ = f
+        rest <- spawnCarts (subInt i 1) mainSegs counter
+        pure (p :: rest)
+
+-- Await every cart's receipt and sum the moves they report. Total by recursion
+-- on the promise list.
+collectMoves : List (Promise Void Receipt) -> UIO Int
+let collectMoves ps decreases listLength ps =
+    match ps
+    case Nil -> pure 0
+    case p :: rest -> do
+        rc   <- awaitPromise p
+        more <- collectMoves rest
+        pure (addInt rc.moves more)
+
+-- How many promises we hold (= carts dispatched). Total by list recursion.
+countPromises : List (Promise Void Receipt) -> Int
+let countPromises ps decreases listLength ps =
+    match ps
+    case Nil -> 0
+    case p :: rest -> addInt 1 (countPromises rest)
+
+-- How many segments in a list are still occupied (the final-state audit). Total
+-- by list recursion.
+countOccupied : List (TVar Bool) -> UIO Int
+let countOccupied segs decreases listLength segs =
+    match segs
+    case Nil -> pure 0
+    case s :: rest -> do
+        occ  <- track.segOccupied s
+        more <- countOccupied rest
+        pure (addInt (if occ then 1 else 0) more)
+
+-- Run the whole simulation: `carts` carts over a `mainLen`-segment shared track.
+-- Builds the topology, spawns the fibers, waits for every receipt, then audits.
+-- Reading the atomic counter and the main-line occupancy only *after* awaiting
+-- all receipts is what makes the result interleaving-independent.
+runYard : Int -> Int -> UIO YardResult
+let runYard carts mainLen = do
+    counter  <- newAtomicRef 0
+    mainSegs <- buildMain mainLen
+    promises <- spawnCarts carts mainSegs counter
+    sumMoves <- collectMoves promises
+    total    <- atomicLoad LoadSeqCst counter
+    occMain  <- countOccupied mainSegs
+    pure (YardResult (countPromises promises) (addInt mainLen 1) sumMoves total occMain)
+
+-- The run is correct iff every move is counted exactly once (receipts == atomic
+-- counter == carts × hops) and the shared track is empty again at the end.
+yardOk : Int -> YardResult -> Bool
+let yardOk carts r = eqInt r.sumMoves r.total && eqInt r.total (mulInt carts r.perCart) && eqInt r.occMain 0

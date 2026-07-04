@@ -536,7 +536,7 @@ static KValue *krt2_run_op_sync_ret(KValue *action, ExitStack *scope, int *contr
       case OP_NEW_REF:
         return kref_new(kctor_arg(action, 0));
       case OP_READ_REF:
-        return kdup(kref_get(kctor_arg(action, 0)));
+        return kref_get(kctor_arg(action, 0));
       case OP_WRITE_REF:
         kref_set(kctor_arg(action, 0), kctor_arg(action, 1));
         return kunit();
@@ -566,6 +566,16 @@ typedef struct BlockingReq {
   int resume_existing;
 } BlockingReq;
 
+static BlockingReq *blocking_req_alloc(void) {
+  BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
+  if (!req) krt_fail("rt.blocking: failed to allocate blocking request");
+  return req;
+}
+
+static void blocking_req_free(BlockingReq *req) {
+  kgc_free(req);
+}
+
 static void fiber_step(Rt *rt, Fiber *f);
 
 static void *blocking_worker_main(void *arg) {
@@ -593,13 +603,12 @@ static void *blocking_worker_main(void *arg) {
     fiber_step(req->rt, f);
   }
   g_on_blocking_lane = saved_blocking_lane;
-  GC_FREE(req);
+  blocking_req_free(req);
   return NULL;
 }
 
 static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
-  BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
-  if (!req) return 0;
+  BlockingReq *req = blocking_req_alloc();
   krc_mark_shared_recursive(action);
   krt2i_mark_fiber_shared(f);
   req->rt = rt;
@@ -616,7 +625,7 @@ static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
     f->blocking_armed = 0;
     atomic_store_explicit(&f->status, F_RUNNING, memory_order_release);
     pthread_mutex_unlock(&f->lock);
-    GC_FREE(req);
+    blocking_req_free(req);
     return 0;
   }
   (void)pthread_detach(t);
@@ -624,15 +633,14 @@ static int krt2i_submit_blocking(Rt *rt, Fiber *f, KValue *action) {
 }
 
 static void krt2i_resume_blocking_lane(Rt *rt, Fiber *f) {
-  BlockingReq *req = (BlockingReq *)GC_MALLOC_UNCOLLECTABLE(sizeof(BlockingReq));
-  if (!req) krt_fail("rt.blocking: failed to allocate blocking resume request");
+  BlockingReq *req = blocking_req_alloc();
   req->rt = rt;
   req->fiber = f;
   req->action = NULL;
   req->resume_existing = 1;
   pthread_t t;
   if (krt2i_spawn_thread(&t, blocking_worker_main, req) != 0) {
-    GC_FREE(req);
+    blocking_req_free(req);
     krt_fail("rt.blocking: failed to resume blocking worker");
   }
   (void)pthread_detach(t);
@@ -857,6 +865,56 @@ void krt2i_resume(Rt *rt, Fiber *f) {
   atomic_store_explicit(&f->status, F_RUNNABLE, memory_order_release);
   krt2i_rq_push(rt, f);
 }
+
+void krt2i_register_park_waiter(Fiber *f, KParkKind kind, void *owner, Waiter *w) {
+  f->park_kind = kind;
+  f->park_owner = owner;
+  f->park_waiter = w;
+}
+
+void krt2i_clear_park_waiter(Fiber *f) {
+  f->park_kind = KPARK_NONE;
+  f->park_owner = NULL;
+  f->park_waiter = NULL;
+}
+
+void krt2i_cleanup_parked_wait(Fiber *f) {
+  KParkKind kind = f->park_kind;
+  void *owner = f->park_owner;
+  Waiter *w = f->park_waiter;
+  if (kind != KPARK_NONE && owner && w) {
+    switch (kind) {
+      case KPARK_FIBER_WAITERS: {
+        Fiber *target = (Fiber *)owner;
+        pthread_mutex_lock(&target->lock);
+        krt2i_unlink_waiter(&target->waiters, w);
+        pthread_mutex_unlock(&target->lock);
+        break;
+      }
+      case KPARK_PROMISE_WAITERS: {
+        Promise *p = (Promise *)owner;
+        pthread_mutex_lock(&p->lock);
+        krt2i_unlink_waiter(&p->waiters, w);
+        pthread_mutex_unlock(&p->lock);
+        break;
+      }
+      case KPARK_SCOPE_DRAIN: {
+        Scope *sc = (Scope *)owner;
+        pthread_mutex_lock(&sc->lock);
+        krt2i_unlink_waiter(&sc->drain_waiters, w);
+        pthread_mutex_unlock(&sc->lock);
+        break;
+      }
+      case KPARK_NONE:
+        break;
+    }
+  }
+  if (kind != KPARK_NONE) {
+    krt2i_clear_park_waiter(f);
+  }
+  krt2i_stm_unpark(f);
+}
+
 void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
   /* Idempotent: only the waker that wins the F_PARKED -> F_RUNNABLE CAS may
    * touch the fiber.  Writing `cur` BEFORE the CAS would let a late/duplicate
@@ -868,7 +926,10 @@ void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
   int expected = F_PARKED;
   if (atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNABLE,
                                               memory_order_acq_rel, memory_order_relaxed)) {
-    if (resume_val) f->cur = resume_val;
+    if (resume_val) {
+      f->cur = resume_val;
+      krt2i_clear_park_waiter(f);
+    }
     krt2i_mark_fiber_shared(f);
     /* fix 2: a wake re-enters fiber_step at a genuine resume point (the park this
      * wakes was a suspension: sleep/await/STM-retry/scope-drain).  Mark it so a
@@ -879,6 +940,8 @@ void krt2i_wake(Rt *rt, Fiber *f, KValue *resume_val) {
       krt2i_resume_blocking_lane(rt, f);
     else
       krt2i_rq_push(rt, f);
+  } else if (resume_val) {
+    kdrop(resume_val);
   }
 }
 /* Block until a runnable fiber is available, or NULL when shutting down. */
@@ -946,8 +1009,12 @@ static Fiber *fiber_new(Rt *rt, KValue *action) {
    * dangling from a previous run/fiber would otherwise be read by the first
    * begin_abandon_drain as a bogus prev_drain (cf. the foreign-terminal hang). */
   f->drain_ae = NULL;
+  f->stm_reads = NULL;
+  f->stm_nreads = 0;
+  krt2i_clear_park_waiter(f);
   f->sleep_timer = NULL;          /* fix S2: no sleep timer armed yet              */
   atomic_store(&f->sleep_armed, 0);
+  atomic_store(&f->sleep_seq, 0);
   f->blocking_armed = 0;
   atomic_store(&f->blocking_depth, 0);
   f->safepoint_hit = 0;           /* fix SP: §32.2.6 loop-backedge safe point      */
@@ -1073,14 +1140,24 @@ static void mark_cont_stack_shared(Cont *c) {
 
 void krt2i_mark_fiber_shared(Fiber *f) {
   if (!f) return;
-  krc_mark_shared_recursive(f->cur);
-  krc_mark_shared_recursive(f->exit);
-  krc_mark_shared_recursive(f->interrupt_cause);
-  mark_cont_stack_shared(f->k);
-  mark_exit_stack_shared(f->cur_exits);
-  mark_fiber_locals_shared(f->locals);
-  mark_abort_exits_shared(f->abort_exits);
-  mark_abandon_end_shared((AbandonEnd *)f->drain_ae);
+  pthread_mutex_lock(&f->lock);
+  KValue *cur = f->cur;
+  KValue *exit = f->exit;
+  KValue *interrupt_cause = f->interrupt_cause;
+  Cont *k = f->k;
+  ExitStack *cur_exits = f->cur_exits;
+  FiberLocals *locals = f->locals;
+  AbortExit *abort_exits = f->abort_exits;
+  AbandonEnd *drain_ae = (AbandonEnd *)f->drain_ae;
+  pthread_mutex_unlock(&f->lock);
+  krc_mark_shared_recursive(cur);
+  krc_mark_shared_recursive(exit);
+  krc_mark_shared_recursive(interrupt_cause);
+  mark_cont_stack_shared(k);
+  mark_exit_stack_shared(cur_exits);
+  mark_fiber_locals_shared(locals);
+  mark_abort_exits_shared(abort_exits);
+  mark_abandon_end_shared(drain_ae);
 }
 
 void krt2i_mark_fgn_payload_shared(const char *kind, void *payload) {
@@ -1117,6 +1194,112 @@ void krt2i_mark_fgn_payload_shared(const char *kind, void *payload) {
   }
 }
 
+#ifndef NDEBUG
+static void assert_exit_stack_shared(ExitStack *xs, Krt2AssertSharedChild assert_child, void *ctx);
+static void assert_cont_stack_shared(Cont *c, Krt2AssertSharedChild assert_child, void *ctx);
+static void assert_abandon_end_shared(AbandonEnd *ae, Krt2AssertSharedChild assert_child, void *ctx);
+static void assert_finseq_shared(FinSeq *fs, Krt2AssertSharedChild assert_child, void *ctx);
+static void assert_resumption_shared(Resumption *r, Krt2AssertSharedChild assert_child, void *ctx);
+
+static void assert_exit_stack_shared(ExitStack *xs, Krt2AssertSharedChild assert_child, void *ctx) {
+  if (!xs || !xs->items) return;
+  for (int i = 0; i < xs->n; i++) assert_child(ctx, xs->items[i]);
+}
+
+static void assert_handler_shared(Handler *h, Krt2AssertSharedChild assert_child, void *ctx) {
+  if (!h) return;
+  assert_child(ctx, h->ret);
+  assert_child(ctx, h->ops);
+}
+
+static void assert_abort_exits_shared(AbortExit *ae, Krt2AssertSharedChild assert_child, void *ctx) {
+  for (; ae; ae = ae->next) {
+    if (ae->active) assert_child(ctx, ae->action);
+  }
+}
+
+static void assert_abandon_end_shared(AbandonEnd *ae, Krt2AssertSharedChild assert_child, void *ctx) {
+  for (; ae; ae = ae->prev_drain) {
+    assert_cont_stack_shared(ae->kont, assert_child, ctx);
+    assert_exit_stack_shared(ae->saved_exits, assert_child, ctx);
+    assert_child(ctx, ae->rval);
+    assert_child(ctx, ae->rlabel);
+  }
+}
+
+static void assert_finseq_shared(FinSeq *fs, Krt2AssertSharedChild assert_child, void *ctx) {
+  if (!fs) return;
+  assert_exit_stack_shared(fs->xs, assert_child, ctx);
+  assert_child(ctx, fs->rval);
+  assert_child(ctx, fs->rlabel);
+  assert_child(ctx, fs->origin_val);
+  assert_abandon_end_shared(fs->drain_ae, assert_child, ctx);
+}
+
+static void assert_resumption_shared(Resumption *r, Krt2AssertSharedChild assert_child, void *ctx) {
+  if (!r) return;
+  assert_cont_stack_shared(r->head, assert_child, ctx);
+  if (!r->head) assert_cont_stack_shared(r->tail, assert_child, ctx);
+  assert_exit_stack_shared(r->cur_exits, assert_child, ctx);
+  assert_child(ctx, r->label);
+  assert_handler_shared((Handler *)r->handler, assert_child, ctx);
+  assert_exit_stack_shared((ExitStack *)r->handler_exits, assert_child, ctx);
+}
+
+static void assert_cont_aux_shared(Cont *c, Krt2AssertSharedChild assert_child, void *ctx) {
+  switch (c->kind) {
+    case KK_DOSCOPE:
+      assert_exit_stack_shared((ExitStack *)c->aux, assert_child, ctx);
+      assert_exit_stack_shared((ExitStack *)c->aux2, assert_child, ctx);
+      break;
+    case KK_FINSEQ:
+      assert_finseq_shared((FinSeq *)c->aux, assert_child, ctx);
+      break;
+    case KK_HANDLER:
+      assert_handler_shared((Handler *)c->aux, assert_child, ctx);
+      assert_exit_stack_shared((ExitStack *)c->aux2, assert_child, ctx);
+      break;
+    case KK_ABANDON:
+      assert_resumption_shared((Resumption *)c->aux, assert_child, ctx);
+      break;
+    case KK_ABANDEND:
+      assert_abandon_end_shared((AbandonEnd *)c->aux, assert_child, ctx);
+      break;
+    default:
+      break;
+  }
+}
+
+static void assert_cont_stack_shared(Cont *c, Krt2AssertSharedChild assert_child, void *ctx) {
+  for (; c; c = c->next) {
+    assert_child(ctx, c->a);
+    assert_cont_aux_shared(c, assert_child, ctx);
+    if (c == &g_done) break;
+  }
+}
+
+void krt2i_assert_fgn_payload_shared(const char *kind, void *payload,
+                                     Krt2AssertSharedChild assert_child,
+                                     void *ctx) {
+  if (!kind || !payload) return;
+  if (strcmp(kind, KRT2_KIND_RESUMPTION) == 0) {
+    assert_resumption_shared((Resumption *)payload, assert_child, ctx);
+  } else if (strcmp(kind, KRT2_KIND_ABORT_EXIT) == 0) {
+    assert_abort_exits_shared((AbortExit *)payload, assert_child, ctx);
+  } else if (strcmp(kind, KRT2_KIND_FIBER) == 0 ||
+             strcmp(kind, KRT2_KIND_SCOPE) == 0 ||
+             strcmp(kind, KRT2_KIND_PROMISE) == 0 ||
+             strcmp(kind, KRT2_KIND_MONITOR) == 0 ||
+             strcmp(kind, KRT2_KIND_TVAR) == 0 ||
+             strcmp(kind, KRT2_KIND_ATOMIC) == 0 ||
+             strcmp(kind, KRT2_KIND_FIBERREF) == 0) {
+    return;
+  } else if (strncmp(kind, "rt.", 3) == 0 || strncmp(kind, "krt2.", 5) == 0) {
+    assert(!"unhandled runtime K_FGN kind in krt2i_assert_fgn_payload_shared");
+  }
+}
+#endif
+
 /* A non-failing record projection (kproj krt_fails on a missing field).  Used to
  * read the §4b reserved "__tailResumptive" marker off a handler's ops record:
  * absent ⇒ the op takes the general 4a path. */
@@ -1152,7 +1335,7 @@ static void fiber_finish(Rt *rt, Fiber *f, KValue *exitv) {
   pthread_mutex_unlock(&f->lock);
 
   for (; w; w = w->next)              /* wake EVERY awaiter (idempotent CAS)  */
-    krt2i_wake(rt, w->f, krt2_pure(w->want_exit ? exitv : kunit()));
+    krt2i_wake(rt, w->f, krt2_pure(w->want_exit ? kdup(exitv) : kunit()));
   krt2i_scope_detach(rt, f);          /* leave att_scope; may drain a shutdownScope */
   krt2i_all_remove(rt, f);            /* DONE: kept now only by a user handle */
 
@@ -1234,7 +1417,7 @@ static FiberLocals *fiber_locals_snapshot(FiberLocals *src) {
   dst->vals = (KValue **)GC_MALLOC(sizeof(KValue *) * src->n); /* scanned */
   for (int i = 0; i < src->n; i++) {
     if (src->vals[i]) krc_mark_shared_recursive(src->vals[i]);
-    dst->vals[i] = src->vals[i];
+    dst->vals[i] = src->vals[i] ? kdup(src->vals[i]) : NULL;
   }
   return dst;
 }
@@ -1271,27 +1454,23 @@ Fiber *krt2i_spawn(Rt *rt, KValue *action, Scope *attach, int daemon) {
   return krt2i_spawn_from(rt, NULL, action, attach, daemon);
 }
 
-/* Companion to krt2i_deliver_pending_before_park (§18.1.12): called by an
- * indefinite park-op AFTER it has committed f->status = F_PARKED and registered
- * its waiter.  Closes the lost-interrupt race — an interrupt whose wake CAS ran
- * while `f` was still F_RUNNING had its wake DROPPED (the CAS needs F_PARKED),
- * and the pre-park check had already passed; now that `f` is observably F_PARKED
- * we re-check the flag and reclaim the park if interrupted.  The seq_cst fence
- * pairs with the one in krt2i_interrupt_request so {store F_PARKED; fence; load
- * pending} and {store pending; fence; CAS status} cannot both miss (Dekker).
- * Returns 1 if it reclaimed the park and delivered (caller CONTINUES stepping,
- * f->cur updated), 0 if `f` stays parked or was already un-parked+enqueued by
- * another waker (caller SUSPENDS this turn — same disposition as return 0 from
- * the park-op). */
-static int krt2i_deliver_pending_after_park(Rt *rt, Fiber *f) {
+/* Companion to krt2i_deliver_pending_before_park (§18.1.12): called by a
+ * park-op AFTER it has committed f->status = F_PARKED and registered its waiter.
+ * `park_unmasked` must be captured BEFORE publishing F_PARKED; after publication
+ * another worker may win a wake and own the fiber, so this function only reads
+ * atomics.  The seq_cst fence pairs with krt2i_interrupt_request so
+ * {store F_PARKED; fence; load pending} and {store pending; fence; CAS status}
+ * cannot both miss (Dekker). */
+int krt2i_claim_pending_after_park(Fiber *f, int park_unmasked) {
   atomic_thread_fence(memory_order_seq_cst);
-  if (!atomic_load_explicit(&f->interrupt_pending, memory_order_acquire)
-      || f->mask_depth != 0)
+  if (!park_unmasked || !atomic_load_explicit(&f->interrupt_pending, memory_order_acquire))
     return 0;
   int expected = F_PARKED;
-  if (!atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNING,
-                                               memory_order_acq_rel, memory_order_relaxed))
-    return 0;  /* another waker already un-parked + enqueued us; suspend here */
+  return atomic_compare_exchange_strong_explicit(&f->status, &expected, F_RUNNING,
+                                                 memory_order_acq_rel, memory_order_relaxed);
+}
+
+int krt2i_deliver_claimed_interrupt(Rt *rt, Fiber *f) {
   return deliver_interrupt(rt, f) ? 1 : 0;
 }
 
@@ -1299,19 +1478,28 @@ static int krt2i_deliver_pending_after_park(Rt *rt, Fiber *f) {
  * Exit), 0 if `f` parked onto the child's waiter list (suspended). */
 static int do_await(Rt *rt, Fiber *f, KValue *handle) {
   Fiber *child = (Fiber *)kas_fgn_kind(handle, KRT2_KIND_FIBER);
+  krt2i_mark_fiber_shared(f);
   pthread_mutex_lock(&child->lock);
   if (atomic_load_explicit(&child->status, memory_order_acquire) == F_DONE) {
     KValue *ex = child->exit;
     pthread_mutex_unlock(&child->lock);
-    f->cur = krt2_pure(ex);
+    f->cur = krt2_pure(kdup(ex));
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
-  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = child->waiters; child->waiters = w;
+  krt2i_register_park_waiter(f, KPARK_FIBER_WAITERS, child, w);
+  int park_unmasked = (f->mask_depth == 0);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&child->lock);
-  return krt2i_deliver_pending_after_park(rt, f);
+  if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+    pthread_mutex_lock(&child->lock);
+    krt2i_unlink_waiter(&child->waiters, w);
+    pthread_mutex_unlock(&child->lock);
+    krt2i_clear_park_waiter(f);
+    return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+  }
+  return 0;
 }
 
 /* ── promises ───────────────────────────────────────────────────────────── */
@@ -1335,24 +1523,33 @@ static KValue *promise_complete(Rt *rt, KValue *ph, KValue *exitv) {
   }
   pthread_mutex_unlock(&p->lock);
   if (!first) kdrop(exitv);
-  for (; w; w = w->next) krt2i_wake(rt, w->f, krt2_pure(exitv));
+  for (; w; w = w->next) krt2i_wake(rt, w->f, krt2_pure(kdup(exitv)));
   return kbool(first);
 }
 static int do_await_promise(Rt *rt, Fiber *f, KValue *ph) {
   Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
+  krt2i_mark_fiber_shared(f);
   pthread_mutex_lock(&p->lock);
   if (atomic_load_explicit(&p->completed, memory_order_acquire)) {
     KValue *ex = p->exit;
     pthread_mutex_unlock(&p->lock);
-    f->cur = krt2_pure(ex);
+    f->cur = krt2_pure(kdup(ex));
     return 1;
   }
   Waiter *w = (Waiter *)GC_MALLOC(sizeof(Waiter));
-  krt2i_mark_fiber_shared(f);
   w->f = f; w->want_exit = 1; w->next = p->waiters; p->waiters = w;
+  krt2i_register_park_waiter(f, KPARK_PROMISE_WAITERS, p, w);
+  int park_unmasked = (f->mask_depth == 0);
   atomic_store(&f->status, F_PARKED);
   pthread_mutex_unlock(&p->lock);
-  return krt2i_deliver_pending_after_park(rt, f);
+  if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+    pthread_mutex_lock(&p->lock);
+    krt2i_unlink_waiter(&p->waiters, w);
+    pthread_mutex_unlock(&p->lock);
+    krt2i_clear_park_waiter(f);
+    return krt2i_deliver_claimed_interrupt(rt, f) ? 1 : 0;
+  }
+  return 0;
 }
 /* §18.11 non-blocking peek: NEVER parks.  poll -> Some Exit iff completed, else
  * None; isDone -> Bool.  A single acquire-load of the cell's state suffices (the
@@ -1362,7 +1559,7 @@ static KValue *promise_poll(KValue *ph) {
   Promise *p = (Promise *)kas_fgn_kind(ph, KRT2_KIND_PROMISE);
   pthread_mutex_lock(&p->lock);
   KValue *r = atomic_load_explicit(&p->completed, memory_order_acquire)
-                  ? krt2i_some(p->exit) : krt2i_none();
+                  ? krt2i_some(kdup(p->exit)) : krt2i_none();
   pthread_mutex_unlock(&p->lock);
   return r;
 }
@@ -2109,6 +2306,7 @@ static int unwind(Rt *rt, Fiber *f, int rkind, KValue *rval, KValue *rlabel) {
  * finished.  The caller MUST honor this — dropping a fiber whose finalizers are
  * still unwinding would deadlock anyone awaiting it. */
 static int deliver_interrupt(Rt *rt, Fiber *f) {
+  krt2i_cleanup_parked_wait(f);
   atomic_store_explicit(&f->interrupt_pending, 0, memory_order_relaxed);
   return unwind(rt, f, RK_INTERRUPT, f->interrupt_cause, NULL);
 }
@@ -2239,7 +2437,13 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         int dp = krt2i_deliver_pending_before_park(rt, f);
         if (dp < 0) return;
         if (dp > 0) break;
+        int park_unmasked = (f->mask_depth == 0);
         krt2i_submit_sleep(rt, f, (uint64_t)ns);
+        if (krt2i_claim_pending_after_park(f, park_unmasked)) {
+          krt2i_cancel_sleep(rt, f);
+          if (!krt2i_deliver_claimed_interrupt(rt, f)) return;
+          break;
+        }
         return;                        /* parked; reactor resumes it          */
       }
       case OP_NOW:
@@ -2382,7 +2586,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         if (!deliver(rt, f, kref_new(kctor_arg(cur, 0)))) return;
         break;
       case OP_READ_REF:
-        if (!deliver(rt, f, kdup(kref_get(kctor_arg(cur, 0))))) return;
+        if (!deliver(rt, f, kref_get(kctor_arg(cur, 0)))) return;
         break;
       case OP_WRITE_REF:
         kref_set(kctor_arg(cur, 0), kctor_arg(cur, 1));
@@ -2392,7 +2596,7 @@ static void fiber_step_run(Rt *rt, Fiber *f) {
         Fiber *tf = (Fiber *)kas_fgn_kind(kctor_arg(cur, 0), KRT2_KIND_FIBER);
         pthread_mutex_lock(&tf->lock);
         KValue *r = (atomic_load_explicit(&tf->status, memory_order_acquire) == F_DONE)
-                        ? krt2i_some(tf->exit) : krt2i_none();
+                        ? krt2i_some(kdup(tf->exit)) : krt2i_none();
         pthread_mutex_unlock(&tf->lock);
         if (!deliver(rt, f, r)) return;
         break;

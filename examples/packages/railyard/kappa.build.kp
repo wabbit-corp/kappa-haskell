@@ -1,0 +1,31 @@
+let buildConfig : BuildConfig = package
+    { name = "railyard"
+    , version = semver "0.1.0"
+    , sourceRoots = [sourceRoot "src", sourceRoot "test"]
+    , fragmentAxes =
+        [ axis "backend" [tag "native"]
+        , axis "role" [tag "game", tag "test"]
+        ]
+    , dependencies = []
+    , hostBindings = []
+    , targets =
+        [ executable
+            { name = "railyard"
+            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , fragments = tags ["native", "game"]
+            , main = module "railyard.dispatch"
+            , modules = modulesUnder "railyard"
+            , dependencies = []
+            , hostBindings = []
+            }
+        , executable
+            { name = "railyard-tests"
+            , backend = native { toolchain = "cc", targetTriple = "aarch64-apple-darwin" }
+            , fragments = tags ["native", "test"]
+            , main = module "railyard.run_tests"
+            , modules = modulesUnder "railyard"
+            , dependencies = []
+            , hostBindings = []
+            }
+        ]
+    }

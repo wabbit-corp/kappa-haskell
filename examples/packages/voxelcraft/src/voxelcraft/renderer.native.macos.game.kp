@@ -1,0 +1,110 @@
+module voxelcraft.renderer
+
+import voxelcraft.core.*
+import voxelcraft.input.*
+import host.native.voxel_renderer.Raw as Raw
+import std.ffi as ffi
+
+opaque data Renderer : Type =
+    Renderer (handle : Option ffi.RawPtr)
+
+checkUnit : Int -> UIO Unit
+let checkUnit code =
+    if code >= 0 then pure () else do
+        let message <- Raw.vc_renderer_last_error
+        printlnString (stringAppend "renderer error: " message)
+
+open : Int -> Int -> UIO Renderer
+let open width height =
+    do
+        let handle <- Raw.vc_renderer_create width height 1
+        pure (Renderer handle)
+
+backendName : (& renderer : Renderer) -> UIO String
+let backendName renderer =
+    match renderer
+    case Renderer handle -> Raw.vc_renderer_backend handle
+
+present : (& renderer : Renderer) -> MeshStats -> UIO Unit
+let present renderer stats =
+    match renderer
+    case Renderer handle ->
+        do
+            let _ <- Raw.vc_renderer_present handle stats.vertexCount stats.indexCount stats.chunks
+            pure ()
+
+shouldDelegate : (& renderer : Renderer) -> UIO Bool
+let shouldDelegate renderer =
+    match renderer
+    case Renderer _ ->
+        do
+            let code <- Raw.vc_renderer_should_spawn_helper
+            pure (code != 0)
+
+delegate : (& renderer : Renderer) -> Int -> UIO Unit
+let delegate renderer seed =
+    match renderer
+    case Renderer handle ->
+        do
+            let code <- Raw.vc_renderer_spawn_helper handle seed
+            if code == 0 then pure () else do
+                let message <- Raw.vc_renderer_last_error
+                printlnString (stringAppend "renderer exited: " message)
+            pure ()
+
+openWindow : (& renderer : Renderer) -> UIO Unit
+let openWindow renderer =
+    match renderer
+    case Renderer handle ->
+        do
+            let code <- Raw.vc_renderer_open_window handle
+            checkUnit code
+
+pollInput : (& renderer : Renderer) -> UIO InputFrame
+let pollInput renderer =
+    match renderer
+    case Renderer handle ->
+        do
+            let flags <- Raw.vc_renderer_poll handle
+            let dx <- Raw.vc_renderer_mouse_dx handle
+            let dy <- Raw.vc_renderer_mouse_dy handle
+            let dt <- Raw.vc_renderer_dt_ms handle
+            pure (InputFrame flags dx dy dt)
+
+beginMesh : (& renderer : Renderer) -> UIO Unit
+let beginMesh renderer =
+    match renderer
+    case Renderer handle ->
+        do
+            let code <- Raw.vc_renderer_begin_mesh handle
+            checkUnit code
+
+pushFace : (& renderer : Renderer) -> FaceDir -> BlockKind -> Int -> Int -> Int -> Int -> UIO Unit
+let pushFace renderer face kind x y z shade =
+    match renderer
+    case Renderer handle ->
+        do
+            let code <- Raw.vc_renderer_push_face handle x y z (faceDirCode face) (blockKindCode kind) shade
+            checkUnit code
+
+drawFrame : (& renderer : Renderer) -> Player -> MeshStats -> Int -> UIO Bool
+let drawFrame renderer player stats terrainHeight =
+    match renderer
+    case Renderer handle ->
+        do
+            let camera = player.camera
+            let pos = camera.position
+            let code <- Raw.vc_renderer_draw_frame handle pos.x pos.y pos.z camera.yaw camera.pitch terrainHeight stats.visibleFaces stats.solidBlocks stats.chunks
+            if code < 0 then do
+                let message <- Raw.vc_renderer_last_error
+                printlnString (stringAppend "renderer error: " message)
+                pure False
+            else pure (code == 0)
+
+close : (1 renderer : Renderer) -> UIO Unit
+let close renderer =
+    match renderer
+    case Renderer handle ->
+        do
+            let _ <- Raw.vc_renderer_destroy handle
+            pure ()
