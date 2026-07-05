@@ -518,6 +518,70 @@ void kfree_recursive(KValue *root) {
   kfree_recursive_impl(root);
 }
 
+static int kctor_would_pack_value(int tagid, int argc, KValue **args) {
+  if (argc == 0) return 1;
+  if (!kctor_tagid_packs(tagid)) return 0;
+  if (argc == 1) return kctor_field_packs(args[0]);
+  if (argc == 2) return kctor_field2_packs(args[0]) && kctor_field2_packs(args[1]);
+  return 0;
+}
+
+static void kctor_drop_old_fields(KValue *v) {
+  KWork stack;
+  KValue *inline_items[64];
+  kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
+  for (int i = 0; i < v->as.ctor.argc; i++) kfree_drop_child(&stack, v->as.ctor.args[i]);
+  kgc_free(v->as.ctor.args);
+  KValue *child;
+  while ((child = kwork_pop(&stack)) != NULL) {
+    if (kis_rc_freeable(child) && krc_count(child) == 0) kfree_visit(&stack, child);
+  }
+  kwork_dispose(&stack);
+}
+
+KValue *kdrop_reuse_ctor(KValue *v, int argc) {
+  if (kis_imm(v)) return NULL;
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return NULL;
+  kassert_live(v);
+  uint32_t cur = krc_word(v);
+  uint32_t n = cur & KRC_COUNT_MASK;
+  if ((cur & (KRC_SHARED_BIT | KRC_SATURATED_BIT)) == 0
+      && n == 1
+      && v->tag == K_CTOR
+      && v->as.ctor.argc == argc) {
+    return v;
+  }
+  kdrop(v);
+  return NULL;
+}
+
+KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue **args) {
+  if (token == NULL) return kctor(tagid, name, argc, args);
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return kctor(tagid, name, argc, args);
+  kassert_live(token);
+  uint32_t cur = krc_word(token);
+  uint32_t n = cur & KRC_COUNT_MASK;
+  if ((cur & (KRC_SHARED_BIT | KRC_SATURATED_BIT)) != 0
+      || n != 1
+      || token->tag != K_CTOR
+      || token->as.ctor.argc != argc
+      || kctor_would_pack_value(tagid, argc, args)) {
+    kdrop(token);
+    return kctor(tagid, name, argc, args);
+  }
+
+  KValue **new_args = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
+  for (int i = 0; i < argc; i++) new_args[i] = args[i];
+  kctor_drop_old_fields(token);
+  __atomic_store_n(&token->rc, 1u, __ATOMIC_RELAXED);
+  token->tag = K_CTOR;
+  token->as.ctor.name = name;
+  token->as.ctor.tagid = tagid;
+  token->as.ctor.argc = argc;
+  token->as.ctor.args = new_args;
+  return token;
+}
+
 /* ── value constructors ────────────────────────────────────────────── */
 
 /* UNBOXING Stage 1 (§5.2 / research rec 2): an in-range Int is a CANONICAL b001

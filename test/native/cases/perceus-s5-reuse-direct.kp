@@ -1,0 +1,22 @@
+-- Perceus S5.B native anchor: a fresh owned constructor is immediately
+-- destructured and rebuilt as a same-size constructor in the same match arm.
+-- Under RC-on this is the first frame-local FBIP site: generated C must pair
+-- the S2.3 match-scrutinee drop with a same-size constructor allocation through
+-- kdrop_reuse_ctor/kreuse_ctor, while preserving observable output.
+module main
+
+data BigBox : Type =
+    MkBigBox String Int
+
+bumpBox : Int -> BigBox
+let bumpBox n =
+    match MkBigBox (showInt n) n
+    case MkBigBox label value -> MkBigBox label (addInt value 1)
+
+readBox : BigBox -> Int
+let readBox b =
+    match b
+    case MkBigBox _ value -> value
+
+main : UIO Unit
+let main = printlnString (showInt (readBox (bumpBox 41)))

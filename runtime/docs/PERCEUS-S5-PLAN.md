@@ -181,22 +181,24 @@ lands**, so the risk is front-loaded-cheap.
 
 ## 2. Phase B — drop-guided FBIP reuse (S5 proper)
 
-### 2.0 Entry state — what S5.A delivered, and the three carry-overs Phase B owns
+### 2.0 Entry state and current Phase-B progress
 
 S5.A (landed, commit `0039ffa`) delivered the *substrate* Phase B consumes but deliberately stopped short of
 reuse itself. Three items were explicitly deferred at the S5.A hand-off and are **Phase B's** to close:
 
-1. **A3 is substrate, not a consumer — B must add the consumer.** The representation metadata exists and is
+1. **A3 is substrate, not a consumer until B adds the consumer.** The representation metadata exists and is
    validated on ctor/match nodes: `CtorLayout` is three-way (`LayoutImmediate | LayoutMayPack | LayoutBoxed`,
    `Repr.hs`), `CtorLayoutInfo` carries field reps plus `clBoxedFootprintBytes`, and the validator checks that
-   footprint against `ctorBoxedFootprintBytes arity = 48 + 8·arity`. But **no emitter reads these facts yet**
-   (0 consumers), and there is no implemented same-size discriminator. B0/B1's discriminator is the *first
-   consumer*: it must read `CtorLayoutInfo` from the KBackendIR node, fail closed when the metadata is missing
-   or non-allocating, and compare the validated boxed footprint before reusing a cell. This
-   substrate→consumer bridge is the first real Phase-B step, not a given fact.
-2. **No reuse pass exists yet.** There is no `drop_reuse`/`reuse_alloc` runtime primitive and no reuse-site
-   pass — B0 (runtime primitives) and B1 (the pass) build them from scratch. Until they land S5 delivers *no*
-   allocation reduction; the rbtree-class win is entirely Phase B.
+   footprint against `ctorBoxedFootprintBytes arity = 48 + 8·arity`. B0/B1's discriminator is the first
+   consumer: it must read `CtorLayoutInfo` from the KBackendIR node, fail closed when the metadata is missing
+   or non-allocating, and compare the validated boxed footprint before reusing a cell. The current C/native
+   first site now does this for direct match-local constructor rebuilds; generalized credit threading still
+   has to reuse the same node facts rather than re-sniffing tags or arity.
+2. **First reuse site vs generalized reuse.** B0/B1 now have runtime primitives (`kdrop_reuse_ctor` /
+   `kreuse_ctor`) and one conservative C/native pass site: an unguarded S2.3 match-destructure drop paired
+   with a direct same-size constructor allocation in the same arm. That is real reuse and is gated by
+   `perceus-s5-reuse-direct` plus the runtime primitive harness. The broader rbtree/list-map zero-allocation
+   win still requires generalized reuse-credit threading and B2 drop specialization / dup-drop fusion.
 3. **Residual physical R-path cleanup (non-blocking).** Native value emission is fully off the old path-keyed
    bridge — `C.hs`/`LLVM.hs` read no `csOwnership`/`OwnInfo`/`biPath`. But the *producer*, `Ownership.hs`'s
    `BinderId { biPath :: [Int] }`, is still structurally path-keyed, and the KBackendIR lowering bridges
@@ -306,9 +308,9 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 | **S5.A2a** | differential scaffold: observe-only lowering computes erasure/conv/layout/ownership, checked vs the legacy path | retired; it was never the deliverable |
 | **S5.A2b** | define `data KBackendIR` (separate tree; erased positions omitted; ownership/rep as node fields); port `C.hs`/`LLVM.hs` to consume it | real tree + fail-closed validator + main native emitter consumption landed; byte-identical; §34.3.3 legality green |
 | **S5.A2c** | delete the scaffold: `bbTerm`, `[Bool]` masks, `bbNodeIds`/`boiCompat*`/`boiMissing*`, the path-keyed ownership bridge from native emission | wrapper scaffold is gone; KBackendIR lowering no longer imports `PathScheme` or reattaches `oiBranchDropSites`; legacy `Ownership.hs` remains observe/cross-check only |
-| **S5.A3** | representation metadata (ctor type, packing class, field reps, validated boxed-footprint metadata) on KBackendIR nodes | ctor layout facts are carried and validated on ctor/match nodes; no emitter consumes them yet; same-size reuse-site discrimination remains Phase B |
-| **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | unit: reuses a unique cell, never a shared/aliased one; the discriminator reads the validated ctor footprint off the node, fails closed when absent/non-allocating, and does not arity/tag re-sniff |
-| **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | rbtree/list-map: 0-alloc unique rebuild; byte-identical |
+| **S5.A3** | representation metadata (ctor type, packing class, field reps, validated boxed-footprint metadata) on KBackendIR nodes | ctor layout facts are carried and validated on ctor/match nodes; same-size reuse-site discrimination remains Phase B |
+| **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | landed for boxed constructor cells as `kdrop_reuse_ctor` / `kreuse_ctor`; runtime harness covers unique reuse, aliased/shared rejection, arity mismatch, and packed-immediate fallback |
+| **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | initial C/native direct-arm site landed and is gated; generalized rbtree/list-map reuse-credit threading remains |
 | **S5.B2** | drop specialization + dup/drop fusion | RC ops vanish on the statically-unique path |
 | **S5.B3** | the rbtree perf gate + poison/TSan over the corpus | the ≈19%-vs-`std::map` target; UAF/race clean |
 | **S5.B4** *(cleanup, non-blocking)* | finish the physical R-path retirement (§2.0 item 3): re-key `Ownership.hs` off `biPath` or delete the residual legacy-ownership reads in non-emission planning/audit/dump paths | no structurally path-keyed producer remains; `biPath` is read nowhere; byte-identical |
@@ -326,8 +328,9 @@ through anything that could re-touch the legacy path producer.
   fields). C/LLVM now consume the lowered tree for main emission. *Not* a `Term` wrapper — see §A2.
 - `src/Kappa/Ownership.hs` — legacy dump/cross-check/refinement side table. It is no longer reattached to
   KBackendIR for native codegen; FBIP reuse facts should be computed on KBackendIR identities (B).
-- `src/Kappa/Backend/C.hs` / `LLVM.hs` — consume KBackendIR fields (retire the re-derivation sites); emit
-  `drop_reuse`/`reuse_alloc` at the fused sites (B).
+- `src/Kappa/Backend/C.hs` / `LLVM.hs` — consume KBackendIR fields (retire the re-derivation sites). C/native
+  currently emits the initial `drop_reuse`/`reuse_alloc` fused site; LLVM still keeps runtime RC
+  counting/freeing disabled and must grow ownership maintenance before it can participate in S5 reuse.
 - `runtime/kappart.h` / `runtime/value.c` — `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; the
   in-place ctor rebuild.
 - `test/native/run-native-tests.sh` — the rbtree perf gate; reuse-on==reuse-off; the poison/TSan corpus.

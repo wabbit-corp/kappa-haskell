@@ -718,6 +718,8 @@ KValue *kunit(void);
 KValue *kbool(int b);                           /* True/False constructors */
 KValue *kctor(int tagid, const char *name, int argc, KValue **args);
 KValue *kctor0(int tagid, const char *name);    /* nullary constructor     */
+KValue *kdrop_reuse_ctor(KValue *v, int argc);
+KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue **args);
 KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
 KValue *kio(KIOFn fn, KEnv *env);

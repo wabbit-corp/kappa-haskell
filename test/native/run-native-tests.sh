@@ -231,7 +231,7 @@ run_native_expected_stdout_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct; do run_diff_case "$c"; done
 run_native_expected_stdout_case ctor-erased-tail-pattern 20
 run_native_expected_stdout_case tuple-erased-field-pattern 5
 run_native_expected_stdout_case poly-lambda-erased-arg 5
@@ -305,8 +305,8 @@ if KAPPA_BACKEND=llvm timeout 180 $KAPPA build "$CASES/blocking-source.kp" --emi
 else
   echo "   FAIL: blocking-source LLVM --emit-c build failed"; cat "$btmp/llvm.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
-echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3/S4 gates =="
-if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq build/perceus_s3_free build/perceus_s3_poison build/perceus_s4_shared >"$btmp/runtime.log" 2>&1; then
+echo "== rt-blocking runtime lane, foreign-handle kind, and Perceus S3/S4/S5 gates =="
+if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/perceus_s3_prereq build/perceus_s3_free build/perceus_s3_poison build/perceus_s4_shared build/perceus_s5_reuse >"$btmp/runtime.log" 2>&1; then
   if timeout 30 "$ROOT/runtime/build/blocking_lane" >"$btmp/blocking_lane.out" 2>"$btmp/blocking_lane.err"; then
     echo "   ok (runtime blocking lane preserves scheduler progress and source interruption)"
   else
@@ -349,8 +349,15 @@ if timeout 120 make -C "$ROOT/runtime" build/blocking_lane build/fgn_kind build/
     cat "$btmp/perceus_s4_shared.out" "$btmp/perceus_s4_shared.err" | sed 's/^/     /'
     fails=$((fails+1))
   fi
+  if timeout 30 "$ROOT/runtime/build/perceus_s5_reuse" >"$btmp/perceus_s5_reuse.out" 2>"$btmp/perceus_s5_reuse.err"; then
+    echo "   ok (Perceus S5 drop-guided reuse runtime harness passed)"
+  else
+    echo "   FAIL: Perceus S5 drop-guided reuse runtime harness failed"
+    cat "$btmp/perceus_s5_reuse.out" "$btmp/perceus_s5_reuse.err" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
 else
-  echo "   FAIL: runtime blocking/fgn/S3/S4 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
+  echo "   FAIL: runtime blocking/fgn/S3/S4/S5 harness build failed"; cat "$btmp/runtime.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 
 echo "== Perceus S4: ThreadSanitizer shared-RC concurrency corpus =="
@@ -689,6 +696,27 @@ elif timeout 240 env -u KAPPA_PERCEUS_RC $KAPPA build "$s34src" -o "$s32tmp/perc
 else
   echo "   FAIL: perceus-s3-generated-drops 100k default-RC native build failed"; cat "$s32tmp/build-100k.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
+
+echo "== Perceus S5.B: same-size match rebuild emits reuse primitives =="
+s5tmp="$WORK/perceus-s5-reuse-direct-shape"; rm -rf "$s5tmp"; mkdir -p "$s5tmp"
+s5src="$CASES/perceus-s5-reuse-direct.kp"
+s5c="${s5src%.kp}.kappa.c"
+rm -f "$s5c"
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s5src" --emit-c -o "$s5tmp/perceus_s5_reuse_direct_emit" >"$s5tmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5tmp/emit.log"
+  if grep -qE 'kdrop_reuse_ctor\(' "$s5c" \
+     && grep -qE 'kreuse_ctor\(' "$s5c"; then
+    echo "   ok-shape (same-size constructor rebuild is routed through drop/reuse primitives)"
+  else
+    echo "   FAIL: perceus-s5-reuse-direct did not emit the expected drop/reuse primitives"
+    [ -f "$s5c" ] && grep -nE 'kdrop_reuse_ctor|kreuse_ctor|kdrop\(scrut_|kctor\(' "$s5c" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5c"
+else
+  echo "   FAIL: perceus-s5-reuse-direct --emit-c build failed"; cat "$s5tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5c"
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert

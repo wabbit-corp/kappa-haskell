@@ -2196,7 +2196,7 @@ compileTerm term = case term of
   BLit _ l -> compileLit l
   BApp {} -> compileApp term
   BLam _ mb _ _ _ body -> compileLam mb body
-  BCtor _ layout args -> compileCtor (bclCtor layout) args
+  BCtor _ layout args -> compileCtorLayout layout args
   BIf {} -> sinkToExpr term
   BMatch {} -> sinkToExpr term
   BLet {} -> sinkToExpr term
@@ -3627,6 +3627,34 @@ compileCtor g args = do
       emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " argEs <> "};")
       pure ("kctor(" <> tc <> ", " <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
 
+compileCtorLayout :: BackendCtorLayout -> [BackendTerm] -> Gen Text
+compileCtorLayout layout = compileCtor (bclCtor layout)
+
+compileCtorWithReuse :: Text -> BackendCtorLayout -> [BackendTerm] -> Gen Text
+compileCtorWithReuse token layout args = do
+  argEs <- mapM (compileCallArg True) args
+  tc <- ctorTagConst (bclCtor layout)
+  arr <-
+    case argEs of
+      [] -> pure "NULL"
+      _ -> do
+        a <- freshN "args_"
+        emit ("KValue *" <> a <> "[] = {" <> T.intercalate ", " argEs <> "};")
+        pure a
+  pure
+    ( "kreuse_ctor("
+        <> token
+        <> ", "
+        <> tc
+        <> ", "
+        <> cStr (gKey (bclCtor layout))
+        <> ", "
+        <> T.pack (show (length argEs))
+        <> ", "
+        <> arr
+        <> ")"
+    )
+
 compileRecord :: [(Text, BackendTerm)] -> Gen Text
 compileRecord fs = do
   valEs <-
@@ -3772,7 +3800,7 @@ cpsNodeApp term = do
 consume :: Sink -> BackendTerm -> Gen ()
 consume sink term = case term of
   BIf _ c t e -> consumeIf sink c t e
-  BMatch _ scrut alts _ -> consumeMatch sink scrut alts
+  BMatch _ scrut alts layouts -> consumeMatch sink scrut alts layouts
   BLet _ mb _ _ rhs body -> do
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
@@ -3894,8 +3922,8 @@ consumeIf sink c t e = do
 
 -- ── Pattern matching ─────────────────────────────────────────────────
 
-consumeMatch :: Sink -> BackendTerm -> [BackendAlt] -> Gen ()
-consumeMatch sink scrut alts = do
+consumeMatch :: Sink -> BackendTerm -> [BackendAlt] -> [(GName, BackendCtorLayout)] -> Gen ()
+consumeMatch sink scrut alts layouts = do
   -- Perceus RC S2.3a (§a): decide whether the match owns a reference to the
   -- scrutinee CELL that it must discharge with a per-arm @kdrop(sv)@. The
   -- verdict is carried by this KBackendIR node's metadata, so it is fixed once
@@ -3923,8 +3951,35 @@ consumeMatch sink scrut alts = do
   -- structural ownership path.
   forM_ alts $ \alt ->
     forM_ (expandBackendAltTopOr alt) $ \subAlt ->
-      consumeAlt sink sv dropCell env done subAlt
+      consumeAlt sink sv dropCell (Map.fromList layouts) env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
+
+ctorReuseFootprint :: BackendCtorLayout -> Maybe Int
+ctorReuseFootprint layout = do
+  info <- bclInfo layout
+  Repr.clBoxedFootprintBytes info
+
+patCtorReuseLayout :: Map GName BackendCtorLayout -> BackendPat -> Maybe BackendCtorLayout
+patCtorReuseLayout layouts = \case
+  BPCtor g _ -> Map.lookup g layouts
+  BPAs _ p -> patCtorReuseLayout layouts p
+  _ -> Nothing
+
+directCtorReuseBody :: BackendTerm -> Maybe (BackendCtorLayout, [BackendTerm])
+directCtorReuseBody = \case
+  BCtor _ layout args -> Just (layout, args)
+  BSeal _ _ body -> directCtorReuseBody body
+  _ -> Nothing
+
+sameSizeCtorReuseCandidate :: Map GName BackendCtorLayout -> BackendPat -> BackendTerm -> Maybe (BackendCtorLayout, BackendCtorLayout, [BackendTerm])
+sameSizeCtorReuseCandidate layouts pat body = do
+  oldLayout <- patCtorReuseLayout layouts pat
+  (newLayout, args) <- directCtorReuseBody body
+  oldBytes <- ctorReuseFootprint oldLayout
+  newBytes <- ctorReuseFootprint newLayout
+  if oldBytes == newBytes && bclRuntimeFields oldLayout == bclRuntimeFields newLayout
+    then Just (oldLayout, newLayout, args)
+    else Nothing
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
 -- names in a non-canonical order (a non-identity permutation on some
@@ -3966,17 +4021,17 @@ distributePat = \case
   BPAs n p -> [BPAs n q | q <- distributePat p]
   p -> [p] -- BPWild / BPVar / BPLit / BPInjectRest: no nested or
 
-consumeAlt :: Sink -> Text -> Bool -> Text -> Text -> BackendAlt -> Gen ()
-consumeAlt sink sv dropCell env done (BackendAlt altMeta pat binders mguard body) = do
+consumeAlt :: Sink -> Text -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendAlt -> Gen ()
+consumeAlt sink sv dropCell layouts env done (BackendAlt altMeta pat binders mguard body) = do
   emit ("if (!" <> done <> ") {")
   -- pattern test + bindings produced as a nested block
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> consumeAltBody sink altMeta sv dropCell env done pat binders mguard body
+      Nothing -> consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        consumeAltBody sink altMeta sv dropCell env done pat binders mguard body
+        consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
@@ -3985,8 +4040,8 @@ consumeAlt sink sv dropCell env done (BackendAlt altMeta pat binders mguard body
 -- match consume the body into the sink (and mark @done@; for a 'SinkTail'
 -- body the @done@ store is dead — the body has returned/looped — but
 -- harmless).
-consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Gen ()
-consumeAltBody sink altMeta sv dropCell env done pat binders mguard body = do
+consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Gen ()
+consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   -- Perceus RC S2.3a/S3.2 (§a): the cell-drop fires for THIS arm only when the
   -- match owns the scrutinee cell ('dropCell'). S3.2 routes that cleanup through
@@ -4014,7 +4069,11 @@ consumeAltBody sink altMeta sv dropCell env done pat binders mguard body = do
   -- after normal body evaluation and before any tail return. Boxed (KEnv) arms
   -- have empty 'gsParamLvals' → no flat local → no drop (left to Boehm).
   patDrops <- if dropHere then rcPatSlotDropLvals binders pat else pure []
-  let altCleanup = map (\lv -> "kdrop(" <> lv <> ");") patDrops <> ["kdrop(" <> sv <> ");" | dropHere]
+  let reuseCandidate = if dropHere then sameSizeCtorReuseCandidate layouts pat body else Nothing
+      consumesScrutineeViaReuse = case reuseCandidate of
+        Just {} -> True
+        Nothing -> False
+      altCleanup = map (\lv -> "kdrop(" <> lv <> ");") patDrops <> ["kdrop(" <> sv <> ");" | dropHere && not consumesScrutineeViaReuse]
       bodySink = sinkWithCleanup altCleanup sink
   -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
   -- body at 'altBodyPos' (the pattern-slot binders are at 'patSlotPos k', looked
@@ -4022,7 +4081,14 @@ consumeAltBody sink altMeta sv dropCell env done pat binders mguard body = do
   case mguard of
     Nothing -> do
       rcEmitBranchDeadDropsHere altMeta
-      withEnv env' ((consume bodySink body))
+      withEnv env' $
+        case reuseCandidate of
+          Just (oldLayout, newLayout, args) -> do
+            token <- freshN "reuse_"
+            emit ("KValue *" <> token <> " = kdrop_reuse_ctor(" <> sv <> ", " <> T.pack (show (bclRuntimeFields oldLayout)) <> ");")
+            compileCtorWithReuse token newLayout args >>= sinkResult bodySink
+          Nothing ->
+            consume bodySink body
       emit (done <> " = 1;")
     Just gd -> do
       ge <- withEnv env' ((compile gd))
