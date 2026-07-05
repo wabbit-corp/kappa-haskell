@@ -48,6 +48,7 @@ import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (catMaybes, fromMaybe, isJust)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -3630,10 +3631,14 @@ compileCtor g args = do
 compileCtorLayout :: BackendCtorLayout -> [BackendTerm] -> Gen Text
 compileCtorLayout layout = compileCtor (bclCtor layout)
 
-compileCtorWithReuse :: Text -> BackendCtorLayout -> [BackendTerm] -> Gen Text
-compileCtorWithReuse token layout args = do
-  argEs <- mapM (compileCallArg True) args
-  tc <- ctorTagConst (bclCtor layout)
+compileCtorFromSource :: Text -> BackendCtorLayout -> BackendCtorLayout -> [BackendTerm] -> [Maybe Int] -> Gen Text
+compileCtorFromSource source oldLayout newLayout args moveSlots = do
+  argEs <-
+    forM (zip args moveSlots) $ \(arg, mslot) ->
+      case mslot of
+        Just {} -> compileBorrowedCallArg arg
+        Nothing -> compileCallArg True arg
+  tc <- ctorTagConst (bclCtor newLayout)
   arr <-
     case argEs of
       [] -> pure "NULL"
@@ -3641,17 +3646,29 @@ compileCtorWithReuse token layout args = do
         a <- freshN "args_"
         emit ("KValue *" <> a <> "[] = {" <> T.intercalate ", " argEs <> "};")
         pure a
+  moveArr <-
+    if any isJust moveSlots
+      then do
+        a <- freshN "moves_"
+        let slotText = maybe "-1" (T.pack . show)
+        emit ("int " <> a <> "[] = {" <> T.intercalate ", " (map slotText moveSlots) <> "};")
+        pure a
+      else pure "NULL"
   pure
-    ( "kreuse_ctor("
-        <> token
+    ( "kdrop_reuse_ctor_alloc("
+        <> source
+        <> ", "
+        <> T.pack (show (bclRuntimeFields oldLayout))
         <> ", "
         <> tc
         <> ", "
-        <> cStr (gKey (bclCtor layout))
+        <> cStr (gKey (bclCtor newLayout))
         <> ", "
         <> T.pack (show (length argEs))
         <> ", "
         <> arr
+        <> ", "
+        <> moveArr
         <> ")"
     )
 
@@ -3949,10 +3966,18 @@ consumeMatch sink scrut alts layouts = do
   -- KBackendIR already carries runtime-kept pattern shapes and branch metadata;
   -- top-level or-patterns can be distributed here without reconstructing any
   -- structural ownership path.
+  let layoutMap = Map.fromList layouts
   forM_ alts $ \alt ->
     forM_ (expandBackendAltTopOr alt) $ \subAlt ->
-      consumeAlt sink sv dropCell (Map.fromList layouts) env done subAlt
+      consumeAlt sink sv dropCell layoutMap env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
+
+data CtorReuseCandidate = CtorReuseCandidate
+  { crcOldLayout :: !BackendCtorLayout
+  , crcNewLayout :: !BackendCtorLayout
+  , crcArgs :: ![BackendTerm]
+  , crcMoveSlots :: ![Maybe Int]
+  }
 
 ctorReuseFootprint :: BackendCtorLayout -> Maybe Int
 ctorReuseFootprint layout = do
@@ -3971,14 +3996,65 @@ directCtorReuseBody = \case
   BSeal _ _ body -> directCtorReuseBody body
   _ -> Nothing
 
-sameSizeCtorReuseCandidate :: Map GName BackendCtorLayout -> BackendPat -> BackendTerm -> Maybe (BackendCtorLayout, BackendCtorLayout, [BackendTerm])
+patDirectCtorFieldVars :: BackendPat -> Maybe (Map Int Int)
+patDirectCtorFieldVars = \case
+  BPCtor _ ps -> do
+    slotsInBindingOrder <- fmap concat $
+      forM (zip [0 ..] ps) $ \(slot, p) ->
+        case p of
+          BPVar {} -> Just [slot]
+          BPWild -> Just []
+          _ -> Nothing
+    let n = length slotsInBindingOrder
+    pure $
+      Map.fromList
+        [ (n - 1 - bindIx, slot)
+        | (bindIx, slot) <- zip [0 ..] slotsInBindingOrder
+        ]
+  BPAs _ p -> patDirectCtorFieldVars p
+  _ -> Nothing
+
+directMovedArgSlot :: Map Int Int -> BackendTerm -> Maybe Int
+directMovedArgSlot slots = \case
+  BVar _ (Just (BackendUse _ LastUse True)) i -> Map.lookup i slots
+  BSeal _ _ e -> directMovedArgSlot slots e
+  _ -> Nothing
+
+ctorReuseMoveSlots :: BackendPat -> [BackendTerm] -> [Maybe Int]
+ctorReuseMoveSlots pat args =
+  case patDirectCtorFieldVars pat of
+    Nothing -> replicate (length args) Nothing
+    Just slots ->
+      let raw = map (directMovedArgSlot slots) args
+          moved = catMaybes raw
+       in if Set.size (Set.fromList moved) == length moved
+            then raw
+            else replicate (length args) Nothing
+
+patDupFlagsForReuse :: BackendPat -> CtorReuseCandidate -> [Bool]
+patDupFlagsForReuse pat candidate =
+  let n = length (patBindings "0" pat)
+      movedSlots = Set.fromList (catMaybes (crcMoveSlots candidate))
+      directFields = fromMaybe Map.empty (patDirectCtorFieldVars pat)
+   in [ maybe True (`Set.notMember` movedSlots) (Map.lookup (n - 1 - j) directFields)
+      | j <- [0 .. n - 1]
+      ]
+
+sameSizeCtorReuseCandidate :: Map GName BackendCtorLayout -> BackendPat -> BackendTerm -> Maybe CtorReuseCandidate
 sameSizeCtorReuseCandidate layouts pat body = do
   oldLayout <- patCtorReuseLayout layouts pat
   (newLayout, args) <- directCtorReuseBody body
   oldBytes <- ctorReuseFootprint oldLayout
   newBytes <- ctorReuseFootprint newLayout
   if oldBytes == newBytes && bclRuntimeFields oldLayout == bclRuntimeFields newLayout
-    then Just (oldLayout, newLayout, args)
+    then
+      Just
+        CtorReuseCandidate
+          { crcOldLayout = oldLayout
+          , crcNewLayout = newLayout
+          , crcArgs = args
+          , crcMoveSlots = ctorReuseMoveSlots pat args
+          }
     else Nothing
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
@@ -4057,7 +4133,12 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
   -- the guard, so a failed guard cannot run the success-branch balancing drops;
   -- keep guarded arms conservative until guard-failure cleanup is modeled.
   let dropHere = dropCell && maybe True (const False) mguard
-  env' <- bindPatScrutDup dropHere binders sv env pat
+      reuseCandidate = if dropHere then sameSizeCtorReuseCandidate layouts pat body else Nothing
+      dupFlags =
+        case reuseCandidate of
+          Just candidate -> patDupFlagsForReuse pat candidate
+          Nothing -> replicate (length (patBindings sv pat)) dropHere
+  env' <- bindPatScrutDupSelective dupFlags binders sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
   -- binders from lowered arm metadata, against the bound flat C locals (R-flat).
   -- These drops only fire with 'dropHere',
@@ -4069,8 +4150,7 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
   -- after normal body evaluation and before any tail return. Boxed (KEnv) arms
   -- have empty 'gsParamLvals' → no flat local → no drop (left to Boehm).
   patDrops <- if dropHere then rcPatSlotDropLvals binders pat else pure []
-  let reuseCandidate = if dropHere then sameSizeCtorReuseCandidate layouts pat body else Nothing
-      consumesScrutineeViaReuse = case reuseCandidate of
+  let consumesScrutineeViaReuse = case reuseCandidate of
         Just {} -> True
         Nothing -> False
       altCleanup = map (\lv -> "kdrop(" <> lv <> ");") patDrops <> ["kdrop(" <> sv <> ");" | dropHere && not consumesScrutineeViaReuse]
@@ -4083,10 +4163,8 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
       rcEmitBranchDeadDropsHere altMeta
       withEnv env' $
         case reuseCandidate of
-          Just (oldLayout, newLayout, args) -> do
-            token <- freshN "reuse_"
-            emit ("KValue *" <> token <> " = kdrop_reuse_ctor(" <> sv <> ", " <> T.pack (show (bclRuntimeFields oldLayout)) <> ");")
-            compileCtorWithReuse token newLayout args >>= sinkResult bodySink
+          Just candidate ->
+            compileCtorFromSource sv (crcOldLayout candidate) (crcNewLayout candidate) (crcArgs candidate) (crcMoveSlots candidate) >>= sinkResult bodySink
           Nothing ->
             consume bodySink body
       emit (done <> " = 1;")
@@ -5551,11 +5629,15 @@ registerDefer (arr, cnt) te = emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
 -- do-kernel\/closure-arg\/let-pattern paths) and every returning-arm match is
 -- unchanged.
 bindPatScrutDup :: Bool -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
-bindPatScrutDup dupFields binders sv env pat = do
+bindPatScrutDup dupFields binders sv env pat =
+  bindPatScrutDupSelective (replicate (length (patBindings sv pat)) dupFields) binders sv env pat
+
+bindPatScrutDupSelective :: [Bool] -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
+bindPatScrutDupSelective dupFlags binders sv env pat = do
   lvals <- gets gsParamLvals
-  let wrap valExpr = if dupFields then "kdup(" <> valExpr <> ")" else valExpr
+  let wrap j valExpr = if dupAt j then "kdup(" <> valExpr <> ")" else valExpr
   if null lvals
-    then foldM push env (patBindings sv pat) -- boxed: kpush each onto the KEnv
+    then foldM push env (zip [0 ..] (patBindings sv pat)) -- boxed: kpush each onto the KEnv
     else do
       -- R2.3-rest FLAT worker: bind each pattern variable to a C local via
       -- 'bindFlatLocal' (the LAST binding becomes de Bruijn index 0, matching
@@ -5566,14 +5648,17 @@ bindPatScrutDup dupFields binders sv env pat = do
         let mb = case drop (n - 1 - j) binders of
               b : _ -> b
               [] -> Nothing
-        void (bindFlatLocal "pat_" (bbBinderId <$> mb) dupFields (wrap valExpr))
+        void (bindFlatLocal "pat_" (bbBinderId <$> mb) (dupAt j) (wrap j valExpr))
       gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
-    push e valExpr = do
+    push e (j, valExpr) = do
       n <- freshN "env_"
-      let v = if dupFields then "kdup(" <> valExpr <> ")" else valExpr
+      let v = if dupAt j then "kdup(" <> valExpr <> ")" else valExpr
       emit ("KEnv *" <> n <> " = kpush(" <> v <> ", " <> e <> ");")
       pure n
+    dupAt j = case drop j dupFlags of
+      flag : _ -> flag
+      [] -> True
 
 -- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
 -- it to 'gsParamLvals' as de Bruijn index 0 (params and earlier binders shift

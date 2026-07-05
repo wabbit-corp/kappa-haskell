@@ -526,17 +526,52 @@ static int kctor_would_pack_value(int tagid, int argc, KValue **args) {
   return 0;
 }
 
-static void kctor_drop_old_fields(KValue *v) {
+static int kctor_move_slot_used(int slot, int argc, const int *move_slots) {
+  if (!move_slots) return 0;
+  for (int i = 0; i < argc; i++) {
+    if (move_slots[i] == slot) return 1;
+  }
+  return 0;
+}
+
+static int kctor_move_slots_valid(KValue *v, int argc, KValue **args, const int *move_slots) {
+  if (!move_slots) return 1;
+  for (int i = 0; i < argc; i++) {
+    int slot = move_slots[i];
+    if (slot < 0) continue;
+    if (slot >= v->as.ctor.argc) return 0;
+    if (args[i] != v->as.ctor.args[slot]) return 0;
+    for (int j = 0; j < i; j++) {
+      if (move_slots[j] == slot) return 0;
+    }
+  }
+  return 1;
+}
+
+static void kctor_dup_moved_args(int argc, KValue **args, const int *move_slots) {
+  if (!move_slots) return;
+  for (int i = 0; i < argc; i++) {
+    if (move_slots[i] >= 0) args[i] = kdup(args[i]);
+  }
+}
+
+static void kctor_drop_old_fields_except(KValue *v, int argc, const int *move_slots) {
   KWork stack;
   KValue *inline_items[64];
   kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
-  for (int i = 0; i < v->as.ctor.argc; i++) kfree_drop_child(&stack, v->as.ctor.args[i]);
+  for (int i = 0; i < v->as.ctor.argc; i++) {
+    if (!kctor_move_slot_used(i, argc, move_slots)) kfree_drop_child(&stack, v->as.ctor.args[i]);
+  }
   kgc_free(v->as.ctor.args);
   KValue *child;
   while ((child = kwork_pop(&stack)) != NULL) {
     if (kis_rc_freeable(child) && krc_count(child) == 0) kfree_visit(&stack, child);
   }
   kwork_dispose(&stack);
+}
+
+static void kctor_drop_old_fields(KValue *v) {
+  kctor_drop_old_fields_except(v, 0, NULL);
 }
 
 KValue *kdrop_reuse_ctor(KValue *v, int argc) {
@@ -580,6 +615,44 @@ KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue
   token->as.ctor.argc = argc;
   token->as.ctor.args = new_args;
   return token;
+}
+
+KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const char *name, int argc, KValue **args, const int *move_slots) {
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) {
+    return kctor(tagid, name, argc, args);
+  }
+  if (kis_imm(source)) {
+    kctor_dup_moved_args(argc, args, move_slots);
+    return kctor(tagid, name, argc, args);
+  }
+  kassert_live(source);
+  uint32_t cur = krc_word(source);
+  uint32_t n = cur & KRC_COUNT_MASK;
+  int can_reuse =
+    (cur & (KRC_SHARED_BIT | KRC_SATURATED_BIT)) == 0
+      && n == 1
+      && source->tag == K_CTOR
+      && source->as.ctor.argc == old_argc
+      && old_argc == argc
+      && !kctor_would_pack_value(tagid, argc, args)
+      && kctor_move_slots_valid(source, argc, args, move_slots);
+
+  if (!can_reuse) {
+    kctor_dup_moved_args(argc, args, move_slots);
+    kdrop(source);
+    return kctor(tagid, name, argc, args);
+  }
+
+  KValue **new_args = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
+  for (int i = 0; i < argc; i++) new_args[i] = args[i];
+  kctor_drop_old_fields_except(source, argc, move_slots);
+  __atomic_store_n(&source->rc, 1u, __ATOMIC_RELAXED);
+  source->tag = K_CTOR;
+  source->as.ctor.name = name;
+  source->as.ctor.tagid = tagid;
+  source->as.ctor.argc = argc;
+  source->as.ctor.args = new_args;
+  return source;
 }
 
 /* ── value constructors ────────────────────────────────────────────── */

@@ -720,6 +720,7 @@ KValue *kctor(int tagid, const char *name, int argc, KValue **args);
 KValue *kctor0(int tagid, const char *name);    /* nullary constructor     */
 KValue *kdrop_reuse_ctor(KValue *v, int argc);
 KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue **args);
+KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const char *name, int argc, KValue **args, const int *move_slots);
 KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
 KValue *kio(KIOFn fn, KEnv *env);

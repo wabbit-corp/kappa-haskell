@@ -231,7 +231,7 @@ run_native_expected_stdout_case() {
 }
 
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct perceus-s5-reuse-move; do run_diff_case "$c"; done
 run_native_expected_stdout_case ctor-erased-tail-pattern 20
 run_native_expected_stdout_case tuple-erased-field-pattern 5
 run_native_expected_stdout_case poly-lambda-erased-arg 5
@@ -704,12 +704,11 @@ s5c="${s5src%.kp}.kappa.c"
 rm -f "$s5c"
 if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s5src" --emit-c -o "$s5tmp/perceus_s5_reuse_direct_emit" >"$s5tmp/emit.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5tmp/emit.log"
-  if grep -qE 'kdrop_reuse_ctor\(' "$s5c" \
-     && grep -qE 'kreuse_ctor\(' "$s5c"; then
-    echo "   ok-shape (same-size constructor rebuild is routed through drop/reuse primitives)"
+  if grep -qE 'kdrop_reuse_ctor_alloc\(' "$s5c"; then
+    echo "   ok-shape (same-size constructor rebuild is routed through fused drop/reuse allocation)"
   else
-    echo "   FAIL: perceus-s5-reuse-direct did not emit the expected drop/reuse primitives"
-    [ -f "$s5c" ] && grep -nE 'kdrop_reuse_ctor|kreuse_ctor|kdrop\(scrut_|kctor\(' "$s5c" | sed 's/^/     /'
+    echo "   FAIL: perceus-s5-reuse-direct did not emit the expected fused drop/reuse allocation"
+    [ -f "$s5c" ] && grep -nE 'kdrop_reuse_ctor_alloc|kdrop_reuse_ctor|kreuse_ctor|kdrop\(scrut_|kctor\(' "$s5c" | sed 's/^/     /'
     fails=$((fails+1))
   fi
   rm -f "$s5c"
@@ -717,6 +716,27 @@ else
   echo "   FAIL: perceus-s5-reuse-direct --emit-c build failed"; cat "$s5tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -f "$s5c"
+
+echo "== Perceus S5.B2: moved constructor fields fuse dup/drop =="
+s5mtmp="$WORK/perceus-s5-reuse-move-shape"; rm -rf "$s5mtmp"; mkdir -p "$s5mtmp"
+s5msrc="$CASES/perceus-s5-reuse-move.kp"
+s5mc="${s5msrc%.kp}.kappa.c"
+rm -f "$s5mc"
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s5msrc" --emit-c -o "$s5mtmp/perceus_s5_reuse_move_emit" >"$s5mtmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5mtmp/emit.log"
+  if grep -qE 'kdrop_reuse_ctor_alloc\(' "$s5mc" \
+     && ! grep -qE 'kdup\(kctor_arg\(' "$s5mc"; then
+    echo "   ok-shape (same-size field moves use fused drop/reuse allocation without field dup/drop pairs)"
+  else
+    echo "   FAIL: perceus-s5-reuse-move did not fuse moved-field dup/drop pairs"
+    [ -f "$s5mc" ] && grep -nE 'kdrop_reuse_ctor_alloc|kdrop_reuse_ctor|kreuse_ctor|kdup\(kctor_arg|kdrop\(scrut_|kctor\(' "$s5mc" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5mc"
+else
+  echo "   FAIL: perceus-s5-reuse-move --emit-c build failed"; cat "$s5mtmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5mc"
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert

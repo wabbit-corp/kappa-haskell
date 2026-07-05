@@ -1,0 +1,21 @@
+-- Perceus S5.B2 native anchor: a same-size constructor rebuild that only
+-- reorders boxed fields should move those field owners through the reuse
+-- primitive. Generated C must not materialize the old S2.3a
+-- kdup(kctor_arg(...)) / old-field kdrop pair for the moved fields.
+module main
+
+data PairBox : Type =
+    MkPairBox String String
+
+swapFresh : PairBox
+let swapFresh =
+    match MkPairBox "left" "right"
+    case MkPairBox left right -> MkPairBox right left
+
+render : PairBox -> String
+let render b =
+    match b
+    case MkPairBox left right -> stringAppend left right
+
+main : UIO Unit
+let main = printlnString (render swapFresh)

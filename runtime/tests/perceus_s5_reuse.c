@@ -17,6 +17,13 @@ static KValue *boxed_ctor1(int tag, const char *name, KValue *field) {
   return v;
 }
 
+static KValue *boxed_ctor2(int tag, const char *name, KValue *left, KValue *right) {
+  KValue *args[2] = { left, right };
+  KValue *v = kctor(tag, name, 2, args);
+  check(!kis_imm(v) && v->tag == K_CTOR, "test setup must allocate a boxed two-field constructor");
+  return v;
+}
+
 static void check_unique_ctor_reuses_cell_and_drops_old_field(void) {
   KValue *old_field = kstr0("s5-old");
   KValue *box = boxed_ctor1(KCT_USER_BASE + 10, "S5Old", old_field);
@@ -95,6 +102,39 @@ static void check_wrong_arity_falls_back_to_normal_drop(void) {
   kdrop(fresh);
 }
 
+static void check_moved_fields_reuse_without_intermediate_child_drops(void) {
+  KValue *left = kstr0("s5-left");
+  KValue *right = kstr0("s5-right");
+  KValue *box = boxed_ctor2(KCT_USER_BASE + 20, "S5MoveOld", left, right);
+  KValue *new_args[2] = { right, left };
+  int move_slots[2] = { 1, 0 };
+
+  unsigned long long before = krc_debug_reclaim_count();
+  KValue *rebuilt = kdrop_reuse_ctor_alloc(box, 2, KCT_USER_BASE + 21, "S5MoveNew", 2, new_args, move_slots);
+  check(rebuilt == box, "S5 fused move rebuild must reuse the unique source cell");
+  check(kctor_arg(rebuilt, 0) == right, "S5 fused move rebuild must install moved right field");
+  check(kctor_arg(rebuilt, 1) == left, "S5 fused move rebuild must install moved left field");
+  check(krc_debug_reclaim_count() == before, "S5 fused move rebuild must not drop moved child fields before final owner drop");
+  kdrop(rebuilt);
+}
+
+static void check_moved_fields_fallback_duplicates_before_drop(void) {
+  KValue *left = kstr0("s5-fallback-left");
+  KValue *right = kstr0("s5-fallback-right");
+  KValue *box = boxed_ctor2(KCT_USER_BASE + 22, "S5MoveAliasedOld", left, right);
+  KValue *alias = kdup(box);
+  KValue *new_args[2] = { right, left };
+  int move_slots[2] = { 1, 0 };
+
+  KValue *fresh = kdrop_reuse_ctor_alloc(box, 2, KCT_USER_BASE + 23, "S5MoveAliasedNew", 2, new_args, move_slots);
+  check(fresh != alias, "S5 fused move fallback must allocate when the source is aliased");
+  check(kctor_arg(fresh, 0) == right, "S5 fused move fallback must preserve moved right field");
+  check(kctor_arg(fresh, 1) == left, "S5 fused move fallback must preserve moved left field");
+  check(krc_count(alias) == 1, "S5 fused move fallback must consume one source owner");
+  kdrop(alias);
+  kdrop(fresh);
+}
+
 int main(void) {
   krt_init();
   check_unique_ctor_reuses_cell_and_drops_old_field();
@@ -102,5 +142,7 @@ int main(void) {
   check_shared_ctor_falls_back_and_reclaims_normally();
   check_packed_result_discards_token_for_canonical_immediate();
   check_wrong_arity_falls_back_to_normal_drop();
+  check_moved_fields_reuse_without_intermediate_child_drops();
+  check_moved_fields_fallback_duplicates_before_drop();
   return 0;
 }
