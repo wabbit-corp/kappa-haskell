@@ -10,34 +10,60 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import Control.Monad (unless)
+import Control.Monad (forM, unless, when)
 import Kappa.Backend.C (generateC)
+import Kappa.Backend.IR
+  ( BackendAlt (..)
+  , BackendBinder (..)
+  , BackendBinderId (..)
+  , BackendBody (..)
+  , BackendCond (..)
+  , BackendCtorLayout (..)
+  , BackendItem (..)
+  , BackendMeta (..)
+  , BackendNodeId (..)
+  , BackendParam (..)
+  , BackendPat (..)
+  , BackendTerm (..)
+  , BackendIRViolation (..)
+  , BackendUse (..)
+  , KBackendIR (..)
+  , BackendUseId (..)
+  , lowerKBackendIR
+  , validateKBackendIR
+  )
 import Kappa.Backend.LLVM (generateLL)
 import Kappa.Backend.Repr
   ( ArgConv (..)
+  , CtorLayout (..)
   , CtorLayoutInfo (..)
   , Rep (..)
+  , argConvSelectGlobalForArgs
   , argConvSelectGlobal
   , ctorLayoutOf
+  , erasedSpinePositionsForArgs
+  , runtimeConstructorField
   , scalarRep
   )
-import Kappa.Backend.Verify (VerifyInputs (..), verifyUnit)
+import Kappa.Backend.Verify (VerifyInputs (..), verifyInputs, verifyUnit)
 import Kappa.Builtins (gPrel, prelDouble, prelInt, prelUnit, primModule)
 import Kappa.Check (CheckState (..), CtorInfo (..), DataInfo (..))
 import Kappa.Core
-  ( GName (..)
+  ( Closure (..)
+  , GName (..)
   , Icit (..)
   , Q (..)
   , Term (..)
   , Value (..)
   )
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
-import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval, quote)
+import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval, force)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
 import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
   , OwnInfo (..)
+  , UseKind (..)
   , annotateOwnership
   , argConvBodies
   , crossCheckBodies
@@ -75,18 +101,25 @@ main = do
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
   primConvOk <- primArgConventionS23c
+  spineErasureOk <- spineErasureOmittedImplicitS5
   ownOk <- ownershipCrossCheckClean
   s23dOk <- perceusS23dDeadBinderDrops
-  s23dDiagOk <- perceusS23dBranchDropMissFails
+  s23dDiagOk <- perceusS23dLegacyPathTamperIgnoredS5
   s32Ok <- perceusS32FreeOnZeroEntryGates
   cachePubOk <- globalCachePublicationMarksShared
+  backendIrOk <- backendIRPhaseAS5
+  backendIrValidateOk <- backendIRValidatorS5
+  backendIrConsumerOk <- backendIRConsumerContractS5
+  backendIrNoPathOwnOk <- backendIRNoPathOwnershipS5
+  backendIrProjectedBorrowedOk <- backendIRProjectedBorrowedCalleeS5
+  backendIrPatternErasureOk <- backendIRPatternErasesExistentialsS5
   scalarKindParamOk <- scalarKindDomainParamKeepsWorkers
   scalarDoubleEscapeOk <- llvmDoubleScalarUnboxEscapesWrongTag
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && primConvOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && scalarKindParamOk
+          && primConvOk && spineErasureOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && backendIrOk && backendIrValidateOk && backendIrConsumerOk && backendIrNoPathOwnOk && backendIrProjectedBorrowedOk && backendIrPatternErasureOk && scalarKindParamOk
           && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
@@ -231,6 +264,49 @@ primArgConventionS23c = do
             <> show (Just [b, o])
             <> " (explicit non-Q0 kind-domain params must be skipped before primitive override arity checks)"
         )
+  pure ok
+
+-- | S5.A regression: KCore can omit erased implicit binders from a global
+-- application spine.  KBackendIR erasure/convention lowering must align facts
+-- to the supplied arguments by icity/telescope, not raw index, otherwise
+-- primitives such as __effBind erase their first explicit runtime operands and
+-- public IO ref operations lose the selected primitive convention.
+spineErasureOmittedImplicitS5 :: IO Bool
+spineErasureOmittedImplicitS5 = do
+  let cu =
+        compileSourceWithPrelude "s5a-spine-erasure.kp" $
+          T.unlines
+            [ "module main"
+            , "main : UIO Unit"
+            , "let main = printlnString \"ok\""
+            ]
+      st = cuState cu
+      globals = csGlobals st
+      ctx = EvalCtx (Globals globals) (csMetas st) False (csFacts st)
+      effBind = erasedSpinePositionsForArgs globals ctx (gPrel (T.pack "__effBind")) [Expl, Expl]
+      handleEff = erasedSpinePositionsForArgs globals ctx (gPrel (T.pack "__handleEff")) [Expl, Expl, Expl, Expl, Expl]
+      runPure = erasedSpinePositionsForArgs globals ctx (gPrel (T.pack "runPure")) [Expl]
+      writeRefConv = argConvSelectGlobalForArgs ctx (gPrel (T.pack "__ioWriteRef")) [Expl, Expl]
+      readRefConv = argConvSelectGlobalForArgs ctx (gPrel (T.pack "__ioReadRef")) [Expl]
+      directWriteRefConv = argConvSelectGlobalForArgs ctx (GName primModule (T.pack "__ioWriteRef")) [Expl, Expl]
+      directReadRefConv = argConvSelectGlobalForArgs ctx (GName primModule (T.pack "__ioReadRef")) [Expl]
+      ok =
+        effBind == [False, False]
+          && handleEff == replicate 5 False
+          && runPure == [False]
+          && writeRefConv == Just [Just ArgBorrowed, Just ArgOwned]
+          && readRefConv == Just [Just ArgBorrowed]
+          && directWriteRefConv == Just [Just ArgBorrowed, Just ArgOwned]
+          && directReadRefConv == Just [Just ArgBorrowed]
+  unless ok $ do
+    putStrLn "spineErasureOmittedImplicitS5 FAILED:"
+    putStrLn ("  __effBind [Expl,Expl] erased=" <> show effBind <> ", want [False,False]")
+    putStrLn ("  __handleEff 5xExpl erased=" <> show handleEff <> ", want all False")
+    putStrLn ("  runPure [Expl] erased=" <> show runPure <> ", want [False]")
+    putStrLn ("  __ioWriteRef conv=" <> show writeRefConv <> ", want borrowed/owned")
+    putStrLn ("  __ioReadRef conv=" <> show readRefConv <> ", want borrowed")
+    putStrLn ("  #prim.__ioWriteRef conv=" <> show directWriteRefConv <> ", want borrowed/owned")
+    putStrLn ("  #prim.__ioReadRef conv=" <> show directReadRefConv <> ", want borrowed")
   pure ok
 
 replaceGlobInSimpleApp :: GName -> GName -> Term -> Term
@@ -946,13 +1022,12 @@ perceusS23dDeadBinderDrops = do
                 then reverse acc'
                 else go depth' acc' rest
 
--- | Perceus S2.3d diagnosability regression: if the ownership table records a
--- branch-dead drop site but the backend cannot resolve any listed binder to a
--- droppable owning flat local, RC-on codegen must fail closed with an ownership
--- finding. This pins path-scheme drift detection for branch-drop metadata; the
--- tampered table is intentionally not a valid compiler output.
-perceusS23dBranchDropMissFails :: IO Bool
-perceusS23dBranchDropMissFails = do
+-- | S5.A regression for the former S2.3d path-drift diagnostic: branch-drop
+-- metadata is now produced on KBackendIR node identities, so tampering with the
+-- legacy path-keyed 'csOwnership' table must not affect native codegen. This is
+-- the structural replacement for the old "branch drop path miss" failure mode.
+perceusS23dLegacyPathTamperIgnoredS5 :: IO Bool
+perceusS23dLegacyPathTamperIgnoredS5 = do
   let src =
         T.unlines
           [ "module main"
@@ -996,21 +1071,27 @@ perceusS23dBranchDropMissFails = do
               staleSite = site <> [9999, 8888]
               ownStalePath = own {oiBranchDropSites = Map.singleton staleSite bids}
               stStalePath = st {csOwnership = Map.insert branchG ownStalePath (csOwnership st)}
-              expectBranchFinding label expectedPath stCase =
+              expectAccepted label stCase =
                 case generateC True stCase mainG Set.empty Map.empty of
-                  Left (_, Just findings)
-                    | any (\msg -> "branch drop site" `T.isInfixOf` msg && T.pack (show expectedPath) `T.isInfixOf` msg) findings -> pure True
+                  Right (csrc, _) ->
+                    if "kdrop(let_" `T.isInfixOf` csrc
+                      then pure True
+                      else do
+                        putStrLn ("perceusS23dLegacyPathTamperIgnoredS5 FAILED: " <> label <> " generated no node-local branch drop")
+                        pure False
                   Left (errs, mFindings) -> do
-                    putStrLn ("perceusS23dBranchDropMissFails FAILED: " <> label <> " rejected for the wrong reason")
+                    putStrLn ("perceusS23dLegacyPathTamperIgnoredS5 FAILED: " <> label <> " was rejected")
                     putStrLn ("  errs=" <> show errs)
                     putStrLn ("  findings=" <> show mFindings)
-                    putStrLn ("  expectedPath=" <> show expectedPath)
                     pure False
-                  Right _ -> do
-                    putStrLn ("perceusS23dBranchDropMissFails FAILED: " <> label <> " was accepted")
-                    pure False
-          unresolvedOk <- expectBranchFinding "unresolved branch drop site" site st'
-          stalePathOk <- expectBranchFinding "stale branch drop path" staleSite stStalePath
+          unresolvedOk <-
+            expectAccepted
+              "unresolved branch drop site"
+              st'
+          stalePathOk <-
+            expectAccepted
+              "stale branch drop path"
+              stStalePath
           pure (unresolvedOk && stalePathOk)
 
 -- | Perceus S3.2 generated-code entry gate: before runtime free-on-zero is
@@ -1372,6 +1453,791 @@ allStoresMarkedImmediatelyBefore storeNeedle markNeedle src =
           [] -> T.empty
    in not (null storeIdxs) && all (\i -> markNeedle `T.isInfixOf` prevNonEmpty i) storeIdxs
 
+-- | S5.A regression: KBackendIR must be a separate runtime tree, not an
+-- annotated Core.Term wrapper. Erased positions are structurally absent, and
+-- representation/ownership facts live on the nodes that need them.
+backendIRPhaseAS5 :: IO Bool
+backendIRPhaseAS5 = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box (a : Type) : Type = MkBox (value : a)"
+          , "let idBox (a : Type) (b : Box a) ="
+          , "    match b"
+          , "    case MkBox x -> MkBox x"
+          , "let useIdBox (a : Type) (b : Box a) = idBox a b"
+          , "type R = (a : Type, b : Int)"
+          , "type TypeOnly = (a : Type)"
+          , "type TupleErased = (a : Type, b : Int)"
+          , "type RuntimeProofRec = (proof : (=) 1 1, value : Int)"
+          , "type ErasedProofRec = (prop : IsProp ((=) \"x\" \"x\"), value : Int)"
+          , "data GhostBox : Type = MkGhostBox (0 ghost : Int) (value : Int)"
+          , "data ErasedTail : Type = MkErasedTail (a : Int) (b : Int) (c : Type)"
+          , "foo : R"
+          , "let foo = (a = Int, b = 5)"
+          , "let useRecord = foo.b"
+          , "sourceType : TypeOnly"
+          , "let sourceType = (a = Int)"
+          , "fooComputed : R"
+          , "let fooComputed = (a = sourceType.a, b = 6)"
+          , "let useRecordComputed = fooComputed.b"
+          , "runtimeProofRec : RuntimeProofRec"
+          , "let runtimeProofRec = (proof = refl, value = 9)"
+          , "erasedProofRec : ErasedProofRec"
+          , "let erasedProofRec = (prop = isPropEq, value = 10)"
+          , "makeGhost : GhostBox"
+          , "let makeGhost = MkGhostBox 99 5"
+          , "useErasedTail : ErasedTail -> Int"
+          , "let useErasedTail t ="
+          , "    match t"
+          , "    case MkErasedTail _ b _ -> b"
+          , "useTuplePattern : TupleErased -> Int"
+          , "let useTuplePattern r ="
+          , "    match r"
+          , "    case (_, b) -> b"
+          , "applyPoly : ((a : Type) -> a -> a) -> Int"
+          , "let applyPoly f = f Int 5"
+          , "usePolyArg : Int"
+          , "let usePolyArg = applyPoly (\\t x -> x)"
+          , "localPoly : Int"
+          , "let localPoly ="
+          , "    let f : (a : Type) -> a -> a = \\a x -> x"
+          , "    f Int 7"
+          , "main : UIO Unit"
+          , "let main = printlnString \"ok\""
+          ]
+      cu = compileSourceWithPrelude "s5a-backendir.kp" src
+      st = cuState cu
+      ir = lowerKBackendIR st
+      m = ModuleName [T.pack "main"]
+      idBoxG = GName m (T.pack "idBox")
+      useIdBoxG = GName m (T.pack "useIdBox")
+      mkBoxG = GName m (T.pack "MkBox")
+      mkGhostBoxG = GName m (T.pack "MkGhostBox")
+      fooG = GName m (T.pack "foo")
+      useRecordG = GName m (T.pack "useRecord")
+      fooComputedG = GName m (T.pack "fooComputed")
+      useRecordComputedG = GName m (T.pack "useRecordComputed")
+      runtimeProofRecG = GName m (T.pack "runtimeProofRec")
+      erasedProofRecG = GName m (T.pack "erasedProofRec")
+      makeGhostG = GName m (T.pack "makeGhost")
+      useErasedTailG = GName m (T.pack "useErasedTail")
+      mkErasedTailG = GName m (T.pack "MkErasedTail")
+      useTuplePatternG = GName m (T.pack "useTuplePattern")
+      usePolyArgG = GName m (T.pack "usePolyArg")
+      localPolyG = GName m (T.pack "localPoly")
+      backendBodies = kbirBodies ir
+      body = Map.lookup idBoxG backendBodies
+      callBody = Map.lookup useIdBoxG backendBodies
+      recordBody = Map.lookup fooG backendBodies
+      recordProjBody = Map.lookup useRecordG backendBodies
+      computedRecordBody = Map.lookup fooComputedG backendBodies
+      computedRecordProjBody = Map.lookup useRecordComputedG backendBodies
+      runtimeProofRecordBody = Map.lookup runtimeProofRecG backendBodies
+      erasedProofRecordBody = Map.lookup erasedProofRecG backendBodies
+      ghostBody = Map.lookup makeGhostG backendBodies
+      erasedTailBody = Map.lookup useErasedTailG backendBodies
+      tuplePatternBody = Map.lookup useTuplePatternG backendBodies
+      polyArgBody = Map.lookup usePolyArgG backendBodies
+      localPolyBody = Map.lookup localPolyG backendBodies
+      terms = maybe [] (backendTerms . bbRoot) body
+      callTerms = maybe [] (backendTerms . bbRoot) callBody
+      recordTerms = maybe [] (backendTerms . bbRoot) recordBody
+      recordProjTerms = maybe [] (backendTerms . bbRoot) recordProjBody
+      computedRecordTerms = maybe [] (backendTerms . bbRoot) computedRecordBody
+      computedRecordProjTerms = maybe [] (backendTerms . bbRoot) computedRecordProjBody
+      runtimeProofRecordTerms = maybe [] (backendTerms . bbRoot) runtimeProofRecordBody
+      erasedProofRecordTerms = maybe [] (backendTerms . bbRoot) erasedProofRecordBody
+      ghostTerms = maybe [] (backendTerms . bbRoot) ghostBody
+      erasedTailAlts = maybe [] (backendAlts . bbRoot) erasedTailBody
+      tuplePatternAlts = maybe [] (backendAlts . bbRoot) tuplePatternBody
+      polyArgTerms = maybe [] (backendTerms . bbRoot) polyArgBody
+      localPolyTerms = maybe [] (backendTerms . bbRoot) localPolyBody
+      params = maybe [] bbParams body
+      hasOnlyRuntimeParam =
+        case params of
+          [BackendParam Expl _ (Just (BackendBinder (BackendBinderId n) _ _ _))] -> n >= 0
+          _ -> False
+      hasErasedCallArgOmitted =
+        any
+          ( \case
+              BApp _ _ args -> length args == 1
+              _ -> False
+          )
+          callTerms
+      hasBoxCtorLayout =
+        any
+          ( \case
+              BCtor _ layout _ ->
+                bclCtor layout == mkBoxG
+                  && bclRuntimeFields layout == 1
+                  && maybe False (\info -> clArity info == 1 && clBoxedFootprintBytes info == Just 56) (bclInfo layout)
+              _ -> False
+          )
+          terms
+      hasMatchLayout =
+        any
+          ( \case
+              BMatch _ _ _ layouts ->
+                any
+                  ( \(_, layout) ->
+                      bclCtor layout == mkBoxG
+                        && bclRuntimeFields layout == 1
+                        && maybe False (\info -> clArity info == 1 && clBoxedFootprintBytes info == Just 56) (bclInfo layout)
+                  )
+                  layouts
+              _ -> False
+          )
+          terms
+      hasNodeIds = all backendTermNodeNonNegative (terms <> callTerms)
+      hasOwnershipUse =
+        any
+          ( \case
+              BVar _ (Just (BackendUse (BackendUseId n) _ _)) _ -> n >= 0
+              _ -> False
+          )
+          (terms <> callTerms)
+      hasErasedRecordFieldOmitted =
+        any
+          ( \case
+              BRecord _ [("b", _)] -> True
+              _ -> False
+          )
+          recordTerms
+      hasRecordProjectionReindexed =
+        any
+          ( \case
+              BProj _ _ "b" (Just 0) -> True
+              _ -> False
+          )
+          recordProjTerms
+      hasComputedErasedRecordFieldOmitted =
+        any
+          ( \case
+              BRecord _ [("b", _)] -> True
+              _ -> False
+          )
+          computedRecordTerms
+      hasComputedRecordProjectionReindexed =
+        any
+          ( \case
+              BProj _ _ "b" (Just 0) -> True
+              _ -> False
+          )
+          computedRecordProjTerms
+      equalityProofRecordFieldRetained =
+        any
+          ( \case
+              BRecord _ fs -> map fst fs == [T.pack "proof", T.pack "value"]
+              _ -> False
+          )
+          runtimeProofRecordTerms
+      hasRuntimeErasedProofRecordFieldOmitted =
+        any
+          ( \case
+              BRecord _ [("value", _)] -> True
+              _ -> False
+          )
+          erasedProofRecordTerms
+      hasQ0CtorFieldOmitted =
+        any
+          ( \case
+              BCtor _ layout [_] ->
+                bclCtor layout == mkGhostBoxG
+                  && bclRuntimeFields layout == 1
+                  && maybe False (\info -> clArity info == 1 && clBoxedFootprintBytes info == Just 56) (bclInfo layout)
+              _ -> False
+          )
+          ghostTerms
+      constructorPatternErasedTailReindexed =
+        any
+          ( \case
+              BackendAlt _ (BPCtor g [BPWild, BPVar n]) binders _ _ ->
+                g == mkErasedTailG && n == T.pack "b" && length binders == 1
+              _ -> False
+          )
+          erasedTailAlts
+      tuplePatternErasedFieldReindexed =
+        any
+          ( \case
+              BackendAlt _ (BPTuple [BPVar n]) binders _ _ ->
+                n == T.pack "b" && length binders == 1
+              _ -> False
+          )
+          tuplePatternAlts
+      polyArgErasesTypeLambda =
+        not $
+          any
+            ( \case
+                BLam _ _ Expl _ "t" _ -> True
+                _ -> False
+            )
+            polyArgTerms
+      localPolyErasesTypeLambda =
+        not $
+          any
+            ( \case
+                BLam _ _ Expl _ "a" _ -> True
+                _ -> False
+            )
+            localPolyTerms
+      localPolyCallErasesTypeArg =
+        any
+          ( \case
+              BApp _ _ args -> length args == 1
+              _ -> False
+          )
+          localPolyTerms
+      showTree = T.pack (show ir)
+      noWrapperScaffold =
+        not ("bbTerm" `T.isInfixOf` showTree)
+          && not ("bbErasedSpines" `T.isInfixOf` showTree)
+          && not ("boiCompat" `T.isInfixOf` showTree)
+      checks =
+        [ ("idBox lowered body exists", body /= Nothing)
+        , ("useIdBox lowered body exists", callBody /= Nothing)
+        , ("erased type parameter is absent from runtime params", hasOnlyRuntimeParam)
+        , ("erased call argument is absent from runtime app", hasErasedCallArgOmitted)
+        , ("constructor layout lives on ctor node", hasBoxCtorLayout)
+        , ("match layout lives on match node", hasMatchLayout)
+        , ("backend node identities live on terms", hasNodeIds)
+        , ("ownership use identities live on variable nodes", hasOwnershipUse)
+        , ("erased record field is absent from runtime record", hasErasedRecordFieldOmitted)
+        , ("fixed record projection is reindexed to runtime fields", hasRecordProjectionReindexed)
+        , ("computed erased record field is absent by record type", hasComputedErasedRecordFieldOmitted)
+        , ("computed erased record projection is reindexed to runtime fields", hasComputedRecordProjectionReindexed)
+        , ("plain equality proof field is retained without RuntimeErased evidence", equalityProofRecordFieldRetained)
+        , ("RuntimeErased proof record field is absent by record type", hasRuntimeErasedProofRecordFieldOmitted)
+        , ("explicit Q0 constructor field is absent from runtime ctor", hasQ0CtorFieldOmitted)
+        , ("constructor pattern is reindexed to runtime fields after erased tail", constructorPatternErasedTailReindexed)
+        , ("tuple pattern is reindexed to runtime fields after erased field", tuplePatternErasedFieldReindexed)
+        , ("polymorphic lambda argument erases type binder from expected type", polyArgErasesTypeLambda)
+        , ("local kind-domain lambda binder is erased", localPolyErasesTypeLambda)
+        , ("local polymorphic call erases type argument", localPolyCallErasesTypeArg)
+        , ("lowered tree is not the old wrapper scaffold", noWrapperScaffold)
+        ]
+      failed = [name | (name, ok) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "backendIRPhaseAS5 FAILED:"
+    mapM_ (putStrLn . ("  " <>)) failed
+    putStrLn ("  bodies=" <> show (Map.keys backendBodies))
+    putStrLn ("  idBox=" <> show body)
+    putStrLn ("  useIdBox=" <> show callBody)
+    putStrLn ("  foo=" <> show recordBody)
+    putStrLn ("  useRecord=" <> show recordProjBody)
+    putStrLn ("  fooComputed=" <> show computedRecordBody)
+    putStrLn ("  useRecordComputed=" <> show computedRecordProjBody)
+    putStrLn ("  runtimeProofRec=" <> show runtimeProofRecordBody)
+    putStrLn ("  erasedProofRec=" <> show erasedProofRecordBody)
+    putStrLn ("  makeGhost=" <> show ghostBody)
+    putStrLn ("  useErasedTail=" <> show erasedTailBody)
+    putStrLn ("  useTuplePattern=" <> show tuplePatternBody)
+    putStrLn ("  usePolyArg=" <> show polyArgBody)
+    putStrLn ("  localPoly=" <> show localPolyBody)
+  pure (null failed)
+
+-- | S5.A regression: the backend-tree legality boundary must run on the real
+-- KBackendIR tree rather than on Core.Term. A clean lowered program should
+-- produce no tree-local findings, while malformed backend nodes must be
+-- rejected for the invariants the C/LLVM emitters will rely on when they stop
+-- consulting Core/path side tables.
+backendIRValidatorS5 :: IO Bool
+backendIRValidatorS5 = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box (a : Type) : Type = MkBox (value : a)"
+          , "let idBox (a : Type) (b : Box a) ="
+          , "    match b"
+          , "    case MkBox x -> MkBox x"
+          , "main : UIO Unit"
+          , "let main = printlnString \"ok\""
+          ]
+      cleanCodes = map bivCode (validateKBackendIR (lowerKBackendIR (cuState (compileSourceWithPrelude "s5a-backendir-validate.kp" src))))
+      m = ModuleName [T.pack "malformed"]
+      gn s = GName m (T.pack s)
+      owner = gn "f"
+      meta0 = BackendMeta (BackendNodeId 0) []
+      meta1 = BackendMeta (BackendNodeId 1) []
+      meta2 = BackendMeta (BackendNodeId 2) []
+      meta3 = BackendMeta (BackendNodeId 3) []
+      badCtor =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BCtor meta0 (BackendCtorLayout (gn "MkBad") Nothing 2) [BGlob meta1 (gn "x")])
+          )
+          []
+      staleInfo =
+        CtorLayoutInfo
+          { clArity = 2
+          , clLayoutClass = LayoutBoxed
+          , clBoxedFootprintBytes = Just 64
+          , clFieldReps = [RepBoxed, RepBoxed]
+          }
+      badCtorInfo =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BCtor meta0 (BackendCtorLayout (gn "MkBad") (Just staleInfo) 1) [BGlob meta1 (gn "x")])
+          )
+          []
+      badUse =
+        KBackendIR
+          (Map.singleton owner $ BackendBody owner [] (BVar meta0 Nothing 0))
+          []
+      dupUse = BackendUse (BackendUseId 0) NonLast False
+      badDuplicateUse =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BRecord meta0 [(T.pack "a", BVar meta1 (Just dupUse) 0), (T.pack "b", BVar meta2 (Just dupUse) 0)])
+          )
+          []
+      badBinder =
+        KBackendIR
+          (Map.singleton owner $ BackendBody owner [BackendParam Expl (T.pack "x") Nothing] (BUnit meta0))
+          []
+      badNodeId =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BLet meta0 Nothing Q1 (T.pack "x") (BUnit meta0) (BUnit meta1))
+          )
+          []
+      badBranchDrop =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BIf (BackendMeta (BackendNodeId 2) [BackendBinder (BackendBinderId 99) (T.pack "dangling") (BinderOwn QW Nothing False True) False]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
+          )
+          []
+      realDropBinder = BackendBinder (BackendBinderId 0) (T.pack "real") (BinderOwn QW Nothing False True) False
+      forgedDropBinder = BackendBinder (BackendBinderId 0) (T.pack "forged") (BinderOwn QW Nothing False True) False
+      badForgedBranchDrop =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                (BIf (BackendMeta (BackendNodeId 2) [forgedDropBinder]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
+          )
+          []
+      badDuplicateBranchDrop =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                (BIf (BackendMeta (BackendNodeId 2) [realDropBinder, realDropBinder]) (BUnit meta0) (BUnit meta1) (BUnit (BackendMeta (BackendNodeId 3) [])))
+          )
+          []
+      badItemBranchDrop =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                [BackendParam Expl (T.pack "x") (Just realDropBinder)]
+                (BDo meta0 Nothing [BKExpr (BackendMeta (BackendNodeId 2) [realDropBinder]) (BUnit meta1)])
+          )
+          []
+      duplicateBinderA = BackendBinder (BackendBinderId 0) (T.pack "a") (BinderOwn QW Nothing False True) False
+      duplicateBinderB = BackendBinder (BackendBinderId 0) (T.pack "b") (BinderOwn QW Nothing False True) False
+      badDuplicateBinder =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                [ BackendParam Expl (T.pack "a") (Just duplicateBinderA)
+                , BackendParam Expl (T.pack "b") (Just duplicateBinderB)
+                ]
+                (BUnit meta0)
+          )
+          []
+      badPattern =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") [BPWild, BPWild]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") Nothing 1)])
+          )
+          []
+      badPatternInfo =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta0 (BPCtor (gn "MkBad") [BPWild]) [] Nothing (BUnit meta1)] [(gn "MkBad", BackendCtorLayout (gn "MkBad") (Just staleInfo) 1)])
+          )
+          []
+      badPatternMissingLayout =
+        KBackendIR
+          ( Map.singleton owner $
+              BackendBody
+                owner
+                []
+                (BMatch meta0 (BUnit meta1) [BackendAlt meta2 (BPCtor (gn "MkBad") [BPWild]) [] Nothing (BUnit meta3)] [])
+          )
+          []
+      codesOf = map bivCode . validateKBackendIR
+      checks =
+        [ ("clean lowered KBackendIR validates", null cleanCodes)
+        , ("ctor runtime-field mismatch caught", T.pack "W_BACKENDIR_CTOR_FIELD_MISMATCH" `elem` codesOf badCtor)
+        , ("ctor layout-info mismatch caught", T.pack "W_BACKENDIR_CTOR_LAYOUT_INCONSISTENT" `elem` codesOf badCtorInfo)
+        , ("runtime variable missing ownership use caught", T.pack "W_BACKENDIR_MISSING_USE" `elem` codesOf badUse)
+        , ("runtime parameter missing ownership binder caught", T.pack "W_BACKENDIR_MISSING_BINDER" `elem` codesOf badBinder)
+        , ("duplicate backend node id caught", T.pack "W_BACKENDIR_DUPLICATE_NODE_ID" `elem` codesOf badNodeId)
+        , ("duplicate backend binder id caught", T.pack "W_BACKENDIR_DUPLICATE_BINDER_ID" `elem` codesOf badDuplicateBinder)
+        , ("duplicate backend use id caught", T.pack "W_BACKENDIR_DUPLICATE_USE_ID" `elem` codesOf badDuplicateUse)
+        , ("dangling branch-drop binder caught", T.pack "W_BACKENDIR_BRANCH_DROP_OUT_OF_SCOPE" `elem` codesOf badBranchDrop)
+        , ("forged branch-drop binder caught", T.pack "W_BACKENDIR_BRANCH_DROP_MISMATCH" `elem` codesOf badForgedBranchDrop)
+        , ("duplicate branch-drop binder caught", T.pack "W_BACKENDIR_BRANCH_DROP_DUPLICATE" `elem` codesOf badDuplicateBranchDrop)
+        , ("item-level branch-drop metadata rejected", T.pack "W_BACKENDIR_BRANCH_DROP_UNEMITTED_ITEM" `elem` codesOf badItemBranchDrop)
+        , ("ctor pattern runtime-field mismatch caught", T.pack "W_BACKENDIR_CTOR_PATTERN_FIELD_MISMATCH" `elem` codesOf badPattern)
+        , ("ctor pattern layout-info mismatch caught", T.pack "W_BACKENDIR_CTOR_LAYOUT_INCONSISTENT" `elem` codesOf badPatternInfo)
+        , ("ctor pattern missing layout caught", T.pack "W_BACKENDIR_CTOR_PATTERN_LAYOUT_MISSING" `elem` codesOf badPatternMissingLayout)
+        ]
+      failed = [name | (name, ok) <- checks, not ok]
+  unless (null failed) $ do
+    putStrLn "backendIRValidatorS5 FAILED:"
+    mapM_ (putStrLn . ("  " <>)) failed
+    putStrLn ("  cleanCodes=" <> show cleanCodes)
+    putStrLn ("  badCtor=" <> show (codesOf badCtor))
+    putStrLn ("  badCtorInfo=" <> show (codesOf badCtorInfo))
+    putStrLn ("  badUse=" <> show (codesOf badUse))
+    putStrLn ("  badDuplicateUse=" <> show (codesOf badDuplicateUse))
+    putStrLn ("  badBinder=" <> show (codesOf badBinder))
+    putStrLn ("  badNodeId=" <> show (codesOf badNodeId))
+    putStrLn ("  badDuplicateBinder=" <> show (codesOf badDuplicateBinder))
+    putStrLn ("  badBranchDrop=" <> show (codesOf badBranchDrop))
+    putStrLn ("  badForgedBranchDrop=" <> show (codesOf badForgedBranchDrop))
+    putStrLn ("  badDuplicateBranchDrop=" <> show (codesOf badDuplicateBranchDrop))
+    putStrLn ("  badItemBranchDrop=" <> show (codesOf badItemBranchDrop))
+    putStrLn ("  badPattern=" <> show (codesOf badPattern))
+    putStrLn ("  badPatternInfo=" <> show (codesOf badPatternInfo))
+    putStrLn ("  badPatternMissingLayout=" <> show (codesOf badPatternMissingLayout))
+  pure (null failed)
+
+-- | S5.A consumer gate: once the real KBackendIR tree exists, native emitters
+-- must consume it directly. Keeping a Core.Term emitter plus a structural
+-- gsPath/UseSite side table would preserve the R-path failure class the split is
+-- meant to retire, even if a separate tree validator runs first.
+backendIRConsumerContractS5 :: IO Bool
+backendIRConsumerContractS5 = do
+  let files =
+        [ ("C", "src/Kappa/Backend/C.hs")
+        , ("LLVM", "src/Kappa/Backend/LLVM.hs")
+        , ("Backend.IR", "src/Kappa/Backend/IR.hs")
+        , ("Driver", "src/Kappa/Backend/Driver.hs")
+        , ("native suite", "test/native/run-native-tests.sh")
+        , ("LLVM parity", "test/native/llvm-parity.sh")
+        ]
+      banned =
+        [ "compile :: Term ->"
+        , "compileTerm :: Term ->"
+        , "gsPath ::"
+        , "gsCurOwn ::"
+        , "gsOwnership ::"
+        , "UseSite"
+        , "withBodyOwn ::"
+        , "lsOwn ::"
+        , "assignBinderIds"
+        , "assignUseIds"
+        , "oiBranchDropSites"
+        , "R-path walk-and-lookup"
+        , "scalarPlan :: GName -> Gen (Maybe ([Bool], [ParamKind], ScalarKind, Term))"
+        , "compileScalarWorker :: GName -> [ParamKind] -> ScalarKind -> Term ->"
+        , "scalarFnPlanLL :: GName -> Gen (Maybe ([Bool], [ParamKindLL], ScalarKindLL, Term))"
+        , "compileScalarFnWorkerLL :: GName -> [ParamKindLL] -> ScalarKindLL -> Term ->"
+        ]
+  findings <- fmap concat $
+    forM files $ \(label, path) -> do
+      src <- TIO.readFile path
+      pure
+        [ label <> " backend still contains old Core/path consumer marker " <> show needle
+        | needle <- banned
+        , T.pack needle `T.isInfixOf` src
+        ]
+  unless (null findings) $ do
+    putStrLn "backendIRConsumerContractS5 FAILED:"
+    mapM_ (putStrLn . ("  " <>)) findings
+  pure (null findings)
+
+-- | S5.A1/A2c regression: native backend ownership metadata must be produced
+-- from KBackendIR binder identities, not by reattaching the legacy path-keyed
+-- 'csOwnership' table. A checked program with its legacy ownership side table
+-- deliberately erased must still lower to a fully annotated KBackendIR tree.
+backendIRNoPathOwnershipS5 :: IO Bool
+backendIRNoPathOwnershipS5 = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Box : Type = MkBox (value : String)"
+          , "let choose (flag : Bool) ="
+          , "    let b = MkBox \"owned\""
+          , "    if flag then b else MkBox \"fallback\""
+          , "main : UIO Unit"
+          , "let main = printlnString \"ok\""
+          ]
+      cu = compileSourceWithPrelude "s5a-backendir-ownids.kp" src
+      st = (cuState cu) {csOwnership = Map.empty}
+      ir = lowerKBackendIR st
+      codes = map bivCode (validateKBackendIR ir)
+      m = ModuleName [T.pack "main"]
+      chooseG = GName m (T.pack "choose")
+      terms = maybe [] (backendTerms . bbRoot) (Map.lookup chooseG (kbirBodies ir))
+      useIds =
+        [ n
+        | BVar _ (Just (BackendUse (BackendUseId n) _ _)) _ <- terms
+        ]
+      branchDropCount =
+        sum
+          [ length drops
+          | t <- terms
+          , let BackendMeta _ drops = backendMetaOf t
+          ]
+      ok = null codes && not (null useIds) && branchDropCount > 0
+  unless ok $ do
+    putStrLn "backendIRNoPathOwnershipS5 FAILED:"
+    putStrLn ("  validation codes=" <> show codes)
+    putStrLn ("  useIds=" <> show useIds)
+    putStrLn ("  branchDropCount=" <> show branchDropCount)
+    putStrLn ("  ir=" <> show ir)
+  pure ok
+
+-- | S5.A regression: first-class/projected callees must carry the same
+-- type-derived argument convention facts as the legacy Core ownership analyzer.
+-- The call @r.f y@ below applies a projected function field with type
+-- @(& x : Box) -> Int@, so @y@ is a read-only NonLast use, not an ownership
+-- transfer. This must be represented directly on KBackendIR, with no
+-- path-keyed ownership table.
+backendIRProjectedBorrowedCalleeS5 :: IO Bool
+backendIRProjectedBorrowedCalleeS5 = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "type Box = (v : Int)"
+          , "type PeekBox = (& x : Box) -> Int"
+          , "peekBox : (& x : Box) -> Int"
+          , "let peekBox x = x.v"
+          , "type RecAlias = (f : PeekBox)"
+          , "useProjectedTwice : RecAlias -> Box -> Int"
+          , "let useProjectedTwice r y = r.f y + y.v"
+          , "type PolyBox (a : Type) = (v : a)"
+          , "type PolyRec (a : Type) = (f : (& x : PolyBox a) -> a)"
+          , "polyPeek : (a : Type) -> (& x : PolyBox a) -> a"
+          , "let polyPeek a x = x.v"
+          , "usePolyProjected : (a : Type) -> PolyRec a -> PolyBox a -> (a, a)"
+          , "let usePolyProjected a r y = (r.f y, y.v)"
+          , "polyId : (a : Type) -> a -> a"
+          , "let polyId a x = x"
+          , "firstClassPoly : ((a : Type) -> a -> a) -> Int"
+          , "let firstClassPoly f = f Int 1"
+          , "main : UIO Unit"
+          , "let main = printInt (useProjectedTwice (f = peekBox) (v = 1))"
+          ]
+      cu = compileSourceWithPrelude "s5a-projected-borrowed-callee.kp" src
+      ir = lowerKBackendIR (cuState cu)
+      codes = map bivCode (validateKBackendIR ir)
+      m = ModuleName [T.pack "main"]
+      target = GName m (T.pack "useProjectedTwice")
+      polyTarget = GName m (T.pack "usePolyProjected")
+      firstClassTarget = GName m (T.pack "firstClassPoly")
+      termsOf g = maybe [] (backendTerms . bbRoot) (Map.lookup g (kbirBodies ir))
+      projectedBorrowedCalls g =
+        [ use
+        | BApp _ (BProj _ _ field _) [(Expl, Just ArgBorrowed, BVar _ (Just use) _)] <- termsOf g
+        , field == T.pack "f"
+        ]
+      hasReadOnlyNonLast g =
+        any
+          ( \(BackendUse _ kind consumes) ->
+              kind == NonLast && not consumes
+          )
+          (projectedBorrowedCalls g)
+      firstClassApps =
+        [ args
+        | BApp _ (BVar _ _ _) args <- termsOf firstClassTarget
+        ]
+      firstClassErasesTypeArg = any ((== 1) . length) firstClassApps
+      ok = null codes && hasReadOnlyNonLast target && hasReadOnlyNonLast polyTarget && firstClassErasesTypeArg
+  unless ok $ do
+    putStrLn "backendIRProjectedBorrowedCalleeS5 FAILED:"
+    putStrLn ("  validation codes=" <> show codes)
+    putStrLn ("  projectedBorrowedCall=" <> show (projectedBorrowedCalls target))
+    putStrLn ("  polyProjectedBorrowedCall=" <> show (projectedBorrowedCalls polyTarget))
+    putStrLn ("  firstClassApps=" <> show firstClassApps)
+    putStrLn ("  body=" <> show (Map.lookup target (kbirBodies ir)))
+    putStrLn ("  polyBody=" <> show (Map.lookup polyTarget (kbirBodies ir)))
+    putStrLn ("  firstClassBody=" <> show (Map.lookup firstClassTarget (kbirBodies ir)))
+  pure ok
+
+-- | S5.A regression: erased existential indices in dependent constructor
+-- patterns are Core-only scope slots. KBackendIR must keep them out of the
+-- runtime pattern/binder stream and instead renumber body variables through
+-- erased ScopeSlot Nothing entries during lowering.
+backendIRPatternErasesExistentialsS5 :: IO Bool
+backendIRPatternErasesExistentialsS5 = do
+  let src =
+        T.unlines
+          [ "module main"
+          , "data Tag (b : Bool) : Type ="
+          , "    TT : Tag True"
+          , "    FF : Tag False"
+          , "data Q : Type ="
+          , "    MkQ : forall (s : Bool). forall (t : Bool). Tag s -> Tag t -> Q"
+          , "use2 : Int -> Int -> Q -> Int"
+          , "let use2 a b q ="
+          , "    match q"
+          , "      case MkQ y z ->"
+          , "        match y"
+          , "          case TT ->"
+          , "            match z"
+          , "              case TT -> a + b"
+          , "              case FF -> a"
+          , "          case FF ->"
+          , "            match z"
+          , "              case TT -> b"
+          , "              case FF -> a + b"
+          , "main : UIO Unit"
+          , "let main = printlnString (showInt (use2 10 3 (MkQ TT FF)))"
+          ]
+      cu = compileSourceWithPrelude "s5a-pattern-erased-existentials.kp" src
+      st = cuState cu
+      ir = lowerKBackendIR st
+      codes = map bivCode (validateKBackendIR ir)
+      m = ModuleName [T.pack "main"]
+      use2G = GName m (T.pack "use2")
+      mkQ = GName m (T.pack "MkQ")
+      alts = maybe [] (backendAlts . bbRoot) (Map.lookup use2G (kbirBodies ir))
+      mkQAltRuntimeBinders =
+        [ length binders
+        | BackendAlt _ (BPCtor g _) binders _ _ <- alts
+        , g == mkQ
+        ]
+      mainG = GName m (T.pack "main")
+      generatedC = case generateC False st mainG Set.empty Map.empty of
+        Right (c, _) -> c
+        Left (errs, _) -> T.pack (show errs)
+      ok =
+        null codes
+          && mkQAltRuntimeBinders == [2]
+          && not (T.pack "kpush(kunit()" `T.isInfixOf` generatedC)
+  unless ok $ do
+    putStrLn "backendIRPatternErasesExistentialsS5 FAILED:"
+    putStrLn ("  validation codes=" <> show codes)
+    putStrLn ("  MkQ runtime binder counts=" <> show mkQAltRuntimeBinders <> ", want [2]")
+    when (T.pack "kpush(kunit()" `T.isInfixOf` generatedC) $
+      putStrLn "  generated C still pushes erased existential placeholders with kpush(kunit())"
+    putStrLn ("  body=" <> show (Map.lookup use2G (kbirBodies ir)))
+  pure ok
+
+backendTerms :: BackendTerm -> [BackendTerm]
+backendTerms t =
+  t : case t of
+    BUnit {} -> []
+    BVar {} -> []
+    BGlob {} -> []
+    BLit {} -> []
+    BLam _ _ _ _ _ b -> backendTerms b
+    BApp _ h args -> backendTerms h ++ concatMap (\(_, _, a) -> backendTerms a) args
+    BCtor _ _ args -> concatMap backendTerms args
+    BMatch _ s alts _ -> backendTerms s ++ concatMap backendAltTerms alts
+    BRecord _ fs -> concatMap (backendTerms . snd) fs
+    BProj _ e _ _ -> backendTerms e
+    BInject _ _ e -> backendTerms e
+    BLet _ _ _ _ rhs body -> backendTerms rhs ++ backendTerms body
+    BLetRec _ _ _ _ rhs body -> backendTerms rhs ++ backendTerms body
+    BDo _ _ items -> concatMap backendItemTerms items
+    BSeal _ _ e -> backendTerms e
+    BThunk _ e -> backendTerms e
+    BLazy _ e -> backendTerms e
+    BForce _ e -> backendTerms e
+    BIf _ c th el -> backendTerms c ++ backendTerms th ++ backendTerms el
+
+backendAlts :: BackendTerm -> [BackendAlt]
+backendAlts = concatMap altsOfTerm . backendTerms
+  where
+    altsOfTerm = \case
+      BMatch _ _ alts _ -> alts ++ concatMap (\(BackendAlt _ _ _ guard body) -> maybe [] backendAlts guard ++ backendAlts body) alts
+      _ -> []
+
+backendAltTerms :: BackendAlt -> [BackendTerm]
+backendAltTerms (BackendAlt _ _ _ guard body) =
+  maybe [] backendTerms guard ++ backendTerms body
+
+backendItemTerms :: BackendItem -> [BackendTerm]
+backendItemTerms = \case
+  BKBind _ _ _ _ action _ -> backendTerms action
+  BKLet _ _ _ _ value -> backendTerms value
+  BKLetQ _ _ _ scrut mElse ->
+    backendTerms scrut
+      ++ maybe [] (\(_, _, body) -> backendTerms body) mElse
+  BKExpr _ action -> backendTerms action
+  BKVarItem _ _ initT action _ -> backendTerms initT ++ backendTerms action
+  BKAssign _ _ rhs action _ -> backendTerms rhs ++ backendTerms action
+  BKReturn _ value -> backendTerms value
+  BKWhile _ _ cond body mElse ->
+    backendCondTerms cond
+      ++ concatMap backendItemTerms body
+      ++ maybe [] (concatMap backendItemTerms) mElse
+  BKFor _ _ _ _ source body mElse ->
+    backendTerms source
+      ++ concatMap backendItemTerms body
+      ++ maybe [] (concatMap backendItemTerms) mElse
+  BKIf _ arms mElse ->
+    concatMap (\(cond, body) -> backendTerms cond ++ concatMap backendItemTerms body) arms
+      ++ maybe [] (concatMap backendItemTerms) mElse
+  BKDefer _ _ action -> backendTerms action
+  BKUsing _ _ _ acquire release -> backendTerms acquire ++ backendTerms release
+  BKSubDo _ _ body -> concatMap backendItemTerms body
+  BKBreak {} -> []
+  BKContinue {} -> []
+
+backendCondTerms :: BackendCond -> [BackendTerm]
+backendCondTerms = \case
+  BKCondPure t -> backendTerms t
+  BKCondAction t -> backendTerms t
+
+backendTermNodeNonNegative :: BackendTerm -> Bool
+backendTermNodeNonNegative t =
+  case backendMetaOf t of
+    BackendMeta (BackendNodeId n) drops -> n >= 0 && all (\(BackendBinder (BackendBinderId b) _ _ _) -> b >= 0) drops
+
+backendMetaOf :: BackendTerm -> BackendMeta
+backendMetaOf = \case
+  BUnit meta -> meta
+  BVar meta _ _ -> meta
+  BGlob meta _ -> meta
+  BLit meta _ -> meta
+  BLam meta _ _ _ _ _ -> meta
+  BApp meta _ _ -> meta
+  BCtor meta _ _ -> meta
+  BMatch meta _ _ _ -> meta
+  BRecord meta _ -> meta
+  BProj meta _ _ _ -> meta
+  BInject meta _ _ -> meta
+  BLet meta _ _ _ _ _ -> meta
+  BLetRec meta _ _ _ _ _ -> meta
+  BDo meta _ _ -> meta
+  BSeal meta _ _ -> meta
+  BThunk meta _ -> meta
+  BLazy meta _ -> meta
+  BForce meta _ -> meta
+  BIf meta _ _ _ -> meta
+
 -- | Perceus S1.3 regression: 'Kappa.Backend.Repr.ctorLayoutOf' must count a
 -- constructor's RUNTIME fields — the field set the backend actually builds the
 -- node with ('Kappa.Check.etaCtor' / 'Kappa.Backend.C.compileCtor': an explicit
@@ -1419,47 +2285,57 @@ ctorLayoutEvidenceFields = do
       ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
       m = ModuleName [T.pack "main"]
       -- the INDEPENDENT runtime-arity oracle: walk the constructor type's
-      -- leading CPi telescope under the SAME runtime field rule etaCtor uses
-      -- (Expl _ -> True; Impl q -> q /= Q0), without consulting ctorLayoutOf.
+      -- leading Pi telescope under the shared runtime-field classifier, without
+      -- consulting ctorLayoutOf.
       runtimeCtorArity :: Term -> Int
-      runtimeCtorArity = goCount . quote ctx 0 . eval ctx []
+      runtimeCtorArity = goCount 0 . eval ctx []
         where
-          goCount = \case
-            CPi ic q _ _ _ cod ->
-              (if runtimeField ic q then 1 else 0) + goCount cod
+          goCount lvl ty = case force ctx ty of
+            VPi ic q _ _ dom (Closure env cod) ->
+              (if runtimeConstructorField ctx lvl ic q dom then 1 else 0)
+                + goCount (lvl + 1) (eval ctx (VRigid lvl [] : env) cod)
             _ -> 0
-          runtimeField Expl _ = True
-          runtimeField Impl q = q /= Q0
       look cname = Map.lookup (GName m (T.pack cname)) (csCtors st)
-      -- (ctorLayoutOf-arity, ctorLayoutOf-fieldReps, runtime-oracle-arity)
+      -- (ctorLayoutOf-arity, ctorLayoutOf-fieldReps, layout class, boxed footprint,
+      -- runtime-oracle-arity)
       probe cname = case look cname of
         Nothing -> Nothing
         Just ci ->
           case ctorLayoutOf ctx (Just (ciType ci)) of
             Nothing -> Nothing
-            Just info -> Just (clArity info, clFieldReps info, runtimeCtorArity (ciType ci))
+            Just info ->
+              Just
+                ( clArity info
+                , clFieldReps info
+                , clLayoutClass info
+                , clBoxedFootprintBytes info
+                , runtimeCtorArity (ciType ci)
+                )
       -- every existential-dictionary ctor: layout arity == runtime arity, and
       -- the dictionary field is RepBoxed.
       evidenceOK cname expectArity =
         case probe cname of
-          Just (a, reps, oracle) ->
+          Just (a, reps, layout, boxedBytes, oracle) ->
             a == expectArity
               && a == oracle
               && length reps == expectArity
               && all (== RepBoxed) reps
+              && layout == LayoutBoxed
+              && boxedBytes == Just (48 + 8 * expectArity)
           Nothing -> False
       -- a known-good case: exact (arity, fieldReps) tuple.
-      exactOK cname want =
+      exactOK cname want wantLayout wantBytes =
         case probe cname of
-          Just (a, reps, oracle) -> (a, reps) == want && a == oracle
+          Just (a, reps, layout, boxedBytes, oracle) ->
+            (a, reps) == want && layout == wantLayout && boxedBytes == wantBytes && a == oracle
           Nothing -> False
       checks =
         [ ("MkShowable evidence", evidenceOK "MkShowable" 2, probe "MkShowable") -- [Show dict, a]
         , ("MkEqd evidence", evidenceOK "MkEqd" 3, probe "MkEqd") -- [Eqt dict, a, a]
-        , ("MkMyUnit nullary", exactOK "MkMyUnit" (0, []), probe "MkMyUnit")
-        , ("MkMyBox single boxed", exactOK "MkMyBox" (1, [RepBoxed]), probe "MkMyBox")
-        , ("MkIntBox scalar", exactOK "MkIntBox" (1, [RepInt]), probe "MkIntBox")
-        , ("MkMyPair pair boxed", exactOK "MkMyPair" (2, [RepBoxed, RepBoxed]), probe "MkMyPair")
+        , ("MkMyUnit nullary", exactOK "MkMyUnit" (0, []) LayoutImmediate Nothing, probe "MkMyUnit")
+        , ("MkMyBox single boxed", exactOK "MkMyBox" (1, [RepBoxed]) LayoutBoxed (Just 56), probe "MkMyBox")
+        , ("MkIntBox scalar", exactOK "MkIntBox" (1, [RepInt]) LayoutMayPack (Just 56), probe "MkIntBox")
+        , ("MkMyPair pair boxed", exactOK "MkMyPair" (2, [RepBoxed, RepBoxed]) LayoutBoxed (Just 64), probe "MkMyPair")
         ]
       failed = [(name, p) | (name, ok, p) <- checks, not ok]
   unless (null failed) $ do
@@ -1777,6 +2653,23 @@ verifierCatchesViolations = do
       fatCtor = ci {ciFields = [(Nothing, Nothing), (Nothing, Nothing)]}
       fieldCountBad =
         base {viCtors = Map.fromList [(c1, fatCtor), (c2, ci)]}
+      erasedExplicitSrc =
+        T.unlines
+          [ "module main"
+          , "data T : Type = MkT (0 ghost : Int) (value : Int)"
+          , "setValue : T -> T"
+          , "let setValue t = t.{ value = 30 }"
+          , "getValue : T -> Int"
+          , "let getValue t ="
+          , "    match t"
+          , "    case MkT _ value -> value"
+          , "main : UIO Unit"
+          , "let main = printlnString (showInt (getValue (setValue (MkT 10 20))))"
+          ]
+      erasedExplicitCodes =
+        map
+          (T.unpack . dCode)
+          (verifyUnit (verifyInputs (cuState (compileSourceWithPrelude "verify-erased-explicit-ctor.kp" erasedExplicitSrc))))
 
       -- a CLEAN body for the same world: f applied to a value (a let-bound
       -- var), and a well-formed C1 application — must produce NOTHING.
@@ -1789,6 +2682,7 @@ verifierCatchesViolations = do
         , ("3a tag-id collision flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit collideInputs))
         , ("3b ctor parent mismatch flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit wrongParent))
         , ("3c ctor field-count overflow flagged", "W_BACKENDIR_LAYOUT_INCONSISTENT" `elem` map (T.unpack . dCode) (verifyUnit fieldCountBad))
+        , ("erased explicit constructor field is verifier-clean", null erasedExplicitCodes)
         , ("clean body produces no findings", null (codesFor cleanBody))
         , ("clean world (no body) produces no findings", null (map (T.unpack . dCode) (verifyUnit base)))
         ]

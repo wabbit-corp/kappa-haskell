@@ -678,6 +678,38 @@ registry =
       "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a constructor application whose runtime field count does not match the constructor's fixed runtime arity (no partial application without a closure, no arity mismatch vs the resolved signature; Spec §34.3.3 bullet 3). This warning surfaces it without changing codegen."
   , ent "W_BACKENDIR_LAYOUT_INCONSISTENT" (Just "kappa-hs.backendir.layout-inconsistent")
       "The observe-only KBackendIR Stage-3 verifier (§34.3.3) found a data-layout inconsistency: two constructors of one datatype share a runtime tag id (non-injective assignment), a constructor a datatype lists does not point back to it, or a constructor declares more explicit fields than its type's runtime arity (so its layout would under-reserve slots) — Spec §34.3.3 layout-consistency, §§31.3-31.4. This warning surfaces it without changing codegen."
+  , ent "E_BACKENDIR_ERASED_RUNTIME_TERM" (Just "kappa-hs.backendir.erased-runtime-term")
+      "KCore-to-KBackendIR lowering found an erased source entity (type/proof term, erased binder, erased index, or unsolved compile-time meta) that would still be needed by a runtime-relevant backend value. Native emission rejects this rather than silently substituting a unit placeholder (§31.2, §34.3)."
+  , ent "W_BACKENDIR_MISSING_BINDER" (Just "kappa-hs.backendir.missing-binder")
+      "The KBackendIR tree validator found a runtime binder or parameter without the ownership binder metadata that backend emitters require once they consume KBackendIR directly (§31.2, §34.3)."
+  , ent "W_BACKENDIR_MISSING_USE" (Just "kappa-hs.backendir.missing-use")
+      "The KBackendIR tree validator found a runtime variable occurrence without node-local ownership-use metadata; the backend must not fall back to a structural path lookup for this occurrence (§31.2, §34.3)."
+  , ent "W_BACKENDIR_CTOR_FIELD_MISMATCH" (Just "kappa-hs.backendir.ctor-field-mismatch")
+      "The KBackendIR tree validator found a constructor node whose recorded runtime field count does not match the number of lowered runtime fields on the node (§34.3.3 fixed-runtime-arity, §34.3.7 representation data)."
+  , ent "W_BACKENDIR_CTOR_LAYOUT_INCONSISTENT" (Just "kappa-hs.backendir.ctor-layout-inconsistent")
+      "The KBackendIR tree validator found constructor layout metadata whose arity, field representations, layout class, or boxed footprint disagrees with the node's runtime-kept field list. Native emission rejects this because S5 reuse will trust these layout facts for same-size checks (§34.3.7)."
+  , ent "W_BACKENDIR_DUPLICATE_NODE_ID" (Just "kappa-hs.backendir.duplicate-node-id")
+      "The KBackendIR tree validator found a backend node identity reused within a single lowered body; node identities must be stable and unique enough to carry ownership/representation facts without structural path keys (§30.2.5, §31.2)."
+  , ent "W_BACKENDIR_DUPLICATE_BINDER_ID" (Just "kappa-hs.backendir.duplicate-binder-id")
+      "The KBackendIR tree validator found a backend binder identity reused within a single lowered body; binder identities must be unique so ownership and branch-drop metadata cannot overwrite or alias each other (§30.2.5, §31.2)."
+  , ent "W_BACKENDIR_DUPLICATE_USE_ID" (Just "kappa-hs.backendir.duplicate-use-id")
+      "The KBackendIR tree validator found a backend use identity reused within a single lowered body; use identities must be unique so future graph and reuse passes can key facts without ambiguity (§30.2.5, §31.2)."
+  , ent "W_BACKENDIR_BRANCH_DROP_OUT_OF_SCOPE" (Just "kappa-hs.backendir.branch-drop-out-of-scope")
+      "The KBackendIR tree validator found branch-dead-drop metadata naming a backend binder that is not in scope at that branch node. Native emission rejects this rather than silently omitting an ownership drop or attaching it to the wrong runtime binder (§31.2, §34.3)."
+  , ent "W_BACKENDIR_BRANCH_DROP_MISMATCH" (Just "kappa-hs.backendir.branch-drop-mismatch")
+      "The KBackendIR tree validator found branch-dead-drop metadata whose binder identity is in scope but whose ownership payload does not match the canonical in-scope backend binder. Native emission rejects this so stale or forged metadata cannot change drop ownership semantics (§31.2, §34.3)."
+  , ent "W_BACKENDIR_BRANCH_DROP_DUPLICATE" (Just "kappa-hs.backendir.branch-drop-duplicate")
+      "The KBackendIR tree validator found branch-dead-drop metadata naming the same binder more than once at one branch site. Native emission rejects this rather than risking a duplicated ownership drop (§31.2, §34.3)."
+  , ent "W_BACKENDIR_CTOR_PATTERN_FIELD_MISMATCH" (Just "kappa-hs.backendir.ctor-pattern-field-mismatch")
+      "The KBackendIR tree validator found a constructor pattern whose lowered runtime payload pattern count does not equal the constructor layout's runtime field count. Constructor pattern offsets must index the same runtime-kept field list that constructor allocation built (§31.2, §34.3.3, §34.3.7)."
+  , ent "W_BACKENDIR_CTOR_PATTERN_LAYOUT_MISSING" (Just "kappa-hs.backendir.ctor-pattern-layout-missing")
+      "The KBackendIR tree validator found a constructor pattern without a matching layout metadata entry on its enclosing match. Match-side constructor layout facts must be present before S5 reuse can trust destructuring offsets (§31.2, §34.3.3, §34.3.7)."
+  , ent "W_BACKENDIR_BRANCH_DROP_UNEMITTED_ITEM" (Just "kappa-hs.backendir.branch-drop-unemitted-item")
+      "The KBackendIR tree validator found branch-dead-drop metadata attached to a do-item node. Native emission drains branch drops only from term and alternative emission points, so item-level branch-drop metadata is rejected fail-closed rather than silently ignored (§31.2, §34.3)."
+  , ent "W_BACKENDIR_BRANCH_DROP_UNRESOLVED" (Just "kappa-hs.backendir.branch-drop-unresolved")
+      "The KBackendIR lowering validator found branch-dead-drop metadata naming a binder that cannot be resolved to node-local backend binder metadata. Native emission rejects this rather than silently omitting an ownership drop (§31.2, §34.3)."
+  , ent "W_BACKENDIR_BRANCH_DROP_UNVISITED" (Just "kappa-hs.backendir.branch-drop-unvisited")
+      "The KBackendIR lowering validator found branch-dead-drop metadata for a branch site that no lowered backend node owns. Native emission rejects this stale metadata so path-to-node drift cannot silently suppress ownership drops (§31.2, §34.3)."
   ]
   where
     -- §3.1.2A registry metadata is derived uniformly from the code and

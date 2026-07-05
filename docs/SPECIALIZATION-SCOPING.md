@@ -3,7 +3,8 @@
 Status: scoping decision document. Decides whether to invest in a
 specialization / monomorphization pass to unblock type-directed (niche)
 runtime layout. The short answer is up front in §6; the case is built in
-§1–§5. Every claim is grounded in source (`file:line`) or spec (`§ref`).
+§1–§5. Claims cite source files and spec sections; exact backend line numbers
+are avoided unless a paragraph is about a fixed audit snapshot.
 
 This document subsumes and formalizes the verdict already reached with the
 user on 2026-06-26 (memory `niche-layout-vs-type-erasure`; `ROADMAP` Stage 4
@@ -16,10 +17,13 @@ DEFERRED) and adds the spec-conformance and prior-art analysis behind it.
 Kappa compiles polymorphic code to **one shared runtime body over uniformly
 boxed values**. `Option Int` and `Option a` lower to the same body and the
 same heap layout because the only type-distinguishing input — the type
-argument `@T` — is **erased to `kunit()`** at codegen. The Stage-4 niche /
-discriminator layout pass exists in the IR design (`src/Kappa/Backend/Repr.hs:16`)
-but is *starved of input*: with types erased there is nothing per-instantiation
-for it to read.
+argument `@T` — is runtime-erased before native emission. In the S5.A native
+path, erased binders/arguments/fields are structurally absent from KBackendIR;
+legacy `kunit()` placeholders remain only for residual compatibility surfaces
+that still need an inert value carrier. The Stage-4 niche / discriminator
+layout pass exists in the IR design (`src/Kappa/Backend/Repr.hs:16`) but is
+*starved of input*: with types erased there is nothing per-instantiation for it
+to read.
 
 The proposed unblock is a **specialization pass**: clone a polymorphic body
 per concrete instantiation while the types are still present, so that
@@ -35,31 +39,32 @@ honest about the payoff before committing.
 
 ### 1.1 The erasure baseline (why the question even arises)
 
-There is **no physical erasure pass**. KCore *is* the elaborated `Term` IR
-(`src/Kappa/Core.hs:102-164`), which carries types, proofs, and dictionaries
-as ordinary terms right through the tree-walking interpreter. Erasure is a
-thin, **late, per-argument codegen rewrite** in the C/LLVM backends, not an
-IR-to-IR transform (`docs/audit/lane-types.md:180-181` marks the §31.2
-physical-erasure pass `INTENTIONALLY-UNSUPPORTED(partial)`).
+KCore is the elaborated `Term` IR (`src/Kappa/Core.hs:102-164`), which carries
+types, proofs, and dictionaries as ordinary terms right through the
+tree-walking interpreter and up to backend lowering. S5.A added the native
+KCore→KBackendIR physical-erasure pass: C/LLVM now lower from a separate
+runtime tree whose erased binders, arguments, and fields are structurally
+absent. The important specialization fact remains the same: specialization
+must run **before** that KBackendIR lowering, while concrete type arguments are
+still present in KCore.
 
-Two backend mechanisms do the erasing:
+Two native lowering mechanisms discharge erasure:
 
-1. Syntactic per-arg erasure — `isErasableArg` / `compileErasableArg`
-   (`C.hs:1707-1731`): a value-position argument that is a type-level syntactic
-   form (`CSort`/`CPi`/`CVariantT`/`CRecordT`/`CMeta`/`CQuote`, or a head that
-   `isTypeGlob`) becomes `kunit()`.
-2. Telescope-driven spine erasure — `erasedSpinePositionsP` / `eraseQ0ArgsP`
-   (`C.hs:979-1033`), invoked from `compileApp` (`C.hs:2128-2134`): walks the
-   head's `gdType` Pi telescope and erases each position iff `q == Q0` **or**
-   the domain is a kind (`isKindDomain`). So in `map @a @b f xs`, `@a @b`
-   become unit slots.
+1. Telescope-driven KBackendIR lowering — `Repr.erasedSpinePositions` and the
+   KBackendIR lowerer walk the head's `gdType` Pi telescope and omit each
+   position iff it is quantity-`0`, kind-domain, or proof-only. So in
+   `map @a @b f xs`, `@a @b` are absent from the runtime application spine.
+2. Residual syntactic erasure shims — `isErasableArg` / `compileErasableArg`
+   remain for compatibility surfaces that still encounter static placeholders in
+   value positions. Those shims produce inert `kunit()` carriers, but they are
+   not the normative S5.A native lowering path.
 
 What is **kept**: trait **dictionaries** and method projections. A dict's
 domain is a trait type `C a : Type` — an inhabitant of a kind, not a kind — so
-`isKindDomain` is False for it and it survives as a real `QW` runtime value
-(`C.hs:997-1000`; Spec §31.2.1 `docs/Spec.md:34718`; §14.4 "IsTrait does not
-imply RuntimeErased"). Dispatch is a runtime record-field projection
-`CProj dict member` (`Check.hs:5992-5999`). **This is classic GHC/Swift-style
+the shared `runtimeErasedParam` / `runtimeConstructorField` classifier keeps it
+as a real `QW` runtime value (Spec §31.2.1; §14.4 "IsTrait does not imply
+RuntimeErased"). Dispatch is a runtime record-field projection
+`CProj dict member`. **This is classic GHC/Swift-style
 dictionary-passing, type-erasing.** Kappa today is squarely the
 *pre-specialization* end of the spectrum (Spec §9436: "a method-bearing trait
 such as `Eq a` may be subsingleton while its method projection is still
@@ -93,26 +98,22 @@ incompatible (§3.3, §5).
 
 ### 1.3 The intervention point
 
-Any specializer **must run on the elaborated `Term` IR before backend
-codegen erasure** — before `compileApp` / `eraseQ0Args` / `compileErasableArg`
-collapse types to `kunit()`. At that stage the concrete type argument is still
-present at each call site. The pass clones `f`'s body monomorphized to `T`,
-and re-points the construct/match sites at the concrete head type. The erasure
-machinery downstream is *self-adjusting*: a monomorphic clone `f_Int` has a
-`gdType` telescope with no kind-domain type binder, so `erasedSpinePositionsP`
-naturally flags nothing spurious there — **no change to the erasure code is
-needed** (erasure findings, implications).
+Any specializer **must run on the elaborated `Term` KCore before KBackendIR
+lowering** — before erased binders/arguments are structurally omitted and before
+remaining static placeholders go through `compileErasableArg`. At that stage
+the concrete type argument is still present at each call site. The pass clones
+`f`'s body monomorphized to `T`, and re-points the construct/match sites at the
+concrete head type. The erasure machinery downstream is *self-adjusting*: a
+monomorphic clone `f_Int` has a `gdType` telescope with no kind-domain type
+binder, so `Repr.erasedSpinePositions` naturally flags nothing spurious there —
+**no change to the erasure policy is needed** (erasure findings, implications).
 
 The natural anchor already exists: `CCtor`/`CMatch` carry an optional,
-**observe-only** monomorphic head-type annotation (`Core.hs:117-131`,
-populated from `sTy1` at `Check.hs:8542-8547`), built explicitly "for the
-(later) niche/discriminator work." It is deliberately ignored by every backend
-and dropped by `Eq Term` / conversion (`Core.hs:122-131, 184-186`). To
-become load-bearing it must be (a) populated everywhere construct/match happen
-(`CCtor`'s slot is `Nothing` almost everywhere today — the one `Just` is the
-§13.2.10 narrowing arm `Check.hs:6522`), (b) read by the backend for layout,
-and (c) carried on `CPCtor`, the match-arm pattern, which has no type field at
-all (`Core.hs:260`).
+**observe-only** monomorphic head-type annotation in KCore. S5.A now reads that
+annotation during KCore→KBackendIR lowering to attach constructor layout facts
+to runtime constructor/match nodes. It is still not a specialization mechanism:
+the annotation does not clone polymorphic bodies or choose per-instantiation
+layouts at call sites.
 
 ---
 
@@ -244,12 +245,11 @@ specialization (`LAYOUT-DESIGN.md:27-52`). Specialization here is "a
 The **scalar worker is the load-bearing proof** that "specialize the concrete
 hot path, box at the uniform boundary" already works under erasure *without*
 monomorphizing polymorphic bodies. `scalarPlan`/`typeScalarKinds`
-(`C.hs:873-928`) read the top-level binding's concrete type via
-`Repr.repSelect ctx (gdType gd)` (`C.hs:925`), classify each param
-PScalar/PBoxed, emit one unboxed worker per layout class, and keep the boxed
-`kw_g` as the always-correct fallback with a wrong-tag/overflow escape
-(`C.hs:704-708, 1345`). A type variable falls through to `RepBoxed` by
-construction (`Repr.hs:119-126`). This is "**per representation class, not per
+read the top-level binding's concrete type via `Repr.repSelect`, classify each
+param as scalar or boxed, emit one unboxed worker per layout class, and keep the
+boxed entry as the always-correct fallback with wrong-tag/overflow escapes. A
+type variable falls through to `RepBoxed` by construction. This is "**per
+representation class, not per
 type**" — bounded to ~4 layout classes, no Rust-style bloat. It is exactly the
 §34.3.7-conformant pattern (key by rep class, not source type).
 
@@ -446,15 +446,17 @@ is already laid.
 
 ## Appendix: load-bearing references
 
-- Erasure model / no physical pass: `docs/audit/lane-types.md:180-181`;
-  `src/Kappa/Core.hs:102-164`; `C.hs:979-1033, 1707-1731, 2128-2134`.
-- Dictionaries kept (QW), classic dict-passing: `C.hs:997-1000`;
-  `Check.hs:5992-5999, 12663-12672, 15135-15139`; Spec §31.2.1
+- Erasure model / native physical pass: `docs/audit/lane-types.md` §31.2;
+  `src/Kappa/Core.hs` for typed KCore; `src/Kappa/Backend/IR.hs` for the
+  KCore→KBackendIR physical-erasure pass; `src/Kappa/Backend/C.hs` and
+  `src/Kappa/Backend/LLVM.hs` for native consumers.
+- Dictionaries kept (QW), classic dict-passing: `src/Kappa/Backend/C.hs`;
+  `src/Kappa/Check.hs`; Spec §31.2.1
   `docs/Spec.md:34718`, §14.4.
-- Typed-Core hook (observe-only): `Core.hs:117-131, 184-186`;
-  `Check.hs:6522, 8542-8547`; `CPCtor` untyped `Core.hs:260`.
-- Layout authority keyed on arity: `Repr.hs:307`; scalar worker
-  `C.hs:873-928, 1136-1148, 1345`, `Repr.hs:114-126, 182`.
+- Typed-Core hook and constructor annotations: `src/Kappa/Core.hs`;
+  `src/Kappa/Check.hs`; `src/Kappa/Backend/IR.hs`.
+- Layout authority and scalar worker inputs: `src/Kappa/Backend/Repr.hs`;
+  `src/Kappa/Backend/C.hs`; `src/Kappa/Backend/LLVM.hs`.
 - Spec: §34.3.7 keying `Spec.md:37971-37986`; §31.2/§30.2.3A erasure
   `34629-34691, 33484-33568`; §34.3.2 inhabitance/Unknown `37827-37871`;
   §34.3.8 obs-equiv + `E_BACKEND_SPECIALIZATION_SEMANTICS` `37989-38016, 1033`;

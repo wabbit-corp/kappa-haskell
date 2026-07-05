@@ -1,0 +1,11 @@
+module main
+
+data T : Type = MkT (a : Int) (b : Int) (c : Type)
+
+pickB : T -> Int
+let pickB t =
+    match t
+    case MkT _ b _ -> b
+
+main : UIO Unit
+let main = printlnString (showInt (pickB (MkT 10 20 Bool)))

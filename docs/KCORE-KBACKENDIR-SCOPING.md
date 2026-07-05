@@ -4,11 +4,17 @@
 representation- and ownership-annotated **KBackendIR** is the right move — and, crucially, it is **not a new
 architecture to invent**: the spec *already* mandates this exact pipeline. The current implementation, in
 which one Haskell `Term` (`src/Kappa/Core.hs`) serves as both the typed core and the backend IR while a
-path-keyed side-table (`src/Kappa/Ownership.hs`) carries the erasure/ownership metadata, is a pragmatic
-**divergence from the normative pipeline**. The accumulating symptoms — the backend re-deriving erased type
-facts (`isKindDomainValueAt` quoting a forced value back to a term *at codegen*, `argConvSelect` re-walking
-`CPi` telescopes, `ctorLayoutOf`, the S2.3c arity checks, the S2.3d `boBorrowed` re-checks; ~69 sites) and
-the R-path risk class — are the cost of that divergence. This note scopes the conformance path.
+path-keyed side-table (`src/Kappa/Ownership.hs`) carries much of the ownership metadata, is a pragmatic
+**divergence from the normative pipeline**. S5.A0 started paying this down by moving erased-argument
+classification to the shared `Kappa.Backend.Repr` authority, and S5.A2b has now replaced the old observe-only
+wrapper scaffold with a **separate recursive `KBackendIR` tree** in `src/Kappa/Backend/IR.hs`: erased
+parameters/arguments are structurally absent, ownership/layout facts live on nodes, and native C/LLVM builds
+now fail closed if the lowered tree is missing required node-local facts. The native emitters' main value/do
+lowering consumes those `BackendTerm` roots directly, and backend-facing ownership is computed on
+`BackendUseId`/`BackendBinderId` identities instead of being reattached from the legacy path-keyed `OwnInfo`
+table. The remaining divergence is narrower: a few backend-wide planning analyses still read `csCoreBodies`
+(scalar worker eligibility, suspendability, host tag collection), but those are explicit non-emission inputs
+rather than ownership or value-emission side tables.
 
 Companion to [PERCEUS-RC-DESIGN.md](../runtime/docs/PERCEUS-RC-DESIGN.md) (RC wants the real KBackendIR),
 the "representation is LLVM layout" thread, and the scoping notes
@@ -51,29 +57,30 @@ erasure + representation selection* — is **verbatim what §28/§30.2/§31.2/§
 
 ## 2. Where the implementation diverges
 
-- **One `Term` plays both KCore and KBackendIR.** It is effectively untyped for backend purposes — `CCtor`
-  and `CMatch` carry no type — and has **no stable binder identities**; binders are addressed positionally.
-- **Erasure is not a materialized lowering.** Instead of a KCore→KBackendIR pass that discharges §31.2 once,
-  erasure is re-decided piecemeal at the backend (`eraseQ0Args` during `compileApp`, `isKindDomainTerm` /
-  `isKindDomainValueAt` at codegen — the latter *runs NBE* (`quote ∘ force`) inside the emitter).
-- **The audit table is keyed by structural child-position paths**, not the stable identities §31.2/§30.2.5
-  envision. `Ownership.hs`'s `OwnInfo` is a spec-*permitted* audit table, but its positional keys are the
-  fragile part: codegen's `gsPath` must reproduce `Ownership.walk`'s path scheme exactly (the shared
-  `PathScheme`), and a divergence silently misattributes every op.
-- **Consequence:** the backend continually **re-derives what the KCore→KBackendIR lowering was supposed to
-  compute once** — erased-vs-runtime, arg conventions, ctor layout, ownership. ~69 re-derivation sites across
-  `Repr`/`C`/`LLVM`/`Verify`/`Ownership`/`Usage`.
+- **Historically, one `Term` played both KCore and KBackendIR.** That shape was effectively untyped for
+  backend purposes — `CCtor` and `CMatch` carried no type — and had **no stable backend binder identities**;
+  binders were addressed positionally. S5.A replaces this on the native emission path with a separate
+  recursive `KBackendIR` tree.
+- **Erasure is materialized in the lowered tree and consumed by the main native emitters.** S5.A0 introduced a
+  shared semantic erasure classifier and S5.A introduced a recursive `KBackendIR` lowering that omits erased
+  parameters/arguments.
+- **Native ownership is node-local.** `Ownership.hs`'s `OwnInfo` remains a spec-*permitted* historical audit /
+  dump table keyed by structural paths, but C/LLVM emission no longer consumes or reattaches it. The lowered
+  tree computes uses, consuming-last-use facts, borrowed-result dependencies, and branch-dead drops on
+  KBackendIR identities.
+- **Consequence:** the backend still has some **explicit planning analyses** over KCore — especially scalar
+  worker eligibility and suspendability — but ownership/layout facts for ordinary value/do emission now live
+  on KBackendIR nodes.
 
 ## 3. Why it matters now (the symptoms compound, and block the roadmap)
 
-- **The re-derivation tax grows every Perceus stage.** Each new stage re-derives more from untyped `Term` +
-  quoted `Value`. `isKindDomainValueAt`'s `quote ∘ force` at codegen is the worst case — re-running the
-  normalization engine in the emitter.
-- **The R-path risk is the highest-rated Perceus risk**, and it exists *only* because the audit table is
-  positionally keyed. The spec wants identity keys (§31.2). The S2.3d review's "silent branch-drop-site
-  lookup miss" was a direct symptom: a positional miss used to be fail-closed to a leak with poor
-  diagnosability. Current validation reports those misses, and stable-identity keying would make the class
-  structurally impossible.
+- **The re-derivation tax grows every Perceus stage.** Each new stage that remains on untyped `Term` +
+  side-tables is tempted to re-walk facts instead of reading a lowered field. S5.A0 removed the worst
+  codegen-only kind-domain readback; the same consolidation needs to continue for ownership/layout consumers.
+- **The R-path risk was the highest-rated Perceus risk**, and it existed on the native path only because
+  ownership facts were positionally keyed. S5.A retires that class for C/LLVM emission by computing ownership
+  on the lowered KBackendIR tree. The legacy path-keyed table can still drift, but that is now a dump /
+  cross-check issue, not a native dup/drop emission issue.
 - **The representation-layout program is blocked on this.** Unboxing / niche layout / `TagId` / `var`
   scalarization are §31.2.1/§31.3/§31.4/§31.5/§34.3.7 — *representation selection*, whose home is KBackendIR
   nodes. "Representation is LLVM layout" + "CCtor/CMatch carry no type" is exactly this gap.
@@ -100,17 +107,31 @@ This is the GHC Core→STG shape, but here it is the *spec's own* KCore→KBacke
 
 ## 5. Migration path (incremental; each step independently validatable, like the Perceus stages)
 
-- **Step 0 — pullable now, cheap, no refactor.** Thread the erasure classification the elaborator *already
-  computed at typecheck* (`0`-quantity ∨ kind-domain) as a per-binder annotation, and delete
-  `isKindDomainTerm` / `isKindDomainValueAt`. Kills the codegen `quote ∘ force` immediately. First brick.
-- **Step 1 — stable KCore identities; re-key the audit table (highest correctness value).** Replace the
-  structural-path keys with stable KCore binder / node identities (§30.2.5, §31.2). This alone **retires the
-  R-path risk class** and makes the S2.3d "silent lookup miss" impossible. Ownership metadata is now keyed as
-  the spec intends.
-- **Step 2 — materialize KBackendIR.** A distinct Haskell type (or, pragmatically, an annotated `Term`
-  wrapper first) produced by an explicit KCore→KBackendIR lowering pass that discharges §31.2 erasure once
-  and attaches erasure/ownership/arg-convention as node fields. The backend reads fields; the re-derivation
-  sites collapse.
+- **Step 0 — landed.** The erasure classification (`0`-quantity ∨ kind-domain) now has a shared semantic
+  classifier in `Kappa.Backend.Repr`, and the codegen-only `isKindDomainTerm` / `isKindDomainValueAt`
+  readback helper is gone. First brick.
+- **Step 1 — stable backend identities; remove the native path bridge (landed for C/LLVM).** Backend-facing
+  ownership now lives on `BackendUseId`/`BackendBinderId` identities in the lowered tree. This retires the
+  R-path risk class for native emission and makes the S2.3d "silent lookup miss" irrelevant to codegen.
+- **Step 2 — materialize KBackendIR as a *separate tree IR* (not a `Term` wrapper).** A **distinct recursive
+  Haskell datatype** (`data KBackendIR = KBApp … | KBCtor … | …`) produced by an explicit KCore→KBackendIR
+  lowering that **deletes** the erased positions (§34.3: `Type u`, row/label terms, region vars, `0`-quantity
+  binders, proof terms, erased indices **do not appear**; §34.3.1 `ERASURE` *eliminates* them) and carries
+  erasure/ownership/arg-convention/representation **as node fields**. The backend's main value/do emitter then
+  **lowers from KBackendIR** (§34.3 "every backend profile lowers from KBackendIR"; §28 must-not-bypass),
+  pattern-matching the tree for ownership-bearing codegen rather than reading `Core.Term` or doing a
+  structural-path ownership lookup; the re-derivation sites collapse.
+  - **Why not an annotated `Term` wrapper (`bbTerm :: Term` + `[Bool]` masks + a path bridge).** It is
+    *non-conformant* — the erased nodes it enumerates still physically appear in the tree, and the emitter
+    still generates code from `Term` — and *self-defeating*: the §34.3.3 legality verifier (whose job is to
+    prove no runtime term depends on an erased occurrence) is then run over a tree that still contains every
+    erased occurrence, so it proves nothing, and every consumer written against the wrapper is rewritten again
+    when the real tree lands. The wrapper does the work twice; it does not reduce it.
+  - **Staging.** The observe-only wrapper was permitted only as a temporary differential scaffold — it could
+    compute the erasure/convention/layout/ownership decisions and check them against the legacy path, but no
+    emitter logic could be written against it. That scaffold has been replaced by the real
+    `src/Kappa/Backend/IR.hs` tree and a build-time tree validator; residual backend-wide Core analyses now
+    sit behind explicit non-emission phase boundaries.
 - **Step 3 — representation classes on KBackendIR** (§34.3.7): the substrate for unboxing / niche layout /
   `TagId` and for **S5 FBIP**. This is where the layout program and the RC arc converge.
 
@@ -124,10 +145,9 @@ Step 2+ additionally unlocks the spec's KBackendIR legality checkpoints (§34.3.
 - **S3 has landed on the current side-table.** That was the right sequencing for the free-on-zero flip; do not
   retroactively churn the validated S3 path just to start this migration. S4 (atomic split) is runtime-side
   and also does not require it.
-- **Schedule Steps 1–3 as the S4→S5 interlude / the representation-layout enabler.** S5 FBIP genuinely cannot
-  proceed cleanly without typed KBackendIR constructors, so this is S5's hard prerequisite — and it is shared
-  with the whole layout/unboxing program, so it is one investment serving both.
-- **Step 0 is schedule-free** — pull it forward whenever, to kill the `quote ∘ force`.
+- **Schedule Phase B on top of the landed Step 1–3 native substrate.** S5 FBIP can now proceed against typed
+  KBackendIR constructors and identity-keyed ownership consumers. Further cleanup of legacy ownership dumps
+  and non-emission Core planning can happen independently, but reuse tokens must be implemented on KBackendIR.
 
 ## 7. Costs / notes
 

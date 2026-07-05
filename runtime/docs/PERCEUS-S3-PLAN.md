@@ -11,7 +11,9 @@ tags, shared objects, cycles, resources, and LLVM output remained Boehm-backed u
 thread-shared / §7 staging) and [PERCEUS-S2-PLAN.md](PERCEUS-S2-PLAN.md) (the dup/drop layer S3 turns live).
 Historical note: this document describes S3's landed boundary. S4 has since replaced S3's shared-value
 dup/drop no-op with counted shared atomic RC for the strict immutable FREESET; see
-[PERCEUS-S4-PLAN.md](PERCEUS-S4-PLAN.md) for the current shared-object state.
+[PERCEUS-S4-PLAN.md](PERCEUS-S4-PLAN.md) for the current shared-object state. S5.A has also moved native
+emission to a separate KBackendIR tree with node-local ownership metadata; see
+[PERCEUS-S5-PLAN.md](PERCEUS-S5-PLAN.md) for the current backend IR boundary.
 
 ## 0. The transition that reshapes everything — the risk model inverts
 

@@ -56,7 +56,9 @@ import qualified Data.Text as T
 
 import Kappa.Backend.Repr
   ( assignUserCtorTags
+  , erasedSpinePositionsForArgs
   , isBuiltinCtor
+  , runtimeConstructorField
   , tagId
   )
 import Kappa.Builtins (prelUnit)
@@ -154,12 +156,13 @@ erasureViolations vi ctx who = go
               Just reason -> [nonFunctionHeadDiag who reason]
               Nothing -> []
             -- (b): for a CGlob-headed spine, flag a manifestly-erased type
-            -- form at a runtime-KEPT argument position (per the callee's
-            -- erasure mask). The mask mirrors the backend's own
-            -- 'erasedSpinePositionsP', so we never flag what lowering erases.
+            -- form at a runtime-KEPT argument position (per the shared S5.A
+            -- erasure mask). The mask is the same 'Repr' verdict the backends
+            -- consume, so we never flag what lowering erases.
             argDiags = case hd of
               CGlob g ->
-                let kept = keptArgMask vi ctx g
+                let erased = erasedSpinePositionsForArgs (viGlobals vi) ctx g (map fst args)
+                    kept = map not erased
                  in concat
                       [ [erasedArgDiag who g i (typeFormReason a) | typeForm a]
                       | (keep, (_, a), i) <- zip3 (kept ++ repeat True) args [0 ..]
@@ -219,29 +222,6 @@ typeFormReason = \case
   CSigT _ _ -> "a signature type"
   _ -> "an erased type form"
 
--- | The per-argument "kept at runtime" mask of a global's signature, indexed
--- by spine position. @True@ = the lowering keeps this argument as a runtime
--- value; @False@ = it erases it (quantity-0 OR a kind\/type domain). This is
--- the exact dual of "Kappa.Backend.C"'s @erasedSpinePositionsP@ (kept = not
--- erased), replicated here (its monadic wrappers live in the backend, but the
--- analysis is pure over the same 'gdType' + 'EvalCtx'). FAIL-SAFE: an unknown
--- global, or a type that does not 'force' to a 'VPi' telescope, yields @[]@ —
--- treated as "keep everything", which can only UNDER-flag, never over-flag.
-keptArgMask :: VerifyInputs -> EvalCtx -> GName -> [Bool]
-keptArgMask vi ctx g = case Map.lookup g (viGlobals vi) of
-  Nothing -> []
-  Just gd -> map not (walk 0 (gdType gd))
-  where
-    walk lvl ty = case force ctx ty of
-      VPi _ q _ _ dom clo ->
-        (q == Q0 || isKindDomain lvl dom) : walk (lvl + 1) (closApply lvl clo)
-      _ -> []
-    closApply lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
-    isKindDomain lvl v = case force ctx v of
-      VSort _ -> True
-      VPi _ _ _ _ _ clo -> isKindDomain (lvl + 1) (closApply lvl clo)
-      _ -> False
-
 -- | Decide whether @hd@, used as the head of a value application, is
 -- /statically/ a non-function value. (This is the Stage-0 lint's classifier,
 -- re-stated here so the Stage-3 verifier is self-contained; the two agree by
@@ -284,13 +264,11 @@ stripImplicitPis t = t
 --
 -- "every call, closure, and entrypoint has a fixed runtime arity and runtime
 -- calling convention". The checkable manifestation in today's Core is the
--- saturated-constructor invariant: a 'CCtor g _ as' MUST carry exactly the
--- runtime arity of @g@ (no partial application without a closure, no arity
--- mismatch vs the resolved constructor signature). The runtime arity is the
--- number of RUNTIME fields in @g@'s declared type — explicit binders, plus
--- implicit binders whose quantity is not 0 — matching the eta-expansion the
--- elaborator emits ("Kappa.Check"'s @etaCtor@ / @runtimeField@) and the
--- payload the backends build.
+-- saturated-constructor invariant: a 'CCtor g _ as' MUST carry a fixed shape
+-- the KCore→KBackendIR lowerer knows how to erase. KCore constructors may be
+-- source-shaped (explicit fields retained for interpretation/conversion) or
+-- already runtime-shaped; KBackendIR then drops the erased fields. Any other
+-- count is a partial application or stale constructor payload.
 
 -- | Constructor runtime-arity findings for one body.
 arityViolations :: VerifyInputs -> Text -> Term -> [Diagnostic]
@@ -298,10 +276,10 @@ arityViolations vi who = go
   where
     go t = case t of
       CCtor g _ as ->
-        let here = case ctorRuntimeArity vi g of
-              Just n
-                | length as /= n ->
-                    [ ctorArityDiag who g (length as) n ]
+        let here = case ctorValidPayloadArities vi g of
+              Just ns
+                | length as `notElem` ns ->
+                    [ ctorArityDiag who g (length as) ns ]
               _ -> []
          in here ++ concatMap go as
       CApp _ f a -> go f ++ go a
@@ -331,24 +309,49 @@ arityViolations vi who = go
       CQuote _ slots -> concatMap go slots
     goAlt (CaseAlt _ gd b) = maybe [] go gd ++ go b
 
--- | The runtime arity of constructor @g@ (number of runtime fields in its
--- declared type), or 'Nothing' if @g@ is not a known constructor or its type
--- does not 'force' to a 'VPi' telescope (fail-safe: we then make no arity
--- claim). Mirrors "Kappa.Check"'s @etaCtor@ runtime-field rule: an explicit
--- binder is always a runtime field; an implicit binder is a runtime field iff
--- its quantity is not 0.
-ctorRuntimeArity :: VerifyInputs -> GName -> Maybe Int
-ctorRuntimeArity vi g = do
+-- | Accepted saturated constructor payload arities. Runtime arity is accepted
+-- for already-lowered Core fragments. Core payload arity is accepted for
+-- ordinary constructor values: all explicit fields are retained in KCore, and
+-- non-erased implicit evidence fields are retained as hidden payload slots.
+-- Plain explicit-field arity is also accepted when there are no hidden runtime
+-- implicit fields; this covers direct checker rewrites such as constructor
+-- record-patch rebuilds before KBackendIR erases explicit Q0/type fields.
+ctorValidPayloadArities :: VerifyInputs -> GName -> Maybe [Int]
+ctorValidPayloadArities vi g = do
   ci <- Map.lookup g (viCtors vi)
   let ctx = EvalCtx (Globals (viGlobals vi)) (viMetas vi) False Map.empty
-  pure (count ctx 0 (eval ctx [] (ciType ci)))
+      counts = ctorPayloadCounts ctx (eval ctx [] (ciType ci))
+      base = [cpcRuntime counts, cpcCore counts]
+      explicit =
+        [ length (ciFields ci)
+        | cpcImplicitRuntime counts == 0
+        ]
+  pure (dedupeSorted (base ++ explicit))
   where
-    count ctx lvl ty = case force ctx ty of
-      VPi ic q _ _ _ clo ->
-        runtimeField ic q + count ctx (lvl + 1) (closApply ctx lvl clo)
-      _ -> 0
-    runtimeField Expl _ = 1
-    runtimeField Impl q = if q /= Q0 then 1 else 0
+    dedupeSorted = Map.keys . Map.fromList . map (\n -> (n, ()))
+
+data CtorPayloadCounts = CtorPayloadCounts
+  { cpcRuntime :: !Int
+  , cpcCore :: !Int
+  , cpcImplicitRuntime :: !Int
+  }
+
+ctorPayloadCounts :: EvalCtx -> Value -> CtorPayloadCounts
+ctorPayloadCounts ctx = count 0
+  where
+    count lvl ty = case force ctx ty of
+      VPi ic q _ _ dom clo ->
+        let runtime = runtimeConstructorField ctx lvl ic q dom
+            core = ic == Expl || runtime
+            implicitRuntime = ic /= Expl && runtime
+            rest = count (lvl + 1) (closApply ctx lvl clo)
+         in CtorPayloadCounts
+              { cpcRuntime = boolCount runtime + cpcRuntime rest
+              , cpcCore = boolCount core + cpcCore rest
+              , cpcImplicitRuntime = boolCount implicitRuntime + cpcImplicitRuntime rest
+              }
+      _ -> CtorPayloadCounts 0 0 0
+    boolCount b = if b then 1 else 0
     closApply ctx lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
 
 -- ── Checkpoint 3 — layout consistency (§34.3.3 / §§31.3-31.4) ────────
@@ -371,13 +374,15 @@ ctorRuntimeArity vi g = do
 --   (c) FIELD-COUNT ⟹ LAYOUT CONSISTENCY: a constructor has TWO views of its
 --       field count — the explicit-field list ('ciFields') the elaborator
 --       recorded, and the runtime arity derived from its declared TYPE
---       telescope ('ctorRuntimeArity'). The runtime arity must cover at least
---       the explicit fields (the runtime adds non-Q0 implicit fields on top,
---       never drops an explicit one), so @length ciFields <= runtimeArity@. A
---       constructor declaring MORE explicit fields than its type's runtime
---       arity is structurally inconsistent: the chosen 'Repr.CtorLayout' would
---       reserve fewer slots than the constructor carries. This cross-checks
---       the two field-count sources the layout decision depends on.
+--       telescope ('ctorRuntimeArity'). Under S5.A, raw explicit fields can be
+--       runtime-erased type/proof fields, so the raw explicit count is not a
+--       layout obligation. The runtime arity must cover the runtime-kept
+--       explicit fields; non-Q0 implicit fields are extra runtime slots. A
+--       constructor whose runtime-kept explicit fields exceed its type's
+--       runtime arity is structurally inconsistent: the chosen
+--       'Repr.CtorLayout' would reserve fewer slots than the constructor
+--       carries. This cross-checks the two field-count sources the layout
+--       decision depends on.
 --
 -- The tag map is derived through the SAME 'Repr.assignUserCtorTags' the
 -- backends use, over the program's full user-ctor set, so this is the exact
@@ -416,19 +421,39 @@ layoutViolations vi = concatMap perData (Map.toList (viDatas vi))
         | ciData ci /= d -> Just (ctorParentMismatchDiag d c (ciData ci))
         | otherwise -> Nothing
 
-    -- (c): the explicit-field count must not EXCEED the type-derived runtime
-    -- arity. The runtime arity adds non-Q0 implicit fields on top of the
-    -- explicit ones, so it can only be ≥ the explicit count; a constructor
-    -- whose 'ciFields' is longer than its type's runtime arity is malformed
-    -- (its layout would under-reserve slots). Cross-checks the two
-    -- field-count sources the layout choice depends on.
+    -- (c): the runtime-kept explicit-field count must not EXCEED the
+    -- type-derived runtime arity. Raw explicit fields can include erased
+    -- type/proof payloads under S5.A, so comparing 'length ciFields' here
+    -- would reject valid erased-layout constructors.
     fieldCountWF d c = do
       ci <- Map.lookup c (viCtors vi)
-      n <- ctorRuntimeArity vi c
-      let explicit = length (ciFields ci)
-      if explicit > n
-        then Just (fieldCountDiag d c explicit n)
-        else Nothing
+      let ctx = EvalCtx (Globals (viGlobals vi)) (viMetas vi) False Map.empty
+          n = cpcRuntime (ctorPayloadCounts ctx (eval ctx [] (ciType ci)))
+      (explicitBinders, explicitRuntime) <- ctorRuntimeExplicitFacts vi c (length (ciFields ci))
+      let explicitFields = length (ciFields ci)
+      if explicitFields > explicitBinders
+        then Just (fieldBinderCountDiag d c explicitFields explicitBinders)
+        else
+          if explicitRuntime > n
+            then Just (fieldCountDiag d c explicitRuntime n)
+            else Nothing
+
+ctorRuntimeExplicitFacts :: VerifyInputs -> GName -> Int -> Maybe (Int, Int)
+ctorRuntimeExplicitFacts vi g fieldCount = do
+  ci <- Map.lookup g (viCtors vi)
+  let ctx = EvalCtx (Globals (viGlobals vi)) (viMetas vi) False Map.empty
+      explicitFlags = collect ctx 0 (eval ctx [] (ciType ci))
+      fieldFlags = drop (max 0 (length explicitFlags - fieldCount)) explicitFlags
+  pure (length explicitFlags, length (filter id (take fieldCount fieldFlags)))
+  where
+    collect ctx lvl ty = case force ctx ty of
+      VPi ic q _ _ dom clo ->
+        let rest = collect ctx (lvl + 1) (closApply ctx lvl clo)
+         in if ic == Expl
+              then runtimeConstructorField ctx lvl ic q dom : rest
+              else rest
+      _ -> []
+    closApply ctx lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
 
 -- | Group @(ctor, id)@ pairs by id, preserving a deterministic id order.
 groupByTag :: [(GName, Int)] -> [(Int, [GName])]
@@ -466,14 +491,14 @@ erasedArgDiag who g i reason =
         <> "erasure-legality / Spec line 34688)"
     )
 
-ctorArityDiag :: Text -> GName -> Int -> Int -> Diagnostic
-ctorArityDiag who g got want =
+ctorArityDiag :: Text -> GName -> Int -> [Int] -> Diagnostic
+ctorArityDiag who g got wants =
   mkDiag
     "W_BACKENDIR_ARITY_MISMATCH"
     "kappa-hs.backendir.arity-mismatch"
     ( "in '" <> who <> "': constructor '" <> gnameText g <> "' is built with "
-        <> tshow got <> " runtime field(s) but its signature has runtime arity "
-        <> tshow want
+        <> tshow got <> " payload field(s) but its signature admits fixed payload arity "
+        <> T.intercalate "/" (map tshow wants)
         <> " (KBackendIR §34.3.3 fixed-runtime-arity)"
     )
 
@@ -489,15 +514,27 @@ tagCollisionDiag d i cs =
     )
 
 fieldCountDiag :: GName -> GName -> Int -> Int -> Diagnostic
-fieldCountDiag d c explicit n =
+fieldCountDiag d c explicitRuntime n =
   mkDiag
     "W_BACKENDIR_LAYOUT_INCONSISTENT"
     "kappa-hs.backendir.layout-inconsistent"
     ( "datatype '" <> gnameText d <> "': constructor '" <> gnameText c
-        <> "' declares " <> tshow explicit <> " explicit field(s) but its type "
+        <> "' has " <> tshow explicitRuntime <> " runtime-kept explicit field(s) but its type "
         <> "has runtime arity " <> tshow n
         <> " — the chosen layout would under-reserve field slots (KBackendIR "
         <> "§34.3.3 layout-consistency / §§31.3-31.4)"
+    )
+
+fieldBinderCountDiag :: GName -> GName -> Int -> Int -> Diagnostic
+fieldBinderCountDiag d c explicitFields explicitBinders =
+  mkDiag
+    "W_BACKENDIR_LAYOUT_INCONSISTENT"
+    "kappa-hs.backendir.layout-inconsistent"
+    ( "datatype '" <> gnameText d <> "': constructor '" <> gnameText c
+        <> "' records " <> tshow explicitFields <> " explicit field(s) but its type "
+        <> "has only " <> tshow explicitBinders
+        <> " explicit binder(s) — constructor field metadata and type layout disagree "
+        <> "(KBackendIR §34.3.3 layout-consistency / §§31.3-31.4)"
     )
 
 ctorUnknownDiag :: GName -> GName -> Diagnostic

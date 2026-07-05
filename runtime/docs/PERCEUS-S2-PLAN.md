@@ -3,7 +3,9 @@
 Status: **HISTORICAL S2 kickoff plan.** The current S2.3b-d status lives in
 [PERCEUS-S2.3-DROP-COMPLETION.md](PERCEUS-S2.3-DROP-COMPLETION.md) and the repository
 [ROADMAP.md](../../ROADMAP.md). Keep this file as design archaeology for the original S2 arc; do not treat
-the counts, line references, or flat-parameter drop targets below as current implementation status.
+the counts, line references, path-keyed `gsPath` machinery, or flat-parameter drop targets below as current
+implementation status. S5.A moved native ownership emission to node-local KBackendIR metadata; see
+[PERCEUS-S5-PLAN.md](PERCEUS-S5-PLAN.md).
 Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc) and [PERCEUS-S1-PLAN.md](PERCEUS-S1-PLAN.md)
 (the analysis layer S2 consumes).
 

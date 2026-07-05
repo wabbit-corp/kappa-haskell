@@ -40,6 +40,7 @@ library
         Kappa.Backend.Capabilities
         Kappa.Backend.Driver
         Kappa.Backend.HeaderGen
+        Kappa.Backend.IR
         Kappa.Backend.LLVM
         Kappa.Backend.NativeFfi
         Kappa.Backend.NativeProbe

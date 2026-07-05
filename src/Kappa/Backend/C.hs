@@ -1,16 +1,16 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 
--- | Native backend: lower elaborated KCore ('Kappa.Core.Term') to C that
+-- | Native backend: lower S5.A 'Kappa.Backend.IR.BackendTerm' roots to C that
 -- links against the @kappart@ runtime (see @runtime/kappart.h@ and
 -- docs/NATIVE_BACKEND.md).
 --
--- The lowering is a structural recursion over 'Term' that mirrors
--- 'Kappa.Eval.eval' / 'Kappa.Interp' but emits C rather than stepping an
--- interpreter, so the two stay semantically aligned for the supported
--- subset.  Any 'Term' or do-kernel item the backend does not support is a
--- compile-time 'E_BACKEND_UNSUPPORTED' error naming the construct (and the
--- definition it appears in) — never a silent fallback to interpreter
--- behaviour.
+-- The main value/do lowering is a structural recursion over the separate
+-- KBackendIR tree. Residual KCore reads in this module are planning/verification
+-- inputs (for example scalar worker eligibility and suspender closure), not
+-- ownership or value-emission side tables. Any unsupported backend node or
+-- do-kernel item is a compile-time 'E_BACKEND_UNSUPPORTED' error naming the
+-- construct (and the definition it appears in) — never a silent fallback to
+-- interpreter behaviour.
 --
 -- Representation contract with the runtime:
 --
@@ -26,6 +26,7 @@ module Kappa.Backend.C
   , BackendError (..)
   , backendUnsupported
   , backendDiagnostics
+  , backendIRValidationErrors
   , basePrims
     -- * Shared primitive registry (consumed by "Kappa.Backend.LLVM")
   , PrimEntry (..)
@@ -38,8 +39,6 @@ module Kappa.Backend.C
   , cpsEligible
     -- * §34.3.3 multi-shot backend legality (shared with "Kappa.Backend.LLVM")
   , multishotLegality
-    -- * Shared Q0 spine erasure (consumed by "Kappa.Backend.LLVM")
-  , eraseQ0ArgsP
   , resultIsProofP
   ) where
 
@@ -55,6 +54,26 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Control.Monad (foldM, forM, forM_, unless, void, when)
 import Control.Monad.State.Strict
+import Kappa.Backend.IR
+  ( BackendAlt (..)
+  , BackendBinder (..)
+  , BackendBinderId (..)
+  , BackendBody (..)
+  , BackendCond (..)
+  , BackendCtorLayout (..)
+  , BackendIRViolation (..)
+  , BackendItem (..)
+  , BackendMeta (..)
+  , BackendNodeId (..)
+  , BackendParam (..)
+  , BackendPat (..)
+  , BackendTerm (..)
+  , BackendUse (..)
+  , KBackendIR (..)
+  , backendPatToCorePat
+  , lowerKBackendIR
+  , validateKBackendIR
+  )
 import Kappa.Backend.NativeFfi
   ( ResolvedNativeSymbol (..)
   , externPrototype
@@ -65,19 +84,15 @@ import Kappa.Backend.NativeFfi
 import Kappa.Build.Types (FfiClass (..))
 import qualified Kappa.Backend.Repr as Repr
 import qualified Kappa.Builtins as Builtins
-import Kappa.Check (CheckState (..), CtorInfo (..))
+import Kappa.Check (CheckState (..), CtorInfo (..), InstanceEntry (..))
 import Kappa.Core
-import Kappa.CoreOps (dropStaticGlobalPrefixArgs, dropStaticPrefixLams, patBindersC, substTopTerm)
+import Kappa.CoreOps (spineOfTerm)
 import Kappa.Diagnostic
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, force, quote)
 import Kappa.Ownership
-  ( BinderId (..)
-  , BinderOwn (..)
-  , OwnInfo (..)
+  ( BinderOwn (..)
   , UseKind (..)
-  , UseSite (..)
   )
-import qualified Kappa.PathScheme as P
 import Kappa.Source (ModuleName (..), Span, noSpan)
 import Numeric (showHex, showOct)
 
@@ -116,6 +131,41 @@ backendDiagnostics = map one
             <> " (" <> beConstruct be <> ")"
         )
 
+-- | S5.A fail-closed gate: the real KBackendIR tree must carry the node-local
+-- facts the backend needs before either native emitter runs. Malformed lowered
+-- trees fail closed before target emission.
+backendIRValidationErrors :: CheckState -> GName -> [BackendError]
+backendIRValidationErrors cs mainG =
+  backendIRValidationErrorsFrom cs mainG (validateKBackendIR (lowerKBackendIR cs))
+
+backendIRValidationErrorsFrom :: CheckState -> GName -> [BackendIRViolation] -> [BackendError]
+backendIRValidationErrorsFrom cs mainG findings =
+  case findings of
+    [] -> []
+    _ ->
+      [ backendUnsupported
+          mainG
+          (Map.findWithDefault noSpan mainG (csDeclSites cs))
+          "KBackendIR validation"
+          ( "KBackendIR validation found "
+              <> T.pack (show (length findings))
+              <> " lowered-tree invariant violation(s); native codegen requires zero. First findings: "
+              <> T.intercalate " | " (take 5 (map renderBackendIRViolation findings))
+          )
+      ]
+
+renderBackendIRViolation :: BackendIRViolation -> Text
+renderBackendIRViolation v =
+  gnameText (bivBody v)
+    <> "@"
+    <> nodeText (bivNode v)
+    <> " "
+    <> bivCode v
+    <> ": "
+    <> bivMessage v
+  where
+    nodeText (BackendNodeId n) = T.pack (show n)
+
 -- ── Code-generation monad ────────────────────────────────────────────
 
 data GenState = GenState
@@ -123,7 +173,7 @@ data GenState = GenState
   , gsStmts :: ![Text] -- ^ current function body, reversed
   , gsEnv :: !Text -- ^ C expression for the current KEnv*
   , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free) first-order worker, the C lvalue for each de Bruijn index — the params (index @i@ = source param @n-1-i@) plus any @let@/@match@-bound locals prepended at index 0 (R2.3-rest); a 'CVar' reads the C local directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
-  , gsParamBinders :: ![Maybe BinderId] -- ^ Parallel to 'gsParamLvals': the ownership binder identity for each flat local when known. Needed by S2.3d branch-dead drops so codegen drops the already-bound C local for exactly the binder the ownership walk named.
+  , gsParamBinders :: ![Maybe BackendBinderId] -- ^ Parallel to 'gsParamLvals': the KBackendIR ownership binder identity for each flat local when known. Needed by S2.3d branch-dead drops so codegen drops the already-bound C local for exactly the binder named by node metadata.
   , gsParamOwns :: ![Bool] -- ^ Parallel to 'gsParamLvals': whether the flat local currently owns a reference. Incoming params are not marked owning until caller-side ownership transfer is normalized; constructor let-locals are owning when their RHS is a proven fresh allocation; pattern locals are owning only on the match cell-drop path that first @kdup@s the field; projection/call-result locals stay non-owning until result ownership is modeled.
   , gsTopFlatFrame :: !Bool -- ^ True only while compiling a top-level flat worker body. S2.3d can treat a missing branch-dead binder mapping as path/metadata drift in this frame; nested flat closures may deliberately omit outer captured binders and therefore keep missing branch-drop locals leak-biased.
   , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
@@ -134,14 +184,12 @@ data GenState = GenState
   , gsCur :: !GName -- ^ definition currently being compiled (for diagnostics)
   , gsGlobals :: !(Map GName GlobalDef)
   , gsEvalCtx :: !EvalCtx -- ^ R2.2: a non-runtime EvalCtx (built from the CheckState) used only to 'quote' a global's 'gdType' to a Term so the per-parameter scalar kinds can be read from its Pi telescope.
+  , gsBackendBodies :: !(Map GName BackendBody)
   , gsBodies :: !(Map GName Term)
+  , gsIOMonadRefDicts :: !(Set GName)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
-  , gsOwnership :: !(Map GName OwnInfo) -- ^ Perceus RC side table (see "Kappa.Ownership"): per-definition binders, per-use last-use facts, and the S2.3b consume/read bit carried from @csOwnership@ beside 'gsSuspenders'. The explicit OFF baseline ignores it and disables runtime RC effects in the generated entry point; the default native path validates and emits RC operations from it.
-  , gsCurOwn :: !(Maybe OwnInfo) -- ^ The 'OwnInfo' for the global currently being compiled ('gsCur'), looked up from 'gsOwnership' at body entry ('emitGlobal'/'compileFunctionGlobal') and cleared otherwise. The walk-and-lookup at a 'CVar' consults @oiUses@ and @oiUseConsumes@ here. 'Nothing' when no per-definition table is in scope (a CAF prologue, a lifted helper without its own entry) — then the lookup is skipped.
-  , gsPath :: ![Int] -- ^ Perceus RC Stage S2.1: the REVERSED structural child-position path from the current global's body root to the node being compiled, threaded through 'compileTerm'/'compileApp'/'compileCtor'/'consume*' at exactly the child positions "Kappa.Ownership"'s walk records, via the SHARED constants in "Kappa.PathScheme" (so the two schemes can never diverge — risk R-path). @reverse gsPath@ is the 'UseSite'/'BinderId' key. Seeded with the leading-lambda prefix in 'compileFunctionGlobal' (the analysis walks the whole body INCLUDING the leading 'CLam's, which codegen strips off into the worker frame). Empty at a CAF/body root.
-  , gsRcEnabled :: !Bool -- ^ Perceus RC maintenance gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so generated @kdup@/@kdrop@ maintenance has no runtime counting/freeing effect. S4 publish marking still emits because shared bits are synchronization metadata for Ref/Array storage. When enabled, every non-erased runtime 'CVar' must resolve in @gsCurOwn@'s @oiUses@ AND @oiUseConsumes@, and the backend emits the currently enabled dup/drop operations.
-  , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. One entry per ownership side-table miss (missing use path, missing consume/read bit for a resolved use, or S2.3d branch-drop binder metadata drift). Converted to a backend error at the end of generation so ON builds fail closed instead of silently suppressing RC decisions.
-  , gsRcBranchVisited :: !(Set (GName, [Int])) -- ^ S2.3d branch-drop paths that codegen reached under the current ownership table. Compared with @oiBranchDropSites@ at the end of RC-on generation so a stale path key cannot silently leak.
+  , gsRcEnabled :: !Bool -- ^ Perceus RC maintenance gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so generated @kdup@/@kdrop@ maintenance has no runtime counting/freeing effect. S4 publish marking still emits because shared bits are synchronization metadata for Ref/Array storage. When enabled, non-erased runtime variables consume node-local KBackendIR 'BackendUse' metadata, and binders/drops consume 'BackendBinder'/'BackendMeta' metadata.
+  , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. With S5.A this is limited to impossible missing KBackendIR node-local ownership metadata after validation; ordinary dup/drop decisions read 'BackendUse'/'BackendBinder' fields directly.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
   , gsTraits :: !(Set GName)
@@ -162,7 +210,7 @@ data GenState = GenState
 
 data FlatLocalScope = FlatLocalScope
   { flsLvals :: ![Text]
-  , flsBinders :: ![Maybe BinderId]
+  , flsBinders :: ![Maybe BackendBinderId]
   , flsOwns :: ![Bool]
   }
 
@@ -217,160 +265,32 @@ freshFn base = do
 emit :: Text -> Gen ()
 emit s = modify' $ \g -> g {gsStmts = s : gsStmts g}
 
--- ── Perceus RC Stage S2.1: structural-path threading ─────────────────
---
--- 'gsPath' is the REVERSED child-position path from the current global's body
--- root to the node being compiled (see 'GenState'). It mirrors the path
--- "Kappa.Ownership"'s @walk@ records, position-for-position, via the SHARED
--- "Kappa.PathScheme" constants — so the codegen path that LOOKS UP a side-table
--- key matches the analysis path that BUILT it (risk R-path). The whole mechanism
--- is INERT unless 'gsRcEnabled'; at S2.1 it asserts but emits nothing.
-
--- | Descend into a child at the given shared child position ('Kappa.PathScheme'),
--- running the action with @pos@ pushed onto 'gsPath', then restoring the path.
--- This is the single descent primitive both the path threading and the analysis
--- walk agree on. A no-op on the path when 'gsRcEnabled' is off would still be
--- correct, but we keep the push unconditional (it is a cheap list cons) so the
--- threading is exercised — and immediately validated — under the ON build.
-withChild :: Int -> Gen a -> Gen a
-withChild pos act = do
-  saved <- gets gsPath
-  modify' $ \st -> st {gsPath = pos : saved}
-  r <- act
-  modify' $ \st -> st {gsPath = saved}
-  pure r
-
--- | Descend into the @j@-th argument (0-based, in 'spineOf' order) of a flat
--- application spine of @k@ total arguments, pushing the nested-CApp path the
--- analysis walk would take. 'spineOf' lists args innermost-applied first, so the
--- spine is @CApp (… (CApp hd arg0) …) arg{k-1}@: @arg j@ sits under one
--- 'appArgPos' beneath @(k-1-j)@ 'appHeadPos' steps. The reversed (deepest-first)
--- prefix pushed onto 'gsPath' is therefore @appArgPos : replicate (k-1-j)
--- appHeadPos@. This reproduces, for a spine flattened by 'spineOf', the exact key
--- the analysis built by its structural nested-'CApp' descent. Inert when the path
--- is unread (OFF baseline).
-withSpineArg :: Int -> Int -> Gen a -> Gen a
-withSpineArg k j act = do
-  saved <- gets gsPath
-  let prefix = P.appArgPos : replicate (k - 1 - j) P.appHeadPos
-  modify' $ \st -> st {gsPath = prefix ++ saved}
-  r <- act
-  modify' $ \st -> st {gsPath = saved}
-  pure r
-
--- | Run an action with the given current-definition 'OwnInfo' and root path in
--- scope (the body-entry seam), restoring both afterwards. @prefix@ is the
--- reversed path from the global's body root down to the term about to be
--- compiled — for a function global the leading-lambda prefix the worker frame
--- stripped off, for a CAF the empty root. Used by 'emitGlobal' /
--- 'compileFunctionGlobal' so the walk-and-lookup keys land in the right
--- definition's table at the right structural offset.
-withBodyOwn :: Maybe OwnInfo -> [Int] -> Gen a -> Gen a
-withBodyOwn own prefix act = do
-  savedOwn <- gets gsCurOwn
-  savedPath <- gets gsPath
-  modify' $ \st -> st {gsCurOwn = own, gsPath = prefix}
-  r <- act
-  modify' $ \st -> st {gsCurOwn = savedOwn, gsPath = savedPath}
-  pure r
-
--- | The per-definition ownership side-table for global @g@, if the analysis
--- recorded one. 'Nothing' for a global with no entry (no recorded core body, or
--- the analysis produced none) — then the walk-and-lookup is skipped for its body.
-curOwnInfo :: GName -> Gen (Maybe OwnInfo)
-curOwnInfo g = Map.lookup g <$> gets gsOwnership
-
--- | Fetch the ownership table for a runtime body about to be compiled. In RC
--- validation mode, absence is a hard finding: compiling without the side-table
--- would make every CVar in the body fail open.
-requireOwnInfo :: GName -> Gen (Maybe OwnInfo)
-requireOwnInfo g = do
-  own <- curOwnInfo g
-  enabled <- gets gsRcEnabled
-  case (enabled, own) of
-    (True, Nothing) ->
-      rcRecordFinding $
-        rcUseSiteMiss
-          g
-          Nothing
-          []
-          "no OwnInfo entry for compiled runtime body"
-    _ -> pure ()
-  pure own
-
--- | The Perceus RC walk-and-lookup at a 'CVar' occurrence
--- (PERCEUS-S2-PLAN (b.2)/(d)). INERT unless 'gsRcEnabled'. When on: build the
--- 'UseSite' for this occurrence (the current global plus @reverse gsPath@) and
--- require both @oiUses@ and @oiUseConsumes@ entries in 'gsCurOwn'. This is the
--- validation guard for the dup/drop decisions emitted elsewhere in S2.
---
---   * A resolved 'UseSite' with a consume/read bit is the expected case — the
---     path threading reached the same structural node the analysis keyed.
---   * A missing @oiUses@ or @oiUseConsumes@ entry is a hard validation miss.
---     Falling back to "no side-table fact" could silently suppress a required S2
---     ownership action, so the ON build fails closed.
 rcRecordFinding :: Text -> Gen ()
 rcRecordFinding msg =
   modify' $ \st -> st {gsRcFindings = msg : gsRcFindings st}
 
-rcUseSiteMiss :: GName -> Maybe Int -> [Int] -> Text -> Text
-rcUseSiteMiss g mi path detail =
+rcMetadataMiss :: GName -> Maybe Int -> Text -> Text
+rcMetadataMiss g mi detail =
   gKey g
-    <> maybe "" (\i -> " CVar#" <> T.pack (show i)) mi
-    <> " @" <> T.pack (show (reverse path))
+    <> maybe "" (\i -> " var#" <> T.pack (show i)) mi
     <> ": "
     <> detail
 
-rcWalkLookupVar :: Int -> Gen ()
-rcWalkLookupVar i = do
-  enabled <- gets gsRcEnabled
-  when enabled $ do
-    mown <- gets gsCurOwn
-    case mown of
-      Nothing -> pure () -- no per-definition table in scope (CAF prologue / lifted helper)
-      Just own -> do
-        g <- gets gsCur
-        path <- gets gsPath
-        let us = UseSite g (reverse path)
-        case Map.lookup us (oiUses own) of
-          Just _
-            | Map.member us (oiUseConsumes own) -> pure () -- resolved: the threaded path and consume/read bit match the analysis key
-            | otherwise ->
-                rcRecordFinding $
-                  rcUseSiteMiss
-                    g
-                    (Just i)
-                    path
-                    "no oiUseConsumes entry for resolved oiUses key"
-          Nothing ->
-            rcRecordFinding $
-              rcUseSiteMiss
-                g
-                (Just i)
-                path
-                "no oiUses entry"
-
--- | The S2.3b use verdict plus the consume/read bit for THIS occurrence. The
--- consume bit is required whenever a use verdict is present; validation records
--- missing bits as side-table misses, and emission declines to act without both
--- facts.
-rcUseInfoHere :: Gen (Maybe (UseKind, Bool))
-rcUseInfoHere = do
+-- | The S2.3b use verdict plus the consume/read bit attached to THIS lowered
+-- variable node. A missing node-local use after 'validateKBackendIR' is an
+-- internal invariant failure and remains fail-closed in RC-on builds.
+rcUseInfoOf :: Maybe BackendUse -> Maybe Int -> Gen (Maybe (UseKind, Bool))
+rcUseInfoOf use mi = do
   enabled <- gets gsRcEnabled
   if not enabled
     then pure Nothing
-    else do
-      mown <- gets gsCurOwn
-      case mown of
-        Just own -> do
-          g <- gets gsCur
-          path <- gets gsPath
-          let us = UseSite g (reverse path)
-          pure $ do
-            k <- Map.lookup us (oiUses own)
-            consumes <- Map.lookup us (oiUseConsumes own)
-            pure (k, consumes)
-        _ -> pure Nothing
+    else case use of
+      Just u -> pure (Just (buUseKind u, buConsumes u))
+      Nothing -> do
+        g <- gets gsCur
+        rcRecordFinding $
+          rcMetadataMiss g mi "KBackendIR variable node has no BackendUse metadata"
+        pure Nothing
 
 -- | Wrap a 'CVar' use-expression in @kdup(...)@ when the analysis classified the
 -- occurrence as a consuming 'NonLast' (S2.2 / b.2 plus S2.3b): the value is used
@@ -379,19 +299,19 @@ rcUseInfoHere = do
 -- expression, since no consumer-side drop will balance a dup. 'kdup' skips
 -- immediates (its @kis_imm@ guard), so an immediate-valued binder wrap is a
 -- runtime no-op.
-rcDupVarUse :: Text -> Gen Text
-rcDupVarUse e = do
-  mi <- rcUseInfoHere
+rcDupVarUse :: Maybe BackendUse -> Int -> Text -> Gen Text
+rcDupVarUse use i e = do
+  mi <- rcUseInfoOf use (Just i)
   pure $ case mi of
     Just (NonLast, True) -> "kdup(" <> e <> ")"
     _ -> e
 
--- | Compile the raw C expression for a variable occurrence after validating the
--- ownership side-table path. This intentionally does not apply a dup/move
+-- | Compile the raw C expression for a variable occurrence after validating its
+-- node-local ownership metadata. This intentionally does not apply a dup/move
 -- policy; callers choose that policy according to the value-flow context.
-compileVarRef :: Int -> Gen Text
-compileVarRef i = do
-  rcWalkLookupVar i
+compileVarRef :: Maybe BackendUse -> Int -> Gen Text
+compileVarRef use i = do
+  void (rcUseInfoOf use (Just i))
   lvals <- gets gsParamLvals
   if not (null lvals) && i >= 0 && i < length lvals
     then pure (lvals !! i)
@@ -407,14 +327,14 @@ compileVarRef i = do
 -- the argument. Non-flat/unknown locals are treated conservatively: an extra dup
 -- is leak-biased, while moving a borrowed cell read becomes a UAF after S3.3
 -- drop-old barriers.
-compileOwnedVarUse :: Int -> Gen Text
-compileOwnedVarUse i = do
-  e <- compileVarRef i
+compileOwnedVarUse :: Maybe BackendUse -> Int -> Gen Text
+compileOwnedVarUse use i = do
+  e <- compileVarRef use i
   rcOn <- gets gsRcEnabled
   if not rcOn
     then pure e
     else do
-      mi <- rcUseInfoHere
+      mi <- rcUseInfoOf use (Just i)
       sourceOwns <- flatLocalOwnsAt i
       let needsDup = case mi of
             Just (_, False) -> False
@@ -430,23 +350,23 @@ compileOwnedVarUse i = do
 -- owned reference with @kdup@ before any later cleanup can drop @p@. The proof is
 -- the structural base term plus the ownership side table for that exact base use:
 -- an owned flat local read in a non-consuming position. No field-name recognition.
-rcProjectionResultCanOwn :: Term -> Gen Bool
+rcProjectionResultCanOwn :: BackendTerm -> Gen Bool
 rcProjectionResultCanOwn = \case
-  CVar i -> do
-    mi <- rcUseInfoHere
+  BVar _ use i -> do
+    mi <- rcUseInfoOf use (Just i)
     sourceOwns <- flatLocalOwnsAt i
     pure $ sourceOwns && case mi of
       Just (_, False) -> True
       _ -> False
-  CSealE _ e -> withChild P.childPos (rcProjectionResultCanOwn e)
+  BSeal _ _ e -> (rcProjectionResultCanOwn e)
   _ -> pure False
 
-rcOwnProjectionResult :: Bool -> Term -> Text -> Gen Text
+rcOwnProjectionResult :: Bool -> BackendTerm -> Text -> Gen Text
 rcOwnProjectionResult needOwned base raw =
   if not needOwned
     then pure raw
     else do
-      canOwn <- withChild P.childPos (rcProjectionResultCanOwn base)
+      canOwn <- (rcProjectionResultCanOwn base)
       pure $ if canOwn then "kdup(" <> raw <> ")" else raw
 
 flatLocalOwnsAt :: Int -> Gen Bool
@@ -456,7 +376,7 @@ flatLocalOwnsAt i = do
     own : _ -> own
     [] -> False
 
-withFlatLocalOwnership :: Maybe BinderId -> Bool -> Gen a -> Gen a
+withFlatLocalOwnership :: Maybe BackendBinderId -> Bool -> Gen a -> Gen a
 withFlatLocalOwnership mbid ownsRef act = do
   lvals <- gets gsParamLvals
   if null lvals
@@ -476,66 +396,55 @@ withFlatLocalOwnership mbid ownsRef act = do
 -- | Conservative S2.3b/S2.3d ownership result check for a flat @let@
 -- initializer.
 -- Scope-close drops are only safe when the local is known to hold an owned
--- reference. Projection results are accepted only when their base-use side-table
+-- reference. Projection results are accepted only when the base-use metadata
 -- proves an owned aggregate is read in a non-consuming position and the result
 -- site can materialise an owned @kdup@; unproven call/projection shapes stay
 -- leak-biased. A saturated eta-expanded constructor application is accepted
 -- because this same structural recognizer is what codegen beta-reduces to a
 -- direct fresh @kctor@ allocation; this is symbolically tied to the Core shape,
 -- not to a source spelling.
-rcTermProducesOwnedHere :: Term -> Gen Bool
+rcTermProducesOwnedHere :: BackendTerm -> Gen Bool
 rcTermProducesOwnedHere t = case t of
-  CApp {}
+  BApp {}
     | Just {} <- etaCtorApp t -> pure True
-  CVar i -> do
-    mi <- rcUseInfoHere
+  BVar _ use i -> do
+    mi <- rcUseInfoOf use (Just i)
     sourceOwns <- flatLocalOwnsAt i
     pure $ case mi of
       Just (LastUse, True) -> sourceOwns
       Just (NonLast, True) -> True
       _ -> False
-  CCtor {} -> pure True
-  CRecordV {} -> pure True
-  CInject {} -> pure True
-  CThunkE {} -> pure True
-  CLazyE {} -> pure True
-  CSealE _ e -> withChild P.childPos (rcTermProducesOwnedHere e)
-  CProj e _ -> withChild P.childPos (rcProjectionResultCanOwn e)
-  CProjAt e _ _ -> withChild P.childPos (rcProjectionResultCanOwn e)
-  CIf _ th el ->
+  BCtor {} -> pure True
+  BRecord {} -> pure True
+  BInject {} -> pure True
+  BThunk {} -> pure True
+  BLazy {} -> pure True
+  BSeal _ _ e -> (rcTermProducesOwnedHere e)
+  BProj _ e _ _ -> (rcProjectionResultCanOwn e)
+  BIf _ _ th el ->
     (&&)
-      <$> withChild P.ifThenPos (rcTermProducesOwnedHere th)
-      <*> withChild P.ifElsePos (rcTermProducesOwnedHere el)
-  CLet _ _ _ rhs body -> do
-    rhsOwns <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
-    bid <- currentBinderIdHere
-    withFlatLocalOwnership (Just bid) rhsOwns $
-      withChild P.letBodyPos (rcTermProducesOwnedHere body)
-  CLetRec _ _ _ rhs body -> do
-    rhsOwns <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
-    bid <- currentBinderIdHere
-    withFlatLocalOwnership (Just bid) rhsOwns $
-      withChild P.letBodyPos (rcTermProducesOwnedHere body)
-  CMatch _ _ alts ->
-    withChild P.matchArmsPos $
-      and
-        <$> forM
-          (zip [0 ..] alts)
-          ( \(ai, CaseAlt _ _ body) ->
-              withChild (P.matchArmPos ai) $
-                withChild P.altBodyPos (rcTermProducesOwnedHere body)
+      <$> (rcTermProducesOwnedHere th)
+      <*> (rcTermProducesOwnedHere el)
+  BLet _ mb _ _ rhs body -> do
+    rhsOwns <- (rcTermProducesOwnedHere rhs)
+    withFlatLocalOwnership (bbBinderId <$> mb) rhsOwns $
+      (rcTermProducesOwnedHere body)
+  BLetRec _ mb _ _ rhs body -> do
+    rhsOwns <- (rcTermProducesOwnedHere rhs)
+    withFlatLocalOwnership (bbBinderId <$> mb) rhsOwns $
+      (rcTermProducesOwnedHere body)
+  BMatch _ _ alts _ ->
+    and
+      <$> forM
+        alts
+          ( \(BackendAlt _ _ _ _ body) ->
+              (rcTermProducesOwnedHere body)
           )
   _ -> pure False
 
-binderHasConsumingLastUse :: OwnInfo -> BinderId -> Bool
-binderHasConsumingLastUse own bid =
-  any (== LastUse) (Map.findWithDefault [] bid (oiBinderConsumingUses own))
-
--- | The S2.3 drop DECISION for a binder introduced at the CURRENT 'gsPath' (its
--- 'BinderId' is @gsCur@ + @reverse gsPath@) — the seam where the binder node is
--- compiled, BEFORE descending into its body/arm. Returns 'True' iff a @kdrop@
--- against the binder's bound C local should be emitted at that scope's close
--- (b.4):
+-- | The S2.3 drop DECISION for a lowered binder node. Returns 'True' iff a
+-- @kdrop@ against the binder's bound C local should be emitted at that scope's
+-- close (b.4):
 --
 --   * the binder is 'boDroppable' (@0@\/@≤1@\/@ω@ — carries no consumption
 --     obligation) and NOT 'boBorrowed' (a borrowed value is the caller's; the
@@ -545,58 +454,19 @@ binderHasConsumingLastUse own bid =
   --     reads may coexist with the close-drop because projection results are now
   --     owned at the result/let/consuming-call sites that can outlive the aggregate.
   --     S2.3d branch-dead drops are handled separately by
---     'rcEmitBranchDeadDropsHere', using explicit path-local drop sites and the
+--     'rcEmitBranchDeadDropsHere', using explicit node-local drop sites and the
 --     current flat-local ownership metadata; this helper remains the ordinary
 --     whole-scope close-drop gate.
 --
--- Inert under the OFF baseline (returns 'False' without a lookup), so codegen is
--- byte-identical. A missing ownership table yields 'False'.
-rcBinderDroppableHere :: Gen Bool
-rcBinderDroppableHere = do
+-- Inert under the OFF baseline. Missing binder metadata yields 'False' after
+-- 'validateKBackendIR' has already made that a compile-time error.
+rcBinderDroppableHere :: Maybe BackendBinder -> Gen Bool
+rcBinderDroppableHere mb = do
   enabled <- gets gsRcEnabled
-  if not enabled
-    then pure False
-    else do
-      mown <- gets gsCurOwn
-      case mown of
-        Just own -> do
-          g <- gets gsCur
-          path <- gets gsPath
-          let bid = BinderId g (reverse path)
-          pure $ case Map.lookup bid (oiBinders own) of
-            Just bo
-              | boDroppable bo
-              , not (boBorrowed bo)
-              , not (binderHasConsumingLastUse own bid) ->
-                  True
-            _ -> False
-        _ -> pure False
-
--- | Like 'rcBinderDroppableHere' but for a pattern-slot binder at slot @k@ of the
--- match arm currently being compiled (its 'BinderId' is @gsCur@ +
--- @reverse (patSlotPos k : gsPath)@ — the same key 'Kappa.Ownership.walkAlt'
--- records). Used to decide whether the per-arm @kdrop@ of a destructured field
--- local fires (b.4, per-arm completion path in 'consumeAlt').
-rcPatSlotDroppableHere :: Int -> Gen Bool
-rcPatSlotDroppableHere k = do
-  enabled <- gets gsRcEnabled
-  if not enabled
-    then pure False
-    else do
-      mown <- gets gsCurOwn
-      case mown of
-        Just own -> do
-          g <- gets gsCur
-          path <- gets gsPath
-          let bid = BinderId g (reverse (P.patSlotPos k : path))
-          pure $ case Map.lookup bid (oiBinders own) of
-            Just bo
-              | boDroppable bo
-              , not (boBorrowed bo)
-              , not (binderHasConsumingLastUse own bid) ->
-                  True
-            _ -> False
-        _ -> pure False
+  pure $ enabled && case mb of
+    Just (BackendBinder _ _ bo hasConsumingLastUse) ->
+      boDroppable bo && not (boBorrowed bo) && not hasConsumingLastUse
+    Nothing -> False
 
 -- | Emit a @kdrop(<lval>)@ statement against a bound C LOCAL (b.4 / R-flat:
 -- ALWAYS the bound local, never a fresh @kvar(env,i)@ rvalue re-read). The
@@ -605,82 +475,77 @@ rcPatSlotDroppableHere k = do
 rcEmitDrop :: Text -> Gen ()
 rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
 
--- | The binder introduced at the current structural path.
-currentBinderIdHere :: Gen BinderId
-currentBinderIdHere = do
-  g <- gets gsCur
-  path <- gets gsPath
-  pure (BinderId g (reverse path))
-
--- | The pattern-slot binder introduced at slot @k@ under the current structural
--- path.
-currentPatSlotBinderId :: Int -> Gen BinderId
-currentPatSlotBinderId k = do
-  g <- gets gsCur
-  path <- gets gsPath
-  pure (BinderId g (reverse (P.patSlotPos k : path)))
-
--- | S2.3d branch-dead drop emission. The ownership table names binders that
--- are absent from this selected branch while live in a sibling path; this
--- helper resolves those binder identities to the current flat C locals and
--- emits drops only when the local is known to own a reference and the binder is
--- droppable/non-borrowed. In a top-level flat worker frame, missing
--- binder-to-local metadata for a droppable site is a validation finding.
--- Capture-free nested flat closures may drop their own resolved owned locals;
--- missing outer captured binders and boxed/CPS paths remain conservative
--- no-drops. A resolved local with unproven ownership also remains a
--- conservative no-drop. No guessed @kvar@ reread, no name-based match.
-rcEmitBranchDeadDropsHere :: Gen ()
-rcEmitBranchDeadDropsHere = do
+-- | S2.3d branch-dead drop emission. The KBackendIR node names binders that are
+-- absent from this selected branch while live in a sibling path; this helper
+-- resolves those lowered binder identities to the current flat C locals and
+-- emits drops only when the local is known to own a reference. No guessed @kvar@
+-- reread, no name-based match, and no structural path lookup.
+rcEmitBranchDeadDropsHere :: BackendMeta -> Gen ()
+rcEmitBranchDeadDropsHere meta = do
   enabled <- gets gsRcEnabled
   when enabled $ do
-    mown <- gets gsCurOwn
-    case mown of
-      Nothing -> pure ()
-      Just own -> do
-        path <- reverse <$> gets gsPath
-        g <- gets gsCur
-        modify' $ \st -> st {gsRcBranchVisited = Set.insert (g, path) (gsRcBranchVisited st)}
-        lvals <- gets gsParamLvals
-        bids <- gets gsParamBinders
-        owns <- gets gsParamOwns
-        topFlat <- gets gsTopFlatFrame
-        let siteBids = Map.findWithDefault [] path (oiBranchDropSites own)
-            flat = zip3 lvals bids owns
-            knownFlatBids = [bid | (_, Just bid, _) <- flat]
-            lvalFor bid =
-              case [lv | (lv, Just bid', True) <- flat, bid' == bid] of
-                lv : _ -> Just lv
-                [] -> Nothing
-            droppable bid =
-              case Map.lookup bid (oiBinders own) of
-                Just bo -> boDroppable bo && not (boBorrowed bo)
-                Nothing -> False
-            targets =
-              [ lv
-              | bid <- siteBids
-              , droppable bid
-              , Just lv <- [lvalFor bid]
-              ]
-            unresolvedDroppable =
-              [ bid
-              | bid <- siteBids
-              , droppable bid
-              , bid `notElem` knownFlatBids
-              ]
-        case unresolvedDroppable of
-          _ | not topFlat -> pure ()
-          [] -> pure ()
-          _ ->
-            rcRecordFinding $
-              rcUseSiteMiss
-                g
-                Nothing
-                (reverse path)
-                ( "branch drop site listed droppable binder(s) with no top-level flat-local metadata: "
-                    <> T.intercalate ", " (map (T.pack . show) unresolvedDroppable)
-                )
-        mapM_ rcEmitDrop targets
+    g <- gets gsCur
+    lvals <- gets gsParamLvals
+    bids <- gets gsParamBinders
+    owns <- gets gsParamOwns
+    topFlat <- gets gsTopFlatFrame
+    let siteBids = bmBranchDrops meta
+        flat = zip3 lvals bids owns
+        knownFlatBids = [bid | (_, Just bid, _) <- flat]
+        bidOf (BackendBinder bid _ _ _) = bid
+        originOf (BackendBinder _ origin _ _) = origin
+        branchDropAllowed (BackendBinder _ _ bo _) =
+          boDeclQ bo /= Q0 && boDroppable bo && not (boBorrowed bo)
+        lvalFor binder =
+          case [lv | (lv, Just bid', True) <- flat, bid' == bidOf binder] of
+            lv : _ -> Just lv
+            [] -> Nothing
+        targets =
+          [ lv
+          | binder <- siteBids
+          , branchDropAllowed binder
+          , Just lv <- [lvalFor binder]
+          ]
+        unresolved =
+          [ originOf binder <> " => " <> T.pack (show (bidOf binder))
+          | binder <- siteBids
+          , branchDropAllowed binder
+          , bidOf binder `notElem` knownFlatBids
+          ]
+    case unresolved of
+      _ | not topFlat -> pure ()
+      [] -> pure ()
+      _ ->
+        rcRecordFinding $
+          rcMetadataMiss
+            g
+            Nothing
+            ( "branch drop site listed droppable binder(s) with no top-level flat-local metadata: "
+                <> T.intercalate ", " unresolved
+            )
+    mapM_ rcEmitDrop targets
+
+backendTermMeta :: BackendTerm -> BackendMeta
+backendTermMeta = \case
+  BUnit meta -> meta
+  BVar meta _ _ -> meta
+  BGlob meta _ -> meta
+  BLit meta _ -> meta
+  BLam meta _ _ _ _ _ -> meta
+  BApp meta _ _ -> meta
+  BCtor meta _ _ -> meta
+  BMatch meta _ _ _ -> meta
+  BRecord meta _ -> meta
+  BProj meta _ _ _ -> meta
+  BInject meta _ _ -> meta
+  BLet meta _ _ _ _ _ -> meta
+  BLetRec meta _ _ _ _ _ -> meta
+  BDo meta _ _ -> meta
+  BSeal meta _ _ -> meta
+  BThunk meta _ -> meta
+  BLazy meta _ -> meta
+  BForce meta _ -> meta
+  BIf meta _ _ _ -> meta
 
 -- | Perceus RC S2.3a (§a) — the MATCH-DESTRUCTURE cell-drop DECISION.
 --
@@ -688,14 +553,12 @@ rcEmitBranchDeadDropsHere = do
 -- (@kctor_arg@\/@kproj@\/@krec_at@\/@kvariant_payload@ all return the field
 -- without an incref), so once the bound fields are dup'd-out the scrutinee CELL
 -- itself is leaked unless the match drops it. This decides, from the SCRUTINEE
--- shape and (for a 'CVar' scrutinee) its use verdict plus consume bit at the
--- 'matchScrutPos' seam,
+-- shape and (for a 'BVar' scrutinee) its node-local use verdict plus consume bit,
 -- whether the match owns a reference to the cell that it must discharge with a
 -- @kdrop(sv)@:
 --
---   * a __'CVar'__ scrutinee — look up its use verdict and consume bit at
---     current @matchScrutPos@ (the exact key "Kappa.Ownership"'s walk records
---     for the scrutinee occurrence). Drop for consuming 'LastUse' only when the
+--   * a __'BVar'__ scrutinee — read the use verdict and consume bit attached to
+--     that lowered variable node. Drop for consuming 'LastUse' only when the
 --     source flat local itself owns the value. Drop for consuming 'NonLast'
 --     because the occurrence was already @kdup@'d at its 'CVar' site, so the
 --     match consumes the freshly incremented reference it received. NEVER drop
@@ -713,32 +576,32 @@ rcEmitBranchDeadDropsHere = do
 --     ownership proof like the structural constructor cases above.
 --
 -- Inert under the OFF baseline, so codegen is byte-identical there.
-rcScrutDropDecision :: Term -> Gen Bool
+rcScrutDropDecision :: BackendTerm -> Gen Bool
 rcScrutDropDecision scrut = do
   enabled <- gets gsRcEnabled
   if not enabled
     then pure False
-    else withChild P.matchScrutPos (go scrut)
+    else (go scrut)
   where
     go = \case
-      CVar i -> do
+      BVar _ use i -> do
         -- Drop only when the resolved occurrence is consuming and the
         -- match owns the reference it compiled: a consuming NonLast has been
         -- dup'd at the CVar site, while a consuming LastUse is droppable only
         -- if the source flat local itself owns the value.
-        mi <- rcUseInfoHere
+        mi <- rcUseInfoOf use (Just i)
         sourceOwns <- flatLocalOwnsAt i
         pure $ case mi of
           Just (LastUse, True) -> sourceOwns
           Just (NonLast, True) -> True
           _ -> False
-      t@CApp {}
+      t@BApp {}
         | Just {} <- etaCtorApp t -> pure True
       -- Fresh owning allocations: rc==1, die at the match.
-      CCtor {} -> pure True
-      CRecordV {} -> pure True
-      CInject {} -> pure True
-      CSealE _ e -> withChild P.childPos (go e)
+      BCtor {} -> pure True
+      BRecord {} -> pure True
+      BInject {} -> pure True
+      BSeal _ _ e -> (go e)
       -- General calls and projections can return borrowed references. Without
       -- result ownership metadata, do not drop them as match-owned cells.
       _ -> pure False
@@ -1079,82 +942,92 @@ basePrims =
 -- implements (empty for the no-FFI build).  Returns @Left errs@ when any
 -- reachable definition uses an unsupported construct (the caller renders
 -- these as 'E_BACKEND_UNSUPPORTED'), or @Right csource@ on success. When
--- Perceus RC validation is enabled, the result also carries the R-path findings
--- so the IO driver can report them on both successful and failed builds.
+-- Perceus RC validation is enabled, the result also carries KBackendIR metadata
+-- findings so the IO driver can report them on both successful and failed
+-- builds.
 generateC :: Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
 generateC rcEnabled cs mainG ffiPrims hostSyms =
-  let evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
-      st0 =
-        GenState
-          { gsFresh = 0
-          , gsStmts = []
-          , gsEnv = "0"
-          , gsParamLvals = []
-          , gsParamBinders = []
-          , gsParamOwns = []
-          , gsTopFlatFrame = False
-          , gsTop = []
-          , gsProtos = []
-          , gsEmitted = Set.singleton mainG
-          , gsQueue = [mainG]
-          , gsErrs = []
-          , gsCur = mainG
-          , gsGlobals = csGlobals cs
-          , gsEvalCtx = evalCtx0
-          , gsBodies = csCoreBodies cs
-          , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
-          , gsOwnership = csOwnership cs
-          , gsCurOwn = Nothing
-          , gsPath = []
-          , gsRcEnabled = rcEnabled
-          , gsRcFindings = []
-          , gsRcBranchVisited = Set.empty
-          , gsCtors = csCtors cs
-          , gsDatas = Map.keysSet (csDatas cs)
-          , gsTraits = Map.keysSet (csTraits cs)
-          , gsDeclSites = csDeclSites cs
-          , gsPrims = Set.union basePrims ffiPrims
-          , gsPrimUsed = Set.empty
-          , gsHostSyms = hostSyms
-          , gsHostUsed = Set.empty
-          , gsBounceMemo = Map.empty
-          , gsLoops = []
-          , gsDefer = []
-          , gsScopeDefers = []
-          , gsDeferLabels = []
-          , gsI64Escape = "*kovf = KRT2_SCALAR_OVERFLOW; return 0;"
-          , gsCollectCtors = Set.empty
-          , gsCollectVars = Set.empty
-          }
-      final = execState (drainQueue >> emitMain mainG) st0
-      -- §18.1.17/§27.6/§34.3.3 Stage-4a backend legality: this native backend's
-      -- KK_HANDLER runtime is ONE-SHOT (it omits `rt-multishot-effects`: no persistent
-      -- copy-on-resume of a captured segment), so a reachable MULTI-SHOT effect
-      -- operation is rejected at compile time rather than miscompiled to
-      -- one-shot semantics.  The interpreter (the differential oracle) supports
-      -- multi-shot, so this gate is backend-local — it does not fire under `run`.
-      multishotErrs = multishotLegality cs (gsEmitted final)
-      rcFindings = reverse (gsRcFindings final) ++ rcBranchSiteFindings final
-      rcErrs = rcFindingErrors (gsRcEnabled final) mainG (Map.findWithDefault noSpan mainG (csDeclSites cs)) rcFindings
-      mRcFindings = if gsRcEnabled final then Just rcFindings else Nothing
-   in case reverse (gsErrs final) ++ multishotErrs ++ rcErrs of
-        [] -> Right (assemble final, mRcFindings)
-        errs -> Left (errs, mRcFindings)
+  let backendIr = lowerKBackendIR cs
+      backendIrFindings = validateKBackendIR backendIr
+      backendIrErrs = backendIRValidationErrorsFrom cs mainG backendIrFindings
+      backendIrReport = map renderBackendIRViolation backendIrFindings
+      mBackendIrReport = if rcEnabled then Just backendIrReport else Nothing
+   in if not (null backendIrErrs)
+        then Left (backendIrErrs, mBackendIrReport)
+        else
+          let evalCtx0 = EvalCtx (Globals (csGlobals cs)) (csMetas cs) False (csFacts cs)
+              st0 =
+                GenState
+                  { gsFresh = 0
+                  , gsStmts = []
+                  , gsEnv = "0"
+                  , gsParamLvals = []
+                  , gsParamBinders = []
+                  , gsParamOwns = []
+                  , gsTopFlatFrame = False
+                  , gsTop = []
+                  , gsProtos = []
+                  , gsEmitted = Set.singleton mainG
+                  , gsQueue = [mainG]
+                  , gsErrs = []
+                  , gsCur = mainG
+                  , gsGlobals = csGlobals cs
+                  , gsEvalCtx = evalCtx0
+                  , gsBackendBodies = kbirBodies backendIr
+                  , gsBodies = csCoreBodies cs
+                  , gsIOMonadRefDicts = ioMonadRefDicts (csInstances cs)
+                  , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
+                  , gsRcEnabled = rcEnabled
+                  , gsRcFindings = []
+                  , gsCtors = csCtors cs
+                  , gsDatas = Map.keysSet (csDatas cs)
+                  , gsTraits = Map.keysSet (csTraits cs)
+                  , gsDeclSites = csDeclSites cs
+                  , gsPrims = Set.union basePrims ffiPrims
+                  , gsPrimUsed = Set.empty
+                  , gsHostSyms = hostSyms
+                  , gsHostUsed = Set.empty
+                  , gsBounceMemo = Map.empty
+                  , gsLoops = []
+                  , gsDefer = []
+                  , gsScopeDefers = []
+                  , gsDeferLabels = []
+                  , gsI64Escape = "*kovf = KRT2_SCALAR_OVERFLOW; return 0;"
+                  , gsCollectCtors = Set.empty
+                  , gsCollectVars = Set.empty
+                  }
+              final = execState (drainQueue >> emitMain mainG) st0
+              -- §18.1.17/§27.6/§34.3.3 Stage-4a backend legality: this native backend's
+              -- KK_HANDLER runtime is ONE-SHOT (it omits `rt-multishot-effects`: no persistent
+              -- copy-on-resume of a captured segment), so a reachable MULTI-SHOT effect
+              -- operation is rejected at compile time rather than miscompiled to
+              -- one-shot semantics.  The interpreter (the differential oracle) supports
+              -- multi-shot, so this gate is backend-local — it does not fire under `run`.
+              multishotErrs = multishotLegality cs (gsEmitted final)
+              rcFindings = backendIrReport ++ reverse (gsRcFindings final)
+              rcErrs = rcFindingErrors (gsRcEnabled final) mainG (Map.findWithDefault noSpan mainG (csDeclSites cs)) rcFindings
+              mRcFindings = if gsRcEnabled final then Just rcFindings else Nothing
+           in case reverse (gsErrs final) ++ multishotErrs ++ rcErrs of
+                [] -> Right (assemble final, mRcFindings)
+                errs -> Left (errs, mRcFindings)
 
-rcBranchSiteFindings :: GenState -> [Text]
-rcBranchSiteFindings st
-  | not (gsRcEnabled st) = []
-  | otherwise =
-      [ rcUseSiteMiss
-          g
-          Nothing
-          (reverse site)
-          "branch drop site key was not visited by C codegen"
-      | g <- Set.toList (gsEmitted st)
-      , Just own <- [Map.lookup g (gsOwnership st)]
-      , site <- Map.keys (oiBranchDropSites own)
-      , (g, site) `Set.notMember` gsRcBranchVisited st
-      ]
+ioMonadRefDicts :: [InstanceEntry] -> Set GName
+ioMonadRefDicts =
+  Set.fromList
+    . map ieDict
+    . filter isIOMonadRefInstance
+  where
+    isIOMonadRefInstance ie =
+      ieTrait ie == Builtins.prelMonadRef
+        && gnameModule (ieDict ie) == Builtins.preludeModule
+        && case ieHead ie of
+          [t] -> termHeadGlob t == Just Builtins.prelIO
+          _ -> False
+    gnameModule (GName m _) = m
+    termHeadGlob = \case
+      CApp _ f _ -> termHeadGlob f
+      CGlob g -> Just g
+      _ -> Nothing
 
 rcFindingErrors :: Bool -> GName -> Span -> [Text] -> [BackendError]
 rcFindingErrors False _ _ _ = []
@@ -1163,10 +1036,10 @@ rcFindingErrors True mainG sp findings =
   [ backendUnsupported
       mainG
       sp
-        "Perceus RC R-path ownership lookup"
+        "Perceus RC KBackendIR ownership metadata"
         ( "Perceus RC validation found "
             <> T.pack (show (length findings))
-            <> " ownership side-table path miss(es); S2.3 validation requires zero so a path drift cannot silently suppress dup/drop decisions. First misses: "
+            <> " missing KBackendIR ownership metadata finding(s); S5.A requires zero so native emission cannot silently suppress dup/drop decisions. First findings: "
             <> T.intercalate " | " (take 5 findings)
         )
   ]
@@ -1233,7 +1106,7 @@ drainQueue = do
 emitGlobal :: GName -> Gen ()
 emitGlobal g = do
   modify' $ \st -> st {gsCur = g}
-  bodies <- gets gsBodies
+  backendBodies <- gets gsBackendBodies
   let ident = cGlobIdent g
   modify' $ \st -> st {gsProtos = ("static KValue *" <> ident <> "(void);") : gsProtos st}
   -- A global reaches here only after compileGlob has ruled out a primitive,
@@ -1245,7 +1118,7 @@ emitGlobal g = do
   -- that mentions such a name compiles rather than being refused.  (Trait
   -- dictionaries and derived projections DO have recorded core bodies via
   -- recordCoreBody, so they take the Just branch below.)
-  case Map.lookup g bodies of
+  case Map.lookup g backendBodies of
     Nothing -> do
       -- Erase to the unit placeholder ONLY for a genuinely type-level / opaque
       -- global (a data\/trait name or a sort-typed builtin like @Integer@).  A
@@ -1264,7 +1137,7 @@ emitGlobal g = do
               )
       (stmts, _) <- captured "0" (pure ())
       finishGlobal ident stmts placeholder
-    Just tm -> do
+    Just body -> do
       -- A global whose body is a type-level / staging term (a `Type`-typed
       -- or `Syntax`-typed definition) is computationally erased (§12.2,
       -- §31.2): its accessor yields the unit placeholder, exactly as the
@@ -1281,28 +1154,20 @@ emitGlobal g = do
       -- placeholder and its body is NOT compiled — keeping those primitives off
       -- the reachable native closure.  See 'resultIsProofP'.
       proof <- resultIsProof g
-      erasable <- (proof ||) <$> isErasableArg tm
+      erasable <- (proof ||) <$> isErasableArg (bbRoot body)
       if erasable
         then do
           (stmts, _) <- captured "0" (pure ())
           finishGlobal ident stmts "kunit()"
-        else case funcArity tm of
+        else case (length (bbParams body), bbRoot body) of
           -- A function global is lowered to a worker (a loop, so a tail
           -- self-call runs in constant C stack) plus a curried closure for
           -- partial application and first-class use.
-          (n, inner) | n >= 1 -> compileFunctionGlobal g n inner
+          (n, inner) | n >= 1 -> compileFunctionGlobal g (bbParams body) inner
           _ -> do
-            -- Perceus RC S2.1: a CAF body sits at the structural root (empty path).
-            own <- requireOwnInfo g
-            (stmts, e) <- withBodyOwn own [] (captured "0" (compile tm))
+            -- A CAF body sits at the KBackendIR root.
+            (stmts, e) <- captured "0" (compile (bbRoot body))
             finishGlobal ident stmts e
-
--- | The leading-lambda arity of a term and the body beneath those binders.
-funcArity :: Term -> (Int, Term)
-funcArity = go 0
-  where
-    go !n (CLam _ _ _ b) = go (n + 1) b
-    go !n t = (n, t)
 
 -- | Does this worker body create a heap value that captures the enclosing
 -- environment BY REFERENCE (a closure\/thunk\/do-action\/recursive let)?  If
@@ -1314,43 +1179,36 @@ funcArity = go 0
 -- each iteration instead (the pre-QW2 behaviour, correct for escaping
 -- closures).  Conservative: ANY such construct anywhere in the body disables
 -- the in-place loop, even if that particular closure does not actually escape.
-bodyCapturesEnv :: Term -> Bool
+bodyCapturesEnv :: BackendTerm -> Bool
 bodyCapturesEnv = go
   where
     go t = case t of
-      CLam {} -> True -- kclo(fn, env)
-      CLetRec {} -> True -- recursive closure captures the binder cell
-      CDo {} -> True -- kio(fn, env)
-      CThunkE {} -> True -- kthunk(fn, env, 0)  (Delay)
-      CLazyE {} -> True -- kthunk(fn, env, 1)  (Memo)
-      CQuote {} -> True -- conservative (erased, but never in a hot worker)
+      BLam {} -> True -- kclo(fn, env)
+      BLetRec {} -> True -- recursive closure captures the binder cell
+      BDo {} -> True -- kio(fn, env)
+      BThunk {} -> True -- kthunk(fn, env, 0)  (Delay)
+      BLazy {} -> True -- kthunk(fn, env, 1)  (Memo)
       -- P0-B: a saturated eta-expanded constructor application lowers to a
       -- direct 'kctor' (no 'kclo' over the env — see 'etaCtorApp'), so it
       -- captures its field VALUES, not the env, exactly like a 'CCtor'.
       -- Look through the eta lambdas to the real fields so this no longer
       -- forces the per-iteration env rebuild.
-      CApp {} | Just (_, ctorArgs) <- etaCtorApp t -> any go ctorArgs
-      CApp _ f a -> go f || go a
-      CCtor _ _ args -> any go args
-      CMatch s _ alts -> go s || any goAlt alts
-      CProj e _ -> go e
-      CProjAt e _ _ -> go e
-      CInject _ e -> go e
-      CForceE e -> go e
-      CSealE _ e -> go e
-      CLet _ _ ty rhs body -> go ty || go rhs || go body
-      CIf c th el -> go c || go th || go el
-      CRecordV fs -> any (go . snd) fs
-      CRecordT fs -> any (go . snd) fs
-      CVariantT ts -> any go ts
-      CSigT _ e -> go e
-      CPi _ _ _ _ a b -> go a || go b
-      CVar {} -> False
-      CGlob {} -> False
-      CSort {} -> False
-      CLit {} -> False
-      CMeta {} -> False
-    goAlt (CaseAlt _ mg body) = maybe False go mg || go body
+      BApp {} | Just (_, ctorArgs) <- etaCtorApp t -> any go ctorArgs
+      BApp _ f args -> go f || any (\(_, _, a) -> go a) args
+      BCtor _ _ args -> any go args
+      BMatch _ s alts _ -> go s || any goAlt alts
+      BProj _ e _ _ -> go e
+      BInject _ _ e -> go e
+      BForce _ e -> go e
+      BSeal _ _ e -> go e
+      BLet _ _ _ _ rhs body -> go rhs || go body
+      BIf _ c th el -> go c || go th || go el
+      BRecord _ fs -> any (go . snd) fs
+      BVar {} -> False
+      BGlob {} -> False
+      BUnit {} -> False
+      BLit {} -> False
+    goAlt (BackendAlt _ _ _ mg body) = maybe False go mg || go body
 
 -- | Lower a function global to: a worker @kw_…(p0,…,p{n-1})@ whose body is
 -- a @while(1)@ loop (so a tail self-call reassigns the C parameters and
@@ -1366,10 +1224,11 @@ bodyCapturesEnv = go
 -- REBUILT at the loop top from the reassigned C params (so each iteration's
 -- escaping closures capture a distinct env, matching the interpreter) and
 -- variables are read via @kvar@.
-compileFunctionGlobal :: GName -> Int -> Term -> Gen ()
-compileFunctionGlobal g n inner = do
+compileFunctionGlobal :: GName -> [BackendParam] -> BackendTerm -> Gen ()
+compileFunctionGlobal g params inner = do
   let ident = cGlobIdent g
       worker = "kw_" <> mangle (gKey g)
+      n = length params
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
       inPlace = not (bodyCapturesEnv inner)
       -- R2.3 FLAT frame: a CAPTURE-FREE body reads parameters directly from the
@@ -1396,16 +1255,11 @@ compileFunctionGlobal g n inner = do
   -- let/match binding prepends a C local; the mapping is reset for a capturing
   -- worker so CVar/binders fall back to kvar/kpush.  (A flat body has no
   -- env-capturing form, so a lifted closure can never read it.)
-  -- Perceus RC S2.1: enter the body-own scope. The analysis walks the WHOLE body
-  -- including the @n@ leading 'CLam's the worker frame just stripped, so @inner@
-  -- sits at the structural path @replicate n lamBodyPos@ from the body root — seed
-  -- 'gsPath' with that prefix so the walk-and-lookup keys land at the right offset.
-  own <- requireOwnInfo g
   saved <- gets gsParamLvals
   savedBinders <- gets gsParamBinders
   savedOwns <- gets gsParamOwns
   savedTopFlat <- gets gsTopFlatFrame
-  let paramBids = reverse [BinderId g (replicate j P.lamBodyPos) | j <- [0 .. n - 1]]
+  let paramBids = reverse (map (fmap bbBinderId . bpBinder) params)
       -- The binder table says which parameters are droppable in the source
       -- contract, but the worker ABI has not yet normalized every incoming
       -- actual to an owned reference. Keep the BinderIds for exact resolution and
@@ -1415,13 +1269,11 @@ compileFunctionGlobal g n inner = do
   modify' $ \st ->
     st
       { gsParamLvals = if flat then reverse ps else []
-      , gsParamBinders = if flat then map Just paramBids else []
+      , gsParamBinders = if flat then paramBids else []
       , gsParamOwns = if flat then paramOwns else []
       , gsTopFlatFrame = flat
       }
-  (bodyStmts, ()) <-
-    withBodyOwn own (replicate n P.lamBodyPos) $
-      captured "kw_env" (consume (SinkTail ti) inner)
+  (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
   modify' $ \st ->
     st
       { gsParamLvals = saved
@@ -1461,18 +1313,25 @@ compileFunctionGlobal g n inner = do
   -- accessor: the memoised curried closure value (its forward declaration
   -- was already emitted by 'emitGlobal').
   (cacheHit, publishFresh) <- globalCacheOwnershipPlan
-  let accessor =
-        T.unlines
-          ( [ "static KValue *" <> ident <> "(void) {"
-            , "  static _Atomic(KValue *) cache = NULL;"
-            , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
-            , cacheHit
-            , "  KValue *fresh = kclo(" <> head cloNames <> ", 0);"
-            ]
-              ++ publishFresh
-              ++ [ "}" ]
-          )
-  modify' $ \st -> st {gsTop = accessor : gsTop st}
+  case cloNames of
+    [] ->
+      void $
+        unsupported
+          "function-global"
+          ("zero-arity function global reached curried closure generation for " <> gKey g)
+    entryClo : _ -> do
+      let accessor =
+            T.unlines
+              ( [ "static KValue *" <> ident <> "(void) {"
+                , "  static _Atomic(KValue *) cache = NULL;"
+                , "  KValue *cached = atomic_load_explicit(&cache, memory_order_acquire);"
+                , cacheHit
+                , "  KValue *fresh = kclo(" <> entryClo <> ", 0);"
+                ]
+                  ++ publishFresh
+                  ++ [ "}" ]
+              )
+      modify' $ \st -> st {gsTop = accessor : gsTop st}
   -- LR1/R2.2: if g is a monomorphic first-order scalar function (Int and/or
   -- Double params + scalar result) with a scalar-expressible body, ALSO emit
   -- the typed unboxed worker beside the boxed kw_g.
@@ -1573,26 +1432,11 @@ cmpPrim = \case
   "floatEq" -> Just ("==", KDouble)
   _ -> Nothing
 
--- | A saturated self-call: spine head is the worker's own global @self@ with
--- exactly @n@ explicit args (FULL GName equality, like 'selfTailArgs').
-lr1SelfArgs :: GName -> Int -> Term -> Maybe [Term]
-lr1SelfArgs self n term = case spineOf term of
-  (CGlob g, sargs)
-    | g == self, expl <- [a | (Expl, a) <- sargs], length expl == n -> Just expl
-  _ -> Nothing
-
 andM :: [Gen Bool] -> Gen Bool
 andM = foldr (\m acc -> do b <- m; if b then acc else pure False) (pure True)
 
 orM :: [Gen Bool] -> Gen Bool
 orM = foldr (\m acc -> do b <- m; if b then pure True else acc) (pure False)
-
--- | Strip leading lambdas, recording each binder's (icity, quantity).
-stripLamsQ :: Term -> ([(Icit, Q)], Term)
-stripLamsQ = go []
-  where
-    go acc (CLam ic q _ b) = go ((ic, q) : acc) b
-    go acc t = (reverse acc, t)
 
 -- | The per-parameter scalar kinds and result kind of @g@ IF it is eligible
 -- for an unboxed worker: a recorded body of @n@ explicit relevant binders, a
@@ -1623,51 +1467,51 @@ stripLamsQ = go []
 -- tail spine), recursing into @if@ branches and every prim/self-call argument,
 -- because a suspension anywhere a raw scalar is live is unsound — not only in
 -- tail position.
-scalarBodyMaySuspend :: Set GName -> Term -> Bool
+scalarBodyMaySuspend :: Set GName -> BackendTerm -> Bool
 scalarBodyMaySuspend susp = go
   where
     -- a call's spine head decides suspendability for this node; the arguments
     -- are then walked too (a suspending op can hide in an argument position).
-    -- Only an APPLICATION counts as a call here — a bare 'CVar'/'CGlob' LEAF
+    -- Only an APPLICATION counts as a call here — a bare 'BVar'/'BGlob' LEAF
     -- (a value read, not an invocation) cannot itself park, so it is never
     -- flagged (else every scalar local read would falsely read as may-suspend).
     headSusp t = case t of
-      CApp {} -> case fst (spineOf t) of
-        CGlob h -> isSuspendingPrim h || h `Set.member` susp
-        CVar _ -> True -- opaque higher-order call: may suspend (conservative)
+      BApp {} -> case fst (spineOf t) of
+        BGlob _ h -> isSuspendingPrim h || h `Set.member` susp
+        BVar {} -> True -- opaque higher-order call: may suspend (conservative)
         _ -> False
       _ -> False
     go t =
       headSusp t || case t of
-        CIf c th el -> go c || go th || go el
-        CApp _ a b -> go a || go b
-        CMatch s _ alts -> go s || any (\a -> maybe False go (caGuard a) || go (caBody a)) alts
-        CLet _ _ _ rhs body -> go rhs || go body
-        CLetRec _ _ _ rhs body -> go rhs || go body
-        CDo _ _ -> True -- a do-block is an IO action: conservatively may-suspend
-        CCtor _ _ as -> any go as
-        CSealE _ e -> go e
-        CSigT _ e -> go e
-        CForceE e -> go e
-        CThunkE e -> go e
-        CLazyE e -> go e
-        CInject _ e -> go e
-        CProj e _ -> go e
-        CProjAt e _ _ -> go e
+        BIf _ c th el -> go c || go th || go el
+        BApp _ f args -> go f || any (go . argTerm) args
+        BMatch _ s alts _ -> go s || any (\(BackendAlt _ _ _ gd b) -> maybe False go gd || go b) alts
+        BLet _ _ _ _ rhs body -> go rhs || go body
+        BLetRec _ _ _ _ rhs body -> go rhs || go body
+        BDo {} -> True -- a do-block is an IO action: conservatively may-suspend
+        BCtor _ _ as -> any go as
+        BSeal _ _ e -> go e
+        BForce _ e -> go e
+        BThunk _ e -> go e
+        BLazy _ e -> go e
+        BInject _ _ e -> go e
+        BProj _ e _ _ -> go e
+        BRecord _ fs -> any (go . snd) fs
         _ -> False
 
-scalarPlan :: GName -> Gen (Maybe ([Bool], [ParamKind], ScalarKind, Term))
+scalarPlan :: GName -> Gen (Maybe ([Bool], [ParamKind], ScalarKind, BackendTerm))
 scalarPlan g = do
-  bodies <- gets gsBodies
+  bodies <- gets gsBackendBodies
   susp <- gets gsSuspenders
   case Map.lookup g bodies of
     Nothing -> pure Nothing
     Just body -> do
-      let (binders, _) = stripLamsQ body
-          n = length binders
-      -- all binders explicit + relevant: an implicit/erased binder is passed
-      -- kunit() (compileErasableArg), which a scalar worker must never read.
-      if n >= 1 && all (\(ic, q) -> ic == Expl && q /= Q0) binders
+      let params = bbParams body
+          n = length params
+      -- KBackendIR has already omitted runtime-erased binders. A scalar worker
+      -- still requires every remaining runtime parameter to be explicit; an
+      -- implicit runtime dictionary or closure-like argument stays boxed.
+      if n >= 1 && all ((== Expl) . bpIcit) params
         then do
           mkinds <- typeScalarKinds g n
           case mkinds of
@@ -1680,13 +1524,10 @@ scalarPlan g = do
               -- Gates on BOTH the global's own transitive suspender membership
               -- (g ∈ gsSuspenders) and a per-body walk for an inlined/opaque
               -- suspending sub-term, so it stays sound once locals widen.
-              case dropStaticPrefixLams mask (dropStaticGlobalPrefixArgs g mask body) of
-                Nothing -> pure Nothing
-                Just scalarBody -> do
-                  let (_, scalarInner) = stripLamsQ scalarBody
-                  ok <- scalarEligTail g pks (reverse pks) ret scalarInner
-                  let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp scalarInner
-                  pure (if ok && not mayParK then Just (mask, pks, ret, scalarInner) else Nothing)
+              let scalarInner = bbRoot body
+              ok <- scalarEligTail g pks (reverse pks) ret scalarInner
+              let mayParK = g `Set.member` susp || scalarBodyMaySuspend susp scalarInner
+              pure (if ok && not mayParK then Just (mask, pks, ret, scalarInner) else Nothing)
             _ -> pure Nothing
         else pure Nothing
 
@@ -1716,7 +1557,7 @@ typeScalarKinds g n = do
       (paramReps, retRep) <- Repr.repSelect ctx (gdType gd)
       ret <- repScalarKind retRep
       let pks = map paramRepKind paramReps
-      if length mask == n && length pks == length (filter id mask)
+      if length (filter id mask) == n && length pks == n
         then Just (mask, pks, ret)
         else Nothing
   where
@@ -1734,91 +1575,6 @@ repScalarKind = \case
   Repr.RepDouble -> Just KDouble
   _ -> Nothing
 
--- | For a global head @g@, the per-spine-position erasure flags read from its
--- elaborated type's Pi telescope: @True@ at a binder whose quantity is 'Q0'
--- (computationally erased, §31.2), @False@ otherwise.  The list runs in
--- telescope order, which 'spineOf' lists arguments in (binder @k@ ↔ spine
--- position @k@); spine positions past the telescope (a result that is itself a
--- function value, applied further) get @False@.
---
--- This is the FIX for the interp-vs-native divergence on @sequence@ /
--- @sequence_@ / @for_@ / @traverse@ over IO: an ERASED type argument that is a
--- type-level APPLICATION @f a@ (a 'CApp' whose head is a type VARIABLE) is
--- otherwise lowered as a real runtime @kapp(kvar f, kvar a)@ over two
--- unit-valued (erased) slots, because the purely SYNTACTIC 'isErasableArg'
--- only inspects the spine head ('CVar' → @False@).  The interpreter keeps type
--- arguments as applicable values so it never crashes; the C/LLVM backends
--- crash with @kapp: applying a non-function value@.  Erasing by the binder's
--- 'Q0' QUANTITY — the elaborator's own irrelevance verdict — is syntax-blind
--- and so erases the application form too.  Unlike 'typeScalarKinds' (explicit
--- value binders only), this walks the WHOLE telescope, since an erased
--- argument can sit at an implicit OR explicit position.
--- The pure core ('erasedSpinePositionsP' / 'eraseQ0ArgsP') is exported so the
--- LLVM backend ("Kappa.Backend.LLVM") shares the SAME erasure verdict with its
--- own 'gsGlobals' / 'gsEvalCtx'.
-
--- | The pure spine-erasure analysis (see 'erasedSpinePositions').
--- FAIL-SAFE: an unknown global, or a 'gdType' that does not 'force' to a 'VPi'
--- telescope (an unsolved-meta/thunk head), yields @[]@ — i.e. nothing is flagged.
--- That can only UNDER-erase (miss a position), never over-erase: a missed
--- type-application position reverts to the original @kapp(unit,unit)@ crash, but
--- a dictionary or runtime value is never wrongly dropped.
-erasedSpinePositionsP :: Map GName GlobalDef -> EvalCtx -> GName -> [Bool]
-erasedSpinePositionsP globals ctx g =
-  case Map.lookup g globals of
-    Nothing -> []
-    Just gd -> walk 0 (gdType gd)
-  where
-    walk lvl ty =
-      case force ctx ty of
-        VPi _ q _ _ dom clo ->
-          (q == Q0 || isKindDomain lvl dom) : walk (lvl + 1) (closApply lvl clo)
-        _ -> []
-    closApply lvl (Closure env body) = eval ctx (VRigid lvl [] : env) body
-    -- A parameter whose DOMAIN is a kind (@Type@, or @A -> … -> Type@) is a type
-    -- or type constructor: it is RuntimeErased (Spec §1.1.1 — types carry no
-    -- runtime representation; §11.4 — there is no typecase), so it is erasable
-    -- REGARDLESS of its quantity (a type argument need not be 'Q0').  This is the
-    -- broader half of the verdict: 'Q0' alone caught the type args that happened
-    -- to be quantity-zero, but a non-'Q0' type *application* @f a@ would still
-    -- crash as @kapp(unit,unit)@.  Crucially this NEVER erases a dictionary: a
-    -- dict's domain is a trait type @C a : Type@ — an inhabitant of a kind, not a
-    -- kind — so 'isKindDomain' is False for it (Spec §14.4: @IsTrait@ does not
-    -- imply @RuntimeErased@; a method projection is runtime-relevant).  Proofs of
-    -- a 'RuntimeErased'/'IsProp' proposition are likewise erasable, but at a
-    -- non-'Q0' position that needs the elaborator's IsProp evidence (not re-derived
-    -- here); the common Q0 proof position is already covered above.  Mirrors
-    -- 'Kappa.Check.isKindLike'.
-    isKindDomain lvl v =
-      case force ctx v of
-        VSort _ -> True
-        VPi _ _ _ _ _ clo -> isKindDomain (lvl + 1) (closApply lvl clo)
-        _ -> False
-
--- | Rewrite a global-headed application @g a0 a1 …@ so each argument at an
--- ERASED (Q0 OR type-level/kind-domain) telescope position becomes a 'CSort'
--- placeholder — see
--- 'erasedSpinePositions' for the why.  The icities are preserved (an erased arg
--- can be implicit or explicit); the placeholder is then erased to @kunit()@ by
--- the existing 'compileErasableArg' path, with no new threading.  Positions past
--- the telescope keep their original term.
-eraseQ0Args :: GName -> Term -> Gen Term
-eraseQ0Args g term = do
-  globals <- gets gsGlobals
-  ctx <- gets gsEvalCtx
-  pure (eraseQ0ArgsP globals ctx g term)
-
--- | The pure spine rewrite (see 'eraseQ0Args').
-eraseQ0ArgsP :: Map GName GlobalDef -> EvalCtx -> GName -> Term -> Term
-eraseQ0ArgsP globals ctx g term =
-  let flags = erasedSpinePositionsP globals ctx g
-      (hd, sargs) = spineOf term
-      go _ [] = []
-      go (er : ers) ((ic, a) : rest) = (ic, if er then CSort 0 else a) : go ers rest
-      go [] rest = rest -- spine longer than the telescope: leave the tail as-is
-      sargs' = go flags sargs
-   in foldl (\f (ic, a) -> CApp ic f a) hd sargs'
-
 -- | Is @g@'s RESULT type a RuntimeErased PROOF — a propositional equality
 -- (@(=) x y@ / the §21.6 @CoreEq@), or h-prop evidence (@IsProp@ / @IsSubsingleton@
 -- / @IsSet@ / @IsContr@ / @IsGroupoid@)?  Such a definition is computationally
@@ -1831,15 +1587,15 @@ eraseQ0ArgsP globals ctx g term =
 -- ADMIT primitives @__eqProof@/@__unsafeAssertProof@ the native runtime does not
 -- implement.  Erasing the proof-typed lemmas keeps those primitives off the
 -- reachable native closure.  This is the by-RESULT-type counterpart of the
--- by-ARGUMENT erasure 'erasedSpinePositionsP' applies (a 'Q0'/kind-domain proof
--- ARGUMENT is already erased; a proof RESULT was not).
+-- by-ARGUMENT erasure that KBackendIR lowering applies (a 'Q0'/kind-domain proof
+-- ARGUMENT is already structurally absent; a proof RESULT was not).
 --
 -- SOUNDNESS: erases ONLY genuine proofs.  The result-head set is exactly the
 -- prelude's propositional-equality and h-prop marker traits — none of which has a
 -- runtime-relevant inhabitant (their members are all erased proofs, §14.4).  A def
 -- whose result is a real runtime value (an @Int@, a dictionary, an @IO@ action …)
 -- has a non-proof head and is left untouched.  FAIL-SAFE like
--- 'erasedSpinePositionsP': an unknown global / a 'gdType' that does not 'force' to
+-- 'Repr.resultIsProofBodyGlobal': an unknown global / a 'gdType' that does not 'force' to
 -- a recognisable telescope yields @False@ (compile for real — never erase on doubt).
 --
 -- The @forall (@0 p : Type). (@_ : IsProp p) -> … -> p@ shape (i.e.
@@ -1848,56 +1604,9 @@ eraseQ0ArgsP globals ctx g term =
 -- SAME binder as the result (compared by absolute de Bruijn level).
 --
 -- Exported so "Kappa.Backend.LLVM" shares the identical verdict (mirrors
--- 'erasedSpinePositionsP').
+-- 'Repr.erasedSpinePositions').
 resultIsProofP :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
-resultIsProofP globals ctx g =
-  case Map.lookup g globals of
-    Nothing -> False
-    Just gd -> walk 0 [] (quote ctx 0 (gdType gd))
-  where
-    -- @lvl@ is the telescope DEPTH so far (number of binders in scope = the
-    -- absolute de Bruijn level of the next binder).  @propLvls@ collects the
-    -- absolute levels of binders pinned by an @IsProp _@ / @IsSubsingleton _@
-    -- hypothesis somewhere earlier in the telescope.
-    walk lvl propLvls ty = case ty of
-      CPi _ _ _ _ dom cod ->
-        -- A domain @IsProp (CVar j)@ / @IsSubsingleton (CVar j)@ at depth @lvl@
-        -- pins the binder at absolute level @lvl-1-j@ as proof-typed.
-        let propLvls' = case hypProofVarLevel lvl dom of
-              Just l -> l : propLvls
-              Nothing -> propLvls
-         in walk (lvl + 1) propLvls' cod
-      r -> resultIsProof' lvl propLvls r
-    -- The result type @r@ sits at depth @lvl@.  It is a proof when its head is a
-    -- propositional-equality / h-prop marker, OR it is a bound variable that a
-    -- prior hypothesis pinned as proof-typed.
-    resultIsProof' lvl propLvls r =
-      case headGlob r of
-        Just h | h `Set.member` proofHeads -> True
-        _ -> case r of
-          CVar i -> (lvl - 1 - i) `elem` propLvls
-          _ -> False
-    -- For a domain term at depth @lvl@, if it is @IsProp (CVar j)@ /
-    -- @IsSubsingleton (CVar j)@ return the absolute level of the pinned binder.
-    hypProofVarLevel lvl dom =
-      case spineOf dom of
-        (CGlob h, [(_, CVar j)])
-          | h == Builtins.prelIsProp || h == Builtins.prelIsSubsingleton ->
-              Just (lvl - 1 - j)
-        _ -> Nothing
-    -- The prelude's propositional-equality type and h-prop marker traits.  Every
-    -- inhabitant of one of these is a RuntimeErased proof (§14.4) — no runtime
-    -- content — so a definition producing one is computationally erased.
-    proofHeads =
-      Set.fromList
-        [ Builtins.prelEqType
-        , Builtins.prelIsProp
-        , Builtins.prelIsSubsingleton
-        , Builtins.prelIsSet
-        , Builtins.gPrel "IsContr"
-        , Builtins.gPrel "IsGroupoid"
-        , Builtins.gPrel "CoreEq"
-        ]
+resultIsProofP = Repr.resultIsProofBodyGlobal
 
 -- | 'resultIsProofP' in 'Gen' (this backend's monad), reading the shared
 -- 'gsGlobals' / 'gsEvalCtx'.
@@ -1924,35 +1633,35 @@ resultIsProof g = do
 -- context (innermost binder first; initially @reverse pks@) — every let-binder
 -- prepends to it (see 'varParamKind'); @pks@ stays the source-order PARAM kinds
 -- for self-call arity ('lr1SelfArgs') and per-slot arg checking.
-scalarEligTail :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligTail :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen Bool
 scalarEligTail g pks dks ret term = case term of
-  CIf c t e -> andM [scalarEligCond g pks dks ret c, scalarEligTail g pks dks ret t, scalarEligTail g pks dks ret e]
+  BIf _ c t e -> andM [scalarEligCond g pks dks ret c, scalarEligTail g pks dks ret t, scalarEligTail g pks dks ret e]
   -- §let: a let-bound scalar keeps the body scalar-eligible.  The RHS must be a
   -- scalar value (Int/Double); its kind is prepended to @dks@ as a 'PScalar'
   -- slot so the body reads the binder at de Bruijn 0.  A non-scalar RHS makes
   -- the whole body ineligible (→ boxed), never miscompiled.  (CLetRec stays
   -- unhandled: a local fixpoint is not a scalar value.)
-  CLet _ _ _ rhs body -> do
+  BLet _ _ _ _ rhs body -> do
     mk <- scalarKindOf g pks dks ret rhs
     case mk of
       Just k -> scalarEligTail g pks (PScalar k : dks) ret body
       Nothing -> pure False
   _
-    | Just args <- lr1SelfArgs g (length pks) term -> andM (zipWith (selfArgElig g pks dks ret) pks args)
+    | Just args <- lr1SelfArgsBackend g (length pks) term -> andM (zipWith (selfArgElig g pks dks ret) pks args)
     | otherwise -> scalarHasKind g pks dks ret ret term
 
 -- | A self-call argument is eligible iff: for a scalar param slot, the arg is a
 -- value of that scalar kind; for a boxed param slot, the arg is a PASS-THROUGH
 -- of a boxed param (a bare @CVar@ of a boxed slot) — the only boxed value the
 -- mixed worker can supply without unboxing/rebuilding (R2.4 slice).
-selfArgElig :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ParamKind -> Term -> Gen Bool
+selfArgElig :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ParamKind -> BackendTerm -> Gen Bool
 selfArgElig g pks dks ret pk arg = case pk of
   PScalar k -> scalarHasKind g pks dks ret k arg
   -- any boxed CVar into a boxed slot is fine: source type-checking already
   -- guarantees the self-call arg's type matches the param, and the runtime
   -- representation of every boxed slot is the uniform @KValue *@.
   PBoxed -> pure $ case arg of
-    CVar j -> varParamKind dks j == Just PBoxed
+    BVar _ _ j -> varParamKind dks j == Just PBoxed
     _ -> False
 
 -- | Is @term@ a FIXED-OFFSET projection of a BOXED param (@krec_at(boxed,i)@)?
@@ -1963,14 +1672,14 @@ selfArgElig g pks dks ret pk arg = case pk of
 -- tuple ≥10) is NOT handled by the coercion codegen, so it must stay
 -- ineligible here (→ boxed worker) rather than reach the worker and escalate
 -- on a valid program.
-isBoxedProj :: [ParamKind] -> Term -> Bool
+isBoxedProj :: [ParamKind] -> BackendTerm -> Bool
 isBoxedProj dks term = case term of
-  CProjAt (CVar j) _ _ -> varParamKind dks j == Just PBoxed
+  BProj _ (BVar _ _ j) _ (Just _) -> varParamKind dks j == Just PBoxed
   _ -> False
 
 -- | Does the value-position @term@ have scalar kind @k@?  A projection of a
 -- boxed param is coercible to any @k@ (a tag-checked unbox at codegen).
-scalarHasKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ScalarKind -> Term -> Gen Bool
+scalarHasKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> ScalarKind -> BackendTerm -> Gen Bool
 scalarHasKind g pks dks ret k term
   | isBoxedProj dks term = pure True
   | otherwise = do
@@ -1985,28 +1694,28 @@ scalarHasKind g pks dks ret k term
 -- @let@ — e.g. a nested FMA temporary — is scalar-expressible, not @Nothing@).
 -- A bare @CVar@ of a BOXED param is NOT a scalar value (it is only usable as a
 -- projection base — see 'isBoxedProj'), so it is @Nothing@ here.
-scalarKindOf :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen (Maybe ScalarKind)
+scalarKindOf :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen (Maybe ScalarKind)
 scalarKindOf g pks dks ret term = case term of
-  CLit (LitInt m)
+  BLit _ (LitInt m)
     | m >= toInteger (minBound :: Int) && m <= toInteger (maxBound :: Int) -> pure (Just KInt64)
     | otherwise -> pure Nothing
-  CLit (LitDouble _) -> pure (Just KDouble)
-  CVar i -> pure (varParamKind dks i >>= paramSK)
-  CLet _ _ _ rhs body -> do
+  BLit _ (LitDouble _) -> pure (Just KDouble)
+  BVar _ _ i -> pure (varParamKind dks i >>= paramSK)
+  BLet _ _ _ _ rhs body -> do
     mk <- scalarKindOf g pks dks ret rhs
     case mk of
       Just k -> scalarKindOf g pks (PScalar k : dks) ret body
       Nothing -> pure Nothing
   _ -> case spineOf term of
-    (CGlob h, sargs) -> do
-      let expl = [a | (Expl, a) <- sargs]
+    (BGlob _ h, sargs) -> do
+      let expl = [argTerm a | a <- sargs, argIcit a == Expl]
       mp <- globPrimName h
       case mp of
         Just p | Just (rk, argks) <- arithPrim p, length expl == length argks -> do
           oks <- sequence (zipWith (scalarHasKind g pks dks ret) argks expl)
           pure (if and oks then Just rk else Nothing)
         _
-          | Just args <- lr1SelfArgs g (length pks) term -> do
+          | Just args <- lr1SelfArgsBackend g (length pks) term -> do
               oks <- sequence (zipWith (selfArgElig g pks dks ret) pks args)
               pure (if and oks then Just ret else Nothing)
           | otherwise -> pure Nothing
@@ -2025,10 +1734,10 @@ varParamKind dks i =
 
 -- | Eligibility of an @if@ condition: a saturated SAFE scalar compare whose
 -- operands have the comparison's operand kind.
-scalarEligCond :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen Bool
+scalarEligCond :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen Bool
 scalarEligCond g pks dks ret term = case spineOf term of
-  (CGlob h, sargs) -> do
-    let expl = [a | (Expl, a) <- sargs]
+  (BGlob _ h, sargs) -> do
+    let expl = [argTerm a | a <- sargs, argIcit a == Expl]
     mp <- globPrimName h
     case (mp >>= cmpPrim, expl) of
       (Just (_, opk), [a, b]) -> andM [scalarHasKind g pks dks ret opk a, scalarHasKind g pks dks ret opk b]
@@ -2047,7 +1756,7 @@ scalarWorkerName g pks ret
 -- | Emit the unboxed worker with per-slot param types + (scalar) return type,
 -- e.g. @double kwd_g(double, int64_t, int *kovf)@ or, with a boxed slot,
 -- @KValue *kwm_g(int64_t, KValue *, int64_t, int *kovf)@.
-compileScalarWorker :: GName -> [ParamKind] -> ScalarKind -> Term -> Gen ()
+compileScalarWorker :: GName -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen ()
 compileScalarWorker g pks ret inner = do
   let n = length pks
       worker = scalarWorkerName g pks ret
@@ -2071,11 +1780,11 @@ compileScalarWorker g pks ret inner = do
 -- | The C expression and type for one self-call argument: a scalar slot is
 -- compiled to its scalar kind; a boxed slot is a pass-through of the boxed C
 -- param (eligibility guarantees the arg is a bare @CVar@ of a boxed slot).
-scalarSelfArg :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ParamKind -> Term -> Gen (Text, Text)
+scalarSelfArg :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ParamKind -> BackendTerm -> Gen (Text, Text)
 scalarSelfArg g pks ret env dks pk a = case pk of
   PScalar k -> do e <- scalarExpr g pks ret env dks k a; pure (cScalarTy k, e)
   PBoxed -> case a of
-    CVar j -> pure ("KValue *", env !! j)
+    BVar _ _ j -> pure ("KValue *", env !! j)
     _ -> do e <- lr1Unreachable; pure ("KValue *", e)
 
 -- | Compile the body in TAIL position: @if@ branches recurse in tail; a @let@
@@ -2085,9 +1794,9 @@ scalarSelfArg g pks ret env dks pk a = case pk of
 -- typed by its slot kind) and @continue@s (an in-place loop — no @KEnv@); any
 -- other (leaf, scalar) expr is returned.  @env@/@dks@ are kept in lock-step (the
 -- C-local name and its scalar kind at each de-Bruijn slot).
-scalarTail :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [Text] -> [ParamKind] -> Term -> Gen ()
+scalarTail :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [Text] -> [ParamKind] -> BackendTerm -> Gen ()
 scalarTail g pks ret ps env dks term = case term of
-  CIf c t e -> do
+  BIf _ c t e -> do
     cond <- scalarCond g pks ret env dks c
     (tb, ()) <- captured "0" (scalarTail g pks ret ps env dks t)
     (eb, ()) <- captured "0" (scalarTail g pks ret ps env dks e)
@@ -2100,14 +1809,14 @@ scalarTail g pks ret ps env dks term = case term of
   -- with (local, kind) pushed at de Bruijn 0.  Its kind is the RHS's bottom-up
   -- scalar kind (eligibility already proved it scalar); a let in a SELF-call
   -- branch correctly reads the param values via the shifted env.
-  CLet _ _ _ rhs body -> do
+  BLet _ _ _ _ rhs body -> do
     k <- letScalarKind g pks dks ret rhs
     e <- scalarExpr g pks ret env dks k rhs
     t <- freshN "lt_"
     emit (cScalarTy k <> " " <> t <> " = " <> e <> ";")
     scalarTail g pks ret ps (t : env) (PScalar k : dks) body
   _
-    | Just args <- lr1SelfArgs g (length pks) term -> do
+    | Just args <- lr1SelfArgsBackend g (length pks) term -> do
         -- tail self-call: evaluate new args into typed temps FIRST (they may
         -- read current params), then reassign params and loop.
         temps <- forM (zip pks args) $ \(pk, a) -> do
@@ -2127,7 +1836,7 @@ scalarTail g pks ret ps env dks term = case term of
 -- re-derivation keeps the C-local declaration in sync with that verdict (a
 -- 'Nothing' here is the same invariant break the 'lr1Unreachable' guards catch,
 -- so default to the worker's return kind rather than miscompile).
-letScalarKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> Term -> Gen ScalarKind
+letScalarKind :: GName -> [ParamKind] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen ScalarKind
 letScalarKind g pks dks ret rhs = do
   mk <- scalarKindOf g pks dks ret rhs
   pure (maybe ret id mk)
@@ -2149,15 +1858,15 @@ unboxWorker KDouble fb = "kunbox_dbl(" <> fb <> ", kovf)"
 -- var, an arith op, or a (non-tail) self-call.
 -- @dk@ is only consulted for the boxed-field coercion; everything else is
 -- determined bottom-up (so all-scalar output is unaffected).
-scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
+scalarExpr :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen Text
 scalarExpr = scalarExprBody
 
-scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> Term -> Gen Text
+scalarExprBody :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> ScalarKind -> BackendTerm -> Gen Text
 scalarExprBody g pks ret env dks dk term
   -- R2.4: a record-field read of a BOXED param yields a boxed value; coerce it
   -- to the demanded scalar kind with a tag-checked unbox that escapes to the
   -- boxed worker on a wrong tag (so a non-Int/Double field never miscompiles).
-  | CProjAt (CVar j) _ off <- term, isBoxedProj dks term = do
+  | BProj _ (BVar _ _ j) _ (Just off) <- term, isBoxedProj dks term = do
       fb <- freshN "fb_"
       emit ("KValue *" <> fb <> " = krec_at(" <> (env !! j) <> ", " <> T.pack (show off) <> ");")
       t <- freshN "ti_"
@@ -2165,27 +1874,27 @@ scalarExprBody g pks ret env dks dk term
       emit "if (*kovf) return 0;"
       pure t
   | otherwise = case term of
-      CLit (LitInt m) -> pure (cIntLit m)
-      CLit (LitDouble d) -> pure (cDblLit d)
-      CVar i -> pure (env !! i)
+      BLit _ (LitInt m) -> pure (cIntLit m)
+      BLit _ (LitDouble d) -> pure (cDblLit d)
+      BVar _ _ i -> pure (env !! i)
       -- §let in value position: emit the scalar RHS into a fresh typed local and
       -- evaluate the body with it pushed at de Bruijn 0 (the value-position twin
       -- of 'scalarTail's let case — e.g. an inner FMA temporary used by a leaf
       -- return expression).
-      CLet _ _ _ rhs body -> do
+      BLet _ _ _ _ rhs body -> do
         k <- letScalarKind g pks dks ret rhs
         e <- scalarExpr g pks ret env dks k rhs
         t <- freshN "lt_"
         emit (cScalarTy k <> " " <> t <> " = " <> e <> ";")
         scalarExpr g pks ret (t : env) (PScalar k : dks) dk body
       _ -> case spineOf term of
-        (CGlob h, sargs) -> do
-          let expl = [a | (Expl, a) <- sargs]
+        (BGlob _ h, sargs) -> do
+          let expl = [argTerm a | a <- sargs, argIcit a == Expl]
           mp <- globPrimName h
           case mp of
             Just p | Just (_, argks) <- arithPrim p, length expl == length argks -> scalarArith g pks ret env dks p expl
             _
-              | Just args <- lr1SelfArgs g (length pks) term -> do
+              | Just args <- lr1SelfArgsBackend g (length pks) term -> do
                   aes <- mapM (\(pk, a) -> snd <$> scalarSelfArg g pks ret env dks pk a) (zip pks args)
                   t <- freshN "ti_"
                   emit (cScalarTy ret <> " " <> t <> " = " <> scalarWorkerName g pks ret <> "(" <> T.intercalate ", " (aes ++ ["kovf"]) <> ");")
@@ -2203,7 +1912,7 @@ scalarExprBody g pks ret env dks dk term
 -- (Driver.hs), so the compiler cannot fuse a @mul@-then-@add@ into a
 -- single-rounding FMA at any @-O@ level.  @intToDouble@ is a C cast (== the
 -- prim's @(double)i@).
-scalarArith :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> Text -> [Term] -> Gen Text
+scalarArith :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> Text -> [BackendTerm] -> Gen Text
 scalarArith g pks ret env dks p expl = do
   -- each arg is compiled for the prim's expected kind (so a boxed-field arg is
   -- coerced to the right scalar kind); arithPrim p is Just by the caller.
@@ -2230,10 +1939,10 @@ scalarArith g pks ret env dks p expl = do
 -- | Compile an @if@ condition (a saturated safe scalar compare) to a C boolean
 -- expr.  The C operator comes from 'cmpPrim', which admits only comparisons
 -- whose C operator matches the runtime prim exactly.
-scalarCond :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> Term -> Gen Text
+scalarCond :: GName -> [ParamKind] -> ScalarKind -> [Text] -> [ParamKind] -> BackendTerm -> Gen Text
 scalarCond g pks ret env dks term = case spineOf term of
-  (CGlob h, sargs) -> do
-    let expl = [a | (Expl, a) <- sargs]
+  (BGlob _ h, sargs) -> do
+    let expl = [argTerm a | a <- sargs, argIcit a == Expl]
     mp <- globPrimName h
     case (mp >>= cmpPrim, expl) of
       (Just (op, opk), [a, b]) -> do
@@ -2262,19 +1971,15 @@ emitScalarWorkerSafepoint = do
 -- | The saturated fast path at a call site: unbox each arg by its scalar kind,
 -- call the unboxed worker, and escape to the boxed @kw_g@ (from the ORIGINAL
 -- boxed args) on a wrong-tag arg or an int64 overflow.
-compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [(Icit, Term)] -> [Int] -> Gen Text
+compileScalarCall :: GName -> [ParamKind] -> ScalarKind -> [BackendArg] -> [Int] -> Gen Text
 compileScalarCall g pks ret sargs runtimeIdxs = do
   let worker = scalarWorkerName g pks ret
       kw = "kw_" <> mangle (gKey g)
-      k = length sargs
-  ownedFlags <- callArgNeedsOwnedForGlobal g sargs
-  -- Perceus RC S2.1: thread each saturating arg's spine path so its CVar uses
-  -- resolve in the analysis side-table (this is an exactly-saturated call, so the
-  -- list position is the spine index).
+  ownedFlags <- callArgNeedsOwnedForArgs sargs
   aes <-
     mapM
-      (\(j, needOwned, (_, a)) -> withSpineArg k j (compileCallArg needOwned a))
-      (zip3 [0 ..] ownedFlags sargs)
+      (\(needOwned, a) -> compileCallArg needOwned (argTerm a))
+      (zip ownedFlags sargs)
   ts <- forM aes $ \ae -> do
     t <- freshN "la_"
     emit ("KValue *" <> t <> " = " <> ae <> ";")
@@ -2284,9 +1989,9 @@ compileScalarCall g pks ret sargs runtimeIdxs = do
   emit ("int " <> ovf <> " = 0;")
   -- scalar slots unbox (tag-checked → escape); boxed slots pass through.
   avs <- forM (zip pks rtTs) $ \(pk, t) -> case pk of
-    PScalar k -> do
+    PScalar sk -> do
       av <- freshN "lu_"
-      emit (cScalarTy k <> " " <> av <> " = " <> unboxScalar k t ovf <> ";")
+      emit (cScalarTy sk <> " " <> av <> " = " <> unboxScalar sk t ovf <> ";")
       pure av
     PBoxed -> pure t
   r <- freshN "lr_"
@@ -2444,11 +2149,22 @@ hostNativeBlock st
           | x `Set.member` seen = go seen xs
           | otherwise = x : go (Set.insert x seen) xs
 
--- ── Term lowering ────────────────────────────────────────────────────
+-- ── KBackendIR lowering ───────────────────────────────────────────────
 
--- | Compile a term: emit any needed statements into the current buffer and
+type BackendArg = (Icit, Maybe Repr.ArgConv, BackendTerm)
+
+argIcit :: BackendArg -> Icit
+argIcit (ic, _, _) = ic
+
+argConv :: BackendArg -> Maybe Repr.ArgConv
+argConv (_, conv, _) = conv
+
+argTerm :: BackendArg -> BackendTerm
+argTerm (_, _, t) = t
+
+-- | Compile a KBackendIR term: emit any needed statements into the current buffer and
 -- return a C expression (of type @KValue *@) for its value.
-compile :: Term -> Gen Text
+compile :: BackendTerm -> Gen Text
 compile term = do
   -- §12.2/§31.2/§14.4: a value whose head is a proof-typed global — a
   -- propositional-equality / h-prop lemma like 'isPropEq' / 'unsafeAssertProof'
@@ -2456,9 +2172,10 @@ compile term = do
   -- RuntimeErased.  Erase the WHOLE maximal spine to the unit placeholder so the
   -- ADMIT primitives '__eqProof'/'__unsafeAssertProof' beneath those lemmas are
   -- never reached at runtime.  A proof is inert (never eliminated/applied), and a
-  -- proof ARGUMENT to anything is itself erased ('eraseQ0Args' /
-  -- 'compileErasableArg'), so the spine never feeds a live continuation — erasing
-  -- the maximal spine cannot drop a runtime-relevant computation.  See
+  -- proof ARGUMENT to anything is already structurally absent from KBackendIR;
+  -- remaining static placeholders are handled by 'compileErasableArg', so the
+  -- spine never feeds a live continuation — erasing the maximal spine cannot
+  -- drop a runtime-relevant computation.  See
   -- 'resultIsProofP'.  ('subst'/'pathInd', whose result is a motive-typed VALUE,
   -- are correctly NOT proof-typed and fall through to the real compile path.)
   proofSpine <- case headGlob term of
@@ -2466,87 +2183,74 @@ compile term = do
     Nothing -> pure False
   if proofSpine then pure "kunit()" else compileTerm term
 
-compileTerm :: Term -> Gen Text
+compileTerm :: BackendTerm -> Gen Text
 compileTerm term = case term of
-  CVar i -> do
-    -- Perceus RC walk-and-lookup (R-path) plus R2.3 flat-local resolution. The
-    -- ownership policy for ordinary expression reads is only the S2.2 NonLast
-    -- dup; owned call/store positions use 'compileOwnedVarUse' instead.
-    e <- compileVarRef i
-    -- Perceus RC S2.2 (b.2): a 'NonLast' occurrence is SHARED downstream → wrap in
-    -- @kdup@ (rc increment, immediates skipped). Inert under the OFF baseline,
-    -- whose generated entry point also disables runtime RC effects.
-    rcDupVarUse e
-  CGlob g -> compileGlob g
-  CLit l -> compileLit l
-  CApp {} -> compileApp term
-  CLam _ _ _ body -> compileLam body
-  CCtor g _ args -> compileCtor g args
-  CIf {} -> sinkToExpr term
-  CMatch {} -> sinkToExpr term
-  CLet {} -> sinkToExpr term
-  CLetRec {} -> sinkToExpr term
-  CRecordV fs -> compileRecord fs
-  CProj e f -> do
-    ee <- withChild P.childPos (compile e)
+  BUnit {} -> pure "kunit()"
+  BVar _ use i -> do
+    -- Perceus RC metadata is attached to this lowered variable occurrence.
+    -- Ordinary expression reads apply only the NonLast consuming-use dup policy;
+    -- owned call/store/result positions use 'compileOwnedVarUse' instead.
+    e <- compileVarRef use i
+    rcDupVarUse use i e
+  BGlob _ g -> compileGlob g
+  BLit _ l -> compileLit l
+  BApp {} -> compileApp term
+  BLam _ mb _ _ _ body -> compileLam mb body
+  BCtor _ layout args -> compileCtor (bclCtor layout) args
+  BIf {} -> sinkToExpr term
+  BMatch {} -> sinkToExpr term
+  BLet {} -> sinkToExpr term
+  BLetRec {} -> sinkToExpr term
+  BRecord _ fs -> compileRecord fs
+  BProj _ e f Nothing -> do
+    ee <- (compile e)
     pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
   -- P0.4: a projection of a statically-known CLOSED record reads the field at
   -- its fixed lexicographic offset (krec_at, the tuple fast path) instead of a
-  -- kproj-by-name strcmp scan.  Open/sealed/dynamic records keep plain CProj.
-  CProjAt e _ i -> do
-    ee <- withChild P.childPos (compile e)
+  -- kproj-by-name strcmp scan.  Open/sealed/dynamic records keep plain BProj.
+  BProj _ e _ (Just i) -> do
+    ee <- (compile e)
     pure (recAtExpr ee i)
   -- S2.3b: do-kernel bodies are no longer treated as an ownership-erased
   -- island. Mutable-variable reads/writes are ordinary runtime uses, so the RC
-  -- validation path must see any CVar lowered while compiling the do body and
-  -- fail closed on missing side-table facts.
-  CDo lbl items -> compileDo lbl items
+  -- validation path must see any lowered variable use in the do body and fail
+  -- closed on missing node-local ownership facts.
+  BDo _ lbl items -> compileDo lbl items
   -- §13 closed/open variants: injection is a tagged payload.
-  CInject tag e -> do
-    ee <- withChild P.childPos (compile e)
+  BInject _ tag e -> do
+    ee <- (compile e)
     tc <- variantTagConst tag
     pure ("kinject(" <> tc <> ", " <> cStr tag <> ", " <> ee <> ")")
   -- §13.2.10: `seal` is pure and non-generative (seal e as S ≡ e), so a
   -- sealed package's runtime value is exactly its underlying record/value.
-  CSealE _ e -> withChild P.childPos (compile e)
+  BSeal _ _ e -> (compile e)
   -- §19 suspensions: Delay re-evaluates on force; Memo caches.
-  CThunkE e -> withChild P.childPos (compileSuspension 0 e)
-  CLazyE e -> withChild P.childPos (compileSuspension 1 e)
-  CForceE t -> do
-    te <- withChild P.childPos (compile t)
+  BThunk _ e -> (compileSuspension 0 e)
+  BLazy _ e -> (compileSuspension 1 e)
+  BForce _ t -> do
+    te <- (compile t)
     pure ("kforce(" <> te <> ")")
-  -- ── Escalated: NOT runtime values in an accepted, erased program ──
-  -- A type-level / staging term (sort, function/record/variant/signature
-  -- type, unsolved-dictionary meta, syntax quote) is computationally erased
-  -- (§12.2 quantity-0 erasure, §31.2; §30.2.4 for staging): its runtime
-  -- value is the unit placeholder, which the interpreter likewise never
-  -- inspects.  Erasing it here (rather than rejecting) means a type/Syntax
-  -- value reached through ANY position — an argument, a field, a global
-  -- body, a local `let` binding — compiles and runs, so no accepted program
-  -- is refused over an erased term (compileErasableArg handles the common
-  -- argument/field sites directly; this is the catch-all).
-  CSort _ -> pure "kunit()"
-  CPi {} -> pure "kunit()"
-  CRecordT _ -> pure "kunit()"
-  CVariantT _ -> pure "kunit()"
-  CSigT {} -> pure "kunit()"
-  CMeta _ -> pure "kunit()"
-  CQuote {} -> pure "kunit()"
 
 -- | Head global of an application spine, if any.
-headGlob :: Term -> Maybe GName
+headGlob :: BackendTerm -> Maybe GName
 headGlob = \case
-  CApp _ f _ -> headGlob f
-  CGlob g -> Just g
-  CCtor g _ _ -> Just g
+  BApp _ f _ -> headGlob f
+  BGlob _ g -> Just g
+  BCtor _ layout _ -> Just (bclCtor layout)
   _ -> Nothing
 
 -- | An application spine: head term plus its arguments with icities.
-spineOf :: Term -> (Term, [(Icit, Term)])
-spineOf = go []
+spineOf :: BackendTerm -> (BackendTerm, [BackendArg])
+spineOf (BApp _ hd args) =
+  let (root, prefix) = spineOf hd
+   in (root, prefix ++ args)
+spineOf t = (t, [])
+
+backendFuncArity :: BackendTerm -> (Int, BackendTerm)
+backendFuncArity = go 0
   where
-    go acc (CApp ic f a) = go ((ic, a) : acc) f
-    go acc t = (t, acc)
+    go !n (BLam _ _ _ _ _ b) = go (n + 1) b
+    go !n t = (n, t)
 
 -- | Recognise a fully-saturated application of an eta-expanded constructor
 -- and beta-reduce it to a direct constructor (gap P0-A).
@@ -2572,91 +2276,47 @@ spineOf = go []
 -- (impossible for a well-typed ctor, but rejected for safety), or any head
 -- that is not an eta-expanded constructor — all of which keep the general
 -- curried lowering.
-etaCtorApp :: Term -> Maybe (GName, [Term])
+etaCtorApp :: BackendTerm -> Maybe (GName, [BackendTerm])
 etaCtorApp term =
   case spineOf term of
     (hd, sargs)
-      | (k, body) <- funcArity hd -- count the leading eta lambdas
+      | (k, body) <- backendFuncArity hd -- count the leading eta lambdas
       , k >= 1
       , k == length sargs
-      , CCtor g _ fieldVars <- body ->
-          (,) g <$> traverse (pick (map snd sargs) k) fieldVars
+      , BCtor _ layout fieldVars <- body ->
+          (,) (bclCtor layout) <$> traverse (pick (map argTerm sargs) k) fieldVars
     _ -> Nothing
   where
     -- a field var must be a bare in-range binder reference; anything else
     -- (a compound subterm, or a free variable at index >= k) bails to the
     -- general lowering rather than misreading the payload.
     pick args k = \case
-      CVar j | j >= 0, j < k -> Just (args !! (k - 1 - j))
+      BVar _ _ j | j >= 0, j < k -> Just (args !! (k - 1 - j))
       _ -> Nothing
-
--- | Like 'etaCtorApp', but also report the SPINE INDEX each picked field arg came
--- from (the @k-1-j@ position for a field var @CVar j@). Perceus RC S2.1 threads
--- the eta-ctor's field args by this spine index so they key the same way the
--- analysis walked the curried-CApp eta-ctor application — the beta-reduction
--- 'compileCtor' performs changes the emitted structure but not the args' origin.
-etaCtorAppSpine :: Term -> Maybe (GName, Int, [(Int, Term)])
-etaCtorAppSpine term =
-  case spineOf term of
-    (hd, sargs)
-      | (k, body) <- funcArity hd
-      , k >= 1
-      , k == length sargs
-      , CCtor g _ fieldVars <- body ->
-          (\picks -> (g, k, picks)) <$> traverse (pick (map snd sargs) k) fieldVars
-    _ -> Nothing
-  where
-    pick args k = \case
-      CVar j | j >= 0, j < k -> Just (k - 1 - j, args !! (k - 1 - j))
-      _ -> Nothing
-
--- | Compile an eta-ctor application ('etaCtorApp') as a direct 'kctor', threading
--- each field arg at its original CApp-spine path (Perceus RC S2.1 R-path) instead
--- of the 'CCtor'-field path — because the analysis walked the un-reduced curried
--- application. @g@ is the ctor, @k@ the spine length, @picks@ the field args paired
--- with the spine index each came from (FIELD order).
-compileEtaCtorApp :: GName -> Int -> [(Int, Term)] -> Gen Text
-compileEtaCtorApp g k picks =
-  compileCtorPaths (\i -> withSpineArg k (fst (picks !! i))) g (map snd picks)
 
 -- | If @term@ is a saturated call to the worker's own global (a tail
 -- self-call), return its arguments (with icities); the worker then loops
 -- instead of recursing in C.
-selfTailArgs :: TailInfo -> Term -> Maybe [(Icit, Term)]
+selfTailArgs :: TailInfo -> BackendTerm -> Maybe [BackendArg]
 selfTailArgs ti term = case spineOf term of
-  (CGlob g, args) | g == tiName ti && length args == tiArity ti -> Just args
+  (BGlob _ g, args) | g == tiName ti && length args == tiArity ti -> Just args
   _ -> Nothing
 
--- | The self-tail-loop path is a direct global call in disguise, so it must
--- apply the same static/Q0 argument rewrite as 'compileApp' before compiling
--- argument temporaries. Otherwise an erased implicit type argument whose source
--- is a 'CVar' is lowered as a runtime read at a path the ownership walk correctly
--- omitted.
-selfTailArgsForLoop :: TailInfo -> Term -> Gen (Maybe [(Icit, Term)])
-selfTailArgsForLoop ti term =
-  case spineOf term of
-    (CGlob g, args)
-      | g == tiName ti
-      , length args == tiArity ti -> do
-          term' <- eraseQ0Args g term
-          pure (selfTailArgs ti term')
-    _ -> pure Nothing
+-- | The self-tail-loop path consumes the already-erased KBackendIR spine.
+selfTailArgsForLoop :: TailInfo -> BackendTerm -> Gen (Maybe [BackendArg])
+selfTailArgsForLoop ti term = pure (selfTailArgs ti term)
 
 -- | Lower a self-tail-call to a loop step: recompute the arguments into
 -- fresh temporaries (they may read the current parameters), rebind the
 -- worker's parameter variables, and @continue@.
-emitTailLoop :: [Text] -> TailInfo -> [(Icit, Term)] -> Gen ()
+emitTailLoop :: [Text] -> TailInfo -> [BackendArg] -> Gen ()
 emitTailLoop cleanup ti args = do
   -- Evaluate every new argument into a temp FIRST (an arg may read a current
   -- parameter via @kvar@), THEN update the parameter cells in place — so the
   -- loop reuses the cells built once in 'compileFunctionGlobal' rather than
   -- allocating a fresh env each iteration (QW2).
-  -- Perceus RC S2.1: a self-tail-call is a saturated spine, so thread each new
-  -- argument's spine path ('withSpineArg') — its CVar uses key the same way the
-  -- analysis walked the original tail-call CApp.
-  let k = length args
-  temps <- forM (zip [0 ..] args) $ \(j, (_ic, a)) -> do
-    e <- withSpineArg k j (compileErasableArg a) -- erase type-level/staging args (§31.2), any icity
+  temps <- forM args $ \a -> do
+    e <- compileErasableArg (argTerm a) -- KBackendIR already erased Q0/type args
     t <- freshN "tc_"
     emit ("KValue *" <> t <> " = " <> e <> ";")
     pure t
@@ -2676,27 +2336,30 @@ emitTailLoop cleanup ti args = do
 -- 'workerMayBounce' mirrors the @kbounce@ condition below and must be kept in
 -- lock-step (a new @kbounce@ arm here without updating it would make R3.1's
 -- trampoline elision unsound).
-emitTailApp :: [Text] -> Term -> Gen ()
+emitTailApp :: [Text] -> BackendTerm -> Gen ()
 emitTailApp cleanup term
   -- P0-A: a saturated eta-expanded constructor in tail position is a final
   -- data value (it cannot bounce or recurse), so build it directly and
   -- return it rather than trampolining through the closure chain.
-  | Just (g, k, picks) <- etaCtorAppSpine term = do
-      e <- compileEtaCtorApp g k picks
+  | Just (g, args) <- etaCtorApp term = do
+      e <- compileCtor g args
       mapM_ emit cleanup
       emit ("return " <> e <> ";")
 emitTailApp cleanup term = do
   let (hd, _) = spineOf term
-  mp <- case hd of CGlob g -> globPrimName g; _ -> pure Nothing
+  mp <- case hd of BGlob _ g -> globPrimName g; _ -> pure Nothing
   case (mp, term) of
     (Just _, _) -> do
       e <- compile term -- prim spine: direct helper / entry-point call, computed here, no trampoline
       mapM_ emit cleanup
       emit ("return " <> e <> ";")
-    (Nothing, CApp Expl f a) -> do
-      -- Perceus RC S2.1: head/arg at the shared 'appHeadPos'/'appArgPos'.
-      fe <- withChild P.appHeadPos (compile f)
-      ae <- withChild P.appArgPos (compileCallArg True a)
+    (Nothing, BApp meta f args)
+      | Just (prefix, a) <- splitLastExplicit meta f args -> do
+      -- Tail-position call-through-value: bounce the final explicit application
+      -- so local/mutual recursion stays C-stack bounded. KBackendIR has already
+      -- flattened and erased the spine; the prefix rebuild is over runtime args.
+      fe <- (compile prefix)
+      ae <- (compileCallArg True a)
       mapM_ emit cleanup
       emit ("return kbounce(" <> fe <> ", " <> ae <> ");")
     _ -> do
@@ -2704,41 +2367,30 @@ emitTailApp cleanup term = do
       mapM_ emit cleanup
       emit ("return " <> e <> ";")
 
--- | Is the implicit argument to this head erased at runtime? Primitive
--- and constructor heads erase implicit arguments (§31.2).  Primitives are
--- the @__prim@ module globals and the prelude globals whose value is a
--- bare 'VPrim' (the @prim@ registrations in "Kappa.Prelude").
-isErasedHead :: Term -> Gen Bool
-isErasedHead t = case headGlob t of
-  Just g@(GName m _)
-    | m == primModule -> pure True
-    | otherwise -> do
-        globals <- gets gsGlobals
-        ctors <- gets gsCtors
-        case Map.lookup g globals of
-          Just gd | isVPrimValue (gdValue gd) -> pure True
-          _ -> pure (Map.member g ctors)
-  Nothing -> pure False
-
-isVPrimValue :: Maybe Value -> Bool
-isVPrimValue (Just (VPrim _ _)) = True
-isVPrimValue _ = False
+splitLastExplicit :: BackendMeta -> BackendTerm -> [BackendArg] -> Maybe (BackendTerm, BackendTerm)
+splitLastExplicit meta hd args =
+  case breakLastExplicit args of
+    Nothing -> Nothing
+    Just (prefix, lastArg) ->
+      let prefixTerm = case prefix of
+            [] -> hd
+            _ -> BApp meta hd prefix
+       in Just (prefixTerm, argTerm lastArg)
+  where
+    breakLastExplicit xs =
+      case reverse xs of
+        a : rs | argIcit a == Expl -> Just (reverse rs, a)
+        _ -> Nothing
 
 -- | Is this implicit argument purely type-level (computationally erased),
 -- so an erased binder receiving it can be passed an unused placeholder?
 -- Type-level forms and references to type/trait globals are erasable;
 -- everything else (dictionaries, runtime values) is compiled for real.
-isErasableArg :: Term -> Gen Bool
+isErasableArg :: BackendTerm -> Gen Bool
 isErasableArg = \case
-  CSort _ -> pure True
-  CPi {} -> pure True
-  CVariantT _ -> pure True
-  CRecordT _ -> pure True
-  CSigT {} -> pure True -- §13.2.10 signature type, erased (§12.2, §31.2)
-  CMeta _ -> pure True
-  CQuote {} -> pure True -- §21/§23 syntax quote: elaboration-time, erased
-  CApp _ f _ -> isErasableArg f -- the spine head decides (e.g. @(List a))
-  CGlob g -> isTypeGlob g
+  BUnit {} -> pure True
+  BApp _ f _ -> isErasableArg f -- the spine head decides (e.g. @(List a))
+  BGlob _ g -> isTypeGlob g
   _ -> pure False
 
 -- | Compile a value-position argument, erasing it to the unit placeholder
@@ -2749,44 +2401,44 @@ isErasableArg = \case
 -- value but never inspects it at runtime; emitting @kunit()@ keeps the
 -- arity (so positional field projection stays aligned) while avoiding the
 -- type-level guards in 'compile'.
-compileErasableArg :: Term -> Gen Text
+compileErasableArg :: BackendTerm -> Gen Text
 compileErasableArg = compileErasableArgOwned False
 
-compileErasableArgOwned :: Bool -> Term -> Gen Text
+compileErasableArgOwned :: Bool -> BackendTerm -> Gen Text
 compileErasableArgOwned needOwned a = do
   er <- isErasableArg a
   if er then pure "kunit()" else compileOwnedResult needOwned a
 
-compileBorrowedCallArg :: Term -> Gen Text
+compileBorrowedCallArg :: BackendTerm -> Gen Text
 compileBorrowedCallArg = \case
-  CVar i -> compileVarRef i
-  CProj e f -> do
-    ee <- withChild P.childPos (compileBorrowedCallArg e)
+  BVar _ use i -> compileVarRef use i
+  BProj _ e f Nothing -> do
+    ee <- (compileBorrowedCallArg e)
     pure ("kproj(" <> ee <> ", " <> cStr f <> ")")
-  CProjAt e _ i -> do
-    ee <- withChild P.childPos (compileBorrowedCallArg e)
+  BProj _ e _ (Just i) -> do
+    ee <- (compileBorrowedCallArg e)
     pure (recAtExpr ee i)
-  CSealE _ e -> withChild P.childPos (compileBorrowedCallArg e)
+  BSeal _ _ e -> (compileBorrowedCallArg e)
   t -> compile t
 
-compileOwnedResult :: Bool -> Term -> Gen Text
+compileOwnedResult :: Bool -> BackendTerm -> Gen Text
 compileOwnedResult needOwned = \case
-  CVar i
-    | needOwned -> compileOwnedVarUse i
-  CProj e f -> do
-    ee <- withChild P.childPos (compile e)
+  BVar _ use i
+    | needOwned -> compileOwnedVarUse use i
+  BProj _ e f Nothing -> do
+    ee <- (compile e)
     rcOwnProjectionResult needOwned e ("kproj(" <> ee <> ", " <> cStr f <> ")")
-  CProjAt e _ i -> do
-    ee <- withChild P.childPos (compile e)
+  BProj _ e _ (Just i) -> do
+    ee <- (compile e)
     rcOwnProjectionResult needOwned e (recAtExpr ee i)
-  CSealE _ e -> withChild P.childPos (compileOwnedResult needOwned e)
-  t@CIf {} -> sinkToExprOwned needOwned t
-  t@CMatch {} -> sinkToExprOwned needOwned t
-  t@CLet {} -> sinkToExprOwned needOwned t
-  t@CLetRec {} -> sinkToExprOwned needOwned t
+  BSeal _ _ e -> (compileOwnedResult needOwned e)
+  t@BIf {} -> sinkToExprOwned needOwned t
+  t@BMatch {} -> sinkToExprOwned needOwned t
+  t@BLet {} -> sinkToExprOwned needOwned t
+  t@BLetRec {} -> sinkToExprOwned needOwned t
   t -> compile t
 
-compileCallArg :: Bool -> Term -> Gen Text
+compileCallArg :: Bool -> BackendTerm -> Gen Text
 compileCallArg needOwned a = do
   er <- isErasableArg a
   if er
@@ -2798,51 +2450,22 @@ flagAt flags i = case drop i flags of
   flag : _ -> flag
   [] -> True
 
-callArgNeedsOwnedForGlobal :: GName -> [(Icit, Term)] -> Gen [Bool]
-callArgNeedsOwnedForGlobal g sargs = do
-  ctx <- gets gsEvalCtx
-  go (Repr.argConvSelectGlobal ctx g) sargs
+callArgNeedsOwnedForArgs :: [BackendArg] -> Gen [Bool]
+callArgNeedsOwnedForArgs = go
   where
-    go _ [] = pure []
-    go convs ((ic, a) : rest)
-      | ic /= Expl = (False :) <$> go convs rest
+    go [] = pure []
+    go (a : rest)
+      | argIcit a /= Expl = (False :) <$> go rest
       | otherwise = do
-          erased <- isErasableArg a
+          erased <- isErasableArg (argTerm a)
           if erased
-            then (False :) <$> go convs rest
+            then (False :) <$> go rest
             else do
-              let (needsOwned, convs') =
-                    case convs of
-                      Just (Repr.ArgBorrowed : cs) -> (False, Just cs)
-                      Just (_ : cs) -> (True, Just cs)
-                      Just [] -> (True, convs)
-                      Nothing -> (True, Nothing)
-              (needsOwned :) <$> go convs' rest
-
-betaApplyArgs :: Term -> [(Icit, Term)] -> Maybe Term
-betaApplyArgs = foldM step
-  where
-    step (CLam lamIc _ _ body) (argIc, arg)
-      | lamIc == argIc = Just (substTopTerm arg body)
-    step _ _ = Nothing
-
-selectedGlobalRecord :: Term -> Gen (Maybe Term)
-selectedGlobalRecord dict = case spineOf dict of
-  (CGlob g, args) -> do
-    bodies <- gets gsBodies
-    pure $ do
-      body <- Map.lookup g bodies
-      betaApplyArgs body args
-  (CRecordV {}, []) -> pure (Just dict)
-  (CSealE _ inner, []) -> selectedGlobalRecord inner
-  _ -> pure Nothing
-
-selectedProjectedMember :: Term -> Text -> Gen (Maybe Term)
-selectedProjectedMember dict fld =
-  selectedGlobalRecord dict >>= \case
-    Just (CRecordV fs) -> pure (lookup fld fs)
-    Just (CSealE _ inner) -> selectedProjectedMember inner fld
-    _ -> pure Nothing
+              let needsOwned = case argConv a of
+                    Just Repr.ArgBorrowed -> False
+                    Just _ -> True
+                    Nothing -> True
+              (needsOwned :) <$> go rest
 
 -- | A selected dictionary/member projection whose KNOWN dictionary body is just
 -- an eta wrapper around a runtime primitive can be lowered as that primitive
@@ -2851,22 +2474,95 @@ selectedProjectedMember dict fld =
 -- body's Core and the resolved primitive identity ('globPrimName'), never by the
 -- projected field spelling alone.  Unknown/local evidence and non-primitive
 -- member bodies stay on the ordinary curried 'kapp' path.
-compileSelectedProjectedPrimitiveApp :: Term -> Gen (Maybe Text)
-compileSelectedProjectedPrimitiveApp term = case spineOf term of
-  (CProj dict fld, sargs) -> go dict fld sargs
-  (CProjAt dict fld _, sargs) -> go dict fld sargs
-  _ -> pure Nothing
+compileSelectedProjectedPrimitiveApp :: BackendTerm -> Gen (Maybe Text)
+compileSelectedProjectedPrimitiveApp term =
+  case spineOf term of
+    (BProj _ dict field _, args)
+      | Just dictG <- backendEvidenceGlobal dict -> do
+      ioDicts <- gets gsIOMonadRefDicts
+      if dictG `Set.member` ioDicts
+        then do
+          mPrim <- selectedIOMonadRefMemberPrimitive dictG field
+          case mPrim of
+            Just ("__ioNewRef", "kpf_io_newRef", 1) ->
+              selectedNewRef [argTerm a | a <- args, argIcit a == Expl]
+            Just ("__ioReadRef", "kpf_io_readRef", 1) ->
+              selectedReadRef [argTerm a | a <- args, argIcit a == Expl]
+            Just ("__ioWriteRef", "kpf_io_writeRef", 2) ->
+              selectedWriteRef [argTerm a | a <- args, argIcit a == Expl]
+            _ -> pure Nothing
+        else pure Nothing
+    _ -> pure Nothing
   where
-    go dict fld sargs = do
-      mmember <- selectedProjectedMember dict fld
-      case mmember >>= (`betaApplyArgs` sargs) of
-        Just reduced
-          | reduced /= term
-          , (CGlob g, _reducedArgs) <- spineOf reduced -> do
-              globPrimName g >>= \case
-                Just _ -> Just <$> compileApp reduced
-                Nothing -> pure Nothing
-        _ -> pure Nothing
+    selectedNewRef [v] =
+      Just <$> emitRefPrim "__ioNewRef" "kpf_io_newRef" 1 [(True, v)]
+    selectedNewRef _ = pure Nothing
+
+    selectedReadRef [r] =
+      Just <$> emitRefPrim "__ioReadRef" "kpf_io_readRef" 1 [(False, r)]
+    selectedReadRef _ = pure Nothing
+
+    selectedWriteRef [r, v] =
+      Just <$> emitRefPrim "__ioWriteRef" "kpf_io_writeRef" 2 [(False, r), (True, v)]
+    selectedWriteRef _ = pure Nothing
+
+    emitRefPrim :: Text -> Text -> Int -> [(Bool, BackendTerm)] -> Gen Text
+    emitRefPrim primName cfn arity args = do
+      markPrimUsed primName
+      aes <-
+        forM args $ \(needOwned, a) ->
+          compileCallArg needOwned a
+      arr <- freshN "na_"
+      emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
+      pure ("knative_sat(" <> cfn <> ", " <> T.pack (show arity) <> ", " <> arr <> ", 1)")
+
+selectedIOMonadRefMemberPrimitive :: GName -> Text -> Gen (Maybe (Text, Text, Int))
+selectedIOMonadRefMemberPrimitive dictG field =
+  case field of
+    "newRef" -> member "__ioNewRef" "kpf_io_newRef" 1
+    "readRef" -> member "__ioReadRef" "kpf_io_readRef" 1
+    "writeRef" -> member "__ioWriteRef" "kpf_io_writeRef" 2
+    _ -> pure Nothing
+  where
+    member primName cfn arity = do
+      ok <- dictionaryMemberBodyIsPrimitive dictG field primName arity
+      pure $ if ok then Just (primName, cfn, arity) else Nothing
+
+dictionaryMemberBodyIsPrimitive :: GName -> Text -> Text -> Int -> Gen Bool
+dictionaryMemberBodyIsPrimitive dictG field primName expectedArity = do
+  bodies <- gets gsBodies
+  case Map.lookup dictG bodies >>= dictionaryFieldBody field of
+    Nothing -> pure False
+    Just memberBody -> primitiveEtaBody primName expectedArity memberBody
+
+dictionaryFieldBody :: Text -> Term -> Maybe Term
+dictionaryFieldBody field body =
+  case stripTermLambdasAndSeals body of
+    CRecordV fs -> lookup field fs
+    _ -> Nothing
+
+primitiveEtaBody :: Text -> Int -> Term -> Gen Bool
+primitiveEtaBody primName expectedArity body = do
+  let (hd, args) = spineOfTerm (stripTermLambdasAndSeals body)
+      explicitArity = length [() | (Expl, _) <- args]
+  headOK <- case hd of
+    CGlob g -> (== Just primName) <$> globPrimName g
+    _ -> pure False
+  pure (headOK && explicitArity == expectedArity)
+
+stripTermLambdasAndSeals :: Term -> Term
+stripTermLambdasAndSeals = \case
+  CLam _ _ _ body -> stripTermLambdasAndSeals body
+  CSealE _ body -> stripTermLambdasAndSeals body
+  term -> term
+
+backendEvidenceGlobal :: BackendTerm -> Maybe GName
+backendEvidenceGlobal = \case
+  BGlob _ g -> Just g
+  BSeal _ _ e -> backendEvidenceGlobal e
+  BApp _ f args
+    | all ((/= Expl) . argIcit) args -> backendEvidenceGlobal f
+  _ -> Nothing
 
 -- | A global that denotes a type or trait (so a reference to it in
 -- argument position is computationally erased): a declared data type or
@@ -2995,7 +2691,8 @@ primEntries = Map.fromList
   [ ("__arrayFromList", PrimEntry "kpf___queryFromList" 1 False)
   , ("__arrayIndexUnsafe", PrimEntry "kpf___arrayIndexUnsafe" 2 False)
   -- MUTABLE-ARRAY-DESIGN §4.1 boxed mutable array.  The forall (e a) is Q0 and
-  -- dropped by eraseQ0ArgsP before codegen, so the entry sees only value args.
+  -- structurally absent from KBackendIR before codegen, so the entry sees only
+  -- value args.
   -- __arrayLen is PURE (isIO=False); the three mutators are IO (isIO=True).
   , ("__newArray", PrimEntry "kpf_io___newArray" 2 True)
   , ("__arrayRead", PrimEntry "kpf_io___arrayRead" 2 True)
@@ -3338,47 +3035,19 @@ primDirectTable = Map.fromList
 -- partial-application boxes or per-argument allocation (the dominant cost in
 -- hot numeric loops).
 -- Otherwise fall back to per-argument 'kapp'/'kappi'.
-compileApp :: Term -> Gen Text
+compileApp :: BackendTerm -> Gen Text
 compileApp term
   -- P0-A: a saturated eta-expanded constructor application is a direct
-  -- 'kctor', not a curried closure chain (see 'etaCtorApp'). S2.1 threads the
-  -- field args by their CApp-spine origin ('compileEtaCtorApp').
-  | Just (g, k, picks) <- etaCtorAppSpine term = compileEtaCtorApp g k picks
-compileApp term0 = do
-  -- FIX (interp-vs-native): at an ORDINARY-function-global spine, replace each
-  -- argument sitting at a 'Q0' (computationally erased, §31.2) telescope position
-  -- with a 'CSort' placeholder.  'compileErasableArg' already lowers a 'CSort' to
-  -- @kunit()@, so this erases the argument WHOLESALE — regardless of its syntax.
-  -- Without it, an erased type-level APPLICATION @f a@ (a 'CApp' over type
-  -- variables) survives the purely-syntactic 'isErasableArg' (which only looks
-  -- at the spine head) and lowers to a real @kapp(kvar f, kvar a)@ over two
-  -- unit-valued slots — the @sequence@/@sequence_@/@for_@/@traverse@-over-IO
-  -- crash (@kapp: applying a non-function value@).  Rewriting the term here keeps
-  -- EVERY downstream path consistent ('compileAppGlob', 'compileDirectCall' +
-  -- 'applyExtra', the prim special-cases, and the 'compileAppDefault' curried
-  -- fallback all re-derive from this term / its spine).
-  --
-  -- ONLY for a NON-erased head (an ordinary defined function global).  For an
-  -- erased head — a primitive or a constructor ('isErasedHead') — elaboration
-  -- has ALREADY dropped the implicit arguments from the spine, so spine position
-  -- k no longer aligns with telescope binder k; erasing by telescope index there
-  -- would wrongly unit-out a real EXPLICIT value argument (e.g. the @Eff@ value
-  -- and continuation of the @__effBind@ prim, whose @~>@ value binders sit at
-  -- telescope positions 3/4 while the spine holds only those two args).  Those
-  -- heads never exhibit the type-application bug anyway (their implicit args are
-  -- dropped, not lowered), and keep the existing per-arg erasure.
-  erasedHd <- isErasedHead term0
-  term <-
-    if erasedHd
-      then pure term0
-      else case fst (spineOf term0) of
-        CGlob g -> eraseQ0Args g term0
-        _ -> pure term0
+  -- 'kctor', not a curried closure chain (see 'etaCtorApp').
+  | Just (g, args) <- etaCtorApp term = compileCtor g args
+compileApp term = do
+  -- KBackendIR has already discharged Q0/type erasure; the spine here contains
+  -- only runtime-kept arguments with their selected calling convention.
   let (hd, sargs) = spineOf term
   compileSelectedProjectedPrimitiveApp term >>= \case
     Just e -> pure e
     Nothing -> case hd of
-      CGlob g -> do
+      BGlob _ g -> do
       -- Perceus RC S2.3 (b.3): validate the callee's owned/borrowed/shared
       -- parameter convention at this CGlob head. Argument materialization happens
       -- at each call argument so selected primitive wrappers can preserve borrowed
@@ -3393,17 +3062,15 @@ compileApp term0 = do
         -- bare-reference path (compileGlob → knative + kapp).
           Just rns
             | let arity = length (rns.params)
-                  explIxH = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
+                  explIxH = [(j, argTerm a) | (j, a) <- zip [0 ..] sargs, argIcit a == Expl]
             , length explIxH >= arity
             , arity > 0 -> do
                 markHostUsed g
                 collectHostCtors rns
-                -- Perceus RC S2.1: thread each host arg's spine path.
-                let kH = length sargs
-                ownedFlags <- callArgNeedsOwnedForGlobal g sargs
+                ownedFlags <- callArgNeedsOwnedForArgs sargs
                 aes <-
                   mapM
-                    (\(j, a) -> withSpineArg kH j (compileCallArg (flagAt ownedFlags j) a))
+                    (\(j, a) -> compileCallArg (flagAt ownedFlags j) a)
                     (take arity explIxH)
                 arr <- freshN "na_"
                 emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " aes <> "};")
@@ -3416,19 +3083,17 @@ compileApp term0 = do
       _ -> compileAppDefault term
 
 -- | The non-host global application spine (primitive / direct-call / default).
-compileAppGlob :: GName -> [(Icit, Term)] -> Term -> Gen Text
+compileAppGlob :: GName -> [BackendArg] -> BackendTerm -> Gen Text
 compileAppGlob g sargs term = do
       mp <- globPrimName g
       susp <- gets gsSuspenders
-      -- Perceus RC S2.1: thread each CK-machine node special-case arg by its TRUE
-      -- spine index. A @Monad@-instance prim (ioBind/stmBind/…) carries a LEADING
-      -- implicit dictionary/type arg, so the explicit-arg position is NOT the spine
-      -- index — 'explIxG' pairs each explicit arg with its real spine index, and
-      -- 'peaIx j t' threads that index. Inert under the OFF baseline.
-      ownedFlags <- callArgNeedsOwnedForGlobal g sargs
-      let kk = length sargs
-          explIxG = [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs]
-          peaIx j t = withSpineArg kk j (compileCallArg (flagAt ownedFlags j) t)
+      -- Explicit arguments keep their original KBackendIR calling convention.
+      -- A @Monad@-instance prim (ioBind/stmBind/…) carries a leading implicit
+      -- dictionary/type argument, so 'explIxG' keeps the original spine index for
+      -- selecting the already-computed ownership flag.
+      ownedFlags <- callArgNeedsOwnedForArgs sargs
+      let explIxG = [(j, argTerm a) | (j, a) <- zip [0 ..] sargs, argIcit a == Expl]
+          peaIx j t = compileCallArg (flagAt ownedFlags j) t
       case mp of
         -- §3.1 general CPS: an @ioBind@/@ioThen@ EXPRESSION (not a do-block —
         -- e.g. the prelude @join@/@race@/@timeout@ bodies) whose FIRST action may
@@ -3439,13 +3104,13 @@ compileAppGlob g sargs term = do
         -- ('gsSuspenders') — a sequential @ioBind@ stays on the cheap bridge.
         Just "ioBind"
           | [(jm, m), (jk, k)] <- explIxG
-          , mayActSuspend susp m -> do
+          , backendMayActSuspend susp m -> do
               mc <- peaIx jm m
               kc <- peaIx jk k
               pure ("krt2_bind(" <> mc <> ", " <> kc <> ")")
         Just "ioThen"
           | [(jm, m), (jn, n)] <- explIxG
-          , mayActSuspend susp m -> do
+          , backendMayActSuspend susp m -> do
               mc <- peaIx jm m
               nc <- peaIx jn n
               pure ("krt2_then(" <> mc <> ", " <> nc <> ")")
@@ -3552,11 +3217,11 @@ compileAppGlob g sargs term = do
         -- compiled, not erased.
         Just "__restoreAt"
           | [(jraw, raw), (jact, act)] <- explIxG -> do
-              rawc <- withSpineArg kk jraw (compileOwnedResult (flagAt ownedFlags jraw) raw)
-              actc <- withSpineArg kk jact (compileOwnedResult (flagAt ownedFlags jact) act)
+              rawc <- compileOwnedResult (flagAt ownedFlags jraw) raw
+              actc <- compileOwnedResult (flagAt ownedFlags jact) act
               pure ("kapp(" <> rawc <> ", " <> actc <> ")")
         Just "poll"
-          | null [a | (Expl, a) <- sargs] -> pure "krt2_poll()"
+          | null [a | a <- sargs, argIcit a == Expl] -> pure "krt2_poll()"
         -- §18.1.4 interruption: __interruptWait (request + await termination) and
         -- __interruptNoWait (request, return at once) — OP_INTERRUPT[_FORK] nodes.
         Just "__interruptWait"
@@ -3608,7 +3273,7 @@ compileAppGlob g sargs term = do
           | [(js, s)] <- explIxG -> do
               sc <- peaIx js s
               pure ("krt2_atomically(" <> sc <> ")")
-        Just pname | explIx@(_ : _) <- [(j, a) | (j, (Expl, a)) <- zip [0 ..] sargs] ->
+        Just pname | explIx@(_ : _) <- [(j, argTerm a) | (j, a) <- zip [0 ..] sargs, argIcit a == Expl] ->
           case Map.lookup pname primEntries of
             -- §34.5.3: a saturated builtin lowers to a DIRECT call on its C
             -- entry point — no string dispatch. A pure builtin: the QW1
@@ -3619,13 +3284,9 @@ compileAppGlob g sargs term = do
             -- through to the curried bare-reference path (emitPrim → knative).
             Just (PrimEntry cfn ar isio) | length explIx == ar -> do
               markPrimUsed pname
-              -- Perceus RC S2.1: thread each builtin arg's spine path
-              -- ('withSpineArg') so its CVar uses resolve in the analysis
-              -- side-table (the @mulInt r r@ / @stringAppend@ arg CVars).
-              let k = length sargs
               aes <-
                 mapM
-                  (\(j, a) -> withSpineArg k j (compileCallArg (flagAt ownedFlags j) a))
+                  (\(j, a) -> compileCallArg (flagAt ownedFlags j) a)
                   explIx
               if isio
                 then do
@@ -3647,15 +3308,14 @@ compileAppGlob g sargs term = do
             Just n | length sargs >= n -> compileDirectCall g n sargs
             _ -> compileAppDefault term
 
--- | The worker arity of a function global @g@ — its leading-lambda count,
--- if @g@ has a recorded core body that is lowered to a worker (≥ 1 binder
--- via 'compileFunctionGlobal').  'Nothing' for CAFs, primitives, and
--- constructors (which have no worker to call directly).
+-- | The worker arity of a function global @g@ after KCore→KBackendIR erasure.
+-- This is the actual @kw_g@ ABI arity; kind-domain/q0 parameters are absent
+-- from 'bbParams'.
 globFuncArity :: GName -> Gen (Maybe Int)
 globFuncArity g = do
-  bodies <- gets gsBodies
+  bodies <- gets gsBackendBodies
   pure $ case Map.lookup g bodies of
-    Just tm | (n, _) <- funcArity tm, n >= 1 -> Just n
+    Just body | let n = length (bbParams body), n >= 1 -> Just n
     _ -> Nothing
 
 -- | Can the boxed worker for @g@ (arity @n@, recorded body @body@) EVER return
@@ -3688,7 +3348,7 @@ globFuncArity g = do
 -- each @(GName, arity)@ denotes a single worker body.  The cache key can
 -- therefore omit the 'body' argument; it is still passed explicitly so callers
 -- that have already looked up the body do not repeat that lookup.
-workerMayBounce :: GName -> Int -> Term -> Gen Bool
+workerMayBounce :: GName -> Int -> BackendTerm -> Gen Bool
 workerMayBounce g n body = do
   memo <- gets gsBounceMemo
   case Map.lookup (g, n) memo of
@@ -3700,27 +3360,43 @@ workerMayBounce g n body = do
       modify' $ \st -> st {gsBounceMemo = Map.insert (g, n) (Just b) (gsBounceMemo st)}
       pure b
 
-workerMayBounceUncached :: GName -> Int -> Term -> Gen Bool
+workerMayBounceUncached :: GName -> Int -> BackendTerm -> Gen Bool
 workerMayBounceUncached g n = tailMay
   where
     tailMay term = case term of
-      CIf _ t e -> orM [tailMay t, tailMay e]
-      CMatch _ _ alts -> orM [tailMay b | CaseAlt _ _ b <- alts]
-      CLet _ _ _ _ body -> tailMay body
-      CLetRec _ _ _ _ body -> tailMay body
+      BIf _ _ t e -> orM [tailMay t, tailMay e]
+      BMatch _ _ alts _ -> orM [tailMay b | BackendAlt _ _ _ _ b <- alts]
+      BLet _ _ _ _ _ body -> tailMay body
+      BLetRec _ _ _ _ _ body -> tailMay body
       _
         -- a saturated self-call loops in place; 'lr1SelfArgs' is the shared
         -- recognizer (explicit-arg count == n) — intentionally stricter than
         -- 'selfTailArgs' (full-spine count), which only ever makes this MORE
         -- conservative (keeps a trampoline), never unsound.
-        | Just _ <- lr1SelfArgs g n term -> pure False
-        | CApp Expl _ _ <- term -> do
+        | Just _ <- lr1SelfArgsBackend g n term -> pure False
+        | hasExplicitApp term -> do
             let (hd, _) = spineOf term
-            prim <- case hd of CGlob h -> globPrimName h; _ -> pure Nothing
-            pure $ case (prim, etaCtorApp term) of
+            prim <- case hd of BGlob _ h -> globPrimName h; _ -> pure Nothing
+            pure $ case (prim, coreEtaCtorApp term) of
               (Nothing, Nothing) -> True -- a general tail call → kbounce
               _ -> False -- prim spine / eta-ctor → returns a value
         | otherwise -> pure False -- a leaf value / IO action (no bounce)
+
+lr1SelfArgsBackend :: GName -> Int -> BackendTerm -> Maybe [BackendTerm]
+lr1SelfArgsBackend self n term = case spineOf term of
+  (BGlob _ g, sargs)
+    | g == self
+    , expl <- [argTerm a | a <- sargs, argIcit a == Expl]
+    , length expl == n ->
+        Just expl
+  _ -> Nothing
+
+hasExplicitApp :: BackendTerm -> Bool
+hasExplicitApp term =
+  any ((== Expl) . argIcit) (snd (spineOf term))
+
+coreEtaCtorApp :: BackendTerm -> Maybe (GName, [BackendTerm])
+coreEtaCtorApp = etaCtorApp
 
 -- | A saturated (or over-saturated) call to a known function global: call
 -- its worker @kw_…@ directly with the leading @n@ arguments instead of
@@ -3729,7 +3405,7 @@ workerMayBounceUncached g n = tailMay
 -- bounce ('workerMayBounce'); a provably non-bouncing worker is called
 -- directly (R3.1).  Any surplus arguments are then applied normally.
 -- Type-level/staging arguments are erased (§31.2).
-compileDirectCall :: GName -> Int -> [(Icit, Term)] -> Gen Text
+compileDirectCall :: GName -> Int -> [BackendArg] -> Gen Text
 compileDirectCall g n sargs = do
   enqueue g
   mplan <- scalarPlan g
@@ -3737,58 +3413,50 @@ compileDirectCall g n sargs = do
     -- LR1/R2.2: an exactly-saturated call to a scalar-eligible worker takes the
     -- unboxed fast path (with a boxed escape).  Surplus args / partial calls
     -- keep the boxed worker.
-    Just (mask, pks, ret, _)
-      | length sargs == length mask
-      , let runtimeIdxs = [i | (i, keep) <- zip [0 :: Int ..] mask, keep]
-      , length runtimeIdxs == length pks ->
+    Just (_mask, pks, ret, _)
+      | length sargs == length pks
+      , let runtimeIdxs = [0 .. length pks - 1] ->
           compileScalarCall g pks ret sargs runtimeIdxs
     _ -> do
-      let k = length sargs
-          (callArgs, extra) = splitAt n sargs
+      let (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
-      ownedFlags <- callArgNeedsOwnedForGlobal g sargs
-      -- Perceus RC S2.1: thread each saturating argument's nested-CApp spine path
-      -- ('withSpineArg') so its CVar uses resolve in the analysis side-table.
+      ownedFlags <- callArgNeedsOwnedForArgs sargs
       aes <-
         mapM
-          (\(j, (_, a)) -> withSpineArg k j (compileCallArg (flagAt ownedFlags j) a))
+          (\(j, a) -> compileCallArg (flagAt ownedFlags j) (argTerm a))
           (zip [0 ..] callArgs)
-      bodies <- gets gsBodies
+      bodies <- gets gsBackendBodies
       mayBounce <- case Map.lookup g bodies of
-        Just body | (_, inner) <- funcArity body -> workerMayBounce g n inner
+        Just body -> workerMayBounce g n (bbRoot body)
         Nothing -> pure True -- no recorded body → keep the trampoline
       let call = worker <> "(" <> T.intercalate ", " aes <> ")"
           base = if mayBounce then "ktrampoline(" <> call <> ")" else call
-      -- the surplus (over-application) args follow the call at spine indices n..k-1.
-      foldM (applyExtra k) base (zip [n ..] extra)
+      -- the surplus (over-application) args follow the saturated direct call.
+      foldM applyExtra base extra
   where
-    applyExtra k acc (j, (Expl, a)) = do
-      ae <- withSpineArg k j (compileCallArg True a)
+    applyExtra acc a | argIcit a == Expl = do
+      ae <- compileCallArg True (argTerm a)
       pure ("kapp(" <> acc <> ", " <> ae <> ")")
-    applyExtra k acc (j, (Impl, a)) = do
-      ae <- withSpineArg k j (compileErasableArg a)
+    applyExtra acc a = do
+      ae <- compileErasableArg (argTerm a)
       pure ("kappi(" <> acc <> ", " <> ae <> ")")
 
 -- | The general curried application lowering (one 'kapp'/'kappi' per arg).
-compileAppDefault :: Term -> Gen Text
-compileAppDefault = \case
-  -- Perceus RC S2.1: this curried fallback recurses through the CApp structure
-  -- itself, so threading head/arg at the shared 'appHeadPos'/'appArgPos' here
-  -- reproduces the analysis walk's nested-CApp path exactly (no separate spine
-  -- index bookkeeping needed). Inert under the OFF baseline.
-  CApp Expl f a -> do
-    fe <- withChild P.appHeadPos (compile f)
-    ae <- withChild P.appArgPos (compileCallArg True a) -- §31.2: an explicit type-level/staging arg is erased
-    pure ("kapp(" <> fe <> ", " <> ae <> ")")
-  CApp Impl f a -> do
-    erased <- isErasedHead f
-    if erased
-      then withChild P.appHeadPos (compile f) -- implicit arg to a prim/constructor: erased (§31.2)
-      else do
-        fe <- withChild P.appHeadPos (compile f)
-        ae <- withChild P.appArgPos (compileErasableArg a)
-        pure ("kappi(" <> fe <> ", " <> ae <> ")")
-  t -> compile t
+compileAppDefault :: BackendTerm -> Gen Text
+compileAppDefault term =
+  case spineOf term of
+    (hd, []) -> compile hd
+    (hd, args) -> do
+      start <- (compile hd)
+      foldM step start args
+  where
+    step acc a
+      | argIcit a == Expl = do
+          ae <- compileCallArg True (argTerm a)
+          pure ("kapp(" <> acc <> ", " <> ae <> ")")
+      | otherwise = do
+          ae <- compileErasableArg (argTerm a)
+          pure ("kappi(" <> acc <> ", " <> ae <> ")")
 
 compileGlob :: GName -> Gen Text
 compileGlob g@(GName m nm)
@@ -3884,8 +3552,8 @@ cBytesLit bs
 
 -- | A lambda: lift its body into a fresh top-level closure function and
 -- return a @kclo@ capturing the current environment.
-compileLam :: Term -> Gen Text
-compileLam body = do
+compileLam :: Maybe BackendBinder -> BackendTerm -> Gen Text
+compileLam mb body = do
   fnName <- freshFn "kfn_"
   env <- gets gsEnv -- the captured environment at closure creation
   -- The body is compiled in the 'SinkBounce' tail sink so a tail-position
@@ -3905,17 +3573,16 @@ compileLam body = do
   savedBinders <- gets gsParamBinders
   savedOwns <- gets gsParamOwns
   savedTopFlat <- gets gsTopFlatFrame
-  bid <- currentBinderIdHere
   bodyEnv <- if flat then pure "cenv" else freshN "lenv_"
   modify' $ \st ->
     st
       { gsParamLvals = if flat then ["arg"] else []
-      , gsParamBinders = if flat then [Just bid] else []
+      , gsParamBinders = if flat then [bbBinderId <$> mb] else []
       , gsParamOwns = if flat then [False] else []
       , gsTopFlatFrame = False
       }
   -- Perceus RC S2.1: the lambda body sits at 'lamBodyPos' under the CLam node.
-  (stmts, ()) <- withChild P.lamBodyPos (captured bodyEnv (consume SinkBounce body))
+  (stmts, ()) <- (captured bodyEnv (consume SinkBounce body))
   modify' $ \st ->
     st
       { gsParamLvals = saved
@@ -3943,25 +3610,12 @@ compileLam body = do
       }
   pure ("kclo(" <> fnName <> ", " <> env <> ")")
 
-compileCtor :: GName -> [Term] -> Gen Text
-compileCtor = compileCtorPaths (\i -> withChild (P.ctorArgPos i))
-
--- | 'compileCtor' parameterised by the per-field PATH wrapper. A genuine 'CCtor'
--- node threads each field at 'ctorArgPos' (the default 'compileCtor'); an eta-ctor
--- application beta-reduced to a ctor ('compileEtaCtorApp') threads each field at
--- the original CApp-spine position the analysis walked, so its CVar uses still
--- resolve in the side-table despite the beta-reduction. @argPath i@ wraps the
--- compilation of field @i@ (0-based, FIELD order).
-compileCtorPaths :: (Int -> Gen Text -> Gen Text) -> GName -> [Term] -> Gen Text
-compileCtorPaths argPath g args = do
-  -- §31.2: erase type-level / staging fields to a unit placeholder so the
-  -- constructor's runtime arity (and positional projection) is preserved
-  -- without compiling a type/quote value (which the interpreter stores but
-  -- never inspects).
-  argEs <-
-    mapM
-      (\(i, a) -> argPath i (compileCallArg True a))
-      (zip [0 ..] args)
+compileCtor :: GName -> [BackendTerm] -> Gen Text
+compileCtor g args = do
+  -- KBackendIR has already omitted erased constructor fields, so this argv
+  -- order is exactly the runtime-kept layout consumed by projections and
+  -- pattern bindings.
+  argEs <- mapM (compileCallArg True) args
   tc <- ctorTagConst g
   -- KBackendIR Stage 2: the nullary ⇒ canonical @b010@ immediate decision is
   -- 'Repr.ctorLayoutByArity' (shared with the LLVM backend); 'Repr.LayoutImmediate'
@@ -3973,12 +3627,12 @@ compileCtorPaths argPath g args = do
       emit ("KValue *" <> arr <> "[] = {" <> T.intercalate ", " argEs <> "};")
       pure ("kctor(" <> tc <> ", " <> cStr (gKey g) <> ", " <> T.pack (show (length argEs)) <> ", " <> arr <> ")")
 
-compileRecord :: [(Text, Term)] -> Gen Text
+compileRecord :: [(Text, BackendTerm)] -> Gen Text
 compileRecord fs = do
   valEs <-
     mapM
-      (\(i, (_, v)) -> withChild (P.recordFieldPos i) (compileCallArg True v))
-      (zip [0 ..] fs)
+      (\(_, v) -> (compileCallArg True v))
+      fs
   namesArr <- freshN "rnames_"
   valsArr <- freshN "rvals_"
   let names = T.intercalate ", " [cStr n | (n, _) <- fs]
@@ -4074,16 +3728,16 @@ sinkResult (SinkCleanup ds sink) e = do
 -- so the CK-machine drives it next — NOT handed to 'emitTailApp's per-argument
 -- trampoline, which compiles the prim head as a bare reference ('emitPrim') and
 -- loses the lowering (and rejects @__reraiseCause@, which has no @primEntry@).
-cpsNodeApp :: Term -> Gen Bool
+cpsNodeApp :: BackendTerm -> Gen Bool
 cpsNodeApp term = do
   let (hd, sargs) = spineOf term
   case hd of
-    CGlob g -> do
+    BGlob _ g -> do
       mp <- globPrimName g
       susp <- gets gsSuspenders
-      pure $ case (mp, [a | (Expl, a) <- sargs]) of
-        (Just "ioBind", [m, _]) -> mayActSuspend susp m
-        (Just "ioThen", [m, _]) -> mayActSuspend susp m
+      pure $ case (mp, [argTerm a | a <- sargs, argIcit a == Expl]) of
+        (Just "ioBind", [m, _]) -> backendMayActSuspend susp m
+        (Just "ioThen", [m, _]) -> backendMayActSuspend susp m
         -- §18.1.4: finallyIO/catchIO ALWAYS lower to the krt2_finally/krt2_catch
         -- node-builder (an OP_DOSCOPE / OP_CATCH tree), so in tail position the
         -- node must be RETURNED for the CK-machine to drive — exactly like
@@ -4115,16 +3769,16 @@ cpsNodeApp term = do
 -- branch is lowered to a loop rather than a recursive C call.  This single
 -- traversal serves both expression context ('SinkVar') and the worker's
 -- tail position ('SinkTail'), so the two can never drift.
-consume :: Sink -> Term -> Gen ()
+consume :: Sink -> BackendTerm -> Gen ()
 consume sink term = case term of
-  CIf c t e -> consumeIf sink c t e
-  CMatch scrut _ alts -> consumeMatch sink scrut alts
-  CLet _ _ _ rhs body -> do
+  BIf _ c t e -> consumeIf sink c t e
+  BMatch _ scrut alts _ -> consumeMatch sink scrut alts
+  BLet _ mb _ _ rhs body -> do
     -- erase a type-level / staging binding (e.g. `let t = Int`) to the unit
     -- placeholder (§31.2) rather than compiling it as a value.
     -- Perceus RC S2.1: rhs at 'letRhsPos', body at 'letBodyPos'.
-    rhsOwnsLocal <- withChild P.letRhsPos (rcTermProducesOwnedHere rhs)
-    re <- withChild P.letRhsPos (compileErasableArgOwned rhsOwnsLocal rhs)
+    rhsOwnsLocal <- (rcTermProducesOwnedHere rhs)
+    re <- (compileErasableArgOwned rhsOwnsLocal rhs)
     lvals <- gets gsParamLvals
     if null lvals
       then do
@@ -4132,16 +3786,16 @@ consume sink term = case term of
         env <- gets gsEnv
         e2 <- freshN "env_"
         emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
-        withEnv e2 (withChild P.letBodyPos (consume sink body))
+        withEnv e2 ((consume sink body))
       else do
         -- R2.3-rest FLAT worker: bind a C local (no KEnv); 'bindFlatLocal'
         -- prepends it as de Bruijn index 0 for exactly the lexical body of this
         -- CLet. This explicit scope is required even inside a 'captured' block:
         -- a nested expression let in an RHS must not shift later outer CVar
         -- lookups (for example an enclosing if condition or else branch).
-        -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken at the
-        -- CLet node (gsPath = the let path → the binder's BinderId), against the
-        -- bound C LOCAL (R-flat). The local is dropped only when the analysis says
+        -- Perceus RC S2.3 (b.4): the let binder's drop decision is taken from the
+        -- lowered binder metadata on this BLet node, against the bound C LOCAL
+        -- (R-flat). The local is dropped only when the analysis says
         -- it is droppable AND the initializer is manifestly owned. Structural
         -- projection results become manifestly owned only where the base-use
         -- side table proves a read from an owned aggregate and codegen emitted
@@ -4149,49 +3803,48 @@ consume sink term = case term of
         -- the body's NORMAL completion — i.e. only when the body sinks into a
         -- continuing result var ('SinkVar'); in a 'SinkTail'/'SinkBounce' body the
         -- value 'return's, so a trailing drop is unreachable.
-        drp0 <- rcBinderDroppableHere
+        drp0 <- rcBinderDroppableHere mb
         let drp = drp0 && rhsOwnsLocal
-        bid <- currentBinderIdHere
         savedFlat <- saveFlatLocalScope
-        lv <- bindFlatLocal "let_" (Just bid) rhsOwnsLocal re
+        lv <- bindFlatLocal "let_" (bbBinderId <$> mb) rhsOwnsLocal re
         let bodySink = if drp then sinkWithCleanup ["kdrop(" <> lv <> ");"] sink else sink
-        withChild P.letBodyPos (consume bodySink body)
+        (consume bodySink body)
         restoreFlatLocalScope savedFlat
   -- A local recursive let: allocate the binder cell, evaluate the rhs
   -- (a function whose closure captures the cell but does not read it until
   -- applied), then back-patch (docs/NATIVE_BACKEND.md §5).
-  CLetRec _ _ _ rhs body -> do
+  BLetRec _ _ _ _ rhs body -> do
     env <- gets gsEnv
     e2 <- freshN "env_"
     emit ("KEnv *" <> e2 <> " = kpush(kunit(), " <> env <> ");")
     -- Perceus RC S2.1: rhs at 'letRhsPos', body at 'letBodyPos'.
-    re <- withEnv e2 (withChild P.letRhsPos (compile rhs))
+    re <- withEnv e2 ((compile rhs))
     emit (e2 <> "->val = " <> re <> ";")
-    withEnv e2 (withChild P.letBodyPos (consume sink body))
+    withEnv e2 ((consume sink body))
   _ -> do
     isCps <- cpsNodeApp term
     let fallback
           | sinkIsTail sink
-          , CApp Expl _ _ <- term
+          , BApp {} <- term
           , isCps =
               compile term >>= sinkResult sink
           | sinkIsTail sink
-          , CApp Expl _ _ <- term
+          , BApp {} <- term
           , sinkHasCleanup sink =
               compile term >>= sinkResult sink
           | sinkIsTail sink
-          , CApp Expl _ _ <- term =
+          , BApp {} <- term =
               emitTailApp (sinkCleanupLines sink) term
           | sinkIsBounce sink
-          , CApp Expl _ _ <- term
+          , BApp {} <- term
           , isCps =
               compile term >>= sinkResult sink
           | sinkIsBounce sink
-          , CApp Expl _ _ <- term
+          , BApp {} <- term
           , sinkHasCleanup sink =
               compile term >>= sinkResult sink
           | sinkIsBounce sink
-          , CApp Expl _ _ <- term =
+          , BApp {} <- term =
               emitTailApp (sinkCleanupLines sink) term
           -- A suspending ioBind/ioThen or __reraiseCause in tail position lowers to a
           -- CK-machine NODE (compileAppGlob): RETURN it so the machine drives it, not
@@ -4216,23 +3869,23 @@ consume sink term = case term of
 
 -- | Compile an if/match/let in expression context: declare a fresh result
 -- variable and consume into it.
-sinkToExpr :: Term -> Gen Text
+sinkToExpr :: BackendTerm -> Gen Text
 sinkToExpr = sinkToExprOwned False
 
-sinkToExprOwned :: Bool -> Term -> Gen Text
+sinkToExprOwned :: Bool -> BackendTerm -> Gen Text
 sinkToExprOwned needOwned term = do
   r <- freshN "r_"
   emit ("KValue *" <> r <> " = 0;")
   consume (SinkOwnedVar needOwned r) term
   pure r
 
-consumeIf :: Sink -> Term -> Term -> Term -> Gen ()
+consumeIf :: Sink -> BackendTerm -> BackendTerm -> BackendTerm -> Gen ()
 consumeIf sink c t e = do
   -- Perceus RC S2.1: cond/then/else at 'ifCondPos'/'ifThenPos'/'ifElsePos'.
-  ce <- withChild P.ifCondPos (compile c)
+  ce <- (compile c)
   env <- gets gsEnv
-  (tStmts, ()) <- withChild P.ifThenPos (captured env (rcEmitBranchDeadDropsHere >> consume sink t))
-  (eStmts, ()) <- withChild P.ifElsePos (captured env (rcEmitBranchDeadDropsHere >> consume sink e))
+  (tStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere (backendTermMeta t) >> consume sink t))
+  (eStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere (backendTermMeta e) >> consume sink e))
   emit ("if (kas_bool(" <> ce <> ")) {")
   forM_ tStmts (emit . ("  " <>))
   emit "} else {"
@@ -4241,16 +3894,15 @@ consumeIf sink c t e = do
 
 -- ── Pattern matching ─────────────────────────────────────────────────
 
-consumeMatch :: Sink -> Term -> [CaseAlt] -> Gen ()
+consumeMatch :: Sink -> BackendTerm -> [BackendAlt] -> Gen ()
 consumeMatch sink scrut alts = do
   -- Perceus RC S2.3a (§a): decide whether the match owns a reference to the
-  -- scrutinee CELL that it must discharge with a per-arm @kdrop(sv)@. Computed
-  -- BEFORE compiling the scrutinee (so 'rcUseKindHere' for a 'CVar' scrutinee
-  -- reads the same 'matchScrutPos' key the analysis recorded, and so the verdict
-  -- is fixed once for every arm). Inert under OFF.
+  -- scrutinee CELL that it must discharge with a per-arm @kdrop(sv)@. The
+  -- verdict is carried by this KBackendIR node's metadata, so it is fixed once
+  -- for every arm without reattaching a path-keyed ownership side table. Inert
+  -- under OFF.
   dropCell <- rcScrutDropDecision scrut
-  -- Perceus RC S2.1: the scrutinee sits at 'matchScrutPos' under the CMatch node.
-  se <- withChild P.matchScrutPos (compile scrut)
+  se <- (compile scrut)
   sv <- freshN "scrut_"
   emit ("KValue *" <> sv <> " = " <> se <> ";")
   env <- gets gsEnv
@@ -4261,34 +3913,30 @@ consumeMatch sink scrut alts = do
   -- permutation; the native backend distributes alternatives over a shared
   -- body and does not perform it, so refuse rather than miscompile. (The
   -- interpreter — the §27 conformance engine — handles this case.)
-  forM_ alts $ \(CaseAlt pat _ _) ->
+  forM_ alts $ \(BackendAlt _ pat _ _ _) ->
     when (orReordered pat) $
       void $
         unsupported "or-pattern-reordered-binders"
           "an or-pattern alternative that binds the shared names in a different order than the first alternative is not supported by the native backend (use a consistent binder order across alternatives)"
-  -- Perceus RC S2.1: the arms sit under 'matchArmsPos', each at 'matchArmPos ai'
-  -- by its ORIGINAL alt index 'ai' — the index "Kappa.Ownership"'s 'walkAlts'
-  -- keys against. An or-pattern alt 'expandTopOr's into several sub-alts that all
-  -- SHARE the original 'ai' (the analysis does not expand), so the arm-body path
-  -- still matches; the intra-pattern slot paths of an or-expansion may diverge,
-  -- which is a TOLERATED miss (logged, never a wrong binder).
-  withChild P.matchArmsPos $
-    forM_ (zip [0 ..] alts) $ \(ai, alt) ->
-      withChild (P.matchArmPos ai) $
-        forM_ (expandTopOr alt) $ \subAlt -> consumeAlt sink sv dropCell env done subAlt
+  -- KBackendIR already carries runtime-kept pattern shapes and branch metadata;
+  -- top-level or-patterns can be distributed here without reconstructing any
+  -- structural ownership path.
+  forM_ alts $ \alt ->
+    forM_ (expandBackendAltTopOr alt) $ \subAlt ->
+      consumeAlt sink sv dropCell env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
 -- names in a non-canonical order (a non-identity permutation on some
 -- alternative) — see 'consumeMatch'.
-orReordered :: CorePat -> Bool
+orReordered :: BackendPat -> Bool
 orReordered = \case
-  CPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReordered ps
-  CPCtor _ _ ps -> any orReordered ps
-  CPTuple ps -> any orReordered ps
-  CPRecord fs _ -> any (orReordered . snd) fs
-  CPInject _ p -> orReordered p
-  CPAs _ p -> orReordered p
+  BPOr ps perms -> any (\pm -> pm /= [0 .. length pm - 1]) perms || any orReordered ps
+  BPCtor _ ps -> any orReordered ps
+  BPTuple ps -> any orReordered ps
+  BPRecord fs _ -> any (orReordered . snd) fs
+  BPInject _ p -> orReordered p
+  BPAs _ p -> orReordered p
   _ -> False
 
 -- | §17.2.3: a top-level or-pattern alternative is equivalent to one
@@ -4296,8 +3944,9 @@ orReordered = \case
 -- guard and body. Splitting here lets each branch's variable bindings be
 -- handled by the ordinary single-pattern path, so or-patterns that bind
 -- variables work without decision-tree compilation.
-expandTopOr :: CaseAlt -> [CaseAlt]
-expandTopOr (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePat pat]
+expandBackendAltTopOr :: BackendAlt -> [BackendAlt]
+expandBackendAltTopOr (BackendAlt meta pat binders g body) =
+  [BackendAlt meta p binders g body | p <- distributePat pat]
 
 -- | §17.2.3: expand a pattern into the list of or-free patterns it denotes,
 -- distributing every nested 'CPOr' as the Cartesian product over its
@@ -4305,29 +3954,29 @@ expandTopOr (CaseAlt pat g body) = [CaseAlt p g body | p <- distributePat pat]
 -- Each or-branch binds the same variables, so all expansions share the
 -- alternative's guard and body; the resulting or-free patterns are then
 -- handled by the ordinary single-pattern test/binding path.
-distributePat :: CorePat -> [CorePat]
+distributePat :: BackendPat -> [BackendPat]
 distributePat = \case
-  CPOr ps _ -> concatMap distributePat ps
-  CPCtor g nEx ps -> [CPCtor g nEx qs | qs <- mapM distributePat ps]
-  CPTuple ps -> [CPTuple qs | qs <- mapM distributePat ps]
-  CPRecord fs rest ->
+  BPOr ps _ -> concatMap distributePat ps
+  BPCtor g ps -> [BPCtor g qs | qs <- mapM distributePat ps]
+  BPTuple ps -> [BPTuple qs | qs <- mapM distributePat ps]
+  BPRecord fs rest ->
     let (names, pats) = unzip fs
-     in [CPRecord (zip names qs) rest | qs <- mapM distributePat pats]
-  CPInject t p -> [CPInject t q | q <- distributePat p]
-  CPAs n p -> [CPAs n q | q <- distributePat p]
-  p -> [p] -- CPWild / CPVar / CPLit / CPInjectRest: no nested or
+     in [BPRecord (zip names qs) rest | qs <- mapM distributePat pats]
+  BPInject t p -> [BPInject t q | q <- distributePat p]
+  BPAs n p -> [BPAs n q | q <- distributePat p]
+  p -> [p] -- BPWild / BPVar / BPLit / BPInjectRest: no nested or
 
-consumeAlt :: Sink -> Text -> Bool -> Text -> Text -> CaseAlt -> Gen ()
-consumeAlt sink sv dropCell env done (CaseAlt pat mguard body) = do
+consumeAlt :: Sink -> Text -> Bool -> Text -> Text -> BackendAlt -> Gen ()
+consumeAlt sink sv dropCell env done (BackendAlt altMeta pat binders mguard body) = do
   emit ("if (!" <> done <> ") {")
   -- pattern test + bindings produced as a nested block
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> consumeAltBody sink sv dropCell env done pat mguard body
+      Nothing -> consumeAltBody sink altMeta sv dropCell env done pat binders mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        consumeAltBody sink sv dropCell env done pat mguard body
+        consumeAltBody sink altMeta sv dropCell env done pat binders mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
@@ -4336,8 +3985,8 @@ consumeAlt sink sv dropCell env done (CaseAlt pat mguard body) = do
 -- match consume the body into the sink (and mark @done@; for a 'SinkTail'
 -- body the @done@ store is dead — the body has returned/looped — but
 -- harmless).
-consumeAltBody :: Sink -> Text -> Bool -> Text -> Text -> CorePat -> Maybe Term -> Term -> Gen ()
-consumeAltBody sink sv dropCell env done pat mguard body = do
+consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Gen ()
+consumeAltBody sink altMeta sv dropCell env done pat binders mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   -- Perceus RC S2.3a/S3.2 (§a): the cell-drop fires for THIS arm only when the
   -- match owns the scrutinee cell ('dropCell'). S3.2 routes that cleanup through
@@ -4353,10 +4002,10 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- the guard, so a failed guard cannot run the success-branch balancing drops;
   -- keep guarded arms conservative until guard-failure cleanup is modeled.
   let dropHere = dropCell && maybe True (const False) mguard
-  env' <- bindPatScrutDup dropHere sv env pat
+  env' <- bindPatScrutDup dropHere binders sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
-  -- binders HERE (gsPath = the arm path, so 'patSlotPos k' keys each slot), against
-  -- the bound flat C locals (R-flat). These drops only fire with 'dropHere',
+  -- binders from lowered arm metadata, against the bound flat C locals (R-flat).
+  -- These drops only fire with 'dropHere',
   -- because otherwise pattern locals are raw borrowed projections, not dup-owned
   -- fields. The slot's de Bruijn index @k@ is its
   -- 'gsParamLvals' index right after binding (the LAST patBinding is index 0,
@@ -4364,7 +4013,7 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- the body so the lookup key is the arm path; emitted through the sink cleanup
   -- after normal body evaluation and before any tail return. Boxed (KEnv) arms
   -- have empty 'gsParamLvals' → no flat local → no drop (left to Boehm).
-  patDrops <- if dropHere then rcPatSlotDropLvals pat else pure []
+  patDrops <- if dropHere then rcPatSlotDropLvals binders pat else pure []
   let altCleanup = map (\lv -> "kdrop(" <> lv <> ");") patDrops <> ["kdrop(" <> sv <> ");" | dropHere]
       bodySink = sinkWithCleanup altCleanup sink
   -- Perceus RC S2.1: under the arm path, the guard sits at 'altGuardPos' and the
@@ -4372,14 +4021,14 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
   -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
-      rcEmitBranchDeadDropsHere
-      withEnv env' (withChild P.altBodyPos (consume bodySink body))
+      rcEmitBranchDeadDropsHere altMeta
+      withEnv env' ((consume bodySink body))
       emit (done <> " = 1;")
     Just gd -> do
-      ge <- withEnv env' (withChild P.altGuardPos (compile gd))
+      ge <- withEnv env' ((compile gd))
       emit ("if (kas_bool(" <> ge <> ")) {")
-      rcEmitBranchDeadDropsHere
-      withEnv env' (withChild P.altBodyPos (consume bodySink body))
+      rcEmitBranchDeadDropsHere altMeta
+      withEnv env' ((consume bodySink body))
       emit ("  " <> done <> " = 1;")
       emit "}"
 
@@ -4392,26 +4041,32 @@ consumeAltBody sink sv dropCell env done pat mguard body = do
 -- its 'gsParamLvals' index in the just-bound arm scope. Returns @[]@ under the OFF
 -- baseline, in a boxed arm (empty 'gsParamLvals' — no flat local to drop against),
 -- or for any slot the analysis did not mark droppable-with-no-LastUse.
-rcPatSlotDropLvals :: CorePat -> Gen [Text]
-rcPatSlotDropLvals pat = do
+rcPatSlotDropLvals :: [Maybe BackendBinder] -> BackendPat -> Gen [Text]
+rcPatSlotDropLvals binders pat = do
   enabled <- gets gsRcEnabled
   lvals <- gets gsParamLvals
   if not enabled || null lvals
     then pure []
     else do
-      let n = patBindersC pat
+      let n = length (patBindings "0" pat)
       fmap concat $ forM [0 .. n - 1] $ \k -> do
-        drp <- rcPatSlotDroppableHere k
+        let mb = case drop k binders of
+              b : _ -> b
+              [] -> Nothing
+        drp <- rcBinderDroppableHere mb
         pure [lvals !! k | drp && k < length lvals]
 
 -- | A C boolean expression that is true iff @pat@ matches the value @v@
 -- (a pure expression; no side effects, no bindings).  'Nothing' means the
 -- pattern always matches (e.g. a variable or wildcard).
-patTest :: Text -> CorePat -> Gen (Maybe Text)
-patTest v = \case
+patTest :: Text -> BackendPat -> Gen (Maybe Text)
+patTest v = patTestCore v . backendPatToCorePat
+
+patTestCore :: Text -> CorePat -> Gen (Maybe Text)
+patTestCore v = \case
   CPWild -> pure Nothing
   CPVar _ -> pure Nothing
-  CPAs _ p -> patTest v p
+  CPAs _ p -> patTestCore v p
   CPLit l -> do
     le <- litValue l
     case le of
@@ -4420,7 +4075,7 @@ patTest v = \case
   CPCtor g _ ps -> do
     let nps = length ps
     subs <- forM (zip [0 ..] ps) $ \(i, p) ->
-      patTest (ctorArgExpr v nps i) p
+      patTestCore (ctorArgExpr v nps i) p
     -- LR2: dispatch on the numeric ctor identity (int compare) rather than a
     -- kctor_is strcmp.  kctor_tagid returns -1 for a non-ctor scrutinee, so
     -- this preserves the `v->tag == K_CTOR &&` type guard kctor_is carried.
@@ -4430,7 +4085,7 @@ patTest v = \case
   CPTuple ps -> do
     let n = length ps
     subs <- forM (zip [0 ..] ps) $ \(i, p) ->
-      patTest (recAtExpr v i) p
+      patTestCore (recAtExpr v i) p
     let szTest = "krec_size(" <> v <> ") == " <> T.pack (show n)
     pure (Just (conj (szTest : [t | Just t <- subs])))
   -- §17.2.5: a record pattern's rest binder always matches; the named
@@ -4443,7 +4098,7 @@ patTest v = \case
     -- binds variables would need decision-tree compilation.
     if all bindsNothing ps
       then do
-        subs <- mapM (patTest v) ps
+        subs <- mapM (patTestCore v) ps
         pure (Just (disj [maybe "1" id t | t <- subs]))
       else do
         _ <- unsupported "CPOr-nested-binding"
@@ -4451,7 +4106,7 @@ patTest v = \case
         pure (Just "0")
   -- §13 variant patterns: tag match + payload sub-test.
   CPInject tag p -> do
-    sub <- patTest ("kvariant_payload(" <> v <> ")") p
+    sub <- patTestCore ("kvariant_payload(" <> v <> ")") p
     -- LR2: numeric variant dispatch (kvariant_tagid -> -1 for a non-variant).
     tc <- variantTagConst tag
     let here = "kvariant_tagid(" <> v <> ") == " <> tc
@@ -4462,7 +4117,7 @@ patTest v = \case
     pure (Just (conj ("kis_variant(" <> v <> ")" : ["kvariant_tagid(" <> v <> ") != " <> tc | tc <- tcs])))
   where
     recordTests rv pfs = do
-      subs <- forM pfs $ \(n, p) -> patTest ("kproj(" <> rv <> ", " <> cStr n <> ")") p
+      subs <- forM pfs $ \(n, p) -> patTestCore ("kproj(" <> rv <> ", " <> cStr n <> ")") p
       case [t | Just t <- subs] of
         [] -> pure Nothing
         ts -> pure (Just (conj ts))
@@ -4500,7 +4155,7 @@ bindsNothing :: CorePat -> Bool
 bindsNothing = \case
   CPWild -> True
   CPLit _ -> True
-  -- @nEx@ skolem placeholder slots ARE bindings, so a ctor pattern with
+  -- @nEx@ skolem slots are Core/interpreter binders, so a ctor pattern with
   -- existentials does not "bind nothing".
   CPCtor _ nEx ps -> nEx == 0 && all bindsNothing ps
   CPTuple ps -> all bindsNothing ps
@@ -4511,8 +4166,11 @@ bindsNothing = \case
 -- | The values a pattern binds, as C expressions over the scrutinee
 -- expression @sv@, in matchPat's left-to-right binding order (rightmost
 -- binder ends up at de Bruijn index 0).
-patBindings :: Text -> CorePat -> [Text]
-patBindings = go
+patBindings :: Text -> BackendPat -> [Text]
+patBindings sv = patBindingsCore sv . backendPatToCorePat
+
+patBindingsCore :: Text -> CorePat -> [Text]
+patBindingsCore = go
   where
     go v = \case
       CPWild -> []
@@ -4769,7 +4427,7 @@ blockingHostGlobals =
 -- | Does this action (its spine head) reach a suspending op?  A suspending prim,
 -- or a global in the §3.3 transitive-suspender set.
 spineHeadSuspends :: Set GName -> Term -> Bool
-spineHeadSuspends susp t = case fst (spineOf t) of
+spineHeadSuspends susp t = case fst (spineOfTerm t) of
   CGlob g -> isSuspendingPrim g || g `Set.member` susp
   _ -> False
 
@@ -4779,15 +4437,22 @@ spineHeadSuspends susp t = case fst (spineOf t) of
 -- conservatively: the CK-machine drives a sequential local action just fine, and
 -- only it can drive a suspending one — whereas the synchronous bridge cannot.
 spineHeadIsLocal :: Term -> Bool
-spineHeadIsLocal t = case fst (spineOf t) of
+spineHeadIsLocal t = case fst (spineOfTerm t) of
   CVar _ -> True
   _ -> False
 
--- | An action that an IO combinator (ioBind/catchIO/…) must drive through the
--- CK-machine: it either reaches a suspending op (§3.3) or is parameter-headed
--- (higher-order, may-suspend).
-mayActSuspend :: Set GName -> Term -> Bool
-mayActSuspend susp t = spineHeadSuspends susp t || spineHeadIsLocal t
+backendSpineHeadSuspends :: Set GName -> BackendTerm -> Bool
+backendSpineHeadSuspends susp t = case fst (spineOf t) of
+  BGlob _ g -> isSuspendingPrim g || g `Set.member` susp
+  _ -> False
+
+backendSpineHeadIsLocal :: BackendTerm -> Bool
+backendSpineHeadIsLocal t = case fst (spineOf t) of
+  BVar {} -> True
+  _ -> False
+
+backendMayActSuspend :: Set GName -> BackendTerm -> Bool
+backendMayActSuspend susp t = backendSpineHeadSuspends susp t || backendSpineHeadIsLocal t
 
 -- | Does any action in the block (recursively, including loop/if bodies) reach a
 -- suspending operation?  When @incLocal@ is 'True' an OPAQUE HIGHER-ORDER call —
@@ -4800,7 +4465,8 @@ mayActSuspend susp t = spineHeadSuspends susp t || spineHeadIsLocal t
 -- itself).  The strict version (@incLocal@ = 'False') gates the FAIL-CLOSED
 -- diagnostic, so a local-headed call there does not newly reject a block; the
 -- may-suspend version gates CPS ELIGIBILITY (a simple block is lowered onto the
--- CK-machine).  This mirrors 'scalarBodyMaySuspend'/'mayActSuspend', which
+-- CK-machine).  This mirrors 'scalarBodyMaySuspend' and the KBackendIR action
+-- suspension checks, which
 -- already treat a local-headed call as conservatively may-suspend.
 blockSuspendsWith :: Bool -> Set GName -> [KItem] -> Bool
 blockSuspendsWith incLocal susp = any itemSuspends
@@ -4883,11 +4549,64 @@ cpsEligible susp items =
     needsRuntimeFinalizers (KSubDo _ body) = any needsRuntimeFinalizers body
     needsRuntimeFinalizers _ = False
 
+backendBlockSuspendsWith :: Bool -> Set GName -> [BackendItem] -> Bool
+backendBlockSuspendsWith incLocal susp = any itemSuspends
+  where
+    s = \case
+      BDo _ _ items -> backendBlockSuspendsWith incLocal susp items
+      t -> backendSpineHeadSuspends susp t || (incLocal && backendSpineHeadIsLocal t)
+    condSuspends (BKCondPure _) = False
+    condSuspends (BKCondAction t) = s t
+    recur = backendBlockSuspendsWith incLocal susp
+    itemSuspends (BKBind _ _ _ _ t _) = s t
+    itemSuspends (BKExpr _ t) = s t
+    itemSuspends (BKAssign _ _ _ actT _) = s actT
+    itemSuspends (BKReturn _ t) = s t
+    itemSuspends (BKVarItem _ _ _ actT _) = s actT
+    itemSuspends (BKWhile _ _ c b me) = condSuspends c || recur b || maybe False recur me
+    itemSuspends (BKFor _ _ _ _ _ b me) = recur b || maybe False recur me
+    itemSuspends (BKIf _ alts me) = any (recur . snd) alts || maybe False recur me
+    itemSuspends (BKDefer _ _ e) = s e
+    itemSuspends BKUsing {} = True
+    itemSuspends (BKSubDo _ _ b) = recur b
+    itemSuspends _ = False
+
+backendBlockSuspends :: Set GName -> [BackendItem] -> Bool
+backendBlockSuspends = backendBlockSuspendsWith False
+
+backendCpsEligible :: Set GName -> [BackendItem] -> Bool
+backendCpsEligible susp items =
+  all simpleLinear items && (backendBlockSuspendsWith True susp items || any needsRuntimeFinalizers items)
+  where
+    simpleLinear BKBind {} = True
+    simpleLinear BKLet {} = True
+    simpleLinear BKExpr {} = True
+    simpleLinear BKUsing {} = True
+    simpleLinear (BKDefer _ Nothing _) = True
+    simpleLinear BKVarItem {} = True
+    simpleLinear BKAssign {} = True
+    simpleLinear BKReturn {} = True
+    simpleLinear (BKBreak _ Nothing) = True
+    simpleLinear (BKContinue _ Nothing) = True
+    simpleLinear (BKWhile _ Nothing _ body Nothing) = all simpleLinear body
+    simpleLinear (BKIf _ alts mels) =
+      all (all simpleLinear . snd) alts && maybe True (all simpleLinear) mels
+    simpleLinear (BKSubDo _ _ body) = all simpleLinear body
+    simpleLinear _ = False
+    needsRuntimeFinalizers (BKDefer _ Nothing _) = True
+    needsRuntimeFinalizers BKUsing {} = True
+    needsRuntimeFinalizers (BKWhile _ Nothing _ body mels) =
+      any needsRuntimeFinalizers body || maybe False (any needsRuntimeFinalizers) mels
+    needsRuntimeFinalizers (BKIf _ alts mels) =
+      any (any needsRuntimeFinalizers . snd) alts || maybe False (any needsRuntimeFinalizers) mels
+    needsRuntimeFinalizers (BKSubDo _ _ body) = any needsRuntimeFinalizers body
+    needsRuntimeFinalizers _ = False
+
 -- | Lower a CPS-eligible do-block: build its @krt2_*@ action tree, wrapping it
 -- in a @krt2_doscope@ when the block carries §18.7 defers (so they run LIFO and
 -- masked on every exit, via OP_DOSCOPE/KK_DOSCOPE).  With no defers there is no
 -- scope frame — just the bind tree.
-compileDoCps :: [KItem] -> Gen Text
+compileDoCps :: [BackendItem] -> Gen Text
 compileDoCps items = do
   tree <- cpsItems items
   -- §18.8: a `return` exits THIS do-block (yielding its value), not the fiber.
@@ -4898,14 +4617,14 @@ compileDoCps items = do
   let scoped = if any itemReturns items then "krt2_retscope(" <> tree <> ")" else tree
   pure $ if any hasScope items then "krt2_doscope(" <> scoped <> ")" else scoped
   where
-    hasScope (KDefer _ _) = True
+    hasScope (BKDefer _ _ _) = True
     hasScope _ = False
     -- a `return` anywhere in THIS block (recursing into its own loop/if/subdo
     -- bodies, which return from this block, but NOT into a nested do VALUE).
-    itemReturns (KReturn _) = True
-    itemReturns (KWhile _ _ b mels) = any itemReturns b || maybe False (any itemReturns) mels
-    itemReturns (KIf alts mels) = any (any itemReturns . snd) alts || maybe False (any itemReturns) mels
-    itemReturns (KSubDo _ b) = any itemReturns b
+    itemReturns (BKReturn _ _) = True
+    itemReturns (BKWhile _ _ _ b mels) = any itemReturns b || maybe False (any itemReturns) mels
+    itemReturns (BKIf _ alts mels) = any (any itemReturns . snd) alts || maybe False (any itemReturns) mels
+    itemReturns (BKSubDo _ _ b) = any itemReturns b
     itemReturns _ = False
 
 -- | Lower a CPS-eligible do-block to its @krt2_bind@/@krt2_then@ action tree.
@@ -4913,80 +4632,80 @@ compileDoCps items = do
 -- continuation emitted as a sibling function; a discarded effect becomes
 -- @krt2_then@; the tail action is returned directly (tail position — the
 -- CK-machine, not a nested bind, so the spine stays bounded).
-cpsItems :: [KItem] -> Gen Text
+cpsItems :: [BackendItem] -> Gen Text
 cpsItems = cpsItemsFrom 0
 
-cpsItemsFrom :: Int -> [KItem] -> Gen Text
+cpsItemsFrom :: Int -> [BackendItem] -> Gen Text
 cpsItemsFrom start items = case items of
   [] -> pure "krt2_pure(kunit())"
   item : rest ->
     let ix = start
         next = ix + 1
-        itemChild child = withChild (P.doItemPos ix) . withChild child
-        itemNode = withChild (P.doItemPos ix)
         restTree = cpsItemsFrom next rest
+        itemChild _ act = act
+        itemNode act = act
      in case item of
           -- TAIL position: a self-tail-call / mutual-recursion /
           -- call-through-a-value here is DEFERRED behind a continuation so the
           -- recursion is C-stack-bounded (see 'cpsTailAction'); a CPS-node or
           -- primitive head is built directly.
-          KExpr t
-            | null rest -> itemChild P.kExprActionPos (cpsTailAction t)
-            | otherwise -> seqThen [P.doItemPos ix, P.kExprActionPos] t restTree
-          KBind _ _ t _
-            | null rest -> itemChild P.kBindActionPos (cpsTailAction t)
-          KBind _ CPWild t _ -> seqThen [P.doItemPos ix, P.kBindActionPos] t restTree
-          KBind _ pat t _ -> do
-            m <- itemChild P.kBindActionPos (cpsActionTerm t)
-            contFn <- emitCpsCont pat next rest
+          BKExpr _ t
+            | null rest -> itemChild () (cpsTailAction t)
+            | otherwise -> seqThen [(), ()] t restTree
+          BKBind _ _ _ _ t _
+            | null rest -> itemChild () (cpsTailAction t)
+          BKBind _ _ BPWild _ t _ -> seqThen [(), ()] t restTree
+          BKBind _ _ pat binders t _ -> do
+            m <- itemChild () (cpsActionTerm t)
+            contFn <- emitCpsCont pat binders next rest
             env <- gets gsEnv
             pure ("krt2_bind(" <> m <> ", kclo(" <> contFn <> ", " <> env <> "))")
-          KLet _ CPWild t -> itemChild P.kLetValuePos (compile t) >> restTree
-          KLet _ pat t -> do
+          BKLet _ _ BPWild _ t -> itemChild () (compile t) >> restTree
+          BKLet _ _ pat binders t -> do
             -- a `let` binds a PURE value. Current-value reads and splices have
             -- already been lifted by the checker into preceding bind/action
             -- items, so there is no hidden monadic read to discover here.
-            bindA <- itemChild P.kLetValuePos (cpsActionOfPure t)
-            contFn <- emitCpsCont pat next rest
+            bindA <- itemChild () (cpsActionOfPure t)
+            contFn <- emitCpsCont pat binders next rest
             env <- gets gsEnv
             pure ("krt2_bind(" <> bindA <> ", kclo(" <> contFn <> ", " <> env <> "))")
           -- ── CPS LOOP FAMILY (CPS-DESIGN §4) ──────────────────────────
           -- @var x = init@: bind the MonadRef.newRef action chosen by
           -- elaboration and push the resulting Ref onto the captured env
           -- (de Bruijn 0) for the continuation.
-          KVarItem x _ actT _ -> do
-            refA <- itemChild P.kVarActionPos (cpsActionTerm actT)
-            contFn <- emitCpsCont (CPVar x) next rest
+          BKVarItem _ mb _ actT _ -> do
+            refA <- itemChild () (cpsActionTerm actT)
+            contFn <- emitCpsCont (BPVar "_var") [mb] next rest
             env <- gets gsEnv
             pure ("krt2_bind(" <> refA <> ", kclo(" <> contFn <> ", " <> env <> "))")
           -- @x := rhs@ / @x <- rhs@ (a var assignment): run the
           -- MonadRef.writeRef action selected during elaboration, so CPS and
           -- non-CPS paths use the same evidence.
-          KAssign _ _ _ actT _ -> do
-            writeA <- itemChild P.kAssignActionPos (cpsActionTerm actT)
+          BKAssign _ _ _ actT _ -> do
+            writeA <- itemChild () (cpsActionTerm actT)
             r <- restTree
             pure ("krt2_then(" <> writeA <> ", " <> r <> ")")
           -- @return v@: exit THIS do-block (OP_RETURN -> RK_RETURN, caught by
           -- the enclosing KK_RETSCOPE — compileDoCps), running every crossed
           -- do-scope's defers en route.
-          KReturn t -> do
-            rv <- itemChild P.kReturnValuePos (cpsActionOfPure t)
+          BKReturn _ t -> do
+            rv <- itemChild () (cpsActionOfPure t)
             contFn <- emitCpsReturnCont
             env <- gets gsEnv
             pure ("krt2_bind(" <> rv <> ", kclo(" <> contFn <> ", " <> env <> "))")
           -- @break@ / @continue@ (unlabeled): target the innermost OP_WHILE's KK_LOOP.
-          KBreak Nothing -> pure "krt2_break()"
-          KContinue Nothing -> pure "krt2_continue()"
+          BKBreak _ Nothing -> pure "krt2_break()"
+          BKContinue _ Nothing -> pure "krt2_continue()"
           -- @while c { body }@ (unlabeled, no else): OP_WHILE[condIO, bodyIO] -> KK_LOOP.
-          KWhile Nothing cond body Nothing -> do
-            condA <- itemChild P.kWhileCondPos (cpsCondAction cond)
-            bodyA <- itemNode (withChild P.kWhileBodyPos (cpsItems body))
+          BKWhile _ Nothing cond body Nothing -> do
+            condA <- itemChild () (cpsCondAction cond)
+            bodyA <- itemNode ((cpsItems body))
             r <- restTree
             pure ("krt2_then(krt2_while(" <> condA <> ", " <> bodyA <> "), " <> r <> ")")
           -- a statement-`if` in a CPS block: each branch is a CPS action tree;
           -- the if's normal completion is Unit, so a non-tail if sequences its
           -- Unit result before the rest via krt2_then.
-          KIf alts mels -> do
+          BKIf _ alts mels -> do
             br <- itemNode (cpsIf alts mels)
             if null rest
               then pure br
@@ -4995,8 +4714,8 @@ cpsItemsFrom start items = case items of
                 pure ("krt2_then(" <> br <> ", " <> r <> ")")
           -- a transparent nested do-statement (§18.8.3.1): its own bindings
           -- are scoped to the sub-block, but abrupt control propagates outward.
-          KSubDo _ body -> do
-            sub0 <- itemNode (withChild P.kSubDoBodyPos (cpsItems body))
+          BKSubDo _ _ body -> do
+            sub0 <- itemNode ((cpsItems body))
             let sub = if any directDefers body then "krt2_doscope(" <> sub0 <> ")" else sub0
             if null rest
               then pure sub
@@ -5005,17 +4724,17 @@ cpsItemsFrom start items = case items of
                 pure ("krt2_then(" <> sub <> ", " <> r <> ")")
           -- §18.7 plain defer: register the action on the enclosing do-scope's
           -- ExitStack (OP_DEFER), then continue.
-          KDefer Nothing t -> do
-            de <- itemChild P.kDeferActionPos (compileDeferAction t)
+          BKDefer _ Nothing t -> do
+            de <- itemChild () (compileDeferAction t)
             r <- restTree
             pure ("krt2_then(krt2_defer(" <> de <> "), " <> r <> ")")
           -- §19.5/§18.8.3 `using pat <- acquire`: lower through
           -- krt2_acquire_release (rt.c), the same protected-scope machinery
           -- `bracketM` uses.
-          KUsing pat acquireT releaseT -> do
-            acqA <- itemChild P.kUsingAcquirePos (cpsActionTerm acquireT)
-            relV <- itemChild P.kUsingReleasePos (compile releaseT)
-            useFn <- emitCpsCont pat next rest
+          BKUsing _ pat binders acquireT releaseT -> do
+            acqA <- itemChild () (cpsActionTerm acquireT)
+            relV <- itemChild () (compile releaseT)
+            useFn <- emitCpsCont pat binders next rest
             env <- gets gsEnv
             pure
               ( "krt2_acquire_release(" <> acqA <> ", " <> relV
@@ -5024,29 +4743,26 @@ cpsItemsFrom start items = case items of
           _ ->
             unsupported "do-kernel (CPS)" ("unexpected item in a CPS do-block: " <> T.pack (show item))
   where
-    seqThen revPrefix t restTree = do
-      m <- withChildren revPrefix (cpsActionTerm t)
+    seqThen _ t restTree = do
+      m <- cpsActionTerm t
       r <- restTree
       pure ("krt2_then(" <> m <> ", " <> r <> ")")
-
-    withChildren [] act = act
-    withChildren (p : ps) act = withChild p (withChildren ps act)
 
 -- | A §18.7 defer registered DIRECTLY in this item list, not in a nested
 -- loop/if/subdo. Such a branch/subdo list needs its own krt2_doscope so the
 -- finalizer runs at that list's exit, not at the enclosing do-scope exit.
-directDefers :: KItem -> Bool
-directDefers (KDefer _ _) = True
+directDefers :: BackendItem -> Bool
+directDefers (BKDefer _ _ _) = True
 directDefers _ = False
 
 -- | Emit a CPS continuation function @kdok_N(KEnv *cenv, KValue *karg)@: bind
 -- the delivered value @karg@ to @pat@ (extending the captured @cenv@), then
 -- build the rest of the block as a tree.
-emitCpsCont :: CorePat -> Int -> [KItem] -> Gen Text
-emitCpsCont pat next rest = do
+emitCpsCont :: BackendPat -> [Maybe BackendBinder] -> Int -> [BackendItem] -> Gen Text
+emitCpsCont pat binders next rest = do
   fnName <- freshFn "kdok_"
   (stmts, tree) <- captured "cenv" $ do
-    e2 <- bindPatScrut "karg" "cenv" pat
+    e2 <- bindPatScrutDup False binders "karg" "cenv" pat
     withEnv e2 (cpsItemsFrom next rest)
   let fn =
         T.unlines $
@@ -5064,7 +4780,7 @@ emitCpsCont pat next rest = do
 
 -- | Compile an IO ACTION term in a CPS block. Current-value reads and splices
 -- have already been lifted by the checker into action terms or do-kernel binds.
-cpsActionTerm :: Term -> Gen Text
+cpsActionTerm :: BackendTerm -> Gen Text
 cpsActionTerm = compile
 
 -- | Compile a CPS do-block's TAIL action (the last @KExpr@/@KBind@ in the
@@ -5092,7 +4808,7 @@ cpsActionTerm = compile
 -- bounce, so the recursion runs at constant fiber-stack depth and can still park
 -- (STM retry / await) — the CK-machine drives the deferred tree, not the
 -- synchronous krun_io bridge (which is why this is a @krt2_bind@, not @kio_tail@).
-cpsTailAction :: Term -> Gen Text
+cpsTailAction :: BackendTerm -> Gen Text
 cpsTailAction t = do
   defer <- deferrableTailCall t
   if not defer
@@ -5121,15 +4837,15 @@ cpsTailAction t = do
 -- lazily so the recursion is C-stack-bounded.  A CPS-node head ('cpsNodeApp')
 -- or a primitive-headed call already builds a node the CK-machine drives (or a
 -- leaf that cannot recurse), so it is NOT deferred — keeping the tree minimal.
-deferrableTailCall :: Term -> Gen Bool
+deferrableTailCall :: BackendTerm -> Gen Bool
 deferrableTailCall t = do
   isCps <- cpsNodeApp t
   if isCps
     then pure False
     else case spineOf t of
       (hd, args)
-        | any ((== Expl) . fst) args -> case hd of
-            CGlob g -> do
+        | any ((== Expl) . argIcit) args -> case hd of
+            BGlob _ g -> do
               mp <- globPrimName g
               pure (mp == Nothing) -- a non-prim global: a (possibly self-) function call → defer
             _ -> pure True -- a call THROUGH a value (closure / local let-rec) → defer
@@ -5137,7 +4853,7 @@ deferrableTailCall t = do
 
 -- | Lift a pure value into an IO action. Any current-value reads in source have
 -- already become preceding MonadRef.readRef binds during checking.
-cpsActionOfPure :: Term -> Gen Text
+cpsActionOfPure :: BackendTerm -> Gen Text
 cpsActionOfPure term = do
   fnName <- freshFn "kdok_"
   (stmts, v) <- captured "cenv" (compile term)
@@ -5162,10 +4878,10 @@ cpsActionOfPure term = do
 -- the loop's Bool condition. Current reads in a source condition elaborate to
 -- 'KCondAction' so the runtime re-runs the selected MonadRef.readRef action on
 -- every iteration.
-cpsCondAction :: KCond -> Gen Text
+cpsCondAction :: BackendCond -> Gen Text
 cpsCondAction = \case
-  KCondPure t -> cpsActionOfPure t
-  KCondAction t -> cpsActionTerm t
+  BKCondPure t -> cpsActionOfPure t
+  BKCondAction t -> cpsActionTerm t
 
 -- | The @return v@ continuation: the delivered value @karg@ exits the do-block
 -- via OP_RETURN (the abrupt-control node unwinds crossed do-scopes, running
@@ -5190,18 +4906,16 @@ emitCpsReturnCont = do
 -- condition is a pure Bool (R7-normalized if it reads a var); the runtime picks
 -- the branch.  Built as @krt2_bind(<condAction>, kclo(select))@ where @select@
 -- dispatches in C on the delivered Bool to the chosen branch's tree.
-cpsIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen Text
-cpsIf alts mels = goAlts 0 alts
+cpsIf :: [(BackendTerm, [BackendItem])] -> Maybe [BackendItem] -> Gen Text
+cpsIf alts mels = goAlts alts
   where
-    armCount = length alts
-
-    goAlts _ [] = case mels of
-      Just els -> withChild (P.kIfElsePos armCount) (cpsScopedItems els)
+    goAlts [] = case mels of
+      Just els -> (cpsScopedItems els)
       Nothing -> pure "krt2_pure(kunit())" -- no/exhausted else: Unit (§18.8)
-    goAlts ai ((c, body) : more) = do
-      condA <- withChild (P.kIfCondPos ai) (cpsActionOfPure c)
-      thenFn <- emitCpsBranchCont (withChild (P.kIfBodyPos ai) (cpsScopedItems body))
-      elseFn <- emitCpsBranchCont (goAlts (ai + 1) more)
+    goAlts ((c, body) : more) = do
+      condA <- (cpsActionOfPure c)
+      thenFn <- emitCpsBranchCont ((cpsScopedItems body))
+      elseFn <- emitCpsBranchCont (goAlts more)
       env <- gets gsEnv
       sel <- emitCpsIfSelect thenFn elseFn
       pure ("krt2_bind(" <> condA <> ", kclo(" <> sel <> ", " <> env <> "))")
@@ -5250,16 +4964,16 @@ emitCpsIfSelect thenFn elseFn = do
 -- | Compile a do-block to a suspended IO action (@kio@) whose body runs
 -- the scope.  The captured environment is the current one.  A block reaching a
 -- suspending operation is CPS-lowered instead (see 'cpsEligible').
-compileDo :: Maybe Text -> [KItem] -> Gen Text
+compileDo :: Maybe Text -> [BackendItem] -> Gen Text
 compileDo lbl items = do
   susp <- gets gsSuspenders
-  if cpsEligible susp items
+  if backendCpsEligible susp items
     then compileDoCps items
     -- A block that reaches a suspending op but is not a CPS-able shape would be
     -- mis-run on the synchronous bridge (fork/await never park) — fail closed
     -- with a clear diagnostic instead, until the relevant CPS stage lands.
     else
-      if blockSuspends susp items
+      if backendBlockSuspends susp items
         then
           unsupported
             "do-kernel"
@@ -5269,7 +4983,7 @@ compileDo lbl items = do
             )
         else compileDoLegacy lbl items
 
-compileDoLegacy :: Maybe Text -> [KItem] -> Gen Text
+compileDoLegacy :: Maybe Text -> [BackendItem] -> Gen Text
 compileDoLegacy lbl items = do
   fnName <- freshFn "kdo_"
   env <- gets gsEnv
@@ -5304,7 +5018,7 @@ compileDoLegacy lbl items = do
 -- one-shot continuation.  The finalizer driver executes that continuation under
 -- the CK machine; if @t@ parks (sleepFor/blocking/await/...), suspension is
 -- preserved instead of being forced through the synchronous @krun_io@ bridge.
-compileDeferAction :: Term -> Gen Text
+compileDeferAction :: BackendTerm -> Gen Text
 compileDeferAction t = do
   fnName <- freshFn "kdefer_"
   env <- gets gsEnv
@@ -5324,7 +5038,7 @@ compileDeferAction t = do
 -- | A §19 suspension: lift the delayed expression into a fresh thunk
 -- function capturing the current environment; @memo@ is 1 for Memo (cache
 -- on first force) and 0 for Delay (re-evaluate each force).
-compileSuspension :: Int -> Term -> Gen Text
+compileSuspension :: Int -> BackendTerm -> Gen Text
 compileSuspension memo e = do
   fnName <- freshFn "kth_"
   env <- gets gsEnv
@@ -5357,6 +5071,20 @@ compileSuspension memo e = do
 data ScopeMode = Tail | Nested | TailEffect
   deriving stock (Eq)
 
+currentDeferFrame :: ScopeMode -> Gen (Text, Text)
+currentDeferFrame mode = do
+  frames <- gets $ \g -> case mode of
+    Nested -> gsScopeDefers g
+    _ -> gsDefer g
+  case frames of
+    frame : _ -> pure frame
+    [] -> do
+      void $
+        unsupported
+          "defer-frame"
+          "internal error: a defer/using item was lowered without an active defer frame"
+      pure ("0", "0")
+
 -- | Compile a sequence of do-kernel items, threading the environment
 -- through bindings.  Mirrors 'Kappa.Interp.runScope' completion: in 'Tail'
 -- position the scope @return@s the last 'KExpr' value (or Unit); in
@@ -5367,20 +5095,20 @@ data ScopeMode = Tail | Nested | TailEffect
 -- scope labeled @L@. Recurses into nested loop/if bodies (which route their
 -- @defer@L@ to this scope) but never into a 'KDefer' action term (a nested
 -- @do@ VALUE there is a fresh scope with its own label map).
-countLabeledDefers :: Text -> [KItem] -> Int
+countLabeledDefers :: Text -> [BackendItem] -> Int
 countLabeledDefers s = sum . map go
   where
-    go (KDefer (Just l) _) | l == s = 1
-    go (KWhile _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
-    go (KFor _ _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
-    go (KIf alts mels) = sum [countLabeledDefers s b | (_, b) <- alts] + maybe 0 (countLabeledDefers s) mels
+    go (BKDefer _ (Just l) _) | l == s = 1
+    go (BKWhile _ _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
+    go (BKFor _ _ _ _ _ body mels) = countLabeledDefers s body + maybe 0 (countLabeledDefers s) mels
+    go (BKIf _ alts mels) = sum [countLabeledDefers s b | (_, b) <- alts] + maybe 0 (countLabeledDefers s) mels
     -- a transparent nested do-statement routes its @defer@s@ to this scope,
     -- unless it is itself labeled @s@ (then it owns those defers)
-    go (KSubDo subL body) | subL == Just s = 0
+    go (BKSubDo _ subL body) | subL == Just s = 0
                           | otherwise = countLabeledDefers s body
     go _ = 0
 
-compileItems :: Maybe Text -> ScopeMode -> [KItem] -> Gen ()
+compileItems :: Maybe Text -> ScopeMode -> [BackendItem] -> Gen ()
 compileItems selfLabel mode items0 = do
   -- A scope that registers §18.7 defers gets a frame (a GC-heap array +
   -- count, declared at scope entry — for a loop body that means a fresh
@@ -5396,7 +5124,7 @@ compileItems selfLabel mode items0 = do
   -- (nested loop/if bodies route to it). A `defer@other` written here
   -- routes to an enclosing frame, so it is NOT counted at this scope.
   -- §19.5 `using` also attaches a release to this scope's exit frame.
-  let ndirect = length [() | KDefer Nothing _ <- items0] + length [() | KUsing {} <- items0]
+  let ndirect = length [() | BKDefer _ Nothing _ <- items0] + length [() | BKUsing {} <- items0]
       nlabeled = case selfLabel of
         Just s -> countLabeledDefers s items0
         Nothing -> 0
@@ -5419,8 +5147,9 @@ compileItems selfLabel mode items0 = do
         Nested -> do flushFramesInline [frame]; modify' $ \g -> g {gsScopeDefers = drop 1 (gsScopeDefers g)}
         _ -> modify' $ \g -> g {gsDefer = drop 1 (gsDefer g)}
   where
-    itemChild ix child = withChild (P.doItemPos ix) . withChild child
+    itemChild _ _ act = act
 
+    goAt :: Int -> [BackendItem] -> Gen ()
     goAt _ [] = case mode of
       -- both Tail and a discarded tail if-branch yield Unit here; route
       -- through emitTailReturn so any §18.7 defers are still flushed.
@@ -5428,9 +5157,9 @@ compileItems selfLabel mode items0 = do
       TailEffect -> emitTailReturn "kunit()"
       Nested -> pure ()
     goAt ix (item : rest) = case item of
-      KExpr t
+      BKExpr _ t
         | null rest -> do
-            te <- itemChild ix P.kExprActionPos (compile t)
+            te <- itemChild ix () (compile t)
             case mode of
               -- The do-block's tail IO action is its result: defer it to the
               -- driving krun_io (constant C stack, §27.5A.3), carrying any
@@ -5440,50 +5169,50 @@ compileItems selfLabel mode items0 = do
               -- discarded (the do-block yields Unit).
               TailEffect -> emitTailIO True te
               Nested -> emitRunIODiscard te
-      KExpr t -> do
-        te <- itemChild ix P.kExprActionPos (compile t)
+      BKExpr _ t -> do
+        te <- itemChild ix () (compile t)
         emitRunIODiscard te >> goAt (ix + 1) rest
       -- A wildcard binding introduces no name: emit the right-hand side
       -- for its effect (a bind runs the IO action; a let just evaluates)
       -- without an unused C variable (keeps the generated C -Wall clean).
-      KLet _ CPWild t -> do
-        te <- itemChild ix P.kLetValuePos (compile t)
+      BKLet _ _ BPWild _ t -> do
+        te <- itemChild ix () (compile t)
         emit ("(void)(" <> te <> ");")
         goAt (ix + 1) rest
-      KLet _ pat t -> do
-        te <- itemChild ix P.kLetValuePos (compile t)
+      BKLet _ _ pat binders t -> do
+        te <- itemChild ix () (compile t)
         sv <- freshN "let_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
-        bindAndContinue sv pat
-      KBind _ CPWild t _ -> do
-        te <- itemChild ix P.kBindActionPos (compile t)
+        bindAndContinue binders sv pat
+      BKBind _ _ BPWild _ t _ -> do
+        te <- itemChild ix () (compile t)
         emitRunIODiscard te
         goAt (ix + 1) rest
-      KBind _ pat t _ -> do
-        te <- itemChild ix P.kBindActionPos (compile t)
+      BKBind _ _ pat binders t _ -> do
+        te <- itemChild ix () (compile t)
         sv <- emitRunIOValue "bind_" te
-        bindAndContinue sv pat
+        bindAndContinue binders sv pat
       -- §18 early non-local return: unwind every enclosing Nested scope
       -- (loop/if bodies) running their defers first, then return the value
       -- through emitTailReturn (which flushes the Tail-scope defer frames).
-      KReturn t -> do
-        te <- itemChild ix P.kReturnValuePos (compile t)
+      BKReturn _ t -> do
+        te <- itemChild ix () (compile t)
         scopeFrames <- gets gsScopeDefers
         flushFramesInline scopeFrames
         emitTailReturn te
-      KVarItem _ _ actT _ -> do
+      BKVarItem _ _ _ actT _ -> do
         -- S2.3b: run the checker-selected MonadRef.newRef action on the
         -- C/default fallback path. The former scalar-loop peephole bypassed
         -- MonadRef evidence, so this backend must not reconstruct raw refs until
         -- an evidence-aware C scalarizer proves equivalence.
-        te <- itemChild ix P.kVarActionPos (compile actT)
+        te <- itemChild ix () (compile actT)
         ref <- emitRunIOValue "var_" te
         env <- gets gsEnv
         e2 <- freshN "env_"
         emit ("KEnv *" <> e2 <> " = kpush(" <> ref <> ", " <> env <> ");")
         withEnv e2 (goAt (ix + 1) rest)
-      KAssign _ _ _ actT _ -> do
-        ae <- itemChild ix P.kAssignActionPos (compile actT)
+      BKAssign _ _ _ actT _ -> do
+        ae <- itemChild ix () (compile actT)
         emitRunIODiscard ae
         goAt (ix + 1) rest
       -- A statement-`if` that is the do-block's tail: its branches are in
@@ -5491,40 +5220,40 @@ compileItems selfLabel mode items0 = do
       -- recurse through krun_io).  Compile the branches in 'TailEffect'
       -- (each path returns); the if's normal completion is discarded so the
       -- do-block yields Unit (§18.8).  A non-tail `if` runs for effect.
-      KIf alts mels
+      BKIf _ alts mels
         -- A statement-`if` that is the do-block's tail: its branches are in
         -- tail position, so compile them in 'TailEffect' (each path returns,
         -- deferring its tail IO action + finalizers via emitTailIO — stack
         -- safe and defer-correct).  A non-tail `if` runs for effect.
-        | null rest && (mode == Tail || mode == TailEffect) -> withChild (P.doItemPos ix) (compileKIfTail mode alts mels)
-        | otherwise -> withChild (P.doItemPos ix) (compileKIf alts mels) >> goAt (ix + 1) rest
-      KWhile ml cond bdy mels -> withChild (P.doItemPos ix) (compileLoop ml (LoopWhile cond) bdy mels) >> goAt (ix + 1) rest
-      KFor ml pat src bdy mels -> withChild (P.doItemPos ix) (compileLoop ml (LoopFor pat src) bdy mels) >> goAt (ix + 1) rest
+        | null rest && (mode == Tail || mode == TailEffect) -> (compileKIfTail mode alts mels)
+        | otherwise -> (compileKIf alts mels) >> goAt (ix + 1) rest
+      BKWhile _ ml cond bdy mels -> (compileLoop ml (LoopWhile cond) bdy mels) >> goAt (ix + 1) rest
+      BKFor _ ml pat binders src bdy mels -> (compileLoop ml (LoopFor pat binders src) bdy mels) >> goAt (ix + 1) rest
       -- §18.8.3.1: a transparent nested do-statement compiles as a child scope
       -- (its own §18.7 defer frame and label) that inherits the enclosing
       -- loop/return targets.  If it is itself the tail item of a value-returning
       -- do-block, preserve the enclosing tail mode: `else do ...` in a tail
       -- branch must return the sub-do's final value, not discard it as an
       -- effect-only nested statement.
-      KSubDo subLbl subItems
-        | null rest && (mode == Tail || mode == TailEffect) -> withChild (P.doItemPos ix) (withChild P.kSubDoBodyPos (compileItems subLbl mode subItems))
-        | otherwise -> withChild (P.doItemPos ix) (withChild P.kSubDoBodyPos (compileItems subLbl Nested subItems)) >> goAt (ix + 1) rest
-      KBreak ml -> gotoLoop ml lcBreak
-      KContinue ml -> gotoLoop ml lcContinue
+      BKSubDo _ subLbl subItems
+        | null rest && (mode == Tail || mode == TailEffect) -> ((compileItems subLbl mode subItems))
+        | otherwise -> ((compileItems subLbl Nested subItems)) >> goAt (ix + 1) rest
+      BKBreak _ ml -> gotoLoop ml lcBreak
+      BKContinue _ ml -> gotoLoop ml lcContinue
       -- §18 let? : bind the pattern and continue, or run the else block
       -- (which replaces the rest of this scope).
-      KLetQ pat t mElse -> do
-        te <- itemChild ix P.kLetQScrutPos (compile t)
+      BKLetQ _ pat binders t mElse -> do
+        te <- itemChild ix () (compile t)
         sv <- freshN "letq_"
         emit ("KValue *" <> sv <> " = " <> te <> ";")
         env <- gets gsEnv
-        let onElse = withChild (P.doItemPos ix) (compileLetQElse mode sv mElse)
+        let onElse = (compileLetQElse mode sv mElse)
         case distributePat pat of
           -- Common case: a single (or-free) pattern.  Preserves the
           -- irrefutable fast path and the simple if\/else lowering.
           [single] -> do
             mtest <- patTest sv single
-            let onMatch = do env' <- bindPatScrut sv env single; withEnv env' (goAt (ix + 1) rest)
+            let onMatch = do env' <- bindPatScrutDup False binders sv env single; withEnv env' (goAt (ix + 1) rest)
             case mtest of
               Nothing -> onMatch -- irrefutable: always binds
               Just test -> do
@@ -5548,7 +5277,7 @@ compileItems selfLabel mode items0 = do
               (blk, ()) <- captured env $ do
                 mtest <- patTest sv alt
                 let bindAndGo = do
-                      env' <- bindPatScrut sv env alt
+                      env' <- bindPatScrutDup False binders sv env alt
                       withEnv env' (goAt (ix + 1) rest)
                 case mtest of
                   Nothing -> bindAndGo >> emit (done <> " = 1;")
@@ -5574,16 +5303,15 @@ compileItems selfLabel mode items0 = do
       -- (not eagerly at registration), so it observes state mutated between
       -- here and the flush — matching the interpreter (`evalK ... t` is run
       -- lazily from the exit list).
-      KDefer ml t -> do
-        de <- itemChild ix P.kDeferActionPos (compileDeferAction t)
+      BKDefer _ ml t -> do
+        de <- itemChild ix () (compileDeferAction t)
         -- §18.7: `defer@L` registers onto the frame of the enclosing scope
         -- labeled L (which may be outer; its C arr/cnt locals are lexically
         -- in scope here). Plain `defer` uses the current scope's frame.
-        frame <- gets $ \g -> case ml of
-          Just l | Just fr <- lookup l (gsDeferLabels g) -> fr
-          _ -> case mode of
-            Nested -> head (gsScopeDefers g)
-            _ -> head (gsDefer g)
+        mframe <- gets $ \g -> case ml of
+          Just l -> lookup l (gsDeferLabels g)
+          _ -> Nothing
+        frame <- maybe (currentDeferFrame mode) pure mframe
         -- Legacy synchronous do-code can abort from a native safe point while C
         -- helper frames are still active, before the ordinary C defer frame is
         -- flushed. Register the same action with the runtime abort-exit stack
@@ -5596,13 +5324,11 @@ compileItems selfLabel mode items0 = do
       -- §19.5: acquire the owned resource, attach `release resource` to this
       -- scope's exit frame (run LIFO with defers via krun_io at exit, on every
       -- exit path), then bind `pat` (borrowed) for the rest of the scope.
-      KUsing pat acquireT releaseT -> do
-        ae <- itemChild ix P.kUsingAcquirePos (compile acquireT)
+      BKUsing _ pat binders acquireT releaseT -> do
+        ae <- itemChild ix () (compile acquireT)
         rv <- emitRunIOValue "ures_" ae
-        re <- itemChild ix P.kUsingReleasePos (compile releaseT)
-        frame <- gets $ \g -> case mode of
-          Nested -> head (gsScopeDefers g)
-          _ -> head (gsDefer g)
+        re <- itemChild ix () (compile releaseT)
+        frame <- currentDeferFrame mode
         -- §32.2.6: register the release with the runtime abort-exit stack. The
         -- ordinary finalizer captures the returned token; if a scalar/boxed
         -- safe-point abort drains it first, the finalizer becomes a no-op, so a
@@ -5611,19 +5337,19 @@ compileItems selfLabel mode items0 = do
         releaseTok <- freshN "ureltok_"
         emit ("KValue *" <> releaseTok <> " = krt2_abort_exit_push(" <> releaseExpr <> ");")
         registerDefer frame ("krt2_abort_exit_finalizer(" <> releaseTok <> ")")
-        bindAndContinue rv pat
+        bindAndContinue binders rv pat
       where
         -- bind an irrefutable do-pattern (with a runtime check for any
         -- refutable shape) and continue with the rest of this scope (the
         -- `rest` closed over from the enclosing `go (item : rest)` clause)
-        bindAndContinue sv pat = do
+        bindAndContinue binders sv pat = do
           env <- gets gsEnv
           mtest <- patTest sv pat
           case mtest of
             Just test ->
               emit ("if (!(" <> test <> ")) krt_fail(\"irrefutable binding failed at runtime\");")
             Nothing -> pure ()
-          env' <- bindPatScrut sv env pat
+          env' <- bindPatScrutDup False binders sv env pat
           withEnv env' (goAt (ix + 1) rest)
 
 -- | §18.2.5: jump to a loop's continue\/break target. @ml@ selects the
@@ -5745,25 +5471,21 @@ emitTailIO discard action = do
 registerDefer :: (Text, Text) -> Text -> Gen ()
 registerDefer (arr, cnt) te = emit (arr <> "[" <> cnt <> "++] = " <> te <> ";")
 
--- | Like 'bindPat' but threads the concrete scrutinee C-expression
--- through the binding projections.
-bindPatScrut :: Text -> Text -> CorePat -> Gen Text
-bindPatScrut = bindPatScrutDup False
-
--- | Perceus RC S2.3a (§a): 'bindPatScrut' with an optional kept-field @kdup@.
+-- | Perceus RC S2.3a (§a): bind a pattern from a concrete scrutinee
+-- C-expression, optionally wrapping kept fields in @kdup@.
 -- When @dupFields@ is 'True' (the arm both owns the scrutinee cell and will drop
 -- it at its 'SinkVar' seam — the 'dropHere' in 'consumeAltBody'), each bound field
 -- projection @kctor_arg(sv,…)@ is wrapped in @kdup(…)@ so the surviving field
 -- keeps a reference of its own before the following @kdrop(sv)@. S3.1 still only
 -- maintains the paired rc invariant; S3.2 will make this the guard against freeing
 -- a unique scrutinee cell while a projected field escapes. @kdup@ skips
--- immediates, so an immediate field is a runtime no-op. With @dupFields@ 'False'
--- this is exactly the old
--- 'bindPatScrut' (byte-identical), so every non-match-destructure caller (the
+-- immediates, so an immediate field is a runtime no-op. With @dupFields@
+-- 'False' this is exactly the plain pattern-binding path, so every
+-- non-match-destructure caller (the
 -- do-kernel\/closure-arg\/let-pattern paths) and every returning-arm match is
 -- unchanged.
-bindPatScrutDup :: Bool -> Text -> Text -> CorePat -> Gen Text
-bindPatScrutDup dupFields sv env pat = do
+bindPatScrutDup :: Bool -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
+bindPatScrutDup dupFields binders sv env pat = do
   lvals <- gets gsParamLvals
   let wrap valExpr = if dupFields then "kdup(" <> valExpr <> ")" else valExpr
   if null lvals
@@ -5775,8 +5497,10 @@ bindPatScrutDup dupFields sv env pat = do
       let vals = patBindings sv pat
           n = length vals
       forM_ (zip [0 ..] vals) $ \(j, valExpr) -> do
-        bid <- currentPatSlotBinderId (n - 1 - j)
-        void (bindFlatLocal "pat_" (Just bid) dupFields (wrap valExpr))
+        let mb = case drop (n - 1 - j) binders of
+              b : _ -> b
+              [] -> Nothing
+        void (bindFlatLocal "pat_" (bbBinderId <$> mb) dupFields (wrap valExpr))
       gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
     push e valExpr = do
@@ -5788,7 +5512,7 @@ bindPatScrutDup dupFields sv env pat = do
 -- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
 -- it to 'gsParamLvals' as de Bruijn index 0 (params and earlier binders shift
 -- up); the enclosing 'captured' block restores the scope.  Returns the C name.
-bindFlatLocal :: Text -> Maybe BinderId -> Bool -> Text -> Gen Text
+bindFlatLocal :: Text -> Maybe BackendBinderId -> Bool -> Text -> Gen Text
 bindFlatLocal prefix mbid ownsRef valExpr = do
   v <- freshN prefix
   emit ("KValue *" <> v <> " = " <> valExpr <> ";")
@@ -5800,24 +5524,22 @@ bindFlatLocal prefix mbid ownsRef valExpr = do
       }
   pure v
 
-compileKIf :: [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
-compileKIf alts mels = go 0 alts
+compileKIf :: [(BackendTerm, [BackendItem])] -> Maybe [BackendItem] -> Gen ()
+compileKIf alts mels = go alts
   where
-    armCount = length alts
-
-    go _ [] = case mels of
-      Just els -> withChild (P.kIfElsePos armCount) (emitBlock els)
+    go [] = case mels of
+      Just els -> (emitBlock els)
       Nothing -> pure ()
-    go ai ((c, body) : more) = do
-      ce <- withChild (P.kIfCondPos ai) (compile c)
+    go ((c, body) : more) = do
+      ce <- (compile c)
       emit ("if (kas_bool(" <> ce <> ")) {")
       env <- gets gsEnv
-      (blk, ()) <- withChild (P.kIfBodyPos ai) (captured env (compileItems Nothing Nested body))
+      (blk, ()) <- (captured env (compileItems Nothing Nested body))
       forM_ blk (emit . ("  " <>))
       emit "}"
       unless (null more && mels == Nothing) $ do
         emit "else {"
-        go (ai + 1) more
+        go more
         emit "}"
     emitBlock items = do
       env <- gets gsEnv
@@ -5831,38 +5553,36 @@ compileKIf alts mels = go 0 alts
 -- branch defers via @kio_effect@ rather than recursing through @krun_io@,
 -- §27.5A.3), and a missing/exhausted else yields Unit (§18.8 — the if's
 -- normal completion is discarded).
-compileKIfTail :: ScopeMode -> [(Term, [KItem])] -> Maybe [KItem] -> Gen ()
-compileKIfTail tailMode alts mels = goAlts 0 alts
+compileKIfTail :: ScopeMode -> [(BackendTerm, [BackendItem])] -> Maybe [BackendItem] -> Gen ()
+compileKIfTail tailMode alts mels = goAlts alts
   where
-    armCount = length alts
-
-    goAlts _ [] = case mels of
-      Just els -> withChild (P.kIfElsePos armCount) (emitBranch els)
+    goAlts [] = case mels of
+      Just els -> (emitBranch els)
       Nothing -> emitTailReturn "kunit()" -- no/exhausted else: yield Unit, flush defers
-    goAlts ai ((c, body) : more) = do
-      ce <- withChild (P.kIfCondPos ai) (compile c)
+    goAlts ((c, body) : more) = do
+      ce <- (compile c)
       emit ("if (kas_bool(" <> ce <> ")) {")
-      withChild (P.kIfBodyPos ai) (emitBranch body)
+      (emitBranch body)
       emit "} else {"
-      goAlts (ai + 1) more
+      goAlts more
       emit "}"
     emitBranch items = do
       env <- gets gsEnv
       (blk, ()) <- captured env (compileItems Nothing tailMode items)
       forM_ blk (emit . ("  " <>))
 
-data LoopKind = LoopWhile !KCond | LoopFor !CorePat !Term
+data LoopKind = LoopWhile !BackendCond | LoopFor !BackendPat ![Maybe BackendBinder] !BackendTerm
 
-compileLoopCond :: KCond -> Gen Text
+compileLoopCond :: BackendCond -> Gen Text
 compileLoopCond = \case
-  KCondPure t -> compile t
-  KCondAction t -> compile t >>= emitRunIOValue "cond_"
+  BKCondPure t -> compile t
+  BKCondAction t -> compile t >>= emitRunIOValue "cond_"
 
 -- | Compile a @while@\/@for@ loop using explicit @goto@ labels, so §18.2.5
 -- labelled @break@\/@continue@ targeting an outer loop work uniformly and
 -- the §18.8 @else@ (run only on normal completion, not after a @break@) is
 -- placed past the body and before the break label.
-compileLoop :: Maybe Text -> LoopKind -> [KItem] -> Maybe [KItem] -> Gen ()
+compileLoop :: Maybe Text -> LoopKind -> [BackendItem] -> Maybe [BackendItem] -> Gen ()
 compileLoop mlabel kind body mels = do
   env <- gets gsEnv
   n <- freshN "lp_"
@@ -5871,7 +5591,7 @@ compileLoop mlabel kind body mels = do
       normL = "knorm_" <> n -- normal completion (run else)
       endL = "kend_" <> n -- break target (skip else)
       -- continue re-tests; for a `for` it must advance the cursor first.
-      contTarget = case kind of LoopWhile _ -> contL; LoopFor _ _ -> advL
+      contTarget = case kind of LoopWhile _ -> contL; LoopFor {} -> advL
   -- the Nested defer-frame depth OUTSIDE this loop's body; a break/continue
   -- to this loop unwinds the frames pushed since (§18.7, see gotoLoop).
   scopeDepth <- gets (length . gsScopeDefers)
@@ -5892,8 +5612,8 @@ compileLoop mlabel kind body mels = do
   emit ("int64_t " <> spc <> " = KRT2_SP_QUANTUM;")
   bodyBlk <- case kind of
     LoopWhile cond -> do
-      (condBlk, ce) <- withChild P.kWhileCondPos (captured env (compileLoopCond cond))
-      (bb, ()) <- withChild P.kWhileBodyPos (withLoop ctx (captured env (compileItems mlabel Nested body)))
+      (condBlk, ce) <- (captured env (compileLoopCond cond))
+      (bb, ()) <- (withLoop ctx (captured env (compileItems mlabel Nested body)))
       emit (contL <> ": ;")
       forM_ condBlk (emit . ("  " <>))
       emit ("if (!kas_bool(" <> ce <> ")) goto " <> normL <> ";")
@@ -5901,17 +5621,17 @@ compileLoop mlabel kind body mels = do
       emitSafepointAbort spc
       emit ("goto " <> contL <> ";")
       pure bb
-    LoopFor pat src -> do
-      se <- withChild P.kForSourcePos (compile src)
+    LoopFor pat binders src -> do
+      se <- (compile src)
       it <- freshN "it_"
       emit ("KValue *" <> it <> " = " <> se <> ";")
-      (bb, ()) <- withChild P.kForBodyPos $ withLoop ctx $ captured env $ case pat of
+      (bb, ()) <-  withLoop ctx $ captured env $ case pat of
         -- a wildcard element binds nothing: skip the unused element var
-        CPWild -> compileItems mlabel Nested body
+        BPWild -> compileItems mlabel Nested body
         _ -> do
           elemV <- freshN "elem_"
           emit ("KValue *" <> elemV <> " = kctor_arg(" <> it <> ", 0);")
-          e' <- bindPatScrut elemV env pat
+          e' <- bindPatScrutDup False binders elemV env pat
           withEnv e' (compileItems mlabel Nested body)
       emit (contL <> ": ;")
       emit ("if (!kis_cons(" <> it <> ")) goto " <> normL <> ";")
@@ -5924,10 +5644,7 @@ compileLoop mlabel kind body mels = do
   emit (normL <> ": ;")
   elsBlk <- case mels of
     Just els -> do
-      let elseChild = case kind of
-            LoopWhile _ -> P.kWhileElsePos
-            LoopFor {} -> P.kForElsePos
-      (eb, ()) <- withChild elseChild (captured env (compileItems Nothing Nested els))
+      (eb, ()) <- (captured env (compileItems Nothing Nested els))
       emit "{"
       forM_ eb (emit . ("  " <>))
       emit "}"
@@ -5947,10 +5664,10 @@ withLoop ctx act = do
 -- | §18 let? else branch: bind the residue pattern and run the else action
 -- as the scope's result (it replaces the rest of the scope).  With no
 -- @else@, a failed let? is a runtime defect (no Alternative available).
-compileLetQElse :: ScopeMode -> Text -> Maybe (CorePat, Term) -> Gen ()
+compileLetQElse :: ScopeMode -> Text -> Maybe (BackendPat, [Maybe BackendBinder], BackendTerm) -> Gen ()
 compileLetQElse mode sv mElse = case mElse of
   Nothing -> emit "krt_fail(\"let? pattern failed and no Alternative is available\");"
-  Just (rp, fe) -> do
+  Just (rp, binders, fe) -> do
     env <- gets gsEnv
     -- §18.2.1: the else residue pattern is matched against the SCRUTINEE; a
     -- refutable residue that does not match is a runtime error — mirroring the
@@ -5961,8 +5678,8 @@ compileLetQElse mode sv mElse = case mElse of
     case mtest of
       Just test -> emit ("if (!(" <> test <> ")) krt_fail(\"let? else: residue pattern failed\");")
       Nothing -> pure ()
-    env' <- bindPatScrut sv env rp
-    fee <- withEnv env' (withChild P.kLetQElsePos (compile fe))
+    env' <- bindPatScrutDup False binders sv env rp
+    fee <- withEnv env' ((compile fe))
     -- the else action replaces the rest of the scope, so it is the tail:
     -- defer it (stack-safe, §27.5A.3, with finalizers) the same way a
     -- trailing KExpr is.

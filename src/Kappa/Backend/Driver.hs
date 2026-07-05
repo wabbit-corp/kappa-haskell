@@ -460,9 +460,9 @@ envFlagDefaultOn mv = case fmap (map lowerAscii) mv of
 reportRcFindings :: [T.Text] -> IO ()
 reportRcFindings findings = do
   hPutStrLn stderr $
-    "perceus-rc: R-path walk-and-lookup complete; "
+    "perceus-rc: KBackendIR ownership metadata validation complete; "
       <> show (length findings)
-      <> " validation miss(es) (zero required for S2.3b)"
+      <> " finding(s) (zero required for native RC)"
   forM_ findings $
     hPutStrLn stderr . ("perceus-rc:   " <>) . T.unpack
 

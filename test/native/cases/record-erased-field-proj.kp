@@ -1,0 +1,21 @@
+-- S5.A: KBackendIR physically erases runtime-erased record fields, so a
+-- fixed-offset projection must be reindexed against the kept runtime fields.
+-- Pre-split native kept the erased field as kunit(); the split shrinks the
+-- record and must compile foo.b as offset 0, not the original full-record
+-- offset 1.
+module main
+
+type R = (a : Type, b : Int)
+type TypeOnly = (a : Type)
+
+foo : R
+let foo = (a = Int, b = 5)
+
+sourceType : TypeOnly
+let sourceType = (a = Int)
+
+fooComputed : R
+let fooComputed = (a = sourceType.a, b = 6)
+
+main : UIO Unit
+let main = printlnString (showInt (foo.b + fooComputed.b))

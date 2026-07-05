@@ -783,9 +783,10 @@ compileFilesWithCfgInj inject intrinsics unsafeCfg packageMode nameOf files =
       -- provably-single-use binder is refined — exported, re-exported, and
       -- internal alike; the §3a gating boundary (the separately-compiled
       -- interface) is empty right now. It
-      -- is observe-only — no consumer reads it, so codegen stays byte-identical;
-      -- this only threads the metadata. The 'EvalCtx' is the same shape the lint
-      -- and other post-finalization consumers build.
+      -- remains an observe/cross-check surface. S5.A native emission computes
+      -- backend-facing ownership on KBackendIR node identities instead of
+      -- attaching these Core-coordinate facts to backend nodes. The 'EvalCtx'
+      -- is the same shape the lint and other post-finalization consumers build.
       ownCtx =
         EvalCtx
           (Globals (csGlobals finalSt'0))

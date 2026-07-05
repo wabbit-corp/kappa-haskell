@@ -1,0 +1,11 @@
+module main
+
+type R = (a : Type, b : Int)
+
+pickB : R -> Int
+let pickB r =
+    match r
+    case (_, b) -> b
+
+main : UIO Unit
+let main = printlnString (showInt (pickB (a = Bool, b = 5)))

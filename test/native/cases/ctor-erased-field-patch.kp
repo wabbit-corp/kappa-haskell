@@ -1,0 +1,17 @@
+-- S5.A: constructor-field patch rebuilds a constructor from the source field
+-- list. KBackendIR must drop erased constructor fields during direct CCtor
+-- lowering, not emit an erased CVar as a runtime payload.
+module main
+
+data T : Type = MkT (0 ghost : Int) (value : Int)
+
+setValue : T -> T
+let setValue t = t.{ value = 30 }
+
+getValue : T -> Int
+let getValue t =
+    match t
+    case MkT _ value -> value
+
+main : UIO Unit
+let main = printlnString (showInt (getValue (setValue (MkT 10 20))))

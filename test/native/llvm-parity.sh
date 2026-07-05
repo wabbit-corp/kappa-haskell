@@ -54,8 +54,8 @@ perceus_rc_enabled() {
 check_perceus_rc_log() {
   local log="$1"
   if perceus_rc_enabled; then
-    if ! grep -q "perceus-rc: R-path walk-and-lookup complete; 0 validation miss(es)" "$log"; then
-      echo "[FAIL] Perceus RC C-backend build did not report zero validation misses"
+    if ! grep -q "perceus-rc: KBackendIR ownership metadata validation complete; 0 finding(s)" "$log"; then
+      echo "[FAIL] Perceus RC C-backend build did not report zero KBackendIR ownership metadata findings"
       sed -n '/perceus-rc:/p' "$log" | sed 's/^/    /'
       return 1
     fi
@@ -104,6 +104,7 @@ KP
   CORPUS+=("test/native/cases/scalar-nested-abort-cleanup-failure.kp")
   CORPUS+=("test/native/cases/defer-sleep.kp")
   CORPUS+=("test/native/cases/monadref-user-evidence.kp")
+  CORPUS+=("test/native/cases/record-erased-field-proj.kp")
 fi
 
 pass=0; fail=0

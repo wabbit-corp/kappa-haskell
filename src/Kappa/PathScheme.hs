@@ -1,21 +1,18 @@
--- | Perceus RC — the canonical structural CHILD-POSITION path scheme.
+-- | Legacy Perceus RC audit path scheme.
 --
 -- The ownership side-table ("Kappa.Ownership") keys every binder and use
 -- occurrence by a /structural path/: the list of child-positions taken from a
 -- definition's body root down to the node (see 'Kappa.Ownership.BinderId' /
 -- 'Kappa.Ownership.UseSite'). That path is de Bruijn-stable, so it survives the
--- index renumbering a Core walk performs and the one post-zonk backend rewrite
--- (@eraseQ0Args@), which lets the analysis (computed once over the elaborated
--- Core) be re-attached to the lowered term by WALKING that term and looking up
--- each node's path — never iterating the table (the S1.1-R1 discipline).
+-- index renumbering a Core walk performs. Before S5.A, native codegen also
+-- re-derived these paths to reattach ownership facts; current C/LLVM emission
+-- instead consumes node-local KBackendIR ownership metadata. This module remains
+-- the shared numbering authority for the legacy ownership dump/cross-check and
+-- for old plan documents.
 --
--- For that to work the TWO walks must agree on the child-position numbering at
--- every node: the analysis walk ('Kappa.Ownership.walk', which BUILDS the keys)
--- and the codegen walk ("Kappa.Backend.C", which RE-DERIVES a path to look the
--- key up). If they ever diverge, every op is silently misattributed (PERCEUS-S2-
--- PLAN risk R-path, "the single highest-value correctness investment"). This
--- module is the ONE source of those constants, consulted by both walks, so the
--- scheme cannot drift between them.
+-- For the legacy table to remain meaningful, every producer/checker walk must
+-- still agree on child-position numbering at every Core node. Native dup/drop
+-- emission no longer depends on that agreement.
 --
 -- == The scheme
 --

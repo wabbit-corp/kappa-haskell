@@ -242,8 +242,13 @@ The collector contract (interior-pointers OFF, 8-byte alignment) is already enfo
 - **S3 — Flip free-on-zero** for strict (acyclic ⇒ garbage-free) data. Immediates skip RC (`kis_imm`).
 - **S4 — Thread-shared split** + atomic fast/slow path at the §5 publish points.
 - **S5 — Drop-guided reuse (FBIP)** — the n-ary-ctor allocation win; the rbtree-class result lands here.
-- **S6 — Borrowing (opt-in only)** + `fip`/`fbip` keyword checking (reuse credits / `◇ₖ`) for a static
-  zero-alloc in-place guarantee — a natural fit with Kappa's quantity/erasure machinery.
+- **S6 — Borrowing (opt-in only)** + **inferred** FIP-style in-place analysis (FP², Lorenzen/Leijen/Swierstra
+  2023): the reuse-credit / `◇ₖ` accounting that yields the zero-alloc in-place guarantee is **derived from the
+  code itself** — from the quantity/borrow facts (`1` owned / `&` borrowed) and the already-computed used-once
+  usage intervals (`ucHi == 1`, `Usage.hs`) — **NOT** from `fip`/`fbip` surface keywords. No annotation; the
+  compiler infers which functions are fully-in-place. A natural fit with Kappa's quantity/erasure machinery,
+  and the erasure-aware runtime layout (S5.A) is on its soundness path (same-size reuse must be over
+  runtime-kept fields).
 - **Later — precise stacks + cycles.** Precise roots in the 8 MiB pthread fiber stacks (stack maps /
   shadow stack) or keep them as conservative root regions; the mutable-ref + lazy-node cycle collector.
 

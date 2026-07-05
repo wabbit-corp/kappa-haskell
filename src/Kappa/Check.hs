@@ -80,6 +80,7 @@ import Kappa.CoreOps
   , termClosed
   , zonkTermWith
   )
+import qualified Kappa.Backend.Repr as Repr
 import Kappa.Diagnostic
 import Kappa.Eval
 import Kappa.Inhabitance
@@ -365,21 +366,18 @@ data CheckState = CheckState
   -- inert, backend-agnostic seam; see docs/BUILD_AND_NATIVE_BINDINGS.md.
   , csCoreBodies :: !(Map GName Term)
   -- ^ Elaborated KCore body of each top-level term definition, captured
-  -- before evaluation to a value. The native backend (Kappa.Backend.C)
-  -- lowers these to C: re-deriving a body by 'quote'-ing the stored NbE
-  -- 'gdValue' is unsound for do-blocks and suspensions that close over
-  -- 'let'/argument bindings (quote drops the captured environment), so we
-  -- keep the real elaborator output. Used only by the native backend; the
+  -- before evaluation to a value. The native backends lower these through
+  -- KBackendIR: re-deriving a body by 'quote'-ing the stored NbE 'gdValue' is
+  -- unsound for do-blocks and suspensions that close over 'let'/argument
+  -- bindings (quote drops the captured environment), so we keep the real
+  -- elaborator output. Used only by backend/lint/analysis paths; the
   -- interpreter path ignores it.
   , csOwnership :: !(Map GName OwnInfo)
   -- ^ Perceus RC Stage S1.0 (see "Kappa.Ownership"): the per-definition
-  -- ownership side-table (owned\/borrowed\/last-use facts) keyed by stable
-  -- Core identities, paralleling 'csCoreBodies'. Populated in
-  -- "Kappa.Pipeline" right after the core bodies are finalized, beside the
-  -- @lintCoreBodies@ call, and carried to the native backend as @gsOwnership@.
-  -- At S1.0 this is the EMPTY map ('annotateOwnership' returns no entries): the
-  -- plumbing exists and threads, but no consumer reads it, so codegen and
-  -- interp\/C\/LLVM parity are byte-identical.
+  -- ownership table (owned\/borrowed\/last-use facts), currently produced in
+  -- Core structural coordinates and reattached to KBackendIR nodes during
+  -- lowering. Populated in "Kappa.Pipeline" right after the core bodies are
+  -- finalized, beside the @lintCoreBodies@ call.
   , csTerminationNames :: !(Set GName)
   -- ^ Signature-governed top-level functions in the current module.  An
   -- edge to one of these names is potentially part of a recursive SCC until
@@ -2011,32 +2009,35 @@ globalType g = do
     Just gd -> pure (Just (CGlob g, gdType gd))
     Nothing -> pure Nothing
 
--- Constructors as values: λ-wrap to a saturated 'CCtor' (erased
--- implicit parameters are dropped from the runtime payload).
+-- Constructors as values: λ-wrap to a saturated source-shaped 'CCtor'. KCore
+-- keeps explicit fields, including explicit erased fields, so the interpreter
+-- and conversion continue to see source pattern arity. Only the KCore →
+-- KBackendIR lowering physically drops runtime-erased fields.
 --
 -- The native backend recognises a saturated application of this shape and
--- beta-reduces it back to a direct 'CCtor' ('Kappa.Backend.C.etaCtorApp', gap
--- P0-A); that recognizer depends on the exact shape produced here (nested
--- 'CLam's whose body is a 'CCtor' selecting only the runtime-field binders by
--- bare 'CVar'), so keep the two in sync.
+-- beta-reduces it back to a direct 'CCtor' ('Kappa.Backend.IR.coreEtaCtorApp');
+-- that recognizer depends on the exact shape produced here (nested 'CLam's
+-- whose body is a 'CCtor' selecting the Core constructor payload binders by bare
+-- 'CVar'), so keep the two in sync.
 etaCtor :: EvalCtx -> GName -> Term -> Term
 etaCtor ec g cty = build 0 [] (eval ec [] cty)
   where
     build n acc fty = case force ec fty of
-      VPi ic q _ _ _ clo ->
+      VPi ic q _ _ dom clo ->
         CLam ic q ("x" <> T.pack (show n)) $
-          build (n + 1) ((ic, q, n) : acc) (evalClosure clo (VRigid n []))
+          build (n + 1) ((n, coreCtorPayloadField ec n ic q dom) : acc) (evalClosure clo (VRigid n []))
       _ ->
         -- KBackendIR Stage 0 / Perceus S1.3: annotate the saturated 'CCtor'
         -- with the constructor's TYPE telescope ('cty', a closed top-level term)
-        -- so the S5 FBIP reuse pass can recover the field count/layout via
-        -- 'Repr.ctorLayoutOf' (the runtime fields are this telescope's explicit
-        -- non-Q0 domains). Observe-only metadata: 'Eq Term' ignores it and no
-        -- backend reads it, so it cannot change tag ids, codegen, or evaluation.
-        CCtor g (Just cty) [CVar (n - 1 - i) | (ic, q, i) <- reverse acc, runtimeField ic q]
-    runtimeField Expl _ = True
-    runtimeField Impl q = q /= Q0
+        -- so KBackendIR lowering can recover the field count/layout via
+        -- 'Repr.ctorLayoutOf' (the runtime fields are this telescope's
+        -- non-erased explicit payloads plus non-erased implicit evidence).
+        -- Observe-only metadata for KCore equality/conversion; KBackendIR reads it
+        -- when attaching layout facts, but it cannot change tag ids or evaluation.
+        CCtor g (Just cty) [CVar (n - 1 - i) | (i, True) <- reverse acc]
     evalClosure (Closure env body) v = eval ec (v : env) body
+    coreCtorPayloadField ctx lvl ic q dom =
+      ic == Expl || Repr.runtimeConstructorField ctx lvl ic q dom
 
 -- | §3.2.2 suggestion edit-distance threshold for a spelling of this
 -- length. Scales with the length so a one-character name does not match
@@ -2897,11 +2898,11 @@ isTraitWitness ctx goal = go (ctxLen ctx) goal
 
 -- | Kind-like goals — @Type@, @Type -> Type@, … — are inferred from
 -- use sites (metavariables), never searched as evidence (§16.3.3).
--- LOCKSTEP: @Kappa.Backend.C.isKindDomain@ is a pure (non-'CheckM') copy of this
--- predicate — it decides which spine arguments are 'RuntimeErased' type/type-ctor
--- positions to erase to @kunit()@.  If the notion of kind-like changes here
--- (e.g. a new sort-former), update that copy in lockstep or the backend's
--- erasure verdict silently desyncs from the elaborator.
+-- LOCKSTEP: @Kappa.Backend.Repr.runtimeErasedParam@ is the pure shared
+-- backend-side classifier for quantity-0, kind-domain, and proof-only binders.
+-- If the notion of kind-like changes here (e.g. a new sort-former), update that
+-- shared classifier in lockstep or KBackendIR erasure can desync from the
+-- elaborator.
 isKindLike :: Int -> Value -> CheckM Bool
 isKindLike lvl v = do
   t <- forceM v
@@ -8930,8 +8931,17 @@ elabHandle ctx deep lblE scrutE cases sp mexpected = do
                     mkK cArgs = do
                       recordHandlerOpQuantity (nameSpan kn) (eoiQ op)
                       let cK = bindCtx (nameText kn) False kTy cArgs
+                          -- The runtime handler ABI always calls an operation
+                          -- clause as `clause payload k`.  A q=0 resumption is
+                          -- unusable by the surface program (enforced from the
+                          -- recorded handler quantity), but the ABI slot must
+                          -- still be present so the second runtime application
+                          -- has a closure to call rather than the clause's Eff
+                          -- result.  Therefore only the generated slot uses a
+                          -- runtime-relevant quantity.
+                          runtimeKQ = if eoiQ op == Q0 then QW else eoiQ op
                       inner <- check cK body resultTy
-                      pure (CLam Expl (eoiQ op) (nameText kn) inner)
+                      pure (CLam Expl runtimeKQ (nameText kn) inner)
                 lam <- case (argPats, opArgVs) of
                   -- single argument: the payload IS the value (§18.1.21)
                   ([p], [argV]) -> handlerClauseLam ctxSk QW p argV mkK
@@ -10889,8 +10899,9 @@ elabPattern ctx0 pat0 ty0 = do
               padTys <- mapM (const (freshMetaV ctxEx)) (drop (length fieldTys) ps)
               (ps', ctx') <- goList ctxEx (zip ps (fieldTys ++ padTys))
               -- 'ctxEx' put @nEx@ existential skolems BELOW the field binders;
-              -- the emitted pattern carries that count so the runtime pushes the
-              -- matching placeholder slots (see 'CPCtor' / 'matchPat').
+              -- the emitted pattern carries that count so Core matching accounts
+              -- for the corresponding erased environment slots (see 'CPCtor' /
+              -- 'matchPat').
               pure (CPCtor g nEx ps', ctx')
         PActive _ _ _ sp -> do
           unsupportedAt sp "active patterns are not supported by this implementation"
@@ -10982,9 +10993,9 @@ ctorFieldTypes ctx _ ci scrutTy _ = do
 -- ground-index no-confusion that powers exhaustiveness) is unaffected.
 -- Returns the field types, the extended context, AND the number @nEx@ of
 -- existential skolems promoted (= context entries added). The caller threads
--- @nEx@ into the emitted 'CPCtor' so the runtime pushes the SAME number of
--- placeholder slots below the field binders — keeping the arm body's de Bruijn
--- indices for outer-bound variables valid at runtime (otherwise they are
+-- @nEx@ into the emitted 'CPCtor' so Core matching accounts for the SAME number
+-- of erased slots below the field binders — keeping the arm body's de Bruijn
+-- indices for outer-bound variables valid during interpretation (otherwise they are
 -- inflated by @nEx@ with no matching binder; see 'CPCtor').
 ctorFieldTypesCtx :: Ctx -> GName -> CtorInfo -> Value -> Span -> CheckM ([Value], Ctx, Int)
 ctorFieldTypesCtx ctx _ ci scrutTy _ = do

@@ -1,0 +1,7 @@
+module main
+
+applyPoly : ((a : Type) -> a -> a) -> Int
+let applyPoly f = f Int 5
+
+main : UIO Unit
+let main = printlnString (showInt (applyPoly (\t x -> x)))

@@ -31,8 +31,8 @@ perceus_rc_enabled() {
 check_perceus_rc_log() {
   local log="$1"
   if perceus_rc_enabled; then
-    if ! grep -q "perceus-rc: R-path walk-and-lookup complete; 0 validation miss(es)" "$log"; then
-      echo "   FAIL: Perceus RC build did not report zero validation R-path misses"
+    if ! grep -q "perceus-rc: KBackendIR ownership metadata validation complete; 0 finding(s)" "$log"; then
+      echo "   FAIL: Perceus RC build did not report zero KBackendIR ownership metadata findings"
       sed -n '/perceus-rc:/p' "$log" | sed 's/^/     /'
       fails=$((fails+1))
       return 1
@@ -195,8 +195,47 @@ run_expected_fail_case() {
   fi
 }
 
+run_native_expected_stdout_case() {
+  local name="$1"; local want="$2"; local src="$CASES/$name.kp"
+  echo "-- case: $name (native erased-layout regression must print $want)"
+  local exe out rc
+  exe="$WORK/$name.expected.c"
+  cleanup_generated_for_source "$src"
+  if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$WORK/$name.expected.c.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
+    echo "   FAIL: C native build failed"; cat "$WORK/$name.expected.c.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+  fi
+  cleanup_generated_for_source "$src"
+  check_perceus_rc_log "$WORK/$name.expected.c.build.log" || return
+  out="$(timeout 120 "$exe" 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$out" != "$want" ]; then
+    echo "   FAIL: C native rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+    return
+  fi
+  exe="$WORK/$name.expected.llvm"
+  cleanup_generated_for_source "$src"
+  if ! timeout 240 env KAPPA_BACKEND=llvm $KAPPA build "$src" -o "$exe" >"$WORK/$name.expected.llvm.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
+    echo "   FAIL: LLVM native build failed"; cat "$WORK/$name.expected.llvm.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+  fi
+  cleanup_generated_for_source "$src"
+  check_perceus_rc_log "$WORK/$name.expected.llvm.build.log" || return
+  out="$(timeout 120 "$exe" 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ] || [ "$out" != "$want" ]; then
+    echo "   FAIL: LLVM native rc=$rc stdout=$(printf '%s' "$out" | tr '\n' '|')"
+    fails=$((fails+1))
+    return
+  fi
+  echo "   ok (C and LLVM printed $want)"
+}
+
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path; do run_diff_case "$c"; done
+run_native_expected_stdout_case ctor-erased-tail-pattern 20
+run_native_expected_stdout_case tuple-erased-field-pattern 5
+run_native_expected_stdout_case poly-lambda-erased-arg 5
+run_native_expected_stdout_case ctor-erased-field-patch 30
 run_expected_fail_case letqmiss
 
 echo "== interpreter interrupt publication stress =="

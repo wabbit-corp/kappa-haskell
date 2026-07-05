@@ -1,8 +1,10 @@
 # Perceus S2.3 redux — Drop Completion (under the Boehm differential backstop)
 
 Historical note: this file documents the S2.3/S3 transition. S4 has since replaced the S3-era shared
-dup/drop no-op policy with counted atomic shared RC for the strict immutable FREESET; see
-[`PERCEUS-S4-PLAN.md`](PERCEUS-S4-PLAN.md) for the current shared-object behavior.
+dup/drop no-op policy with counted atomic shared RC for the strict immutable FREESET, and S5.A has since
+replaced native path-keyed ownership reattachment with node-local KBackendIR ownership metadata. See
+[`PERCEUS-S4-PLAN.md`](PERCEUS-S4-PLAN.md) for shared-object behavior and
+[`PERCEUS-S5-PLAN.md`](PERCEUS-S5-PLAN.md) for the current backend IR boundary.
 
 Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`), with **S2.3c
 implemented by the primitive convention table** and **S2.3d implemented for locally-proven path-local dead
@@ -74,12 +76,13 @@ The backend still re-checks `boDroppable` and `boBorrowed`, and it refuses to gu
 borrowed binders, incoming worker parameters whose caller-side transfer has not been normalized, unproven
 call/projection shapes, and pattern fields that were not first `kdup`'d by the match cell-drop path do not get
 S2.3d drops. S3.2 proves owned projection results for the structural subset whose base is an owned flat local
-read through the validated read-only use side table, and it materializes those results with `kdup` before any
-owner cleanup. If a branch-drop site
-lists a droppable binder that no longer resolves inside a top-level flat worker frame, the RC-on backend
-records a `gsRcFindings` miss and rejects generation. Capture-free nested flat closures may drop their own
-resolved owned flat locals under the same proof; missing outer/captured binders, boxed/CPS paths, and flat
-locals whose ownership is resolved but unproven still intentionally emit no drop.
+read through validated read-only use metadata, and it materializes those results with `kdup` before any owner
+cleanup. In the original S2/S3 implementation, stale branch-drop path lookups recorded `gsRcFindings` misses
+and rejected generation. In the current S5.A native path, branch drops are node-local `BackendMeta`
+binders; `validateKBackendIR` rejects out-of-scope, forged, duplicated, or item-level branch-drop metadata
+before C/LLVM emission. Capture-free nested flat closures may drop their own resolved owned flat locals under
+the same proof; missing outer/captured binders, boxed/CPS paths, and flat locals whose ownership is resolved
+but unproven still intentionally emit no drop.
 
 ## (c) S2.3b — the CONSUME flag (a real OwnInfo refinement)
 
@@ -186,9 +189,9 @@ emitting cleanup before `return`; guarded arms still stay conservative where gua
 modeled. **R-CDo** — S2.3b walks and validates `CDo` bodies so generated do-kernel paths are
 covered by RC checks; drops still do not cross a do-block boundary unless the lowered structure proves ownership transfer.
 K_FGN/resource scrutinees must not be cell-dropped because S3.2 free-on-zero deliberately excludes resource
-cells from the FREESET. **R-path** — every new lookup (`matchScrutPos`, `patSlotPos k`, per-arm) uses the shared
-`PathScheme` constants; `gsRcFindings` miss-log is fail-closed under default-on Perceus validation, including
-S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level flat worker frame.
+cells from the FREESET. **R-path** — this was the S2/S3 path-keyed lookup risk (`matchScrutPos`,
+`patSlotPos k`, per-arm) and is retained here as historical context. S5.A retires that lookup from native
+emission: the current fail-closed gate is `validateKBackendIR` over node-local backend binder/use metadata.
 
 ## (g) Verification — the backstop now genuinely exercised
 
@@ -205,8 +208,10 @@ S2.3d branch-drop sites whose droppable binders no longer resolve in a top-level
 4. **Static ground truth green** (`crossCheckBodies`/`argConvBodies`, plus `primArgConventionS23c`) — new
    OwnInfo fields additive; the S2.3c prim table must keep `argConvBodies` and the direct convention matrix
    consistent with the audited storing-vs-borrowing primitive set.
-5. **RC path lookup is zero-miss** — with default-on Perceus validation, `generateC` rejects nonzero
-   `gsRcFindings`, and the native/LLVM harnesses assert the zero-miss diagnostic in redirected build logs.
+5. **Backend ownership metadata is zero-finding** — with default-on Perceus validation, C/LLVM native builds
+   reject nonzero `validateKBackendIR` findings, and the native/LLVM harnesses assert the zero-finding
+   diagnostic in redirected build logs. The older `gsRcFindings` path-miss log is now limited to impossible
+   post-validation metadata drift and is not the primary S5.A gate.
 6. **Resource regressions unchanged** (`usingsusp.kp`/`usinginterrupt.kp`) — no spurious drop inside a
    do-scope; S3.2 keeps `K_FGN` out of the FREESET and pins runtime-private FGN payload marking.
 

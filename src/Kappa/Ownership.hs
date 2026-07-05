@@ -3,26 +3,26 @@
 -- This module is the analysis half of the Perceus reference-counting arc
 -- (see @runtime/docs/PERCEUS-RC-DESIGN.md@ §3 and @runtime/docs/PERCEUS-S1-PLAN.md@).
 -- S1.0 landed the EMPTY plumbing — the type shapes, the 'annotateOwnership'
--- entry point, and the @csOwnership@\/@gsOwnership@ threading through the
--- pipeline and the native backend. __S1.1 fills in the analysis__: for every
+-- entry point, and the @csOwnership@ threading through the pipeline. __S1.1
+-- fills in the analysis__: for every
 -- top-level body it walks the elaborated, zonked Core 'Term' and populates
 -- 'OwnInfo' with per-binder ownership facts ('oiBinders') and per-occurrence
 -- last-use classification ('oiUses').
 --
 -- The ownership facts are computed during elaboration (§12.2 quantity\/borrow
--- accounting, ported here from the source-of-truth lattice in "Kappa.Usage"),
--- but they are ERASED before KBackendIR (§31.2), so they must be re-attached as
--- backend metadata rather than read off the IR. They live in a SIDE-TABLE keyed
--- by stable Core identities ('BinderId'\/'UseSite'), threaded beside the
--- existing @csCoreBodies@\/@gsSuspenders@ metadata, never as new 'Term' fields.
+-- accounting, ported here from the source-of-truth lattice in "Kappa.Usage").
+-- This legacy S1 side-table still renders @dump-ownership@ output and
+-- cross-checks/refines the historical analysis, but S5.A native emission no
+-- longer consumes it. 'Kappa.Backend.IR' computes backend-facing uses,
+-- binders, and branch-dead drops on the separate KBackendIR tree itself, using
+-- node-local 'BackendUseId'/'BackendBinderId' metadata rather than these
+-- structural Core coordinates.
 --
--- __Stage S1.1 is OBSERVE-ONLY.__ Like the Stage-0 'CCtor'\/'CMatch'
--- annotations, NO consumer reads the table for codegen — the later dup\/drop
--- pass (S2+) is what consumes it. So conformance fixtures and interp\/C\/LLVM
--- parity stay byte-identical; this stage only RECORDS the already-validated
--- decisions in Core coordinates. The recorded decisions are continuously
--- validated against the declared quantities by 'crossCheckOwnInfo' (S1.2,
--- gated in the test suite), so a wrong analysis fails rather than drifts.
+-- __Stage S1.1 is OBSERVE-ONLY for native codegen.__ The recorded decisions
+-- remain continuously validated against the declared quantities by
+-- 'crossCheckOwnInfo' (S1.2, gated in the test suite), so a wrong analysis
+-- fails rather than drifts, but the S5.A backend path does not reattach or look
+-- up this table when deciding dup/drop emission.
 --
 -- == The analysis (PERCEUS-RC-DESIGN §3, ported from "Kappa.Usage")
 --
@@ -53,23 +53,16 @@
 --     pattern bindings are tracked as ordinary value binders rather than treated
 --     as an ownership-erased island.
 --
--- == R1 — de-Bruijn key stability (the highest risk; see PERCEUS-S1-PLAN (e))
+-- == R1 — de-Bruijn key stability (legacy audit table; see PERCEUS-S1-PLAN (e))
 --
 -- The side-table keys are STRUCTURAL PATHS ('biPath'\/'usPath'): the list of
 -- child-positions taken from the body root down to the node, NOT raw de Bruijn
 -- indices. A path is invariant under the index renumbering a de Bruijn walk
--- performs, and — crucially — it is invariant under the one post-zonk rewrite
--- the backend applies before lowering, @eraseQ0Args@ (@C.hs@). That rewrite
--- ONLY replaces ARGUMENT subterms at erased global-application spine positions
--- with a @CSort 0@ placeholder; it removes NO binder ('CLam'\/'CLet'\/match
--- arm) and shifts NO de Bruijn index, so choice (a) holds: the keys are robust
--- to the shift, with no re-keying required by the backend. The
--- ownership walk now treats those erased argument subterms as non-runtime, so
--- they record no 'UseSite' and do not flow liveness upstream. Surviving binder
--- nodes and surviving 'CVar' occurrences keep their exact structural path. The
--- 'crossCheckOwnInfo' regression includes a body with a 'Q0' (erased) binder
--- bound before a runtime binder, proving the runtime binder's key is unaffected
--- by the erased one.
+-- performs. S5.A moved native C/LLVM dup/drop emission to node-local KBackendIR
+-- ownership metadata, so this path-keyed table is no longer reattached by the
+-- backend and cannot drive native ownership decisions. It remains useful as a
+-- legacy dump/cross-check artifact over KCore; erased argument subterms still
+-- record no 'UseSite' and do not flow liveness upstream.
 module Kappa.Ownership
   ( -- * Stable Core identities (side-table keys)
     BinderId (..)
@@ -103,7 +96,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal)
+import Kappa.Backend.Repr (ArgConv (..), argConvGlobalType, argConvSelectGlobal, runtimeErasedParam)
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
@@ -286,7 +279,7 @@ data ParamSite = ParamSite
   { psIcit :: !Icit
   , psQ :: !Q
   , psBorrowed :: !Bool
-  , psDomain :: !Term
+  , psLevel :: !Int
   , psDomainValue :: !Value
   }
   deriving stock (Show)
@@ -1421,16 +1414,6 @@ evalTypeAt ctx depth = eval ctx (rigidEnv depth)
 rigidEnv :: Int -> [Value]
 rigidEnv depth = [VRigid (depth - 1 - i) [] | i <- [0 .. depth - 1]]
 
--- | Pure mirror of the backend's kind-domain half of 'erasedSpinePositionsP':
--- a parameter whose normalized DOMAIN is a kind (@Type@, @Type -> Type@, …) is
--- a type/type constructor argument and has no runtime representation even when
--- its quantity is not 'Q0'. Unknown shapes are treated as runtime.
-isKindDomainTerm :: Term -> Bool
-isKindDomainTerm = \case
-  CSort _ -> True
-  CPi _ _ _ _ _ cod -> isKindDomainTerm cod
-  _ -> False
-
 indexMaybe :: Int -> [a] -> Maybe a
 indexMaybe i xs
   | i < 0 = Nothing
@@ -1459,10 +1442,10 @@ scopeTypeAt scopes lvl = lookupLevel lvl scopes >>= scType
 callArgConsumes :: EvalCtx -> Int -> (Int -> Maybe Value) -> Term -> [(Icit, Term)] -> [UseConsumes]
 callArgConsumes ctx depth localType hd args =
   case hd of
-    CGlob g -> classifyCallArgs GlobalCall (argConvSelectGlobal ctx g) (paramConvTelescope ctx g) args
+    CGlob g -> classifyCallArgs ctx GlobalCall (argConvSelectGlobal ctx g) (paramConvTelescope ctx g) args
     _ ->
       case termTypeAt ctx depth localType hd of
-        Just ty -> classifyCallArgs LocalCall Nothing (paramConvTelescopeFromValueAt ctx depth ty) args
+        Just ty -> classifyCallArgs ctx LocalCall Nothing (paramConvTelescopeFromValueAt ctx depth ty) args
         Nothing -> sharedFallback
   where
     -- S2 all-shared fallback for non-global/unknown function values. Shared is
@@ -1527,14 +1510,13 @@ paramConvTelescopeWithResultAt ctx = go
         VPi ic q borrowed _ dom (Closure env cod) ->
           let x = VRigid lvl []
               domV = force ctx dom
-              domT = quote ctx lvl domV
               codV = eval ctx (x : env) cod
               (sites, resultTy) = go (lvl + 1) codV
-           in (ParamSite ic q borrowed domT domV : sites, resultTy)
+           in (ParamSite ic q borrowed lvl domV : sites, resultTy)
         resultTy -> ([], resultTy)
 
-classifyCallArgs :: CallMode -> Maybe [ArgConv] -> [ParamSite] -> [(Icit, Term)] -> [UseConsumes]
-classifyCallArgs mode mConvs tele0 = go mConvs tele0
+classifyCallArgs :: EvalCtx -> CallMode -> Maybe [ArgConv] -> [ParamSite] -> [(Icit, Term)] -> [UseConsumes]
+classifyCallArgs ctx mode mConvs tele0 = go mConvs tele0
   where
     go _ _ [] = []
     go convs tele ((ic, _) : rest) =
@@ -1566,7 +1548,7 @@ classifyCallArgs mode mConvs tele0 = go mConvs tele0
           , convs
           )
 
-    erasedOrKind site = psQ site == Q0 || isKindDomainTerm (psDomain site)
+    erasedOrKind site = runtimeErasedParam ctx (psLevel site) (psQ site) (psDomainValue site)
 
 argConvConsumes :: ArgConv -> UseConsumes
 argConvConsumes = \case

@@ -46,6 +46,13 @@ module Kappa.Backend.Repr
   ( -- * Runtime representation classes
     Rep (..)
   , scalarRep
+  , runtimeErasedParam
+  , runtimeRelevantParam
+  , runtimeConstructorField
+  , erasedParamMask
+  , erasedSpinePositions
+  , erasedSpinePositionsForArgs
+  , keptSpinePositions
 
     -- * Function rep/worker-plan selection (the single authority)
   , repSelect
@@ -53,16 +60,26 @@ module Kappa.Backend.Repr
 
     -- * S1.5 owned/borrowed calling convention (telescope-derived; observe-only)
   , ArgConv (..)
+  , ArgPlan
   , argConvSelect
+  , argConvSelectForArgs
+  , argConvSelectForArgsAt
+  , argPlanSelectForArgsAt
   , argConvSelectGlobal
+  , argConvSelectGlobalForArgs
   , argConvGlobalType
+  , resultIsProofGlobal
+  , resultIsProofValue
+  , resultIsProofBodyGlobal
+  , resultIsProofBodyValue
 
     -- * Static constructor layout
   , CtorLayout (..)
   , ctorLayout
   , ctorLayoutByArity
+  , ctorBoxedFootprintBytes
 
-    -- * S1.3 ctor layout authority (observe-only; consumed by S5 FBIP reuse)
+    -- * S1.3 ctor layout authority (observe-only; S5 Phase B reuse substrate)
   , CtorLayoutInfo (..)
   , ctorLayoutOf
 
@@ -77,7 +94,20 @@ import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Kappa.Builtins (builtinCtorTagId, gPrel, kctUserBase, prelDouble, prelInt, prelInteger, prelNat, primModule)
+import Kappa.Builtins
+  ( builtinCtorTagId
+  , gPrel
+  , kctUserBase
+  , prelDouble
+  , prelEqType
+  , prelInt
+  , prelInteger
+  , prelIsProp
+  , prelIsSet
+  , prelIsSubsingleton
+  , prelNat
+  , primModule
+  )
 import Kappa.Core
   ( CaseAlt (..)
   , Closure (..)
@@ -284,7 +314,10 @@ data ArgConv
 -- per-arg convention and (in S2) must fall back to the conservative
 -- treat-as-shared default, never a miscompile.
 argConvSelect :: EvalCtx -> Value -> Maybe [ArgConv]
-argConvSelect ctx = walk 0 []
+argConvSelect ctx = argConvSelectAt ctx 0
+
+argConvSelectAt :: EvalCtx -> Int -> Value -> Maybe [ArgConv]
+argConvSelectAt ctx startLvl = walk startLvl []
   where
     walk lvl acc ty =
       case force ctx ty of
@@ -330,6 +363,92 @@ argConvSelectGlobal ctx g =
 
 argConvGlobalType :: EvalCtx -> GName -> Maybe Value
 argConvGlobalType ctx g = gdType <$> primitiveGlobalDef (globalsMap (ecGlobals ctx)) g
+
+-- | A global whose result is a runtime-erased proof has no native value body.
+-- This is shared by KBackendIR lowering and native emitters so erased proof
+-- bodies do not look like runtime erasure bugs while real runtime references to
+-- erased values still fail closed.
+resultIsProofGlobal :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
+resultIsProofGlobal globals ctx g =
+  case Map.lookup g globals of
+    Nothing -> False
+    Just gd -> resultIsProofValue ctx 0 (gdType gd)
+
+-- | True when the semantic type's result is explicitly known to be
+-- runtime-erased proposition evidence. This is a runtime-erasure classifier,
+-- not a source-name recognizer: callers pass the already elaborated/evaluated
+-- type, and the classifier inspects the quoted normal form for 'IsProp' heads
+-- or variables constrained by 'IsProp' hypotheses in the telescope. Equality
+-- proofs, 'IsSubsingleton', 'IsSet', and higher groupoid-style evidence are not
+-- erased by this predicate unless the source supplies the explicit proposition
+-- evidence the spec assigns runtime-erasure semantics to.
+resultIsProofValue :: EvalCtx -> Int -> Value -> Bool
+resultIsProofValue ctx lvl ty =
+  resultIsProofTerm proofHeads [prelIsProp] lvl [] (quote ctx lvl (force ctx ty))
+
+-- | Broader native proof-body classifier. This is deliberately NOT used for
+-- parameter/field representation erasure: it is only for proof-producing global
+-- bodies and already-erased proof applications whose generated native value is
+-- never observed. It preserves the pre-S5 native backend behavior while keeping
+-- ordinary equality-proof fields runtime-relevant unless a real RuntimeErased
+-- proof is present.
+resultIsProofBodyGlobal :: Map GName GlobalDef -> EvalCtx -> GName -> Bool
+resultIsProofBodyGlobal globals ctx g =
+  case Map.lookup g globals of
+    Nothing -> False
+    Just gd -> resultIsProofBodyValue ctx 0 (gdType gd)
+
+resultIsProofBodyValue :: EvalCtx -> Int -> Value -> Bool
+resultIsProofBodyValue ctx lvl ty =
+  resultIsProofTerm proofBodyHeads [prelIsProp, prelIsSubsingleton] lvl [] (quote ctx lvl (force ctx ty))
+
+resultIsProofTerm :: [GName] -> [GName] -> Int -> [Int] -> Term -> Bool
+resultIsProofTerm heads hypHeads lvl propLvls ty = case ty of
+  CPi _ _ _ _ dom cod ->
+    let propLvls' = case hypProofVarLevel hypHeads lvl dom of
+          Just l -> l : propLvls
+          Nothing -> propLvls
+     in resultIsProofTerm heads hypHeads (lvl + 1) propLvls' cod
+  r ->
+    case coreHeadGlob r of
+      Just h | h `elem` heads -> True
+      _ -> case r of
+        CVar i -> (lvl - 1 - i) `elem` propLvls
+        _ -> False
+
+hypProofVarLevel :: [GName] -> Int -> Term -> Maybe Int
+hypProofVarLevel heads lvl dom =
+  case coreSpine dom of
+    (CGlob h, [(_, CVar j)])
+      | h `elem` heads ->
+          Just (lvl - 1 - j)
+    _ -> Nothing
+
+proofHeads :: [GName]
+proofHeads = [prelIsProp]
+
+proofBodyHeads :: [GName]
+proofBodyHeads =
+  [ prelEqType
+  , prelIsProp
+  , prelIsSubsingleton
+  , prelIsSet
+  , gPrel "IsContr"
+  , gPrel "IsGroupoid"
+  , gPrel "CoreEq"
+  ]
+
+coreHeadGlob :: Term -> Maybe GName
+coreHeadGlob t = case fst (coreSpine t) of
+  CGlob h -> Just h
+  CCtor h _ _ -> Just h
+  _ -> Nothing
+
+coreSpine :: Term -> (Term, [(Icit, Term)])
+coreSpine = go []
+  where
+    go acc (CApp ic f a) = go ((ic, a) : acc) f
+    go acc h = (h, acc)
 
 primitiveGlobalDef :: Map GName GlobalDef -> GName -> Maybe GlobalDef
 primitiveGlobalDef globals g@(GName m nm) =
@@ -409,6 +528,16 @@ argConv q borrowed
       QLe1 -> ArgShared
       Q0 -> ArgShared -- unreachable (Q0 is skipped); shared is the safe default
 
+-- | The shared runtime-erasure classifier for one telescope binder. A
+-- quantity-0 binder is erased by quantity; any binder whose domain is itself a
+-- kind (@Type@, @Type -> Type@, …) is erased by phase; and domains explicitly
+-- known runtime-erased by proposition evidence are erased. The classifier
+-- inspects the semantic 'Value' directly, so code generation no longer performs
+-- the old @quote . force@ readback just to rediscover kind-domain status.
+runtimeErasedParam :: EvalCtx -> Int -> Q -> Value -> Bool
+runtimeErasedParam ctx lvl q dom =
+  q == Q0 || valueDomainIsKind ctx lvl dom || resultIsProofValue ctx lvl dom
+
 -- | The shared runtime-argument filter for representation and ownership
 -- convention selection. A non-'Q0' explicit parameter whose domain is a kind is
 -- still a static/type argument, not a runtime value. Keeping this predicate in
@@ -416,16 +545,138 @@ argConv q borrowed
 -- Ownership.classifyCallArgs will skip as @erasedOrKind@.
 runtimeRelevantParam :: EvalCtx -> Int -> Icit -> Q -> Value -> Bool
 runtimeRelevantParam ctx lvl ic q dom =
-  ic == Expl && q /= Q0 && not (isKindDomainValueAt ctx lvl dom)
+  ic == Expl && not (runtimeErasedParam ctx lvl q dom)
 
-isKindDomainValueAt :: EvalCtx -> Int -> Value -> Bool
-isKindDomainValueAt ctx lvl v = isKindDomainTerm (quote ctx lvl (force ctx v))
+-- | Constructor payload fields use the same erasure classifier as ordinary
+-- runtime parameters, with one extra allowance: implicit non-erased evidence
+-- and dictionary binders are retained because constructor values can carry
+-- selected runtime dictionaries. Explicit quantity-0 fields, explicit
+-- kind-domain/type fields, implicit quantity-0 indices, and implicit
+-- kind-domain type parameters are absent from the runtime payload.
+runtimeConstructorField :: EvalCtx -> Int -> Icit -> Q -> Value -> Bool
+runtimeConstructorField ctx lvl ic q dom =
+  (ic == Expl || q /= Q0) && not (runtimeErasedParam ctx lvl q dom)
 
-isKindDomainTerm :: Term -> Bool
-isKindDomainTerm = \case
-  CSort _ -> True
-  CPi _ _ _ _ _ cod -> isKindDomainTerm cod
-  _ -> False
+-- | One erasure bit per Pi binder in source telescope order. This is the S5.A
+-- erasure fact lowered once and shared by C, LLVM, Verify, and the materialized
+-- KBackendIR artifact: @True@ means the argument is absent from runtime
+-- representation.
+erasedParamMask :: EvalCtx -> Value -> [Bool]
+erasedParamMask ctx = walk 0 []
+  where
+    walk lvl acc ty =
+      case force ctx ty of
+        VPi _ q _ _ dom clo ->
+          let x = VRigid lvl []
+              cod = closApplyV x clo
+           in walk (lvl + 1) (runtimeErasedParam ctx lvl q dom : acc) cod
+        _ -> reverse acc
+    closApplyV v (Closure env body) = eval ctx (v : env) body
+
+-- | The erased-argument mask for a global-headed application spine. Unknown
+-- globals fail safe by erasing nothing.
+erasedSpinePositions :: Map GName GlobalDef -> EvalCtx -> GName -> [Bool]
+erasedSpinePositions globals ctx g =
+  maybe [] (erasedParamMask ctx . gdType) (Map.lookup g globals)
+
+-- | Erasure bits aligned to the ACTUAL application spine, not just to raw
+-- telescope position.  KCore may omit erased implicit type arguments while
+-- still applying the explicit runtime arguments, so a position-only mask would
+-- shift a skipped implicit's erased verdict onto the first explicit value.  The
+-- aligner may skip only omitted implicit binders that are themselves erased;
+-- unalignable shapes fail conservatively by keeping all supplied arguments.
+erasedSpinePositionsForArgs :: Map GName GlobalDef -> EvalCtx -> GName -> [Icit] -> [Bool]
+erasedSpinePositionsForArgs globals ctx g actuals =
+  case Map.lookup g globals >>= \gd -> alignErasedArgs ctx (gdType gd) actuals of
+    Just flags -> flags
+    Nothing -> replicate (length actuals) False
+
+-- | The dual of 'erasedSpinePositions': @True@ means the argument remains a
+-- runtime value after KCore→KBackendIR erasure.
+keptSpinePositions :: Map GName GlobalDef -> EvalCtx -> GName -> [Bool]
+keptSpinePositions globals ctx g =
+  map not (erasedSpinePositions globals ctx g)
+
+-- | Per-supplied-argument calling conventions for a non-global callee type,
+-- aligned with 'erasedSpinePositionsForArgs'. Erased or implicit arguments have
+-- no runtime convention; explicit kept arguments consume one convention from
+-- 'argConvSelect'. If either the callee telescope or the supplied spine cannot
+-- be aligned, return 'Nothing' so callers use their conservative fallback
+-- instead of assigning a convention to the wrong argument.
+argConvSelectForArgs :: EvalCtx -> Value -> [Icit] -> Maybe [Maybe ArgConv]
+argConvSelectForArgs ctx = argConvSelectForArgsAt ctx 0
+
+-- | Per supplied argument: whether it is erased, and the runtime calling
+-- convention if it remains as an explicit runtime value.
+type ArgPlan = (Bool, Maybe ArgConv)
+
+-- | Like 'argConvSelectForArgs', but the callee type lives under @startLvl@
+-- already-bound Core variables. This is required for first-class/local callee
+-- heads whose telescope may mention outer binders; globals use level 0.
+argConvSelectForArgsAt :: EvalCtx -> Int -> Value -> [Icit] -> Maybe [Maybe ArgConv]
+argConvSelectForArgsAt ctx startLvl ty actuals =
+  map snd <$> argPlanSelectForArgsAt ctx startLvl ty actuals
+
+argPlanSelectForArgsAt :: EvalCtx -> Int -> Value -> [Icit] -> Maybe [ArgPlan]
+argPlanSelectForArgsAt ctx startLvl ty actuals = do
+  flags <- alignErasedArgsAt ctx startLvl ty actuals
+  convs <- argConvSelectAt ctx startLvl ty
+  convs' <- assignArgConvs convs (zip actuals flags)
+  pure (zip flags convs')
+
+-- | Per-supplied-argument calling conventions, aligned with
+-- 'erasedSpinePositionsForArgs'.  Erased or implicit arguments have no runtime
+-- convention; explicit kept arguments consume one convention from
+-- 'argConvSelectGlobal'.  If either the callee telescope or the supplied spine
+-- cannot be aligned, return 'Nothing' so callers use their conservative
+-- fallback instead of assigning a convention to the wrong argument.
+argConvSelectGlobalForArgs :: EvalCtx -> GName -> [Icit] -> Maybe [Maybe ArgConv]
+argConvSelectGlobalForArgs ctx g actuals = do
+  gd <- primitiveGlobalDef (globalsMap (ecGlobals ctx)) g
+  flags <- alignErasedArgsAt ctx 0 (gdType gd) actuals
+  convs <- argConvSelectGlobal ctx g
+  assignArgConvs convs (zip actuals flags)
+
+assignArgConvs :: [ArgConv] -> [(Icit, Bool)] -> Maybe [Maybe ArgConv]
+assignArgConvs convs0 = assign convs0
+  where
+    assign [] [] = Just []
+    assign _ [] = Just []
+    assign cs ((ic, erased) : rest)
+      | erased || ic /= Expl = (Nothing :) <$> assign cs rest
+      | c : cs' <- cs = (Just c :) <$> assign cs' rest
+      | otherwise = Nothing
+
+alignErasedArgs :: EvalCtx -> Value -> [Icit] -> Maybe [Bool]
+alignErasedArgs ctx = alignErasedArgsAt ctx 0
+
+alignErasedArgsAt :: EvalCtx -> Int -> Value -> [Icit] -> Maybe [Bool]
+alignErasedArgsAt ctx startLvl = walk startLvl []
+  where
+    walk _ acc _ [] = Just (reverse acc)
+    walk lvl acc ty actuals@(actualIc : restActuals) =
+      case force ctx ty of
+        VPi ic q _ _ dom clo ->
+          let erased = runtimeErasedParam ctx lvl q dom
+              cod = closApply lvl clo
+           in if ic == actualIc
+                then walk (lvl + 1) (erased : acc) cod restActuals
+                else
+                  if ic == Impl && erased
+                    then walk (lvl + 1) acc cod actuals
+                    else Nothing
+        _ -> Nothing
+    closApply l (Closure env body) = eval ctx (VRigid l [] : env) body
+
+valueDomainIsKind :: EvalCtx -> Int -> Value -> Bool
+valueDomainIsKind ctx lvl v =
+  case force ctx v of
+    VSort _ -> True
+    VPi _ _ _ _ _ clo ->
+      valueDomainIsKind ctx (lvl + 1) (closApply lvl clo)
+    _ -> False
+  where
+    closApply l (Closure env body) = eval ctx (VRigid l [] : env) body
 
 -- | The largest de-Bruijn INDEX a 'Term' references relative to its own top
 -- (a @CVar i@ contributes @i@; entering a binder subtracts one from the body's
@@ -507,6 +758,18 @@ data CtorLayout
   | LayoutBoxed
   deriving stock (Eq, Show)
 
+-- | Current native boxed-ctor footprint, in bytes.
+--
+-- A boxed constructor is represented by the outer 'KValue' cell (statically
+-- asserted to 48 bytes in @runtime/kappart.h@) plus a scanned array of
+-- @KValue *@ argument slots allocated by @kctor@.  S5 Phase B compares this
+-- footprint before reusing a just-dropped constructor cell.  Nullary ctors are
+-- canonical immediates and have no reusable heap footprint; 'LayoutMayPack'
+-- exposes the boxed fallback footprint because the runtime may still allocate
+-- when the actual fields do not fit the packed immediate encoding.
+ctorBoxedFootprintBytes :: Int -> Int
+ctorBoxedFootprintBytes arity = 48 + (8 * arity)
+
 -- | The static layout of a constructor given its field-type representations.
 -- A nullary ctor is the canonical @b010@ immediate; a 1- or 2-field ctor whose
 -- fields are ALL immediate-typed (int/double/immediate-ctor — i.e. not
@@ -536,33 +799,39 @@ ctorLayoutByArity :: Int -> CtorLayout
 ctorLayoutByArity 0 = LayoutImmediate
 ctorLayoutByArity _ = LayoutBoxed
 
--- ── S1.3 ctor layout authority (observe-only; consumed by S5 FBIP reuse) ──
+-- ── S1.3 ctor layout authority (observe-only; S5 Phase B reuse substrate) ──
 --
--- Perceus drop-guided reuse (PERCEUS-RC-DESIGN §3, stage S5) needs the
--- field count and per-field representation of the constructor at every
--- @CCtor@ construct site and every @CMatch@ arm so a unique k-field node can
--- be rebuilt IN PLACE (the @drop-reuse@ token + same-size constructor write).
+-- Perceus drop-guided reuse (PERCEUS-RC-DESIGN §3, stage S5) will need the
+-- field count and per-field representation of constructors at allocation and
+-- match sites before it can pair a drop-reuse token with a same-size
+-- constructor write. This record supplies the node-local layout evidence; the
+-- actual same-size reuse-site discriminator is built by Phase B, not here.
 -- That layout is statically knowable from the constructor's instantiated type
 -- telescope, but it is ERASED before the backend lowers the term (§31.2), so
 -- the @CCtor@\/@CMatch@ /head-type annotation/ channel ('Kappa.Core.CCtor's
 -- @Maybe Term@) re-attaches it. This function reads that annotation back into a
 -- layout verdict.
 --
--- __It is observe-only in S1__ — populated alongside the annotation
--- (PERCEUS-S1-PLAN (c)), consumed by the S5 reuse pass, NOT by any current
--- codegen. So it changes no tag id, no call shape, and nothing about parity.
+-- __It is observe-only before Phase B__ — populated alongside the annotation
+-- (PERCEUS-S1-PLAN (c)) and now carried/validated on KBackendIR nodes, but NOT
+-- used by current emitters to rewrite allocations or drops. So it changes no
+-- tag id, no call shape, and nothing about parity.
 
 -- | The full static layout of a constructor at a construct\/match site: its
--- runtime arity, its 'CtorLayout' packing class, and the per-field 'Rep' list
--- (in field order). 'clLayoutClass' is exactly the 'ctorLayout' verdict over
--- 'clFieldReps', surfaced here so an S5 consumer reads one record rather than
--- recomputing it.
+-- runtime arity, its 'CtorLayout' packing class, its boxed heap footprint when
+-- one can exist, and the per-field 'Rep' list (in field order).
+-- 'clLayoutClass' is exactly the 'ctorLayout' verdict over 'clFieldReps',
+-- surfaced here so an S5 consumer reads one record rather than recomputing it.
 data CtorLayoutInfo = CtorLayoutInfo
   { clArity :: !Int
   -- ^ The constructor's runtime arity (the number of explicit, non-'Q0'
   -- parameter slots in its type telescope) = @length clFieldReps@.
   , clLayoutClass :: !CtorLayout
   -- ^ The static packing class ('ctorLayout' over 'clFieldReps').
+  , clBoxedFootprintBytes :: !(Maybe Int)
+  -- ^ Current native boxed storage footprint for a constructor with this
+  -- layout, if such a heap object can exist. 'Nothing' means the constructor is
+  -- always immediate and cannot produce or consume a reuse token.
   , clFieldReps :: ![Rep]
   -- ^ The 'scalarRep' of each runtime field's domain head, in field order.
   }
@@ -610,12 +879,19 @@ ctorLayoutOf ctx (Just ty) =
   case ctorFieldReps ctx (eval ctx [] ty) of
     Nothing -> Nothing
     Just fieldReps ->
-      Just
-        CtorLayoutInfo
-          { clArity = length fieldReps
-          , clLayoutClass = ctorLayout fieldReps
-          , clFieldReps = fieldReps
-          }
+      let layout = ctorLayout fieldReps
+          arity = length fieldReps
+       in Just
+            CtorLayoutInfo
+              { clArity = arity
+              , clLayoutClass = layout
+              , clBoxedFootprintBytes =
+                  case layout of
+                    LayoutImmediate -> Nothing
+                    LayoutMayPack -> Just (ctorBoxedFootprintBytes arity)
+                    LayoutBoxed -> Just (ctorBoxedFootprintBytes arity)
+              , clFieldReps = fieldReps
+              }
 
 -- | Walk a constructor's (whnf-forced) type telescope and return the 'scalarRep'
 -- of every __RUNTIME__ field, in field order — the field set the backend
@@ -644,18 +920,11 @@ ctorFieldReps ctx = walk 0 []
             else
               let x = VRigid lvl []
                   cod = closApplyV x clo
-                  acc' = if runtimeField ic q then scalarRep dom : acc else acc
+                  acc' = if runtimeConstructorField ctx lvl ic q dom then scalarRep dom : acc else acc
                in walk (lvl + 1) acc' cod
         _ -> Just (reverse acc)
     closApplyV v (Closure env body) = eval ctx (v : env) body
     closureHasBoundEnv env body = maxVar body < length env + 1
-    -- the RUNTIME field rule, copied VERBATIM from 'etaCtor's @runtimeField@
-    -- ("Kappa.Check") which feeds @compileCtor@'s argument list
-    -- ("Kappa.Backend.C"): an EXPLICIT field always counts (even a 'Q0' one — it
-    -- still occupies a positional slot, erased to a @kunit()@ placeholder); an
-    -- IMPLICIT field counts iff it is non-'Q0' (an evidence\/dictionary field).
-    runtimeField Expl _ = True
-    runtimeField Impl q = q /= Q0
 
 -- ── Constructor tag ids (the single authority) ───────────────────────
 --

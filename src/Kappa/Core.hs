@@ -281,10 +281,10 @@ data CorePat
     -- binds an existential @s@ not pinned by the result type, which the checker
     -- promotes to a rigid skolem occupying a real de Bruijn slot in the arm's
     -- elaboration context (see 'Kappa.Check.ctorFieldTypesCtx'). Those skolems sit
-    -- BELOW the field binders in the de Bruijn order, so the runtime must push the
-    -- same N placeholder slots (one erased unit per skolem) UNDER the field values
+    -- BELOW the field binders in the de Bruijn order, so Core matching accounts
+    -- for the same N erased slots UNDER the field values
     -- — otherwise every index in the arm body referring to an outer-bound variable
-    -- is inflated by N with no matching runtime binder. The placeholders are never
+    -- is inflated by N with no matching Core environment slot. The placeholders are never
     -- read (a skolem is an erased type); the slots only keep the OTHER indices
     -- correct. @0@ for an ordinary (non-existential) constructor pattern.
     CPCtor !GName !Int ![CorePat]

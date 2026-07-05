@@ -449,9 +449,9 @@ unboxed scalar slabs land as a following stage with zero `K_ARRAY` redesign (§7
 #### 5.3.1 THE CRUX — sound unboxed-rep selection under erasure (no monomorphization)
 
 The element type `a` is a `forall (a : Type)` = **quantity-0 erased** parameter
-(§4.1): it is dropped by `eraseQ0ArgsP` (`C.hs`, via
-`erasedSpinePositionsP` at `C.hs`) before codegen and **never reaches
-the `kpf_*` op**. So the runtime op CANNOT inspect `a` to choose a slab rep. The
+(§4.1): KBackendIR lowering uses the shared `Repr.erasedSpinePositions`
+erasure verdict to omit it before codegen, so it **never reaches the `kpf_*`
+op**. The runtime op CANNOT inspect `a` to choose a slab rep. The
 question is: *where does the element kind come from soundly?* There are exactly
 two candidate sources, and only one is sound.
 
@@ -548,7 +548,7 @@ array-op call site. Two threads to nail down in implementation:
    scope as the erased first telescope slot, and the *value* argument `init : a`
    pins it. For `arrayRead`/`arrayWrite` the element type is the `__ArrayBuf a`
    argument's type parameter. The specializer must read `a` from the call site's
-   typed spine (the `forall a` slot, pre-`eraseQ0Args`), force it to whnf, and
+   typed KCore spine (the `forall a` slot, before KBackendIR erasure), force it to whnf, and
    feed the head to `Repr.scalarRep`. `repSelect` already does the analogous
    read on a whole telescope; the array case is the single-type projection.
 2. **A non-obvious uniform-scalar caveat.** `Repr.scalarRep` is deliberately
@@ -758,8 +758,8 @@ specialization seam exist from Stage A.
   and the **AtomicRef rows** — copy those
   rows verbatim as the template: `PrimEntry "kpf_io_newArray" 2 True`,
   `... "kpf_io_arrayRead" 2 True`, `... "kpf_io_arrayWrite" 3 True`,
-  `... "kpf_arrayLen" 1 False`. The `forall (a : Type)` is Q0 and is dropped by
-  `eraseQ0ArgsP` (`C.hs`) before codegen, exactly as for STM's
+  `... "kpf_arrayLen" 1 False`. The `forall (a : Type)` is Q0 and is omitted by
+  KBackendIR lowering before codegen, exactly as for STM's
   `forall (a : Type)` signatures — **no type/dict/proof ever reaches a `kpf_*`
   symbol** (the erasure-safety contract, §31.2, the prior-crash class).
 - **SHAPE the specialization seam now (even though only the boxed prim is
@@ -897,8 +897,8 @@ boxed ops:
    (the `forall a` slot / the `__ArrayBuf a` argument) PRE-erasure and feeds its
    whnf head to `Repr.scalarRep`. Open: the exact spine position to read for each
    of `newArray`/`arrayRead`/`arrayWrite`, and confirming the type survives in
-   the Core term at that point (it must be read before `eraseQ0Args` rewrites it
-   to a `CSort` placeholder). `repSelect` already does the analogous telescope
+   the KCore term at that point (it must be read before KBackendIR lowering
+   omits the erased slot). `repSelect` already does the analogous telescope
    read; the array case is the single-type projection — but the precise
    plumbing is the first thing to settle in Stage H.
 8. **Types whose uniform-scalar-ness is non-obvious (§5.3.2).** `Repr.scalarRep`
@@ -932,9 +932,10 @@ boxed ops:
 - `src/Kappa/Backend/Repr.hs` — `Rep`, `scalarRep`, `primScalarRep`, and
   `repSelect`, which are the representation authorities the array call-site
   specializer consults.
-- `src/Kappa/Backend/C.hs` — `boxScalar`/`unboxScalar`, scalar planning,
-  `erasedSpinePositionsP`/`eraseQ0ArgsP`, scalar workers, primitive
-  registration, and do/action lowering for explicit mutable operations.
+- `src/Kappa/Backend/IR.hs` / `src/Kappa/Backend/C.hs` — KBackendIR erasure over
+  `Repr.erasedSpinePositions`, plus `boxScalar`/`unboxScalar`, scalar planning,
+  scalar workers, primitive registration, and do/action lowering for explicit
+  mutable operations.
 - `src/Kappa/Backend/LLVM.hs` — function scalar workers, including the `kwi_` /
   `kwd_` unboxed SSA paths the array scalar fast path would feed.
 - `docs/Spec.md` — §12.2/§12.2.6/§12.2.7 (quantities and linear

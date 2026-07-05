@@ -2,20 +2,21 @@
 
 Status: **historical S1 COMPLETE** (`71e6639`→`b26ef7c`; conformance 1916/0, parity 121/0; the full
 ownership-analysis layer was observe-only and Boehm untouched at this stage). Later stages have since landed:
-S2 consumes this metadata for dup/drop/drop-site emission, and S3.4 makes the C/runtime path RC-on by default
-with free-on-zero for the conservative freeable partition. This document records the S1 design constraints; use
-[PERCEUS-S3-PLAN.md](PERCEUS-S3-PLAN.md) and [ROADMAP.md](../../ROADMAP.md) for current runtime status.
+S2 consumes this metadata for dup/drop/drop-site emission, S3.4 makes the C/runtime path RC-on by default,
+S4 adds counted shared RC, and S5.A moves native emission to node-local KBackendIR ownership metadata. This
+document records the S1 design constraints; use [PERCEUS-S5-PLAN.md](PERCEUS-S5-PLAN.md) and
+[ROADMAP.md](../../ROADMAP.md) for current runtime/backend status.
 Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) (the arc) — this is the detailed S1 blueprint.
 
 ## The framing that drives every decision
 
 Three findings (from a spec-first scoping pass) reshape the naive reading:
 
-1. **There is no distinct `KBackendIR` datatype.** `Term` (`src/Kappa/Core.hs:103`) *is* the KCore, and the
+1. **Historical S1 premise: there was no distinct `KBackendIR` datatype.** `Term` (`src/Kappa/Core.hs:103`) *is* the KCore, and the
    backends lower it directly. Per §34.3's "observationally equivalent" clause, "thread onto KBackendIR" =
    **a side-table keyed by Core node/binder identity that the backend reads** — exactly the §31.2
    mandatory-erasure audit-trail shape (Spec.md:34680, "keyed by KCore node identity, binder identity") —
-   **not** a parallel IR.
+   **not** a parallel IR. S5.A supersedes this premise for native emission with a separate KBackendIR tree.
 2. **The owned/borrowed *parameter* convention is already in the IR.** `CPi !Icit !Q !Bool …`
    (`Core.hs:113`) carries the quantity `Q` *and* the borrow `Bool`; `CLam`/`CLet` carry `Q`.
    `Usage.coreFnParams` (`Usage.hs:1901`) reconstructs per-param `(quantity, borrow)`, and
