@@ -194,11 +194,19 @@ reuse itself. Three items were explicitly deferred at the S5.A hand-off and are 
    or non-allocating, and compare the validated boxed footprint before reusing a cell. The current C/native
    first site now does this for direct match-local constructor rebuilds; generalized credit threading still
    has to reuse the same node facts rather than re-sniffing tags or arity.
-2. **First reuse site vs generalized reuse.** B0/B1 now have runtime primitives (`kdrop_reuse_ctor` /
-   `kreuse_ctor`) and one conservative C/native pass site: an unguarded S2.3 match-destructure drop paired
-   with a direct same-size constructor allocation in the same arm. That is real reuse and is gated by
-   `perceus-s5-reuse-direct` plus the runtime primitive harness. The broader rbtree/list-map zero-allocation
-   win still requires generalized reuse-credit threading and B2 drop specialization / dup-drop fusion.
+2. **First reuse sites vs generalized reuse.** B0/B1 now have runtime primitives (`kdrop_reuse_ctor` /
+   `kreuse_ctor`, plus the fused/early-token helpers) and conservative C/native pass sites: an unguarded
+   S2.3 match-destructure drop paired with a direct same-size constructor allocation in the same arm; moved
+   constructor fields that eliminate the old dup/drop pair; the boxed recursive list-map shape where a
+   unique cons cell moves its payload/tail through the arm before being rewritten; a rbtree-shaped recursive
+   n-ary node rebuild; and the rbtree-insert path-copying shape where owned path cells transfer through
+   direct worker calls into same-frame reuse. These are real reuse and are gated by
+   `perceus-s5-reuse-direct`, `perceus-s5-reuse-move`, `s5_listmap_reuse`, `s5_rbtree_reuse`,
+   `s5_rbtree_insert_reuse`, and the runtime primitive harness. The literal Koka-style
+   rbtree-insert-vs-`std::map` speed comparison is carried as a **tracked report**, not an S5.B acceptance
+   gate: the allocation/reuse gates prove the mechanism; *beating* `std::map` additionally needs the unboxed
+   value representation (per node it must retire the `kctor_arg`/`kas_int`/compare-prim overhead — see §4) and
+   is deferred to the representation/unboxing program. FBIP alone reaches zero-alloc but ≈1.3× slower today.
 3. **Residual physical R-path cleanup (non-blocking).** Native value emission is fully off the old path-keyed
    bridge — `C.hs`/`LLVM.hs` read no `csOwnership`/`OwnInfo`/`biPath`. But the *producer*, `Ownership.hs`'s
    `BinderId { biPath :: [Int] }`, is still structurally path-keyed, and the KBackendIR lowering bridges
@@ -271,9 +279,21 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 3. **ThreadSanitizer (TSan) — the S4 concurrency gate continues.** Reuse composes with the biased split;
    shared cells are never reused, so there is no new data-race surface — the existing TSan run over the
    concurrency corpus (fork/promise/STM/atomic/fiber-ref) must stay clean.
-4. **The rbtree payoff (the whole point).** RC-DESIGN §3's proof target: Koka's rbtree insert ≈ 19% faster
-   than hand-tuned C++ `std::map` with FBIP. Add an rbtree/list-map benchmark; gate on the **alloc reduction**
-   (unique k-field rebuild ⇒ 0 alloc) and the speedup.
+4. **The reuse mechanism is the S5.B gate; the `std::map` speed target is representation-gated.** RC-DESIGN
+   §3's headline is Koka's rbtree insert ≈ 19% faster than hand-tuned C++ `std::map` — but that is Koka's
+   result *with its full unboxed value representation*, not FBIP alone. On Kappa's current uniform-boxed
+   `KValue` representation, FBIP removes **allocation** but every node visit still pays `kctor_arg` field
+   dispatch + `kas_int` unboxing + a comparison prim-call, so the tree loop cannot yet match `std::map`'s
+   inline-`int` / fixed-offset-load loop. Empirically, after FBIP **plus some additional unboxing** the insert
+   fixture is **zero-allocation but ≈1.3× slower** than `std::map` — the residual is boxing/dispatch, a
+   *different lever* (the representation / unboxing / layout program, coupled with the LLVM backend), which no
+   reuse pass can close. **S5.B's hard gate is therefore the mechanism**: boxed list-map, rbtree-shaped
+   recursive rebuilds, and rbtree insert must show positive reuse counts, RC-on allocation reduction,
+   poison/TSan cleanliness, and byte-identical output. The literal cross-language `std::map` speed comparison
+   is **carried as a tracked report**, not an acceptance gate: a reuse-proven run that is still slower than
+   `std::map` is the *expected* state until unboxing lands, **not** an S5.B blocker. **Koka's ≈19% figure is
+   likely out of reach for now without more unboxing**; that target moves to the representation program's
+   acceptance, not FBIP's.
 5. Conformance / parity / underflow-clean through both phases.
 
 ## 5. Risks
@@ -309,11 +329,11 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 | **S5.A2b** | define `data KBackendIR` (separate tree; erased positions omitted; ownership/rep as node fields); port `C.hs`/`LLVM.hs` to consume it | real tree + fail-closed validator + main native emitter consumption landed; byte-identical; §34.3.3 legality green |
 | **S5.A2c** | delete the scaffold: `bbTerm`, `[Bool]` masks, `bbNodeIds`/`boiCompat*`/`boiMissing*`, the path-keyed ownership bridge from native emission | wrapper scaffold is gone; KBackendIR lowering no longer imports `PathScheme` or reattaches `oiBranchDropSites`; legacy `Ownership.hs` remains observe/cross-check only |
 | **S5.A3** | representation metadata (ctor type, packing class, field reps, validated boxed-footprint metadata) on KBackendIR nodes | ctor layout facts are carried and validated on ctor/match nodes; same-size reuse-site discrimination remains Phase B |
-| **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | landed for boxed constructor cells as `kdrop_reuse_ctor` / `kreuse_ctor`; runtime harness covers unique reuse, aliased/shared rejection, arity mismatch, and packed-immediate fallback |
-| **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | initial C/native direct-arm site landed and is gated; generalized rbtree/list-map reuse-credit threading remains |
-| **S5.B2** | drop specialization + dup/drop fusion | RC ops vanish on the statically-unique path |
-| **S5.B3** | the rbtree perf gate + poison/TSan over the corpus | the ≈19%-vs-`std::map` target; UAF/race clean |
-| **S5.B4** *(cleanup, non-blocking)* | finish the physical R-path retirement (§2.0 item 3): re-key `Ownership.hs` off `biPath` or delete the residual legacy-ownership reads in non-emission planning/audit/dump paths | no structurally path-keyed producer remains; `biPath` is read nowhere; byte-identical |
+| **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | landed for boxed constructor cells as `kdrop_reuse_ctor` / `kreuse_ctor` plus fused/early-token helpers; runtime harness covers unique reuse, aliased/shared rejection, arity mismatch, packed-immediate fallback, moved-field fallback, and reuse counting |
+| **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | C/native direct-arm site landed and is gated; reuse remains restricted to direct same-arm constructor rebuilds |
+| **S5.B2** | drop specialization + dup/drop fusion | landed for direct moved constructor fields and for early-token unique branches where consumed old fields are moved through the arm; unproven/fallback paths keep the conservative dup/drop sequence |
+| **S5.B3** | the reuse perf gate + poison/TSan over the corpus | **acceptance:** list-map, rbtree-shaped n-ary rebuild, and rbtree insert reuse gated with poison, RC-on==RC-off output, positive reuse counts, and RC-on allocation reduction. **Tracked report (NOT acceptance):** the ≈19%-vs-`std::map` comparison — representation-gated (FBIP reaches zero-alloc but ≈1.3× slower today; beating `std::map` needs the unboxing program, see §4). Koka's ≈19% is likely out of reach without more unboxing and moves to the representation program's gate |
+| **S5.B4** *(cleanup, non-blocking)* | finish the physical R-path retirement (§2.0 item 3): re-key `Ownership.hs` off `biPath` or delete the residual legacy-ownership reads in non-emission planning/audit/dump paths | native emission remains off the path-keyed bridge; physical producer cleanup is complete only when residual `biPath`/legacy ownership reads are gone; byte-identical |
 
 Ordering rationale: Phase A must precede Phase B (the reuse pass reads typed ctor sizes + stable ownership);
 within A, the cheap high-value relief (A0/A1) lands first; within B, the runtime primitive + first A3 consumer
