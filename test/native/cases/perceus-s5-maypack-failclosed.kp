@@ -1,0 +1,20 @@
+-- Perceus S5.B fail-closed anchor: MayPack constructors have a boxed fallback
+-- footprint, but they are not statically guaranteed boxed cells. The reuse
+-- pass must not route this rebuild through kdrop_reuse_ctor_alloc/kreuse_ctor.
+module main
+
+data IntBox : Type =
+    MkIntBox Int
+
+bump : Int -> IntBox
+let bump seed =
+    match MkIntBox seed
+    case MkIntBox n -> MkIntBox (addInt n 1)
+
+read : IntBox -> Int
+let read b =
+    match b
+    case MkIntBox n -> n
+
+main : UIO Unit
+let main = printlnString (showInt (read (bump 41)))
