@@ -1,6 +1,6 @@
 # Perceus Stage S5 — Implementation Plan (KCore/KBackendIR split → drop-guided FBIP reuse)
 
-Status: **S5.A landed for native emission; S5.B native FBIP reuse is implemented in this changeset and pending final review.** S0→S4 have landed and been independently reviewed sound: precise RC with
+Status: **S5.A and S5.B landed for native C emission; S5.B is closed out with the §6 gates green.** S0→S4 have landed and been independently reviewed sound: precise RC with
 free-on-zero is default-on, with the biased fast/slow split + shared-object reclamation (TSan/UAF-clean,
 25–45% thread-local RC perf recovered). Phase A now has the native-codegen split the plan required:
 erasure classification has a shared `Repr` authority; the codegen-only `quote∘force` kind-domain helper is
@@ -28,6 +28,13 @@ literal `std::map` speed target is representation-gated (§4). **Decision
 (recorded):** S5 is done **split-first** — the KCore/KBackendIR split lands as Phase A, then the FBIP reuse
 pass as Phase B on the typed IR. Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) §3 (the reuse
 pipeline) and [KCORE-KBACKENDIR-SCOPING.md](../../docs/KCORE-KBACKENDIR-SCOPING.md) (the Phase A design).
+S5.B close-out evidence: conformance `2644/0`; full native suite green; LLVM parity `163/0` with every
+deterministic S5 reuse fixture wired in; runtime `poison-rc` and `tsan-rc` both include the S5 primitive
+harness; reuse-on == RC-on/reuse-off is gated with `KAPPA_PERCEUS_REUSE=0`; and the B3 fixtures report
+positive reuse only when enabled plus RC-on allocation reduction: list-map `20000` reuses / `1278288B`
+saved, rbtree rebuild `32767` reuses / `3145680B` saved, and rbtree insert `139631` reuses / `13401120B`
+saved. The tracked `std::map` report remains visible at about `1.4x` slower pending representation/unboxing
+work. Generalized cross-arm/frame reuse-credit threading remains the explicit open/report-only B5 increment.
 
 ## 0. Why split-first (the decision)
 
@@ -209,7 +216,7 @@ reuse itself. Three items were explicitly deferred at the S5.A hand-off and are 
    gate: the allocation/reuse gates prove the mechanism; *beating* `std::map` additionally needs the unboxed
    value representation and tighter layout/scalar paths for the residual boxed dispatch overhead (see §4) and
    is deferred to the representation/unboxing program. FBIP makes the proven rebuild operation allocation-free,
-   but the current boxed benchmark fixture still has setup/result allocation and reports ≈1.3× slower today.
+   but the current boxed benchmark fixture still has setup/result allocation and reports ≈1.3-1.4× slower today.
 3. **Physical R-path cleanup.** Native value emission was already fully off the old path-keyed bridge —
    `C.hs`/`LLVM.hs` read no `csOwnership`/`OwnInfo` side table when attaching ownership facts. Phase B now
    also physically retires the leftover structural-path ownership producer: `Ownership.hs` uses deterministic
@@ -278,7 +285,10 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
    S5, a reuse of a *non-unique* cell would overwrite a cell another reference still reads → that read traps.
    Build the corpus RC-on with `KAPPA_POISON=1`; the `rc==1` guard + the shared-bit exclusion + the frame
    discipline must keep it clean.
-2. **Byte-identical output** — reuse must not change behavior: reuse-on == reuse-off, and RC-on == RC-off.
+2. **Byte-identical output** — reuse must not change behavior. The C backend has a reuse-only kill switch,
+   `KAPPA_PERCEUS_REUSE=0`, that leaves `KAPPA_PERCEUS_RC=true` maintenance and validation active while
+   disabling only S5 FBIP rewrites. Gates therefore compare reuse-on == RC-on/reuse-off and still keep the
+   explicit RC-on == RC-off behavioral baseline.
 3. **ThreadSanitizer (TSan) — the S4 concurrency gate continues.** Reuse composes with the biased split;
    shared cells are never reused, so there is no new data-race surface — the existing TSan run over the
    concurrency corpus (fork/promise/STM/atomic/fiber-ref) must stay clean.
@@ -288,7 +298,7 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
    `KValue` representation, FBIP removes **allocation** but the tree loop still pays boxed-value and layout
    overhead that `std::map`'s inline-`int` / fixed-offset-load loop avoids (even where the native backend now
    uses direct proven slots and fast integer compares). Empirically, after FBIP **plus some additional
-   unboxing** the insert fixture's hot reuse path is **allocation-free but ≈1.3× slower** than `std::map` — the residual is boxing/dispatch, a
+   unboxing** the insert fixture's hot reuse path is **allocation-free but ≈1.3-1.4× slower** than `std::map` — the residual is boxing/dispatch, a
    *different lever* (the representation / unboxing / layout program, coupled with the LLVM backend), which no
    reuse pass can close. **S5.B's hard gate is therefore the mechanism**: boxed list-map, rbtree-shaped
    recursive rebuilds, and rbtree insert must show positive reuse counts, RC-on allocation reduction,
@@ -335,13 +345,15 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 | **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | landed for boxed constructor cells as `kdrop_reuse_ctor` / `kreuse_ctor` plus fused/early-token helpers; runtime harness covers unique reuse, aliased/shared rejection, arity mismatch, packed-immediate fallback, moved-field fallback, and reuse counting |
 | **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | C/native direct-arm site landed and is gated; reuse remains restricted to direct same-arm constructor rebuilds |
 | **S5.B2** | drop specialization + dup/drop fusion | landed for direct moved constructor fields and for early-token unique branches where consumed old fields are moved through the arm; unproven/fallback paths keep the conservative dup/drop sequence |
-| **S5.B3** | the reuse perf gate + poison/TSan over the corpus | **acceptance:** list-map, rbtree-shaped n-ary rebuild, and rbtree insert reuse gated with poison, RC-on==RC-off output, positive reuse counts, and RC-on allocation reduction. **Tracked report (NOT acceptance):** the ≈19%-vs-`std::map` comparison — representation-gated (FBIP makes the proven rebuilds allocation-free but the full boxed fixture remains ≈1.3× slower today; beating `std::map` needs the unboxing program, see §4). Koka's ≈19% is likely out of reach without more unboxing and moves to the representation program's gate |
+| **S5.B3** | the reuse perf gate + poison/TSan over the corpus | **acceptance:** list-map, rbtree-shaped n-ary rebuild, and rbtree insert reuse gated with poison, reuse-on == RC-on/reuse-off output via `KAPPA_PERCEUS_REUSE=0`, RC-on == RC-off output, positive reuse counts only with reuse enabled, zero reuse counts with the reuse kill switch, and allocation reduction against the RC-on/reuse-off baseline. The runtime `poison-rc` and `tsan-rc` corpora include the S5 reuse primitive harness, so those lanes exercise reuse active. **Tracked report (NOT acceptance):** the ≈19%-vs-`std::map` comparison — representation-gated (FBIP makes the proven rebuilds allocation-free but the full boxed fixture remains ≈1.3-1.4× slower today; beating `std::map` needs the unboxing program, see §4). Koka's ≈19% is likely out of reach without more unboxing and moves to the representation program's gate |
 | **S5.B4** | finish the physical R-path retirement (§2.0 item 3): re-key the observe-only `Ownership.hs` producer away from structural paths and delete the unused child-position module | landed: native emission remains off the path-keyed bridge; `Ownership.hs` binders/uses/branch-drop sites are owner-local ordinals; no residual structural-path producer remains; byte-identical |
+| **S5.B5** | **open/report-only:** generalized reuse-credit threading across arms/frames beyond the direct same-arm / early-token sites | explicit open increment. Current native reuse is intentionally restricted to direct same-arm constructor rebuilds plus the proven early-token moved-field/list/rbtree/insert shapes. Future generalized credit threading must read `CtorLayoutInfo` from KBackendIR node facts, fail closed on missing metadata, and must not re-sniff runtime tag/arity. The report-only gate keeps this row visible; it is not reclassified as done or out of scope. |
 
 Ordering rationale: Phase A must precede Phase B (the reuse pass reads typed ctor sizes + stable ownership);
 within A, the cheap high-value relief (A0/A1) lands first; within B, the runtime primitive + first A3 consumer
 and a single proven site (B0/B1) precede the general specialization (B2) and the perf gate (B3). B4 is now
-done, so future reuse-token work has no structural-path ownership producer to accidentally reattach.
+done, so future reuse-token work has no structural-path ownership producer to accidentally reattach. B5 remains
+the visible report-only follow-up for generalized credit threading beyond the conservative sites S5.B ships.
 
 ## Critical files
 
@@ -356,7 +368,8 @@ done, so future reuse-token work has no structural-path ownership producer to ac
   counting/freeing disabled and must grow ownership maintenance before it can participate in S5 reuse.
 - `runtime/kappart.h` / `runtime/value.c` — `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; the
   in-place ctor rebuild.
-- `test/native/run-native-tests.sh` — the rbtree perf gate; reuse-on==reuse-off; the poison/TSan corpus.
+- `test/native/run-native-tests.sh` — the rbtree perf gate; reuse-on==RC-on/reuse-off via
+  `KAPPA_PERCEUS_REUSE=0`; RC-on==RC-off; the poison/TSan corpus.
 
 ## Spec anchors
 

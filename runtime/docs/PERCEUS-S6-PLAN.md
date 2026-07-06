@@ -1,8 +1,13 @@
 # Perceus Stage S6 — Implementation Plan (opt-in Borrowing → inferred FIP)
 
 Status: **Planned.** S0→S4 landed and reviewed sound (precise RC, free-on-zero, biased fast/slow split +
-shared reclamation). S5 is landing: the KCore/KBackendIR split (Phase A) and drop-guided **FBIP reuse**
-(Phase B) — `drop_reuse`/`reuse_alloc`, the reuse pass, allocation-free rebuilds on the rbtree/list-map fixtures.
+shared reclamation). S5 has landed for the native C path: the KCore/KBackendIR split landed (Phase A, commit
+`0039ffa`) and drop-guided **FBIP reuse** (Phase B) is closed out with green §6 gates — the runtime primitives
+(`kdrop_reuse_ctor`/`kreuse_ctor` + the fused/early-token helpers), the reuse pass, allocation-free rebuilds
+on the rbtree/list-map fixtures, `KAPPA_PERCEUS_REUSE=0` reuse-on/off differentials, and the S5.B4 physical
+R-path retirement (`Ownership.hs` is observe-only, keyed by owner-local ordinals; the child-position module is
+deleted). Generalized cross-arm/frame reuse-credit threading remains the explicit S5.B5 report-only increment;
+S6 builds on the landed guarded reuse machinery rather than replacing that open S5 follow-up.
 S6 is the next and **last major** Perceus rung before the "Later" work (precise stacks + cycles). It has two
 threads: **(1) opt-in Borrowing** — stop paying reference-counting on read-only accesses — and **(2) inferred
 FIP** — statically prove where reuse always succeeds, elide the runtime uniqueness guard, and *derive* (never
@@ -27,10 +32,12 @@ parameter — written `&x` in a signature, e.g. `readSig : (& s : Sig) -> Int` �
 callee reads through it but never consumes it, and the **caller** keeps ownership and performs the single
 `drop`. A borrowed access therefore needs **no `dup` and no `drop`** — it is a bare pointer read. This is
 *literally* Perceus's owned-vs-borrowed calling convention, and Kappa already has it: `&` is the
-non-consuming quantity (§12.3), the elaborator computes it, and S5 already carried it onto the backend IR
-(`BinderOwn.boBorrowed`, the `Borrowed` use-kind — a borrowed use is read-only and never a last-use). So S6's
-borrowing thread is mostly about *consuming* facts that already exist, plus verifying the borrow doesn't
-escape.
+non-consuming quantity (§12.3), the elaborator computes it, and S5 already carried it **onto KBackendIR
+nodes** — a binder node's `bbBinderOwn` carries `boBorrowed`, a use node's `buUseKind` can be `Borrowed`
+(read-only, never a last-use), and the call convention already distinguishes `ArgBorrowed`. (Post-S5.B4 the
+legacy `Ownership.hs` table is observe-only; the facts S6 consumes are the node-local ones on the lowered
+tree.) So S6's borrowing thread is mostly about *consuming* facts that already exist, plus verifying the
+borrow doesn't escape.
 
 **What "FIP" is.** S5's FBIP reuse is *opportunistic*: `drop_reuse(x)` checks `x`'s reference count is
 exactly `1` **at run time** and falls back to `malloc`/`free` if it is not. Where the compiler can *prove* a
@@ -50,7 +57,7 @@ reuse guard until the guarded reuse exists.
 **Honest scope (read this before expecting speed).** S6 removes *reference-counting* overhead — the `dup`/
 `drop` traffic on reads (borrowing) and the `rc==1` branch on proven-unique reuse (FIP). It does **not** touch
 the *representation* overhead: on Kappa's uniform-boxed `KValue`, the tree loop still pays boxed-value and
-layout/scalar dispatch costs that keep the S5 rbtree fixture ≈1.3× slower than `std::map` (see
+layout/scalar dispatch costs that keep the S5 rbtree fixture ≈1.3-1.4× slower than `std::map` (see
 PERCEUS-S5-PLAN.md §4). Closing the gap to C/Rust/`std::map` is the **representation/
 unboxing program** (immediate tagging + struct-packed layout, coupled with the LLVM backend), a separate arc.
 S6 and unboxing are complementary: S6 removes RC ops and the uniqueness branch; unboxing removes the boxing/
@@ -63,12 +70,15 @@ earlier Perceus stages; the *measurable* win is a drop in emitted `dup`/`drop` c
 
 - **S6.A0 — RC-elide borrowed uses.** *The problem:* today a borrowed parameter is still reference-counted as
   if owned — the callee may `dup` a read and the flow inserts `drop`s — pure waste, because the caller owns
-  the value and drops it once. *The fix:* in the RC emission (`C.hs`/`LLVM.hs`, driven by the KBackendIR
-  ownership node-facts), a `Borrowed` use emits **no `dup`**, and a borrowed binder carries **no `drop`
-  obligation** (the owner's single `drop` at the call site is authoritative). A borrowed argument is passed as
-  a bare, non-owned pointer. *Gate:* RC-on == RC-off; byte-identical output; **strictly fewer `dup`/`drop`
-  ops** on the borrow corpus (the win); poison-clean; no leak (the owner still drops exactly once) and no
-  double-free (the borrower drops never).
+  the value and drops it once. *The fix:* in the RC emission (driven by the KBackendIR ownership node-facts),
+  a `Borrowed` use emits **no `dup`**, and a borrowed binder carries **no `drop` obligation** (the owner's
+  single `drop` at the call site is authoritative). A borrowed argument is passed as a bare, non-owned
+  pointer. **Backend scope:** this lands on the **C backend first** — LLVM still keeps runtime RC
+  counting/freeing off entirely (`gsRcRuntimeEnabled = False`; it emits no `kdup`/`kdrop` to elide), so LLVM
+  participates only after the orthogonal LLVM-RC port, which must then read the same `ArgBorrowed`/`Borrowed`
+  node facts rather than re-derive them. *Gate:* RC-on == RC-off; byte-identical output; **strictly fewer
+  `dup`/`drop` ops** on the borrow corpus (the win); poison-clean; no leak (the owner still drops exactly
+  once) and no double-free (the borrower drops never).
 - **S6.A1 — borrow-escape verification (fail-closed).** *The problem:* the RC-elision in A0 is sound **only**
   if a borrowed value never outlives the borrow — it must not be stored in a heap cell that survives the call,
   returned as owned, captured by an escaping closure, or handed to a callee that expects to consume it. If it
@@ -105,12 +115,17 @@ When all four hold, the reuse *cannot fail at run time*, so the runtime `rc==1` 
 - **S6.B0 — the static-uniqueness analysis.** A dataflow pass over KBackendIR that evaluates the conjunction
   above at every S5 reuse candidate, from the S5 ownership node-facts + the `ucHi` usage intervals. It is
   **conservative by construction**: anything unknown ⇒ *not* proven unique ⇒ keep the S5 runtime-guarded
-  reuse. *Gate:* the analysis runs and is *sound* — it never claims uniqueness where the runtime `rc==1` would
-  be false. This is validated by keeping the runtime check as a **poison-mode debug assert** on claimed-unique
-  sites (§3): a static-unique site whose runtime count is not `1` traps deterministically.
+  reuse. **The seed already exists:** S5.B2's *early-token unique branches* (moved ctor fields whose dup/drop
+  pairs are fused; the branch that is the only path allowed to use direct boxed slots) are the first instance
+  of compiler-proven move-through — B0 generalizes that ad-hoc discipline into the explicit four-condition
+  proof, rather than inventing a new analysis beside it. *Gate:* the analysis runs and is *sound* — it never
+  claims uniqueness where the runtime `rc==1` would be false. This is validated by keeping the runtime check
+  as a **poison-mode debug assert** on claimed-unique sites (§3): a static-unique site whose runtime count is
+  not `1` traps deterministically.
 - **S6.B1 — guard elision (static reuse).** Where B0 proves uniqueness, lower the drop+alloc pair to
   `reuse_in_place(x, C, fields)` — a header rewrite that overwrites the cell's tag and fields **with no `rc==1`
-  branch and no shared check** (contrast S5's `drop_reuse`, which branches). *Gate:* byte-identical;
+  branch and no shared check** (contrast S5's `kdrop_reuse_ctor`, which tests uniqueness at run time and falls
+  back to `kctor`). *Gate:* byte-identical;
   RC-on == RC-off; the uniqueness branch is **provably gone** on proven paths (a measurable instruction-count
   drop); **poison-clean is the primary safety oracle** — a wrong proof is a UAF that poison traps; a perf
   improvement on the linear reuse path.
@@ -194,7 +209,7 @@ When all four hold, the reuse *cannot fail at run time*, so the runtime `rc==1` 
 
 | sub | what | gate |
 |---|---|---|
-| **S6.A0** | RC-elide borrowed uses (no `dup`/`drop` on `Borrowed`; borrowed arg passed bare) | RC-on==RC-off; byte-identical; strictly fewer `dup`/`drop` on the borrow corpus; poison-clean; no leak/double-free |
+| **S6.A0** | RC-elide borrowed uses (no `dup`/`drop` on `Borrowed`; borrowed arg passed bare) — C backend first; LLVM joins after the LLVM-RC port | RC-on==RC-off; byte-identical; strictly fewer `dup`/`drop` on the borrow corpus; poison-clean; no leak/double-free |
 | **S6.A1** | borrow-escape fail-closed KBackendIR verifier | green on corpus; a synthetic borrowed escape is rejected at compile time |
 | **S6.A2** | borrow across the IO/`do`/call boundary (close D6) | RC-op reduction on IO/borrow paths; borrow-on==borrow-off; TSan/poison clean |
 | **S6.B0** | static-uniqueness analysis over KBackendIR (`Q1` ∧ `ucHi==1` ∧ static-non-shared ∧ non-escaping) | conservative + **sound**: never claims uniqueness where runtime `rc==1` is false (poison-assert validated) |
@@ -212,14 +227,19 @@ guard on a reuse that must already exist).
 
 - `src/Kappa/Usage.hs` — the used-once usage intervals (`UseCount`/`ucHi`); the `ucHi == 1` precursor B0
   consumes.
-- `src/Kappa/Ownership.hs` — `BinderOwn.boBorrowed` and the `Borrowed` use-kind (already computed); the
-  owned/borrowed/shared lattice the RC-elision (A) and uniqueness proof (B) read.
-- `src/Kappa/Backend/IR.hs` — the static-uniqueness dataflow (B0) and the inferred-FIP annotation (B3) as
-  passes over KBackendIR node-facts; the borrow-escape verifier (A1) as a fail-closed KBackendIR check.
-- `src/Kappa/Backend/C.hs` / `LLVM.hs` — consume the borrow facts to elide `dup`/`drop` (A); emit
-  `reuse_in_place` on proven-unique sites (B1).
-- `runtime/kappart.h` / `runtime/value.c` — `reuse_in_place` (the guard-free in-place rewrite) + the
-  poison-mode `rc==1` debug assert on static-unique sites.
+- `src/Kappa/Backend/IR.hs` — **the primary read surface**: the borrow facts live here as node fields
+  (`bbBinderOwn`/`boBorrowed`, `buUseKind == Borrowed`, `plsBorrowed`, the `ArgBorrowed` call convention);
+  plus the static-uniqueness dataflow (B0) and the inferred-FIP annotation (B3) as passes over those
+  node-facts; the borrow-escape verifier (A1) as a fail-closed KBackendIR check.
+- `src/Kappa/Ownership.hs` — defines the `BinderOwn`/`UseKind` lattice types, but post-S5.B4 the table itself
+  is **observe-only** (dump/cross-check, owner-local ordinals) — S6 must NOT reattach it; all consumption goes
+  through the KBackendIR node facts above.
+- `src/Kappa/Backend/C.hs` — consume the borrow facts to elide `dup`/`drop` (A); emit `reuse_in_place` on
+  proven-unique sites (B1). `LLVM.hs` joins only after the LLVM-RC port (`gsRcRuntimeEnabled` is still
+  `False` — it emits no RC ops to elide yet).
+- `runtime/kappart.h` / `runtime/value.c` — `reuse_in_place` (the guard-free in-place rewrite, beside S5's
+  guarded `kdrop_reuse_ctor`/`kreuse_ctor` family) + the poison-mode `rc==1` debug assert on static-unique
+  sites.
 - `test/native/run-native-tests.sh` — the RC-op-count reduction gate (A/B); the zero-allocation FIP fixtures
   (B2); the borrow/FIP poison + TSan corpus.
 
