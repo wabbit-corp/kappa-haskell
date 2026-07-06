@@ -248,7 +248,8 @@ The collector contract (interior-pointers OFF, 8-byte alignment) is already enfo
   usage intervals (`ucHi == 1`, `Usage.hs`) — **NOT** from `fip`/`fbip` surface keywords. No annotation; the
   compiler infers which functions are fully-in-place. A natural fit with Kappa's quantity/erasure machinery,
   and the erasure-aware runtime layout (S5.A) is on its soundness path (same-size reuse must be over
-  runtime-kept fields).
+  runtime-kept fields). Plan: [PERCEUS-S6-PLAN.md](PERCEUS-S6-PLAN.md) (Phase A opt-in borrowing → Phase B
+  inferred FIP: static uniqueness → guard elision → zero-alloc knowledge).
 - **Later — precise stacks + cycles.** Precise roots in the 8 MiB pthread fiber stacks (stack maps /
   shadow stack) or keep them as conservative root regions; the mutable-ref + lazy-node cycle collector.
 
