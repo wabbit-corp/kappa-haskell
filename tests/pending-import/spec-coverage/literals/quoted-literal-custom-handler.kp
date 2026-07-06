@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaEscape "\\u0041|A|byte"
+--! assertEval viaWide "λ|λ|nobyte"
+
+-- §6.5: a prefixed quoted literal elaborates through the prefix's
+-- QuotedLiteralMacro handler, which receives a QuotedLiteral payload:
+-- sourceBody is the source text BEFORE escape decoding, text is the
+-- decoded text view when valid scalar text, bytes is present only
+-- when every unit contributes a single byte (a non-ASCII scalar such
+-- as λ has no one-byte view). The handler reifies all three.
+
+import std.deriving.shape.*
+
+textView : Option String -> String
+let textView o =
+    match o
+    case None -> "notext"
+    case Some s -> s
+
+byteView : Option Bytes -> String
+let byteView o =
+    match o
+    case None -> "nobyte"
+    case Some bs -> "byte"
+
+joinViews : String -> String -> String -> String
+let joinViews a b c =
+    stringAppend a (stringAppend "|" (stringAppend b (stringAppend "|" c)))
+
+instance QuotedLiteralMacro String =
+    let buildQuotedLiteral q =
+        match q
+        case QuotedLiteral src mtext mbytes -> stringSyntax (joinViews src (textView mtext) (byteView mbytes))
+
+probe : Elab (QuotedLiteralMacro String)
+let probe = pure (summon (QuotedLiteralMacro String))
+
+viaEscape : String
+let viaEscape = probe'\u0041'
+
+viaWide : String
+let viaWide = probe'λ'
+-- STATUS(a51e1bf): FAIL — E_UNSUPPORTED "this quoted-literal form is not supported": only the hardcoded g/b prefixes exist; the §6.5 QuotedLiteralMacro handler pipeline for user prefixes is unimplemented

@@ -1,0 +1,30 @@
+-- Spec: §10.1 (L8473-8474). In (0 p : P = e) the default e is checked at
+-- erased quantity, exactly as an explicitly supplied erased argument would
+-- be — so it may mention erased names. A default on an UNRESTRICTED
+-- parameter is runtime-relevant and must not consume an erased name.
+
+module main
+
+--! mode check
+
+-- POSITIVE: the default for the erased parameter 'seen' refers to the
+-- erased data-type parameter 'n'; at erased quantity this is permitted.
+data Wit (@0 n : Int) : Type =
+    MkWit (@0 seen : Int = n) (payload : Int)
+
+useWit : Wit 3
+let useWit = MkWit { payload = 10 }
+
+-- NEGATIVE: the default for the unrestricted parameter 'payload' is checked
+-- at runtime quantity, so it may not use the erased data parameter 'n'.
+data BadWit (@0 n : Int) : Type =
+    MkBadWit (payload : Int = n) --!! kappa.quantity.unsatisfied
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): FAIL — the erased-use violation in MkBadWit's default is
+-- not reported at the declaration (0 errors); the compiler only flags it when
+-- a call site instantiates the default (e.g. MkBadWit { }), whereas §10.1
+-- checks defaults in the declaration context (cf. the accepted
+-- constructor-defaults-negative-default-expression-checked.kp, which pins
+-- declaration-site TYPE errors).

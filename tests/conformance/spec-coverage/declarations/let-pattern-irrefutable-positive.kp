@@ -1,0 +1,52 @@
+module main
+
+-- §9.1.2: patterns irrefutable when well-typed — binder, wildcard,
+-- as-pattern, typed pattern, tuple, anonymous record patterns (bare form
+-- ignores extra fields per §17.2.1, `..` discards, `..rest` captures the
+-- residual), and a constructor pattern of a provably single-constructor
+-- type. All are accepted in plain `let` bindings.
+
+data Box : Type =
+    MkBox Int
+
+boxed : Box
+let boxed = MkBox 5
+
+singleCtor : Int
+let singleCtor =
+    let (MkBox inner) = boxed
+    in inner
+
+rec : (x : Int, y : Int)
+let rec = (x = 1, y = 2)
+
+bareIgnoresExtra : Int
+let bareIgnoresExtra =
+    let (x = a) = rec
+    in a
+
+dotsDiscard : Int
+let dotsDiscard =
+    let (x = a, ..) = rec
+    in a
+
+restCaptures : Int
+let restCaptures =
+    let (x = a, ..rest) = rec
+    in a + rest.y
+
+tupleAsTyped : Int
+let tupleAsTyped =
+    let
+        (p, q) = (3, 4)
+        whole@(r : Int) = p + q
+        _ = whole
+    in
+        r
+
+--! mode check
+--! assertNoErrors
+--! assertType singleCtor Int
+--! assertType restCaptures Int
+--! assertType tupleAsTyped Int
+-- STATUS(a51e1bf): PASS

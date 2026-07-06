@@ -1,0 +1,39 @@
+--! mode check
+--! assertDiagnostic error E_ROW_TAIL_QUANTITY_UNSATISFIED
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+--! assertErrorCount 2
+
+-- §13.2.7 (Spec.md L13251-L13334): row polymorphism preserves the tail
+-- exactly (no width subtyping). Forgetting the tail requires
+-- RecTailSatisfies r 0 (not spellable in v1, so dropping it is an
+-- error); an UNRESTRICTED receiver does not make a linear residual tail
+-- reusable — a caller whose tail holds a linear resource is rejected;
+-- borrowed receivers support read-only row-polymorphic access.
+module main
+
+data Token : Type =
+    Token
+
+-- POSITIVE: read-only access through a borrowed row-polymorphic receiver
+getName : forall (r : RecRow). (& rec : (name : String | r)) -> String
+let getName (@0 r : RecRow) (& rec : (name : String | r)) : String = rec.name
+
+-- NEGATIVE: consuming receiver, tail not transferred to the result —
+-- needs RecTailSatisfies r 0, which is unavailable
+forgetExtras : forall (r : RecRow). (1 rec : (name : String | r)) -> (name : String,)
+let forgetExtras (@0 r : RecRow) (1 rec : (name : String | r)) : (name : String,) =  --!! E_ROW_TAIL_QUANTITY_UNSATISFIED
+    (name = rec.name)
+
+-- unrestricted receiver duplicating the whole record (tail included):
+-- fine at the definition site, the tail obligation moves to call sites
+duplicate : forall (r : RecRow). (rec : (name : String | r)) -> ((name : String | r), (name : String | r))
+let duplicate (@0 r : RecRow) (rec : (name : String | r)) : ((name : String | r), (name : String | r)) =
+    (rec, rec)
+
+-- NEGATIVE: instantiating the tail with a LINEAR field cannot satisfy
+-- the receiver's unrestricted demand
+useLinearTail : (1 t : Token) -> ((name : String, 1 tok : Token), (name : String, 1 tok : Token))
+let useLinearTail (1 t : Token) : ((name : String, 1 tok : Token), (name : String, 1 tok : Token)) =
+    duplicate (name = "x", tok = t)     --!! E_QTT_LINEAR_OVERUSE
+
+-- STATUS(a51e1bf): PASS

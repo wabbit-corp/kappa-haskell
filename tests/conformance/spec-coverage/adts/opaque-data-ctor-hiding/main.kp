@@ -1,0 +1,15 @@
+module main
+
+-- §10.1 (L8390), §8.5.3: an opaque data type exports the type but not its
+-- constructors. The smart constructor works; direct construction must fail.
+import lib.(type Token, mk)
+
+-- POSITIVE: the type and the exported smart constructor are available.
+ok : Token
+let ok = mk 3
+
+-- NEGATIVE: MkToken is not exported, so it cannot be applied here.
+bad : Token
+let bad = MkToken 3 --!! kappa.name.unresolved
+
+-- STATUS(a51e1bf): PASS

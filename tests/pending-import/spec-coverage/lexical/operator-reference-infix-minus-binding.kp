@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probe 5
+
+-- §5.5.1: `(infix -)` denotes THE curried binary function associated
+-- with the in-scope infix fixity for `-` — i.e. exactly what a bare
+-- `(-)` denotes once the expected type's 2-ary arity disambiguates it
+-- (tests/conformance/fixity/bare-operator-references.kp pins that the
+-- bare form checks at Int -> Int -> Int, eta-inserting the §28.2.1
+-- proof obligation). The explicit form MUST therefore check at the
+-- same type.
+
+module main
+
+sub2 : Int -> Int -> Int
+let sub2 = (infix -)
+
+probe : Int
+let probe = sub2 9 4
+
+-- STATUS(a51e1bf): FAIL — (infix -) skips the eta-expansion/proof-insertion path that bare (-) gets, so it reports E_TYPE_EQUALITY_MISMATCH against Int -> Int -> Int (actual type keeps the subDefined proof argument)

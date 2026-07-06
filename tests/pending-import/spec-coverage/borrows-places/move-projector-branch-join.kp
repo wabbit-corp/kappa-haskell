@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_PATH_CONSUMED
+
+-- §12.4.2: in a consuming value-demanding position a projection call
+-- elaborates as MoveProjector, and the post-expression path state is
+-- the branchwise join — in v1 conservatively the UNION of consumed
+-- footprints per root. After moving `if which then t.left else
+-- t.right`, BOTH paths must be unavailable.
+module main
+
+data Token : Type =
+    Token
+
+type Pair = (1 left : Token, 1 right : Token)
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+projection eitherEnd (place this : Pair) (which : Bool) : Token =
+    if which then yield this.left else yield this.right
+
+bad : (1 t : Pair) -> Bool -> (Token, Token)
+let bad (1 t : Pair) (which : Bool) : (Token, Token) =
+    block
+        let first = eitherEnd t which
+        (first, takeToken t.right) --!! E_QTT_PATH_CONSUMED
+
+-- STATUS(a51e1bf): FAIL — compiler reports 0 errors: after a multi-yield move it leaves BOTH alternatives available (consuming t.left afterwards is accepted too, and no linear-drop fires), so the §12.4.2 branchwise-join/union post-state is not tracked. Same-root whole-record consume after a single-yield move IS caught (E_QTT_LINEAR_OVERUSE), so the gap is specific to per-path post-state of multi-yield moves.

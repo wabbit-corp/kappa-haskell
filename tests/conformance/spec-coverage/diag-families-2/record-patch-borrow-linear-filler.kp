@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+-- §12.3/§12.4 with §13.2.5: the implicit filler `c.tok` is a MOVE of a
+-- quantity-1 field out of a borrowed root, which a borrow never permits.
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- Combination (§13.2.5 record patch × §12.2/§12.3 quantities/borrows):
+-- patching a borrowed record may copy unrestricted omitted fields, but
+-- an omitted LINEAR field's implicit filler would consume the borrowed
+-- payload and MUST be rejected; supplying that field explicitly repairs
+-- the patch (positive half).
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Cell = (count : Int, 1 tok : Token)
+
+bad : (& c : Cell) -> Cell
+let bad c =
+    c.{ count = 1 }
+
+good : (& c : Cell) -> Cell
+let good c =
+    c.{ count = 1, tok = MkToken 5 }

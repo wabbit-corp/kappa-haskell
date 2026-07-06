@@ -1,0 +1,18 @@
+module main
+
+-- §4.4: legacy `assertTotal` is a compatibility alias for `assertTerminates`
+-- with IDENTICAL semantics: gated by the same `allow_assert_terminates`
+-- setting, it suppresses termination checking for acceptance only, does not
+-- change runtime semantics, and the accepted use is recorded in the §4.7
+-- audit ledger.
+slow : Integer -> Integer
+assertTotal let slow n = if eqInt n 0 then 0 else slow (subInt n 1)
+
+useSlow : Integer
+let useSlow = slow 3
+
+--! allow_assert_terminates
+--! assertNoErrors
+--! assertEval useSlow 0
+--! assertAuditLedger assertTotal
+-- STATUS(a51e1bf): PASS

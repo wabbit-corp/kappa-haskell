@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.2 (with §16.2.2): introduction of a `Need A` suspension requires
+-- `Shareable A` — memoization shares the cached value. With an instance the
+-- introduction is accepted; without one the introduction must be rejected
+-- (an undischarged Shareable obligation).
+module main
+
+data Shared : Type =
+    Shared
+
+instance Shareable Shared =
+
+data Unshared : Type =
+    Unshared
+
+takeNeedS : Need Shared -> Shared
+let takeNeedS (n : Need Shared) : Shared = force n
+
+takeNeedU : Need Unshared -> Unshared
+let takeNeedU (n : Need Unshared) : Unshared = force n
+
+-- POSITIVE: Need introduction (implicit suspension insertion at the call)
+-- for a Shareable payload.
+okIntro : Shared
+let okIntro = takeNeedS Shared
+
+-- NEGATIVE: Need introduction for a non-Shareable payload must be rejected.
+badIntro : Unshared
+let badIntro = takeNeedU Unshared                        --!! kappa.implicit.unsolved
+
+-- STATUS(a51e1bf): FAIL — compiler accepts the Need introduction for a non-Shareable payload (0 errors); the Shareable A obligation of §11.2 is not enforced

@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- §11.3.2: effect rows <[l : E, ...]> require unique labels; equality of
+-- effect rows is modulo permutation after normalization. The spec mandates
+-- rejection of a duplicate label but names no diagnostic family;
+-- kappa.effect.row-mismatch is the closest registered family.
+module main
+
+-- POSITIVE: permutation equality of closed effect rows.
+reorder : Int
+let reorder =
+    block
+        scoped effect A =
+            opA : Unit -> Int
+        scoped effect B =
+            opB : Unit -> Int
+        let comp : Eff <[A : A, B : B]> Int = pure 1
+        let comp2 : Eff <[B : B, A : A]> Int = comp
+        0
+
+-- NEGATIVE: duplicate labels in a single effect row must be rejected.
+dupRow : Int
+let dupRow =
+    block
+        scoped effect C =
+            opC : Unit -> Int
+        let bad : Eff <[C : C, C : C]> Int = pure 1      --!! kappa.effect.row-mismatch
+        0
+
+-- STATUS(a51e1bf): FAIL — duplicate labels in one effect row are accepted (0 errors); §11.3.2 label uniqueness is not enforced

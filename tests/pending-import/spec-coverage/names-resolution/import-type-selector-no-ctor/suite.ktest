@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — 'import lib.(type Box)' also brings the same-spelling constructor facet: bare 'Box 1' elaborates as the constructor (0 errors)

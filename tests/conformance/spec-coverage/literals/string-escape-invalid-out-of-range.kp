@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_STRING_ESCAPE_INVALID
+
+-- §6.3.1: \u{H...} must denote a Unicode scalar value, so a decoded
+-- code point beyond U+10FFFF is a compile-time error (the escape is
+-- shape-valid: 6 hex digits — the VALUE is out of range).
+
+badRange : String
+let badRange = "\u{110000}" --!! E_STRING_ESCAPE_INVALID
+-- STATUS(a51e1bf): PASS

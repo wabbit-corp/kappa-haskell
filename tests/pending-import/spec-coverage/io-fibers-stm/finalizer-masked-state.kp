@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertStdoutContains "finalizer-completed"
+--! assertStdoutContains "child-done"
+
+-- §18.1.12 (Spec.md L19246-19249): finalizers installed by `ensuring` run
+-- in MASKED state. The child unwinds a typed failure through an ensuring
+-- finalizer that parks on a promise; an interrupt requested during that
+-- park must NOT abort the finalizer — it completes ("finalizer-completed")
+-- once released. (Where the still-pending request is later delivered is
+-- implementation latitude under §18.1.5 safe points, so only containment
+-- is asserted, not the child's exact terminal Exit.)
+module main
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
+
+finalizer : Promise Void Unit -> Promise Void Unit -> IO String Unit
+let finalizer ready go = do
+    let _ <- weakenVoidIO (completePromise ready (Success ()))
+    let _ <- weakenVoidIO (awaitPromise go)
+    weakenVoidIO (printlnString "finalizer-completed")
+
+child : Promise Void Unit -> Promise Void Unit -> UIO Int
+let child ready go =
+    catchIO (ensuring (throwIO "boom") (finalizer ready go)) (\m -> ioPure 0)
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let go <- newPromise
+    let f <- fork (child ready go)
+    -- the child is now parked, masked, inside its ensuring finalizer
+    let _ <- awaitPromise ready
+    interruptFork f
+    let _ <- completePromise go (Success ())
+    let ex <- await f
+    let _ = ex
+    printlnString "child-done"

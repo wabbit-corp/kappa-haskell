@@ -29,17 +29,17 @@ let pollMany n = do
     ioPure 0
   else do
     cede
-    rest <- pollMany (n - 1)
+    let rest <- pollMany (n - 1)
     ioPure (rest + 1)
 
 main : UIO Unit
 let main = do
-  latch <- newBlockingLatch
-  workers <- floodBlockingWorkers 200 (blocking (awaitBlockingLatch latch))
+  let latch <- newBlockingLatch
+  let workers <- floodBlockingWorkers 200 (blocking (awaitBlockingLatch latch))
 
-  poller <- fork (pollMany 100)
-  polled <- await poller
-  released <- releaseBlockingLatch latch
+  let poller <- fork (pollMany 100)
+  let polled <- await poller
+  let released <- releaseBlockingLatch latch
   awaitBlockingWorkers workers
 
   printlnString ("poll:" ++ showInt polled)

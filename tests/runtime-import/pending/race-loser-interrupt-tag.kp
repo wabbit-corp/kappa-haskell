@@ -21,13 +21,13 @@ let recordLoserCause out ic = do
     let label = match ic
           case InterruptCause RaceLost _ -> "RaceLost"
           case InterruptCause _ _ -> "other"
-    ok <- completePromise out (Success label)
+    let ok <- completePromise out (Success label)
     let _ = ok
     ioPure Unit
 
 rightBody : Promise Void Unit -> UIO Int
 let rightBody ready = do
-    ok <- completePromise ready (Success Unit)
+    let ok <- completePromise ready (Success Unit)
     let _ = ok
     sleepFor (seconds 10)
     ioPure 2
@@ -38,10 +38,10 @@ let right ready loserCause =
 
 main : UIO Unit
 let main = do
-    ready <- newPromise
-    loserCause <- newPromise
-    f <- fork (race (left ready) (right ready loserCause))
-    ex <- await f
+    let ready <- newPromise
+    let loserCause <- newPromise
+    let f <- fork (race (left ready) (right ready loserCause))
+    let ex <- await f
     let _ = ex
-    cause <- awaitPromise loserCause
+    let cause <- awaitPromise loserCause
     printlnString ("loser:" ++ cause)

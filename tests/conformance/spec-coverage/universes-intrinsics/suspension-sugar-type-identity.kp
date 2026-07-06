@@ -1,0 +1,35 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.2: the binder sugar (thunk x : A) / (lazy x : A) / (q thunk x : A)
+-- desugars to (x : Thunk A) / (x : Need A) / (q x : Thunk A) without
+-- introducing a distinct core binder kind or changing function-type
+-- identity. Thunk and Need remain distinct type constructors.
+module main
+
+-- POSITIVE: thunk sugar produces exactly (x : Thunk Int) -> Int.
+sugarThunk : (thunk x : Int) -> Int
+let sugarThunk (thunk x : Int) : Int = force x
+
+explicitThunk : (x : Thunk Int) -> Int
+let explicitThunk = sugarThunk
+
+-- POSITIVE: lazy sugar produces exactly (x : Need Int) -> Int.
+sugarLazy : (lazy x : Int) -> Int
+let sugarLazy (lazy x : Int) : Int = force x
+
+explicitNeed : (x : Need Int) -> Int
+let explicitNeed = sugarLazy
+
+-- POSITIVE: quantity sugar (1 thunk x : Int) = (1 x : Thunk Int).
+qtySugar : (1 thunk x : Int) -> Int
+let qtySugar (1 thunk x : Int) : Int = force x
+
+qtyExplicit : (1 x : Thunk Int) -> Int
+let qtyExplicit = qtySugar
+
+-- NEGATIVE: Thunk and Need do not unify; the sugar keeps them distinct.
+confused : (x : Thunk Int) -> Int
+let confused = explicitNeed                              --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

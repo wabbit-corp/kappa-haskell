@@ -1,0 +1,47 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.termination.failure
+
+-- §14.3.5 (Spec.md L14781-L14791) Paterson-style instance termination
+-- edges: (a) a non-variable premise with the SAME variable count as the
+-- head is accepted when its total constructor-and-variable size is
+-- strictly smaller; (b) a permuted premise of EQUAL size is rejected even
+-- though it is not identical to the head and no variable count grows;
+-- (c) a premise that is smaller in size but repeats a variable more often
+-- than the head is rejected on the occurrence condition.
+module main
+
+trait Pack (a : Type) =
+    packed : a -> Int
+
+trait Rel (a : Type) (b : Type) =
+    rel : a -> b -> Bool
+
+data Stack (a : Type) : Type =
+    SEmpty
+    SPush a (Stack a)
+
+data Pairy (a : Type) (b : Type) : Type =
+    MkPairy a b
+
+instance Pack Int =
+    let packed n = n
+
+-- POSITIVE (a): premise `Stack a` (size 2) < head `Stack (Stack a)`
+-- (size 3); the variable count is equal, the premise is not a bare
+-- variable, and constructor depth strictly shrinks.
+instance Pack (Stack a) => Pack (Stack (Stack a)) =
+    let packed s = 1
+
+-- NEGATIVE (b): `Rel b a` is not identical to `Rel a b` and no variable
+-- occurs more often, but its size equals the head's — not strictly
+-- smaller, so search could swap forever.
+instance Rel b a => Rel a b = --!! kappa.termination.failure
+    let rel x y = True
+
+-- NEGATIVE (c): premise size 2 < head size 3, but `a` occurs twice in the
+-- premise and only once in the head — occurrence growth is rejected.
+instance Rel a a => Pack (Pairy a b) = --!! kappa.termination.failure
+    let packed p = 0
+
+-- STATUS(a51e1bf): PASS

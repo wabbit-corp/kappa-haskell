@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §11.3.2 (negative): "Labels in a single effect row must be unique",
+-- and an open row <[l : E | r]> carries the implicit uniqueness side
+-- condition LacksEff r l. Both the duplicated closed literal and the
+-- instantiation of an open row's tail with a row already containing the
+-- same label must be rejected. §11.3.2 names no diagnostic family for
+-- either violation, so only the two rejections are asserted.
+module main
+
+effect AskE =
+    1 ask : Unit -> Int
+
+dup : Eff <[AskE : AskE, AskE : AskE]> Int
+let dup = pure 1
+
+type OpenAsk (e : EffRow) : Type = Eff <[AskE : AskE | e]> Int
+
+lacksViolated : OpenAsk <[AskE : AskE]>
+let lacksViolated = pure 2
+
+-- STATUS(a51e1bf): FAIL — compiler accepts both the duplicated closed effect row and the LacksEff-violating tail instantiation (0 errors); §11.3.2 label uniqueness is unenforced

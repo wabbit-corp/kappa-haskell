@@ -1,0 +1,11 @@
+module ambiguous
+
+-- §8.3.1A: two EXPLICIT imports introducing distinct semantic identities
+-- with the same spelling and kind are not import-time errors; lookup at a
+-- use site is ambiguous.
+import a.(value)
+import b.(value)
+
+bad : Int
+let bad = value --!! E_NAME_AMBIGUOUS
+-- STATUS(a51e1bf): FAIL — colliding explicit imports silently last-win; no use-site E_NAME_AMBIGUOUS is emitted

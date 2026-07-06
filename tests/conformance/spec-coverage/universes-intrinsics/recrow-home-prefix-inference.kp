@@ -1,0 +1,41 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.3.1A: every record-row variable gets a hidden home prefix computed
+-- from its open-record residual occurrences. With one occurrence prefix
+-- (len : Nat), home(r) = (len : Nat), so a tail field may depend on len.
+-- With occurrence prefixes sharing no field, home(r) is empty, so a tail
+-- field may depend on neither prefix field.
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+-- POSITIVE: home(r) = (len : Nat); instantiating r with a tail whose field
+-- depends on len is valid at the call site.
+lenId : forall (r : RecRow). (len : Nat | r) -> (len : Nat | r)
+let lenId (@0 r : RecRow) (rec : (len : Nat | r)) : (len : Nat | r) = rec
+
+useDep : Nat
+let useDep =
+    block
+        let dep : (len : Nat, buf : Vec this.len Byte) = (len = 0, buf = VNil)
+        (lenId dep).len
+
+-- NEGATIVE: home(r) is empty here (occurrence prefixes (x : Nat) and
+-- (y : Bool) share no field), so a tail whose field depends on x cannot
+-- instantiate r.
+twoOcc : forall (r : RecRow). (x : Nat | r) -> (y : Bool | r) -> Bool
+let twoOcc (@0 r : RecRow) (a : (x : Nat | r)) (b : (y : Bool | r)) : Bool = b.y
+
+bad : Bool
+let bad =
+    block
+        let depA : (x : Nat, buf : Vec this.x Byte) = (x = 0, buf = VNil)
+        let depB : (y : Bool, buf : Vec 0 Byte) = (y = True, buf = VNil)
+        twoOcc depA depB                                 --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

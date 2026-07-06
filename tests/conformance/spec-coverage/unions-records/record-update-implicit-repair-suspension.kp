@@ -1,0 +1,38 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertErrorCount 1
+
+-- §13.2.5 (Spec.md L12938-L12958, L13117-L13123): an implicit field may
+-- be repaired explicitly in the same update (`@ok = proof`); an omitted
+-- implicit field is copied as `r.ok` and the update is REJECTED when the
+-- copy no longer typechecks against the updated record. Expected-type-
+-- directed suspension insertion (§13.2.5/§16.1.7.1) also applies to the
+-- supplied update expression of a `Thunk` field.
+module main
+
+isPos : Integer -> Bool
+let isPos n = ltInt 0 n
+
+type Pos = (id : Integer, @ok : isPos this.id)
+
+mk : Pos
+let mk = (id = 1, @ok = refl)
+
+-- explicit implicit-field repair in the same update: OK (refl proves
+-- isPos 2 = True by reduction)
+bump : Pos -> Pos
+let bump p = p.{ id = 2, @ok = refl }
+
+-- NEGATIVE: omitting the repair copies p.ok : (isPos p.id) = True, which
+-- is stale against the updated record (needs (isPos 2) = True)
+stale : Pos -> Pos
+let stale p = p.{ id = 2 }              --!! E_TYPE_EQUALITY_MISMATCH
+
+-- suspension insertion: the supplied bare String is elaborated to
+-- `thunk "replaced"` because the updated field type is Thunk String
+type Lazy = (tag : Integer, thunk buf : String)
+
+updLazy : Lazy -> Lazy
+let updLazy l = l.{ buf = "replaced" }
+
+-- STATUS(a51e1bf): PASS

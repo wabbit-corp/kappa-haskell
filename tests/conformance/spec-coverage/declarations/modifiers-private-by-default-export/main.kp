@@ -1,0 +1,14 @@
+module main
+
+-- §9.1 + §8.5.1: under @PrivateByDefault only `public`-marked items are
+-- exported; the unmarked `hiddenDefault` cannot be imported.
+
+import plib.(shown)
+import plib.(hiddenDefault)
+
+ok : Int
+let ok = shown
+
+--! assertDiagnosticCodes E_IMPORT_ITEM_NOT_FOUND
+--! assertType ok Int
+-- STATUS(a51e1bf): PASS

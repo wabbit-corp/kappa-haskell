@@ -1,0 +1,4 @@
+module util
+
+helpers : Int
+let helpers = 1

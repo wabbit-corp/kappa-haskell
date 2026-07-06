@@ -1,0 +1,21 @@
+-- §14.5.1 (Spec L15049): the compiler MUST NOT derive Hashable from
+-- Equiv. Q carries only an Equiv instance (a coarse equivalence, not Eq),
+-- so this derivation must fail with exactly one error. NOTE: today the
+-- single error is E_UNSUPPORTED (derive declarations unimplemented), not
+-- an Equiv-specific derivation rejection; re-point the assertion when a
+-- derivation path lands.
+--! mode check
+--! assertErrorCount 1
+module main
+
+import std.hash.*
+
+data Q : Type =
+    MkQ (v : Int)
+
+instance Equiv Q =
+    let (~=) a b = True
+
+derive Hashable Q
+
+-- STATUS(a51e1bf): PASS — but only because 'derive' is wholly unsupported (E_UNSUPPORTED); re-point to the Equiv-specific rejection when a derivation path lands.

@@ -1,0 +1,6 @@
+module foo
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label counterLabel : Counter

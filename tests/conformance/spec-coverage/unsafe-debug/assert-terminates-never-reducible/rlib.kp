@@ -1,0 +1,12 @@
+module rlib
+
+data N : Type = Z | S (p : N)
+
+-- genuinely NOT verifiable as terminating (diverges on S _), so no
+-- conforming implementation can "separately verify" it (§4.4): the
+-- definitions below can never legitimately become conversion-reducible.
+weirdT : N -> N
+assertTerminates let weirdT n = match n case Z -> Z case S m -> weirdT (S (S m))
+
+weirdL : N -> N
+assertTotal let weirdL n = match n case Z -> Z case S m -> weirdL (S (S m))

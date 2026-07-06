@@ -1,0 +1,37 @@
+-- Spec: §10.1 (L8362-8370). Constructor defaults affect construction only.
+-- In a pattern, a defaulted parameter is an ordinary field: omitting it in
+-- a NAMED pattern is a wildcard (never the default expression), and a
+-- POSITIONAL pattern must still supply every field.
+
+module main
+
+--! mode check
+
+data Conn : Type =
+    MkConn (host : String) (port : Int = 5432)
+
+-- The sample deliberately does NOT use the default port.
+sample : Conn
+let sample = MkConn "db" 99
+
+-- POSITIVE: the named pattern omits 'port'; it must match port = 99
+-- (a default-inserting reading would only match port = 5432).
+classify : Conn -> Int
+let classify c =
+    match c
+    case MkConn { host = _ } -> 1
+
+classified : Int
+let classified = classify sample
+
+-- NEGATIVE: positional patterns are never default-completed; MkConn with a
+-- single positional subpattern has the wrong arity.
+bad : Conn -> String
+let bad c =
+    match c
+    case MkConn h -> h --!! kappa.pattern.constructor-arity
+
+--! assertErrorCount 1
+--! assertEval classified 1
+
+-- STATUS(a51e1bf): PASS

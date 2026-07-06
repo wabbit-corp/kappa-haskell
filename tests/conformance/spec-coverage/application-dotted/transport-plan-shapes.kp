@@ -1,0 +1,61 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 required plan shapes (L16721-16746), driven by stable-alias
+-- equalities: shape 2 (one proof rewrites every selected occurrence of
+-- the same subterm), shape 3 (independent disjoint replacements in
+-- canonical order), and shape 4 (telescope-dependent replacements — the
+-- w -> v goal is well-typed only after m -> n is transported, so steps
+-- need a dependency-respecting topological order). A cyclic dependency
+-- has no source-level spelling here, so only the orderable case is pinned.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+type Two (b : Bool) = (first : FlagBox b, second : FlagBox b)
+
+needsTwo : (b : Bool) -> Two b -> Unit
+let needsTwo (b : Bool) (t : Two b) : Unit = ()
+
+-- POSITIVE (shape 2): one alias equality rewrites both occurrences of x.
+viaRepeated : (x : Bool) -> Two x -> Unit
+let viaRepeated (x : Bool) (t : Two x) : Unit =
+    block
+        let y = x
+        needsTwo y t
+
+type Pair2 (b : Bool) (c : Bool) = (first : FlagBox b, second : FlagBox c)
+
+needsPair : (b : Bool) -> (c : Bool) -> Pair2 b c -> Unit
+let needsPair (b : Bool) (c : Bool) (t : Pair2 b c) : Unit = ()
+
+-- POSITIVE (shape 3): two independent replacements at disjoint paths.
+viaDisjoint : (x : Bool) -> (w : Bool) -> Pair2 x w -> Unit
+let viaDisjoint (x : Bool) (w : Bool) (t : Pair2 x w) : Unit =
+    block
+        let y = x
+        let v = w
+        needsPair y v t
+
+data Nat : Type =
+    Zero
+    Succ (n : Nat)
+
+data Vec (a : Type) (n : Nat) : Type =
+    VNil  : Vec a Zero
+    VCons : (head : a) -> (tail : Vec a n) -> Vec a (Succ n)
+
+data Wit (n : Nat) (v : Vec Int n) : Type =
+    MkWit
+
+needsWit : (n : Nat) -> (v : Vec Int n) -> Wit n v -> Unit
+let needsWit (n : Nat) (v : Vec Int n) (wit : Wit n v) : Unit = ()
+
+-- POSITIVE (shape 4): replacing w by v is well-typed only after m -> n.
+viaTelescope : (m : Nat) -> (w : Vec Int m) -> Wit m w -> Unit
+let viaTelescope (m : Nat) (w : Vec Int m) (wit : Wit m w) : Unit =
+    block
+        let n = m
+        let v = w
+        needsWit n v wit

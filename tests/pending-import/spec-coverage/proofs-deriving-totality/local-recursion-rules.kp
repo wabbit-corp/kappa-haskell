@@ -1,0 +1,46 @@
+-- §15.14 (Spec L15534-L15561) + §9.3.1: a local named binding is recursive
+-- only when a preceding local signature enables it, and local recursive
+-- helpers are checked by the SAME termination rules as top-level
+-- definitions — an unverifiable local self-loop must be flagged exactly
+-- like its top-level counterpart.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+-- POSITIVE: signature-enabled local recursion, structurally certified
+-- (the spec's own lengthAcc example, L15543-L15555).
+lengthAcc : List Int -> Int
+let lengthAcc xs =
+    block
+        go : List Int -> Int -> Int
+        let go ys acc decreases structural ys =
+            match ys
+            case Nil -> acc
+            case _ :: rest -> go rest (addInt acc 1)
+        go xs 0
+
+-- NEGATIVE: without a preceding local signature the binding is not
+-- recursive, so the inner occurrence of go2 is simply not in scope.
+noSig : List Int -> Int
+let noSig xs =
+    block
+        let go2 ys = go2 ys --!! kappa.name.unresolved
+        go2 xs
+
+-- NEGATIVE: local recursion is termination-checked like top level; this
+-- self-loop must receive the same unverified-termination diagnostic that
+-- the identical top-level definition receives.
+wob : Int -> Int
+let wob n =
+    block
+        go3 : Int -> Int
+        let go3 k = go3 k --!! W_TERMINATION_UNVERIFIED
+        go3 n
+
+-- STATUS(a51e1bf): FAIL — local recursive helpers are not
+-- termination-checked at all: the top-level counterpart of go3 gets
+-- W_TERMINATION_UNVERIFIED, but the local self-loop is silently accepted
+-- (no warning), violating §15.14 "same termination rules as top-level".
+-- The signature-rule halves (lengthAcc accepted, go2 unresolved) behave
+-- per spec.

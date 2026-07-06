@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+--! assertDiagnosticMatch 'choose'
+--! assertDiagnosticMatch 'x'
+--! assertDiagnosticMatch borrowed
+
+-- §18.1.20 / §18.1.20.2: a multi-shot operation whose captured suffix uses
+-- a BORROWED binding is rejected, and the diagnostic must identify the
+-- operation being invoked ('choose'), a live offending value ('x'), and
+-- the reason category (borrowed capture).
+module main
+
+bad : (& x : Int) -> Int
+let bad (& x : Int) : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let b <- Choice.choose ()
+                if b then x else x
+
+        let handled =
+            deep handle Choice comp with
+                case return y -> pure y
+                case choose _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled

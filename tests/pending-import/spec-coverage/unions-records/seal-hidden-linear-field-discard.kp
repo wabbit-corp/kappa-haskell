@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.10 hidden-field discard (Spec.md L13522-L13529): fields not
+-- retained by the signature are discarded by the seal, and every hidden
+-- runtime-relevant field must be droppable under §12.2.6. A hidden field
+-- carrying a positive lower-bound obligation (quantity 1) makes the seal
+-- ill-formed (natural family: kappa.quantity.positive-lower-bound). A
+-- hidden UNRESTRICTED field is droppable, so hiding it is fine.
+module main
+
+data Token : Type =
+    Token
+
+type Public = (x : Integer,)
+
+-- POSITIVE: the linear token is discharged by moving it into an
+-- ω-quantity literal field; the hidden field itself is droppable
+hideDroppable : (1 t : Token) -> Public
+let hideDroppable (1 t : Token) : Public =
+    seal (x = 1, extra = t) as Public
+
+-- NEGATIVE: w.secret is declared linear; the seal silently drops it
+type WithSecret = (x : Integer, 1 secret : Token)
+
+hideLinear : (1 w : WithSecret) -> Public
+let hideLinear (1 w : WithSecret) : Public =
+    seal w as Public
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts hideLinear (0 errors):
+-- seal's hidden-field discard does not check droppability, so a linear
+-- field is silently leaked. §13.2.10 requires rejecting this seal.

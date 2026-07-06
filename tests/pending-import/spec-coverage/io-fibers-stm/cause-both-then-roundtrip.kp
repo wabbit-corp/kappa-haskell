@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "both-left:1\nthen-first:2\nthen-defect:panic-msg\n"
+
+-- §18.1.2: Cause carries parallel (Both) and sequential (Then) composition
+-- alongside Fail/Interrupt/Defect. A composite cause survives an
+-- unsandbox/sandbox round trip verbatim: unsandbox re-raises it as the
+-- runtime cause and sandbox re-exposes the SAME structure in the typed
+-- channel, so composite causes are first-class observable values.
+module main
+
+composite : Cause Int
+let composite =
+    Both (Fail 1)
+         (Then (Fail 2)
+               (Defect (DefectInfo Panic (Some "panic-msg"))))
+
+sealed : IO (Cause Int) Int
+let sealed = throwIO composite
+
+classify : Cause Int -> IO Void Int
+let classify c = match c
+    case Both (Fail a) (Then (Fail b) (Defect (DefectInfo Panic (Some msg)))) -> do
+        printlnString ("both-left:" ++ showInt a)
+        printlnString ("then-first:" ++ showInt b)
+        printlnString ("then-defect:" ++ msg)
+        ioPure 0
+    case _ -> do
+        printlnString "structure-lost"
+        ioPure 1
+
+main : UIO Unit
+let main = do
+    let r <- catchIO (sandbox (unsandbox sealed)) classify
+    let _ = r
+    ioPure ()

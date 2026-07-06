@@ -1,0 +1,25 @@
+-- Perceus S5.B regression: skip slots are path-local and paired with emitted
+-- drops.  In the replacement branch, the old boxed payload is overwritten by a
+-- new boxed String, so the branch must drop that old payload before the runtime
+-- rewrite and then include its slot in the skip array to avoid a second drop.
+-- The sibling branch carries both old fields forward.
+module main
+
+data PairBox : Type =
+    MkPairBox String String
+
+update : Bool -> String -> PairBox -> PairBox
+let update replace newValue b =
+    match b
+    case MkPairBox keep oldValue ->
+        if replace then MkPairBox keep newValue
+        else MkPairBox keep oldValue
+
+render : PairBox -> String
+let render b =
+    match b
+    case MkPairBox keep value -> stringAppend keep value
+
+main : UIO Unit
+let main =
+    printlnString (stringAppend (render (update True "new" (MkPairBox "keep-" "old"))) (stringAppend "|" (render (update False "new" (MkPairBox "keep-" "old")))))

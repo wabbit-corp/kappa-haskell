@@ -1,0 +1,24 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nTrue\n4\n3\n"
+
+-- §6.4: `Ord UnicodeScalar` orders by Unicode scalar numeric value;
+-- `Eq UnicodeScalar` compares scalar values; `Rangeable UnicodeScalar`
+-- enumerates by increasing scalar value SKIPPING the surrogate code
+-- points U+D800..U+DFFF. The range below straddles the surrogate
+-- block: inclusive it holds D7FE, D7FF, E000, E001 (4 scalars).
+
+lo : UnicodeScalar
+let lo = '\u{D7FE}'
+
+hi : UnicodeScalar
+let hi = '\u{E001}'
+
+main : UIO Unit
+let main = do
+    println (compare 'a' 'b' == LT)
+    println (compare '\u{3B2}' '\u{3B1}' == GT)
+    println ('\u{1F642}' == '🙂')
+    println (listLength (rangeToList (lo .. hi)))
+    println (listLength (rangeToList (lo ..< hi)))
+-- STATUS(a51e1bf): PASS

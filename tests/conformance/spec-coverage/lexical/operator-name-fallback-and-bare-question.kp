@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n7\n6\n"
+
+-- §5.5.3: with NO fixity in scope an operator is still usable as a
+-- normal function name via (op) — here (<%>) is applied prefix-style.
+-- §5.5.1: the reserved tokens ?. and ?: are recognized before `?`, yet
+-- the bare `?` token stays available for a user-defined postfix
+-- operator (§5.5.2); `?:` keeps its built-in precedence 2 /
+-- right-associativity independent of the user fixity for `?`.
+
+module main
+
+(<%>) : Int -> Int -> Int
+let (<%>) x y = addInt x y
+
+viaName : Int
+let viaName = (<%>) 20 22
+
+postfix 90 (?)
+(?) : Int -> Int
+let (?) x = addInt x 1
+
+elvis : Int
+let elvis = None ?: 7
+
+combined : Int
+let combined = 5 ?
+
+main : UIO Unit
+let main = do
+    println viaName
+    println elvis
+    println combined
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §3.2.17 + §29.3: kappa.hash.suspicious-hashcode-key is ADVISORY —
+-- "The diagnostic MUST NOT reject programs by default. Explicit
+-- HashCode comparison is permitted by §29.3." This test pins the MUST
+-- NOT: branch conditions comparing hashWith results directly and a
+-- public API taking HashCode compile with NO errors. (The advisory
+-- warning itself is MAY-level and deliberately not asserted here;
+-- an implementation may or may not emit it.)
+module main
+
+import std.hash.*
+
+sameByHash : Int -> Int -> Bool
+let sameByHash x y =
+    hashWith defaultHashSeed x == hashWith defaultHashSeed y
+
+pick : Int -> Int -> Int
+let pick x y =
+    if sameByHash x y then x else y
+
+lookupByCode : HashCode -> Int
+let lookupByCode h = 0
+-- STATUS(a51e1bf): PASS

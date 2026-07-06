@@ -1,0 +1,16 @@
+-- §8.1/§28.1: @NoPrelude disables the implicit prelude import and the
+-- fixed unqualified prelude-constructor import — but only the IMPLICIT
+-- imports. An explicit `import std.prelude.(...)` restores exactly the
+-- imported names; everything else from the prelude stays out of scope.
+@NoPrelude module main
+
+import std.prelude.(type Bool, ctor True, ctor False, not)
+
+flag : Bool
+let flag = not False
+
+bad : Bool
+let bad = id flag --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 1
+-- STATUS(a51e1bf): PASS

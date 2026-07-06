@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7A (L16671-16678): eta-expansion destroys named-call metadata
+-- unless the eta-expanded value is explicitly annotated with binder
+-- metadata by a standardized source form. A bare wrapper \a b -> ...
+-- carries its OWN lambda binder names a/b (L16671: named-binder lambdas
+-- carry metadata) but not the original image/width; a named-binder lambda
+-- restating the names is the standardized annotation form.
+module main
+
+resize : (image : Int) -> (width : Int) -> Int
+let resize (image : Int) (width : Int) : Int = image + width
+
+-- POSITIVE: the eta wrapper's own binder names are callable.
+renamedOk : Int
+let renamedOk =
+    block
+        let eta = \a b -> resize a b
+        eta { a = 1, b = 2 }
+
+-- POSITIVE: a named-binder lambda restores the original names.
+annotatedOk : Int
+let annotatedOk =
+    block
+        let eta = \(image : Int) (width : Int) -> resize image width
+        eta { image = 1, width = 2 }
+
+-- NEGATIVE: the callee's original binder names do not survive eta.
+lostNames : Int
+let lostNames =
+    block
+        let eta = \a b -> resize a b
+        eta { image = 1, width = 2 } --!! kappa.type.mismatch

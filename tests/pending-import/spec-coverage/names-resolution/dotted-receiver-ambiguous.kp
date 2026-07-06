@@ -1,0 +1,22 @@
+-- §7.3 (steps 2, 5-6): dotted resolution considers receiver candidates
+-- of kinds module/type/effect-label/term/ctor in the nearest binding
+-- group; if MORE THAN ONE candidate yields a well-formed full chain the
+-- dotted form is ambiguous. Type B's ctor Mk is a static member (§7.2),
+-- and term B is a record with field Mk, so both candidates complete
+-- B.Mk. (§7.1: the type and term declarations coexist — distinct kinds.)
+module main
+
+data B : Type =
+    Mk (v : Int)
+
+let B = (Mk = 1)
+
+amb : Int
+let amb =
+    block
+        let u = B.Mk --!! E_NAME_AMBIGUOUS
+        2
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_AMBIGUOUS
+-- STATUS(a51e1bf): FAIL — compiler conflates 'let B' with the data type's reified facet (E_TYPE_EQUALITY_MISMATCH at the let, record vs Type) instead of forming a two-kind binding group and reporting B.Mk ambiguous

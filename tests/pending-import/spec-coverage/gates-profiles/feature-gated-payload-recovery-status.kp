@@ -1,0 +1,15 @@
+-- §2.1 (parser recognition is not acceptance) / §3.2.1: a construct the
+-- parser recognizes only for recovery is still rejected by semantic
+-- gating, and the kappa.feature.gated payload MUST carry the gate-setting
+-- provenance and the parser-recovery status ("syntax recognized only for
+-- recovery" is one of the cases a renderer MUST distinguish).
+--! mode check
+--! assertDiagnosticFamily error kappa.feature.gated
+--! assertDiagnosticPayload error kappa.feature.gated /payload/owningGate unicode-names
+--! assertDiagnosticPayload error kappa.feature.gated /payload/gateProvenance implementation-default
+--! assertDiagnosticPayload error kappa.feature.gated /payload/parserRecoveryStatus recognized-for-recovery
+module main
+
+let λ = 1 --!! E_FEATURE_INACTIVE
+
+-- STATUS(a51e1bf): FAIL — kappa.feature.gated payload carries no parser-recovery status field; the §3.2.1 'recognized only for recovery' case is not distinguished

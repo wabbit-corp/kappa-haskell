@@ -1,0 +1,26 @@
+module main
+
+-- §9.3.1.1: `scoped` may prefix local `data` and `trait` declarations
+-- inside `block`. Entities that never leave the block (the result below
+-- is a plain Int) are legal: the hidden nominal-scope token is captured
+-- but nothing mentioning the scoped families escapes.
+
+confined : Int
+let confined =
+    block
+        scoped data Token : Type =
+            MkToken
+
+        scoped trait Keyed a =
+            key : a -> Int
+
+        instance Keyed Token =
+            key t = 7
+
+        let tok = MkToken
+        key tok
+
+--! mode check
+--! assertNoErrors
+--! assertType confined Int
+-- STATUS(a51e1bf): FAIL — compiler rejects scoped data/trait in block with E_UNSUPPORTED ("local declaration form is not supported inside block by this implementation"); §9.3.1.1 scoped local nominal declarations unimplemented

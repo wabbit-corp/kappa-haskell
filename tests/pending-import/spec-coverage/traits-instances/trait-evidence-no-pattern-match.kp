@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §14.1.1 (Spec.md L14128-L14160): source code "may not construct, update,
+-- pattern match on, or structurally reflect the evidence record" — `match d
+-- with ...` is listed as rejected ("no constructor pattern for trait
+-- evidence"). A record pattern against a trait evidence scrutinee is
+-- structural reflection and MUST be rejected even when a catch-all case
+-- makes the match exhaustive. No family is fixed by the spec; the record
+-- pattern cannot check against the abstract evidence type, so
+-- kappa.type.mismatch is the spec-implied family.
+module main
+
+trait Named (a : Type) =
+    nameOf : a -> String
+
+instance Named Int =
+    let nameOf n = "int"
+
+-- NEGATIVE: record/constructor pattern on trait evidence.
+bad : String
+let bad =
+    let
+        d = summon (Named Int)
+    in
+        match d
+        case (nameOf = f) -> "reflected" --!! kappa.type.mismatch
+        case _ -> "opaque"
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts the record pattern on trait evidence once a catch-all makes the match exhaustive (structural reflection of the evidence record; only *using* the bound field errs, and without a catch-all the rejection is E_PATTERN_NON_EXHAUSTIVE rather than a construction-form rejection).

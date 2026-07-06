@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "first:T\nsecond:F\nvalue:1\n"
+
+-- Imported from:
+--   ZIO PromiseSpec / complete a promise twice
+--   Cats Effect DeferredSuite / complete is only successful once
+-- Spec target: §18.1.9, the first successful promise completion wins and later
+-- completions return False without changing the stored Exit.
+module main
+
+import std.prelude.(type Exit(..))
+
+showBool : Bool -> String
+let showBool b = if b then "T" else "F"
+
+main : UIO Unit
+let main = do
+    let p <- newPromise
+    let first <- completePromise p (Success 1)
+    let second <- completePromise p (Success 2)
+    let v <- awaitPromise p
+    printlnString ("first:" ++ showBool first)
+    printlnString ("second:" ++ showBool second)
+    printlnString ("value:" ++ showInt v)

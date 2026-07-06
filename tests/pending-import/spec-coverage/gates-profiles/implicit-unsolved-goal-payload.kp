@@ -1,0 +1,17 @@
+-- §3.1.9 / §3.2.4: a kappa.implicit.unsolved payload MUST include the
+-- implicit goal and the goal classifier as structured fields (a trait
+-- evidence goal here) — diagnostics are structured records, and tools
+-- MUST NOT be required to parse the human-readable prose (§3.1).
+--! mode check
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+--! assertDiagnosticPayload error kappa.implicit.unsolved /payload/goal Pretty String
+--! assertDiagnosticPayload error kappa.implicit.unsolved /payload/goalClassifier trait-evidence
+module main
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+needy : String
+let needy = pretty "hello" --!! E_UNSOLVED_IMPLICIT
+
+-- STATUS(a51e1bf): FAIL — kappa.implicit.unsolved payload is kind 'none'; §3.2.4 goal/goalClassifier fields absent

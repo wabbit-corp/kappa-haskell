@@ -1,0 +1,19 @@
+module main
+
+-- §4.2/§4.3/§4.7: with `allow_clarify` enabled, `clarify` requests that the
+-- imported opaque item be treated as TRANSPARENT for definitional equality
+-- in this importing module, so the `refl` proof of `secret = 7` must be
+-- accepted; the accepted modifier is recorded in the §4.7 audit ledger.
+import oplib.(clarify secret)
+
+proof : secret = 7
+let proof = refl
+
+useSecret : Int
+let useSecret = secret
+
+--! allow_clarify
+--! assertNoErrors
+--! assertEval useSecret 7
+--! assertAuditLedger clarify
+-- STATUS(a51e1bf): FAIL — `clarify` is gated and audited, but the requested transparency is not granted: the refl proof still fails with E_TYPE_EQUALITY_MISMATCH (opacity untouched).

@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_CONSUME
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied borrow-start
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied consumed-here
+
+-- §13.2.5 elaborates omitted patch fields as projections from the
+-- original record. When the original root is borrowed, an omitted
+-- quantity-1 field would transfer the borrowed payload into the result.
+-- Supplying that field explicitly is valid because the result owns the
+-- new payload instead of the borrowed one.
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Cell = (count : Int, 1 tok : Token)
+
+bad : (& c : Cell) -> Cell
+let bad c =
+    c.{ count = 1 }
+
+good : (& c : Cell) -> Cell
+let good c =
+    c.{ count = 1, tok = MkToken 5 }

@@ -1,0 +1,8 @@
+module plainsel
+
+-- §8.3.1: the `trait` kind selector selects the trait constructor
+-- (including its reified static-object term facet) without an alias.
+import klib.(trait Marked)
+
+useIt : Type -> Type
+let useIt = trait Marked

@@ -1,0 +1,12 @@
+module plib
+
+-- §9.2: a top-level pattern binding whose binder is not a single simple
+-- name MUST NOT be exported. The names are still usable locally.
+
+pairSource : (Int, Int)
+let pairSource = (1, 2)
+
+let (a, b) = pairSource
+
+localUse : Int
+let localUse = a + b

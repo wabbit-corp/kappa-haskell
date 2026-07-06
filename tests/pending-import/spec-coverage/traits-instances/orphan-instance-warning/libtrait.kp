@@ -1,0 +1,9 @@
+module libtrait
+
+-- Defines the trait. The instance below is NOT an orphan: the trait is
+-- defined in this module (§14.3, Spec.md L14532-L14534).
+trait Tag (a : Type) =
+    tag : a -> Int
+
+instance Tag Int =
+    let tag n = n

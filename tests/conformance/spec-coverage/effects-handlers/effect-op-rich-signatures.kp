@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval applied 9
+--! assertEval both 30
+
+-- §18.1.15: operation signatures may be arbitrary function types — multiple
+-- explicit parameters, quantity annotations on binders (defaulting to ω),
+-- and forall-bound type parameters mixed with value parameters. The handler
+-- clause binds each parameter at its declared quantity: ω parameters may be
+-- used repeatedly, the 1-parameter exactly once.
+module main
+
+effect Calc =
+    1 apply : (ω f : Int -> Int) -> (1 x : Int) -> Int
+    1 twice : forall (a : Type). (ω v : a) -> (f : a -> Int) -> Int
+
+compApply : Eff <[Calc : Calc]> Int
+let compApply =
+    do
+        let a <- Calc.apply (\v -> addInt v 1) 7
+        pure a
+
+compTwice : Eff <[Calc : Calc]> Int
+let compTwice =
+    do
+        let b <- Calc.twice 15 (\v -> v)
+        pure b
+
+runCalc : Eff <[Calc : Calc]> Int -> Int
+let runCalc c =
+    block
+        let handled =
+            deep handle Calc c with
+                case return x -> pure x
+                case apply f x k -> k (f (f x))
+                case twice v f k -> k (addInt (f v) (f v))
+        runPure handled
+
+applied : Int
+let applied = runCalc compApply
+
+both : Int
+let both = runCalc compTwice

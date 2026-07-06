@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_NUMERIC_LITERAL_DOMAIN_MISMATCH, E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,20 @@
+-- §3.1.9 expected/actual payloads: the expected fragment is a compact
+-- SOURCE-LIKE rendering — the signature spells the transparent alias
+-- `Age` — and when the normalized form differs it MUST be exposed
+-- (normalizedExpected). Eagerly unfolding the alias into `expected` and
+-- omitting the normalized/alias distinction loses both MUST fields.
+--! mode check
+--! assertDiagnostic error E_TYPE_MISMATCH
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/kind expected-actual
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Bool
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Age
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/normalizedExpected Integer
+module main
+
+Age : Type
+let Age = Integer
+
+bad : Age
+let bad = True --!! E_TYPE_MISMATCH
+
+-- STATUS(a51e1bf): FAIL — the alias is eagerly unfolded into 'expected' (Integer); no source-like rendering ('Age') and no normalizedExpected

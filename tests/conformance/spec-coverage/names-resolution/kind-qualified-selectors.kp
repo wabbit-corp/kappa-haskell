@@ -1,0 +1,39 @@
+-- §7.1.1: kind-qualified name expressions reify declaration facets.
+-- `effectLabel l` resolves l by ordinary lookup in effect-label position;
+-- `module M` resolves M by ordinary lookup in module position, so a type
+-- spelling does not resolve there; a type alias — opaque included — has a
+-- reified static-object term facet (§7.6), so `type T` on it is
+-- well-formed.
+module main
+
+opaque type T = Int
+
+F : Type
+let F = type T
+
+labelled : Int
+let labelled =
+    block
+        scoped effect Ask =
+            1 ask : Unit -> Int
+
+        scoped effect label a : Ask
+
+        let l = effectLabel a
+        1
+
+badLabel : Int
+let badLabel =
+    block
+        let l = effectLabel Option --!! E_STATIC_OBJECT_KIND_MISMATCH
+        2
+
+badModule : Int
+let badModule =
+    block
+        let m = module T --!! E_STATIC_OBJECT_UNRESOLVED
+        3
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_STATIC_OBJECT_KIND_MISMATCH, E_STATIC_OBJECT_UNRESOLVED
+-- STATUS(a51e1bf): PASS

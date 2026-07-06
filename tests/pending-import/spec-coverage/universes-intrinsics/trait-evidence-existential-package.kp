@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.4 with §13.2.11 (combination): trait evidence may be an existential
+-- package member alongside a payload depending on the same witness;
+-- packaging does not change its abstractness or coherence. Opening the
+-- package exposes the evidence for ordinary projection-based use.
+module main
+
+trait MyEq (a : Type) =
+    myeq : a -> a -> Bool
+
+instance MyEq Int =
+    let myeq a b = True
+
+-- POSITIVE: evidence member + payload member over the same witness.
+pkg : exists (a : Type). (ev : MyEq a, value : a)
+let pkg = seal exists (a = Int). (ev = summon (MyEq Int), value = 7) as exists (a : Type). (ev : MyEq a, value : a)
+
+-- POSITIVE: the opened evidence is usable through its public projection.
+probe : Bool
+let probe =
+    open pkg as exists (b). (ev = d, value = v) in
+        d.myeq v v
+
+-- STATUS(a51e1bf): FAIL — a multi-field existential record payload cannot reference the witness: 'a' is E_NAME_UNRESOLVED in (ev : MyEq a, value : a); single-field bodies work

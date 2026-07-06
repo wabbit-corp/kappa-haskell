@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.1/§11.1.2: `forall (u : Universe)` binds an explicit universe variable;
+-- every `Type u` occurrence shares that user-written variable (no fresh
+-- metavariables), and explicit universe variables participate in ordinary
+-- constraint solving. Unsatisfiable constraints must reject compilation.
+module main
+
+-- POSITIVE: both `Type u` occurrences share the same level; `u` solves at 0
+-- for value-type instantiations.
+appU : forall (u : Universe) (a : Type u) (b : Type u). (a -> b) -> a -> b
+let appU f x = f x
+
+atValues : Bool
+let atValues = appU (\n -> True) 5
+
+-- POSITIVE: cumulativity feeds the same constraint set — instantiating `a`
+-- with Type0 (an inhabitant of Type1) forces u >= 1 on BOTH binders.
+atTypes : Type1
+let atTypes = appU (\t -> t) Type0
+
+-- NEGATIVE: `Type u : Type (u+1)` at the meta-level (§11.1); demanding
+-- `Type u : Type u` generates the unsatisfiable constraint u+1 <= u, so
+-- compilation must fail (§11.1.2). No registered family names universe
+-- unsatisfiability; the general type-mismatch family is asserted.
+selfTy : (u : Universe) -> Type u
+let selfTy u = Type u                                    --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): FAIL — 'Universe' is not implemented: every use is E_NAME_UNRESOLVED (plus cascade), so explicit universe variables and their constraints are untestable today

@@ -7,7 +7,7 @@ replaced native path-keyed ownership reattachment with node-local KBackendIR own
 [`PERCEUS-S5-PLAN.md`](PERCEUS-S5-PLAN.md) for the current backend IR boundary.
 
 Status: **S2.3a + S2.3b LANDED + independently reviewed SOUND** (`5723ec0`, `272be14`), with **S2.3c
-implemented by the primitive convention table** and **S2.3d implemented for locally-proven path-local dead
+implemented by the primitive convention table** and **S2.3d implemented for locally-proven branch-local dead
 owned flat locals**. S3.2 has since tightened the C backend entry gates needed by free-on-zero: returning-arm
 match cleanup and owned projection results through nested/control expressions. S2.2 (dup) +
 S2.3-first-cut landed in `d5624e6` but `kdrop` fired ~0×; S2.3a completed the match-destructure cell-drop
@@ -58,11 +58,13 @@ as a peephole on the unique path.
 ## (b) S2.3d — per-path DEAD-BINDER drops
 
 Implemented by preserving the branch-local omission fact instead of asking only whether a binder has a
-`LastUse` anywhere. `Ownership.walk` records `oiBranchDropSites :: Map [Int] [BinderId]`: for each `CIf`
-arm and `CMatch` arm, binders live in the branch join but absent from that arm's live-in set are listed at
-the arm path. `C.hs` resolves those `BinderId`s against the current flat-local metadata (`lvalue`, binder id,
-owns-reference bit) and emits `kdrop(local)` at branch entry after the condition/pattern has selected the
-path. Read-only projection aliases add owner dependencies to the branch-drop decision, so an owner is not dropped
+`LastUse` anywhere. In the historical S2/S3 path-keyed implementation, `Ownership.walk` recorded branch
+drop sites by structural arm path. In the current S5 implementation, native branch drops are node-local
+`BackendMeta` facts, while the observe-only `Ownership.hs` dump records branch-drop sites by deterministic
+owner-local ordinal. In both forms, binders live in the branch join but absent from that arm's live-in set are
+listed for that selected arm. `C.hs` resolves those binders against the current flat-local metadata (`lvalue`,
+binder id, owns-reference bit) and emits `kdrop(local)` at branch entry after the condition/pattern has
+selected the path. Read-only projection aliases add owner dependencies to the branch-drop decision, so an owner is not dropped
 on a path where a raw borrowed record projection remains live; constructor/data projection paths that first `kdup`
 the field remain free to drop the owner. Guarded match arms analyze the guard with the later-arm failure
 continuation: if a later arm actually uses a consumed guard argument, the guard use is `NonLast` and codegen emits
@@ -169,7 +171,7 @@ value flows into*, not only the binder's marker.
 | **S2.3a** | match-destructure cell drop (a) — the biggest fire-count win | underflow-assert clean; net → 0; byte-identical |
 | **S2.3b** | consuming-vs-read flag (c); close-drops stay conservative outside the S3.2-proven projection-result subset | assert clean; metadata pins transfer vs read |
 | **S2.3c** | prim-convention table (d): classify audited primitive publish/read positions; full caller-drop completion still waits for caller-side transfer normalization | `primArgConventionS23c`; ref/TVar/FiberRef ownership regressions; assert clean |
-| **S2.3d** | per-path dead-binder drops (b)+(e) for locally-owned flat constructor let-locals, including guarded post-guard omissions, after the path-local ownership facts are explicit | `perceusS23dDeadBinderDrops`; branch-drop miss diagnostic; assert clean; net trends down |
+| **S2.3d** | per-path dead-binder drops (b)+(e) for locally-owned flat constructor let-locals, including guarded post-guard omissions, after the branch-local ownership facts are explicit | `perceusS23dDeadBinderDrops`; branch-drop miss diagnostic; assert clean; net trends down |
 
 **Risks (under the Boehm backstop: leak/assert now; S3 UAF risks called out explicitly):** **R-double-drop (highest)** — cell-drop +
 sibling per-path drop + a move on the same cell; guard by disjoint conditions (cell-drop only when scrutinee
@@ -223,7 +225,8 @@ emission: the current fail-closed gate is `validateKBackendIR` over node-local b
   sub-stages.
 - `src/Kappa/Ownership.hs` — position-aware consuming flag in `walk`, forced global/local parameter
   telescopes, pattern-bound field type recovery, additive `OwnInfo` consume/read and branch-drop fields, and
-  cross-check validation for the stored side tables.
+  cross-check validation for the observe-only side tables. S5.B4 re-keyed the dump/cross-check producer away
+  from structural child paths to owner-local ordinals; native codegen uses KBackendIR node metadata.
 - `src/Kappa/Backend/Repr.hs` — `argConvSelect`/`argConv` plus `argConvSelectGlobal`; the audited
   primitive convention table is S2.3c.
 - `src/Kappa/Prelude.hs` — storing `newRef`/`writeRef`/`__newArray`/`__arrayWrite` vs borrowing

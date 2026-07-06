@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+--! assertDiagnostic warning W_UNICODE_NON_NORMALIZED_SOURCE_TEXT
+--! assertEval resolved 42
+
+-- §5.1A: backtick identifiers with profile-valid contents MUST
+-- contribute the same strictNameKey (NFKC-normalized spelling) and
+-- strongVisualNameKey as the corresponding unquoted identifier, and
+-- these checks apply to backtick spellings independently of the
+-- `unicode-names` gate (§2.1A, §5.1). A non-normalized backtick
+-- spelling MAY be rejected with E_UNICODE_NAME_NON_NORMALIZED or MAY be
+-- accepted with W_UNICODE_NON_NORMALIZED_SOURCE_TEXT (with
+-- deterministic recorded keys); this implementation takes the accepting
+-- branch (§3.1.3 hygiene warning), under which the decomposed
+-- reference and the composed declaration share one strictNameKey and
+-- MUST resolve to the same binding.
+
+module main
+
+`café` : Int
+let `café` = 42
+
+resolved : Int
+let resolved = `café`
+
+-- STATUS(a51e1bf): FAIL — backtick lookup keys are raw source bytes, not NFKC strictNameKey: the decomposed reference is E_NAME_UNRESOLVED (the W_UNICODE_NON_NORMALIZED_SOURCE_TEXT hygiene warning itself IS emitted)

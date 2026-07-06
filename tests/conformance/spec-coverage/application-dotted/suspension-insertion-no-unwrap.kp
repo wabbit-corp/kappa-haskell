@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 3
+
+-- §16.1.7.1 Step 0 (L16434-16449): suspension insertion only wraps; it
+-- never unwraps and never converts between suspension kinds. A
+-- Thunk (Thunk Int) is neither a Thunk Int nor an Int; a Need value does
+-- not satisfy a Thunk demand and vice versa.
+module main
+
+forceIt : (thunk x : Int) -> Int
+let forceIt (thunk x : Int) : Int = force x
+
+needIt : (lazy x : Int) -> Int
+let needIt (lazy x : Int) : Int = force x
+
+nested : Thunk (Thunk Int)
+let nested = thunk (thunk 1)
+
+-- NEGATIVE: no unwrapping of an over-suspended argument.
+badNested : Int
+let badNested = forceIt nested --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: Need Int does not satisfy a Thunk Int demand.
+badNeed : Int
+let badNeed = forceIt (lazy 2) --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: Thunk Int does not satisfy a Need Int demand.
+badThunk : Int
+let badThunk = needIt (thunk 3) --!! kappa.application.argument-mismatch

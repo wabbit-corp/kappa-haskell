@@ -1,0 +1,7 @@
+module klib
+
+data Rose : Type =
+    Petal Int
+
+trait Marked a =
+    mark : a -> Int

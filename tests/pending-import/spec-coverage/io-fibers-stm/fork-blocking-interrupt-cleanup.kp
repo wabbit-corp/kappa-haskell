@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "cleaned-up\ninterrupt-returned\ninterrupted:Requested\n"
+
+-- Combination §18.1.4 + §18.1.11 + §18.1.12: a forked child parks inside
+-- `blocking` with an ensuring finalizer installed. Interrupting it must
+-- deliver through the blocking region (blocking preserves interruption
+-- behavior), run the finalizer, and only then let `interrupt` return
+-- (interrupt waits for termination AND finalizers) — no resource leak.
+module main
+
+childBody : Promise Void Unit -> UIO Unit
+let childBody ready = do
+    let _ <- completePromise ready (Success ())
+    blocking (sleepFor (seconds 10))
+
+child : Promise Void Unit -> UIO Unit
+let child ready = ensuring (childBody ready) (printlnString "cleaned-up")
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    -- interrupt completes only after the child has terminated and all of
+    -- its finalizers have run (§18.1.4), so "cleaned-up" precedes this:
+    interrupt f
+    printlnString "interrupt-returned"
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
+      case Failure c -> printlnString "other"

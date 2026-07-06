@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.9 (Spec.md L13403-L13456): implicit record fields are omitted or
+-- supplied with `@label = expr` at construction, and — the point of this
+-- test — are UNPACKED into the local implicit context when the record is
+-- bound: after `let p = ...`, `p.m : Marker Integer` is available as
+-- implicit evidence, so a Marker-requiring call needs no manual routing.
+-- Marker deliberately has NO global instance: the only possible evidence
+-- is the record field, so success proves unpacking happened.
+module main
+
+trait Marker (a : Type) =
+    label : a -> String
+
+type Packed = (id : Integer, @m : Marker Integer)
+
+-- construction: explicitly supplying an implicit field with @label = expr
+pack : Marker Integer => Integer -> Packed
+let pack (@d : Marker Integer) (n : Integer) : Packed = (id = n, @m = d)
+
+-- elimination: direct binding unpacks p.m into the implicit context
+consume : Packed -> String
+let consume p = label p.id
+
+-- STATUS(a51e1bf): FAIL — construction with @m = d is accepted, but
+-- binding does not unpack the implicit field: `label p.id` dies with
+-- E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type
+-- Marker Integer". §13.2.9 transparent unpacking is unimplemented.

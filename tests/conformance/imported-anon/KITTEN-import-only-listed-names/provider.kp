@@ -1,0 +1,10 @@
+-- Spec: modules.exports (§8.4), modules.imports.item_kind_selectors (§8.3.1).
+module provider
+
+-- Default-exported (no @PrivateByDefault attribute, no `private` modifier).
+
+exportedA : Int
+let exportedA = 1
+
+exportedB : Int
+let exportedB = 2

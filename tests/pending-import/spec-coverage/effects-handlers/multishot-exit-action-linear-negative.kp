@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+
+-- §18.1.20 / §18.1.20.1: a pending exit action (defer) that holds live
+-- quantity-1 state makes the captured suffix of a multi-shot operation
+-- non-duplicable — resuming twice would run the exit action twice and
+-- consume the linear value twice; compilation fails at the operation site.
+module main
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                defer (if leInt x 0 then pure () else pure ())
+                let b <- Choice.choose ()
+                if b then 1 else 2
+
+        let handled =
+            deep handle Choice comp with
+                case return y -> pure y
+                case choose _ k ->
+                    do
+                        let a <- k True
+                        let _ <- k False
+                        pure a
+
+        runPure handled

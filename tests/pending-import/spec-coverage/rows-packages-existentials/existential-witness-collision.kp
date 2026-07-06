@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.11 surface-name restrictions: "In the surface view used by
+-- explicit-witness existential sealing, a witness binder name must not
+-- collide with any source-visible field label of a record-shaped
+-- payload." Here the witness binder `value` collides with the payload
+-- field label `value`, so the explicit-witness seal must be rejected.
+module main
+
+bad : exists (value : Type). (value : Int)
+let bad = seal exists (value = Int). (value = 1) as exists (value : Type). (value : Int)
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; the witness/payload-field name collision in the explicit-witness seal surface view is not detected

@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "as:shed-load\nforkAs:rebalance\n"
+
+-- §18.1.4 (Spec.md L18851-18854): interruptAs / interruptForkAs carry
+-- explicit structured interrupt metadata; §18.1.2: InterruptTag.Custom
+-- permits library-defined interruption reasons. The custom tag MUST be
+-- preserved in the target fiber's terminal Exit.
+module main
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    ioPure 0
+
+report : String -> Exit Void Int -> UIO Unit
+let report label ex = match ex
+    case Success v -> printlnString (label ++ ":completed")
+    case Failure (Interrupt (InterruptCause (Custom t) by)) -> printlnString (label ++ ":" ++ t)
+    case Failure c -> printlnString (label ++ ":other")
+
+main : UIO Unit
+let main = do
+    -- interruptAs: waits for termination, custom tag preserved
+    let f1 <- fork sleeper
+    interruptAs (InterruptCause (Custom "shed-load") None) f1
+    let e1 <- await f1
+    report "as" e1
+    -- interruptForkAs: fire-and-forget, custom tag preserved
+    let f2 <- fork sleeper
+    interruptForkAs (InterruptCause (Custom "rebalance") None) f2
+    let e2 <- await f2
+    report "forkAs" e2

@@ -1,0 +1,21 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE, E_URL_IMPORT_REF_PIN_REQUIRES_LOCK
+-- §3.2.15: URL-pinning and lockfile-identity failures MUST use family
+-- kappa.package.reproducibility, and the message/payload must carry a
+-- repair hint (pinning / lockfile).
+--! assertDiagnosticFamily error kappa.package.reproducibility
+--! assertDiagnosticMatch (pin|lock)
+
+-- §3.2.15, §8.3.2-3: in package mode an unpinned URL import is a
+-- reproducibility failure, and a ref-pinned URL import additionally
+-- requires the resolved digest recorded in a lockfile.
+module main
+
+import "https://example.com/lib" as remote --!! E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE
+import "https://example.com/lib2#ref:main" as remote2 --!! E_URL_IMPORT_REF_PIN_REQUIRES_LOCK
+
+value : Int
+let value = 1
+-- STATUS(a51e1bf): PASS

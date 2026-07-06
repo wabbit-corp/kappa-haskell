@@ -1,0 +1,39 @@
+-- §14.5.1 (Spec L15017-L15038): derived Hashable is structurally aligned
+-- with Eq — erased fields do not contribute to the runtime hash (they are
+-- not runtime-observable through Eq), and record fields hash in canonical
+-- order, so field order in a record literal cannot affect the hash.
+--! mode run
+--! assertStdout "True\nTrue\nTrue\n"
+module main
+
+import std.hash.*
+
+data Cred : Type =
+    MkCred (@0 audit : Int) (user : Int)
+
+derive Eq Cred
+derive Hashable Cred
+
+type Pt = (x : Int, y : Int)
+
+-- Hashable refines Eq (§14.1.3), so the record needs both derivations.
+derive Eq Pt
+derive Hashable Pt
+
+hEq : forall (a : Type). (@_ : Hashable a) -> a -> a -> Bool
+let hEq l r = hashWith defaultHashSeed l == hashWith defaultHashSeed r
+
+main : UIO Unit
+let main = do
+    -- the erased 'audit' fields differ; derived Eq and the derived hash
+    -- must both ignore them (L15026-L15027)
+    println (hEq (MkCred @1 42) (MkCred @2 42))
+    println (MkCred @1 42 == MkCred @2 42)
+    -- record-literal source order is canonicalized before hashing
+    -- (L15036-L15038)
+    println (hEq ((x = 1, y = 2) : Pt) ((y = 2, x = 1) : Pt))
+
+-- STATUS(a51e1bf): FAIL — derive declarations are unsupported
+-- (E_UNSUPPORTED on all four derives; the program never runs). A
+-- handwritten-instance variant of the same runtime assertions passes, so
+-- the expected output is achievable on this runtime.

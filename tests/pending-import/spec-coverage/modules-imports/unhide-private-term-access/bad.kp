@@ -1,0 +1,5 @@
+module bad
+
+-- §8.5.1: a private item "cannot be imported by ordinary import forms";
+-- only an explicit `unhide` import item may request it.
+import ulib.(helper) --!! E_IMPORT_ITEM_NOT_FOUND

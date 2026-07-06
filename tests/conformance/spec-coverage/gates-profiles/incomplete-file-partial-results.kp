@@ -1,0 +1,16 @@
+-- §3.1.17: queries over a syntactically incomplete file MUST return
+-- partial results rather than failing wholesale: the complete leading
+-- declaration still elaborates and answers type queries, while the
+-- unterminated tail is reported from a renderable (synthetic) origin.
+--! mode check
+--! assertType whole Int
+--! assertDiagnosticFamily error kappa-hs.parse.error
+module main
+
+whole : Int
+let whole = 40
+
+unfinished : Int
+let unfinished = (1
+
+-- STATUS(a51e1bf): PASS

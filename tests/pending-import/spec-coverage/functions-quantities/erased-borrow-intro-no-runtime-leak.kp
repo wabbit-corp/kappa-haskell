@@ -1,0 +1,26 @@
+-- §12.2 (L10439 "0 ... no runtime use is permitted"; ambient-demand rule
+-- L10961-10964: the demand imposed on argument ai is δ·qi) and §12.2.3
+-- borrow introduction (L11168+): supplying an ERASED binding to a
+-- runtime borrowed parameter `(& p : A)` is a runtime-relevant demand
+-- (δ = 1, qi = ω & borrow) of a quantity-0 binding and MUST be rejected.
+-- Borrow introduction is an elaboration rule; it does not license
+-- observing an erased value at runtime.
+module main
+
+data Proof : Type =
+    MkProof
+
+peek : (& p : Proof) -> Int
+let peek (& p : Proof) : Int = 5
+
+-- NEGATIVE: erased ordinary binder lent to a runtime borrow.
+badPlain : (0 x : Proof) -> Int
+let badPlain (0 x : Proof) : Int = peek x --!! E_QTT_ERASED_RUNTIME_USE
+
+-- NEGATIVE: erased borrowed binder re-lent to a runtime borrow.
+badBorrowed : (0 & x : Proof) -> Int
+let badBorrowed (0 & x : Proof) : Int = peek x --!! E_QTT_ERASED_RUNTIME_USE
+
+--! mode check
+--! assertErrorCount 2
+-- STATUS(a51e1bf): FAIL — the compiler accepts both functions (0 errors): lending a quantity-0 binding to a runtime `&` parameter via borrow introduction bypasses the erased-runtime-use check (direct runtime uses of the same binders ARE rejected with E_QTT_ERASED_RUNTIME_USE).

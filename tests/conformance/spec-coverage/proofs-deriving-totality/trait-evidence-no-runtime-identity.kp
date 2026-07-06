@@ -1,0 +1,28 @@
+-- §14.4 (Spec L14926-L14932): trait-evidence proof irrelevance is
+-- propositional, NOT representational — it does not expose a generic
+-- equality, hash, serialization, or runtime identity operation for
+-- evidence values, and it does not make a missing trait goal solvable.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+module main
+
+import std.hash.*
+
+-- NEGATIVE: no structural (==) on evidence (would need an Eq (Eq Int)
+-- instance, which proof irrelevance does not conjure).
+evCmp : Bool
+let evCmp =
+    block
+        let d1 = summon (Eq Int)
+        let d2 = summon (Eq Int)
+        d1 == d2 --!! kappa.implicit.unsolved
+
+-- NEGATIVE: no implicit Hashable for evidence values either.
+evHash : HashCode
+let evHash =
+    block
+        let d = summon (Eq Int)
+        hashWith defaultHashSeed d --!! kappa.implicit.unsolved
+
+-- STATUS(a51e1bf): PASS

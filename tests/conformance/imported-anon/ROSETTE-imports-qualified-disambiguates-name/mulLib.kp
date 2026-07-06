@@ -1,0 +1,6 @@
+-- Spec: modules.imports.imported_binding_collisions (§8.3.3),
+--       modules.names.dotted_name_resolution_dotted (§7.3).
+module mulLib
+
+public combine : Int -> Int -> Int
+let combine x y = x * y

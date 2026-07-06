@@ -1,0 +1,17 @@
+--! mode check
+--! assertDiagnostic error E_NOT_A_TYPE
+
+-- §11.4.2 scope guard: the coercion b ⟼ (b = True) applies ONLY to
+-- implicit binder annotations, the left of b => T, and record/tuple
+-- field types. In all other type positions users MUST write (b = True)
+-- explicitly. A function RESULT type and a top-level value signature
+-- are not among the three forms, so a bare boolean there is not a type.
+module main
+
+bad1 : (n : Int) -> n == 1 --!! E_NOT_A_TYPE
+let bad1 n = refl
+
+flag : 1 == 1 --!! E_NOT_A_TYPE
+let flag = refl
+
+-- STATUS(a51e1bf): PASS

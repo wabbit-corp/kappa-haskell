@@ -1,0 +1,4 @@
+--! mode check
+--! assertNoErrors
+--! assertEval totalAB 39
+--! assertEval totalBA 39

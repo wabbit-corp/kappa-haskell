@@ -1,0 +1,28 @@
+-- Perceus S5.B regression: a direct worker call whose callee tail-returns a
+-- projection must not be treated as an owned result unless the worker actually
+-- materializes that projection as owned.  Current emission returns the borrowed
+-- field for this shape, so caller-side drops/reuse must fail closed.
+module main
+
+data Box : Type =
+    MkBox String
+
+data Holder : Type =
+    Holder (box : Box)
+
+project : Holder -> Box
+let project h = h.box
+
+render : Box -> String
+let render b =
+    match b
+    case MkBox s -> s
+
+use : Bool -> String
+let use keep =
+    let x = project (Holder (MkBox "field"))
+    if keep then render x
+    else "skipped"
+
+main : UIO Unit
+let main = printlnString (stringAppend (use True) (stringAppend "|" (use False)))

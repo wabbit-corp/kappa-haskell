@@ -1,0 +1,34 @@
+-- Spec: §10.1 (L8466-8474). A constructor default is checked against the
+-- ELABORATED parameter type after binder sugar: in (thunk x : A = e) the
+-- default checks against Thunk A, in (lazy x : A = e) against Need A.
+-- Explicit suspension values are accepted; a default of an unrelated type
+-- is a type error. (Whether expected-type-directed suspension insertion,
+-- stated for SUPPLIED arguments in §10.1.1 L8555-8559, also applies to a
+-- bare default of type A is left ambiguous by the spec and not pinned.)
+
+module main
+
+--! mode check
+
+data Delayed : Type =
+    MkDelayed (label : String) (thunk value : Int = thunk 41)
+
+-- POSITIVE: default thunk 41 : Thunk Int checks against Thunk Int.
+useDefault : Delayed
+let useDefault = MkDelayed { label = "d" }
+
+data Cached : Type =
+    MkCached (label : String) (lazy value : Int = lazy 41)
+
+-- POSITIVE: default lazy 41 : Need Int checks against Need Int
+-- (closed term, so the §16.2.2 Shareable capture condition holds).
+useLazyDefault : Cached
+let useLazyDefault = MkCached { label = "c" }
+
+-- NEGATIVE: the default must check against Thunk Int; a String cannot.
+data BadDelayed : Type =
+    MkBadDelayed (label : String) (thunk value : Int = "nope") --!! kappa.type.mismatch
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): PASS

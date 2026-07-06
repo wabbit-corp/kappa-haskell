@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.row.tail-quantity
+
+-- §13.2.10 hidden-field discard: "If the hidden part contains an
+-- abstract residual record tail r, sealing requires RecTailSatisfies r 0
+-- unless that tail is otherwise explicitly consumed, transferred, or
+-- retained by S." Neither receiver supplies that evidence (v1 cannot
+-- even spell it), so both seals must be rejected; §3.2 (L3113-3121,
+-- L4008 "residual-row tail quantity failures" MUST use the standard
+-- family) mandates kappa.row.tail-quantity for tail-discard demands.
+module main
+
+-- consuming receiver: the tail is owned and then silently discarded
+hideTail1 : forall (r : RecRow). (1 rec : (x : Int | r)) -> (x : Int,)
+let hideTail1 (@0 r : RecRow) (rec : (x : Int | r)) : (x : Int,) =
+    seal rec as (x : Int,) --!! kappa.row.tail-quantity
+
+-- unrestricted receiver: RecTailSatisfies r 0 is still not derivable
+-- for an abstract tail, so the seal is rejected as well
+hideTailW : forall (r : RecRow). (rec : (x : Int | r)) -> (x : Int,)
+let hideTailW (@0 r : RecRow) (rec : (x : Int | r)) : (x : Int,) =
+    seal rec as (x : Int,) --!! kappa.row.tail-quantity
+
+-- STATUS(a51e1bf): FAIL — compiler rejects both seals but as generic kappa.type.mismatch, not the §3.2.4-mandated kappa.row.tail-quantity family (rejection behavior itself is spec-conformant)

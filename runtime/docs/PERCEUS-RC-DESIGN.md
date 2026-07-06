@@ -124,7 +124,10 @@ explicit-control-flow core
   same-size constructor writes fields **in place** when the token is live. A unique k-field node rebuild
   becomes **0 alloc + k field stores** instead of malloc + k stores + free. Constraints: object unique at
   runtime; token size matches the alloc; drop and alloc in the same frame/branch. Proof target: Koka's
-  red-black-tree insert is ~19% faster than hand-tuned C++ `std::map` with this.
+  red-black-tree insert is ~19% faster than hand-tuned C++ `std::map` with this. In Kappa's current
+  uniform-boxed representation, S5.B gates the reuse/allocation-reduction mechanism and carries the
+  `std::map` comparison as a tracked report; matching Koka's headline requires the representation/unboxing
+  program (see [PERCEUS-S5-PLAN.md](PERCEUS-S5-PLAN.md) §4).
 - Perceus is **garbage-free** (Thm 4) on the strict core — at every step every heap object is reachable
   from the erased program, i.e. no float-ing garbage between a last-use and its drop.
 
@@ -241,7 +244,7 @@ The collector contract (interior-pointers OFF, 8-byte alignment) is already enfo
   validates the counts against a ground-truth collector before any RC-free can cause a use-after-free.
 - **S3 — Flip free-on-zero** for strict (acyclic ⇒ garbage-free) data. Immediates skip RC (`kis_imm`).
 - **S4 — Thread-shared split** + atomic fast/slow path at the §5 publish points.
-- **S5 — Drop-guided reuse (FBIP)** — the n-ary-ctor allocation win; the rbtree-class result lands here.
+- **S5 — Drop-guided reuse (FBIP)** — the n-ary-ctor allocation win; the rbtree-class reuse/allocation-reduction result lands here.
 - **S6 — Borrowing (opt-in only)** + **inferred** FIP-style in-place analysis (FP², Lorenzen/Leijen/Swierstra
   2023): the reuse-credit / `◇ₖ` accounting that yields the zero-alloc in-place guarantee is **derived from the
   code itself** — from the quantity/borrow facts (`1` owned / `&` borrowed) and the already-computed used-once

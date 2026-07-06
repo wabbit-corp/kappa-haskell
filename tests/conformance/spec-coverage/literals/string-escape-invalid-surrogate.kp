@@ -1,0 +1,11 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_STRING_ESCAPE_INVALID
+
+-- §6.3.1/§6.3.6: \uNNNN must not denote a surrogate code point —
+-- no String value may contain surrogates, so "\uD800" in an ordinary
+-- STRING literal (not just a scalar literal) is a compile-time error.
+
+badSurrogate : String
+let badSurrogate = "\uD800" --!! E_STRING_ESCAPE_INVALID
+-- STATUS(a51e1bf): PASS

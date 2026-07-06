@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "interrupted:Requested\nvalue:0\n"
+
+-- §18.1.13 (Spec.md L19314-19315): if interruption is requested before a
+-- transaction commits, the current attempt is abandoned and the
+-- interruption is taken at the next interruption point outside the commit.
+-- The abandoned attempt is an aborted transaction, so its writes MUST NOT
+-- be visible (no partial writes); the fiber terminates with Interrupt.
+module main
+
+parked : TVar Int -> STM Unit
+let parked a = do
+    writeTVar a 5
+    retry
+
+main : UIO Unit
+let main = do
+    let a <- atomically (newTVar 0)
+    let f <- fork (atomically (parked a))
+    -- give the transaction time to attempt, write, and park in retry
+    sleepFor (millis 25)
+    interrupt f
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
+      case Failure c -> printlnString "other"
+    let v <- atomically (readTVar a)
+    printlnString ("value:" ++ showInt v)

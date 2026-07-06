@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "loser-cleanup\nleft:1\n"
+
+-- Imported from:
+--   Cats Effect IOSuite / race closes the loser eagerly
+--   ZIO ZIOSpec / interrupt waits for finalizer
+-- Spec target: §18.1.6, race interrupts the losing branch and completes only
+-- after the loser's finalizers have run.
+module main
+
+import std.prelude.(type Exit(..), type RaceResult(..))
+
+left : Promise Void Unit -> UIO Int
+let left ready = do
+    awaitPromise ready
+    ioPure 1
+
+right : Promise Void Unit -> UIO Int
+let right ready = do
+    defer (printlnString "loser-cleanup")
+    let ok <- completePromise ready (Success Unit)
+    let _ = ok
+    sleepFor (seconds 10)
+    ioPure 2
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (race (left ready) (right ready))
+    let ex <- await f
+    match ex
+      case Success rr -> match rr
+        case LeftWins v -> printlnString ("left:" ++ showInt v)
+        case RightWins v -> printlnString ("right:" ++ showInt v)
+      case Failure _ -> printlnString "failed"

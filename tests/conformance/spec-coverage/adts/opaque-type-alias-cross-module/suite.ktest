@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1

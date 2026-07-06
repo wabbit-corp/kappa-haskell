@@ -1,0 +1,9 @@
+module main
+
+-- §8.3: `ctorAll` may not be combined with `itemAlias`, so
+-- `import M.(type T(..) as U)` is ill-formed. Import the type and the
+-- constructors separately when aliases are desired.
+import klib.(type Rose(..) as Tree) --!! E_IMPORT_ITEM_MALFORMED
+
+--! assertErrorCount 1
+-- STATUS(a51e1bf): PASS

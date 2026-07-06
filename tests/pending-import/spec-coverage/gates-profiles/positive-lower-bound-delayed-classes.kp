@@ -1,0 +1,28 @@
+-- §3.1.19 delayed uses: the diagnostic MUST distinguish a use inside an
+-- UNCALLED CLOSURE from a use inside an UNFORCED THUNK — §3.2.5 requires
+-- the delayed-use classification in structured payload — a generic
+-- "dropped without being consumed" message does not satisfy the
+-- distinction requirement.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertDiagnosticPayload error kappa.quantity.positive-lower-bound /payload/delayedUseClassification uncalled-closure
+--! assertDiagnosticPayload error kappa.quantity.positive-lower-bound /payload/delayedUseClassification unforced-thunk
+--! assertDiagnosticMatch uncalled closure
+--! assertDiagnosticMatch unforced thunk
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+closureCase : (>=1 x : Int) -> Unit
+let closureCase x =
+    let f = \() -> strictId x
+    () --!! kappa.quantity.positive-lower-bound
+
+thunkCase : (>=1 y : Int) -> Unit
+let thunkCase (>=1 y : Int) : Unit =
+    let t = thunk (strictId y)
+    in () --!! kappa.quantity.positive-lower-bound
+
+-- STATUS(a51e1bf): FAIL — delayed uses are not classified: payload is kind 'none' (no §3.2.5 delayed-use classification) and uncalled closure vs unforced thunk get the same generic drop message

@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+--! assertEval sizedOk 3
+
+-- §18.1.15: operation signatures may be dependently typed — the declared
+-- result type may mention an earlier value parameter. The continuation k
+-- accepts a payload at the instantiated dependent type, and the call site
+-- refines the operation result accordingly (here Sized 3).
+module main
+
+data Sized (n : Nat) : Type =
+    MkSized (tag : Int)
+
+effect Alloc =
+    1 alloc : (n : Nat) -> Sized n
+
+useThree : Sized 3 -> Int
+let useThree s =
+    match s
+        case MkSized t -> t
+
+comp : Eff <[Alloc : Alloc]> Int
+let comp =
+    do
+        let s <- Alloc.alloc 3
+        pure (useThree s)
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Alloc comp with
+        case return x -> pure x
+        case alloc n k -> k (MkSized 3)
+
+sizedOk : Int
+let sizedOk = runPure handled

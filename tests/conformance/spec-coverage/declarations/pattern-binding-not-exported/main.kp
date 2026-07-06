@@ -1,0 +1,16 @@
+module main
+
+-- §9.2 (L7873): pattern-bound names never enter the export surface, so
+-- importing one fails; a simple-name export from the same module works.
+
+import plib.(localUse)
+import plib.(a)
+
+ok : Int
+let ok = localUse
+
+bad : Int
+let bad = a
+
+--! assertDiagnosticCodes E_IMPORT_ITEM_NOT_FOUND, E_NAME_UNRESOLVED
+-- STATUS(a51e1bf): PASS

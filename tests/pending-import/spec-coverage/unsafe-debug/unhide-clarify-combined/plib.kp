@@ -1,0 +1,9 @@
+module plib
+
+-- items that are BOTH private (§8.5.1) and opaque (§8.5.2), so an importer
+-- needs `unhide` for access and `clarify` for transparency.
+secretA : Int
+private opaque let secretA = 11
+
+secretB : Int
+private opaque let secretB = 22

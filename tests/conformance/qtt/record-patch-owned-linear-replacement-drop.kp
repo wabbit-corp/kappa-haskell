@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §12.2.6: replacing a linear field in an owned record does not consume
+-- or transfer the old field value. The old field must have been moved
+-- already; otherwise the patch silently drops it.
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Cell = (count : Int, 1 tok : Token)
+
+bad : (1 c : Cell) -> Cell
+let bad c =
+    c.{ tok = MkToken 9 }
+
+good : (1 c : Cell) -> Cell
+let good c =
+    block
+        let 1 old = c.tok
+        c.{ tok = old }

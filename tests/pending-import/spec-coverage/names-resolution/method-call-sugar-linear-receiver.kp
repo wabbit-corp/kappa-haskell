@@ -1,0 +1,27 @@
+-- §7.4 elaboration + §12.2: `recv.name` elaborates as ONE DIRECT CALL to
+-- the chosen callable with recv inserted at its unique receiver-marked
+-- binder, and "the inserted receiver must typecheck against the chosen
+-- receiver binder" — so quantity accounting must agree with the explicit
+-- call form. Consuming a 1-quantity binder through the sugar twice must
+-- be rejected exactly like `consume r` twice (E_QTT_LINEAR_OVERUSE).
+module main
+
+data Res : Type =
+    MkRes (v : Int)
+
+let consume (1 this r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+ok : (1 r : Res) -> Int
+let ok (1 r : Res) : Int = r.consume
+
+bad : (1 r : Res) -> Int
+let bad (1 r : Res) : Int =
+    let a = r.consume
+    in let b = r.consume
+    in a + b
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+-- STATUS(a51e1bf): FAIL — the sugared r.consume bypasses receiver quantity accounting (0 errors); the explicit 'consume r' double use is correctly rejected with E_QTT_LINEAR_OVERUSE

@@ -1,0 +1,21 @@
+module main
+
+import lib
+
+-- §13.1.1 (Spec.md L12243-L12250): member identity is canonical across
+-- modules — a union type re-spelled here (in permuted order) is equal to
+-- lib.Payload, so values built against the local spelling flow into the
+-- imported consumer with no coercion, and vice versa.
+
+type Local = (| String | Integer |)
+
+fromLocal : Local -> lib.Payload
+let fromLocal u = u
+
+roundTrip : lib.Payload -> Local
+let roundTrip u = u
+
+useImported : String
+let useImported = lib.describe ((5 : Integer) : Local)
+
+-- STATUS(a51e1bf): PASS

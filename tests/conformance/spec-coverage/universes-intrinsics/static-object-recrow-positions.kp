@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.application.explicit-implicit-classifier
+
+-- §11.1.6.2: a static-object expression position expecting the classifier
+-- RecRow does not reinterpret ordinary record-type syntax: `(level : Int,)`
+-- remains a one-field record TYPE (classifier Type), so supplying it as an
+-- explicit implicit row payload is rejected. A bound row VARIABLE is a valid
+-- RecRow expression at the same position.
+module main
+
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name
+
+-- NEGATIVE: record-type literal supplied where RecRow is expected (also
+-- makes the record argument fail downstream, hence the second error).
+bad : String
+let bad = readName @((level : Int,)) (name = "x", level = 1)    --!! kappa.application.explicit-implicit-classifier
+
+-- POSITIVE: a row variable is an ordinary RecRow-classified compile-time
+-- expression at the same position.
+delegate : forall (r : RecRow). (name : String | r) -> String
+let delegate (@0 r : RecRow) (rec : (name : String | r)) : String = readName @r rec
+
+-- STATUS(a51e1bf): PASS

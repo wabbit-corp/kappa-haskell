@@ -1,0 +1,23 @@
+-- §14.5 (Spec L14990-L14996): a Phase 0 body macro MUST NOT inspect
+-- opaque representations unavailable to ordinary code at the splice site.
+-- Inspecting lib.Secret from outside its defining module fails with the
+-- structured kappa.deriving.shape diagnostic.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes KAPPA_DERIVING_SHAPE_OPAQUE_REPRESENTATION
+module main
+
+import lib.(Secret, mkSecret)
+import std.deriving.shape.*
+
+tagOf : forall (@0 a : Type). Syntax Type -> Syntax a -> Elab (Syntax String)
+let tagOf @a target value = do
+    let shape <- inspectAdt @a target
+    matchAdt shape value \ctor fields ->
+        stringSyntax ctor.renderName
+
+secretTag : Secret -> String
+let secretTag s =
+    $(tagOf @Secret '{ type Secret } '{ s }) --!! KAPPA_DERIVING_SHAPE_OPAQUE_REPRESENTATION
+
+-- STATUS(a51e1bf): PASS

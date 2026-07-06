@@ -1,0 +1,42 @@
+-- Spec: §10.1.3 (L8693-8731). Data-family arguments are uniform: there is no
+-- parameter/index split, and a constructor result may instantiate ANY family
+-- argument — including the first, which parameter/index implementations
+-- would freeze as a "parameter". Exhaustiveness must account for the forced
+-- equalities: at Shape Zero Zero the Wide case is impossible.
+
+module main
+
+--! mode check
+
+data Nat : Type =
+    Zero
+    Succ (n : Nat)
+
+-- Constructors instantiate the family arguments in different ways: Square
+-- forces both to the SAME binder value, Wide forces both to literals.
+data Shape (w : Nat) (h : Nat) : Type =
+    Square : (side : Nat) -> Shape side side
+    Wide   : Shape (Succ Zero) Zero
+
+-- POSITIVE: constructing at instantiated family arguments.
+sq : Shape (Succ Zero) (Succ Zero)
+let sq = Square (Succ Zero)
+
+wd : Shape (Succ Zero) Zero
+let wd = Wide
+
+-- POSITIVE: at w = Zero, h = Zero only Square can match (Wide forces
+-- w = Succ Zero); the single case must be exhaustive.
+zeroSide : Shape Zero Zero -> Nat
+let zeroSide s =
+    match s
+    case Square { side } -> side
+
+-- NEGATIVE: Square : Shape side side cannot inhabit Shape Zero (Succ Zero);
+-- the two family arguments are forced equal by the result type.
+bad : Shape Zero (Succ Zero)
+let bad = Square Zero --!! kappa.type.mismatch
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): PASS

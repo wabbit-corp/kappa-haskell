@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.row.lacks-failed
+
+-- §13.2.6/§13.2.7: a row-polymorphic pure extension carries a
+-- `LacksRec r z` premise. Instantiating `r` at a call site with a row
+-- that already contains `z` violates the lacks constraint. §3.2.9
+-- (L3066-3069) defines family kappa.row.lacks-failed for use "when a
+-- row-extension, variant injection, open row operation, or effect-row
+-- operation violates a lacks constraint".
+module main
+
+addZ :
+    forall (r : RecRow).
+    LacksRec r z =>
+    (1 rec : (x : Int | r)) -> (x : Int, z : Bool | r)
+let addZ (@0 r : RecRow) (@_ : LacksRec r z) (rec : (x : Int | r)) : (x : Int, z : Bool | r) =
+    rec.{ z := True }
+
+bad : Int
+let bad = (addZ (x = 1, z = False)).x --!! kappa.row.lacks-failed
+
+-- STATUS(a51e1bf): FAIL — compiler rejects, but as E_UNSOLVED_IMPLICIT (kappa.implicit.unsolved) rather than the §3.2.9-mandated kappa.row.lacks-failed family

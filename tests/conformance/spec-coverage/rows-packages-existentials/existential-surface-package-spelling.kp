@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.11 compatibility surface-package spelling: "For record-shaped
+-- payloads only, `seal e as exists ...` also accepts the full surface
+-- package spelling where e is a record that supplies both witness names
+-- and payload fields." For a NON-record payload the form must be
+-- rejected: there is no source-visible payload field, so only direct
+-- payload or explicit-witness introduction is available.
+module main
+
+-- POSITIVE: record-shaped payload, witness + payload in one record
+d : exists (a : Type). (value : Option a)
+let d = seal (a = Int, value = Some 1) as exists (a : Type). (value : Option a)
+
+-- the payload field is projectable as usual
+let projected = d.value
+
+-- NEGATIVE: non-record payload rejects the compatibility spelling
+bad : exists (a : Type). Option a
+let bad = seal (a = Int, payload = Some 1) as exists (a : Type). Option a
+
+-- STATUS(a51e1bf): PASS

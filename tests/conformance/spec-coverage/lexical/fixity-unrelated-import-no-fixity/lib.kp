@@ -1,0 +1,8 @@
+module lib
+
+infix left 60 (+++)
+(+++) : Int -> Int -> Int
+let (+++) x y = addInt x y
+
+unrelated : Int
+let unrelated = 1

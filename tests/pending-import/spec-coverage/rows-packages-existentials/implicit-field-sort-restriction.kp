@@ -1,0 +1,13 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.9 sort restriction: the type of an implicit record field must
+-- elaborate to a trait evidence type, a compile-time type (§11.1.6.1),
+-- or a boolean proposition (§11.4.2). "Ordinary computational data
+-- types such as String, Bytes, or IO e a cannot be marked as implicit
+-- record fields" — so `@s : String` must be rejected.
+module main
+
+type Bad : Type = (x : Int, @s : String)
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; the computational implicit field '@s : String' is not rejected

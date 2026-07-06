@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertDiagnosticFamily warning kappa.termination.failure
+
+-- Combination (§3.2.11 termination diagnostics × §17.1.1 GADTs, §15):
+-- structural recursion on a GADT-indexed vector verifies without any
+-- termination diagnostic — matching VCons refines the erased index and
+-- the tail is still recognized as structurally smaller. Recursing on
+-- the unchanged scrutinee must produce exactly one
+-- kappa.termination.failure diagnostic for the SCC.
+module main
+
+data PNat : Type =
+    Zero
+    Succ (n : PNat)
+
+data Vec (n : PNat) (a : Type) : Type =
+    VNil : Vec Zero a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (Succ n) a
+
+vlen : forall (@0 a : Type) (@0 n : PNat). Vec n a -> Int
+let vlen @a @n v =
+    match v
+    case VNil -> 0
+    case VCons _ tail -> 1 + vlen tail
+
+spin : forall (@0 a : Type) (@0 n : PNat). Vec n a -> Int
+let spin @a @n v = --!! W_TERMINATION_UNVERIFIED
+    match v
+    case VNil -> 0
+    case VCons _ tail -> spin v
+-- STATUS(a51e1bf): PASS

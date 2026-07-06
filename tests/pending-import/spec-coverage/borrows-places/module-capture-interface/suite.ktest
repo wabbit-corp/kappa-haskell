@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+--! assertType lib.makeGetter forall (s : Region). (&[s] x : Int) -> ((Unit -> Int) captures (s))

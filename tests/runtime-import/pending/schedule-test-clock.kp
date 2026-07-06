@@ -18,12 +18,12 @@ import std.time.(term seconds)
 
 bump : Ref Int -> UIO Unit
 let bump ref = do
-  n <- readRef ref
+  let n <- readRef ref
   writeRef ref (n + 1)
 
 failOnceThenSucceed : Ref Int -> IO String Unit
 let failOnceThenSucceed ref = do
-  n <- readRef ref
+  let n <- readRef ref
   writeRef ref (n + 1)
   if n == 0 then
     raise "retry"
@@ -32,24 +32,24 @@ let failOnceThenSucceed ref = do
 
 main : UIO Unit
 let main = do
-  r0 <- newRef 0
+  let r0 <- newRef 0
   repeatSchedule (recurs 0) (bump r0)
-  n0 <- readRef r0
+  let n0 <- readRef r0
   printlnString ("recurs0:" ++ showInt n0)
 
-  r2 <- newRef 0
+  let r2 <- newRef 0
   repeatSchedule (recurs 2) (bump r2)
-  n2 <- readRef r2
+  let n2 <- readRef r2
   printlnString ("recurs2:" ++ showInt n2)
 
-  rr <- newRef 0
-  _ <- retrySchedule once (failOnceThenSucceed rr)
-  attempts <- readRef rr
+  let rr <- newRef 0
+  let _ <- retrySchedule once (failOnceThenSucceed rr)
+  let attempts <- readRef rr
   printlnString ("retry-once:" ++ showInt attempts)
 
   withTestClock (do
-    gate <- newPromise @Unit
-    sleeper <- fork (do
+    let gate <- newPromise @Unit
+    let sleeper <- fork (do
       sleepFor (seconds 5)
       completePromise gate (Success Unit)
     )

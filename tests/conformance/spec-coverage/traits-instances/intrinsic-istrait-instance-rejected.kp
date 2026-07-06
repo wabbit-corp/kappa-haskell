@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_INSTANCE_HEAD
+
+-- §14.1.2 (Spec.md L14166-L14200) + §14.4 (L14890-L14895): IsTrait is an
+-- intrinsic trait whose evidence introduction is compiler-owned; "User
+-- source MUST NOT define IsTrait instances." A user-written instance
+-- declaration for IsTrait is rejected; only compiler-synthesized evidence
+-- exists for well-formed full trait applications.
+module main
+
+trait Named (a : Type) =
+    nameOf : a -> String
+
+instance Named Int =
+    let nameOf n = "int"
+
+-- NEGATIVE: user instance for the intrinsic trait IsTrait.
+instance IsTrait (Named Int) = --!! E_INSTANCE_HEAD
+
+-- POSITIVE: ordinary user instances for ordinary traits stay accepted.
+useNamed : String
+let useNamed = nameOf 5
+
+-- STATUS(a51e1bf): PASS

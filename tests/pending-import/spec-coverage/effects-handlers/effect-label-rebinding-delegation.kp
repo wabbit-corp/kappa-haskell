@@ -1,0 +1,40 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaLet 8
+--! assertEval viaPkg 9
+
+-- §18.1.15 / §18.1.18: rebinding an effect label preserves its label
+-- identity — a let-rebound label and a package member of type EffLabel are
+-- admissible in `handle label ...` and in `label.op` selection, and match
+-- the handler for the original label (matching is by resolved identity,
+-- not spelling).
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+comp : Eff <[Counter : Counter]> Int
+let comp =
+    do
+        let a <- Counter.tick ()
+        pure (addInt a 1)
+
+viaLet : Int
+let viaLet =
+    block
+        let l = Counter
+        let handled =
+            deep handle l comp with
+                case return x -> pure x
+                case tick _ k -> k 7
+        runPure handled
+
+viaPkg : Int
+let viaPkg =
+    block
+        let pkg = (label = Counter)
+        let handled =
+            deep handle pkg.label comp with
+                case return x -> pure x
+                case tick _ k -> k 8
+        runPure handled

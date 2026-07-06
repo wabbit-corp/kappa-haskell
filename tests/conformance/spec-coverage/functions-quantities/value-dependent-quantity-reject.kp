@@ -1,0 +1,13 @@
+-- §12.2.10 (L11668-11695): v1 quantity intervals are static — a binder
+-- quantity may not depend on a runtime value. §12.1.1 (L10517-10519):
+-- `quantityExpr` is checked in a STATIC-object expression position with
+-- expected classifier `Quantity`. A quantity expression branching on a
+-- runtime `Bool` must be rejected.
+module main
+
+bad : (b : Bool) -> ((if b then 1 else ω) x : Int) -> Int --!! kappa.type.mismatch
+let bad b x = 0
+
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a51e1bf): PASS

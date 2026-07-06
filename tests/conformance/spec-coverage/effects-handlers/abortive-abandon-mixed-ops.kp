@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval taken 7
+--! assertEval aborted 42
+
+-- §18.1.17.1 / §32.2.20: an abortive operation (quantity 0) coexists with
+-- an ordinary one-shot operation in one effect; the abortive clause returns
+-- a value without resuming, abandoning the captured segment, while the
+-- one-shot clause tail-resumes. Neither requires rt-multishot-effects.
+module main
+
+effect Attempt =
+    0 raise : Unit -> Int
+    1 fetch : Unit -> Int
+
+good : Eff <[Attempt : Attempt]> Int
+let good =
+    do
+        let v <- Attempt.fetch ()
+        pure v
+
+bad : Eff <[Attempt : Attempt]> Int
+let bad =
+    do
+        let v <- Attempt.fetch ()
+        let x <- Attempt.raise ()
+        pure (addInt v x)
+
+runAttempt : Eff <[Attempt : Attempt]> Int -> Int
+let runAttempt c =
+    block
+        let handled =
+            deep handle Attempt c with
+                case return x -> pure x
+                case raise _ k -> pure 42
+                case fetch _ k -> k 7
+        runPure handled
+
+taken : Int
+let taken = runAttempt good
+
+aborted : Int
+let aborted = runAttempt bad

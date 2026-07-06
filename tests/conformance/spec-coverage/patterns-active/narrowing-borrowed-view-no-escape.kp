@@ -1,0 +1,38 @@
+-- §17.1.8 (Spec L18107-L18110): if the discriminated scrutinee is a
+-- borrowed view, the refinement applies to the same underlying path for
+-- the same borrow lifetime, and constructor-field projections made
+-- available by the refinement are borrowed projections, not copies.
+-- Escaping the borrow region with such a projection is rejected (§12.3).
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+data Cell : Type =
+    Cell (n : Int)
+
+data Holder : Type =
+    HNone
+    HSome (c : Cell)
+
+data W : Type =
+    W (Unit -> Int)
+
+look : (& c : Cell) -> Int
+let look (& c : Cell) : Int =
+    match c
+    case Cell n -> n
+
+-- POSITIVE: the refined borrowed projection h.c is usable inside the
+-- borrow region.
+peek : (& h : Holder) -> Int
+let peek (& h : Holder) : Int =
+    if h is HSome then look h.c else 0
+
+-- NEGATIVE: h.c is a borrowed projection of the same underlying root;
+-- capturing it in a closure returned past the region is a borrow escape.
+bad : (& h : Holder) -> W
+let bad (& h : Holder) : W =
+    if h is HSome then W (\u -> look h.c) else W (\u -> 0)
+
+-- STATUS(a51e1bf): PASS

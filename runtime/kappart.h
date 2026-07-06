@@ -529,6 +529,15 @@ static inline int64_t kint_word(KValue *v) {
 static inline int kis_int_word(KValue *v) {
   return kis_imm_int(v) || (!kis_imm(v) && kderef(v)->tag == K_INT);
 }
+int kint_cmp(KValue *, KValue *);
+static inline int kint_cmp_fast(KValue *a, KValue *b) {
+  if (kis_int_word(a) && kis_int_word(b)) {
+    int64_t ia = kint_word(a);
+    int64_t ib = kint_word(b);
+    return ia < ib ? -1 : (ia > ib ? 1 : 0);
+  }
+  return kint_cmp(a, b);
+}
 
 /* ── Stage 1b: immediate nullary-ctor encoding (b010) ───────────────────────
  * EVERY nullary constructor (0 fields) — of ANY ADT — rides INSIDE the
@@ -706,6 +715,7 @@ void *kgc_alloc_atomic(size_t n);    /* pointer-free (string/byte blobs) */
 void  kgc_free(void *p);             /* S3 free-on-zero shell/slab release */
 unsigned long long kgc_debug_free_count(void);
 unsigned long long krc_debug_reclaim_count(void); /* logical RC object reclaims, including poison */
+unsigned long long krc_debug_reuse_count(void);   /* successful in-place Perceus reuse events */
 
 /* ── value constructors ────────────────────────────────────────────── */
 KValue *kint(int64_t v);
@@ -718,9 +728,11 @@ KValue *kunit(void);
 KValue *kbool(int b);                           /* True/False constructors */
 KValue *kctor(int tagid, const char *name, int argc, KValue **args);
 KValue *kctor0(int tagid, const char *name);    /* nullary constructor     */
+KValue *ktry_reuse_ctor(KValue *v, int argc);
 KValue *kdrop_reuse_ctor(KValue *v, int argc);
 KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue **args);
 KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const char *name, int argc, KValue **args, const int *move_slots);
+KValue *kreuse_ctor_skip(KValue *token, int tagid, const char *name, int argc, KValue **args, const int *move_slots, const int *skip_slots, int skip_count);
 KValue *krec(int n, const char **names, KValue **vals);
 KValue *kclo(KFn fn, KEnv *env);
 KValue *kio(KIOFn fn, KEnv *env);

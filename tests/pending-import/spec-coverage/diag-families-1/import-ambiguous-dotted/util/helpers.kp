@@ -1,0 +1,4 @@
+module util.helpers
+
+inner : Int
+let inner = 2

@@ -1,7 +1,8 @@
 # Proposed native-backend benchmarks
 
-Date: 2026-06-18. Status: **proposals** accompanying `docs/KAPPA_NATIVE_BENCHMARK_DESIGN.md`
-and `docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md` §4 (the gaps each bench detects). These are design artifacts:
+Date: 2026-06-18. Status: **benchmark proposals and report fixtures** accompanying
+`docs/KAPPA_NATIVE_BENCHMARK_DESIGN.md` and `docs/NATIVE_BACKEND_OPTIMIZATION_GUIDE.md`
+§4 (the gaps each bench detects). Most timing comparisons here remain design/report artifacts:
 each `.kp` carries, in its header comment, the four required fields —
 
   * **Purpose** — which codegen/optimization dimension it exercises;
@@ -13,8 +14,11 @@ They are written against the surface syntax used in `test/native/cases/*` (verif
 `data`, `match/case`, `do`/`var`/`while`/`for`/`defer`, lambdas `\x -> e`, `Option`/`Result`,
 list `::`/`Nil`, records `(x = …)` + `.field`, prims `addInt`/`leInt`/`showInt`/`stringAppend`).
 Several are confirmed to build today (see the table); the rest are intended to build after the
-roadmap items they target land, or may need a one-line syntactic tweak — they are *proposals*,
-not a committed gate. **Self-contained on purpose:** HOF/list benches define their own
+roadmap items they target land, or may need a one-line syntactic tweak. The three S5 fixtures
+(`s5_listmap_reuse.kp`, `s5_rbtree_reuse.kp`, and `s5_rbtree_insert_reuse.kp`) are now also
+consumed by `test/native/run-native-tests.sh` as S5.B mechanism gates; their cross-language
+timing comparison remains report-only until the representation/unboxing work lands.
+**Self-contained on purpose:** HOF/list benches define their own
 `map`/`fold` rather than relying on a particular prelude module path, so they isolate the
 codegen dimension under test.
 
@@ -25,8 +29,9 @@ codegen dimension under test.
 KAPPA_CC="cc -O2" cabal run -v0 kappa -- build proposed/<bench>.kp -o /tmp/<bench>
 KAPPA_GC_STATS=1 /tmp/<bench>        # prints result + [kappa-gc] total_bytes/heap_size/collections
 
-# raw-C baseline (where provided)
+# raw C/C++ baseline (where provided)
 cc -O2 proposed/raw/<bench>.c -o /tmp/<bench>_c && /tmp/<bench>_c <N>
+c++ -O2 proposed/raw/<bench>.cpp -o /tmp/<bench>_cpp && /tmp/<bench>_cpp <N>
 ```
 
 For a real measurement use the methodology in the design doc: ≥10 invocations, median ±
@@ -37,6 +42,7 @@ interval, per-iteration allocation = total_bytes / N, setup randomization, pinne
 | File | Dimension | Targets gap | Raw-C baseline | Builds today? |
 |---|---|---|---|---|
 | `scalar_intloop.kp` | scalar Int loop (alloc-free) | LR1 | `raw/scalar_intloop.c` | yes |
+| `scalar_intwhile.kp` | mutable-var Int while loop scalarization | S2.3b scalar var/while | — | yes |
 | `scalar_doubleloop.kp` | scalar Double loop | P0-D | `raw/scalar_doubleloop.c` | yes |
 | `adtbuild.kp` | ADT/list construction (alloc-heavy) | **P0-A / P0-B** | `raw/adtbuild.c` | yes |
 | `adtmatch.kp` | ADT + variant matching | **P0-C** | — | yes |
@@ -52,12 +58,16 @@ interval, per-iteration allocation = total_bytes / N, setup randomization, pinne
 | `deferloop.kp` | defer/effects per-iteration | defer alloc | — | yes |
 | `sqlite_shape.kp` | sqlite-shaped query loop (modeled) | record/proj/accum | — | yes |
 | `http_kernel.kp` | tiny HTTP request/response kernel | mixed realistic | — | yes |
+| `s5_listmap_reuse.kp` | boxed list-map FBIP reuse | S5.B list reuse | — | yes |
+| `s5_rbtree_reuse.kp` | rbtree-shaped recursive rebuild reuse | S5.B n-ary reuse | — | yes |
+| `s5_rbtree_insert_reuse.kp` | rbtree insert path-copying reuse | S5.B insert reuse | `raw/s5_rbtree_insert_reuse.cpp` | yes |
 
-**Provenance:** all 16 benches were built AND run to completion at this commit with
+**Provenance:** all 20 benches were built AND run to completion at this commit with
 `KAPPA_CC="cc -O2" cabal run -v0 kappa -- build proposed/<b>.kp` (then executed with
 `KAPPA_GC_STATS=1`). Examples: `scalar_intloop` → `50000005000000`, `adtmatch` → `500000`,
-`adtbuild` → `2000001000000`, `byteloop` → `1000000`, `hofmap` → `2000003000000`. "Builds
-today: yes" therefore reflects a verified build *and run*, not just an expectation.
+`adtbuild` → `2000001000000`, `byteloop` → `1000000`, `hofmap` → `2000003000000`,
+`s5_rbtree_insert_reuse` → `19777`. "Builds today: yes" therefore reflects a verified build *and run*,
+not just an expectation.
 
 Earlier drafts of `hofmap`, `listops`, and `polyvsmono` were written with **non-tail** recursion
 and segfaulted at their default N — deep non-tail recursion rides the C stack (only tail calls

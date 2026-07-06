@@ -1,0 +1,38 @@
+--! mode check
+--! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
+--! assertErrorCount 1
+
+-- §13.2.11 (Spec.md L13635-L13695): a record-shaped existential body
+-- contributes its fields DIRECTLY to the payload view (multi-field
+-- telescopes included, e.g. (tc : Eq a, value : a)); fields not
+-- mentioning the witness are ordinary projections; witness binder names
+-- are NOT source-addressable projection labels; and alpha-equivalent
+-- exists types are the same type.
+module main
+
+-- single-field record payload
+pkg : exists (a : Type). (value : a)
+let pkg = seal exists (a = Integer). (value = 5) as exists (a : Type). (value : a)
+
+-- alpha-equivalence: same elaborated signature under another binder name
+alpha : exists (b : Type). (value : b)
+let alpha = pkg
+
+-- multi-field record payload: later fields may depend on the witness
+dyn : exists (a : Type). (shown : String, value : a)
+let dyn = seal exists (a = Integer). (shown = "5", value = 5) as exists (a : Type). (shown : String, value : a)
+
+-- flattened payload view: `shown` is directly projectable
+flat : String
+let flat = dyn.shown
+
+-- NEGATIVE: the witness binder is not a projection label
+witnessLeak : Type
+let witnessLeak = pkg.a                 --!! E_RECORD_PROJECTION_MISSING_FIELD
+
+-- STATUS(a51e1bf): FAIL — single-field payloads, alpha-equivalence, and
+-- witness non-addressability all behave; but a MULTI-field record
+-- payload does not scope the witness over the field telescope
+-- (E_NAME_UNRESOLVED "unresolved name 'a'" on the `dyn` signature and
+-- seal), so the §13.2.11 payload-view flattening for telescopes like
+-- (tc : Eq a, value : a) is unimplemented.

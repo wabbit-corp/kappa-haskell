@@ -1,0 +1,35 @@
+--! mode check
+--! assertErrorCount 1
+-- §3.3.6: restoring the returned successor invalidates the enclosing
+-- dependent record type, so the diagnostic MUST use family
+-- kappa.inout.restoration and identify predecessor/successor types and
+-- the invalidated dependent sibling (here `len`).
+--! assertDiagnosticFamily error kappa.inout.restoration
+--! assertDiagnosticMatch (Vec|buffer|len|restor)
+
+-- §3.3.6, §18.9.3: `grow ~s.buffer` opens `s.buffer` at predecessor
+-- type `Vec s.len Byte` and returns successor type `Vec 2 Byte`;
+-- restoring it leaves the sibling `len` field stale, so the call must
+-- be rejected as an inout-restoration failure.
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+mkVec : (n : Nat) -> Vec n Byte
+let mkVec n = VNil
+
+type Sized : Type = (len : Nat, buffer : Vec this.len Byte)
+
+grow : forall (@0 n : Nat). (inout b : Vec n Byte) -> UIO (1 b : Vec 2 Byte)
+let grow @n (inout b : Vec n Byte) : UIO (1 b : Vec 2 Byte) =
+    pure (b = mkVec 2)
+
+bad : (1 s : Sized) -> UIO Unit
+let bad (1 s : Sized) : UIO Unit = do
+    grow ~s.buffer
+    pure ()
+-- STATUS(a51e1bf): FAIL — the restoration failure is reported as E_TYPE_EQUALITY_MISMATCH in kappa.type.mismatch (actual Vec 2 Byte vs expected Vec s.len Byte) instead of the §3.3.6 kappa.inout.restoration family

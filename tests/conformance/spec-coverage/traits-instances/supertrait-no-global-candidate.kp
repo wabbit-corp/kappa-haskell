@@ -1,0 +1,35 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §14.1.4 (Spec.md L14311-L14312) + §14.3.3 (L14677-L14686): supertrait
+-- projection is evidence projection ONLY and never introduces global
+-- instance candidates. Declaring `EqLike a => OrdLike a` makes EqLike
+-- evidence available from an OrdLike evidence VALUE (implicit binder or
+-- explicit ordinary value), but a bare global goal `EqLike Int` with no
+-- EqLike instance and no in-scope OrdLike value must stay unsolved even
+-- though the supertrait edge exists in the program.
+module main
+
+trait EqLike (a : Type) =
+    eqq : a -> a -> Bool
+
+trait EqLike a => OrdLike (a : Type) =
+    cmpq : a -> a -> Bool
+
+-- POSITIVE: projection from a local implicit binder.
+viaBinder : (@o : OrdLike Int) -> Bool
+let viaBinder (@o : OrdLike Int) = eqq 1 2
+
+-- POSITIVE: supertrait member projected from an explicit ordinary value.
+viaValue : (o : OrdLike Int) -> Bool
+let viaValue o = o.eqq 1 2
+
+-- NEGATIVE: no EqLike Int instance exists and no OrdLike evidence is in
+-- scope here; the supertrait declaration alone creates no global
+-- candidate.
+globalGoal : Bool
+let globalGoal = eqq 1 2 --!! E_UNSOLVED_IMPLICIT
+
+-- STATUS(a51e1bf): PASS

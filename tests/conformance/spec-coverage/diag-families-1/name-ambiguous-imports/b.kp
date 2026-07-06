@@ -1,0 +1,4 @@
+module b
+
+flag : Int
+let flag = 2

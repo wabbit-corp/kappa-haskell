@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+-- §3.2.14: when a dynamic representation is unavailable for a checked
+-- cast/dynamic boundary the diagnostic MUST use family
+-- kappa.dynamic.cast-representation, with the demanded DynRep, the cast
+-- site, and the DynamicType evidence origin in the payload.
+--! assertDiagnosticFamily error kappa.dynamic.cast-representation
+--! assertDiagnosticMatch (DynamicType|DynRep|representation)
+
+-- §3.2.14, §24.9 (std.gradual): `toDyn` demands `DynamicType Widget`
+-- evidence; no instance exists for a local data type, so the cast MUST
+-- be rejected as a missing dynamic representation. Positive half:
+-- supplying an explicit representation with toDynWith is accepted.
+module main
+
+import std.gradual.*
+
+data Widget : Type =
+    MkWidget Int
+
+bad : Dyn
+let bad = toDyn (MkWidget 1)
+
+widgetRep : DynRep Widget
+let widgetRep = MkDynRep "main.Widget"
+
+good : Dyn
+let good = toDynWith widgetRep (MkWidget 2)
+-- STATUS(a51e1bf): FAIL — family kappa.dynamic.cast-representation is not registered (harness-error §T.5.1); the missing representation surfaces only as generic E_UNSOLVED_IMPLICIT (kappa.implicit.unsolved) for DynamicType Widget

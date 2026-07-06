@@ -1,0 +1,13 @@
+module wlib
+
+data Rose : Type =
+    Petal Int
+
+trait Marked a =
+    mark : a -> Int
+
+f : Int
+let f = 1
+
+g : Int
+let g = 2

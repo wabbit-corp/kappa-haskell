@@ -1,0 +1,33 @@
+module main
+
+-- §9.3.1.1 scoped effects: `scoped effect E` introduces the effect
+-- constructor E and a same-spelling canonical self label, admissible in
+-- effect-row syntax (`<[Ask : Ask]>`), in `handle Ask ... with`, and in
+-- operation selection `Ask.ask`. Combination: local signature (§9.3.1)
+-- + do-block + deep handler inside one pure block.
+
+useAsk : Int
+let useAsk =
+    block
+        scoped effect Ask =
+            ask : Unit -> Int
+
+        polyUse : Eff <[Ask : Ask]> Int
+        let polyUse =
+            do
+                let a <- Ask.ask ()
+                let b <- Ask.ask ()
+                a + b
+
+        let handled : Eff <[ ]> Int =
+            deep handle Ask polyUse with
+                case return x -> pure x
+                case ask () k -> k 21
+
+        runPure handled
+
+--! mode check
+--! assertNoErrors
+--! assertType useAsk Int
+--! assertEval useAsk 42
+-- STATUS(a51e1bf): PASS

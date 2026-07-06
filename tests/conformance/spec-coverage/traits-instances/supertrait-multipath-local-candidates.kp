@@ -1,0 +1,43 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7 8 9\n"
+
+-- §14.3.3 (Spec.md L14687-L14713): when several local trait evidence
+-- values (or a direct local candidate plus projected candidates) can
+-- supply the same normalized supertrait goal, they are accepted only when
+-- the projected evidence values are coherent under §33.2.1, and the
+-- checker must select a deterministic representative rather than choose
+-- arbitrarily. For a ground goal (Base Int) global coherence guarantees at
+-- most one semantic implementation, so all paths agree observably.
+module main
+
+trait Base (a : Type) =
+    baseVal : a -> Int
+
+trait Base a => LeftArm (a : Type) =
+    leftVal : a -> Int
+
+trait Base a => RightArm (a : Type) =
+    rightVal : a -> Int
+
+instance Base Int =
+    let baseVal n = n
+
+instance LeftArm Int =
+    let leftVal n = n + 1
+
+instance RightArm Int =
+    let rightVal n = n + 2
+
+-- Two distinct local binders can both project Base Int.
+twoProjected : (@l : LeftArm Int) -> (@r : RightArm Int) -> Int
+let twoProjected (@l : LeftArm Int) (@r : RightArm Int) = baseVal 7
+
+-- A direct local candidate and a projected candidate for the same goal.
+directAndProjected : (@b : Base Int) -> (@l : LeftArm Int) -> Int
+let directAndProjected (@b : Base Int) (@l : LeftArm Int) = baseVal 8
+
+main : UIO Unit
+let main = printlnString (showInt twoProjected ++ " " ++ showInt directAndProjected ++ " " ++ showInt (baseVal 9))
+
+-- STATUS(a51e1bf): PASS

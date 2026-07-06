@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.3.1 capture-set subsumption: a value elaborating at `T captures S`
+-- checks against a demanded `T captures S'` whenever S ⊆ S'. Pins
+-- {s} ⊆ {s, t} (result position and record field) and {} ⊆ {s} (the
+-- empty hidden region environment is the most general).
+module main
+
+-- {s} ⊆ {s, t}: a closure capturing only s checks at captures (s, t)
+widen :
+    forall (s : Region) (t : Region).
+    (&[s] x : Int) -> (&[t] y : Int) -> ((Unit -> Int) captures (s, t))
+let widen (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : ((Unit -> Int) captures (s, t)) =
+    \() -> x
+
+-- {} ⊆ {s}: a region-free closure checks against any demanded set
+pureAtBroad :
+    forall (s : Region).
+    (&[s] x : Int) -> ((Unit -> Int) captures (s))
+let pureAtBroad (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
+    \() -> 1
+
+-- §12.3.1: the annotation may sit on any value type, so subsumption
+-- also applies to a capture-annotated record field
+packWide :
+    forall (s : Region) (t : Region).
+    (&[s] x : Int) -> (&[t] y : Int) -> (getter : (Unit -> Int) captures (s, t))
+let packWide (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : (getter : (Unit -> Int) captures (s, t)) =
+    (getter = \() -> x)
+
+-- STATUS(a51e1bf): PASS

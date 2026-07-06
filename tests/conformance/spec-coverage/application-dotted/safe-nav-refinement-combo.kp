@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.1.2 desugaring to match (L15957-15986) combined with
+-- flow-sensitive constructor refinement: safe navigation on a receiver
+-- already refined by `is Option.Some` / `is Option.None` conditions
+-- remains well-typed on both branch shapes; the refinement facts and the
+-- inserted match arms must compose.
+module main
+
+type Container = (field : Int)
+
+-- POSITIVE: then-branch carries HasCtor Some evidence for x.
+readField : Option Container -> Option Int
+let readField x =
+    if x is Option.Some then x?.field else None
+
+-- POSITIVE: else-branch narrows away None, then safe-navigates.
+readFieldElse : Option Container -> Option Int
+let readFieldElse x =
+    if x is Option.None then None else x?.field

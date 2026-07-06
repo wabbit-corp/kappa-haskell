@@ -62,6 +62,7 @@ import Kappa.Explain (ExplainEntry (..), explainExists, registry)
 import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
+  , BranchSite (..)
   , OwnInfo (..)
   , UseKind (..)
   , annotateOwnership
@@ -111,6 +112,7 @@ main = do
   backendIrValidateOk <- backendIRValidatorS5
   backendIrConsumerOk <- backendIRConsumerContractS5
   backendIrNoPathOwnOk <- backendIRNoPathOwnershipS5
+  ownershipNoRPathOk <- ownershipPhysicalRPathRetiredS5
   backendIrProjectedBorrowedOk <- backendIRProjectedBorrowedCalleeS5
   backendIrPatternErasureOk <- backendIRPatternErasesExistentialsS5
   scalarKindParamOk <- scalarKindDomainParamKeepsWorkers
@@ -119,7 +121,7 @@ main = do
   reExportOk <- reExportBoundaryRefinement
   let regOk =
         regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
-          && primConvOk && spineErasureOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && backendIrOk && backendIrValidateOk && backendIrConsumerOk && backendIrNoPathOwnOk && backendIrProjectedBorrowedOk && backendIrPatternErasureOk && scalarKindParamOk
+          && primConvOk && spineErasureOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && backendIrOk && backendIrValidateOk && backendIrConsumerOk && backendIrNoPathOwnOk && ownershipNoRPathOk && backendIrProjectedBorrowedOk && backendIrPatternErasureOk && scalarKindParamOk
           && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
   exists <- doesDirectoryExist root
@@ -525,7 +527,7 @@ ownershipCrossCheckClean = do
             tvarWriteTransferG = GName mainMod (T.pack "tvarWriteTransfer")
             fiberGetBorrowG = GName mainMod (T.pack "fiberGetBorrow")
             fiberSetTransferG = GName mainMod (T.pack "fiberSetTransfer")
-            paramBid g = BinderId g []
+            paramBid g = BinderId g 0
             refinedOf g =
               case Map.lookup g (csOwnership st) of
                 Nothing -> Left ("no OwnInfo for " <> show g)
@@ -942,6 +944,14 @@ perceusS23dDeadBinderDrops = do
           borrowedRecordElse = afterMarker "} else {" borrowedRecordWorker
           borrowedNestedThen = sliceFromUntil "if (kas_bool" "} else {" borrowedNestedWorker
           borrowedNestedElse = afterMarker "} else {" borrowedNestedWorker
+          dupedCtorField fn =
+            "kdup(kctor_arg" `T.isInfixOf` fn
+              || any
+                ( \line ->
+                    "kdup(scrut_" `T.isInfixOf` line
+                      && "->as.ctor.args[" `T.isInfixOf` line
+                )
+                (T.lines fn)
           nestedClosureOk =
             any
               ( \fn ->
@@ -966,7 +976,7 @@ perceusS23dDeadBinderDrops = do
             "consumeBox" `T.isInfixOf` aliasWorker
               && not ("kdrop(let_" `T.isInfixOf` aliasWorker)
           borrowedAliasOk =
-            "kdup(kctor_arg" `T.isInfixOf` borrowedWorker
+            dupedCtorField borrowedWorker
               && "consumeBox" `T.isInfixOf` borrowedWorker
               && "peekHolder" `T.isInfixOf` borrowedWorker
               && noOwnerDropBefore " = kctor(" "peekHolder" borrowedWorker borrowedElse
@@ -1059,8 +1069,8 @@ perceusS23dLegacyPathTamperIgnoredS5 = do
         Nothing -> do
           putStrLn "perceusS23dBranchDropMissFails FAILED: no branch drop site in source program"
           pure False
-        Just (site, bids) -> do
-          let fakeBid = BinderId branchG (site <> [9999])
+        Just (site@(BranchSite siteId), bids) -> do
+          let fakeBid = BinderId branchG (siteId + 9999)
               fakeOwn = BinderOwn QW Nothing False True
               own' =
                 own
@@ -1068,9 +1078,9 @@ perceusS23dLegacyPathTamperIgnoredS5 = do
                   , oiBranchDropSites = Map.singleton site [fakeBid]
                   }
               st' = st {csOwnership = Map.insert branchG own' (csOwnership st)}
-              staleSite = site <> [9999, 8888]
-              ownStalePath = own {oiBranchDropSites = Map.singleton staleSite bids}
-              stStalePath = st {csOwnership = Map.insert branchG ownStalePath (csOwnership st)}
+              staleSite = BranchSite (siteId + 8888)
+              ownStaleBranchSite = own {oiBranchDropSites = Map.singleton staleSite bids}
+              stStaleBranchSite = st {csOwnership = Map.insert branchG ownStaleBranchSite (csOwnership st)}
               expectAccepted label stCase =
                 case generateC True stCase mainG Set.empty Map.empty of
                   Right (csrc, _) ->
@@ -1088,11 +1098,11 @@ perceusS23dLegacyPathTamperIgnoredS5 = do
             expectAccepted
               "unresolved branch drop site"
               st'
-          stalePathOk <-
+          staleBranchSiteOk <-
             expectAccepted
-              "stale branch drop path"
-              stStalePath
-          pure (unresolvedOk && stalePathOk)
+              "stale branch drop site"
+              stStaleBranchSite
+          pure (unresolvedOk && staleBranchSiteOk)
 
 -- | Perceus S3.2 generated-code entry gate: before runtime free-on-zero is
 -- enabled, the C backend must own escaping projections and attach proven
@@ -1199,6 +1209,14 @@ perceusS32FreeOnZeroEntryGates = do
           consumeProjWorker = lookupWorker "consumeRecordProjection"
           inlineEtaWorker = lookupWorker "inlineEtaCtorMatch"
           returnMatchWorker = lookupWorker "returnMatchedField"
+          dupedCtorField fn =
+            "kdup(kctor_arg" `T.isInfixOf` fn
+              || any
+                ( \line ->
+                    "kdup(scrut_" `T.isInfixOf` line
+                      && "->as.ctor.args[" `T.isInfixOf` line
+                )
+                (T.lines fn)
           projectionOwnsOk =
             "kdup(krec_at(let_" `T.isInfixOf` returnProjWorker
               && "kdup(krec_at(let_" `T.isInfixOf` returnNestedWorker
@@ -1209,7 +1227,7 @@ perceusS32FreeOnZeroEntryGates = do
               && dropBeforeReturn consumeProjWorker
               && dropBeforeReturn returnMatchWorker
           matchFieldsOk =
-            "kdup(kctor_arg" `T.isInfixOf` returnMatchWorker
+            dupedCtorField returnMatchWorker
               && "kdrop(scrut_" `T.isInfixOf` returnMatchWorker
           inlineEtaMatchDropsOk =
             "kdrop(scrut_" `T.isInfixOf` inlineEtaWorker
@@ -2017,6 +2035,30 @@ backendIRNoPathOwnershipS5 = do
     putStrLn ("  ir=" <> show ir)
   pure ok
 
+-- | S5.B4 regression: the remaining observe-only ownership audit table must
+-- not be keyed by structural child paths. Native emission was already off the
+-- old bridge; this pins the physical cleanup so future work cannot accidentally
+-- reattach path-keyed ownership by reusing the legacy producer.
+ownershipPhysicalRPathRetiredS5 :: IO Bool
+ownershipPhysicalRPathRetiredS5 = do
+  src <- TIO.readFile "src/Kappa/Ownership.hs"
+  let banned =
+        [ "Kappa.PathScheme"
+        , "biPath"
+        , "usPath"
+        , "Map [Int] [BinderId]"
+        , "renderPath"
+        ]
+      failed =
+        [ "Ownership.hs still contains legacy R-path marker " <> show needle
+        | needle <- banned
+        , T.pack needle `T.isInfixOf` src
+        ]
+  unless (null failed) $ do
+    putStrLn "ownershipPhysicalRPathRetiredS5 FAILED:"
+    mapM_ (putStrLn . ("  " <>)) failed
+  pure (null failed)
+
 -- | S5.A regression: first-class/projected callees must carry the same
 -- type-derived argument convention facts as the legacy Core ownership analyzer.
 -- The call @r.f y@ below applies a projected function field with type
@@ -2384,12 +2426,12 @@ reExportBoundaryRefinement = do
       ctx = EvalCtx (Globals (csGlobals st)) (csMetas st) False (csFacts st)
       ctorTypes = Map.map ciType (csCtors st)
       lib = ModuleName [T.pack "lib"]
-      -- the single leading ω parameter of each one-arg body sits at biPath [].
+      -- The first value binder in each one-arg body receives owner-local ordinal 0.
       refinedOf cname =
         case Map.lookup (GName lib (T.pack cname)) (csOwnership st) of
           Nothing -> Left ("no OwnInfo for " <> cname)
           Just oi ->
-            case Map.lookup (BinderId (GName lib (T.pack cname)) []) (oiBinders oi) of
+            case Map.lookup (BinderId (GName lib (T.pack cname)) 0) (oiBinders oi) of
               Nothing -> Left ("no param binder for " <> cname)
               Just bo -> Right (boRefined bo)
       xcClean =
@@ -2411,7 +2453,7 @@ reExportBoundaryRefinement = do
                 { oiBinders =
                     Map.adjust
                       (\bo -> bo {boDeclQ = Q1, boRefined = Just (1, Nothing)})
-                      (BinderId (GName lib (T.pack "priv")) [])
+                      (BinderId (GName lib (T.pack "priv")) 0)
                       (oiBinders oi)
                 }
           )

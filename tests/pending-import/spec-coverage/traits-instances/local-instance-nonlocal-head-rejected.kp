@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §14.3 (Spec.md L14524-L14526): "a local instance MUST mention at least
+-- one trait or type declared in the same block scope or an enclosing local
+-- block scope". An instance for a global trait at a global type inside a
+-- block violates this and must be rejected; it may not shadow or extend
+-- the global instance environment from a lexical scope. The spec fixes no
+-- family; the head-shape code E_INSTANCE_HEAD is the closest registered
+-- diagnostic.
+module main
+
+trait Sized (a : Type) =
+    sizeOf : a -> Int
+
+instance Sized Int =
+    let sizeOf n = 4
+
+-- NEGATIVE: neither Sized nor Int is declared in this block scope.
+badLocal : Int
+let badLocal =
+    block
+        instance Sized Int = --!! E_INSTANCE_HEAD
+            let sizeOf n = 999
+
+        sizeOf 1
+
+-- STATUS(a51e1bf): FAIL — the local instance is rejected, but with E_UNSUPPORTED ("this local declaration form is not supported inside block by this implementation") because ALL local instances are unimplemented; the §14.3 locality condition itself is never checked.

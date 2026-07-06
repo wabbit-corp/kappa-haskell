@@ -1,0 +1,7 @@
+module rlib
+
+opaque data Token : Type =
+    Token Int
+
+mk : Int -> Token
+let mk n = Token n

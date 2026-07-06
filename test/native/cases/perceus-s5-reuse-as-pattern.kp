@@ -1,0 +1,24 @@
+-- Perceus S5.B regression: a constructor as-pattern binds the whole scrutinee
+-- cell as a real runtime value.  The token-reuse path must fail closed for this
+-- shape until whole-cell alias liveness is modeled; otherwise the token cell can
+-- be overwritten while the alias is still semantically live.
+module main
+
+data PairBox : Type =
+    MkPairBox String String
+
+update : Bool -> String -> PairBox -> PairBox
+let update replace newValue b =
+    match b
+    case whole@(MkPairBox keep oldValue) ->
+        if replace then MkPairBox keep newValue
+        else whole
+
+render : PairBox -> String
+let render b =
+    match b
+    case MkPairBox keep value -> stringAppend keep value
+
+main : UIO Unit
+let main =
+    printlnString (stringAppend (render (update True "new" (MkPairBox "keep-" "old"))) (stringAppend "|" (render (update False "new" (MkPairBox "keep-" "old")))))

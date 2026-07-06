@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §16.1.1.1 (L15904-15909): module qualification, static member selection
+-- on a type, record patch, and row extension are not admitted inside a
+-- receiver-section body, while nested field projection is. Record patch
+-- and row extension have distinct spellings and must be rejected; module
+-- qualification and static member selection have no receiver-section
+-- spelling distinguishable from member projection, so they are not pinned.
+module main
+
+type Inner = (x : Int, y : Int)
+type Outer = (pos : Inner)
+
+-- POSITIVE: nested projection chain (.pos.x) = \__x -> __x.pos.x.
+getX : Outer -> Int
+let getX = (.pos.x)
+
+useGetX : Int
+let useGetX = getX (pos = (x = 1, y = 2))
+
+-- NEGATIVE: record patch is not a receiver-section body.
+badPatch : Inner -> Inner
+let badPatch = (.{ x = 1 })
+
+-- NEGATIVE: row extension is not a receiver-section body.
+badExtend : Inner -> (x : Int, y : Int, z : Int)
+let badExtend = (.{ z := 3 })

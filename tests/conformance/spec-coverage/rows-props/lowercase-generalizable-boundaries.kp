@@ -1,0 +1,24 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticFamily error kappa.feature.gated
+
+-- §11.3.3 lowercase rule (negative boundaries): an identifier whose
+-- first scalar is '_' is not lowercase-generalizable, and neither is an
+-- uppercase-initial identifier — both must be reported unresolved, not
+-- silently generalized (metavariable discipline, L10051-55). With
+-- unicode-names INACTIVE a Greek-initial identifier is not
+-- lowercase-generalizable either; this implementation rejects the
+-- unquoted Unicode identifier at the §2.1A gate (kappa.feature.gated),
+-- which likewise never generalizes it.
+module main
+
+underscored : _x -> _x --!! E_NAME_UNRESOLVED
+let underscored v = v
+
+uppercased : Zzz -> Zzz --!! E_NAME_UNRESOLVED
+let uppercased v = v
+
+greek : α -> α
+let greek v = v
+
+-- STATUS(a51e1bf): PASS

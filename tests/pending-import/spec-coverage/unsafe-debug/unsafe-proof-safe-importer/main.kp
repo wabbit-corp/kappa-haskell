@@ -1,0 +1,18 @@
+module main
+
+-- §4.5: "A safe importing module MUST NOT silently treat unsafe-erasure
+-- evidence as trusted safe evidence unless the build profile explicitly
+-- accepts unsafe proof assertions from the providing artifact." This build
+-- does NOT enable `allow_unsafe_assert_proof`, so consuming ulib's
+-- unsafely-lawful instance from this safe module must raise SOME
+-- diagnostic mentioning the unsafe dependency (Kappa registers no
+-- dedicated family for this refusal, so only the message is matched).
+-- The §4.7 ledger must still expose the assertion to this importer.
+import ulib.*
+
+useTag : String
+let useTag = tag "hi"
+
+--! assertDiagnosticMatch unsafe
+--! assertAuditLedger unsafeAssertProof
+-- STATUS(a51e1bf): FAIL — the safe importer compiles with zero diagnostics: the unsafe-erasure evidence from ulib is silently trusted even though the build profile never accepted unsafe proof assertions (only the ledger entry survives).

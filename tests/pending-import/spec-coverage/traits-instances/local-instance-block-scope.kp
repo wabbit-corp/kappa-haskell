@@ -1,0 +1,41 @@
+--! mode check
+--! assertNoErrors
+--! assertType viaLocalTrait Int
+--! assertType viaLocalType Int
+
+-- §14.3 (Spec.md L14523-L14529) + §9.3.1: local instances are permitted in
+-- block scopes; a local instance MUST mention at least one trait or type
+-- declared in the same or an enclosing local block scope, and it
+-- participates in implicit resolution only within that lexical scope.
+-- Both legal shapes are exercised: a local instance of a local trait, and
+-- a local instance of a GLOBAL trait at a locally declared type.
+module main
+
+trait Sized (a : Type) =
+    sizeOf : a -> Int
+
+-- POSITIVE: local trait + local instance, used within the block.
+viaLocalTrait : Int
+let viaLocalTrait =
+    block
+        trait Keyed (a : Type) =
+            keyOf : a -> Int
+
+        instance Keyed Int =
+            let keyOf n = n + 1
+
+        keyOf 41
+
+-- POSITIVE: global trait instantiated at a block-local type.
+viaLocalType : Int
+let viaLocalType =
+    block
+        data Token : Type =
+            MkToken
+
+        instance Sized Token =
+            let sizeOf t = 7
+
+        sizeOf MkToken
+
+-- STATUS(a51e1bf): FAIL — local `trait`/`data`/`instance` items inside `block` are rejected wholesale with E_UNSUPPORTED ("this local declaration form is not supported inside block by this implementation"); the §9.3.1/§14.3 local-instance forms are unimplemented.

@@ -1,0 +1,25 @@
+-- §15 (Spec L15060-L15074): "total by default" governs transparent
+-- definitions and elaboration-time computation. Effectful runtime loops
+-- (`while` inside `do`) may diverge — no termination diagnostic — and that
+-- permission MUST NOT make any definition eligible for δ-reduction:
+-- conversion never runs the loop body.
+--! mode check
+--! assertErrorCount 1
+--! assertNoWarnings
+module main
+
+-- POSITIVE: a possibly-divergent while loop inside do is accepted without
+-- any termination diagnostic; divergence here is a runtime matter.
+spin : Int -> UIO Int
+let spin start = do
+    var x = start
+    while ltInt 0 x do
+        x = addInt x 1
+    pureIO x
+
+-- NEGATIVE: the do-block is opaque to conversion; even the "obvious"
+-- equation spin 0 = pureIO 0 is not a definitional equality.
+claims : spin 0 = pureIO 0
+let claims = refl --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

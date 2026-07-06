@@ -1,0 +1,31 @@
+--! mode check
+--! assertDiagnostic error E_ROW_TAIL_QUANTITY_UNSATISFIED
+
+-- §11.3.1: RecTailSatisfies r 0 with a closed known tail is checked
+-- structurally per field; a linear (quantity-1) runtime-relevant field
+-- cannot be demanded at 0, so instantiating r with (1 secret : Key)
+-- must fail. §3.2.4 mandates the portable alias
+-- E_ROW_TAIL_QUANTITY_UNSATISFIED (family kappa.row.tail-quantity) for
+-- unsatisfied row-tail quantity demands.
+module main
+
+data Key : Type =
+    MkKey
+
+type Locker : Type = (name : String, 1 secret : Key)
+
+forgetExtras :
+    forall (r : RecRow).
+    RecTailSatisfies r 0 =>
+    (1 rec : (name : String | r)) ->
+    String
+let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : String =
+    rec.name
+
+mkLocker : Locker
+let mkLocker : Locker = (name = "top", secret = MkKey)
+
+bad : String
+let bad = forgetExtras mkLocker
+
+-- STATUS(a51e1bf): FAIL — RecTailSatisfies is not in scope (E_NAME_UNRESOLVED), so the call-site structural quantity check never runs; no E_ROW_TAIL_QUANTITY_UNSATISFIED emitted

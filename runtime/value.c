@@ -67,6 +67,7 @@ static KValue *alloc_val_atomic(KTag tag) {
  * defined (a no-op under NDEBUG) so the symbol resolves regardless of build. */
 _Atomic int k_rc_enabled = 1;
 static _Atomic unsigned long long k_rc_reclaims_total = 0;
+static _Atomic unsigned long long k_rc_reuses_total = 0;
 
 void krc_set_enabled(int enabled) {
   atomic_store_explicit(&k_rc_enabled, enabled ? 1 : 0, memory_order_relaxed);
@@ -76,8 +77,16 @@ unsigned long long krc_debug_reclaim_count(void) {
   return atomic_load_explicit(&k_rc_reclaims_total, memory_order_relaxed);
 }
 
+unsigned long long krc_debug_reuse_count(void) {
+  return atomic_load_explicit(&k_rc_reuses_total, memory_order_relaxed);
+}
+
 static void krc_note_reclaim(void) {
   atomic_fetch_add_explicit(&k_rc_reclaims_total, 1, memory_order_relaxed);
+}
+
+static void krc_note_reuse(void) {
+  atomic_fetch_add_explicit(&k_rc_reuses_total, 1, memory_order_relaxed);
 }
 
 #ifndef NDEBUG
@@ -151,17 +160,14 @@ static KValue *kthunk_cached_value_snapshot(KValue *v) {
   return r;
 }
 
-static KValue *kdup_thunk_cached_value(KValue *thunk, KValue *cached) {
+static KValue *kdup_thunk_cached_value(KValue *cached) {
   if (!cached) return NULL;
-  if (!krc_is_shared(thunk)) {
-    kshared_mark_lock();
-    if (!krc_is_shared(thunk)) {
-      KValue *owned = kdup(cached);
-      kshared_mark_unlock();
-      return owned;
-    }
-    kshared_mark_unlock();
-  }
+  /* A memo cache is a mutable edge owned by the thunk. A concurrent publication
+   * can mark the thunk and its cache while another fiber is forcing the existing
+   * cached value; returning a thread-local duplicate would race with that mark
+   * when the caller later drops it. Make cached heap values shared before they
+   * leave the cache path, preserving the uniform owned-result contract while
+   * keeping the race out of kdup/kdrop. */
   if (!kis_imm(cached)) krc_mark_shared_recursive(cached);
   return kdup(cached);
 }
@@ -534,6 +540,27 @@ static int kctor_move_slot_used(int slot, int argc, const int *move_slots) {
   return 0;
 }
 
+static int kctor_skip_slots_valid(KValue *v, const int *skip_slots, int skip_count) {
+  if (!skip_slots) return skip_count == 0;
+  if (skip_count < 0) return 0;
+  for (int i = 0; i < skip_count; i++) {
+    int slot = skip_slots[i];
+    if (slot < 0 || slot >= v->as.ctor.argc) return 0;
+    for (int j = 0; j < i; j++) {
+      if (skip_slots[j] == slot) return 0;
+    }
+  }
+  return 1;
+}
+
+static int kctor_skip_slot_used(int slot, const int *skip_slots, int skip_count) {
+  if (!skip_slots) return 0;
+  for (int i = 0; i < skip_count; i++) {
+    if (skip_slots[i] == slot) return 1;
+  }
+  return 0;
+}
+
 static int kctor_move_slots_valid(KValue *v, int argc, KValue **args, const int *move_slots) {
   if (!move_slots) return 1;
   for (int i = 0; i < argc; i++) {
@@ -555,14 +582,14 @@ static void kctor_dup_moved_args(int argc, KValue **args, const int *move_slots)
   }
 }
 
-static void kctor_drop_old_fields_except(KValue *v, int argc, const int *move_slots) {
+static void kctor_drop_old_fields_except(KValue *v, int argc, const int *move_slots, int free_arg_vector) {
   KWork stack;
   KValue *inline_items[64];
   kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
   for (int i = 0; i < v->as.ctor.argc; i++) {
     if (!kctor_move_slot_used(i, argc, move_slots)) kfree_drop_child(&stack, v->as.ctor.args[i]);
   }
-  kgc_free(v->as.ctor.args);
+  if (free_arg_vector) kgc_free(v->as.ctor.args);
   KValue *child;
   while ((child = kwork_pop(&stack)) != NULL) {
     if (kis_rc_freeable(child) && krc_count(child) == 0) kfree_visit(&stack, child);
@@ -570,13 +597,54 @@ static void kctor_drop_old_fields_except(KValue *v, int argc, const int *move_sl
   kwork_dispose(&stack);
 }
 
-static void kctor_drop_old_fields(KValue *v) {
-  kctor_drop_old_fields_except(v, 0, NULL);
+static void kctor_drop_old_fields_skip(KValue *v, int argc, const int *move_slots, const int *skip_slots, int skip_count, int free_arg_vector) {
+  KWork stack;
+  KValue *inline_items[64];
+  kwork_init(&stack, inline_items, sizeof inline_items / sizeof inline_items[0]);
+  for (int i = 0; i < v->as.ctor.argc; i++) {
+    if (!kctor_move_slot_used(i, argc, move_slots)
+        && !kctor_skip_slot_used(i, skip_slots, skip_count)) {
+      kfree_drop_child(&stack, v->as.ctor.args[i]);
+    }
+  }
+  if (free_arg_vector) kgc_free(v->as.ctor.args);
+  KValue *child;
+  while ((child = kwork_pop(&stack)) != NULL) {
+    if (kis_rc_freeable(child) && krc_count(child) == 0) kfree_visit(&stack, child);
+  }
+  kwork_dispose(&stack);
 }
 
-KValue *kdrop_reuse_ctor(KValue *v, int argc) {
-  if (kis_imm(v)) return NULL;
+static void kctor_discard_token_skip(KValue *v, int argc, const int *move_slots, const int *skip_slots, int skip_count) {
+#ifndef NDEBUG
+  atomic_fetch_add_explicit(&k_drops_total, 1, memory_order_relaxed);
+#endif
+  __atomic_store_n(&v->rc, 0u, __ATOMIC_RELAXED);
+  kctor_drop_old_fields_skip(v, argc, move_slots, skip_slots, skip_count, 1);
+#ifndef NDEBUG
+  if (atomic_load_explicit(&k_rc_poison_enabled, memory_order_relaxed)) {
+    krc_note_reclaim();
+    v->tag = K_FREED;
+    return;
+  }
+#endif
+  krc_note_reclaim();
+  kgc_free(v);
+}
+
+static void kctor_rewrite_reused_cell(KValue *v, int tagid, const char *name, int argc, KValue **args) {
+  for (int i = 0; i < argc; i++) v->as.ctor.args[i] = args[i];
+  krc_note_reuse();
+  __atomic_store_n(&v->rc, 1u, __ATOMIC_RELAXED);
+  v->tag = K_CTOR;
+  v->as.ctor.name = name;
+  v->as.ctor.tagid = tagid;
+  v->as.ctor.argc = argc;
+}
+
+KValue *ktry_reuse_ctor(KValue *v, int argc) {
   if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return NULL;
+  if (kis_imm(v)) return NULL;
   kassert_live(v);
   uint32_t cur = krc_word(v);
   uint32_t n = cur & KRC_COUNT_MASK;
@@ -586,6 +654,13 @@ KValue *kdrop_reuse_ctor(KValue *v, int argc) {
       && v->as.ctor.argc == argc) {
     return v;
   }
+  return NULL;
+}
+
+KValue *kdrop_reuse_ctor(KValue *v, int argc) {
+  if (ktry_reuse_ctor(v, argc)) return v;
+  if (kis_imm(v)) return NULL;
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) return NULL;
   kdrop(v);
   return NULL;
 }
@@ -605,15 +680,33 @@ KValue *kreuse_ctor(KValue *token, int tagid, const char *name, int argc, KValue
     return kctor(tagid, name, argc, args);
   }
 
-  KValue **new_args = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
-  for (int i = 0; i < argc; i++) new_args[i] = args[i];
-  kctor_drop_old_fields(token);
-  __atomic_store_n(&token->rc, 1u, __ATOMIC_RELAXED);
-  token->tag = K_CTOR;
-  token->as.ctor.name = name;
-  token->as.ctor.tagid = tagid;
-  token->as.ctor.argc = argc;
-  token->as.ctor.args = new_args;
+  kctor_drop_old_fields_except(token, 0, NULL, 0);
+  kctor_rewrite_reused_cell(token, tagid, name, argc, args);
+  return token;
+}
+
+KValue *kreuse_ctor_skip(KValue *token, int tagid, const char *name, int argc, KValue **args, const int *move_slots, const int *skip_slots, int skip_count) {
+  if (token == NULL) krt_fail("S5 reuse token missing for moved-field unique branch");
+  if (!atomic_load_explicit(&k_rc_enabled, memory_order_relaxed)) krt_fail("S5 reuse token used while RC is disabled");
+  kassert_live(token);
+  uint32_t cur = krc_word(token);
+  uint32_t n = cur & KRC_COUNT_MASK;
+  if ((cur & (KRC_SHARED_BIT | KRC_SATURATED_BIT)) != 0
+      || n != 1
+      || token->tag != K_CTOR
+      || token->as.ctor.argc != argc
+      || !kctor_move_slots_valid(token, argc, args, move_slots)
+      || !kctor_skip_slots_valid(token, skip_slots, skip_count)) {
+    krt_fail("S5 reuse token invalid after moved-field unique branch");
+  }
+  if (kctor_would_pack_value(tagid, argc, args)) {
+    kctor_dup_moved_args(argc, args, move_slots);
+    kctor_discard_token_skip(token, argc, move_slots, skip_slots, skip_count);
+    return kctor(tagid, name, argc, args);
+  }
+
+  kctor_drop_old_fields_skip(token, argc, move_slots, skip_slots, skip_count, 0);
+  kctor_rewrite_reused_cell(token, tagid, name, argc, args);
   return token;
 }
 
@@ -628,6 +721,13 @@ KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const ch
   kassert_live(source);
   uint32_t cur = krc_word(source);
   uint32_t n = cur & KRC_COUNT_MASK;
+  if (move_slots && source->tag == K_CTOR) {
+    if (source->as.ctor.argc != old_argc
+        || old_argc != argc
+        || !kctor_move_slots_valid(source, argc, args, move_slots)) {
+      krt_fail("S5 reuse move metadata invalid");
+    }
+  }
   int can_reuse =
     (cur & (KRC_SHARED_BIT | KRC_SATURATED_BIT)) == 0
       && n == 1
@@ -635,7 +735,7 @@ KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const ch
       && source->as.ctor.argc == old_argc
       && old_argc == argc
       && !kctor_would_pack_value(tagid, argc, args)
-      && kctor_move_slots_valid(source, argc, args, move_slots);
+      && (!move_slots || kctor_move_slots_valid(source, argc, args, move_slots));
 
   if (!can_reuse) {
     kctor_dup_moved_args(argc, args, move_slots);
@@ -643,15 +743,8 @@ KValue *kdrop_reuse_ctor_alloc(KValue *source, int old_argc, int tagid, const ch
     return kctor(tagid, name, argc, args);
   }
 
-  KValue **new_args = (KValue **)kgc_alloc(sizeof(KValue *) * (size_t)argc);
-  for (int i = 0; i < argc; i++) new_args[i] = args[i];
-  kctor_drop_old_fields_except(source, argc, move_slots);
-  __atomic_store_n(&source->rc, 1u, __ATOMIC_RELAXED);
-  source->tag = K_CTOR;
-  source->as.ctor.name = name;
-  source->as.ctor.tagid = tagid;
-  source->as.ctor.argc = argc;
-  source->as.ctor.args = new_args;
+  kctor_drop_old_fields_except(source, argc, move_slots, 0);
+  kctor_rewrite_reused_cell(source, tagid, name, argc, args);
   return source;
 }
 
@@ -1328,7 +1421,7 @@ KValue *kforce(KValue *v) {
     if (cached) {
       KValue *r = cached[0];
       kthunk_cache_unlock();
-      return kdup_thunk_cached_value(v, r);
+      return kdup_thunk_cached_value(r);
     }
     KEnv *env = v->as.thunk.env;
     int markEnv = krc_is_shared(v);
@@ -1348,7 +1441,7 @@ KValue *kforce(KValue *v) {
         KValue *lost = r;
         KValue *existing = v->as.thunk.cache[0];
         kthunk_cache_unlock();
-        r = kdup_thunk_cached_value(v, existing);
+        r = kdup_thunk_cached_value(existing);
         kdrop(lost);
         break;
       }

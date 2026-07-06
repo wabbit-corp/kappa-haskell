@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.1.1 (L15907) + §7.3 (L6283-6285): a receiver section is
+-- well-formed iff the dotted form on the fresh binder is; constructor-
+-- field projection needs the refinement context to prove the constructor.
+-- For a single-constructor GADT that proof is trivial and the family
+-- argument (Wrap Int) fixes the projected type; in a match branch the
+-- branch refinement licenses e.value at the refined family argument.
+module main
+
+data Wrap (a : Type) : Type =
+    MkWrap : (value : a) -> Wrap a
+
+-- POSITIVE: (.value) on Wrap Int projects the refined Int field.
+getVal : Wrap Int -> Int
+let getVal = (.value)
+
+useGetVal : Int
+let useGetVal = getVal (MkWrap 5)
+
+data Expr (a : Type) : Type =
+    IntVal  : (value : Int) -> Expr Int
+    BoolVal : (value : Bool) -> Expr Bool
+
+-- POSITIVE: branch-local constructor knowledge refines the family
+-- argument, so e.value is an Int projection in the IntVal branch.
+fromBranch : forall (a : Type). Expr a -> Option Int
+let fromBranch (@0 a : Type) (e : Expr a) : Option Int =
+    match e
+    case IntVal _  -> Some (e.value)
+    case BoolVal _ -> None

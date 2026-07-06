@@ -1,0 +1,28 @@
+-- §12.2.3 (L11118-11128): quantity metavariables are not defaulted to
+-- satisfy `QuantitySatisfies`. If elaboration generates
+-- `QuantitySatisfies ?q 1`, the compiler MUST NOT silently instantiate
+-- `?q = 1`/`<=1`/`>=1`/`ω`; the metavariable must be solved contextually,
+-- generalized explicitly, or reported as unsolved.
+module main
+
+apply :
+    forall (q : Quantity) (a b : Type).
+    QuantitySatisfies q 1 =>
+    (q fn : a -> b) -> (q x : a) -> b
+let apply fn x = fn x
+
+inc : Int -> Int
+let inc (n : Int) : Int = n + 1
+
+-- NEGATIVE: nothing in this context determines `?q` (the supplied
+-- capabilities are `ω`, which satisfies every demand, so any
+-- instantiation would work — exactly the situation in which defaulting
+-- is forbidden). The metavariable must be reported unsolved, not
+-- silently instantiated.
+ambiguous : Int
+let ambiguous = apply inc 41 --!! kappa.implicit.unsolved
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch unsolved
+-- STATUS(a51e1bf): FAIL — the QuantitySatisfies/quantity-variable surface is unimplemented, so elaboration emits a 5-error unresolved-name/mismatch cascade instead of the single spec-required unsolved-metavariable report at the call site.

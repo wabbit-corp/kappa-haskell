@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 2
+--! assertType f (x : Int, y : String) -> Bool
+
+-- §13.2.8 records as function parameters: `let f (x : A, y : B)` is
+-- sugar for one record argument with destructuring; the function type
+-- is `(x : A, y : B) -> R`, NOT curried A -> B -> R. Calls pass a
+-- record value or record literal; a curried application `f 1 "hi"` is
+-- ill-typed (Int is not the record, and the Bool result of the first
+-- misapplication is not callable).
+module main
+
+let f (x : Int, y : String) : Bool = x > 0
+
+-- record literal call
+callLiteral : Bool
+let callLiteral = f (x = 1, y = "hi")
+
+-- record value call
+callValue : Bool
+let callValue =
+    let r = (x = 2, y = "bye")
+    in f r
+
+-- NOT curried: this must be rejected
+bad : Bool
+let bad = f 1 "hi" --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

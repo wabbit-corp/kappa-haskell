@@ -1,0 +1,22 @@
+@PrivateByDefault module main
+
+-- §5.4 trailing commas: wherever the grammar admits a comma-separated
+-- list — import item lists, tuple literals and tuple types, record
+-- literals and record types, list literals — an optional trailing comma
+-- is permitted.
+
+import lib.(term fortyOne, term one,)
+
+tup : (Int, Int, Int,)
+let tup = (1, 2, 3,)
+
+rec : (a : Int, b : Int,)
+let rec = (a = 1, b = 2,)
+
+nums : List Int
+let nums = [1, 2, 3,]
+
+sum : Int
+let sum = fortyOne + one
+
+-- STATUS(a51e1bf): PASS

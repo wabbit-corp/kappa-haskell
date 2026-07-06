@@ -1,0 +1,20 @@
+-- §7.1 binding-group formation: the visual-duplicate rule applies to two
+-- declarations "of the same declaration kind" only. A type A and a term
+-- А (equal strongVisualNameKey, different kinds) coexist in one binding
+-- group like any distinct-kind pair; contextual admissibility separates
+-- their uses.
+module main
+
+type A = Int
+
+let `А` = 5
+
+typeSide : A
+let typeSide = 7
+
+termSide : Int
+let termSide = `А`
+
+--! assertNoErrors
+--! assertEval termSide 5
+-- STATUS(a51e1bf): PASS

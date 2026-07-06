@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+--! assertErrorCount 1

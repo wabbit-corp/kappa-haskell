@@ -1,0 +1,31 @@
+-- Spec: §10.1.2 (capitalization is not semantically significant for data
+-- declarations) combined with §10.1/§17.2.1 (named constructor patterns).
+-- A constructor may be spelled lowercase (warning only, §10.1.2), and named
+-- patterns must still work for it: 'case some { v } -> v' is an ordinary
+-- named constructor pattern.
+
+module main
+
+--! mode check
+
+data option (a : Type) : Type =
+    some (v : a)
+    None2
+
+get : option Int -> Int
+let get o =
+    match o
+    case some { v } -> v
+    case None2 -> 0
+
+got : Int
+let got = get (some 9)
+
+--! assertNoErrors
+--! assertEval got 9
+
+-- STATUS(a51e1bf): FAIL — 'case some { v } -> v' does not parse: the whole
+-- enclosing let is dropped with E_RECOVERY_DECLARATION_SKIPPED "unexpected
+-- 'let' at start of declaration". Positional 'case some v' works, and named
+-- patterns on capitalized constructors work, so the named-pattern grammar
+-- appears to require a capitalized head, contrary to §10.1.2.

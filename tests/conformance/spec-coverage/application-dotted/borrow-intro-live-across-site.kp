@@ -1,0 +1,44 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7.1 Step 1 + L16500-16502: a temporary borrow introduced for one
+-- argument stays live until elaboration of the whole maximal application
+-- site finishes, so a later argument of the same call must not consume
+-- the borrowed place; shared+shared overlap is fine (§12.4), and the
+-- borrow ends with the site, so a consume in the next statement is fine.
+module main
+
+data Token : Type =
+    MkToken Int
+
+takeTok : (1 t : Token) -> Int
+let takeTok t =
+    match t
+      case MkToken n -> n
+
+readTok : (& a : Token) -> Int
+let readTok (& a : Token) : Int = 0
+
+readTwice : (& a : Token) -> (& b : Token) -> Int
+let readTwice (& a : Token) (& b : Token) : Int = 0
+
+pair : (& a : Token) -> (1 b : Token) -> Int
+let pair (& a : Token) (1 b : Token) : Int = takeTok b
+
+-- POSITIVE: two shared temporary borrows of the same place in one site.
+okShared : (1 t : Token) -> Int
+let okShared (1 t : Token) : Int =
+    block
+        let r = readTwice t t
+        takeTok t
+
+-- POSITIVE: the temporary borrow ends when the site does.
+okRelease : (1 t : Token) -> Int
+let okRelease (1 t : Token) : Int =
+    block
+        let r = readTok t
+        takeTok t
+
+-- NEGATIVE: arg2 consumes t while arg1's temporary borrow is still live.
+bad : (1 t : Token) -> Int
+let bad (1 t : Token) : Int = pair t t --!! kappa.borrow.overlap

@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.7.1 Step 0 (L16434-16449): expected-type-directed suspension
+-- insertion first checks whether the argument already satisfies the
+-- demanded suspension type — no re-suspension at the same binder — and
+-- only otherwise wraps a T argument as thunk e / lazy e. L16511-16512:
+-- the rule is the same for (thunk x : A) sugar and explicit Thunk A.
+module main
+
+forceIt : (thunk x : Int) -> Int
+let forceIt (thunk x : Int) : Int = force x
+
+-- POSITIVE: already-suspended argument passes unchanged; re-wrapping
+-- would produce Thunk (Thunk Int), which does not check.
+fromSuspension : Int
+let fromSuspension = forceIt (thunk 42)
+
+-- POSITIVE: bare Int is wrapped as thunk 42.
+fromBare : Int
+let fromBare = forceIt 42
+
+needIt : (lazy x : Int) -> Int
+let needIt (lazy x : Int) : Int = force x
+
+-- POSITIVE: already-suspended Need argument passes unchanged.
+fromLazy : Int
+let fromLazy = needIt (lazy 42)
+
+-- POSITIVE: bare Int wraps as lazy 42 (closed term, so the §16.2.2
+-- Shareable capture condition holds).
+fromBareLazy : Int
+let fromBareLazy = needIt 42
+
+explicitDemand : Thunk Int -> Int
+let explicitDemand (x : Thunk Int) : Int = force x
+
+-- POSITIVE: explicit Thunk A spelling behaves exactly like the sugar.
+explicitFromSuspension : Int
+let explicitFromSuspension = explicitDemand (thunk 41)
+
+explicitFromBare : Int
+let explicitFromBare = explicitDemand 41

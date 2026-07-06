@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §12.4 (rules for abstract residual tails) + §13.2.5: changing
+-- explicit prefix label `len` while preserving abstract residual row r
+-- has an invalidation overlap with the abstract tail rec.<r> unless
+-- `StableUnderRecChange r len` is solvable. With an abstract tail and
+-- no premise it is not solvable — r may contain a field whose type
+-- depends on len — so the patch MUST be rejected with spec family
+-- kappa.record.open-tail-invalidated (portable alias
+-- E_RECORD_OPEN_TAIL_INVALIDATED, §3.2.4). That code is not registered
+-- in this implementation, so this test can only pin the error count.
+module main
+
+setLen :
+    forall (r : RecRow).
+    (1 rec : (len : Int | r)) ->
+    Int ->
+    (len : Int | r)
+let setLen (@0 r : RecRow) (rec : (len : Int | r)) (n : Int) : (len : Int | r) =
+    rec.{ len = n }
+
+-- STATUS(a51e1bf): FAIL — compiler accepts the premise-free tail-preserving update (0 errors); the §13.2.5 StableUnderRecChange obligation for changedLabels is not generated, which is unsound for dependent abstract tails.

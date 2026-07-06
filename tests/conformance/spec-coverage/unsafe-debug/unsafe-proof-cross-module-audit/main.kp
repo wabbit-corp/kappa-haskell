@@ -1,0 +1,18 @@
+module main
+
+-- §4.7: `main` depends on ulib's `unsafeAssertProof` only transitively
+-- (through `mid`), yet the importing unit's audit ledger MUST still let it
+-- determine that an unchecked proof assertion contributed to the facts it
+-- trusts: the ledger carries the `unsafeAssertProof` record across BOTH
+-- module hops. Runtime behavior of the tagged value is unaffected (§4.5:
+-- the asserted proof erases like any proof).
+import mid.(tagTwice)
+
+useIt : String
+let useIt = tagTwice "hello"
+
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertEval useIt "hello"
+--! assertAuditLedger unsafeAssertProof
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,28 @@
+--! mode check
+--! assertDiagnostic error E_EQUALITY_MATCH_REQUIRES_ISSET
+--! assertDiagnosticFamily error kappa.equality.match-requires-hlevel
+--! assertDiagnosticMatch IsSet
+
+-- §3.2.3 (Spec.md L2232-2252): a source equality match that would require
+-- UIP/K or proof irrelevance without sufficient h-level evidence MUST be
+-- diagnosed in family kappa.equality.match-requires-hlevel with portable
+-- alias E_EQUALITY_MATCH_REQUIRES_ISSET, listing the required evidence
+-- (e.g. `IsSet A`) and the h-level evidence considered. §14.4: v1 equality
+-- is intensional; K/UIP is not derivable for an arbitrary carrier.
+module main
+
+-- POSITIVE: matching refl with a constant motive needs no h-level evidence.
+constMotive : forall (@0 b : Bool). (p : (=) b True) -> Int
+let constMotive p =
+    match p
+    case refl -> 1
+
+-- NEGATIVE: proving `(=) p refl` for p : (=) x x by matching on `refl` is
+-- axiom K on the loop space of an arbitrary carrier `a`; it requires
+-- `IsSet a` (or `IsProp ((=) x x)`) evidence, and none is in scope.
+badK : forall (@0 a : Type) (@0 x : a). (p : (=) x x) -> (=) p refl
+let badK p =
+    match p
+    case refl -> refl --!! E_EQUALITY_MATCH_REQUIRES_ISSET
+
+-- STATUS(a51e1bf): FAIL — family/alias E_EQUALITY_MATCH_REQUIRES_ISSET not registered; matching refl performs no motive refinement so the K-requiring branch emits kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH) instead of an h-level-evidence diagnostic. Positive half checks clean.

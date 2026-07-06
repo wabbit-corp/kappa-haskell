@@ -1,0 +1,32 @@
+--! mode check
+--! assertDiagnostic error E_VARIANT_AMBIGUOUS
+--! assertErrorCount 1
+
+-- §13.1.7 (Spec.md L12353-L12364): the inferred pattern form (| x |) is
+-- valid only when the scrutinee is a singleton union (or the member type
+-- is otherwise unambiguous). It is NEVER interpreted as the residual-row
+-- case: on a multi-member scrutinee it is an ambiguity error rather than
+-- a catch-all, and residual matching must be spelled (| ..rest |).
+module main
+
+-- POSITIVE: singleton scrutinee — (| x |) binds the only member
+fromSingleton : (| Integer |) -> Integer
+let fromSingleton u =
+    match u
+    case (| x |) -> x
+
+-- NEGATIVE: two possible member types — the inferred form is ambiguous,
+-- and is NOT read as (| ..rest |) (which would cover both arms)
+ambiguous : (| Integer | String |) -> String
+let ambiguous u =
+    match u
+    case (| x |) -> "x"                 --!! E_VARIANT_AMBIGUOUS
+
+-- the residual spelling is the explicit catch-all that (| x |) is not
+explicitRest : (| Integer | String |) -> String
+let explicitRest u =
+    match u
+    case (| n : Integer |) -> "int"
+    case (| ..rest |)      -> "other"
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.1.2 (L16039-16043): when the ?. prefix is a borrowed view, the
+-- success binder is a borrowed alias of the payload inheriting the same
+-- rigid borrow region and borrow root, with projections interpreted
+-- pathwise through the source path (§12.4). Reading a copyable payload
+-- out is fine; a closure capturing the borrowed chain must not escape.
+module main
+
+type Leaf = (score : Int)
+type Mid = (leaf : Option Leaf)
+type Root = (mid : Option Mid)
+
+-- POSITIVE: two safe-nav steps under a borrowed root; each success
+-- binder inherits the borrow and the final Int is copied out.
+readDeep : (& r : Root) -> Option Int
+let readDeep (& r : Root) : Option Int = r.mid?.leaf?.score
+
+-- NEGATIVE: a closure over the borrowed safe-nav chain escapes through
+-- the result.
+badEscape : (& r : Root) -> Unit -> Option Int
+let badEscape (& r : Root) : Unit -> Option Int =
+    \() -> r.mid?.leaf?.score --!! kappa.borrow.escape

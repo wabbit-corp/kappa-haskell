@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_VAR_READ_DUPLICATES_LINEAR_VALUE
+--! assertDiagnosticFamily error kappa.var.mutable-binding
+
+-- §3.2.20, §12.2.6, §18.6.1: a current-value read duplicates the whole
+-- stored value; if the cell stores a value with a non-duplicable
+-- component the read MUST be rejected with
+-- E_VAR_READ_DUPLICATES_LINEAR_VALUE (kappa.var.mutable-binding).
+-- Positive half: an unrestricted stored value may be read repeatedly.
+module main
+
+data Token : Type =
+    Token
+
+type Box : Type =
+    (<=1 tok : Token)
+
+bad : UIO Unit
+let bad = do
+    var cell : Box = (tok = Token)
+    let first = cell --!! E_VAR_READ_DUPLICATES_LINEAR_VALUE
+    pure ()
+
+good : UIO Int
+let good = do
+    var counter = 1
+    let a = counter
+    let b = counter
+    pure (a + b)
+-- STATUS(a51e1bf): PASS

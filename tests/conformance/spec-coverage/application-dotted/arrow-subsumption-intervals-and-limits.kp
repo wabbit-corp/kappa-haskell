@@ -1,0 +1,50 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §16.1.7.1 Step 3 (L16476-16495) with interval quantities, per the §12.2
+-- table (L10812-10819): <=1 ⊑ 1 and ω ⊑ <=1 hold; >=1 ⊑ ω fails (an
+-- ω-binder body may drop a must-use argument). L16504-16506: subsumption
+-- never applies recursively inside type constructors, so even the sound
+-- outermost direction is rejected under List.
+module main
+
+-- POSITIVE: demand-inner <=1, capability-inner 1.
+applyAtMost : ((<=1 x : Int) -> Int) -> Int
+let applyAtMost (f : (<=1 x : Int) -> Int) : Int = f 3
+
+exactlyOnce : (1 x : Int) -> Int
+let exactlyOnce (1 x : Int) : Int = x
+
+okAtMost : Int
+let okAtMost = applyAtMost exactlyOnce
+
+-- POSITIVE: demand-inner ω, capability-inner <=1.
+applyOmega : ((ω x : Int) -> Int) -> Int
+let applyOmega (f : (ω x : Int) -> Int) : Int = f 4
+
+atMostOnce : (<=1 x : Int) -> Int
+let atMostOnce (<=1 x : Int) : Int = 9
+
+okOmega : Int
+let okOmega = applyOmega atMostOnce
+
+-- NEGATIVE: demand-inner >=1, capability-inner ω: >=1 ⊑ ω fails.
+applyRelevant : ((>=1 x : Int) -> Int) -> Int
+let applyRelevant (f : (>=1 x : Int) -> Int) : Int = f 5
+
+dropIt : (ω x : Int) -> Int
+let dropIt (ω x : Int) : Int = 0
+
+badRelevant : Int
+let badRelevant = applyRelevant dropIt --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: no deep subsumption: List ((1 x : Int) -> Int) does not
+-- coerce to List ((ω x : Int) -> Int) even though the bare arrows would.
+wantOmegaList : List ((ω x : Int) -> Int) -> Int
+let wantOmegaList (fs : List ((ω x : Int) -> Int)) : Int = 0
+
+linearOnly : (1 x : Int) -> Int
+let linearOnly (1 x : Int) : Int = x
+
+badDeep : Int
+let badDeep = wantOmegaList [linearOnly] --!! kappa.application.argument-mismatch

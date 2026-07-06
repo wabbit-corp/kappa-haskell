@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- §18.6 (L21017-L21044): a loop-local >=1 binding must satisfy its demand on
+-- EVERY iteration path leaving its scope — `break` and `return` included.
+-- Both exits below skip the demand and are rejected. General >=1 case (not
+-- linear typestate): the payload is a plain Int.
+module main
+
+badBreak : Bool -> UIO Unit
+let badBreak (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 x = 1 --!! kappa.quantity.positive-lower-bound
+            break
+        pure ()
+
+badReturn : Bool -> UIO Unit
+let badReturn (cond : Bool) : UIO Unit =
+    do
+        for i in 1 :: 2 :: Nil do
+            let >=1 y = 1 --!! kappa.quantity.positive-lower-bound
+            return ()
+        pure ()
+
+-- STATUS(a51e1bf): PASS

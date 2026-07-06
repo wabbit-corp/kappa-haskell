@@ -1,0 +1,37 @@
+-- §17.2.1 record-rest capture (Spec L18242-L18302): ..rest on a closed
+-- record binds the remaining fields (zero fields ≡ Unit); capturing
+-- ..rest from an OPEN row is valid only when the remaining prefix extends
+-- home(r) (§11.3.1A), otherwise diagnostic kappa.row.context-mismatch.
+
+--! mode check
+
+-- POSITIVE: closed record; rest binds the remaining explicit fields.
+takeX : (x : Int, y : Int) -> Int
+let takeX p =
+    let (x = a, ..rest) = p
+    a + rest.y
+
+-- POSITIVE: nothing remains; rest is the zero-field closed record,
+-- definitionally equal to Unit.
+emptyRest : (x : Int,) -> Unit
+let emptyRest p =
+    let (x = a, ..rest) = p
+    rest
+
+-- NEGATIVE: detaching the residual row from the prefix that home(r) may
+-- depend on (the spec's own splitName example, L18288-L18299).
+splitName : forall (r : RecRow). (rec : (name : String | r)) -> String
+let splitName (@0 r : RecRow) (rec : (name : String | r)) : String =
+    let (name = n, ..rest) = rec
+    n
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch context|home|prefix|row
+
+-- STATUS(a51e1bf): FAIL — takeX passes, but (a) emptyRest is rejected
+-- with `()` vs Unit E_TYPE_EQUALITY_MISMATCH even though Spec L12480 and
+-- L18247 identify the zero-field closed record with Unit, and (b)
+-- splitName fails with a bogus "actual Type / expected String" mismatch
+-- on the let line: record patterns over open-row scrutinees are broken,
+-- and kappa.row.context-mismatch is not a registered family in this
+-- implementation.

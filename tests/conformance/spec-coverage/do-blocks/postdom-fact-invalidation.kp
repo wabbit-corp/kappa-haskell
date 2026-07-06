@@ -1,0 +1,36 @@
+-- §18.2.3 (L20499-20511): post-dominating refinement facts survive a
+-- conditional ONLY while their stable subject is available — a shadowing
+-- rebind discards the fact (last bullet, L20510-20511) — and a conditional
+-- whose branches BOTH continue introduces no postcondition facts (L20505).
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+mk : Unit -> Payload
+let mk u = Empty
+
+-- NEGATIVE: the shadowing rebind gives `payload` a fresh, unrefined subject;
+-- the Box fact from the guard no longer applies, so the Box-only match is
+-- non-exhaustive.
+badRebind : Payload -> UIO Int
+let badRebind payload = do
+    if payload is Box then pure () else do
+        return 0
+    let payload = mk ()
+    match payload
+    case Box v -> pure v
+
+-- NEGATIVE: both branches continue normally, so §18.2.3 introduces no facts
+-- for the following do-items.
+badBothContinue : Payload -> UIO Int
+let badBothContinue payload = do
+    if payload is Box then pure () else pure ()
+    match payload
+    case Box v -> pure v
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticMatch exhaustive|non-exhaustive|missing
+-- STATUS(a51e1bf): PASS

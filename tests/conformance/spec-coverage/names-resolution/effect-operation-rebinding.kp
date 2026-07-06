@@ -1,0 +1,35 @@
+--! assertNoErrors
+--! assertEval result 20
+
+module main
+
+-- §7.3 effect-operation values: `l.op` elaborates to an ordinary
+-- first-class term value; "applying a rebound operation value invokes the
+-- same effect operation at the same effect label as applying the direct
+-- selection", including operation values packaged inside a record.
+result : Int
+let result =
+    block
+        scoped effect State =
+            1 get : Unit -> Int
+            1 put : Int -> Unit
+
+        scoped effect label st : State
+
+        let comp : Eff <[st : State]> Int =
+            do
+                let get2 = st.get
+                let ops = (g = st.get, p = st.put)
+                let a <- get2 ()
+                let _ <- ops.p 5
+                let b <- ops.g ()
+                pure (a + b)
+
+        let handled =
+            deep handle st comp with
+                case return x -> pure x
+                case get _ k -> k 10
+                case put _ k -> k ()
+
+        runPure handled
+-- STATUS(a51e1bf): PASS

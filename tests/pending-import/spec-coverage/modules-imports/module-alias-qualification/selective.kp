@@ -1,0 +1,12 @@
+module selective
+
+-- §8.3: selective imports (`import M.(...)`) do NOT bring `M` into scope
+-- for qualified access or as a reified module value; that requires a
+-- separate `import M`.
+import qlib.(val)
+
+ok : Int
+let ok = val
+
+bad : Int
+let bad = qlib.val --!! E_NAME_UNRESOLVED

@@ -1,0 +1,18 @@
+-- §3.1.14A: recovery from a missing closing delimiter is a TYPED
+-- recovery node, and a diagnostic caused by a recovery node MUST
+-- identify that node in structured payload (kind recovery-node). §3.1.7:
+-- downstream diagnostics that depend only on the unrepaired parse shape
+-- are suppressed under the root recovery diagnostic.
+--! mode check
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnosticPayload error E_EXPECTED_SYNTAX_TOKEN /payload/kind recovery-node
+--! assertSuppressedDiagnostic E_EXPECTED_SYNTAX_TOKEN E_SIGNATURE_UNSATISFIED
+module main
+
+foo : Int
+let foo = (1
+
+bar : Int
+let bar = 2
+
+-- STATUS(a51e1bf): FAIL — the unclosed-delimiter diagnostic has payload kind 'none': no typed recovery-node payload (suppression under the root works)

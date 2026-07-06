@@ -1,0 +1,19 @@
+module main
+
+-- §8.3.1.1/§4.3: `clarify` requests that imported opaque items be treated
+-- as transparent for definitional equality in THIS module (gated by
+-- allow_clarify, §4.2). With clarify, `secret` δ-unfolds to 7 (so refl
+-- proves the equation) and the opaque type alias `Id` unfolds (so an Int
+-- literal checks at type `Id Int`). Contrast: without clarify both are
+-- rejected (tests/conformance/modules-opaque-cross-module).
+import oplib.(clarify term secret, clarify type Id)
+
+proof : secret = 7
+let proof = refl
+
+unwrapped : Id Int
+let unwrapped = 3
+
+--! allow_clarify
+--! assertNoErrors
+-- STATUS(a51e1bf): FAIL — clarify is gated+audited only; imported opaque items stay non-transparent (E_TYPE_EQUALITY_MISMATCH on both unfolding checks)

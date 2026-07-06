@@ -1,0 +1,41 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- §14.2.1 (Spec.md L14385-L14414): each TERM member m of `trait Tr params`
+-- induces an overloaded name `forall params. forall us. Tr params => τ`
+-- whose bare occurrence elaborates to projection from synthesized implicit
+-- evidence; `d.m` is the unsugared form. Associated STATIC members induce
+-- NO term-level overloaded names — they are only projected from an
+-- explicit evidence value (`d.Name`).
+module main
+
+trait Keyed (a : Type) =
+    Key : Type
+    keyOf : a -> Int
+
+instance Keyed Int =
+    let Key = Bool
+    let keyOf n = n
+
+-- POSITIVE: the bare term member checks at its overloaded generalized type.
+useGen : forall (a : Type). Keyed a => a -> Int
+let useGen x = keyOf x
+
+-- POSITIVE: bare occurrence solved against the Int instance.
+useAtInt : Int
+let useAtInt = keyOf 5
+
+-- POSITIVE: explicit projections, term and associated static.
+projTerm : (@d : Keyed Int) -> Int
+let projTerm (@d : Keyed Int) = d.keyOf 9
+
+projStatic : (@d : Keyed Int) -> d.Key -> d.Key
+let projStatic (@d : Keyed Int) k = k
+
+-- NEGATIVE: the associated static member has no overloaded bare name.
+badBareStatic : Type
+let badBareStatic = Key --!! E_NAME_UNRESOLVED
+
+-- STATUS(a51e1bf): FAIL — the bare static-member use IS rejected, but as E_TYPE_EQUALITY_MISMATCH ("type mismatch"), not as an unresolved name: the compiler resolves bare `Key` to some term-level symbol instead of inducing no overloaded name at all. All positive halves check clean.

@@ -1,0 +1,16 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §13.2.11: opened witness binders are RIGID abstract witnesses scoped
+-- to the open body. A rigid witness does not unify with a concrete
+-- type, so checking the payload `x : Option a` against the expected
+-- type `Option Int` must fail (the expected type may not capture the
+-- opened witness; §12.3 skolem discipline).
+module main
+
+bad : (p : exists (a : Type). Option a) -> Option Int
+let bad (p : exists (a : Type). Option a) : Option Int =
+    open p as exists (a). x in x --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

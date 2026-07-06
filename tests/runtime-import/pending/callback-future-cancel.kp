@@ -22,9 +22,9 @@ let showBool b = match b
 
 main : UIO Unit
 let main = do
-  future <- neverFutureWithCancel @Unit
-  fiber <- fork (fromFutureCancelable future)
+  let future <- neverFutureWithCancel @Unit
+  let fiber <- fork (fromFutureCancelable future)
   cede
   interrupt fiber
-  canceled <- futureCancelObserved future
+  let canceled <- futureCancelObserved future
   printlnString ("cancel:" ++ showBool canceled)

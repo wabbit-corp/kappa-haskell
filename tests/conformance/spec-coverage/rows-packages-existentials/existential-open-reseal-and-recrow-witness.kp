@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 positives: (1) an opened witness may appear in the open
+-- body's result "under a new existential or sealing form that hides
+-- that witness again" — re-sealing discharges the non-escape
+-- obligation; (2) a witness may range over the intrinsic compile-time
+-- type RecRow (§11.3.1A): the hidden row keeps its home-prefix identity
+-- through seal, open, and projection of the payload's prefix field.
+module main
+
+pkg : exists (a : Type). Option a
+let pkg = seal (Some 1) as exists (a : Type). Option a
+
+-- re-hiding under a fresh seal: no witness escape
+repack : exists (b : Type). Option b
+let repack =
+    open pkg as exists (a). x in
+        seal x as exists (b : Type). Option b
+
+-- RecRow-typed witness hides a record's residual row
+type HiddenRow : Type1 = exists (r : RecRow). (rec : (x : Int | r))
+
+rowPkg : HiddenRow
+let rowPkg = seal (rec = (x = 1, y = "extra")) as HiddenRow
+
+-- opening reintroduces the row witness; the explicit prefix field of
+-- the payload record projects as usual
+readX : Int
+let readX =
+    open rowPkg as exists (r). (rec = rec) in rec.x
+
+-- STATUS(a51e1bf): PASS

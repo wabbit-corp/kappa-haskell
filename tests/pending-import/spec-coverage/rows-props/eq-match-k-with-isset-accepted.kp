@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.4.1 (positive): the same K-shaped match as
+-- eq-match-k-without-isset-rejected.kp, but with 'IsSet a' evidence in
+-- scope — exactly the sufficient evidence §11.4.1 names ("for x y : a:
+-- IsSet a") — so the match on the self-equality proof must be accepted.
+-- Companion combinator-surface tests live in tests/conformance/hlevel/.
+module main
+
+goodK : forall (@0 a : Type) (@_ : IsSet a) (@0 x : a). (p : x = x) -> p = refl
+let goodK p =
+    match p
+    case refl -> refl
+
+-- STATUS(a51e1bf): FAIL — match on refl performs no endpoint identification even with IsSet a in scope; refl branch rejected with E_TYPE_EQUALITY_MISMATCH

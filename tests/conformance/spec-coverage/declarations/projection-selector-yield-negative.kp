@@ -1,0 +1,32 @@
+module main
+
+-- §9.1.1 selector form: every `yield` operand must be a stable place
+-- rooted in a `place` binder (an arithmetic expression is not); every
+-- yielded place must have the declared result type; and every branch of
+-- the selector body must be a yield form (a bare expression is not).
+
+type Pair = (left : Int, right : String)
+type Holder = (l : Int, r : Int)
+
+data D : Type =
+    L Int
+    R Int
+
+projection notPlace (place p : Holder) : Int =
+    yield p.l + 1 --!! E_PROJECTION_YIELD_INVALID
+
+projection branchTypes (chooseLeft : Bool) (place p : Pair) : Int =
+    if chooseLeft then
+        yield p.left
+    else
+        yield p.right --!! E_TYPE_EQUALITY_MISMATCH
+
+projection bareBranch (d : D) (place p : Holder) : Int =
+    match d
+    case L _ -> yield p.l
+    case R _ -> p.r --!! E_PROJECTION_YIELD_INVALID
+
+--! mode check
+--! assertDiagnostic error E_PROJECTION_YIELD_INVALID
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a51e1bf): PASS

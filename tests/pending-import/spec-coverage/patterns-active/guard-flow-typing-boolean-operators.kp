@@ -1,0 +1,47 @@
+-- §17.1.9 (Spec L18136-L18138): a guard is a flow-sensitive condition
+-- position; if it contains &&, ||, or not, the body is checked as if the
+-- guard were recursively lowered by §16.4.2 before guard-success evidence
+-- is assigned. Constructor tests inside the guard therefore narrow their
+-- subjects in the body.
+
+--! mode check
+--! assertNoErrors
+
+data Payload : Type =
+    IntBox (value : Int)
+    NatBox (value : Int)
+    Hollow
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+-- &&: the guard's success environment proves q is IntBox, licensing
+-- q.value in the body alongside the pattern's own binding.
+pickBoth : Payload -> Payload -> Int
+let pickBoth o q =
+    match o
+    case IntBox v if q is IntBox && v > 0 -> v + q.value
+    case _ -> 0
+
+-- ||: the body is checked under each success environment separately;
+-- p.value is well-formed under both IntBox and NatBox (§16.4.2 example,
+-- here in guard position via the binder alias p).
+pickEither : Payload -> Int
+let pickEither q =
+    match q
+    case p if p is IntBox || p is NatBox -> p.value
+    case _ -> 0
+
+-- not: the body is the failure environment of `p is MyNone`; the unique
+-- remaining constructor MySome is derived (§16.4), licensing p.value.
+pickNot : MyOption Int -> Int
+let pickNot q =
+    match q
+    case p if not (p is MyNone) -> p.value
+    case _ -> 0
+
+-- STATUS(a51e1bf): FAIL — all three bodies get E_UNRESOLVED_MEMBER on the
+-- .value projection: the compiler implements §16.4.2 flow narrowing in
+-- `if` conditions but not in guard position (§17.1.9's lowering of guards
+-- containing &&, ||, not is unimplemented).

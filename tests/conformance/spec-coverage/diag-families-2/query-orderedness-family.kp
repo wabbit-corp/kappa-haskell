@@ -1,0 +1,41 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QUERY_UNORDERED_PAGING, E_QUERY_UNORDERED_PAGING
+-- §3.2.16: paging on an Unordered pipeline MUST be reported in family
+-- kappa.query.orderedness with the operation and orderedness context.
+--! assertDiagnosticFamily error kappa.query.orderedness
+--! assertDiagnosticMatch (skip|take|[Oo]rder)
+
+-- §3.2.16, §10.6.1-2 (L923): `skip`/`take` require an Ordered pipeline.
+-- A set literal source is Unordered, and `skip` BEFORE `order by` still
+-- sees the unordered prefix. Positive half: ordering first, then
+-- paging, is accepted.
+module main
+
+badSkip : List Int
+let badSkip =
+    [
+        for x in {| 3, 1, 2 |}
+        skip 1
+        yield x
+    ]
+
+badSkipBeforeOrder : List Int
+let badSkipBeforeOrder =
+    [
+        for x in {| 3, 1, 2 |}
+        skip 1
+        order by x
+        yield x
+    ]
+
+goodOrderedPaging : List Int
+let goodOrderedPaging =
+    [
+        for x in {| 3, 1, 2 |}
+        order by x
+        skip 1
+        take 1
+        yield x
+    ]
+-- STATUS(a51e1bf): PASS

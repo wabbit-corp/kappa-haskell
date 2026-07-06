@@ -1,0 +1,13 @@
+module lib
+
+-- §13.1.1 (Spec.md L12243-L12248): MemberId(T) is computed from the
+-- canonical defining-module view and is stable across separately
+-- compiled modules. This module fixes one spelling of the union.
+
+type Payload = (| Integer | String |)
+
+describe : Payload -> String
+let describe u =
+    match u
+    case (| n : Integer |) -> "int"
+    case (| s : String |) -> "str"

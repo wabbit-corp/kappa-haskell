@@ -1,0 +1,7 @@
+module liba
+
+onlyA : Int
+let onlyA = 10
+
+shared : Int
+let shared = 1

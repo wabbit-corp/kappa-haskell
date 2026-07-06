@@ -1,0 +1,37 @@
+-- §12.2.6 (L11401-11475): a linear obligation is discharged by pattern
+-- matching on a VISIBLE constructor (with every runtime-relevant
+-- component discharged); a wildcard `_` is a discard pattern and does
+-- NOT discharge linearity — accepting it would provide a generic
+-- discard for all linear values. Discarding a quantity-1 value in a
+-- discard position is rejected because 1 is not droppable.
+module main
+
+data Spent : Type =
+    Spent
+
+-- POSITIVE (spec example L11450-11461): visible nullary constructor
+-- decomposition consumes the outer value and introduces no component
+-- obligations.
+okCtor : (1 t : Spent) -> Unit
+let okCtor (1 t : Spent) : Unit =
+    match t
+    case Spent -> ()
+
+-- NEGATIVE (spec example L11463-11470): a wildcard exposes and
+-- discharges nothing; rejected for arbitrary `a`.
+badWild : forall (a : Type). (1 t : a) -> Unit
+let badWild t = --!! E_QTT_LINEAR_DROP
+    match t
+    case _ -> ()
+
+-- NEGATIVE (spec example L11430-11440): `let _ = t` is likewise a
+-- discard position and does not discharge the linear obligation.
+badLet : forall (a : Type). (1 t : a) -> Unit
+let badLet t = --!! E_QTT_LINEAR_DROP
+    let _ = t
+    in ()
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): FAIL — badWild is accepted: `match t case _ -> ()` on a polymorphic linear scrutinee is treated as consuming the scrutinee, but §12.2.6 says a wildcard is a discard pattern that discharges nothing (only badLet is rejected, 1 of 2 expected errors).

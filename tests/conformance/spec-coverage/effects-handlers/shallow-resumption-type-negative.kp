@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §18.1.21: a shallow resumption returns to the original unhandled carrier
+-- Eff <[label : E | r]> a. Annotating the resumed computation with the
+-- EMPTY row must fail: the handled label is still present in the row of a
+-- shallow k's result (rows do not shrink by resuming).
+module main
+
+bad : Eff <[ ]> Int
+let bad =
+    block
+        scoped effect Ask =
+            1 ask : Unit -> Int
+
+        let comp : Eff <[Ask : Ask]> Int =
+            do
+                let a <- Ask.ask ()
+                pure a
+
+        handle Ask comp with
+            case return x -> pure x
+            case ask _ k ->
+                block
+                    let resumed : Eff <[ ]> Int = k 5
+                    resumed

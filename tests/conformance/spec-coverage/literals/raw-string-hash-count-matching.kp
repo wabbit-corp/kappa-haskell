@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertEval winPath "C:\\tmp\\x"
+--! assertEval dollar "cost $x and ${y}"
+--! assertEval hashInside "see #\"quoted\"# here"
+--! assertEval doubleHashContent "a ## b"
+--! assertEval hashAtEdges "# c #"
+
+-- §6.3.2: raw strings decode no escapes and give '$' no meaning; the
+-- number of trailing '#' must exactly match the leading count, and
+-- only the earliest closing delimiter with the MATCHING count ends
+-- the literal — so a `"#` sequence inside a ##"..."## literal, and
+-- unmatched '#' runs inside a #"..."# literal, are ordinary content.
+
+winPath : String
+let winPath = #"C:\tmp\x"#
+
+dollar : String
+let dollar = #"cost $x and ${y}"#
+
+hashInside : String
+let hashInside = ##"see #"quoted"# here"##
+
+doubleHashContent : String
+let doubleHashContent = #"a ## b"#
+
+hashAtEdges : String
+let hashAtEdges = ##"# c #"##
+-- STATUS(a51e1bf): PASS

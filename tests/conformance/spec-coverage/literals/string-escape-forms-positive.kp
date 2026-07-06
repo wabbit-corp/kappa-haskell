@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+--! assertEval escHexScalar True
+--! assertEval escHexHighBit True
+--! assertEval escU4 True
+--! assertEval escBraced True
+--! assertEval escControl True
+--! assertEval escQuotes True
+
+-- §6.3.1: every portable escape decodes to its designated scalar. In
+-- particular \xNN in a TEXT literal denotes the Unicode scalar U+00NN
+-- (never a raw byte), so \xE9 equals \u{E9} (é) and the resulting
+-- string stays valid scalar text; \b \f \0 and both \u forms decode
+-- to the same scalars as their braced spellings.
+
+escHexScalar : Bool
+let escHexScalar = "\x41" == "A"
+
+escHexHighBit : Bool
+let escHexHighBit = "\xE9" == "\u{E9}"
+
+escU4 : Bool
+let escU4 = "\u0041" == "\u{41}"
+
+escBraced : Bool
+let escBraced = "\u{1F642}" == "🙂"
+
+escControl : Bool
+let escControl = "\b\f\0" == "\u{8}\u{C}\u{0}"
+
+escQuotes : Bool
+let escQuotes = "\'\"\\" == "'\u{22}\u{5C}"
+-- STATUS(a51e1bf): PASS

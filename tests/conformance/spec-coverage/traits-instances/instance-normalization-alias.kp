@@ -1,0 +1,49 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "3 5\n"
+
+-- §14.3.2 (Spec.md L14634-L14653): instance goals and instance heads are
+-- compared after normalizing transparent type aliases available at the
+-- use/declaration site, and an implementation MUST NOT ignore a candidate
+-- merely because the goal (or the head) is spelled through a normalizable
+-- alias at the first comparison point. Both directions are exercised:
+-- goal-through-alias against a direct head, and alias-spelled head
+-- against a direct goal.
+module main
+
+trait Count (c : Type) =
+    count : c -> Int
+
+type Names = List Int
+
+-- Direct head; the goal below is spelled through the alias `Names`.
+instance Count (List Int) =
+    let count xs = match xs case Nil -> 0 case y :: rest -> 1 + count rest
+
+data Bag : Type =
+    MkBag Int
+
+type BagAlias = Bag
+
+-- Alias-spelled head; the goal below is spelled directly at `Bag`.
+instance Count BagAlias =
+    let count b = match b case MkBag n -> n
+
+goalThroughAlias : Int
+let goalThroughAlias =
+    let
+        d = summon (Count Names)
+    in
+        d.count (1 :: 2 :: 3 :: Nil)
+
+goalDirect : Int
+let goalDirect =
+    let
+        d = summon (Count Bag)
+    in
+        d.count (MkBag 5)
+
+main : UIO Unit
+let main = printlnString (showInt goalThroughAlias ++ " " ++ showInt goalDirect)
+
+-- STATUS(a51e1bf): PASS

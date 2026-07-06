@@ -1,0 +1,31 @@
+--! mode check
+--! assertDiagnostic error E_SEAL_OPEN_RECORD_ASCRIPTION
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertErrorCount 2
+
+-- §13.2.10 (Spec.md L13505, L13526-L13527): the ascribed type of
+-- `seal e as S` must elaborate to a CLOSED record type — an open record
+-- with a residual row is not a sealing signature. Separately, sealing a
+-- value whose type still carries an abstract residual tail `r` under a
+-- closed signature hides that tail, which requires RecTailSatisfies r 0;
+-- that premise is not spellable in v1, so such a seal must be rejected.
+module main
+
+-- NEGATIVE (a): open record type as the seal ascription
+sealOpenAscription : forall (r : RecRow). (rec : (x : Integer | r)) -> (x : Integer | r)
+let sealOpenAscription (@0 r : RecRow) (rec : (x : Integer | r)) : (x : Integer | r) =
+    seal rec as (x : Integer | r)       --!! E_SEAL_OPEN_RECORD_ASCRIPTION
+
+type Public = (x : Integer,)
+
+-- NEGATIVE (b): hiding an abstract residual tail behind a closed
+-- signature (no RecTailSatisfies r 0 evidence is available)
+hideTail : forall (r : RecRow). (1 rec : (x : Integer | r)) -> Public
+let hideTail (@0 r : RecRow) (1 rec : (x : Integer | r)) : Public =
+    seal rec as Public                  --!! E_TYPE_EQUALITY_MISMATCH
+
+-- POSITIVE: sealing a closed record, hiding a droppable extra field
+p : Public
+let p = seal (x = 1, note = "spare") as Public
+
+-- STATUS(a51e1bf): PASS

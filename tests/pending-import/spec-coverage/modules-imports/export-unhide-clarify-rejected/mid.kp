@@ -1,0 +1,13 @@
+module mid
+
+-- §8.4: "An item imported via unhide or clarify MUST NOT be re-exported.
+-- Attempting to apply export to such an item is a compile-time error" —
+-- even with the allow_unhiding gate enabled. (The spec names no
+-- diagnostic family; E_IMPORT_ITEM_MALFORMED is the closest registered
+-- code.)
+import plib.(unhide secret)
+export plib.(unhide secret) --!! E_IMPORT_ITEM_MALFORMED
+
+--! allow_unhiding
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — the unhide import itself fails (private access unimplemented, E_IMPORT_ITEM_NOT_FOUND@8) and the export of an unhide item is accepted without diagnostic

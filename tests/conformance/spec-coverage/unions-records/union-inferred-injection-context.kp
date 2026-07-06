@@ -1,0 +1,33 @@
+--! mode check
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertErrorCount 1
+
+-- §13.1.2 (Spec.md L12256-L12269): the explicit injection (| e : T |)
+-- needs only ContainsVar; the inferred form (| e |) is valid ONLY when
+-- the injected member type is unambiguously determined from context.
+-- With an expected union type both forms elaborate; with no expected
+-- type the inferred form is rejected.
+module main
+
+-- expected type from the binding annotation: inferred form OK
+ok : (| Integer | String |)
+let ok = (| 5 |)
+
+-- explicit form selects the member directly
+okExplicit : (| Integer | String |)
+let okExplicit = (| "hi" : String |)
+
+-- expected type from a function argument position: inferred form OK
+consume : (| Integer | String |) -> Integer
+let consume u = 0
+
+viaArg : Integer
+let viaArg = consume (| "x" |)
+
+-- NEGATIVE: no expected union type — the inferred form cannot determine
+-- the member and is rejected.
+bad : Integer
+let bad =
+    let u = (| 1 |) in 0                --!! E_EXPECTED_SYNTAX_TOKEN
+
+-- STATUS(a51e1bf): PASS

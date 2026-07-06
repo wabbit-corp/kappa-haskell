@@ -1,0 +1,43 @@
+--! mode check
+--! assertErrorCount 3
+
+-- §11.1.4: trait evidence records are abstract — no record-literal
+-- construction, no record-update, no structural pattern matching — while
+-- member projection stays public and evidence remains an ordinary
+-- first-class value (bindable, rebindable, summonable). The spec mandates
+-- rejection for the negative cases without fixing a diagnostic family.
+module main
+
+trait MyEq (a : Type) =
+    myeq : a -> a -> Bool
+
+instance MyEq Int =
+    let myeq a b = True
+
+-- POSITIVE: summoned evidence is an ordinary value; projection is public.
+useProj : Bool
+let useProj = (summon (MyEq Int)).myeq 1 2
+
+-- POSITIVE: rebinding evidence is ordinary compile-time-value binding.
+reboundUse : Bool
+let reboundUse =
+    block
+        let d = summon (MyEq Int)
+        let d2 = d
+        d2.myeq 3 4
+
+-- NEGATIVE: record-literal construction of evidence must be rejected.
+forged : MyEq Int
+let forged = (myeq = \a b -> False)                      --!! kappa.type.mismatch
+
+-- NEGATIVE: record update on evidence must be rejected.
+tweaked : MyEq Int
+let tweaked = (summon (MyEq Int)).{ myeq := \a b -> False }    --!! kappa.type.mismatch
+
+-- NEGATIVE: structural pattern matching on evidence must be rejected.
+inspected : Int
+let inspected =
+    match summon (MyEq Int)                              --!! kappa.pattern.non-exhaustive
+    case (myeq = f) -> 0
+
+-- STATUS(a51e1bf): PASS

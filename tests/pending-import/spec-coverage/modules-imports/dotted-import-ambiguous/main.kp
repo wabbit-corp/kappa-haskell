@@ -1,0 +1,11 @@
+module main
+
+-- §8.3: the bare dotted form `import a.b.c` is disambiguated after module
+-- discovery. Here BOTH interpretations are resolvable — module a.b.c
+-- exists AND module a.b exports an item `c` — so the form is a
+-- compile-time error. (The spec names no diagnostic family;
+-- E_NAME_AMBIGUOUS is the closest registered code.)
+import a.b.c --!! E_NAME_AMBIGUOUS
+
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — no ambiguity error; the compiler silently prefers the singleton-item interpretation of the bare dotted form

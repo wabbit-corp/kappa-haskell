@@ -1,0 +1,22 @@
+module main
+
+-- §8.3/§8.3.1: in `import M.* except (...)`, kind-qualified except items
+-- remove only the selected kind after wildcard expansion (`type Rose`,
+-- `term f`, `trait Marked`); the remaining binding groups (here `g`) are
+-- still imported.
+import wlib.* except (type Rose, term f, trait Marked)
+
+useG : Int
+let useG = g
+
+badType : Int
+let badType = (0 : Rose) --!! E_NAME_UNRESOLVED
+
+badTerm : Int
+let badTerm = f --!! E_NAME_UNRESOLVED
+
+badTrait : Type -> Type
+let badTrait = trait Marked --!! E_STATIC_OBJECT_UNRESOLVED
+
+--! assertErrorCount 3
+-- STATUS(a51e1bf): PASS

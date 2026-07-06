@@ -1,0 +1,38 @@
+-- Spec: §10.1 (L8256-8260), §10.4 (L8909-8910). A data declaration without
+-- '=' is an empty ADT and a DEFINITION; matching on it is exhaustive with
+-- no ordinary cases (via `case impossible`); positivity holds vacuously and
+-- its parameters are vacuously positive in the recorded signature.
+
+module main
+
+--! mode check
+
+data Empty : Type
+
+-- POSITIVE: an empty match is exhaustive on an empty scrutinee.
+absurd : forall (a : Type). Empty -> a
+let absurd v =
+    match v
+    case impossible
+
+-- POSITIVE: parameterized empty data type.
+data Impossible (a : Type) : Type
+
+swallow : forall (a : Type). Impossible a -> Empty
+let swallow v =
+    match v
+    case impossible
+
+-- POSITIVE: Impossible's parameter does not occur in any constructor
+-- argument type (there are none), so it is recorded positive vacuously
+-- and may carry a recursive occurrence.
+data UsesImp : Type =
+    MkUsesImp (Impossible UsesImp)
+
+mk : Impossible UsesImp -> UsesImp
+let mk i = MkUsesImp i
+
+--! assertNoErrors
+--! assertType absurd forall (a : Type). Empty -> a
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,5 @@
+-- Spec: data_types.data_declarations (§10.1), traits.instances (§14.3).
+-- Defines the data type `TyVal`. See `th.lang` for the suite description.
+module ty
+
+data TyVal : Type = TyVal

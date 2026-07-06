@@ -1,0 +1,12 @@
+module lib
+
+-- §14.5 (Spec L15007-L15009): deriving that inspects the constructors of
+-- an `opaque data` type is permitted here, inside the defining module,
+-- where the representation is visible.
+opaque data Secret : Type =
+    MkSecret (payload : Int)
+
+mkSecret : Int -> Secret
+let mkSecret n = MkSecret n
+
+derive Eq Secret

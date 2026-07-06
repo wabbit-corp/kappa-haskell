@@ -1,0 +1,24 @@
+module main
+
+-- §4.3/§8.3.1.1: `unhide` and `clarify` may be combined on one import item
+-- and their surface ORDER is not semantically significant. With both build
+-- settings enabled, each private+opaque item must become accessible (unhide)
+-- AND transparent for definitional equality (clarify), under either
+-- modifier ordering.
+import plib.(unhide clarify secretA)
+import plib.(clarify unhide secretB)
+
+proofA : secretA = 11
+let proofA = refl
+
+proofB : secretB = 22
+let proofB = refl
+
+total : Int
+let total = addInt secretA secretB
+
+--! allow_unhiding
+--! allow_clarify
+--! assertNoErrors
+--! assertEval total 33
+-- STATUS(a51e1bf): FAIL — both orderings parse and are gated/audited symmetrically, but the imports are rejected with E_IMPORT_ITEM_NOT_FOUND (unhide does not grant private access) and the refl proofs fail (clarify does not grant transparency).

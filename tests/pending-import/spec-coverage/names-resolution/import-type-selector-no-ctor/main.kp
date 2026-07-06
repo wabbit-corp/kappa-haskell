@@ -1,0 +1,23 @@
+module main
+
+-- §8.3.1: the `type` kind selector imports the type constructor and its
+-- reified facet, NOT the same-spelling constructor facet (that needs
+-- `ctor Box` or `type Box(..)`). §7.2/§7.3: constructors are still
+-- static members of the imported type, so Box.Box remains available in
+-- term and pattern-head positions — but a bare unqualified `Box 1` in
+-- term position must not elaborate as the constructor.
+import lib.(type Box)
+
+viaStatic : Box Int
+let viaStatic = Box.Box 1
+
+unwrapped : Int
+let unwrapped =
+    match viaStatic
+    case Box.Box n -> n
+
+-- unqualified term-position Box can only be the reified TYPE facet
+-- (§7.1 fallback); applying it to the non-type argument 1 at expected
+-- type Box Int is ill-formed.
+bare : Box Int
+let bare = Box 1

@@ -1,0 +1,38 @@
+-- Spec: §10.3 (L8791-8805). `type T` with no RHS is a DEFINITION of an
+-- opaque type-level object, not an external requirement; it needs no
+-- backend or import to be satisfied. `type Id a = a` generalizes the
+-- unannotated parameter per §11.3.3, and a transparent alias participates
+-- in definitional equality.
+
+module main
+
+--! mode check
+
+-- POSITIVE: abstract type definition; satisfied by itself.
+type Abstract
+
+idAbstract : Abstract -> Abstract
+let idAbstract x = x
+
+-- NEGATIVE: Abstract is opaque — it is not definitionally any other type,
+-- so a Bool cannot check at it.
+bad : Abstract
+let bad = True --!! kappa.type.mismatch
+
+-- POSITIVE: unannotated alias parameter elaborates as (a : Type).
+type Id a = a
+
+useId : Id Int -> Int
+let useId x = x + 1
+
+-- POSITIVE: transparent aliases unfold in both directions.
+roundTrip : Int -> Id Int
+let roundTrip x = x
+
+applied : Int
+let applied = useId (roundTrip 4)
+
+--! assertErrorCount 1
+--! assertEval applied 5
+
+-- STATUS(a51e1bf): PASS

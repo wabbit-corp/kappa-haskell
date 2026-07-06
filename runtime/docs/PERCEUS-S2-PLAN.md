@@ -18,7 +18,7 @@ under a backstop before S3 removes the net.
 
 ## 0. The architectural fact that reshapes everything
 
-`OwnInfo` keys are **structural child-paths** (`Ownership.hs` `biPath`/`usPath`); the S1.1-R1
+In the original S2 implementation, `OwnInfo` keys were **structural child paths**; the S1.1-R1
 discipline mandates **walk-the-lowered-term-and-look-up-each-node's-path**, never iterate the table. But the
 native lowering (`compile`/`compileTerm` in `C.hs`) is **expression-oriented and carries no path** —
 it returns C-expression `Text`, with statement seams only at `sinkToExpr`, `consumeMatch`, `consumeAlt`,
@@ -74,7 +74,7 @@ S0 substrate is present (`rc` field in `kappart.h`; `alloc_val`/`_atomic` init `
   rvalue re-read (R-flat).
 - **b.5 historical `CDo` carve-out (superseded):** the original plan treated `CDo` as an ownership-erased
   island to keep do-scope resources under the ExitStack alone. Current S2.3b+ instead walks `CDo` with the
-  shared `PathScheme` positions and validates generated do-kernel paths. Drops still must not cross a
+  shared structural child positions and validates generated do-kernel paths. Drops still must not cross a
   do-block/resource boundary unless the lowered structure proves ownership transfer; boxed/CPS paths remain
   conservative no-drop sites where ownership is not represented as a current flat local.
 
@@ -126,8 +126,8 @@ ownership proof exists.
 - `src/Kappa/Backend/C.hs` — thread `gsPath`/`gsCurOwn`/`gsRcEnabled`; walk-and-lookup; dup at
   NonLast; drop at `consumeAlt`/`sinkToExpr`/CLet seams; owned/borrowed at `compileApp`/
   `eraseQ0Args`.
-- `src/Kappa/Ownership.hs` — the canonical child-position path scheme in `walk`; source of the
-  shared path constants.
+- `src/Kappa/Ownership.hs` — historical source of the child-position walk used by S2; current S5 code keeps
+  this table observe-only and owner-local-ordinal keyed, while native codegen uses KBackendIR metadata.
 - `src/Kappa/Backend/Repr.hs` — `argConvSelect`/`ArgConv`, the call-boundary accessor.
 - `runtime/kappart.h` / `runtime/value.c` — `kdup`/`kdrop`/counters/`krc_report` beside the S0 `rc`
   and `alloc_val`; K_FGN/K_REF never-free-on-drop.

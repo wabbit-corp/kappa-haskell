@@ -1,0 +1,10 @@
+@PrivateByDefault module plib
+
+-- §9.1: `public` marks an item exported; it is meaningful under
+-- @PrivateByDefault, where an unmarked item is private.
+
+public shown : Int
+public let shown = 5
+
+hiddenDefault : Int
+let hiddenDefault = 6

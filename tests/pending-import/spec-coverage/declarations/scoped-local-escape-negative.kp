@@ -1,0 +1,24 @@
+module main
+
+-- §9.3.1.1 (L8130-L8137): anything still mentioning a scoped local
+-- family after elaboration MUST NOT escape the lexical block scope.
+-- Here the block's result is an unhandled computation whose inferred
+-- type mentions the scoped effect `Ask`, so the definition must be
+-- rejected. (The spec registers no dedicated diagnostic family; any
+-- compile-time error satisfies this test.)
+
+let leak =
+    block
+        scoped effect Ask =
+            ask : Unit -> Int
+
+        let comp : Eff <[Ask : Ask]> Int =
+            do
+                let n <- Ask.ask ()
+                n
+
+        comp
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — compiler accepts the escaping computation (0 errors); §9.3.1.1 nominal-scope-token escape checking is not enforced

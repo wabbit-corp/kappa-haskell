@@ -1,0 +1,26 @@
+module main
+
+-- §9.2: the explicit-signature requirement for exported definitions is
+-- satisfied by (a) a fully inline-annotated named function (every binder
+-- typed + explicit result type), (b) a simple value binding whose `: T`
+-- annotation itself counts as the signature, and (c) a separate
+-- signature declaration. Non-exported definitions may rely on inference.
+
+let addInline (x : Int) (y : Int) : Int = x + y
+
+let greeting : String = "hi"
+
+separate : Int -> Int
+let separate x = x + 1
+
+private let inferredPrivate x = x + 2
+
+usePrivate : Int
+let usePrivate = inferredPrivate 1
+
+--! mode check
+--! assertNoErrors
+--! assertType addInline Int -> Int -> Int
+--! assertType greeting String
+--! assertType separate Int -> Int
+-- STATUS(a51e1bf): PASS

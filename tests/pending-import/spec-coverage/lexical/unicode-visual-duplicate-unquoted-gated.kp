@@ -1,0 +1,17 @@
+--! requires capability unicode-names
+--! mode check
+--! assertDiagnostic error E_UNICODE_VISUAL_DUPLICATE_BINDING
+
+-- §5.1A (the spec's own example): with `unicode-names` active, the
+-- three unquoted declarations below share one strongVisualNameKey
+-- equivalence class {U+0041, U+0391, U+0410} and collide in one
+-- lexical scope. On implementations without the gate this test
+-- classifies unsupported via the requires directive.
+
+module main
+
+let A = 1
+let Α = 2 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+let А = 3 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+
+-- STATUS(a51e1bf): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)

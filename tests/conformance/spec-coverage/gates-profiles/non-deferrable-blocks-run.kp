@@ -1,0 +1,21 @@
+-- §3.1.15: a linear-use violation (dropping an owned quantity-1 value)
+-- is a non-deferrable hard error; no mode may turn it into a runtime
+-- hole or fabricated value, and the produced artifact MUST NOT be used
+-- as a successful result — the program must not execute (empty stdout,
+-- nonzero exit).
+--! mode run
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+--! assertExitCode 1
+--! assertStdout ""
+module main
+
+dropIt : (1 t : Int) -> Int
+let dropIt t = 5 --!! E_QTT_LINEAR_DROP
+
+used : Int
+let used = dropIt 7
+
+main : IO Unit
+let main = println "must never print"
+
+-- STATUS(a51e1bf): PASS

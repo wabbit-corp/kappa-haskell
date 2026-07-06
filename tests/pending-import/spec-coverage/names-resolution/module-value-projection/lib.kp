@@ -1,0 +1,7 @@
+module lib
+
+answer : Int
+let answer = 42
+
+data Box (a : Type) : Type =
+    Box (value : a)

@@ -34,19 +34,19 @@ let rightShouldNotRun marker =
 
 main : UIO Unit
 let main = do
-  retryRef <- atomically (newTVar 0)
-  rollbackMarker <- atomically (newTVar 0)
+  let retryRef <- atomically (newTVar 0)
+  let rollbackMarker <- atomically (newTVar 0)
   atomically (leftRetry retryRef rollbackMarker <|> rightWins retryRef)
-  retryValue <- atomically (readTVar retryRef)
-  markerAfterRetry <- atomically (readTVar rollbackMarker)
+  let retryValue <- atomically (readTVar retryRef)
+  let markerAfterRetry <- atomically (readTVar rollbackMarker)
   printlnString ("retry-right:" ++ showInt retryValue)
   printlnString ("rollback-marker:" ++ showInt markerAfterRetry)
 
-  out <- atomically (newTVar 0)
-  marker <- atomically (newTVar 0)
+  let out <- atomically (newTVar 0)
+  let marker <- atomically (newTVar 0)
   atomically (leftWins out marker <|> rightShouldNotRun marker)
-  leftValue <- atomically (readTVar out)
-  markerValue <- atomically (readTVar marker)
+  let leftValue <- atomically (readTVar out)
+  let markerValue <- atomically (readTVar marker)
   if markerValue == 99 then
     printlnString ("left-wins:" ++ showInt leftValue)
   else

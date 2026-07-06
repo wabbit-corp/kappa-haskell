@@ -1,0 +1,15 @@
+-- §3.1.7 / §2.1: for an unquoted Unicode identifier under the inactive
+-- `unicode-names` gate, a rank-1 local source-preserving repair is known
+-- (the backtick spelling, §2.1A) and MUST outrank enabling the broader
+-- feature gate (rank 4); §2.1 requires the diagnostic to carry the most
+-- local source-preserving repair. Applying that machine-applicable fix
+-- must let the file elaborate under the current profile.
+--! mode check
+--! assertDiagnosticFamily error kappa.feature.gated
+--! assertDiagnosticFix error kappa.feature.gated machine-applicable
+--! assertDiagnosticFixCompiles error kappa.feature.gated
+module main
+
+let λ = 1 --!! E_FEATURE_INACTIVE
+
+-- STATUS(a51e1bf): FAIL — no fix-its at all on kappa.feature.gated; the local backtick repair is not offered

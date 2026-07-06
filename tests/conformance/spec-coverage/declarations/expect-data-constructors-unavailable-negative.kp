@@ -1,0 +1,18 @@
+module main
+
+-- §9.4: `expect data` by itself does not make any constructor name
+-- available, so pattern matching with a guessed constructor is an
+-- unresolved-constructor error; and with no satisfying definition in
+-- the compilation unit the expect itself is unsatisfied.
+
+expect data Ext : Type
+
+use : Ext -> Int
+let use e =
+    match e
+    case MkExt -> 1 --!! E_NAME_UNRESOLVED
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_NAME_UNRESOLVED, E_EXPECT_UNSATISFIED
+-- STATUS(a51e1bf): PASS

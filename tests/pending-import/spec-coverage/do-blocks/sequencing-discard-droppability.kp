@@ -1,0 +1,38 @@
+-- §18.2/§18.2.2 (L20207-20230, L20461-20464): a do expression item followed
+-- by a later reachable item has its value DISCARDED, and the discard is
+-- permitted only when the value is droppable under §12.2.6. A result whose
+-- component carries a positive lower bound (>=1) is not droppable and must
+-- be bound and consumed explicitly.
+module main
+
+data Handle : Type =
+    MkHandle (>=1 token : Int)
+
+acquireH : UIO Handle
+let acquireH = pure (MkHandle 7)
+
+-- POSITIVE: droppable intermediate results may be discarded.
+okDiscard : UIO Unit
+let okDiscard = do
+    pure 42
+    pure ()
+
+-- POSITIVE: binding and consuming the non-droppable component is accepted.
+okConsume : UIO Int
+let okConsume = do
+    let h <- acquireH
+    match h
+    case MkHandle t -> pure t
+
+-- NEGATIVE: the discarded intermediate result carries a >=1 component.
+badDiscard : UIO Unit
+let badDiscard = do
+    acquireH --!! E_QTT_LINEAR_DROP
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — the compiler accepts badDiscard (0 errors): the do
+-- expression-item discard path skips the §12.2.6 droppability check that the
+-- equivalent explicit `let h <- acquireH; pure ()` DOES perform (that twin is
+-- correctly rejected), so a >=1 component is silently dropped.

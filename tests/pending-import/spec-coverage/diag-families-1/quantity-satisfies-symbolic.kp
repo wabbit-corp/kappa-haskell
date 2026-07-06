@@ -1,0 +1,34 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+--! assertDiagnosticMatch may be
+--! assertDiagnosticMatch positive lower bound
+
+-- §3.2.5 (Spec.md L2664-2706): underconstrained symbolic QuantitySatisfies
+-- obligations MUST be diagnosed with two DISTINCT case messages: a demand
+-- the symbolic quantity may not supply ("the quantity `q` is symbolic and
+-- may be `0`", L2678-2684) versus a drop the symbolic quantity may not
+-- permit ("may have a positive lower bound", L2700-2706). §12.2.2
+-- (L10736-10752) accepts the same body once an explicit premise is written.
+module main
+
+-- POSITIVE (§12.2.2 example): the explicit premise `QuantitySatisfies q 1`
+-- licenses demanding both binders exactly once.
+apply :
+    forall (q : Quantity) (a b : Type).
+    QuantitySatisfies q 1 =>
+    (q fn : a -> b) -> (q x : a) -> b
+let apply fn x = fn x
+
+-- NEGATIVE (spec example L2666-2673): body demands `x` exactly once, but
+-- symbolic `q` may be `0`; required content: cannot prove
+-- `QuantitySatisfies q 1`, "the quantity `q` is symbolic and may be `0`".
+badPoly : forall (q : Quantity) (a : Type). (q x : a) -> a
+let badPoly x = x
+
+-- NEGATIVE (spec example L2687-2695): body ignores `x`, but symbolic `q`
+-- "may have a positive lower bound"; required content: cannot prove
+-- `QuantitySatisfies q 0` plus the droppable-quantity repair hint.
+badDrop : forall (q : Quantity) (a : Type). (q x : a) -> Unit
+let badDrop x = ()
+
+-- STATUS(a51e1bf): FAIL — family kappa.quantity.satisfies is not registered; 'QuantitySatisfies' is not even a resolvable source name (positive premise half gets E_NAME_UNRESOLVED), and symbolic-quantity binders (q x : a) mis-elaborate to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH).

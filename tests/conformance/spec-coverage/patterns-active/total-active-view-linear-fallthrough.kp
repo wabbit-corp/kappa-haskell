@@ -1,0 +1,45 @@
+-- §17.3.5 (Spec L18599-L18608) + §17.3.6.2: a total active pattern that
+-- consumes its scrutinee at quantity 1 may carry a refutable subpattern
+-- only inside a grouped total-view match that exhausts the view type.
+-- Falling through to a later case NOT headed by the same grouped pattern
+-- is forbidden (the scrutinee is already consumed on subpattern failure).
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_ACTIVE_PATTERN_LINEARITY_VIOLATION
+
+data Buf : Type =
+    Buf (n : Int)
+
+data BufView : Type =
+    VSmall (n : Int)
+    VBig (n : Int)
+
+pattern View (1 b : Buf) : BufView =
+    match b
+    case Buf n -> if n > 9 then VBig n else VSmall n
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+-- POSITIVE: adjacent cases headed by the same consuming total view form a
+-- grouped total-view match; the subpatterns exhaust BufView, so
+-- fallthrough between them is view-level fallthrough (allowed).
+ok : (1 b : Buf) -> Int
+let ok (1 b : Buf) : Int =
+    match b
+    case View (VSmall n) -> n
+    case View (VBig n) -> n + 1
+
+-- NEGATIVE: a refutable subpattern on the consuming view, followed by an
+-- unrelated case: on subpattern failure the original scrutinee would have
+-- to fall through after being consumed. Ill-formed per §17.3.5/§17.3.6.
+bad : (1 b : Buf) -> Int
+let bad (1 b : Buf) : Int =
+    match b
+    case View (VBig n) -> n
+    case rest -> bufValue rest
+
+-- STATUS(a51e1bf): PASS

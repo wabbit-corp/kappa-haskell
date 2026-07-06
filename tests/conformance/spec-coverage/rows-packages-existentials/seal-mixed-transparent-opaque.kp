@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_SEAL_OPAQUE_UNFOLDING
+
+-- §13.2.10: one signature may mix transparent compile-time members
+-- (defining equation stays available; §31.1 definitional equality) and
+-- opaque members (defining equation hidden across the seal). `seal` is
+-- pure and non-generative: definitionally equal seal operands give
+-- definitionally equal packages, so even the OPAQUE members of two
+-- identical seals agree; the transparent member also unfolds to Int.
+module main
+
+type Mixed : Type = (Pub : Type, opaque Priv : Type, pub : this.Pub, priv : this.Priv)
+
+p1 : Mixed
+let p1 = seal (Pub = Int, Priv = Int, pub = 1, priv = 2) as Mixed
+
+p2 : Mixed
+let p2 = seal (Pub = Int, Priv = Int, pub = 1, priv = 2) as Mixed
+
+-- transparent member unfolds across the seal: p1.pub : p1.Pub = Int
+usePub : Int
+let usePub = p1.pub
+
+-- transparent members of two seals unfold to the same equation
+transparentEq : p1.Pub -> p2.Pub
+let transparentEq (x : p1.Pub) : p2.Pub = x
+
+-- non-generativity: identical seal operands => equal opaque members
+opaqueEq : p1.Priv -> p2.Priv
+let opaqueEq (x : p1.Priv) : p2.Priv = x
+
+-- but an opaque member does NOT unfold to its hidden definition
+usePriv : Int
+let usePriv = p1.priv --!! E_SEAL_OPAQUE_UNFOLDING
+
+-- STATUS(a51e1bf): PASS

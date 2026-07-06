@@ -1,0 +1,42 @@
+-- Combination test: §17.3.3 Match-residue threading + §12.2 linear
+-- consumption + §17.1.2 GADT family-argument refinement. A Match-returning
+-- active pattern consumes an indexed linear scrutinee; both Hit and Miss
+-- arms are typed under the constructor's index refinement, and the Miss
+-- residue (same indexed type) is threaded into the final case.
+
+--! mode check
+--! assertNoErrors
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Sized (n : PNat) : Type =
+    Small : (v : Int) -> Sized Z
+    Big : (v : Int) -> Sized (S Z)
+
+consumeSized : (1 s : Sized n) -> Int
+let consumeSized (1 s : Sized n) : Int =
+    match s
+    case Small v -> v
+    case Big v -> v
+
+-- Hit arm typed under n = S Z, Miss arm rebuilds the residue under n = Z;
+-- both check against Match Int (Sized n) via §17.1.2 refinement.
+pattern TakeBig (@0 n : PNat) (1 s : Sized n) : Match Int (Sized n) =
+    match s
+    case Big v -> Match.Hit v
+    case Small v -> Match.Miss (Small v)
+
+-- §17.3.3: residue type Sized n equals the next case's scrutinee type;
+-- the final irrefutable case consumes the threaded linear residue.
+grab : (1 s : Sized n) -> Int
+let grab (1 s : Sized n) : Int =
+    match s
+    case TakeBig (v) -> v
+    case rest -> consumeSized rest
+
+-- STATUS(a51e1bf): FAIL — the linear Match-threading in `grab` checks, but
+-- the pattern body's Miss arm gets E_APPLICATION_ARGUMENT_MISMATCH: the
+-- compiler does not transport Small v : Sized Z to Sized n under the
+-- branch's forced n = Z equality (§17.1.2 family-argument refinement gap).

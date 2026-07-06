@@ -1,0 +1,42 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.1.1 (Spec.md L12514-L12580): record types are order-insensitive
+-- up to lawful (dependency-respecting) reorderings. Two spellings with
+-- the same fields are definitionally EQUAL types: values, functions over
+-- them, and higher-order uses are interchangeable with no coercion. For
+-- a dependent telescope the reorder is lawful because canonicalization
+-- picks the dependency-respecting topological order.
+module main
+
+type XY = (x : Integer, y : String)
+type YX = (y : String, x : Integer)
+
+-- value-level identity in both directions
+toYX : XY -> YX
+let toYX r = r
+
+toXY : YX -> XY
+let toXY r = r
+
+-- the two function types are the same type, so a function value moves
+-- between them unchanged (higher-order witness of type equality)
+sameFn : (XY -> Integer) -> (YX -> Integer)
+let sameFn f = f
+
+-- a literal written in either field order checks against either spelling
+lit : XY
+let lit = (y = "b", x = 1)
+
+-- dependent telescope: swapping the source order of len/buf is lawful —
+-- canonical order is determined by the dependency graph, not the source
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized = (len : Nat, buf : Vec this.len Bool)
+type SizedSwapped = (buf : Vec this.len Bool, len : Nat)
+
+depSame : Sized -> SizedSwapped
+let depSame s = s
+
+-- STATUS(a51e1bf): PASS

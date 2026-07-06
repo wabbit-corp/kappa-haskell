@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_RECORD_PROJECTION_MISSING_FIELD
+
+-- §13.2.9 interaction with export/interfaces: implicit record fields do
+-- NOT create a sealing or opaqueness boundary — "omitted implicit
+-- fields remain ordinary record members and are not hidden from
+-- projection or definitional equality." Contrast with §13.2.10: a field
+-- hidden by `seal ... as ...` has no projection at all.
+module main
+
+type Pos : Type = (id : Int, @ok : this.id > 0)
+
+pos : Pos
+let pos = (id = 5, @ok = refl)
+
+-- implicit field: projection stays available (no seal, no hiding)
+let okProof = pos.ok
+
+idVal : Int
+let idVal = pos.id
+
+-- sealed hidden field: projection is gone (§13.2.10 hidden-field rule)
+type Public : Type = (x : Int,)
+
+p : Public
+let p = seal (x = 1, secret = "nope") as Public
+
+hidden : String
+let hidden = p.secret --!! E_RECORD_PROJECTION_MISSING_FIELD
+
+-- STATUS(a51e1bf): PASS

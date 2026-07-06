@@ -1,0 +1,46 @@
+--! mode check
+--! assertNoErrors
+--! assertEval total 23
+
+-- §18.1.20.1: repeated resumption is fresh control re-entry — the captured
+-- segment's do-scope frames and pending exit-action stacks are cloned per
+-- application of k, so an (unrestricted) defer registered before the ω
+-- operation runs once per resumption. Log accumulates: branch values
+-- 1 + 2, plus defer emit 10 on each of the two re-entries = 23.
+module main
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+effect Log =
+    1 emit : Int -> Unit
+
+comp : Eff <[Choice : Choice, Log : Log]> Int
+let comp =
+    do
+        defer (Log.emit 10)
+        let b <- Choice.choose ()
+        if b then 1 else 2
+
+bothBranches : Eff <[Log : Log]> Int
+let bothBranches =
+    deep handle Choice comp with
+        case return x -> pure x
+        case choose _ k ->
+            do
+                let l <- k True
+                let r <- k False
+                pure (addInt l r)
+
+-- accumulate every emit into the final result
+summed : Eff <[ ]> Int
+let summed =
+    deep handle Log bothBranches with
+        case return x -> pure x
+        case emit n k ->
+            do
+                let rest <- k ()
+                pure (addInt rest n)
+
+total : Int
+let total = runPure summed

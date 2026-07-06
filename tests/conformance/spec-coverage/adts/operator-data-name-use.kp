@@ -1,0 +1,30 @@
+-- Spec: §10.1 (L8240, L8250-8255). A parenthesized operator token used as a
+-- dataName introduces a TYPE declaration; it resolves in type positions but
+-- introduces no term operator or fixity. Combination with §10.1.3: its
+-- GADT constructor forces the two family arguments equal.
+
+module main
+
+--! mode check
+
+data (~=~) (@0 a : Type) (x : a) (y : a) : Type =
+    MkSame : (~=~) a x x
+
+-- POSITIVE: prefix use in a type position, including partial application.
+refl1 : (~=~) Integer 1 1
+let refl1 = MkSame
+
+SameInt : Integer -> Integer -> Type
+let SameInt = (~=~) Integer
+
+refl2 : SameInt 2 2
+let refl2 = MkSame
+
+-- NEGATIVE: the data name introduces no term-level fixity; bare infix use
+-- in a TERM position must not resolve to an operator with fixity.
+bad : Type
+let bad = 1 ~=~ 1 --!! E_OPERATOR_NO_FIXITY
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): PASS

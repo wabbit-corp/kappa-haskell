@@ -1,0 +1,45 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_VAR_REF_REQUIRED, E_VAR_IN_STATIC_POSITION
+--! assertDiagnosticFamily error kappa.var.mutable-binding
+-- §3.2.20: the payload MUST name the binding and the selected facet.
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /binding "x"
+--! assertDiagnosticPayload error E_VAR_REF_REQUIRED /selectedFacet "current-value"
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /binding "n"
+--! assertDiagnosticPayload error E_VAR_IN_STATIC_POSITION /selectedFacet "current-value"
+
+-- §3.2.20 (kappa.var.mutable-binding), §18.6.1, §18.3.1: a `var`
+-- occurrence that selects the wrong facet is rejected with a facet
+-- diagnostic. `readRef x` demands the reference facet (repair: `ref x`);
+-- a current-value occurrence in a type is a static position that cannot
+-- perform object-phase reads. The positive half shows both repairs.
+module main
+
+data Gauge (n : Int) : Type =
+    MkGauge
+
+badRef : UIO Int
+let badRef = do
+    var x = 1
+    let v = !readRef x --!! E_VAR_REF_REQUIRED
+    pure v
+
+badStatic : UIO Int
+let badStatic = do
+    var n = 1
+    let g = (MkGauge : Gauge n) --!! E_VAR_IN_STATIC_POSITION
+    pure 0
+
+goodRef : UIO Int
+let goodRef = do
+    var x = 1
+    let v = !readRef (ref x)
+    pure v
+
+goodStatic : UIO Int
+let goodStatic = do
+    var n = 1
+    let n0 = n
+    let g = (MkGauge : Gauge n0)
+    pure 0
+-- STATUS(a51e1bf): PASS

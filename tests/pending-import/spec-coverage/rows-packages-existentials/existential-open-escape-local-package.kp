@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_EXISTENTIAL_WITNESS_ESCAPE
+
+-- §13.2.11 unpacking: "No opened witness may appear free in the
+-- externally visible type ... returned value ... produced by body" and
+-- "if the body type is inferred, the inferred type is checked for the
+-- same non-escape condition before the open expression is accepted."
+-- The package here is a LOCAL let, so the payload type `Option a`
+-- cannot even be re-rendered as a package projection once the inner
+-- binding is gone — the witness escapes.
+module main
+
+let leak =
+    let p = seal (Some 1) as exists (a : Type). Option a
+    in open p as exists (a). x in x --!! E_EXISTENTIAL_WITNESS_ESCAPE
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; no witness-escape check fires when the open body returns the raw payload, even though the local package path is dead

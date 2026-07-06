@@ -1,0 +1,11 @@
+module lib
+
+-- §10.3 (L8806-8807), §8.5.2: an opaque alias's RHS unfolds only INSIDE
+-- the defining module; a plain alias stays transparent everywhere.
+type Open (a : Type) = a
+
+opaque type Secret = Int
+
+-- POSITIVE: inside the defining module the opaque alias unfolds.
+mkSecret : Int -> Secret
+let mkSecret n = n

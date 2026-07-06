@@ -1,0 +1,14 @@
+@PrivateByDefault module main
+
+-- §5.5.1.1 + §12.2 combination: the right section (+ x) desugars to
+-- \__x -> __x + x, capturing the linear binder x in a closure; calling
+-- the closure twice consumes x twice, exceeding its linear quantity.
+-- The sibling module `once` shows a single call is accepted.
+
+bad : (1 x : Int) -> Int
+let bad (1 x : Int) : Int =
+    block
+        let f = (+ x)
+        addInt (f 1) (f 2)
+
+-- STATUS(a51e1bf): PASS

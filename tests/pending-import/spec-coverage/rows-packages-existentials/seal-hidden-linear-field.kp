@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP
+
+-- §13.2.10 hidden-field discard: "hiding is not a consuming destructor.
+-- Every hidden runtime-relevant field must therefore be droppable under
+-- the ordinary discard rules of §12.2.6. A hidden field or tail that
+-- carries a positive lower-bound obligation, including 1 or >=1, makes
+-- the seal ill-formed unless the program has explicitly discharged that
+-- obligation before the seal."
+module main
+
+data Resource : Type = MkResource
+
+type WithRes : Type = (x : Int, 1 res : Resource)
+type Public : Type = (x : Int,)
+
+-- `w.res` is a linear field; hiding it via seal discards it silently,
+-- which must be rejected as a positive-lower-bound drop
+bad : (1 w : WithRes) -> Public
+let bad (w : WithRes) : Public = seal w as Public --!! E_QTT_LINEAR_DROP
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; seal silently discards the hidden field declared at quantity 1

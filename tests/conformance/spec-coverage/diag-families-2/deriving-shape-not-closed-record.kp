@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+--! assertDiagnosticMatch (closed record|record type)
+
+-- §3.2.13, §22.1: `inspectRecord` succeeds only for a closed record
+-- type; requesting record inspection of a (sum) data type MUST fail
+-- with a kappa.deriving.shape diagnostic (portable meaning
+-- E_DERIVING_SHAPE_NOT_CLOSED_RECORD). Positive half: a closed record
+-- type is inspectable.
+module main
+
+import std.deriving.shape.*
+
+type Point = (x : Int, y : Int)
+
+data Shade : Type =
+    Light
+    Dark
+
+goodFields : Elab (Syntax String)
+let goodFields = do
+    let shape <- inspectRecord @Point '{ type Point }
+    stringSyntax "ok"
+
+badFields : Elab (Syntax String)
+let badFields = do
+    let shape <- inspectRecord @Shade '{ type Shade }
+    stringSyntax "unreachable"
+
+good : String
+let good = $(goodFields)
+
+bad : String
+let bad = $(badFields)
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,44 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4.2 static footprint summary: the static footprint of a
+-- projection call is the union of ALL yielded alternatives' footprints.
+-- Borrowing a two-yield selector locks BOTH roots even though only one
+-- is selected dynamically; a root not mentioned by any yield stays
+-- unlocked.
+module main
+
+data Buffer : Type =
+    Buffer
+
+type Pack = (1 buf : Buffer)
+
+consumeWhole : (1 p : Pack) -> Pack
+let consumeWhole (1 p : Pack) : Pack = p
+
+observe : (& b : Buffer) -> Int
+let observe (& b : Buffer) : Int = 0
+
+projection pick (place a : Pack) (place b : Pack) (which : Bool) : Buffer =
+    if which then yield a.buf else yield b.buf
+
+-- POSITIVE: root c is in no yield alternative, so it is not locked
+okOther : (1 a : Pack) -> (1 b : Pack) -> (1 c : Pack) -> Bool -> (Pack, Pack, Pack)
+let okOther (1 a : Pack) (1 b : Pack) (1 c : Pack) (which : Bool) : (Pack, Pack, Pack) =
+    block
+        let third =
+            block
+                let & p = pick a b which
+                let _ = observe p
+                consumeWhole c
+        (a, b, third)
+
+-- NEGATIVE: the union footprint locks root b even when the dynamic
+-- branch would have chosen a
+bad : (1 a : Pack) -> (1 b : Pack) -> Bool -> Pack
+let bad a b which =
+    let & p = pick a b which
+    in consumeWhole b --!! E_QTT_BORROW_OVERLAP
+
+-- STATUS(a51e1bf): PASS

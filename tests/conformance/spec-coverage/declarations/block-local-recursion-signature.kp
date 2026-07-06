@@ -1,0 +1,25 @@
+module main
+
+-- §9.3.1 local recursion: a local named binding is non-recursive by
+-- default, so without a preceding local signature the name is simply
+-- not in scope in its own body (unresolved). With a preceding local
+-- signature declaration in the same block scope, recursion is legal.
+
+bad : Int
+let bad =
+    block
+        let go (n : Int) : Int = if n <= 1 then 1 else go (n - 1) --!! E_NAME_UNRESOLVED
+        go 3
+
+good : Int
+let good =
+    block
+        go : Int -> Int
+        let go n = if n <= 1 then 1 else go (n - 1)
+        go 3
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_UNRESOLVED
+--! assertType good Int
+-- STATUS(a51e1bf): PASS

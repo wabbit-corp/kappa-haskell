@@ -1,0 +1,48 @@
+-- Spec: §10.1 (L8342-8360 named parameters and patterns), §17.2.1 (named
+-- record patterns). Named constructor patterns accept fields in any order
+-- and may name only a subset of the fields; omitted fields match anything
+-- (they are never default-completed, §10.1 L8362-8370).
+
+module main
+
+--! mode check
+
+data Config : Type =
+    MkConfig (host : String) (port : Int) (retries : Int)
+
+-- POSITIVE: named pattern with fields in declaration order.
+inOrder : Config -> Int
+let inOrder c =
+    match c
+    case MkConfig { host = _, port = p, retries = r } -> p + r
+
+-- POSITIVE: named pattern with fields reordered; must be equivalent.
+reordered : Config -> Int
+let reordered c =
+    match c
+    case MkConfig { retries = r, port = p, host = _ } -> p + r
+
+-- POSITIVE: partial named pattern; omitted fields are wildcards.
+justPort : Config -> Int
+let justPort c =
+    match c
+    case MkConfig { port = p } -> p
+
+sample : Config
+let sample = MkConfig "h" 8080 3
+
+inOrderResult : Int
+let inOrderResult = inOrder sample
+
+reorderedResult : Int
+let reorderedResult = reordered sample
+
+justPortResult : Int
+let justPortResult = justPort sample
+
+--! assertNoErrors
+--! assertEval inOrderResult 8083
+--! assertEval reorderedResult 8083
+--! assertEval justPortResult 8080
+
+-- STATUS(a51e1bf): PASS

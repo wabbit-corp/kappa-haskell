@@ -1,0 +1,35 @@
+--! mode check
+--! assertErrorCount 2
+-- §3.3.5: a projection used in a context requiring a capability it
+-- does not provide MUST use family kappa.accessor.missing-capability,
+-- identifying the required capability (set / sink), the available
+-- descriptor form, and the use context.
+--! assertDiagnosticFamily error kappa.accessor.missing-capability
+--! assertDiagnosticMatch (set|sink|capab)
+
+-- §3.3.5, §16.1.6: `readOnly` provides only `get`, so a
+-- projection-section update through it requires the missing `set`
+-- capability; `cellLens` provides get/set but no `sink`, so a consuming
+-- use requires the missing `sink` capability.
+module main
+
+type Cell = (value : Int)
+
+consumeInt : (1 x : Int) -> Int
+let consumeInt (1 x : Int) : Int = x
+
+projection readOnly (place this : Cell) : Int =
+    get -> this.value
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+    set (new_value : Int) ->
+        this.{ value = new_value }
+
+badSet : Cell -> Cell
+let badSet (cell : Cell) : Cell = cell.{ (.readOnly) = 9 }
+
+badSink : (1 cell : Cell) -> Int
+let badSink (1 cell : Cell) : Int = consumeInt (cellLens cell)
+-- STATUS(a51e1bf): FAIL — family kappa.accessor.missing-capability is not registered (harness-error §T.5.1); the compiler reports E_PROJECTION_UPDATE_TARGET_UNSUPPORTED (kappa-hs.projection.update) and E_PROJECTION_CAPABILITY_REQUIRED (kappa-hs.projection.capability) instead of the §3.3.5 family

@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.5 (open-record residual-tail preservation) + §11.3.1B: updating
+-- explicit prefix label `len` while preserving abstract residual row r
+-- is accepted exactly when `StableUnderRecChange r len` is available as
+-- a premise. This is the spec's own `setLen` example (§13.2.5).
+module main
+
+setLen :
+    forall (r : RecRow).
+    StableUnderRecChange r len =>
+    (1 rec : (len : Int | r)) ->
+    Int ->
+    (len : Int | r)
+let setLen (@0 r : RecRow) (@_ : StableUnderRecChange r len) (rec : (len : Int | r)) (n : Int) : (len : Int | r) =
+    rec.{ len = n }
+
+-- STATUS(a51e1bf): FAIL — the §11.3.1B intrinsic trait StableUnderRecChange is not exposed (E_NAME_UNRESOLVED); the spec's own setLen example cannot be written.

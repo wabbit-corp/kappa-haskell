@@ -1,0 +1,47 @@
+-- Spec: §10.1.1 (L8605-8627), §10.1.1A (L8653-8667). A transparent local
+-- binding whose RHS is a constructor preserves constructor application
+-- metadata, so named application keeps working; eta-expansion / ordinary
+-- lambda wrapping destroys the metadata, making C { ... } ill-formed.
+
+module main
+
+--! mode check
+
+data User : Type =
+    MkUser (name : String) (age : Int = 30)
+
+-- POSITIVE: rebinding preserves metadata (defaults included).
+viaAlias : User
+let viaAlias =
+    block
+        let Mk2 = MkUser
+        Mk2 { name = "ada" }
+
+ageOf : User -> Int
+let ageOf u =
+    match u
+    case MkUser { age } -> age
+
+aliasAge : Int
+let aliasAge = ageOf viaAlias
+
+-- NEGATIVE: an eta-expanded wrapper is an ordinary function value; named
+-- constructor application on it is ill-formed (positional still fine).
+viaEta : User
+let viaEta =
+    block
+        let wrap = \(n : String) (a : Int) -> MkUser n a
+        wrap { name = "lin", age = 1 } --!! kappa.type.mismatch
+
+-- NEGATIVE: sealing behind an ordinary function-type signature omits the
+-- constructor metadata (§10.1.1A L8663-8665), so named application fails.
+sealed : String -> Int -> User
+let sealed = MkUser
+
+viaSealed : User
+let viaSealed = sealed { name = "x", age = 1 } --!! kappa.type.mismatch
+
+--! assertErrorCount 2
+--! assertEval aliasAge 30
+
+-- STATUS(a51e1bf): PASS

@@ -1,4 +1,0 @@
--- Defines the data type `TyVal`. See `th.lang` for the suite description.
-module ty
-
-data TyVal : Type = TyVal

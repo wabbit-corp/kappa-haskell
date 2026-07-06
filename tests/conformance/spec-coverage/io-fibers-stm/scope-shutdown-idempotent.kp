@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "scope-shutdown\nidempotent-ok\n"
+
+-- §18.1.8 (Spec.md L19082-19086): shutdownScope interrupts every still-live
+-- attached fiber, waits for termination and finalizers, and is IDEMPOTENT —
+-- a second (and later) shutdown of the same scope is safe, does not error,
+-- does not hang, and does not re-interrupt drained fibers.
+module main
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    ioPure 0
+
+main : UIO Unit
+let main = do
+    let sc <- newScope
+    let f <- forkIn sc sleeper
+    shutdownScope sc
+    shutdownScope sc
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause ScopeShutdown by)) -> printlnString "scope-shutdown"
+      case Failure c -> printlnString "other"
+    -- shutting down again after the scope is fully drained is also safe
+    shutdownScope sc
+    printlnString "idempotent-ok"

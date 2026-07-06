@@ -1,0 +1,22 @@
+-- §7.3 effect-operation values: "the selected operation value is
+-- compile-time parameterized by the effect label. Rebinding or packaging
+-- it does not remove the operation's effect-row requirements." Applying
+-- the rebound operation outside an Eff computation carrying the label's
+-- row must therefore fail to typecheck.
+module main
+
+result : Int
+let result =
+    block
+        scoped effect Ask =
+            1 ask : Unit -> Int
+
+        scoped effect label a : Ask
+
+        let g = a.ask
+        let bad = g ()
+        bad
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a51e1bf): PASS

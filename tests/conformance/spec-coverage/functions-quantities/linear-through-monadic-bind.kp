@@ -1,0 +1,40 @@
+-- §12.2.6 discard positions (L11430-11447) x §18 sequencing: a linear
+-- obligation carried by a monadically bound value propagates into the
+-- continuation of the `do` block. Dropping the bound value at the end
+-- of the sequence is a discard of a non-droppable (quantity-1) field
+-- and is rejected; consuming it discharges the obligation.
+module main
+
+data Token : Type =
+    Token
+
+data Cell : Type =
+    Full (1 tok : Token)
+
+makeFull : UIO Cell
+let makeFull = pure (Full Token)
+
+spendCell : (1 c : Cell) -> UIO Unit
+let spendCell (1 c : Cell) : UIO Unit =
+    match c
+    case Full tok ->
+        match tok
+        case Token -> pure ()
+
+-- POSITIVE: the bound linear-field value is consumed downstream.
+ok : UIO Unit
+let ok = do
+    let c <- makeFull
+    spendCell c
+
+-- NEGATIVE: the continuation drops `c`, discarding its quantity-1
+-- `tok` field without a consuming use.
+bad : UIO Unit
+let bad = do
+    let c <- makeFull --!! E_QTT_LINEAR_DROP
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

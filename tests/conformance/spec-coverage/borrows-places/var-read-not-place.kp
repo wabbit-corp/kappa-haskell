@@ -1,0 +1,42 @@
+--! mode check
+--! assertDiagnostic error E_VAR_READ_DUPLICATES_LINEAR_VALUE
+
+-- §12.4.1: a `var` binding is not an ordinary stable-place root — a
+-- source occurrence of its name is a READ of the hidden cell, and
+-- `let & b = x` therefore borrows a hidden temporary holding the read
+-- value (§12.3), not the cell. POSITIVE: the cell can be reassigned
+-- while such a borrow-of-snapshot is live (no overlap: the borrow root
+-- is the temporary). NEGATIVE: when the stored shape may hold a linear
+-- value, the read itself duplicates it — precisely because the binding
+-- is read, not borrowed in place.
+module main
+
+data Token : Type =
+    Token
+
+data Box : Type =
+    Empty
+    Full (1 tok : Token)
+
+replace : (inout b : Box) -> UIO (1 b : Box)
+let replace (inout b : Box) : UIO (1 b : Box) =
+    pure (b = Full Token)
+
+observe : (& n : Int) -> Int
+let observe (& n : Int) : Int = n
+
+ok : UIO Int
+let ok = do
+    var x = 1
+    let & b = x
+    x = 2
+    pure (observe b)
+
+bad : UIO Unit
+let bad = do
+    var box : Box = Empty
+    replace ~box
+    let & v = box --!! E_VAR_READ_DUPLICATES_LINEAR_VALUE
+    pure ()
+
+-- STATUS(a51e1bf): PASS

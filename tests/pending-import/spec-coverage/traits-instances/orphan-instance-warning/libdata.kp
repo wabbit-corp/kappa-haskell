@@ -1,0 +1,11 @@
+module libdata
+
+import libtrait.(trait Tag)
+
+-- Defines the type. The instance below is NOT an orphan: the instantiated
+-- type constructor is defined in this module (§14.3, L14532-L14534).
+data Wrapped : Type =
+    MkWrapped Int
+
+instance Tag Wrapped =
+    let tag w = match w case MkWrapped n -> n

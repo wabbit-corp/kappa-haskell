@@ -1,0 +1,19 @@
+module main
+
+-- §4.4/§15.1(case 5): `assertReducible` admits the definition as
+-- conversion-reducible; §15.1 makes no module-locality exception for
+-- top-level definitions, so `weird Z` must δ-unfold to `Z` for the refl
+-- proof INSIDE the defining module too (compare the cross-module variant,
+-- which the implementation accepts).
+data N : Type = Z | S (p : N)
+
+weird : N -> N
+assertReducible let weird n = match n case Z -> Z case S m -> weird (S (S m))
+
+proof : weird Z = Z
+let proof = refl
+
+--! allow_assert_reducible
+--! assertNoErrors
+--! assertAuditLedger assertReducible
+-- STATUS(a51e1bf): FAIL — same-module conversion does not see the assertReducible grant: the refl proof fails with E_TYPE_EQUALITY_MISMATCH, while the identical cross-module test passes (the override is only honored downstream).

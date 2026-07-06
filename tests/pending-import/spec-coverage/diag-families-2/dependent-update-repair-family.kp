@@ -1,0 +1,32 @@
+--! mode check
+-- one diagnostic per invalidated copied field: buffer, sums, total
+--! assertErrorCount 3
+-- §3.3.1: a record patch whose omitted copied field depends on the
+-- updated field MUST use family kappa.record.dependent-update-repair.
+--! assertDiagnosticFamily error kappa.record.dependent-update-repair
+-- §3.3.1: the diagnostic MUST identify the updated field, the omitted
+-- copied field, and suggest supplying the dependent field explicitly.
+--! assertDiagnosticMatch (len|buffer)
+
+-- §3.3.1, §13.2.5: updating `len` invalidates the implicit copy of
+-- `buffer : Vec this.len Byte`; the same holds transitively for a
+-- two-level dependency chain (`total` depends on `parts` through `sums`).
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buffer : Vec this.len Byte)
+
+badResize : Sized -> Sized
+let badResize (s : Sized) : Sized = s.{ len = 20 }
+
+type Chain : Type =
+    (parts : Nat, sums : Vec this.parts Byte, total : Vec this.parts Byte)
+
+badChain : Chain -> Chain
+let badChain (c : Chain) : Chain = c.{ parts = 3 }
+-- STATUS(a51e1bf): FAIL — family kappa.record.dependent-update-repair is not registered (harness-error §T.5.1); the compiler emits E_TYPE_EQUALITY_MISMATCH in kappa.type.mismatch ("dependent field ... is stale") instead of the §3.3.1 family

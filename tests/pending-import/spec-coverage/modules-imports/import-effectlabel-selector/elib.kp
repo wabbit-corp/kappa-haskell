@@ -1,0 +1,8 @@
+module elib
+
+effect Counter =
+    1 tick : Unit -> Int
+
+-- §18.1.15/§7: `effect label` introduces a declaration of internal kind
+-- effect-label (source selector spelling: effectLabel).
+effect label counterL : Counter

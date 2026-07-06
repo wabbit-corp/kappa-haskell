@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.4.3: withBorrowView v k is the elimination form for a
+-- first-class borrowed view — k is checked with its parameter as an
+-- ordinary borrowed binder under rho. POSITIVE: the continuation may
+-- read the binder, and may return a closure over it when the result
+-- type mentions rho via captures (§12.3.1). NEGATIVE: under an
+-- ANONYMOUS rigid region no capture annotation can name rho
+-- (§12.3.1), so leaking the reinstated binder through the result is a
+-- skolem escape (§12.3).
+module main
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+readView : forall (r : Region). BorrowView r Int -> Int
+let readView (@0 r : Region) (v : BorrowView r Int) : Int =
+    withBorrowView v (\(&[r] x : Int) -> observe x)
+
+delay : forall (r : Region). BorrowView r Int -> ((Unit -> Int) captures (r))
+let delay (@0 r : Region) (v : BorrowView r Int) : ((Unit -> Int) captures (r)) =
+    withBorrowView v (\(&[r] x : Int) -> \() -> observe x)
+
+leak : (& x : Int) -> (Unit -> Int)
+let leak (& x : Int) : (Unit -> Int) =
+    block
+        let v = captureBorrow x
+        withBorrowView v (\m -> \() -> observe m) --!! E_QTT_BORROW_ESCAPE
+
+-- STATUS(a51e1bf): FAIL — compiler reports 0 errors: a closure over the withBorrowView-reinstated borrowed binder m escapes through the result unflagged (direct closures over & parameters ARE caught), so §12.4.3 elimination does not reinstate the §12.3 escape tainting.

@@ -1,0 +1,10 @@
+@PrivateByDefault module once
+
+-- Positive twin: the section closure over a linear binder is fine when
+-- it is called exactly once (§12.2).
+
+good : (1 x : Int) -> Int
+let good (1 x : Int) : Int =
+    block
+        let f = (+ x)
+        f 1

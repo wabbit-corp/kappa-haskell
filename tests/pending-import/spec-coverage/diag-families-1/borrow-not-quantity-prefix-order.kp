@@ -1,0 +1,39 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.borrow-not-quantity
+--! assertDiagnosticFamily error kappa.binder.bad-borrow-prefix-order
+--! assertDiagnosticMatch not a Quantity
+--! assertDiagnosticMatch quantity-first
+
+-- §3.2.6 (Spec.md L2746-2810): `&` where a Quantity is expected MUST be
+-- kappa.quantity.borrow-not-quantity with required content "`&` is not a
+-- Quantity" / "`&` is a borrowed binder access marker" plus a borrowed-binder
+-- or interval-quantity repair hint (L2777-2782). A binder written borrow-first
+-- MUST be kappa.binder.bad-borrow-prefix-order with the canonical
+-- quantity-first repair "Write `(1 & x : A)`, not `(& 1 x : A)`" (L2807-2810).
+module main
+
+trait Quantified (a : Type) =
+    Demand : Quantity
+
+-- POSITIVE: an interval quantity is a valid associated Quantity member.
+data Strict : Type = MkStrict
+
+instance Quantified Strict =
+    let Demand = 1
+
+-- POSITIVE: borrowed binder prefixes are written quantity-first (§12.3).
+readOnce : (1 & x : Int) -> Int
+let readOnce (1 & x : Int) : Int = x
+
+-- NEGATIVE (spec example L2758-2764): `&` written where classifier Quantity
+-- is expected.
+data Bad : Type = MkBad
+
+instance Quantified Bad =
+    let Demand = & --!! kappa.quantity.borrow-not-quantity
+
+-- NEGATIVE (spec example L2792-2796): borrowed access before quantity.
+badOrder : (& 1 y : Int) -> Int --!! kappa.binder.bad-borrow-prefix-order
+let badOrder (& 1 y : Int) : Int = y
+
+-- STATUS(a51e1bf): FAIL — neither kappa.quantity.borrow-not-quantity nor kappa.binder.bad-borrow-prefix-order is registered; '&' in a quantity/binder-prefix position only produces a parse-recovery cascade (E_UNEXPECTED_INDENTATION, E_RECOVERY_DECLARATION_SKIPPED, E_OPERATOR_NO_FIXITY, E_NOT_A_TYPE, E_INSTANCE_MEMBER_MISSING). Positive halves check clean.

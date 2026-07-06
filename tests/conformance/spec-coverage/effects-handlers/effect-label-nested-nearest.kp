@@ -1,0 +1,63 @@
+--! mode check
+--! assertNoErrors
+--! assertEval distinct 10
+--! assertEval sameNested 1
+
+-- §18.1.18 / §18.1.19 worked examples: two distinct labels carrying the
+-- SAME effect interface are handled independently (inner.get is caught by
+-- the handler for inner, yielding 10, not outer's 20); and nested handlers
+-- for the same exact label select the nearest dynamically enclosing one
+-- (yielding 1, not 2).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect label outer : State
+effect label inner : State
+
+example : Eff <[outer : State, inner : State]> Int
+let example =
+    do
+        let _ <- inner.put 1
+        let _ <- outer.put 2
+        inner.get ()
+
+innerHandled : Eff <[outer : State]> Int
+let innerHandled =
+    deep handle inner example with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+bothHandled : Eff <[ ]> Int
+let bothHandled =
+    deep handle outer innerHandled with
+        case return x -> pure x
+        case get _ k -> k 20
+        case put _ k -> k ()
+
+distinct : Int
+let distinct = runPure bothHandled
+
+-- nearest-handler selection for the same exact label
+sameComp : Eff <[State : State]> Int
+let sameComp = State.get ()
+
+innermost : Eff <[State : State]> Int
+let innermost =
+    deep handle State sameComp with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+
+outermost : Eff <[ ]> Int
+let outermost =
+    deep handle State innermost with
+        case return x -> pure x
+        case get _ k -> k 2
+        case put _ k -> k ()
+
+sameNested : Int
+let sameNested = runPure outermost

@@ -1,0 +1,43 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+
+-- §13.1.8 (Spec.md L12367-L12371): union members may be GADT-style
+-- indexed types; injection is valid when the expected union contains the
+-- specific instantiation, and exhaustiveness/reachability use
+-- family-argument unification exactly as in §17.1.1. Inside an arm the
+-- index is known, so the inner GADT match needs only the constructors
+-- compatible with that index.
+module main
+
+data Tag (b : Bool) : Type =
+    TInt : Tag True
+    TStr : Tag False
+
+type AnyTag = (| Tag True | Tag False |)
+
+-- injection of an indexed value at its exact index
+wrapTrue : AnyTag
+let wrapTrue = (| TInt : Tag True |)
+
+-- both index instantiations covered: exhaustive; and in the Tag True
+-- arm, unification rules out TStr, so `case TInt` alone is exhaustive.
+describe : AnyTag -> Integer
+let describe t =
+    match t
+    case (| a : Tag True |) ->
+        match a
+        case TInt -> 1
+    case (| b : Tag False |) ->
+        match b
+        case TStr -> 0
+
+-- NEGATIVE: covering only the Tag True member leaves Tag False
+-- unmatched — the two distinct index instantiations are distinct
+-- members, so this is non-exhaustive.
+partialTag : AnyTag -> Integer
+let partialTag t =
+    match t                            --!! kappa.pattern.non-exhaustive
+    case (| a : Tag True |) -> 1
+
+-- STATUS(a51e1bf): PASS

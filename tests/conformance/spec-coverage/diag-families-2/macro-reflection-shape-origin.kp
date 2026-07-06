@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+
+-- Combination (§3.2.12 macro failure × §3.2.13/§22.1 shape reflection):
+-- a reflection failure inside a user macro helper is a
+-- kappa.deriving.shape diagnostic (not a bare kappa.macro.failure), and
+-- per §3.2.13 its PRIMARY origin must be user-written syntax — the
+-- splice / target type expression below, not the generated helper body.
+-- The inline marker pins the primary origin to the splice line.
+module main
+
+import std.deriving.shape.*
+
+type Alias = Int -> Int
+
+describe : forall (@0 a : Type). Syntax Type -> Elab (Syntax String)
+let describe @a target = do
+    let shape <- inspectAdt @a target
+    stringSyntax "described"
+
+bad : String
+let bad = $(describe @Alias '{ type Alias }) --!! KAPPA_DERIVING_SHAPE_NOT_DATA
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,45 @@
+-- §15.16 (Spec L15631-L15668): a mutually recursive declaration group is
+-- elaborated from its semantic fixpoint — headers of every SCC member are
+-- published before any body is checked, so a type constructor declared by
+-- one member is visible in a sibling's signature regardless of source
+-- order, and reordering must not change accepted/rejected status.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+-- Order 1: the earlier data declaration's field types mention the later
+-- declaration.
+data Forest (a : Type) : Type =
+    FNil
+    FCons (tree : Tree a) (rest : Forest a)
+
+data Tree (a : Type) : Type =
+    TLeaf (label : a)
+    TNode (children : Forest a)
+
+-- Order 2: the same group with the members swapped must also be accepted.
+data Tree2 (a : Type) : Type =
+    TLeaf2 (label : a)
+    TNode2 (children : Forest2 a)
+
+data Forest2 (a : Type) : Type =
+    FNil2
+    FCons2 (tree : Tree2 a) (rest : Forest2 a)
+
+-- Bodies over the group elaborate with the completed environment: a
+-- mutually recursive traversal over both types of the family.
+treeSize : forall (a : Type). Tree a -> Int
+forestSize : forall (a : Type). Forest a -> Int
+
+let treeSize t =
+    match t
+    case TLeaf _ -> 1
+    case TNode kids -> addInt 1 (forestSize kids)
+
+let forestSize f =
+    match f
+    case FNil -> 0
+    case FCons t rest -> addInt (treeSize t) (forestSize rest)
+
+-- STATUS(a51e1bf): PASS

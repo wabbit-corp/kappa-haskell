@@ -1,0 +1,11 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+--! assertDiagnosticMatch (opaque|visib)
+-- §3.2.13, §22.1: a data representation that exists but is hidden by
+-- ordinary opacity rules at the inspection site MUST be reported with
+-- a kappa.deriving.shape diagnostic (portable meaning
+-- E_DERIVING_SHAPE_OPAQUE_REPRESENTATION): shape inspection requires a
+-- representation ordinary code at the splice site could match on.
+-- STATUS(a51e1bf): PASS

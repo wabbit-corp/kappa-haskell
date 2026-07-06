@@ -1,0 +1,8 @@
+module rlib
+
+data N : Type = Z | S (p : N)
+
+-- not verifiable as terminating (diverges on S _): conversion-reducible
+-- status can come ONLY from the unsafe §4.4 assertion, never from a check.
+weird : N -> N
+assertReducible let weird n = match n case Z -> Z case S m -> weird (S (S m))

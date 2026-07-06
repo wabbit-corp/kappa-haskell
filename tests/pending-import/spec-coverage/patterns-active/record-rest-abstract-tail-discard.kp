@@ -1,0 +1,31 @@
+-- §17.2.1 discarding omitted residual tails (Spec L18226-L18240): a bare
+-- `..` in a record pattern is a discard position (§12.2.6). If the
+-- discarded portion contains an abstract residual row r and the scrutinee
+-- is owned, the discard requires RecTailSatisfies r 0 — not expressible
+-- in v1 — so the owned abstract-tail discard is rejected.
+
+--! mode check
+
+-- POSITIVE: closed record; the omitted field y : Int is droppable.
+firstOnly : (x : Int, y : Int) -> Int
+let firstOnly p =
+    let (x = a, ..) = p
+    a
+
+-- NEGATIVE: owned scrutinee with abstract residual row; the bare `..`
+-- discards a tail that may hold linear resources.
+forgetTail : forall (r : RecRow). (1 rec : (name : String | r)) -> String
+let forgetTail (@0 r : RecRow) (rec : (name : String | r)) : String =
+    let (name = n, ..) = rec
+    n
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.row.tail-quantity
+
+-- STATUS(a51e1bf): FAIL — the compiler emits kappa.row.tail-quantity for
+-- the equivalent tail-forgetting PROJECTION (see conformance
+-- qtt/open-record-tail-drop.kp) but not for this record-PATTERN discard:
+-- forgetTail instead gets an unrelated "actual Type / expected String"
+-- E_TYPE_EQUALITY_MISMATCH on the let line (record patterns over open-row
+-- scrutinees are broken), so the §17.2.1/§12.2.6 discard obligation is
+-- never checked.

@@ -1,0 +1,13 @@
+@AllowUnsafeIntrinsics module ulib
+
+-- this module is individually permitted to use the unchecked-proof escape
+-- (implementation's trusted-bootstrapping module attribute), WITHOUT the
+-- build profile enabling `allow_unsafe_assert_proof`. Its exported
+-- instance therefore carries unsafe-erasure evidence (§4.5).
+trait LawfulTag (a : Type) =
+    tag : a -> a
+    tagIdem : forall (x : a). (=) (tag (tag x)) (tag x)
+
+instance LawfulTag String =
+    let tag s = s
+    let tagIdem = unsafeAssertProof "asserted without proof"

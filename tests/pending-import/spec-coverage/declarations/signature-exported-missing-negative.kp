@@ -1,0 +1,16 @@
+module main
+
+-- §9.2: every exported top-level `let` definition MUST have an explicit
+-- top-level signature: either a separate `name : T` declaration, or ALL
+-- binders typed AND an explicit result type inline. Without
+-- @PrivateByDefault everything here is exported (§8.5), so `untyped`
+-- (no signature at all) and `partial` (untyped binder `y` despite the
+-- result annotation) must both be rejected.
+
+let untyped x = x + 1 --!! E_MISSING_EXPLICIT_SIGNATURE
+
+let partial (x : Int) y : Int = x + y --!! E_MISSING_EXPLICIT_SIGNATURE
+
+--! mode check
+--! assertDiagnosticCodes E_MISSING_EXPLICIT_SIGNATURE, E_MISSING_EXPLICIT_SIGNATURE
+-- STATUS(a51e1bf): FAIL — compiler emits no diagnostic; the §9.2 explicit-signature requirement for exported definitions is not enforced (E_MISSING_EXPLICIT_SIGNATURE is registered but never produced)

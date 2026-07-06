@@ -65,9 +65,9 @@ erasure + representation selection* — is **verbatim what §28/§30.2/§31.2/§
   shared semantic erasure classifier and S5.A introduced a recursive `KBackendIR` lowering that omits erased
   parameters/arguments.
 - **Native ownership is node-local.** `Ownership.hs`'s `OwnInfo` remains a spec-*permitted* historical audit /
-  dump table keyed by structural paths, but C/LLVM emission no longer consumes or reattaches it. The lowered
-  tree computes uses, consuming-last-use facts, borrowed-result dependencies, and branch-dead drops on
-  KBackendIR identities.
+  dump table, now keyed by deterministic owner-local ordinals, but C/LLVM emission no longer consumes or
+  reattaches it. The lowered tree computes uses, consuming-last-use facts, borrowed-result dependencies, and
+  branch-dead drops on KBackendIR identities.
 - **Consequence:** the backend still has some **explicit planning analyses** over KCore — especially scalar
   worker eligibility and suspendability — but ownership/layout facts for ordinary value/do emission now live
   on KBackendIR nodes.
@@ -79,8 +79,8 @@ erasure + representation selection* — is **verbatim what §28/§30.2/§31.2/§
   codegen-only kind-domain readback; the same consolidation needs to continue for ownership/layout consumers.
 - **The R-path risk was the highest-rated Perceus risk**, and it existed on the native path only because
   ownership facts were positionally keyed. S5.A retires that class for C/LLVM emission by computing ownership
-  on the lowered KBackendIR tree. The legacy path-keyed table can still drift, but that is now a dump /
-  cross-check issue, not a native dup/drop emission issue.
+  on the lowered KBackendIR tree, and S5.B4 removes the leftover structural-path producer from the
+  observe-only ownership dump/cross-check path.
 - **The representation-layout program is blocked on this.** Unboxing / niche layout / `TagId` / `var`
   scalarization are §31.2.1/§31.3/§31.4/§31.5/§34.3.7 — *representation selection*, whose home is KBackendIR
   nodes. "Representation is LLVM layout" + "CCtor/CMatch carry no type" is exactly this gap.

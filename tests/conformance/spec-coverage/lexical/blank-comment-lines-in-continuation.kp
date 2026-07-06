@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertEval x 42
+--! assertEval y 1
+
+-- §5.4: blank lines and comment-only lines do not affect indentation
+-- and do not produce INDENT/DEDENT changes — even comment-only lines
+-- indented less than the continuation anchor, or between top-level
+-- declarations, must not terminate a continuation region or open a
+-- block.
+
+module main
+
+x : Int
+let x =
+    20 +
+
+    -- comment at the continuation indentation
+
+  -- comment shallower than the continuation lines
+        {- block comment deeper than the continuation lines -}
+    22
+
+y : Int
+  -- an indented comment-only line between declarations is not INDENT
+let y = 1
+
+-- STATUS(a51e1bf): PASS

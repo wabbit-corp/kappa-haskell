@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.3 escape rule: passing a value whose region environment mentions
+-- rigid rho as an argument to a function whose parameter does NOT
+-- itself mention rho (i.e. the parameter is not known to be
+-- downward-only w.r.t. rho) is an escape point and must be rejected.
+module main
+
+applyPure : (Unit -> Int) -> Int
+let applyPure (f : Unit -> Int) : Int = f ()
+
+bad : (& x : Int) -> Int
+let bad (& x : Int) : Int =
+    applyPure (\() -> x) --!! E_QTT_BORROW_ESCAPE
+
+-- STATUS(a51e1bf): PASS

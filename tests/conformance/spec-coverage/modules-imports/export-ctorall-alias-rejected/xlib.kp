@@ -1,0 +1,4 @@
+module xlib
+
+data Rose : Type =
+    Petal Int

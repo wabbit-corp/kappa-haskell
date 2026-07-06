@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.3 with §11.1/§11.3.1A (combination): universe variables and row
+-- variables both participate in declaration-level universalization —
+-- implicitly (lowercase-generalizable identifiers, including a row tail
+-- inferred to have type RecRow) and explicitly — and a single declaration
+-- may generalize both.
+module main
+
+-- POSITIVE: `a` and the row tail `r` are both implicitly universalized.
+getPayload : (payload : a | r) -> a
+let getPayload rec = rec.payload
+
+-- POSITIVE: explicit universe and row binders in one declaration.
+pick : forall (u : Universe) (a : Type u) (r : RecRow). (payload : a | r) -> a
+let pick (@0 u : Universe) (@0 a : Type u) (@0 r : RecRow) (rec : (payload : a | r)) : a =
+    rec.payload
+
+usePick : Int
+let usePick = pick (payload = 3, extra = True)
+
+-- STATUS(a51e1bf): FAIL — implicit universalization does not cover row-tail variables (unresolved 'r' in getPayload), and 'Universe' is unimplemented (pick)

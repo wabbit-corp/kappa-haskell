@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "False\nTrue\nTrue\nFalse\n"
+
+-- §6.1.3: the default `Eq Float` is RAW-BIT equality: two floats are
+-- equal iff their IEEE-754 bit patterns are equal, so `+0.0 == -0.0`
+-- is False and `NaN == NaN` is True when the payload bits match.
+-- `floatEq` is IEEE numeric equality: `+0.0` equals `-0.0`, NaN is
+-- never equal.
+
+nan : Float
+let nan = divDouble 0.0 0.0
+
+pz : Float
+let pz = 0.0
+
+nz : Float
+let nz = -0.0
+
+main : UIO Unit
+let main = do
+    println (pz == nz)
+    println (floatEq pz nz)
+    println (nan == nan)
+    println (floatEq nan nan)
+-- STATUS(a51e1bf): PASS

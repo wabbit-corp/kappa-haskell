@@ -1,0 +1,8 @@
+module clib
+
+data Color : Type =
+    Red
+    Green
+
+data Box : Type =
+    Box Int

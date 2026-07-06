@@ -1,0 +1,4 @@
+--! mode check
+--! assertErrorCount 1
+--! assertEval ok 9
+--! assertEval ok2 1

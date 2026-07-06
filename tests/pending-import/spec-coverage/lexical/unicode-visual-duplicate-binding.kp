@@ -1,0 +1,19 @@
+--! mode check
+--! assertDiagnostic error E_UNICODE_VISUAL_DUPLICATE_BINDING
+
+-- §5.1A/§7.1: the pinned StrongVisualNameTable MUST place U+0041 LATIN
+-- CAPITAL A, U+0391 GREEK CAPITAL ALPHA and U+0410 CYRILLIC CAPITAL A
+-- in one visual equivalence class; two same-kind declarations in one
+-- lexical scope whose strictNameKey values differ but whose
+-- strongVisualNameKey values are equal MUST be rejected with
+-- E_UNICODE_VISUAL_DUPLICATE_BINDING. Backtick spellings contribute the
+-- same name keys, and per §2.1A/§5.1 the visual-duplicate checks still
+-- apply to them while `unicode-names` is inactive.
+
+module main
+
+let A = 1
+let `Α` = 2 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+let `А` = 3 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+
+-- STATUS(a51e1bf): FAIL — no visual-duplicate detection: only hygiene W_UNICODE_CONFUSABLE_IDENTIFIER is emitted; the three visually-colliding bindings are accepted (E_UNICODE_VISUAL_DUPLICATE_BINDING is registered in Explain.hs but never emitted)

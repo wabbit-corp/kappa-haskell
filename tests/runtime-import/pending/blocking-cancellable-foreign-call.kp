@@ -21,9 +21,9 @@ let showBool b = if b then "T" else "F"
 
 main : UIO Unit
 let main = do
-  op <- newCancelableBlock
-  fiber <- fork (runCancelableBlock op)
+  let op <- newCancelableBlock
+  let fiber <- fork (runCancelableBlock op)
   cede
   interrupt fiber
-  canceled <- cancelObserved op
+  let canceled <- cancelObserved op
   printlnString ("cancel:" ++ showBool canceled)

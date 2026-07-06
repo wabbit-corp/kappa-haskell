@@ -1,0 +1,24 @@
+-- §7.1 reified-static fallback: when ordinary term-expression lookup
+-- fails, an implementation MAY select a unique reified static-object term
+-- facet — but "if more than one reified static-object term facet is
+-- available in that nearest binding group, the use is ambiguous unless an
+-- expected type or explicit kind-qualified name expression uniquely
+-- selects one". Kappa implements the fallback (a lone alias facet
+-- resolves), so with type X and trait X in one binding group (§7.1:
+-- distinct kinds coexist) a bare X with no expected type is ambiguous.
+module main
+
+type X = Int
+
+trait X a =
+    unit : a
+
+amb : Int
+let amb =
+    block
+        let v = X --!! E_NAME_AMBIGUOUS
+        1
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_NAME_AMBIGUOUS
+-- STATUS(a51e1bf): FAIL — compiler silently resolves bare X to the trait facet (0 errors) instead of reporting the two-facet fallback ambiguity

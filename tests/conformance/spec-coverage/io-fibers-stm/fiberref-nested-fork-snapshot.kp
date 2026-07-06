@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "grandchild:20\nchild-after:20\nparent-after:10\n"
+
+-- §18.1.7 (Spec.md L19007-19011): each fork boundary snapshots the parent's
+-- currently visible FiberRef values; updates are independent afterwards, at
+-- EVERY nesting level — a grandchild inherits the child's value at its own
+-- fork, and neither its update nor the child's leaks upward.
+module main
+
+grandchild : FiberRef Int -> UIO Int
+let grandchild ref = do
+    let v <- getFiberRef ref
+    setFiberRef ref 30
+    ioPure v
+
+child : FiberRef Int -> UIO Int
+let child ref = do
+    setFiberRef ref 20
+    let g <- fork (grandchild ref)
+    let gex <- await g
+    match gex
+      case Success v -> printlnString ("grandchild:" ++ showInt v)
+      case Failure c -> printlnString "grandchild:failed"
+    -- the grandchild's setFiberRef 30 must not affect this fiber
+    getFiberRef ref
+
+main : UIO Unit
+let main = do
+    let ref <- newFiberRef 1
+    setFiberRef ref 10
+    let f <- fork (child ref)
+    let ex <- await f
+    match ex
+      case Success v -> printlnString ("child-after:" ++ showInt v)
+      case Failure c -> printlnString "child-after:failed"
+    -- the child's setFiberRef 20 must not affect the parent
+    let mine <- getFiberRef ref
+    printlnString ("parent-after:" ++ showInt mine)

@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+-- §11.3.1 uniqueness and contradiction facts (L9811-25): ContainsRec
+-- r l a and LacksRec r l cannot both be solved in one consistent
+-- context. needsBoth declares both premises (well-formed but jointly
+-- unsatisfiable for any concrete row); instantiating r with a row that
+-- contains x leaves LacksRec r x unsolvable — the same unsolved-
+-- evidence surface E_UNSOLVED_IMPLICIT that a closed row already
+-- containing a label produces for LacksRec (§11.3.1A). The variant-row
+-- analogue (ContainsVar/LacksVar inconsistent) is pinned as a
+-- declaration.
+module main
+
+needsBoth : forall (r : RecRow) (a : Type). (ContainsRec r x a, LacksRec r x) => (rec : (y : Bool | r)) -> Bool
+let needsBoth (@0 r : RecRow) (@0 a : Type) (@_ : ContainsRec r x a) (@_ : LacksRec r x) (rec : (y : Bool | r)) : Bool =
+    rec.y
+
+boom : Bool
+let boom = needsBoth (y = True, x = 1)
+
+varBoth : forall (v : VarRow). (ContainsVar v Int, LacksVar v Int) => Int -> Int
+let varBoth (n : Int) : Int = n
+
+-- STATUS(a51e1bf): FAIL — ContainsRec/ContainsVar/LacksVar intrinsic traits not in scope (9 unresolved-name errors instead of the single unsolvable LacksRec obligation at boom)

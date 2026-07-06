@@ -1,0 +1,21 @@
+-- §17.3.2 (Spec L18462-L18468): an Option-returning active pattern that
+-- consumes its scrutinee at quantity 1 must be rejected in any refutable
+-- context where failure would require fallthrough — in particular the
+-- `let? P (...) = e` form, where failure would leave no residue.
+
+--! mode check
+--! assertDiagnostic error E_ACTIVE_PATTERN_LINEARITY_VIOLATION
+
+data Buf : Type =
+    Buf (n : Int)
+
+pattern MaybeTake (1 b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+use : (1 b : Buf) -> UIO Int
+let use (1 b : Buf) : UIO Int = do
+    let? MaybeTake (n) = b
+    pure n
+
+-- STATUS(a51e1bf): PASS

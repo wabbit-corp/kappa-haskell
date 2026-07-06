@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "zero:timed-out\nnegative:timed-out\npositive:ran\n"
+
+-- §18.1.6 (Spec.md L18963-18965): with a nonpositive duration, timeout
+-- behaves as if the timer fires before the FIRST ordinary step of io — the
+-- body must not run (its print must not appear) and the result is the typed
+-- failure Fail Timeout. A positive duration lets a fast body pass through.
+module main
+
+body : UIO Int
+let body = do
+    printlnString "io-started"
+    ioPure 1
+
+report : String -> Exit (| TimeoutError | Void |) Int -> UIO Unit
+let report label ex = match ex
+    case Success v -> printlnString (label ++ ":ran")
+    case Failure (Fail e) -> printlnString (label ++ ":timed-out")
+    case Failure c -> printlnString (label ++ ":other")
+
+quiet : UIO Int
+let quiet = ioPure 2
+
+main : UIO Unit
+let main = do
+    let f1 <- fork (timeout (millis 0) body)
+    let e1 <- await f1
+    report "zero" e1
+    let f2 <- fork (timeout (millis (0 - 5)) body)
+    let e2 <- await f2
+    report "negative" e2
+    let f3 <- fork (timeout (seconds 5) quiet)
+    let e3 <- await f3
+    report "positive" e3

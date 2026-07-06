@@ -1,0 +1,33 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+--! assertDiagnosticMatch Logger
+
+-- §3.2.9 (Spec.md L3045-3061): when an expression's effect row cannot be
+-- checked against the demanded row, the diagnostic MUST use family
+-- kappa.effect.row-mismatch and its payload MUST include the missing effect
+-- labels and the failed ContainsEff/LacksEff/SplitEff obligations — not a
+-- generic type mismatch. Here the declared row <[Counter : Counter]> lacks
+-- the performed Logger operation: `Logger` is the missing label.
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect Logger =
+    1 log : String -> Unit
+
+-- POSITIVE: performing only operations of labels present in the row.
+okComp : Eff <[Counter : Counter]> Int
+let okComp = do
+    let x <- Counter.tick ()
+    pure x
+
+-- NEGATIVE: performs Logger.log but the declared row has no Logger label;
+-- the failed obligation is ContainsEff of Logger in the demanded row.
+badComp : Eff <[Counter : Counter]> Int
+let badComp = do
+    let u <- Logger.log "hi" --!! kappa.effect.row-mismatch
+    let x <- Counter.tick ()
+    pure x
+
+-- STATUS(a51e1bf): FAIL — kappa.effect.row-mismatch is registered but not emitted for the demanded-row check: the compiler reports generic kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH) on the Eff row types, with no missing-label or ContainsEff/LacksEff/SplitEff payload. Positive half checks clean.

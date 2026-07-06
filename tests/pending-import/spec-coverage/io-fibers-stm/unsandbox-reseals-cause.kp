@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "resealed:sealed-tag\ntyped:8\n"
+
+-- §18.1.2 unsandbox reverses sandbox's exposure: a typed Fail carrying a
+-- Cause is re-raised as that very cause. An Interrupt cause re-seals into
+-- real interruption (the fiber's terminal Exit is Failure (Interrupt ...),
+-- not a typed error); a Fail cause re-seals into the ordinary typed channel.
+module main
+
+sealedInterrupt : IO (Cause Int) Int
+let sealedInterrupt = throwIO (Interrupt (InterruptCause (Custom "sealed-tag") None))
+
+sealedFail : IO (Cause Int) Int
+let sealedFail = throwIO (Fail 7)
+
+main : UIO Unit
+let main = do
+    -- Interrupt cause: unsandbox terminates the fiber by interruption,
+    -- with the InterruptCause preserved structurally.
+    let f <- fork (unsandbox sealedInterrupt)
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause (Custom t) by)) ->
+        printlnString ("resealed:" ++ t)
+      case Failure c -> printlnString "resealed:other"
+    -- Fail cause: unsandbox re-fails in the plain typed channel (IO Int a),
+    -- so catchIO observes the original error value.
+    let n <- catchIO (unsandbox sealedFail) (\e -> ioPure (e + 1))
+    printlnString ("typed:" ++ showInt n)

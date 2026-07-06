@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_MODULE_ALIAS_TYPE_COLLISION
+--! assertDiagnosticFamily error kappa.name.module-alias-collision
+--! assertDiagnosticMatch shadow
+
+-- §3.2.2 (Spec.md L2143-2163): a qualified name resolving through a module
+-- alias that shadows an unrelated same-spelling declaration MUST use family
+-- kappa.name.module-alias-collision and the portable alias
+-- E_MODULE_ALIAS_TYPE_COLLISION, showing the shadowed declaration and a
+-- repair (rename the alias / qualify the type / change the import).
+module main
+
+import std.bytes as Foo
+
+-- The alias `Foo` shadows this same-spelling type declaration.
+data Foo : Type = MkFoo
+
+-- POSITIVE: the shadowed type is still usable where no qualified lookup
+-- goes through the alias.
+mk : Foo
+let mk = MkFoo
+
+-- NEGATIVE: `Foo.nope` resolves through the alias (std.bytes has no member
+-- `nope`); the alias collision is the primary repairable cause.
+let bad : Int = Foo.nope --!! E_MODULE_ALIAS_TYPE_COLLISION
+
+-- STATUS(a51e1bf): PASS

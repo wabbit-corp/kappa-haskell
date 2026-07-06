@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+
+-- §11.5: while the reserved 'cubical-paths' gate is inactive, equality
+-- is the intensional family of §11.4.1 and the compiler MUST NOT assume
+-- function extensionality. refl proves f = g only when f and g are
+-- definitionally equal: alpha-renamed lambdas are (accepted), but
+-- pointwise-equal, non-convertible lambdas are not — no univalence or
+-- funext may close that gap while the gate is off.
+module main
+
+alphaOk : (\x -> addInt x 1) = (\y -> addInt y 1)
+let alphaOk = refl
+
+noFunext : (\x -> addInt x 0) = (\x -> x)
+let noFunext = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a51e1bf): PASS

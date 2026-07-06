@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval viaProj 42
+--! assertEval viaQual 42
+-- STATUS(a51e1bf): FAIL — a bare imported module spelling is not admitted as a term-position module value: E_NAME_UNRESOLVED for 'lib' (only the kind-qualified 'module lib' form works)

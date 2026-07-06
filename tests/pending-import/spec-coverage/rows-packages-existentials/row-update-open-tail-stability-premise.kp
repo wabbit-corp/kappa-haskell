@@ -1,0 +1,36 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.7 row-polymorphism obligations, spelled exactly as the spec
+-- does: `StableUnderRecChange r name` licenses a prefix-field update
+-- that preserves an unknown dependent tail; `RecTailSatisfies r ω`
+-- licenses duplicating the tail; `RecTailSatisfies r 0` licenses
+-- forgetting it (width forgetting). With the premises supplied, all
+-- three functions are well-typed per the spec's own examples.
+module main
+
+rename :
+    forall (r : RecRow).
+    StableUnderRecChange r name =>
+    (1 rec : (name : String | r)) ->
+    (name : String | r)
+let rename (@0 r : RecRow) (@_ : StableUnderRecChange r name) (rec : (name : String | r)) : (name : String | r) =
+    rec.{ name = "Grace" }
+
+duplicateExtras :
+    forall (r : RecRow).
+    RecTailSatisfies r ω =>
+    (rec : (name : String | r)) ->
+    ((name : String | r), (name : String | r))
+let duplicateExtras (@0 r : RecRow) (@_ : RecTailSatisfies r ω) (rec : (name : String | r)) : ((name : String | r), (name : String | r)) =
+    (rec, rec)
+
+forgetExtras :
+    forall (r : RecRow).
+    RecTailSatisfies r 0 =>
+    (1 rec : (name : String | r)) ->
+    (name : String,)
+let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : (name : String,) =
+    (name = rec.name,)
+
+-- STATUS(a51e1bf): FAIL — StableUnderRecChange and RecTailSatisfies are not defined in v1 (E_NAME_UNRESOLVED); the spec's own §13.2.7 premise spellings cannot be expressed

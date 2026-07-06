@@ -1,0 +1,17 @@
+-- §12.3.1 (L11821-11824): the regions listed in a capture annotation
+-- form a set and "duplicates are a compile-time error". A signature
+-- writing `captures (s, s)` MUST be rejected.
+module main
+
+data Box : Type =
+    MkBox Int
+
+badDup :
+    forall (s : Region).
+    (&[s] x : Box) -> ((Unit -> Int) captures (s, s))
+let badDup (@0 s : Region) (&[s] x : Box) : ((Unit -> Int) captures (s, s)) =
+    \() -> 0
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — the compiler accepts `captures (s, s)` (0 errors); the §12.3.1 duplicate-region compile-time error is not implemented.

@@ -1,0 +1,14 @@
+module main
+
+import sealed.(type Token)
+import std.deriving.shape.*
+
+-- §22.1: ordinary code here cannot match on Token's constructors, so
+-- shape inspection of Token must be rejected as opaque.
+badShape : Elab (Syntax String)
+let badShape = do
+    let shape <- inspectAdt @Token '{ type Token }
+    stringSyntax "unreachable"
+
+bad : String
+let bad = $(badShape)

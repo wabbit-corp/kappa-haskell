@@ -1,0 +1,25 @@
+-- §15.11 (Spec L15433-L15437): `decreases e by R` with a Type-valued
+-- relation requires erased `WellFounded A R` evidence; with the evidence
+-- in scope and every call-site decrease goal provable through the
+-- transparent relation body (ltInt (n-1) n under 0 < n, in the §15.8
+-- required fragment), the SCC must be accepted as termination-certified,
+-- with no diagnostics.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+myLt : Int -> Int -> Type
+let myLt x y = (ltInt x y = True)
+
+wfMyLt : WellFounded Int myLt
+let wfMyLt = MkWellFounded
+
+down : Int -> Int
+let down n decreases n by myLt =
+    if leInt n 0 then 0 else down (subInt n 1)
+
+-- STATUS(a51e1bf): FAIL — the checker does not consume WellFounded
+-- evidence and does not reason through Type-valued relations (prelude
+-- notes the witness "is not modelled"); the SCC is accepted only as
+-- unverified (W_TERMINATION_UNVERIFIED) instead of termination-certified.

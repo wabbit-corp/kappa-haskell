@@ -1,0 +1,22 @@
+-- §15.16 (Spec L15631-L15676): a mutually recursive trait group, when
+-- admitted, is elaborated from its semantic fixpoint (the later trait's
+-- header is visible while checking the earlier member's signatures). An
+-- implementation that does NOT admit the group form MUST say so directly;
+-- it MUST NOT surface a downstream unresolved-name/missing-trait error
+-- from checking one member against the incomplete source-order environment
+-- (L15670-L15676).
+--! mode check
+--! assertNoErrors
+module main
+
+trait AT (t : Type) =
+    viaB : (@_ : BT t) -> t -> Int
+
+trait BT (t : Type) =
+    viaA : (@_ : AT t) -> t -> Int
+
+-- STATUS(a51e1bf): FAIL — the group is rejected with a downstream
+-- E_NAME_UNRESOLVED on BT (source-order checking of AT against an
+-- incomplete environment). §15.16 permits not admitting mutual trait
+-- groups, but then the diagnostic MUST say so directly; an unresolved-name
+-- cascade is the exact form L15670-L15676 forbids.

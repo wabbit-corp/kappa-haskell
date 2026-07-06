@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1 / §11.3.2: SplitEff and ContainsEff are intrinsic row traits.
+-- SplitEff e l E rest holds iff e normalizes to <[l : E | rest]>
+-- (L9964), so under that premise 'Eff e Int' and
+-- 'Eff <[AskE : AskE | rest]> Int' are the same type and the identity
+-- must check — exercising the definitional content of split evidence
+-- (uniqueness of e/rest per L9824-25). ContainsEff evidence is likewise
+-- ordinary premise evidence.
+module main
+
+effect AskE =
+    1 ask : Unit -> Int
+
+splitId : forall (e : EffRow) (rest : EffRow). SplitEff e AskE AskE rest => Eff e Int -> Eff <[AskE : AskE | rest]> Int
+let splitId (@0 e : EffRow) (@0 rest : EffRow) (@_ : SplitEff e AskE AskE rest) (comp : Eff e Int) : Eff <[AskE : AskE | rest]> Int =
+    comp
+
+hasAsk : forall (e : EffRow). ContainsEff e AskE AskE => Eff e Int -> Eff e Int
+let hasAsk (@0 e : EffRow) (@_ : ContainsEff e AskE AskE) (comp : Eff e Int) : Eff e Int =
+    comp
+
+-- STATUS(a51e1bf): FAIL — SplitEff/ContainsEff intrinsic traits are not in scope (E_NAME_UNRESOLVED); §11.3.1's intrinsic effect-row traits are unimplemented

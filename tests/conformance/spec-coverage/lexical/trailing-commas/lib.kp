@@ -1,0 +1,9 @@
+module lib
+
+-- Exports for the trailing-comma import-item probe in main.kp.
+
+fortyOne : Int
+let fortyOne = 41
+
+one : Int
+let one = 1

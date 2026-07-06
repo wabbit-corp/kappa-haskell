@@ -1,0 +1,25 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.query.borrow-not-item-quantity
+--! assertDiagnosticFamily error kappa.query.borrow-not-source-demand
+--! assertDiagnosticMatch BorrowSourceIntoQuery
+
+-- §3.2.6 (Spec.md L2812-2851) + §20.10.2 (L23972): `D.ItemQuantity` and
+-- `D.SourceDemand` of a query trait are interval quantities and "cannot be
+-- borrowed access markers". Using `&` for ItemQuantity MUST be
+-- kappa.query.borrow-not-item-quantity; for SourceDemand it MUST be
+-- kappa.query.borrow-not-source-demand; both MUST carry the repair hints of
+-- L2847-2851 (BorrowSourceIntoQuery / BorrowItemsIntoQuery / BorrowView).
+-- The governing query trait shape is §23.7 (L30395-30403).
+module main
+
+data Chan : Type = MkChan
+
+-- NEGATIVE: borrowed access is not an item quantity or a source demand.
+instance IntoQuery Chan =
+    let Mode = QueryMode Reusable QZeroOrMore
+    let Item = Int
+    let ItemQuantity = & --!! kappa.query.borrow-not-item-quantity
+    let SourceDemand = & --!! kappa.query.borrow-not-source-demand
+    let toQuery c = __queryFromList Nil
+
+-- STATUS(a51e1bf): FAIL — kappa.query.borrow-not-item-quantity / kappa.query.borrow-not-source-demand are not registered; the instance body parse-recovers on '&' and the prelude IntoQuery declares IntoItem/toQuery instead of the §23.7 Mode/ItemQuantity/Item/SourceDemand members (E_INSTANCE_MEMBER_MISSING).

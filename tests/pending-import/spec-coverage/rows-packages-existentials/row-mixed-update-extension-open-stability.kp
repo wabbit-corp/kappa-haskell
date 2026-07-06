@@ -1,0 +1,21 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.5 (L12970-12999) + §13.2.6 mixed update/extension over an open
+-- row: changedLabels includes the update label `x` and the extension
+-- label `z`. `StableUnderRecChange r z` follows from the LacksRec
+-- freshness fact, but `StableUnderRecChange r x` is NOT available, so
+-- preserving the abstract dependent tail `r` after changing `x` must be
+-- rejected with family kappa.record.open-tail-invalidated (portable
+-- alias E_RECORD_OPEN_TAIL_INVALIDATED — not yet registered, so this
+-- test asserts only the error count).
+module main
+
+mixedOpen :
+    forall (r : RecRow).
+    LacksRec r z =>
+    (1 rec : (x : Int | r)) -> (x : Int, z : Bool | r)
+let mixedOpen (@0 r : RecRow) (@_ : LacksRec r z) (rec : (x : Int | r)) : (x : Int, z : Bool | r) =
+    rec.{ x = 9, z := True }
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; no StableUnderRecChange obligation is generated for the update label of a mixed patch over an abstract tail (E_RECORD_OPEN_TAIL_INVALIDATED alias also unregistered)

@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.7.2 (L16552-16585, L16594-16624): explicit-implicit payload
+-- elaboration is directed by the demanded binder type, never by token
+-- shape. A lambda payload whose body contains '=' checks as an ordinary
+-- lambda with its body in type position when the binder demands
+-- Int -> Type (the spec's subst example, L16596-16602); a Type-demanding
+-- binder takes @(List Int). The BODY_RESOLVE dump prohibition on
+-- token-shape classifiers (L16652-16653) has no harness assertion and is
+-- pinned only behaviorally here.
+module main
+
+pickFam : (@0 fam : Int -> Type) -> Int -> Int
+let pickFam (@0 fam : Int -> Type) (x : Int) : Int = x
+
+-- POSITIVE: lambda payload; the body elaborates in type position.
+useLambda : Int
+let useLambda = pickFam @(\i -> Int) 3
+
+-- POSITIVE: '=' inside the payload is an equality type here; the
+-- classification comes from fam's demanded type, not the token stream.
+useEq : Int
+let useEq = pickFam @(\i -> i = 0) 4
+
+useType : (@0 t : Type) -> Int -> Int
+let useType (@0 t : Type) (x : Int) : Int = x
+
+-- POSITIVE: type payload for a Type-demanding binder.
+useList : Int
+let useList = useType @(List Int) 7

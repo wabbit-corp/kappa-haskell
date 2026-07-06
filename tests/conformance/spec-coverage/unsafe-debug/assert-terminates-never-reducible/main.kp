@@ -1,0 +1,19 @@
+module main
+
+-- §4.4/§15.1: `assertTerminates` (and legacy `assertTotal`) NEVER grants
+-- conversion-reducible status: a definition accepted solely via either
+-- escape does not δ-unfold for definitional equality (§15.1, §31.1). Both
+-- refl proofs would need `weird* Z` to unfold to `Z`, so both MUST be
+-- rejected. This also pins §4.4's identical-alias claim across a module
+-- boundary, where the recorded (non-)reducible artifact bit is consulted.
+import rlib.*
+
+proofT : weirdT Z = Z
+let proofT = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+proofL : weirdL Z = Z
+let proofL = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+--! allow_assert_terminates
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH, E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a51e1bf): PASS

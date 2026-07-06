@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "one\ntwo\nthree\nsum 5\n"
+
+-- §18.2/§18.2.2 (L20433-20466): do-items elaborate left-to-right — each item
+-- is sequenced before the remainder, a bind's pattern scopes only over the
+-- REMAINING items, and the last reached item provides the block result. The
+-- stdout order here depends on the sequencing contract, not just on types.
+module main
+
+emit : String -> Int -> UIO Int
+let emit tag n = do
+    printlnString tag
+    pure n
+
+main : UIO Unit
+let main = do
+    let a <- emit "one" 2
+    emit "two" 0
+    let b <- emit "three" 3
+    printlnString (stringAppend "sum " (showInt (a + b)))
+-- STATUS(a51e1bf): PASS

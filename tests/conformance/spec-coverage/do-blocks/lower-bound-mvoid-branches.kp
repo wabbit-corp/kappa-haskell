@@ -1,0 +1,41 @@
+-- §18.2.4 (L20553-20585): a branch accepted as `m Void` is terminal for
+-- normal-result typing but must STILL satisfy positive lower-bound
+-- obligations of the scopes it leaves. `bad` is the spec's own rejected
+-- example (L20566-20574, via the IO primitive `throwIO`), `ok` its accepted
+-- twin; `badElse` hides the drop behind a `let? … else` failure arm whose
+-- normal continuation DOES demand x.
+module main
+
+data Fail : Type =
+    NotReady
+
+data Parse : Type =
+    Parsed (value : Int)
+    Other
+
+burnInt : (>=1 x : Int) -> Int
+let burnInt (>=1 x : Int) : Int = x
+
+-- NEGATIVE: the failure path leaves scope without demanding x.
+bad : (>=1 x : Int) -> IO Fail Unit
+let bad (>=1 x : Int) : IO Fail Unit = do
+    throwIO NotReady
+
+-- POSITIVE: demand x, then fail.
+ok : (>=1 x : Int) -> IO Fail Unit
+let ok (>=1 x : Int) : IO Fail Unit = do
+    let _ = burnInt x
+    throwIO NotReady
+
+-- NEGATIVE: the `m Void` else-branch exits the scope of `x` without
+-- demanding it; only the normal continuation demands x.
+badElse : (>=1 x : Int) -> Parse -> IO Fail Int
+let badElse (>=1 x : Int) (p : Parse) : IO Fail Int = do
+    let? Parsed v = p
+    else _ -> throwIO NotReady
+    pure (v + burnInt x)
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

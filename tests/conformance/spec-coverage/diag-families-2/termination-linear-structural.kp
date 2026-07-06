@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertDiagnosticFamily warning kappa.termination.failure
+
+-- Combination (§3.2.11 termination × §12.2 quantities): structural
+-- recursion whose decreasing argument is LINEAR verifies without
+-- diagnostics — consuming the tail once satisfies both the quantity
+-- discipline and the size-change argument. A non-decreasing recursive
+-- call on the same linear binder is linearity-correct (used exactly
+-- once) but MUST still get exactly one kappa.termination.failure
+-- diagnostic; the quantity checker must not double-count it.
+module main
+
+data LinList : Type =
+    LNil
+    LCons (n : Int) (1 tail : LinList)
+
+sumAll : (1 xs : LinList) -> Int
+let sumAll xs =
+    match xs
+    case LNil -> 0
+    case LCons n tail -> n + sumAll tail
+
+drain : (1 xs : LinList) -> Int
+let drain xs = drain xs --!! W_TERMINATION_UNVERIFIED
+-- STATUS(a51e1bf): PASS

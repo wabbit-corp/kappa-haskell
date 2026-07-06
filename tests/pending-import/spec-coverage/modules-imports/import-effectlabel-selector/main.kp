@@ -1,0 +1,22 @@
+module main
+
+-- §8.3.1: the `effectLabel` kind selector selects an effect-label
+-- declaration, including its reified static-object term facet — used here
+-- in a row (<[counterL : Counter]>), for operation selection
+-- (counterL.tick), and as the handled label (deep handle counterL).
+import elib.(type Counter, effectLabel counterL)
+
+comp : Eff <[counterL : Counter]> Int
+let comp = counterL.tick ()
+
+let handledEff =
+    deep handle counterL comp with
+        case return x -> pure x
+        case tick _ k -> k 42
+
+result : Int
+let result = runPure handledEff
+
+--! assertNoErrors
+--! assertEval result 42
+-- STATUS(a51e1bf): FAIL — effect labels are not importable by explicit item (E_IMPORT_ITEM_NOT_FOUND) and the effect interface constructor is not exported at all

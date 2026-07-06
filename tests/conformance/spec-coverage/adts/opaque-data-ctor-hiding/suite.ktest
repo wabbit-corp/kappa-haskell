@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 1

@@ -1,0 +1,30 @@
+--! assertNoErrors
+--! assertEval roundTrip 5
+--! assertEval nestedOut 3
+
+module main
+
+-- §7.2: a same-spelling data family forms ONE binding group; type
+-- positions select the type facet while term-expression and pattern-head
+-- positions select the constructor facet — exercised together in a
+-- single definition, including a nested type-and-term use.
+data Wrap (a : Type) : Type =
+    Wrap (v : a)
+
+roundTrip : Int
+let roundTrip =
+    block
+        let w : Wrap Int = Wrap 5
+        match w
+        case Wrap n -> n
+
+nestedTy : Wrap (Wrap Int)
+let nestedTy = Wrap (Wrap 3)
+
+nestedOut : Int
+let nestedOut =
+    match nestedTy
+    case Wrap inner ->
+        match inner
+        case Wrap n -> n
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,42 @@
+-- §17.3.3 (Spec L18518-L18528): in a threaded active-pattern sequence the
+-- Miss residue type must equal the next case's scrutinee type, and the
+-- chain is exhaustive only when terminated by an unconditionally
+-- irrefutable final case.
+
+--! mode check
+
+data Buf : Type =
+    Buf (n : Int)
+
+data Cog : Type =
+    Cog (n : Int)
+
+pattern TakeA (b : Buf) : Match Int Buf =
+    match b
+    case Buf n -> if n > 0 then Match.Hit n else Match.Miss (Buf n)
+
+pattern TakeC (c : Cog) : Match Int Cog =
+    match c
+    case Cog n -> if n > 0 then Match.Hit n else Match.Miss (Cog n)
+
+-- NEGATIVE 1: TakeA's Miss residue is Buf, but the next case's pattern
+-- head TakeC expects a Cog scrutinee → residue-type mismatch.
+badResidue : Buf -> Int
+let badResidue b =
+    match b
+    case TakeA (n) -> n
+    case TakeC (n) -> n
+    case _ -> 0
+
+-- NEGATIVE 2: a Match-returning active-pattern case is refutable; with no
+-- irrefutable final case the threaded match is non-exhaustive.
+noFinal : Buf -> Int
+let noFinal b =
+    match b
+    case TakeA (n) -> n
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- STATUS(a51e1bf): PASS

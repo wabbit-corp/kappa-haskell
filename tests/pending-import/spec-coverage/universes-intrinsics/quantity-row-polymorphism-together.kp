@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.2.1 with §11.3.1 (combination): a declaration may abstract over a
+-- Quantity and a RecRow independently; the quantity variable is legal in a
+-- binder position of a function-typed parameter, and the row variable is an
+-- ordinary residual tail. The two constraint systems do not interfere.
+module main
+
+applyBoth : forall (q : Quantity) (r : RecRow).
+    (f : (q x : Int) -> Int) -> (rec : (v : Int | r)) -> Int
+let applyBoth (@0 q : Quantity) (@0 r : RecRow) (f : (q x : Int) -> Int) (rec : (v : Int | r)) : Int =
+    f rec.v
+
+-- POSITIVE: instantiate q explicitly at ω and r by unification.
+useOmega : Int
+let useOmega = applyBoth @ω (\x -> x) (v = 4, extra = True)
+
+-- STATUS(a51e1bf): FAIL — a bound Quantity variable is rejected in binder position ((q x : Int) -> Int gives E_TYPE_EQUALITY_MISMATCH); quantity polymorphism in signatures unimplemented

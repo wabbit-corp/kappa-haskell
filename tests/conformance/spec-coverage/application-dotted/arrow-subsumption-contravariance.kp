@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7.1 Step 3 (L16476-16495): outermost-arrow subsumption checks the
+-- contravariant condition q_inner_dem ⊑ q_inner_cap under the §12.2
+-- satisfaction table (L10801-10819). ω ⊑ 1 holds, so a linear-binder
+-- function serves an ω-binder demand; 1 ⊑ ω fails, so an ω-binder function
+-- must not serve a linear-binder demand (the callee may pass a linear
+-- resource to it, which the ω body could duplicate).
+module main
+
+applyOmega : ((ω x : Int) -> Int) -> Int
+let applyOmega (f : (ω x : Int) -> Int) : Int = f 3
+
+linearId : (1 x : Int) -> Int
+let linearId (1 x : Int) : Int = x
+
+-- POSITIVE: demand-inner ω, capability-inner 1: ω ⊑ 1 holds.
+ok : Int
+let ok = applyOmega linearId
+
+applyLinear : ((1 x : Int) -> Int) -> Int -> Int
+let applyLinear (f : (1 x : Int) -> Int) (seed : Int) : Int = f seed
+
+dup : (ω x : Int) -> Int
+let dup (ω x : Int) : Int = x + x
+
+-- NEGATIVE: demand-inner 1, capability-inner ω: 1 ⊑ ω fails.
+bad : Int
+let bad = applyLinear dup 3 --!! kappa.application.argument-mismatch

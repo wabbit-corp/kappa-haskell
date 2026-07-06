@@ -1,0 +1,27 @@
+-- §14.5.1 (Spec L15040-L15041): Double fields hash with hashDoubleRaw
+-- (raw IEEE bits), matching the raw-bit Eq instance: a NaN hashes (and
+-- compares) equal to the same-bit NaN, while 0.0 and -0.0 have different
+-- bit patterns and therefore different hashes (and are not Eq-equal).
+--! mode run
+--! assertStdout "True\nFalse\nTrue\nFalse\n"
+module main
+
+import std.hash.*
+
+nan : Double
+let nan = divDouble 0.0 0.0
+
+negZero : Double
+let negZero = negDouble 0.0
+
+hEq : Double -> Double -> Bool
+let hEq x y = hashWith defaultHashSeed x == hashWith defaultHashSeed y
+
+main : UIO Unit
+let main = do
+    println (hEq nan (divDouble 0.0 0.0))
+    println (hEq 0.0 negZero)
+    println (nan == nan)
+    println (0.0 == negZero)
+
+-- STATUS(a51e1bf): PASS

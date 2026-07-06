@@ -1,0 +1,34 @@
+-- §12.2.7 (L11565-11589): a reference from one record field's TYPE to
+-- another field is a compile-time dependency, not a runtime-relevant
+-- demand — it neither demands the field at any runtime quantity nor
+-- discharges a positive lower-bound obligation on it.
+module main
+
+data Vec (n : Int) : Type =
+    MkVec
+
+readData : forall (n : Int). (& v : Vec n) -> Int
+let readData (@0 n : Int) (& v : Vec n) : Int = 0
+
+-- POSITIVE: `data`'s type depends on `len`, but consuming the record
+-- while only reading `data` is fine — the dependency does not force a
+-- runtime demand of `len` (both fields are droppable at ω).
+type Arr = (len : Int, data : Vec this.len)
+
+useArr : (1 a : Arr) -> Int
+let useArr (1 a : Arr) : Int =
+    readData a.data
+
+-- NEGATIVE: with `len` at quantity 1, the type dependency from `data`
+-- does NOT discharge len's positive lower bound; the body must demand
+-- `len` itself, and it never does.
+type LinArr = (1 len : Int, data : Vec this.len)
+
+badArr : (1 a : LinArr) -> Int
+let badArr (1 a : LinArr) : Int = --!! E_QTT_LINEAR_DROP
+    readData a.data
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

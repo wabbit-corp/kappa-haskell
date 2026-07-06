@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+--! assertEval x 42
+
+-- §5.4 continuation regions (spec's second example): all lines whose
+-- indentation is strictly greater than the anchor belong to ONE
+-- continued construct; the strictly deeper indentation on the middle
+-- operand does not open a nested statement block.
+
+module main
+
+a : Int
+let a = 1
+
+b : Int
+let b = 2
+
+c : Int
+let c = 39
+
+x : Int
+let x =
+    a +
+        b +
+    c
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,18 @@
+module main
+
+-- §5.5.2: module-only imports do not dump unrelated unqualified
+-- fixities into scope; an unqualified fixity enters scope only if the
+-- operator itself is imported unqualified. The qualified reference
+-- `lib.(+++)` stays usable as a function without any fixity, but the
+-- infix use is rejected by §5.5.3 infix gating (and the unqualified
+-- name is likewise not in scope).
+
+import lib
+
+ok : Int
+let ok = lib.(+++) 20 22
+
+bad : Int
+let bad = 1 +++ 2 --!! E_OPERATOR_NO_FIXITY
+
+-- STATUS(a51e1bf): PASS

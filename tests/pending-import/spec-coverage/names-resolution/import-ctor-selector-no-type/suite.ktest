@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+-- STATUS(a51e1bf): FAIL — 'import lib.(ctor Box)' also brings the type facet: type-position 'Box Int' resolves (0 errors)

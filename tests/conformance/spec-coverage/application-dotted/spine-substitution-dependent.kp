@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §16.1.7.1 (L16409-16430, L16497-16498): accepted arguments are
+-- substituted through later binder types before the next binder is
+-- processed; an @payload aligned with an explicit binder is ill-formed
+-- (L16427); with no remaining surface argument the site is a partial
+-- application over the residual telescope (L16428-16429), and a named
+-- block may supply that residual suffix (§16.1.7).
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsSame : (b : Bool) -> FlagBox b -> Unit
+let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+
+-- POSITIVE: True flows into the second binder's type.
+ok : FlagBox True -> Unit
+let ok (x : FlagBox True) : Unit = needsSame True x
+
+-- NEGATIVE: substituting False makes the second binder demand
+-- FlagBox False, which FlagBox True does not satisfy.
+bad : FlagBox True -> Unit
+let bad (x : FlagBox True) : Unit = needsSame False x --!! kappa.application.argument-mismatch
+
+add3 : (x : Int) -> (y : Int) -> (z : Int) -> Int
+let add3 (x : Int) (y : Int) (z : Int) : Int = x + y + z
+
+-- POSITIVE: partial application over the residual telescope, then a
+-- named block supplying the remaining explicit binders.
+partial : (y : Int) -> (z : Int) -> Int
+let partial = add3 1
+
+useNamedTail : Int
+let useNamedTail = partial { y = 2, z = 3 }
+
+-- NEGATIVE: @payload where the next binder is explicit is ill-formed.
+badAt : Int
+let badAt = add3 @Int 1 2 --!! kappa.application.argument-mismatch

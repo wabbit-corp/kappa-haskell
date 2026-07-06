@@ -1,0 +1,40 @@
+-- Bench: s5_rbtree_reuse
+-- Purpose: Perceus S5.B drop-guided FBIP reuse on a red/black-tree-shaped
+--   recursive rebuild. Each Node has five runtime fields; mapValues consumes a
+--   unique tree, recursively rebuilds both children, and immediately rebuilds a
+--   same-footprint Node carrying color/key/value fields forward. The S5.B reuse
+--   pass should use a runtime-guarded reuse token for each visited Node, proving
+--   the rbtree-class n-ary-constructor path rather than only the built-in List
+--   cons path.
+
+module main
+
+data Color : Type =
+    Red
+    Black
+
+data RBTree : Type =
+    Empty
+    Node (color : Color) (left : RBTree) (key : Int) (value : String) (right : RBTree)
+
+build : Int -> Int -> RBTree
+let build lo hi =
+    if ltInt hi lo then Empty
+    else
+        let mid = divInt (addInt lo hi) 2
+        Node Black (build lo (subInt mid 1)) mid "v" (build (addInt mid 1) hi)
+
+mapValues : RBTree -> RBTree
+let mapValues t decreases treeSize t =
+    match t
+    case Empty -> Empty
+    case Node color left key value right -> Node color (mapValues left) key value (mapValues right)
+
+treeSize : RBTree -> Int
+let treeSize t =
+    match t
+    case Empty -> 0
+    case Node _ left _ _ right -> addInt 1 (addInt (treeSize left) (treeSize right))
+
+main : UIO Unit
+let main = printlnString (showInt (treeSize (mapValues (build 1 32767))))

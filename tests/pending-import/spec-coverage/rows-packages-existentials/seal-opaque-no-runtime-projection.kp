@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
+
+-- §13.2.10 projection of opaque members: "If f is opaque, p.f is
+-- nameable in typechecking, erased positions, and other
+-- compile-time/static positions admitted by its type. ... it has no
+-- runtime projection unless S also exposes an ordinary runtime field
+-- carrying the corresponding value." Type-level use of pkg.n is fine;
+-- projecting it into a runtime Nat must be rejected (§31.2 erasure).
+module main
+
+data Byte : Type = Byte
+
+data Vec (n : Nat) (a : Type) : Type = VNil
+
+type Sized : Type = (opaque n : Nat, label : String)
+
+pkg : Sized
+let pkg = seal (n = 3, label = "hi") as Sized
+
+-- static/type position: nameable, admitted
+tyUse : Vec pkg.n Byte -> Vec pkg.n Byte
+let tyUse (v : Vec pkg.n Byte) : Vec pkg.n Byte = v
+
+-- runtime position: no runtime projection exists for an opaque member
+bad : Nat
+let bad = pkg.n --!! E_QTT_ERASED_RUNTIME_USE
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; projecting the opaque Nat member into a runtime value is not rejected

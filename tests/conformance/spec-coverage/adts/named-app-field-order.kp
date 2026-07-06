@@ -1,0 +1,43 @@
+-- Spec: §10.1.1 (L8539-8554). Field order in named constructor application
+-- is not semantically significant: defaults are instantiated in
+-- constructor-parameter order with the ACTUAL earlier arguments, and the
+-- final application is assembled in parameter order. Duplicate and unknown
+-- labels are errors.
+
+module main
+
+--! mode check
+
+data Rect : Type =
+    MkRect { width : Int, height : Int = width + 1 }
+
+area : Rect -> Int
+let area r =
+    match r
+    case MkRect { width, height } -> width * height
+
+-- POSITIVE: supplied-field order is irrelevant to the result.
+forward : Int
+let forward = area (MkRect { width = 2, height = 9 })
+
+backward : Int
+let backward = area (MkRect { height = 9, width = 2 })
+
+-- POSITIVE: the default for height observes the actual width argument.
+defaulted : Int
+let defaulted = area (MkRect { width = 4 })
+
+-- NEGATIVE: duplicate labels are an error.
+dup : Rect
+let dup = MkRect { width = 1, width = 2 } --!! kappa.constructor.arity
+
+-- NEGATIVE: labels not declared by the constructor are an error.
+extra : Rect
+let extra = MkRect { width = 1, depth = 3 } --!! kappa.constructor.arity
+
+--! assertErrorCount 2
+--! assertEval forward 18
+--! assertEval backward 18
+--! assertEval defaulted 20
+
+-- STATUS(a51e1bf): PASS

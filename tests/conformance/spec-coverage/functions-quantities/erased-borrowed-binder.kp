@@ -1,0 +1,38 @@
+-- §12.1.1 (L10505-10530), §12.2 (L10787-10788), §12.2.1 (L10879-10884):
+-- a borrowed binder may carry ANY interval quantity, including erased —
+-- `(0 & x : A)` is a well-formed binder prefix. The quantity and the
+-- borrow access are checked separately: erased means no runtime use is
+-- permitted, while compile-time (type-position) uses remain legal.
+module main
+
+data Proof : Type =
+    MkProof
+
+data Flag : Type =
+    On
+    Off
+
+data Vec (n : Int) : Type =
+    MkVec
+
+-- POSITIVE: an erased borrowed binder never demanded at runtime.
+ignoreProof : (0 & x : Proof) -> Int
+let ignoreProof (0 & x : Proof) : Int = 42
+
+-- POSITIVE: an erased borrowed binder used only in a type position
+-- (ambient demand 0, §12.2 L10949-10951) is permitted.
+lenOf : (0 & n : Int) -> (& v : Vec n) -> Int
+let lenOf (0 & n : Int) (& v : Vec n) : Int = 0
+
+-- NEGATIVE: a runtime match scrutinizes the erased borrowed binding —
+-- quantity 0 permits no runtime-relevant demand.
+badRuntime : (0 & x : Flag) -> Int
+let badRuntime (0 & x : Flag) : Int =
+    match x --!! E_QTT_ERASED_RUNTIME_USE
+    case On -> 1
+    case Off -> 0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+-- STATUS(a51e1bf): PASS

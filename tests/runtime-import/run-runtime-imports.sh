@@ -5,7 +5,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CASES="$ROOT/tests/runtime-import/cases"
+CASES="$ROOT/tests/conformance/runtime-import"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/kappa-runtime-import-tests.XXXXXX")"
 KAPPA="cabal run -v0 kappa --"
 fails=0
@@ -19,12 +19,14 @@ cleanup() {
 trap cleanup EXIT
 
 cleanup_case_artifacts() {
-  name="$1"
+  src="$1"
+  dir="$(dirname "$src")"
+  stem="$(basename "$src" .kp)"
   rm -f \
-    "$CASES/$name.kappa.c" \
-    "$CASES/$name.kappa.ll" \
-    "$CASES/$name.kappa.hostffi.c" \
-    "$CASES/$name.native.prov"
+    "$dir/$stem.kappa.c" \
+    "$dir/$stem.kappa.ll" \
+    "$dir/$stem.kappa.hostffi.c" \
+    "$dir/$stem.native.prov"
 }
 
 if ! command -v timeout >/dev/null 2>&1; then
@@ -48,14 +50,14 @@ have_driver() {
 }
 
 echo "== harness =="
-for src in "$CASES"/*.kp; do
-  name="$(basename "$src" .kp)"
+while IFS= read -r src; do
+  name="$(basename "$(dirname "$src")")"
   echo "-- case: $name"
   if ! timeout 240 $KAPPA test "$src"; then
     echo "   FAIL: harness"
     fails=$((fails+1))
   fi
-done
+done < <(find "$CASES" -mindepth 2 -maxdepth 2 -name main.kp | sort)
 
 if [ "$fails" -ne 0 ]; then
   echo "runtime import harness failures: $fails"
@@ -68,8 +70,8 @@ if ! have_driver; then
 fi
 
 echo "== native parity =="
-for src in "$CASES"/*.kp; do
-  name="$(basename "$src" .kp)"
+while IFS= read -r src; do
+  name="$(basename "$(dirname "$src")")"
   echo "-- case: $name"
   interp_out="$WORK/$name.interp.out"
   interp_err="$WORK/$name.interp.err"
@@ -89,11 +91,11 @@ for src in "$CASES"/*.kp; do
   if ! timeout 240 $KAPPA build "$src" -o "$exe" >"$build_log" 2>&1; then
     echo "   FAIL: native build failed"
     sed 's/^/     /' "$build_log"
-    cleanup_case_artifacts "$name"
+    cleanup_case_artifacts "$src"
     fails=$((fails+1))
     continue
   fi
-  cleanup_case_artifacts "$name"
+  cleanup_case_artifacts "$src"
   timeout 120 "$exe" >"$native_out" 2>"$native_err"
   nrc=$?
   if [ "$nrc" -ne 0 ]; then
@@ -110,7 +112,7 @@ for src in "$CASES"/*.kp; do
     echo "     native:      $(tr '\n' '|' <"$native_out")"
     fails=$((fails+1))
   fi
-done
+done < <(find "$CASES" -mindepth 2 -maxdepth 2 -name main.kp | sort)
 
 if [ "$fails" -ne 0 ]; then
   echo "runtime import failures: $fails"

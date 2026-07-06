@@ -1,0 +1,34 @@
+-- §17.1.3 equality-proof scrutinees (Spec L17849-L17864): a source match
+-- on an equality proof available only at quantity 0 is accepted when it
+-- elaborates to erased equality induction — the branch only refines types
+-- or produces proof-level results — or when the scrutinee is forced to
+-- `refl` by definitional equality of its endpoints.
+
+--! mode check
+--! assertNoErrors
+
+-- Proof-only result: erased symmetry. The branch result is itself an
+-- erased proof obligation (accepted per §17.1.3, second bullet).
+sym0 : forall (@0 a : Type) (@0 x : a) (@0 y : a). (0 p : (=) x y) -> (=) y x
+let sym0 p =
+    match p
+    case refl -> refl
+
+-- Endpoints definitionally equal: the scrutinee is already forced to
+-- `refl`, so a runtime-relevant result is fine (third bullet).
+forcedRefl : (0 p : (=) True True) -> Int
+let forcedRefl p =
+    match p
+    case refl -> 7
+
+-- Type-refining only: the runtime result `v` passes through unchanged;
+-- the match performs no runtime discrimination of `p` (second bullet).
+cast0 : forall (@0 a : Type) (@0 b : Type). (0 p : (=) a b) -> a -> b
+let cast0 p v =
+    match p
+    case refl -> v
+
+-- STATUS(a51e1bf): FAIL — forcedRefl is accepted, but sym0 and cast0 get
+-- E_TYPE_EQUALITY_MISMATCH: matching `refl` performs no equality-induction
+-- refinement in this compiler, so the erased proof-only/type-refining
+-- matches that §17.1.3 accepts are rejected.

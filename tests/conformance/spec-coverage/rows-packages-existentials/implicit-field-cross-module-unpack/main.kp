@@ -1,0 +1,16 @@
+-- §13.2.9: the caller in ANOTHER module binds the returned record; the
+-- unpacked implicit projection (safe.p) satisfies the needsPos
+-- obligation with no manual evidence routing (§16.3.3, §8.4).
+module main
+
+import lib.(getSafe, type SafeInt)
+
+needsPos : (n : Int) -> (@p : n > 0) -> Int
+let needsPos n = n
+
+use : Unit -> Int
+let use (u : Unit) : Int =
+    let safe = getSafe ()
+    in needsPos safe.v
+
+-- STATUS(a51e1bf): PASS

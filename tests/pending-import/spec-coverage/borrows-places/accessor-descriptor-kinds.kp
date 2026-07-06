@@ -1,0 +1,48 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §12.4.3: Getter/Setter/Sinker/Opener are first-class descriptor
+-- types DISTINCT from Projector — an accessor bundle may describe
+-- computed access that is not a stable place. POSITIVE: accessor
+-- descriptors may be bound, stored, returned, and applied in ordinary
+-- read/consume contexts. NEGATIVE: a get-only bundle is not a
+-- Projector.
+module main
+
+type Cell = (value : Int)
+
+consumeInt : (1 x : Int) -> Int
+let consumeInt (1 x : Int) : Int = x
+
+projection readOnly (place this : Cell) : Int =
+    get -> this.value
+
+projection sinkOnly (place this : Cell) : Int =
+    sink -> this.value
+
+-- POSITIVE: store at the spec'd descriptor types and apply
+storedGetter : Unit -> Getter (this : Cell,) Int
+let storedGetter () : Getter (this : Cell,) Int = readOnly
+
+readThrough : Cell -> Int
+let readThrough (cell : Cell) : Int =
+    block
+        let g = storedGetter ()
+        g cell
+
+storedSinker : Unit -> Sinker (this : Cell,) Int
+let storedSinker () : Sinker (this : Cell,) Int = sinkOnly
+
+sinkThrough : (1 cell : Cell) -> Int
+let sinkThrough (1 cell : Cell) : Int =
+    block
+        let sk = storedSinker ()
+        consumeInt (sk cell)
+
+-- NEGATIVE: a Getter is not a Projector (distinct type formers)
+notAProjector : Unit -> Projector (this : Cell,) Int
+let notAProjector () : Projector (this : Cell,) Int =
+    readOnly --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a51e1bf): FAIL — accessor bundles are not assigned the §12.4.3 first-class descriptor types: binding readOnly/sinkOnly at Getter/Sinker (this : Cell,) Int is E_TYPE_EQUALITY_MISMATCH (bare `Getter Cell Int` also mismatches), so descriptors cannot be stored or returned; only the final Projector-mismatch line errors as specified.

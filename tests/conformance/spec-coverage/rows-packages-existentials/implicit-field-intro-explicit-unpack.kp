@@ -1,0 +1,48 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.9 implicit record fields: declaration of propositional (§11.4.2)
+-- and trait-evidence fields, explicit `@label = expr` supply at
+-- construction, and direct-binding elimination — after `let box = ...`
+-- the implicit projections (box.p, box.tc) enter the local implicit
+-- context of §16.3.3 and discharge later implicit obligations.
+module main
+
+trait Pretty a =
+    pretty : a -> String
+
+instance Pretty Int =
+    let pretty n = "int"
+
+-- summon Pretty Int evidence explicitly through an implicit binder
+summon : (@tc : Pretty Int) -> Pretty Int
+let summon (@tc : Pretty Int) : Pretty Int = tc
+
+-- propositional implicit field (`v > 0` coerced to `(v > 0) = True`)
+type SafeInt : Type = (v : Int, @p : this.v > 0)
+
+-- trait-evidence implicit field over an earlier type field
+type Box : Type = (a : Type, @tc : Pretty this.a, val : this.a)
+
+needsPos : (n : Int) -> (@p : n > 0) -> Int
+let needsPos n = n
+
+getSafe : Unit -> SafeInt
+let getSafe (u : Unit) : SafeInt = (v = 5, @p = refl)
+
+mkBox : Unit -> Box
+let mkBox (u : Unit) : Box = (a = Int, @tc = summon, val = 5)
+
+-- direct binding: safe.p : (safe.v > 0) = True satisfies the goal
+usePos : Unit -> Int
+let usePos (u : Unit) : Int =
+    let safe = getSafe ()
+    in needsPos safe.v
+
+-- direct binding: box.tc : Pretty box.a satisfies the trait goal
+usePretty : Unit -> String
+let usePretty (u : Unit) : String =
+    let box = mkBox ()
+    in pretty box.val
+
+-- STATUS(a51e1bf): PASS

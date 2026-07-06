@@ -1,0 +1,9 @@
+module benign
+
+-- §8.3.1A: duplicate imports of the SAME semantic identity are benign and
+-- contribute one declaration to the binding group.
+import a.(value)
+import a.(value)
+
+ok2 : Int
+let ok2 = value

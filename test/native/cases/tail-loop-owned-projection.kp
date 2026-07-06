@@ -1,0 +1,16 @@
+-- Regression: a self-tail loop must materialize owned next-iteration
+-- arguments before running cleanup.  The recursive argument below is a
+-- projection out of a record local that is dead at the tail-call boundary; if
+-- the tail-loop lowering carries the borrowed krec_at result through cleanup,
+-- KAPPA_POISON traps when the next iteration reads it.
+module main
+
+loop : Int -> String -> String
+let loop n acc decreases n =
+    if leInt n 0 then acc
+    else
+        let next = (keep = stringAppend acc (showInt n), spare = stringAppend "s" (showInt n))
+        loop (subInt n 1) next.keep
+
+main : UIO Unit
+let main = printlnString (loop 5 "")

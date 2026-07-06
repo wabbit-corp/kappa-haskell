@@ -1,0 +1,17 @@
+--! mode check
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+
+-- §5.4 block introducers: all lines belonging to one block must share
+-- the same indentation level (modulo continuation contexts). A `case`
+-- clause indented deeper than its sibling clause does not belong to the
+-- match block and is rejected as unexpected indentation.
+
+module main
+
+f : Int -> Int
+let f n =
+    match n
+    case 0 -> 1
+      case _ -> 2
+
+-- STATUS(a51e1bf): PASS

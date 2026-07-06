@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §18.1.4 (Spec.md L18878-18880): in portable v1, `forkIn scope action`
+-- also requires `action : IO e a captures ()` — a runtime Scope value alone
+-- does not prove a lexical borrow outlives the child fiber, so a captured
+-- anonymous borrow MUST be rejected with E_QTT_BORROW_ESCAPE.
+module main
+
+read : (& x : Int) -> Int
+let read (& x : Int) : Int = x
+
+bad : Scope -> (& x : Int) -> UIO (Fiber Void (Int -> Int))
+let bad (sc : Scope) (& x : Int) : UIO (Fiber Void (Int -> Int)) =
+    let child = pure (\y -> read x)
+    in forkIn sc child

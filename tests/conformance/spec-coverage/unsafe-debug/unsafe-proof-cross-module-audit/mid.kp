@@ -1,0 +1,8 @@
+module mid
+
+-- middle hop: consumes the unsafely-lawful instance and re-exposes a
+-- derived definition, so `main` depends on the assertion only INDIRECTLY.
+import ulib.*
+
+tagTwice : String -> String
+let tagTwice s = tag (tag s)

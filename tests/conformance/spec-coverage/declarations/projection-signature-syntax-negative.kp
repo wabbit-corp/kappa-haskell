@@ -1,0 +1,21 @@
+module main
+
+-- §9.1.1: a projection definition must carry its declared result type
+-- inline (no signature-only form in v1), and an expanded-form body must
+-- contain at least one accessor clause. Both violations are grammar
+-- errors; parsing recovers and later declarations still elaborate.
+
+type Cell = (value : Int)
+
+projection noResultType (place p : Cell) = --!! E_RECOVERY_DECLARATION_SKIPPED
+    yield p.value
+
+projection noClauses (place p : Cell) : Int = --!! E_RECOVERY_DECLARATION_SKIPPED
+
+good : Int
+let good = 1
+
+--! mode check
+--! assertErrorCount 2
+--! assertType good Int
+-- STATUS(a51e1bf): PASS

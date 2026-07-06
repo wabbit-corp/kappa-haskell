@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_VARIANT_DUPLICATE
+
+-- §13.1.1 (Spec.md L12241-L12250): duplicate detection in a VarRow is by
+-- canonical MemberId of the FULLY ELABORATED member type, not by surface
+-- spelling. A member written through a transparent type alias has the
+-- same MemberId as its expansion, so (| Alias | Integer |) with
+-- `type Alias = Integer` is exactly as duplicated as (| Integer | Integer |).
+module main
+
+type Alias = Integer
+
+bad1 : (| Integer | Integer |) -> Integer
+let bad1 v = 0
+
+bad2 : (| Alias | Integer |) -> Integer
+let bad2 v = 0
+
+-- STATUS(a51e1bf): PASS

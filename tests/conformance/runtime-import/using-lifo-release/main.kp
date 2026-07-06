@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquire:1\nacquire:2\nbody\nrelease:2\nrelease:1\nafter\n"
+
+-- Imported from:
+--   ZIO ScopeSpec / sequential finalizers preserve order
+--   Cats Effect ResourceSuite / releases resources in reverse order
+-- Spec target: §18.8.3 and §28 MonadResource, protected resources release
+-- exactly once in LIFO order when the do-scope exits normally.
+module main
+
+data Res : Type =
+    MkRes (name : String)
+
+instance Releasable (IO e) Res =
+    let release r = match r
+      case MkRes name -> printlnString ("release:" ++ name)
+
+acquire : String -> IO String Res
+let acquire name = do
+    printlnString ("acquire:" ++ name)
+    ioPure (MkRes name)
+
+body : IO String Unit
+let body = do
+    using r1 <- acquire "1"
+    using r2 <- acquire "2"
+    printlnString "body"
+
+main : UIO Unit
+let main = do
+    let f <- fork body
+    let ex <- await f
+    match ex
+      case Success _ -> printlnString "after"
+      case Failure _ -> printlnString "failed"

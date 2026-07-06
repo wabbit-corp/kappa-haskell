@@ -1,0 +1,30 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertErrorCount 1
+
+-- §13.2.2 (Spec.md L12599) + §13.2.7: the open record type
+-- (f1 : T1, ... | r) carries the generated side condition LacksRec r fi
+-- for every explicit label. At a call site the residual row is solved
+-- from the argument; an instantiation that would put an explicitly
+-- listed label (here the extension label `age`) into r as well must be
+-- rejected — rows never contain a label twice.
+module main
+
+addAge : forall (r : RecRow). LacksRec r age => (1 rec : (name : String | r)) -> (name : String, age : Integer | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (1 rec : (name : String | r)) : (name : String, age : Integer | r) =
+    rec.{ age := 36 }
+
+-- POSITIVE: extra fields disjoint from both `name` and `age`;
+-- r := (tag : Integer) and the tail is preserved exactly
+fine : (name : String, tag : Integer) -> (name : String, age : Integer, tag : Integer)
+let fine rec = addAge rec
+
+clash : (name : String, age : Integer, tag : Integer)
+let clash = (name = "b", age = 1, tag = 2)
+
+-- NEGATIVE: the argument already has `age`, so solving r would violate
+-- LacksRec r age
+boom : (name : String, age : Integer, tag : Integer)
+let boom = addAge clash                 --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a51e1bf): PASS

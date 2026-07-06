@@ -1,0 +1,9 @@
+-- Spec: modules.imports (§8.3),
+--       compiler.frontir.standard_diagnostic_families.name_import (§3.2).
+module library
+
+-- Only `existingValue` is declared here; `missingFunction` is
+-- intentionally absent so that a use site of `library.missingFunction`
+-- produces an ordinary kappa.name.unresolved diagnostic.
+existingValue : Int
+let existingValue = 99

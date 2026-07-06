@@ -1,0 +1,58 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probeFmt "L<a>F<%04d>L<b>"
+--! assertEval probeFmtSpaces "F< pad >"
+--! assertEval probeInterp "L<x>IL<y>"
+--! assertEval probeAdjacent "II"
+--! assertEval probeOnlyInterp "I"
+--! assertEval probeEmpty "L<>"
+
+-- §6.3.4.1/§6.3.4.2: `${expr : fmt}` builds an InterpFmt fragment whose
+-- format string is the exact source text after the top-level colon,
+-- minus one optional ASCII space after ':' and one before '}'.
+-- §6.3.4.4: fragments preserve source order, empty Lit fragments are
+-- omitted, and a completely empty prefixed string is [Lit ""].
+-- The handler below reifies the fragment list it receives as a string.
+
+import std.deriving.shape.*
+
+fragTag : SyntaxFragment -> String
+let fragTag frag =
+    match frag
+    case Lit s -> stringAppend "L<" (stringAppend s ">")
+    case Interp e -> "I"
+    case InterpFmt e fmt -> stringAppend "F<" (stringAppend fmt ">")
+
+summarize : List SyntaxFragment -> String
+let summarize frags =
+    match frags
+    case Nil -> ""
+    case frag :: rest -> stringAppend (fragTag frag) (summarize rest)
+
+instance InterpolatedMacro String =
+    let buildInterpolated fragments = stringSyntax (summarize fragments)
+
+tag : Elab (InterpolatedMacro String)
+let tag = pure (summon (InterpolatedMacro String))
+
+n : Integer
+let n = 7
+
+probeFmt : String
+let probeFmt = tag"a${n : %04d}b"
+
+probeFmtSpaces : String
+let probeFmtSpaces = tag"${n :  pad  }"
+
+probeInterp : String
+let probeInterp = tag"x${n}y"
+
+probeAdjacent : String
+let probeAdjacent = tag"${n}${n}"
+
+probeOnlyInterp : String
+let probeOnlyInterp = tag"${n}"
+
+probeEmpty : String
+let probeEmpty = tag""
+-- STATUS(a51e1bf): PASS

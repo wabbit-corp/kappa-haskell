@@ -1,0 +1,18 @@
+module main
+
+-- §8.3/§8.3.1: an alias on a kind-qualified import item imports ONLY the
+-- selected declaration kind, under the alias spelling; the original
+-- spelling is not introduced by that item.
+import klib.(type Rose as Tree, trait Marked as Tagged)
+
+grow : Tree -> Tree
+let grow t = t
+
+useTrait : Type -> Type
+let useTrait = trait Tagged
+
+badOriginal : Int
+let badOriginal = (0 : Rose) --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 1
+-- STATUS(a51e1bf): PASS

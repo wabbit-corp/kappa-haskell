@@ -1,0 +1,31 @@
+-- §15.11 (Spec L15433-L15437, L15465-L15466): for a Type-valued relation,
+-- erased `WellFounded A R` evidence MUST be available — an unsatisfied
+-- requirement is an unsolved erased implicit. For a Bool-valued relation
+-- that is not a §15.4 default measure relation, evidence for the lifting
+-- \x y -> R x y == True is required, and an unprovable call-site decrease
+-- goal rejects the SCC with family kappa.termination.failure.
+--! mode check
+--! assertErrorCount 2
+module main
+
+-- NEGATIVE: Type-valued relation, no WellFounded value anywhere in scope.
+shrouded : Int -> Int -> Type
+opaque let shrouded x y = (ltInt x y = True)
+
+downT : Int -> Int
+let downT n decreases n by shrouded = --!! kappa.implicit.unsolved
+    if leInt n 0 then 0 else downT (subInt n 1)
+
+-- NEGATIVE: Bool-valued REVERSED order — not a default measure relation,
+-- not well-founded, and the decrease goal revLt (n-1) n == True is false.
+revLt : Int -> Int -> Bool
+let revLt x y = ltInt y x
+
+climb : Int -> Int
+let climb n decreases n by revLt = --!! kappa.termination.failure
+    if leInt n 0 then 0 else climb (subInt n 1)
+
+-- STATUS(a51e1bf): FAIL — both SCCs are accepted with
+-- W_TERMINATION_UNVERIFIED warnings and 0 errors: the missing WellFounded
+-- evidence for the opaque Type-valued relation is never demanded, and the
+-- false decrease goal of the reversed Bool relation never rejects.

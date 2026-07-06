@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+
+-- §6.1.6: a float-literal suffix must resolve to a term in scope
+-- (otherwise a compile-time error identifying the missing suffix
+-- name), and the resolved term must have a function type accepting
+-- the Double payload (otherwise a type error at the literal).
+
+-- a suffix whose parameter type is String admits no Double payload
+label : String -> Integer
+let label s = 3
+
+bad1 : Integer
+let bad1 = 2.5label --!! kappa.application.argument-mismatch
+
+bad2 : Double
+let bad2 = 9.5nosuchsuffix --!! kappa.name.unresolved
+-- STATUS(a51e1bf): PASS

@@ -141,7 +141,7 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      changes codegen; the Boehm-differential-backstop go/no-go).
    - **S2 — dup/drop, Boehm differential backstop. ✅ S2.0–S2.3b LANDED + independently reviewed SOUND;
      S2.3c primitive convention table and S2.3d per-path dead-binder drops implemented**
-     (`9c19790`→`272be14` plus current S2.3c/S2.3d work): dup/drop runtime ops + `PathScheme` child-position threading (S2.0/S2.1), dup
+     (`9c19790`→`272be14` plus current S2.3c/S2.3d work): dup/drop runtime ops + historical child-position threading (S2.0/S2.1), dup
      emission (S2.2), the match-destructure cell-drop (S2.3a — `kdrop` now fires: 101 sites / 33 files, 315
      `kdup` / 66), and the consume-vs-read flag consumed CONSERVATIVELY (S2.3b — dup only a consuming
      `NonLast`; scope-close consults consuming uses, while S3.2 supplies the proved projection-result ownership
@@ -194,14 +194,16 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      focused `runtime` `tsan-rc` shared-RC concurrency corpus, `perceus_s4_shared` poison/reclamation
      regressions, a debug recursive publish-mark assertion, and `bench-s4-rc` for biased fast-path recovery.
      Mutable/lazy/foreign/resource tags remain Boehm-retained until the later cycle/resource ownership stages.
-   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree-beats-`std::map` class). Full
+   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree/boxed-rebuild allocation
+     reduction now; the literal `std::map` speed target is representation/unboxing-gated). Full
      plan: [PERCEUS-S5-PLAN.md](runtime/docs/PERCEUS-S5-PLAN.md). **Decision: split-first** — Phase A lands the
      KCore/KBackendIR split ([KCORE-KBACKENDIR-SCOPING.md](docs/KCORE-KBACKENDIR-SCOPING.md): A0 thread erasure
      classification / kill `quote∘force`, A1 stable identities / **retire R-path**, A2 materialize KBackendIR,
      A3 representation classes), then Phase B the FBIP reuse pass (`drop_reuse`/`reuse_alloc`, reuse only a
      unique cell — the S4 shared bit is the concurrency guard, so shared cells are never reused). The split is
      one investment that also unblocks LLVM-RC + the layout program.
-   - **S6 — borrowing (opt-in) + `fip`/`fbip` checking.** Later: precise stack roots; the ref/lazy cycle set.
+   - **S6 — borrowing (opt-in) + inferred FIP / reuse-credit checking (no surface `fip`/`fbip` keywords).**
+     Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
    lazy-data design.
 6. **Evidence-aware IO/`var` scalarization (P0.2 restore)** — design plan **DONE**

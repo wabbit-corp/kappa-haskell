@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n7\n"
+
+-- §18.2.3 (L20499-20504): BOTH directions of the post-dominating rule — a
+-- terminal else keeps the SUCCESS facts of the condition (payload is Box),
+-- and a terminal then keeps the FAILURE facts (payload is not Empty, hence
+-- Box). Facts from two successive guards stack for the final item.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- terminal ELSE: success facts survive; a second guard stacks a fact about q.
+viaElse : Payload -> Payload -> UIO Int
+let viaElse p q = do
+    if p is Box then pure () else do
+        return 0
+    if q is Box then pure () else do
+        return p.value
+    pure (p.value + q.value)
+
+-- terminal THEN: the failure fact of `p is Empty` survives — p is Box.
+viaThen : Payload -> UIO Int
+let viaThen p = do
+    if p is Empty then do
+        return 0
+    else pure ()
+    pure p.value
+
+main : UIO Unit
+let main = do
+    let a <- viaElse (Box 40) (Box 2)
+    printlnString (showInt a)
+    let b <- viaThen (Box 7)
+    printlnString (showInt b)
+-- STATUS(a51e1bf): PASS

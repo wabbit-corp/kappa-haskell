@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_INOUT_RESIDUAL_PATTERN
+--! assertDiagnosticFamily error kappa.inout.restoration
+
+-- Combination (§3.3.6/§18.9.3-4 inout restoration × §18.1 effect rows):
+-- an inout call whose callee computes in an effect row behaves like any
+-- other inout call: the residual pattern must not bind the threaded
+-- successor field `v` (negative), while binding only the ordinary
+-- result field `old` restores `c.count` implicitly (positive).
+module main
+
+effect Count =
+    bump : Unit -> Int
+
+type Cell = (count : Int)
+
+step : (inout v : Int) -> Eff <[Count : Count]> (1 v : Int, old : Int)
+let step (inout v : Int) : Eff <[Count : Count]> (1 v : Int, old : Int) = do
+    let d <- Count.bump ()
+    pure (v = v + d, old = v)
+
+good : (1 c : Cell) -> Eff <[Count : Count]> Int
+let good (1 c : Cell) : Eff <[Count : Count]> Int = do
+    let (old = before) <- step ~c.count
+    pure before
+
+bad : (1 c : Cell) -> Eff <[Count : Count]> Int
+let bad (1 c : Cell) : Eff <[Count : Count]> Int = do
+    let (v = after, old = before) <- step ~c.count --!! E_QTT_INOUT_RESIDUAL_PATTERN
+    pure before
+-- STATUS(a51e1bf): FAIL — call-site '~' inout arguments are not supported for Eff-typed callees at all: both halves die with E_QTT_INOUT_MARKER_UNEXPECTED ("requires resolved inout-parameter metadata") + cascade type mismatches, so the §18.9.4 residual-pattern check never runs across an effect row

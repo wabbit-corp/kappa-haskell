@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §18.1.21 / §18.1.22: all clauses of one handler MUST elaborate to the
+-- same target carrier m. A return clause pinned to Eff <[ ]> and an
+-- operation clause pinned to IO cannot share a carrier; the handler is
+-- rejected with a type mismatch.
+module main
+
+effect Tick =
+    1 tick : Unit -> Int
+
+comp : Eff <[Tick : Tick]> Int
+let comp =
+    do
+        let n <- Tick.tick ()
+        pure n
+
+bad : Eff <[ ]> Int
+let bad =
+    deep handle Tick comp with
+        case return x -> (pure x : Eff <[ ]> Int)
+        case tick _ k -> (ioPure 5 : IO String Int)

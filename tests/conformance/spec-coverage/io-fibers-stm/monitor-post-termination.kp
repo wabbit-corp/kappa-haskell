@@ -1,0 +1,49 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "recorded:5\nrecorded-fail:boom\nmonitor-survived\nm3:5\nm4:5\n"
+
+-- §18.1.8 (Spec.md L19093-19102): monitors are one-way, non-destructive
+-- termination observation. awaitMonitor called AFTER the fiber has already
+-- terminated returns immediately with the recorded Exit; a monitored
+-- fiber's failure does not terminate the monitoring fiber; multiple
+-- monitors on one fiber all observe the same recorded Exit.
+module main
+
+failing : IO String Int
+let failing = throwIO "boom"
+
+emit : String -> Exit Void Int -> UIO Unit
+let emit label ex = match ex
+    case Success v -> printlnString (label ++ ":" ++ showInt v)
+    case Failure c -> printlnString (label ++ ":failed")
+
+main : UIO Unit
+let main = do
+    -- monitor created after termination: awaitMonitor returns immediately
+    let w <- fork (ioPure 5)
+    let ex0 <- await w
+    let _ = ex0
+    let m <- monitor w
+    let e1 <- awaitMonitor m
+    match e1
+      case Success v -> printlnString ("recorded:" ++ showInt v)
+      case Failure c -> printlnString "recorded:failed"
+    -- a failed fiber's recorded Exit is observable; the monitoring fiber
+    -- is NOT terminated by the monitored failure
+    let bad <- fork failing
+    let exb <- await bad
+    let _ = exb
+    let m2 <- monitor bad
+    let e2 <- awaitMonitor m2
+    match e2
+      case Success v -> printlnString "recorded-fail:none"
+      case Failure (Fail msg) -> printlnString ("recorded-fail:" ++ msg)
+      case Failure c -> printlnString "recorded-fail:other"
+    printlnString "monitor-survived"
+    -- multiple monitors all observe the same recorded Exit
+    let m3 <- monitor w
+    let m4 <- monitor w
+    let e3 <- awaitMonitor m3
+    emit "m3" e3
+    let e4 <- awaitMonitor m4
+    emit "m4" e4

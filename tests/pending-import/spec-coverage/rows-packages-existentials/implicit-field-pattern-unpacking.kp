@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.9 elimination, case 2 (pattern matching / destructuring): "If a
+-- record is destructured in a `let` binding, `match` case, or function
+-- parameter, the implicit fields associated with the matched record are
+-- injected into the local implicit context" — omitting the implicit
+-- field from the pattern introduces an anonymous assumption `@_ : x > 0`
+-- that must satisfy later implicit obligations (§16.3.3, §17.2).
+module main
+
+needsPos : (n : Int) -> (@p : n > 0) -> Int
+let needsPos n = n
+
+type SafeInt : Type = (v : Int, @p : this.v > 0)
+
+getSafe : Unit -> SafeInt
+let getSafe (u : Unit) : SafeInt = (v = 5, @p = refl)
+
+-- let-destructuring: pattern omits @p, so `@_ : x > 0` enters context
+useLet : Unit -> Int
+let useLet (u : Unit) : Int =
+    let (v = x) = getSafe ()
+    in needsPos x
+
+-- function-parameter destructuring: binding `rec` at a record type with
+-- an implicit field injects rec.p for the scope of the body
+useParam : (rec : SafeInt) -> Int
+let useParam (rec : SafeInt) : Int =
+    needsPos rec.v
+
+-- STATUS(a51e1bf): FAIL — destructuring/parameter binding does not inject implicit fields into the implicit context; both uses fail with E_UNSOLVED_IMPLICIT (direct let-binding unpack DOES work)

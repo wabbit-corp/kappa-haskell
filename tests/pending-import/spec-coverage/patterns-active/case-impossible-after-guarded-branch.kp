@@ -1,0 +1,34 @@
+-- §17.1.5 (Spec L17914-L17922) + §17.1.9: `case impossible` is accepted
+-- only if the remainder AFTER the preceding cases and guards is
+-- unreachable. A guarded case excludes only the pattern-and-guard
+-- conjunction, so the guarded constructor remains in the remainder and
+-- `case impossible` must be rejected.
+
+--! mode check
+
+data Single : Type =
+    Only (n : Int)
+
+-- POSITIVE: after the unguarded Only case nothing remains uncovered, so
+-- the empty-remainder clause is accepted.
+ok : Single -> Int
+let ok s =
+    match s
+    case Only n -> n
+    case impossible
+
+-- NEGATIVE: the guard may fail, so Only values can reach the remainder.
+bad : Single -> Bool -> Int
+let bad s b =
+    match s
+    case Only n if b -> n
+    case impossible
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch impossible|remainder|exhaust|reachable
+
+-- STATUS(a51e1bf): FAIL — the compiler rejects BOTH matches with
+-- E_INDEXED_IMPOSSIBLE_REACHABLE "requires the remaining scrutinee type
+-- to be uninhabited": it demands an uninhabited scrutinee type instead of
+-- computing the uncovered remainder after the preceding cases and guards
+-- (§17.1.5), so the spec-valid `ok` is also rejected.

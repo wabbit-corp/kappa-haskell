@@ -1,0 +1,18 @@
+-- §3.1.7: a missing closing delimiter has a rank-1 source-preserving
+-- local repair (insert the `)`); the diagnostic MUST rank that local
+-- repair first — machine-applicable, editing only source origins — and
+-- applying it must make the unit compile. A broader feature-gate or
+-- rewrite suggestion must not be the primary fix here.
+--! mode check
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnosticFix error E_EXPECTED_SYNTAX_TOKEN machine-applicable
+--! assertDiagnosticFixCompiles error E_EXPECTED_SYNTAX_TOKEN
+module main
+
+value : Int
+let value = (1
+
+after : Int
+let after = 2
+
+-- STATUS(a51e1bf): FAIL — no machine-applicable local delimiter fix is offered on the unclosed-paren diagnostic

@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 payload view: "if T elaborates to a record or signature type
+-- (g1 : U1, ..., gm : Um), the payload view is that field telescope"
+-- with all fields contributed directly — the spec's own canonical
+-- example is `exists (a : Type). (tc : Eq a, value : a)`. Witnesses
+-- must be in scope in EVERY payload field, not only in single-field
+-- payloads; each field is then an ordinary payload projection.
+module main
+
+trait Pretty a =
+    pretty : a -> String
+
+instance Pretty Int =
+    let pretty n = "int"
+
+summon : (@tc : Pretty Int) -> Pretty Int
+let summon (@tc : Pretty Int) : Pretty Int = tc
+
+-- multi-field record payload; both fields mention the witness
+type Dyn : Type1 = exists (a : Type). (tc : Pretty a, value : a)
+
+pkg : Dyn
+let pkg = seal exists (a = Int). (tc = summon, value = 5) as Dyn
+
+-- record-shaped payloads expose ordinary projections (p.tc, p.value)
+-- and open-elimination with a field pattern
+use : String
+let use =
+    open pkg as exists (a). (tc = tc, value = v) in
+        tc.pretty v
+
+-- STATUS(a51e1bf): FAIL — witness binders are not in scope inside multi-field record payloads: each field type mentioning the witness gets E_NAME_UNRESOLVED (single-field payloads work)

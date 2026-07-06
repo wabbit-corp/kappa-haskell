@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_HANDLER_OP_DUPLICATE
+
+-- §18.1.21: a handler must contain exactly one operation clause per
+-- operation declared by the effect interface — a second clause for the
+-- same operation is rejected.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        pure a
+
+bad : Eff <[ ]> Int
+let bad =
+    deep handle Ask comp with
+        case return x -> pure x
+        case ask _ k -> k 1
+        case ask _ k -> k 2
+
+result : Int
+let result = runPure bad

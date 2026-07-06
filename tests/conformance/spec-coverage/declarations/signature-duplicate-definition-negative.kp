@@ -1,0 +1,14 @@
+module main
+
+-- §9.1 (L7422-L7432): a non-expect top-level signature must be
+-- satisfied by exactly ONE matching definition in the same file; a
+-- second definition of the same name is a duplicate declaration.
+
+f : Int -> Int
+let f x = x + 1
+let f x = x + 2 --!! E_DUPLICATE_DECLARATION
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_DUPLICATE_DECLARATION
+-- STATUS(a51e1bf): PASS

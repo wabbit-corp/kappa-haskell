@@ -1,0 +1,5 @@
+module sealed
+
+-- The representation of Token is visible only inside this module.
+opaque data Token : Type =
+    MkToken Int

@@ -1,0 +1,21 @@
+--! mode check
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+
+-- §5.4: constructor lines of a block-form `data ... =` declaration form
+-- one block and must share one indentation level. `Red` is a complete
+-- constructor declaration and activates no continuation context, so the
+-- strictly deeper `Green` line MUST be rejected as unexpected
+-- indentation (parallel to the spec's own `do`/`action`/`y` example) —
+-- not silently absorbed as an application continuation (a constructor
+-- argument of `Red`).
+
+module main
+
+data Color : Type =
+    Red
+      Green
+
+probe : Color
+let probe = Red
+
+-- STATUS(a51e1bf): FAIL — compiler absorbs the deeper ctor line as an application continuation (Green becomes an argument type of Red: E_NAME_UNRESOLVED/E_TYPE_EQUALITY_MISMATCH) instead of rejecting with E_UNEXPECTED_INDENTATION

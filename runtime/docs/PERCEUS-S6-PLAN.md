@@ -2,7 +2,7 @@
 
 Status: **Planned.** S0→S4 landed and reviewed sound (precise RC, free-on-zero, biased fast/slow split +
 shared reclamation). S5 is landing: the KCore/KBackendIR split (Phase A) and drop-guided **FBIP reuse**
-(Phase B) — `drop_reuse`/`reuse_alloc`, the reuse pass, zero-allocation on the rbtree/list-map fixtures.
+(Phase B) — `drop_reuse`/`reuse_alloc`, the reuse pass, allocation-free rebuilds on the rbtree/list-map fixtures.
 S6 is the next and **last major** Perceus rung before the "Later" work (precise stacks + cycles). It has two
 threads: **(1) opt-in Borrowing** — stop paying reference-counting on read-only accesses — and **(2) inferred
 FIP** — statically prove where reuse always succeeds, elide the runtime uniqueness guard, and *derive* (never
@@ -49,9 +49,9 @@ reuse guard until the guarded reuse exists.
 
 **Honest scope (read this before expecting speed).** S6 removes *reference-counting* overhead — the `dup`/
 `drop` traffic on reads (borrowing) and the `rc==1` branch on proven-unique reuse (FIP). It does **not** touch
-the *representation* overhead: on Kappa's uniform-boxed `KValue`, each field access is still a `kctor_arg`
-dispatch and each scalar a `kas_int` unbox (the residual that keeps the S5 rbtree fixture ≈1.3× slower than
-`std::map` — see PERCEUS-S5-PLAN.md §4). Closing the gap to C/Rust/`std::map` is the **representation/
+the *representation* overhead: on Kappa's uniform-boxed `KValue`, the tree loop still pays boxed-value and
+layout/scalar dispatch costs that keep the S5 rbtree fixture ≈1.3× slower than `std::map` (see
+PERCEUS-S5-PLAN.md §4). Closing the gap to C/Rust/`std::map` is the **representation/
 unboxing program** (immediate tagging + struct-packed layout, coupled with the LLVM backend), a separate arc.
 S6 and unboxing are complementary: S6 removes RC ops and the uniqueness branch; unboxing removes the boxing/
 dispatch. Neither alone beats hand-tuned C; together they are the endgame.

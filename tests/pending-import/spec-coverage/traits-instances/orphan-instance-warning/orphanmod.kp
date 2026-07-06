@@ -1,0 +1,12 @@
+module orphanmod
+
+import libtrait.(trait Tag)
+
+-- ORPHAN: trait Tag lives in libtrait and Bool is not defined here, so
+-- neither the trait nor the instantiated type constructor is defined in
+-- this module. Permitted, but SHOULD draw a warning (§14.3, L14532-L14535).
+instance Tag Bool =
+    let tag b = if b then 1 else 0
+
+orphanMarker : Int
+let orphanMarker = 3

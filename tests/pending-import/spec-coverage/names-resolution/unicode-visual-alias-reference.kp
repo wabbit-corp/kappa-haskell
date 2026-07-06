@@ -1,0 +1,28 @@
+-- §7.1 (steps 4-9) + §5.1A: unqualified lookup is keyed by
+-- strongVisualNameKey; when no exact strict-key match exists and the
+-- nearest binding group holds exactly one admissible declaration, that
+-- declaration is chosen and W_UNICODE_VISUAL_ALIAS_REFERENCE is emitted.
+-- §5.1A: backtick identifiers contribute the same name keys as unquoted
+-- ones, and the pinned StrongVisualNameTable relates A / Α / А.
+module main
+
+let A = 1
+
+-- Cyrillic А resolves to the ASCII declaration via the visual key.
+refCyr : Int
+let refCyr = `А` --!! W_UNICODE_VISUAL_ALIAS_REFERENCE
+
+-- §7.1 consequences: a nearer admissible declaration shadows outer ones
+-- of the same source name key, even when the inner match is itself only
+-- visual. The Greek inner binding shadows the ASCII outer one for the
+-- Cyrillic reference.
+shadowed : Int
+let shadowed =
+    block
+        let `Α` = 2
+        `А` --!! W_UNICODE_VISUAL_ALIAS_REFERENCE
+
+--! assertNoErrors
+--! assertEval refCyr 1
+--! assertEval shadowed 2
+-- STATUS(a51e1bf): FAIL — no StrongVisualNameTable lookup: both Cyrillic references are E_NAME_UNRESOLVED (plus a W_UNICODE_CONFUSABLE_IDENTIFIER); the visual-alias warning is never emitted

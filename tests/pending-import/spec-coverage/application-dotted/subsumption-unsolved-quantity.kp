@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- §16.1.7.1 Steps 2-3 (L16468-16495): when q_cap ⊑ q_dem remains
+-- undecidable because quantities still contain unsolved metavariables
+-- after surrounding constraints, compilation MUST fail with an unsolved
+-- quantity-metavariable error (family kappa.quantity.unsatisfied, whose
+-- §3.1.1 payload carries the blocking metavariables) rather than
+-- defaulting. \x -> 0 constrains q only to {0, <=1, ω}, so the implicit
+-- q stays underconstrained.
+module main
+
+hof : (@0 q : Quantity) -> ((q x : Int) -> Int) -> Int
+let hof (@0 q : Quantity) (f : (q x : Int) -> Int) : Int = 0
+
+-- NEGATIVE: q is unsolved; must not default to any quantity.
+ambiguous : Int
+let ambiguous = hof (\x -> 0)

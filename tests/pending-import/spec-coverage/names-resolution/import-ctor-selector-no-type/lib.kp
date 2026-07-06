@@ -1,0 +1,4 @@
+module lib
+
+data Box (a : Type) : Type =
+    Box (value : a)

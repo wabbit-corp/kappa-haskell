@@ -37,7 +37,7 @@ data BinderOwn = BinderOwn
   , boBorrowed  :: Bool                    -- from CPi Bool / let & — non-consuming
   , boDroppable :: Bool }                  -- §12.2.6: True for 0/≤1/ω, False for 1/≥1
 data OwnInfo = OwnInfo
-  { oiBinders :: Map BinderId BinderOwn    -- BinderId = (GName, child-position path) — de-Bruijn-stable
+  { oiBinders :: Map BinderId BinderOwn    -- historical S1 key: (GName, child-position path)
   , oiUses    :: Map UseSite  UseKind
   , oiUseConsumes :: Map UseSite Bool       -- S2.3b: use transfers ownership vs read-only
   , oiBinderUses :: Map BinderId [UseKind]
@@ -100,6 +100,9 @@ resolves to a `CSort 0` childless leaf (safe — it addresses nothing, never a w
 walk-and-lookup never queries a deleted key at all. S2.3b pins this with the default-on Perceus validation
 gate: every non-erased runtime lookup must resolve both `oiUses` and `oiUseConsumes`, or the backend fails
 (`KAPPA_PERCEUS_RC=0` is reserved for explicit RC-off differential baselines that also disable runtime RC effects).
+S5.A/B supersede this consumption discipline for native emission: C/LLVM now use node-local KBackendIR
+metadata, and the remaining observe-only `Ownership.hs` producer is keyed by owner-local ordinals rather than
+structural child positions.
 
 ## (e) Sub-stages, ordering, risks
 

@@ -1,0 +1,34 @@
+-- §12.2.5 (L11366-11380): droppability. Affine (<=1) has lower bound 0
+-- and is droppable; relevant (>=1) has a positive lower bound and is NOT
+-- droppable — it must be demanded on every reachable completion path
+-- (branchwise join, §16.4.4). The same body is accepted at <=1 and
+-- rejected at >=1.
+module main
+
+data Token : Type =
+    MkToken Int
+
+readT : (& t : Token) -> Int
+let readT (& t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+-- NEGATIVE: the else-branch never demands the relevant `x`.
+badRelevant : (>=1 x : Token) -> Bool -> Int
+let badRelevant (>=1 x : Token) (b : Bool) : Int = --!! E_QTT_LINEAR_DROP
+    if b then readT x else 0
+
+-- POSITIVE: identical body; affine `x` may be dropped on the else path.
+okAffine : (<=1 x : Token) -> Bool -> Int
+let okAffine (<=1 x : Token) (b : Bool) : Int =
+    if b then readT x else 0
+
+-- POSITIVE: the relevant binder is demanded in every reachable branch.
+okRelevant : (>=1 x : Token) -> Bool -> Int
+let okRelevant (>=1 x : Token) (b : Bool) : Int =
+    if b then readT x else readT x + 1
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

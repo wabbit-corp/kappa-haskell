@@ -1,0 +1,34 @@
+-- Spec: §10.1 (L8444-8464). A constructor default is elaborated in the
+-- declaration context extended by the data-type parameters and EARLIER
+-- constructor parameters/implicit binders; it may not refer to the
+-- parameter being defaulted, later parameters, or later implicit binders.
+
+module main
+
+--! mode check
+
+-- POSITIVE: default refers to a data-type parameter and an earlier field.
+data Repeat (a : Type) : Type =
+    MkRepeat (seed : a) (copy : a = seed) (rep : Type = a)
+
+pairOf : forall (a : Type). Repeat a -> (a, a)
+let pairOf r =
+    match r
+    case MkRepeat { seed, copy } -> (seed, copy)
+
+defaulted : (Int, Int)
+let defaulted = pairOf (MkRepeat { seed = 5 })
+
+-- NEGATIVE: a default may not refer to a LATER implicit constructor binder.
+data BadLaterImplicit : Type =
+    MkBadLater (t : Type = b) (@b : Type) --!! kappa.name.unresolved
+
+--! assertErrorCount 1
+--! assertEval defaulted (5, 5)
+
+-- STATUS(a51e1bf): FAIL — the later-implicit negative is caught (correct
+-- E_NAME_UNRESOLVED), but instantiating MkRepeat { seed = 5 } fails with
+-- E_TYPE_EQUALITY_MISMATCH: a default that refers to an earlier constructor
+-- parameter breaks whenever the data type has a type parameter (the same
+-- default on an unparameterized data type is accepted — likely a context/
+-- de Bruijn shift bug), so the positive half errors and the eval is stuck.

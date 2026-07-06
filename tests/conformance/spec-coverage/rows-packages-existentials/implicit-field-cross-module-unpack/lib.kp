@@ -1,0 +1,8 @@
+-- §13.2.9 interaction with export/interfaces: "Functions returning
+-- records with implicit fields act as transparent dependent packages."
+@PrivateByDefault module lib
+
+public type SafeInt : Type = (v : Int, @p : this.v > 0)
+
+public getSafe : Unit -> SafeInt
+public let getSafe (u : Unit) : SafeInt = (v = 5, @p = refl)

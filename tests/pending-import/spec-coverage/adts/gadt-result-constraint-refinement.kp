@@ -1,0 +1,46 @@
+-- Spec: §10.1.3 (L8710-8721), §10.2. A GADT constructor may instantiate any
+-- data-family argument in its result type; matching it makes the forced
+-- family-argument equalities available branch-locally. ReflT : EqT a x x
+-- forces x = y in the branch, which must justify both symmetry and
+-- transport of an indexed type.
+
+module main
+
+--! mode check
+
+data EqT (a : Type) (x : a) (y : a) : Type =
+    ReflT : EqT a x x
+
+-- POSITIVE: with x = y in scope, ReflT also checks at EqT a y x.
+symmE : forall (a : Type) (x : a) (y : a). EqT a x y -> EqT a y x
+let symmE p =
+    match p
+    case ReflT -> ReflT
+
+-- POSITIVE: transport across the forced index equality.
+data Nat : Type =
+    Zero
+    Succ (n : Nat)
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec Zero a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (Succ n) a
+
+castLen : forall (n : Nat) (m : Nat). EqT Nat n m -> Vec n Int -> Vec m Int
+let castLen p v =
+    match p
+    case ReflT -> v
+
+-- NEGATIVE: without matching ReflT no equality is available; x and y are
+-- distinct rigid family arguments, so ReflT cannot check at EqT a x y.
+bogus : forall (a : Type) (x : a) (y : a). EqT a x y
+let bogus = ReflT --!! kappa.type.mismatch
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): FAIL — the forced family-argument equalities are not made
+-- available for conversion inside constructor branches: both symmE and
+-- castLen are rejected with E_TYPE_EQUALITY_MISMATCH (3 errors instead of
+-- the 1 expected from 'bogus'). The compiler does use the equalities for
+-- exhaustiveness and hole typing, but not for branch-body checking as
+-- §10.1.3 L8720-8721 requires.

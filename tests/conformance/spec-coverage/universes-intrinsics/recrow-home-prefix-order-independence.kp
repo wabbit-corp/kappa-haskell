@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1A: home-prefix inference is semantic, not source-order based. The
+-- same two occurrence prefixes — (len : Nat) and (len : Nat, extra : Bool) —
+-- must infer home(r) = (len : Nat) regardless of which occurrence comes
+-- first in the source, so both orders accept the same dependent
+-- instantiation of r (a tail field depending on len).
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+narrowThenWide : forall (r : RecRow).
+    (rec : (len : Nat | r)) -> (also : (len : Nat, extra : Bool | r)) -> Nat
+let narrowThenWide (@0 r : RecRow) (rec : (len : Nat | r)) (also : (len : Nat, extra : Bool | r)) : Nat =
+    rec.len
+
+wideThenNarrow : forall (r : RecRow).
+    (also : (len : Nat, extra : Bool | r)) -> (rec : (len : Nat | r)) -> Nat
+let wideThenNarrow (@0 r : RecRow) (also : (len : Nat, extra : Bool | r)) (rec : (len : Nat | r)) : Nat =
+    rec.len
+
+-- POSITIVE: the same dependent tail (buf depends on len, which is in
+-- home(r)) is accepted under both source orders.
+useA : Nat
+let useA =
+    block
+        let dep : (len : Nat, buf : Vec this.len Byte) = (len = 0, buf = VNil)
+        let wide : (len : Nat, extra : Bool, buf : Vec this.len Byte) = (len = 0, extra = True, buf = VNil)
+        narrowThenWide dep wide
+
+useB : Nat
+let useB =
+    block
+        let dep : (len : Nat, buf : Vec this.len Byte) = (len = 0, buf = VNil)
+        let wide : (len : Nat, extra : Bool, buf : Vec this.len Byte) = (len = 0, extra = True, buf = VNil)
+        wideThenNarrow wide dep
+
+-- STATUS(a51e1bf): PASS

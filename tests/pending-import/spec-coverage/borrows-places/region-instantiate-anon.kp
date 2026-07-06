@@ -1,0 +1,20 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.4.2 (makeGetter example): "At a call site, an explicit region
+-- variable such as s may be instantiated by a caller-local rigid
+-- region rho." A bare & binder introduces exactly such a caller-local
+-- rigid region (§12.3), so a closure over it may flow into a
+-- higher-order parameter annotated `captures (s)` — the parameter is
+-- downward-only w.r.t. the instantiated region.
+module main
+
+apply : forall (s : Region). ((Unit -> Int) captures (s)) -> Int
+let apply (@0 s : Region) (f : ((Unit -> Int) captures (s))) : Int =
+    f ()
+
+callAnon : (& x : Int) -> Int
+let callAnon (& x : Int) : Int =
+    apply (\() -> x)
+
+-- STATUS(a51e1bf): FAIL — compiler emits E_QTT_BORROW_ESCAPE ("flows into an unrestricted parameter", citing stale §12.3.2): it refuses to instantiate the explicit region s with the caller-local anonymous rigid, which §12.4.2 explicitly permits.

@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_AMBIGUOUS
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- §3.2.2 (Spec.md L2091-2105): when lookup finds multiple admissible
+-- declarations the diagnostic MUST use family kappa.name.ambiguous and its
+-- payload MUST include the candidate declarations with their defining
+-- modules and whether qualification / an explicit import item / a module
+-- alias would disambiguate. POSITIVE half: the qualified spellings stay
+-- unambiguous in the same suite.
+module main
+
+import a.*
+import b.*
+
+-- POSITIVE: qualification disambiguates (a.flag, b.flag resolve uniquely).
+sum2 : Int
+let sum2 = addInt a.flag b.flag
+
+-- NEGATIVE: both a.* and b.* export `flag`; the bare spelling is ambiguous.
+bad : Int
+let bad = flag --!! E_NAME_AMBIGUOUS
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,38 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.8 runtime relevance restriction (L16767-16781): for a runtime-
+-- relevant expression, automatic transport may use a proof only if it is
+-- RuntimeErased, or the transport is checked under ambient demand 0, or
+-- the transport is backend-lowerable. An erased (@0) proof and a
+-- demand-0 target are therefore fine; a runtime-relevant (ω) proof at a
+-- runtime-relevant target must not be silently inserted — the call is
+-- rejected (kappa.type.transport-failed or, if only lowering remains,
+-- E_PROOF_RELEVANT_TRANSPORT_NOT_LOWERABLE; failing as usual otherwise).
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsSame : (b : Bool) -> FlagBox b -> Unit
+let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+
+-- POSITIVE: erased proof, runtime-relevant transported expression.
+erasedOk : forall (x : Bool) (y : Bool). (@0 p : x = y) -> FlagBox x -> Unit
+let erasedOk (@0 x : Bool) (@0 y : Bool) (@0 p : x = y) (box : FlagBox x) : Unit =
+    needsSame y box
+
+dropErased : (b : Bool) -> (@0 g : FlagBox b) -> Unit
+let dropErased (b : Bool) (@0 g : FlagBox b) : Unit = ()
+
+-- POSITIVE: relevant proof, but the transported argument is checked
+-- under demand 0 (an erased binder position).
+demandZeroOk : forall (x : Bool) (y : Bool). (ω p : x = y) -> FlagBox x -> Unit
+let demandZeroOk (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : Unit =
+    dropErased y box
+
+-- NEGATIVE: relevant proof at a runtime-relevant target with no
+-- lowerable transport: silent insertion is forbidden.
+relevantBad : forall (x : Bool) (y : Bool). (ω p : x = y) -> FlagBox x -> Unit
+let relevantBad (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : Unit =
+    needsSame y box --!! kappa.application.argument-mismatch

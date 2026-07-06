@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.3.1: ContainsRec, StableUnderRecChange, and RecTailSatisfies are
+-- intrinsic trait evidence types, usable as ordinary `=>` premises; their
+-- evidence is introduced by the compiler-owned row solver. LacksRec r l is
+-- unsolvable when the row demonstrably contains l (contradiction fact) —
+-- the only error this file may produce is the rejection of `clash` below.
+module main
+
+-- POSITIVE: intrinsic row traits are ordinary premises.
+getAge : forall (r : RecRow). ContainsRec r age Int => (name : String | r) -> Int
+let getAge (@0 r : RecRow) (@_ : ContainsRec r age Int) (rec : (name : String | r)) : Int = 0
+
+stableAt : forall (r : RecRow). StableUnderRecChange r len => (len : Nat | r) -> Nat
+let stableAt (@0 r : RecRow) (@_ : StableUnderRecChange r len) (rec : (len : Nat | r)) : Nat = rec.len
+
+droppable : forall (r : RecRow). RecTailSatisfies r 0 => (name : String | r) -> Int
+let droppable (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : Int = 1
+
+-- NEGATIVE: instantiating r := (age : Int) makes the LacksRec premise
+-- unsolvable — the row solver must reject the call (§11.3.1 contradiction
+-- facts: ContainsRec r l a and LacksRec r l never hold together).
+needsLacks : forall (r : RecRow). LacksRec r age => (name : String | r) -> Int
+let needsLacks (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : Int = 0
+
+clash : Int
+let clash = needsLacks (name = "x", age = 1)             --!! kappa.implicit.unsolved
+
+-- STATUS(a51e1bf): FAIL — ContainsRec/StableUnderRecChange/RecTailSatisfies are not implemented (E_NAME_UNRESOLVED + cascade, 17 errors); only LacksRec exists

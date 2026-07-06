@@ -1,0 +1,10 @@
+module lib
+
+-- §14.5 (Spec L14996) / §22.4: outside this module the representation of
+-- Secret is unavailable to ordinary code, so shape reflection must refuse
+-- to reveal it there.
+opaque data Secret : Type =
+    MkSecret (payload : Int)
+
+mkSecret : Int -> Secret
+let mkSecret n = MkSecret n

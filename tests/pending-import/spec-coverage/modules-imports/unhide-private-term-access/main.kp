@@ -1,0 +1,15 @@
+module main
+
+-- §8.3.1.1/§4.3: `unhide` requests access to a PRIVATE imported item; with
+-- the allow_unhiding build gate enabled (§4.2) the private `helper` is
+-- imported as if it were exported for this module. §8.5.1: even with the
+-- gate enabled, ordinary import forms (see bad.kp) still cannot name it.
+import ulib.(unhide term helper)
+
+result : Int
+let result = helper + 1
+
+--! allow_unhiding
+--! assertErrorCount 1
+--! assertEval result 42
+-- STATUS(a51e1bf): FAIL — unhide is gated+audited only; the unhide import of a private item still fails with E_IMPORT_ITEM_NOT_FOUND

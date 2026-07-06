@@ -1,0 +1,21 @@
+--! mode check
+--! assertDiagnosticCodes E_UNEXPECTED_INDENTATION
+
+-- §5.4: an indented line where neither a block introducer nor a
+-- continuation context is active MUST be rejected as unexpected
+-- indentation (spec's own `do`/`let x <- action` example): `pureIO 1`
+-- is a complete RHS and no token requires a following expression, so
+-- the deeper `helper` line is NOT an application continuation.
+
+module main
+
+helper : Int
+let helper = 3
+
+main : UIO Unit
+let main = do
+    let x <- pureIO 1
+        helper
+    printInt x
+
+-- STATUS(a51e1bf): PASS

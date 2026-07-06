@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1: RecTailSatisfies is an intrinsic row trait ("Kappa provides
+-- the following intrinsic row traits"); as an explicit premise it is
+-- ordinary implicit evidence, so a consuming (quantity-1) receiver may
+-- forget its abstract residual tail (the premise-less rejection is
+-- pinned by tests/conformance/qtt/open-record-tail-drop.kp). At the
+-- call site the closed tail (age : Int) is all-ω, so the obligation is
+-- checked structurally and solves (§11.3.1 record-row solver meaning).
+module main
+
+forgetExtras :
+    forall (r : RecRow).
+    RecTailSatisfies r 0 =>
+    (1 rec : (name : String | r)) ->
+    String
+let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : String =
+    rec.name
+
+useClosed : String
+let useClosed = forgetExtras (name = "grace", age = 36)
+
+-- STATUS(a51e1bf): FAIL — RecTailSatisfies intrinsic trait not in scope (E_NAME_UNRESOLVED); the spec'd explicit premise form is inexpressible in this implementation

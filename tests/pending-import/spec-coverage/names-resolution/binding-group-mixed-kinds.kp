@@ -1,0 +1,21 @@
+-- §7.1 binding-group formation: "distinct kinds with the same source name
+-- key may coexist in one binding group" — only two declarations of the
+-- SAME kind with equal strictNameKey are duplicates. A term `let T`
+-- alongside `type T` is therefore not a duplicate; type positions select
+-- the type facet and term positions the term facet (contextual
+-- admissibility, §7.1).
+module main
+
+type T = Int
+
+let T = 5
+
+useType : T
+let useType = 7
+
+useTerm : Int
+let useTerm = T
+
+--! assertNoErrors
+--! assertEval useTerm 5
+-- STATUS(a51e1bf): FAIL — E_DUPLICATE_DECLARATION for 'let T' after 'type T': distinct declaration kinds do not coexist in one binding group in the implementation

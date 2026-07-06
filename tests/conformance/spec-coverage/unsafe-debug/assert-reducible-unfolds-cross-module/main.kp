@@ -1,0 +1,19 @@
+module main
+
+-- §4.4/§15.1(case 5)/§4.7: a definition admitted via `assertReducible` IS
+-- conversion-reducible, so `weird Z` δ-unfolds to `Z` and the refl proof is
+-- accepted in an importing module — observing the stable conversion-
+-- reducible bit the §4.4 recording rule requires the artifact to carry.
+-- The unverified grant MUST appear in the importing unit's audit ledger
+-- (§4.7: importers can determine that unsafe reducibility contributed),
+-- and it is an assertion, not a verification: no termination warning fires.
+import rlib.*
+
+proof : weird Z = Z
+let proof = refl
+
+--! allow_assert_reducible
+--! assertNoErrors
+--! assertNoWarnings
+--! assertAuditLedger assertReducible
+-- STATUS(a51e1bf): PASS

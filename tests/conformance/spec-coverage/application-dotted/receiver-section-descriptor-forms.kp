@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.1.1 (L15910-15913): a receiver-section body resolving to a fully
+-- applied receiver projection counts as a fully applied projection call
+-- after inserting the fresh receiver, and a body resolving to a
+-- projector/accessor-bundle descriptor application is treated under
+-- §§16.1.5-16.1.6 — here the non-consuming position selects the get facet.
+module main
+
+type Cell = (value : Int)
+
+projection cellValue (place this : Cell) : Int =
+    yield this.value
+
+-- POSITIVE: (.cellValue) = \__x -> __x.cellValue, a receiver projection.
+readViaSection : Cell -> Int
+let readViaSection = (.cellValue)
+
+useIt : Int
+let useIt = readViaSection (value = 9)
+
+projection cellLens (place this : Cell) : Int =
+    get -> this.value
+
+    set (new_value : Int) ->
+        this.{ value = new_value }
+
+-- POSITIVE: accessor-bundle member through a receiver section in a
+-- non-consuming value-demanding position reads through get (§16.1.6).
+readViaLensSection : Cell -> Int
+let readViaLensSection = (.cellLens)
+
+useLens : Int
+let useLens = readViaLensSection (value = 10)

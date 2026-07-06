@@ -1,0 +1,15 @@
+module main
+
+-- §8.3.1: the `ctor` kind selector imports only the constructor facet.
+-- Term and pattern-head positions resolve the constructor (§7.1
+-- contextual admissibility), but the type Box is NOT in scope, so a
+-- type-position use of the spelling fails to resolve.
+import lib.(ctor Box)
+
+unwrapped : Int
+let unwrapped =
+    match Box 2
+    case Box n -> n
+
+f : Box Int -> Int --!! E_NAME_UNRESOLVED
+let f b = 3

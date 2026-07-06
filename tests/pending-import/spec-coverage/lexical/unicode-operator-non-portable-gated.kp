@@ -1,0 +1,18 @@
+--! requires capability unicode-names
+--! mode check
+--! assertDiagnostic error E_UNICODE_NAME_PROFILE_VIOLATION
+
+-- §5.5.1/§3.1.3: emoji and pictographs are NOT portable operator
+-- tokens even when `unicode-names` is active (U+1F40D is So, not Sm,
+-- and outside the profile's operatorCharacterSet); an operator token
+-- violating the active Unicode name profile is rejected with
+-- E_UNICODE_NAME_PROFILE_VIOLATION. This is where the language declines
+-- to make the snake a binary operator.
+
+module main
+
+infix left 60 (🐍) --!! E_UNICODE_NAME_PROFILE_VIOLATION
+(🐍) : Int -> Int -> Int
+let (🐍) x y = addInt x y
+
+-- STATUS(a51e1bf): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)

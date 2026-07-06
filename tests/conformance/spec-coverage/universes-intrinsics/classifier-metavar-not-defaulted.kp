@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §11.1.3: row inference variables are never defaulted to the empty row
+-- unless a rule of the surrounding construct explicitly demands it, and a
+-- rigid (universally bound) row is never "assumed empty" for convenience.
+-- Solving a row metavariable to empty by unification against a closed
+-- record IS permitted — that is unification, not defaulting.
+module main
+
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name
+
+-- POSITIVE: r := empty row is demanded here by ordinary unification with a
+-- closed record argument (an explicit requirement, not a default).
+closedCall : String
+let closedCall = readName (name = "grace")
+
+-- NEGATIVE: a rigid effect row must not be silently treated as <[ ]>;
+-- runPure demands the empty row and r is abstract here.
+handleAll : forall (r : EffRow). Eff r Int -> Int
+let handleAll (@0 r : EffRow) (c : Eff r Int) : Int = runPure c    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: a rigid record row must not be silently treated as empty;
+-- (name : String | r) is not (name : String) for abstract r.
+toClosed : forall (r : RecRow). (name : String | r) -> (name : String)
+let toClosed (@0 r : RecRow) (rec : (name : String | r)) : (name : String) = rec    --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

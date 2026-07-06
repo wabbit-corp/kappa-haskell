@@ -1,0 +1,28 @@
+-- §7.1 step 7: when the filtered binding group contains a declaration
+-- whose strictNameKey equals the reference's, declarations with a
+-- different strict key are discarded — exact lookup beats visual-alias
+-- lookup. Term A (ASCII) and ctor А (Cyrillic, distinct kinds so they
+-- coexist per §7.1) are both admissible in term position; each spelling
+-- must select its own declaration, not the visual alias.
+module main
+
+let A = 7
+
+data D : Type =
+    `А` (v : Int)
+
+exactTerm : Int
+let exactTerm = A
+
+exactCtor : D
+let exactCtor = `А` 3
+
+fromCtor : Int
+let fromCtor =
+    match exactCtor
+    case `А` n -> n
+
+--! assertNoErrors
+--! assertEval exactTerm 7
+--! assertEval fromCtor 3
+-- STATUS(a51e1bf): PASS

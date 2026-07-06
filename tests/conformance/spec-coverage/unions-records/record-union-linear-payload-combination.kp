@@ -1,0 +1,35 @@
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+--! assertErrorCount 1
+
+-- Combination: §13.1.4 union match narrowing x §13.2.4 path-sensitive
+-- consumption x §13.2.5 reconstitution. A record holds a LINEAR union
+-- payload: projecting it consumes only that path (the sibling stays
+-- readable), matching the projected union consumes the linear value in
+-- each arm, updating the path restores whole-record capabilities, and
+-- re-projecting the consumed path without restoring is an error.
+module main
+
+type Job = (1 payload : (| Integer | String |), retries : Integer)
+
+describe : (1 u : (| Integer | String |)) -> String
+let describe (1 u : (| Integer | String |)) : String =
+    match u
+    case (| n : Integer |) -> showInt n
+    case (| s : String |)  -> s
+
+-- POSITIVE: consume the payload path, still read the sibling, then
+-- restore the consumed path by update — the record is whole again
+recycle : (1 j : Job) -> Job
+let recycle (1 j : Job) : Job =
+    let msg = describe j.payload in
+    let n = j.retries in
+    j.{ payload = (msg : (| Integer | String |)) }
+
+-- NEGATIVE: second projection of the already-consumed linear path
+reuse : (1 j : Job) -> String
+let reuse (1 j : Job) : String =
+    let a = describe j.payload in
+    describe j.payload                  --!! E_QTT_LINEAR_OVERUSE
+
+-- STATUS(a51e1bf): PASS

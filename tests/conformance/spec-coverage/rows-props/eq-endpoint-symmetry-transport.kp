@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.4.1 endpoint discipline: the equality family has two ordinary
+-- endpoint arguments — implementations MUST NOT treat the left endpoint
+-- as a declaration-level parameter and the right as an index. A single
+-- proof p : x = y must therefore support transport in BOTH directions
+-- (forward via subst p, backward via subst (sym p)), composition of the
+-- two, double symmetry, and congruence against either endpoint. An
+-- implementation with a hidden parameter/index asymmetry fails one
+-- direction.
+module main
+
+fwd : forall (@0 a : Type) (@0 c : a -> Type) (@0 x : a) (@0 y : a). (p : x = y) -> c x -> c y
+let fwd p cx = subst p cx
+
+bwd : forall (@0 a : Type) (@0 c : a -> Type) (@0 x : a) (@0 y : a). (p : x = y) -> c y -> c x
+let bwd p cy = subst (sym p) cy
+
+roundTrip : forall (@0 a : Type) (@0 c : a -> Type) (@0 x : a) (@0 y : a). (p : x = y) -> c y -> c y
+let roundTrip p cy = subst p (subst (sym p) cy)
+
+symsym : forall (@0 a : Type) (@0 x : a) (@0 y : a). (p : x = y) -> x = y
+let symsym p = sym (sym p)
+
+congBoth : forall (@0 x : Int) (@0 y : Int). (p : x = y) -> addInt y 1 = addInt x 1
+let congBoth p = cong (\i -> addInt i 1) (sym p)
+
+-- STATUS(a51e1bf): PASS

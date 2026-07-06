@@ -1,0 +1,32 @@
+-- §15.15 (Spec L15568-L15600): elaboration lowerings (here, a
+-- tuple-scrutinee match lowered to nested matches / branch helpers) MUST
+-- preserve termination evidence — the structural facts rx <ₛ xs, ry <ₛ ys.
+-- If the explicit nested-match form typechecks, the sugared form MUST NOT
+-- be rejected because the lowering lost evidence (L15594-L15597).
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+-- Explicit nested form: plainly structural on xs; accepted.
+zipLenExplicit : List Int -> List Int -> Int
+let zipLenExplicit xs ys =
+    match xs
+    case Nil -> 0
+    case _ :: rx ->
+        match ys
+        case Nil -> 0
+        case _ :: ry -> addInt 1 (zipLenExplicit rx ry)
+
+-- Tuple-scrutinee form: elaborates to the same nested matches, so the
+-- subterm facts rooted at the parameters must survive the lowering.
+zipLenTuple : List Int -> List Int -> Int
+let zipLenTuple xs ys =
+    match (xs, ys)
+    case (_ :: rx, _ :: ry) -> addInt 1 (zipLenTuple rx ry)
+    case _ -> 0
+
+-- STATUS(a51e1bf): FAIL — the tuple-scrutinee lowering loses the
+-- structural subterm facts: zipLenTuple is W_TERMINATION_UNVERIFIED even
+-- though the equivalent explicit nested form is accepted, exactly the
+-- rejection-through-lost-evidence §15.15 forbids.

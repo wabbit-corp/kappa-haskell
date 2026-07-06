@@ -1,0 +1,19 @@
+--! mode compile
+--! packageMode
+--! requires backend python
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.host.python
+--! assertDiagnosticMatch (pin|provider|host.python)
+
+-- §3.2.18, §26.1.10A: in package mode a `host.python` binding module
+-- must be backed by a pinned provider identity; an unpinned reference
+-- MUST fail with E_HOST_PYTHON_PROVIDER_UNPINNED (kappa.host.python),
+-- identifying the module, package, and distribution identity, and
+-- suggesting pinning as the repair.
+module main
+
+import host.python.json_tools as jt
+
+value : Int
+let value = 1
+-- STATUS(a51e1bf): UNSUPPORTED — gated on `requires backend python` (not provided here); note the harness currently reports a HARNESS-ERROR instead, because §T.3 ill-typed-directive validation (kappa.host.python unregistered) runs before the §T.4 requires precondition — see spec-issue note on T.3/T.4 ordering

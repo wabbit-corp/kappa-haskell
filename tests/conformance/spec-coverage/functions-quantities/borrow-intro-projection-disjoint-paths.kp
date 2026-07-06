@@ -1,0 +1,40 @@
+-- §12.2.3 (L11190-11196): when borrow introduction applies to a record
+-- projection `r.f`, the temporary borrow applies to that projected path,
+-- NOT the whole root record, subject to the disjoint-path rules of
+-- §12.4. Borrowing r.a while the same call consumes the disjoint sibling
+-- r.b is accepted; borrowing and consuming the SAME path in one call
+-- overlaps and is rejected.
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Pair = (1 a : Token, b : Token)
+
+take : (1 t : Token) -> Int
+let take (1 t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+-- borrows its first argument, consumes its second
+both : (& s : Token) -> (1 t : Token) -> Int
+let both (& s : Token) (1 t : Token) : Int = take t
+
+-- POSITIVE: r.a is borrowed for the duration of the call while the
+-- disjoint sibling r.b is consumed by the same call; r.a is then
+-- consumed afterwards. If the temporary borrow locked the whole record
+-- this could not typecheck.
+okDisjoint : (1 r : Pair) -> Int
+let okDisjoint (1 r : Pair) : Int =
+    both r.a r.b + take r.a
+
+-- NEGATIVE: the same call borrows r.a and consumes r.a — overlapping
+-- footprints on one application spine.
+badSame : (1 r : Pair) -> Int
+let badSame (1 r : Pair) : Int =
+    both r.a r.a --!! E_QTT_BORROW_OVERLAP
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.overlap
+-- STATUS(a51e1bf): PASS

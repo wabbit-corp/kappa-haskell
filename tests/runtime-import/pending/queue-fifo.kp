@@ -17,18 +17,18 @@ import std.queue.(term boundedQueue, term unboundedQueue, term offerQueue, term 
 
 main : UIO Unit
 let main = do
-  seqQ <- boundedQueue @Int 2
-  _ <- offerQueue seqQ 10
-  v1 <- takeQueue seqQ
-  _ <- offerQueue seqQ 20
-  v2 <- takeQueue seqQ
+  let seqQ <- boundedQueue @Int 2
+  let _ <- offerQueue seqQ 10
+  let v1 <- takeQueue seqQ
+  let _ <- offerQueue seqQ 20
+  let v2 <- takeQueue seqQ
   printlnString ("seq:" ++ showInt v1 ++ "," ++ showInt v2)
 
-  orderedQ <- unboundedQueue @Int
-  _ <- offerQueue orderedQ 1
-  _ <- offerQueue orderedQ 2
-  _ <- offerQueue orderedQ 3
-  a <- takeQueue orderedQ
-  b <- takeQueue orderedQ
-  c <- takeQueue orderedQ
+  let orderedQ <- unboundedQueue @Int
+  let _ <- offerQueue orderedQ 1
+  let _ <- offerQueue orderedQ 2
+  let _ <- offerQueue orderedQ 3
+  let a <- takeQueue orderedQ
+  let b <- takeQueue orderedQ
+  let c <- takeQueue orderedQ
   printlnString ("ordered:" ++ showInt a ++ "," ++ showInt b ++ "," ++ showInt c)

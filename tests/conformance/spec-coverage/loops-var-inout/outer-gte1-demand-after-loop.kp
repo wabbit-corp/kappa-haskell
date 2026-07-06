@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- §18.6 (L20969-L21015): loop bodies are not assumed to run at least once,
+-- so demands occurring ONLY inside the loop body do not discharge a >=1
+-- obligation for an outer binding (`bad`). Demanding the variable after the
+-- loop, on every normal path, does (`ok`).
+module main
+
+consume : (1 n : Int) -> Int
+let consume (1 n : Int) : Int = n
+
+bad : Bool -> (>=1 x : Int) -> UIO Unit
+let bad (cond : Bool) (>=1 x : Int) : UIO Unit = --!! kappa.quantity.positive-lower-bound
+    do
+        while cond do
+            let _ = consume x
+        pure ()
+
+ok : Bool -> (>=1 x : Int) -> UIO Unit
+let ok (cond : Bool) (>=1 x : Int) : UIO Unit =
+    do
+        while cond do
+            pure ()
+        let _ = consume x
+        pure ()
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,20 @@
+module main
+
+-- §9.4: `expect type T` supplies an abstract type-level object WITHOUT
+-- ADT constructor metadata; only `expect data` carries deriving support.
+-- `derive Eq` against an expect-type has no constructor metadata and
+-- must be rejected; the unsatisfied expect is additionally an error in
+-- this single-file unit. NOTE: the spec registers no dedicated family
+-- for the derive rejection (E_NOT_DATA is unregistered in the harness
+-- registry); today the implementation rejects `derive` wholesale with
+-- E_UNSUPPORTED. Once derive lands, this must still fail — with a
+-- constructor-metadata (not-a-data-type) diagnostic on the derive line.
+
+expect type Ext
+
+derive Eq Ext
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_EXPECT_UNSATISFIED
+-- STATUS(a51e1bf): PASS

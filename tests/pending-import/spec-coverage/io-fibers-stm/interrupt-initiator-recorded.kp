@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "initiator:caller\n"
+
+-- §18.1.4 (Spec.md L18855-18858): `interrupt fiber` behaves as
+-- `interruptAs (InterruptCause Requested (Some id)) fiber` where id is the
+-- CURRENT CALLER's fiber id — the initiating fiber MUST be recorded in the
+-- delivered InterruptCause, not dropped to None.
+module main
+
+sleeper : UIO Int
+let sleeper = do
+    sleepFor (seconds 10)
+    ioPure 0
+
+sameId : FiberId -> FiberId -> Bool
+let sameId a b = match a
+    case MkFiberId x -> match b
+      case MkFiberId y -> x == y
+
+main : UIO Unit
+let main = do
+    let me <- currentFiberId
+    let f <- fork sleeper
+    interrupt f
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause Requested (Some by))) ->
+        if sameId by me
+          then printlnString "initiator:caller"
+          else printlnString "initiator:other-fiber"
+      case Failure (Interrupt (InterruptCause Requested None)) -> printlnString "initiator:none"
+      case Failure c -> printlnString "other-cause"

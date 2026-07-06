@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval viaAnnotated 42
+--! assertEval applied 42
+-- STATUS(a51e1bf): FAIL — E_UNSUPPORTED: moduleSig is not supported by this implementation

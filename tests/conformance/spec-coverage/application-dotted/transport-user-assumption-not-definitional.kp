@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §16.1.8 (L16761): the implementation MUST NOT use arbitrary user
+-- equality assumptions as definitional equality. Transport insertion is
+-- an elaboration rule at checking boundaries only; a local assumption
+-- True = False must not make Tagged (FlagBox False) definitionally match
+-- the Tagged (FlagBox True) instance during implicit resolution.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+trait Tagged (a : Type) =
+    tagOf : Int
+
+instance Tagged (FlagBox True) =
+    let tagOf = 1
+
+needTag : forall (a : Type). Tagged a => Int
+let needTag (@0 a : Type) (@d : Tagged a) : Int = tagOf @a
+
+-- NEGATIVE: the user assumption must not leak into instance matching.
+bad : (@0 p : True = False) -> Int
+let bad (@0 p : True = False) : Int = needTag @(FlagBox False) --!! kappa.implicit.unsolved

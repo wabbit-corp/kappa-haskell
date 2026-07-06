@@ -1,0 +1,44 @@
+-- §12.1.1 (L10515-10530, L10600-10614): implicit binders share the
+-- binder-prefix grammar — `@` marks implicitness and may be followed by
+-- quantity, borrow marker, or both (quantity first). `@0 &`, `@<=1 &`,
+-- `@1 &`, and `@>=1 &` are all valid implicit binder prefixes, each
+-- checked under its interval quantity plus borrow rules.
+module main
+
+data Res : Type =
+    MkRes Int
+
+data Proof : Type =
+    MkProof
+
+readRes : (& r : Res) -> Int
+let readRes (& r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+-- POSITIVE: erased borrowed implicit evidence, never demanded at runtime.
+erasedImp : (@0 & prf : Proof) -> Int
+let erasedImp (@0 & prf : Proof) : Int = 9
+
+-- POSITIVE: affine borrowed implicit binder, zero demands.
+affineImp : (@<=1 & r : Res) -> Int
+let affineImp (@<=1 & r : Res) : Int = 1
+
+-- POSITIVE: linear borrowed implicit binder, exactly one demand.
+linearImp : (@1 & r : Res) -> Int
+let linearImp (@1 & r : Res) : Int = readRes r
+
+-- POSITIVE: relevant borrowed implicit binder, at least one demand.
+relevantImp : (@>=1 & r : Res) -> Int
+let relevantImp (@>=1 & r : Res) : Int = readRes r + readRes r
+
+caller : Res -> Int
+let caller (v : Res) : Int =
+    block
+        let (@& r : Res) = v
+        let (@& prf : Proof) = MkProof
+        erasedImp + affineImp + linearImp + relevantImp
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a51e1bf): PASS

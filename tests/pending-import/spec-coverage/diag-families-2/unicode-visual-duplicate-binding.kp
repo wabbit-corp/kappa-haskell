@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNICODE_VISUAL_DUPLICATE_BINDING
+--! assertDiagnosticFamily error kappa.unicode.name
+
+-- §3.2.19 + §5.1A: the StrongVisualNameTable MUST include the visual
+-- equivalence class { U+0041 LATIN A, U+0391 GREEK ALPHA, U+0410
+-- CYRILLIC A }, and two same-scope declarations with distinct source
+-- spellings but one StrongVisualNameKey MUST be rejected with
+-- E_UNICODE_VISUAL_DUPLICATE_BINDING (kappa.unicode.name). Backtick
+-- spellings contribute the SAME visual key as unquoted ones (§5.1A),
+-- so the gate on unquoted Unicode identifiers does not excuse this.
+module main
+
+let A = 1
+let `А` = 2
+-- STATUS(a51e1bf): FAIL — the compiler ACCEPTS the visual duplicate (0 errors; only the optional W_UNICODE_CONFUSABLE_IDENTIFIER hygiene warning exists behind a capability): strong-visual-key duplicate detection per §5.1A is not implemented

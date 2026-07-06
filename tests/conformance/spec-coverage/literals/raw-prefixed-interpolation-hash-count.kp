@@ -1,0 +1,19 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "v=7 $n \\n\nw=7\nlit #{n} kept\n"
+
+-- §6.3.4.1: a raw prefixed string with hash count n interpolates via
+-- exactly n '#' characters before '{'. In raw prefixed strings '$'
+-- has no special meaning and backslashes stay literal; a SHORTER
+-- hash-sequence than n (e.g. `#{` inside a ##-literal) is ordinary
+-- literal text.
+
+n : Integer
+let n = 7
+
+main : UIO Unit
+let main = do
+    printlnString f#"v=#{n} $n \n"#
+    printlnString f##"w=##{n}"##
+    printlnString f##"lit #{n} kept"##
+-- STATUS(a51e1bf): PASS

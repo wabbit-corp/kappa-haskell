@@ -1,0 +1,43 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+--! assertDiagnostic error E_INDEXED_IMPOSSIBLE_REACHABLE
+--! assertDiagnosticFamily error kappa.proof.impossible-reachable
+--! assertDiagnosticMatch unreachable|uninhabited
+
+-- §3.2.10 (Spec.md L3179-3193): a branch incorrectly claimed unreachable is
+-- family kappa.pattern.unreachable. §3.2.4 (L2567-2589): a rejected
+-- `case impossible` on a still-reachable remainder is family
+-- kappa.proof.impossible-reachable, alias E_INDEXED_IMPOSSIBLE_REACHABLE,
+-- and per L2586-2587 the primary message MUST explain reachability directly
+-- (never a leaked implicit binder / skolem / contradiction-search artifact —
+-- pinned approximately by the direct-wording match above).
+module main
+
+-- POSITIVE (§17.1.5): the remainder of a Void match is uninhabited.
+fromVoid : Void -> Int
+let fromVoid v =
+    match v
+    case impossible
+
+data Tag (b : Bool) : Type =
+    TT : Tag True
+    FF : Tag False
+
+-- NEGATIVE (§17.1.4): `impossible` as a branch body is accepted only when
+-- the refined case fiber is provably uninhabited; `True` is inhabited.
+badBool : Bool -> Int
+let badBool b =
+    match b
+    case True -> impossible --!! E_IMPOSSIBLE_REACHABLE
+    case False -> 1
+
+-- NEGATIVE (§17.1.5): with `b` abstract, neither constructor of the indexed
+-- family is excluded, so the remainder is still reachable.
+badTag : forall (b : Bool). Tag b -> Int
+let badTag t =
+    match t
+    case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- STATUS(a51e1bf): PASS

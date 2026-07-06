@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.1.2 (Spec.md L12264-L12269) + §13.1.5 (L12322-L12336): a function
+-- may be polymorphic over the residual VarRow of an open union. The
+-- generated/declared `LacksVar r a` constraint ensures the projected
+-- member is not already in the residual row, and injection into the open
+-- union `(| a | r |)` is justified by ContainsVar. This is the spec's own
+-- §13.1.5 `project` example, plus an injection helper.
+module main
+
+project : forall (r : VarRow) (a : Type).
+          LacksVar r a => (| a | r |) -> Option a
+let project u =
+    match u
+    case (| x : a |)  -> Some x
+    case (| ..rest |) -> None
+
+inject : forall (r : VarRow). LacksVar r Integer => Integer -> (| Integer | r |)
+let inject n = n
+
+-- instantiating the residual row at a concrete tail: r := (| String |)
+useProject : (| Integer | String |) -> Option Integer
+let useProject u = project u
+
+-- STATUS(a51e1bf): FAIL — compiler has no VarRow/LacksVar (unresolved name
+-- 'VarRow'); open variant rows are rejected in elaboration (Syntax.hs
+-- EVariant tail is always Nothing), so §13.1.5 row polymorphism is
+-- unimplemented.

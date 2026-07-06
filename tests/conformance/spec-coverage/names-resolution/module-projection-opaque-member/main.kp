@@ -1,0 +1,28 @@
+module main
+
+-- §7.5 + §8.5.2: module-value projection agrees with qualified access
+-- for opaque exports too — lib.T and m.T denote the SAME opaque type
+-- (the identity function checks definitional agreement), and opacity is
+-- respected identically on both paths: a raw Int is not accepted at
+-- either spelling of the abstract type.
+import lib
+
+let m = module lib
+
+viaQualified : lib.T
+let viaQualified = lib.mk 1
+
+viaProjected : m.T
+let viaProjected = m.mk 2
+
+same : lib.T -> m.T
+let same t = t
+
+back : Int
+let back = lib.get (same viaQualified)
+
+badQualified : lib.T
+let badQualified = 3 --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+
+badProjected : m.T
+let badProjected = 4 --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH

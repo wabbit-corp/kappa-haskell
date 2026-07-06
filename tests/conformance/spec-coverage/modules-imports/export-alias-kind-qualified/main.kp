@@ -1,0 +1,7 @@
+module main
+
+-- Downstream of mid: the alias spelling is importable as a type.
+import mid.(type Tree)
+
+grow : Tree -> Tree
+let grow t = t

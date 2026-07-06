@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §18.1.15 / §12.2: quantity annotations on operation-signature binders
+-- carry into the handler clause: a parameter declared at quantity 1 is
+-- bound linearly there, so using it twice in the clause body is a
+-- quantity error.
+module main
+
+bad : Int
+let bad : Int =
+    block
+        scoped effect Use1 =
+            1 consume : (1 x : Int) -> Int
+
+        let comp : Eff <[Use1 : Use1]> Int =
+            do
+                let a <- Use1.consume 3
+                pure a
+
+        let handled =
+            deep handle Use1 comp with
+                case return y -> pure y
+                case consume x k -> k (addInt x x)
+
+        runPure handled

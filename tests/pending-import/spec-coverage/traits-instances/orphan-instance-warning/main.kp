@@ -1,0 +1,21 @@
+module main
+
+-- §14.3 (Spec.md L14532-L14538): orphan instances (neither the trait nor
+-- the instantiated type constructor defined in the declaring module) are
+-- permitted, and implementations SHOULD emit a warning per orphan instance
+-- declaration. Exactly one of the three instances in this suite
+-- (orphanmod's `Tag Bool`) is an orphan; the same-module instances in
+-- libtrait and libdata must stay warning-free.
+import libtrait.*
+import libdata.*
+import orphanmod.*
+
+total : Int
+let total = tag 4 + tag (MkWrapped 2) + tag True + orphanMarker
+
+--! mode check
+--! assertErrorCount 0
+--! assertWarningCount 1
+--! assertType total Int
+
+-- STATUS(a51e1bf): FAIL — no orphan-instance warning is implemented; the suite compiles with 0 warnings (the orphan `Tag Bool` instance is accepted silently). SHOULD-level requirement.

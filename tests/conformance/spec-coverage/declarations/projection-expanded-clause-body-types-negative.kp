@@ -1,0 +1,19 @@
+module main
+
+-- §9.1.1 accessor clause environments: a `set (v : T) -> e` body must
+-- elaborate to the root type `S` (here Cell), and an `inout` body must
+-- elaborate to `Zipper S T T`. Returning the focus value instead is a
+-- type error in both clauses.
+
+type Cell = (value : Int)
+
+projection badSet (place p : Cell) : Int =
+    get -> p.value
+    set (nv : Int) -> nv --!! E_TYPE_EQUALITY_MISMATCH
+
+projection badInout (place p : Cell) : Int =
+    inout -> p.value --!! E_TYPE_EQUALITY_MISMATCH
+
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a51e1bf): PASS

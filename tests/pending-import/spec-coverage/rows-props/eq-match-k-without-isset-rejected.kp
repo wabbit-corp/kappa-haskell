@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticExplainExists E_EQUALITY_MATCH_REQUIRES_ISSET
+
+-- §11.4.1 (negative): the spec's badK example realized through an
+-- actual source match. Proving p = refl for an arbitrary carrier
+-- requires Streicher's K / UIP, so the match "is rejected unless the
+-- checker has evidence that the equality type is a proposition"
+-- (IsProp (x = x) or IsSet a — neither is available here). The
+-- rejection MUST use portable alias E_EQUALITY_MATCH_REQUIRES_ISSET
+-- (family kappa.equality.match-requires-hlevel), which must be
+-- registered per §3.1.2A.
+module main
+
+badK : forall (@0 a : Type) (@0 x : a). (p : x = x) -> p = refl
+let badK p =
+    match p
+    case refl -> refl
+
+-- STATUS(a51e1bf): FAIL — the match IS rejected (1 error) but via generic E_TYPE_EQUALITY_MISMATCH; mandated E_EQUALITY_MATCH_REQUIRES_ISSET / kappa.equality.match-requires-hlevel is not registered

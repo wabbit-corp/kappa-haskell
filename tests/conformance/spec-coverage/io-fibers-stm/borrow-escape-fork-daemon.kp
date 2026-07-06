@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §18.1.4 (Spec.md L18860-18876): forkDaemon, like fork, requires an action
+-- with an EMPTY hidden region environment (captures ()). An action whose
+-- capture environment needs an anonymous rigid region MUST fail elaboration
+-- with E_QTT_BORROW_ESCAPE, citing the borrow introduction and the
+-- fiber-spawn argument position.
+module main
+
+read : (& x : Int) -> Int
+let read (& x : Int) : Int = x
+
+bad : (& x : Int) -> UIO (Fiber Void (Int -> Int))
+let bad (& x : Int) : UIO (Fiber Void (Int -> Int)) =
+    let child = pure (\y -> read x)
+    in forkDaemon child

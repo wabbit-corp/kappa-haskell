@@ -1,0 +1,39 @@
+-- §12.2.3 (L11186-11189): when a borrowed argument is rooted at a value
+-- held at quantity 1, "the caller's quantity-1 obligation is suspended
+-- for the duration of the call, and that obligation is restored when the
+-- call returns". A restored obligation must still be discharged: a
+-- linear binder that is only lent (never consumed) violates its [1,1]
+-- interval at scope exit (§12.2.5; 1 is not droppable, L11374-11380).
+module main
+
+data Token : Type =
+    MkToken Int
+
+peek : (& t : Token) -> Int
+let peek (& t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+take : (1 t : Token) -> Int
+let take (1 t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+-- POSITIVE: borrow first, then consume — the suspended obligation is
+-- restored after the call and discharged by the consuming use.
+goodOrder : (1 t : Token) -> Int
+let goodOrder (1 t : Token) : Int =
+    let y = peek t
+    in y + take t
+
+-- NEGATIVE: the linear binder is only ever lent to a read-only borrow;
+-- the restored quantity-1 obligation is never discharged, so `t` is
+-- dropped without being consumed.
+badLendOnly : (1 t : Token) -> Int
+let badLendOnly (1 t : Token) : Int = --!! E_QTT_LINEAR_DROP
+    peek t
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): FAIL — the compiler accepts badLendOnly (0 errors): a borrow-read is treated as discharging the linear lower bound, so the §12.2.3 restored quantity-1 obligation is never re-checked at scope exit (see also the §12.2.3/§12.2.5 ambiguity recorded with this batch).

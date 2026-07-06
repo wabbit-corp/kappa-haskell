@@ -1,0 +1,53 @@
+-- §17.1.2 (Spec L17814-L17832): a constructor branch of a match on a GADT
+-- is typechecked under the family-argument equalities forced by the
+-- constructor's result type; the equalities participate in definitional
+-- equality and reachability (§17.1.1).
+
+--! mode check
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- POSITIVE: rebuilding at the refined index. In the Zero branch n = Z is
+-- in the branch environment, so Zero : Natural n checks; in the Succ
+-- branch n = S m, so Succ p : Natural n checks.
+rebuild : Natural n -> Natural n
+let rebuild v =
+    match v
+    case Zero -> Zero
+    case Succ p -> Succ p
+
+-- POSITIVE: `if v is Zero` introduces the same refinement (§17.1.2).
+sameIf : Natural n -> Natural n
+let sameIf v =
+    if v is Zero then Zero else v
+
+-- POSITIVE: at ground index S (S Z), unification rules out Zero, so a
+-- single Succ case is exhaustive (§17.1.1) and p : Natural (S Z) by
+-- definitional equality on the forced index.
+predOfTwo : Natural (S (S Z)) -> Natural (S Z)
+let predOfTwo v =
+    match v
+    case Succ p -> p
+
+-- NEGATIVE: under n = Z the expected result type Natural n is
+-- definitionally Natural Z; Succ Zero : Natural (S Z) does not match.
+bad : Natural n -> Natural n
+let bad v =
+    match v
+    case Zero -> Succ Zero
+    case Succ p -> Succ p
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a51e1bf): FAIL — 6 errors instead of 1: `bad` is correctly
+-- rejected, and predOfTwo (ground index) is accepted, but rebuild and
+-- sameIf also fail with E_TYPE_EQUALITY_MISMATCH: constructor-forced
+-- family-argument equalities over an ABSTRACT index (n = Z in the Zero
+-- branch) do not participate in definitional equality as §17.1.2 requires.

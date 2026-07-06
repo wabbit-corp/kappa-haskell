@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.4.3: captureBorrow reifies an already-valid borrow as an ordinary
+-- value whose type mentions rho — it does NOT extend the borrow's
+-- lifetime. POSITIVE: a record holding a view keeps r in its type and
+-- may be eliminated wherever r is live. NEGATIVE: a value carrying an
+-- anonymous rigid region may not leave the scope that introduced it,
+-- even hidden inside a returned closure (§12.3 skolem escape).
+module main
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+type Held (r : Region) = (view : BorrowView r Int)
+
+pack : forall (r : Region). (&[r] x : Int) -> Held r
+let pack (@0 r : Region) (&[r] x : Int) : Held r =
+    (view = captureBorrow x)
+
+readHeld : forall (r : Region). Held r -> Int
+let readHeld (@0 r : Region) (h : Held r) : Int =
+    withBorrowView h.view (\(&[r] n : Int) -> observe n)
+
+bad : Unit -> (Unit -> Int)
+let bad () : (Unit -> Int) =
+    block
+        let & n = 41
+        let v = captureBorrow n
+        \() -> withBorrowView v (\m -> observe m) --!! E_QTT_BORROW_ESCAPE
+
+-- STATUS(a51e1bf): FAIL — compiler reports 0 errors: the closure captures the reified BorrowView v (region env {rho}) and returns it from the introducing scope, but view-values are not taint-tracked through closures, violating §12.3 "the same rule applies to first-class borrowed-view values".

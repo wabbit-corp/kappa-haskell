@@ -1,0 +1,56 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probeAscription "I"
+--! assertEval probeStringColon "I"
+--! assertEval probeFmtColon "F<a:b>"
+--! assertEval probeAnnotationAsFmt "F<Integer>"
+
+-- §6.3.4.2: only a TOP-LEVEL ':' inside an interpolation begins a
+-- format specifier; a ':' nested inside parentheses or nested string
+-- literals does not. The format specifier is uninterpreted source
+-- text, so it may itself contain further ':' characters, and an
+-- unparenthesized `expr : Type` reading is taken as expr + format.
+
+import std.deriving.shape.*
+
+fragTag : SyntaxFragment -> String
+let fragTag frag =
+    match frag
+    case Lit s -> stringAppend "L<" (stringAppend s ">")
+    case Interp e -> "I"
+    case InterpFmt e fmt -> stringAppend "F<" (stringAppend fmt ">")
+
+summarize : List SyntaxFragment -> String
+let summarize frags =
+    match frags
+    case Nil -> ""
+    case frag :: rest -> stringAppend (fragTag frag) (summarize rest)
+
+instance InterpolatedMacro String =
+    let buildInterpolated fragments = stringSyntax (summarize fragments)
+
+tag : Elab (InterpolatedMacro String)
+let tag = pure (summon (InterpolatedMacro String))
+
+n : Integer
+let n = 7
+
+name : String
+let name = "x"
+
+-- a type-ascription colon nested in parentheses is not a format boundary
+probeAscription : String
+let probeAscription = tag"${(n : Integer)}"
+
+-- a ':' inside a nested string literal is not a format boundary
+probeStringColon : String
+let probeStringColon = tag"${stringAppend ":" name}"
+
+-- the format specifier is raw text and may contain ':' itself
+probeFmtColon : String
+let probeFmtColon = tag"${n : a:b}"
+
+-- without parentheses, `n : Integer` is expr `n` + format "Integer"
+probeAnnotationAsFmt : String
+let probeAnnotationAsFmt = tag"${n : Integer}"
+-- STATUS(a51e1bf): PASS

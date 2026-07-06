@@ -1,0 +1,20 @@
+--! mode check
+--! assertNoErrors
+--! assertType applied Integer
+--! assertEval applied 42
+--! assertEval viaByte True
+
+-- §6.5: a prefix is a prefixed quoted literal only when IMMEDIATELY
+-- adjacent to the opening quote; `w 'a'` with whitespace is ordinary
+-- application of `w` to the Unicode scalar literal 'a'. The escape
+-- byte view rules make b'\u{61}' and b'a' the same Byte.
+
+w : UnicodeScalar -> Integer
+let w s = 42
+
+applied : Integer
+let applied = w 'a'
+
+viaByte : Bool
+let viaByte = b'\u{61}' == b'a'
+-- STATUS(a51e1bf): PASS

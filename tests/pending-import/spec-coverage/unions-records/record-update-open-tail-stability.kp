@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.5 (Spec.md L12960-L13038): a patch that PRESERVES a residual row
+-- r while changing label l must solve StableUnderRecChange r l; if it
+-- cannot, the patch is rejected with family
+-- kappa.record.open-tail-invalidated. An abstract dependent tail may
+-- contain a field whose type depends on l (e.g. buffer : SizedArray
+-- this.len Byte), so preserving it blindly is unsound. A pure extension
+-- with LacksRec r label needs NO user-written stability premise (the
+-- solver derives it from the generated LacksRec fact).
+-- (StableUnderRecChange is not spellable in surface v1, so only the
+-- no-evidence rejection is testable; the family is not registered, hence
+-- the count-only assertion.)
+module main
+
+-- NEGATIVE: changes `len` while preserving abstract tail r, with no
+-- StableUnderRecChange r len evidence available — must be rejected.
+setLen : forall (r : RecRow). (1 rec : (len : Nat | r)) -> Nat -> (len : Nat | r)
+let setLen (@0 r : RecRow) (1 rec : (len : Nat | r)) (n : Nat) : (len : Nat | r) =
+    rec.{ len = n }
+
+-- POSITIVE: pure extension of a fresh label — LacksRec r age satisfies
+-- StableUnderRecChange r age, no explicit premise required (§13.2.5
+-- addAge example).
+addAge : forall (r : RecRow). LacksRec r age =>
+         (1 rec : (name : String | r)) -> (name : String, age : Integer | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (1 rec : (name : String | r)) : (name : String, age : Integer | r) =
+    rec.{ age := 36 }
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts setLen (0 errors): the
+-- StableUnderRecChange obligation of §13.2.5 is never generated, and the
+-- kappa.record.open-tail-invalidated family is not registered. This is
+-- the soundness hole the spec rule exists to close.

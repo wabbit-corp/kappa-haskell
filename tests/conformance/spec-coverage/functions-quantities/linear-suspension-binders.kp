@@ -1,0 +1,24 @@
+-- §12.1 (L10452-10455) + §11.2 (L9651-9668): suspension binder sugar
+-- composes with quantities — `(q lazy x : A)` desugars to
+-- `(q x : Need A)` and `(q thunk x : A)` to `(q x : Thunk A)`. The
+-- interval quantity is checked on the suspension binding itself: a
+-- linear suspension must be demanded (forced) exactly once.
+module main
+
+-- POSITIVE: linear by-need binding forced exactly once.
+okLazy : (1 lazy x : Int) -> Int
+let okLazy x = force x
+
+-- POSITIVE: linear by-name binding forced exactly once.
+okThunk : (1 thunk x : Int) -> Int
+let okThunk x = force x
+
+-- NEGATIVE: the linear lazy binding is never demanded; quantity 1 is
+-- not droppable (§12.2.5).
+badLazy : (1 lazy y : Int) -> Int
+let badLazy y = 0 --!! E_QTT_LINEAR_DROP
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

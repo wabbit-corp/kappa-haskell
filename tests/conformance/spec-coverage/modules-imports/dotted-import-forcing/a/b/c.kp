@@ -1,0 +1,4 @@
+module a.b.c
+
+x : Int
+let x = 2

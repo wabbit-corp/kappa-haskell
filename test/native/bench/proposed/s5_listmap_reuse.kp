@@ -1,0 +1,32 @@
+-- Bench: s5_listmap_reuse
+-- Purpose: Perceus S5.B drop-guided FBIP reuse on the canonical list-map
+--   shape over boxed payloads. `mapKeep` destructures each cons cell and
+--   immediately rebuilds a same-size cons cell for the mapped list.
+-- Expected optimized lowering: the cons arm first proves the matched cell with
+--   `ktry_reuse_ctor`, then rewrites it with `kreuse_ctor_skip` after the
+--   recursive tail rebuild. The fallback path remains conservative. Under
+--   RC-on the unique path reuses the matched cons KValue cell; under explicit
+--   RC-off the same program allocates a fresh cons cell.
+-- Failure mode it detects: S5 reuse becoming merely shape-present in tiny or
+--   packed-immediate examples but not reducing allocation on a real recursive
+--   boxed list-map path.
+module main
+
+build : Int -> List String -> List String
+let build n acc =
+    if leInt n 0 then acc else build (subInt n 1) ("x" :: acc)
+
+mapKeep : List String -> List String
+let mapKeep xs decreases listLength xs =
+    match xs
+    case Nil -> Nil
+    case y :: rest -> y :: mapKeep rest
+
+foldLen : List String -> Int -> Int
+let foldLen xs acc =
+    match xs
+    case Nil -> acc
+    case _ :: rest -> foldLen rest (addInt acc 1)
+
+main : UIO Unit
+let main = printlnString (showInt (foldLen (mapKeep (build 20000 Nil)) 0))

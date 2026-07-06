@@ -1,0 +1,31 @@
+-- §3.1.15 non-deferrable correctness failures MUST be hard errors (never
+-- warnings, never deferred): an inactive feature gate, an incoherent
+-- instance selection, and a malformed constructor arity (identity known)
+-- — three categories exercised together in one unit, each independently
+-- reported at severity error.
+--! mode check
+--! assertDiagnostic error E_FEATURE_INACTIVE
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+module main
+
+let λ = 1 --!! E_FEATURE_INACTIVE
+
+trait Show2 (a : Type) =
+    show2 : a -> String
+
+instance Show2 Int =
+    let show2 n = "a"
+
+instance Show2 Int =
+    let show2 n = "b"
+
+useInc : String
+let useInc = show2 3 --!! E_INSTANCE_INCOHERENT
+
+data User : Type =
+    User { name : String, active : Bool }
+
+let missing = User { active = False } --!! E_CONSTRUCTOR_ARITY_MISMATCH
+
+-- STATUS(a51e1bf): PASS

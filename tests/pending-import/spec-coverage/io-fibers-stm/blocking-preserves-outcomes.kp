@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "success:7\ncaught:boom\ninterrupted:Requested\n"
+
+-- §18.1.11 (Spec.md L19194-19196): `blocking body` preserves the typed
+-- success, typed failure, and interruption behavior of body — the bridge
+-- must not remap outcomes into blocking-specific errors or defects.
+module main
+
+failing : IO String Int
+let failing = throwIO "boom"
+
+childBody : Promise Void Unit -> UIO Unit
+let childBody ready = do
+    let _ <- completePromise ready (Success ())
+    blocking (sleepFor (seconds 10))
+
+main : UIO Unit
+let main = do
+    -- success passes through
+    let v <- blocking (ioPure 7)
+    printlnString ("success:" ++ showInt v)
+    -- typed failure passes through
+    let r <- catchIO (blocking failing) (\m -> ioPure ("caught:" ++ m))
+    printlnString r
+    -- interruption is delivered inside the blocking region and the fiber
+    -- terminates with Interrupt (not a blocking-specific error)
+    let ready <- newPromise
+    let f <- fork (childBody ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+      case Success u -> printlnString "completed"
+      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted:Requested"
+      case Failure c -> printlnString "other"

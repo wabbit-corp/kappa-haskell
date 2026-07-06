@@ -1,0 +1,18 @@
+-- §3.1.19 / §3.2.5: a positive lower-bound rejection MUST identify the
+-- binder, its declared quantity, and the failing completion path/branch
+-- — as structured payload fields (§3.2.5 spells them: binder, declared
+-- quantity, failing completion path) and with the binder site related —
+-- cf. the spec's example "`x` may leave this scope without being
+-- demanded" / "this path exits without demanding `x`".
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertDiagnosticPayload error kappa.quantity.positive-lower-bound /payload/binder x
+--! assertDiagnosticPayload error kappa.quantity.positive-lower-bound /payload/declaredQuantity >=1
+--! assertDiagnosticRelated error kappa.quantity.positive-lower-bound binder-site
+--! assertDiagnosticMatch without being demanded|path|branch
+module main
+
+g : (>=1 x : Int) -> (b : Bool) -> Int
+let g x b = if b then x else 0 --!! kappa.quantity.positive-lower-bound
+
+-- STATUS(a51e1bf): FAIL — payload is kind 'none' (no §3.2.5 binder/declaredQuantity/failing-path fields), no binder-site related origin, and no branch/path identification in the generic drop message

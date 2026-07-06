@@ -1,0 +1,15 @@
+module main
+
+-- §7.5: "a module declaration may also be used as a pure module value
+-- where a term expression is expected" — the bare spelling lib, not only
+-- the kind-qualified `module lib` form. And "M.x and, after let m = M,
+-- m.x denote the same member whenever both are well-formed".
+import lib
+
+let m = lib
+
+viaProj : Int
+let viaProj = m.answer
+
+viaQual : Int
+let viaQual = lib.answer

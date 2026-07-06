@@ -1,0 +1,15 @@
+-- §3.1.9: a mismatch payload MUST carry mismatchPath — the smallest
+-- stable path to the differing substructure. For a nested record whose
+-- innermost field differs, the path is the two record-field steps
+-- (rendered here as the flattened §3.1.9 MismatchPathStep list), not just
+-- a whole-type expected/actual pair.
+--! mode check
+--! assertDiagnostic error E_TYPE_MISMATCH
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/kind expected-actual
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/mismatchPath record-field outer, record-field inner
+module main
+
+nested : (outer : (inner : Integer))
+let nested = (outer = (inner = True)) --!! E_TYPE_MISMATCH
+
+-- STATUS(a51e1bf): FAIL — mismatch payload has no mismatchPath; only the whole-type expected/actual pair is exposed

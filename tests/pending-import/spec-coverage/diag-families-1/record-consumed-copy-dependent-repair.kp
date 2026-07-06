@@ -1,0 +1,46 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.record.consumed-copy
+--! assertDiagnosticFamily error kappa.record.dependent-update-repair
+
+-- §3.2.8 (Spec.md L2917-2950) + §13.2.4 (L12951-12958): a record patch whose
+-- omitted filler path is consumed MUST be kappa.record.consumed-copy (the
+-- field must be supplied explicitly); a patch whose omitted copied field
+-- depends on an updated field and no longer typechecks MUST be
+-- kappa.record.dependent-update-repair with the dependency path and an
+-- explicit repair.
+module main
+
+data Res : Type = MkRes
+
+eat : (1 r : Res) -> Int
+let eat r = match r case MkRes -> 1
+
+-- NEGATIVE (consumed filler, L2942-2950 / L12957-12958): `p.a` is consumed
+-- by `eat`, so the implicit filler for the omitted field `a` is ill-typed;
+-- `a` must be supplied explicitly.
+badConsumed : (1 p : (a : Res, b : Int)) -> (a : Res, b : Int)
+let badConsumed p =
+    let n = eat p.a
+    in p.{ b = n } --!! kappa.record.consumed-copy
+
+data Byte : Type = MkByte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+-- NEGATIVE (stale dependent copy, L2917-2934 / L12951-12954): updating `len`
+-- invalidates the omitted copied field `buf : Vec this.len Byte`; the copied
+-- projection no longer has the required type after substitution.
+badStale : Sized -> Sized
+let badStale (s : Sized) : Sized =
+    s.{ len = 2 } --!! kappa.record.dependent-update-repair
+
+-- POSITIVE (L12955-12956): repairing the dependent field explicitly in the
+-- same update is valid.
+goodRepair : Sized -> Sized
+let goodRepair (s : Sized) : Sized =
+    s.{ len = 2, buf = VNil }
+
+-- STATUS(a51e1bf): FAIL — neither family is registered; the consumed-filler patch is ACCEPTED silently (soundness gap vs §13.2.4 L12957-12958), and the stale dependent update emits generic kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). Positive half checks clean.

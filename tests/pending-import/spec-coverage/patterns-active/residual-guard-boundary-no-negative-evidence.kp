@@ -1,0 +1,38 @@
+-- §17.1.7 (Spec L17956-L17974): only top-level UNGUARDED constructor
+-- branches contribute residual LacksCtor evidence to a later catch-all;
+-- a guarded branch contributes nothing past the guard boundary, because
+-- guard failure does not exclude the constructor (§17.1.9, example at
+-- Spec L18053-L18063).
+
+--! mode check
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+-- POSITIVE: after an unguarded MyNone case the catch-all is checked under
+-- LacksCtor x <MyNone>; MyOption has exactly one other visible constructor,
+-- so HasCtor x <MySome> is derived and the projection is licensed.
+getOrZero : MyOption Int -> Int
+let getOrZero x =
+    match x
+    case MyNone -> 0
+    case _ -> x.value
+
+-- NEGATIVE: the MyNone case is guarded; its failure may be the guard's
+-- failure, so the catch-all must NOT assume LacksCtor x <MyNone> and the
+-- projection is ill-formed (x may still be MyNone).
+badGuarded : MyOption Int -> Bool -> Int
+let badGuarded x b =
+    match x
+    case MyNone if b -> 0
+    case _ -> x.value
+
+--! assertErrorCount 1
+
+-- STATUS(a51e1bf): FAIL — the compiler emits 2 errors: it correctly
+-- rejects badGuarded, but it also rejects getOrZero's catch-all
+-- projection with E_UNRESOLVED_MEMBER. The §17.1.7 residual LacksCtor →
+-- unique-remaining HasCtor derivation works for `if x is C` chains
+-- (residual_normalization.kp) but is not implemented for a `match`
+-- catch-all after unguarded constructor cases.

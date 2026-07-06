@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+-- §6.1.5: when context does not determine a unique type for an
+-- unsuffixed integer literal, the compiler defaults it to Int. It is
+-- a compile-time error when defaulting makes an otherwise-satisfiable
+-- constraint unsatisfiable: `Sized a` below is satisfied only at
+-- Double, so `measure 3` (which would elaborate fine at Double) must
+-- be rejected rather than silently re-typed.
+
+trait Sized (a : Type) =
+    isSmall : a -> Bool
+
+instance Sized Double =
+    let isSmall x = ltDouble x 16.0
+
+measure : forall (a : Type). (@_ : Sized a) -> a -> Bool
+let measure x = isSmall x
+
+bad : Bool
+let bad = measure 3 --!! E_UNSOLVED_IMPLICIT
+-- STATUS(a51e1bf): PASS

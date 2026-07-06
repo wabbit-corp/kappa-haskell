@@ -1,0 +1,4 @@
+module lib.box
+
+y : Int
+let y = 2

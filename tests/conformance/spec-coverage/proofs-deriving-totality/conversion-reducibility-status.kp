@@ -1,0 +1,40 @@
+-- §15.1 (Spec L15094-L15120): total-certified and conversion-reducible are
+-- independent bits. Structural recursion (case 2) unfolds by δ/ι during
+-- conversion; a definition accepted only by a well-founded Int measure,
+-- and a definition admitted by assertTerminates (§15.17), are accepted but
+-- MUST NOT be δ-reduced in definitional equality (unfolding lemmas for the
+-- former are propositional, not definitional, L15119-L15120).
+--! allow_assert_terminates
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+module main
+
+len : List Integer -> Integer
+let len xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (len rest)
+
+-- POSITIVE: structurally recursive definitions ARE conversion-reducible.
+lenReduces : len (7 :: 8 :: Nil) = 2
+let lenReduces = refl
+
+countdown : Int -> Int
+let countdown n decreases n =
+    if leInt n 0 then 0 else countdown (subInt n 1)
+
+-- NEGATIVE: the Int-measure (well-founded) recursion is total-certified
+-- but not conversion-reducible; refl cannot force its unfolding.
+countdownStuck : countdown 2 = 0
+let countdownStuck = refl --!! kappa.type.mismatch
+
+slow : Integer -> Integer
+assertTerminates let slow n = if eqInt n 0 then 0 else slow (subInt n 1)
+
+-- NEGATIVE: assertTerminates suppresses termination checking for
+-- acceptance only (§15.17); it never confers conversion-reducibility.
+slowStuck : slow 1 = 0
+let slowStuck = refl --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

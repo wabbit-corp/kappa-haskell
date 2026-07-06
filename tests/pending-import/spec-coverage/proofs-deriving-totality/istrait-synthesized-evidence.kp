@@ -1,0 +1,27 @@
+-- §14.4 (Spec L14887-L14915): for every well-formed full trait application
+-- G = Tr args the compiler synthesizes `IsTrait G` "and hence
+-- `IsSubsingleton G`"; the prelude IsSubsingleton member `allEqual`
+-- (Spec L14815-L14819) then yields the propositional equality of any two
+-- inhabitants — the §14.4 `sameEqEvidence` example (L14943-L14947).
+--! mode check
+--! assertNoErrors
+module main
+
+-- POSITIVE: compiler-issued IsTrait evidence for a full trait application.
+evTrait : IsTrait (Eq Int)
+let evTrait = summon (IsTrait (Eq Int))
+
+-- POSITIVE: the intrinsic supertrait (`intrinsic trait IsSubsingleton t =>
+-- IsTrait t`, L14890) makes the subsingleton evidence available too.
+evSub : IsSubsingleton (Eq Int)
+let evSub = summon (IsSubsingleton (Eq Int))
+
+-- POSITIVE: proof irrelevance is observable as a propositional equality of
+-- two evidence values (spec example `sameEqEvidence`).
+sameEqEvidence : (d1 : Eq Int) -> (d2 : Eq Int) -> d1 = d2
+let sameEqEvidence d1 d2 = allEqual d1 d2
+
+-- STATUS(a51e1bf): FAIL — IsTrait (Eq Int) resolves, but the intrinsic
+-- supertrait consequence IsSubsingleton (Eq Int) is E_UNSOLVED_IMPLICIT and
+-- the prelude omits the spec's `allEqual` member (h-level traits are
+-- member-less markers here), so the sameEqEvidence proof cannot be written.

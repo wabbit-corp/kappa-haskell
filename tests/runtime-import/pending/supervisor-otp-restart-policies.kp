@@ -17,25 +17,25 @@ import std.supervisor.(term childSpec, term startSupervisor, term shutdownSuperv
 
 countAndFail : AtomicRef Int -> IO String Unit
 let countAndFail ref = do
-  _ <- atomicFetchAdd RmwSeqCst ref 1
+  let _ <- atomicFetchAdd RmwSeqCst ref 1
   raise "boom"
 
 countAndSucceed : AtomicRef Int -> UIO Unit
 let countAndSucceed ref = do
-  _ <- atomicFetchAdd RmwSeqCst ref 1
+  let _ <- atomicFetchAdd RmwSeqCst ref 1
   ioPure Unit
 
 main : UIO Unit
 let main = do
-  permanentCount <- newAtomicRef 0
-  transientSuccessCount <- newAtomicRef 0
-  temporaryFailureCount <- newAtomicRef 0
+  let permanentCount <- newAtomicRef 0
+  let transientSuccessCount <- newAtomicRef 0
+  let temporaryFailureCount <- newAtomicRef 0
 
-  permanent <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+  let permanent <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
     ((childSpec "permanent" Permanent (countAndFail permanentCount)) :: Nil)
-  transient <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+  let transient <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
     ((childSpec "transient-success" Transient (countAndSucceed transientSuccessCount)) :: Nil)
-  temporary <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
+  let temporary <- startSupervisor OneForOne (RestartIntensity 1 (seconds 10))
     ((childSpec "temporary-failure" Temporary (countAndFail temporaryFailureCount)) :: Nil)
 
   cede
@@ -44,9 +44,9 @@ let main = do
   shutdownSupervisor transient
   shutdownSupervisor temporary
 
-  pc <- atomicLoad LoadSeqCst permanentCount
-  tc <- atomicLoad LoadSeqCst transientSuccessCount
-  fc <- atomicLoad LoadSeqCst temporaryFailureCount
+  let pc <- atomicLoad LoadSeqCst permanentCount
+  let tc <- atomicLoad LoadSeqCst transientSuccessCount
+  let fc <- atomicLoad LoadSeqCst temporaryFailureCount
   printlnString ("permanent:" ++ showInt pc)
   printlnString ("transient-success:" ++ showInt tc)
   printlnString ("temporary-failure:" ++ showInt fc)

@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 2
+-- §3.3.2: a record patch whose omitted copied filler path is already
+-- consumed MUST use family kappa.record.consumed-copy, identifying the
+-- consumed path, the consuming origin, and the field to supply.
+--! assertDiagnosticFamily error kappa.record.consumed-copy
+--! assertDiagnosticMatch (tok|consumed)
+
+-- §3.3.2, §12.4, §13.2: `c.{ count = _ }` implicitly copies the omitted
+-- `tok` field; both a `let`-consume and a match-scrutinee consume of
+-- `c.tok` must make that implicit copy fail.
+module main
+
+data Token : Type =
+    MkToken Int
+
+type Cell = (count : Int, 1 tok : Token)
+
+takeTok : (1 t : Token) -> Int
+let takeTok t =
+    match t
+    case MkToken n -> n
+
+bad : (1 c : Cell) -> Cell
+let bad c =
+    let n = takeTok c.tok
+    c.{ count = 2 }
+
+badMatch : (1 c : Cell) -> Cell
+let badMatch c =
+    match c.tok
+    case MkToken n -> c.{ count = n }
+-- STATUS(a51e1bf): FAIL — family kappa.record.consumed-copy is not registered (harness-error §T.5.1); the compiler reports E_QTT_LINEAR_OVERUSE in kappa.quantity.unsatisfied for the consumed implicit filler instead of the §3.3.2 family

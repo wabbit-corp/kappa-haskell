@@ -1,0 +1,22 @@
+module main
+
+-- §8.5.3: outside the defining module, the constructors of an `opaque
+-- data` type are not name-resolvable — not via the wildcard import, and
+-- not through dotted static-member selection on the type. The type
+-- constructor itself and ordinary exported terms remain importable.
+import rlib.*
+
+reWrap : Token -> Token
+let reWrap t = t
+
+viaExport : Token
+let viaExport = mk 1
+
+badCtor : Token
+let badCtor = Token 2 --!! E_NAME_UNRESOLVED
+
+badDotted : Token
+let badDotted = Token.Token 3 --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 2
+-- STATUS(a51e1bf): FAIL — opaque data constructors remain name-resolvable cross-module (both the wildcard-scoped ctor and dotted static-member selection succeed)

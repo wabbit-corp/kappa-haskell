@@ -1,0 +1,16 @@
+module main
+
+-- §9.1 (L7446): any term definition must begin with `let` (except the
+-- binding lines inside `let ... in`). A bare Haskell-style equation at
+-- top level is a grammar error; recovery skips the declaration and the
+-- rest of the file still elaborates.
+
+f x = x + 1 --!! E_RECOVERY_DECLARATION_SKIPPED
+
+g : Int -> Int
+let g x = x + 1
+
+--! mode check
+--! assertErrorCount 1
+--! assertType g Int -> Int
+-- STATUS(a51e1bf): PASS

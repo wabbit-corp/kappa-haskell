@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.4: Quantity, Region, RecRow, EffRow are intrinsic compile-time types
+-- (each inhabits Type0) whose inhabitants are first-class for binding, record
+-- fields, and rebinding. §11.1.6.1: compile-time bindings may carry quantity
+-- annotations, and `let y = x` on a compile-time value simply rebinds it.
+module main
+
+-- POSITIVE: a record type with intrinsic compile-time fields is well-formed;
+-- its fields all inhabit Type0, so the record former stays at Type0.
+ctRecord : Type0
+let ctRecord = (q : Quantity, s : Region, r : RecRow, e : EffRow)
+
+-- POSITIVE: ω is an ordinary prelude inhabitant of Quantity; binding and
+-- rebinding it are ordinary compile-time bindings (§11.1.6.1).
+omegaVal : Quantity
+let omegaVal = ω
+
+rebound : Quantity
+let rebound = omegaVal
+
+-- POSITIVE: a quantity annotation on a compile-time (Region-typed) binder is
+-- grammatically admitted; erasure is by phase/classifier, not written
+-- quantity (§11.1.6.1).
+withRegion : (0 s : Region) -> Int
+let withRegion (0 s : Region) : Int = 0
+
+-- POSITIVE: a bound row variable is an ordinary compile-time value; it can
+-- be passed explicitly at a RecRow-classified implicit position.
+readName : forall (r : RecRow). (name : String | r) -> String
+let readName (@0 r : RecRow) (rec : (name : String | r)) : String = rec.name
+
+delegate : forall (r : RecRow). (name : String | r) -> String
+let delegate (@0 r : RecRow) (rec : (name : String | r)) : String = readName @r rec
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §11.1.6/§11.1.6.3/§21.9: object phase and meta phase are separated. A
+-- meta-phase (Elab) expression must not directly consume an object-phase
+-- runtime value; `pure` lifts only meta-phase values; a meta-phase String is
+-- erased, and only Syntax may cross back to the object phase via a splice.
+-- Object-phase identifiers ARE allowed inside quotation, as hygienic
+-- references.
+module main
+
+-- POSITIVE: quoting an object-phase binder records a hygienic reference; it
+-- does not capture or evaluate the runtime value in the meta phase.
+quoteRef : Int -> Int
+let quoteRef n = $(pure '{ n })
+
+-- NEGATIVE: a meta-phase String result cannot escape to the object phase;
+-- only `Syntax t` may cross via a splice (§11.1.6.3).
+rendered : Elab String
+let rendered = renderSyntax '{ 1 + 1 }
+
+escaped : String
+let escaped = $(rendered)                                --!! E_SPLICE_REQUIRES_SYNTAX
+
+-- NEGATIVE: meta-phase code must not directly consume an object-phase
+-- runtime value; only quotation carriers may reference it.
+smuggle : Int -> Int
+let smuggle n =
+    $(do
+        let m = n                                        --!! E_ELAB_PHASE
+        pure '{ 1 })
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,5 @@
+-- Spec: modules.imports (§8.3), modules.names.lexical_lookup (§7.1).
+module foundation
+
+fortyTwo : Int
+let fortyTwo = 42

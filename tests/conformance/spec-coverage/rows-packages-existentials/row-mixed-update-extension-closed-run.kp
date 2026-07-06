@@ -1,0 +1,19 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\next\nhello\n"
+
+-- §13.2.6 mixed update/extension form on a closed record: at least one
+-- ordinary update field (x = 2) and one extension field (z := "ext") in
+-- the same patch. Elaboration applies §13.2.5 updates first, then the
+-- row-extension rule; omitted fields (y) are copied from the scrutinee.
+module main
+
+main : UIO Unit
+let main = do
+    let rec = (x = 1, y = "hello")
+    let rec2 = rec.{ x = 2, z := "ext" }
+    printlnString (showInt rec2.x)
+    printlnString rec2.z
+    printlnString rec2.y
+
+-- STATUS(a51e1bf): PASS

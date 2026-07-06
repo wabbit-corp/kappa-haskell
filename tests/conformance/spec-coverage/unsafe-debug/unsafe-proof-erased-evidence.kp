@@ -1,0 +1,22 @@
+module main
+
+-- §4.5: a proof produced by `unsafeAssertProof` "may erase exactly like any
+-- other proof of the same proposition. Erasure does not make the assertion
+-- checked." Here the asserted witness flows into a 0-quantity parameter
+-- (erased evidence): the program still evaluates normally, the parameter
+-- stays erased, and the assertion is STILL recorded in the §4.7 ledger —
+-- the audit trail must survive erasure.
+refly : forall (x : String). (=) x x
+let refly = unsafeAssertProof "reflexivity witness, erased at runtime"
+
+let consume (0 w : forall (x : String). (=) x x) = 7
+
+result : Integer
+let result = consume refly
+
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertEval result 7
+--! assertParameterQuantities consume 0
+--! assertAuditLedger unsafeAssertProof
+-- STATUS(a51e1bf): PASS

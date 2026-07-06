@@ -1,0 +1,19 @@
+-- §3.1.14A: "missing expression after `=`" is a listed recoverable
+-- condition — recovery MUST attempt a typed recovery node for the
+-- MISSING EXPRESSION (recoverySite expression), preserving the
+-- declaration for tooling, rather than discarding the whole declaration;
+-- neighboring declarations must keep elaborating (§3.1.17).
+--! mode check
+--! assertDiagnosticFamily error kappa-hs.parse.error
+--! assertDiagnosticPayload error E_RECOVERY_DECLARATION_SKIPPED /payload/kind recovery-node
+--! assertDiagnosticPayload error E_RECOVERY_DECLARATION_SKIPPED /payload/recoverySite expression
+--! assertType bar Int
+module main
+
+foo : Int
+let foo =
+
+bar : Int
+let bar = 2
+
+-- STATUS(a51e1bf): FAIL — recovery skips the whole declaration (recoverySite=declaration) instead of constructing the §3.1.14A missing-expression node

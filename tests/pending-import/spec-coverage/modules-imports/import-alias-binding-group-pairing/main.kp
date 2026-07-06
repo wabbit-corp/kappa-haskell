@@ -1,0 +1,25 @@
+module main
+
+-- §8.3.1: an alias on an UNQUALIFIED import of a same-spelling data
+-- family imports the type and same-spelling constructor facets PAIRED
+-- under the alias spelling (usable as type, constructor, and pattern
+-- head); the original spelling is not introduced by the item.
+import blib.(Box as Container)
+
+wrap : Int -> Container
+let wrap n = Container n
+
+unwrap : Container -> Int
+let unwrap c =
+    match c
+      case Container n -> n
+
+result : Int
+let result = unwrap (wrap 9)
+
+badOriginal : Int
+let badOriginal = (0 : Box) --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 1
+--! assertEval result 9
+-- STATUS(a51e1bf): FAIL — aliased same-spelling import constructs via the alias, but the alias is rejected as a pattern head (E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN)

@@ -1,0 +1,39 @@
+--! mode check
+--! assertDiagnostic error E_RECORD_OPEN_TAIL_INVALIDATED
+--! assertDiagnosticFamily error kappa.record.open-tail-invalidated
+--! assertDiagnosticMatch StableUnderRecChange
+
+-- §13.2.5 (Spec.md L12960-13000): a record patch that preserves a residual
+-- row variable `r` while changing label `l` generates the obligation
+-- `StableUnderRecChange r l`; if unsolvable the patch MUST be rejected with
+-- family kappa.record.open-tail-invalidated and portable alias
+-- E_RECORD_OPEN_TAIL_INVALIDATED (§3.2.8 L2952-3003). `home(r)` here is
+-- (len : Nat) per §11.3.1A L9924-9935, so `r` may depend on `len`.
+module main
+
+-- POSITIVE (L13021-13032): extension guarded by LacksRec does not change
+-- any label the tail may depend on.
+addAge :
+    forall (r : RecRow).
+    LacksRec r age =>
+    (name : String | r) -> (name : String, age : Int | r)
+let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (name : String, age : Int | r) =
+    rec.{ age := 36 }
+
+-- POSITIVE: updating a closed record preserves no abstract tail.
+type Counter : Type = (count : Nat)
+
+bump : Counter -> Counter
+let bump (c : Counter) : Counter = c.{ count = 2 }
+
+-- NEGATIVE (spec example L13004-13019 WITHOUT the StableUnderRecChange
+-- premise): `r` may contain fields whose types depend on `len` (e.g.
+-- `buffer : SizedArray this.len Byte`), so blindly preserving the tail
+-- after changing `len` is unsound and MUST be rejected.
+setLen :
+    forall (r : RecRow).
+    (1 rec : (len : Nat | r)) -> Nat -> (len : Nat | r)
+let setLen (@0 r : RecRow) (rec : (len : Nat | r)) (n : Nat) : (len : Nat | r) =
+    rec.{ len = n } --!! E_RECORD_OPEN_TAIL_INVALIDATED
+
+-- STATUS(a51e1bf): FAIL — family/alias not registered, and the compiler ACCEPTS the tail-preserving patch with zero errors: no StableUnderRecChange obligation is generated for the preserved residual row (soundness gap vs §13.2.5 L12985-12997). Positive halves check clean.

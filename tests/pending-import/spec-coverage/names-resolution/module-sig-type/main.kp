@@ -1,0 +1,19 @@
+module main
+
+-- §7.5 source-level module signature type: `moduleSig M` elaborates in
+-- type position to the closed signature type of M's module value; the
+-- reified module value has that type, so it annotates a binding and
+-- serves as an ordinary function parameter type whose projections agree
+-- with qualified access.
+import lib
+
+let m1 : moduleSig lib = module lib
+
+viaAnnotated : Int
+let viaAnnotated = m1.answer
+
+useModule : (m : moduleSig lib) -> Int
+let useModule m = m.answer
+
+applied : Int
+let applied = useModule (module lib)

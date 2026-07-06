@@ -1,0 +1,47 @@
+-- §15.3 (Spec L15155-L15157): structural acceptance is judged AFTER
+-- pattern-match elaboration, transparent local alias expansion, and
+-- transparent projection reduction rooted in the structural parameter.
+-- Opaque helpers do not participate (§15.7: normalization cannot cross an
+-- opaque boundary), so conservative non-certification is expected there.
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+module main
+
+-- POSITIVE (MUST accept): matching through a transparent local alias of
+-- the structural parameter.
+walkAlias : List Int -> Int
+let walkAlias xs =
+    block
+        let tailAlias = xs
+        match tailAlias
+        case Nil -> 0
+        case _ :: rest -> addInt 1 (walkAlias rest)
+
+-- POSITIVE (MUST accept): projection reduction — boxed.payload reduces to
+-- the structural parameter xs, so rest is a subterm of xs.
+walkProj : List Int -> Int
+let walkProj xs =
+    block
+        let boxed = (payload = xs)
+        match boxed.payload
+        case Nil -> 0
+        case _ :: rest -> addInt 1 (walkProj rest)
+
+hide : List Int -> List Int
+opaque let hide xs = xs
+
+-- NEGATIVE: recursion routed through an opaque helper cannot be
+-- structurally certified; the checker must flag it, not trust it.
+walkOpaque : List Int -> Int
+let walkOpaque xs = --!! W_TERMINATION_UNVERIFIED
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (walkOpaque (hide rest))
+
+-- STATUS(a51e1bf): FAIL — the §15.3 normalization pipeline is not
+-- implemented: walkAlias (transparent local alias) and walkProj
+-- (projection reduction) are both W_TERMINATION_UNVERIFIED, giving 3
+-- warnings where the spec requires acceptance of the first two (only the
+-- opaque-helper warning is conforming).

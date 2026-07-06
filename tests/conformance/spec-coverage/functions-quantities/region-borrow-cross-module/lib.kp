@@ -1,0 +1,18 @@
+-- §12.2.3 (L11137-11166): the explicit-region forms `&[s]` are needed
+-- when a borrow relationship crosses an interface boundary such as a
+-- top-level export; the exported result names the region via
+-- `captures (s)` (§12.3.1).
+module lib
+
+data Box : Type =
+    MkBox Int
+
+readBox : (& b : Box) -> Int
+let readBox (& b : Box) : Int =
+    match b
+    case MkBox n -> n
+
+-- POSITIVE: exported borrow relationship under an explicit region.
+makeGetter : forall (s : Region). (&[s] x : Box) -> ((Unit -> Int) captures (s))
+let makeGetter (@0 s : Region) (&[s] x : Box) : ((Unit -> Int) captures (s)) =
+    \() -> readBox x

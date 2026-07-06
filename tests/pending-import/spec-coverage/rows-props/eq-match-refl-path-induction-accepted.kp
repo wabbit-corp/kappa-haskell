@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.4.1 pattern matching on equality (positive): this is the spec's
+-- own transportByMatch example — "a source pattern match on refl MUST
+-- elaborate to equality induction (pathInd) or to the corresponding
+-- subst specialization", identifying the two endpoints in the refl
+-- branch. It requires no K/UIP and must be accepted.
+module main
+
+transportByMatch : forall (@0 a : Type) (@0 c : a -> Type) (@0 x : a) (@0 y : a). (p : x = y) -> c x -> c y
+let transportByMatch p px =
+    match p
+    case refl -> px
+
+-- STATUS(a51e1bf): FAIL — match on refl does not elaborate to path induction (no endpoint refinement); the spec's own transportByMatch example is rejected with E_TYPE_EQUALITY_MISMATCH

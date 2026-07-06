@@ -17,16 +17,16 @@ import std.runtime_diagnostics.(term fiberSnapshotStatus, term fiberSnapshotLabe
 
 main : UIO Unit
 let main = do
-  gate <- newPromise @Unit
-  fiber <- fork (do
+  let gate <- newPromise @Unit
+  let fiber <- fork (do
     setFiberLabel (Some "worker")
     awaitPromise gate
   )
 
   cede
-  fid <- fiberId fiber
-  snapshot <- snapshotRuntime
-  fiberSnapshot <- findFiberSnapshot snapshot fid
+  let fid <- fiberId fiber
+  let snapshot <- snapshotRuntime
+  let fiberSnapshot <- findFiberSnapshot snapshot fid
 
   printlnString ("status:" ++ fiberSnapshotStatus fiberSnapshot)
   printlnString ("label:" ++ fiberSnapshotLabel fiberSnapshot)

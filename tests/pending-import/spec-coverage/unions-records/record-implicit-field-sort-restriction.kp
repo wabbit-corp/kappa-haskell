@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.9 (Spec.md L13385-L13393): the type of an implicit record field
+-- must elaborate to trait evidence, a compile-time type (§11.1.6.1), or
+-- a boolean proposition (coerced per §11.4.2). Ordinary computational
+-- data types such as String CANNOT be implicit record fields (portable
+-- code cannot declare them trait evidence). The spec names no diagnostic
+-- family for the violation, so this pins the error count only.
+module main
+
+-- POSITIVE: boolean proposition (coerces to `... = True`), dependent on
+-- an earlier field
+okProp : (id : Integer, @ok : ltInt 0 this.id) -> Integer
+let okProp r = r.id
+
+-- POSITIVE: compile-time type member
+okType : (@T : Type, value : this.T) -> Integer
+let okType r = 0
+
+-- POSITIVE: trait evidence
+okEvidence : (id : Integer, @tc : Show Integer) -> Integer
+let okEvidence r = r.id
+
+-- NEGATIVE: an ordinary computational type as an implicit field
+bad : (x : Integer, @buf : String) -> Integer
+let bad r = r.x
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts `@buf : String` (0
+-- errors); the §13.2.9 sort restriction on implicit record fields is not
+-- enforced.

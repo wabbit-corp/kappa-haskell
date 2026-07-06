@@ -1,0 +1,33 @@
+-- Spec: §10.2 (L8771-8772): free lowercase identifiers in a GADT-style
+-- constructor signature that are not bound by the data header or explicit
+-- constructor binders are implicitly universalized per §11.3.3. Here 'e'
+-- must elaborate as an implicit (e : Type) binder of the constructor.
+
+module main
+
+--! mode check
+
+data Showcase : Type =
+    Hidden : (item : e) -> (measure : e -> Int) -> Showcase
+
+observe : Showcase -> Int
+let observe s =
+    match s
+    case Hidden { item, measure } -> measure item
+
+-- POSITIVE: 'e' instantiates freely at each application site.
+fromInt : Int
+let fromInt = observe (Hidden { item = 4, measure = \(n : Int) -> n + 1 })
+
+fromString : Int
+let fromString = observe (Hidden { item = "abc", measure = \(_ : String) -> 9 })
+
+--! assertNoErrors
+--! assertEval fromInt 5
+--! assertEval fromString 9
+
+-- STATUS(a51e1bf): FAIL — the compiler does not universalize free lowercase
+-- identifiers in GADT constructor signatures: E_NAME_UNRESOLVED "unresolved
+-- name 'e' (not in scope)" on the Hidden signature (same for multi-letter
+-- lowercase names), while §10.2 L8771-8772 requires implicit
+-- universalization per §11.3.3.

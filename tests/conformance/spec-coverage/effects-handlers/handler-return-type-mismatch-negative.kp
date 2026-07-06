@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §18.1.21: in the return clause `case return x -> e_ret`, x : a and
+-- e_ret : m b. Here the operation clause fixes m b = Eff <[ ]> Int, so a
+-- return clause producing a String is a type error.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        pure a
+
+bad : Eff <[ ]> Int
+let bad =
+    deep handle Ask comp with
+        case return x -> pure "mismatched"
+        case ask _ k -> k 1

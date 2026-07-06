@@ -1,0 +1,27 @@
+-- §7.1 reified-static fallback + §7.1.1: with type X and trait X in one
+-- binding group, a bare X in term position is disambiguated by an
+-- expected type — `Type` matches only the reified alias facet, since the
+-- trait constructor's facet has a function type — and kind-qualified
+-- name expressions (`type X`, `trait X`) select each facet explicitly.
+module main
+
+type X = Int
+
+trait X a =
+    unit : a
+
+viaExpected : Type
+let viaExpected = X
+
+viaSelector : Type
+let viaSelector = type X
+
+traitSelector : Int
+let traitSelector =
+    block
+        let t = trait X
+        9
+
+--! assertNoErrors
+--! assertEval traitSelector 9
+-- STATUS(a51e1bf): FAIL — the binding group keeps only the later trait declaration: bare X at expected type Type still yields the trait facet (E_TYPE_EQUALITY_MISMATCH) and 'type X' reports E_STATIC_OBJECT_KIND_MISMATCH ('X' names a trait)

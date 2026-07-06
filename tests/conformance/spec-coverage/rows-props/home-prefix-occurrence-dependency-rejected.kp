@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.3.1A occurrence validity (negative). dropCtx's two occurrence
+-- prefixes (len : Nat) and (other : Bool) share no field, so home(r) is
+-- the empty prefix, and fields of r may not depend on prefix fields
+-- outside home(r). Instantiating r with (buf : Vec this.len Byte),
+-- whose field depends on len, must therefore be rejected. §11.3.1A
+-- reserves kappa.row.context-mismatch for the no-unique-greatest-prefix
+-- declaration failure and names no family for an invalid weakening at
+-- an instantiation site, so only the rejection itself is asserted.
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+dropCtx : forall (r : RecRow). (len : Nat | r) -> (other : Bool | r) -> Bool
+let dropCtx (@0 r : RecRow) (rec : (len : Nat | r)) (o : (other : Bool | r)) : Bool = True
+
+mk : Sized
+let mk : Sized = (len = 0, buf = VNil)
+
+bad : (o : (other : Bool, buf : Vec 0 Byte)) -> Bool
+let bad = dropCtx mk
+
+-- STATUS(a51e1bf): PASS

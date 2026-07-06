@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §14.1.2 (Spec.md L14210-L14224): `Eq` is reflective decidable
+-- observational identity — with a proof-carrying `eqSound` member, boolean
+-- equality reflects into propositional equality. `Equiv` is a
+-- NON-reflecting boolean equivalence: "The compiler MUST NOT derive
+-- `x = y` from `(x ~= y) = True`". The positive half shows reflection is
+-- available exactly when it is carried by a proof member; the negative
+-- half shows Equiv evidence grants no such derivation.
+module main
+
+-- A proof-carrying equality trait in the §14.1.1 Eq mold.
+trait PropEq (a : Type) =
+    peq : a -> a -> Bool
+    peqSound : (x : a) -> (y : a) -> (p : (=) (peq x y) True) -> (=) x y
+
+-- POSITIVE: reflection through the required proof member typechecks.
+reflects : (@d : PropEq Int) -> (x : Int) -> (y : Int) -> (p : (=) (d.peq x y) True) -> (=) x y
+let reflects (@d : PropEq Int) x y p = d.peqSound x y p
+
+-- NEGATIVE: prelude Equiv carries only the boolean (~=); a proof of
+-- (x ~= y) = True MUST NOT yield x = y. `refl` checks at x = x only, and
+-- no compiler rule may close the gap from the Equiv hypothesis.
+noReflect : (x : Int) -> (y : Int) -> (p : (=) (x ~= y) True) -> (=) x y
+let noReflect x y p = refl --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

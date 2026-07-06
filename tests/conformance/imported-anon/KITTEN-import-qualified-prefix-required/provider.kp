@@ -1,0 +1,5 @@
+-- Spec: modules.imports (§8.3), modules.names.dotted_name_resolution_dotted (§7.3).
+module provider
+
+exportedA : Int
+let exportedA = 1

@@ -1,0 +1,22 @@
+module main
+
+-- §9.1: `public`, `private`, and `opaque` are top-level only — block
+-- scoped declarations are always lexically private and transparent, so
+-- `private let` inside `block` is rejected (parse-level). `public` and
+-- `private` are also mutually exclusive on one declaration.
+
+topOk : Int
+private let topOk = 1
+
+blockBad : Int
+let blockBad =
+    block
+        private let w = 1 --!! E_UNEXPECTED_INDENTATION
+        w
+
+public private let both : Int = 2 --!! E_RECOVERY_DECLARATION_SKIPPED
+
+--! mode check
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+--! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED
+-- STATUS(a51e1bf): PASS

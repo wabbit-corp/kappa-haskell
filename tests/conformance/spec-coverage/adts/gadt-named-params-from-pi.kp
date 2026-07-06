@@ -1,0 +1,37 @@
+-- Spec: §10.1 (L8342-8360), §10.2 (L8745-8748). Explicit binders in a GADT
+-- constructor signature are named parameters: named application and named
+-- patterns work directly from the Pi binders, equivalently to positional
+-- form; no separate (name : Type) declaration in the data header is needed.
+
+module main
+
+--! mode check
+
+data Box (a : Type) : Type =
+    MkBox : (value : a) -> (count : Int) -> Box a
+
+-- POSITIVE: named application straight from the Pi binders.
+byName : Box Int
+let byName = MkBox { value = 7, count = 2 }
+
+-- POSITIVE: positional application is equivalent.
+byPos : Box Int
+let byPos = MkBox 7 2
+
+-- POSITIVE: named pattern with punning, names from the Pi binders.
+count : forall (a : Type). Box a -> Int
+let count b =
+    match b
+    case MkBox { count } -> count
+
+named : Int
+let named = count byName
+
+positional : Int
+let positional = count byPos
+
+--! assertNoErrors
+--! assertEval named 2
+--! assertEval positional 2
+
+-- STATUS(a51e1bf): PASS

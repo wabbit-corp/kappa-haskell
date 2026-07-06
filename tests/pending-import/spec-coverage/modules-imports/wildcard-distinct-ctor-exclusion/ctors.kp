@@ -1,0 +1,14 @@
+module ctors
+
+-- §8.3.1: `type Color(..)` imports the type together with all of its
+-- constructors, including distinct-spelling ones.
+import clib.(type Color(..))
+
+pick : Color
+let pick = Red
+
+flip : Color -> Color
+let flip c =
+    match c
+      case Red -> Green
+      case Green -> Red

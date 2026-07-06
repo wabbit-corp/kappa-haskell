@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.1.1 (Spec.md L12247-L12253): VarRow equality is modulo permutation
+-- by canonical MemberId. A union type spelled with its members in a
+-- different order is the SAME type after elaboration: values, function
+-- arguments/results, and matches are interchangeable with no coercion.
+module main
+
+type AB = (| Integer | String |)
+type BA = (| String | Integer |)
+
+-- identity across the two spellings, both directions
+toBA : AB -> BA
+let toBA u = u
+
+toAB : BA -> AB
+let toAB u = u
+
+describe : AB -> String
+let describe u =
+    match u
+    case (| n : Integer |) -> "int"
+    case (| s : String |) -> "str"
+
+-- a BA value flows into an AB-consuming match unchanged
+viaBA : BA -> String
+let viaBA u = describe u
+
+-- three members: an arbitrary permutation is still the same row
+three : (| Bool | Integer | String |) -> (| String | Bool | Integer |)
+let three u = u
+
+-- STATUS(a51e1bf): PASS

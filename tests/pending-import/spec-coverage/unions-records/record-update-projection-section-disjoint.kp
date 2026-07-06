@@ -1,0 +1,47 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 2
+@PrivateByDefault module main
+
+-- §13.2.5 (Spec.md L12817-L12843, L13043): a record patch MAY contain
+-- more than one projection-section update; two of them (or one plus an
+-- ordinary update path) must have STATICALLY DISJOINT write footprints
+-- (checked per §§12.4.2, 16.1.5, 16.1.6). Disjoint pairs are accepted;
+-- overlapping pairs are rejected. The spec names no dedicated family for
+-- the overlap rejection, so this pins error count and placement only.
+
+type Pair = (left : Integer, right : Integer)
+
+projection leftLens (place this : Pair) : Integer =
+    get -> this.left
+
+    set (v : Integer) ->
+        this.{ left = v }
+
+projection rightLens (place this : Pair) : Integer =
+    get -> this.right
+
+    set (v : Integer) ->
+        this.{ right = v }
+
+-- POSITIVE: a single projection-section update
+okSingle : Pair -> Pair
+let okSingle (p : Pair) : Pair = p.{ (.leftLens) = 1 }
+
+-- POSITIVE: two projection-section updates with disjoint footprints
+okDisjoint : Pair -> Pair
+let okDisjoint (p : Pair) : Pair = p.{ (.leftLens) = 1, (.rightLens) = 2 }
+
+-- NEGATIVE: same footprint twice
+badSame : Pair -> Pair
+let badSame (p : Pair) : Pair = p.{ (.leftLens) = 1, (.leftLens) = 2 }
+
+-- NEGATIVE: projection-section update overlapping an ordinary path
+badMixed : Pair -> Pair
+let badMixed (p : Pair) : Pair = p.{ (.leftLens) = 1, left = 2 }
+
+-- STATUS(a51e1bf): FAIL — the compiler restricts a projection-section
+-- update to be the ONLY item of its patch
+-- (E_PROJECTION_UPDATE_TARGET_UNSUPPORTED), so the spec-legal okDisjoint
+-- is rejected and the two overlap negatives are rejected for the wrong
+-- reason (5 errors total instead of 2).

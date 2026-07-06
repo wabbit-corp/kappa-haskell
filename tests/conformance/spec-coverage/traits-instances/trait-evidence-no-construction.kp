@@ -1,0 +1,45 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- §14.1.1 (Spec.md L14128-L14163): trait evidence is an abstract record with
+-- compiler-private introduction. Source may project members, but the listed
+-- construction forms are rejected: `__MkTr { ... }` (compiler-private
+-- constructor), `Tr.{ ... }` (no trait record literal), `d.{ m = ... }`
+-- (no trait evidence update). §14.1.1 mandates rejection without fixing a
+-- diagnostic family; the codes below pin today's conformant rejections.
+module main
+
+trait Named (a : Type) =
+    nameOf : a -> String
+
+instance Named Int =
+    let nameOf n = "int"
+
+-- POSITIVE: summon + member projection are the well-formed evidence uses.
+good : String
+let good =
+    let
+        d = summon (Named Int)
+    in
+        d.nameOf 3
+
+-- NEGATIVE: the elaborated constructor is compiler-private and has no
+-- source-visible name.
+bad1 : Named Int
+let bad1 = __MkNamed { } --!! E_NAME_UNRESOLVED
+
+-- NEGATIVE: no trait record literal construction.
+bad2 : Named Int
+let bad2 = Named.{ nameOf = \x -> "lit" } --!! E_TYPE_EQUALITY_MISMATCH
+
+-- NEGATIVE: no trait evidence update.
+bad3 : Named Int
+let bad3 =
+    let
+        d = summon (Named Int)
+    in
+        d.{ nameOf = \x -> "other" } --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a51e1bf): PASS

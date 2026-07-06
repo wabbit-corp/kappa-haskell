@@ -1,0 +1,5 @@
+module badmain
+
+-- §8.4: the original spelling `Rose` was not re-exported by mid's
+-- aliased export item.
+import mid.(Rose) --!! E_IMPORT_ITEM_NOT_FOUND

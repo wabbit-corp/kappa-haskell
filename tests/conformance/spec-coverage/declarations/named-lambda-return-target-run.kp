@@ -1,0 +1,25 @@
+module main
+
+-- §9.1 (L7486-L7488) + §18.5: `let name = \binders -> body` counts as a
+-- named function named `name` for bare-`return` target resolution, so
+-- `return` inside the do-block exits `classify` early with `pure e`.
+
+classify : Int -> IO Int
+let classify = \x ->
+    do
+        if x > 0 then
+            return (x + 100)
+        pure 0
+
+main : IO Unit
+let main =
+    do
+        let a <- classify 1
+        let b <- classify (0 - 5)
+        printInt a
+        printInt b
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "101\n0\n"
+-- STATUS(a51e1bf): PASS

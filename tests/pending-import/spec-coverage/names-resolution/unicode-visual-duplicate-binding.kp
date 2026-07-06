@@ -1,0 +1,17 @@
+-- §7.1 binding-group formation: two declarations of the same kind whose
+-- strictNameKey values differ but whose strongVisualNameKey values are
+-- equal MUST be rejected with E_UNICODE_VISUAL_DUPLICATE_BINDING.
+-- §5.1A pins A (ASCII), Α (Greek), А (Cyrillic) in one visual class; the
+-- spec's own example marks the second and third `let` as the duplicates.
+module main
+
+let A = 1
+let `Α` = 2 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+let `А` = 3 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
+
+use : Int
+let use = A
+
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_UNICODE_VISUAL_DUPLICATE_BINDING, E_UNICODE_VISUAL_DUPLICATE_BINDING
+-- STATUS(a51e1bf): FAIL — compiler accepts all three same-kind declarations (0 errors, only W_UNICODE_CONFUSABLE_IDENTIFIER); visual-duplicate detection is unimplemented

@@ -1,0 +1,46 @@
+--! mode run
+--! assertNoErrors
+--! assertType rsec Int -> Int
+--! assertType lsec Int -> Int
+--! assertType negd Int
+--! assertType pre Int
+--! assertStdout "25\n20\n-5\n105\n"
+
+-- §5.5.1.1 exception for prefixes and suffixes: `(op e)` is unary
+-- prefix application when a matching `prefix` fixity is in scope
+-- (`(- 5)` and the prefix-only `(%% 5)` have type Int, not Int -> Int);
+-- otherwise, with a matching infix fixity in scope, it is a right
+-- section (`(<+> 5)` : Int -> Int). Dually `(e op)` with only an infix
+-- fixity is a left section. `<+>` is non-commutative (2x + y) so the
+-- two sections are distinguishable.
+
+module main
+
+infix left 60 (<+>)
+(<+>) : Int -> Int -> Int
+let (<+>) x y = addInt (addInt x x) y
+
+prefix 75 (%%)
+(%%) : Int -> Int
+let (%%) x = addInt x 100
+
+rsec : Int -> Int
+let rsec = (<+> 5)
+
+lsec : Int -> Int
+let lsec = (5 <+>)
+
+negd : Int
+let negd = (- 5)
+
+pre : Int
+let pre = (%% 5)
+
+main : UIO Unit
+let main = do
+    println (rsec 10)
+    println (lsec 10)
+    println negd
+    println pre
+
+-- STATUS(a51e1bf): PASS

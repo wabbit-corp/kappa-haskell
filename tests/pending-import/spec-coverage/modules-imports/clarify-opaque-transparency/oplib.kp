@@ -1,0 +1,7 @@
+module oplib
+
+-- §8.5.2: opaque definitions do not δ-unfold outside this module.
+secret : Int
+opaque let secret = 7
+
+opaque type Id a = a

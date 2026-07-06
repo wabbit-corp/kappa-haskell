@@ -1,0 +1,40 @@
+--! mode check
+--! assertNoErrors
+--! assertDeclKinds fixity, signature, let, fixity, signature, let, fixity, signature, let, signature, let, signature, let, signature, let
+--! assertEval tight 306
+--! assertEval loose 106
+--! assertEval post 6
+
+-- §5.5.2: `prefix N (op)` and `postfix N (op)` fixity declarations bind
+-- a precedence level to one operator token, and the level participates
+-- in operator-chain grouping (§5.5.3): a prefix op ABOVE `*` (70) binds
+-- tighter than `*`; a prefix op BELOW `*` takes the whole product; a
+-- postfix op at 90 binds tighter than `+` (60).
+
+module main
+
+prefix 80 (%%)
+(%%) : Int -> Int
+let (%%) x = addInt x 100
+
+prefix 50 (%%%)
+(%%%) : Int -> Int
+let (%%%) x = addInt x 100
+
+postfix 90 (??)
+(??) : Int -> Int
+let (??) x = addInt x 3
+
+-- prefix 80 > 70: (%% 2) * 3 = 102 * 3
+tight : Int
+let tight = %% 2 * 3
+
+-- prefix 50 < 70: %%% (2 * 3) = 106
+loose : Int
+let loose = %%% 2 * 3
+
+-- postfix 90 > 60: 1 + (2 ??) = 6
+post : Int
+let post = 1 + 2 ??
+
+-- STATUS(a51e1bf): PASS

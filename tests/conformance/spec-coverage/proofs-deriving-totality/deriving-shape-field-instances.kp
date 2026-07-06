@@ -1,0 +1,24 @@
+-- §14.5 (Spec L14985-L14988) / §22.4: a Phase 0 body macro may ask whether
+-- field instances for a trait constructor are available at the splice site
+-- and MUST fail with a structured diagnostic when they are not — here the
+-- function-typed field 'fn' has no Eq instance.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+module main
+
+import std.deriving.shape.*
+
+data Blob : Type =
+    MkBlob (fn : Int -> Int) (tag : Int)
+
+eqBody : forall (@0 a : Type). Syntax Type -> Syntax a -> Syntax a -> Elab (Syntax Bool)
+let eqBody @a target left right = do
+    let shape <- inspectAdt @a target
+    requireRuntimeFieldInstances @Eq @a shape
+    matchAdt2 shape left right (\ctor fieldPairs -> boolSyntax True) (\l r -> boolSyntax False)
+
+instance Eq Blob =
+    let (==) l r = $(eqBody @Blob '{ type Blob } '{ l } '{ r }) --!! KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE
+
+-- STATUS(a51e1bf): PASS

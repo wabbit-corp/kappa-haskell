@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 4
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §13.2.11: witness assignments of the explicit-witness form are
+-- "checked sequentially against the existential binder telescope" — an
+-- out-of-order assignment (x before the `a` it depends on) cannot
+-- check. And in `open e as exists (...)`, "the number of witness
+-- binders in the open form must equal the number of existential binders
+-- in the type of e".
+module main
+
+-- NEGATIVE: out-of-order witness assignments break sequential checking
+badOrder : exists (a : Type) (x : a). Option a
+let badOrder = seal exists (x = 3, a = Int). Some 3 as exists (a : Type) (x : a). Option a
+
+goodPkg : exists (a : Type) (b : Type). Option a
+let goodPkg = seal exists (a = Int, b = Bool). Some 1 as exists (a : Type) (b : Type). Option a
+
+-- NEGATIVE: open binds one witness, the type has two
+badCount : Int
+let badCount =
+    open goodPkg as exists (a). x in
+        match x
+        case Option.None -> 0
+        case Option.Some _ -> 1
+
+-- STATUS(a51e1bf): PASS

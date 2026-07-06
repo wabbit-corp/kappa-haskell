@@ -1,0 +1,37 @@
+-- §17.2.3 (Spec L18362-L18369): in an or-pattern each alternative must
+-- bind the same names with definitionally equal types AND identical
+-- quantities. Constructor fields declare the binder quantities: an
+-- omitted field quantity defaults to ω (Spec L12481), so `C (1 r : a)`
+-- vs `D (r : a)` bind r at different quantities and the or-pattern is
+-- ill-formed.
+
+--! mode check
+
+data Even (a : Type) : Type =
+    A (1 r : a)
+    B (1 r : a)
+
+data Uneven (a : Type) : Type =
+    C (1 r : a)
+    D (r : a)
+
+-- POSITIVE: both alternatives bind r at quantity 1; the shared body
+-- moves r to the result exactly once.
+okOr : (1 e : Even a) -> a
+let okOr (1 e : Even a) : a =
+    match e
+    case A r | B r -> r
+
+-- NEGATIVE: C binds r at quantity 1, D at unrestricted quantity; the
+-- quantities differ across alternatives, so the or-pattern is ill-formed.
+badOr : (1 f : Uneven a) -> a
+let badOr (1 f : Uneven a) : a =
+    match f
+    case C r | D r -> r
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch quantit|or-pattern|alternativ
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts badOr with 0 errors: the
+-- §17.2.3 requirement that corresponding or-pattern binders carry
+-- identical quantities is not checked (okOr correctly passes).

@@ -1,0 +1,20 @@
+-- §3.1.1A: termination diagnostics MUST include the recursive
+-- declaration site and every failing recursive call site considered;
+-- §3.1.18: the diagnostic includes the recursive SCC and each call site.
+-- A mutually recursive pair that cannot be verified must relate both the
+-- declaration and the recursive call, not just a bare primary span.
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 2
+--! assertDiagnostic warning W_TERMINATION_UNVERIFIED
+--! assertDiagnosticRelated warning kappa.termination.failure declaration-site
+--! assertDiagnosticRelated warning kappa.termination.failure call-site
+module main
+
+ping : Int -> Int
+let ping n = pong n
+
+pong : Int -> Int
+let pong n = ping n
+
+-- STATUS(a51e1bf): FAIL — the termination diagnostic carries no related origins (no declaration-site or call-site for the SCC)

@@ -140,11 +140,11 @@ data KItem
 The exact field names can change during implementation, but the key rule cannot:
 the backend must be able to distinguish "checker proved builtin IO ref" from
 "some term whose shape currently resembles readRef/writeRef." If Core churn is
-too high, a side table keyed by `PathScheme` is acceptable only if it is
-fail-closed: keys must identify individual action occurrences, transforms must
-re-key or invalidate entries, stale or missing entries must reject scalarization,
-and validator/cross-check paths must consume the same table as both native
-backends.
+too high, a side table is acceptable only if it is keyed by stable action
+identities rather than structural child positions: keys must identify individual
+action occurrences, transforms must re-key or invalidate entries, stale or
+missing entries must reject scalarization, and validator/cross-check paths must
+consume the same table as both native backends.
 
 The witness is emitted only when the checker has selected the builtin
 `MonadRef (IO e)` evidence. For user monads, STM, abstract evidence, wrong

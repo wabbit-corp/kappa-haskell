@@ -1,0 +1,39 @@
+module main
+
+-- §4.4: "These forms do not change runtime semantics." The same fib body is
+-- declared plainly and under each of the three termination-assertion
+-- escapes; all four must evaluate to the same value. The three escape uses
+-- are recorded in the §4.7 audit ledger in source order.
+fibPlain : Integer -> Integer
+let fibPlain n = if leInt n 1 then n else addInt (fibPlain (subInt n 1)) (fibPlain (subInt n 2))
+
+fibTerm : Integer -> Integer
+assertTerminates let fibTerm n = if leInt n 1 then n else addInt (fibTerm (subInt n 1)) (fibTerm (subInt n 2))
+
+fibRed : Integer -> Integer
+assertReducible let fibRed n = if leInt n 1 then n else addInt (fibRed (subInt n 1)) (fibRed (subInt n 2))
+
+fibTot : Integer -> Integer
+assertTotal let fibTot n = if leInt n 1 then n else addInt (fibTot (subInt n 1)) (fibTot (subInt n 2))
+
+rPlain : Integer
+let rPlain = fibPlain 10
+
+rTerm : Integer
+let rTerm = fibTerm 10
+
+rRed : Integer
+let rRed = fibRed 10
+
+rTot : Integer
+let rTot = fibTot 10
+
+--! allow_assert_terminates
+--! allow_assert_reducible
+--! assertNoErrors
+--! assertEval rPlain 55
+--! assertEval rTerm 55
+--! assertEval rRed 55
+--! assertEval rTot 55
+--! assertAuditLedger assertTerminates assertReducible assertTotal
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7.2 steps 3 and 6 (L16562-16575, L16587-16588): when the selected
+-- implicit binder demands an intrinsic compile-time classifier (Quantity,
+-- Region, ...), the payload elaborates in static-object position against
+-- it. Quantity literals 1/ω and a region variable are accepted; an
+-- ordinary term is rejected with no reclassification retry.
+module main
+
+constQ : (@0 q : Quantity) -> Int -> Int
+let constQ (@0 q : Quantity) (x : Int) : Int = x
+
+-- POSITIVE: quantity-literal payloads, bare and parenthesized.
+useOne : Int
+let useOne = constQ @1 5
+
+useOmega : Int
+let useOmega = constQ @ω 5
+
+useParen : Int
+let useParen = constQ @(1) 5
+
+readAt : forall (s : Region). (&[s] x : Int) -> Int
+let readAt (@0 s : Region) (&[s] x : Int) : Int = x
+
+-- POSITIVE: region-variable payload in static-object position.
+regionCaller : forall (t : Region). (&[t] y : Int) -> Int
+let regionCaller (@0 t : Region) (&[t] y : Int) : Int = readAt @t y
+
+fortyTwo : Int
+let fortyTwo = 42
+
+-- NEGATIVE: an ordinary term where Quantity is demanded fails
+-- classification; the implementation must not retry by token shape.
+badTerm : Int
+let badTerm = constQ @(fortyTwo) 5 --!! kappa.application.explicit-implicit-classifier

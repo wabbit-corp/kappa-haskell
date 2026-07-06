@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertType custom2 Int -> Int -> Int
+--! assertStdout "42\n3\n-9\n7\n"
+
+-- §5.5.1 operator function references: `(infix op)` denotes the curried
+-- binary function of an in-scope infix fixity, `(prefix op)` the unary
+-- function of an in-scope prefix fixity, `(postfix op)` the unary
+-- function of an in-scope postfix fixity. For `-` (both prelude
+-- fixities in scope, §28.2.3) `(prefix -)` is negation and `(infix -)`
+-- is subtraction.
+
+module main
+
+infix left 60 (<+>)
+(<+>) : Int -> Int -> Int
+let (<+>) x y = addInt x y
+
+postfix 90 (?)
+(?) : Int -> Int
+let (?) x = addInt x 1
+
+custom2 : Int -> Int -> Int
+let custom2 = (infix <+>)
+
+neg1 : Int -> Int
+let neg1 = (prefix -)
+
+post1 : Int -> Int
+let post1 = (postfix ?)
+
+main : UIO Unit
+let main = do
+    println (custom2 20 22)
+    println ((infix -) 5 2)
+    println (neg1 9)
+    println (post1 6)
+
+-- STATUS(a51e1bf): PASS

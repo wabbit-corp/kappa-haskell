@@ -1,0 +1,39 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_EFFECT_LABEL_NOT_IN_ROW
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+
+-- §3.2.9 (Spec.md L3043-3061): an effect-row failure MUST be diagnosed in
+-- family kappa.effect.row-mismatch, including the missing effect label and
+-- the origin of the handler that demanded it. Combination with §18.1.15
+-- effect labels: distinct labels of one effect are handled independently,
+-- so handling label `other` cannot discharge a row containing only the
+-- default `Counter` label.
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label other : Counter
+
+comp : Eff <[Counter : Counter]> Int
+let comp = do
+    let x <- Counter.tick ()
+    pure x
+
+-- POSITIVE: handling the label that is present in the row.
+let okHandled =
+    deep handle Counter comp with
+        case return x -> pure x
+        case tick u k -> k 7
+
+ok : Int
+let ok = runPure okHandled
+
+-- NEGATIVE: `other` does not occur in comp's effect row.
+let badHandled =
+    deep handle other comp with --!! E_EFFECT_LABEL_NOT_IN_ROW
+        case return x -> pure x
+        case tick u k -> k 7
+
+-- STATUS(a51e1bf): PASS

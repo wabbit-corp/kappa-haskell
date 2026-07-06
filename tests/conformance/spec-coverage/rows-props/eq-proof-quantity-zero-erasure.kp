@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_ERASED_RUNTIME_USE
+
+-- §11.4.1 (L10182-86): the equality proof is NOT quantity-0 by the
+-- definition of equality itself; a 0-annotated proof binder is accepted
+-- exactly when the quantity checker can justify that the proof is not
+-- required by runtime-relevant computation. 'sink' and 'passAlong'
+-- (erased proof unused / forwarded into another erased position) must
+-- be accepted; 'keep' returns the erased proof as the runtime-relevant
+-- result and must be rejected.
+module main
+
+sink : forall (@0 a : Type) (@0 x : a) (@0 y : a). (0 q : x = y) -> Int
+let sink q = 7
+
+passAlong : forall (@0 a : Type) (@0 x : a) (@0 y : a). (0 p : x = y) -> Int
+let passAlong p = sink p
+
+keep : forall (@0 a : Type) (@0 x : a) (@0 y : a). (0 p : x = y) -> x = y
+let keep p = p --!! E_QTT_ERASED_RUNTIME_USE
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,29 @@
+-- §17.1.10 (Spec L18147-L18177): positive lower-bound obligations are
+-- checked branchwise through a match: the usage interval of x is the join
+-- over reachable branches, so a >=1 parameter must be demanded in every
+-- reachable branch. Both functions mirror the spec's own examples.
+
+--! mode check
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+-- POSITIVE (spec example, L18161): every reachable branch demands x.
+ok : (>=1 x : Int) -> MyOption Int -> Int
+let ok (>=1 x : Int) (o : MyOption Int) : Int =
+    match o
+    case MySome y -> x + y
+    case MyNone -> x
+
+-- NEGATIVE (spec example, L18170): the MyNone branch does not demand x.
+bad : (>=1 x : Int) -> MyOption Int -> Int
+let bad (>=1 x : Int) (o : MyOption Int) : Int =
+    match o
+    case MySome y -> x + y
+    case MyNone -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- STATUS(a51e1bf): PASS

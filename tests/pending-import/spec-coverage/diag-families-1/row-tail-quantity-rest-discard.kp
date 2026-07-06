@@ -1,0 +1,32 @@
+--! mode check
+--! assertDiagnostic error E_ROW_TAIL_QUANTITY_UNSATISFIED
+--! assertDiagnosticFamily error kappa.row.tail-quantity
+
+-- §17.x record patterns (Spec.md L18226-18237): a bare record-rest discard
+-- `..` of an OWNED open-record scrutinee requires `RecTailSatisfies r 0` —
+-- the omitted abstract tail may contain a linear value. §3.2.9 (L3111-3142)
+-- mandates family kappa.row.tail-quantity and portable alias
+-- E_ROW_TAIL_QUANTITY_UNSATISFIED, with the discard operation and the
+-- generated obligation in the payload.
+module main
+
+type Full : Type = (name : String, age : Int)
+
+-- POSITIVE: discarding the rest of a closed record; every omitted field is
+-- structurally droppable, no abstract tail is forgotten.
+firstOnly : Full -> String
+let firstOnly (r : Full) : String =
+    block
+        let (name = n, ..) = r
+        n
+
+-- NEGATIVE: the scrutinee is owned (quantity 1) and its residual tail `r`
+-- is abstract; discarding it via `..` demands RecTailSatisfies r 0, which
+-- no assumption provides.
+takeName : forall (r : RecRow). (1 rec : (name : String | r)) -> String
+let takeName (@0 r : RecRow) (rec : (name : String | r)) : String =
+    block
+        let (name = n, ..) = rec --!! E_ROW_TAIL_QUANTITY_UNSATISFIED
+        n
+
+-- STATUS(a51e1bf): FAIL — E_ROW_TAIL_QUANTITY_UNSATISFIED/kappa.row.tail-quantity are registered but never produced here: the open-record '..' discard mis-elaborates to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH), no RecTailSatisfies r 0 obligation is generated. Closed-record positive checks clean.

@@ -1,0 +1,20 @@
+module main
+
+-- §9.1.1 (L7686): a `place` binder is always explicit and may not be
+-- combined with `@`, `inout`, or an explicit quantity annotation. Each
+-- projection below must therefore be rejected.
+
+type Cell = (value : Int)
+
+projection quantityPlace (1 place this : Cell) : Int =
+    yield this.value
+
+projection implicitPlace (@place this : Cell) : Int =
+    yield this.value
+
+projection inoutPlace (inout place this : Cell) : Int =
+    yield this.value
+
+--! mode check
+--! assertErrorCount 3
+-- STATUS(a51e1bf): FAIL — compiler accepts quantity/@/inout on place binders (0 errors); §9.1.1 place-binder restriction not enforced

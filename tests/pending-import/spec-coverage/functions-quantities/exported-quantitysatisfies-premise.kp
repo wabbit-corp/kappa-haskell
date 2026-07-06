@@ -1,0 +1,28 @@
+-- §12.2 (L10717-10744), §12.2.3 (L11095-11116): a generated
+-- `QuantitySatisfies` obligation must be solved or explicitly represented
+-- in the declaration's type; an exported declaration whose body requires a
+-- premise the signature lacks MUST fail, and the compiler MUST NOT repair
+-- the exported signature by inventing a new public premise.
+module main
+
+-- POSITIVE (§12.2.2 example, L10736-10752): the explicit premise
+-- `QuantitySatisfies q 1` licenses demanding both binders exactly once.
+apply :
+    forall (q : Quantity) (a b : Type).
+    QuantitySatisfies q 1 =>
+    (q fn : a -> b) -> (q x : a) -> b
+let apply fn x = fn x
+
+-- NEGATIVE (§12.2.3): same body, exported signature omits the premise.
+-- The body generates `QuantitySatisfies q 1`, which is unsolvable for
+-- arbitrary symbolic `q` (it may be `0`, §12.2.1 L10852), so compilation
+-- fails instead of silently adding the premise to the interface.
+badExported :
+    forall (q : Quantity) (a : Type).
+    (q x : a) -> a
+let badExported x = x
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch QuantitySatisfies
+-- STATUS(a51e1bf): FAIL — quantity polymorphism surface is unimplemented: `QuantitySatisfies` is not a resolvable name (E_NAME_UNRESOLVED) and a quantity-variable binder `(q x : a)` misparses as an application (E_TYPE_EQUALITY_MISMATCH); 4 errors instead of the single spec-required missing-premise rejection of badExported.

@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.4/§11.3.1: Label and EffLabel are intrinsic compile-time types (each
+-- inhabits Type0, §11.1) and are first-class in record fields and binders; a
+-- bound Label variable may be used where a row-trait argument expects a
+-- label.
+module main
+
+-- POSITIVE: record fields of the intrinsic label classifiers.
+labelRecord : Type0
+let labelRecord = (l : Label, el : EffLabel)
+
+-- POSITIVE: quantifying over a Label and using it in a LacksRec obligation.
+readAt : forall (r : RecRow) (lab : Label).
+    LacksRec r lab =>
+    (name : String | r) -> String
+let readAt (@0 r : RecRow) (@0 lab : Label) (@_ : LacksRec r lab) (rec : (name : String | r)) : String =
+    rec.name
+
+-- STATUS(a51e1bf): FAIL — 'Label' is not implemented (E_NAME_UNRESOLVED x3); EffLabel resolves, Label does not

@@ -1,0 +1,30 @@
+-- §17.2.1 typed patterns + §17.2.2 (Spec L18321-L18355): names bound by a
+-- pattern (including inside a typed pattern (p : T)) are in scope in the
+-- guard, the branch body, and subsequent generator clauses.
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n0\n1\n2\n"
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+-- typed pattern binder v: referenced in the guard and again in the body
+describe : MyOption Integer -> Integer
+let describe o =
+    match o
+    case MySome (v : Integer) if ltInt 2 v -> v
+    case MySome v -> 0
+    case MyNone -> 0
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (describe (MySome 5)))
+    printlnString (showInt (describe (MySome 1)))
+    -- generator pattern binder: in scope in the nested clause and body
+    for (x : Integer) in 1 :: 2 :: Nil do
+        for y in x :: Nil do
+            printlnString (showInt y)
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,15 @@
+module orderab
+
+-- §8.3.7: reordering unrelated imports MUST NOT change elaboration,
+-- diagnostics (other than presentation order), or accept/reject status.
+-- This module and orderba differ ONLY in import source order; both must
+-- be accepted, with the local `shared` shadowing both imported
+-- candidates (§8.3.1A).
+import liba.(onlyA, shared)
+import libb.(onlyB, shared)
+
+shared : Int
+let shared = 9
+
+totalAB : Int
+let totalAB = onlyA + onlyB + shared

@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+--! assertType floorOk Int -> Int
+--! assertEval applied 10
+
+-- §5.5.1.1 precedence rule for section disambiguation: the operand of a
+-- right section `(op e)` is parsed with a precedence floor of
+-- prec(op) + 1. `*` (infix left 70, §28.2.3) sits above the floor of
+-- `+` (60 + 1), so `(+ 2 * 3)` is the section \__x -> __x + (2 * 3).
+
+module main
+
+floorOk : Int -> Int
+let floorOk = (+ 2 * 3)
+
+applied : Int
+let applied = floorOk 4
+
+-- STATUS(a51e1bf): PASS

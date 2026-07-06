@@ -1,0 +1,30 @@
+--! mode check
+--! assertDiagnosticMatch StableUnderRecChange
+
+-- §11.3.1 / §11.3.1A / §13.2.5 (negative): home(r) = (len : Nat), and
+-- "changing len while preserving r requires StableUnderRecChange r len"
+-- (§11.3.1A example). bump has no such premise and r is abstract, so
+-- the obligation is unsolvable and the declaration must be rejected,
+-- with the structured diagnostic recording the actual trait obligation
+-- (§11.3.1). Accepting it is unsound: 'stale' below carries
+-- buf = VNil : Vec 0 Byte inside a record claiming buf : Vec 2 Byte.
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+bump : forall (r : RecRow). (len : Nat | r) -> (len : Nat | r)
+let bump (@0 r : RecRow) (rec : (len : Nat | r)) : (len : Nat | r) = rec.{ len = 2 }
+
+mk : Sized
+let mk : Sized = (len = 0, buf = VNil)
+
+stale : Sized
+let stale = bump mk
+
+-- STATUS(a51e1bf): FAIL — no diagnostic at all: the home-prefix-field update is accepted without StableUnderRecChange evidence and 'stale' carries buf : Vec 0 Byte at type Vec 2 Byte (soundness hole)

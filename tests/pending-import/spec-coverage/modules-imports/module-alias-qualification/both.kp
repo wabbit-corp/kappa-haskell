@@ -1,0 +1,12 @@
+module both
+
+-- §8.3: adding a separate module-only import alongside the selective
+-- import enables BOTH qualified access and the unqualified binding.
+import qlib
+import qlib.(val)
+
+okQual : Int
+let okQual = qlib.val
+
+okUnqual : Int
+let okUnqual = val

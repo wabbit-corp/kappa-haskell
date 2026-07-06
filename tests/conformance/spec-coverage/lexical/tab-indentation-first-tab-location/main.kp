@@ -1,0 +1,12 @@
+@PrivateByDefault module main
+
+-- Section 5.4: indentation is measured in spaces; tabs in indentation are a
+-- compile-time error, implementations MUST NOT silently convert tabs to
+-- spaces, and the diagnostic MUST point at the FIRST tab character
+-- (line 10, column 1 below).
+
+f : Bool -> Bool
+let f b =
+	if b then False else True
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,34 @@
+-- §17.1.3 (Spec L17840-L17844) + §17.1.1: discrimination of an erased
+-- (quantity 0) scrutinee is permitted when definitional equality /
+-- family-argument unification proves the tested constructor is the only
+-- possible one. `Natural Z` forces `Zero`; `Natural (S n)` forces `Succ`.
+
+--! mode check
+--! assertNoErrors
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- The index Z forces the Zero constructor, so no runtime discrimination
+-- of the erased scrutinee is needed; the single-case match is exhaustive
+-- (the Succ case is unreachable at index Z, §17.1.1).
+zeroCase : (0 v : Natural Z) -> Int
+let zeroCase v =
+    match v
+    case Zero -> 0
+
+-- The index (S n) forces the Succ constructor. The bound field `p` is
+-- itself only available erased and is not used at runtime.
+succCase : (0 v : Natural (S n)) -> Int
+let succCase v =
+    match v
+    case Succ p -> 1
+
+-- STATUS(a51e1bf): FAIL — compiler rejects both matches with
+-- E_QTT_ERASED_RUNTIME_USE; it does not implement the §17.1.3 exception
+-- for constructors forced by family-argument unification.

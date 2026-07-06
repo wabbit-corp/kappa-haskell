@@ -1,0 +1,42 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "fair:1\nspin-interrupted\n"
+
+-- §18.1.5: weak fairness — a continuously runnable cede-looping fiber must
+-- not starve the other runnable fiber (main's timer wake and TVar write
+-- still happen, so the spinner observes the flag and completes). And cede
+-- is ALWAYS an interruption point, so a fiber looping on cede is
+-- interruptible even though it never otherwise suspends.
+module main
+
+spin : TVar Int -> UIO Int
+let spin flag = do
+    var v = 0
+    while v == 0 do
+        cede
+        let cur <- atomically (readTVar flag)
+        v = cur
+    ioPure v
+
+main : UIO Unit
+let main = do
+    -- weak fairness: the spinner yields; main still runs and sets the flag
+    let flag <- atomically (newTVar 0)
+    let f <- fork (spin flag)
+    sleepFor (millis 10)
+    atomically (writeTVar flag 1)
+    let ex <- await f
+    match ex
+      case Success v -> printlnString ("fair:" ++ showInt v)
+      case Failure c -> printlnString "fair:failed"
+    -- cede as interruption point: a never-set flag spins forever until
+    -- the interrupt is delivered at a cede
+    let never <- atomically (newTVar 0)
+    let g <- fork (spin never)
+    sleepFor (millis 10)
+    interrupt g
+    let ex2 <- await g
+    match ex2
+      case Success v -> printlnString "spin-completed"
+      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "spin-interrupted"
+      case Failure c -> printlnString "spin-other"

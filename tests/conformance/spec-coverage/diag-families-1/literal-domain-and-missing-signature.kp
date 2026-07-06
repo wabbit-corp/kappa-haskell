@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertDiagnosticMatch integer literal
+--! assertDiagnostic error E_MISSING_EXPLICIT_SIGNATURE
+--! assertDiagnosticFamily error kappa.type.missing-signature
+
+-- §3.2.3 (Spec.md L2367-2410): literal elaboration against a domain with no
+-- suitable literal witness MUST use family kappa.type.literal-domain-mismatch
+-- and SHOULD foreground the user-visible mismatch ("expected `T` but found
+-- an integer literal"); a declaration requiring an explicit signature under
+-- §9.2/§15 MUST use family kappa.type.missing-signature with the portable
+-- alias E_MISSING_EXPLICIT_SIGNATURE (asserted here through the alias).
+module main
+
+data Color : Type = Red
+
+-- POSITIVE: an integer literal at a type with a numeric literal witness.
+okLit : Int
+let okLit = 42
+
+-- NEGATIVE: Color has no integer-literal witness.
+badLit : Color
+let badLit = 42 --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+
+-- POSITIVE: recursion with a preceding signature declaration.
+looping : Int -> Int
+let looping x = looping x
+
+-- NEGATIVE: recursive definition without any preceding signature.
+let loop x = loop x --!! E_MISSING_EXPLICIT_SIGNATURE
+
+-- STATUS(a51e1bf): PASS

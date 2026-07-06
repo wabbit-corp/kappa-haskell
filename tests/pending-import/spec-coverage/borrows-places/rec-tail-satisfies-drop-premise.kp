@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.7 / §11.3.1B: a consuming open-record receiver may forget its
+-- residual tail when `RecTailSatisfies r 0` ("row tail r is droppable")
+-- is available as a premise. Positive complement of
+-- tests/conformance/qtt/open-record-tail-drop.kp, which pins the
+-- no-premise rejection (E_ROW_TAIL_QUANTITY_UNSATISFIED).
+module main
+
+forgetExtras :
+    forall (r : RecRow).
+    RecTailSatisfies r 0 =>
+    (1 rec : (name : String | r)) ->
+    String
+let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : String | r)) : String =
+    rec.name
+
+-- STATUS(a51e1bf): FAIL — the §11.3.1B intrinsic trait RecTailSatisfies is not exposed (E_NAME_UNRESOLVED); the droppable-tail premise of §13.2.7 cannot be written, so consuming receivers can never legally forget a tail.

@@ -1,0 +1,39 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §12.3 hidden-root introduction: `let & pat = expr` where expr is not
+-- a borrowable place elaborates via a fresh hidden temporary scoped to
+-- the binding's body (in a do block: the remaining do-items); the
+-- rigid region has that same scope. POSITIVE: the borrow is usable
+-- through the rest of the do sequence. NEGATIVE: the borrow cannot
+-- outlive the temporary — a returned closure over it is a skolem
+-- escape.
+module main
+
+data Box : Type =
+    MkBox (n : Int)
+
+readBox : (& b : Box) -> Int
+let readBox (& b : Box) : Int =
+    match b
+      case MkBox n -> n
+
+mkBox : Int -> Box
+let mkBox (n : Int) : Box = MkBox n
+
+-- POSITIVE: hidden temporary lives through the remaining do-items
+ok : UIO Int
+let ok = do
+    let & b = mkBox 1
+    let first = readBox b
+    let second = readBox b
+    pure (addInt first second)
+
+-- NEGATIVE: the closure would outlive the hidden temporary's scope
+bad : Unit -> (Unit -> Int)
+let bad () : (Unit -> Int) =
+    let & b = mkBox 1
+    in \() -> readBox b --!! E_QTT_BORROW_ESCAPE
+
+-- STATUS(a51e1bf): PASS

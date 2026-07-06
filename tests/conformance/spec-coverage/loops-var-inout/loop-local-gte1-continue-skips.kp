@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- §18.6 (L21017-L21044): a loop-local binding with a positive lower bound
+-- (>=1) must be demanded on every iteration path that leaves its scope,
+-- including `continue`. A `continue` that skips the demand is rejected;
+-- demanding the binding before `continue` is accepted.
+module main
+
+consume : (1 n : Int) -> Int
+let consume (1 n : Int) : Int = n
+
+bad : Bool -> UIO Unit
+let bad (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 x = 1 --!! kappa.quantity.positive-lower-bound
+            continue
+        pure ()
+
+ok : Bool -> UIO Unit
+let ok (cond : Bool) : UIO Unit =
+    do
+        while cond do
+            let >=1 y = 1
+            let _ = consume y
+            continue
+        pure ()
+
+-- STATUS(a51e1bf): PASS

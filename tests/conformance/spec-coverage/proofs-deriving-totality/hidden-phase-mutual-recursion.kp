@@ -1,0 +1,50 @@
+-- §15.10 (Spec L15375-L15396) + §15.11 minimum acceptance (L15486-L15495):
+-- mutual SCCs are accepted via the canonical hidden phase component — a
+-- call may preserve the entire visible measure when it targets a callee
+-- with strictly smaller phase, and every cycle still strictly decreases a
+-- visible component (here, structurally). Source order of members within
+-- the SCC must not change acceptance (§15.16 L15661-L15662).
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+-- Two members, measure-preserving edge stepA -> lowerA (phase 1 -> 0).
+stepA : List Int -> Int
+lowerA : List Int -> Int
+
+let stepA xs = lowerA xs
+
+let lowerA xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (stepA rest)
+
+-- The same SCC with the member definitions reordered: acceptance must not
+-- depend on which member happens to come first in the file.
+lowerB : List Int -> Int
+stepB : List Int -> Int
+
+let lowerB xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (stepB rest)
+
+let stepB xs = lowerB xs
+
+-- Three members: two consecutive measure-preserving edges (phase 2 -> 1
+-- -> 0) before the structural decrease closes the cycle.
+stage1 : List Int -> Int
+stage2 : List Int -> Int
+stage3 : List Int -> Int
+
+let stage1 xs = stage2 xs
+
+let stage2 xs = stage3 xs
+
+let stage3 xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (stage1 rest)
+
+-- STATUS(a51e1bf): PASS

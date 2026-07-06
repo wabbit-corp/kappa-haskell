@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1: ContainsRec is an intrinsic row trait; a premise
+-- 'ContainsRec r x a' licenses projecting label x from the residual
+-- tail. Uniqueness fact (L9813-14): if ContainsRec r l a and
+-- ContainsRec r l b are solvable in the same occurrence context then
+-- a = b is derivable — so 'uniq' may return rec.x (typed a by the first
+-- premise) at result type b through the solver's uniqueness evidence.
+module main
+
+getAt : forall (r : RecRow) (a : Type). ContainsRec r x a => (rec : (y : Bool | r)) -> a
+let getAt (@0 r : RecRow) (@0 a : Type) (@_ : ContainsRec r x a) (rec : (y : Bool | r)) : a =
+    rec.x
+
+uniq : forall (r : RecRow) (a : Type) (b : Type). (ContainsRec r x a, ContainsRec r x b) => (rec : (y : Bool | r)) -> b
+let uniq (@0 r : RecRow) (@0 a : Type) (@0 b : Type) (@_ : ContainsRec r x a) (@_ : ContainsRec r x b) (rec : (y : Bool | r)) : b =
+    rec.x
+
+useGet : Int
+let useGet = getAt (y = True, x = 7)
+
+-- STATUS(a51e1bf): FAIL — ContainsRec intrinsic trait not in scope (E_NAME_UNRESOLVED); premise-licensed tail projection and erased uniqueness evidence unimplemented

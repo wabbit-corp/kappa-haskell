@@ -1,0 +1,24 @@
+-- §17.2.1 variant patterns (Spec L18325-L18341): the inferred form
+-- (| x |) is valid only when the scrutinee is a singleton union or the
+-- member type is otherwise unambiguous from context (§13.1.7); with two
+-- member types it is ambiguous and rejected.
+
+--! mode check
+
+-- POSITIVE: singleton union — the inferred form is unambiguous.
+one : (| Integer |) -> Integer
+let one u =
+    match u
+    case (| x |) -> x
+
+-- NEGATIVE: two member types — (| x |) does not determine the member.
+pick : (| Integer | String |) -> Integer
+let pick u =
+    match u
+    case (| x |) -> 0
+    case (| ..rest |) -> 1
+
+--! assertErrorCount 1
+--! assertDiagnostic error E_VARIANT_AMBIGUOUS
+
+-- STATUS(a51e1bf): PASS

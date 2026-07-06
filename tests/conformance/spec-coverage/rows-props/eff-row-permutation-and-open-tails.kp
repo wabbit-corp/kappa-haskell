@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.2: equality of effect rows is modulo permutation after row
+-- normalization, so a closed row written in either label order is the
+-- same type. Open rows <[l : E | e]> with an EffRow tail are ordinary
+-- types: the identity preserves them, and a pure computation may be
+-- typed at any open row instance.
+module main
+
+effect AskE =
+    1 ask : Unit -> Int
+
+effect LogE =
+    1 note : Int -> Unit
+
+reorder : Eff <[AskE : AskE, LogE : LogE]> Int -> Eff <[LogE : LogE, AskE : AskE]> Int
+let reorder comp = comp
+
+openNoop : forall (e : EffRow). Eff <[AskE : AskE | e]> Int -> Eff <[AskE : AskE | e]> Int
+let openNoop comp = comp
+
+pureAtOpen : forall (e : EffRow). Eff <[AskE : AskE | e]> Int
+let pureAtOpen = pure 7
+
+-- STATUS(a51e1bf): PASS

@@ -2619,11 +2619,13 @@ closeVarWith mctx vi u = do
   -- resource is silently dropped (§12.2.5). A whole-record consume sets
   -- the root move lower bound; a patch re-consumes unpatched linear paths
   -- (walkPatch), so this check sees restored records as consumed.
-  let droppedFields
-        -- a borrowed receiver carries no consumption obligation, and a
-        -- whole-record transfer (root move/patch residue) moves every
-        -- field with it
-        | vBorrowed vi || rootLo >= 1 = []
+  let wholeRootTransferred = rLo + ucLo refEsc >= 1
+      droppedFields
+        -- a borrowed receiver carries no consumption obligation.  A true
+        -- whole-root transfer moves every field with it, but a record-patch
+        -- residue only transfers omitted fields; explicitly replaced linear
+        -- fields must have been consumed already.
+        | vBorrowed vi || wholeRootTransferred = []
         | otherwise =
             [ p
             | p <- linPaths vi
@@ -3590,11 +3592,15 @@ walkPatch env base items sp = do
   bu <- case base of
     EVar n
       | Just vi <- Map.lookup (nameText n) (eVars env) -> do
-          -- replacing patched paths conflicts with any live borrow of
-            -- the record; the residue (and every moved-but-unpatched
-            -- quantity-1 path) is consumed by the patch
-            checkBorrowOverlap env vi [] sp
-            pure $ patchRootUsage vi (concatMap patchPaths items) sp
+          let patched = concatMap patchPaths items
+          -- Replacing patched paths conflicts with any live borrow of the
+          -- record; the residue (and every moved-but-unpatched quantity-1
+          -- path) is consumed by the patch.  If the receiver itself is
+          -- borrowed, those implicit omitted-field moves are illegal: the
+          -- rebuilt owned result cannot take a linear payload out of a borrow.
+          checkBorrowOverlap env vi [] sp
+          checkBorrowedPatchFillers vi patched sp
+          pure $ patchRootUsage vi patched sp
     _ -> fst . flatR <$> walkE env base
   pure (rPlain (bu `seqU` vu))
   where
@@ -3618,6 +3624,27 @@ patchRootUsage vi patched sp =
   where
     reconsumed =
       [ (pathKey vi p, oneUC sp)
+      | p <- linPaths vi
+      , not (any (pathsOverlap p) patched)
+      ]
+
+checkBorrowedPatchFillers :: VInfo -> [FieldPath] -> Span -> Analysis ()
+checkBorrowedPatchFillers vi patched sp =
+  when (vBorrowed vi) $
+    forM_ copiedLinearPaths $ \p ->
+      emitRel "E_QTT_BORROW_CONSUME" "kappa.quantity.unsatisfied" sp
+        [ related RoleBorrowStart (vSpan vi) "borrowed binding introduced here"
+        , related RoleConsumedHere sp "implicitly copied by this record patch"
+        ]
+        ( "record patch would move the quantity-1 field '"
+            <> T.takeWhile (/= '#') (vKey vi)
+            <> "."
+            <> pathText p
+            <> "' out of a borrowed root (§12.3, §12.4, §13.2.5)"
+        )
+  where
+    copiedLinearPaths =
+      [ p
       | p <- linPaths vi
       , not (any (pathsOverlap p) patched)
       ]

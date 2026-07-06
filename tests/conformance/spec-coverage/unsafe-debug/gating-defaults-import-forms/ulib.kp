@@ -1,0 +1,7 @@
+module ulib
+
+hidden : Int
+let hidden = 1
+
+veiled : Int
+opaque let veiled = 2

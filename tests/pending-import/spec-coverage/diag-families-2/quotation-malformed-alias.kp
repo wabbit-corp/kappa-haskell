@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+-- §3.2.12: malformed quoted syntax MUST be reported in family
+-- kappa.syntax.quotation under portable alias E_QUOTE_MALFORMED_SYNTAX,
+-- with the quotation form and the origin of the malformed fragment in
+-- the payload (NOT as an ordinary declaration-level parse recovery).
+--! assertDiagnostic error E_QUOTE_MALFORMED_SYNTAX
+--! assertDiagnosticFamily error kappa.syntax.quotation
+
+-- §3.2.12, §21.2: the quoted fragment `if True then` is not a
+-- complete object-language expression; the failure happens inside the
+-- quotation, before ordinary elaboration of the quoted syntax.
+module main
+
+q : Syntax Int
+let q = '{ if True then }
+-- STATUS(a51e1bf): FAIL — E_QUOTE_MALFORMED_SYNTAX is not a registered code (harness-error §T.5.1); the malformed quote surfaces as declaration-level parse recovery (E_RECOVERY_DECLARATION_SKIPPED, kappa-hs.parse.error) with no kappa.syntax.quotation diagnostic

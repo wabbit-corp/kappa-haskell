@@ -1,0 +1,21 @@
+-- Spec: §10.1 (L8372-8374). All parameters of a single constructor must use
+-- the same style: all positional/named-parenthesized, or all record-style.
+-- Mixing the two styles inside one constructor is a compile-time error.
+-- The spec assigns no diagnostic family, so only the error count is pinned.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: parenthesized named binder followed by a record-style block.
+data BadParenThenRecord : Type =
+    MkBad1 (x : Int) { y : String }
+
+-- NEGATIVE: bare positional field followed by a record-style block.
+data BadBareThenRecord : Type =
+    MkBad2 Int { y : String }
+
+--! assertErrorCount 2
+
+-- STATUS(a51e1bf): FAIL — compiler accepts style-mixed constructors (0 errors);
+-- both fields elaborate and are usable via named and positional application.

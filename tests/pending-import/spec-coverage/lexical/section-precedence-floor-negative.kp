@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §5.5.1.1 precedence rule for section disambiguation: the operand of a
+-- right section `(op e)` is parsed with a precedence floor of
+-- prec(op) + 1, so an operator of lower or EQUAL precedence inside the
+-- operand must be parenthesized. In `(+ 2 + 3)` the inner `+` (infix
+-- left 60) is below the floor 61 — operand parsing stops at `2` and the
+-- trailing `+ 3` cannot complete the section, so the form MUST be
+-- rejected.
+
+module main
+
+bad : Int -> Int
+let bad = (+ 2 + 3)
+
+-- STATUS(a51e1bf): FAIL — the precedence floor is not enforced: the compiler accepts (+ 2 + 3) with 0 errors, parsing the whole equal-precedence operand as the section operand (probe: (<+> 2 <+> 3) 4 with 10x+y evaluates to 63, i.e. \x -> x <+> (2 <+> 3))

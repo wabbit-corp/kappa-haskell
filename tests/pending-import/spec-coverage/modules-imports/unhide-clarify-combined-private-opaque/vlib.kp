@@ -1,0 +1,10 @@
+module vlib
+
+-- §8.5.4: private and opaque are orthogonal and may be combined on one
+-- item. private controls visibility; opaque controls transparency when
+-- the item is accessed via escape hatches.
+secret : Int
+private opaque let secret = 7
+
+hidden : Int
+private opaque let hidden = 3

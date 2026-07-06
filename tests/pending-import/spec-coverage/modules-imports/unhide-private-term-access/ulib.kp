@@ -1,0 +1,5 @@
+module ulib
+
+-- §8.5.1: `helper` is private — not part of ulib's export interface.
+helper : Int
+private let helper = 41

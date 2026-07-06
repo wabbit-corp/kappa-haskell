@@ -1,0 +1,39 @@
+-- Spec: §10.1.2 (L8675-8688). Implementations MUST emit a warning (not an
+-- error) for each user-written data type name or constructor name that is
+-- lowercase-generalizable under §11.3.3 — separately for the type name and
+-- each constructor name. The spec registers no family for this diagnostic.
+
+module main
+
+--! mode check
+
+-- NEGATIVE (warnings): 'option' and 'some' are ASCII lowercase-initial,
+-- so one warning is due for the type name and one for the constructor;
+-- 'None2' is capitalized and gets no warning.
+data option (a : Type) : Type =
+    some (v : a)
+    None2
+
+-- Capitalization is not semantically significant: the declaration remains
+-- an ordinary data type (warning, never error).
+picked : option Int
+let picked = some 9
+
+get : option Int -> Int
+let get o =
+    match o
+    case some v -> v
+    case None2 -> 0
+
+got : Int
+let got = get picked
+
+--! assertNoErrors
+--! assertWarningCount 2
+--! assertEval got 9
+
+-- STATUS(a51e1bf): FAIL — no warnings are emitted (got 0, want 2): the
+-- §10.1.2 MUST-warning for lowercase-generalizable data/constructor names
+-- is not implemented. The declaration itself parses and evaluates fine
+-- (positional patterns; see lowercase-ctor-named-pattern.kp for the
+-- lowercase named-pattern parse gap).

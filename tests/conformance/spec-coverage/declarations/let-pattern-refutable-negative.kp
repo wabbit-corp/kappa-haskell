@@ -1,0 +1,28 @@
+module main
+
+-- §9.1.2: constructor patterns are refutable for `let` bindings unless
+-- the scrutinee type provably has exactly one constructor. §9.3 requires
+-- every `let ... in` binding to use an irrefutable underlying pattern.
+-- Both a top-level `let` and a `let ... in` binding over a two-constructor
+-- type must be rejected.
+
+data T : Type =
+    A Int
+    B Int
+
+t : T
+let t = A 1
+
+let (A topX) = t --!! E_REFUTABLE_LET_PATTERN
+
+inBody : Int
+let inBody =
+    let
+        (A localX) = t --!! E_REFUTABLE_LET_PATTERN
+    in
+        localX
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_REFUTABLE_LET_PATTERN, E_REFUTABLE_LET_PATTERN
+-- STATUS(a51e1bf): PASS

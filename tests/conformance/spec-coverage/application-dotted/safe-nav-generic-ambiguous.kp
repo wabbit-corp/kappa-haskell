@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_SAFE_NAV_GENERIC_AMBIGUOUS
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertNoWarnings
+
+-- §16.1.1.2 (L16008-16060): if the residual type of a safe-navigation
+-- member access is still an unsolved metavariable, compilation fails
+-- with family kappa.type.mismatch and portable alias
+-- E_SAFE_NAV_GENERIC_AMBIGUOUS; the compiler MUST NOT default the
+-- wrap/flatten choice. An annotation disambiguates. L16079: the
+-- redundant-receiver warning MUST NOT fire when the receiver may be
+-- absent, so this file must produce no warnings.
+module main
+
+type Box a = (value : a)
+
+-- NEGATIVE: fully generic accessor; residual type unsolved.
+let getValue x = x?.value
+
+-- POSITIVE: the annotated variant fixes the residual type (wrap case).
+getValueAnnotated : Option (Box Int) -> Option Int
+let getValueAnnotated (x : Option (Box Int)) : Option Int = x?.value

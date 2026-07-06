@@ -1,0 +1,33 @@
+--! mode check
+--! assertDiagnostic error E_ROW_CONTEXT_MISMATCH
+--! assertDiagnosticFamily error kappa.row.context-mismatch
+
+-- §17.x record-rest capture (Spec.md L18250-18284) + §11.3.1A (L9854-9891):
+-- `..rest` on an open record creates a new occurrence of the residual row;
+-- it is valid only when the remaining prefix extends `home(r)`. Detaching
+-- the tail from a home-prefix field it may depend on MUST be rejected with
+-- family kappa.row.context-mismatch, portable alias E_ROW_CONTEXT_MISMATCH
+-- (§3.2.9 L3079-3109).
+module main
+
+type Full : Type = (name : String, age : Int)
+
+-- POSITIVE: record-rest capture on a closed record detaches no abstract
+-- tail; `rest` is the remaining closed record (L18242-18248).
+dropName : Full -> String
+let dropName (r : Full) : String =
+    block
+        let (name = n, ..rest) = r
+        n
+
+-- NEGATIVE: home(r) is (name : String) — the only residual occurrence sits
+-- under that prefix, so fields of `r` may depend on `name`. Binding
+-- `rest : ( | r)` removes `name` from the prefix; the remaining (empty)
+-- prefix does not extend home(r), so the capture MUST be rejected.
+detach : forall (r : RecRow). (rec : (name : String | r)) -> String
+let detach (@0 r : RecRow) (rec : (name : String | r)) : String =
+    block
+        let (name = n, ..rest) = rec --!! E_ROW_CONTEXT_MISMATCH
+        n
+
+-- STATUS(a51e1bf): FAIL — family/alias E_ROW_CONTEXT_MISMATCH not registered; the open-record '..rest' capture mis-elaborates to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH at the destructure). Closed-record positive checks clean.

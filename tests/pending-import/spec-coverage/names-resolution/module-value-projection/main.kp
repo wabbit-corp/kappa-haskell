@@ -1,0 +1,27 @@
+module main
+
+-- §7.5: projection from a reified module value is contextual and agrees
+-- with ordinary qualified access — m.answer selects the exported term,
+-- m.Box in type position selects the exported type facet, and m.Box in
+-- term/pattern-head position selects the exported constructor facet,
+-- denoting the same members as lib.answer / lib.Box.
+import lib
+
+let m = module lib
+
+viaProj : Int
+let viaProj = m.answer
+
+viaQual : Int
+let viaQual = lib.answer
+
+typed : m.Box Int
+let typed = m.Box 1
+
+unboxed : Int
+let unboxed =
+    match typed
+    case m.Box n -> n
+
+agree : lib.Box Int -> m.Box Int
+let agree b = b

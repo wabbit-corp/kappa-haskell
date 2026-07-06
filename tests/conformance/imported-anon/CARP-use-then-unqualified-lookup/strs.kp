@@ -1,0 +1,9 @@
+-- Spec: modules.exports (§8.4), modules.imports (§8.3),
+--       modules.names.lexical_lookup (§7.1).
+-- Provider module: defines `length` over `String`.
+module strs
+
+export length
+
+length : String -> Int
+let length s = 0

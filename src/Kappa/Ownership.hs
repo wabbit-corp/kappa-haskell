@@ -15,8 +15,8 @@
 -- cross-checks/refines the historical analysis, but S5.A native emission no
 -- longer consumes it. 'Kappa.Backend.IR' computes backend-facing uses,
 -- binders, and branch-dead drops on the separate KBackendIR tree itself, using
--- node-local 'BackendUseId'/'BackendBinderId' metadata rather than these
--- structural Core coordinates.
+-- node-local 'BackendUseId'/'BackendBinderId' metadata rather than this
+-- observe-only Core audit table.
 --
 -- __Stage S1.1 is OBSERVE-ONLY for native codegen.__ The recorded decisions
 -- remain continuously validated against the declared quantities by
@@ -47,26 +47,26 @@
 --     never claims a reuse that the per-field analysis would forbid); it just
 --     leaves the S5 field-reuse win on the table.
 --
---   * __Do-kernel paths__ (the §18.8 do-kernel): a 'CDo' is walked with the
---     shared "Kappa.PathScheme" child positions. Do-local binders occupy real
---     de Bruijn slots in the backend environment, so mutable variables and do
---     pattern bindings are tracked as ordinary value binders rather than treated
---     as an ownership-erased island.
+--   * __Do-kernel sequencing__ (the §18.8 do-kernel): do-local binders occupy
+--     real de Bruijn slots in the backend environment, so mutable variables and
+--     do pattern bindings are tracked as ordinary value binders rather than
+--     treated as an ownership-erased island.
 --
 -- == R1 — de-Bruijn key stability (legacy audit table; see PERCEUS-S1-PLAN (e))
 --
--- The side-table keys are STRUCTURAL PATHS ('biPath'\/'usPath'): the list of
--- child-positions taken from the body root down to the node, NOT raw de Bruijn
--- indices. A path is invariant under the index renumbering a de Bruijn walk
--- performs. S5.A moved native C/LLVM dup/drop emission to node-local KBackendIR
--- ownership metadata, so this path-keyed table is no longer reattached by the
--- backend and cannot drive native ownership decisions. It remains useful as a
--- legacy dump/cross-check artifact over KCore; erased argument subterms still
--- record no 'UseSite' and do not flow liveness upstream.
+-- The side-table keys are owner-local ORDINAL identities assigned by this
+-- analysis walk, not raw de Bruijn indices and not structural child positions.
+-- An ordinal is minted at the binder/use/drop-site occurrence itself, so it is
+-- stable under the index renumbering a de Bruijn walk performs without
+-- preserving the old R-path bridge. S5.A moved native C/LLVM dup/drop emission
+-- to node-local KBackendIR ownership metadata; this table remains useful only
+-- as a legacy dump/cross-check artifact over KCore. Erased argument subterms
+-- still record no 'UseSite' and do not flow liveness upstream.
 module Kappa.Ownership
   ( -- * Stable Core identities (side-table keys)
     BinderId (..)
   , UseSite (..)
+  , BranchSite (..)
     -- * Use classification
   , UseKind (..)
     -- * Per-binder ownership facts
@@ -112,41 +112,40 @@ import Kappa.Core
   )
 import Kappa.CoreOps (patBindersC, spineOfTerm)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), eval, evalApp, force, quote)
-import qualified Kappa.PathScheme as P
 import Kappa.Pretty (renderTerm)
 
 -- | A stable identity for a binder within a definition's elaborated Core.
 --
 -- Core is de Bruijn /indexed/ (a 'Kappa.Core.CVar' is an index relative to the
 -- enclosing binders), so an index alone is not stable — it shifts as the term
--- is traversed under binders. The stable key is therefore the owning global
--- plus a /path/ from that global's body root down to the binder: the list of
--- child-positions taken at each 'Term' node on the way to the binder that
--- introduces the variable (e.g. into the body of a 'Kappa.Core.CLam', into the
--- right-hand side of a @let@, into a particular match arm). A path is invariant
--- under the index renumbering that de Bruijn traversal performs, so it names
--- the same binder no matter where in the walk it is observed.
+-- is traversed under binders. The stable audit key is therefore the owning
+-- global plus a deterministic owner-local ordinal minted at the binding
+-- occurrence by the single analysis walk. It names the same binder everywhere
+-- that walk resolves the de Bruijn level, without retaining structural child
+-- positions as a key.
 data BinderId = BinderId
   { biOwner :: !GName
   -- ^ The top-level definition whose body contains the binder.
-  , biPath :: ![Int]
-  -- ^ Child-position path from the body root to the binding node (de
-  -- Bruijn-stable; see the type doc).
+  , biOrdinal :: !Int
+  -- ^ Owner-local ordinal assigned by the ownership analysis walk.
   }
   deriving stock (Eq, Ord, Show)
 
 -- | A stable identity for a /use occurrence/ of a binder — a single
--- 'Kappa.Core.CVar' site. Same scheme as 'BinderId': the owning global plus the
--- child-position path from the body root down to the 'CVar' node. Two distinct
--- occurrences of the same variable are distinct 'UseSite's (distinct paths),
--- which is exactly what last-use analysis needs (one occurrence is the last
--- use, the others are not).
+-- 'Kappa.Core.CVar' site. Same scheme as 'BinderId': the owning global plus an
+-- owner-local ordinal minted at the occurrence. Two distinct occurrences of the
+-- same variable are distinct 'UseSite's, which is exactly what last-use analysis
+-- needs (one occurrence is the last use, the others are not).
 data UseSite = UseSite
   { usOwner :: !GName
   -- ^ The top-level definition whose body contains the use.
-  , usPath :: ![Int]
-  -- ^ Child-position path from the body root to the 'CVar' occurrence.
+  , usOrdinal :: !Int
+  -- ^ Owner-local ordinal assigned by the ownership analysis walk.
   }
+  deriving stock (Eq, Ord, Show)
+
+-- | Stable identity for an observe-only branch-dead drop site in one owner.
+newtype BranchSite = BranchSite Int
   deriving stock (Eq, Ord, Show)
 
 -- | The liveness classification of a particular use occurrence. S2.3b records
@@ -222,13 +221,13 @@ data OwnInfo = OwnInfo
   -- this to distinguish transfer from read-only last-use at analysis and
   -- validation time. Whole-scope close drops intentionally consult this
   -- consuming subset plus codegen's separate owned-result proof.
-  , oiBranchDropSites :: !(Map [Int] [BinderId])
-  -- ^ Perceus RC Stage S2.3d: path-local dead-binder drops. Keyed by the
-  -- branch/arm structural path where a normal completion should drop existing
-  -- flat locals for the listed binders. A binder appears here when it is live in
-  -- a sibling branch (or after the join) but absent from this branch's live-in
-  -- set; the backend still re-checks droppability/borrowedness and whether the
-  -- current flat local owns a reference before emitting.
+  , oiBranchDropSites :: !(Map BranchSite [BinderId])
+  -- ^ Perceus RC Stage S2.3d: branch-local dead-binder drops. Keyed by the
+  -- branch/arm ordinal where a normal completion should drop existing flat
+  -- locals for the listed binders. A binder appears here when it is live in a
+  -- sibling branch (or after the join) but absent from this branch's live-in set.
+  -- Native emission no longer consumes this table; KBackendIR carries branch
+  -- drops on node metadata.
   }
   deriving stock (Eq, Show)
 
@@ -334,12 +333,30 @@ data Acc = Acc
   , accUseConsumes :: !(Map UseSite Bool)
   , accAssoc :: !(Map BinderId [UseKind])
   , accConsumingAssoc :: !(Map BinderId [UseKind])
-  , accBranchDropSites :: !(Map [Int] [BinderId])
+  , accBranchDropSites :: !(Map BranchSite [BinderId])
   , accBorrowDeps :: !(Map BinderId (Set BinderId))
+  , accNextBinderId :: !Int
+  , accNextUseSite :: !Int
+  , accNextBranchSite :: !Int
   }
 
 emptyAcc :: Acc
-emptyAcc = Acc Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty
+emptyAcc = Acc Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty 0 0 0
+
+freshBinderId :: GName -> Acc -> (BinderId, Acc)
+freshBinderId owner acc =
+  let n = accNextBinderId acc
+   in (BinderId owner n, acc {accNextBinderId = n + 1})
+
+freshUseSite :: GName -> Acc -> (UseSite, Acc)
+freshUseSite owner acc =
+  let n = accNextUseSite acc
+   in (UseSite owner n, acc {accNextUseSite = n + 1})
+
+freshBranchSite :: Acc -> (BranchSite, Acc)
+freshBranchSite acc =
+  let n = accNextBranchSite acc
+   in (BranchSite n, acc {accNextBranchSite = n + 1})
 
 -- | Analyze one top-level body into its 'OwnInfo' plus the binder→kinds
 -- association the cross-check consumes. @tele@ is the owner's declared parameter
@@ -347,7 +364,7 @@ emptyAcc = Acc Map.empty Map.empty Map.empty Map.empty Map.empty Map.empty Map.e
 -- up the owned\/borrowed convention and parameter types from the type.
 analyzeBodyFull :: EvalCtx -> Map GName Term -> [ParamSite] -> GName -> Term -> (OwnInfo, Map BinderId [UseKind], Map BinderId [UseKind])
 analyzeBodyFull ctx ctorTypes tele owner body =
-  let (acc, _live) = walk ctx ctorTypes tele owner [] 0 [] UseConsumes body Set.empty emptyAcc
+  let (acc, _live) = walk ctx ctorTypes tele owner 0 [] UseConsumes body Set.empty emptyAcc
    in ( OwnInfo
           (accBinders acc)
           (accUses acc)
@@ -414,22 +431,23 @@ addBorrowDeps bid deps acc
 
 -- | Record the S2.3d drop sites for binders that are live in the branch join
 -- but absent from this particular branch. The ownership walk already computes
--- each branch against the same live-out set; this only preserves the path-local
+-- each branch against the same live-out set; this only preserves the branch-local
 -- omission fact for codegen instead of collapsing it into the per-binder use
 -- multiset. Filtering by 'BinderOwn' is intentionally left to the backend so
 -- the same stored table can be drift-checked against a fresh walk.
-addBranchDeadDrops :: GName -> [Int] -> [Scope] -> Set Int -> Set Int -> Acc -> Acc
-addBranchDeadDrops owner branchPath scopes liveJoin liveBranch =
-  addBranchDeadDropsExcept owner branchPath scopes liveJoin liveBranch Set.empty
+addBranchDeadDrops :: GName -> [Scope] -> Set Int -> Set Int -> Acc -> Acc
+addBranchDeadDrops owner scopes liveJoin liveBranch =
+  addBranchDeadDropsExcept owner scopes liveJoin liveBranch Set.empty
 
-addBranchDeadDropsExcept :: GName -> [Int] -> [Scope] -> Set Int -> Set Int -> Set BinderId -> Acc -> Acc
-addBranchDeadDropsExcept owner branchPath scopes liveJoin liveBranch excluded acc =
+addBranchDeadDropsExcept :: GName -> [Scope] -> Set Int -> Set Int -> Set BinderId -> Acc -> Acc
+addBranchDeadDropsExcept owner scopes liveJoin liveBranch excluded acc =
   case bids of
     [] -> acc
     _ ->
-      acc
+      let (site, acc') = freshBranchSite acc
+       in acc'
         { accBranchDropSites =
-            Map.insertWith (++) (reverse branchPath) bids (accBranchDropSites acc)
+            Map.insertWith (++) site bids (accBranchDropSites acc')
         }
   where
     liveBranchWithDeps = expandLiveWithBorrowDeps scopes (accBorrowDeps acc) liveBranch
@@ -741,8 +759,6 @@ rhsBorrowDeps ctx ctorTypes depth scopes deps term0 =
 --     parameter picks up the owned\/borrowed convention from its 'CPi'. Empty
 --     once the leading-lambda chain ends (or for a non-top-level subterm).
 --   * @owner@ — the global whose body is being walked (the key prefix).
---   * @path@  — the reversed child-position path from the body root to the
---     current node (prepended at each descent; reversed when a key is built).
 --   * @depth@ — the number of binders currently in scope (= the absolute de
 --     Bruijn level of the next binder to be introduced).
 --   * @scopes@ — the binders in scope, innermost first, each tagged with its
@@ -760,7 +776,6 @@ walk
   -> Map GName Term
   -> [ParamSite]
   -> GName
-  -> [Int]
   -> Int
   -> [Scope]
   -> UseConsumes
@@ -768,8 +783,8 @@ walk
   -> Set Int
   -> Acc
   -> (Acc, Set Int)
-walk _ctx _ctorTypes _tele _owner _path _depth _scopes UseErased _term liveOut acc = (acc, liveOut)
-walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = case term of
+walk _ctx _ctorTypes _tele _owner _depth _scopes UseErased _term liveOut acc = (acc, liveOut)
+walk ctx ctorTypes tele owner depth scopes useConsumes term liveOut acc = case term of
   CVar i ->
     -- An occurrence of binder at level @lvl@. It is a LAST use on this path iff
     -- the same binder is not already live downstream (@lvl `notElem` liveOut@).
@@ -778,12 +793,12 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
      in case lookupLevel lvl scopes of
           Just sc
             | Just bid <- scId sc ->
-                let us = UseSite owner (reverse path)
+                let (us, acc0) = freshUseSite owner acc
                     kind
                       | scBorrowed sc = Borrowed
                       | lvl `Set.member` liveOut = NonLast
                       | otherwise = LastUse
-                    acc' = addUse useConsumes us bid kind acc
+                    acc' = addUse useConsumes us bid kind acc0
                     -- this binder is now a free variable of the surrounding
                     -- term; flow it upstream so an earlier occurrence sees it
                     -- as still-live (and is therefore NonLast).
@@ -802,10 +817,10 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     let (declQ, borrowed, mTy, tele') = case tele of
           ParamSite _ tq tb _ domV : trest -> (tq, tb, Just domV, trest)
           [] -> (q, False, Nothing, [])
-        bid = BinderId owner (reverse path)
+        (bid, accBid) = freshBinderId owner acc
         sc = Scope depth (Just bid) borrowed mTy
-        acc0 = addBinder bid declQ borrowed acc
-        (acc1, liveB) = walk ctx ctorTypes tele' owner (P.lamBodyPos : path) (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
+        acc0 = addBinder bid declQ borrowed accBid
+        (acc1, liveB) = walk ctx ctorTypes tele' owner (depth + 1) (sc : scopes) UseConsumes b liveOut acc0
      in (acc1, dropLevel depth liveB)
 
   CPi _ _q _borrowed _nm dom cod ->
@@ -814,9 +829,9 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     -- type-valued top-level body is a bare 'CPi'), pushing an UNTRACKED scope so
     -- de Bruijn indices stay aligned, but record no binder fact and treat any
     -- codomain reference to it as a non-runtime (type-level) reference.
-    let (acc1, liveDom) = walk ctx ctorTypes [] owner (P.piDomPos : path) depth scopes UseErased dom liveOut acc
+    let (acc1, liveDom) = walk ctx ctorTypes [] owner depth scopes UseErased dom liveOut acc
         sc = Scope depth Nothing False Nothing
-        (acc2, liveCod) = walk ctx ctorTypes [] owner (P.piCodPos : path) (depth + 1) (sc : scopes) UseErased cod liveDom acc1
+        (acc2, liveCod) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) UseErased cod liveDom acc1
      in (acc2, dropLevel depth liveCod)
 
   CLet q _nm _ty rhs b ->
@@ -825,24 +840,24 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     -- live-out. The binder's last-use is decided inside the body.
     let tyV = evalTypeAt ctx depth _ty
         rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-        bid = BinderId owner (reverse path)
+        (bid, accBid) = freshBinderId owner acc
         deps = rhsBorrowDeps ctx ctorTypes depth scopes (accBorrowDeps acc) rhs
-        acc0 = addBorrowDeps bid deps (addBinder bid q False acc)
+        acc0 = addBorrowDeps bid deps (addBinder bid q False accBid)
         sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (P.letBodyPos : path) (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
         liveBody' = dropLevel depth liveBody
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (P.letRhsPos : path) depth scopes UseConsumes rhs liveBody' acc1
+        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner depth scopes UseConsumes rhs liveBody' acc1
      in (acc2, liveRhs)
 
   CLetRec q _nm _ty rhs b ->
     -- Recursive local let: the binder is in scope in BOTH its rhs and its body.
     let tyV = evalTypeAt ctx depth _ty
         rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-        bid = BinderId owner (reverse path)
-        acc0 = addBinder bid q False acc
+        (bid, accBid) = freshBinderId owner acc
+        acc0 = addBinder bid q False accBid
         sc = Scope depth (Just bid) False (Just tyV)
-        (acc1, liveBody) = walk ctx ctorTypes [] owner (P.letBodyPos : path) (depth + 1) (sc : scopes) useConsumes b liveOut acc0
-        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (P.letRhsPos : path) (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
+        (acc1, liveBody) = walk ctx ctorTypes [] owner (depth + 1) (sc : scopes) useConsumes b liveOut acc0
+        (acc2, liveRhs) = walk ctx ctorTypes rhsTele owner (depth + 1) (sc : scopes) UseConsumes rhs liveBody acc1
      in (acc2, dropLevel depth liveRhs)
 
   -- Branching: each arm is its own completion path -------------------------
@@ -852,18 +867,18 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     -- binds, or an outer binder; an outer binder used in one arm but not
     -- another is dropped on the arms that omit it (its absence = a drop point),
     -- which falls out of computing each arm against the SAME @liveOut@.
-    let (acc1, liveArms) = walkAlts ctx ctorTypes owner (P.matchArmsPos : path) depth scopes useConsumes ann alts liveOut acc 0
-        (acc2, liveS) = walk ctx ctorTypes [] owner (P.matchScrutPos : path) depth scopes UseConsumes s liveArms acc1
+    let (acc1, liveArms) = walkAlts ctx ctorTypes owner depth scopes useConsumes ann alts liveOut acc 0
+        (acc2, liveS) = walk ctx ctorTypes [] owner depth scopes UseConsumes s liveArms acc1
      in (acc2, liveS)
 
   CIf c t e ->
-    let (acc1, liveT) = walk ctx ctorTypes [] owner (P.ifThenPos : path) depth scopes useConsumes t liveOut acc
-        (acc2, liveE) = walk ctx ctorTypes [] owner (P.ifElsePos : path) depth scopes useConsumes e liveOut acc1
+    let (acc1, liveT) = walk ctx ctorTypes [] owner depth scopes useConsumes t liveOut acc
+        (acc2, liveE) = walk ctx ctorTypes [] owner depth scopes useConsumes e liveOut acc1
         liveBranches = Set.union liveT liveE
         accDrops =
-          addBranchDeadDrops owner (P.ifElsePos : path) scopes liveBranches liveE $
-            addBranchDeadDrops owner (P.ifThenPos : path) scopes liveBranches liveT acc2
-        (acc3, liveC) = walk ctx ctorTypes [] owner (P.ifCondPos : path) depth scopes UseConsumes c liveBranches accDrops
+          addBranchDeadDrops owner scopes liveBranches liveE $
+            addBranchDeadDrops owner scopes liveBranches liveT acc2
+        (acc3, liveC) = walk ctx ctorTypes [] owner depth scopes UseConsumes c liveBranches accDrops
      in (acc3, liveC)
 
   -- Sequential, multi-child nodes ------------------------------------------
@@ -871,113 +886,107 @@ walk ctx ctorTypes tele owner path depth scopes useConsumes term liveOut acc = c
     -- Evaluation order for a flat spine is head, then arguments left-to-right.
     -- Liveness flows backward through the arguments right-to-left, then through
     -- the head. Decomposing the full spine lets each argument be marked
-    -- consuming/read according to the callee position while preserving the exact
-    -- nested-CApp path the backend re-derives with 'withSpineArg'.
+    -- consuming/read according to the callee position while preserving the same
+    -- nested application semantics the backend lowering consumes.
     let (hd, args) = spineOfTerm term
-        k = length args
         argConsumes = callArgConsumes ctx depth (scopeTypeAt scopes) hd args
-        argEntries =
-          [ (P.appArgPos : replicate (k - 1 - j) P.appHeadPos, a, uc)
-          | (j, ((_, a), uc)) <- zip [0 ..] (zip args argConsumes)
-          ]
+        argEntries = [(a, uc) | ((_, a), uc) <- zip args argConsumes]
         (accArgs, liveArgs) =
           foldr
-            (\(prefix, a, uc) (aAcc, lo) -> walk ctx ctorTypes [] owner (prefix ++ path) depth scopes uc a lo aAcc)
+            (\(a, uc) (aAcc, lo) -> walk ctx ctorTypes [] owner depth scopes uc a lo aAcc)
             (acc, liveOut)
             argEntries
-        headPath = replicate k P.appHeadPos ++ path
-        (accHead, liveHead) = walk ctx ctorTypes [] owner headPath depth scopes UseConsumes hd liveArgs accArgs
+        (accHead, liveHead) = walk ctx ctorTypes [] owner depth scopes UseConsumes hd liveArgs accArgs
      in (accHead, liveHead)
 
   CCtor _ _ann args ->
-    seqChildren ctx ctorTypes owner path depth scopes UseConsumes [(P.ctorArgPos i, x) | (i, x) <- zip [0 ..] args] liveOut acc
+    seqChildren ctx ctorTypes owner depth scopes UseConsumes args liveOut acc
 
   CRecordT fs ->
-    seqChildren ctx ctorTypes owner path depth scopes UseErased [(P.recordFieldPos i, snd f) | (i, f) <- zip [0 ..] fs] liveOut acc
+    seqChildren ctx ctorTypes owner depth scopes UseErased (map snd fs) liveOut acc
   CRecordV fs ->
-    seqChildren ctx ctorTypes owner path depth scopes UseConsumes [(P.recordFieldPos i, snd f) | (i, f) <- zip [0 ..] fs] liveOut acc
+    seqChildren ctx ctorTypes owner depth scopes UseConsumes (map snd fs) liveOut acc
   CVariantT ms ->
-    seqChildren ctx ctorTypes owner path depth scopes UseErased [(P.variantMemberPos i, m) | (i, m) <- zip [0 ..] ms] liveOut acc
+    seqChildren ctx ctorTypes owner depth scopes UseErased ms liveOut acc
   CQuote _ slots ->
-    seqChildren ctx ctorTypes owner path depth scopes UseErased [(P.quoteSlotPos i, sl) | (i, sl) <- zip [0 ..] slots] liveOut acc
+    seqChildren ctx ctorTypes owner depth scopes UseErased slots liveOut acc
 
   -- Single-child nodes -----------------------------------------------------
-  CProj e _ -> descend1 ctx ctorTypes owner path depth scopes UseReads e liveOut acc
-  CProjAt e _ _ -> descend1 ctx ctorTypes owner path depth scopes UseReads e liveOut acc
-  CInject _ e -> descend1 ctx ctorTypes owner path depth scopes UseConsumes e liveOut acc
-  CSealE _ e -> descend1 ctx ctorTypes owner path depth scopes UseConsumes e liveOut acc
-  CSigT _ e -> descend1 ctx ctorTypes owner path depth scopes UseErased e liveOut acc
-  CThunkE e -> descend1 ctx ctorTypes owner path depth scopes UseConsumes e liveOut acc
-  CLazyE e -> descend1 ctx ctorTypes owner path depth scopes UseConsumes e liveOut acc
-  CForceE e -> descend1 ctx ctorTypes owner path depth scopes UseConsumes e liveOut acc
+  CProj e _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
+  CProjAt e _ _ -> descend1 ctx ctorTypes owner depth scopes UseReads e liveOut acc
+  CInject _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CSealE _ e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CSigT _ e -> descend1 ctx ctorTypes owner depth scopes UseErased e liveOut acc
+  CThunkE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CLazyE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
+  CForceE e -> descend1 ctx ctorTypes owner depth scopes UseConsumes e liveOut acc
 
   -- Leaves and do-kernel ---------------------------------------------------
   CGlob _ -> (acc, liveOut)
   CSort _ -> (acc, liveOut)
   CLit _ -> (acc, liveOut)
   CMeta _ -> (acc, liveOut)
-  CDo _ items -> walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc
+  CDo _ items -> walkDoItems ctx ctorTypes owner depth scopes items liveOut acc
 
--- | Walk a single child at child-position @c@.
-descend1 :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Term -> Set Int -> Acc -> (Acc, Set Int)
-descend1 ctx ctorTypes owner path depth scopes uc e liveOut acc =
-  walk ctx ctorTypes [] owner (P.childPos : path) depth scopes uc e liveOut acc
+-- | Walk a single child.
+descend1 :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Term -> Set Int -> Acc -> (Acc, Set Int)
+descend1 ctx ctorTypes owner depth scopes uc e liveOut acc =
+  walk ctx ctorTypes [] owner depth scopes uc e liveOut acc
 
--- | Walk a sequence of children (left-to-right evaluation order) at the given
--- child-positions, threading liveness backward through them. Each entry is
--- @(childPos, subterm)@.
+-- | Walk a sequence of children in left-to-right evaluation order, threading
+-- liveness backward through them.
 seqChildren
-  :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> [(Int, Term)] -> Set Int -> Acc -> (Acc, Set Int)
-seqChildren ctx ctorTypes owner path depth scopes uc children liveOut acc =
+  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> [Term] -> Set Int -> Acc -> (Acc, Set Int)
+seqChildren ctx ctorTypes owner depth scopes uc children liveOut acc =
   -- process right-to-left so a later child's liveness flows into the earlier
   -- child's live-out (an earlier occurrence is NonLast if a later one exists).
   foldr
-    (\(c, t) (a, lo) -> walk ctx ctorTypes [] owner (c : path) depth scopes uc t lo a)
+    (\t (a, lo) -> walk ctx ctorTypes [] owner depth scopes uc t lo a)
     (acc, liveOut)
     children
 
--- | Walk a §18.8 do-kernel in the same structural coordinates used by the C
--- backend. The sequencing is backward for liveness, but binder scopes are
--- introduced forward: a binding item is in scope for the remaining items, not
--- for the item action that creates it.
-walkDoItems :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> [KItem] -> Set Int -> Acc -> (Acc, Set Int)
-walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth scopes items liveOut acc
+bindPatternScopes :: GName -> Int -> Q -> Bool -> [Maybe Value] -> Acc -> Int -> ([Scope], Acc)
+bindPatternScopes owner depth q borrowed slotTypes acc0 n =
+  go 0 acc0 []
   where
-    go _ _ _ [] lo a = (a, lo)
-    go ix d scs (item : rest) lo a =
-      let ip = P.doItemPos ix : path
-          next = ix + 1
-          dropLocal n live = foldr Set.delete live [d .. d + n - 1]
-          bindPatAt bpath q borrowed pat mTy a0 =
+    go k accRev rev
+      | k >= n = (reverse rev, accRev)
+      | otherwise =
+          let (bid, acc1) = freshBinderId owner accRev
+              sc = Scope (depth + n - 1 - k) (Just bid) borrowed (indexMaybe k slotTypes >>= id)
+              acc2 = addBinder bid q borrowed acc1
+           in go (k + 1) acc2 (sc : rev)
+
+-- | Walk a §18.8 do-kernel. The sequencing is backward for liveness, but binder
+-- scopes are introduced forward: a binding item is in scope for the remaining
+-- items, not for the item action that creates it.
+walkDoItems :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> [KItem] -> Set Int -> Acc -> (Acc, Set Int)
+walkDoItems ctx ctorTypes owner depth scopes items liveOut acc = go depth scopes items liveOut acc
+  where
+    go _ _ [] lo a = (a, lo)
+    go d scs (item : rest) lo a =
+      let dropLocal n live = foldr Set.delete live [d .. d + n - 1]
+          bindPat q borrowed pat mTy a0 =
             let n = patBindersC pat
                 slotTypes = reverse (patBindingTypes ctx ctorTypes d pat mTy)
-                newScopes =
-                  [ Scope (d + n - 1 - k) (Just (BinderId owner (reverse (P.patSlotPos k : bpath)))) borrowed (indexMaybe k slotTypes >>= id)
-                  | k <- [0 .. n - 1]
-                  ]
-                a1 =
-                  foldr
-                    (\sc acc' -> maybe acc' (\bid -> addBinder bid q borrowed acc') (scId sc))
-                    a0
-                    newScopes
+                (newScopes, a1) = bindPatternScopes owner d q borrowed slotTypes a0 n
              in (n, newScopes, a1)
-          bindPat = bindPatAt ip
-          walkRest d' scs' a0 = go next d' scs' rest lo a0
-          doRestThen child uc t =
-            let (aRest, liveRest) = go next d scs rest lo a
-             in walk ctx ctorTypes [] owner child d scs uc t liveRest aRest
+          walkRest d' scs' a0 = go d' scs' rest lo a0
+          doRestThen uc t =
+            let (aRest, liveRest) = go d scs rest lo a
+             in walk ctx ctorTypes [] owner d scs uc t liveRest aRest
        in case item of
             KBind q pat t _ ->
               let (n, newScopes, aBind) = bindPat q False pat Nothing a
                   (aRest, liveRest) = walkRest (d + n) (newScopes ++ scs) aBind
                   liveBeforeRest = dropLocal n liveRest
-               in walk ctx ctorTypes [] owner (P.kBindActionPos : ip) d scs UseConsumes t liveBeforeRest aRest
+               in walk ctx ctorTypes [] owner d scs UseConsumes t liveBeforeRest aRest
 
             KLet q pat t ->
               let (n, newScopes, aBind) = bindPat q False pat Nothing a
                   (aRest, liveRest) = walkRest (d + n) (newScopes ++ scs) aBind
                   liveBeforeRest = dropLocal n liveRest
-               in walk ctx ctorTypes [] owner (P.kLetValuePos : ip) d scs UseConsumes t liveBeforeRest aRest
+               in walk ctx ctorTypes [] owner d scs UseConsumes t liveBeforeRest aRest
 
             KLetQ pat t mElse ->
               let (n, newScopes, aBind) = bindPat QW False pat Nothing a
@@ -986,26 +995,26 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
                   (aElse, liveElse) = case mElse of
                     Nothing -> (aRest, Set.empty)
                     Just (rp, fe) ->
-                      let (rn, rScopes, aResidue) = bindPatAt (P.kLetQElsePos : ip) QW False rp Nothing aRest
-                          (aFe, liveFe) = walk ctx ctorTypes [] owner (P.kLetQElsePos : ip) (d + rn) (rScopes ++ scs) UseConsumes fe lo aResidue
+                      let (rn, rScopes, aResidue) = bindPat QW False rp Nothing aRest
+                          (aFe, liveFe) = walk ctx ctorTypes [] owner (d + rn) (rScopes ++ scs) UseConsumes fe lo aResidue
                        in (aFe, dropLocal rn liveFe)
                   liveBranches = Set.union liveSuccess liveElse
-               in walk ctx ctorTypes [] owner (P.kLetQScrutPos : ip) d scs UseConsumes t liveBranches aElse
+               in walk ctx ctorTypes [] owner d scs UseConsumes t liveBranches aElse
 
-            KExpr t -> doRestThen (P.kExprActionPos : ip) UseConsumes t
+            KExpr t -> doRestThen UseConsumes t
 
             KVarItem _ _initT actT _ ->
-              let bid = BinderId owner (reverse ip)
+              let (bid, aBid) = freshBinderId owner a
                   sc = Scope d (Just bid) False Nothing
-                  aBind = addBinder bid QW False a
+                  aBind = addBinder bid QW False aBid
                   (aRest, liveRest) = walkRest (d + 1) (sc : scs) aBind
                   liveBeforeRest = Set.delete d liveRest
-               in walk ctx ctorTypes [] owner (P.kVarActionPos : ip) d scs UseConsumes actT liveBeforeRest aRest
+               in walk ctx ctorTypes [] owner d scs UseConsumes actT liveBeforeRest aRest
 
-            KAssign _ _ _ actT _ -> doRestThen (P.kAssignActionPos : ip) UseConsumes actT
+            KAssign _ _ _ actT _ -> doRestThen UseConsumes actT
 
             KReturn t ->
-              walk ctx ctorTypes [] owner (P.kReturnValuePos : ip) d scs UseConsumes t lo a
+              walk ctx ctorTypes [] owner d scs UseConsumes t lo a
 
             KBreak _ -> (a, lo)
             KContinue _ -> (a, lo)
@@ -1014,93 +1023,90 @@ walkDoItems ctx ctorTypes owner path depth scopes items liveOut acc = go 0 depth
               let (aRest, liveRest) = walkRest d scs a
                   loopUses =
                     Set.unions
-                      [ freeKCond d scs (P.kWhileCondPos : ip) cond
-                      , freeDoItems d scs (P.kWhileBodyPos : ip) body
+                      [ freeKCond d scs cond
+                      , freeDoItems d scs body
                       ]
                   loopLiveOut = Set.union liveRest loopUses
-                  (aBody, liveBody) = walkDoItems ctx ctorTypes owner (P.kWhileBodyPos : ip) d scs body loopLiveOut aRest
+                  (aBody, liveBody) = walkDoItems ctx ctorTypes owner d scs body loopLiveOut aRest
                   (aElse, liveElse) = case mElse of
                     Nothing -> (aBody, liveRest)
-                    Just els -> walkDoItems ctx ctorTypes owner (P.kWhileElsePos : ip) d scs els liveRest aBody
+                    Just els -> walkDoItems ctx ctorTypes owner d scs els liveRest aBody
                   liveBeforeCond = Set.unions [loopLiveOut, liveBody, liveElse]
-               in walkKCond (P.kWhileCondPos : ip) d scs cond liveBeforeCond aElse
+               in walkKCond d scs cond liveBeforeCond aElse
 
             KFor _ pat src body mElse ->
               let (aRest, liveRest) = walkRest d scs a
-                  (n, newScopes, aBind) = bindPatAt (P.kForBodyPos : ip) QW False pat Nothing aRest
-                  loopUses = Set.filter (< d) (freeDoItems (d + n) (newScopes ++ scs) (P.kForBodyPos : ip) body)
+                  (n, newScopes, aBind) = bindPat QW False pat Nothing aRest
+                  loopUses = Set.filter (< d) (freeDoItems (d + n) (newScopes ++ scs) body)
                   loopLiveOut = Set.union liveRest loopUses
-                  (aBody, liveBody) = walkDoItems ctx ctorTypes owner (P.kForBodyPos : ip) (d + n) (newScopes ++ scs) body loopLiveOut aBind
+                  (aBody, liveBody) = walkDoItems ctx ctorTypes owner (d + n) (newScopes ++ scs) body loopLiveOut aBind
                   liveBody' = dropLocal n liveBody
                   (aElse, liveElse) = case mElse of
                     Nothing -> (aBody, liveRest)
-                    Just els -> walkDoItems ctx ctorTypes owner (P.kForElsePos : ip) d scs els liveRest aBody
+                    Just els -> walkDoItems ctx ctorTypes owner d scs els liveRest aBody
                   liveBeforeSrc = Set.unions [liveRest, liveBody', liveElse]
-               in walk ctx ctorTypes [] owner (P.kForSourcePos : ip) d scs UseConsumes src liveBeforeSrc aElse
+               in walk ctx ctorTypes [] owner d scs UseConsumes src liveBeforeSrc aElse
 
             KIf alts mElse ->
               let (aRest, liveRest) = walkRest d scs a
-                  (aIf, liveIf) = walkKIf ip d scs alts mElse liveRest aRest
+                  (aIf, liveIf) = walkKIf d scs alts mElse liveRest aRest
                in (aIf, liveIf)
 
-            KDefer _ t -> doRestThen (P.kDeferActionPos : ip) UseConsumes t
+            KDefer _ t -> doRestThen UseConsumes t
 
             KUsing pat acquireT releaseT ->
               let (n, newScopes, aBind) = bindPat QW True pat Nothing a
                   (aRest, liveRest) = walkRest (d + n) (newScopes ++ scs) aBind
                   liveBeforeRest = dropLocal n liveRest
-                  (aRelease, liveRelease) = walk ctx ctorTypes [] owner (P.kUsingReleasePos : ip) d scs UseConsumes releaseT liveBeforeRest aRest
-               in walk ctx ctorTypes [] owner (P.kUsingAcquirePos : ip) d scs UseConsumes acquireT liveRelease aRelease
+                  (aRelease, liveRelease) = walk ctx ctorTypes [] owner d scs UseConsumes releaseT liveBeforeRest aRest
+               in walk ctx ctorTypes [] owner d scs UseConsumes acquireT liveRelease aRelease
 
             KSubDo _ subItems ->
               let (aRest, liveRest) = walkRest d scs a
-               in walkDoItems ctx ctorTypes owner (P.kSubDoBodyPos : ip) d scs subItems liveRest aRest
+               in walkDoItems ctx ctorTypes owner d scs subItems liveRest aRest
 
-    walkKCond cpath d scs = \case
-      KCondPure t -> walk ctx ctorTypes [] owner cpath d scs UseConsumes t
-      KCondAction t -> walk ctx ctorTypes [] owner cpath d scs UseConsumes t
+    walkKCond d scs = \case
+      KCondPure t -> walk ctx ctorTypes [] owner d scs UseConsumes t
+      KCondAction t -> walk ctx ctorTypes [] owner d scs UseConsumes t
 
-    freeTerm d scs cpath t =
-      snd (walk ctx ctorTypes [] owner cpath d scs UseConsumes t Set.empty emptyAcc)
+    freeTerm d scs t =
+      snd (walk ctx ctorTypes [] owner d scs UseConsumes t Set.empty emptyAcc)
 
-    freeKCond d scs cpath = \case
-      KCondPure t -> freeTerm d scs cpath t
-      KCondAction t -> freeTerm d scs cpath t
+    freeKCond d scs = \case
+      KCondPure t -> freeTerm d scs t
+      KCondAction t -> freeTerm d scs t
 
-    freeDoItems d scs cpath kis =
-      snd (walkDoItems ctx ctorTypes owner cpath d scs kis Set.empty emptyAcc)
+    freeDoItems d scs kis =
+      snd (walkDoItems ctx ctorTypes owner d scs kis Set.empty emptyAcc)
 
-    walkKIf ip d scs alts mElse liveRest a =
-      goAlts 0 alts a
+    walkKIf d scs alts mElse liveRest a =
+      goAlts alts a
       where
-        armCount = length alts
-        goAlts _ [] a0 =
+        goAlts [] a0 =
           case mElse of
             Nothing -> (a0, liveRest)
-            Just els -> walkDoItems ctx ctorTypes owner (P.kIfElsePos armCount : ip) d scs els liveRest a0
-        goAlts ai ((cond, body) : more) a0 =
-          let (aBody, liveBody) = walkDoItems ctx ctorTypes owner (P.kIfBodyPos ai : ip) d scs body liveRest a0
-              (aMore, liveMore) = goAlts (ai + 1) more aBody
+            Just els -> walkDoItems ctx ctorTypes owner d scs els liveRest a0
+        goAlts ((cond, body) : more) a0 =
+          let (aBody, liveBody) = walkDoItems ctx ctorTypes owner d scs body liveRest a0
+              (aMore, liveMore) = goAlts more aBody
               liveAfterCond = Set.union liveBody liveMore
-           in walk ctx ctorTypes [] owner (P.kIfCondPos ai : ip) d scs UseConsumes cond liveAfterCond aMore
+           in walk ctx ctorTypes [] owner d scs UseConsumes cond liveAfterCond aMore
 
 -- | Walk all arms of a 'CMatch'. Each arm is an INDEPENDENT completion path
 -- joined against the same @liveOut@; the returned live set is the union over
--- arms (an outer binder is live before the match iff some arm uses it). @ai@ is
--- the running arm index (its child-position under the match node).
+-- arms (an outer binder is live before the match iff some arm uses it).
 data AltLive = AltLive
-  { altLiveIndex :: !Int
-  , altLiveEntry :: !(Set Int)
+  { altLiveEntry :: !(Set Int)
   , altLiveBody :: !(Set Int)
   , altLiveGuardConsumes :: !(Set BinderId)
   , altLiveHasGuard :: !Bool
   }
 
 walkAlts
-  :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Maybe Term -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
-walkAlts _ctx _ctorTypes _owner _path _depth _scopes _useConsumes _mScrutTy [] _liveOut acc _ai = (acc, Set.empty)
-walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy alts liveOut acc ai0 =
-  let (accWalk, armLives) = go ai0 alts acc
+  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> [CaseAlt] -> Set Int -> Acc -> Int -> (Acc, Set Int)
+walkAlts _ctx _ctorTypes _owner _depth _scopes _useConsumes _mScrutTy [] _liveOut acc _ai = (acc, Set.empty)
+walkAlts ctx ctorTypes owner depth scopes useConsumes mScrutTy alts liveOut acc _ai0 =
+  let (accWalk, armLives) = go alts acc
       liveAll = Set.unions (map altLiveEntry armLives)
       (_, accDrops) =
         foldl
@@ -1120,7 +1126,6 @@ walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy alts liveOut
                   a' =
                     addBranchDeadDropsExcept
                       owner
-                      (P.matchArmPos (altLiveIndex alt) : path)
                       scopes
                       liveAll
                       liveAtDrop
@@ -1132,12 +1137,12 @@ walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy alts liveOut
           armLives
    in (accDrops, liveAll)
   where
-    go _ [] a = (a, [])
-    go ai (alt : rest) a =
-      let (aRest, liveRestAlts) = go (ai + 1) rest a
+    go [] a = (a, [])
+    go (alt : rest) a =
+      let (aRest, liveRestAlts) = go rest a
           liveRest = Set.unions (map altLiveEntry liveRestAlts)
-          (aAlt, liveAlt) = walkAlt ctx ctorTypes owner (P.matchArmPos ai : path) depth scopes useConsumes mScrutTy alt liveOut liveRest aRest
-       in (aAlt, liveAlt {altLiveIndex = ai} : liveRestAlts)
+          (aAlt, liveAlt) = walkAlt ctx ctorTypes owner depth scopes useConsumes mScrutTy alt liveOut liveRest aRest
+       in (aAlt, liveAlt : liveRestAlts)
 
 -- | Walk one match arm. The pattern introduces @n = patBindersC@ binders that
 -- are in scope for the guard and body, pushed innermost-LAST (so in the arm
@@ -1150,31 +1155,21 @@ walkAlts ctx ctorTypes owner path depth scopes useConsumes mScrutTy alts liveOut
 -- assertions therefore apply to 'CLam'\/'CLet'\/'CPi' binders, which DO carry
 -- their 'Q'; pattern binders carry no linearity claim to validate.)
 walkAlt
-  :: EvalCtx -> Map GName Term -> GName -> [Int] -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Set Int -> Acc -> (Acc, AltLive)
-walkAlt ctx ctorTypes owner path depth scopes useConsumes mScrutTy (CaseAlt pat mguard body) liveOut guardFailLive acc =
+  :: EvalCtx -> Map GName Term -> GName -> Int -> [Scope] -> UseConsumes -> Maybe Term -> CaseAlt -> Set Int -> Set Int -> Acc -> (Acc, AltLive)
+walkAlt ctx ctorTypes owner depth scopes useConsumes mScrutTy (CaseAlt pat mguard body) liveOut guardFailLive acc =
   let n = patBindersC pat
       slotTypes = reverse (patBindingTypes ctx ctorTypes depth pat (evalTypeAt ctx depth <$> mScrutTy))
       -- pattern slots, innermost-first as they sit in the arm-body de Bruijn
       -- order: slot at body index @k@ was introduced at level @depth+n-1-k@.
-      -- We register them under the arm path with a slot-position suffix so each
-      -- has a distinct, stable BinderId.
-      newScopes =
-        [ Scope (depth + n - 1 - k) (Just (BinderId owner (reverse (P.patSlotPos k : path)))) False (indexMaybe k slotTypes >>= id)
-        | k <- [0 .. n - 1]
-        ]
-      acc0 =
-        foldr
-          (\sc a -> maybe a (\bid -> addBinder bid QW False a) (scId sc))
-          acc
-          newScopes
+      (newScopes, acc0) = bindPatternScopes owner depth QW False slotTypes acc n
       depth' = depth + n
       scopes' = newScopes ++ scopes
       -- guard (if any) runs before the body; both are under the pattern binders
-      (acc1, liveBody) = walk ctx ctorTypes [] owner (P.altBodyPos : path) depth' scopes' useConsumes body liveOut acc0
+      (acc1, liveBody) = walk ctx ctorTypes [] owner depth' scopes' useConsumes body liveOut acc0
       consumingBeforeGuard = accConsumingAssoc acc1
       (acc2, liveArm) = case mguard of
         Nothing -> (acc1, liveBody)
-        Just g -> walk ctx ctorTypes [] owner (P.altGuardPos : path) depth' scopes' UseConsumes g (liveBody `Set.union` guardFailLive) acc1
+        Just g -> walk ctx ctorTypes [] owner depth' scopes' UseConsumes g (liveBody `Set.union` guardFailLive) acc1
       guardConsumes = case mguard of
         Nothing -> Set.empty
         Just _ -> consumingLastUseAssocDelta consumingBeforeGuard (accConsumingAssoc acc2)
@@ -1183,8 +1178,7 @@ walkAlt ctx ctorTypes owner path depth scopes useConsumes mScrutTy (CaseAlt pat 
       liveArm' = foldr Set.delete liveArm [depth .. depth + n - 1]
    in ( acc2
       , AltLive
-          { altLiveIndex = 0
-          , altLiveEntry = liveArm'
+          { altLiveEntry = liveArm'
           , altLiveBody = liveBody'
           , altLiveGuardConsumes = guardConsumes
           , altLiveHasGuard = case mguard of Nothing -> False; Just _ -> True
@@ -1678,6 +1672,8 @@ subInterval (lo1, hi1) (lo2, hi2) = lo1 >= lo2 && hiLe hi1 hi2
     hiLe Nothing (Just _) = False
     hiLe (Just a) (Just b) = a <= b
 
+type CountScope = (Int, Maybe BinderId, Bool, Maybe Value)
+
 -- | The precise per-binder runtime-use interval over a whole body, keyed by the
 -- same 'BinderId's 'annotateOwnership' records. The interval @(lo, hi)@ counts how
 -- many times the binder is used at runtime (read-only occurrences of owned
@@ -1693,262 +1689,259 @@ subInterval (lo1, hi1) (lo2, hi2) = lo1 >= lo2 && hiLe hi1 hi2
 -- the other). It returns intervals for value binders only; an untracked
 -- (type-level) binder records none.
 usageIntervals :: EvalCtx -> Map GName Term -> GName -> Term -> Map BinderId (Int, Maybe Int)
-usageIntervals ctx ctorTypes owner body = snd (count (paramTelescope ctx owner) 0 [] [] UseConsumes body)
+usageIntervals ctx ctorTypes owner body =
+  let (_uses, sub, _next) = count (paramTelescope ctx owner) 0 [] UseConsumes body 0
+   in sub
   where
-    -- @count depth scopes path term@ → (per-binder interval over @term@, accum of
-    -- binders introduced under @term@). @scopes@ resolves a 'CVar' index to its
-    -- binder (innermost first); @path@ is the reversed child path (for keys).
+    fresh n = (BinderId owner n, n + 1)
+
     count
       :: [ParamSite]
       -> Int
-      -> [(Int, Maybe BinderId, Bool, Maybe Value)] -- (level, binderId?, borrowed?, type?)
-      -> [Int]
+      -> [CountScope]
       -> UseConsumes
       -> Term
-      -> (Map BinderId (Int, Maybe Int), Map BinderId (Int, Maybe Int))
-    count _tele _depth _scopes _path UseErased _term = (Map.empty, Map.empty)
-    count tele depth scopes path uc term = case term of
+      -> Int
+      -> (Map BinderId (Int, Maybe Int), Map BinderId (Int, Maybe Int), Int)
+    count _tele _depth _scopes UseErased _term next = (Map.empty, Map.empty, next)
+    count tele depth scopes uc term next = case term of
       CVar i ->
         let lvl = depth - 1 - i
          in case resolve lvl scopes of
               Just (Just bid, borrowed)
-                | not borrowed, useRuntimeUseBool uc -> (Map.singleton bid (1, Just 1), Map.empty)
-              _ -> (Map.empty, Map.empty)
+                | not borrowed, useRuntimeUseBool uc -> (Map.singleton bid (1, Just 1), Map.empty, next)
+              _ -> (Map.empty, Map.empty, next)
 
       CLam _ _ _ b ->
-        let bid = BinderId owner (reverse path)
+        let (bid, next1) = fresh next
             (borrowed, mTy, tele') = case tele of
               ParamSite _ _ tb _ domV : trest -> (tb, Just domV, trest)
               [] -> (False, Nothing, [])
-            (uses, sub) = count tele' (depth + 1) ((depth, Just bid, borrowed, mTy) : scopes) (P.lamBodyPos : path) UseConsumes b
-         in (Map.delete bid uses, recordSelf bid uses sub)
+            (uses, sub, next2) = count tele' (depth + 1) ((depth, Just bid, borrowed, mTy) : scopes) UseConsumes b next1
+         in (Map.delete bid uses, recordSelf bid uses sub, next2)
 
       CPi _ _ _ _ dom cod ->
-        let (uDom, sDom) = count [] depth scopes (P.piDomPos : path) UseErased dom
-            (uCod, sCod) = count [] (depth + 1) ((depth, Nothing, False, Nothing) : scopes) (P.piCodPos : path) UseErased cod
-         in (addUses uDom uCod, Map.union sDom sCod)
+        let (uDom, sDom, next1) = count [] depth scopes UseErased dom next
+            (uCod, sCod, next2) = count [] (depth + 1) ((depth, Nothing, False, Nothing) : scopes) UseErased cod next1
+         in (addUses uDom uCod, Map.union sDom sCod, next2)
 
       CLet _ _ ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
             rhsTele = paramConvTelescopeFromValueAt ctx depth tyV
-            bid = BinderId owner (reverse path)
-            (uRhs, sRhs) = count rhsTele depth scopes (P.letRhsPos : path) UseConsumes rhs
-            (uB, sB) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) (P.letBodyPos : path) UseConsumes b
+            (bid, next1) = fresh next
+            (uB, sB, next2) = count [] (depth + 1) ((depth, Just bid, False, Just tyV) : scopes) UseConsumes b next1
             body' = Map.delete bid uB
-         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB))
+            (uRhs, sRhs, next3) = count rhsTele depth scopes UseConsumes rhs next2
+         in (addUses uRhs body', recordSelf bid uB (Map.union sRhs sB), next3)
 
       CLetRec _ _ ty rhs b ->
         let tyV = evalTypeAt ctx depth ty
             rhsTele = paramConvTelescopeFromValueAt ctx (depth + 1) tyV
-            bid = BinderId owner (reverse path)
+            (bid, next1) = fresh next
             scopes' = (depth, Just bid, False, Just tyV) : scopes
-            (uRhs, sRhs) = count rhsTele (depth + 1) scopes' (P.letRhsPos : path) UseConsumes rhs
-            (uB, sB) = count [] (depth + 1) scopes' (P.letBodyPos : path) UseConsumes b
+            (uB, sB, next2) = count [] (depth + 1) scopes' UseConsumes b next1
+            (uRhs, sRhs, next3) = count rhsTele (depth + 1) scopes' UseConsumes rhs next2
             combined = addUses uRhs uB
-         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB))
+         in (Map.delete bid combined, recordSelf bid combined (Map.union sRhs sB), next3)
 
       CMatch s ann alts ->
-        let (uAlts, sAlts) = countAlts depth scopes (P.matchArmsPos : path) ann alts 0
-            (uS, sS) = count [] depth scopes (P.matchScrutPos : path) UseConsumes s
-         in (addUses uS uAlts, Map.union sS sAlts)
+        let (uAlts, sAlts, next1) = countAlts depth scopes ann alts next
+            (uS, sS, next2) = count [] depth scopes UseConsumes s next1
+         in (addUses uS uAlts, Map.union sS sAlts, next2)
 
       CIf c t e ->
-        let (uT, sT) = count [] depth scopes (P.ifThenPos : path) UseConsumes t
-            (uE, sE) = count [] depth scopes (P.ifElsePos : path) UseConsumes e
-            (uC, sC) = count [] depth scopes (P.ifCondPos : path) UseConsumes c
-         in (addUses uC (joinUses uT uE), Map.unions [sC, sT, sE])
+        let (uT, sT, next1) = count [] depth scopes UseConsumes t next
+            (uE, sE, next2) = count [] depth scopes UseConsumes e next1
+            (uC, sC, next3) = count [] depth scopes UseConsumes c next2
+         in (addUses uC (joinUses uT uE), Map.unions [sC, sT, sE], next3)
 
       CApp {} ->
         let (hd, args) = spineOfTerm term
-            k = length args
             argConsumes = callArgConsumes ctx depth (countScopeTypeAt scopes) hd args
-            children =
-              (replicate k P.appHeadPos, hd, UseConsumes)
-                : [ (P.appArgPos : replicate (k - 1 - j) P.appHeadPos, a, auc)
-                  | (j, ((_, a), auc)) <- zip [0 ..] (zip args argConsumes)
-                  ]
-         in seqKPaths depth scopes path children
-      CCtor _ _ args -> seqK depth scopes path UseConsumes [(P.ctorArgPos i, x) | (i, x) <- zip [0 ..] args]
-      CRecordT fs -> seqK depth scopes path UseErased [(P.recordFieldPos i, x) | (i, x) <- zip [0 ..] (map snd fs)]
-      CRecordV fs -> seqK depth scopes path UseConsumes [(P.recordFieldPos i, x) | (i, x) <- zip [0 ..] (map snd fs)]
-      CVariantT ms -> seqK depth scopes path UseErased [(P.variantMemberPos i, x) | (i, x) <- zip [0 ..] ms]
-      CQuote _ slots -> seqK depth scopes path UseErased [(P.quoteSlotPos i, x) | (i, x) <- zip [0 ..] slots]
+            argTerms = [(a, auc) | ((_, a), auc) <- zip args argConsumes]
+            (uArgs, sArgs, nextArgs) = countSeqR depth scopes argTerms next
+            (uHead, sHead, nextHead) = count [] depth scopes UseConsumes hd nextArgs
+         in (addUses uHead uArgs, Map.union sHead sArgs, nextHead)
+      CCtor _ _ args -> countSeqR depth scopes [(x, UseConsumes) | x <- args] next
+      CRecordT fs -> countSeqR depth scopes [(x, UseErased) | x <- map snd fs] next
+      CRecordV fs -> countSeqR depth scopes [(x, UseConsumes) | x <- map snd fs] next
+      CVariantT ms -> countSeqR depth scopes [(x, UseErased) | x <- ms] next
+      CQuote _ slots -> countSeqR depth scopes [(x, UseErased) | x <- slots] next
 
-      CProj e _ -> count [] depth scopes (P.childPos : path) UseReads e
-      CProjAt e _ _ -> count [] depth scopes (P.childPos : path) UseReads e
-      CInject _ e -> count [] depth scopes (P.childPos : path) UseConsumes e
-      CSealE _ e -> count [] depth scopes (P.childPos : path) UseConsumes e
-      CSigT _ e -> count [] depth scopes (P.childPos : path) UseErased e
-      CThunkE e -> count [] depth scopes (P.childPos : path) UseConsumes e
-      CLazyE e -> count [] depth scopes (P.childPos : path) UseConsumes e
-      CForceE e -> count [] depth scopes (P.childPos : path) UseConsumes e
+      CProj e _ -> count [] depth scopes UseReads e next
+      CProjAt e _ _ -> count [] depth scopes UseReads e next
+      CInject _ e -> count [] depth scopes UseConsumes e next
+      CSealE _ e -> count [] depth scopes UseConsumes e next
+      CSigT _ e -> count [] depth scopes UseErased e next
+      CThunkE e -> count [] depth scopes UseConsumes e next
+      CLazyE e -> count [] depth scopes UseConsumes e next
+      CForceE e -> count [] depth scopes UseConsumes e next
 
-      CGlob _ -> (Map.empty, Map.empty)
-      CSort _ -> (Map.empty, Map.empty)
-      CLit _ -> (Map.empty, Map.empty)
-      CMeta _ -> (Map.empty, Map.empty)
-      CDo _ items -> countDoItems depth scopes path items
+      CGlob _ -> (Map.empty, Map.empty, next)
+      CSort _ -> (Map.empty, Map.empty, next)
+      CLit _ -> (Map.empty, Map.empty, next)
+      CMeta _ -> (Map.empty, Map.empty, next)
+      CDo _ items -> countDoItems depth scopes items next
 
-    -- record a freshly-bound binder's own interval (its scope is the subterm just
-    -- walked) into the accumulator alongside any deeper binders.
     recordSelf bid uses sub =
       Map.insert bid (Map.findWithDefault (0, Just 0) bid uses) sub
 
-    -- a sequence of children evaluated in order: ADD per-binder counts.
-    seqK depth scopes path uc children =
-      let results = [count [] depth scopes (c : path) uc t | (c, t) <- children]
-          uses = foldr addUses Map.empty (map fst results)
-          subs = Map.unions (map snd results)
-       in (uses, subs)
+    countSeqR depth scopes children next0 =
+      foldr
+        ( \(t, uc) (uses, subs, nextIn) ->
+            let (u, s, nextOut) = count [] depth scopes uc t nextIn
+             in (addUses u uses, Map.union s subs, nextOut)
+        )
+        (Map.empty, Map.empty, next0)
+        children
 
-    seqKPaths depth scopes path children =
-      let results = [count [] depth scopes (prefix ++ path) uc t | (prefix, t, uc) <- children]
-          uses = foldr addUses Map.empty (map fst results)
-          subs = Map.unions (map snd results)
-       in (uses, subs)
-
-    countDoItems depth scopes path items = go 0 depth scopes items
+    bindPat d pat borrowed next0 =
+      let n = patBindersC pat
+       in go 0 next0 [] n
       where
-        go _ _ _ [] = (Map.empty, Map.empty)
-        go ix d scs (item : rest) =
-          let ip = P.doItemPos ix : path
-              next = ix + 1
-              bindPatAt bpath pat =
-                let n = patBindersC pat
-                    newScopes =
-                      [ (d + n - 1 - k, Just (BinderId owner (reverse (P.patSlotPos k : bpath))), False, Nothing)
-                      | k <- [0 .. n - 1]
-                      ]
-                 in (n, newScopes)
-              bindPat = bindPatAt ip
-              recordPatSelf uses sub newScopes =
-                foldr
-                  (\(_, mbid, _, _) m -> maybe m (\bid -> Map.insert bid (Map.findWithDefault (0, Just 0) bid uses) m) mbid)
-                  sub
-                  newScopes
-              bindThen pat termPath term =
-                let (n, newScopes) = bindPat pat
-                    (uRest, sRest) = go next (d + n) (newScopes ++ scs) rest
-                    (uTerm, sTerm) = count [] d scs termPath UseConsumes term
+        go k nextAcc rev n
+          | k >= n = (n, reverse rev, nextAcc)
+          | otherwise =
+              let (bid, next1) = fresh nextAcc
+                  sc = (d + n - 1 - k, Just bid, borrowed, Nothing)
+               in go (k + 1) next1 (sc : rev) n
+
+    recordPatSelf uses sub scopes =
+      foldr
+        (\(_, mbid, _, _) m -> maybe m (\bid -> Map.insert bid (Map.findWithDefault (0, Just 0) bid uses) m) mbid)
+        sub
+        scopes
+
+    countDoItems depth scopes items next0 = go depth scopes items next0
+      where
+        go _ _ [] next = (Map.empty, Map.empty, next)
+        go d scs (item : rest) next =
+          let bindThen pat term =
+                let (n, newScopes, next1) = bindPat d pat False next
+                    (uRest, sRest, next2) = go (d + n) (newScopes ++ scs) rest next1
+                    (uTerm, sTerm, next3) = count [] d scs UseConsumes term next2
                     uLocal = addUses uTerm uRest
                     bids = [bid | (_, Just bid, _, _) <- newScopes]
                     outward = foldr Map.delete uLocal bids
-                 in (outward, recordPatSelf uRest (Map.union sTerm sRest) newScopes)
-              restThen termPath term =
-                let (uRest, sRest) = go next d scs rest
-                    (uTerm, sTerm) = count [] d scs termPath UseConsumes term
-                 in (addUses uTerm uRest, Map.union sTerm sRest)
+                 in (outward, recordPatSelf uRest (Map.union sTerm sRest) newScopes, next3)
+              restThen term =
+                let (uRest, sRest, next1) = go d scs rest next
+                    (uTerm, sTerm, next2) = count [] d scs UseConsumes term next1
+                 in (addUses uTerm uRest, Map.union sTerm sRest, next2)
            in case item of
-                KBind _ pat t _ -> bindThen pat (P.kBindActionPos : ip) t
-                KLet _ pat t -> bindThen pat (P.kLetValuePos : ip) t
+                KBind _ pat t _ -> bindThen pat t
+                KLet _ pat t -> bindThen pat t
                 KLetQ pat t mElse ->
-                  let (n, newScopes) = bindPat pat
-                      (uRest, sRest) = go next (d + n) (newScopes ++ scs) rest
+                  let (n, newScopes, next1) = bindPat d pat False next
+                      (uRest, sRest, next2) = go (d + n) (newScopes ++ scs) rest next1
                       bids = [bid | (_, Just bid, _, _) <- newScopes]
                       uSuccess = foldr Map.delete uRest bids
                       sSuccess = recordPatSelf uRest sRest newScopes
-                      (uElse, sElse) = case mElse of
-                        Nothing -> (Map.empty, Map.empty)
+                      (uElse, sElse, next3) = case mElse of
+                        Nothing -> (Map.empty, Map.empty, next2)
                         Just (rp, fe) ->
-                          let (rn, rScopes) = bindPatAt (P.kLetQElsePos : ip) rp
-                              (uFe, sFe) = count [] (d + rn) (rScopes ++ scs) (P.kLetQElsePos : ip) UseConsumes fe
+                          let (rn, rScopes, nextR) = bindPat d rp False next2
+                              (uFe, sFe, nextFe) = count [] (d + rn) (rScopes ++ scs) UseConsumes fe nextR
                               rbids = [bid | (_, Just bid, _, _) <- rScopes]
-                           in (foldr Map.delete uFe rbids, recordPatSelf uFe sFe rScopes)
-                      (uScrut, sScrut) = count [] d scs (P.kLetQScrutPos : ip) UseConsumes t
-                   in (addUses uScrut (joinUses uSuccess uElse), Map.unions [sScrut, sSuccess, sElse])
-                KExpr t -> restThen (P.kExprActionPos : ip) t
+                           in (foldr Map.delete uFe rbids, recordPatSelf uFe sFe rScopes, nextFe)
+                      (uScrut, sScrut, next4) = count [] d scs UseConsumes t next3
+                   in (addUses uScrut (joinUses uSuccess uElse), Map.unions [sScrut, sSuccess, sElse], next4)
+                KExpr t -> restThen t
                 KVarItem _ _ actT _ ->
-                  let bid = BinderId owner (reverse ip)
+                  let (bid, next1) = fresh next
                       sc = (d, Just bid, False, Nothing)
-                      (uRest, sRest) = go next (d + 1) (sc : scs) rest
-                      (uAct, sAct) = count [] d scs (P.kVarActionPos : ip) UseConsumes actT
+                      (uRest, sRest, next2) = go (d + 1) (sc : scs) rest next1
+                      (uAct, sAct, next3) = count [] d scs UseConsumes actT next2
                       uLocal = addUses uAct uRest
-                   in (Map.delete bid uLocal, recordSelf bid uRest (Map.union sAct sRest))
-                KAssign _ _ _ actT _ -> restThen (P.kAssignActionPos : ip) actT
-                KReturn t -> count [] d scs (P.kReturnValuePos : ip) UseConsumes t
-                KBreak _ -> (Map.empty, Map.empty)
-                KContinue _ -> (Map.empty, Map.empty)
+                   in (Map.delete bid uLocal, recordSelf bid uRest (Map.union sAct sRest), next3)
+                KAssign _ _ _ actT _ -> restThen actT
+                KReturn t -> count [] d scs UseConsumes t next
+                KBreak _ -> (Map.empty, Map.empty, next)
+                KContinue _ -> (Map.empty, Map.empty, next)
                 KWhile _ cond loopBody mElse ->
-                  let (uRest, sRest) = go next d scs rest
-                      (uCond, sCond) = countKCond d scs (P.kWhileCondPos : ip) cond
-                      (uBody, sBody) = countDoItems d scs (P.kWhileBodyPos : ip) loopBody
+                  let (uRest, sRest, next1) = go d scs rest next
+                      (uCond, sCond, next2) = countKCond d scs cond next1
+                      (uBody, sBody, next3) = countDoItems d scs loopBody next2
                       loopUses = Map.map (\_ -> (0, Nothing)) (addUses uCond uBody)
-                      (uElse, sElse) = maybe (Map.empty, Map.empty) (countDoItems d scs (P.kWhileElsePos : ip)) mElse
-                   in (addUses uRest (joinUses loopUses uElse), Map.unions [sRest, sCond, sBody, sElse])
+                      (uElse, sElse, next4) = maybe (Map.empty, Map.empty, next3) (\els -> countDoItems d scs els next3) mElse
+                   in (addUses uRest (joinUses loopUses uElse), Map.unions [sRest, sCond, sBody, sElse], next4)
                 KFor _ pat src loopBody mElse ->
-                  let (uRest, sRest) = go next d scs rest
-                      (n, newScopes) = bindPatAt (P.kForBodyPos : ip) pat
-                      (uSrc, sSrc) = count [] d scs (P.kForSourcePos : ip) UseConsumes src
-                      (uBody, sBody) = countDoItems (d + n) (newScopes ++ scs) (P.kForBodyPos : ip) loopBody
+                  let (uRest, sRest, next1) = go d scs rest next
+                      (n, newScopes, next2) = bindPat d pat False next1
+                      (uSrc, sSrc, next3) = count [] d scs UseConsumes src next2
+                      (uBody, sBody, next4) = countDoItems (d + n) (newScopes ++ scs) loopBody next3
                       bids = [bid | (_, Just bid, _, _) <- newScopes]
                       bodyOut = foldr Map.delete uBody bids
                       loopUses = Map.map (\_ -> (0, Nothing)) bodyOut
                       sBody' = recordPatSelf uBody sBody newScopes
-                      (uElse, sElse) = maybe (Map.empty, Map.empty) (countDoItems d scs (P.kForElsePos : ip)) mElse
-                   in (addUses uSrc (addUses uRest (joinUses loopUses uElse)), Map.unions [sRest, sSrc, sBody', sElse])
+                      (uElse, sElse, next5) = maybe (Map.empty, Map.empty, next4) (\els -> countDoItems d scs els next4) mElse
+                   in (addUses uSrc (addUses uRest (joinUses loopUses uElse)), Map.unions [sRest, sSrc, sBody', sElse], next5)
                 KIf alts mElse ->
-                  let (uRest, sRest) = go next d scs rest
-                      (uIf, sIf) = countKIf d scs ip alts mElse
-                   in (addUses uIf uRest, Map.union sRest sIf)
-                KDefer _ t -> restThen (P.kDeferActionPos : ip) t
+                  let (uRest, sRest, next1) = go d scs rest next
+                      (uIf, sIf, next2) = countKIf d scs alts mElse next1
+                   in (addUses uIf uRest, Map.union sRest sIf, next2)
+                KDefer _ t -> restThen t
                 KUsing pat acquireT releaseT ->
-                  let (n, newScopes0) = bindPat pat
-                      newScopes = [(lvl, mbid, True, mty) | (lvl, mbid, _brw, mty) <- newScopes0]
-                      (uRest, sRest) = go next (d + n) (newScopes ++ scs) rest
+                  let (n, newScopes, next1) = bindPat d pat True next
+                      (uRest, sRest, next2) = go (d + n) (newScopes ++ scs) rest next1
                       bids = [bid | (_, Just bid, _, _) <- newScopes]
                       uRestOut = foldr Map.delete uRest bids
                       sRest' = recordPatSelf uRest sRest newScopes
-                      (uRelease, sRelease) = count [] d scs (P.kUsingReleasePos : ip) UseConsumes releaseT
-                      (uAcquire, sAcquire) = count [] d scs (P.kUsingAcquirePos : ip) UseConsumes acquireT
-                   in (addUses uAcquire (addUses uRelease uRestOut), Map.unions [sRest', sRelease, sAcquire])
+                      (uRelease, sRelease, next3) = count [] d scs UseConsumes releaseT next2
+                      (uAcquire, sAcquire, next4) = count [] d scs UseConsumes acquireT next3
+                   in (addUses uAcquire (addUses uRelease uRestOut), Map.unions [sRest', sRelease, sAcquire], next4)
                 KSubDo _ subItems ->
-                  let (uRest, sRest) = go next d scs rest
-                      (uSub, sSub) = countDoItems d scs (P.kSubDoBodyPos : ip) subItems
-                   in (addUses uSub uRest, Map.union sSub sRest)
+                  let (uRest, sRest, next1) = go d scs rest next
+                      (uSub, sSub, next2) = countDoItems d scs subItems next1
+                   in (addUses uSub uRest, Map.union sSub sRest, next2)
 
-    countKCond depth scopes path = \case
-      KCondPure t -> count [] depth scopes path UseConsumes t
-      KCondAction t -> count [] depth scopes path UseConsumes t
+    countKCond depth scopes cond next = case cond of
+      KCondPure t -> count [] depth scopes UseConsumes t next
+      KCondAction t -> count [] depth scopes UseConsumes t next
 
-    countKIf depth scopes ip alts mElse = go 0 alts
+    countKIf depth scopes alts mElse next = go alts next
       where
-        armCount = length alts
-        go _ [] = case mElse of
-          Nothing -> (Map.empty, Map.empty)
-          Just els -> countDoItems depth scopes (P.kIfElsePos armCount : ip) els
-        go ai ((cond, armBody) : more) =
-          let (uBody, sBody) = countDoItems depth scopes (P.kIfBodyPos ai : ip) armBody
-              (uMore, sMore) = go (ai + 1) more
-              (uCond, sCond) = count [] depth scopes (P.kIfCondPos ai : ip) UseConsumes cond
-           in (addUses uCond (joinUses uBody uMore), Map.unions [sCond, sBody, sMore])
+        go [] nextIn = case mElse of
+          Nothing -> (Map.empty, Map.empty, nextIn)
+          Just els -> countDoItems depth scopes els nextIn
+        go ((cond, armBody) : more) nextIn =
+          let (uBody, sBody, next1) = countDoItems depth scopes armBody nextIn
+              (uMore, sMore, next2) = go more next1
+              (uCond, sCond, next3) = count [] depth scopes UseConsumes cond next2
+           in (addUses uCond (joinUses uBody uMore), Map.unions [sCond, sBody, sMore], next3)
 
-    countAlts _depth _scopes _path _mScrutTy [] _ai = (Map.empty, Map.empty)
-    countAlts depth scopes path mScrutTy (alt : rest) ai =
-      let (uAlt, sAlt) = countAlt depth scopes (P.matchArmPos ai : path) mScrutTy alt
-          (uRest, sRest) = countAlts depth scopes path mScrutTy rest (ai + 1)
-       in (joinUses uAlt uRest, Map.union sAlt sRest)
+    countAlts _depth _scopes _mScrutTy [] next = (Map.empty, Map.empty, next)
+    countAlts depth scopes mScrutTy (alt : rest) next =
+      let (uRest, sRest, next1) = countAlts depth scopes mScrutTy rest next
+          (uAlt, sAlt, next2) = countAlt depth scopes mScrutTy alt next1
+       in (joinUses uAlt uRest, Map.union sAlt sRest, next2)
 
-    countAlt depth scopes path mScrutTy (CaseAlt pat mguard b) =
+    countAlt depth scopes mScrutTy (CaseAlt pat mguard b) next =
       let n = patBindersC pat
           slotTypes = reverse (patBindingTypes ctx ctorTypes depth pat (evalTypeAt ctx depth <$> mScrutTy))
-          newScopes =
-            [ (depth + n - 1 - k, Just (BinderId owner (reverse (P.patSlotPos k : path))), False, indexMaybe k slotTypes >>= id)
-            | k <- [0 .. n - 1]
-            ]
+          (newScopes, next1) = bindCountPattern depth slotTypes next n
           depth' = depth + n
           scopes' = newScopes ++ scopes
-          (uB, sB) = count [] depth' scopes' (P.altBodyPos : path) UseConsumes b
-          (uArm, sArm) = case mguard of
-            Nothing -> (uB, sB)
+          (uB, sB, next2) = count [] depth' scopes' UseConsumes b next1
+          (uArm, sArm, next3) = case mguard of
+            Nothing -> (uB, sB, next2)
             Just gd ->
-              let (uG, sG) = count [] depth' scopes' (P.altGuardPos : path) UseConsumes gd
-               in (addUses uG uB, Map.union sG sB)
-          -- the arm's pattern binders are local: record their own intervals and
-          -- drop them from the outward-facing use map.
+              let (uG, sG, nextG) = count [] depth' scopes' UseConsumes gd next2
+               in (addUses uG uB, Map.union sG sB, nextG)
           bids = [bid | (_, Just bid, _, _) <- newScopes]
           selfRecorded = foldr (\bid m -> Map.insert bid (Map.findWithDefault (0, Just 0) bid uArm) m) sArm bids
           outward = foldr Map.delete uArm bids
-       in (outward, selfRecorded)
+       in (outward, selfRecorded, next3)
+
+    bindCountPattern depth slotTypes next0 n =
+      go 0 next0 []
+      where
+        go k nextAcc rev
+          | k >= n = (reverse rev, nextAcc)
+          | otherwise =
+              let (bid, next1) = fresh nextAcc
+                  sc = (depth + n - 1 - k, Just bid, False, indexMaybe k slotTypes >>= id)
+               in go (k + 1) next1 (sc : rev)
 
     resolve lvl = go
       where
@@ -2144,13 +2137,13 @@ checkRefined g bid bo =
       | not (subInterval refined (declInterval (boDeclQ bo)))
       ]
   where
-    msg s = T.unpack (gKey g) <> " @" <> show (biPath bid) <> ": " <> s
+    msg s = T.unpack (gKey g) <> " @" <> renderBinderIdString bid <> ": " <> s
     showI (lo, Just hi) = "[" <> show lo <> "," <> show hi <> "]"
     showI (lo, Nothing) = "[" <> show lo <> ",ω]"
 
 -- | The per-binder declared-quantity invariant (§12.2.5\/§12.2.6).
 --
--- The classification multiset is read PATH-AWARELY by exploiting a structural
+-- The classification multiset is read completion-path-awarely by exploiting a structural
 -- property of the backward walk: within one sequential completion path it
 -- threads @liveOut@ so an upstream occurrence always sees a downstream one and
 -- is therefore 'NonLast'. Hence two 'LastUse's for the same binder can ONLY
@@ -2184,7 +2177,7 @@ checkKinds g bid bo ks cks
   | otherwise = []
   where
     msg s =
-      T.unpack (gKey g) <> " @" <> show (biPath bid) <> ": " <> s
+      T.unpack (gKey g) <> " @" <> renderBinderIdString bid <> ": " <> s
 
 -- ── S1.5 call-site classification assert ─────────────────────────────
 --
@@ -2313,30 +2306,29 @@ argConvFindings ctx owner = goTerm
 -- | Render one definition's 'OwnInfo' for the @kappa dump-ownership@ CLI
 -- surface: per binder its @(declQ, refined, borrowed, droppable)@, and per
 -- 'CVar' occurrence its @LastUse|NonLast|Borrowed@ classification plus whether
--- the syntactic position consumes the reference. The output is sorted by path
--- so it is deterministic and diffable.
+-- the syntactic position consumes the reference. The output is sorted by
+-- owner-local ordinal so it is deterministic and diffable.
 renderOwnInfo :: GName -> OwnInfo -> Text
 renderOwnInfo g oi =
   T.unlines $
     [gKey g]
-      ++ [ "  binder " <> renderPath (biPath bid)
+      ++ [ "  binder " <> renderBinderId bid
              <> " declQ=" <> renderQ (boDeclQ bo)
              <> " refined=" <> renderRefined (boRefined bo)
              <> " borrowed=" <> tshow (boBorrowed bo)
              <> " droppable=" <> tshow (boDroppable bo)
-         | (bid, bo) <- sortOn (biPath . fst) (Map.toList (oiBinders oi))
+         | (bid, bo) <- sortOn (biOrdinal . fst) (Map.toList (oiBinders oi))
          ]
-      ++ [ "  use " <> renderPath (usPath us) <> " " <> renderKind k
+      ++ [ "  use " <> renderUseSite us <> " " <> renderKind k
              <> " consumes=" <> renderConsumes us
-         | (us, k) <- sortOn (usPath . fst) (Map.toList (oiUses oi))
+         | (us, k) <- sortOn (usOrdinal . fst) (Map.toList (oiUses oi))
          ]
-      ++ [ "  drop-site " <> renderPath p <> " binders=" <> T.pack (show (map biPath bids))
+      ++ [ "  drop-site " <> renderBranchSite p <> " binders=" <> T.pack (show (map biOrdinal bids))
          | (p, bids) <- sortOn fst (Map.toList (oiBranchDropSites oi))
          ]
   where
     tshow :: Show a => a -> Text
     tshow = T.pack . show
-    renderPath p = T.pack (show p)
     renderQ = \case
       Q0 -> "0"
       Q1 -> "1"
@@ -2355,3 +2347,15 @@ renderOwnInfo g oi =
       case Map.lookup us (oiUseConsumes oi) of
         Just b -> tshow b
         Nothing -> "?"
+
+renderBinderId :: BinderId -> Text
+renderBinderId = T.pack . renderBinderIdString
+
+renderBinderIdString :: BinderId -> String
+renderBinderIdString bid = "#" <> show (biOrdinal bid)
+
+renderUseSite :: UseSite -> Text
+renderUseSite us = "#" <> T.pack (show (usOrdinal us))
+
+renderBranchSite :: BranchSite -> Text
+renderBranchSite (BranchSite n) = "#" <> T.pack (show n)

@@ -1,19 +1,21 @@
 # Runtime Import Tests
 
-This directory stages runtime-semantics tests converted from the Scala
-reference trees under `/Users/wabbit/ws/refs`.
+This area stages runtime-semantics tests converted from the Scala reference
+trees under `/Users/wabbit/ws/refs`.
 
-They are intentionally outside `tests/conformance` and outside
-`test/native/cases`, so neither the Cabal conformance suite nor the main native
-suite picks them up accidentally. Run them explicitly:
+Passing portable cases live in `tests/conformance/runtime-import`, so the Cabal
+conformance suite picks up their interpreter/harness assertions. The
+runtime-import runner adds the native parity check that conformance alone does
+not provide:
 
 ```sh
-for f in tests/runtime-import/cases/*.kp; do cabal run -v0 kappa -- test "$f"; done
+cabal run -v0 kappa -- test tests/conformance/runtime-import
 bash tests/runtime-import/run-runtime-imports.sh
 ```
 
-`pending/` contains converted reference tests that are intentionally not executed
-yet. Those files are classified as `runtime-pending`, `library-proposal`,
+`tests/runtime-import/pending/` contains converted reference tests that are
+intentionally not executed yet. Those files are classified as `runtime-pending`,
+`library-proposal`,
 `host-bridge-proposal`, or `extension-proposal` in
 `tests/runtime-import/pending/README.md` before they can move into the passing
 import lane.
@@ -21,7 +23,7 @@ import lane.
 ## First imported batch
 
 The initial batch targets portable semantics already specified in
-`docs/Spec.md` §18.1:
+`docs/Spec.md` §18.1 and now lives in `tests/conformance/runtime-import`:
 
 - `promise-multiple-waiters.kp`: ZIO `PromiseSpec` waiter stack safety and Cats
   Effect `DeferredSuite` get-blocks-until-set behavior.

@@ -1,0 +1,9 @@
+-- §12.4.2 module interfaces: the exported type is the fully elaborated
+-- type including its captures (...) annotation; the escaping region is
+-- expressible via the explicit Region binder, so the export is
+-- well-formed.
+module lib
+
+makeGetter : forall (s : Region). (&[s] x : Int) -> ((Unit -> Int) captures (s))
+let makeGetter (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
+    \() -> x

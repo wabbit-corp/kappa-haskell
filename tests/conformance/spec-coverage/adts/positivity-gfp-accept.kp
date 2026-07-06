@@ -1,0 +1,31 @@
+-- Spec: §10.4 (L8856-8926, L8962-8963). Parameter-positivity signatures are
+-- the GREATEST fixed point starting from all-positive. In T (and in the
+-- mutual pair F/G) the parameter occurs only under the group's own tentative
+-- signatures, so the GFP keeps it positive; the forbidden least-fixed-point
+-- (all-non-positive start) would converge to non-positive and wrongly
+-- reject the recursive uses in U and U2.
+
+--! mode check
+--! assertNoErrors
+@PrivateByDefault module main
+
+data T (a : Type) : Type =
+    TLeaf a
+    TNest (T a)
+
+-- POSITIVE only under the GFP: U's recursive occurrence sits in T's
+-- parameter, which must have converged to positive.
+data U : Type =
+    MkU (T U)
+
+data F (a : Type) : Type =
+    FLeaf a
+    FSwap (G a)
+
+data G (a : Type) : Type =
+    GSwap (F a)
+
+data U2 : Type =
+    MkU2 (F U2)
+
+-- STATUS(a51e1bf): PASS

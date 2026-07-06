@@ -1,0 +1,23 @@
+--! assertNoErrors
+--! assertExecute main 17
+
+module main
+
+-- §7.3 receiver forms: a surface `var` receiver in an object-phase value
+-- expression inside a do block is elaborated through its current-value
+-- facet, so x.m reads the CURRENT value at each occurrence; the cell is
+-- selected only by `ref x`, and `x.ref` remains ordinary member selection
+-- from the current value (here Rec's own field named ref).
+type Rec = (m : Int, ref : Int)
+
+main : UIO Int
+let main = do
+    var x : Rec = (m = 1, ref = 100)
+    let a = x.m
+    x = (m = 2, ref = 200)
+    let b = x.m
+    writeRef (ref x) (m = 7, ref = 300)
+    let c = x.m
+    let d = x.ref
+    pureIO (a + b + c + d - 293)
+-- STATUS(a51e1bf): PASS

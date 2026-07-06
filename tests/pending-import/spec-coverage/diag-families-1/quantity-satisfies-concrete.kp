@@ -1,0 +1,39 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+--! assertDiagnosticMatch QuantitySatisfies
+
+-- §3.2.5 (Spec.md L2613-2662): an unsolvable `QuantitySatisfies qcap qdem`
+-- obligation MUST be diagnosed in family kappa.quantity.satisfies. For the
+-- spec's own concrete example (linear binder, body demands it zero times)
+-- the required content is "cannot prove `QuantitySatisfies 1 0`". §12.2.1
+-- (L10860-10872) gives the closed table used by the second negative:
+-- capability 1 does not satisfy demand <=1 (an affine consumer may drop).
+module main
+
+-- POSITIVE: linear identity — demanding exactly once satisfies capability 1.
+useOnce : forall (a : Type). (1 x : a) -> a
+let useOnce x = x
+
+-- POSITIVE (§12.2.1 table, cap <=1 / dem 1): an affine capability meets a
+-- demand of exactly once.
+consumeOnce : forall (a : Type). (1 y : a) -> a
+let consumeOnce y = y
+
+okAffine : forall (a : Type). (<=1 x : a) -> a
+let okAffine x = consumeOnce x
+
+-- NEGATIVE (spec example L2646-2653): the binder is declared linear, the
+-- body demands `x` zero times; required content per L2658-2662:
+--   cannot prove `QuantitySatisfies 1 0`
+bad : forall (a : Type). (1 x : a) -> Unit
+let bad x = ()
+
+-- NEGATIVE (§12.2.1 table, cap 1 / dem <=1): a linear capability cannot be
+-- handed to an at-most-once consumer, which is free to drop it.
+mayDrop : forall (a : Type). (<=1 z : a) -> Unit
+let mayDrop z = ()
+
+badAffineDemand : (1 w : Int) -> Unit
+let badAffineDemand w = mayDrop w
+
+-- STATUS(a51e1bf): FAIL — family kappa.quantity.satisfies is not registered (harness rejects the assertion, §3.1.2A); the compiler instead emits E_QTT_LINEAR_DROP (kappa.quantity.positive-lower-bound) for both negatives, with none of the L2658-2662 required QuantitySatisfies content.

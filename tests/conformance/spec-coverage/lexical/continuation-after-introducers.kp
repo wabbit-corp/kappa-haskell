@@ -1,0 +1,57 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n7\nzero\nother\n1\n2\n42\n"
+
+-- §5.4 continuation contexts: a NEWLINE immediately after a token that
+-- syntactically requires a following expression (`=`, `then`, `else`,
+-- `in`, the introducers `do`/`match`/`case`, `:` in type annotations)
+-- continues the construct on lines at strictly greater indentation
+-- instead of starting a new statement.
+
+module main
+
+-- after `=`
+answer : Int
+let answer =
+    42
+
+-- after `:` in a type annotation
+wide :
+    Int -> Int
+let wide x = x
+
+-- after `case ... ->` (match case bodies continued on deeper lines)
+describe : Int -> String
+let describe n =
+    match n
+    case 0 ->
+        "zero"
+    case _ ->
+        "other"
+
+-- after `then` and `else`
+pick : Bool -> Int
+let pick b =
+    if b then
+        1
+    else
+        2
+
+-- after `in`
+viaIn : Int
+let viaIn =
+    let t = 40 in
+        t + 2
+
+-- `do` at end of line introduces the indented statement block
+main : UIO Unit
+let main = do
+    println answer
+    println (wide 7)
+    printlnString (describe 0)
+    printlnString (describe 3)
+    println (pick True)
+    println (pick False)
+    println viaIn
+
+-- STATUS(a51e1bf): PASS

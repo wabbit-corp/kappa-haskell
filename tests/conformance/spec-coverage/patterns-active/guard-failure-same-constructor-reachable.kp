@@ -1,0 +1,28 @@
+-- §17.1.9 (Spec L18140-L18144): guard failure excludes only the
+-- conjunction of pattern and guard, never the pattern itself. The same
+-- constructor may therefore head a later unguarded case, that case is
+-- reachable at runtime, and the guarded case does not count toward
+-- exhaustiveness on its own (§17.1.7 guard boundary).
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "big\nsmall\nnone\n"
+
+data MyOption (a : Type) : Type =
+    MyNone
+    MySome (value : a)
+
+describe : MyOption Integer -> String
+let describe x =
+    match x
+    case MySome v if ltInt 9 v -> "big"
+    case MySome v -> "small"
+    case MyNone -> "none"
+
+main : UIO Unit
+let main = do
+    printlnString (describe (MySome 10))
+    printlnString (describe (MySome 1))
+    printlnString (describe MyNone)
+
+-- STATUS(a51e1bf): PASS

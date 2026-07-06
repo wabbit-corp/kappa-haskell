@@ -1,0 +1,4 @@
+module qlib
+
+val : Int
+let val = 5

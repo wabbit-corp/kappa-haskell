@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 proof sources (L16748-16759) combined with §16.1.7.1 Step 1
+-- borrow introduction: a stable-alias equality licenses the transport of
+-- a borrow-introduced argument without disturbing borrow constraints —
+-- the temporary borrow of box (demanded at (& box : FlagBox b)) ends
+-- with the application site, so the later linear consume is accepted.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox (payload : Int)
+
+readSame : (0 b : Bool) -> (& box : FlagBox b) -> Int
+let readSame (0 b : Bool) (& box : FlagBox b) : Int = box.payload
+
+-- POSITIVE: alias equality x = y transports the borrowed argument, and
+-- the borrow region stays intact through the transported call.
+viaBorrowedAlias : (x : Bool) -> (1 box : FlagBox x) -> Int
+let viaBorrowedAlias (x : Bool) (1 box : FlagBox x) : Int =
+    block
+        let y = x
+        let r = readSame y box
+        match box
+        case MakeFlagBox p -> r + p

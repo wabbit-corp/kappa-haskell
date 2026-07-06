@@ -1,0 +1,36 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertErrorCount 1
+
+-- Combination: §13.1.1 MemberId canonicity x §13.2.1.1 record canonical
+-- field order. Anonymous record types are union members; the MemberId of
+-- a record member is computed from its CANONICAL field order, so a union
+-- spelled with a permuted record member (and permuted member order) is
+-- the same union type. Match arms bind the record and project fields.
+module main
+
+type Shape = (| (w : Integer, h : Integer) | (side : Integer,) |)
+type ShapeSwapped = (| (side : Integer,) | (h : Integer, w : Integer) |)
+
+area : Shape -> Integer
+let area s =
+    match s
+    case (| r : (w : Integer, h : Integer) |) -> mulInt r.w r.h
+    case (| sq : (side : Integer,) |)         -> mulInt sq.side sq.side
+
+-- permuted member order AND permuted record fields: same type
+sameType : ShapeSwapped -> Shape
+let sameType s = s
+
+-- record-literal injection through both spellings
+useIt : Integer
+let useIt = area (sameType ((side = 4,) : ShapeSwapped))
+
+mk : Shape
+let mk = ((h = 2, w = 3) : Shape)
+
+-- NEGATIVE: a record with a different field set is not a member type
+bad : Shape
+let bad = ((w = 1, d = 2) : Shape)      --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a51e1bf): PASS

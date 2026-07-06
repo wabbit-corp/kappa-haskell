@@ -1,0 +1,24 @@
+-- Perceus S5.B regression: moved-field/skip-slot recognition must account for
+-- de-Bruijn shifts introduced by inner lets. A let-local in the rebuild body is
+-- not one of the matched constructor fields and must not be encoded as a moved
+-- field in the reuse metadata.
+module main
+
+data PairBox : Type =
+    MkPairBox String String
+
+update : PairBox -> PairBox
+let update b =
+    match b
+    case MkPairBox keep oldValue ->
+        let newKeep = stringAppend keep "!"
+        MkPairBox newKeep oldValue
+
+render : PairBox -> String
+let render b =
+    match b
+    case MkPairBox keep value -> stringAppend keep value
+
+main : UIO Unit
+let main =
+    printlnString (render (update (MkPairBox "keep" "old")))

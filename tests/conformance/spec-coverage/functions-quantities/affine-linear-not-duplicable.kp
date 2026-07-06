@@ -1,0 +1,37 @@
+-- §12.2.6 duplication positions (L11487-11520): linear (1) and affine
+-- (<=1) are NOT duplicable; >=1 and ω are. Using a 1/<=1 binder twice
+-- creates an additional live value and is rejected; a mutable-variable
+-- current-value read whose stored type contains a non-duplicable
+-- component is a duplication position and is rejected (§18.6.1).
+module main
+
+data Token : Type =
+    Token
+
+type TwoTok = (x : Token, y : Token)
+
+type Box = (<=1 tok : Token)
+
+-- NEGATIVE: an affine binder supplied to two runtime fields.
+badAffine : (<=1 t : Token) -> TwoTok
+let badAffine (<=1 t : Token) : TwoTok = (x = t, y = t) --!! E_QTT_LINEAR_OVERUSE
+
+-- NEGATIVE: a linear binder duplicated the same way.
+badLinear : (1 t : Token) -> TwoTok
+let badLinear (1 t : Token) : TwoTok = (x = t, y = t) --!! E_QTT_LINEAR_OVERUSE
+
+-- POSITIVE: relevant (>=1) values are duplicable (§12.2.6 table).
+okRelevant : (>=1 n : Int) -> Int
+let okRelevant (>=1 n : Int) : Int = n + n
+
+-- NEGATIVE (spec example L11524-11528): the current-value read `cell`
+-- would duplicate the affine field held in the cell.
+badVarRead : UIO Unit
+let badVarRead = do
+    var cell : Box = (tok = Token)
+    let copy = cell --!! E_VAR_READ_DUPLICATES_LINEAR_VALUE
+    pure ()
+
+--! mode check
+--! assertErrorCount 3
+-- STATUS(a51e1bf): PASS

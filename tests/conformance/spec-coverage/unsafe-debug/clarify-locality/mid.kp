@@ -1,0 +1,8 @@
+module mid
+
+-- §4.3: this module requests clarification of `secret`; the request is
+-- audited here and MUST NOT leak to other importing modules.
+import oplib.(clarify secret)
+
+reexport : Int
+let reexport = secret

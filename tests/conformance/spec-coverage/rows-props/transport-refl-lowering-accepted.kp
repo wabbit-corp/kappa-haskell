@@ -1,0 +1,20 @@
+--! mode compile
+--! assertNoErrors
+
+-- §11.4.1 proof-relevant transport (positive): a subst whose proof
+-- argument is definitionally refl is backend-lowerable ("the proof
+-- argument is definitionally refl"), so compiling a runtime-relevant
+-- transport of a runtime-relevant value must succeed with no
+-- kappa.equality.transport-not-lowerable diagnostic.
+module main
+
+data VecB (n : Nat) : Type =
+    MkVecB
+
+castRefl : VecB 2 -> VecB 2
+let castRefl (v : VecB 2) : VecB 2 = subst @Nat @VecB @2 @2 refl v
+
+out : VecB 2
+let out = castRefl MkVecB
+
+-- STATUS(a51e1bf): PASS

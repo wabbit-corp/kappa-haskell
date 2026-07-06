@@ -1,0 +1,37 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertErrorCount 1
+
+-- §13.1.6 (Spec.md L12339-L12350): there is no separate tag namespace —
+-- every union arm is a TYPE. A nullary branch is an ordinary singleton
+-- data type declared separately (or Unit); a bare undeclared name in arm
+-- position is simply an unresolved type name, not an implicit tag.
+module main
+
+data Missing : Type =
+    Missing
+
+type OptionalInt = (| Missing | Integer |)
+
+orZero : OptionalInt -> Integer
+let orZero v =
+    match v
+    case (| m : Missing |)  -> 0
+    case (| n : Integer |)  -> n
+
+-- injection of the singleton value picks the Missing member
+absent : OptionalInt
+let absent = Missing
+
+-- Unit works when no dedicated name is needed
+viaUnit : (| Unit | Integer |) -> Integer
+let viaUnit v =
+    match v
+    case (| u : Unit |)    -> 0
+    case (| n : Integer |) -> n
+
+-- NEGATIVE: `Null` was never declared as a type
+bad : (| Null | Integer |) -> Integer   --!! E_NAME_UNRESOLVED
+let bad v = 0
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,47 @@
+-- §12.2.4 (L11249-11252): the quantity solver MUST NOT depend on source
+-- declaration order except through ordinary lexical scoping, and MUST be
+-- deterministic for a fixed elaboration environment. Two clusters of
+-- declarations that differ only in top-level order must elaborate with
+-- identical quantity obligations (all solvable here).
+module main
+
+data Token : Type =
+    MkToken Int
+
+-- Cluster A: the consumer is declared BEFORE the helper it demands
+-- linearly (top-level forward reference).
+consumeA : (1 t : Token) -> Int
+let consumeA (1 t : Token) : Int = spendA t
+
+spendA : (1 t : Token) -> Int
+let spendA (1 t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+-- Cluster B: identical shapes, helper declared FIRST. The generated
+-- obligations (QuantitySatisfies 1 1 at each call, positive lower
+-- bounds on each binder) must be solved exactly as in cluster A.
+spendB : (1 t : Token) -> Int
+let spendB (1 t : Token) : Int =
+    match t
+    case MkToken n -> n
+
+consumeB : (1 t : Token) -> Int
+let consumeB (1 t : Token) : Int = spendB t
+
+-- Same-shaped relevant/branch obligations in both orders (§16.4.4 join).
+joinA : (>=1 x : Int) -> Bool -> Int
+let joinA (>=1 x : Int) (b : Bool) : Int =
+    if b then x else x + 1
+
+joinB : (>=1 x : Int) -> Bool -> Int
+let joinB (>=1 x : Int) (b : Bool) : Int =
+    if b then x else x + 1
+
+useBoth : Int
+let useBoth = consumeA (MkToken 1) + consumeB (MkToken 2)
+
+--! mode check
+--! assertNoErrors
+--! assertType useBoth Int
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,22 @@
+-- §15.15 (Spec L15610-L15628) + §15.3: a recursive PROOF whose cons branch
+-- needs the branch-local constructor fact and the transparent equations of
+-- (++) — the spec's lenAppend example shape. Any helper lowering of the
+-- match must retain those facts; the structural recursion is also
+-- conversion-reducible (§15.1 case 2), so refl closes the Nil branch.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+appendNilRight : (xs : List Int) -> (xs ++ Nil) = xs
+let appendNilRight xs =
+    match xs
+    case Nil -> refl
+    case y :: rest -> cong (\t -> y :: t) (appendNilRight rest)
+
+-- Composing the inductive lemma under a congruence: the recursive proof's
+-- certificate is usable as ordinary erased evidence.
+lengthAppendNil : (xs : List Int) -> listLength (xs ++ Nil) = listLength xs
+let lengthAppendNil xs = cong listLength (appendNilRight xs)
+
+-- STATUS(a51e1bf): PASS

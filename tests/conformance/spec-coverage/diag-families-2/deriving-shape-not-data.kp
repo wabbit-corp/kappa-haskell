@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+--! assertDiagnosticMatch (not (a )?data|data type)
+
+-- §3.2.13, §22.1: `inspectAdt` on a type whose visible head (after
+-- following transparent aliases) is not a data type MUST fail with a
+-- kappa.deriving.shape diagnostic (portable meaning
+-- E_DERIVING_SHAPE_NOT_DATA). The positive half checks that a proper
+-- data type is inspectable at the same splice shape.
+module main
+
+import std.deriving.shape.*
+
+data Color : Type =
+    Red
+    Green
+
+type IntFun = Int -> Int
+
+goodShape : Elab (Syntax String)
+let goodShape = do
+    let shape <- inspectAdt @Color '{ type Color }
+    stringSyntax "ok"
+
+badShape : Elab (Syntax String)
+let badShape = do
+    let shape <- inspectAdt @IntFun '{ type IntFun }
+    stringSyntax "unreachable"
+
+good : String
+let good = $(goodShape)
+
+bad : String
+let bad = $(badShape)
+-- STATUS(a51e1bf): PASS

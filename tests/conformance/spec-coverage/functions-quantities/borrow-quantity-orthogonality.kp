@@ -1,0 +1,34 @@
+-- §12.2.1 (L10874-10884): a borrowed binder's interval quantity and its
+-- borrowed access are checked SEPARATELY — the quantity by the ordinary
+-- interval rules, the borrow by the escape/region rules of §§12.2-12.4.
+-- An affine quantity licenses dropping the binding, but it never
+-- licenses the borrow escaping its region.
+module main
+
+data File : Type =
+    Handle Int
+
+readF : (& f : File) -> Int
+let readF (& f : File) : Int =
+    match f
+    case Handle n -> n
+
+-- POSITIVE: affine borrowed binder, zero demands (droppable).
+ignoreIt : (<=1 & x : File) -> Int
+let ignoreIt (<=1 & x : File) : Int = 0
+
+-- POSITIVE: affine borrowed binder, exactly one non-consuming demand.
+readOnce : (<=1 & x : File) -> Int
+let readOnce (<=1 & x : File) : Int = readF x
+
+-- NEGATIVE: the affine quantity would permit dropping `x`, but the
+-- closure result still captures the borrowed view — borrow non-escape
+-- is checked independently of the quantity (skolem escape, §12.3).
+badEscape : (<=1 & x : File) -> (Unit -> Int)
+let badEscape (<=1 & x : File) : (Unit -> Int) =
+    \() -> readF x --!! kappa.borrow.escape
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+-- STATUS(a51e1bf): PASS

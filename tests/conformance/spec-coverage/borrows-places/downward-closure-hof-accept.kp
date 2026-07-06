@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.3 downward-only closures: a closure capturing only & variables
+-- whose regions are live may be passed to a higher-order function whose
+-- parameter is elaborated with a compatible region environment — here
+-- the parameter type mentions the region via captures (s). §12.4.2: at
+-- a call site an explicit region variable may be instantiated by a
+-- caller-local rigid region.
+module main
+
+apply : forall (s : Region). ((Unit -> Int) captures (s)) -> Int
+let apply (@0 s : Region) (f : ((Unit -> Int) captures (s))) : Int =
+    f ()
+
+-- caller supplies its own explicit region
+callExplicit : forall (s : Region). (&[s] x : Int) -> Int
+let callExplicit (@0 s : Region) (&[s] x : Int) : Int =
+    apply (\() -> x)
+
+-- forwarding through a second region-polymorphic layer stays compatible
+callNested : forall (u : Region). (&[u] x : Int) -> Int
+let callNested (@0 u : Region) (&[u] x : Int) : Int =
+    callExplicit x
+
+-- STATUS(a51e1bf): PASS

@@ -5,15 +5,16 @@
 # For each `proposed/<b>.kp` it builds the native binary at -O2, runs it R times
 # with $KAPPA_GC_STATS=1, and reports the MEDIAN wall time plus the cumulative
 # allocation (`total_bytes`, `collections`) and per-iteration allocation
-# (`total_bytes / N`).  Where a like-for-like `proposed/raw/<b>.c` baseline
-# exists, it builds+runs that at -O2 too and reports the native/raw-C time RATIO.
+# (`total_bytes / N`).  Where a like-for-like `proposed/raw/<b>.c` or
+# `proposed/raw/<b>.cpp` baseline exists, it builds+runs that at -O2 too and
+# reports the native/raw time RATIO.
 #
 # This is REPORT-ONLY by default (the guide's gate philosophy §4: convert a
 # report to a ratio/alloc gate only once the matching roadmap item lands and a
 # fair baseline exists — e.g. an `adtbuild` alloc/iter gate after R1.1).  With
 # `--gate` it enforces the few gates that ARE currently fair (see GATES below).
 #
-# Methodology realized (design §2): -O2 native + raw-C; result printed so the C
+# Methodology realized (design §2): -O2 native + raw C/C++; result printed so the C
 # compiler cannot fold the loop away (the raw baselines use a volatile sink);
 # R invocations with the median reported; allocation counted separately from
 # time; per-iteration allocation surfaced.  DEFERRED (tracked, design §2):
@@ -68,6 +69,7 @@ if ! have_driver; then
   echo "SKIP: no C driver (set \$KAPPA_CC or install zig/cc/gcc/clang)."; exit 0
 fi
 RAWCC="${KAPPA_CC:-cc} -O2"
+RAWCXX="${KAPPA_CXX:-c++} -O2"
 
 rm -rf "$WORK"; mkdir -p "$WORK"
 echo "== building the kappa CLI =="
@@ -91,6 +93,9 @@ bench_n() {
     adtbuild) echo 2000000 ;;
     adtmatch) echo 500000 ;;
     byteloop) echo 1000000 ;;
+    s5_listmap_reuse) echo 20000 ;;
+    s5_rbtree_reuse) echo 32767 ;;
+    s5_rbtree_insert_reuse) echo 12000 ;;
     *) echo "" ;;
   esac
 }
@@ -101,6 +106,9 @@ bench_expected() {
     adtbuild) echo 2000001000000 ;;
     adtmatch) echo 500000 ;;
     byteloop) echo 1000000 ;;
+    s5_listmap_reuse) echo 20000 ;;
+    s5_rbtree_reuse) echo 32767 ;;
+    s5_rbtree_insert_reuse) echo 19777 ;;
     *) echo "" ;;
   esac
 }
@@ -146,6 +154,7 @@ for b in "${BENCHES[@]}"; do
   fi
   # one stats run for total_bytes/result, REPS timing runs for the median
   stats="$(KAPPA_GC_STATS=1 "$exe" 2>&1)"; src=$?
+  printf '%s\n' "$stats" >"$WORK/$b.stats"
   if [ "$src" -ne 0 ]; then
     printf "%-18s %12s\n" "$b" "RUN-FAIL"
     printf '%s\n' "$stats" | sed 's/^/    /' | head -4
@@ -159,16 +168,25 @@ for b in "${BENCHES[@]}"; do
   fi
   nt="$(cat "$WORK/$b.nt")"
   n="$(bench_n "$b")"; api="-"; [ -n "$n" ] && [ -n "$tb" ] && api="$(awk "BEGIN{printf \"%.1f\", $tb/$n}")"
-  # raw-C baseline + ratio, if present
+  # raw C/C++ baseline + ratio, if present
   rct="-"; ratio="-"
+  raw_src=""; raw_exe=""; raw_compile=""
   if [ -f "$RAW/$b.c" ]; then
-    if $RAWCC "$RAW/$b.c" -o "$WORK/${b}_c" >"$WORK/$b.cc.log" 2>&1; then
-      if ! { for _ in $(seq 1 "$REPS"); do elapsed "$WORK/${b}_c" "${n:-}"; done; } | median > "$WORK/$b.rt"; then
+    raw_src="$RAW/$b.c"; raw_exe="$WORK/${b}_c"; raw_compile="$RAWCC"
+  elif [ -f "$RAW/$b.cpp" ]; then
+    raw_src="$RAW/$b.cpp"; raw_exe="$WORK/${b}_cpp"; raw_compile="$RAWCXX"
+  fi
+  if [ -n "$raw_src" ]; then
+    if $raw_compile "$raw_src" -o "$raw_exe" >"$WORK/$b.raw.log" 2>&1; then
+      if ! { for _ in $(seq 1 "$REPS"); do elapsed "$raw_exe" "${n:-}"; done; } | median > "$WORK/$b.rt"; then
         fails=$((fails+1)); rct="RAW-RUN-FAIL"
       else
         rct="$(cat "$WORK/$b.rt")"
         ratio="$(awk "BEGIN{ if($rct>0) printf \"%.1fx\", $nt/$rct; else printf \"n/a\" }")"
       fi
+    else
+      rct="RAW-BUILD-FAIL"
+      [ "$GATE" -eq 1 ] && fails=$((fails+1))
     fi
   fi
   # correctness check
@@ -182,11 +200,13 @@ done
 if [ "$GATE" -eq 1 ]; then
   echo ""; echo "== gates (currently-fair only) =="
   # scalar_intloop: LR1 must keep this an alloc-free unboxed worker loop.
-  tb="$(KAPPA_GC_STATS=1 "$WORK/scalar_intloop" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
-  if [ -n "$tb" ] && [ "$tb" -le 100000 ]; then
-    echo "   ok scalar_intloop alloc ${tb}B <= 100KB (LR1 unboxed worker loop)"
-  else
-    echo "   FAIL scalar_intloop alloc ${tb:-?}B > 100KB — the Int scalar loop regressed to boxing"; fails=$((fails+1))
+  if [ -x "$WORK/scalar_intloop" ]; then
+    tb="$(KAPPA_GC_STATS=1 "$WORK/scalar_intloop" 2>&1 | sed -n 's/.*total_bytes=\([0-9]*\).*/\1/p')"
+    if [ -n "$tb" ] && [ "$tb" -le 100000 ]; then
+      echo "   ok scalar_intloop alloc ${tb}B <= 100KB (LR1 unboxed worker loop)"
+    else
+      echo "   FAIL scalar_intloop alloc ${tb:-?}B > 100KB — the Int scalar loop regressed to boxing"; fails=$((fails+1))
+    fi
   fi
   # adtbuild (R1.1 LANDED): saturated-ctor applications lower to a direct kctor,
   # so construction is bounded to the data representation (≈1 cons KValue + its

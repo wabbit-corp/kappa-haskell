@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4.1 + §16.1.1.2: the compiler-generated success binder of
+-- safe-navigation (?.) is place-preserving, and projecting through a
+-- borrowed alias extends the original place path. POSITIVE: ?. through
+-- a borrowed field alias is an ordinary read. NEGATIVE: the borrow of
+-- box.opt is still live at the consume of box, so the whole-root
+-- consume overlaps it — ?. must not have laundered the footprint into
+-- a fresh root.
+module main
+
+import std.prelude.(type Option)
+
+type Inner = (c : Int)
+type Box = (1 opt : Option Inner, tag : Int)
+
+consumeBox : (1 b : Box) -> Box
+let consumeBox (1 b : Box) : Box = b
+
+-- POSITIVE: safe navigation through a borrowed alias of box.opt
+peek : (& box : Box) -> Option Int
+let peek (& box : Box) : Option Int =
+    block
+        let & o = box.opt
+        o?.c
+
+-- NEGATIVE: borrow of box.opt live across the whole-root consume
+bad : (1 box : Box) -> (Option Int, Box)
+let bad (1 box : Box) : (Option Int, Box) =
+    block
+        let & o = box.opt
+        let x = o?.c
+        (x, consumeBox box) --!! E_QTT_BORROW_OVERLAP
+
+-- STATUS(a51e1bf): PASS

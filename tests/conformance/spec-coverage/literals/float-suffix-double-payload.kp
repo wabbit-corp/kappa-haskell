@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertType twoPi Double
+--! assertType scaled Double
+--! assertEval twoPi 6.28
+--! assertEval scaled 200000
+--! assertEval viaIntSuffix 8
+
+-- §6.1.6: a suffix on a float literal elaborates as `suf litVal` with
+-- litVal : Double. 'e'/'E' is an exponent only when followed by an
+-- optional sign and at least one digit, so `1e5rad` is the float 1e5
+-- with suffix rad, while `1erad` is the INTEGER 1 with the identifier
+-- suffix `erad` (Nat payload).
+
+rad : Double -> Double
+let rad d = mulDouble d 2.0
+
+erad : Nat -> Integer
+let erad n = addInt (natToInt n) 7
+
+twoPi : Double
+let twoPi = 3.14rad
+
+scaled : Double
+let scaled = 1e5rad
+
+viaIntSuffix : Integer
+let viaIntSuffix = 1erad
+-- STATUS(a51e1bf): PASS

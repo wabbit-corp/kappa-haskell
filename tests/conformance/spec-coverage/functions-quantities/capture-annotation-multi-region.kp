@@ -1,0 +1,40 @@
+-- §12.3.1 (L11820-11827): the regions listed in `captures (...)` form a
+-- SET — order is not semantically significant (canonical rendering
+-- orders by first binding occurrence); a closure capturing two explicit
+-- regions checks against the annotation written in either order.
+module main
+
+data Box : Type =
+    MkBox Int
+
+readBox : (& b : Box) -> Int
+let readBox (& b : Box) : Int =
+    match b
+    case MkBox n -> n
+
+-- POSITIVE: two explicit regions, annotation in binding order.
+pairGetter :
+    forall (s1 : Region) (s2 : Region).
+    (&[s1] x : Box) -> (&[s2] y : Box) -> ((Unit -> Int) captures (s1, s2))
+let pairGetter (@0 s1 : Region) (@0 s2 : Region) (&[s1] x : Box) (&[s2] y : Box) : ((Unit -> Int) captures (s1, s2)) =
+    \() -> readBox x + readBox y
+
+-- POSITIVE: identical value at the SWAPPED annotation — capture sets
+-- are order-insensitive, so this must also be accepted.
+swapGetter :
+    forall (s1 : Region) (s2 : Region).
+    (&[s1] x : Box) -> (&[s2] y : Box) -> ((Unit -> Int) captures (s2, s1))
+let swapGetter (@0 s1 : Region) (@0 s2 : Region) (&[s1] x : Box) (&[s2] y : Box) : ((Unit -> Int) captures (s2, s1)) =
+    \() -> readBox x + readBox y
+
+-- POSITIVE: capture-set subsumption (L11888-11893) — a closure over
+-- only s1 checks against the larger set {s1, s2}.
+subsumed :
+    forall (s1 : Region) (s2 : Region).
+    (&[s1] x : Box) -> (&[s2] y : Box) -> ((Unit -> Int) captures (s1, s2))
+let subsumed (@0 s1 : Region) (@0 s2 : Region) (&[s1] x : Box) (&[s2] y : Box) : ((Unit -> Int) captures (s1, s2)) =
+    \() -> readBox x
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a51e1bf): PASS

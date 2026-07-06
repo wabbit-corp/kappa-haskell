@@ -1,0 +1,45 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "a1:7\na2:7\na3:7\n"
+
+-- Imported from:
+--   Cats Effect IOSuite / multiple awaiters on a fiber all observe completion
+-- Spec target: §18.1.4, await returns the target fiber's terminal Exit and does
+-- not consume it.
+module main
+
+import std.prelude.(type Exit(..))
+
+awaitValue : Fiber Void Int -> UIO Int
+let awaitValue f = do
+    let ex <- await f
+    match ex
+      case Success v -> ioPure v
+      case Failure _ -> ioPure 0
+
+workerBody : Promise Void Unit -> UIO Int
+let workerBody gate = do
+    awaitPromise gate
+    ioPure 7
+
+main : UIO Unit
+let main = do
+    let gate <- newPromise
+    let worker <- fork (workerBody gate)
+    let a1 <- fork (awaitValue worker)
+    let a2 <- fork (awaitValue worker)
+    let a3 <- fork (awaitValue worker)
+    let ok <- completePromise gate (Success Unit)
+    let _ = ok
+    let e1 <- await a1
+    let e2 <- await a2
+    let e3 <- await a3
+    match e1
+      case Success v -> printlnString ("a1:" ++ showInt v)
+      case Failure _ -> printlnString "a1:failed"
+    match e2
+      case Success v -> printlnString ("a2:" ++ showInt v)
+      case Failure _ -> printlnString "a2:failed"
+    match e3
+      case Success v -> printlnString ("a3:" ++ showInt v)
+      case Failure _ -> printlnString "a3:failed"

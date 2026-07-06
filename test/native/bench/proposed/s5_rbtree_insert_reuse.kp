@@ -1,0 +1,63 @@
+-- Bench: s5_rbtree_insert_reuse
+-- Purpose: Perceus S5.B drop-guided FBIP reuse on the rbtree-insert class of
+--   path-copying update, not just whole-tree map/rebuild. The insert path
+--   consumes a unique tree, descends through one child, and rebuilds the current
+--   same-footprint Node with the updated child. The midpoint insertion order
+--   keeps the tree balanced enough that the benchmark measures the intended
+--   path-copying shape rather than degenerate-list behavior.
+-- Expected optimized lowering: the Node arm proves a unique token with
+--   `ktry_reuse_ctor` before the nested comparison branches and each same-size
+--   Node rebuild uses `kreuse_ctor_skip`; recursive child calls receive owned
+--   child fields without forcing a duplicate that would defeat reuse down the
+--   path. The final lookup keeps the tree live without adding an O(n) traversal
+--   that the std::map baseline does not perform.
+
+module main
+
+data Color : Type =
+    Red
+    Black
+
+data RBTree : Type =
+    Empty
+    Node (color : Color) (left : RBTree) (key : Int) (value : Int) (right : RBTree)
+
+insert : Int -> Int -> RBTree -> RBTree
+let insert k v t decreases treeSize t =
+    match t
+    case Empty -> Node Black Empty k v Empty
+    case Node color left key value right ->
+        if ltInt k key then Node color (insert k v left) key value right
+        else if ltInt key k then Node color left key value (insert k v right)
+        else Node color left key v right
+
+insertRangeFuel : Int -> Int -> Int -> RBTree -> RBTree
+let insertRangeFuel fuel lo hi t decreases fuel =
+    if leInt fuel 0 then t
+    else if ltInt hi lo then t
+    else
+        let mid = divInt (addInt lo hi) 2
+        let t1 = insert mid mid t
+        let nextFuel = subInt fuel 1
+        let t2 = insertRangeFuel nextFuel lo (subInt mid 1) t1
+        insertRangeFuel nextFuel (addInt mid 1) hi t2
+
+treeSize : RBTree -> Int
+let treeSize t =
+    match t
+    case Empty -> 0
+    case Node _ left _ _ right -> addInt 1 (addInt (treeSize left) (treeSize right))
+
+lookupDefault : Int -> Int -> RBTree -> Int
+let lookupDefault k default t decreases treeSize t =
+    match t
+    case Empty -> default
+    case Node _ left key value right ->
+        if ltInt k key then lookupDefault k default left
+        else if ltInt key k then lookupDefault k default right
+        else value
+
+main : UIO Unit
+let main =
+    let t = insertRangeFuel 20 1 12000 Empty
+    printlnString (showInt (addInt 12000 (lookupDefault 7777 0 t)))

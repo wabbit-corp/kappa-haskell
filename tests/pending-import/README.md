@@ -20,6 +20,12 @@ classifies the same error (e.g. `type.mismatch` → `application.argument-mismat
 the per-category counts here are now approximate (they reflect the original
 staging pass).
 
+Follow-up import pass: 227 additional ANON fixtures that now pass and have a
+direct `docs/Spec.md` category/reference were moved to
+`tests/conformance/imported-anon/`. Passing candidates that still described their
+behavior as a spec gap or source-language-specific addition remain staged here
+until the behavior is actually specified.
+
 ## Categories
 
 ### `syntax-dialect/` — 491

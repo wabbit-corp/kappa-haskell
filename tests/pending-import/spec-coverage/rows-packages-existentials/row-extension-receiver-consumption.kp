@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
+
+-- §13.2.6 tail transfer + §13.2.7: a row extension that transfers the
+-- receiver's abstract residual tail consumes the receiver at quantity 1.
+-- Using `rec` a second time (to duplicate the tail into a pair) exceeds
+-- the linear quantity; duplicating an unknown tail is only licensed by
+-- a `RecTailSatisfies r ω` premise, which is absent here (§12.2).
+module main
+
+bad :
+    forall (r : RecRow).
+    LacksRec r y =>
+    (1 rec : (x : Int | r)) ->
+    ((x : Int, y : Int | r), (x : Int | r))
+let bad (@0 r : RecRow) (@_ : LacksRec r y) (rec : (x : Int | r)) : ((x : Int, y : Int | r), (x : Int | r)) =
+    (rec.{ y := 1 }, rec)
+
+-- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; row extension is not counted as consumption of the 1-receiver (double consume via two function calls IS caught, so the extension is the missing edge)

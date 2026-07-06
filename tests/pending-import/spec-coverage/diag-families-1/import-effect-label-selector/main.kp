@@ -1,0 +1,18 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.import.effect-label-selector
+--! assertDiagnosticMatch effectLabel
+
+-- §3.2.2 (Spec.md L2107-2124): an import item that selects an effect label
+-- with the invalid internal selector spelling `effect-label` (instead of the
+-- source spelling `effectLabel`) MUST be diagnosed in family
+-- kappa.import.effect-label-selector, with the source selector spelling and
+-- a repair that replaces `effect-label` with `effectLabel` (L2124).
+module main
+
+-- NEGATIVE: internal selector spelling in source.
+import foo.(effect-label counterLabel) --!! kappa.import.effect-label-selector
+
+x : Int
+let x = 1
+
+-- STATUS(a51e1bf): FAIL — kappa.import.effect-label-selector is not registered; the 'effect-label' selector merely parse-recovers (E_RECOVERY_DECLARATION_SKIPPED: unexpected '.') with no selector-spelling payload or effectLabel repair.

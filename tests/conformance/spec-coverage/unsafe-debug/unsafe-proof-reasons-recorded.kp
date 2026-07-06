@@ -1,0 +1,19 @@
+module main
+
+-- §4.5/§4.7: every `unsafeAssertProof` use must be accepted in applied form
+-- with its reason string, and each use produces its own audit-ledger record
+-- (two uses -> two records, in source order). The further §4.5 MUST — that
+-- the interface records the canonical identity, origin, and the SUPPLIED
+-- REASON STRING of each assertion — is not observable through the standard
+-- harness (assertAuditLedger exposes facility names only); only the record
+-- count and acceptance are pinned here.
+lemma1 : (=) "a" "a"
+let lemma1 = unsafeAssertProof "reason one: string refl"
+
+lemma2 : forall (x : String) (y : String). (=) (stringAppend x y) (stringAppend x y)
+let lemma2 = unsafeAssertProof "reason two: append refl"
+
+--! allow_unsafe_assert_proof
+--! assertNoErrors
+--! assertAuditLedger unsafeAssertProof unsafeAssertProof
+-- STATUS(a51e1bf): PASS

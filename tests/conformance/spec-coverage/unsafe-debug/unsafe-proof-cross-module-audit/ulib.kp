@@ -1,0 +1,11 @@
+module ulib
+
+-- §4.5/§11.4: a lawful trait instance settles its law through the gated
+-- `unsafeAssertProof` escape (IsProp discharged via IsSet String).
+trait LawfulTag (a : Type) =
+    tag : a -> a
+    tagIdem : forall (x : a). (=) (tag (tag x)) (tag x)
+
+instance LawfulTag String =
+    let tag s = s
+    let tagIdem = unsafeAssertProof "tag is identity"

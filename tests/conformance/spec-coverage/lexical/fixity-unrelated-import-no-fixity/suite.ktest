@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 2
+--! assertDiagnostic error E_OPERATOR_NO_FIXITY
+--! assertDiagnostic error E_NAME_UNRESOLVED

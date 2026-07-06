@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.2/§11.1.3: each bare `Type` introduces a fresh universe metavariable;
+-- at a generalization boundary, an unconstrained universe metavariable that
+-- appears in the generalized (exported) type IS generalized — not silently
+-- instantiated to a fixed level. Both instantiations below are only accepted
+-- under generalization: `a := Int` needs level 0, `a := Type0` needs >= 1.
+module main
+
+idFn : forall (a : Type). a -> a
+let idFn x = x
+
+-- POSITIVE: instantiation at a Type0 inhabitant.
+atInt : Int
+let atInt = idFn 5
+
+-- POSITIVE: instantiation at a Type1 inhabitant (a := Type0). If the
+-- signature's universe metavariable had been pinned to level 0 instead of
+-- generalized, this use would be a universe violation.
+atLevel1 : Type1
+let atLevel1 = idFn Type0
+
+-- POSITIVE: yet another level (a := Type1) through the same declaration.
+atLevel2 : Type2
+let atLevel2 = idFn Type1
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,17 @@
+-- §3.1.11 internal-placeholder hygiene: the unsolved-implicit rendering
+-- explains the inserted implicit argument with a stable phrase and shows
+-- the user-level goal type — never a raw metavariable id, solver id, or
+-- compiler-only placeholder as the only explanation.
+--! mode check
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+--! assertDiagnosticMatch implicit argument
+--! assertDiagnosticMatch Pretty String
+module main
+
+trait Pretty (a : Type) =
+    pretty : a -> String
+
+needy : String
+let needy = pretty "hello" --!! E_UNSOLVED_IMPLICIT
+
+-- STATUS(a51e1bf): PASS

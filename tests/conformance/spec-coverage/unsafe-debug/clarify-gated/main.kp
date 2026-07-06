@@ -1,0 +1,12 @@
+module main
+
+-- §4.1/§4.2/§4.3: `clarify` is an unsafe/debug import modifier outside the
+-- safe portable subset. With `allow_clarify` disabled (the package-mode
+-- default), its use is a compile-time error (kappa.feature.gated), and the
+-- diagnostic MUST identify BOTH the offending import item ('secret') and
+-- the disabling build setting name `allow_clarify` (§4.2).
+import oplib.(clarify secret)
+
+--! assertDiagnostic error E_FEATURE_INACTIVE
+--! assertDiagnosticMatch clarify.*secret.*allow_clarify
+-- STATUS(a51e1bf): PASS

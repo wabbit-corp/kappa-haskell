@@ -1,0 +1,6 @@
+module plib
+
+-- §8.5.1: a `private` item is not part of the export interface, so only a
+-- §4.3 `unhide` import may reach it.
+secretVal : Int
+private let secretVal = 42

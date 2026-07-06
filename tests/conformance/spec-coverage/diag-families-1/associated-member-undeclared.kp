@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_ASSOCIATED_MEMBER_UNDECLARED
+--! assertDiagnosticFamily error kappa.associated.member-undeclared
+--! assertDiagnosticMatch declared in the trait body
+
+-- §3.2.4 (Spec.md L2504-2523): an instance body defining an associated
+-- static member the governing trait does not declare MUST use family
+-- kappa.associated.member-undeclared, naming the governing trait, the
+-- invalid member, and the declared members, and SHOULD explain that the
+-- member must first be declared in the trait body.
+module main
+
+trait Sized (a : Type) =
+    Size : Int
+
+data Box : Type = MkBox
+
+-- POSITIVE: an instance defining exactly the declared member.
+instance Sized Box =
+    let Size = 1
+
+data Crate : Type = MkCrate
+
+-- NEGATIVE: `Extra` is not declared by trait Sized.
+instance Sized Crate =
+    let Size = 2
+    let Extra = 3 --!! E_ASSOCIATED_MEMBER_UNDECLARED
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,43 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nTrue\n"
+
+-- §6.3.3 fixed dedent: the first newline after the opening delimiter
+-- is removed; the closing-delimiter line's leading spaces define I;
+-- empty lines stay empty; space-only lines drop UP TO |I| spaces (a
+-- space-only line shorter than I is permitted and becomes empty, one
+-- longer than I keeps the excess); every non-blank line must begin
+-- with I, which is stripped.
+
+-- s: I = 4 spaces; contains an empty line, a 6-space space-only line
+-- (keeps 2 spaces), and a deeper-indented content line.
+s : String
+let s = """
+    alpha
+
+    beta
+      gamma
+      
+    """
+
+-- t: contains a 2-space space-only line, shorter than I = 4.
+t : String
+let t = """
+    one
+  
+    two
+    """
+
+-- u: the newline right after the opening delimiter is removed, and the
+-- space-only closing-delimiter line leaves a trailing newline.
+u : String
+let u = """
+    x
+    """
+
+main : UIO Unit
+let main = do
+    println (s == "alpha\n\nbeta\n  gamma\n  \n")
+    println (t == "one\n\ntwo\n")
+    println (u == "x\n")
+-- STATUS(a51e1bf): PASS

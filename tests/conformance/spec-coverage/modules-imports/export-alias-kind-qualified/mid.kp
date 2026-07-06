@@ -1,0 +1,7 @@
+module mid
+
+-- §8.4: an aliased kind-qualified export re-exports ONLY the selected
+-- declaration kind under the alias spelling; the original spelling is
+-- NOT re-exported by that export item.
+export xlib.(type Rose as Tree)
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,18 @@
+module main
+
+-- §5.5.2: importing UNRELATED names from a module does not bring its
+-- other unqualified operator fixities into scope — an unqualified
+-- fixity enters scope only if that operator itself is imported
+-- unqualified. With only `unrelated` imported, the infix use of +++
+-- is rejected by §5.5.3 infix gating (and the unqualified operator
+-- name is not in scope either).
+
+import lib.(term unrelated)
+
+ok : Int
+let ok = unrelated
+
+bad : Int
+let bad = 1 +++ 2 --!! E_OPERATOR_NO_FIXITY
+
+-- STATUS(a51e1bf): PASS

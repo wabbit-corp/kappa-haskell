@@ -1,0 +1,36 @@
+-- §12.2.5 (L11318-11364): a source-level abrupt completion may leave a
+-- scope only after all positive lower-bound obligations of that scope
+-- are satisfied on that completion path. Mirrors the spec's badReturn /
+-- okReturn examples: an early `return` that exits the scope of a `>=1`
+-- binder without demanding it is rejected.
+module main
+
+data Token : Type =
+    Token
+
+useToken : (1 t : Token) -> UIO Unit
+let useToken (1 t : Token) : UIO Unit =
+    match t
+    case Token -> pure ()
+
+-- NEGATIVE (spec example L11341-11349): the `return` path leaves the
+-- scope of `x` without demanding it.
+badReturn : (>=1 x : Token) -> Bool -> UIO Unit
+let badReturn (>=1 x : Token) (b : Bool) : UIO Unit = do --!! E_QTT_LINEAR_DROP
+    if b then
+        return ()
+    useToken x
+
+-- POSITIVE (spec example L11351-11361): the returning branch demands
+-- `x` before exiting; the continuing path demands it afterwards.
+okReturn : (>=1 x : Token) -> Bool -> UIO Unit
+let okReturn (>=1 x : Token) (b : Bool) : UIO Unit = do
+    if b then
+        useToken x
+        return ()
+    useToken x
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a51e1bf): PASS

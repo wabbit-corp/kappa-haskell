@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval viaProj 42
+--! assertEval unboxed 1
+-- STATUS(a51e1bf): FAIL — m.answer and type-position m.Box work, but the constructor facet is unreachable through a module value: 'm.Box 1' fails (E_APPLICATION_ARGUMENT_MISMATCH, treated as the reified type facet) and pattern-head 'case m.Box n' is an unresolved constructor

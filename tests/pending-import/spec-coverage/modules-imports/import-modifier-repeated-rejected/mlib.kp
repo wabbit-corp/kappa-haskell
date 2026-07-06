@@ -1,0 +1,7 @@
+module mlib
+
+x : Int
+let x = 1
+
+y : Int
+opaque let y = 2

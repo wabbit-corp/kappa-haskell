@@ -1,0 +1,4 @@
+module blib
+
+data Box : Type =
+    Box Int

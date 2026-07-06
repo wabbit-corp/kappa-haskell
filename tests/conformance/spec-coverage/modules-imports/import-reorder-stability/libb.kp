@@ -1,0 +1,7 @@
+module libb
+
+onlyB : Int
+let onlyB = 20
+
+shared : Int
+let shared = 2

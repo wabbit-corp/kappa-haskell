@@ -1,0 +1,9 @@
+module lib
+
+-- §10.1 (L8390): with `opaque` on a data declaration the constructors are
+-- not exported (§8.5.3); the type itself still is.
+opaque data Token : Type =
+    MkToken (id : Int)
+
+mk : Int -> Token
+let mk n = MkToken n

@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §11.3.1 (contradiction facts): ContainsRec r l a and LacksRec r l cannot
+-- both be solved in one consistent refinement context. Instantiating the row
+-- tail with a row that demonstrably contains the label makes an assumed
+-- LacksRec premise unsolvable, and the call must be rejected. The spec pins
+-- rejection but no family; the premise surfaces as an unsolved implicit.
+module main
+
+needsLacks : forall (r : RecRow). LacksRec r age => (name : String | r) -> Int
+let needsLacks (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : Int = 0
+
+-- POSITIVE: r := (height : Int) lacks `age`; the premise is solvable.
+fine : Int
+let fine = needsLacks (name = "x", height = 3)
+
+-- NEGATIVE: r := (age : Int) contains `age`; LacksRec r age is unsolvable.
+clash : Int
+let clash = needsLacks (name = "x", age = 1)             --!! kappa.implicit.unsolved
+
+-- STATUS(a51e1bf): PASS

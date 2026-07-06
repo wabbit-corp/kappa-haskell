@@ -1,0 +1,21 @@
+-- Spec: §10.4 (L8839, L8845-8851). A function type is admissible in a
+-- strictly positive position only when its domain does not mention the
+-- recursive type. T may occur in a codomain (Int -> T) but any occurrence
+-- in a domain — including doubly-negative ones like (T -> Int) -> Int —
+-- is not strictly positive and must be rejected.
+
+--! mode check
+--! assertDiagnostic error E_DATA_NOT_STRICTLY_POSITIVE
+--! assertErrorCount 1
+@PrivateByDefault module main
+
+-- POSITIVE: the recursive type appears only in the codomain.
+data Stream : Type =
+    MkStream (Integer -> Stream)
+
+-- NEGATIVE: Bad occurs in the domain of the outer function's domain.
+-- Double negation is NOT positive under strict positivity.
+data Bad : Type =
+    MkBad ((Bad -> Integer) -> Integer)
+
+-- STATUS(a51e1bf): PASS

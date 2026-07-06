@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.2 with §10.1 (combination): suspension binder sugar over a dependent
+-- type — (thunk x : Vec n Byte) desugars to (x : Thunk (Vec n Byte)) inside
+-- an ordinary dependent function type; the sugared and explicit spellings
+-- are the same function type, and forcing yields the dependent result.
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+depThunk : (n : Nat) -> (thunk x : Vec n Byte) -> Vec n Byte
+let depThunk (n : Nat) (thunk x : Vec n Byte) : Vec n Byte = force x
+
+-- POSITIVE: the sugar did not change function-type identity.
+depExplicit : (n : Nat) -> (x : Thunk (Vec n Byte)) -> Vec n Byte
+let depExplicit = depThunk
+
+-- POSITIVE: implicit suspension insertion at a dependent instantiation.
+useDep : Vec 3 Byte
+let useDep = depThunk 3 VNil
+
+-- STATUS(a51e1bf): PASS

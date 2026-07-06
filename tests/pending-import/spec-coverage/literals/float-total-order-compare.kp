@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nFalse\nFalse\nTrue\nTrue\n"
+
+-- §6.1.3: ordering on `Float` MUST be a total order following
+-- IEEE-754 totalOrder semantics: all values are comparable, including
+-- NaN. Consequently `compare` may answer EQ only for bit-identical
+-- values: NaN is ordered away from every number (never EQ against
+-- 1.5), the two zeroes are distinct with -0.0 below +0.0, and the
+-- order is antisymmetric (swapping arguments flips LT/GT).
+
+nan : Float
+let nan = divDouble 0.0 0.0
+
+main : UIO Unit
+let main = do
+    println (compare nan nan == EQ)
+    println (compare nan 1.5 == EQ)
+    println (compare 1.5 nan == EQ)
+    println (not (compare nan 1.5 == compare 1.5 nan))
+    println (compare (-0.0) 0.0 == LT)
+-- STATUS(a51e1bf): FAIL — Ord Float compares via IEEE '<' (ltDouble), so compare answers EQ for NaN-vs-1.5 and for -0.0 vs +0.0 instead of a §6.1.3 total order (got True/True/True/False/False)

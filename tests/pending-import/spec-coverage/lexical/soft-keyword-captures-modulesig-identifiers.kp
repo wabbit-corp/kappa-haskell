@@ -1,0 +1,22 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "8\n15\n"
+
+-- §5.2: `captures` is a soft keyword used only in TYPE positions
+-- (§12.3.1) and `moduleSig` only in TYPE positions (§7.5); in term
+-- binder positions both MUST parse as ordinary identifiers, exactly
+-- like the spec's `let type = 42` example.
+
+module main
+
+addUp : Integer -> Integer -> Integer
+let addUp captures moduleSig = captures + moduleSig
+
+main : UIO Unit
+let main = do
+    let captures = 8
+    println captures
+    let moduleSig = 15
+    println moduleSig
+
+-- STATUS(a51e1bf): FAIL — `captures`/`moduleSig` are not usable as ordinary term binders: the parameter-binder line fails to parse (E_RECOVERY_DECLARATION_SKIPPED) and the do-local `let captures =`/`let moduleSig =` forms misparse as well (type-mismatch/unexpected-indentation cascades)

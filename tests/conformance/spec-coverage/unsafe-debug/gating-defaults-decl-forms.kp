@@ -1,0 +1,26 @@
+module main
+
+-- §4.2: in package mode every unsafe/debug setting defaults to FALSE, so
+-- with no allow_* directives all four declaration-level escapes are
+-- compile-time errors, and each diagnostic MUST identify BOTH the
+-- offending construct (facility + declaration name) and the specific
+-- build setting that disallows it. Legacy `assertTotal` must name
+-- `allow_assert_terminates` (§4.4), not a setting of its own.
+f1 : Integer -> Integer
+assertTerminates let f1 n = f1 n --!! E_FEATURE_INACTIVE
+
+f2 : Integer -> Integer
+assertReducible let f2 n = f2 n --!! E_FEATURE_INACTIVE
+
+f3 : Integer -> Integer
+assertTotal let f3 n = f3 n --!! E_FEATURE_INACTIVE
+
+myUnsafe : forall (@0 p : Type). (@_ : IsProp p) -> (@0 reason : String) -> p
+let myUnsafe = unsafeAssertProof --!! E_FEATURE_INACTIVE
+
+--! assertErrorCount 4
+--! assertDiagnosticMatch assertTerminates.*f1.*allow_assert_terminates
+--! assertDiagnosticMatch assertReducible.*f2.*allow_assert_reducible
+--! assertDiagnosticMatch assertTotal.*f3.*allow_assert_terminates
+--! assertDiagnosticMatch unsafeAssertProof.*allow_unsafe_assert_proof
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,35 @@
+--! mode check
+--! assertDiagnostic error E_VARIANT_MEMBER
+--! assertErrorCount 1
+
+-- §13.1.4 (Spec.md L12317-L12319): the `..rest` binder has the RESIDUAL
+-- union type — scrutinee members minus those consumed by earlier arms —
+-- not the original scrutinee type. Pinned two ways: (a) a match on rest
+-- covering only the leftover members is exhaustive; (b) an arm for an
+-- already-consumed member is not a member of rest's type at all.
+module main
+
+-- (a) after Integer and String arms, rest : (| Bool |): a Bool-only
+-- match on it is exhaustive (would be non-exhaustive at the full type),
+-- and the singleton inferred pattern (| b |) is legal per §13.1.7.
+narrowed : (| Integer | String | Bool |) -> Bool
+let narrowed u =
+    match u
+    case (| n : Integer |) -> True
+    case (| s : String |)  -> True
+    case (| ..rest |) ->
+        match rest
+        case (| b |) -> b
+
+-- (b) Integer was consumed before the residual arm, so rest : (| Bool |)
+-- has no Integer member: matching it against Integer is a member error.
+stale : (| Integer | Bool |) -> Integer
+let stale u =
+    match u
+    case (| n : Integer |) -> n
+    case (| ..rest |) ->
+        match rest
+        case (| m : Integer |) -> m       --!! E_VARIANT_MEMBER
+        case (| b : Bool |)    -> 0
+
+-- STATUS(a51e1bf): PASS

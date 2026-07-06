@@ -1,0 +1,17 @@
+module main
+
+-- §4.2/§4.3/§4.7: with `allow_unhiding` enabled, `unhide` imports a name
+-- marked `private` in the imported module "as if it were exported for that
+-- importing module" — the import MUST resolve, the value MUST be usable,
+-- and the accepted modifier MUST be recorded in the audit ledger.
+-- (The existing conformance suite only exercises unhide on a PUBLIC name.)
+import plib.(unhide secretVal)
+
+useSecret : Int
+let useSecret = secretVal
+
+--! allow_unhiding
+--! assertNoErrors
+--! assertEval useSecret 42
+--! assertAuditLedger unhide
+-- STATUS(a51e1bf): FAIL — `unhide` is gated and audited, but the private item is still rejected with E_IMPORT_ITEM_NOT_FOUND ("exists ... but is not exported"); §4.3 private-import semantics are not implemented.

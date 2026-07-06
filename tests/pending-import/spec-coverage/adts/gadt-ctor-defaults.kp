@@ -1,0 +1,49 @@
+-- Spec: §10.2 (L8750-8769). A GADT-style constructor's explicit named
+-- binders may carry defaults with the §10.1 rules: the default is checked
+-- in the telescope prefix (may use earlier binders), affects only NAMED
+-- application, and does not change the constructor's explicit Pi type.
+
+module main
+
+--! mode check
+
+data Tagged : Type =
+    MkTagged : (base : Int) -> (offset : Int = base * 2) -> Tagged
+
+-- POSITIVE: named application inserts the default, instantiated with the
+-- actual earlier argument (base = 3, so offset = 6).
+defaulted : Tagged
+let defaulted = MkTagged { base = 3 }
+
+readOffset : Tagged -> Int
+let readOffset t =
+    match t
+    case MkTagged { offset = o } -> o
+
+defaultedOffset : Int
+let defaultedOffset = readOffset defaulted
+
+-- POSITIVE: a supplied field overrides the default, in any order.
+overridden : Int
+let overridden = readOffset (MkTagged { offset = 1, base = 3 })
+
+-- POSITIVE: defaults do not change the Pi type; full positional
+-- application still takes both arguments.
+asFn : Int -> Int -> Tagged
+let asFn = MkTagged
+
+-- POSITIVE: positional application never inserts defaults — MkTagged 5 is
+-- a partial application awaiting 'offset', not (MkTagged 5 10).
+partial : Int -> Tagged
+let partial = MkTagged 5
+
+--! assertNoErrors
+--! assertEval defaultedOffset 6
+--! assertEval overridden 1
+--! assertType partial Int -> Tagged
+
+-- STATUS(a51e1bf): FAIL — the compiler does not parse/elaborate a default
+-- clause inside a GADT Pi binder: (offset : Int = base * 2) yields
+-- E_NOT_A_TYPE "expected a type; this expression has type Int -> Type" on
+-- the constructor signature (the same signature without the default is
+-- accepted), and everything downstream cascades.

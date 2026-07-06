@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+--! assertDiagnostic warning W_UNICODE_VISUAL_ALIAS_REFERENCE
+--! assertType resolved Int
+--! assertEval resolved 42
+
+-- §7.1 (lookup steps 4-9): unqualified lookup inspects the binding
+-- group for the reference's strongVisualNameKey; with no exact
+-- strict-key match and exactly one admissible declaration, lookup
+-- chooses it and emits W_UNICODE_VISUAL_ALIAS_REFERENCE (§3.1.3 lists
+-- the warning as SHOULD). The reference below is backtick CYRILLIC
+-- CAPITAL A (U+0410) resolving to latin `A`; backtick spellings
+-- contribute the same keys while `unicode-names` is inactive
+-- (§5.1/§2.1A).
+
+module main
+
+let A = 41
+
+resolved : Int
+let resolved = `А` + 1
+
+-- STATUS(a51e1bf): FAIL — no strongVisualNameKey lookup: the Cyrillic reference is E_NAME_UNRESOLVED instead of resolving to A with W_UNICODE_VISUAL_ALIAS_REFERENCE

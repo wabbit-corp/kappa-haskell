@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertType half Double
+--! assertStdout "5\n4\n42\n1.5\n"
+
+-- §5.5.1 numeric-literal disambiguation: a decimal point is part of a
+-- numeric literal only when followed by at least one decimal digit and
+-- not immediately followed by another '.'. So `1..5` is `1` `..` `5`
+-- (inclusive range), `1..<5` is `1` `..<` `5` (half-open range),
+-- `42.echo` is `42` `.` `echo` (receiver method call, §2.8.4), and
+-- `1.5` is a single floating-point literal.
+
+module main
+
+echo : forall (a : Type). (this x : a) -> a
+let echo @a (this x : a) = x
+
+incl : List Integer
+let incl = [for i in 1..5, yield i]
+
+excl : List Integer
+let excl = [for i in 1..<5, yield i]
+
+dotted : Int
+let dotted = 42.echo
+
+half : Double
+let half = 1.5
+
+main : UIO Unit
+let main = do
+    println (listLength incl)
+    println (listLength excl)
+    println dotted
+    println half
+
+-- STATUS(a51e1bf): PASS

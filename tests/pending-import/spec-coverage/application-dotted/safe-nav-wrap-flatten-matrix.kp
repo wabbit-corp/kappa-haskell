@@ -1,0 +1,38 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.1.2 (L16090-16149) worked examples: the leftmost ?. splits the
+-- chain, the WHOLE residual (including later plain '.' steps) elaborates
+-- under the fresh payload binder, and the wrap/flatten choice dispatches
+-- on the residual body type. Cases 1-4 must all yield Option Int, and
+-- a?.b?.c is ill-typed when b is a plain (non-Option) field (L16102).
+module main
+
+type PlainLeaf = (c : Int)
+type PlainMid = (b : PlainLeaf)
+type OptLeaf = (c : Option Int)
+type OptMid = (b : Option OptLeaf)
+type MixedLeaf = (c : Option Int)
+type MixedMid = (b : MixedLeaf)
+type OptMid2 = (b : Option PlainLeaf)
+
+-- POSITIVE (Case 1): all plain; residual __x.b.c : Int wraps once.
+case1 : Option PlainMid -> Option Int
+let case1 a = a?.b.c
+
+-- POSITIVE (Case 2): all optional; both steps flatten.
+case2 : Option OptMid -> Option Int
+let case2 a = a?.b?.c
+
+-- POSITIVE (Case 3): plain then optional; residual is already Option Int.
+case3 : Option MixedMid -> Option Int
+let case3 a = a?.b.c
+
+-- POSITIVE (Case 4): optional then plain; the plain result wraps.
+case4 : Option OptMid2 -> Option Int
+let case4 a = a?.b?.c
+
+-- NEGATIVE (Case 1, L16102): with b plain, the second ?. sees the
+-- non-Option residual __x.b : PlainLeaf and the chain is ill-typed.
+bad : Option PlainMid -> Option Int
+let bad a = a?.b?.c --!! kappa.type.mismatch

@@ -1,6 +1,6 @@
 # Perceus Stage S5 — Implementation Plan (KCore/KBackendIR split → drop-guided FBIP reuse)
 
-Status: **S5.A landed for native emission.** S0→S4 have landed and been independently reviewed sound: precise RC with
+Status: **S5.A landed for native emission; S5.B native FBIP reuse is implemented in this changeset and pending final review.** S0→S4 have landed and been independently reviewed sound: precise RC with
 free-on-zero is default-on, with the biased fast/slow split + shared-object reclamation (TSan/UAF-clean,
 25–45% thread-local RC perf recovered). Phase A now has the native-codegen split the plan required:
 erasure classification has a shared `Repr` authority; the codegen-only `quote∘force` kind-domain helper is
@@ -19,10 +19,12 @@ miscompile *class* — erasing a **non-leading** field shrinks a runtime structu
 pre-erasure indices (crash, and one silent-wrong-read case) — now **fixed** (runtime-kept reindexing) and
 **gated** by native regression tests (`ctor-erased-tail-pattern`, `tuple-erased-field-pattern`,
 `poly-lambda-erased-arg`); the projection path was already fixed via `runtimeRecordFieldIndex`. Three items
-S5.A deliberately deferred to Phase B — A3-substrate-has-no-consumer, no-reuse-pass-yet, and the residual
-physical R-path cleanup — are enumerated as the Phase-B **entry state in §2.0**. S5 remains the
+S5.A deliberately deferred to Phase B — A3-substrate-has-no-consumer, no-reuse-pass-yet, and physical
+R-path cleanup — are enumerated as the Phase-B **entry state in §2.0** and their Phase-B status is called out
+there. S5 remains the
 **marquee perf lever** — drop-guided **FBIP reuse**
-(Functional But In-Place; Lorenzen/Leijen 2022), the rbtree-beats-`std::map` class of win. **Decision
+(Functional But In-Place; Lorenzen/Leijen 2022), the rbtree allocation-reduction class of win whose
+literal `std::map` speed target is representation-gated (§4). **Decision
 (recorded):** S5 is done **split-first** — the KCore/KBackendIR split lands as Phase A, then the FBIP reuse
 pass as Phase B on the typed IR. Companion to [PERCEUS-RC-DESIGN.md](PERCEUS-RC-DESIGN.md) §3 (the reuse
 pipeline) and [KCORE-KBACKENDIR-SCOPING.md](../../docs/KCORE-KBACKENDIR-SCOPING.md) (the Phase A design).
@@ -42,7 +44,7 @@ and all three are what the KCore/KBackendIR split now supplies or makes explicit
 3. **A materialized erasure/representation lowering** — so the backend reads node fields instead of
    re-deriving (`isKindDomainValueAt`'s `quote∘force`, `argConvSelect` re-walks, …; ~69 sites).
 
-The alternative — *basic same-arity match-local reuse on the side-table* (the rbtree win, faster payoff) —
+The alternative — *basic same-footprint match-local reuse on the side-table* (the rbtree win, faster payoff) —
 was **not** chosen: split-first does S5 **once, cleanly**, retires R-path, and the split independently unblocks
 **LLVM-RC** and the **layout/unboxing** program, so it is one foundational investment serving three levers.
 
@@ -205,15 +207,16 @@ reuse itself. Three items were explicitly deferred at the S5.A hand-off and are 
    `s5_rbtree_insert_reuse`, and the runtime primitive harness. The literal Koka-style
    rbtree-insert-vs-`std::map` speed comparison is carried as a **tracked report**, not an S5.B acceptance
    gate: the allocation/reuse gates prove the mechanism; *beating* `std::map` additionally needs the unboxed
-   value representation (per node it must retire the `kctor_arg`/`kas_int`/compare-prim overhead — see §4) and
-   is deferred to the representation/unboxing program. FBIP alone reaches zero-alloc but ≈1.3× slower today.
-3. **Residual physical R-path cleanup (non-blocking).** Native value emission is fully off the old path-keyed
-   bridge — `C.hs`/`LLVM.hs` read no `csOwnership`/`OwnInfo`/`biPath`. But the *producer*, `Ownership.hs`'s
-   `BinderId { biPath :: [Int] }`, is still structurally path-keyed, and the KBackendIR lowering bridges
-   path→node-identity once; some non-emission planning/audit/dump paths may still read the legacy ownership
-   structures. Finishing the physical retirement (re-key the producer off `biPath`, or delete the residual
-   legacy reads) is a Phase-B cleanup lane — it does **not** gate reuse, but it removes the last place the
-   R-path could be silently re-wired once B starts threading reuse tokens.
+   value representation and tighter layout/scalar paths for the residual boxed dispatch overhead (see §4) and
+   is deferred to the representation/unboxing program. FBIP makes the proven rebuild operation allocation-free,
+   but the current boxed benchmark fixture still has setup/result allocation and reports ≈1.3× slower today.
+3. **Physical R-path cleanup.** Native value emission was already fully off the old path-keyed bridge —
+   `C.hs`/`LLVM.hs` read no `csOwnership`/`OwnInfo` side table when attaching ownership facts. Phase B now
+   also physically retires the leftover structural-path ownership producer: `Ownership.hs` uses deterministic
+   owner-local ordinals for its observe-only binders, uses, and branch-drop sites; the obsolete child-position
+   numbering module has been removed from the build; and KBackendIR lowering no longer bridges
+   path→node identity. The ownership dump/cross-check/refinement artifact can still exist, but it cannot
+   silently reintroduce R-path by reusing old structural keys.
 
 **What FBIP does.** When a program pattern-matches a data structure and immediately rebuilds a same-shaped
 one — the classic case is an in-place-looking update such as `Cons h t → Cons h' t`, or a red-black-tree
@@ -282,10 +285,10 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 4. **The reuse mechanism is the S5.B gate; the `std::map` speed target is representation-gated.** RC-DESIGN
    §3's headline is Koka's rbtree insert ≈ 19% faster than hand-tuned C++ `std::map` — but that is Koka's
    result *with its full unboxed value representation*, not FBIP alone. On Kappa's current uniform-boxed
-   `KValue` representation, FBIP removes **allocation** but every node visit still pays `kctor_arg` field
-   dispatch + `kas_int` unboxing + a comparison prim-call, so the tree loop cannot yet match `std::map`'s
-   inline-`int` / fixed-offset-load loop. Empirically, after FBIP **plus some additional unboxing** the insert
-   fixture is **zero-allocation but ≈1.3× slower** than `std::map` — the residual is boxing/dispatch, a
+   `KValue` representation, FBIP removes **allocation** but the tree loop still pays boxed-value and layout
+   overhead that `std::map`'s inline-`int` / fixed-offset-load loop avoids (even where the native backend now
+   uses direct proven slots and fast integer compares). Empirically, after FBIP **plus some additional
+   unboxing** the insert fixture's hot reuse path is **allocation-free but ≈1.3× slower** than `std::map` — the residual is boxing/dispatch, a
    *different lever* (the representation / unboxing / layout program, coupled with the LLVM backend), which no
    reuse pass can close. **S5.B's hard gate is therefore the mechanism**: boxed list-map, rbtree-shaped
    recursive rebuilds, and rbtree insert must show positive reuse counts, RC-on allocation reduction,
@@ -327,27 +330,27 @@ RC-DESIGN §3; it runs *after* dup/drop insertion and is **frame-limited** (expl
 | **S5.A1** | move backend-facing ownership onto stable KBackendIR node/binder identities | byte-identical; RC-on==RC-off; R-path class retired from native emission; `csOwnership` tampering does not affect codegen |
 | **S5.A2a** | differential scaffold: observe-only lowering computes erasure/conv/layout/ownership, checked vs the legacy path | retired; it was never the deliverable |
 | **S5.A2b** | define `data KBackendIR` (separate tree; erased positions omitted; ownership/rep as node fields); port `C.hs`/`LLVM.hs` to consume it | real tree + fail-closed validator + main native emitter consumption landed; byte-identical; §34.3.3 legality green |
-| **S5.A2c** | delete the scaffold: `bbTerm`, `[Bool]` masks, `bbNodeIds`/`boiCompat*`/`boiMissing*`, the path-keyed ownership bridge from native emission | wrapper scaffold is gone; KBackendIR lowering no longer imports `PathScheme` or reattaches `oiBranchDropSites`; legacy `Ownership.hs` remains observe/cross-check only |
+| **S5.A2c** | delete the scaffold: `bbTerm`, `[Bool]` masks, `bbNodeIds`/`boiCompat*`/`boiMissing*`, the path-keyed ownership bridge from native emission | wrapper scaffold is gone; KBackendIR lowering no longer reattaches `oiBranchDropSites`; legacy `Ownership.hs` remains observe/cross-check only |
 | **S5.A3** | representation metadata (ctor type, packing class, field reps, validated boxed-footprint metadata) on KBackendIR nodes | ctor layout facts are carried and validated on ctor/match nodes; same-size reuse-site discrimination remains Phase B |
 | **S5.B0** | runtime `drop_reuse`/`reuse_alloc` + the S4-aware is-unique check; **become the first A3 consumer** — read `CtorLayoutInfo.clBoxedFootprintBytes`/packing class from the KBackendIR node as the same-size discriminator (§2.0 item 1) | landed for boxed constructor cells as `kdrop_reuse_ctor` / `kreuse_ctor` plus fused/early-token helpers; runtime harness covers unique reuse, aliased/shared rejection, arity mismatch, packed-immediate fallback, moved-field fallback, and reuse counting |
 | **S5.B1** | the reuse pass (match-destructure drop + same-size arm alloc) — closes §2.0 item 2 (first actual reuse) | C/native direct-arm site landed and is gated; reuse remains restricted to direct same-arm constructor rebuilds |
 | **S5.B2** | drop specialization + dup/drop fusion | landed for direct moved constructor fields and for early-token unique branches where consumed old fields are moved through the arm; unproven/fallback paths keep the conservative dup/drop sequence |
-| **S5.B3** | the reuse perf gate + poison/TSan over the corpus | **acceptance:** list-map, rbtree-shaped n-ary rebuild, and rbtree insert reuse gated with poison, RC-on==RC-off output, positive reuse counts, and RC-on allocation reduction. **Tracked report (NOT acceptance):** the ≈19%-vs-`std::map` comparison — representation-gated (FBIP reaches zero-alloc but ≈1.3× slower today; beating `std::map` needs the unboxing program, see §4). Koka's ≈19% is likely out of reach without more unboxing and moves to the representation program's gate |
-| **S5.B4** *(cleanup, non-blocking)* | finish the physical R-path retirement (§2.0 item 3): re-key `Ownership.hs` off `biPath` or delete the residual legacy-ownership reads in non-emission planning/audit/dump paths | native emission remains off the path-keyed bridge; physical producer cleanup is complete only when residual `biPath`/legacy ownership reads are gone; byte-identical |
+| **S5.B3** | the reuse perf gate + poison/TSan over the corpus | **acceptance:** list-map, rbtree-shaped n-ary rebuild, and rbtree insert reuse gated with poison, RC-on==RC-off output, positive reuse counts, and RC-on allocation reduction. **Tracked report (NOT acceptance):** the ≈19%-vs-`std::map` comparison — representation-gated (FBIP makes the proven rebuilds allocation-free but the full boxed fixture remains ≈1.3× slower today; beating `std::map` needs the unboxing program, see §4). Koka's ≈19% is likely out of reach without more unboxing and moves to the representation program's gate |
+| **S5.B4** | finish the physical R-path retirement (§2.0 item 3): re-key the observe-only `Ownership.hs` producer away from structural paths and delete the unused child-position module | landed: native emission remains off the path-keyed bridge; `Ownership.hs` binders/uses/branch-drop sites are owner-local ordinals; no residual structural-path producer remains; byte-identical |
 
 Ordering rationale: Phase A must precede Phase B (the reuse pass reads typed ctor sizes + stable ownership);
 within A, the cheap high-value relief (A0/A1) lands first; within B, the runtime primitive + first A3 consumer
-and a single proven site (B0/B1) precede the general specialization (B2) and the perf gate (B3). **B4 is a
-cleanup lane that does not gate reuse** — schedule it whenever, but before B starts threading reuse tokens
-through anything that could re-touch the legacy path producer.
+and a single proven site (B0/B1) precede the general specialization (B2) and the perf gate (B3). B4 is now
+done, so future reuse-token work has no structural-path ownership producer to accidentally reattach.
 
 ## Critical files
 
 - `src/Kappa/Core.hs` (the typed KCore) + `src/Kappa/Backend/IR.hs` — the latter now holds the separate
   recursive `data KBackendIR` lowering (runtime-only nodes; erased positions omitted; ownership/rep as node
   fields). C/LLVM now consume the lowered tree for main emission. *Not* a `Term` wrapper — see §A2.
-- `src/Kappa/Ownership.hs` — legacy dump/cross-check/refinement side table. It is no longer reattached to
-  KBackendIR for native codegen; FBIP reuse facts should be computed on KBackendIR identities (B).
+- `src/Kappa/Ownership.hs` — observe-only dump/cross-check/refinement ownership table, now keyed by
+  deterministic owner-local ordinals rather than structural child paths. It is no longer reattached to
+  KBackendIR for native codegen; FBIP reuse facts are computed on KBackendIR identities (B).
 - `src/Kappa/Backend/C.hs` / `LLVM.hs` — consume KBackendIR fields (retire the re-derivation sites). C/native
   currently emits the initial `drop_reuse`/`reuse_alloc` fused site; LLVM still keeps runtime RC
   counting/freeing disabled and must grow ownership maintenance before it can participate in S5 reuse.

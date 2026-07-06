@@ -1,0 +1,18 @@
+-- §3.1.9: kappa.application.argument-mismatch is a standardized
+-- expected-versus-actual family and MUST expose the expected/actual
+-- mismatch payload when both sides are available (expected Integer,
+-- actual Bool here), with mismatchKind application-argument.
+--! mode check
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+--! assertDiagnosticPayload error kappa.application.argument-mismatch /payload/kind expected-actual
+--! assertDiagnosticPayload error kappa.application.argument-mismatch /payload/mismatchKind application-argument
+--! assertDiagnosticPayload error kappa.application.argument-mismatch /payload/expected Integer
+--! assertDiagnosticPayload error kappa.application.argument-mismatch /payload/actual Bool
+module main
+
+f : Int -> Int
+let f n = n
+
+let app = f True --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+-- STATUS(a51e1bf): FAIL — E_APPLICATION_ARGUMENT_MISMATCH payload is kind 'none'; no expected/actual payload although both sides are available

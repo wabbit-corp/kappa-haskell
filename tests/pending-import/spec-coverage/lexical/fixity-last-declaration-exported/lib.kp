@@ -1,0 +1,11 @@
+module lib
+
+-- §5.5.2: the exported fixity for (+++) is the one in scope at the END
+-- of the module, i.e. the LAST top-level fixity declaration — here
+-- infix right 65, not the earlier infix left 55.
+
+infix left 55 (+++)
+(+++) : Int -> Int -> Int
+let (+++) x y = addInt (mulInt 10 x) y
+
+infix right 65 (+++)

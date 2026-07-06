@@ -1,0 +1,24 @@
+-- §2.1 / §2.1A: parser recognition of unquoted Unicode identifiers while
+-- `unicode-names` is inactive is recovery only — every occurrence is
+-- rejected via kappa.feature.gated and never semantically accepted —
+-- while backtick spellings stay available independently of the gate and
+-- neighboring ASCII declarations still elaborate (§3.1 error tolerance).
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.feature.gated
+--! assertDiagnosticPayload error kappa.feature.gated /payload/constructKind unicode-identifier
+--! assertDiagnosticPayload error kappa.feature.gated /payload/activeProfile kappa-v1
+--! assertType after Int
+module main
+
+λ : Int --!! E_FEATURE_INACTIVE
+let λ = 1 --!! E_FEATURE_INACTIVE
+
+let uses = λ --!! E_FEATURE_INACTIVE
+
+let `π` = 5
+
+after : Int
+let after = 42
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7 (L16339-16346): a record field projection whose stored value
+-- preserves named-call metadata is named-callable. §16.1.7A (L16676):
+-- sealing hides named-call metadata unless the exposed signature records
+-- it — an opaque binding behind a nameless Int -> Int -> Int signature
+-- must reject a named application block.
+module main
+
+resize : (image : Int) -> (width : Int) -> Int
+let resize (image : Int) (width : Int) : Int = image + width
+
+type Ops = (doIt : (image : Int) -> (width : Int) -> Int)
+
+ops : Ops
+let ops = (doIt = resize)
+
+-- POSITIVE: named call through a record-field projection.
+fieldCall : Int
+let fieldCall = ops.doIt { image = 1, width = 2 }
+
+sealedResize : Int -> Int -> Int
+opaque let sealedResize = resize
+
+-- NEGATIVE: the sealed signature records no binder names.
+sealedCall : Int
+let sealedCall = sealedResize { image = 1, width = 2 } --!! kappa.type.mismatch

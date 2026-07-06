@@ -1,0 +1,28 @@
+--! mode check
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+
+-- §14.3.2 (Spec.md L14636-L14664): normalization strips transparent
+-- aliases from instance heads, so `Tag AliasedInt` and `Tag Int` are the
+-- SAME normalized head. With observably different member implementations
+-- the two artifacts are not equivalent under §33.2.1, and the program must
+-- be rejected as incoherent; the incoherence diagnostic MUST expose the
+-- normalization fact that made the candidates overlap. It is not
+-- sufficient to treat them as distinct because one head is spelled
+-- through an alias.
+module main
+
+trait Tag (a : Type) =
+    tag : a -> Int
+
+type AliasedInt = Int
+
+instance Tag Int =
+    let tag n = 1
+
+instance Tag AliasedInt =
+    let tag n = 2
+
+use : Int
+let use = tag 7 --!! E_INSTANCE_INCOHERENT
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,21 @@
+-- §3.1 error tolerance: the implementation MUST report multiple
+-- independent errors — including across checker categories. A quantity
+-- violation in one declaration is causally independent of a type error
+-- and an unresolved name in two other declarations, and MUST NOT be
+-- silently dropped because unrelated elaboration errors exist.
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+module main
+
+bad1 : Int
+let bad1 = True --!! E_TYPE_MISMATCH
+
+let bad2 = missingName --!! E_NAME_UNRESOLVED
+
+drops : (>=1 x : Int) -> Int
+let drops x = 0 --!! kappa.quantity.positive-lower-bound
+
+-- STATUS(a51e1bf): FAIL — the quantity checker is skipped when unrelated elaboration errors exist, so the independent E_QTT_LINEAR_DROP is never emitted (got 2 of 3 errors)

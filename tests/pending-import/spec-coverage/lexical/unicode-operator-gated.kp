@@ -1,0 +1,21 @@
+--! requires capability unicode-names
+--! mode check
+--! assertNoErrors
+--! assertEval combined 3
+
+-- §5.5.1: with `unicode-names` active the portable operator character
+-- set is the ASCII operator characters ∪ General_Category Sm; U+2295
+-- (circled plus, Sm) is therefore a portable operator token, declarable
+-- with a fixity (§5.5.2) and usable infix (§5.5.3). Unsupported on
+-- implementations without the gate.
+
+module main
+
+infix left 60 (⊕)
+(⊕) : Int -> Int -> Int
+let (⊕) x y = addInt x y
+
+combined : Int
+let combined = 1 ⊕ 2
+
+-- STATUS(a51e1bf): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)

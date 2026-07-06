@@ -1,0 +1,26 @@
+-- Perceus S5.B regression: an early reuse token is linear.  A match arm whose
+-- nested control flow has one reusable constructor branch and one non-reuse
+-- branch must not acquire a token for the whole arm, because the non-reuse path
+-- would return without consuming or dropping that token.
+module main
+
+data MaybeBox : Type =
+    NoBox
+    SomeBox String Int
+
+step : Bool -> MaybeBox -> MaybeBox
+let step keep b =
+    match b
+    case NoBox -> NoBox
+    case SomeBox label value ->
+        if keep then SomeBox label (addInt value 1)
+        else NoBox
+
+render : MaybeBox -> String
+let render b =
+    match b
+    case NoBox -> "none"
+    case SomeBox label value -> stringAppend label (showInt value)
+
+main : UIO Unit
+let main = printlnString (render (step False (SomeBox "v" 41)))

@@ -1,0 +1,22 @@
+module main
+
+-- §8.3.1: `import M.*` imports all exported binding groups EXCEPT
+-- distinct-spelling constructors. The same-spelling family Box arrives
+-- as one paired binding group (type + constructor); Red/Green require an
+-- explicit `ctor Red` or `type Color(..)` item (see ctors.kp).
+import clib.*
+
+paint : Color -> Color
+let paint c = c
+
+boxed : Int
+let boxed =
+    match Box 4
+      case Box n -> n
+
+badCtor : Color
+let badCtor = Red --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 1
+--! assertEval boxed 4
+-- STATUS(a51e1bf): FAIL — wildcard import brings distinct-spelling constructors into scope (Red resolves without an explicit ctor item)

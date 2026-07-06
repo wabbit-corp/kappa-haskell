@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4 abstract residual tails + §11.3.1B: a residual field projected
+-- under `ContainsRec r buf Int` has a read footprint that includes the
+-- abstract tail node rec.<r>. Consuming the whole root while that
+-- borrow is live must be rejected as an overlap (§12.4: the diagnostic
+-- SHOULD render the overlap as "the residual row r").
+module main
+
+consume :
+    forall (r : RecRow).
+    (1 rec : (name : String | r)) ->
+    (name : String | r)
+let consume (@0 r : RecRow) (rec : (name : String | r)) : (name : String | r) =
+    rec
+
+bad :
+    forall (r : RecRow).
+    ContainsRec r buf Int =>
+    (1 rec : (name : String | r)) ->
+    (name : String | r)
+let bad (@0 r : RecRow) (@_ : ContainsRec r buf Int) (rec : (name : String | r)) : (name : String | r) =
+    let & b = rec.buf
+    in consume rec --!! E_QTT_BORROW_OVERLAP
+
+-- STATUS(a51e1bf): FAIL — the §11.3.1B intrinsic trait ContainsRec is not exposed (E_NAME_UNRESOLVED), so residual-field projection/borrow cannot be justified at all; the abstract-tail overlap check is unreachable.

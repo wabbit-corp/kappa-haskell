@@ -1,0 +1,10 @@
+-- §8.1: two files whose effective module names are equal after
+-- case-folding but differ in case are a compile-time error, and the
+-- diagnostic must identify all colliding files. Script mode lets the
+-- headers differ from the path-derived names (the collision cannot be
+-- staged via file paths on a case-insensitive filesystem).
+module lib.Box
+
+x : Int
+let x = 1
+-- STATUS(a51e1bf): FAIL — case-folded module-name collision is not detected; lib.Box and lib.box coexist without diagnostic

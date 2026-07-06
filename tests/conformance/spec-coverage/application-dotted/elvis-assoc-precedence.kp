@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.2 (L16162-16176): e ?: d desugars to a match whose default d is
+-- typed at the payload type T; ?: is right-associative at precedence 2 —
+-- below comparison/arithmetic and above |> (at 1). Each positive below
+-- typechecks only under the specified parse, and the negative pins that
+-- ?: neither flattens nor coerces the default.
+module main
+
+-- POSITIVE: right associativity: a ?: (b ?: c).
+rightAssoc : Option Int -> Option Int -> Int -> Int
+let rightAssoc (a : Option Int) (b : Option Int) (c : Int) : Int =
+    a ?: b ?: c
+
+-- POSITIVE: binds below comparison: x ?: (y == z).
+belowComparison : Option Bool -> Int -> Int -> Bool
+let belowComparison (x : Option Bool) (y : Int) (z : Int) : Bool =
+    x ?: y == z
+
+-- POSITIVE: binds above |>: 5 |> (fOpt ?: fDef).
+abovePipe : Option (Int -> Int) -> (Int -> Int) -> Int
+let abovePipe (fOpt : Option (Int -> Int)) (fDef : Int -> Int) : Int =
+    5 |> fOpt ?: fDef
+
+-- POSITIVE: for e : Option (Option Int) the payload T = Option Int, so
+-- an Option Int default is exactly T (no implicit flattening involved).
+nestedOk : Option (Option Int) -> Option Int -> Option Int
+let nestedOk (e2 : Option (Option Int)) (d2 : Option Int) : Option Int = e2 ?: d2
+
+-- NEGATIVE: for e : Option Int the default must be Int, not Option Int.
+bad : Option Int -> Option Int -> Int
+let bad (e : Option Int) (d : Option Int) : Int = e ?: d --!! kappa.type.mismatch

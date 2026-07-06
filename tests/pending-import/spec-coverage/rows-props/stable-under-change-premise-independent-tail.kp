@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1 (positive): StableUnderRecChange is an intrinsic row trait;
+-- with an explicit 'StableUnderRecChange r len' premise the update of
+-- the home-prefix field len is licensed. At the call site the concrete
+-- tail (note : String) does not depend on len, so the obligation is
+-- solvable ("no preserved field other than l's own may depend directly
+-- or transitively on l").
+module main
+
+bump :
+    forall (r : RecRow).
+    StableUnderRecChange r len =>
+    (rec : (len : Nat | r)) ->
+    (len : Nat | r)
+let bump (@0 r : RecRow) (@_ : StableUnderRecChange r len) (rec : (len : Nat | r)) : (len : Nat | r) =
+    rec.{ len = 2 }
+
+use1 : (len : Nat, note : String)
+let use1 = bump (len = 0, note = "free")
+
+-- STATUS(a51e1bf): FAIL — StableUnderRecChange intrinsic trait not in scope (E_NAME_UNRESOLVED)

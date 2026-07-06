@@ -29,10 +29,11 @@ static _Atomic unsigned long long g_kgc_frees_total = 0;
 
 static void krt_at_exit(void) {
   if (getenv("KAPPA_GC_STATS")) {
-    fprintf(stderr, "[kappa-gc] total_bytes=%zu heap_size=%zu collections=%lu frees=%llu\n",
+    fprintf(stderr, "[kappa-gc] total_bytes=%zu heap_size=%zu collections=%lu frees=%llu reuses=%llu\n",
             (size_t)GC_get_total_bytes(), (size_t)GC_get_heap_size(),
             (unsigned long)GC_get_gc_no(),
-            atomic_load_explicit(&g_kgc_frees_total, memory_order_relaxed));
+            atomic_load_explicit(&g_kgc_frees_total, memory_order_relaxed),
+            krc_debug_reuse_count());
   }
 }
 

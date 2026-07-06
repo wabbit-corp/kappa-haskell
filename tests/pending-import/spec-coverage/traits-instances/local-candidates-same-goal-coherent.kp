@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+--! assertType twoDicts (@d1 : Tag Int) -> (@d2 : Tag Int) -> Int
+
+-- §14.3.1 step 1 (Spec.md L14560-L14562) with §16.3.3 step 1
+-- (L17307-L17316): at the first lexical scope level with candidates for a
+-- trait goal G, if more than one candidate is present and IsTrait G is
+-- available, the candidates ARE accepted — any two local evidence values
+-- d1 d2 : G are coherent because trait proof irrelevance provides
+-- IsSubsingleton.allEqual d1 d2 — and a deterministic representative is
+-- selected. Local trait candidates also take priority over the global
+-- instance environment (search stops at the first level with candidates).
+module main
+
+trait Tag (a : Type) =
+    tag : a -> Int
+
+instance Tag Int =
+    let tag n = n
+
+-- POSITIVE: two same-type local trait candidates are coherent, not
+-- ambiguous; the bare member use must elaborate.
+twoDicts : (@d1 : Tag Int) -> (@d2 : Tag Int) -> Int
+let twoDicts (@d1 : Tag Int) (@d2 : Tag Int) = tag 5
+
+-- POSITIVE: a single local candidate is used before global search.
+localFirst : (@d : Tag Int) -> Int
+let localFirst (@d : Tag Int) = tag 6
+
+-- STATUS(a51e1bf): FAIL — the compiler reports E_IMPLICIT_AMBIGUOUS ("two implicit candidates in the same scope satisfy this implicit goal") for twoDicts instead of applying the §16.3.3 IsTrait-goal coherence rule and picking a deterministic representative.

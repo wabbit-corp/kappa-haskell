@@ -1,0 +1,35 @@
+module main
+
+-- §9.3 positive lower-bound scope exit: every completion path leaving a
+-- `let ... in` body must satisfy positive lower bounds of its bindings.
+-- `dropped` never consumes the linear `f`; `shadowNoDemand` shadows a
+-- linear `f` without the shadowing right-hand side demanding it. Both
+-- violate the lower bound (family kappa.quantity.positive-lower-bound).
+
+data File : Type =
+    Handle Int
+
+close : (1 f : File) -> Int
+let close f =
+    match f
+    case Handle n -> n
+
+dropped : Int
+let dropped =
+    let
+        1 f = Handle 1 --!! E_QTT_LINEAR_DROP
+    in
+        42
+
+shadowNoDemand : Int
+let shadowNoDemand =
+    let
+        1 f = Handle 1 --!! E_QTT_LINEAR_DROP
+        1 f = Handle 2
+    in
+        close f
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_LINEAR_DROP, E_QTT_LINEAR_DROP
+-- STATUS(a51e1bf): PASS

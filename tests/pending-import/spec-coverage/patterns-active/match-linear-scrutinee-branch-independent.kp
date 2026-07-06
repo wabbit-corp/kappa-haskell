@@ -1,0 +1,39 @@
+-- §17.1.8 (Spec L18092-L18106): constructor discrimination is
+-- observational only. Discriminating a quantity-1 scrutinee does not
+-- consume it; each branch receives it at its original quantity, and
+-- consumptions in different branches are checked branchwise, never
+-- accumulated against one another.
+
+--! mode check
+--! assertNoErrors
+
+data Res : Type =
+    Res (n : Int)
+
+data Choice : Type =
+    L (r : Res)
+    R (r : Res)
+
+consumeRes : (1 r : Res) -> Int
+let consumeRes (1 r : Res) : Int =
+    match r
+    case Res n -> n
+
+-- Each branch of the match consumes the linear scrutinee's component
+-- exactly once; the two branch consumptions are not accumulated.
+consumeChoice : (1 c : Choice) -> Int
+let consumeChoice (1 c : Choice) : Int =
+    match c
+    case L r -> consumeRes r
+    case R r -> consumeRes r
+
+-- `if c is L` borrows c only for branch selection; both arms still hold
+-- the original linear c and may each consume it in full.
+branchwise : (1 c : Choice) -> Int
+let branchwise (1 c : Choice) : Int =
+    if c is L then consumeChoice c else consumeChoice c
+
+-- STATUS(a51e1bf): FAIL — `branchwise` is rejected with
+-- E_QTT_LINEAR_OVERUSE: the compiler counts the `if c is L` discrimination
+-- as a consumption of c (a plain `if b` with the same branches is
+-- accepted), contradicting §17.1.8 "does not by itself consume".

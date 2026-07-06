@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+--! assertType hasIsTrait IsTrait (Named Int)
+
+-- §14.1.1 (Spec.md L14132-L14144): for every well-formed full trait
+-- application the compiler provides `IsTrait (Tr args)` and therefore
+-- `IsSubsingleton (Tr args)` (by the IsTrait supertrait, §14.4
+-- L14890-L14910). §14.4 (L14926-L14928): the proof irrelevance is
+-- propositional — `IsSubsingleton.allEqual d1 d2 : d1 = d2` is a permitted
+-- proof for evidence values d1 d2 : Tr args.
+module main
+
+trait Named (a : Type) =
+    nameOf : a -> String
+
+instance Named Int =
+    let nameOf n = "int"
+
+-- POSITIVE: compiler-synthesized IsTrait evidence.
+hasIsTrait : IsTrait (Named Int)
+let hasIsTrait = summon (IsTrait (Named Int))
+
+-- POSITIVE per spec: IsSubsingleton follows from IsTrait's supertrait.
+hasSub : IsSubsingleton (Named Int)
+let hasSub = summon (IsSubsingleton (Named Int))
+
+-- POSITIVE per spec: propositional proof irrelevance for trait evidence.
+sameEvidence : (d1 : Named Int) -> (d2 : Named Int) -> (=) d1 d2
+let sameEvidence d1 d2 =
+    let
+        sub = summon (IsSubsingleton (Named Int))
+    in
+        sub.allEqual d1 d2
+
+-- STATUS(a51e1bf): FAIL — summon (IsTrait ...) succeeds, but IsSubsingleton (Named Int) is not synthesized (E_UNSOLVED_IMPLICIT: the prelude IsTrait carries no IsSubsingleton supertrait) and the prelude IsSubsingleton is a memberless marker, so `allEqual` does not exist.

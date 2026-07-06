@@ -1,0 +1,14 @@
+module exceptall
+
+-- §8.3/§8.3.1: an UNQUALIFIED except item removes every imported
+-- declaration of that spelling — here both the type facet and the
+-- same-spelling constructor facet of the Box data family.
+import blib.* except (Box)
+
+useOther : Int
+let useOther = other
+
+badType : Int
+let badType = (0 : Box) --!! E_NAME_UNRESOLVED
+
+--! assertErrorCount 2

@@ -1,0 +1,12 @@
+module shadowed
+
+-- §8.3.1A/§8.3.1: a nearer local declaration shadows the colliding
+-- imported candidates, so the same collision is harmless here.
+import a.(value)
+import b.(value)
+
+value : Int
+let value = 9
+
+ok : Int
+let ok = value

@@ -1,0 +1,47 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "base:7 top:10\n"
+
+-- §14.1.4 (Spec.md L14314-L14317): the transitive supertrait closure is
+-- canonicalized by normalized evidence type; when a diamond makes two
+-- projection paths (Top -> LeftArm -> Base and Top -> RightArm -> Base)
+-- reach the same normalized supertrait evidence type, the projected
+-- evidence must be coherent and one canonical projection is stored.
+-- §14.3.3 (L14687-L14713): coherent multi-path projection selects a
+-- deterministic representative rather than failing or choosing arbitrarily.
+module main
+
+trait Base (a : Type) =
+    baseVal : a -> Int
+
+trait Base a => LeftArm (a : Type) =
+    leftVal : a -> Int
+
+trait Base a => RightArm (a : Type) =
+    rightVal : a -> Int
+
+-- Diamond: both arms declare the same Base supertrait.
+trait (LeftArm a, RightArm a) => Top (a : Type) =
+    topVal : a -> Int
+
+instance Base Int =
+    let baseVal n = n
+
+instance LeftArm Int =
+    let leftVal n = n + 1
+
+instance RightArm Int =
+    let rightVal n = n + 2
+
+instance Top Int =
+    let topVal n = n + 3
+
+-- Both paths from the Top binder reach Base Int; the projections come from
+-- the same instance elaboration, so they are coherent and usable.
+throughDiamond : (@t : Top Int) -> Int
+let throughDiamond (@t : Top Int) = baseVal 7
+
+main : UIO Unit
+let main = printlnString ("base:" ++ showInt (throughDiamond + baseVal 0) ++ " top:" ++ showInt (topVal 7))
+
+-- STATUS(a51e1bf): PASS

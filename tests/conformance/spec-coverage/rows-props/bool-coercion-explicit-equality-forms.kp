@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.4.2 (positive): outside the three sugar forms the user writes the
+-- proposition explicitly — (b = True), and the "false branch" as
+-- (b = False). Both elaborate as ordinary equality types in explicit
+-- type positions, and the implicit proofs are discharged by
+-- normalization at the call sites.
+module main
+
+holdsTrue : (n : Int) -> (@0 p : (n == 1) = True) -> Int
+let holdsTrue n = n
+
+holdsFalse : (n : Int) -> (@0 p : (n == 1) = False) -> Int
+let holdsFalse n = n
+
+useTrue : Int
+let useTrue = holdsTrue 1
+
+useFalse : Int
+let useFalse = holdsFalse 2
+
+-- STATUS(a51e1bf): PASS

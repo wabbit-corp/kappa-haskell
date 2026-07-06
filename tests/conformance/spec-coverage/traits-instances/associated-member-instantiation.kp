@@ -1,0 +1,55 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertType viaAlias Bool
+
+-- §14.3.4 (Spec.md L14729-L14759): instance checking substitutes
+-- params := actuals into each member declaration and normalizes; member
+-- definitions check by ORDINARY elaboration against the instantiated
+-- declaration. The checker MUST NOT reject a valid member merely because
+-- its alias-expanded shape differs syntactically from the trait
+-- declaration, and MUST reject a member that does not match the
+-- instantiated declaration (here: a body at the wrong associated Elem).
+module main
+
+trait Container (c : Type) =
+    Elem : Type
+    firstOf : c -> Elem
+
+-- POSITIVE: Elem = Int makes firstOf check at List Int -> Int.
+instance Container (List Int) =
+    let Elem = Int
+    let firstOf xs = match xs case Nil -> 0 case y :: rest -> y
+
+type BoolList = List Bool
+
+-- POSITIVE: head spelled through a transparent alias; the member checks
+-- against the instantiated declaration after alias expansion.
+instance Container BoolList =
+    let Elem = Bool
+    let firstOf xs = match xs case Nil -> False case y :: rest -> y
+
+useSubstituted : Int
+let useSubstituted =
+    let
+        d = summon (Container (List Int))
+    in
+        d.firstOf (7 :: Nil)
+
+viaAlias : Bool
+let viaAlias =
+    let
+        d = summon (Container (List Bool))
+    in
+        d.firstOf (True :: Nil)
+
+data Crate : Type =
+    MkCrate
+
+-- NEGATIVE: Elem = Bool, but the member body produces a String; the
+-- instantiated declaration `Crate -> Bool` must reject it.
+instance Container Crate =
+    let Elem = Bool
+    let firstOf c = "three" --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 explicit-witness introduction: multiple binders form ONE
+-- telescopic witness list (not nested packages); later witnesses may
+-- depend on earlier ones (`x : a` after `a : Type`). Witness
+-- assignments are checked sequentially against the binder telescope,
+-- then the payload against T[w/b]. The `(@0 a : S)` spelling is the
+-- explicit erased-witness form with identical semantics.
+module main
+
+-- second witness's TYPE depends on the first witness
+dep : exists (a : Type) (x : a). Option a
+let dep = seal exists (a = Int, x = 3). Some 3 as exists (a : Type) (x : a). Option a
+
+-- explicit erased-witness binder spelling
+erasedSpelling : exists (@0 a : Type). Option a
+let erasedSpelling = seal (Some 1) as exists (@0 a : Type). Option a
+
+-- an erased index (Nat) is a legal witness sort: any S : Type u
+idx : exists (n : Nat). Option Int
+let idx = seal exists (n = 3). Some 1 as exists (n : Nat). Option Int
+
+-- STATUS(a51e1bf): PASS

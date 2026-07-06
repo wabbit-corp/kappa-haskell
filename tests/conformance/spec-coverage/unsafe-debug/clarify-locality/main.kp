@@ -1,0 +1,23 @@
+module main
+
+-- §4.3: `clarify` affects ONLY the importing module (`mid`); it is not
+-- re-exported implicitly and does not change the imported module. `main`
+-- imports `secret` WITHOUT clarify, so opacity still applies here and the
+-- refl proof MUST be rejected, even though `mid` clarified the same item
+-- under the same `allow_clarify` build. Runtime opacity is unaffected
+-- (§8.5.2/§32.1), so evaluation still computes with the value.
+import oplib.(secret)
+import mid.(reexport)
+
+proof : secret = 7
+let proof = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+useBoth : Int
+let useBoth = addInt secret reexport
+
+--! allow_clarify
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnosticAt main.kp error E_TYPE_EQUALITY_MISMATCH 13
+--! assertEval useBoth 14
+--! assertAuditLedger clarify
+-- STATUS(a51e1bf): PASS

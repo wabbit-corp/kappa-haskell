@@ -1,0 +1,50 @@
+--! mode check
+--! assertNoErrors
+--! assertEval widened 5
+--! assertEval chained 12
+
+-- §18.1.14: if r1 ⊆ r2 then Eff r1 a coerces implicitly to Eff r2 a
+-- (effect-row weakening). An empty-row computation flows into a context
+-- annotated with a two-effect row; a singleton-row computation flows into
+-- the combined row; handlers then peel the row back down to <[ ]>.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+effect Log =
+    1 emit : Int -> Unit
+
+pureComp : Eff <[ ]> Int
+let pureComp = pure 5
+
+-- empty row weakens into the two-effect row at an annotated binding
+widenedComp : Eff <[Ask : Ask, Log : Log]> Int
+let widenedComp = pureComp
+
+-- a computation built from single-effect pieces: each op's natural
+-- singleton row weakens into the combined row
+combined : Eff <[Ask : Ask, Log : Log]> Int
+let combined =
+    do
+        let a <- Ask.ask ()
+        let _ <- Log.emit a
+        pure (addInt a 2)
+
+handleAsk : Eff <[Ask : Ask, Log : Log]> Int -> Eff <[Log : Log]> Int
+let handleAsk c =
+    deep handle Ask c with
+        case return x -> pure x
+        case ask _ k -> k 10
+
+handleLog : Eff <[Log : Log]> Int -> Eff <[ ]> Int
+let handleLog c =
+    deep handle Log c with
+        case return x -> pure x
+        case emit _ k -> k ()
+
+widened : Int
+let widened = runPure (handleLog (handleAsk widenedComp))
+
+chained : Int
+let chained = runPure (handleLog (handleAsk combined))

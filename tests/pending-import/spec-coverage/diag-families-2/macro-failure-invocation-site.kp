@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_MACRO_FAILURE
+--! assertDiagnosticFamily error kappa.macro.failure
+-- §3.1.5 (L607) + §3.2.12: macro diagnostics MUST include the macro
+-- invocation site as a related origin, and the payload MUST expose the
+-- expansion stack (outer -> inner) with the failure phase.
+--! assertDiagnosticRelated error kappa.macro.failure macro-invocation-site
+
+-- §3.2.12, §21.9: a failure deep inside a nested macro (helper called
+-- by the spliced macro) is reported once, in kappa.macro.failure, and
+-- must let the user trace it back to the `$(outer ...)` splice below.
+module main
+
+inner : Syntax Int -> Elab (Syntax Int)
+let inner s = failElab "inner macro rejected"
+
+outer : Syntax Int -> Elab (Syntax Int)
+let outer s = do
+    let r <- inner s
+    pure r
+
+bad : Int
+let bad = $(outer '{ 41 }) --!! E_MACRO_FAILURE
+-- STATUS(a51e1bf): FAIL — E_MACRO_FAILURE (kappa.macro.failure) is emitted at the splice, but with related=[] and payload kind "none": the §3.1.5 macro-invocation-site related origin and the §3.2.12 expansion-stack payload are missing

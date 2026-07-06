@@ -68,10 +68,12 @@ hot). Break-even: reuse pays off whenever per-node RC bookkeeping is cheaper
 than an allocator round-trip — usually true.
 
 **FP² / FIP — "Fully in-Place Functional Programming"** (Lorenzen, Leijen,
-Swierstra — ICFP 2023) is the *static-guarantee* story and the closest match to
-Kappa's design. A `fip`-checked function is *guaranteed* to run with no
-(de)allocation and constant stack space when its arguments are unique — a
-compile-time guarantee, not a runtime "maybe." Machinery:
+Swierstra — ICFP 2023) is the *static-guarantee* story and the closest research
+reference for Kappa's future inferred reuse checks. In FP², a `fip`-checked
+function is *guaranteed* to run with no (de)allocation and constant stack space
+when its arguments are unique — a compile-time guarantee, not a runtime "maybe."
+Kappa's current plan keeps that guarantee as an inferred/reported property, not
+as surface `fip`/`fbip` keywords. Machinery:
 
 - *Owned vs borrowed environments*. Parameters split into *borrowed* `ŷ` (hat
   `^f`, freely shared, inspectable but not destructively matched/consumed/
@@ -86,11 +88,11 @@ compile-time guarantee, not a runtime "maybe." Machinery:
   (returned in registers / as multiple values). Both are *essential*: without
   them splay-tree `lookup` returning `(bool, tree)`, in-place quicksort, and
   finger-tree cons would all still allocate.
-- *fip vs fbip*: `fip` = no alloc AND constant stack (tail-recursive, in-place);
-  `fbip` = in-place but may use stack (non-tail recursion); `fip(n)`/`fbip(n)`
-  allow ≤ n constant cells. Containment: **FIP ⊂ FBIP ⊂ λ^fip** (λ^fip re-adds
-  full RC, so FIP is exactly the fragment needing *no* runtime memory
-  management).
+- *FP² fip vs fbip*: `fip` = no alloc AND constant stack (tail-recursive,
+  in-place); `fbip` = in-place but may use stack (non-tail recursion);
+  `fip(n)`/`fbip(n)` allow ≤ n constant cells. Containment: **FIP ⊂ FBIP ⊂
+  λ^fip** (λ^fip re-adds full RC, so FIP is exactly the fragment needing *no*
+  runtime memory management).
 
 Discharging the call-site uniqueness obligation (FIP checks the *definition*;
 calls still need the inputs to be unowned) has two routes: **(a) uniqueness/
@@ -406,17 +408,18 @@ Kappa's escape/liveness graph *exact* rather than conservative once a quantity i
 known.
 
 **Reuse (FIP) — target the static guarantee, not dynamic RC.** A `Q1`,
-sole-consumer destructive match that reconstructs a same-arity constructor can be
-a **guaranteed in-place field write** — better than Perceus, which needs a
-runtime `refcount==1` branch, because QTT *proves* uniqueness at compile time
-(verified by `Usage.hs E_QTT_LINEAR_OVERUSE`). The design: treat a `Q1`
-destructive match as yielding a static reuse token (size = ctor arity),
-spendable by a same-size constructor in scope; emit the in-place write with no
-`is-unique` branch and no RC field. For `ω`/unprovable cases, fall back to copy
-or to a per-size free-list. The frame-limited **★ condition** is the right model
-for *certifying* the region/borrow interactions, and a checked `fip`/`fbip`
-annotation can statically certify "no alloc / constant stack" from QTT+borrow
-info — a guarantee Koka only approximates and Roc rejects on principle.
+sole-consumer destructive match that reconstructs a same-size constructor can be
+a **guaranteed in-place field write** — better than dynamic Perceus, which needs
+a runtime `refcount==1` branch, because QTT *proves* uniqueness at compile time
+(verified by `Usage.hs E_QTT_LINEAR_OVERUSE`). The design direction is to derive
+a static reuse token from the destructive match, keyed by the runtime-kept
+constructor footprint, and spend it on a same-footprint constructor in scope; emit
+the in-place write with no `is-unique` branch and no RC field. For
+`ω`/unprovable cases, fall back to copy or to a per-size free-list. The
+frame-limited **★ condition** remains the right model for *certifying* the
+region/borrow interactions. Current Kappa planning does **not** add surface
+`fip`/`fbip` keywords; S6 tracks inferred FIP/reuse-credit checks and report
+gates rather than user-written annotations.
 
 **Stack allocation — drive it off QTT + §12, don't port a JIT escape analysis.**
 Linear (`Q1`) and borrowed values are *provably non-escaping* ⇒ stack-allocate +

@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n7\n"
+
+-- §18.1.21 / §18.1.22: the target carrier m is chosen per handler — the
+-- SAME effect may be eliminated into IO by one handler and into Eff <[ ]>
+-- (then runPure) by another; there is no implicit conversion between the
+-- two carriers, each handler picks its own m.
+module main
+
+effect Tick =
+    1 tick : Unit -> Int
+
+comp : Eff <[Tick : Tick]> Int
+let comp =
+    do
+        let n <- Tick.tick ()
+        pure n
+
+effResult : Int
+let effResult =
+    block
+        let handled =
+            deep handle Tick comp with
+                case return x -> pure x
+                case tick _ k -> k 7
+        runPure handled
+
+main : UIO Unit
+let main = do
+    let v <- deep handle Tick comp with
+        case return r -> ioPure r
+        case tick _ k -> k 5
+    printlnString (showInt v)
+    printlnString (showInt effResult)

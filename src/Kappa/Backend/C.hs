@@ -48,12 +48,12 @@ import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit, ord)
 import Data.List (sort)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes, fromMaybe, isJust)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Control.Monad (foldM, forM, forM_, unless, void, when)
+import Control.Monad (foldM, forM, forM_, guard, unless, void, when)
 import Control.Monad.State.Strict
 import Kappa.Backend.IR
   ( BackendAlt (..)
@@ -175,7 +175,8 @@ data GenState = GenState
   , gsEnv :: !Text -- ^ C expression for the current KEnv*
   , gsParamLvals :: ![Text] -- ^ R2.3: in a FLAT (capture-free) first-order worker, the C lvalue for each de Bruijn index — the params (index @i@ = source param @n-1-i@) plus any @let@/@match@-bound locals prepended at index 0 (R2.3-rest); a 'CVar' reads the C local directly instead of walking @kvar(kw_env,i)@. Empty outside a flat worker body (then 'CVar' uses @kvar@).
   , gsParamBinders :: ![Maybe BackendBinderId] -- ^ Parallel to 'gsParamLvals': the KBackendIR ownership binder identity for each flat local when known. Needed by S2.3d branch-dead drops so codegen drops the already-bound C local for exactly the binder named by node metadata.
-  , gsParamOwns :: ![Bool] -- ^ Parallel to 'gsParamLvals': whether the flat local currently owns a reference. Incoming params are not marked owning until caller-side ownership transfer is normalized; constructor let-locals are owning when their RHS is a proven fresh allocation; pattern locals are owning only on the match cell-drop path that first @kdup@s the field; projection/call-result locals stay non-owning until result ownership is modeled.
+  , gsParamOwns :: ![Bool] -- ^ Parallel to 'gsParamLvals': whether the flat local currently owns a reference for generic ownership decisions (projection ownership, branch-dead drops, consuming-call moves). Constructor let-locals are owning when their RHS is a proven fresh allocation; pattern locals are owning only when the match path materialises or moves the field owner; worker parameters stay non-owning here until full callee-scope drop normalization lands.
+  , gsParamReusable :: ![Bool] -- ^ Parallel to 'gsParamLvals': whether a consuming match scrutinee may attempt S5 runtime-guarded reuse. This is intentionally narrower than 'gsParamOwns': generated worker parameters can be reusable for a ktry_reuse_ctor branch without becoming generally droppable locals.
   , gsTopFlatFrame :: !Bool -- ^ True only while compiling a top-level flat worker body. S2.3d can treat a missing branch-dead binder mapping as path/metadata drift in this frame; nested flat closures may deliberately omit outer captured binders and therefore keep missing branch-drop locals leak-biased.
   , gsTop :: ![Text] -- ^ completed top-level C functions, reversed
   , gsProtos :: ![Text] -- ^ forward declarations, reversed
@@ -213,6 +214,7 @@ data FlatLocalScope = FlatLocalScope
   { flsLvals :: ![Text]
   , flsBinders :: ![Maybe BackendBinderId]
   , flsOwns :: ![Bool]
+  , flsReusable :: ![Bool]
   }
 
 saveFlatLocalScope :: Gen FlatLocalScope
@@ -221,6 +223,7 @@ saveFlatLocalScope =
     <$> gets gsParamLvals
     <*> gets gsParamBinders
     <*> gets gsParamOwns
+    <*> gets gsParamReusable
 
 restoreFlatLocalScope :: FlatLocalScope -> Gen ()
 restoreFlatLocalScope saved =
@@ -229,6 +232,7 @@ restoreFlatLocalScope saved =
       { gsParamLvals = flsLvals saved
       , gsParamBinders = flsBinders saved
       , gsParamOwns = flsOwns saved
+      , gsParamReusable = flsReusable saved
       }
 
 -- | A loop's labelled control targets: its source label (if any), the C
@@ -329,7 +333,17 @@ compileVarRef use i = do
 -- is leak-biased, while moving a borrowed cell read becomes a UAF after S3.3
 -- drop-old barriers.
 compileOwnedVarUse :: Maybe BackendUse -> Int -> Gen Text
-compileOwnedVarUse use i = do
+compileOwnedVarUse = compileOwnedVarUseWithReusable False
+
+-- | Variant used only for direct calls to known KBackendIR workers whose
+-- selected parameter convention consumes ownership. A flat worker parameter is
+-- not generally droppable in its caller frame, but S5 marks it reusable so a
+-- consuming LastUse can transfer the unique cell to the callee and let the
+-- callee's runtime-guarded match reuse prove rc==1. Other owned positions keep
+-- using 'compileOwnedVarUse', so reusable params do not become movable into
+-- arbitrary stores/constructors.
+compileOwnedVarUseWithReusable :: Bool -> Maybe BackendUse -> Int -> Gen Text
+compileOwnedVarUseWithReusable allowReusable use i = do
   e <- compileVarRef use i
   rcOn <- gets gsRcEnabled
   if not rcOn
@@ -337,12 +351,14 @@ compileOwnedVarUse use i = do
     else do
       mi <- rcUseInfoOf use (Just i)
       sourceOwns <- flatLocalOwnsAt i
+      sourceReusable <- if allowReusable then flatLocalReusableAt i else pure False
+      let canMove = sourceOwns || sourceReusable
       let needsDup = case mi of
             Just (_, False) -> False
             Just (NonLast, True) -> True
-            Just (LastUse, True) -> not sourceOwns
+            Just (LastUse, True) -> not canMove
             Just (Borrowed, True) -> True
-            Nothing -> not sourceOwns
+            Nothing -> not canMove
       pure $ if needsDup then "kdup(" <> e <> ")" else e
 
 -- | A projection such as @p.left@ borrows its field from the owning aggregate
@@ -377,6 +393,13 @@ flatLocalOwnsAt i = do
     own : _ -> own
     [] -> False
 
+flatLocalReusableAt :: Int -> Gen Bool
+flatLocalReusableAt i = do
+  reusable <- gets gsParamReusable
+  pure $ case drop i reusable of
+    reuse : _ -> reuse
+    [] -> False
+
 withFlatLocalOwnership :: Maybe BackendBinderId -> Bool -> Gen a -> Gen a
 withFlatLocalOwnership mbid ownsRef act = do
   lvals <- gets gsParamLvals
@@ -389,6 +412,7 @@ withFlatLocalOwnership mbid ownsRef act = do
           { gsParamLvals = "proof_local" : gsParamLvals st
           , gsParamBinders = mbid : gsParamBinders st
           , gsParamOwns = ownsRef : gsParamOwns st
+          , gsParamReusable = ownsRef : gsParamReusable st
           }
       r <- act
       restoreFlatLocalScope saved
@@ -408,6 +432,7 @@ rcTermProducesOwnedHere :: BackendTerm -> Gen Bool
 rcTermProducesOwnedHere t = case t of
   BApp {}
     | Just {} <- etaCtorApp t -> pure True
+  BApp {} -> directWorkerCallReturnsOwned t
   BVar _ use i -> do
     mi <- rcUseInfoOf use (Just i)
     sourceOwns <- flatLocalOwnsAt i
@@ -443,6 +468,85 @@ rcTermProducesOwnedHere t = case t of
           )
   _ -> pure False
 
+directWorkerCallReturnsOwned :: BackendTerm -> Gen Bool
+directWorkerCallReturnsOwned term = do
+  bodies <- gets gsBackendBodies
+  pure $ case spineOf term of
+    (BGlob _ g, args) ->
+      case Map.lookup g bodies of
+        Just body
+          | length args == length (bbParams body) ->
+              workerBodyReturnsOwned bodies Set.empty body
+        _ -> False
+    _ -> False
+
+workerBodyReturnsOwned :: Map GName BackendBody -> Set GName -> BackendBody -> Bool
+workerBodyReturnsOwned bodies seen body =
+  termReturnsOwned bodies (Set.insert (bbOwner body) seen) initialOwns (bbRoot body)
+  where
+    initialOwns = reverse (map workerParamOwns (bbParams body))
+
+termReturnsOwned :: Map GName BackendBody -> Set GName -> [Bool] -> BackendTerm -> Bool
+termReturnsOwned bodies seen owns = go owns
+  where
+    go env = \case
+      term@BApp {} ->
+        case etaCtorApp term of
+          Just {} -> True
+          Nothing -> workerCallReturnsOwnedStatic seen term
+      BVar _ use i -> varUseReturnsOwned env use i
+      BCtor {} -> True
+      BRecord {} -> True
+      BInject {} -> True
+      BThunk {} -> True
+      BLazy {} -> True
+      BSeal _ _ e -> go env e
+      -- A worker tail-returning a projection currently emits the borrowed
+      -- projection expression unless the local sink has cleanup that forces
+      -- materialisation. A caller-side direct-call proof cannot see that sink
+      -- cleanup, so it must not classify projection returns as owned.
+      BProj {} -> False
+      BIf _ _ th el -> go env th && go env el
+      BLet _ _ _ _ rhs body ->
+        let rhsOwns = go env rhs
+         in go (rhsOwns : env) body
+      BLetRec _ _ _ _ rhs body ->
+        let rhsOwns = go env rhs
+         in go (rhsOwns : env) body
+      BMatch _ _ alts _ ->
+        all
+          ( \(BackendAlt _ _ binders _ body) ->
+              -- Pattern binders are borrowing projections out of the scrutinee
+              -- unless the emitting arm pairs them with an explicit dup/drop
+              -- cleanup. This structural callee summary has no sink-local
+              -- cleanup information, so pattern locals are conservatively
+              -- non-owned and outer variables are shifted behind them.
+              go (replicate (length binders) False <> env) body
+          )
+          alts
+      _ -> False
+
+    workerCallReturnsOwnedStatic seen0 term =
+      case spineOf term of
+        (BGlob _ g, args) ->
+          case Map.lookup g bodies of
+            Just body
+              | length args == length (bbParams body) ->
+                  if g `Set.member` seen0
+                    then True
+                    else workerBodyReturnsOwned bodies seen0 body
+            _ -> False
+        _ -> False
+
+    varUseReturnsOwned env use i =
+      case drop i env of
+        own : _ ->
+          case use of
+            Just (BackendUse _ LastUse True) -> own
+            Just (BackendUse _ NonLast True) -> True
+            _ -> False
+        [] -> False
+
 -- | The S2.3 drop DECISION for a lowered binder node. Returns 'True' iff a
 -- @kdrop@ against the binder's bound C local should be emitted at that scope's
 -- close (b.4):
@@ -469,6 +573,10 @@ rcBinderDroppableHere mb = do
       boDroppable bo && not (boBorrowed bo) && not hasConsumingLastUse
     Nothing -> False
 
+branchDropAllowedBinder :: BackendBinder -> Bool
+branchDropAllowedBinder (BackendBinder _ _ bo _) =
+  boDeclQ bo /= Q0 && boDroppable bo && not (boBorrowed bo)
+
 -- | Emit a @kdrop(<lval>)@ statement against a bound C LOCAL (b.4 / R-flat:
 -- ALWAYS the bound local, never a fresh @kvar(env,i)@ rvalue re-read). The
 -- runtime decrements RC and, in S3/S4, may reclaim strict FREESET values at zero;
@@ -481,8 +589,17 @@ rcEmitDrop lv = emit ("kdrop(" <> lv <> ");")
 -- resolves those lowered binder identities to the current flat C locals and
 -- emits drops only when the local is known to own a reference. No guessed @kvar@
 -- reread, no name-based match, and no structural path lookup.
-rcEmitBranchDeadDropsHere :: BackendMeta -> Gen ()
-rcEmitBranchDeadDropsHere meta = do
+cleanupDropLvals :: [Text] -> Set Text
+cleanupDropLvals =
+  Set.fromList . mapMaybe parse
+  where
+    parse line =
+      case T.stripPrefix "kdrop(" line >>= T.stripSuffix ");" of
+        Just lv -> Just lv
+        Nothing -> Nothing
+
+rcEmitBranchDeadDropsHere :: [Text] -> BackendMeta -> Gen ()
+rcEmitBranchDeadDropsHere scheduledCleanup meta = do
   enabled <- gets gsRcEnabled
   when enabled $ do
     g <- gets gsCur
@@ -495,22 +612,22 @@ rcEmitBranchDeadDropsHere meta = do
         knownFlatBids = [bid | (_, Just bid, _) <- flat]
         bidOf (BackendBinder bid _ _ _) = bid
         originOf (BackendBinder _ origin _ _) = origin
-        branchDropAllowed (BackendBinder _ _ bo _) =
-          boDeclQ bo /= Q0 && boDroppable bo && not (boBorrowed bo)
         lvalFor binder =
           case [lv | (lv, Just bid', True) <- flat, bid' == bidOf binder] of
             lv : _ -> Just lv
             [] -> Nothing
-        targets =
+        scheduled = cleanupDropLvals scheduledCleanup
+        targets0 =
           [ lv
           | binder <- siteBids
-          , branchDropAllowed binder
+          , branchDropAllowedBinder binder
           , Just lv <- [lvalFor binder]
           ]
+        targets = filter (`Set.notMember` scheduled) targets0
         unresolved =
           [ originOf binder <> " => " <> T.pack (show (bidOf binder))
           | binder <- siteBids
-          , branchDropAllowed binder
+          , branchDropAllowedBinder binder
           , bidOf binder `notElem` knownFlatBids
           ]
     case unresolved of
@@ -589,7 +706,9 @@ rcScrutDropDecision scrut = do
         -- Drop only when the resolved occurrence is consuming and the
         -- match owns the reference it compiled: a consuming NonLast has been
         -- dup'd at the CVar site, while a consuming LastUse is droppable only
-        -- if the source flat local itself owns the value.
+        -- if the source flat local itself owns the value. S5 reusable worker
+        -- params are handled by 'rcScrutReuseDecision'; that eligibility must
+        -- not leak into ordinary borrowed-scrutinee cleanup.
         mi <- rcUseInfoOf use (Just i)
         sourceOwns <- flatLocalOwnsAt i
         pure $ case mi of
@@ -605,6 +724,28 @@ rcScrutDropDecision scrut = do
       BSeal _ _ e -> (go e)
       -- General calls and projections can return borrowed references. Without
       -- result ownership metadata, do not drop them as match-owned cells.
+      _ -> pure False
+
+-- | S5.B reuse eligibility is narrower than normal ownership cleanup. A flat
+-- worker parameter may be transferred into a same-size match rebuild even though
+-- the backend still keeps parameters borrowed for generic branch cleanup and
+-- arbitrary consuming calls. The runtime-guarded reuse helper either proves the
+-- cell is unique and consumes it, or falls back after restoring moved fields.
+rcScrutReuseDecision :: BackendTerm -> Gen Bool
+rcScrutReuseDecision scrut = do
+  enabled <- gets gsRcEnabled
+  if not enabled
+    then pure False
+    else go scrut
+  where
+    go = \case
+      BVar _ use i -> do
+        mi <- rcUseInfoOf use (Just i)
+        sourceReusable <- flatLocalReusableAt i
+        pure $ case mi of
+          Just (LastUse, True) -> sourceReusable
+          _ -> False
+      BSeal _ _ e -> go e
       _ -> pure False
 
 -- | The S2.3 OWNED/BORROWED call-boundary classification (b.3) at a 'CGlob' call
@@ -965,6 +1106,7 @@ generateC rcEnabled cs mainG ffiPrims hostSyms =
                   , gsParamLvals = []
                   , gsParamBinders = []
                   , gsParamOwns = []
+                  , gsParamReusable = []
                   , gsTopFlatFrame = False
                   , gsTop = []
                   , gsProtos = []
@@ -1227,10 +1369,12 @@ bodyCapturesEnv = go
 -- variables are read via @kvar@.
 compileFunctionGlobal :: GName -> [BackendParam] -> BackendTerm -> Gen ()
 compileFunctionGlobal g params inner = do
+  rcOn <- gets gsRcEnabled
   let ident = cGlobIdent g
       worker = "kw_" <> mangle (gKey g)
       n = length params
       ps = ["p" <> T.pack (show i) | i <- [0 .. n - 1]]
+      paramOwnsSource = if rcOn then map workerParamOwns params else replicate n False
       inPlace = not (bodyCapturesEnv inner)
       -- R2.3 FLAT frame: a CAPTURE-FREE body reads parameters directly from the
       -- C parameters (no KEnv node, no kvar chain walk); a tail self-call
@@ -1259,19 +1403,23 @@ compileFunctionGlobal g params inner = do
   saved <- gets gsParamLvals
   savedBinders <- gets gsParamBinders
   savedOwns <- gets gsParamOwns
+  savedReusable <- gets gsParamReusable
   savedTopFlat <- gets gsTopFlatFrame
   let paramBids = reverse (map (fmap bbBinderId . bpBinder) params)
-      -- The binder table says which parameters are droppable in the source
-      -- contract, but the worker ABI has not yet normalized every incoming
-      -- actual to an owned reference. Keep the BinderIds for exact resolution and
-      -- future caller-transfer completion; do not let S2.3d drop params from the
-      -- callee frame yet.
+      -- FLAT worker parameters are eligible for S5's runtime-guarded reuse
+      -- branch, but they are not generally owned locals: branch-dead drops,
+      -- projection ownership, and arbitrary consuming calls still require a
+      -- locally materialized owner. This preserves the pre-S5 leak-biased
+      -- parameter seam while allowing a ktry_reuse_ctor branch to prove and
+      -- consume a unique scrutinee cell.
       paramOwns = replicate n False
+      paramReusable = reverse paramOwnsSource
   modify' $ \st ->
     st
       { gsParamLvals = if flat then reverse ps else []
       , gsParamBinders = if flat then paramBids else []
       , gsParamOwns = if flat then paramOwns else []
+      , gsParamReusable = if flat then paramReusable else []
       , gsTopFlatFrame = flat
       }
   (bodyStmts, ()) <- captured "kw_env" (consume (SinkTail ti) inner)
@@ -1280,6 +1428,7 @@ compileFunctionGlobal g params inner = do
       { gsParamLvals = saved
       , gsParamBinders = savedBinders
       , gsParamOwns = savedOwns
+      , gsParamReusable = savedReusable
       , gsTopFlatFrame = savedTopFlat
       }
   let workerFn =
@@ -1300,7 +1449,13 @@ compileFunctionGlobal g params inner = do
               "  return kclo(" <> (cloNames !! (i + 1)) <> ", kpush(arg, cenv));"
           | otherwise =
               -- saturating call: p{n-1} = arg; p_j = kvar(cenv, n-2-j)
-              let collected = [ "kvar(cenv, " <> T.pack (show (n - 2 - j)) <> ")" | j <- [0 .. n - 2] ]
+              let collected =
+                    [ let raw = "kvar(cenv, " <> T.pack (show (n - 2 - j)) <> ")"
+                       in if flagAt paramOwnsSource j
+                            then "kdup(" <> raw <> ")"
+                            else raw
+                    | j <- [0 .. n - 2]
+                    ]
                   callArgs = T.intercalate ", " (collected ++ ["arg"])
                in "  return " <> worker <> "(" <> callArgs <> ");"
         fn =
@@ -1340,6 +1495,11 @@ compileFunctionGlobal g params inner = do
   case mplan of
     Just (_, pks, ret, scalarInner) -> compileScalarWorker g pks ret scalarInner
     Nothing -> pure ()
+
+workerParamOwns :: BackendParam -> Bool
+workerParamOwns (BackendParam ic _ (Just (BackendBinder _ _ bo _))) =
+  ic == Expl && boDeclQ bo /= Q0 && not (boBorrowed bo)
+workerParamOwns _ = False
 
 -- ── LR1/R2.2: typed unboxed scalar workers (int64 / double) ──────────────
 -- A first-order monomorphic SCALAR function — parameters and result each
@@ -2313,19 +2473,76 @@ selfTailArgsForLoop ti term = pure (selfTailArgs ti term)
 emitTailLoop :: [Text] -> TailInfo -> [BackendArg] -> Gen ()
 emitTailLoop cleanup ti args = do
   -- Evaluate every new argument into a temp FIRST (an arg may read a current
-  -- parameter via @kvar@), THEN update the parameter cells in place — so the
-  -- loop reuses the cells built once in 'compileFunctionGlobal' rather than
-  -- allocating a fresh env each iteration (QW2).
-  temps <- forM args $ \a -> do
-    e <- compileErasableArg (argTerm a) -- KBackendIR already erased Q0/type args
-    t <- freshN "tc_"
-    emit ("KValue *" <> t <> " = " <> e <> ";")
-    pure t
+  -- parameter via @kvar@), THEN run cleanup, THEN update the parameter cells
+  -- in place — so the loop reuses the cells built once in
+  -- 'compileFunctionGlobal' rather than allocating a fresh env each iteration
+  -- (QW2).  The temps must obey the same owned/borrowed convention as an
+  -- ordinary call to the worker: an owned next-iteration parameter may be a
+  -- projection out of a let-local whose cleanup runs before the assignment, so
+  -- it has to be materialized with kdup before that cleanup can drop the base.
+  ownedFlags <- callArgNeedsOwnedForArgs args
+  temps <- withTailParamOwnership ti ownedFlags $
+    forM (zip [0 ..] args) $ \(i, a) -> do
+      mustStabilize <- tailArgNeedsCleanupDup ti cleanup (argTerm a)
+      e <-
+        if mustStabilize
+          then do
+            raw <- compileBorrowedCallArg (argTerm a)
+            pure ("kdup(" <> raw <> ")")
+          else compileCallArg (flagAt ownedFlags i) (argTerm a) -- KBackendIR already erased Q0/type args
+      t <- freshN "tc_"
+      emit ("KValue *" <> t <> " = " <> e <> ";")
+      pure t
   mapM_ emit cleanup
   -- reassign the C parameters (FLAT: read directly; REBUILD: the loop top
   -- rebuilds kw_env from them).  Temps first, so an arg may read a current param.
   forM_ (zip (tiSlots ti) temps) $ \(slot, t) -> emit (slot <> " = " <> t <> ";")
   emit "continue;"
+
+withTailParamOwnership :: TailInfo -> [Bool] -> Gen a -> Gen a
+withTailParamOwnership ti ownedFlags act = do
+  saved <- gets gsParamOwns
+  lvals <- gets gsParamLvals
+  let slotOwns = Map.fromList (zip (tiSlots ti) ownedFlags)
+      mark lv own = own || Map.findWithDefault False lv slotOwns
+      markOwns owns = [mark lv own | (lv, own) <- zip lvals (owns ++ repeat False)] ++ drop (length lvals) owns
+  modify' $ \st -> st {gsParamOwns = markOwns (gsParamOwns st)}
+  r <- act
+  modify' $ \st -> st {gsParamOwns = saved}
+  pure r
+
+-- | A self-tail-call is not an ordinary call boundary: its argument temps are
+-- evaluated, then the current lexical cleanup runs, then the C parameter slots
+-- are reassigned and the loop continues.  A borrowed value read from a
+-- soon-to-be-cleaned flat local (especially @local.field@) therefore has to be
+-- duplicated before the cleanup can drop the owning aggregate.  Current worker
+-- parameters are excluded: they are the loop-carried state itself and are not
+-- emitted in the lexical cleanup list.
+tailArgNeedsCleanupDup :: TailInfo -> [Text] -> BackendTerm -> Gen Bool
+tailArgNeedsCleanupDup _ [] _ = pure False
+tailArgNeedsCleanupDup ti _ term = go term
+  where
+    go = \case
+      BVar _ _ i -> flatLocalIsCleanupOwned ti i
+      BProj _ base _ _ -> projectionBaseNeedsCleanupDup base
+      BSeal _ _ body -> go body
+      _ -> pure False
+
+    projectionBaseNeedsCleanupDup = \case
+      BVar _ _ i -> flatLocalIsCleanupOwned ti i
+      BSeal _ _ body -> projectionBaseNeedsCleanupDup body
+      BProj _ base _ _ -> projectionBaseNeedsCleanupDup base
+      -- A projection out of any non-flat expression is not a proven borrowed
+      -- read from a cleanup-owned local.  Keep the ordinary call lowering
+      -- rather than guessing.
+      _ -> pure False
+
+flatLocalIsCleanupOwned :: TailInfo -> Int -> Gen Bool
+flatLocalIsCleanupOwned ti i = do
+  lvals <- gets gsParamLvals
+  pure $ case drop i lvals of
+    lv : _ -> lv `notElem` tiSlots ti
+    [] -> False
 
 -- | Emit a tail-position application.  A call whose spine head is a
 -- primitive cannot recurse, so it is computed directly and returned (the
@@ -2445,6 +2662,44 @@ compileCallArg needOwned a = do
   if er
     then pure "kunit()"
     else if needOwned then compileOwnedResult True a else compileBorrowedCallArg a
+
+compileDirectCallArg :: Bool -> Bool -> BackendTerm -> Gen Text
+compileDirectCallArg needOwned allowReusableTransfer a = do
+  er <- isErasableArg a
+  if er
+    then pure "kunit()"
+    else
+      if needOwned
+        then case a of
+          BVar _ use i
+            | allowReusableTransfer -> compileOwnedVarUseWithReusable True use i
+          BSeal _ _ body -> compileDirectCallArg needOwned allowReusableTransfer body
+          _ -> compileOwnedResult True a
+        else compileBorrowedCallArg a
+
+compileBoolTest :: BackendTerm -> Gen Text
+compileBoolTest = \case
+  BSeal _ _ body -> compileBoolTest body
+  term -> do
+    let (hd, sargs) = spineOf term
+        expl = [argTerm a | a <- sargs, argIcit a == Expl]
+        intCmp op [a, b] = do
+          ae <- compileBorrowedCallArg a
+          be <- compileBorrowedCallArg b
+          pure ("kint_cmp_fast(" <> ae <> ", " <> be <> ") " <> op <> " 0")
+        intCmp _ _ = fallback
+        fallback = do
+          ce <- compile term
+          pure ("kas_bool(" <> ce <> ")")
+    case hd of
+      BGlob _ g -> do
+        mp <- globPrimName g
+        case mp of
+          Just "eqInt" -> intCmp "==" expl
+          Just "ltInt" -> intCmp "<" expl
+          Just "leInt" -> intCmp "<=" expl
+          _ -> fallback
+      _ -> fallback
 
 flagAt :: [Bool] -> Int -> Bool
 flagAt flags i = case drop i flags of
@@ -3422,11 +3677,20 @@ compileDirectCall g n sargs = do
       let (callArgs, extra) = splitAt n sargs
           worker = "kw_" <> mangle (gKey g)
       ownedFlags <- callArgNeedsOwnedForArgs sargs
+      bodies <- gets gsBackendBodies
+      let calleeOwnsFlags =
+            case Map.lookup g bodies of
+              Just body -> map workerParamOwns (bbParams body)
+              Nothing -> replicate n False
       aes <-
         mapM
-          (\(j, a) -> compileCallArg (flagAt ownedFlags j) (argTerm a))
+          (\(j, a) ->
+              compileDirectCallArg
+                (flagAt ownedFlags j)
+                (flagAt calleeOwnsFlags j)
+                (argTerm a)
+          )
           (zip [0 ..] callArgs)
-      bodies <- gets gsBackendBodies
       mayBounce <- case Map.lookup g bodies of
         Just body -> workerMayBounce g n (bbRoot body)
         Nothing -> pure True -- no recorded body → keep the trampoline
@@ -3573,6 +3837,7 @@ compileLam mb body = do
   saved <- gets gsParamLvals
   savedBinders <- gets gsParamBinders
   savedOwns <- gets gsParamOwns
+  savedReusable <- gets gsParamReusable
   savedTopFlat <- gets gsTopFlatFrame
   bodyEnv <- if flat then pure "cenv" else freshN "lenv_"
   modify' $ \st ->
@@ -3580,6 +3845,7 @@ compileLam mb body = do
       { gsParamLvals = if flat then ["arg"] else []
       , gsParamBinders = if flat then [bbBinderId <$> mb] else []
       , gsParamOwns = if flat then [False] else []
+      , gsParamReusable = if flat then [False] else []
       , gsTopFlatFrame = False
       }
   -- Perceus RC S2.1: the lambda body sits at 'lamBodyPos' under the CLam node.
@@ -3589,6 +3855,7 @@ compileLam mb body = do
       { gsParamLvals = saved
       , gsParamBinders = savedBinders
       , gsParamOwns = savedOwns
+      , gsParamReusable = savedReusable
       , gsTopFlatFrame = savedTopFlat
       }
   -- non-flat: materialise kpush(arg, cenv) only when a variable is read (a
@@ -3669,6 +3936,57 @@ compileCtorFromSource source oldLayout newLayout args moveSlots = do
         <> arr
         <> ", "
         <> moveArr
+        <> ")"
+    )
+
+compileCtorFromTokenSkip :: Text -> BackendCtorLayout -> [BackendTerm] -> [Maybe Int] -> Set Int -> Gen Text
+compileCtorFromTokenSkip token newLayout args moveSlots skipSlots = do
+  argEs <-
+    forM (zip args moveSlots) $ \(arg, mslot) ->
+      case mslot of
+        Just {} -> compileBorrowedCallArg arg
+        Nothing -> compileCallArg True arg
+  tc <- ctorTagConst (bclCtor newLayout)
+  arr <-
+    case argEs of
+      [] -> pure "NULL"
+      _ -> do
+        a <- freshN "args_"
+        emit ("KValue *" <> a <> "[] = {" <> T.intercalate ", " argEs <> "};")
+        pure a
+  let skipList = Set.toAscList skipSlots
+  moveArr <-
+    if any isJust moveSlots
+      then do
+        a <- freshN "moves_"
+        let slotText = maybe "-1" (T.pack . show)
+        emit ("int " <> a <> "[] = {" <> T.intercalate ", " (map slotText moveSlots) <> "};")
+        pure a
+      else pure "NULL"
+  skipArr <-
+    case skipList of
+      [] -> pure "NULL"
+      _ -> do
+        a <- freshN "skip_"
+        emit ("int " <> a <> "[] = {" <> T.intercalate ", " (map (T.pack . show) skipList) <> "};")
+        pure a
+  pure
+    ( "kreuse_ctor_skip("
+        <> token
+        <> ", "
+        <> tc
+        <> ", "
+        <> cStr (gKey (bclCtor newLayout))
+        <> ", "
+        <> T.pack (show (length argEs))
+        <> ", "
+        <> arr
+        <> ", "
+        <> moveArr
+        <> ", "
+        <> skipArr
+        <> ", "
+        <> T.pack (show (length skipList))
         <> ")"
     )
 
@@ -3927,11 +4245,12 @@ sinkToExprOwned needOwned term = do
 consumeIf :: Sink -> BackendTerm -> BackendTerm -> BackendTerm -> Gen ()
 consumeIf sink c t e = do
   -- Perceus RC S2.1: cond/then/else at 'ifCondPos'/'ifThenPos'/'ifElsePos'.
-  ce <- (compile c)
+  ce <- compileBoolTest c
   env <- gets gsEnv
-  (tStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere (backendTermMeta t) >> consume sink t))
-  (eStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere (backendTermMeta e) >> consume sink e))
-  emit ("if (kas_bool(" <> ce <> ")) {")
+  let scheduledCleanup = sinkCleanupLines sink
+  (tStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere scheduledCleanup (backendTermMeta t) >> consume sink t))
+  (eStmts, ()) <- (captured env (rcEmitBranchDeadDropsHere scheduledCleanup (backendTermMeta e) >> consume sink e))
+  emit ("if (" <> ce <> ") {")
   forM_ tStmts (emit . ("  " <>))
   emit "} else {"
   forM_ eStmts (emit . ("  " <>))
@@ -3947,6 +4266,7 @@ consumeMatch sink scrut alts layouts = do
   -- for every arm without reattaching a path-keyed ownership side table. Inert
   -- under OFF.
   dropCell <- rcScrutDropDecision scrut
+  reuseCell <- rcScrutReuseDecision scrut
   se <- (compile scrut)
   sv <- freshN "scrut_"
   emit ("KValue *" <> sv <> " = " <> se <> ";")
@@ -3969,7 +4289,7 @@ consumeMatch sink scrut alts layouts = do
   let layoutMap = Map.fromList layouts
   forM_ alts $ \alt ->
     forM_ (expandBackendAltTopOr alt) $ \subAlt ->
-      consumeAlt sink sv dropCell layoutMap env done subAlt
+      consumeAlt sink sv dropCell reuseCell layoutMap env done subAlt
   emit ("if (!" <> done <> ") krt_fail(\"non-exhaustive match\");")
 
 data CtorReuseCandidate = CtorReuseCandidate
@@ -3977,6 +4297,7 @@ data CtorReuseCandidate = CtorReuseCandidate
   , crcNewLayout :: !BackendCtorLayout
   , crcArgs :: ![BackendTerm]
   , crcMoveSlots :: ![Maybe Int]
+  , crcSkipSlots :: !(Set Int)
   }
 
 ctorReuseFootprint :: BackendCtorLayout -> Maybe Int
@@ -3986,8 +4307,14 @@ ctorReuseFootprint layout = do
 
 patCtorReuseLayout :: Map GName BackendCtorLayout -> BackendPat -> Maybe BackendCtorLayout
 patCtorReuseLayout layouts = \case
-  BPCtor g _ -> Map.lookup g layouts
-  BPAs _ p -> patCtorReuseLayout layouts p
+  BPCtor g ps -> do
+    layout <- Map.lookup g layouts
+    guard (length ps == bclRuntimeFields layout)
+    pure layout
+  -- An as-pattern binds the whole scrutinee cell as a real runtime local.
+  -- Token reuse overwrites that exact cell, so until whole-cell alias liveness
+  -- is modeled, S5.B must fail closed rather than peeking through BPAs.
+  BPAs {} -> Nothing
   _ -> Nothing
 
 directCtorReuseBody :: BackendTerm -> Maybe (BackendCtorLayout, [BackendTerm])
@@ -4011,8 +4338,13 @@ patDirectCtorFieldVars = \case
         [ (n - 1 - bindIx, slot)
         | (bindIx, slot) <- zip [0 ..] slotsInBindingOrder
         ]
-  BPAs _ p -> patDirectCtorFieldVars p
+  BPAs {} -> Nothing
   _ -> Nothing
+
+shiftCtorFieldVars :: Int -> Map Int Int -> Map Int Int
+shiftCtorFieldVars n
+  | n <= 0 = id
+  | otherwise = Map.mapKeys (+ n)
 
 directMovedArgSlot :: Map Int Int -> BackendTerm -> Maybe Int
 directMovedArgSlot slots = \case
@@ -4020,16 +4352,101 @@ directMovedArgSlot slots = \case
   BSeal _ _ e -> directMovedArgSlot slots e
   _ -> Nothing
 
-ctorReuseMoveSlots :: BackendPat -> [BackendTerm] -> [Maybe Int]
-ctorReuseMoveSlots pat args =
+ctorReuseMoveSlotsWith :: Map Int Int -> [BackendTerm] -> [Maybe Int]
+ctorReuseMoveSlotsWith slots args =
+  let raw = map (directMovedArgSlot slots) args
+      moved = catMaybes raw
+   in if Set.size (Set.fromList moved) == length moved
+        then raw
+        else replicate (length args) Nothing
+
+data CtorFieldSlotUse = CtorFieldSlotUse
+  { cfsAlways :: !(Set Int)
+  , cfsMay :: !(Set Int)
+  }
+
+slotUseNone :: CtorFieldSlotUse
+slotUseNone = CtorFieldSlotUse Set.empty Set.empty
+
+slotUseOne :: Int -> CtorFieldSlotUse
+slotUseOne slot = CtorFieldSlotUse (Set.singleton slot) (Set.singleton slot)
+
+slotUseSeq :: [CtorFieldSlotUse] -> CtorFieldSlotUse
+slotUseSeq uses =
+  CtorFieldSlotUse
+    { cfsAlways = Set.unions (map cfsAlways uses)
+    , cfsMay = Set.unions (map cfsMay uses)
+    }
+
+slotUseChoice :: CtorFieldSlotUse -> CtorFieldSlotUse -> CtorFieldSlotUse
+slotUseChoice a b =
+  CtorFieldSlotUse
+    { cfsAlways = cfsAlways a `Set.intersection` cfsAlways b
+    , cfsMay = cfsMay a `Set.union` cfsMay b
+    }
+
+slotUseStable :: CtorFieldSlotUse -> Bool
+slotUseStable use = cfsAlways use == cfsMay use
+
+consumedCtorFieldSlotUse :: Map Int Int -> BackendTerm -> CtorFieldSlotUse
+consumedCtorFieldSlotUse = go
+  where
+    go fields = \case
+      BVar _ (Just (BackendUse _ LastUse True)) i ->
+        maybe slotUseNone slotUseOne (Map.lookup i fields)
+      BVar {} -> slotUseNone
+      BSeal _ _ body -> go fields body
+      BApp _ f args -> slotUseSeq (go fields f : map (go fields . argTerm) args)
+      BCtor _ _ args -> slotUseSeq (map (go fields) args)
+      BMatch _ scrut alts _ ->
+        slotUseSeq
+          [ go fields scrut
+          , slotUseAlts
+              [ go (shiftCtorFieldVars (length binders) fields) body
+              | BackendAlt _ _ binders _ body <- alts
+              ]
+          ]
+      BRecord _ fields0 -> slotUseSeq (map (go fields . snd) fields0)
+      BProj _ base _ _ -> go fields base
+      BInject _ _ payload -> go fields payload
+      BLet _ _ _ _ rhs body -> slotUseSeq [go fields rhs, go (shiftCtorFieldVars 1 fields) body]
+      BLetRec _ _ _ _ _ body -> go (shiftCtorFieldVars 1 fields) body
+      BForce _ body -> go fields body
+      BIf _ cond th el -> slotUseSeq [go fields cond, slotUseChoice (go fields th) (go fields el)]
+      BThunk {} -> slotUseNone
+      BLazy {} -> slotUseNone
+      BLam {} -> slotUseNone
+      BDo {} -> slotUseNone
+      BUnit {} -> slotUseNone
+      BGlob {} -> slotUseNone
+      BLit {} -> slotUseNone
+
+    slotUseAlts [] = slotUseNone
+    slotUseAlts (x : xs) = foldl slotUseChoice x xs
+
+consumedCtorFieldSlotsInArgsWith :: Map Int Int -> [BackendTerm] -> Maybe (Set Int)
+consumedCtorFieldSlotsInArgsWith fields args =
+  let use = slotUseSeq (map (consumedCtorFieldSlotUse fields) args)
+   in if slotUseStable use then Just (cfsAlways use) else Nothing
+
+branchDeadCtorFieldSlots :: BackendPat -> [Maybe BackendBinder] -> BackendMeta -> Set Int
+branchDeadCtorFieldSlots pat binders meta =
   case patDirectCtorFieldVars pat of
-    Nothing -> replicate (length args) Nothing
-    Just slots ->
-      let raw = map (directMovedArgSlot slots) args
-          moved = catMaybes raw
-       in if Set.size (Set.fromList moved) == length moved
-            then raw
-            else replicate (length args) Nothing
+    Nothing -> Set.empty
+    Just fields ->
+      Set.fromList
+        [ slot
+        | (dbIx, slot) <- Map.toList fields
+        , Just binder <- [binderAt dbIx]
+        , branchDropAllowedBinder binder
+        , binderId binder `Set.member` branchDrops
+        ]
+  where
+    binderAt i = case drop i binders of
+      b : _ -> b
+      [] -> Nothing
+    binderId (BackendBinder bid _ _ _) = bid
+    branchDrops = Set.fromList [bid | BackendBinder bid _ _ _ <- bmBranchDrops meta]
 
 patDupFlagsForReuse :: BackendPat -> CtorReuseCandidate -> [Bool]
 patDupFlagsForReuse pat candidate =
@@ -4040,12 +4457,28 @@ patDupFlagsForReuse pat candidate =
       | j <- [0 .. n - 1]
       ]
 
-sameSizeCtorReuseCandidate :: Map GName BackendCtorLayout -> BackendPat -> BackendTerm -> Maybe CtorReuseCandidate
-sameSizeCtorReuseCandidate layouts pat body = do
+sameSizeCtorReuseCandidate :: Map GName BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> BackendTerm -> Maybe CtorReuseCandidate
+sameSizeCtorReuseCandidate layouts pat binders body = do
   oldLayout <- patCtorReuseLayout layouts pat
+  directSameSizeCtorReuseCandidate oldLayout pat binders body
+
+directSameSizeCtorReuseCandidate :: BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> BackendTerm -> Maybe CtorReuseCandidate
+directSameSizeCtorReuseCandidate oldLayout pat binders body = do
   (newLayout, args) <- directCtorReuseBody body
+  sameSizeCtorReuseCandidateFrom oldLayout pat binders newLayout args
+
+sameSizeCtorReuseCandidateFrom :: BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> BackendCtorLayout -> [BackendTerm] -> Maybe CtorReuseCandidate
+sameSizeCtorReuseCandidateFrom oldLayout pat _binders newLayout args = do
+  let fields = fromMaybe Map.empty (patDirectCtorFieldVars pat)
+  sameSizeCtorReuseCandidateFromFields fields oldLayout newLayout args
+
+sameSizeCtorReuseCandidateFromFields :: Map Int Int -> BackendCtorLayout -> BackendCtorLayout -> [BackendTerm] -> Maybe CtorReuseCandidate
+sameSizeCtorReuseCandidateFromFields fields oldLayout newLayout args = do
   oldBytes <- ctorReuseFootprint oldLayout
   newBytes <- ctorReuseFootprint newLayout
+  let moveSlots = ctorReuseMoveSlotsWith fields args
+      movedSlots = Set.fromList (catMaybes moveSlots)
+  consumedSlots <- consumedCtorFieldSlotsInArgsWith fields args
   if oldBytes == newBytes && bclRuntimeFields oldLayout == bclRuntimeFields newLayout
     then
       Just
@@ -4053,9 +4486,44 @@ sameSizeCtorReuseCandidate layouts pat body = do
           { crcOldLayout = oldLayout
           , crcNewLayout = newLayout
           , crcArgs = args
-          , crcMoveSlots = ctorReuseMoveSlots pat args
+          , crcMoveSlots = moveSlots
+          , crcSkipSlots = movedSlots `Set.union` consumedSlots
           }
     else Nothing
+
+staticallyBoxedCtorLayout :: BackendCtorLayout -> Bool
+staticallyBoxedCtorLayout layout =
+  case bclInfo layout of
+    Just info -> Repr.clLayoutClass info == Repr.LayoutBoxed
+    Nothing -> False
+
+tokenCtorReuseCandidateFrom :: BackendCtorLayout -> Map Int Int -> BackendCtorLayout -> [BackendTerm] -> Maybe CtorReuseCandidate
+tokenCtorReuseCandidateFrom oldLayout fields newLayout args = do
+  candidate <- sameSizeCtorReuseCandidateFromFields fields oldLayout newLayout args
+  if staticallyBoxedCtorLayout oldLayout && staticallyBoxedCtorLayout newLayout
+    then Just candidate
+    else Nothing
+
+termHasTokenCtorReuse :: BackendCtorLayout -> BackendPat -> BackendTerm -> Bool
+termHasTokenCtorReuse oldLayout pat =
+  case patDirectCtorFieldVars pat of
+    Nothing -> const False
+    Just fields -> go fields
+  where
+    stable fields term = slotUseStable (consumedCtorFieldSlotUse fields term)
+    go fields = \case
+      BCtor _ newLayout args -> isJust (tokenCtorReuseCandidateFrom oldLayout fields newLayout args)
+      BSeal _ _ body -> go fields body
+      BIf _ cond th el ->
+        stable fields cond
+          && go fields th
+          && go fields el
+      BLet _ _ _ _ rhs body ->
+        stable fields rhs
+          && go (shiftCtorFieldVars 1 fields) body
+      BLetRec _ _ _ _ _ body ->
+        go (shiftCtorFieldVars 1 fields) body
+      _ -> False
 
 -- | Whether a pattern contains an or-pattern whose alternatives bind the shared
 -- names in a non-canonical order (a non-identity permutation on some
@@ -4097,17 +4565,17 @@ distributePat = \case
   BPAs n p -> [BPAs n q | q <- distributePat p]
   p -> [p] -- BPWild / BPVar / BPLit / BPInjectRest: no nested or
 
-consumeAlt :: Sink -> Text -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendAlt -> Gen ()
-consumeAlt sink sv dropCell layouts env done (BackendAlt altMeta pat binders mguard body) = do
+consumeAlt :: Sink -> Text -> Bool -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendAlt -> Gen ()
+consumeAlt sink sv dropCell reuseCell layouts env done (BackendAlt altMeta pat binders mguard body) = do
   emit ("if (!" <> done <> ") {")
   -- pattern test + bindings produced as a nested block
   (blk, ()) <- captured env $ do
     mtest <- patTest sv pat
     case mtest of
-      Nothing -> consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
+      Nothing -> consumeAltBody sink altMeta sv dropCell reuseCell layouts env done pat binders mguard body
       Just test -> do
         emit ("if (" <> test <> ") {")
-        consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
+        consumeAltBody sink altMeta sv dropCell reuseCell layouts env done pat binders mguard body
         emit "}"
   forM_ blk (emit . ("  " <>))
   emit "}"
@@ -4116,8 +4584,8 @@ consumeAlt sink sv dropCell layouts env done (BackendAlt altMeta pat binders mgu
 -- match consume the body into the sink (and mark @done@; for a 'SinkTail'
 -- body the @done@ store is dead — the body has returned/looped — but
 -- harmless).
-consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Gen ()
-consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body = do
+consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Gen ()
+consumeAltBody sink altMeta sv dropCell reuseCell layouts env done pat binders mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   -- Perceus RC S2.3a/S3.2 (§a): the cell-drop fires for THIS arm only when the
   -- match owns the scrutinee cell ('dropCell'). S3.2 routes that cleanup through
@@ -4132,13 +4600,32 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
   -- inflation / leak, never balanced). Guarded arms bind fields before evaluating
   -- the guard, so a failed guard cannot run the success-branch balancing drops;
   -- keep guarded arms conservative until guard-failure cleanup is modeled.
-  let dropHere = dropCell && maybe True (const False) mguard
-      reuseCandidate = if dropHere then sameSizeCtorReuseCandidate layouts pat body else Nothing
+  let unguarded = maybe True (const False) mguard
+      dropHere = dropCell && unguarded
+      reuseHere = (dropCell || reuseCell) && unguarded
+      reuseOldLayout = if reuseHere then patCtorReuseLayout layouts pat else Nothing
+      reuseCandidate = if reuseHere then sameSizeCtorReuseCandidate layouts pat binders body else Nothing
+  flat <- not . null <$> gets gsParamLvals
+  case (mguard, reuseOldLayout) of
+    (Nothing, Just oldLayout)
+      | flat
+      , staticallyBoxedCtorLayout oldLayout
+      , termHasTokenCtorReuse oldLayout pat body ->
+          consumeEarlyReuseAltBody sink altMeta sv env done pat binders body oldLayout dropHere
+    _ -> consumeAltBodyLateReuse sink altMeta sv dropHere layouts env done pat binders mguard body reuseCandidate
+
+consumeAltBodyLateReuse :: Sink -> BackendMeta -> Text -> Bool -> Map GName BackendCtorLayout -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> Maybe BackendTerm -> BackendTerm -> Maybe CtorReuseCandidate -> Gen ()
+consumeAltBodyLateReuse sink altMeta sv dropHere _layouts env done pat binders mguard body reuseCandidate = do
+  let
       dupFlags =
         case reuseCandidate of
           Just candidate -> patDupFlagsForReuse pat candidate
           Nothing -> replicate (length (patBindings sv pat)) dropHere
-  env' <- bindPatScrutDupSelective dupFlags binders sv env pat
+  -- Late reuse has not proved that @sv@ is a boxed constructor cell yet: a
+  -- source can reach this path because it is packed/immediate, shared, or
+  -- otherwise not reusable.  Bind through the generic accessor here; the
+  -- early-token branch is the only path allowed to use direct boxed slots.
+  env' <- bindPatScrutDupSelectiveWith Nothing dupFlags binders sv env pat
   -- Perceus RC S2.3 (b.4, per-arm): decide the drops for this arm's pattern-slot
   -- binders from lowered arm metadata, against the bound flat C locals (R-flat).
   -- These drops only fire with 'dropHere',
@@ -4160,7 +4647,7 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
   -- up only by the binder pass S2.3, not here).
   case mguard of
     Nothing -> do
-      rcEmitBranchDeadDropsHere altMeta
+      rcEmitBranchDeadDropsHere (sinkCleanupLines bodySink) altMeta
       withEnv env' $
         case reuseCandidate of
           Just candidate ->
@@ -4169,12 +4656,94 @@ consumeAltBody sink altMeta sv dropCell layouts env done pat binders mguard body
             consume bodySink body
       emit (done <> " = 1;")
     Just gd -> do
-      ge <- withEnv env' ((compile gd))
-      emit ("if (kas_bool(" <> ge <> ")) {")
-      rcEmitBranchDeadDropsHere altMeta
+      ge <- withEnv env' (compileBoolTest gd)
+      emit ("if (" <> ge <> ") {")
+      rcEmitBranchDeadDropsHere (sinkCleanupLines bodySink) altMeta
       withEnv env' ((consume bodySink body))
       emit ("  " <> done <> " = 1;")
       emit "}"
+
+consumeEarlyReuseAltBody :: Sink -> BackendMeta -> Text -> Text -> Text -> BackendPat -> [Maybe BackendBinder] -> BackendTerm -> BackendCtorLayout -> Bool -> Gen ()
+consumeEarlyReuseAltBody sink altMeta sv env done pat binders body oldLayout _dropHere = do
+  token <- freshN "reuse_"
+  emit ("KValue *" <> token <> " = ktry_reuse_ctor(" <> sv <> ", " <> T.pack (show (bclRuntimeFields oldLayout)) <> ");")
+  emit ("if (" <> token <> ") {")
+  savedUnique <- saveFlatLocalScope
+  let n = length (patBindings sv pat)
+      dupUnique = replicate n False
+      ownUnique = replicate n True
+      layoutMap = Map.singleton (bclCtor oldLayout) oldLayout
+      altDeadSlots = branchDeadCtorFieldSlots pat binders altMeta
+      fieldSlots = fromMaybe Map.empty (patDirectCtorFieldVars pat)
+  envUnique <- bindPatScrutOwnershipSelectiveWith (Just layoutMap) dupUnique ownUnique binders sv env pat
+  rcEmitBranchDeadDropsHere (sinkCleanupLines sink) altMeta
+  withEnv envUnique $
+    consumeTokenReuseBody sink token oldLayout pat binders fieldSlots altDeadSlots body
+  emit ("  " <> done <> " = 1;")
+  restoreFlatLocalScope savedUnique
+  emit "} else {"
+  savedFallback <- saveFlatLocalScope
+  consumeAltBodyLateReuse sink altMeta sv True layoutMap env done pat binders Nothing body (directSameSizeCtorReuseCandidate oldLayout pat binders body)
+  restoreFlatLocalScope savedFallback
+  emit "}"
+
+consumeTokenReuseBody :: Sink -> Text -> BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> Map Int Int -> Set Int -> BackendTerm -> Gen ()
+consumeTokenReuseBody sink token oldLayout pat binders fieldSlots pathSkipSlots term =
+  case term of
+    BCtor _ newLayout args ->
+      case tokenCtorReuseCandidateFrom oldLayout fieldSlots newLayout args of
+        Just candidate ->
+          let candidateSkip = crcSkipSlots candidate `Set.union` pathSkipSlots
+           in compileCtorFromTokenSkip token (crcNewLayout candidate) (crcArgs candidate) (crcMoveSlots candidate) candidateSkip >>= sinkResult sink
+        Nothing ->
+          emit "krt_fail(\"internal: S5 reuse token path lost same-size constructor\");"
+    BSeal _ _ body -> consumeTokenReuseBody sink token oldLayout pat binders fieldSlots pathSkipSlots body
+    BIf _ c th el -> consumeTokenReuseIf sink token oldLayout pat binders fieldSlots pathSkipSlots c th el
+    BLet _ mb _ _ rhs body -> consumeTokenReuseLet sink token oldLayout pat binders fieldSlots pathSkipSlots mb rhs body
+    _ -> emit "krt_fail(\"internal: S5 reuse token path reached non-constructor body\");"
+
+consumeTokenReuseIf :: Sink -> Text -> BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> Map Int Int -> Set Int -> BackendTerm -> BackendTerm -> BackendTerm -> Gen ()
+consumeTokenReuseIf sink token oldLayout pat binders fieldSlots pathSkipSlots c th el = do
+  ce <- compileBoolTest c
+  env <- gets gsEnv
+  let condSkip = cfsAlways (consumedCtorFieldSlotUse fieldSlots c)
+      branchSkip term = pathSkipSlots `Set.union` condSkip `Set.union` branchDeadCtorFieldSlots pat binders (backendTermMeta term)
+  (tStmts, ()) <-
+    captured env $
+      rcEmitBranchDeadDropsHere (sinkCleanupLines sink) (backendTermMeta th)
+        >> consumeTokenReuseBody sink token oldLayout pat binders fieldSlots (branchSkip th) th
+  (eStmts, ()) <-
+    captured env $
+      rcEmitBranchDeadDropsHere (sinkCleanupLines sink) (backendTermMeta el)
+        >> consumeTokenReuseBody sink token oldLayout pat binders fieldSlots (branchSkip el) el
+  emit ("if (" <> ce <> ") {")
+  forM_ tStmts (emit . ("  " <>))
+  emit "} else {"
+  forM_ eStmts (emit . ("  " <>))
+  emit "}"
+
+consumeTokenReuseLet :: Sink -> Text -> BackendCtorLayout -> BackendPat -> [Maybe BackendBinder] -> Map Int Int -> Set Int -> Maybe BackendBinder -> BackendTerm -> BackendTerm -> Gen ()
+consumeTokenReuseLet sink token oldLayout pat binders fieldSlots pathSkipSlots mb rhs body = do
+  rhsOwnsLocal <- rcTermProducesOwnedHere rhs
+  re <- compileErasableArgOwned rhsOwnsLocal rhs
+  let rhsSkip = cfsAlways (consumedCtorFieldSlotUse fieldSlots rhs)
+      bodySkip = pathSkipSlots `Set.union` rhsSkip
+      bodyFields = shiftCtorFieldVars 1 fieldSlots
+  lvals <- gets gsParamLvals
+  if null lvals
+    then do
+      env <- gets gsEnv
+      e2 <- freshN "env_"
+      emit ("KEnv *" <> e2 <> " = kpush(" <> re <> ", " <> env <> ");")
+      withEnv e2 (consumeTokenReuseBody sink token oldLayout pat binders bodyFields bodySkip body)
+    else do
+      drp0 <- rcBinderDroppableHere mb
+      let drp = drp0 && rhsOwnsLocal
+      savedFlat <- saveFlatLocalScope
+      lv <- bindFlatLocal "let_" (bbBinderId <$> mb) rhsOwnsLocal re
+      let bodySink = if drp then sinkWithCleanup ["kdrop(" <> lv <> ");"] sink else sink
+      consumeTokenReuseBody bodySink token oldLayout pat binders bodyFields bodySkip body
+      restoreFlatLocalScope savedFlat
 
 -- | Perceus RC S2.3: the bound flat C locals to @kdrop@ for the pattern-slot
 -- binders of @pat@ that the analysis says are droppable without a consuming
@@ -4312,6 +4881,35 @@ bindsNothing = \case
 -- binder ends up at de Bruijn index 0).
 patBindings :: Text -> BackendPat -> [Text]
 patBindings sv = patBindingsCore sv . backendPatToCorePat
+
+patBindingsWithLayouts :: Map GName BackendCtorLayout -> Text -> BackendPat -> [Text]
+patBindingsWithLayouts layouts sv pat0 = go sv pat0
+  where
+    go v pat = case pat of
+      BPWild -> []
+      BPLit _ -> []
+      BPVar _ -> [v]
+      BPAs _ p -> v : go v p
+      BPCtor g ps ->
+        let nps = length ps
+            arg i =
+              case Map.lookup g layouts of
+                Just layout
+                  | staticallyBoxedCtorLayout layout
+                  , bclRuntimeFields layout == nps ->
+                      v <> "->as.ctor.args[" <> T.pack (show i) <> "]"
+                _ -> ctorArgExpr v nps i
+         in concat [go (arg i) p | (i, p) <- zip [0 ..] ps]
+      BPTuple ps -> concat [go (recAtExpr v i) p | (i, p) <- zip [0 ..] ps]
+      BPRecord fs mrest ->
+        concat [go ("kproj(" <> v <> ", " <> cStr n <> ")") p | (n, p) <- fs]
+          ++ case mrest of
+            Just "_" -> []
+            Just _ -> [recWithoutExpr v (map fst fs)]
+            Nothing -> []
+      BPInject _ p -> go ("kvariant_payload(" <> v <> ")") p
+      BPInjectRest _ -> []
+      BPOr {} -> patBindings v pat
 
 patBindingsCore :: Text -> CorePat -> [Text]
 patBindingsCore = go
@@ -5633,22 +6231,34 @@ bindPatScrutDup dupFields binders sv env pat =
   bindPatScrutDupSelective (replicate (length (patBindings sv pat)) dupFields) binders sv env pat
 
 bindPatScrutDupSelective :: [Bool] -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
-bindPatScrutDupSelective dupFlags binders sv env pat = do
+bindPatScrutDupSelective =
+  bindPatScrutDupSelectiveWith Nothing
+
+bindPatScrutDupSelectiveWith :: Maybe (Map GName BackendCtorLayout) -> [Bool] -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
+bindPatScrutDupSelectiveWith mlayouts dupFlags =
+  bindPatScrutOwnershipSelectiveWith mlayouts dupFlags dupFlags
+
+bindPatScrutOwnershipSelectiveWith :: Maybe (Map GName BackendCtorLayout) -> [Bool] -> [Bool] -> [Maybe BackendBinder] -> Text -> Text -> BackendPat -> Gen Text
+bindPatScrutOwnershipSelectiveWith mlayouts dupFlags ownFlags binders sv env pat = do
   lvals <- gets gsParamLvals
+  rcEnabled <- gets gsRcEnabled
   let wrap j valExpr = if dupAt j then "kdup(" <> valExpr <> ")" else valExpr
+      vals = case mlayouts of
+        Just layouts | rcEnabled -> patBindingsWithLayouts layouts sv pat
+        Nothing -> patBindings sv pat
+        _ -> patBindings sv pat
   if null lvals
-    then foldM push env (zip [0 ..] (patBindings sv pat)) -- boxed: kpush each onto the KEnv
+    then foldM push env (zip [0 ..] vals) -- boxed: kpush each onto the KEnv
     else do
       -- R2.3-rest FLAT worker: bind each pattern variable to a C local via
       -- 'bindFlatLocal' (the LAST binding becomes de Bruijn index 0, matching
       -- the kpush order); the scope is restored by the enclosing 'captured'.
-      let vals = patBindings sv pat
-          n = length vals
+      let n = length vals
       forM_ (zip [0 ..] vals) $ \(j, valExpr) -> do
         let mb = case drop (n - 1 - j) binders of
               b : _ -> b
               [] -> Nothing
-        void (bindFlatLocal "pat_" (bbBinderId <$> mb) (dupAt j) (wrap j valExpr))
+        void (bindFlatLocal "pat_" (bbBinderId <$> mb) (ownAt j) (wrap j valExpr))
       gets gsEnv -- unchanged (flat reads via gsParamLvals, not the KEnv)
   where
     push e (j, valExpr) = do
@@ -5659,6 +6269,9 @@ bindPatScrutDupSelective dupFlags binders sv env pat = do
     dupAt j = case drop j dupFlags of
       flag : _ -> flag
       [] -> True
+    ownAt j = case drop j ownFlags of
+      flag : _ -> flag
+      [] -> dupAt j
 
 -- | R2.3-rest: bind @valExpr@ to a fresh C local in a flat worker and prepend
 -- it to 'gsParamLvals' as de Bruijn index 0 (params and earlier binders shift
@@ -5672,6 +6285,7 @@ bindFlatLocal prefix mbid ownsRef valExpr = do
       { gsParamLvals = v : gsParamLvals st
       , gsParamBinders = mbid : gsParamBinders st
       , gsParamOwns = ownsRef : gsParamOwns st
+      , gsParamReusable = ownsRef : gsParamReusable st
       }
   pure v
 
@@ -5682,8 +6296,8 @@ compileKIf alts mels = go alts
       Just els -> (emitBlock els)
       Nothing -> pure ()
     go ((c, body) : more) = do
-      ce <- (compile c)
-      emit ("if (kas_bool(" <> ce <> ")) {")
+      ce <- compileBoolTest c
+      emit ("if (" <> ce <> ") {")
       env <- gets gsEnv
       (blk, ()) <- (captured env (compileItems Nothing Nested body))
       forM_ blk (emit . ("  " <>))
@@ -5711,8 +6325,8 @@ compileKIfTail tailMode alts mels = goAlts alts
       Just els -> (emitBranch els)
       Nothing -> emitTailReturn "kunit()" -- no/exhausted else: yield Unit, flush defers
     goAlts ((c, body) : more) = do
-      ce <- (compile c)
-      emit ("if (kas_bool(" <> ce <> ")) {")
+      ce <- compileBoolTest c
+      emit ("if (" <> ce <> ") {")
       (emitBranch body)
       emit "} else {"
       goAlts more

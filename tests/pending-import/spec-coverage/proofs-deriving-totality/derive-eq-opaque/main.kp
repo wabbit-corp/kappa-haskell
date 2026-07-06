@@ -1,0 +1,26 @@
+-- §14.5 (Spec L15007-L15009): the Eq instance derived inside lib for the
+-- opaque data type is usable outside only through the trait interface; it
+-- grants no constructor access, pattern-matching access, or definitional
+-- transparency for Secret outside its defining module.
+--! mode check
+--! assertErrorCount 2
+module main
+
+import lib.(Secret, mkSecret)
+
+-- POSITIVE: the exported derived instance works through the interface.
+sameSecret : Bool
+let sameSecret = mkSecret 1 == mkSecret 1
+
+-- NEGATIVE: the derived instance does not leak the constructor. Both
+-- errors are direct consequences of opacity: the constructor name is not
+-- in scope, so its pattern binder 'n' never binds either.
+peek : Secret -> Int
+let peek s =
+    match s
+    case MkSecret n -> n --!! kappa.name.unresolved
+    case _ -> 0
+
+-- STATUS(a51e1bf): FAIL — derive is unsupported (E_UNSUPPORTED in lib), so
+-- no Eq Secret instance is ever published and main additionally gets an
+-- unsolved (==) implicit: 4 errors instead of the 2 opacity errors.

@@ -1,0 +1,15 @@
+module main
+
+-- §9.4: a satisfying definition must match the expected signature up to
+-- definitional equality. `convert : Int -> Int` does not match the
+-- expected `Int -> Bool`, so the expect remains unsatisfied and
+-- compilation must fail.
+
+expect term convert : Int -> Bool
+
+convert : Int -> Int
+let convert x = x
+
+--! mode check
+--! assertDiagnosticCodes E_EXPECT_UNSATISFIED
+-- STATUS(a51e1bf): FAIL — compiler accepts the mismatched same-file definition as satisfying the expect; §9.4 definitional-equality matching is not enforced

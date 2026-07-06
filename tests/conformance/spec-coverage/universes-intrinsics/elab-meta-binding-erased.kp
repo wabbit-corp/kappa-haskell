@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §11.1.6.1/§11.1.6.3: a binding introduced inside an Elab action is
+-- meta-phase even when its type (String) is runtime-capable; it is an
+-- ordinary value within the meta phase. A Syntax value mentioning a
+-- meta-phase local cannot outlive that local's scope: the meta binding is
+-- erased and never becomes an object-phase runtime value.
+module main
+
+-- POSITIVE: meta-phase Strings are ordinary values within the meta phase.
+metaStr : Elab (Syntax Int)
+let metaStr =
+    do
+        let s : String = "meta"
+        let t : String = stringAppend s "!"
+        pure '{ 1 }
+
+ok : Int
+let ok = $(metaStr)
+
+-- NEGATIVE: the returned quotation references the meta-phase local `s`,
+-- whose scope ends with the Elab action; splicing it is rejected.
+leak : Int
+let leak = $(do                                          --!! E_SYNTAX_SCOPE_ESCAPE
+    let s : Int = 5
+    pure '{ s })
+
+-- STATUS(a51e1bf): PASS

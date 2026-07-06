@@ -1,0 +1,47 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4.1: a borrowed binder is a place-preserving alias — projecting
+-- from it extends the SAME underlying root path rather than creating a
+-- fresh root. A two-step alias chain keeps the footprint rooted at the
+-- original path: consuming the aliased path is rejected while the
+-- borrow is live, but a disjoint sibling path stays consumable.
+module main
+
+data Token : Type =
+    Token
+
+type Inner = (1 tok : Token, tag : Int)
+type Nest = (1 inner : Inner, 1 spare : Token)
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+observeTok : (& t : Token) -> Int
+let observeTok (& t : Token) : Int = 0
+
+-- POSITIVE: borrow chain a = nest.inner, v = a.tok has footprint
+-- nest.inner.tok; the sibling nest.spare is disjoint and consumable
+okDisjoint : (1 nest : Nest) -> (Token, Token)
+let okDisjoint (1 nest : Nest) : (Token, Token) =
+    block
+        let sp =
+            block
+                let & a = nest.inner
+                let & v = a.tok
+                let _ = observeTok v
+                takeToken nest.spare
+        (sp, takeToken nest.inner.tok)
+
+-- NEGATIVE: the chained alias footprint IS nest.inner.tok — consuming
+-- that path while the borrow is live must be rejected
+bad : (1 nest : Nest) -> (Token, Token)
+let bad (1 nest : Nest) : (Token, Token) =
+    block
+        let & a = nest.inner
+        let & v = a.tok
+        let _ = observeTok v
+        (takeToken nest.inner.tok, takeToken nest.spare) --!! E_QTT_BORROW_OVERLAP
+
+-- STATUS(a51e1bf): PASS

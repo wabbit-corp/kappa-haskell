@@ -1,0 +1,6 @@
+module rlib
+
+-- §8.5.3: constructors of an `opaque data` type are not exported and are
+-- not name-resolvable outside this module.
+opaque data Token : Type =
+    Token Int

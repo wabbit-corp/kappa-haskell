@@ -1,0 +1,55 @@
+--! mode check
+--! assertNoErrors
+--! assertEval residual 10
+--! assertEval widenedResidual 5
+
+-- §18.1.21 / §11.3.2 / §18.1.14: a handler may be abstracted over an open
+-- row — SplitEff <[Tick : Tick | r]> Tick Tick r leaves the residual row r;
+-- the residual computation is handled further and, when r instantiates to
+-- <[ ]>, weakens back into a larger row context.
+module main
+
+effect Tick =
+    1 tick : Unit -> Int
+
+effect Log =
+    1 emit : Int -> Unit
+
+handleTick : forall (r : EffRow) (a : Type). Eff <[Tick : Tick | r]> a -> Eff r a
+let handleTick c =
+    deep handle Tick c with
+        case return x -> pure x
+        case tick _ k -> k 5
+
+comp : Eff <[Tick : Tick, Log : Log]> Int
+let comp =
+    do
+        let a <- Tick.tick ()
+        let b <- Tick.tick ()
+        let _ <- Log.emit a
+        pure (addInt a b)
+
+afterTick : Eff <[Log : Log]> Int
+let afterTick = handleTick comp
+
+handleLog : Eff <[Log : Log]> Int -> Eff <[ ]> Int
+let handleLog c =
+    deep handle Log c with
+        case return x -> pure x
+        case emit _ k -> k ()
+
+residual : Int
+let residual = runPure (handleLog afterTick)
+
+-- instantiating r at <[ ]> and weakening the result into <[Log : Log]>
+onlyTick : Eff <[Tick : Tick]> Int
+let onlyTick =
+    do
+        let a <- Tick.tick ()
+        pure a
+
+widenedAfter : Eff <[Log : Log]> Int
+let widenedAfter = handleTick onlyTick
+
+widenedResidual : Int
+let widenedResidual = runPure (handleLog widenedAfter)

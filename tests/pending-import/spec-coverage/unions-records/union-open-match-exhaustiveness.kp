@@ -1,0 +1,38 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+
+-- §13.1.4 (Spec.md L12314-L12319): for an open union `(| ... | r |)`,
+-- exhaustiveness requires either a catch-all `_` or a residual-row
+-- pattern `(| ..rest |)`; listing only the known members is
+-- non-exhaustive. In the residual branch the binder has type Variant r,
+-- so it may be returned at exactly that residual union type.
+module main
+
+-- POSITIVE: residual arm makes the open match exhaustive, and `rest`
+-- has precisely the residual type (| r |) = Variant r.
+classify : forall (r : VarRow). LacksVar r Integer =>
+           (| Integer | r |) -> Option (| r |)
+let classify u =
+    match u
+    case (| n : Integer |) -> None
+    case (| ..rest |)      -> Some rest
+
+-- POSITIVE: an ordinary catch-all `_` also satisfies open-union
+-- exhaustiveness.
+catchAll : forall (r : VarRow). LacksVar r Integer => (| Integer | r |) -> Integer
+let catchAll u =
+    match u
+    case (| n : Integer |) -> n
+    case _                 -> 0
+
+-- NEGATIVE: no residual arm and no catch-all — non-exhaustive.
+bad : forall (r : VarRow). LacksVar r Integer => (| Integer | r |) -> Integer
+let bad u =
+    match u                             --!! kappa.pattern.non-exhaustive
+    case (| n : Integer |) -> n
+
+-- STATUS(a51e1bf): FAIL — VarRow/LacksVar unresolved (open variant rows
+-- are not implemented), so open-union exhaustiveness checking cannot be
+-- reached; the file dies with E_NAME_UNRESOLVED instead of the single
+-- expected non-exhaustiveness error.

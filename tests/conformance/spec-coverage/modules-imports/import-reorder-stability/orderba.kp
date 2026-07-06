@@ -1,0 +1,13 @@
+module orderba
+
+-- Same body as orderab with the import specs in the opposite order;
+-- §8.3.7 requires identical elaboration results.
+import libb.(onlyB, shared)
+import liba.(onlyA, shared)
+
+shared : Int
+let shared = 9
+
+totalBA : Int
+let totalBA = onlyA + onlyB + shared
+-- STATUS(a51e1bf): PASS

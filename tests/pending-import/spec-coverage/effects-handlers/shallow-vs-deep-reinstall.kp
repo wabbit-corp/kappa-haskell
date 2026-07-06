@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+--! assertEval shallowResult 101
+--! assertEval deepResult 2
+
+-- §18.1.21 vs §18.1.22: a shallow handler is NOT reinstalled around k, so
+-- after the clause resumes, a second operation at the same label propagates
+-- outward (caught here by an outer handler: 1 + 100); a deep handler
+-- automatically reinstalls, so both operations hit the same clause (1 + 1).
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        let b <- Ask.ask ()
+        pure (addInt a b)
+
+shallowInner : Eff <[Ask : Ask]> Int
+let shallowInner =
+    handle Ask comp with
+        case return x -> pure x
+        case ask _ k -> k 1
+
+shallowOuter : Eff <[ ]> Int
+let shallowOuter =
+    deep handle Ask shallowInner with
+        case return x -> pure x
+        case ask _ k -> k 100
+
+shallowResult : Int
+let shallowResult = runPure shallowOuter
+
+deepHandled : Eff <[ ]> Int
+let deepHandled =
+    deep handle Ask comp with
+        case return x -> pure x
+        case ask _ k -> k 1
+
+deepResult : Int
+let deepResult = runPure deepHandled

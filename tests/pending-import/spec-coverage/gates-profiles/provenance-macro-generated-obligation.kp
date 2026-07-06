@@ -1,0 +1,25 @@
+-- §3.1.5A: a diagnostic caused by a macro-generated obligation MUST keep
+-- its primary origin at the nearest faithful user-written source (the
+-- splice — pinned by line below) and expose the macro-expansion
+-- provenance frame as a related origin or payload entry. §3.1.1A: macro
+-- diagnostics MUST include the macro invocation site and the generated
+-- syntax site. Here the macro duplicates a linear splice (§12.2).
+--! mode check
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+--! assertDiagnosticAt provenance-macro-generated-obligation.kp error E_QTT_LINEAR_OVERUSE 23
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied macro-invocation-site
+--! assertDiagnosticRelated error kappa.quantity.unsatisfied generated-site
+module main
+
+data Token : Type =
+    Token
+
+dupSyntax : Syntax Token -> Elab (Syntax (Token, Token))
+let dupSyntax s =
+    pure '{ (${s}, ${s}) }
+
+bad : (1 t : Token) -> (Token, Token)
+let bad t =
+    $(dupSyntax '{ t })
+
+-- STATUS(a51e1bf): FAIL — primary is correctly the user-written splice, but no macro provenance is exposed (no macro-invocation-site/generated-site related origin or payload entry)

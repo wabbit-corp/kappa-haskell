@@ -1,0 +1,19 @@
+module main
+
+-- §8.3.1.1/§4.3: `unhide` and `clarify` may be combined on one import
+-- item, and their surface order is not semantically significant. unhide
+-- grants access to the private item; clarify makes its definition
+-- transparent, so refl proves each equation (§8.5.4). Both gates enabled.
+import vlib.(unhide clarify term secret)
+import vlib.(clarify unhide term hidden)
+
+proofSecret : secret = 7
+let proofSecret = refl
+
+proofHidden : hidden = 3
+let proofHidden = refl
+
+--! allow_unhiding
+--! allow_clarify
+--! assertNoErrors
+-- STATUS(a51e1bf): FAIL — unhide does not grant access to private items (E_IMPORT_ITEM_NOT_FOUND on both import items, plus cascades)

@@ -1,0 +1,28 @@
+-- §17.1.6 (Spec L17930-L17941): matching Bool against the literal True /
+-- False typechecks the branch under the implicit assumption @p : b = True
+-- (resp. b = False). The assumption is real evidence: it proves b = True
+-- in the True branch, and its absence makes the same proof fail in the
+-- False branch.
+
+--! mode check
+
+-- POSITIVE: the True branch proves (=) b True by refl under the branch
+-- assumption; the False branch never claims it.
+proveTrue : (b : Bool) -> Option ((=) b True)
+let proveTrue b =
+    match b
+    case True -> Some refl
+    case False -> None
+
+-- NEGATIVE: in the False branch the assumption is b = False; refl cannot
+-- inhabit (=) b True there.
+bad : (b : Bool) -> (=) b True
+let bad b =
+    match b
+    case True -> refl
+    case False -> refl
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

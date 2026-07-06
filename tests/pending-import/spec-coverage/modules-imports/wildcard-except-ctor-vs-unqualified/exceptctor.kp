@@ -1,0 +1,15 @@
+module exceptctor
+
+-- §8.3.1: the kind-qualified except item `ctor Box` removes ONLY the
+-- constructor facet of the same-spelling data family from the wildcard;
+-- the type facet remains imported and usable.
+import blib.* except (ctor Box)
+
+useType : Box -> Int
+let useType b = other
+
+badMatch : Box -> Int
+let badMatch b =
+    match b
+      case Box n -> n --!! E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN
+-- STATUS(a51e1bf): FAIL — except (ctor Box) removes the entire same-spelling binding group, so even the type facet becomes unresolved

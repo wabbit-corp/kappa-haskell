@@ -1,0 +1,46 @@
+--! mode check
+--! assertNoErrors
+--! assertEval shallowVal 6
+--! assertEval deepVal 6
+
+-- §18.1.21 / §18.1.22 resumption types: a shallow k resumes in the original
+-- UNHANDLED carrier — k : (1 _ : B) -> Eff <[label : E | r]> a — so its
+-- result still carries the label and must be re-handled explicitly; a deep
+-- k resumes in the handler's TARGET carrier — k : (1 _ : B) -> m b. The
+-- explicit annotations on `resumed` pin both shapes.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        pure (addInt a 1)
+
+shallowK : Eff <[ ]> Int
+let shallowK =
+    handle Ask comp with
+        case return x -> pure x
+        case ask _ k ->
+            block
+                let resumed : Eff <[Ask : Ask]> Int = k 5
+                handle Ask resumed with
+                    case return y -> pure y
+                    case ask _ k2 -> pure 0
+
+shallowVal : Int
+let shallowVal = runPure shallowK
+
+deepK : Eff <[ ]> Int
+let deepK =
+    deep handle Ask comp with
+        case return x -> pure x
+        case ask _ k ->
+            block
+                let resumed : Eff <[ ]> Int = k 5
+                resumed
+
+deepVal : Int
+let deepVal = runPure deepK

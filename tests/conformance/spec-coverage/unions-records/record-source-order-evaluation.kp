@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "y\nx\nb\na\n9\n8\n"
+
+-- §13.2.1.1 + §13.2.3 (Spec.md L12525-L12533, L12622-L12629) and §13.2.5
+-- elaboration order (L12845-L12855): the dependency graph may REORDER
+-- fields for typechecking and canonical identity, but user-written field
+-- initializers and patch right-hand sides are evaluated exactly once in
+-- SOURCE order. Here the record type is (x, y) but the literal is
+-- written (y, x): the effects run y-then-x, and patch items likewise run
+-- in patch item order, while projections still read the right fields.
+module main
+
+type P = (x : Integer, y : Integer)
+
+step : String -> Integer -> UIO Integer
+let step tag v = do
+    printlnString tag
+    pure v
+
+main : UIO Unit
+let main = do
+    let r = ((y = !(step "y" 2), x = !(step "x" 1)) : P)
+    let r2 = r.{ y = !(step "b" 9), x = !(step "a" 8) }
+    printlnString (showInt r2.y)
+    printlnString (showInt r2.x)
+
+-- STATUS(a51e1bf): PASS

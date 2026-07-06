@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.4.3: composeProjector composes descriptors only; the composite is
+-- an ordinary first-class Projector value. Pins a three-stage chain and
+-- its use in both read and borrow demand (§12.4.2: a descriptor
+-- application behaves like the corresponding fully applied projection
+-- call, with the composite footprint rooted in the outermost root).
+module main
+
+type Cell = (value : Int)
+type Mid = (cell : Cell)
+type Outer = (mid : Mid)
+
+projection outerMid (place this : Outer) : Mid =
+    yield this.mid
+
+projection midCell (place this : Mid) : Cell =
+    yield this.cell
+
+projection cellValue (place this : Cell) : Int =
+    yield this.value
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+-- left-nested composition, ordinary read demand
+readChain : Outer -> Int
+let readChain (o : Outer) : Int =
+    block
+        let two = composeProjector outerMid midCell
+        let three = composeProjector two cellValue
+        three o
+
+-- right-nested composition, borrow demand
+borrowChain : Outer -> Int
+let borrowChain (o : Outer) : Int =
+    block
+        let three = composeProjector outerMid (composeProjector midCell cellValue)
+        let & v = three o
+        observe v
+
+-- STATUS(a51e1bf): PASS

@@ -1,0 +1,21 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.import.ambiguous-dotted
+
+-- §3.2.2 (Spec.md L2126-2141): a bare dotted import that is resolvable BOTH
+-- as a module import (module util.helpers exists) AND as a singleton item
+-- import (module util exports the term `helpers`) MUST be diagnosed in
+-- family kappa.import.ambiguous-dotted, with both interpretations, their
+-- provider identities, and concrete rewrites that force either one.
+module main
+
+-- POSITIVE: the kind-selector rewrite forces the singleton-item reading.
+import util.(term helpers)
+
+-- NEGATIVE: resolvable both as module `util.helpers` and as item
+-- `helpers` of module `util`.
+import util.helpers --!! kappa.import.ambiguous-dotted
+
+x : Int
+let x = helpers
+
+-- STATUS(a51e1bf): FAIL — kappa.import.ambiguous-dotted is not registered; the doubly-resolvable dotted import is accepted SILENTLY (zero diagnostics), one interpretation is picked without any ambiguity report. Forced-rewrite positive checks clean.

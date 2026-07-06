@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+--! assertType readX forall (r : RecRow). (x : Int | r) -> Int
+
+-- §11.3.3 (L10033-L10040): a free lowercase-generalizable identifier in
+-- a term signature whose use is an open-record residual position is
+-- inferred to have type RecRow and is implicitly universalized as an
+-- ordinary 'forall (r : RecRow)' binder (annotation inferred from uses,
+-- not defaulted to Type); its hidden home prefix — (x : Int) here — is
+-- inferred by §11.3.1A from the residual occurrence.
+module main
+
+readX : (x : Int | r) -> Int
+let readX rec = rec.x
+
+-- STATUS(a51e1bf): FAIL — a free lowercase identifier in open-record residual position is not implicitly universalized to RecRow (E_NAME_UNRESOLVED 'r')

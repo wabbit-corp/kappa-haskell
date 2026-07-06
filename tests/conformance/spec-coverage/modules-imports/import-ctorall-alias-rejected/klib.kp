@@ -1,0 +1,4 @@
+module klib
+
+data Rose : Type =
+    Petal Int

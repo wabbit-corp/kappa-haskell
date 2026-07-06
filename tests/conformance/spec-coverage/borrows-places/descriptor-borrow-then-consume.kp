@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4.2: a projector descriptor application is treated EXACTLY like
+-- the corresponding fully applied projection call for static overlap,
+-- disjointness, and borrow introduction — including when the projector
+-- was obtained as an ordinary stored term value rather than by naming
+-- the projection definition.
+module main
+
+data Token : Type =
+    Token
+
+type Cell = (1 tok : Token)
+
+consumeCell : (1 c : Cell) -> Cell
+let consumeCell (1 c : Cell) : Cell = c
+
+observe : (& t : Token) -> Int
+let observe (& t : Token) : Int = 0
+
+projection cellTok (place this : Cell) : Token =
+    yield this.tok
+
+bad : (1 c : Cell) -> Cell
+let bad (1 c : Cell) : Cell =
+    block
+        let proj = cellTok
+        let & v = proj c
+        let _ = observe v
+        consumeCell c --!! E_QTT_BORROW_OVERLAP
+
+-- STATUS(a51e1bf): PASS

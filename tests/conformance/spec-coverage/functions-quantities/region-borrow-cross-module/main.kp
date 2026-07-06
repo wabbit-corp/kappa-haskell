@@ -1,0 +1,23 @@
+-- §12.2.3 (L11211-11226): an anonymous rigid region introduced for a
+-- bare `&` binder may not be mentioned by a callee's result once the
+-- call returns; only explicitly scoped regions cross that boundary.
+module main
+
+import lib.(Box, MkBox, makeGetter)
+
+-- POSITIVE: the imported getter is instantiated at the caller's
+-- (anonymous) region and consumed strictly inside that scope.
+useLocal : (& v : Box) -> Int
+let useLocal (& v : Box) : Int =
+    let g = makeGetter v
+    in g ()
+
+-- NEGATIVE: returning the region-capturing closure at a plain function
+-- type would let the anonymous region escape; the demanded type
+-- `Unit -> Int` (empty capture set) cannot subsume `captures (rho)`.
+badExport : (& v : Box) -> (Unit -> Int)
+let badExport (& v : Box) : (Unit -> Int) =
+    makeGetter v --!! kappa.type.mismatch
+
+--! assertErrorCount 1
+-- STATUS(a51e1bf): PASS

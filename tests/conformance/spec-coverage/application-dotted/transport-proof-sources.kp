@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 proof sources (L16748-16759): branch-local boolean evidence
+-- (b = True from an if-condition) and stable-alias equalities license
+-- automatic transport insertion at an application boundary, attempted
+-- after ordinary argument checking fails (L16786-16788).
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsTrue : FlagBox True -> Unit
+let needsTrue (x : FlagBox True) : Unit = ()
+
+-- POSITIVE: in the then-branch, b = True transports FlagBox b.
+useBoolEvidence : (b : Bool) -> FlagBox b -> Unit
+let useBoolEvidence (b : Bool) (x : FlagBox b) : Unit =
+    if b then needsTrue x else ()
+
+needsSame : (b : Bool) -> FlagBox b -> Unit
+let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+
+-- POSITIVE: let y = x induces the stable-alias equality x = y, licensing
+-- the transport of box : FlagBox x to the demanded FlagBox y.
+useAlias : (x : Bool) -> FlagBox x -> Unit
+let useAlias (x : Bool) (box : FlagBox x) : Unit =
+    block
+        let y = x
+        needsSame y box

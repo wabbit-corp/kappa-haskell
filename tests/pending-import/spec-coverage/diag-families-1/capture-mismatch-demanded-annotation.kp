@@ -1,0 +1,34 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.capture.mismatch
+
+-- §3.2.7 (Spec.md L2896-2911): when a value's inferred hidden region
+-- environment is not contained in the demanded capture annotation, the
+-- diagnostic MUST use family kappa.capture.mismatch, with the inferred and
+-- demanded capture sets, the regions missing from the demanded set, and the
+-- origins introducing them — not a generic type mismatch.
+module main
+
+-- POSITIVE: the annotation lists every captured region.
+makeGetter : forall (s : Region). (&[s] x : Int) -> ((Unit -> Int) captures (s))
+let makeGetter (@0 s : Region) (&[s] x : Int) : ((Unit -> Int) captures (s)) =
+    \() -> x
+
+-- NEGATIVE: the closure's inferred capture set is {s, t} (it reads borrows
+-- from both regions), but the annotation demands captures (s) only; region
+-- `t` is missing from the demanded set.
+pairGetter :
+    forall (s : Region) (t : Region).
+    (&[s] x : Int) -> (&[t] y : Int) -> ((Unit -> Int) captures (s))
+let pairGetter (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : ((Unit -> Int) captures (s)) =
+    \() -> addInt x y --!! kappa.capture.mismatch
+
+-- NEGATIVE: same containment failure through a value of annotated type —
+-- a captures (s, t) value is not a captures (s) value (§12.3.1: the capture
+-- set is part of type identity, and {s, t} is not contained in {s}).
+shrink :
+    forall (s : Region) (t : Region).
+    (((Unit -> Int) captures (s, t)) -> ((Unit -> Int) captures (s)))
+let shrink (f : ((Unit -> Int) captures (s, t))) : ((Unit -> Int) captures (s)) =
+    f --!! kappa.capture.mismatch
+
+-- STATUS(a51e1bf): FAIL — kappa.capture.mismatch is not registered; the closure-inference negative is ACCEPTED with zero errors (missing region t not detected — soundness gap), and the value-level negative emits generic kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). Positive half checks clean.

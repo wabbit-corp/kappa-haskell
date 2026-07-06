@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 3
+
+-- §11.1.4: intrinsic traits (the quantity-solver trait QuantitySatisfies and
+-- the row traits, e.g. LacksRec) have compiler-owned evidence introduction:
+-- user `instance` declarations for them are rejected. IsTrait is
+-- compiler-issued and user instances of it MUST likewise be rejected.
+module main
+
+-- NEGATIVE: user instance of the intrinsic row trait LacksRec.
+instance LacksRec r name =                               --!! E_INSTANCE_HEAD
+
+-- NEGATIVE: user instance of compiler-issued IsTrait.
+instance IsTrait Int =                                   --!! E_INSTANCE_HEAD
+
+-- NEGATIVE: user instance of the intrinsic quantity-solver trait.
+-- (The current compiler has no source-visible QuantitySatisfies at all, so
+-- today the rejection reason is name resolution rather than the spec'd
+-- intrinsic-instance rule; the spec still requires this to be an error.)
+instance QuantitySatisfies ω ω =
+
+-- STATUS(a51e1bf): PASS

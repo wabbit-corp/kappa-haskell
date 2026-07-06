@@ -1,0 +1,20 @@
+module main
+
+-- §4.4/§15.11: `assertTerminates` composes with an explicit `decreases`
+-- clause. The MUSTs pinned here: the combined form is accepted under
+-- `allow_assert_terminates`, runtime semantics are unchanged (§4.4), and
+-- the escape is recorded in the §4.7 audit ledger. Whether the
+-- implementation ALSO verifies the measure and upgrades the definition to
+-- total-certified/conversion-reducible is a MAY (§4.4), so no unfolding
+-- behavior is asserted either way.
+countdown : Integer -> Integer
+assertTerminates let countdown n decreases n = if leInt n 0 then 0 else countdown (subInt n 1)
+
+useCountdown : Integer
+let useCountdown = countdown 4
+
+--! allow_assert_terminates
+--! assertNoErrors
+--! assertEval useCountdown 0
+--! assertAuditLedger assertTerminates
+-- STATUS(a51e1bf): PASS

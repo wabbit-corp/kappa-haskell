@@ -1,0 +1,9 @@
+module lib
+
+opaque type T = Int
+
+mk : Int -> T
+let mk n = n
+
+get : T -> Int
+let get t = t

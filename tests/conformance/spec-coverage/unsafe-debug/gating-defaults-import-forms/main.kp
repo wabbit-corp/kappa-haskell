@@ -1,0 +1,18 @@
+module main
+
+-- §4.2/§4.3/§29.6: with package-mode defaults (all unsafe/debug settings
+-- false), the import-level unsafe facilities are compile-time errors, and
+-- each diagnostic MUST name both the offending construct and its disabling
+-- setting: `unhide` -> allow_unhiding, `clarify` -> allow_clarify, and the
+-- std.debug import -> allow_debug_introspection. The `unhide` gate fires on
+-- the modifier itself, independently of the target's actual visibility.
+import ulib.(unhide hidden)
+import ulib.(clarify veiled)
+import std.debug.*
+
+--! assertErrorCount 3
+--! assertDiagnostic error E_FEATURE_INACTIVE
+--! assertDiagnosticMatch unhide.*hidden.*allow_unhiding
+--! assertDiagnosticMatch clarify.*veiled.*allow_clarify
+--! assertDiagnosticMatch std.debug.*allow_debug_introspection
+-- STATUS(a51e1bf): PASS

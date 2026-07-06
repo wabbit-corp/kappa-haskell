@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertDiagnostic error E_TAB_IN_INDENTATION
+--! assertDiagnosticAt main.kp error E_TAB_IN_INDENTATION 10 1

@@ -1,0 +1,24 @@
+module main
+
+-- §8.5.3/§4.3: clarify on an opaque data type makes its constructors
+-- available BOTH for construction and for pattern matching in the
+-- importing module (gated by allow_clarify, §4.2). Token is a
+-- same-spelling data family, so the unqualified clarified import brings
+-- the paired type + constructor facets (§8.3.1).
+import rlib.(clarify Token)
+
+wrap : Int -> Token
+let wrap n = Token n
+
+unwrap : Token -> Int
+let unwrap t =
+    match t
+      case Token n -> n
+
+result : Int
+let result = unwrap (wrap 5)
+
+--! allow_clarify
+--! assertNoErrors
+--! assertEval result 5
+-- STATUS(a51e1bf): PASS

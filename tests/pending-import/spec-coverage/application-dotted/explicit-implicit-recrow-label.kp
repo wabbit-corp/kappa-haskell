@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §16.1.7.2 step 3 (L16562-16575) + §11.3.1B (L9562-9583): a RecRow
+-- payload elaborates in static-object position, and ordinary record-TYPE
+-- syntax is NOT reinterpreted as a bare row — it stays a Type and must be
+-- rejected against a RecRow demand — while a row variable is a valid
+-- RecRow payload. Label is likewise an intrinsic classifier (L9714) and
+-- must be usable as an implicit binder type.
+module main
+
+wantRow : (@0 r : RecRow) -> Int -> Int
+let wantRow (@0 r : RecRow) (x : Int) : Int = x
+
+-- POSITIVE: a row variable is a RecRow static object.
+passVar : forall (r : RecRow). Int -> Int
+let passVar (@0 r : RecRow) (x : Int) : Int = wantRow @r x
+
+-- POSITIVE: Label is an intrinsic compile-time classifier type.
+wantLabel : (@0 l : Label) -> Int -> Int
+let wantLabel (@0 l : Label) (x : Int) : Int = x
+
+-- NEGATIVE: record-type syntax elaborates to a Type, not a RecRow.
+badType : Int
+let badType = wantRow @(x : Int, y : String) 1 --!! kappa.application.explicit-implicit-classifier

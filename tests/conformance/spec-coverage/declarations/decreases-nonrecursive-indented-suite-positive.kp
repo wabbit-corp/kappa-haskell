@@ -1,0 +1,36 @@
+module main
+
+-- Combination test. §9.1: a `decreases` clause on a non-recursive
+-- definition has no effect (L7441). §9.3.1 indented-suite sugar: a named
+-- `let` body written as an indented suite of pureBlockItems + final
+-- expression elaborates to an explicit `block`.
+
+f : Int -> Int
+let f (n : Int) : Int decreases n = 42
+
+g : Int -> Int
+let g x =
+    let y = x + 1
+    y * 2
+
+gExplicit : Int -> Int
+let gExplicit x =
+    block
+        let y = x + 1
+        y * 2
+
+r : Int
+let r = f 5
+
+s : Int
+let s = g 3
+
+sExplicit : Int
+let sExplicit = gExplicit 3
+
+--! mode check
+--! assertNoErrors
+--! assertEval r 42
+--! assertEval s 8
+--! assertEval sExplicit 8
+-- STATUS(a51e1bf): PASS

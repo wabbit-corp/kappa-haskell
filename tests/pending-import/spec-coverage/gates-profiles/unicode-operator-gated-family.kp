@@ -1,0 +1,20 @@
+-- §2.1A / §5.5.1: a Unicode operator token (General_Category Sm, e.g. ∘)
+-- is owned by the `unicode-names` gate. While the gate is inactive its
+-- rejection is a feature-gating diagnostic — family kappa.feature.gated
+-- with the unicode-operator construct kind (§3.2.1) — not an anonymous
+-- lexer error without a family.
+--! mode check
+--! assertDiagnosticFamily error kappa.feature.gated
+--! assertDiagnosticPayload error kappa.feature.gated /payload/constructKind unicode-operator
+--! assertDiagnosticPayload error kappa.feature.gated /payload/owningGate unicode-names
+module main
+
+f : Int -> Int
+let f n = n
+
+g : Int
+let g = 3
+
+let composed = f ∘ g --!! E_FEATURE_INACTIVE
+
+-- STATUS(a51e1bf): FAIL — the Unicode operator is rejected as bare E_UNEXPECTED_CHARACTER with no family/payload; the lexer's kappa.feature.gated unicode-operator path is unreachable

@@ -1,0 +1,18 @@
+module main
+
+-- §8.3: even when the bare form `import a.b.c` would be ambiguous, the
+-- parenthesized item form `a.b.(c)` FORCES singleton-item import, and the
+-- `as` form FORCES module import; both coexist without ambiguity.
+import a.b.(c)
+import a.b.c as abc
+
+fromItem : Int
+let fromItem = c
+
+fromModule : Int
+let fromModule = abc.x
+
+--! assertNoErrors
+--! assertEval fromItem 1
+--! assertEval fromModule 2
+-- STATUS(a51e1bf): PASS

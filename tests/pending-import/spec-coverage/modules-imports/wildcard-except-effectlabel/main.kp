@@ -1,0 +1,14 @@
+module main
+
+-- §8.3/§8.3.1: `except (effectLabel counterL)` removes only the
+-- effect-label declaration from the wildcard expansion; the effect
+-- interface constructor `Counter` (declaration kind: type) remains
+-- imported and usable.
+import elib.* except (effectLabel counterL)
+
+useIface : Eff <[Counter : Counter]> Int
+let useIface = Counter.tick ()
+
+badUse : Eff <[Counter : Counter]> Int
+let badUse = counterL.tick () --!! E_NAME_UNRESOLVED
+-- STATUS(a51e1bf): FAIL — the effect interface constructor is not exported, and except (effectLabel ...) does not remove the label from the wildcard

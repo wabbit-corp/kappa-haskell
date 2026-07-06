@@ -1,0 +1,33 @@
+--! assertNoErrors
+--! assertEval viaStatic 5
+--! assertEval fromOpt 1
+
+module main
+
+-- §7.2: distinct-spelling constructors are ordinary ctor declarations in
+-- their enclosing binding groups AND static members of their data type
+-- for dotted selection (§7.3), so Shape.Line, Option.None, and
+-- Option.Some are ordinary static-member selections — in term position
+-- and, for prelude Option, without importing the ctor spellings.
+data Shape : Type =
+    Dot
+    Line (len : Int)
+
+viaStatic : Int
+let viaStatic =
+    match Shape.Line 5
+    case Line n -> n
+    case Dot -> 0
+
+optNone : Option Int
+let optNone = Option.None
+
+optSome : Option Int
+let optSome = Option.Some 1
+
+fromOpt : Int
+let fromOpt =
+    match optSome
+    case Some n -> n
+    case None -> 0
+-- STATUS(a51e1bf): PASS

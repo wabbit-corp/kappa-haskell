@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+--! assertType equivProbe Bool
+--! assertEval sum 42
+
+-- §5.5.1 reserved punctuation and longest-match-first tokenization:
+-- `~=` is recognized as ONE ordinary operator token (the prelude Equiv
+-- operator, infix 40 per §28.2.3) in preference to reserved `~` + `=`;
+-- a user operator token may likewise embed reserved single characters
+-- (`~~>` is one token, not `~` `~` `>`).
+
+module main
+
+equivProbe : Bool
+let equivProbe = 1 ~= 1
+
+infix left 60 (~~>)
+(~~>) : Int -> Int -> Int
+let (~~>) x y = addInt x y
+
+sum : Int
+let sum = 20 ~~> 22
+
+-- STATUS(a51e1bf): PASS

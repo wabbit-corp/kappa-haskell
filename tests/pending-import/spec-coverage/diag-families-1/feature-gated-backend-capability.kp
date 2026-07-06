@@ -1,0 +1,36 @@
+--! mode compile
+--! backend zig
+--! assertDiagnostic error E_FEATURE_BACKEND_CAPABILITY_MISSING
+--! assertDiagnosticFamily error kappa.feature.gated
+
+-- §3.2.1 (Spec.md L2029-2060): source accepted by the frontend but rejected
+-- because the selected backend lacks a required runtime capability MUST be
+-- distinguished from E_FEATURE_INACTIVE, using the stable code
+-- E_FEATURE_BACKEND_CAPABILITY_MISSING in family kappa.feature.gated, with
+-- the backend profile and capability set in the payload. §1.x (L298, L333):
+-- a reachable multi-shot operation invocation requires the backend
+-- capability gate `rt-multishot-effects`.
+module main
+
+effect Choose =
+    ω pick : Unit -> Bool
+
+comp : Eff <[Choose : Choose]> Int
+let comp = do
+    let b <- Choose.pick ()
+    pure (if b then 1 else 0)
+
+-- NEGATIVE (backend-capability): the multi-shot resumption (quantity ω)
+-- demands rt-multishot-effects, which the native backend does not advertise.
+let handled =
+    deep handle Choose comp with
+        case return x -> pure x
+        case pick u k -> do
+            let a <- k True
+            let b <- k False
+            pure (addInt a b)
+
+main : Int
+let main = runPure handled
+
+-- STATUS(a51e1bf): UNSUPPORTED — harness provides only the 'interpreter' backend profile; 'backend zig' + mode compile reports unsupported. Program body verified clean under mode check.

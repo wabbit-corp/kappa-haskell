@@ -1,0 +1,19 @@
+module main
+
+-- §9.3: refutable bindings (`let?`) are permitted only inside `do`
+-- blocks (§18.2.1) and comprehensions (§20.4.1); they are rejected in
+-- ordinary `let ... in` / pure `block` scope. The rejection surfaces as
+-- a parse-level diagnostic (the spec names no dedicated family).
+
+o : Option Int
+let o = Some 1
+
+bad : Int
+let bad =
+    block
+        let? (Some x) = o --!! E_UNEXPECTED_INDENTATION
+        x
+
+--! mode check
+--! assertDiagnostic error E_UNEXPECTED_INDENTATION
+-- STATUS(a51e1bf): PASS

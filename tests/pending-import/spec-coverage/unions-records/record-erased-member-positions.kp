@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §13.2.1 (Spec.md L12442-L12477) + §13.2.4 compile-time member
+-- selection: an erased (quantity 0) field is projectable in ambient-
+-- demand-0 positions (types), but NOT in runtime positions; an opaque
+-- member's quantity defaults to 0 and a written non-0 quantity on an
+-- opaque member is ill-formed in portable v1. The spec names no
+-- dedicated family for either rejection (natural fit:
+-- kappa.quantity.unsatisfied for the runtime use), so error count only.
+module main
+
+type R = (n : Nat, @0 index : Nat, buf : SizedArray this.index Bool)
+
+-- POSITIVE: quantity-0 field projected in a TYPE position (demand 0)
+useTy : (r : R) -> SizedArray r.index Bool
+let useTy r = r.buf
+
+-- POSITIVE: opaque member with the default (omitted) quantity 0
+type Sig = (opaque T : Type, value : this.T)
+
+mkSig : Sig
+let mkSig = seal (T = Integer, value = 1) as Sig
+
+-- NEGATIVE (1): quantity-0 field projected into a RUNTIME position
+badRuntime : R -> Nat
+let badRuntime r = r.index
+
+-- NEGATIVE (2): opaque member with written non-0 quantity is ill-formed
+type BadOpaque = (opaque 1 T : Type, value : this.T)
+
+-- STATUS(a51e1bf): FAIL — the compiler accepts both negatives (0
+-- errors): erased record-field projections are not usage-checked at
+-- runtime demand, and `opaque 1 T : Type` is not rejected.

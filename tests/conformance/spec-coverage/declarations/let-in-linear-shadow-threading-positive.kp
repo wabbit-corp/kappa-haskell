@@ -1,0 +1,39 @@
+module main
+
+-- §9.3: a shadowing binding whose right-hand side consumes the earlier
+-- linear binding exactly once discharges its lower bound (ergonomic
+-- linear state threading). Also §9.3 borrowed bindings: `let & pat =`
+-- over a non-place record construction introduces a hidden temporary
+-- root scoped to the body.
+
+data File : Type =
+    Handle Int
+
+advance : (1 f : File) -> File
+let advance f =
+    match f
+    case Handle n -> Handle (n + 1)
+
+close : (1 f : File) -> Int
+let close f =
+    match f
+    case Handle n -> n
+
+threaded : Int
+let threaded =
+    let
+        1 f = Handle 1
+        1 f = advance f
+    in
+        close f
+
+borrowFresh : Int -> Int -> Int
+let borrowFresh a b =
+    let & (x = bx, y = by) = (x = a + 1, y = b + 2)
+    in bx + by
+
+--! mode check
+--! assertNoErrors
+--! assertType threaded Int
+--! assertType borrowFresh Int -> Int -> Int
+-- STATUS(a51e1bf): PASS

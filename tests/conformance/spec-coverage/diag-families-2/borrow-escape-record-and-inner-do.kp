@@ -1,0 +1,38 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE, E_QTT_BORROW_ESCAPE
+--! assertDiagnosticFamily error kappa.borrow.escape
+-- §3.1.1A/§3.3.3: escape diagnostics MUST relate the borrow
+-- introduction site and the escaping use site.
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-start
+--! assertDiagnosticRelated error kappa.borrow.escape borrow-escape-site
+
+-- §3.3.3, §12.3.2 (combination with §13.2 records and §18 do blocks):
+-- a borrow escapes (a) packed inside a returned record field and
+-- (b) through a value returned from a do block. The positive half
+-- consumes the closure locally, inside the region.
+module main
+
+data Box : Type =
+    Box Int
+
+read : (& b : Box) -> Int
+let read b = 0
+
+type Holder = (getter : Unit -> Int)
+
+badRecord : (& b : Box) -> Holder
+let badRecord b =
+    (getter = \_ -> read b)
+
+badInnerDo : (& b : Box) -> UIO (Unit -> Int)
+let badInnerDo b = do
+    let f = \_ -> read b
+    pure f
+
+goodLocal : (& b : Box) -> Int
+let goodLocal b =
+    block
+        let f = \(_ : Unit) -> read b
+        f ()
+-- STATUS(a51e1bf): PASS

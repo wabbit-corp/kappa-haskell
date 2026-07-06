@@ -1,0 +1,46 @@
+-- §18.2.4 (L20525-20529): before elaborating a `return`, `break`, or
+-- `continue`, all positive lower-bound obligations for binders whose scopes
+-- are exited by that completion must already be satisfied on that path.
+-- Existing tests cover only `return`; this pins `break` and `continue`
+-- exiting a loop-body scope that holds an unconsumed linear binding.
+-- (The diagnostic anchors on the violated binder.)
+module main
+
+data Token : Type =
+    MkToken
+
+burn : (1 t : Token) -> Int
+let burn (1 t : Token) : Int =
+    match t
+    case MkToken -> 0
+
+-- POSITIVE: the body's linear binding is consumed before `break` exits.
+okBreak : Bool -> UIO Unit
+let okBreak cond = do
+    while cond do
+        let 1 t = MkToken
+        let _ = burn t
+        break
+    pure ()
+
+-- NEGATIVE: `break` exits the loop-body scope while `t` is unconsumed
+-- (the consuming use after it is unreachable and contributes no usage).
+badBreak : Bool -> UIO Unit
+let badBreak cond = do
+    while cond do
+        let 1 t = MkToken --!! E_QTT_LINEAR_DROP
+        break
+        let _ = burn t
+    pure ()
+
+-- NEGATIVE: `continue` also exits the body scope for this iteration.
+badContinue : Bool -> UIO Unit
+let badContinue cond = do
+    while cond do
+        let 1 t = MkToken --!! E_QTT_LINEAR_DROP
+        continue
+    pure ()
+
+--! mode check
+--! assertErrorCount 2
+-- STATUS(a51e1bf): PASS

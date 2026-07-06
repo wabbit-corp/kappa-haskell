@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.3.1A home-prefix inference (positive). Two occurrences under
+-- (len : Nat | r) give home(r) = (len : Nat), the greatest
+-- dependency-closed common prefix, so a concrete tail whose field type
+-- depends on len (buf : Vec this.len Byte) may instantiate r. Two
+-- occurrences with disjoint prefixes give the empty home; the same tail
+-- (tag : String) then appears under both records (§11.3.1A examples).
+module main
+
+data Byte : Type =
+    Byte
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil
+
+type Sized : Type = (len : Nat, buf : Vec this.len Byte)
+
+keepLen : forall (r : RecRow). (len : Nat | r) -> (len : Nat | r)
+let keepLen (@0 r : RecRow) (rec : (len : Nat | r)) : (len : Nat | r) = rec
+
+useDependentTail : Sized -> Sized
+let useDependentTail (s : Sized) : Sized = keepLen s
+
+disjoint : forall (r : RecRow). (x : Int | r) -> (y : Bool | r) -> Bool
+let disjoint (@0 r : RecRow) (a : (x : Int | r)) (b : (y : Bool | r)) : Bool = b.y
+
+useDisjoint : Bool
+let useDisjoint = disjoint (x = 1, tag = "t") (y = True, tag = "s")
+
+-- STATUS(a51e1bf): PASS

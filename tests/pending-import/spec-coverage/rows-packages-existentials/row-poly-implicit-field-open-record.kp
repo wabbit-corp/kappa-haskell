@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- Combination of §13.2.7 (row polymorphism) and §13.2.9 (implicit
+-- record fields): a row-polymorphic function over an open record whose
+-- explicit prefix contains an implicit propositional field. Binding the
+-- receiver injects the implicit projection `rec.p : (rec.val > 0) =
+-- True` into the local implicit context (§16.3.3), which discharges the
+-- `needsPos` obligation; the residual tail `r` rides along untouched.
+module main
+
+needsPos : (n : Int) -> (@p : n > 0) -> Int
+let needsPos n = n
+
+readPos :
+    forall (r : RecRow).
+    (& rec : (val : Int, @p : this.val > 0 | r)) ->
+    Int
+let readPos (@0 r : RecRow) (& rec : (val : Int, @p : this.val > 0 | r)) : Int =
+    needsPos rec.val
+
+-- a caller instantiates r with extra fields and supplies the proof
+caller : Int
+let caller = readPos (val = 5, @p = refl, extra = "more")
+
+-- STATUS(a51e1bf): FAIL — record binder types containing implicit fields fail to check (kappa.type.mismatch at the binder) and parameter-side implicit unpacking is missing (E_UNSOLVED_IMPLICIT)

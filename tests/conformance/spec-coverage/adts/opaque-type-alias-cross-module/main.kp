@@ -1,0 +1,19 @@
+module main
+
+-- §10.3 (L8806-8807): outside 'lib', Open unfolds but Secret must not.
+import lib.(type Open, type Secret, mkSecret)
+
+-- POSITIVE: the transparent alias unfolds across the module boundary.
+viaOpen : Open Int -> Int
+let viaOpen x = x + 1
+
+-- POSITIVE: Secret is inhabited through the exported smart constructor.
+ok : Secret
+let ok = mkSecret 7
+
+-- NEGATIVE: Secret does not unfold to Int here, so an Int value cannot
+-- check at type Secret.
+leak : Secret
+let leak = viaOpen 6 --!! kappa.type.mismatch
+
+-- STATUS(a51e1bf): PASS

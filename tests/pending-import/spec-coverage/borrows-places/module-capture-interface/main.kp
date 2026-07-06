@@ -1,0 +1,21 @@
+-- §12.4.2: downstream modules perform escape checking against the
+-- capture-annotated exported type. POSITIVE: the imported getter is
+-- usable while the instantiating region is live. NEGATIVE: returning
+-- it at a plain function type would need the caller-local anonymous
+-- rigid region in an annotation, which §12.3.1 forbids — skolem
+-- escape.
+module main
+
+import lib.(makeGetter)
+
+useLocal : forall (s : Region). (&[s] x : Int) -> Int
+let useLocal (@0 s : Region) (&[s] x : Int) : Int =
+    block
+        let g = makeGetter x
+        g ()
+
+bad : (& x : Int) -> (Unit -> Int)
+let bad (& x : Int) : (Unit -> Int) =
+    makeGetter x --!! E_QTT_BORROW_ESCAPE
+
+-- STATUS(a51e1bf): FAIL — the launder IS rejected on the marked line, but as a generic E_TYPE_EQUALITY_MISMATCH; §12.3.1 says an annotation that would need an anonymous rigid region is rejected by the SKOLEM-ESCAPE rule (kappa.borrow.escape naming rho), so the diagnostic identity is wrong. The positive use and the exported captures-annotated interface type check as specified.

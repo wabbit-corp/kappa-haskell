@@ -1,0 +1,42 @@
+-- §15.8 (Spec L15325-L15331): the portable arithmetic fragment MUST decide
+-- lexicographic comparison of accepted measure tuples and non-negative
+-- affine combinations of accepted inequalities; §15.7 (L15269-L15291) puts
+-- max(0, e) and literal-scaled sums inside the portable linear measure
+-- language. All three SCCs below are therefore MUST-accept.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+-- MUST accept: 3-component lexicographic tuple, last component strictly
+-- decreasing, earlier components definitionally equal.
+lex3 : Int -> Int -> Int -> Int
+let lex3 a b c decreases (a, b, c) =
+    if leInt c 0 then 0
+    else lex3 a b (subInt c 1)
+
+-- MUST accept: a strict decrease in the first component permits resetting
+-- the later component upward.
+lexReset : Int -> Int -> Int
+let lexReset a b decreases (a, b) =
+    if leInt a 0 then 0
+    else if leInt b 0 then lexReset (subInt a 1) 7
+    else lexReset a (subInt b 1)
+
+max0 : Int -> Int
+let max0 x = if ltInt x 0 then 0 else x
+
+-- MUST accept: the affine combination max0 a + 2*max0 b of non-negative
+-- components; each edge decreases one max0 component under its guard
+-- ("max 0 (n - 1) < max 0 n under 0 < n" scaled and summed, L15328-L15331).
+affine : Int -> Int -> Int
+let affine a b decreases addInt (max0 a) (mulInt 2 (max0 b)) =
+    if leInt a 0 then
+        if leInt b 0 then 0 else affine a (subInt b 1)
+    else affine (subInt a 1) b
+
+-- STATUS(a51e1bf): FAIL — all three MUST-accept SCCs get
+-- W_TERMINATION_UNVERIFIED: the verifier handles neither 3-component
+-- lexicographic tuples (even with equal earlier components), nor a
+-- first-component decrease with a later-component reset, nor affine
+-- combinations of max0 measures.

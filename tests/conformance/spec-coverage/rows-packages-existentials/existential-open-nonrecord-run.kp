@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"
+
+-- §13.2.11 elimination of a NON-record payload: `exists (a : Type).
+-- Option a` has one anonymous payload slot (no source-visible field), so
+-- the payload must be reached via `open ... as exists ...`; the opened
+-- witness `a` is a rigid quantity-0 local and the anonymous payload is
+-- bound at quantity ω, pattern-matchable like any value (§17.1).
+module main
+
+pkg : exists (a : Type). Option a
+let pkg = seal (Some 42) as exists (a : Type). Option a
+
+size : Int
+let size =
+    open pkg as exists (a). x in
+        match x
+        case Option.None -> 0
+        case Option.Some _ -> 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt size)
+
+-- STATUS(a51e1bf): PASS

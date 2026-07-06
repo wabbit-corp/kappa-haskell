@@ -1,0 +1,25 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.variant.injection-ambiguous
+
+-- §13.1.2 (Spec.md L12255-12269): the inferred injection form `(| e |)` is
+-- valid only when the injected member type is unambiguously determined from
+-- context. §3.2.9 (L3144-3157) mandates family
+-- kappa.variant.injection-ambiguous with the candidate member types and the
+-- annotation form that would disambiguate.
+module main
+
+-- POSITIVE: an explicit member-type annotation disambiguates.
+okAnnotated : (| List Int | List String |)
+let okAnnotated = (| Nil : List Int |)
+
+-- POSITIVE: inferred injection with a unique admissible member type.
+okInferred : (| Int | String |)
+let okInferred = (| 42 |)
+
+-- NEGATIVE: `Nil` inhabits both `List Int` and `List String`; the inferred
+-- injection cannot determine a unique member type and MUST be rejected with
+-- the candidate members and a disambiguating annotation hint.
+amb : (| List Int | List String |)
+let amb = (| Nil |) --!! kappa.variant.injection-ambiguous
+
+-- STATUS(a51e1bf): FAIL — kappa.variant.injection-ambiguous is not registered; the ambiguous inferred injection emits kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH) against the generalized type of Nil instead of listing the candidate member types. Positives check clean.

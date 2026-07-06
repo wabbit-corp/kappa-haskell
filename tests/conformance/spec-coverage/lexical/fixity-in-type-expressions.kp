@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probe 42
+
+-- §5.5.2 (last rule): fixity declarations apply when parsing operator
+-- tokens in TYPE expressions as well as term expressions. (~>) is an
+-- ordinary term of type Type -> Type -> Type; its `infix right 30`
+-- fixity makes the signature of f parse as Int ~> (Int ~> Int)
+-- = Int -> (Int -> Int), so f is the curried two-argument function.
+
+module main
+
+infix right 30 (~>)
+(~>) : Type -> Type -> Type
+let (~>) a b = a -> b
+
+f : Int ~> Int ~> Int
+let f x y = addInt x y
+
+probe : Int
+let probe = f 20 22
+
+-- STATUS(a51e1bf): PASS

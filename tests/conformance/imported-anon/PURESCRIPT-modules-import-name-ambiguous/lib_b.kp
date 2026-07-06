@@ -1,0 +1,8 @@
+-- Spec: modules.imports.imported_binding_collisions (§8.3.3),
+--       compiler.frontir.standard_diagnostic_families.name_import (§3.2).
+-- Companion module: also exports `foo` so that wildcard-importing both
+-- modules produces `kappa.name.ambiguous` at the use site.
+module lib_b
+
+foo : Int
+let foo = 2
