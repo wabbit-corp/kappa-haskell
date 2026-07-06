@@ -100,15 +100,17 @@ buildNative cs mainG inputPath opts = do
   -- the same argv slot a @.c@ occupies, dispatching by extension).
   envBackend <- lookupEnv ("KAPPA" <> "_BACKEND") -- assembled: see detectCC
   envPerceus <- lookupEnv ("KAPPA" <> "_PERCEUS_RC") -- assembled: avoid diagnostic-code scanner false positives
+  envReuse <- lookupEnv ("KAPPA" <> "_PERCEUS_REUSE") -- assembled: keep the reuse toggle at the IO boundary
   let useLLVM = envBackend == Just "llvm"
       rcEnabled = envFlagDefaultOn envPerceus
+      reuseEnabled = envFlagDefaultOn envReuse
       ext = if useLLVM then ".kappa.ll" else ".kappa.c"
       -- Native host bindings lower to direct typed call sites generated from
       -- the resolved symbol map (no FFI prim set); the runtime needs no extra
       -- prim names seeded here.
       gen
-        | useLLVM = generateLL rcEnabled cs mainG Set.empty (opts.hostSyms)
-        | otherwise = generateC rcEnabled cs mainG Set.empty (opts.hostSyms)
+        | useLLVM = generateLL rcEnabled reuseEnabled cs mainG Set.empty (opts.hostSyms)
+        | otherwise = generateC rcEnabled reuseEnabled cs mainG Set.empty (opts.hostSyms)
   case gen of
     Left (errs, mRcFindings) -> do
       forM_ mRcFindings reportRcFindings

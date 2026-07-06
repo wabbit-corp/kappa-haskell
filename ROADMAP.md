@@ -8,8 +8,10 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
 
 **Two implementations** — keep them straight:
 - **kappa-haskell** (this repo) — the native (C + LLVM) compiler + the kappart2
-  runtime. The one we are building. It currently lowers `Term` (its KCore)
-  *directly* to C/LLVM with no KBackendIR (see the IR-pipeline track).
+  runtime. The one we are building. Since S5.A it materializes and validates a
+  native `KBackendIR` tree for backend value/do lowering, while older planning
+  and a few backend analyses still read KCore where explicitly called out (see
+  the IR-pipeline and Perceus S5 tracks).
 - **`../kappa/`** (F#/.NET) — a second, more spec-complete implementation
   (`KFrontIR.fs` → `KCore.fs` → `KBackendIR.fs` → `KBackendLowering.fs` →
   CLR). Use it as a **structural reference for the §34.3 stage decomposition
@@ -194,14 +196,20 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
      focused `runtime` `tsan-rc` shared-RC concurrency corpus, `perceus_s4_shared` poison/reclamation
      regressions, a debug recursive publish-mark assertion, and `bench-s4-rc` for biased fast-path recovery.
      Mutable/lazy/foreign/resource tags remain Boehm-retained until the later cycle/resource ownership stages.
-   - **S5 — drop-guided FBIP reuse** — the n-ary-ctor allocation win (rbtree/boxed-rebuild allocation
-     reduction now; the literal `std::map` speed target is representation/unboxing-gated). Full
-     plan: [PERCEUS-S5-PLAN.md](runtime/docs/PERCEUS-S5-PLAN.md). **Decision: split-first** — Phase A lands the
-     KCore/KBackendIR split ([KCORE-KBACKENDIR-SCOPING.md](docs/KCORE-KBACKENDIR-SCOPING.md): A0 thread erasure
-     classification / kill `quote∘force`, A1 stable identities / **retire R-path**, A2 materialize KBackendIR,
-     A3 representation classes), then Phase B the FBIP reuse pass (`drop_reuse`/`reuse_alloc`, reuse only a
-     unique cell — the S4 shared bit is the concurrency guard, so shared cells are never reused). The split is
-     one investment that also unblocks LLVM-RC + the layout program.
+   - **S5 — drop-guided FBIP reuse** — ✅ **LANDED for the native C path**: the n-ary-ctor allocation win
+     (rbtree/boxed-rebuild allocation reduction now; the literal `std::map` speed target remains
+     representation/unboxing-gated). Full plan: [PERCEUS-S5-PLAN.md](runtime/docs/PERCEUS-S5-PLAN.md).
+     **Decision: split-first** — Phase A landed the KCore/KBackendIR split
+     ([KCORE-KBACKENDIR-SCOPING.md](docs/KCORE-KBACKENDIR-SCOPING.md): A0 thread erasure classification / kill
+     `quote∘force`, A1 stable identities / **retire R-path**, A2 materialize KBackendIR, A3 representation
+     classes), then Phase B landed the FBIP reuse pass (`drop_reuse`/`reuse_alloc`, reuse only a unique cell —
+     the S4 shared bit is the concurrency guard, so shared cells are never reused). Close-out gates include
+     conformance `2644/0`, full native green, LLVM parity `163/0` including deterministic S5 reuse fixtures,
+     poison/TSan RC lanes with the S5 primitive harness, reuse-on == RC-on/reuse-off via
+     `KAPPA_PERCEUS_REUSE=0`, and positive B3 reuse/allocation-reduction counts (`20000` / `32767` /
+     `139631` reuses; `1278288B` / `3145680B` / `13402752B` saved). The tracked `std::map` comparison still
+     reports about `1.3x` slower and belongs to the representation/unboxing program; generalized cross-arm/
+     frame reuse-credit threading stays visible as S5.B5 report-only.
    - **S6 — borrowing (opt-in) + inferred FIP / reuse-credit checking (no surface `fip`/`fbip` keywords).**
      Later: precise stack roots; the ref/lazy cycle set.
    Couples with the array element-unboxing (#2 Stages B→H) and the lazy-data/RC boundary for any future opt-in
@@ -313,15 +321,16 @@ logged: read the **spec** first, not the buggy code. Conformance 1916/1916, pari
 
 ## Recommended order
 
-The plan front-loads the **uniform** wins (sound with no IR scaffolding) and the
-shared **§3.3 suspendability** prerequisite, then makes the one **architecture
-investment** (KBackendIR / representation selection) that unblocks every
-*type-directed* layout (the niche), then finishes the CPS + primitives + perf
-endgame. The big near-term fork is item 6 — until it lands, the niche and clean
-type-directed layout are blocked (see the IR-pipeline track for why).
+The plan front-loaded the **uniform** wins (sound without type-directed layout)
+and the shared **§3.3 suspendability** prerequisite, then landed the architecture
+investment in item 6 (KBackendIR / representation selection). The remaining
+non-uniform layout fork is item 7: niche/full-range layouts need more than the
+now-landed KBackendIR substrate because Kappa erases types without
+monomorphization, so they are deferred to the specialization/representation
+program.
 
 1. [x] **§3.3 suspendability analysis** — the shared unblock. ✅
-2. [x] **Value layout — uniform immediates + packing** — `b001` Int, `b010` nullary, `b011` single- AND two-field packing. DONE, adversarially verified (corpus 102/102). The NON-uniform layouts (niche, full-range Int) are blocked on item 6, NOT on more runtime work — see [`LAYOUT-DESIGN.md`](runtime/docs/LAYOUT-DESIGN.md).
+2. [x] **Value layout — uniform immediates + packing** — `b001` Int, `b010` nullary, `b011` single- AND two-field packing. DONE, adversarially verified (corpus 102/102). The NON-uniform layouts (niche, full-range Int) now depend on item 7's specialization/monomorphization work, NOT on more runtime work — see [`LAYOUT-DESIGN.md`](runtime/docs/LAYOUT-DESIGN.md).
 3. [x] **CPS loop family** — var/while/break/continue/return in suspending blocks + R7 var-read normalization. DONE (`for`/labeled/`using`/`let?` still fail-closed).
 4. [x] **Erased-type-application native crash fix** — the RuntimeErased erasure verdict (types + Q0, never dicts) at the application spine. DONE.
 5. [x] **Scalar Double worker** (UNBOXING §7 Stage 1.5 + 2b) — DONE. The per-binding transitive may-suspend witness (`scalarBodyMaySuspend`, proven load-bearing — a C-local `double` is lost across a fiber park) gates the `kwd_` Double worker; FP pinned (`-ffp-contract=off -fno-fast-math`) so results are bit-identical to interp. A fused Double loop is 0 B/op. (Surfaced a pre-existing `kp_showDouble` last-digit printer bug, flagged separately.)
@@ -338,29 +347,25 @@ type-directed layout are blocked (see the IR-pipeline track for why).
 
 ## Track: Compiler IR pipeline & representation selection (the architecture)
 
-**The gap.** The Spec mandates `KFrontIR` (§34.2) → **KCore** (§30.2, the typed
-kernel) → **KBackendIR** (§34.3); KCore→KBackendIR runs §34.3.1's conceptual
-stages, including **`INHABITANCE`** (shape summaries "consulted by representation
-selection") and **`REPRESENTATION_SELECTION`** ("choose runtime representation
-classes, layouts, and tag encodings for data, variants, records, dictionaries,
-…"). kappa-haskell has **no KBackendIR**: `Backend/C.hs` lowers `Term` (its
-KCore) directly to C/LLVM, doing representation selection **at runtime, per
-value** (`kctor`: argc/fit → `b010`/`b011`/boxed) plus a hand-rolled scalar-worker
-analysis. That is sound + ideal for **uniform** reps (explicit discriminant,
-decodable blind) but **structurally cannot do type-directed layout** — the niche
-`Some p = p` needs the concrete type at the construct/match site, a compile-time
-decision. `Term` is only partially annotated (`CPi`/`CLet` carry types;
-`CLam`/`CCtor`/`CMatch`/`CPCtor` do not — Core.hs), and there is no Core re-checker.
-This track is the one big architecture investment; **scope it as its own effort
-first** (the §34.3 stages × what `Backend/C.hs` does today × the minimal
-niche-unblocking slice) before implementing.
+**Status.** The original gap was that the Spec mandates `KFrontIR` (§34.2) →
+**KCore** (§30.2, the typed kernel) → **KBackendIR** (§34.3), while
+kappa-haskell previously lowered `Term` (its KCore) directly to C/LLVM and did
+representation selection mostly at runtime/per value (`kctor`: argc/fit →
+`b010`/`b011`/boxed). S5.A changed that architecture for native value/do
+emission: `src/Kappa/Backend/IR.hs` now materializes a distinct recursive
+KBackendIR tree, validates it, structurally omits erased positions, and carries
+node-local ownership/argument/layout facts consumed by C/LLVM. Remaining work in
+this track is therefore **not** "add KBackendIR"; it is to broaden the staged
+§34.3 representation-selection program on top of the landed tree, keeping older
+KCore-reading analyses explicit and preventing them from reattaching ownership
+or layout facts by structural path.
 
-**Staged plan** (scoped 2026-06-26; §34.3's "observationally equivalent" clause
-means we need NOT materialize a distinct KBackendIR datatype — only behave as-if,
-so this is a *verifier + rep-table over the existing pipeline*, NOT a big-bang IR
-rewrite. Each stage stays interp==C==LLVM byte-identical until the niche). The
-ONE ordering constraint: typed-Core head annotations are the keystone — niche AND
-the real Lint are both impossible without them.
+**Historical staged plan** (scoped 2026-06-26; updated after S5.A/S5.B). Early
+stages experimented with observe-only annotations and representation tables; S5.A
+then did materialize the distinct KBackendIR datatype because Perceus reuse needed
+typed layout + stable node-local ownership. Each remaining stage still stays
+interp==C==LLVM byte-identical until it deliberately lands a representation
+change.
 
 - [x] **Stage 0 — typed-Core head annotations + observe-only Lint. DONE** (merged
       `6315758`). `CMatch`/`CCtor` carry an optional head-type field, threaded from

@@ -73,7 +73,8 @@ TEST_BIN := $(TEST_SRC:tests/%.c=$(BUILD)/%)
 TSAN_TEST_BIN := $(filter-out $(BUILD)/atomic_lostproof,$(TEST_BIN))
 S4_RC_CORPUS := $(BUILD)/atomic $(BUILD)/fiberref_promise $(BUILD)/parallel $(BUILD)/race \
                 $(BUILD)/stm $(BUILD)/stm_retry $(BUILD)/stm_orelse \
-                $(BUILD)/blocking_lane $(BUILD)/perceus_s3_prereq $(BUILD)/perceus_s4_shared
+                $(BUILD)/blocking_lane $(BUILD)/perceus_s3_prereq $(BUILD)/perceus_s4_shared \
+                $(BUILD)/perceus_s5_reuse
 
 .PHONY: all test clean tsan-supported tsan _tsan tsan-rc _tsan-rc poison-rc _poison-rc bench bench-s4-rc _bench-s4-rc
 all: $(LIB) $(TEST_BIN)

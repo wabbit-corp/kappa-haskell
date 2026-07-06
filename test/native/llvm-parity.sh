@@ -13,6 +13,8 @@
 #   test/native/llvm-parity.sh a.kp b.kp ...   # run specific programs
 #
 # Env: KAPPA=<cabal run -v0 kappa --> override the compiler invocation.
+# The parity build legs deliberately pin Perceus RC/reuse below, so caller
+# KAPPA_PERCEUS_RC/KAPPA_PERCEUS_REUSE settings cannot silently weaken the gate.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
 
@@ -44,21 +46,12 @@ PY
   }
 fi
 
-perceus_rc_enabled() {
-  case "${KAPPA_PERCEUS_RC:-}" in
-    0|[Oo][Ff][Ff]|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
 check_perceus_rc_log() {
   local log="$1"
-  if perceus_rc_enabled; then
-    if ! grep -q "perceus-rc: KBackendIR ownership metadata validation complete; 0 finding(s)" "$log"; then
-      echo "[FAIL] Perceus RC C-backend build did not report zero KBackendIR ownership metadata findings"
-      sed -n '/perceus-rc:/p' "$log" | sed 's/^/    /'
-      return 1
-    fi
+  if ! grep -q "perceus-rc: KBackendIR ownership metadata validation complete; 0 finding(s)" "$log"; then
+    echo "[FAIL] Perceus RC C-backend build did not report zero KBackendIR ownership metadata findings"
+    sed -n '/perceus-rc:/p' "$log" | sed 's/^/    /'
+    return 1
   fi
   return 0
 }
@@ -66,6 +59,28 @@ check_perceus_rc_log() {
 cleanup_generated_for_source() {
   local src="$1"
   rm -f "${src%.kp}.kappa.c" "${src%.kp}.kappa.ll"
+}
+
+s5_positive_reuse_case() {
+  case "$(basename "$1" .kp)" in
+    perceus-s5-reuse-direct|perceus-s5-reuse-move|s5_listmap_reuse|s5_rbtree_reuse|s5_rbtree_insert_reuse)
+      return 0 ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+check_c_reuse_shape_if_required() {
+  local kp="$1"; local csrc="${kp%.kp}.kappa.c"
+  if ! s5_positive_reuse_case "$kp"; then
+    return 0
+  fi
+  if [ -f "$csrc" ] && grep -qE 'ktry_reuse_ctor\(|kdrop_reuse_ctor_alloc\(|kreuse_ctor' "$csrc"; then
+    return 0
+  fi
+  echo "[FAIL] $(basename "$kp" .kp) — C parity leg did not emit S5 reuse primitives"
+  [ -f "$csrc" ] && grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|kctor\(' "$csrc" | sed 's/^/    /'
+  return 1
 }
 
 # Built-in corpus grows as milestones land.  With no args, run every program in
@@ -105,14 +120,32 @@ KP
   CORPUS+=("test/native/cases/defer-sleep.kp")
   CORPUS+=("test/native/cases/monadref-user-evidence.kp")
   CORPUS+=("test/native/cases/record-erased-field-proj.kp")
+  # S5.B: C/default has FBIP reuse enabled, LLVM still has RC/reuse emission
+  # disabled, so these deterministic programs are a free reuse-vs-no-reuse
+  # semantic differential.
+  CORPUS+=("test/native/cases/perceus-s5-reuse-direct.kp")
+  CORPUS+=("test/native/cases/perceus-s5-reuse-move.kp")
+  CORPUS+=("test/native/cases/perceus-s5-reuse-mixed-branch.kp")
+  CORPUS+=("test/native/cases/perceus-s5-reuse-branch-replace-boxed.kp")
+  CORPUS+=("test/native/cases/perceus-s5-reuse-as-pattern.kp")
+  CORPUS+=("test/native/cases/perceus-s5-direct-projection-failclosed.kp")
+  CORPUS+=("test/native/cases/perceus-s5-reuse-let-scope.kp")
+  CORPUS+=("test/native/cases/perceus-s5-maypack-failclosed.kp")
+  CORPUS+=("test/native/cases/tail-loop-owned-projection.kp")
+  CORPUS+=("test/native/bench/proposed/s5_listmap_reuse.kp")
+  CORPUS+=("test/native/bench/proposed/s5_rbtree_reuse.kp")
+  CORPUS+=("test/native/bench/proposed/s5_rbtree_insert_reuse.kp")
 fi
 
 pass=0; fail=0
 for kp in "${CORPUS[@]}"; do
   name=$(basename "$kp" .kp)
   cbin="$TMP/${name}_c"; lbin="$TMP/${name}_llvm"
+  interp_out="$TMP/${name}.interp.out"
+  c_out="$TMP/${name}.c.out"
+  l_out="$TMP/${name}.llvm.out"
 
-  interp_out=$(timeout "$PARITY_TIMEOUT" $KAPPA run "$kp" 2>/dev/null); interp_rc=$?
+  timeout "$PARITY_TIMEOUT" $KAPPA run "$kp" >"$interp_out" 2>/dev/null; interp_rc=$?
   if [ "$interp_rc" -eq 124 ]; then
     echo "[FAIL] $name — interpreter timed out after ${PARITY_TIMEOUT}s"
     fail=$((fail+1))
@@ -120,20 +153,27 @@ for kp in "${CORPUS[@]}"; do
   fi
 
   cleanup_generated_for_source "$kp"
-  timeout "$BUILD_TIMEOUT" $KAPPA build "$kp" -o "$cbin" >/dev/null 2>"$TMP/cbuild.err"; cbuild_rc=$?
-  cleanup_generated_for_source "$kp"
+  timeout "$BUILD_TIMEOUT" env -u KAPPA_BACKEND KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=true $KAPPA build "$kp" -o "$cbin" >/dev/null 2>"$TMP/cbuild.err"; cbuild_rc=$?
   if [ "$cbuild_rc" -eq 124 ]; then
+    cleanup_generated_for_source "$kp"
     echo "[FAIL] $name — C backend build timed out after ${BUILD_TIMEOUT}s"
     fail=$((fail+1))
     continue
   fi
   if [ "$cbuild_rc" -ne 0 ]; then
+    cleanup_generated_for_source "$kp"
     echo "[FAIL] $name — C backend build error"; sed 's/^/    /' "$TMP/cbuild.err" | head -5; fail=$((fail+1)); continue
   fi
   if ! check_perceus_rc_log "$TMP/cbuild.err"; then
+    cleanup_generated_for_source "$kp"
     fail=$((fail+1)); continue
   fi
-  c_out=$(timeout "$PARITY_TIMEOUT" "$cbin" 2>/dev/null); c_rc=$?
+  if ! check_c_reuse_shape_if_required "$kp"; then
+    cleanup_generated_for_source "$kp"
+    fail=$((fail+1)); continue
+  fi
+  cleanup_generated_for_source "$kp"
+  timeout "$PARITY_TIMEOUT" "$cbin" >"$c_out" 2>/dev/null; c_rc=$?
   if [ "$c_rc" -eq 124 ]; then
     echo "[FAIL] $name — C binary timed out after ${PARITY_TIMEOUT}s"
     fail=$((fail+1))
@@ -141,7 +181,7 @@ for kp in "${CORPUS[@]}"; do
   fi
 
   cleanup_generated_for_source "$kp"
-  KAPPA_BACKEND=llvm timeout "$BUILD_TIMEOUT" $KAPPA build "$kp" -o "$lbin" >/dev/null 2>"$TMP/lbuild.err"; lbuild_rc=$?
+  timeout "$BUILD_TIMEOUT" env KAPPA_BACKEND=llvm KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=true $KAPPA build "$kp" -o "$lbin" >/dev/null 2>"$TMP/lbuild.err"; lbuild_rc=$?
   cleanup_generated_for_source "$kp"
   if [ "$lbuild_rc" -eq 124 ]; then
     echo "[FAIL] $name — LLVM backend build timed out after ${BUILD_TIMEOUT}s"
@@ -154,22 +194,22 @@ for kp in "${CORPUS[@]}"; do
   if ! check_perceus_rc_log "$TMP/lbuild.err"; then
     fail=$((fail+1)); continue
   fi
-  l_out=$(timeout "$PARITY_TIMEOUT" "$lbin" 2>/dev/null); l_rc=$?
+  timeout "$PARITY_TIMEOUT" "$lbin" >"$l_out" 2>/dev/null; l_rc=$?
   if [ "$l_rc" -eq 124 ]; then
     echo "[FAIL] $name — LLVM binary timed out after ${PARITY_TIMEOUT}s"
     fail=$((fail+1))
     continue
   fi
 
-  if [ "$l_out" = "$c_out" ] && [ "$l_rc" = "$c_rc" ] && \
-     [ "$c_out" = "$interp_out" ] && [ "$c_rc" = "$interp_rc" ]; then
+  if cmp -s "$l_out" "$c_out" && [ "$l_rc" = "$c_rc" ] && \
+     cmp -s "$c_out" "$interp_out" && [ "$c_rc" = "$interp_rc" ]; then
     echo "[PASS] $name — interp == C == LLVM (rc=$l_rc)"
     pass=$((pass+1))
   else
     echo "[FAIL] $name"
-    printf '    interp: rc=%s out=%q\n' "$interp_rc" "$interp_out"
-    printf '    C     : rc=%s out=%q\n' "$c_rc" "$c_out"
-    printf '    LLVM  : rc=%s out=%q\n' "$l_rc" "$l_out"
+    printf '    interp: rc=%s out=%s\n' "$interp_rc" "$(tr '\n' '|' < "$interp_out")"
+    printf '    C     : rc=%s out=%s\n' "$c_rc" "$(tr '\n' '|' < "$c_out")"
+    printf '    LLVM  : rc=%s out=%s\n' "$l_rc" "$(tr '\n' '|' < "$l_out")"
     fail=$((fail+1))
   fi
 done
@@ -178,7 +218,7 @@ echo "== LLVM Perceus RC runtime gate =="
 gate_src="${CORPUS[0]}"
 gate_ll="${gate_src%.kp}.kappa.ll"
 cleanup_generated_for_source "$gate_src"
-KAPPA_BACKEND=llvm timeout "$BUILD_TIMEOUT" $KAPPA build "$gate_src" --emit-c -o "$TMP/llvm_rc_gate" >/dev/null 2>"$TMP/llvm-rc-gate.err"; gate_rc=$?
+timeout "$BUILD_TIMEOUT" env KAPPA_BACKEND=llvm KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=true $KAPPA build "$gate_src" --emit-c -o "$TMP/llvm_rc_gate" >/dev/null 2>"$TMP/llvm-rc-gate.err"; gate_rc=$?
 if [ "$gate_rc" -ne 0 ]; then
   echo "[FAIL] LLVM RC gate — emit build failed"
   sed 's/^/    /' "$TMP/llvm-rc-gate.err" | head -8
@@ -188,11 +228,12 @@ elif [ ! -f "$gate_ll" ]; then
   fail=$((fail+1))
 elif grep -q 'call void @krc_set_enabled(i32 0)' "$gate_ll" \
      && grep -q 'krc_mark_shared_recursive' "$gate_ll" \
-     && ! grep -qE 'call .*@kdup|call .*@kdrop' "$gate_ll"; then
-  echo "[PASS] LLVM RC gate — counting/freeing disabled; publish marking retained"
+     && ! grep -qE 'call .*@kdup|call .*@kdrop' "$gate_ll" \
+     && ! grep -qE 'ktry_reuse_ctor|kdrop_reuse_ctor|kreuse_ctor' "$gate_ll"; then
+  echo "[PASS] LLVM RC gate — counting/freeing and S5 reuse disabled; publish marking retained"
 else
-  echo "[FAIL] LLVM RC gate — expected krc_set_enabled(0), publish marking, and no ownership kdup/kdrop"
-  grep -nE 'krc_set_enabled|krc_mark_shared_recursive|kdup|kdrop' "$gate_ll" | sed 's/^/    /' || true
+  echo "[FAIL] LLVM RC gate — expected krc_set_enabled(0), publish marking, no ownership kdup/kdrop, and no S5 reuse primitives"
+  grep -nE 'krc_set_enabled|krc_mark_shared_recursive|kdup|kdrop|ktry_reuse_ctor|kreuse_ctor' "$gate_ll" | sed 's/^/    /' || true
   fail=$((fail+1))
 fi
 cleanup_generated_for_source "$gate_src"

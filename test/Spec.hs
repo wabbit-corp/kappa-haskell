@@ -903,7 +903,7 @@ perceusS23dDeadBinderDrops = do
       report label body = do
         putStrLn ("  " <> label <> " worker:")
         putStrLn (T.unpack body)
-  case generateC True st mainG Set.empty Map.empty of
+  case generateC True True st mainG Set.empty Map.empty of
     Left (errs, mLog) -> do
       putStrLn ("perceusS23dDeadBinderDrops FAILED: generateC rejected: " <> show errs)
       putStrLn ("  rcLog=" <> show mLog)
@@ -1082,7 +1082,7 @@ perceusS23dLegacyPathTamperIgnoredS5 = do
               ownStaleBranchSite = own {oiBranchDropSites = Map.singleton staleSite bids}
               stStaleBranchSite = st {csOwnership = Map.insert branchG ownStaleBranchSite (csOwnership st)}
               expectAccepted label stCase =
-                case generateC True stCase mainG Set.empty Map.empty of
+                case generateC True True stCase mainG Set.empty Map.empty of
                   Right (csrc, _) ->
                     if "kdrop(let_" `T.isInfixOf` csrc
                       then pure True
@@ -1184,7 +1184,7 @@ perceusS32FreeOnZeroEntryGates = do
       report label body = do
         putStrLn ("  " <> label <> " worker:")
         putStrLn (T.unpack body)
-  case generateC True st mainG Set.empty Map.empty of
+  case generateC True True st mainG Set.empty Map.empty of
     Left (errs, mLog) -> do
       putStrLn ("perceusS32FreeOnZeroEntryGates FAILED: generateC rejected: " <> show errs)
       putStrLn ("  rcLog=" <> show mLog)
@@ -1277,7 +1277,7 @@ globalCachePublicationMarksShared = do
           && " acquire, align 8" `T.isInfixOf` llsrc
           && " release, align 8" `T.isInfixOf` llsrc
   cOk <-
-    case generateC True st mainG Set.empty Map.empty of
+    case generateC True True st mainG Set.empty Map.empty of
       Left (errs, mLog) -> do
         putStrLn ("globalCachePublicationMarksShared FAILED: generateC rejected: " <> show errs)
         putStrLn ("  rcLog=" <> show mLog)
@@ -1288,7 +1288,7 @@ globalCachePublicationMarksShared = do
           putStrLn (T.unpack csrc)
         pure (checkC csrc)
   llOk <-
-    case generateLL True st mainG Set.empty Map.empty of
+    case generateLL True True st mainG Set.empty Map.empty of
       Left (errs, mLog) -> do
         putStrLn ("globalCachePublicationMarksShared FAILED: generateLL rejected: " <> show errs)
         putStrLn ("  rcLog=" <> show mLog)
@@ -1356,7 +1356,7 @@ scalarKindDomainParamKeepsWorkers = do
         ("define internal i64 @" <> worker <> "(i64 %p0, ptr %kovf)") `T.isInfixOf` llsrc
           && llCallShape llsrc
   cOk <-
-    case generateC False st mainG Set.empty Map.empty of
+    case generateC False True st mainG Set.empty Map.empty of
       Left (errs, mLog) -> do
         putStrLn ("scalarKindDomainParamKeepsWorkers FAILED: generateC rejected: " <> show errs)
         putStrLn ("  rcLog=" <> show mLog)
@@ -1367,7 +1367,7 @@ scalarKindDomainParamKeepsWorkers = do
           putStrLn (T.unpack csrc)
         pure (cHasWorker csrc)
   llOk <-
-    case generateLL False st mainG Set.empty Map.empty of
+    case generateLL False True st mainG Set.empty Map.empty of
       Left (errs, mLog) -> do
         putStrLn ("scalarKindDomainParamKeepsWorkers FAILED: generateLL rejected: " <> show errs)
         putStrLn ("  rcLog=" <> show mLog)
@@ -1404,7 +1404,7 @@ llvmDoubleScalarUnboxEscapesWrongTag = do
           && helper `T.isInfixOf` llsrc
           && not ("call double @kas_dbl(ptr %v)" `T.isInfixOf` llsrc)
           && doubleUnboxFallbackBranches llsrc
-  case generateLL False st mainG Set.empty Map.empty of
+  case generateLL False True st mainG Set.empty Map.empty of
     Left (errs, mLog) -> do
       putStrLn ("llvmDoubleScalarUnboxEscapesWrongTag FAILED: generateLL rejected: " <> show errs)
       putStrLn ("  rcLog=" <> show mLog)
@@ -2170,7 +2170,7 @@ backendIRPatternErasesExistentialsS5 = do
         , g == mkQ
         ]
       mainG = GName m (T.pack "main")
-      generatedC = case generateC False st mainG Set.empty Map.empty of
+      generatedC = case generateC False True st mainG Set.empty Map.empty of
         Right (c, _) -> c
         Left (errs, _) -> T.pack (show errs)
       ok =

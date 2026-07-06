@@ -110,8 +110,11 @@ build_clean_for_source() {
 run_diff_case() {
   local name="$1"; local src="$CASES/$name.kp"
   echo "-- case: $name (native output must match the interpreter)"
-  local interp native exe irc nrc off_native off_exe off_rc native_err
-  interp="$(timeout 120 $KAPPA run "$src" 2>/dev/null)"; irc=$?
+  local exe irc nrc off_exe off_rc native_err interp_out native_out off_out
+  interp_out="$WORK/$name.interp.out"
+  native_out="$WORK/$name.native.out"
+  off_out="$WORK/$name.rcoff.out"
+  timeout 120 $KAPPA run "$src" >"$interp_out" 2>/dev/null; irc=$?
   if [ "$irc" -ne 0 ]; then
     echo "   FAIL: interpreter exited with $irc"; fails=$((fails+1)); return
   fi
@@ -123,14 +126,14 @@ run_diff_case() {
       echo "   FAIL: native RC-off baseline build failed"; cat "$WORK/$name.rcoff.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
     fi
     cleanup_generated_for_source "$src"
-    off_native="$(timeout 120 env -u KAPPA_POISON "$off_exe" 2>/dev/null)"; off_rc=$?
+    timeout 120 env -u KAPPA_POISON "$off_exe" >"$off_out" 2>/dev/null; off_rc=$?
     if [ "$off_rc" -ne 0 ]; then
       echo "   FAIL: native RC-off baseline exited with $off_rc"; fails=$((fails+1)); return
     fi
-    if [ "$interp" != "$off_native" ]; then
+    if ! cmp -s "$interp_out" "$off_out"; then
       echo "   FAIL: RC-off native baseline output mismatch"
-      echo "     interpreter: $(printf '%s' "$interp" | tr '\n' '|')"
-      echo "     native-off:  $(printf '%s' "$off_native" | tr '\n' '|')"
+      echo "     interpreter: $(tr '\n' '|' < "$interp_out")"
+      echo "     native-off:  $(tr '\n' '|' < "$off_out")"
       fails=$((fails+1))
       return
     fi
@@ -145,29 +148,29 @@ run_diff_case() {
   check_perceus_rc_log "$WORK/$name.build.log" || return
   native_err="$WORK/$name.native.err"
   if perceus_rc_enabled; then
-    native="$(timeout 120 env KAPPA_POISON=1 "$exe" 2>"$native_err")"; nrc=$?
+    timeout 120 env KAPPA_POISON=1 "$exe" >"$native_out" 2>"$native_err"; nrc=$?
   else
-    native="$(timeout 120 "$exe" 2>"$native_err")"; nrc=$?
+    timeout 120 "$exe" >"$native_out" 2>"$native_err"; nrc=$?
   fi
   if [ "$nrc" -ne 0 ]; then
     echo "   FAIL: native executable exited with $nrc"
     sed 's/^/     /' "$native_err" | head -40
     fails=$((fails+1)); return
   fi
-  if [ "$interp" != "$native" ]; then
+  if ! cmp -s "$interp_out" "$native_out"; then
     echo "   FAIL: output mismatch"
-    echo "     interpreter: $(printf '%s' "$interp" | tr '\n' '|')"
-    echo "     native:      $(printf '%s' "$native" | tr '\n' '|')"
+    echo "     interpreter: $(tr '\n' '|' < "$interp_out")"
+    echo "     native:      $(tr '\n' '|' < "$native_out")"
     fails=$((fails+1))
-  elif perceus_rc_enabled && [ "$off_native" != "$native" ]; then
+  elif perceus_rc_enabled && ! cmp -s "$off_out" "$native_out"; then
     echo "   FAIL: RC-on output differs from RC-off native baseline"
-    echo "     native-off:  $(printf '%s' "$off_native" | tr '\n' '|')"
-    echo "     native-on:   $(printf '%s' "$native" | tr '\n' '|')"
+    echo "     native-off:  $(tr '\n' '|' < "$off_out")"
+    echo "     native-on:   $(tr '\n' '|' < "$native_out")"
     fails=$((fails+1))
   elif perceus_rc_enabled; then
-    echo "   ok ($(printf '%s' "$native" | tr '\n' '|'); RC-on == RC-off; poison)"
+    echo "   ok ($(tr '\n' '|' < "$native_out"); RC-on == RC-off; poison)"
   else
-    echo "   ok ($(printf '%s' "$native" | tr '\n' '|'))"
+    echo "   ok ($(tr '\n' '|' < "$native_out"))"
   fi
 }
 
@@ -230,8 +233,41 @@ run_native_expected_stdout_case() {
   echo "   ok (C and LLVM printed $want)"
 }
 
+run_reuse_on_off_case() {
+  local name="$1"; local src="$CASES/$name.kp"
+  echo "-- reuse diff: $name (RC-on reuse-on == RC-on reuse-off)"
+  local on_exe off_exe on_out off_out on_rc off_rc
+  on_exe="$WORK/$name.reuse-on"
+  off_exe="$WORK/$name.reuse-off"
+  on_out="$WORK/$name.reuse-on.out"
+  off_out="$WORK/$name.reuse-off.out"
+  cleanup_generated_for_source "$src"
+  if ! timeout 240 env KAPPA_PERCEUS_RC=true $KAPPA build "$src" -o "$on_exe" >"$WORK/$name.reuse-on.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
+    echo "   FAIL: reuse-on build failed"; cat "$WORK/$name.reuse-on.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+  fi
+  cleanup_generated_for_source "$src"
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$WORK/$name.reuse-on.build.log" || return
+  if ! timeout 240 env KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 $KAPPA build "$src" -o "$off_exe" >"$WORK/$name.reuse-off.build.log" 2>&1; then
+    cleanup_generated_for_source "$src"
+    echo "   FAIL: reuse-off build failed"; cat "$WORK/$name.reuse-off.build.log" | sed 's/^/     /'; fails=$((fails+1)); return
+  fi
+  cleanup_generated_for_source "$src"
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$WORK/$name.reuse-off.build.log" || return
+  timeout 120 env KAPPA_POISON=1 "$on_exe" >"$on_out" 2>/dev/null; on_rc=$?
+  timeout 120 env KAPPA_POISON=1 "$off_exe" >"$off_out" 2>/dev/null; off_rc=$?
+  if [ "$on_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] && cmp -s "$on_out" "$off_out"; then
+    echo "   ok ($(tr '\n' '|' < "$on_out"))"
+  else
+    echo "   FAIL: reuse-on/reuse-off output mismatch"
+    echo "     on : rc=$on_rc out=$(tr '\n' '|' < "$on_out")"
+    echo "     off: rc=$off_rc out=$(tr '\n' '|' < "$off_out")"
+    fails=$((fails+1))
+  fi
+}
+
 echo "== output-equivalence cases =="
-for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read tail-loop-owned-projection interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct perceus-s5-reuse-move perceus-s5-reuse-mixed-branch perceus-s5-reuse-branch-replace-boxed perceus-s5-reuse-as-pattern perceus-s5-direct-projection-failclosed perceus-s5-reuse-let-scope; do run_diff_case "$c"; done
+for c in arith data control strings loops records unicode traits variants-susp bignum dokernel showprims bytes ubuilders unidata uhash iorec defernest deferlazy defer-finally defer-sleep defer-fail-compose defer-loop-fail-remaining defer-legacy-fail-compose reraise-nonfail-discard defer-finally-reraise-sequence finally-reraise-sequence finally-by-value-reraise prefixbind letqor letqelse projection lr1 varloop monadref-readref-field monadref-user-evidence recordproj record-erased-field-proj tupleproj ctortags adtcons scalarkinds fpbitident fpmath showfixed await-dbl-acc flatframe flatbinders flatclosure effects effparking efftailloop abandon-perform-drain borrowview ioerror stm atomic atomic-race mutarray fork forkdefer scope fork-transitive await-exit iobind-await join-success join-catch race timeout blocking-source blocking-first-class blocking-cede blocking-sleep interrupt-cause withscope monitor interrupt interrupt-tight-loop adv-boxed-loop-tail adv-loop-tail-effect adv-loop-tail-read tail-loop-owned-projection interrupt-general-loop masking mask-suppress-interrupt maskrank2 maskrank2nonres bracketmask usinginterrupt usingsusp promise promise-poll fiber-ref-modify fiber-id on-exit-interrupt on-interrupt-cleanup-fail timer-duration sleep-nonpositive stm-tvar scheduler-retry suspendloop acceptloop suspendvarrw var-store-io-action-no-suspend-shape suspendbreak while-defer-scope suspendsubdefer suspendmonassign suspendloop-deep finally-tail-suspend restore-suspend-do doblock-tailrec perceus-s3-generated-drops perceus-s3-ref-transfer perceus-rc-recursive-list-path perceus-s5-reuse-direct perceus-s5-reuse-move perceus-s5-reuse-mixed-branch perceus-s5-reuse-branch-replace-boxed perceus-s5-reuse-as-pattern perceus-s5-direct-projection-failclosed perceus-s5-reuse-let-scope perceus-s5-maypack-failclosed; do run_diff_case "$c"; done
 run_native_expected_stdout_case ctor-erased-tail-pattern 20
 run_native_expected_stdout_case tuple-erased-field-pattern 5
 run_native_expected_stdout_case poly-lambda-erased-arg 5
@@ -724,6 +760,55 @@ else
 fi
 rm -f "$s5c"
 
+echo "== Perceus S5.B: reuse kill-switch keeps RC but disables FBIP rewrites =="
+s5offtmp="$WORK/perceus-s5-reuse-off-shape"; rm -rf "$s5offtmp"; mkdir -p "$s5offtmp"
+rm -f "$s5c"
+if KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 120 $KAPPA build "$s5src" --emit-c -o "$s5offtmp/perceus_s5_reuse_off_emit" >"$s5offtmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5offtmp/emit.log"
+  if [ -f "$s5c" ] \
+     && ! grep -qE 'ktry_reuse_ctor\(|kdrop_reuse_ctor_alloc\(|kreuse_ctor' "$s5c" \
+     && ! grep -q 'krc_set_enabled(0);' "$s5c" \
+     && grep -qE 'kctor\(' "$s5c"; then
+    echo "   ok-shape (KAPPA_PERCEUS_REUSE=0 leaves RC validation on and emits ordinary constructor allocation)"
+  else
+    echo "   FAIL: KAPPA_PERCEUS_REUSE=0 did not disable only generated S5 reuse primitives"
+    [ -f "$s5c" ] && grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|krc_set_enabled|kctor\(' "$s5c" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5c"
+else
+  echo "   FAIL: perceus-s5-reuse-direct reuse-off --emit-c build failed"; cat "$s5offtmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5c"
+
+echo "== Perceus S5.B: reuse-on equals reuse-off over deterministic S5 cases =="
+for c in perceus-s5-reuse-direct perceus-s5-reuse-move perceus-s5-reuse-mixed-branch perceus-s5-reuse-branch-replace-boxed perceus-s5-reuse-as-pattern perceus-s5-direct-projection-failclosed perceus-s5-reuse-let-scope perceus-s5-maypack-failclosed tail-loop-owned-projection; do
+  run_reuse_on_off_case "$c"
+done
+
+echo "== Perceus S5.B: MayPack constructors fail closed for reuse =="
+s5maytmp="$WORK/perceus-s5-maypack-failclosed-shape"; rm -rf "$s5maytmp"; mkdir -p "$s5maytmp"
+s5maysrc="$CASES/perceus-s5-maypack-failclosed.kp"
+s5mayc="${s5maysrc%.kp}.kappa.c"
+rm -f "$s5mayc"
+if KAPPA_PERCEUS_RC=true timeout 120 $KAPPA build "$s5maysrc" --emit-c -o "$s5maytmp/perceus_s5_maypack_emit" >"$s5maytmp/emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5maytmp/emit.log"
+  s5may_bump_block="$(awk '/^static KValue \*kw_main_2e_bump\(KValue \*p0\) \{/{flag=1} /^static KValue \*kw_main_2e_read\(KValue \*p0\) \{/{flag=0} flag {print}' "$s5mayc")"
+  if ! printf '%s\n' "$s5may_bump_block" | grep -qE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor' \
+     && printf '%s\n' "$s5may_bump_block" | grep -qE 'kctor\(' \
+     && printf '%s\n' "$s5may_bump_block" | grep -qE 'kdrop\(scrut_[0-9]+\);'; then
+    echo "   ok-shape (LayoutMayPack rebuild uses ordinary kctor plus consuming drop, not S5 reuse)"
+  else
+    echo "   FAIL: perceus-s5-maypack-failclosed emitted S5 reuse or missed the consuming drop"
+    [ -f "$s5mayc" ] && printf '%s\n' "$s5may_bump_block" | grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|kctor\(|kdrop\(scrut_' | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5mayc"
+else
+  echo "   FAIL: perceus-s5-maypack-failclosed --emit-c build failed"; cat "$s5maytmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5mayc"
+
 echo "== Perceus S5.B2: moved constructor fields fuse dup/drop =="
 s5mtmp="$WORK/perceus-s5-reuse-move-shape"; rm -rf "$s5mtmp"; mkdir -p "$s5mtmp"
 s5msrc="$CASES/perceus-s5-reuse-move.kp"
@@ -855,34 +940,62 @@ else
   echo "   FAIL: s5_listmap_reuse --emit-c build failed"; cat "$s5b3tmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -f "$s5b3c"
+s5b3offc="${s5b3src%.kp}.kappa.c"
+rm -f "$s5b3offc"
+if KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 120 $KAPPA build "$s5b3src" --emit-c -o "$s5b3tmp/reuse-off-emit" >"$s5b3tmp/reuse-off-emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5b3tmp/reuse-off-emit.log"
+  s5b3off_map_block="$(awk '/^static KValue \*kw_main_2e_mapKeep\(KValue \*p0\) \{/{flag=1} /^static KValue \*kw_main_2e_foldLen\(KValue \*p0, KValue \*p1\) \{/{flag=0} flag {print}' "$s5b3offc")"
+  if ! printf '%s\n' "$s5b3off_map_block" | grep -qE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor' \
+     && ! grep -q 'krc_set_enabled(0);' "$s5b3offc" \
+     && printf '%s\n' "$s5b3off_map_block" | grep -qE 'kctor\(' \
+     && printf '%s\n' "$s5b3off_map_block" | grep -qE 'kdrop\(scrut_[0-9]+\);'; then
+    echo "   ok-off-shape (reuse-off disables FBIP primitives but still consumes the matched cons cell)"
+  else
+    echo "   FAIL: s5_listmap_reuse reuse-off did not preserve the consuming drop path"
+    [ -f "$s5b3offc" ] && grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|krc_set_enabled|kdrop\(scrut_|kctor\(' "$s5b3offc" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5b3offc"
+else
+  echo "   FAIL: s5_listmap_reuse reuse-off --emit-c build failed"; cat "$s5b3tmp/reuse-off-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5b3offc"
 if KAPPA_PERCEUS_RC=true timeout 180 $KAPPA build "$s5b3src" -o "$s5b3tmp/on" >"$s5b3tmp/on.build.log" 2>&1 \
-   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5b3src" -o "$s5b3tmp/off" >"$s5b3tmp/off.build.log" 2>&1; then
+   && KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 180 $KAPPA build "$s5b3src" -o "$s5b3tmp/reuse-off" >"$s5b3tmp/reuse-off.build.log" 2>&1 \
+   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5b3src" -o "$s5b3tmp/rc-off" >"$s5b3tmp/rc-off.build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5b3tmp/on.build.log"
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5b3tmp/reuse-off.build.log"
   on_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5b3tmp/on" 2>&1)"; on_rc=$?
-  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5b3tmp/off" 2>&1)"; off_rc=$?
+  no_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5b3tmp/reuse-off" 2>&1)"; no_rc=$?
+  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5b3tmp/rc-off" 2>&1)"; off_rc=$?
   on_res="$(printf '%s\n' "$on_out" | grep -v '^\[kappa-gc\]')"
+  no_res="$(printf '%s\n' "$no_out" | grep -v '^\[kappa-gc\]')"
   off_res="$(printf '%s\n' "$off_out" | grep -v '^\[kappa-gc\]')"
   on_bytes="$(printf '%s\n' "$on_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_bytes="$(printf '%s\n' "$no_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   off_bytes="$(printf '%s\n' "$off_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   on_reuses="$(printf '%s\n' "$on_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_reuses="$(printf '%s\n' "$no_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
   off_reuses="$(printf '%s\n' "$off_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
-  delta=$(( ${off_bytes:-0} - ${on_bytes:-0} ))
-  if [ "$on_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
-     && [ "$on_res" = "20000" ] && [ "$off_res" = "20000" ] \
+  delta=$(( ${no_bytes:-0} - ${on_bytes:-0} ))
+  if [ "$on_rc" -eq 0 ] && [ "$no_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
+     && [ "$on_res" = "20000" ] && [ "$no_res" = "20000" ] && [ "$off_res" = "20000" ] \
      && [ -n "$on_reuses" ] && [ "$on_reuses" -ge 19000 ] \
+     && [ "${no_reuses:-0}" -eq 0 ] \
      && [ "${off_reuses:-0}" -eq 0 ] \
      && [ "$delta" -ge 500000 ]; then
-    echo "   ok-reuse (RC-on reuses=${on_reuses}, RC-off reuses=${off_reuses:-0}, total_bytes delta=${delta}B)"
+    echo "   ok-reuse (reuse-on reuses=${on_reuses}, reuse-off reuses=${no_reuses:-0}, RC-off reuses=${off_reuses:-0}, reuse allocation delta=${delta}B)"
   else
     echo "   FAIL: s5_listmap_reuse did not prove recursive in-place reuse"
     echo "     on rc=${on_rc:-?} result=${on_res:-?} bytes=${on_bytes:-?} reuses=${on_reuses:-?}"
-    echo "     off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
-    printf '%s\n' "$on_out" "$off_out" | sed 's/^/     /'
+    echo "     reuse-off rc=${no_rc:-?} result=${no_res:-?} bytes=${no_bytes:-?} reuses=${no_reuses:-?}"
+    echo "     rc-off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
+    printf '%s\n' "$on_out" "$no_out" "$off_out" | sed 's/^/     /'
     fails=$((fails+1))
   fi
 else
   echo "   FAIL: s5_listmap_reuse native build failed"
-  cat "$s5b3tmp/on.build.log" "$s5b3tmp/off.build.log" | sed 's/^/     /'
+  cat "$s5b3tmp/on.build.log" "$s5b3tmp/reuse-off.build.log" "$s5b3tmp/rc-off.build.log" 2>/dev/null | sed 's/^/     /'
   fails=$((fails+1))
 fi
 
@@ -906,34 +1019,61 @@ else
   echo "   FAIL: s5_rbtree_reuse --emit-c build failed"; cat "$s5rbtmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -f "$s5rbc"
+s5rboffc="${s5rbsrc%.kp}.kappa.c"
+rm -f "$s5rboffc"
+if KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 180 $KAPPA build "$s5rbsrc" --emit-c -o "$s5rbtmp/reuse-off-emit" >"$s5rbtmp/reuse-off-emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5rbtmp/reuse-off-emit.log"
+  if ! grep -qE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor' "$s5rboffc" \
+     && ! grep -q 'krc_set_enabled(0);' "$s5rboffc" \
+     && grep -qE 'kctor\(' "$s5rboffc" \
+     && grep -qE 'kdrop\(scrut_[0-9]+\);' "$s5rboffc"; then
+    echo "   ok-off-shape (reuse-off disables FBIP primitives but still consumes rbtree nodes)"
+  else
+    echo "   FAIL: s5_rbtree_reuse reuse-off emitted S5 primitives, disabled RC, or missed consuming drops"
+    [ -f "$s5rboffc" ] && grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|krc_set_enabled|kdrop\(scrut_|kctor\(' "$s5rboffc" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5rboffc"
+else
+  echo "   FAIL: s5_rbtree_reuse reuse-off --emit-c build failed"; cat "$s5rbtmp/reuse-off-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5rboffc"
 if KAPPA_PERCEUS_RC=true timeout 180 $KAPPA build "$s5rbsrc" -o "$s5rbtmp/on" >"$s5rbtmp/on.build.log" 2>&1 \
-   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5rbsrc" -o "$s5rbtmp/off" >"$s5rbtmp/off.build.log" 2>&1; then
+   && KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 180 $KAPPA build "$s5rbsrc" -o "$s5rbtmp/reuse-off" >"$s5rbtmp/reuse-off.build.log" 2>&1 \
+   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5rbsrc" -o "$s5rbtmp/rc-off" >"$s5rbtmp/rc-off.build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5rbtmp/on.build.log"
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5rbtmp/reuse-off.build.log"
   on_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5rbtmp/on" 2>&1)"; on_rc=$?
-  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5rbtmp/off" 2>&1)"; off_rc=$?
+  no_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5rbtmp/reuse-off" 2>&1)"; no_rc=$?
+  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5rbtmp/rc-off" 2>&1)"; off_rc=$?
   on_res="$(printf '%s\n' "$on_out" | grep -v '^\[kappa-gc\]')"
+  no_res="$(printf '%s\n' "$no_out" | grep -v '^\[kappa-gc\]')"
   off_res="$(printf '%s\n' "$off_out" | grep -v '^\[kappa-gc\]')"
   on_bytes="$(printf '%s\n' "$on_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_bytes="$(printf '%s\n' "$no_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   off_bytes="$(printf '%s\n' "$off_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   on_reuses="$(printf '%s\n' "$on_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_reuses="$(printf '%s\n' "$no_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
   off_reuses="$(printf '%s\n' "$off_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
-  delta=$(( ${off_bytes:-0} - ${on_bytes:-0} ))
-  if [ "$on_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
-     && [ "$on_res" = "32767" ] && [ "$off_res" = "32767" ] \
+  delta=$(( ${no_bytes:-0} - ${on_bytes:-0} ))
+  if [ "$on_rc" -eq 0 ] && [ "$no_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
+     && [ "$on_res" = "32767" ] && [ "$no_res" = "32767" ] && [ "$off_res" = "32767" ] \
      && [ -n "$on_reuses" ] && [ "$on_reuses" -ge 32000 ] \
+     && [ "${no_reuses:-0}" -eq 0 ] \
      && [ "${off_reuses:-0}" -eq 0 ] \
      && [ "$delta" -ge 1000000 ]; then
-    echo "   ok-reuse (RC-on reuses=${on_reuses}, RC-off reuses=${off_reuses:-0}, total_bytes delta=${delta}B)"
+    echo "   ok-reuse (reuse-on reuses=${on_reuses}, reuse-off reuses=${no_reuses:-0}, RC-off reuses=${off_reuses:-0}, reuse allocation delta=${delta}B)"
   else
     echo "   FAIL: s5_rbtree_reuse did not prove rbtree-shaped in-place reuse"
     echo "     on rc=${on_rc:-?} result=${on_res:-?} bytes=${on_bytes:-?} reuses=${on_reuses:-?}"
-    echo "     off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
-    printf '%s\n' "$on_out" "$off_out" | sed 's/^/     /'
+    echo "     reuse-off rc=${no_rc:-?} result=${no_res:-?} bytes=${no_bytes:-?} reuses=${no_reuses:-?}"
+    echo "     rc-off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
+    printf '%s\n' "$on_out" "$no_out" "$off_out" | sed 's/^/     /'
     fails=$((fails+1))
   fi
 else
   echo "   FAIL: s5_rbtree_reuse native build failed"
-  cat "$s5rbtmp/on.build.log" "$s5rbtmp/off.build.log" | sed 's/^/     /'
+  cat "$s5rbtmp/on.build.log" "$s5rbtmp/reuse-off.build.log" "$s5rbtmp/rc-off.build.log" 2>/dev/null | sed 's/^/     /'
   fails=$((fails+1))
 fi
 
@@ -959,34 +1099,61 @@ else
   echo "   FAIL: s5_rbtree_insert_reuse --emit-c build failed"; cat "$s5ritmp/emit.log" | sed 's/^/     /'; fails=$((fails+1))
 fi
 rm -f "$s5ric"
+s5rioffc="${s5risrc%.kp}.kappa.c"
+rm -f "$s5rioffc"
+if KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 180 $KAPPA build "$s5risrc" --emit-c -o "$s5ritmp/reuse-off-emit" >"$s5ritmp/reuse-off-emit.log" 2>&1; then
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5ritmp/reuse-off-emit.log"
+  if ! grep -qE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor' "$s5rioffc" \
+     && ! grep -q 'krc_set_enabled(0);' "$s5rioffc" \
+     && grep -qE 'kctor\(' "$s5rioffc" \
+     && grep -qE 'kdrop\(scrut_[0-9]+\);' "$s5rioffc"; then
+    echo "   ok-off-shape (reuse-off disables FBIP primitives but still consumes insert path nodes)"
+  else
+    echo "   FAIL: s5_rbtree_insert_reuse reuse-off emitted S5 primitives, disabled RC, or missed consuming drops"
+    [ -f "$s5rioffc" ] && grep -nE 'ktry_reuse_ctor|kdrop_reuse_ctor_alloc|kreuse_ctor|krc_set_enabled|kdrop\(scrut_|kctor\(' "$s5rioffc" | sed 's/^/     /'
+    fails=$((fails+1))
+  fi
+  rm -f "$s5rioffc"
+else
+  echo "   FAIL: s5_rbtree_insert_reuse reuse-off --emit-c build failed"; cat "$s5ritmp/reuse-off-emit.log" | sed 's/^/     /'; fails=$((fails+1))
+fi
+rm -f "$s5rioffc"
 if KAPPA_PERCEUS_RC=true timeout 180 $KAPPA build "$s5risrc" -o "$s5ritmp/on" >"$s5ritmp/on.build.log" 2>&1 \
-   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5risrc" -o "$s5ritmp/off" >"$s5ritmp/off.build.log" 2>&1; then
+   && KAPPA_PERCEUS_RC=true KAPPA_PERCEUS_REUSE=0 timeout 180 $KAPPA build "$s5risrc" -o "$s5ritmp/reuse-off" >"$s5ritmp/reuse-off.build.log" 2>&1 \
+   && KAPPA_PERCEUS_RC=0 timeout 180 $KAPPA build "$s5risrc" -o "$s5ritmp/rc-off" >"$s5ritmp/rc-off.build.log" 2>&1; then
   KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5ritmp/on.build.log"
+  KAPPA_PERCEUS_RC=true check_perceus_rc_log "$s5ritmp/reuse-off.build.log"
   on_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5ritmp/on" 2>&1)"; on_rc=$?
-  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5ritmp/off" 2>&1)"; off_rc=$?
+  no_out="$(KAPPA_GC_STATS=1 KAPPA_POISON=1 timeout 60 "$s5ritmp/reuse-off" 2>&1)"; no_rc=$?
+  off_out="$(KAPPA_GC_STATS=1 timeout 60 "$s5ritmp/rc-off" 2>&1)"; off_rc=$?
   on_res="$(printf '%s\n' "$on_out" | grep -v '^\[kappa-gc\]')"
+  no_res="$(printf '%s\n' "$no_out" | grep -v '^\[kappa-gc\]')"
   off_res="$(printf '%s\n' "$off_out" | grep -v '^\[kappa-gc\]')"
   on_bytes="$(printf '%s\n' "$on_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_bytes="$(printf '%s\n' "$no_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   off_bytes="$(printf '%s\n' "$off_out" | grep -oE 'total_bytes=[0-9]+' | tail -1 | cut -d= -f2)"
   on_reuses="$(printf '%s\n' "$on_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
+  no_reuses="$(printf '%s\n' "$no_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
   off_reuses="$(printf '%s\n' "$off_out" | grep -oE 'reuses=[0-9]+' | tail -1 | cut -d= -f2)"
-  delta=$(( ${off_bytes:-0} - ${on_bytes:-0} ))
-  if [ "$on_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
-     && [ "$on_res" = "19777" ] && [ "$off_res" = "19777" ] \
+  delta=$(( ${no_bytes:-0} - ${on_bytes:-0} ))
+  if [ "$on_rc" -eq 0 ] && [ "$no_rc" -eq 0 ] && [ "$off_rc" -eq 0 ] \
+     && [ "$on_res" = "19777" ] && [ "$no_res" = "19777" ] && [ "$off_res" = "19777" ] \
      && [ -n "$on_reuses" ] && [ "$on_reuses" -ge 100000 ] \
+     && [ "${no_reuses:-0}" -eq 0 ] \
      && [ "${off_reuses:-0}" -eq 0 ] \
      && [ "$delta" -ge 10000000 ]; then
-    echo "   ok-reuse (RC-on reuses=${on_reuses}, RC-off reuses=${off_reuses:-0}, total_bytes delta=${delta}B)"
+    echo "   ok-reuse (reuse-on reuses=${on_reuses}, reuse-off reuses=${no_reuses:-0}, RC-off reuses=${off_reuses:-0}, reuse allocation delta=${delta}B)"
   else
     echo "   FAIL: s5_rbtree_insert_reuse did not prove insert-path in-place reuse"
     echo "     on rc=${on_rc:-?} result=${on_res:-?} bytes=${on_bytes:-?} reuses=${on_reuses:-?}"
-    echo "     off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
-    printf '%s\n' "$on_out" "$off_out" | sed 's/^/     /'
+    echo "     reuse-off rc=${no_rc:-?} result=${no_res:-?} bytes=${no_bytes:-?} reuses=${no_reuses:-?}"
+    echo "     rc-off rc=${off_rc:-?} result=${off_res:-?} bytes=${off_bytes:-?} reuses=${off_reuses:-?}"
+    printf '%s\n' "$on_out" "$no_out" "$off_out" | sed 's/^/     /'
     fails=$((fails+1))
   fi
 else
   echo "   FAIL: s5_rbtree_insert_reuse native build failed"
-  cat "$s5ritmp/on.build.log" "$s5ritmp/off.build.log" | sed 's/^/     /'
+  cat "$s5ritmp/on.build.log" "$s5ritmp/reuse-off.build.log" "$s5ritmp/rc-off.build.log" 2>/dev/null | sed 's/^/     /'
   fails=$((fails+1))
 fi
 if timeout 240 bash "$ROOT/test/native/bench/proposed/run-proposed.sh" --reps 5 s5_rbtree_insert_reuse >"$s5ritmp/proposed.log" 2>&1; then
@@ -996,6 +1163,9 @@ else
   cat "$s5ritmp/proposed.log" | sed 's/^/     /'
   fails=$((fails+1))
 fi
+
+echo "== Perceus S5.B5 report: generalized reuse-credit threading =="
+echo "   report-open (current reuse is direct same-arm / early-token only; generalized cross-arm/frame credit threading remains the explicit S5.B5 follow-up)"
 
 # LR2: the pattern-match dispatch must be a numeric tag-id int compare
 # (kctor_tagid / kvariant_tagid), NOT a kctor_is / kvariant_is strcmp.  Assert

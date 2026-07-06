@@ -191,6 +191,7 @@ data GenState = GenState
   , gsIOMonadRefDicts :: !(Set GName)
   , gsSuspenders :: !(Set GName) -- ^ §3.3: globals that TRANSITIVELY reach a suspending primitive (fork/await/…); computed once from gsBodies. A do-bind whose action's spine head is in here may suspend, so its do-block is CPS-lowered.
   , gsRcEnabled :: !Bool -- ^ Perceus RC maintenance gate. Default ON for native builds; @KAPPA_PERCEUS_RC=0@ is the explicit byte-identical baseline and emits @krc_set_enabled(0)@ so generated @kdup@/@kdrop@ maintenance has no runtime counting/freeing effect. S4 publish marking still emits because shared bits are synchronization metadata for Ref/Array storage. When enabled, non-erased runtime variables consume node-local KBackendIR 'BackendUse' metadata, and binders/drops consume 'BackendBinder'/'BackendMeta' metadata.
+  , gsReuseEnabled :: !Bool -- ^ S5 FBIP reuse gate. This is intentionally separate from 'gsRcEnabled': @KAPPA_PERCEUS_REUSE=0@ leaves RC maintenance and validation active while disabling only drop-guided in-place reuse sites for reuse-on/off differentials.
   , gsRcFindings :: ![Text] -- ^ Perceus RC validation log, populated only when 'gsRcEnabled'. With S5.A this is limited to impossible missing KBackendIR node-local ownership metadata after validation; ordinary dup/drop decisions read 'BackendUse'/'BackendBinder' fields directly.
   , gsCtors :: !(Map GName CtorInfo)
   , gsDatas :: !(Set GName)
@@ -707,8 +708,9 @@ rcScrutDropDecision scrut = do
         -- match owns the reference it compiled: a consuming NonLast has been
         -- dup'd at the CVar site, while a consuming LastUse is droppable only
         -- if the source flat local itself owns the value. S5 reusable worker
-        -- params are handled by 'rcScrutReuseDecision'; that eligibility must
-        -- not leak into ordinary borrowed-scrutinee cleanup.
+        -- params are reported separately by 'rcScrutReuseDecision' because
+        -- they are consumed only at the matched-arm seam, not as generally
+        -- owned locals.
         mi <- rcUseInfoOf use (Just i)
         sourceOwns <- flatLocalOwnsAt i
         pure $ case mi of
@@ -726,15 +728,17 @@ rcScrutDropDecision scrut = do
       -- result ownership metadata, do not drop them as match-owned cells.
       _ -> pure False
 
--- | S5.B reuse eligibility is narrower than normal ownership cleanup. A flat
--- worker parameter may be transferred into a same-size match rebuild even though
--- the backend still keeps parameters borrowed for generic branch cleanup and
--- arbitrary consuming calls. The runtime-guarded reuse helper either proves the
--- cell is unique and consumes it, or falls back after restoring moved fields.
+-- | S5.B reusable-parameter consumption is narrower than normal ownership
+-- cleanup. A flat worker parameter may be transferred into a same-size match
+-- rebuild even though the backend still keeps parameters borrowed for generic
+-- branch cleanup and arbitrary consuming calls. This decision is intentionally
+-- independent from the reuse-emission kill switch: @KAPPA_PERCEUS_REUSE=0@
+-- disables the in-place rewrite primitives, but the callee still owns the
+-- transferred parameter and must consume it through the ordinary dup/drop path.
 rcScrutReuseDecision :: BackendTerm -> Gen Bool
 rcScrutReuseDecision scrut = do
-  enabled <- gets gsRcEnabled
-  if not enabled
+  rcOn <- gets gsRcEnabled
+  if not rcOn
     then pure False
     else go scrut
   where
@@ -1087,8 +1091,8 @@ basePrims =
 -- Perceus RC validation is enabled, the result also carries KBackendIR metadata
 -- findings so the IO driver can report them on both successful and failed
 -- builds.
-generateC :: Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
-generateC rcEnabled cs mainG ffiPrims hostSyms =
+generateC :: Bool -> Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
+generateC rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
   let backendIr = lowerKBackendIR cs
       backendIrFindings = validateKBackendIR backendIr
       backendIrErrs = backendIRValidationErrorsFrom cs mainG backendIrFindings
@@ -1121,6 +1125,7 @@ generateC rcEnabled cs mainG ffiPrims hostSyms =
                   , gsIOMonadRefDicts = ioMonadRefDicts (csInstances cs)
                   , gsSuspenders = suspenderGlobalsWith (blockingHostGlobals hostSyms) evalCtx0 (csGlobals cs) (csCoreBodies cs)
                   , gsRcEnabled = rcEnabled
+                  , gsReuseEnabled = rcEnabled && reuseEnabled
                   , gsRcFindings = []
                   , gsCtors = csCtors cs
                   , gsDatas = Map.keysSet (csDatas cs)
@@ -4474,6 +4479,7 @@ sameSizeCtorReuseCandidateFrom oldLayout pat _binders newLayout args = do
 
 sameSizeCtorReuseCandidateFromFields :: Map Int Int -> BackendCtorLayout -> BackendCtorLayout -> [BackendTerm] -> Maybe CtorReuseCandidate
 sameSizeCtorReuseCandidateFromFields fields oldLayout newLayout args = do
+  guard (staticallyBoxedCtorLayout oldLayout && staticallyBoxedCtorLayout newLayout)
   oldBytes <- ctorReuseFootprint oldLayout
   newBytes <- ctorReuseFootprint newLayout
   let moveSlots = ctorReuseMoveSlotsWith fields args
@@ -4588,9 +4594,10 @@ consumeAltBody :: Sink -> BackendMeta -> Text -> Bool -> Bool -> Map GName Backe
 consumeAltBody sink altMeta sv dropCell reuseCell layouts env done pat binders mguard body = do
   -- patTest already verified the constructor/shape; bindings just project.
   -- Perceus RC S2.3a/S3.2 (§a): the cell-drop fires for THIS arm only when the
-  -- match owns the scrutinee cell ('dropCell'). S3.2 routes that cleanup through
-  -- the sink, so returning 'SinkTail'/'SinkBounce' arms emit the drop before the
-  -- return instead of leaving the scrutinee to Boehm.
+  -- match owns the scrutinee cell ('dropCell') or when an S5 reusable flat
+  -- worker parameter was transferred to this callee ('reuseCell'). S3.2 routes
+  -- that cleanup through the sink, so returning 'SinkTail'/'SinkBounce' arms
+  -- emit the drop before the return instead of leaving the scrutinee to Boehm.
   -- The kept-field DUP and the cell @kdrop@ are an ATOMIC PAIR: a field projected
   -- via a borrowing 'kctor_arg'/'kproj' (no incref) is dup'd so it survives the
   -- following @kdrop(sv)@ (which S3.2 lets recursively free fields when the cell
@@ -4600,17 +4607,29 @@ consumeAltBody sink altMeta sv dropCell reuseCell layouts env done pat binders m
   -- inflation / leak, never balanced). Guarded arms bind fields before evaluating
   -- the guard, so a failed guard cannot run the success-branch balancing drops;
   -- keep guarded arms conservative until guard-failure cleanup is modeled.
+  reuseOn <- gets gsReuseEnabled
   let unguarded = maybe True (const False) mguard
-      dropHere = dropCell && unguarded
-      reuseHere = (dropCell || reuseCell) && unguarded
-      reuseOldLayout = if reuseHere then patCtorReuseLayout layouts pat else Nothing
-      reuseCandidate = if reuseHere then sameSizeCtorReuseCandidate layouts pat binders body else Nothing
+      canOwnForReuse = (dropCell || reuseCell) && unguarded
+      reuseOldLayoutAll = if canOwnForReuse then patCtorReuseLayout layouts pat else Nothing
+      reuseCandidateAll = if canOwnForReuse then sameSizeCtorReuseCandidate layouts pat binders body else Nothing
   flat <- not . null <$> gets gsParamLvals
+  let earlyReuseShape =
+        case reuseOldLayoutAll of
+          Just oldLayout ->
+            flat
+              && staticallyBoxedCtorLayout oldLayout
+              && termHasTokenCtorReuse oldLayout pat body
+          Nothing -> False
+      -- A reusable flat parameter is not a generally owned local: it should be
+      -- consumed at this seam only when the S5 shape proof would have consumed
+      -- it. With KAPPA_PERCEUS_REUSE=0 that consumption falls back to the
+      -- ordinary dup/drop path; arbitrary non-reuse matches stay leak-biased.
+      dropHere = (dropCell || (reuseCell && (earlyReuseShape || isJust reuseCandidateAll))) && unguarded
+      reuseOldLayout = if reuseOn then reuseOldLayoutAll else Nothing
+      reuseCandidate = if reuseOn then reuseCandidateAll else Nothing
   case (mguard, reuseOldLayout) of
     (Nothing, Just oldLayout)
-      | flat
-      , staticallyBoxedCtorLayout oldLayout
-      , termHasTokenCtorReuse oldLayout pat body ->
+      | earlyReuseShape ->
           consumeEarlyReuseAltBody sink altMeta sv env done pat binders body oldLayout dropHere
     _ -> consumeAltBodyLateReuse sink altMeta sv dropHere layouts env done pat binders mguard body reuseCandidate
 

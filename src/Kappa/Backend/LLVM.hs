@@ -431,10 +431,10 @@ internCStr s = do
 
 -- | Lower a checked program to a complete LLVM IR translation unit, or
 -- report the unsupported constructs.  The SAME signature as
--- 'Kappa.Backend.C.generateC', so the Driver dispatches on a flag with no
+-- 'Kappa.Backend.C.generateC', so the Driver dispatches on flags with no
 -- change to the call site's type.
-generateLL :: Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
-generateLL rcEnabled cs mainG ffiPrims hostSyms =
+generateLL :: Bool -> Bool -> CheckState -> GName -> Set Text -> Map GName ResolvedNativeSymbol -> Either ([BackendError], Maybe [Text]) (Text, Maybe [Text])
+generateLL rcEnabled reuseEnabled cs mainG ffiPrims hostSyms =
   case backendIRValidationErrors cs mainG of
     errs@(_ : _) -> Left (errs, Nothing)
     [] ->
@@ -486,7 +486,7 @@ generateLL rcEnabled cs mainG ffiPrims hostSyms =
     -- emission. This keeps LLVM RC builds from silently bypassing node-local
     -- ownership metadata while avoiding a second, drifting validation path.
     rcValidation
-      | rcEnabled = case generateC True cs mainG ffiPrims hostSyms of
+      | rcEnabled = case generateC True reuseEnabled cs mainG ffiPrims hostSyms of
           Left failure -> Left failure
           Right (_, mRcFindings) -> Right mRcFindings
       | otherwise = Right Nothing
