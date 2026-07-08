@@ -6263,11 +6263,21 @@ kind.
 Contextual admissibility:
 
 * term-expression position primarily admits `term`, `ctor`, and `module`;
-* type position admits `type` and compile-time term expressions whose elaborated type is `Type u` for some universe `u`;
-* trait-obligation position admits `trait`, type expressions, and compile-time term expressions whose elaborated type is
-  `Type u` for some universe `u`, provided the compiler can establish `IsTrait C` for the resulting type `C`;
+* type position admits:
+  * declarations of kind `type`;
+  * ordinary compile-time term expressions whose elaborated value has ordinary type-code capability and type
+    `Type u` for some universe `u`;
+  * parametric type witnesses, provided the surrounding use preserves their parametric capability.
+* trait-obligation position admits `trait`, type expressions, parametric type witnesses used as type expressions, and
+  compile-time term expressions whose elaborated value has ordinary type-code capability and type `Type u` for some
+  universe `u`, provided the compiler can establish `IsTrait C` for the resulting type `C`;
 * pattern-head position admits `ctor` and terms declared with `pattern`;
 * effect-label position admits `effect-label` and compile-time term expressions whose elaborated type is `EffLabel`.
+
+A parametric type witness selected by lookup or projection is not an ordinary term-expression value of type `Type`.
+
+If a term-expression position demands an ordinary type-code value and lookup would supply only a parametric type
+witness, the use is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
 
 Reified-static fallback in term-expression position:
 
@@ -6676,13 +6686,59 @@ let get = l.get
 let ops = (get = l.get, put = l.put)
 ```
 
-<!-- names.static_object_facets.universe_polymorphic -->
-#### 7.6.1 Universe-polymorphic static-object facets
+<!-- names.static_object_facets.parametric -->
+#### 7.6.1 Parametric and higher-universe static-object facets
 
-A reified static-object facet whose type carries explicit level binders (§11.1.2.5) is an **ordinary value** whose type
-begins with `(@0 _ : TypeLevel)` binders. No special rules apply: it is named, imported, exported, aliased, and
-instantiated like any other value; ordinary implicit-argument insertion governs its occurrences, and ordinary universe
-checking (§11.1.2.8, §10.4.1) governs where it may be stored.
+A type declaration, type alias, trait declaration, data declaration, or effect declaration introduces a reified
+static-object term facet only when its reified facet type checks with ordinary type-code capability.
+
+A declaration whose RHS, classifier, or reified facet depends on a parametric type witness may still introduce a
+type-level name usable in type expressions.
+
+It does not automatically introduce an ordinary reified static-object term facet of type `Type`.
+
+Examples:
+
+```kappa
+let f (0 A : Type) (x : A) : A =
+    type T = A
+    let y : T = x
+    y
+```
+
+The alias `T` is usable as a type expression in the scope where `A` remains parametric.
+
+But this is rejected:
+
+```kappa
+let f (0 A : Type) =
+    let T : Type = A
+    T
+```
+
+because it promotes `A` to ordinary type-code capability.
+
+Rebinding and dotted static-member lookup apply only to ordinary reified static-object values.
+
+A projected or rebound parametric type witness may be used as a type expression and passed to `0 Type` binders, but it
+does not preserve or create static-object identity for ordinary dotted static-member lookup.
+
+A reified static-object facet whose type contains parametric `0 Type` binders is an ordinary value, and the parametric
+binders remain part of its type.
+
+Example:
+
+```kappa
+Option : (0 A : Type) -> Type
+```
+
+Such a value may be named, imported, exported, aliased, stored, and instantiated like any other value, provided ordinary
+capability checking preserves every parametric type witness.
+
+A reified static-object facet whose type uses explicit higher universes such as `Type1`, `Type2`, `Typeω`, or `Type u`
+is governed by ordinary universe checking.
+
+Kappa v1 does not introduce a separate universe-schema object for these facets.
 
 <!-- modules -->
 ## 8. Modules, Files, Imports, Exports, Visibility, and Opacity
