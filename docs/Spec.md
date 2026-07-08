@@ -6679,9 +6679,9 @@ let ops = (get = l.get, put = l.put)
 <!-- names.static_object_facets.universe_polymorphic -->
 #### 7.6.1 Universe-polymorphic static-object facets
 
-A reified static-object facet whose type carries hoisted level binders (§11.3.0.2) is an **ordinary value** whose type
+A reified static-object facet whose type carries explicit level binders (§11.1.2.5) is an **ordinary value** whose type
 begins with `(@0 _ : TypeLevel)` binders. No special rules apply: it is named, imported, exported, aliased, and
-instantiated like any other value; lazy level instantiation (§11.3.0.2) governs its occurrences, and ordinary universe
+instantiated like any other value; ordinary implicit-argument insertion governs its occurrences, and ordinary universe
 checking (§11.1.2.8, §10.4.1) governs where it may be stored.
 
 <!-- modules -->
@@ -9015,7 +9015,7 @@ LevelLe α ρ
 
 The `LevelLe α ρ` obligations are discharged under the level assumptions introduced by earlier binders of `Ξ`
 (including solver-owned `LevelLe`/`LevelLt` evidence binders, §11.1.2.2) and by the data-family header telescope `Δ`.
-Hoisted level parameters (§11.3.0.2) are ordinary binders of `Δ`; the obligations are checked once with those binders
+Explicit level parameters (§11.1.2.5) are ordinary binders of `Δ`; the obligations are checked once with those binders
 held abstract, which enforces them for every instantiation.
 
 If a constraint is unsatisfiable, the data declaration is rejected with diagnostic family
@@ -9026,8 +9026,8 @@ This rule applies regardless of quantity, implicitness, or erasure.
 In particular, erased constructor binders do not receive an exception merely because they erase at runtime. Erasure
 does not make a logically large constructor argument small.
 
-The data-family header telescope `Δ` is checked by the ordinary type-constructor rules (including hoisted level
-parameters, §11.3.0.2). Header binders are not constructor-local payload fields merely because constructors are
+The data-family header telescope `Δ` is checked by the ordinary type-constructor rules (including explicit `TypeLevel`
+parameters, §11.1.2.5). Header binders are not constructor-local payload fields merely because constructors are
 polymorphic over the family arguments.
 
 Consequently, the following declaration is accepted:
@@ -9438,8 +9438,7 @@ Universes are cumulative: if the universe solver can prove `LevelLe u v`, then `
 expected. Cumulative subsumption applies to **inhabitants**, not only to the universe terms themselves: if `A : Type u`
 and the solver proves `LevelLe u v`, then `A : Type v`. Consequently, checking a type-valued argument against an
 expected `Type v` generates the **lower-bound** constraint `LevelLe u v` on the argument's own level `u` — never an
-equality — which is what the level-max solving of §11.3.0.3 relies on. Implementations may realize cumulativity as an
-implicit coercion/subtyping rule between universes.
+equality. Implementations may realize cumulativity as an implicit coercion/subtyping rule between universes.
 
 Provability of the ordering is defined semantically, so that conforming implementations cannot diverge:
 
@@ -10738,175 +10737,64 @@ Introduction of `Need A` suspensions requires `Shareable A` and obeys the captur
 <!-- types.quantification -->
 ### 11.3 Universal quantification
 
-There is exactly **one** universal quantifier in Kappa: the Pi type. This includes universe levels — quantification
-over `TypeLevel` is an ordinary Pi whose classifier is computed by §11.1.2.8, and universe-polymorphic declarations are
-ordinary values whose leading erased level binders are inserted by **prenex level generalization** (§11.3.0.2). There
-is no separate "scheme" sort.
-
-<!-- types.quantification.level_polymorphism -->
-#### 11.3.0 Level-polymorphism mechanics
-
-<!-- types.quantification.ordinary_forall -->
-##### 11.3.0.1 Ordinary `forall`
-
-Ordinary `forall` is syntactic sugar over Pi-types:
+`forall` is syntactic sugar over erased Pi-types.
 
 ```kappa
-forall a. T        ==   (@0 a : Type) -> T
+forall a. T        ==   (0 a : Type) -> T
 forall (a : S). T  ==   (@0 a : S) -> T
 ```
 
-This includes quantification over the intrinsic compile-time types:
+When `S` is exactly bare `Type` or `Type0`, the binder introduced by `forall` is a parametric type witness under
+§11.1.2.3A.
+
+Consequently:
 
 ```kappa
-forall (q : Quantity). T
-forall (s : Region). T
-forall (u : TypeLevel). T
-forall (r : EffRow). T
+forall A. A -> A
+forall (A : Type). A -> A
 ```
 
-Quantification over `TypeLevel` is first-class. Because every `TypeLevel` value denotes a finite level (§11.1.1), a Pi
-over levels always has a universe ceiling (§11.1.2.8):
+both elaborate to a small impredicative parametric function type:
 
 ```kappa
-forall (u : TypeLevel). Nat                          -- : Type0  (codomain does not mention u)
-forall (u : TypeLevel). (A : Type u) -> A -> A       -- : Typeω  (automatic ceiling)
-forall (u : TypeLevel < 2). Type u                   -- : Type2  (bounded binder tightens)
+(0 A : Type) -> A -> A
 ```
 
-Examples:
+with classifier:
 
 ```kappa
-forall a. a -> Int
-forall (n : Nat). Vec n Int -> Int
-forall (s : Region). (&[s] buf : Buffer) -> Unit -> Int
-forall (r : EffRow) (l : EffLabel). SplitEff r l E r' => ...
-forall (row : RecRow) (lab : Label). ContainsRec row lab T => ...
+Type
 ```
 
-<!-- types.quantification.prenex_level_generalization -->
-##### 11.3.0.2 Prenex level generalization
-
-Each source occurrence of bare `Type` introduces a fresh universe metavariable (§11.1.2.3). **Prenex level
-generalization** determines where the unsolved ones are bound, so that ordinary code never writes levels:
-
-* **Term declarations.** After a top-level term declaration's signature (or, absent a signature, its inferred type) is
-  elaborated, every level metavariable that remains unsolved, appears as a `Type` **index** in the declaration's type,
-  and carries **no upper-bound constraint** is generalized into a **leading implicit erased binder**
-  `(@0 u : TypeLevel)` of the declaration, in left-to-right order of the corresponding bare-`Type` occurrences in the
-  source signature (for inferred types, first occurrence in the canonically rendered elaborated type). This
-  generalization is mandatory (it is the §11.1.3 generalization-boundary rule, realized as an ordinary Pi binder):
-  implementations MUST NOT default such a metavariable instead of generalizing it, and MUST NOT reject the declaration
-  for having one.
-
-* **Classifier-position and constrained metavariables are solved, not hoisted.** A level metavariable in **classifier
-  position** — the declared result classifier of a `data` or `type` declaration, or the universe of the declared type
-  itself — and any level metavariable carrying an **upper-bound** constraint is **not** generalized: after the hoisted
-  metavariables are fixed as rigid binders, each remaining metavariable is solved to the **least** level satisfying its
-  constraints; if none exists the declaration is rejected with `E_UNIVERSE_CONSTRAINT_UNSATISFIABLE`. This is an
-  explicit carve-out from §11.1.3's generalization rule. Consequently `data Box = MkBox (f : (A : Type) -> A -> A)`
-  hoists exactly one parameter `u` and solves its result classifier to `Type (succ u)` — it never invents a second
-  parameter — and under a user-written cap such as `data Box : Type1 = …` the field metavariable is bounded above and
-  solves to `0` instead of hoisting.
-
-  ```kappa
-  id : (A : Type) -> A -> A
-  -- elaborates to:
-  id : (@0 u : TypeLevel) -> (A : Type u) -> A -> A      -- an ordinary value, : Typeω
-  ```
-
-* **`data`, `type`, trait, and effect declarations.** Unsolved level metavariables in the declaration's header,
-  constructor field types, or member signatures are hoisted as implicit erased parameters **appended to the
-  declaration's header telescope** `Δ`, in left-to-right order of first occurrence. Hoisted parameters are ordinary
-  header binders for every later rule (in particular §10.4.1). The declared entity stays at a **finite** universe and
-  is usable by ordinary generic code:
-
-  ```kappa
-  data Box = MkBox (f : (A : Type) -> A -> A)
-  -- elaborates to:
-  data Box (@0 u : TypeLevel) : Type (succ u) =
-      MkBox (f : (A : Type u) -> A -> A)                 -- Box ?u : Type (succ ?u), finite
-  ```
-
-  Hoisted parameters participate in the declaration's arity and interface identity: for traits and effects they extend
-  the header telescope, and instance heads and handlers instantiate them like any other header parameter. `TypeLevel`
-  parameters carry no positivity obligations (§10.4.2) and no runtime representation (§11.1.6).
-
-* **Local bindings are not generalization boundaries.** Level metavariables arising in local bindings float outward and
-  are generalized at the enclosing declaration. No local generalization machinery exists or is needed: lazy
-  instantiation (below) preserves polymorphism through local aliases, and cumulative max-solving (§11.3.0.3) covers
-  multi-level use of level-monomorphic locals.
-
-**Lazy level instantiation.** An occurrence of a name whose type begins with implicit `(@0 _ : TypeLevel)` binders
-instantiates them only when **forced**: when the occurrence is applied to an explicit argument, projected, matched on,
-or checked against an expected type that does not itself begin with corresponding implicit `TypeLevel` binders.
-Checking against an **unsolved metavariable** forces instantiation (so branches of a shared-typed conditional, list
-elements, and arguments to not-yet-solved callee types instantiate), with exactly one exception: an occurrence that is
-the **entire right-hand side of a binding without a type annotation** elaborates in synthesis mode and retains its
-binders. For `TypeLevel` binders this rule takes precedence over the general implicit-insertion discipline of §16.3.
-Each forcing instantiates the binders at fresh level metavariables (or explicit level arguments). In particular:
-
-* a bare alias keeps polymorphism at **any** scope — after `let boo = id`, local or top-level, `boo` has `id`'s exact
-  type, including its level binders;
-* checking `id` against an expected type that *is* the polymorphic Pi (a rank-2 parameter, a polymorphic field) uses it
-  directly, without instantiation;
-* `id id` elaborates by forcing each occurrence separately: the inner `id` instantiates at `?u`, the outer at
-  `succ ?u`.
-
-Instantiating a level binder and applying the result to a type argument `A : Type l` generates the **lower-bound**
-constraint `LevelLe l ?u` (cumulative subsumption, §11.1.2.1) — never an equality. This is what makes one instantiation
-serve many levels (§11.3.0.3).
-
-<!-- types.quantification.level_max_solving -->
-##### 11.3.0.3 Cumulativity and level-max solving
-
-Because instantiated level uses generate lower-bound constraints (§11.3.0.2) and universes are cumulative (§11.1.2.1),
-a **single** level-instantiated value serves every level up to its solved level; the solver picks the least upper bound
-of the uses. A stored polymorphic function is therefore level-*bounded*, not level-*locked*. The following program is
-normative — it MUST elaborate with no level annotations and no `ω`-classified types:
+The ordinary explicit function type:
 
 ```kappa
-data Box = MkBox (f : (A : Type) -> A -> A)
--- hoisted (§11.3.0.2): data Box (@0 u : TypeLevel) : Type (succ u) = MkBox (f : (A : Type u) -> A -> A)
-
-type Sig = (T : Type, val : T)
--- hoisted: Sig (@0 v : TypeLevel), with Sig at level 0 : Type1
-
-id : (A : Type) -> A -> A
-let id A x = x
-
-box : Box
-let box = MkBox id           -- box's hoisted level generalizes: box : (@0 w : TypeLevel) -> Box w
-
-r : Sig
-let r = (T = Nat, val = 5)   -- forces Sig at level 0
-
-useBoth : Unit
-let useBoth =
-    match box                -- one occurrence: box forced at a single level ?w
-    case MkBox f ->
-        let a = f Nat 1      -- LevelLe 0 ?w
-        let b = f Sig r      -- Sig at level 0 : Type1, so LevelLe 1 ?w   ⇒ ?w := 1
-        ()                   -- the SAME match-bound f serves both; the Nat use is covered by cumulativity
+(A : Type) -> A -> A
 ```
 
-A single forced instantiation (`?w`, solved to the maximum of its uses) serves every level below it. Distinct
-occurrences of `box` would force distinct, independent instantiations; a `Box` stored in a container shares one level
-across the container the same way:
+does not use `forall` sugar. It binds `A` as an ordinary type-code value and is classified by the ordinary predicative
+Pi rule.
+
+There is no separate source-level universe-schema `forall` form in Kappa v1.
+
+In particular, Kappa does not use a special declaration-level form such as:
 
 ```kappa
-boxes : List Box
-let boxes = [MkBox id, MkBox id]     -- boxes : (@0 w) -> List (Box w); a forced use shares one ?w
+forall {u : TypeLevel}. T
 ```
 
-The remaining failure modes are exactly the sound ones:
+for ordinary type polymorphism.
 
-* **self-containment** — applying a stored `f` to the very structure that stores it (with `f` bound from a
-  `Box ?w` match, `f Box box` needs `LevelLe (succ ?w) ?w`), rejected with `E_UNIVERSE_SELF_CONTAINMENT`;
-* **user-written caps** — an explicit annotation such as `data Box : Type1` fixes the hoisted level, and a use above
-  the cap is rejected at the annotation the user wrote, with `E_UNIVERSE_CONSTRAINT_UNSATISFIABLE`.
+Ordinary type polymorphism is expressed by parametric `0 Type` binders.
 
-Inference never introduces a cap on its own.
+Explicit quantification over `TypeLevel` values remains ordinary Pi quantification and is used only for explicit
+universe-index programming:
+
+```kappa
+(u : TypeLevel) -> Type u
+```
+
+Such code is governed by the universe rules of §11.1. It is not the default elaboration of ordinary `Type`.
 
 <!-- types.quantification.rows_labels -->
 #### 11.3.1 Rows and labels
