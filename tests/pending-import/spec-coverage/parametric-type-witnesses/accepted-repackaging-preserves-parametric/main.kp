@@ -1,0 +1,10 @@
+--! assertNoErrors
+
+type SigSmall : Type =
+    (0 A : Type, value : A)
+
+copy :
+    SigSmall -> SigSmall
+
+let copy s =
+    (0 A = s.A, value = s.value)

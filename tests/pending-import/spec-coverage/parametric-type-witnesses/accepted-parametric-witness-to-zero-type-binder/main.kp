@@ -1,0 +1,15 @@
+--! assertNoErrors
+
+data Some : Type =
+    Some (0 A : Type) (value : A)
+
+consume :
+    (0 R : Type) ->
+    Some ->
+    ((0 B : Type) -> B -> R) ->
+    R
+
+let consume R x k =
+    match x
+    case Some A value ->
+        k A value

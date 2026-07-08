@@ -1,0 +1,4 @@
+--! assertNoErrors
+
+data Some : Type =
+    Some (0 A : Type) (value : A)

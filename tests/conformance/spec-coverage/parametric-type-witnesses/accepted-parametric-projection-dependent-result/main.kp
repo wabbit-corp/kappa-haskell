@@ -1,0 +1,10 @@
+--! assertNoErrors
+
+type SigSmall : Type =
+    (0 A : Type, value : A)
+
+get :
+    (s : SigSmall) -> s.A
+
+let get s =
+    s.value

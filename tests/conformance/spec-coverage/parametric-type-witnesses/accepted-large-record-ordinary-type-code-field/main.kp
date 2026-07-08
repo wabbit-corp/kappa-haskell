@@ -1,0 +1,4 @@
+--! assertNoErrors
+
+type SigLarge : Type1 =
+    (A : Type, value : A)

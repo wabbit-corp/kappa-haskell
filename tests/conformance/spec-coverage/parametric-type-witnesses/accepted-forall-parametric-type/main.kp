@@ -1,0 +1,7 @@
+--! assertNoErrors
+
+id :
+    forall A. A -> A
+
+let id A x =
+    x

@@ -1,0 +1,9 @@
+--! assertNoErrors
+
+ok :
+    (0 A : Type) -> A -> A
+
+let ok A x =
+    type T = A
+    let y : T = x
+    y

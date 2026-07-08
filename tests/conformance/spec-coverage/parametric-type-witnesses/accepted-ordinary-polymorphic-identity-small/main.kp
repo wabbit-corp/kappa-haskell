@@ -1,0 +1,7 @@
+--! assertNoErrors
+
+id :
+    (0 A : Type) -> A -> A
+
+let id A x =
+    x
