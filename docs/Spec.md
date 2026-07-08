@@ -11106,7 +11106,7 @@ Header parameters:
 
 * In the parameter list of a `trait`, `data`, `type`, or `effect` declaration, an unannotated lowercase-generalizable
   identifier parameter introduces a declaration binder whose annotation is inferred from its uses in the declaration.
-* If the annotation is otherwise unconstrained, it defaults to `Type`.
+* If the annotation is otherwise unconstrained, it defaults according to the parametric default below.
 * An unannotated parameter that is not lowercase-generalizable still introduces a declaration binder, but its annotation
   defaults to `Type` unless another rule supplies a more precise annotation.
 
@@ -11122,11 +11122,72 @@ Free lowercase identifiers in signatures and heads:
 * Backtick identifiers and operator tokens are never implicitly universalized by this rule.
 * The introduced binders are ordered by first left-to-right occurrence in source order after name-key computation.
 * Each introduced binder's annotation is inferred from its uses in the corresponding signature or head.
-* If the annotation is otherwise unconstrained, it defaults to `Type`.
+* If the annotation is otherwise unconstrained, it defaults according to the parametric default below.
 * For signatures, elaboration is as if the declaration were prefixed by an explicit outer `forall`.
 * For instances, elaboration is as if the entire instance declaration were abstracted over those binders before its
   premises and head are checked.
 * Outside the sites listed above, ordinary unbound-identifier rules apply.
+
+Parametric default for inferred type variables:
+
+When implicit declaration-level universalization introduces a binder for a type variable whose inferred classifier is
+bare `Type`, and the variable is used only as a type expression or as an argument to other `0 Type` binders, the
+generalized binder is parametric:
+
+```kappa
+(0 a : Type)
+```
+
+not ordinary:
+
+```kappa
+(a : Type)
+```
+
+Examples:
+
+```kappa
+let id A x =
+    x
+```
+
+may infer:
+
+```kappa
+id :
+    (0 A : Type) -> A -> A
+```
+
+An unannotated type parameter in a type, data, trait, effect, or projection declaration is likewise generalized
+parametrically when its uses permit it:
+
+```kappa
+data Option a : Type =
+    None
+    Some (value : a)
+```
+
+elaborates as if written:
+
+```kappa
+data Option (0 a : Type) : Type =
+    None
+    Some (value : a)
+```
+
+A variable is generalized as an ordinary type-code binder only when some use demands ordinary type-code capability.
+
+Examples of such demands include:
+
+* returning the variable from a term of result type `Type`;
+* storing it in a field annotated `(A : Type)`;
+* passing it to a binder `(A : Type)` without quantity `0`;
+* using it as input to a reflection or typecase API that demands ordinary type-code capability;
+* selecting static members from it as an ordinary reified type object.
+
+If inference cannot decide whether a generalized type variable should be parametric or ordinary type-code, the compiler
+SHOULD prefer the parametric binder and report the first later ordinary-code demand as `E_PARAMETRIC_TYPE_PROMOTION`.
+An implementation MAY instead require an explicit binder annotation when doing so produces a more local diagnostic.
 
 If an implicitly universalized identifier is inferred to have type `RecRow`, the identifier is generalized as an ordinary
 source binder:
