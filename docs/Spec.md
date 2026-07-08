@@ -62,6 +62,17 @@ Consequences:
 * runtime bridge binding uses explicit contracts such as `std.bridge.BridgeContract`;
 * foreign or dynamic values that claim precise Kappa types do so through explicit boundary contracts.
 
+This rule constrains source-level semantics, KCore checking, definitional equality, dynamic casts, bridge contracts,
+proof checking, and source-observable runtime behavior.
+
+After KCore checking and erasure justification, a backend MAY use erased or compile-time type information for
+specialization, monomorphization, layout selection, calling-convention selection, wrapper generation, or equivalent
+internal lowering choices, provided the resulting artifact preserves the source-observable behavior of the accepted
+KCore program.
+
+Such backend metadata does not re-enter Kappa typing, definitional equality, trait search, proof checking, dynamic
+casts, bridge contracts, or boundary contracts unless represented by explicit source-level evidence.
+
 <!-- design.boundary_honesty.runtime_capabilities_as_values -->
 #### 1.1.2 Runtime capabilities as values
 
@@ -35155,6 +35166,62 @@ Rules:
   elaboration-time evaluator primitives.
 * Reflection values MUST NOT survive lowering to KBackendIR except through ordinary reification to `Syntax` followed by
   ordinary elaboration.
+
+KCore distinguishes ordinary type-code values from parametric type witnesses.
+
+A KCore binder corresponding to source:
+
+```kappa
+(0 A : Type)
+```
+
+or:
+
+```kappa
+(@0 A : Type)
+```
+
+binds `A` with parametric type-witness capability.
+
+KCore typing rules preserve the invariant:
+
+```text
+a parametric type witness may occur in type expressions and may instantiate parametric `0 Type` binders,
+but it may not be used as an ordinary value of type `Type`.
+```
+
+KCore contains no implicit coercion:
+
+```text
+ParamTypeWitness -> TypeCode
+```
+
+A KCore term, interface artifact, or generated helper that would require such a coercion is rejected by checkpoint
+verification with diagnostic family:
+
+```text
+kappa.type.parametric-promotion
+```
+
+and portable alias:
+
+```text
+E_PARAMETRIC_TYPE_PROMOTION
+```
+
+KCore may contain ordinary explicit evidence whose members compute or carry runtime or compile-time representations
+related to a parametric witness. That evidence is ordinary data or proof evidence and does not constitute an implicit
+promotion of the witness itself.
+
+KCore erasure justification records MUST preserve enough information to distinguish:
+
+```text
+erased ordinary type-code values
+erased parametric type witnesses
+erased trait/proof evidence
+```
+
+because these have different source-level capabilities even when all erase before backend lowering.
 
 <!-- compiler.kcore.application_spines.capture_annotated_types -->
 ##### 30.2.2.10 KCore capture-annotated types
