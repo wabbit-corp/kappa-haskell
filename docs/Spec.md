@@ -871,6 +871,7 @@ E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
 E_UNIVERSE_SELF_CONTAINMENT
 E_UNIVERSE_LEVEL_EXPRESSION
 E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+E_PARAMETRIC_TYPE_PROMOTION
 
 E_QUOTE_MALFORMED_SYNTAX
 E_GENERATED_SYNTAX_INVALID
@@ -941,6 +942,13 @@ Meanings:
   §11.1.1.
 * `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE` is emitted when a constructor-local binder type is too large for the declared
   result universe of the enclosing data family under §10.4.1.
+* `E_PARAMETRIC_TYPE_PROMOTION` is emitted when a parametric type witness introduced by a `0 Type` binder, field,
+  constructor binder, pattern binder, or projection is used where an ordinary inspectable value of type `Type` is
+  required.
+
+  This includes returning it from a term whose result type is `Type`, storing it in an ordinary `(A : Type)` field,
+  passing it to a nonzero or unrestricted `(A : Type)` binder, reifying it as a static type object, or otherwise
+  dropping its parametric capability.
 * `E_VAR_REF_REQUIRED` is emitted when a mutable variable's reference cell is required but the source occurrence denotes its current value.
 * `E_VAR_READ_OUTSIDE_DO` is emitted when a current-value read of a mutable variable appears outside the expression-lifting context of its enclosing `do` block.
 * `E_VAR_READ_CROSSES_BOUNDARY` is emitted when elaborating a mutable-variable current-value occurrence would require moving the generated read across a user-written lambda, local-function, quote, type, or elaboration-time boundary.
@@ -2304,6 +2312,40 @@ Payload MUST include:
 * whether a local repair such as raising the data result universe is available.
 
 A diagnostic in this family MUST use portable alias `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE`.
+
+Family:
+
+```text
+kappa.type.parametric-promotion
+```
+
+Used when a parametric type witness is used as an ordinary inspectable type-code value.
+
+A **parametric type witness** is a type expression introduced by a binder, field, constructor binder, pattern binder, or
+projection whose source form carries quantity `0` and whose annotation is exactly `Type`, as specified by §11.1.2.3A.
+
+A diagnostic in this family MUST use portable alias:
+
+```text
+E_PARAMETRIC_TYPE_PROMOTION
+```
+
+Payload MUST include:
+
+* the parametric witness expression;
+* the origin that introduced the witness;
+* the use site where ordinary type-code capability was demanded;
+* the demanded construct kind, among `ordinary-type-field`, `ordinary-type-binder`, `term-result-Type`,
+  `static-object-reification`, `reflection`, `typecase`, `macro-semantic-query`, `associated-member-definition`,
+  `constructor-argument`, `record-field`, `package-field`, or implementation-defined equivalent;
+* whether the witness came from a binder, record field, constructor field, pattern, projection, or generated term;
+* whether the rejected use was user-written or generated;
+* the nearest binder or field whose annotation should be changed, when a local repair is evident;
+* the expected capability, always `ordinary-type-code`;
+* the actual capability, always `parametric-type-witness`.
+
+A human renderer SHOULD say that `0 A : Type` may be used as a type and passed to other `0 Type` binders, but cannot be
+repackaged as an ordinary `Type` value.
 
 Family:
 
@@ -9520,6 +9562,20 @@ A conforming implementation MUST NOT treat two printed occurrences of bare `Type
 ordinary elaboration has equated their hidden level metavariables.
 
 The spelling `*` remains syntactic sugar for bare `Type`.
+
+<!-- types.universes.parametric_type_witnesses -->
+##### 11.1.2.3A Parametric type witnesses
+
+A binder, field, constructor binder, pattern binder, or projection whose source form carries quantity `0` and whose
+annotation is exactly `Type` introduces a **parametric type witness**.
+
+A parametric type witness may be used as a type and passed to other `0 Type` binders, fields, constructor binders,
+pattern binders, or projections.
+
+It is not an ordinary inspectable type-code value. A use that would return it from a term whose result type is `Type`,
+store it in an ordinary `(A : Type)` field, pass it to a nonzero or unrestricted `(A : Type)` binder, reify it as a
+static type object, or otherwise drop its parametric capability is rejected with diagnostic family
+`kappa.type.parametric-promotion` and portable alias `E_PARAMETRIC_TYPE_PROMOTION`.
 
 <!-- types.universes.inference -->
 ##### 11.1.2.4 Universe inference
