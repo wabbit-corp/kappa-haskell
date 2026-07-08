@@ -9535,47 +9535,248 @@ RuntimeErased (LevelLt u v)
 <!-- types.universes.bare_type -->
 ##### 11.1.2.3 Bare `Type`
 
-Bare `Type` is universe-polymorphic surface syntax.
+Bare `Type` is not universe-polymorphic.
 
-Each source occurrence of bare `Type` introduces a fresh universe metavariable:
+The source spelling:
 
-```text
-Type ?u
+```kappa
+Type
 ```
 
-unless an expected type, explicit universe annotation, or surrounding constraint determines the level.
+means:
 
-A renderer may display:
+```kappa
+Type0
+```
+
+The spelling:
+
+```kappa
+*
+```
+
+remains syntactic sugar for bare `Type`, and therefore also means `Type0`.
+
+Universe typing remains predicative:
+
+```text
+Type  : Type1
+Type1 : Type2
+Type2 : Type3
+...
+```
+
+Equivalently:
+
+```text
+Type0 : Type1
+Type1 : Type2
+Type2 : Type3
+```
+
+A renderer MUST NOT display:
 
 ```text
 Type : Type
 ```
 
-as compact notation only when the hidden levels are not relevant. A verbose renderer MUST expose the predicative
-classifier:
+as a compact judgment for ordinary checked Kappa code.
+
+If a renderer omits the `0` in `Type0`, it MUST still preserve the predicative classifier in verbose output:
 
 ```text
-Type ?u : Type (succ ?u)
+Type : Type1
 ```
 
-A conforming implementation MUST NOT treat two printed occurrences of bare `Type` as the same universe level unless
-ordinary elaboration has equated their hidden level metavariables.
+The source forms:
 
-The spelling `*` remains syntactic sugar for bare `Type`.
+```kappa
+Type1
+Type2
+Typeω
+Type(ω+1)
+Type u
+Type(max u v)
+```
+
+remain explicit universe forms governed by §§11.1.1, 11.1.2, 11.1.2.1, and 11.1.2.2. They are not introduced by bare
+`Type`.
+
+Consequences:
+
+```kappa
+Type       -- Type0
+Type0      -- same as Type
+Type1      -- the next predicative universe
+Typeω      -- explicit limit universe, not the meaning of bare Type
+```
+
+Ordinary polymorphic programming over `Type` is not expressed by hidden universe metavariables. It is expressed by
+parametric type witnesses (§11.1.2.3A).
 
 <!-- types.universes.parametric_type_witnesses -->
 ##### 11.1.2.3A Parametric type witnesses
 
-A binder, field, constructor binder, pattern binder, or projection whose source form carries quantity `0` and whose
-annotation is exactly `Type` introduces a **parametric type witness**.
+Kappa distinguishes two capabilities for expressions whose apparent type is `Type`:
 
-A parametric type witness may be used as a type and passed to other `0 Type` binders, fields, constructor binders,
-pattern binders, or projections.
+```text
+ordinary type-code value
+parametric type witness
+```
 
-It is not an ordinary inspectable type-code value. A use that would return it from a term whose result type is `Type`,
-store it in an ordinary `(A : Type)` field, pass it to a nonzero or unrestricted `(A : Type)` binder, reify it as a
-static type object, or otherwise drop its parametric capability is rejected with diagnostic family
-`kappa.type.parametric-promotion` and portable alias `E_PARAMETRIC_TYPE_PROMOTION`.
+An **ordinary type-code value** is an inspectable compile-time value of type `Type`.
+
+A **parametric type witness** is an erased abstract type witness. It may be used as a type expression and may be passed to
+other parametric type binders, but it is not an ordinary inspectable value of type `Type`.
+
+A binder introduces a parametric type witness when all of the following hold:
+
+* the binder quantity is exactly `0`;
+* the binder annotation is exactly bare `Type` or `Type0` after transparent alias expansion; and
+* the binder is not inside an implementation-defined unsafe extension that explicitly changes this rule.
+
+Examples of parametric binders:
+
+```kappa
+(0 A : Type) -> A -> A
+
+(@0 A : Type) -> A -> A
+
+forall A. A -> A
+
+forall (A : Type). A -> A
+```
+
+The following introduces an ordinary type-code binder, not a parametric type witness:
+
+```kappa
+(A : Type) -> B
+```
+
+The distinction is capability-based. It is not merely runtime erasure.
+
+The following one-way use is permitted:
+
+```text
+ordinary type-code value  ->  parametric type witness
+```
+
+An ordinary type-code value may instantiate a `0 Type` binder.
+
+The reverse direction is forbidden:
+
+```text
+parametric type witness  ->  ordinary type-code value
+```
+
+A parametric type witness may be used:
+
+* as a type expression;
+* as an argument to another `0 Type` binder;
+* as a parameter to type constructors;
+* in trait obligations;
+* in associated type and associated member types;
+* in equality propositions;
+* in dependent result types;
+* in record fields, package fields, data constructor fields, and pattern matches, provided its parametric capability is
+  preserved;
+* in generated syntax that is rechecked under the same capability rules.
+
+A parametric type witness may not be used:
+
+* as an ordinary term of type `Type`;
+* as the result of a term whose declared result type is `Type`;
+* as an argument to a nonzero or unrestricted `(A : Type)` binder;
+* as a field value for an ordinary `(A : Type)` field;
+* as the body of an ordinary type-code-valued static object;
+* as the RHS of a declaration that reifies to an ordinary static-object term facet of type `Type`;
+* as input to typecase, type reflection, static-object lookup, or semantic reflection APIs that demand ordinary
+  type-code capability;
+* as a constructor argument, record field, package field, associated member, or generated term that would expose it
+  without its parametric capability.
+
+If a program attempts such a promotion, compilation fails with diagnostic family:
+
+```text
+kappa.type.parametric-promotion
+```
+
+and portable alias:
+
+```text
+E_PARAMETRIC_TYPE_PROMOTION
+```
+
+Examples:
+
+```kappa
+id :
+    (0 A : Type) -> A -> A
+
+let id A x =
+    x
+```
+
+is accepted.
+
+```kappa
+bad :
+    (0 A : Type) -> Type
+
+let bad A =
+    A
+```
+
+is rejected, because the body attempts to return the parametric witness `A` as an ordinary value of type `Type`.
+
+This is accepted:
+
+```kappa
+useParam :
+    (0 A : Type) ->
+    ((0 B : Type) -> B -> B) ->
+    A -> A
+
+let useParam A f x =
+    f A x
+```
+
+because `A` is passed to another `0 Type` binder.
+
+This is rejected:
+
+```kappa
+useCode :
+    (0 A : Type) ->
+    ((B : Type) -> B -> B) ->
+    A -> A
+
+let useCode A f x =
+    f A x
+```
+
+because `f` demands an ordinary type-code argument.
+
+Parametric type witnesses may participate in trait search. If behavior depends on trait evidence, that dependency must
+appear in the elaborated term as ordinary explicit or implicit evidence.
+
+For example:
+
+```kappa
+show :
+    (0 A : Type) ->
+    Show A =>
+    A ->
+    String
+```
+
+is parametric in `A` relative to the explicit `Show A` evidence. The witness `A` alone does not provide reflection,
+typecase, or ordinary type-code capability.
+
+A trait such as `Typeable`, `Generic`, `ShapeOf`, or equivalent reflection evidence is permitted only as ordinary
+evidence. Its instance declarations and member definitions are checked by the same parametric capability rules as all
+other code. Such evidence may provide runtime or compile-time representation values when its declared members say so,
+but no standard rule converts a parametric type witness itself into an ordinary type-code value.
 
 <!-- types.universes.inference -->
 ##### 11.1.2.4 Universe inference
