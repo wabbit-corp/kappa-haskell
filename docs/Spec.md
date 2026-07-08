@@ -9781,10 +9781,16 @@ but no standard rule converts a parametric type witness itself into an ordinary 
 <!-- types.universes.inference -->
 ##### 11.1.2.4 Universe inference
 
-Elaboration generates universe constraints from ordinary typing, type-former formation, cumulativity, constructor-size
-checking (§10.4.1), implicit insertion, unification, and explicit level evidence. Explicit universe variables
-introduced by hoisted level binders (§11.3.0.2) or ordinary `TypeLevel` binders participate in the same constraint
-solving; occurrences of `Type u` share exactly the same user-written universe variable rather than introducing fresh
+Elaboration generates universe constraints from explicit universe forms, ordinary typing, type-former formation,
+cumulativity, constructor-size checking (§10.4.1), implicit insertion, unification, and explicit level evidence.
+
+Bare `Type` does not introduce a fresh universe metavariable. It means `Type0`.
+
+Universe metavariables arise only from explicit universe metavariable syntax, implementation-internal inference for
+explicit higher-universe forms, or rules that this specification explicitly says introduce a universe metavariable.
+
+Explicit universe variables introduced by ordinary `TypeLevel` binders participate in the same constraint solving.
+Occurrences of `Type u` share exactly the same user-written universe variable rather than introducing fresh
 metavariables.
 
 Universe metavariables may be solved only by the universe solver and by definitional equality of solver-level
@@ -9901,6 +9907,70 @@ collapses to `ω` — note that the least upper bound of `u + n` over finite `u`
 every finite atom (`max(ω, n) ≡ ω`, `max(ω, x + n) ≡ ω` for outer variables `x`, since all level variables are
 finite-valued). A bounded binder or evidence in scope tightens the ceiling below the `ω` fallback.
 
+**Parametric `0 Type` binders.** A parametric type binder contributes no ordinary type-code field to the universe level
+of the enclosing type former.
+
+If:
+
+```text
+Γ, A : ParamTypeWitness ⊢ B : Type ρ
+```
+
+then:
+
+```text
+Γ ⊢ (0 A : Type) -> B : Type ρ
+```
+
+and likewise for the implicit erased form:
+
+```text
+Γ ⊢ (@0 A : Type) -> B : Type ρ
+```
+
+The binder `A` is available in `B` as a parametric type witness. It may appear in type expressions and may be passed to
+other `0 Type` binders, but it may not be used as an ordinary type-code value.
+
+This rule is impredicative at `Type`:
+
+```kappa
+(0 A : Type) -> A -> A
+```
+
+has classifier:
+
+```kappa
+Type
+```
+
+not:
+
+```kappa
+Type1
+```
+
+When the body lives in a higher universe, the enclosing Pi lives in that higher universe:
+
+```kappa
+(0 A : Type) -> Type
+```
+
+has classifier:
+
+```kappa
+Type1
+```
+
+because the body `Type` has classifier `Type1`.
+
+The ordinary Pi rule still applies to non-parametric binders. In particular:
+
+```kappa
+(A : Type) -> B
+```
+
+uses an ordinary type-code binder, and the domain contributes `Type1` to the Pi classifier.
+
 **Pi types.** If:
 
 ```text
@@ -9951,6 +10021,46 @@ Ai : Type αi
 
 the whole telescope's classifier is `Type κ` for the least `κ` well-formed outside the telescope variables such that
 the solver proves every `LevelLe αi κ`. As with Pi types, such a `κ` always exists.
+
+Parametric record, tuple, Sigma, existential, and package fields of the form:
+
+```kappa
+(0 A : Type)
+```
+
+do not contribute `Type1` to the enclosing telescope merely because `Type : Type1`.
+
+They introduce a parametric type witness that later fields may mention.
+
+For example:
+
+```kappa
+(0 A : Type, value : A)
+```
+
+has classifier:
+
+```kappa
+Type
+```
+
+provided every non-parametric field is itself classified by `Type`.
+
+By contrast:
+
+```kappa
+(A : Type, value : A)
+```
+
+has classifier at least:
+
+```kappa
+Type1
+```
+
+because `A` is an ordinary inspectable type-code field.
+
+Projection from a parametric field preserves parametric capability. It does not return an ordinary term of type `Type`.
 
 Examples:
 
@@ -10003,7 +10113,6 @@ checking convenient.
 
 Universe variables:
 
-* A universe metavariable introduced by bare `Type` may be solved by ordinary universe constraints.
 * At a generalization boundary, an unconstrained or underconstrained universe metavariable that appears in the
   generalized type is generalized.
 * A universe metavariable that does not appear in any exported, stored, or user-observable type MAY be instantiated to
