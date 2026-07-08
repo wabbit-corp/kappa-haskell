@@ -9021,10 +9021,99 @@ held abstract, which enforces them for every instantiation.
 If a constraint is unsatisfiable, the data declaration is rejected with diagnostic family
 `kappa.universe.constructor-size` and portable alias `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE`.
 
-This rule applies regardless of quantity, implicitness, or erasure.
+This rule applies regardless of implicitness or erasure, except for constructor-local binders classified as parametric
+type binders under §11.1.2.3A.
 
-In particular, erased constructor binders do not receive an exception merely because they erase at runtime. Erasure
-does not make a logically large constructor argument small.
+A constructor-local binder of the exact form:
+
+```kappa
+(0 A : Type)
+```
+
+or:
+
+```kappa
+(@0 A : Type)
+```
+
+does not store an ordinary type-code value and therefore does not generate a constructor-size obligation:
+
+```text
+Type : Type1 ≤ ρ
+```
+
+Instead, it introduces a parametric type witness.
+
+Every constructor type, constructor application, pattern binder, generated accessor, generated projection, generated
+matcher, constructor metadata entry, and branch-local binder derived from that parameter MUST preserve the parameter's
+parametric capability.
+
+If any generated operation would expose that parameter as an ordinary value of type `Type`, the data declaration or use
+site is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+
+Erasure alone is not enough for this exception.
+
+The following remains rejected:
+
+```kappa
+data Bad : Type =
+    Bad (@0 A : Type1)
+```
+
+The following also remains rejected:
+
+```kappa
+data Bad : Type =
+    Bad (A : Type)
+```
+
+because `A` is an ordinary type-code field.
+
+The following is accepted:
+
+```kappa
+data Some : Type =
+    Some (0 A : Type) (value : A)
+```
+
+because `A` is parametric and `value : A` is a small field.
+
+The following is accepted:
+
+```kappa
+data Box : Type =
+    Box (f : (0 A : Type) -> A -> A)
+```
+
+because the polymorphic function field is classified by `Type`.
+
+Pattern matching preserves parametric capability:
+
+```kappa
+repack :
+    Some -> Some
+
+let repack x =
+    match x
+    case Some A value ->
+        Some A value
+```
+
+is accepted.
+
+The following is rejected:
+
+```kappa
+badType :
+    Some -> Type
+
+let badType x =
+    match x
+    case Some A value ->
+        A
+```
+
+because the branch attempts to return the parametric witness `A` as an ordinary type-code value.
 
 The data-family header telescope `Δ` is checked by the ordinary type-constructor rules (including explicit `TypeLevel`
 parameters, §11.1.2.5). Header binders are not constructor-local payload fields merely because constructors are
