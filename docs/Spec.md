@@ -16061,6 +16061,49 @@ alpha-renaming, or runtime behavior.
 Instance candidate collection and representative selection MUST NOT depend on import declaration order, module load
 order, interface reload order, hash-map iteration order, cache insertion order, or worker scheduling.
 
+<!-- traits.instances.parametric_type_witnesses_trait_evidence -->
+#### 14.3.1A Parametric type witnesses and trait evidence
+
+Trait search may form goals involving parametric type witnesses.
+
+Example:
+
+```kappa
+show :
+    (0 A : Type) ->
+    Show A =>
+    A ->
+    String
+```
+
+The parameter `A` remains parametric. The function may depend on the explicit or implicit `Show A` evidence.
+
+This is ordinary dictionary passing: the term is parametric in `A` relative to the evidence it receives.
+
+Trait evidence may expose operations, runtime representations, compile-time representations, associated types, or
+associated values exactly as declared by the trait. Such members are checked by ordinary typing and by the parametric
+capability rules of §11.1.2.3A.
+
+No trait search rule implicitly converts a parametric type witness into an ordinary type-code value.
+
+A generic reflection trait such as `Typeable A`, `Generic A`, `ShapeOf A`, or implementation-defined equivalent is
+permitted only through explicit evidence. Its instances and members must be checked normally.
+
+A method or associated member definition that attempts to implement an ordinary `Type` result by returning a parametric
+type witness is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+
+Example rejected instance body shape:
+
+```kappa
+trait BadReflect (0 A : Type) =
+    code : Type
+
+instance BadReflect A =
+    code = A
+```
+
+unless `A` is an ordinary type-code parameter rather than a parametric type witness.
+
 <!-- traits.instances.normalized_instance_heads -->
 #### 14.3.2 Normalized instance goals and heads
 
