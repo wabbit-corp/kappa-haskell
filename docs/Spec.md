@@ -14103,6 +14103,95 @@ let n = r.len
 -- `r.buf` is now consumed, but `r.len` remains available
 ```
 
+<!-- records.parametric_type_fields -->
+#### 13.2.4A Parametric type fields
+
+A record, tuple, package, or existential field written:
+
+```kappa
+0 A : Type
+```
+
+introduces a parametric type field.
+
+The projected field:
+
+```kappa
+r.A
+```
+
+has parametric type-witness capability.
+
+It may be used as a type expression:
+
+```kappa
+get :
+    (r : (0 A : Type, value : A)) -> r.A
+
+let get r =
+    r.value
+```
+
+It may be passed to another `0 Type` binder:
+
+```kappa
+apply :
+    (r : (0 A : Type, value : A)) ->
+    ((0 B : Type) -> B -> B) ->
+    r.A
+
+let apply r f =
+    f r.A r.value
+```
+
+It may be repackaged into another parametric field:
+
+```kappa
+copy :
+    (r : (0 A : Type, value : A)) ->
+    (0 A : Type, value : A)
+
+let copy r =
+    (0 A = r.A, value = r.value)
+```
+
+It may not be projected as an ordinary value of type `Type`:
+
+```kappa
+bad :
+    (r : (0 A : Type, value : A)) -> Type
+
+let bad r =
+    r.A
+```
+
+The last example is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+
+By contrast, a field written:
+
+```kappa
+A : Type
+```
+
+is an ordinary type-code field. Its projection has ordinary type-code capability, and the enclosing record, tuple,
+package, or existential is classified by the ordinary predicative universe rules.
+
+Example:
+
+```kappa
+type SigLarge : Type1 =
+    (A : Type, value : A)
+```
+
+is a dependent record with an inspectable type-code field.
+
+```kappa
+type SigSmall : Type =
+    (0 A : Type, value : A)
+```
+
+is a small record with a parametric type witness field.
+
 <!-- types.records.update -->
 #### 13.2.5 Record update
 
