@@ -8944,7 +8944,7 @@ Unified declaration principle:
 
 * Parameters may be annotated.
 * Unannotated parameters are interpreted by §11.3.3.
-  In particular, `type Id a = a` elaborates as `type Id (a : Type) = a`.
+  In particular, `type Id a = a` elaborates as `type Id (0 a : Type) = a`.
 * `type Name ...` with no `= ...` declares an abstract type definition in the current module. It is a definition of an
   opaque type-level object, not an external requirement.
 * A bare `type Name ...` declaration is satisfied by the declaration itself and does not require a backend, fragment, or
@@ -8955,11 +8955,51 @@ Unified declaration principle:
 
 Type aliases vs type-level definitions:
 
-Because Kappa is dependently typed, types are terms.
+Because Kappa is dependently typed, ordinary type-code expressions are terms.
 
-* `type T ... = RHS` is surface syntax for a type-level definition whose right-hand side is parsed in a type context.
-* An equivalent form is a term definition with a universe type, e.g. `let T : Type = RHS`, when `RHS` is intended to be
-  a type expression. Implementations may treat these as equivalent after elaboration.
+However, a type expression may contain parametric type witnesses introduced by `0 Type` binders, fields, constructor
+binders, projections, or pattern binders.
+
+Such expressions are valid type expressions, but they are not automatically ordinary term expressions of type `Type`.
+
+A type declaration:
+
+```kappa
+type T ... = RHS
+```
+
+introduces a type-level definition whose right-hand side is parsed in a type context.
+
+The equivalence:
+
+```kappa
+type T = RHS
+let T : Type = RHS
+```
+
+holds only when `RHS` checks with ordinary type-code capability.
+
+If `RHS` depends on a parametric type witness, then `T` is a parametric type alias. It may be used as a type expression
+in contexts preserving that witness, but it does not introduce an ordinary reified static-object term facet of type
+`Type`.
+
+Example:
+
+```kappa
+let f (0 A : Type) : Type =
+    A
+```
+
+is rejected.
+
+But a local type alias used only as a type expression is permitted:
+
+```kappa
+let f (0 A : Type) (x : A) : A =
+    type T = A
+    let y : T = x
+    y
+```
 
 <!-- data_types.well_formedness -->
 ### 10.4 Well-formedness of `data` declarations
