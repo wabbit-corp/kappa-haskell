@@ -19521,6 +19521,69 @@ let fooRightNil left =
 In the residual branch, normalization of `foo left Nil` skips the first alternative using `LacksCtor left ⟨Nil⟩`, then
 reduces the second decision using the known `right = Nil` argument.
 
+<!-- expressions.match.parametric_constructor_binders_patterns -->
+#### 17.1.7A Parametric constructor binders in patterns
+
+When a constructor field was declared as a parametric type binder:
+
+```kappa
+(0 A : Type)
+```
+
+or:
+
+```kappa
+(@0 A : Type)
+```
+
+the corresponding pattern binder is introduced as a parametric type witness.
+
+Example:
+
+```kappa
+data Some : Type =
+    Some (0 A : Type) (value : A)
+
+let repack (x : Some) : Some =
+    match x
+    case Some A value ->
+        Some A value
+```
+
+The branch binder `A` may be used as a type expression and may be passed to other `0 Type` binders.
+
+It may not be returned, stored, reflected, or repackaged as an ordinary value of type `Type`.
+
+Rejected:
+
+```kappa
+bad :
+    Some -> Type
+
+let bad x =
+    match x
+    case Some A value ->
+        A
+```
+
+Accepted:
+
+```kappa
+consume :
+    Some ->
+    ((0 B : Type) -> B -> R) ->
+    R
+
+let consume x k =
+    match x
+    case Some A value ->
+        k A value
+```
+
+Pattern matching does not seal parametric type witnesses behind a special unpacking form. Ordinary records and data
+constructors project and pattern-match normally. The only restriction is capability preservation: a `0 Type` witness
+must remain a `0 Type` witness.
+
 <!-- expressions.match.narrowing_is_consuming -->
 #### 17.1.8 Narrowing is non-consuming
 
