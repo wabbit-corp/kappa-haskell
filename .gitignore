@@ -1,6 +1,7 @@
 dist-newstyle/
 dist-source/
 dist/
+__pycache__/
 .idea/
 *.hi
 *.o

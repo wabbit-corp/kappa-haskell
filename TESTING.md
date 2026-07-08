@@ -9,6 +9,8 @@ cabal run -v0 kappa -- test examples              # golden-output example
 cabal run -v0 kappa -- test path/to/file.kp       # one fixture
 cabal run -v0 kappa -- test --suite path/to/dir   # one §T.2 directory suite
 cabal run -v0 kappa -- explain E_TYPE_MISMATCH    # §3.1.2A code registry
+python3 scripts/validate.py docs/Spec.md          # spec markdown/reference validator
+python3 -m pytest test_validate.py                # validator unit tests (requires pytest)
 tools/run-external-fixtures.sh                    # external corpus (see below)
 tools/triage-external.sh                          # per-category triage db
 ```
