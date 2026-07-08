@@ -5343,10 +5343,10 @@ instead.
 The numeric literal traits are:
 
 ```kappa
-trait FromInteger (t : Type) =
+trait FromInteger (0 t : Type) =
     fromInteger : Nat -> t
 
-trait FromFloat (t : Type) =
+trait FromFloat (0 t : Type) =
     fromFloat : Double -> t
 ```
 
@@ -5710,10 +5710,10 @@ The prelude provides:
 ```kappa
 data SyntaxFragment : Type =
     Lit       (s : String)
-    Interp    (@t : Type) (e : Syntax t)
-    InterpFmt (@t : Type) (e : Syntax t) (fmt : String)
+    Interp    (@0 t : Type) (e : Syntax t)
+    InterpFmt (@0 t : Type) (e : Syntax t) (fmt : String)
 
-trait InterpolatedMacro (t : Type) =
+trait InterpolatedMacro (0 t : Type) =
     buildInterpolated :
         List SyntaxFragment -> Elab (Syntax t)
 ```
@@ -6074,7 +6074,7 @@ QuotedLiteralMacro t
 The prelude provides:
 
 ```kappa
-trait QuotedLiteralMacro (t : Type) =
+trait QuotedLiteralMacro (0 t : Type) =
     buildQuotedLiteral :
         QuotedLiteral -> Elab (Syntax t)
 ```
@@ -6638,10 +6638,10 @@ Trait declarations:
   ```
 
   then its reified term facet has that same compile-time function type.
-* Thus a declaration `trait Eq (a : Type) = ...` introduces a reified term facet:
+* Thus a declaration `trait Eq (0 a : Type) = ...` introduces a reified term facet:
 
   ```kappa
-  Eq : Type -> Type
+  Eq : (0 A : Type) -> Type
   ```
 * For every well-formed full application `Tr args`, the compiler provides intrinsic evidence:
 
@@ -8392,7 +8392,7 @@ Forms:
 expect type Int
 expect type String
 expect data Nat : Type
-expect data IO (e : Type) (a : Type) : Type
+expect data IO (0 e : Type) (0 a : Type) : Type
 expect trait Eq a
 expect term toFloat : (this : Int) -> Float
 expect term print   : (this : String) -> UIO Unit
@@ -8480,11 +8480,11 @@ Examples:
 ```kappa
 data Void : Type
 
-data Maybe (a : Type) : Type =
+data Maybe (0 a : Type) : Type =
     Nothing
     Just a
 
-data Result (e : Type) (a : Type) : Type =
+data Result (0 e : Type) (0 a : Type) : Type =
     Ok a
     Err e
 ```
@@ -8725,7 +8725,7 @@ let inactive =
 let MkUser = User
 let grace = MkUser { name = "Grace" }
 
-data SizedVec (a : Type) : Type =
+data SizedVec (0 a : Type) : Type =
     SizedVec {
         n  : Nat,
         xs : Vec n a = replicate n defaultElement
@@ -8924,7 +8924,7 @@ ordinary universe rules.
 A GADT-style constructor may instantiate any data-family argument in its explicit result type. For example:
 
 ```kappa
-data T (a : Type) (x : a) (y : a) : Type =
+data T (0 a : Type) (x : a) (y : a) : Type =
     C : T a x x
 ```
 
@@ -8951,7 +8951,7 @@ GADT-style constructors are written with an explicit result type after `:`. The 
 constrain any uniform data-family argument of the enclosing `data` declaration.
 
 ```kappa
-data Vec (n : Nat) (a : Type) : Type =
+data Vec (n : Nat) (0 a : Type) : Type =
     VNil  : Vec 0 a
     VCons : (head : a) -> (tail : Vec n a) -> Vec (n + 1) a
 ```
@@ -8969,7 +8969,7 @@ rules as §10.1.
 Example:
 
 ```kappa
-data VecBox (a : Type) : Type =
+data VecBox (0 a : Type) : Type =
     VecBox :
         (n  : Nat) ->
         (xs : Vec n a = replicate n defaultElement) ->
@@ -8997,8 +8997,8 @@ Type aliases use `type`:
 
 ```kappa
 type Foo (x : Int) : Type = Int
-type Id (a : Type) = a
-opaque type Id (a : Type) = a
+type Id (0 a : Type) = a
+opaque type Id (0 a : Type) = a
 private type Internal = ...
 ```
 
@@ -10534,40 +10534,40 @@ IR. Such renderings are not source names. They are not made available through le
 Trait evidence is proof-irrelevant in the following source-level sense:
 
 ```kappa
-trait IsEmpty (t : Type) =
+trait IsEmpty (0 t : Type) =
     absurd :
         t -> Void
 
-trait IsContr (t : Type) =
+trait IsContr (0 t : Type) =
     center : t
 
     contract :
         (x : t) ->
         center = x
 
-trait IsSubsingleton (t : Type) =
+trait IsSubsingleton (0 t : Type) =
     allEqual :
         (x : t) ->
         (y : t) ->
         x = y
 
-trait IsSubsingleton p => IsProp (p : Type)
+trait IsSubsingleton p => IsProp (0 p : Type)
 
-trait IsSet (a : Type) =
+trait IsSet (0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
 
-trait IsGroupoid (a : Type) =
+trait IsGroupoid (0 a : Type) =
     pathIsSet :
         forall (x : a) (y : a).
         IsSet (x = y)
 
-intrinsic trait IsNType (level : Nat) (a : Type)
+intrinsic trait IsNType (level : Nat) (0 a : Type)
 
-intrinsic trait RuntimeErased (t : Type)
+intrinsic trait RuntimeErased (0 t : Type)
 
-intrinsic trait IsSubsingleton t => IsTrait (t : Type)
+intrinsic trait IsSubsingleton t => IsTrait (0 t : Type)
 ```
 
 `IsSubsingleton` by itself asserts uniqueness, not existence. `IsProp` classifies proof propositions and does not provide a value of its parameter.
@@ -10895,8 +10895,8 @@ Non-strictness is expressed by suspension types, not by a distinct family of arr
 Primitive suspension types:
 
 ```kappa
-Thunk : Type -> Type
-Need  : Type -> Type
+Thunk : (0 A : Type) -> Type
+Need  : (0 A : Type) -> Type
 ```
 
 Meaning:
@@ -11030,17 +11030,17 @@ A field type inside a record row tail may not depend on:
 Kappa provides the following intrinsic row traits:
 
 ```kappa
-intrinsic trait ContainsRec          (r : RecRow) (l : Label) (a : Type)
+intrinsic trait ContainsRec          (r : RecRow) (l : Label) (0 a : Type)
 intrinsic trait LacksRec             (r : RecRow) (l : Label)
 intrinsic trait StableUnderRecChange (r : RecRow) (l : Label)
 intrinsic trait RecTailSatisfies     (r : RecRow) (q : Quantity)
 
-intrinsic trait ContainsVar (r : VarRow) (a : Type)
-intrinsic trait LacksVar    (r : VarRow) (a : Type)
+intrinsic trait ContainsVar (r : VarRow) (0 a : Type)
+intrinsic trait LacksVar    (r : VarRow) (0 a : Type)
 
-intrinsic trait ContainsEff (r : EffRow) (l : EffLabel) (e : Type)
+intrinsic trait ContainsEff (r : EffRow) (l : EffLabel) (0 e : Type)
 intrinsic trait LacksEff    (r : EffRow) (l : EffLabel)
-intrinsic trait SplitEff    (r : EffRow) (l : EffLabel) (e : Type) (rest : EffRow)
+intrinsic trait SplitEff    (r : EffRow) (l : EffLabel) (0 e : Type) (rest : EffRow)
 ```
 
 These are ordinary trait evidence types with compiler-owned introduction rules.
@@ -11419,7 +11419,7 @@ trait Functor f =
 elaborates as if:
 
 ```kappa
-trait Functor (f : Type -> Type) =
+trait Functor (f : (0 A : Type) -> Type) =
     map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b
 ```
 
@@ -11433,7 +11433,7 @@ trait GreekFunctor f =
 elaborates as if:
 
 ```kappa
-trait GreekFunctor (f : Type -> Type) =
+trait GreekFunctor (f : (0 A : Type) -> Type) =
     mapGreek : forall (α : Type) (β : Type). (α -> β) -> f α -> f β
 ```
 
@@ -13493,15 +13493,15 @@ an explicit region variable such as `s` may be instantiated by a caller-local ri
 Kappa provides the following built-in type formers:
 
 ```kappa
-Projector  : Type -> Type -> Type
+Projector  : (0 A : Type) -> (0 B : Type) -> Type
 
-Getter     : Type -> Type -> Type
-Opener     : Type -> Type -> Type
-Setter     : Type -> Type -> Type
-Sinker     : Type -> Type -> Type
+Getter     : (0 A : Type) -> (0 B : Type) -> Type
+Opener     : (0 A : Type) -> (0 B : Type) -> Type
+Setter     : (0 A : Type) -> (0 B : Type) -> Type
+Sinker     : (0 A : Type) -> (0 B : Type) -> Type
 
-BorrowView : Region -> Type -> Type
-Zipper     : Type -> Type -> Type -> Type
+BorrowView : Region -> (0 A : Type) -> Type
+Zipper     : (0 A : Type) -> (0 B : Type) -> (0 C : Type) -> Type
 ```
 
 Meaning:
@@ -13526,7 +13526,7 @@ Meaning:
 Canonical declaration of `Zipper`:
 
 ```kappa
-data Zipper (whole : Type) (focus : Type) (replace : Type) : Type =
+data Zipper (0 whole : Type) (0 focus : Type) (0 replace : Type) : Type =
     Zipper (focus : focus) (1 fill : replace -> whole)
 ```
 
@@ -14074,7 +14074,7 @@ Compile-time member selection:
 * If the selected field is compile-time in the sense of §11.1.6.1, the same projection form `rec.ℓ` may appear in any
   syntactic position compatible with the field's compile-time type, regardless of the field's written quantity.
 * This includes:
-  * type position for members such as `T : Type` or `F : Type -> Type`,
+  * type position for members such as `T : Type` or `F : (0 A : Type) -> Type`,
   * quantity position for members such as `Q : Quantity`,
   * region position for members such as `S : Region`,
   * row or label position for members such as `R : RecRow` or `L : Label`, and
@@ -14932,7 +14932,7 @@ Examples:
 
 ```kappa
 type SetSig : Type =
-    (opaque Set : Type -> Type,
+    (opaque Set : (0 A : Type) -> Type,
      singleton : forall (a : Type). a -> this.Set a,
      union     : forall (a : Type). this.Set a -> this.Set a -> this.Set a)
 
@@ -15056,7 +15056,7 @@ quantifiedType ::= forallType
                  | typeArrow
 ```
 
-`exists a. T` is sugar for `exists (a : Type). T`.
+`exists a. T` is sugar for `exists (0 a : Type). T`.
 
 The binder spelling `(@0 a : S)` is accepted only as an explicit erased-witness spelling. It has the same semantics as
 `(a : S)` in an `exists` binder and does not introduce an implicit argument or a source-visible projection label. Other
@@ -15090,21 +15090,21 @@ has a **payload view** determined by the elaborated shape of `T` after substitut
   with written quantities, implicitness, opaqueness, dependencies, and field labels preserved;
 * otherwise, the payload view is one anonymous payload slot of type `T` at quantity `ω`.
 
-Thus `exists (a : Type). Maybe a` is well-formed. Its payload is an anonymous value of type `Maybe a`, not a field named
+Thus `exists (0 a : Type). Maybe a` is well-formed. Its payload is an anonymous value of type `Maybe a`, not a field named
 `value`.
 
 A record-valued existential body contributes its fields directly to the payload view:
 
 ```kappa
-exists (a : Type). (1 value : a)
-exists (a : Type). (tc : Eq a, value : a)
+exists (0 a : Type). (1 value : a)
+exists (0 a : Type). (tc : Eq a, value : a)
 ```
 
 If a record should be packaged as one payload value rather than flattened into visible payload fields, wrap it in a
 field explicitly:
 
 ```kappa
-exists (a : Type). (payload : (x : a, y : a))
+exists (0 a : Type). (payload : (x : a, y : a))
 ```
 
 Canonical elaboration of existential types:
@@ -15136,7 +15136,7 @@ Consequences:
 * Alpha-equivalent existential types are equivalent because elaboration uses the same anonymous internal witness-member
   shape.
 * A direct projection is available only for source-visible fields contributed by a record-shaped payload. Therefore
-  `exists (a : Type). (1 value : a)` exposes `p.value`, but `exists (a : Type). Maybe a` does not expose `p.value`.
+  `exists (0 a : Type). (1 value : a)` exposes `p.value`, but `exists (0 a : Type). Maybe a` does not expose `p.value`.
 * Source code that needs access to an anonymous non-record payload must use `open ... as exists ...`.
 
 Erasure, witness quantity, and payload quantities:
@@ -15149,8 +15149,8 @@ Erasure, witness quantity, and payload quantities:
   a runtime value carried by the package.
 * Runtime-relevant information must live in the payload view. For example, a runtime dictionary is written as a payload
   field such as `(tc : Eq a, value : a)`, not as an existential witness `(tc : Eq a)`.
-* Payload field quantities are written in record-shaped payloads. For example, `exists (a : Type). (1 value : a)`
-  packages a linear payload field, while `exists (a : Type). (value : a)` uses the ordinary explicit-field default.
+* Payload field quantities are written in record-shaped payloads. For example, `exists (0 a : Type). (1 value : a)`
+  packages a linear payload field, while `exists (0 a : Type). (value : a)` uses the ordinary explicit-field default.
 * A non-record payload has anonymous payload quantity `ω`. If a non-record payload needs a different quantity, wrap it
   in a one-field record payload with the desired field quantity.
 * Transparent dependent records / Σ already remain available for user-written packages that should stay transparently
@@ -15164,10 +15164,10 @@ existential-specific payload-checking mode.
 Direct payload introduction:
 
 ```kappa
-let p : exists (a : Type). Maybe a =
+let p : exists (0 a : Type). Maybe a =
     seal
         Some 1
-    as exists (a : Type). Maybe a
+    as exists (0 a : Type). Maybe a
 ```
 
 For `seal e as exists (a1 : S1) ... (an : Sn). T`, if the seal operand is an ordinary expression rather than an explicit
@@ -15180,11 +15180,11 @@ use the explicit-witness form below or add an ordinary type annotation to the pa
 Examples:
 
 ```kappa
-let p1 : exists (a : Type). Maybe a =
-    seal Some 1 as exists (a : Type). Maybe a
+let p1 : exists (0 a : Type). Maybe a =
+    seal Some 1 as exists (0 a : Type). Maybe a
 
-let p2 : exists (a : Type). Maybe a =
-    seal (None : Maybe Int) as exists (a : Type). Maybe a
+let p2 : exists (0 a : Type). Maybe a =
+    seal (None : Maybe Int) as exists (0 a : Type). Maybe a
 ```
 
 Explicit-witness introduction:
@@ -15205,9 +15205,9 @@ The explicit-witness form is an atomic expression for purposes of application an
 This form supplies witness values explicitly before checking the payload:
 
 ```kappa
-let p3 : exists (a : Type). Maybe a =
+let p3 : exists (0 a : Type). Maybe a =
     seal exists (a = Int). None
-    as exists (a : Type). Maybe a
+    as exists (0 a : Type). Maybe a
 ```
 
 For
@@ -15223,9 +15223,9 @@ against `T[w1/b1, ..., wn/bn]`.
 If the payload view is record-shaped, the payload expression `e` is checked against that record or signature type:
 
 ```kappa
-let d : exists (a : Type). (rep : DynRep a, value : a) =
+let d : exists (0 a : Type). (rep : DynRep a, value : a) =
     seal exists (a = Int). (rep = dynRepInt, value = 1)
-    as exists (a : Type). (rep : DynRep a, value : a)
+    as exists (0 a : Type). (rep : DynRep a, value : a)
 ```
 
 Compatibility with full surface-package spelling:
@@ -15234,12 +15234,12 @@ For record-shaped payloads only, `seal e as exists ...` also accepts the full su
 record that supplies both witness names and payload fields:
 
 ```kappa
-let d : exists (a : Type). (rep : DynRep a, value : a) =
+let d : exists (0 a : Type). (rep : DynRep a, value : a) =
     seal
         (a = Int,
          rep = dynRepInt,
          value = 1)
-    as exists (a : Type). (rep : DynRep a, value : a)
+    as exists (0 a : Type). (rep : DynRep a, value : a)
 ```
 
 This compatibility form is not available for non-record payloads, because a non-record payload has no source-visible
@@ -15381,7 +15381,7 @@ Traits describe typeclasses / interfaces.
 Trait declarations use Haskell/Idris-style headers, optionally with a supertrait context:
 
 ```kappa
-trait Equiv (a : Type) =
+trait Equiv (0 a : Type) =
     (~=) : (& x : a) -> (& y : a) -> Bool
 
     equivRefl :
@@ -15395,13 +15395,13 @@ trait Equiv (a : Type) =
         (& x : a) -> (& y : a) -> (& z : a) ->
         ((x ~= y) = True -> (y ~= z) = True -> (x ~= z) = True)
 
-trait Eq (a : Type) =
+trait Eq (0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (& x : a) -> (& y : a) -> ((x == y) = True  -> x = y)
     eqComplete : (& x : a) -> (& y : a) -> (x = y -> (x == y) = True)
     eqIsSet    : IsSet a
 
-trait Eq a => Ord (a : Type) =
+trait Eq a => Ord (0 a : Type) =
     compare : (& x : a) -> (& y : a) -> Ordering
 
     compareEqSound :
@@ -15477,7 +15477,7 @@ let (>=) x y =
     case EQ -> True
     case GT -> True
 
-trait Functor (f : Type -> Type) =
+trait Functor (f : (0 A : Type) -> Type) =
     map :
         forall (a : Type) (b : Type).
         (a -> b) -> f a -> f b
@@ -15491,7 +15491,7 @@ trait Functor (f : Type -> Type) =
                (g : b -> c) (h : a -> b) (x : f a).
         map (\x -> g (h x)) x = map g (map h x)
 
-trait Functor f => Applicative (f : Type -> Type) =
+trait Functor f => Applicative (f : (0 A : Type) -> Type) =
     pure :
         forall (a : Type).
         a -> f a
@@ -15522,7 +15522,7 @@ trait Functor f => Applicative (f : Type -> Type) =
         forall (a : Type) (b : Type) (u : f (a -> b)) (y : a).
         u <*> pure y = pure (\f0 -> f0 y) <*> u
 
-trait Applicative m => Monad (m : Type -> Type) =
+trait Applicative m => Monad (m : (0 A : Type) -> Type) =
     (>>=) :
         forall (a : Type) (b : Type).
         m a -> (a -> m b) -> m b
@@ -15554,7 +15554,7 @@ A trait declaration introduces an abstract evidence record family.
 For example:
 
 ```kappa
-trait Eq (a : Type) =
+trait Eq (0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (x : a) -> (y : a) -> ((x == y) = True -> x = y)
     eqComplete : (x : a) -> (y : a) -> (x = y -> (x == y) = True)
@@ -15564,7 +15564,7 @@ trait Eq (a : Type) =
 elaborates as if it introduced an abstract evidence type:
 
 ```text
-Eq : Type -> Type
+Eq : (0 A : Type) -> Type
 ```
 
 with public eliminators for `(==)`, `eqSound`, and `eqComplete`, and with compiler-private introduction.
@@ -15700,7 +15700,7 @@ The standard trait `std.hash.Hashable` is a runtime collection-acceleration trai
 It is deliberately not a replacement for `Eq`.
 
 ```kappa
-trait Eq a => Hashable (a : Type) =
+trait Eq a => Hashable (0 a : Type) =
     hashInto :
         (& value : a) -> (1 state : std.hash.HashState) -> std.hash.HashState
 ```
@@ -15724,7 +15724,7 @@ equality-keyed APIs SHOULD require only `Eq` unless their observable contract ge
 Sugar:
 
 ```kappa
-trait Eq a = ...           -- Eq (a : Type)
+trait Eq a = ...           -- Eq (0 a : Type)
 trait Eq a => Ord a = ...
 trait Marker a b = ...     -- both default to Type
 ```
@@ -15861,7 +15861,7 @@ Associated static members:
   For example, from:
 
   ```kappa
-  trait Iterator (it : Type) =
+  trait Iterator (0 it : Type) =
       Item : Type
       next : (1 this : it) -> Option (item : Item, rest : it)
   ```
@@ -15909,7 +15909,7 @@ instance Eq a => Eq (Option a) =
         case (Option.Some x, Option.Some y) -> x == y
         case _ -> False
 
-trait Iterator (it : Type) =
+trait Iterator (0 it : Type) =
     Item : Type
     next : (1 this : it) -> Option (item : Item, rest : it)
 
@@ -16288,38 +16288,38 @@ irrelevance, or runtime erasure for arbitrary equality types or arbitrary proof-
 The portable prelude provides the following proof-classification and h-level traits:
 
 ```kappa
-trait IsEmpty (t : Type) =
+trait IsEmpty (0 t : Type) =
     absurd :
         t -> Void
 
-trait IsContr (t : Type) =
+trait IsContr (0 t : Type) =
     center : t
 
     contract :
         (x : t) ->
         center = x
 
-trait IsSubsingleton (t : Type) =
+trait IsSubsingleton (0 t : Type) =
     allEqual :
         (x : t) ->
         (y : t) ->
         x = y
 
-trait IsSubsingleton p => IsProp (p : Type)
+trait IsSubsingleton p => IsProp (0 p : Type)
 
-trait IsSet (a : Type) =
+trait IsSet (0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
 
-trait IsGroupoid (a : Type) =
+trait IsGroupoid (0 a : Type) =
     pathIsSet :
         forall (x : a) (y : a).
         IsSet (x = y)
 
-intrinsic trait IsNType (level : Nat) (a : Type)
+intrinsic trait IsNType (level : Nat) (0 a : Type)
 
-intrinsic trait RuntimeErased (t : Type)
+intrinsic trait RuntimeErased (0 t : Type)
 ```
 
 Meanings:
@@ -16374,7 +16374,7 @@ its subexpressions impose no runtime demand even when their binders are not expl
 The prelude also provides the intrinsic trait:
 
 ```kappa
-intrinsic trait IsSubsingleton t => IsTrait (t : Type)
+intrinsic trait IsSubsingleton t => IsTrait (0 t : Type)
 ```
 
 `IsTrait t` is compiler-issued evidence that `t` is a trait evidence type. User source MUST NOT define `IsTrait`
@@ -18286,7 +18286,7 @@ Lambda syntax uses backslash and `->`, optionally preceded by a label:
 \ x (y : Int) z -> x + y + z
 \ (x : Int) -> x
 \ (x : Int) (y : Int) -> x + y
-\ (@t : Type) (x : t) -> x
+\ (@0 t : Type) (x : t) -> x
 \ (@0 t : Type) (x : t) -> x
 \ (1 x : Res) -> consume x
 \() -> True
@@ -18539,7 +18539,7 @@ Control-flow boundary:
 Implicit binders:
 
 ```kappa
-\ (@t : Type) (x : t) -> x
+\ (@0 t : Type) (x : t) -> x
 ```
 
 * `@` marks an implicit parameter.
@@ -20023,7 +20023,7 @@ Linearity restriction:
 To support zero-copy parsing and other state-machine-style matching on owned resources, Kappa uses the prelude type:
 
 ```kappa
-data Match (a : Type) (r : Type) : Type =
+data Match (0 a : Type) (0 r : Type) : Type =
     Hit a
     Miss r
 ```
@@ -20219,8 +20219,8 @@ semantics. It is not a claim that the full runtime footprint of `IO`, fibers, ST
 Kappa provides a standard runtime computation type:
 
 ```kappa
-IO : Type -> Type -> Type
-type UIO (a : Type) = IO Void a
+IO : (0 A : Type) -> (0 B : Type) -> Type
+type UIO (0 a : Type) = IO Void a
 ```
 
 `IO e a` classifies a runtime computation that may:
@@ -20255,11 +20255,11 @@ behavior redefine Kappa interruption, finalization, fiber lifetime, or failure c
 The runtime outcome of an `IO` computation is described by:
 
 ```kappa
-data Exit (e : Type) (a : Type) : Type =
+data Exit (0 e : Type) (0 a : Type) : Type =
     Success a
     Failure (Cause e)
 
-data Cause (e : Type) : Type =
+data Cause (0 e : Type) : Type =
     Fail e
     Interrupt InterruptCause
     Defect DefectInfo
@@ -20807,8 +20807,8 @@ mechanism is part of portable source semantics.
 Kappa provides software transactional memory:
 
 ```kappa
-STM  : Type -> Type
-TVar : Type -> Type
+STM  : (0 A : Type) -> Type
+TVar : (0 A : Type) -> Type
 ```
 
 with the standard operations:
@@ -20871,7 +20871,7 @@ Semantics:
 Kappa provides a standard algebraic-effect computation type:
 
 ```kappa
-Eff : EffRow -> Type -> Type
+Eff : EffRow -> (0 A : Type) -> Type
 ```
 
 Effect rows describe only handleable algebraic effects. Ordinary implicit values are not effect-row entries.
@@ -20925,7 +20925,7 @@ with a resumption quantity, which dictates how the corresponding handler continu
 Example:
 
 ```kappa
-[public|private] effect State (s : Type) =
+[public|private] effect State (0 s : Type) =
     1 get : Unit -> s
     1 put : s -> Unit
 
@@ -21263,7 +21263,7 @@ Typing:
 Suppose `expr : Eff r_all a` and `SplitEff r_all label E r` is solvable. Equivalently, up to row normalization, `expr`
 has type `Eff <[label : E | r]> a`.
 
-Suppose every clause body in the handler is checked in the same target carrier `m : Type -> Type`.
+Suppose every clause body in the handler is checked in the same target carrier `m : (0 A : Type) -> Type`.
 
 Suppose the effect interface `E` declares an operation `q op` whose signature (after elaborating any outer `forall`s)
 is:
@@ -21384,7 +21384,7 @@ Typing:
 
 Suppose `expr : Eff r_all a` and `SplitEff r_all label E r` is solvable.
 
-Suppose every clause body in the handler is checked in the same target carrier `m : Type -> Type`.
+Suppose every clause body in the handler is checked in the same target carrier `m : (0 A : Type) -> Type`.
 
 Suppose the effect interface `E` declares an operation `q op` whose signature (after elaborating any outer `forall`s)
 is:
@@ -21565,7 +21565,7 @@ or portable conformance tests.
 Kappa provides a trait for monads that support reliable finalization:
 
 ```kappa
-trait MonadFinally (m : Type -> Type) =
+trait MonadFinally (m : (0 A : Type) -> Type) =
     finally : forall a. m a -> m Unit -> m a
 ```
 
@@ -21810,7 +21810,7 @@ Valid do-items inside `do`:
     It requires an implicit instance:
 
     ```kappa
-    trait Releasable (m : Type -> Type) (a : Type) =
+    trait Releasable (m : (0 A : Type) -> Type) (0 a : Type) =
         release : (1 resource : a) -> m Unit
     ```
 
@@ -22622,7 +22622,7 @@ Rejected: `continue` exits the scope of `x` without demanding it.
   or loop `else` is involved, the portable semantics are given by the standard prelude `Iterator` protocol:
 
   ```kappa
-  trait Iterator (it : Type) =
+  trait Iterator (0 it : Type) =
       Item : Type
       next : (1 this : it) -> Option (item : Item, rest : it)
   ```
@@ -22648,8 +22648,8 @@ Rejected: `continue` exits the scope of `x` without demanding it.
 A `var` declaration inside a `do` block of monad `m` requires an implicit instance:
 
 ```kappa
-trait MonadRef (m : Type -> Type) =
-    Ref : Type -> Type
+trait MonadRef (m : (0 A : Type) -> Type) =
+    Ref : (0 A : Type) -> Type
     newRef   : a -> m (Ref a)
     readRef  : Ref a -> m a
     writeRef : Ref a -> a -> m Unit
@@ -23207,10 +23207,10 @@ choose different names provided it offers the same type-level escape-prevention 
 
 ```kappa
 -- A monad parameterized by a ghost region type `s`
-expect data ST (s : Type) (a : Type) : Type
+expect data ST (0 s : Type) (0 a : Type) : Type
 
 -- The reference type is also tied to the region `s`
-expect data STRef (s : Type) (a : Type) : Type
+expect data STRef (0 s : Type) (0 a : Type) : Type
 
 -- ST forms a MonadRef
 instance MonadRef (ST s) =
@@ -23784,7 +23784,7 @@ Implementations MUST NOT require stronger iteration capabilities than necessary:
   to) the standard `Iterator` protocol:
 
   ```kappa
-  trait Iterator (it : Type) =
+  trait Iterator (0 it : Type) =
       Item : Type
       next : (1 this : it) -> Option (item : Item, rest : it)
   ```
@@ -24162,7 +24162,7 @@ step ~weights ~bias
 Error-aware monads are described via a trait like:
 
 ```kappa
-trait MonadFinally m => MonadError (m : Type -> Type) =
+trait MonadFinally m => MonadError (m : (0 A : Type) -> Type) =
     Error : Type
     throwError : Error -> m a
     catchError : m a -> (Error -> m a) -> m a
@@ -24322,7 +24322,7 @@ Therefore:
 
 ```kappa
 raise :
-    forall (m : Type -> Type) (a : Type).
+    forall (m : (0 A : Type) -> Type) (a : Type).
     (@_ : MonadError m) ->
     MonadError.Error m ->
     m a
@@ -24343,7 +24343,7 @@ refines `MonadFinally` with a scoped-allocation combinator that guarantees relea
 ordinary `do`-scope unwinding behavior of §18.8.
 
 ```kappa
-trait MonadFinally m => MonadResource (m : Type -> Type) =
+trait MonadFinally m => MonadResource (m : (0 A : Type) -> Type) =
     bracket :
         forall (a : Type) (b : Type).
         (1 acquire : m a) ->
@@ -24415,7 +24415,7 @@ Empty `{}` denotes an empty map; empty set uses `{| |}`.
 They are defined by the prelude trait:
 
 ```kappa
-trait Rangeable (v : Type) =
+trait Rangeable (0 v : Type) =
     Range : Type
 
     range :
@@ -25310,7 +25310,7 @@ A carrier prefix may elaborate in one of two standardized forms:
 
 2. Unary sink head:
 
-   If the prefix elaborates to a type constructor `F : Type -> Type`, then the candidate result type is `F item`.
+   If the prefix elaborates to a type constructor `F : (0 A : Type) -> Type`, then the candidate result type is `F item`.
 
 No other automatic prefix application is standardized in v1.
 
@@ -26162,7 +26162,7 @@ message should identify the user-written clause and binding that caused the viol
 Kappa provides a built-in type family for inspectable, hygienic syntax values:
 
 ```kappa
-Syntax : Type -> Type
+Syntax : (0 A : Type) -> Type
 ```
 
 `Syntax t` is a compile-time-only type. A value of type `Syntax t` represents object-language syntax whose expected
@@ -26495,7 +26495,7 @@ Built-in elaboration-time reflection types:
 
 ```kappa
 CoreCtx : Type
-Core    : CoreCtx -> Type -> Type
+Core    : CoreCtx -> (0 A : Type) -> Type
 CoreEq  :
     forall (@0 Γ : CoreCtx) (@0 a : Type) (@0 b : Type).
     Core Γ a -> Core Γ b -> Type
@@ -26975,7 +26975,7 @@ A macro or splice that violates them is a compile-time error.
 Kappa provides a built-in elaboration-time computation type for context-sensitive macros and DSL elaborators:
 
 ```kappa
-Elab : Type -> Type
+Elab : (0 A : Type) -> Type
 ```
 
 `Elab a` is compile-time only.
@@ -27331,7 +27331,7 @@ data ShapeConstructor : Type =
         (tag : Nat)
         (fields : List ShapeField)
 
-data AdtShape (a : Type) : Type =
+data AdtShape (0 a : Type) : Type =
     AdtShape
         (symbol : Symbol)
         (sourceName : String)
@@ -27342,7 +27342,7 @@ data AdtShape (a : Type) : Type =
         (parameters : List ShapeParameter)
         (constructors : List ShapeConstructor)
 
-data RecordShape (a : Type) : Type =
+data RecordShape (0 a : Type) : Type =
     RecordShape
         (origin : SyntaxOrigin)
         (fields : List ShapeField)
@@ -27369,7 +27369,7 @@ data FieldArgument : Type =
     OmittedImplicitFieldArgument
         (field : ShapeField)
 
-data FieldConstraint (tc : Type -> Type) : Type =
+data FieldConstraint (tc : (0 A : Type) -> Type) : Type =
     FieldConstraint
         (field : ShapeField)
         (@0 fieldType : Type)
@@ -27404,17 +27404,17 @@ expect term runtimeRecordFields :
     RecordShape a -> List ShapeField
 
 expect term requiredRuntimeFieldConstraints :
-    forall (tc : Type -> Type) (@0 a : Type).
+    forall (tc : (0 A : Type) -> Type) (@0 a : Type).
     (@_ : forall (x : Type). IsTrait (tc x)) ->
     AdtShape a -> Elab (List (FieldConstraint tc))
 
 expect term requireRuntimeFieldInstances :
-    forall (tc : Type -> Type) (@0 a : Type).
+    forall (tc : (0 A : Type) -> Type) (@0 a : Type).
     (@_ : forall (x : Type). IsTrait (tc x)) ->
     AdtShape a -> Elab Unit
 
 expect term requireRecordFieldInstances :
-    forall (tc : Type -> Type) (@0 a : Type).
+    forall (tc : (0 A : Type) -> Type) (@0 a : Type).
     (@_ : forall (x : Type). IsTrait (tc x)) ->
     RecordShape a -> Elab Unit
 
@@ -27689,8 +27689,8 @@ Kappa provides separate built-in types for generative staged code:
 `Code`, `ClosedCode`, `Lift`, `liftCode`, `closeCode`, `genlet`, and `runCode` are exported by `std.prelude`.
 
 ```kappa
-Code       : Type -> Type
-ClosedCode : Type -> Type
+Code       : (0 A : Type) -> Type
+ClosedCode : (0 A : Type) -> Type
 ```
 
 `Code t` is typed staged code. It is generative and is not inspectable as ordinary syntax. Use `Syntax t` for
@@ -27721,7 +27721,7 @@ requires `c : Code t` and splices the staged subterm into the surrounding `Code`
 Cross-stage persistence is lift-based:
 
 ```kappa
-trait Lift (a : Type) =
+trait Lift (0 a : Type) =
     liftCode : a -> Code a
 ```
 
@@ -27862,7 +27862,7 @@ Rules:
 * A conforming implementation MUST behave as if a dynamic value stores both a runtime representation and a payload:
 
   ```text
-  Dyn  ≃  exists (a : Type). (rep : DynRep a, value : a)
+  Dyn  ≃  exists (0 a : Type). (rep : DynRep a, value : a)
   ```
 
 * `toDynWith rep x` constructs such a package.
@@ -28078,7 +28078,7 @@ expect data Dyn : Type
 expect data DynRep (@0 a : Type) : Type
 expect data CastBlame : Type
 
-trait DynamicType (a : Type) =
+trait DynamicType (0 a : Type) =
     dynRep : DynRep a
 
 expect term toDynWith :
@@ -28184,7 +28184,7 @@ expect data BridgePackage (@0 surface : Region -> Type) : Type
 trait BridgeBindable (surface : Region -> Type) =
     bridgeContract : BridgeContract surface
 
-trait BridgeHandle (h : Type) =
+trait BridgeHandle (0 h : Type) =
     Error : Type
 
     bridgeOrigin :
@@ -31176,10 +31176,10 @@ expect data Bytes : Type
 expect data UnicodeScalar : Type
 expect data Grapheme : Type
 expect data String : Type
-expect data Array (a : Type) : Type
-expect data SizedArray (n : Nat) (a : Type) : Type
-expect data Set (a : Type) : Type
-expect data Map (k : Type) (v : Type) : Type
+expect data Array (0 a : Type) : Type
+expect data SizedArray (n : Nat) (0 a : Type) : Type
+expect data Set (0 a : Type) : Type
+expect data Map (0 k : Type) (0 v : Type) : Type
 ```
 
 Rules:
@@ -31229,7 +31229,7 @@ performance and implementation-defined profiling/debug APIs.
 
 ```kappa
 
-data List (a : Type) : Type =
+data List (0 a : Type) : Type =
     Nil
     (::) (head : a) (tail : List a)
 
@@ -31344,14 +31344,14 @@ Collection basics are specified through `Eq`, not `Hashable`.
 * No operation in this subsection requires `std.hash.Hashable`.
 * Implementations MAY use hashing internally only under the `std.hash` as-if rules.
 
-data Res (a : Type) (r : Type) : Type =
+data Res (0 a : Type) (0 r : Type) : Type =
     (:&) (value : a) (1 resource : r)
 
-data Match (a : Type) (r : Type) : Type =
+data Match (0 a : Type) (0 r : Type) : Type =
     Hit a
     Miss r
 
-data Dec (p : Type) : Type =
+data Dec (0 p : Type) : Type =
     Yes p
     No (p -> Void)
 
@@ -31368,65 +31368,65 @@ EffRow   : Type0
 Label    : Type0
 EffLabel : Type0
 
-trait IsEmpty (t : Type) =
+trait IsEmpty (0 t : Type) =
     absurd :
         t -> Void
 
-trait IsContr (t : Type) =
+trait IsContr (0 t : Type) =
     center : t
 
     contract :
         (x : t) ->
         center = x
 
-trait IsSubsingleton (t : Type) =
+trait IsSubsingleton (0 t : Type) =
     allEqual :
         (x : t) ->
         (y : t) ->
         x = y
 
-trait IsSubsingleton p => IsProp (p : Type)
+trait IsSubsingleton p => IsProp (0 p : Type)
 
-trait IsSet (a : Type) =
+trait IsSet (0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
 
-trait IsGroupoid (a : Type) =
+trait IsGroupoid (0 a : Type) =
     pathIsSet :
         forall (x : a) (y : a).
         IsSet (x = y)
 
-intrinsic trait IsNType (level : Nat) (a : Type)
+intrinsic trait IsNType (level : Nat) (0 a : Type)
 
-intrinsic trait RuntimeErased (t : Type)
+intrinsic trait RuntimeErased (0 t : Type)
 
-intrinsic trait IsSubsingleton t => IsTrait (t : Type)
+intrinsic trait IsSubsingleton t => IsTrait (0 t : Type)
 
 intrinsic trait QuantitySatisfies
     (capability : Quantity)
     (demand : Quantity)
 
-intrinsic trait ContainsRec (r : RecRow) (l : Label) (a : Type)
+intrinsic trait ContainsRec (r : RecRow) (l : Label) (0 a : Type)
 intrinsic trait LacksRec    (r : RecRow) (l : Label)
 intrinsic trait StableUnderRecChange (r : RecRow) (l : Label)
 intrinsic trait RecTailSatisfies     (r : RecRow) (q : Quantity)
 
-intrinsic trait ContainsVar (r : VarRow) (a : Type)
-intrinsic trait LacksVar    (r : VarRow) (a : Type)
+intrinsic trait ContainsVar (r : VarRow) (0 a : Type)
+intrinsic trait LacksVar    (r : VarRow) (0 a : Type)
 
-intrinsic trait ContainsEff (r : EffRow) (l : EffLabel) (e : Type)
+intrinsic trait ContainsEff (r : EffRow) (l : EffLabel) (0 e : Type)
 intrinsic trait LacksEff    (r : EffRow) (l : EffLabel)
-intrinsic trait SplitEff    (r : EffRow) (l : EffLabel) (e : Type) (rest : EffRow)
+intrinsic trait SplitEff    (r : EffRow) (l : EffLabel) (0 e : Type) (rest : EffRow)
 
 Variant : VarRow -> Type
 
-expect data Eff (r : EffRow) (a : Type) : Type
+expect data Eff (r : EffRow) (0 a : Type) : Type
 
-Code       : Type -> Type
-ClosedCode : Type -> Type
+Code       : (0 A : Type) -> Type
+ClosedCode : (0 A : Type) -> Type
 
-trait Lift (a : Type) =
+trait Lift (0 a : Type) =
     liftCode :
         a -> Code a
 
@@ -31465,7 +31465,7 @@ Acc :
     forall (a : Type).
     (a -> a -> Type) -> a -> Type
 
-trait WellFoundedRelation (a : Type) =
+trait WellFoundedRelation (0 a : Type) =
     rel : a -> a -> Type
     wf  : WellFounded a rel
 
@@ -31490,20 +31490,20 @@ Proof-directed termination clauses in §15.11 use erased source proofs of relati
 values of the selected relation type, checked at ambient demand `0`; there is no runtime representation requirement for
 termination proof arguments.
 
-expect data IO (e : Type) (a : Type) : Type
-type UIO (a : Type) = IO Void a
+expect data IO (0 e : Type) (0 a : Type) : Type
+type UIO (0 a : Type) = IO Void a
 
-trait MonadFinally (m : Type -> Type) =
+trait MonadFinally (m : (0 A : Type) -> Type) =
     finally :
         forall (a : Type).
         m a -> m Unit -> m a
 
-trait MonadFinally m => MonadError (m : Type -> Type) =
+trait MonadFinally m => MonadError (m : (0 A : Type) -> Type) =
     Error : Type
     throwError : Error -> m a
     catchError : m a -> (Error -> m a) -> m a
 
-trait MonadFinally m => MonadResource (m : Type -> Type) =
+trait MonadFinally m => MonadResource (m : (0 A : Type) -> Type) =
     bracket :
         forall (a : Type) (b : Type).
         (1 acquire : m a) ->
@@ -31511,13 +31511,13 @@ trait MonadFinally m => MonadResource (m : Type -> Type) =
         (1 use : (& r : a) -> m b) ->
         m b
 
-trait MonadRef (m : Type -> Type) =
-    Ref : Type -> Type
+trait MonadRef (m : (0 A : Type) -> Type) =
+    Ref : (0 A : Type) -> Type
     newRef   : a -> m (Ref a)
     readRef  : Ref a -> m a
     writeRef : Ref a -> a -> m Unit
 
-trait Releasable (m : Type -> Type) (a : Type) =
+trait Releasable (m : (0 A : Type) -> Type) (0 a : Type) =
     release :
         (1 resource : a) -> m Unit
 
@@ -31529,15 +31529,15 @@ instance Functor (Eff r)
 instance Applicative (Eff r)
 instance Monad (Eff r)
 
-expect data Fiber (e : Type) (a : Type) : Type
+expect data Fiber (0 e : Type) (0 a : Type) : Type
 expect data FiberId : Type
 expect data Scope : Type
-expect data Monitor (e : Type) (a : Type) : Type
-expect data FiberRef (a : Type) : Type
-expect data Promise (e : Type) (a : Type) : Type
+expect data Monitor (0 e : Type) (0 a : Type) : Type
+expect data FiberRef (0 a : Type) : Type
+expect data Promise (0 e : Type) (0 a : Type) : Type
 
-expect data STM (a : Type) : Type
-expect data TVar (a : Type) : Type
+expect data STM (0 a : Type) : Type
+expect data TVar (0 a : Type) : Type
 expect data Duration : Type
 expect data Instant : Type
 
@@ -31596,11 +31596,11 @@ data DefectTag : Type =
 data DefectInfo : Type =
     DefectInfo (tag : DefectTag) (message : Option String)
 
-data Exit (e : Type) (a : Type) : Type =
+data Exit (0 e : Type) (0 a : Type) : Type =
     Success a
     Failure (Cause e)
 
-data Cause (e : Type) : Type =
+data Cause (0 e : Type) : Type =
     Fail e
     Interrupt InterruptCause
     Defect DefectInfo
@@ -31610,7 +31610,7 @@ data Cause (e : Type) : Type =
 data TimeoutError : Type =
     Timeout
 
-data RaceResult (a : Type) (b : Type) : Type =
+data RaceResult (0 a : Type) (0 b : Type) : Type =
     LeftWins a
     RightWins b
 
@@ -31656,7 +31656,7 @@ let summon (@0 t : Type) (@_ : IsTrait t) (@evidence : t) =
     evidence
 
 raise :
-    forall (m : Type -> Type) (a : Type).
+    forall (m : (0 A : Type) -> Type) (a : Type).
     (@_ : MonadError m) ->
     MonadError.Error m ->
     m a
@@ -31771,7 +31771,7 @@ expect term race :
     forall (e : Type) (a : Type) (f : Type) (b : Type).
     IO e a -> IO f b -> IO (| e | f |) (RaceResult a b)
 
-trait Show (a : Type) =
+trait Show (0 a : Type) =
     show : (& value : a) -> String
 
 expect term printString :
@@ -31798,7 +31798,7 @@ println :
 let println value =
     printlnString (show value)
 
-trait Monoid (m : Type) =
+trait Monoid (0 m : Type) =
     empty : m
     append : m -> m -> m
 
@@ -31821,7 +31821,7 @@ trait Monoid (m : Type) =
 
 let (++) x y = append x y
 
-trait Foldable (t : Type -> Type) =
+trait Foldable (t : (0 A : Type) -> Type) =
     foldr :
         forall (a : Type) (b : Type).
         (a -> b -> b) -> b -> t a -> b
@@ -31835,36 +31835,36 @@ trait Foldable (t : Type -> Type) =
         (@_ : Monoid m) ->
         (a -> m) -> t a -> m
 
-trait (Functor t, Foldable t) => Traversable (t : Type -> Type) =
+trait (Functor t, Foldable t) => Traversable (t : (0 A : Type) -> Type) =
     traverse :
-        forall (f : Type -> Type) (a : Type) (b : Type).
+        forall (f : (0 A : Type) -> Type) (a : Type) (b : Type).
         (@_ : Applicative f) ->
         (a -> f b) -> t a -> f (t b)
 
-trait Filterable (t : Type -> Type) =
+trait Filterable (t : (0 A : Type) -> Type) =
     filter :
         forall (a : Type).
         (a -> Bool) -> t a -> t a
 
-trait FilterMap (t : Type -> Type) =
+trait FilterMap (t : (0 A : Type) -> Type) =
     filterMap :
         forall (a : Type) (b : Type).
         (a -> Option b) -> t a -> t b
 
 expect term for_ :
-    forall (t : Type -> Type) (m : Type -> Type) (a : Type).
+    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
     (@_ : Foldable t) ->
     (@_ : Applicative m) ->
     t a -> (a -> m Unit) -> m Unit
 
 expect term sequence :
-    forall (t : Type -> Type) (m : Type -> Type) (a : Type).
+    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
     (@_ : Traversable t) ->
     (@_ : Applicative m) ->
     t (m a) -> m (t a)
 
 expect term sequence_ :
-    forall (t : Type -> Type) (m : Type -> Type) (a : Type).
+    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
     (@_ : Foldable t) ->
     (@_ : Applicative m) ->
     t (m a) -> m Unit
@@ -31876,33 +31876,33 @@ The portable prelude MUST provide coherent instances of `Foldable`, `Traversable
 defined by Chapter 20. A `Foldable Set` or `Foldable Map` instance must obey the Ordered/Unordered rules of §20.3.2 and
 must not expose hash-bucket order as portable behavior.
 
-trait Alternative (f : Type -> Type) =
+trait Alternative (f : (0 A : Type) -> Type) =
     empty : f a
     (<|>) : f a -> f a -> f a
 
     let orElse : f a -> f a -> f a =
         (<|>)
 
-trait Iterator (it : Type) =
+trait Iterator (0 it : Type) =
     Item : Type
     next : (1 this : it) -> Option (item : Item, rest : it)
 
-Syntax : Type -> Type
+Syntax : (0 A : Type) -> Type
 SyntaxOrigin : Type
 
 data SyntaxFragment : Type =
     Lit       (s : String)
-    Interp    (@t : Type) (e : Syntax t)
-    InterpFmt (@t : Type) (e : Syntax t) (fmt : String)
+    Interp    (@0 t : Type) (e : Syntax t)
+    InterpFmt (@0 t : Type) (e : Syntax t) (fmt : String)
 
-Elab : Type -> Type
+Elab : (0 A : Type) -> Type
 
 type ElabGoal : Type =
     (ctx : CoreCtx,
      expected : Option (Core this.ctx Type))
 
 CoreCtx : Type
-Core    : CoreCtx -> Type -> Type
+Core    : CoreCtx -> (0 A : Type) -> Type
 
 CoreEq  :
     forall (@0 Γ : CoreCtx) (@0 a : Type) (@0 b : Type).
@@ -31927,27 +31927,27 @@ data QueryMode : Type =
 expect data QueryCore
     (@0 mode : QueryMode)
     (@0 itemQuantity : Quantity)
-    (item : Type) : Type
+    (0 item : Type) : Type
 
-type Query (a : Type) =
+type Query (0 a : Type) =
     QueryCore (QueryMode Reusable QZeroOrMore) ω a
 
-type OnceQuery (a : Type) =
+type OnceQuery (0 a : Type) =
     QueryCore (QueryMode OneShot QZeroOrMore) ω a
 
-type OptionalQuery (a : Type) =
+type OptionalQuery (0 a : Type) =
     QueryCore (QueryMode Reusable QZeroOrOne) ω a
 
-type NonEmptyQuery (a : Type) =
+type NonEmptyQuery (0 a : Type) =
     QueryCore (QueryMode Reusable QOneOrMore) ω a
 
-type SingletonQuery (a : Type) =
+type SingletonQuery (0 a : Type) =
     QueryCore (QueryMode Reusable QOne) ω a
 
-RawComprehension : Type -> Type
-ComprehensionPlan : Type -> Type
+RawComprehension : (0 A : Type) -> Type
+ComprehensionPlan : (0 A : Type) -> Type
 
-trait InterpolatedMacro (t : Type) =
+trait InterpolatedMacro (0 t : Type) =
     buildInterpolated :
         List SyntaxFragment -> Elab (Syntax t)
 
@@ -31957,15 +31957,15 @@ data QuotedLiteral : Type =
         (text       : Option String)
         (bytes      : Option Bytes)
 
-trait QuotedLiteralMacro (t : Type) =
+trait QuotedLiteralMacro (0 t : Type) =
     buildQuotedLiteral :
         QuotedLiteral -> Elab (Syntax t)
 
-trait FromString (t : Type) =
+trait FromString (0 t : Type) =
     fromString :
         String -> t
 
-trait IntoQuery (src : Type) =
+trait IntoQuery (0 src : Type) =
     Mode : QueryMode
     ItemQuantity : Quantity
     Item : Type
@@ -31975,7 +31975,7 @@ trait IntoQuery (src : Type) =
         (SourceDemand source : src) ->
         QueryCore Mode ItemQuantity Item
 
-trait BorrowSourceIntoQuery (src : Type) =
+trait BorrowSourceIntoQuery (0 src : Type) =
     Mode : QueryMode
     ItemQuantity : Quantity
     Item : Type
@@ -31985,7 +31985,7 @@ trait BorrowSourceIntoQuery (src : Type) =
         (&[ρ] source : src) ->
         QueryCore Mode ItemQuantity Item captures (ρ)
 
-trait BorrowItemsIntoQuery (src : Type) =
+trait BorrowItemsIntoQuery (0 src : Type) =
     Card : QueryCard
     Item : Type
 
@@ -31994,12 +31994,12 @@ trait BorrowItemsIntoQuery (src : Type) =
         (&[ρ] source : src) ->
         QueryCore (QueryMode Reusable Card) ω (BorrowView ρ Item) captures (ρ)
 
-trait FromComprehensionPlan (c : Type) =
+trait FromComprehensionPlan (0 c : Type) =
     Item : Type
     fromComprehensionPlan :
         ComprehensionPlan Item -> Elab (Syntax c)
 
-trait FromComprehensionRaw (c : Type) =
+trait FromComprehensionRaw (0 c : Type) =
     Item : Type
     fromComprehensionRaw :
         RawComprehension Item -> Elab (Syntax c)
@@ -32092,8 +32092,8 @@ that site.
 Primitive suspension types:
 
 ```kappa
-Thunk : Type -> Type
-Need  : Type -> Type
+Thunk : (0 A : Type) -> Type
+Need  : (0 A : Type) -> Type
 ```
 
 `Thunk a` is a non-memoized suspension of a computation producing `a`.
@@ -32102,7 +32102,7 @@ Need  : Type -> Type
 The prelude additionally provides:
 
 ```kappa
-trait Shareable (a : Type)
+trait Shareable (0 a : Type)
 ```
 
 `Shareable a` classifies values that may be safely cached and reused by `Need`.
@@ -32322,13 +32322,13 @@ standard types such as `Float` and `Double` support useful arithmetic operations
 semiring, ring, or field laws under the portable raw-bit `Eq` semantics of §6.1.3.
 
 ```kappa
-trait Zero (a : Type) =
+trait Zero (0 a : Type) =
     zero : a
 
-trait One (a : Type) =
+trait One (0 a : Type) =
     one : a
 
-trait Add (a : Type) =
+trait Add (0 a : Type) =
     add : a -> a -> a
 
 (+) :
@@ -32338,7 +32338,7 @@ trait Add (a : Type) =
 
 let (+) x y = add x y
 
-trait Mul (a : Type) =
+trait Mul (0 a : Type) =
     multiply : a -> a -> a
 
 (*) :
@@ -32348,10 +32348,10 @@ trait Mul (a : Type) =
 
 let (*) x y = multiply x y
 
-trait Negatable (a : Type) =
+trait Negatable (0 a : Type) =
     negate : a -> a
 
-trait CheckedSub (a : Type) =
+trait CheckedSub (0 a : Type) =
     subDefined : (& x : a) -> (& y : a) -> Bool
 
     subtract :
@@ -32371,7 +32371,7 @@ trait CheckedSub (a : Type) =
 let (-) x y (@p : subDefined x y = True) =
     subtract x y @p
 
-trait (Eq a, Zero a) => CheckedDiv (a : Type) =
+trait (Eq a, Zero a) => CheckedDiv (0 a : Type) =
     divDefined : (& x : a) -> (& y : a) -> Bool
 
     divide :
@@ -32399,7 +32399,7 @@ trait (Eq a, Zero a) => CheckedDiv (a : Type) =
 let (/) x y (@p : divDefined x y = True) =
     divide x y @p
 
-trait (Eq a, Zero a) => CheckedMod (a : Type) =
+trait (Eq a, Zero a) => CheckedMod (0 a : Type) =
     modDefined : (& x : a) -> (& y : a) -> Bool
 
     modulo :
@@ -32462,7 +32462,7 @@ determined by the general `RuntimeErased` and ambient-demand rules of §§11.1.4
 promise that they are "proofs".
 
 ```kappa
-trait (Eq a, Zero a, Add a) => AdditiveMonoid (a : Type) =
+trait (Eq a, Zero a, Add a) => AdditiveMonoid (0 a : Type) =
     addAssoc :
         forall (x : a) (y : a) (z : a).
         add (add x y) z = add x (add y z)
@@ -32475,7 +32475,7 @@ trait (Eq a, Zero a, Add a) => AdditiveMonoid (a : Type) =
         forall (x : a).
         add x zero = x
 
-trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (a : Type) =
+trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (0 a : Type) =
     addLeftInverse :
         forall (x : a).
         add (negate x) x = zero
@@ -32484,7 +32484,7 @@ trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (a : Type) =
         forall (x : a).
         add x (negate x) = zero
 
-trait (Eq a, One a, Mul a) => MultiplicativeMonoid (a : Type) =
+trait (Eq a, One a, Mul a) => MultiplicativeMonoid (0 a : Type) =
     mulAssoc :
         forall (x : a) (y : a) (z : a).
         multiply (multiply x y) z = multiply x (multiply y z)
@@ -32497,7 +32497,7 @@ trait (Eq a, One a, Mul a) => MultiplicativeMonoid (a : Type) =
         forall (x : a).
         multiply x one = x
 
-trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (a : Type) =
+trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (0 a : Type) =
     mulLeftZero :
         forall (x : a).
         multiply zero x = zero
@@ -32514,7 +32514,7 @@ trait (AdditiveMonoid a, MultiplicativeMonoid a) => Semiring (a : Type) =
         forall (x : a) (y : a) (z : a).
         multiply (add x y) z = add (multiply x z) (multiply y z)
 
-trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (a : Type) =
+trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (0 a : Type) =
     subDefinedAlways :
         forall (x : a) (y : a).
         subDefined x y = True
@@ -32523,7 +32523,7 @@ trait (Semiring a, AdditiveGroup a, CheckedSub a) => Ring (a : Type) =
         forall (x : a) (y : a) (@p : subDefined x y = True).
         subtract x y @p = add x (negate y)
 
-trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (a : Type) =
+trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (0 a : Type) =
     divAndModSameDomain :
         forall (x : a) (y : a).
         divDefined x y = modDefined x y
@@ -32534,12 +32534,12 @@ trait (Semiring a, Ord a, CheckedDiv a, CheckedMod a) => EuclideanSemiring (a : 
                (@pm : modDefined x y = True).
         add (multiply (divide x y @pd) y) (modulo x y @pm) = x
 
-trait (Ring a, CheckedDiv a) => FieldLike (a : Type) =
+trait (Ring a, CheckedDiv a) => FieldLike (0 a : Type) =
     divisionRightInverse :
         forall (x : a) (y : a) (@p : divDefined x y = True).
         multiply (divide x y @p) y = x
 
-trait (Ord a, AdditiveMonoid a) => OrderedAdditive (a : Type) =
+trait (Ord a, AdditiveMonoid a) => OrderedAdditive (0 a : Type) =
     addMonotoneLeft :
         forall (x : a) (y : a) (z : a).
         (x <= y) = True -> (add z x <= add z y) = True
@@ -32548,7 +32548,7 @@ trait (Ord a, AdditiveMonoid a) => OrderedAdditive (a : Type) =
         forall (x : a) (y : a) (z : a).
         (x <= y) = True -> (add x z <= add y z) = True
 
-trait (OrderedAdditive a, Semiring a) => OrderedSemiring (a : Type) =
+trait (OrderedAdditive a, Semiring a) => OrderedSemiring (0 a : Type) =
     mulNonnegativeMonotone :
         forall (x : a) (y : a) (z : a).
         (zero <= z) = True ->
@@ -32766,7 +32766,7 @@ atomicFetchXor
 Canonical declarations:
 
 ```kappa
-expect data AtomicRef (a : Type) : Type
+expect data AtomicRef (0 a : Type) : Type
 
 data LoadOrder : Type =
     LoadRelaxed
@@ -32790,13 +32790,13 @@ data CasFailureOrder : Type =
     CasFailAcquire
     CasFailSeqCst
 
-data CompareExchangeResult (a : Type) : Type =
+data CompareExchangeResult (0 a : Type) : Type =
     Exchanged (old : a)
     NotExchanged (current : a)
 
-trait AtomicValue (a : Type)
+trait AtomicValue (0 a : Type)
 
-trait AtomicValue a => AtomicInteger (a : Type)
+trait AtomicValue a => AtomicInteger (0 a : Type)
 
 expect term newAtomicRef :
     forall (a : Type).
@@ -32932,7 +32932,7 @@ awaitSupervisor
 Canonical declarations:
 
 ```kappa
-expect data Supervisor (e : Type) : Type
+expect data Supervisor (0 e : Type) : Type
 
 data SupervisorStrategy : Type =
     OneForOne
@@ -32947,7 +32947,7 @@ data RestartPolicy : Type =
 data RestartIntensity : Type =
     RestartIntensity (maxRestarts : Nat) (within : Duration)
 
-data ChildSpec (e : Type) : Type =
+data ChildSpec (0 e : Type) : Type =
     ChildSpec
         (label : String)
         (restart : RestartPolicy)
@@ -33144,7 +33144,7 @@ expect term hashDoubleRaw :
 expect term hashNatTag :
     Nat -> (1 state : HashState) -> HashState
 
-trait Eq a => Hashable (a : Type) =
+trait Eq a => Hashable (0 a : Type) =
     hashInto :
         (& value : a) -> (1 state : HashState) -> HashState
 
@@ -34003,7 +34003,7 @@ It may be made available by a config loader's schema scope.
 The portable minimum includes:
 
 ```kappa
-ConfigInputKey : Type -> Type
+ConfigInputKey : (0 A : Type) -> Type
 
 expect term input :
     forall (a : Type).
@@ -34013,9 +34013,9 @@ ConfigPath : Type
 ConfigConflict : Type
 ConfigConflictSide : Type
 
-trait ConfigUnify (a : Type)
-trait ConfigOverride (a : Type)
-trait ConfigMerge (a : Type)
+trait ConfigUnify (0 a : Type)
+trait ConfigOverride (0 a : Type)
+trait ConfigMerge (0 a : Type)
 
 expect term tryUnify :
     forall (a : Type).
@@ -34684,8 +34684,8 @@ Rules:
 A conforming implementation MUST behave as if KCore contains the primitive type formers:
 
 ```text
-Thunk : Type -> Type
-Need  : Type -> Type
+Thunk : (0 A : Type) -> Type
+Need  : (0 A : Type) -> Type
 ```
 
 and primitive term forms:
@@ -35043,14 +35043,14 @@ A conforming implementation MUST behave as if KCore contains an explicit effect-
 the effect features of §18.1 and the runtime constraints of §32.2.
 
 For a handled label `label`, effect interface `E`, surrounding effect row `r_all`, residual effect row `r`, and target
-carrier `m : Type -> Type` such that `SplitEff r_all label E r` is solvable, KCore additionally behaves as if it
+carrier `m : (0 A : Type) -> Type` such that `SplitEff r_all label E r` is solvable, KCore additionally behaves as if it
 contains:
 
 ```text
 OpCall        : EffLabel -> OpSymbol -> ArgSpine -> Eff r_all B
 HandleShallow : EffLabel -> HandlerSpec(label, E, r_all, r, m, A, B) -> Eff r_all A -> m B
 
-Resumption : Type -> Type -> Type
+Resumption : (0 A : Type) -> (0 B : Type) -> Type
 Resume     : Π (X : Type) (Y : Type). Resumption X Y -> (1 _ : X) -> Y
 ```
 
@@ -40619,7 +40619,7 @@ External inputs are explicit, typed, and provenance-marked.
 The portable API shape is:
 
 ```kappa
-ConfigInputKey : Type -> Type
+ConfigInputKey : (0 A : Type) -> Type
 
 expect term input :
     forall (a : Type).
@@ -47635,7 +47635,7 @@ This appendix amends §18.2.
 `std.prelude` provides:
 
 ```kappa
-trait Applicative (f : Type -> Type) =
+trait Applicative (f : (0 A : Type) -> Type) =
     pure    : a -> f a
     liftA2  : (a -> b -> c) -> f a -> f b -> f c
 
