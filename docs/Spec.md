@@ -26849,6 +26849,29 @@ opacity, or feature-gate rules, the reflection operation MUST fail with an ordin
 diverge or fall through to an internal error merely because the term was assembled through a different but equivalent
 reflection path.
 
+<!-- types.macros.parametric_witnesses_reflection -->
+#### 21.6.2 Parametric witnesses and reflection
+
+Generated syntax, macro output, plugin output, and reflected syntax are checked by the same parametric capability rules
+as user-written source.
+
+A macro may generate code that mentions a parametric type witness. The generated code is accepted exactly when the same
+source-written code would be accepted.
+
+A macro or plugin does not receive a special operation that converts:
+
+```text
+parametric type witness -> ordinary type-code value
+```
+
+Semantic reflection may represent a parametric type witness as a rigid semantic entity. Such representation does not
+grant ordinary type-code capability.
+
+If generated code attempts to return, store, reflect, typecase, or reify a parametric type witness as an ordinary
+`Type`, elaboration rejects the generated code with `E_PARAMETRIC_TYPE_PROMOTION`.
+
+This rule does not restrict ordinary syntax inspection. It restricts only accepted elaborated output.
+
 <!-- types.macros.derivation_shape_reflection -->
 ### 21.7 Derivation-shape reflection
 
