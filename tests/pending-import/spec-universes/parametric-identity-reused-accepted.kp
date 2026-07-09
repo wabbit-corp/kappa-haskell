@@ -1,0 +1,17 @@
+-- §11.1.2.3A/§11.3: ordinary type polymorphism is represented by parametric
+-- erased `0 Type` binders, not by hidden universe-level schemes.
+--! mode check
+--! assertNoErrors
+
+type Poly : Type =
+    (0 A : Type) -> A -> A
+
+id : Poly
+let id A x = x
+
+main : UIO Unit
+let main = do
+    let boo = id
+    let n = boo Int 1
+    let selfApp = id Poly id
+    pure ()

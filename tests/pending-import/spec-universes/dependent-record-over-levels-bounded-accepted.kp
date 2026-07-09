@@ -1,0 +1,7 @@
+-- §11.1.2.7/§11.1.2.8: an erased level-comparison proof supplies a ceiling
+-- for a dependent record over TypeLevel.
+--! mode check
+--! assertNoErrors
+
+type LevelRecordBelowOmega : Typeω =
+    (u : TypeLevel, @0 p : u < ω, T : Type u)

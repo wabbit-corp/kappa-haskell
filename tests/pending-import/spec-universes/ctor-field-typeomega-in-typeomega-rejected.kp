@@ -1,0 +1,9 @@
+-- §10.4.1 / T.10A.5: `Typeω` field inside `Typeω` is rejected
+-- (`Typeω : Type(ω+1)` and `ω + 1 ≤ ω` is unsolvable).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data Badω : Typeω =
+    MkBadω (t : Typeω)

@@ -1,0 +1,8 @@
+-- §10.4.1 / T.10A.1: constructor field `Type0` inside `Type0` is rejected.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
+--! assertDiagnosticFamily error kappa.universe.constructor-size
+
+data U : Type0 =
+    MkU (t : Type0)
