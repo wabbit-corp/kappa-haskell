@@ -28,6 +28,9 @@ cover the whole implementation (front end, IRs, backend, runtime, spec gaps).
   (immediate tagging `b010`/`b011`, niche, Direct-tag, the uniform-vs-niche split).
 - [`UNBOXING-DESIGN.md`](runtime/docs/UNBOXING-DESIGN.md) — value-representation specialization (immediate tagging + worker/wrapper).
 - [`SPECIALIZATION-SCOPING.md`](docs/SPECIALIZATION-SCOPING.md) — scoping of a monomorphization/specialization pass; **verdict: not worth it** (the static niche needs whole-program mono, which §8.3 separate-compilation forbids; the already-shipped uniform wins + Perceus RC are the better levers).
+- [`UNIVERSES-PLAN.md`](docs/UNIVERSES-PLAN.md) — implementation plan for the §11.1/§11.3/§10.4.1
+  universe redesign (`TypeLevel` levels incl. `ω`, ordering solver, formation ceilings,
+  constructor universe-size rule, parametric type witnesses); closes KNOWN_SPEC_ISSUES §16/§17.
 - [`CPS-DESIGN.md`](runtime/docs/CPS-DESIGN.md) — the do-kernel CPS / continuation rewrite (Stages 0–5, R1–R15).
 - [`PRIMITIVES.md`](runtime/docs/PRIMITIVES.md) — the ADD/DERIVE/SKIP analysis of missing concurrency primitives.
 - [`COVERAGE.md`](runtime/docs/COVERAGE.md) — ZIO/Cats-Effect combinator coverage.
@@ -781,6 +784,115 @@ nor a coercion the `CRecord`/`CProj` nodes lack (unlike the deferred niche). Res
       captures the allocation win without the type dependence. Do NOT schedule.
 
 ---
+
+## Track: Universes / `TypeLevel` / parametric witnesses ([`UNIVERSES-PLAN.md`](docs/UNIVERSES-PLAN.md))
+
+The §11.1/§11.3/§10.4.1 redesign. **Spec side DONE** (`9a29e59a`..`39207986`, plus the current
+operation-identity revision), and the proof-bounded pending suite was reconciled in
+`7965dfd5`: 28 universe fixtures, 14 pending parametric-witness fixtures, and 8 active
+acceptance fixtures. Source level operations now resolve through ordinary prelude traits and
+compiler-owned `TypeLevel` instances before canonicalizing to KCore intrinsic heads.
+**Compiler NOT STARTED**:
+`CSort`/`VSort` still carry `Int`, cumulativity is a direct integer comparison, data results
+are hardwired to `Type0`, `TypeLevel` and universe diagnostics do not exist, and the
+bare-`Type` alias-kind skip at `Check.hs:16417` makes several active tests vacuously green.
+This track closes confirmed-high KNOWN_SPEC_ISSUES **§16** and **§17**.
+
+Every sub-stage is independently reviewable and keeps active conformance green. Existing
+programs must produce byte-identical native output because levels and witnesses are
+compile-time-only. The detailed file ownership, fixtures, risks, and solver invariants live in
+`docs/UNIVERSES-PLAN.md`.
+
+### U-P — pin the contract
+
+- [ ] **U-P0 — baseline and complete the pending gate.** Record active conformance/native
+      baselines; validate all pending universe/witness files; add missing fixtures for invalid
+      level expressions, first-class `TypeLevel`, inconsistent proof assumptions, explicit
+      comparison proofs, `<=` ceilings, higher-level witness cumulativity/drop, `forall`
+      explicitness, arbitrary/noncommutative ordinal addition, semantic-identity acceptance,
+      shadowed-operation rejection, forbidden user `TypeLevel` instances, negative literals,
+      module boundaries, and malformed KCore. Reconcile the two stale
+      higher-universe wording remnants identified in the plan before encoding them.
+
+### U-A — level substrate and solver
+
+- [ ] **U-A0 — structured `Level`.** Replace `Int` in `CSort`/`VSort` with normalized
+      intrinsic `zero`/`omega`/`succ`/ordered-`add`/`max`/rigid/meta expressions; preserve
+      noncommutative ordinal addition; migrate Core equality, substitution, formation, and
+      rendering.
+- [ ] **U-A1 — constraints, metas, and complete ordering.** Add originated `≤` constraints,
+      level-meta solving, occurs/self-containment checks, scoped-assumption support, and a
+      documented complete decision procedure for the addition/max ordinal fragment. Pin
+      `1 + ω = ω` versus `ω + 1 > ω`; property-test open/closed semantics and constraint-order
+      independence; reconcile old generic-error pins.
+- [ ] **U-A2 — first-class `TypeLevel` and surface forms.** Add the builtin and ordinary
+      compile-time term behavior; add `Successor`/`Max`; provide compiler-owned
+      `Eq`/`Ord`/`Zero`/`One`/`FromInteger`/`Successor`/`Add`/`Max TypeLevel`; canonicalize
+      `ω`, `succ`, arbitrary `+`, `max`, and comparisons by resolved declaration/evidence
+      identity only; reject user instances, negative literals, shadowed lookalikes, and
+      noncanonical `Type (f u)`.
+
+**U-A exit:** solver properties green, self-containment and level-expression diagnostics
+correct, active conformance green, native output byte-identical.
+
+### U-B — formation, ceilings, and constructor size
+
+- [ ] **U-B0 — erased level assumptions.** Recognize `<`/`<=`, explicit `= True`, and
+      transparent `LevelLt`/`LevelLe` proof binders only through compiler-owned
+      `Ord TypeLevel` evidence; scope assumptions lexically and reject or ignore inconsistent
+      assumption sets rather than deriving self-containment.
+- [ ] **U-B1 — ceiling-based dependent formation.** Apply an outer, binder-independent
+      ceiling to Pi/Sigma/record/tuple/exists/package telescopes; infer a least expressible
+      ceiling where allowed; emit `E_UNIVERSE_UNBOUNDED_TELESCOPE` when none exists.
+- [ ] **U-B2 — parametric no-bump.** Make exact `Q0` binders/fields annotated `Type ρ`
+      contribute no `succ ρ`; keep later value fields mentioning the witness at level `ρ`.
+- [ ] **U-B3 — enforce declared classifiers.** Remove the bare-`Type` alias-kind skip; make
+      bare `Type` exactly `Type0`; remove hidden bare-`Type` universe metas; reconcile active
+      old-semantics fixtures and prove the parametric acceptance suite is non-vacuous.
+- [ ] **U-B4 — data universes and §10.4.1.** Elaborate declared `data ... : Type ρ`; check every
+      constructor-local annotation under header/earlier proof assumptions; exempt only the
+      parametric binder itself; emit `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE` with full payload.
+
+**U-B exit:** all bounded/unbounded and constructor-size pending fixtures owned by B are active;
+KNOWN_SPEC_ISSUES §16/§17 repros reject; full active suite and native differential green.
+
+### U-C — parametric witness capability
+
+- [ ] **U-C0 — one capability model.** Preserve witness level, capability, and origin across
+      contexts, aliases, fields, constructors, patterns, generated projections, KCore, and
+      typed module artifacts; round-trip the same judgment across a module boundary.
+- [ ] **U-C1 — promotion enforcement.** Permit type-position use, compatible `0 Type κ`
+      application, and parametric repackaging; reject every ordinary type-code sink including
+      results, ordinary binders/fields, projection/pattern escape, static facets, and
+      reflection with `E_PARAMETRIC_TYPE_PROMOTION`.
+- [ ] **U-C2 — generalization and `forall`.** Default inferred type variables and unannotated
+      declaration parameters to parametric binders when their uses permit it; implement the
+      normative explicit `(0 a : Type)` vs implicit `(@0 a : S)` `forall` asymmetry; reconcile
+      polymorphic call sites in the same commit.
+- [ ] **U-C3 — traits, evidence, boxes, and reflection.** Keep witnesses parametric through
+      trait goals and stored polymorphic functions; allow representation only through ordinary
+      declared evidence; reject associated-member promotion.
+- [ ] **U-C4 — KCore and erasure verification.** Fail closed on witness-to-type-code use in
+      KCore/generated helpers/interfaces; distinguish erased ordinary type codes, parametric
+      witnesses, and proof/trait evidence; prove none survives as a KBackendIR runtime operand.
+
+**U-C exit:** all parametric pending fixtures active, malformed-KCore injection rejected,
+module round trip stable, active suite and native differential green.
+
+### U-D — prelude and closeout
+
+- [ ] **U-D0 — prelude/std re-headers.** Convert ordinary polymorphic declarations and builtin
+      contracts to `(0 t : Type)` without changing evidence or runtime erasure shapes.
+- [ ] **U-D1 — bounded packaging.** Add `TypeBelow`, `TypeAtMost`, and transparent
+      `LevelLe`/`LevelLt`; discharge their bounds through the universe solver, not trait search.
+- [ ] **U-D2 — defaulting, rendering, diagnostics, and artifacts.** Implement §11.1.3
+      order-independent least-level/default/generalize behavior; preserve normalized levels
+      and capabilities in typed artifacts; render predicative classifiers; complete normative
+      diagnostic payloads and two-module round-trip tests.
+- [ ] **U-D3 — promote and close.** Move every universe/witness fixture from `pending-import`
+      to conformance, remove stale STATUS markers, update known issues/counts/docs, and run the
+      full conformance, solver-property, validator, KCore, interface, and native differential
+      gates. Zero universe/witness pending fixtures is the completion criterion.
 
 ## Track: Spec coverage ([`SPEC_COMPLIANCE.md`](SPEC_COMPLIANCE.md))
 
