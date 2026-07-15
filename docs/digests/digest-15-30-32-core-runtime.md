@@ -43,7 +43,7 @@ Active refinement context threads through every branch/guard/normalization/conve
 
 Erasure justifications per erased occurrence: QuantityZero | AmbientDemandZero | RuntimeErasedEvidence | CompileTimeClassifier | MetaPhaseBinding | CaptureAnnotationStructure | ErasedIndex | ExplicitRuntimeSafeEliminator | BackendIntrinsicErasure.
 
-Inhabitance summaries (§30.2.7): Empty | Subsingleton | Contractible | Finite n | Unknown; only exact Empty under SourceReachability justifies impossible.
+Inhabitance summaries (§30.2.7) are cardinality intervals with canonical aliases Empty=[0,0], Subsingleton=[0,1], Contractible=[1,1], Finite n=[n,n], and Unknown=[0,Unbounded]; only exact Empty under SourceReachability justifies impossible.
 
 Local declarations (§30.1.1): closure-convert over captured free vars; family identity per declaration site (never per dynamic evaluation).
 

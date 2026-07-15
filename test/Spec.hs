@@ -1,3 +1,5 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 -- | Cabal test-suite driver: runs the Appendix T conformance tree
 -- under @tests/conformance@ through the in-process harness, then
 -- cross-checks the §3.1.2A diagnostic code registry against every
@@ -59,6 +61,16 @@ import Kappa.Core
 import Kappa.Diagnostic (dCode, jArray, jObject, jStr)
 import Kappa.Eval (EvalCtx (..), GlobalDef (..), Globals (..), emptyMetas, eval, force)
 import Kappa.Explain (ExplainEntry (..), explainExists, registry)
+import Kappa.Inhabitance
+  ( CardinalityBound (..)
+  , InhabitanceSummary (Contractible, Empty, Finite, Subsingleton, Unknown)
+  , addSummaries
+  , canonicalizeFinite
+  , isEmpty
+  , maxCount
+  , minCount
+  , multiplySummaries
+  )
 import Kappa.Ownership
   ( BinderId (..)
   , BinderOwn (..)
@@ -80,6 +92,7 @@ import Kappa.TestHarness
   , runTestPath
   , summarize
   )
+import Numeric.Natural (Natural)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -99,6 +112,7 @@ main = do
   famOk <- familiesHygienic
   harnessOk <- harnessFaithful
   jsonOk <- jsonEncoderSound
+  inhabitanceOk <- inhabitanceIntervalDomain
   verifyOk <- verifierCatchesViolations
   reprOk <- reprScalarIdentity
   primConvOk <- primArgConventionS23c
@@ -120,7 +134,7 @@ main = do
   ctorLayoutOk <- ctorLayoutEvidenceFields
   reExportOk <- reExportBoundaryRefinement
   let regOk =
-        regOk0 && famOk && harnessOk && jsonOk && verifyOk && reprOk
+        regOk0 && famOk && harnessOk && jsonOk && inhabitanceOk && verifyOk && reprOk
           && primConvOk && spineErasureOk && ownOk && s23dOk && s23dDiagOk && s32Ok && cachePubOk && backendIrOk && backendIrValidateOk && backendIrConsumerOk && backendIrNoPathOwnOk && ownershipNoRPathOk && backendIrProjectedBorrowedOk && backendIrPatternErasureOk && scalarKindParamOk
           && scalarDoubleEscapeOk && ctorLayoutOk && reExportOk
   let root = "tests/conformance"
@@ -141,6 +155,39 @@ main = do
       if sFail s > 0 || sHarnessError s > 0 || not regOk
         then exitFailure
         else pure ()
+
+-- | §30.2.7 regression: inhabitance is a normalized cardinality interval, not
+-- a closed five-constructor enumeration. The richer bounds retain useful
+-- partial facts under sums/products, while only exact zero proves unreachable.
+-- Exact arithmetic uses 'Natural', so a large finite product cannot overflow a
+-- machine 'Int' and be misclassified as 'Empty'.
+inhabitanceIntervalDomain :: IO Bool
+inhabitanceIntervalDomain = do
+  let hasBounds lo hi s = minCount s == lo && maxCount s == hi
+      finite n = canonicalizeFinite n
+      beyondInt = fromIntegral (maxBound :: Int) + 1 :: Natural
+      beyondIntSquared = beyondInt * beyondInt
+      checks =
+        [ ("Finite 0 canonicalizes to Empty", finite 0 == Empty)
+        , ("Finite 1 canonicalizes to Contractible", finite 1 == Contractible)
+        , ("Finite n remains exact", finite 7 == Finite 7)
+        , ("Subsingleton is [0,1]", hasBounds 0 (FiniteBound 1) Subsingleton)
+        , ("Unknown is [0,unbounded]", hasBounds 0 Unbounded Unknown)
+        , ("two subsingleton arms retain [0,2]", hasBounds 0 (FiniteBound 2) (addSummaries Subsingleton Subsingleton))
+        , ("subsingleton times three retains [0,3]", hasBounds 0 (FiniteBound 3) (multiplySummaries Subsingleton (Finite 3)))
+        , ("known singleton plus unknown retains inhabited lower bound", hasBounds 1 Unbounded (addSummaries Contractible Unknown))
+        , ("exact zero absorbs an unbounded product", multiplySummaries Empty Unknown == Empty)
+        , ("a nonzero range is not empty", not (isEmpty (addSummaries Subsingleton Subsingleton)))
+        , ( "exact products do not overflow through Int"
+          , hasBounds beyondIntSquared (FiniteBound beyondIntSquared) (multiplySummaries (finite beyondInt) (finite beyondInt))
+          )
+        ]
+      failures = [label | (label, False) <- checks]
+      ok = null failures
+  unless ok $ do
+    putStrLn "inhabitanceIntervalDomain FAILED:"
+    mapM_ (putStrLn . ("  " ++)) failures
+  pure ok
 
 -- | §1.2 regression pin: 'scalarRep' must classify a primitive by its
 -- declaration-symbol IDENTITY (the module-qualified 'GName'), not by surface

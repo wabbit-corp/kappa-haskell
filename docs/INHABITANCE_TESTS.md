@@ -9,7 +9,7 @@ The counting blog is useful for **inhabitance/cardinality** tests, especially pr
 I’d use pseudo-directives like this, mapped onto whatever harness you actually have:
 
 ```text
--- %summary SourceReachability T == Empty | Subsingleton | Contractible | Finite n | Unknown
+-- %summary SourceReachability T == Empty | Subsingleton | Contractible | Finite n | Range l u | Range l Unbounded | Unknown
 -- %summary Completion T == ...
 -- %enumerate Completion T == [term1, term2, ...] | NotEnumerable
 -- %synth Goal == pass | fail
@@ -18,6 +18,14 @@ I’d use pseudo-directives like this, mapped onto whatever harness you actually
 ```
 
 Keep **inhabitance queries** separate from **source-level evidence synthesis**. The spec says inhabitance summaries can use proof-classification evidence, but using evidence for a summary does not create new source-level evidence. Tiny distinction, large compiler bug if ignored.
+
+The named summaries are canonical interval aliases: `Empty = [0,0]`, `Subsingleton = [0,1]`, `Contractible = [1,1]`,
+`Finite n = [n,n]`, and `Unknown = [0,Unbounded]`. The harness should also pin interval arithmetic directly:
+
+```text
+%summary SourceReachability (KEither P Q) in context [IsSubsingleton P, IsSubsingleton Q] == Range 0 2
+%summary SourceReachability (p : P, b : Bool) in context [IsSubsingleton P] == Range 0 2
+```
 
 ## 2. Shared fixtures
 
@@ -168,7 +176,7 @@ opaque data HiddenTwo : Type =
 
 -- Module B, without clarify:
 -- %summary SourceReachability HiddenTwo == Unknown
--- not Empty, not Finite 0, not Contractible
+-- not Empty, not exact zero, not Contractible
 ```
 
 This catches the especially rancid bug where hidden constructors are treated as no constructors. Opaque does not mean void. It means “none of your business.”

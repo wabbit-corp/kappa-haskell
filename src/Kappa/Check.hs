@@ -86,7 +86,6 @@ import Kappa.Eval
 import Kappa.Inhabitance
   ( InhabEnv (..)
   , InhabitancePurpose (..)
-  , InhabitanceSummary (..)
   , HeadClass (..)
   , CtorFiber (..)
   , inhabitanceSummary

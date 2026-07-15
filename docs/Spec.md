@@ -36912,20 +36912,30 @@ Implementations MUST behave as if KCore exposes a conservative inhabitance-summa
 types.
 
 ```text
-InhabitanceSummary ::= Empty
-                     | Subsingleton
-                     | Contractible
-                     | Finite nat
-                     | Unknown
+CardinalityBound   ::= FiniteBound nat | Unbounded
+
+InhabitanceSummary ::= Bounds {
+                         minCount : nat,
+                         maxCount : CardinalityBound
+                       }
 ```
 
-Canonicalization:
+An inhabitance summary records a finite lower bound and an optional finite upper bound on cardinality. If `maxCount` is
+`FiniteBound u`, the summary is well formed only when `minCount <= u`. `Unbounded` means that the query has established
+no finite upper bound; it does not assert any particular infinite cardinality.
 
-* `Finite 0` is identical to `Empty`.
-* `Finite 1` is identical to `Contractible`.
-* `Finite n` is used only for `n >= 2`.
-* `Empty`, `Contractible`, and `Finite n` are exact-cardinality summaries.
-* `Subsingleton` is not an exact-cardinality summary. It means at most one inhabitant.
+The following canonical aliases are used throughout this specification:
+
+```text
+Empty          = Bounds 0 (FiniteBound 0)
+Subsingleton  = Bounds 0 (FiniteBound 1)
+Contractible   = Bounds 1 (FiniteBound 1)
+Finite n       = Bounds n (FiniteBound n), for n >= 2
+Unknown        = Bounds 0 Unbounded
+```
+
+`Bounds l (FiniteBound u)` may also be written `Range l u` when `l /= u`. `Bounds l Unbounded` may be written
+`Range l Unbounded` when `l > 0`.
 
 Meaning:
 
@@ -36935,19 +36945,17 @@ Meaning:
 * `Contractible` means the analyzed type is known to have exactly one inhabitant, and the implementation can identify a
   representative inhabitant for the current purpose when enumeration is requested.
 * `Finite n` means the analyzed type is known to have exactly `n` inhabitants.
-* `Unknown` means the implementation does not establish a stronger fact.
+* `Range l u` means the analyzed type has at least `l` and at most `u` inhabitants.
+* `Range l Unbounded` means the analyzed type has at least `l` inhabitants and the query establishes no finite upper
+  bound.
+* `Unknown` means the implementation establishes neither inhabitance nor a finite upper bound.
 
 Ordering of precision:
 
-```text
-Empty         exact 0
-Contractible  exact 1
-Finite n      exact n, n >= 2
-Subsingleton  upper bound <= 1
-Unknown       no portable fact
-```
-
-`Empty` and `Contractible` are both stronger than `Subsingleton`, but they carry different exact-cardinality facts.
+A summary is at least as precise as another summary when its interval is contained in the other's interval. Thus
+`Empty` and `Contractible` are both stronger than `Subsingleton`, while carrying different exact-cardinality facts;
+every well-formed summary is at least as precise as `Unknown`. Exact finite summaries are precisely those whose finite
+lower and upper endpoints are equal.
 
 Query purpose:
 
@@ -36999,15 +37007,15 @@ resolution, coherence, source-level proof search, or source acceptance.
 
 Portable summary boundary:
 
-The portable `InhabitanceSummary` deliberately does not distinguish exact infinite cardinalities.
+The portable `InhabitanceSummary` deliberately does not distinguish exact infinite cardinalities. An implementation
+MAY track exact or approximate infinite-cardinality information internally, but must project it soundly to finite lower
+bounds and either a finite upper bound or `Unbounded`. In particular, `Unbounded` is an analysis bound, not an exact
+cardinality named "infinity".
 
-An implementation MAY track exact or approximate infinite-cardinality information internally, but at the portable
-summary boundary any non-finite inhabited result that is not otherwise known to be `Contractible` is reported as
-`Unknown`.
-
-Rationale: `Empty`, `Subsingleton`, `Contractible`, and exact small `Finite n` are sufficient for reachability,
-erasure, representation selection, and completion. Standardizing exact infinite-cardinality classes would constrain
-implementations while buying very little besides fresh opportunities for humans to argue about cardinal arithmetic.
+Rationale: finite cardinality intervals are sufficient for reachability, erasure, representation selection, and
+completion while retaining useful partial information such as `[0,2]` or `[1,Unbounded]`. Standardizing exact infinite
+cardinality classes would constrain implementations while buying very little besides fresh opportunities for humans to
+argue about cardinal arithmetic.
 
 Required structural fragment:
 
@@ -37026,21 +37034,22 @@ Base types:
 
 Closed products and records:
 
-* A closed nondependent product or nondependent closed record summarizes by exact multiplication when all component
-  summaries are exact.
+* A closed nondependent product or nondependent closed record summarizes by interval multiplication. Lower endpoints
+  multiply, finite upper endpoints multiply, and any positive finite upper endpoint multiplied by `Unbounded` yields
+  `Unbounded`.
 * Any `Empty` component makes the product or record `Empty`.
 * `Contractible` components contribute exact multiplicative factor `1`.
 * `Finite n` components contribute exact multiplicative factor `n`.
 * If every component is either `Contractible` or `Subsingleton`, and at least one component is `Subsingleton`, the
   result is `Subsingleton`.
-* If any component is `Unknown`, and no component is `Empty`, the required result is `Unknown`.
-* If any component is `Subsingleton` and any other component is `Finite n` for `n >= 2`, the required result is
-  `Unknown` unless a stronger specified rule applies.
+* `Subsingleton` multiplied by `Finite n` yields `Range 0 n`.
+* `Unknown` multiplied by any nonempty exact finite summary remains `Unknown`; `Unknown` multiplied by `Empty` is
+  `Empty`.
 
 Closed sums and variants:
 
-* A closed sum, closed ordinary data type, or closed `Variant` row summarizes by exact addition when all reachable arm
-  summaries are exact.
+* A closed sum, closed ordinary data type, or closed `Variant` row summarizes by interval addition. Lower endpoints add;
+  finite upper endpoints add; an `Unbounded` upper endpoint remains `Unbounded`.
 * `Empty` arms contribute exact additive factor `0`.
 * If every reachable arm is `Empty`, the result is `Empty`.
 * If exactly one reachable arm is `Contractible` and every other reachable arm is `Empty`, the result is
@@ -37049,9 +37058,8 @@ Closed sums and variants:
   `Subsingleton`.
 * If exact addition of reachable arms yields `1`, the result is `Contractible`.
 * If exact addition of reachable arms yields `n >= 2`, the result is `Finite n`.
-* If any reachable arm is `Unknown`, and no exact result can be derived structurally, the required result is `Unknown`.
-* If more than one non-empty arm is known only as `Subsingleton`, the required result is `Unknown` unless an
-  implementation applies an optional sound strengthening rule.
+* Adding two `Subsingleton` arms yields `Range 0 2`.
+* Adding an exact `Finite n` arm to `Unknown` yields `Range n Unbounded`, retaining the known inhabited lower bound.
 
 Constructor-result family-argument refinement:
 
@@ -37175,8 +37183,8 @@ values, and any other unsupported shape, the required result is `Unknown`.
 Termination and conservatism:
 
 * The required fragment MUST be implemented by a terminating structural procedure over normalized KCore.
-* The implementation MUST NOT return `Empty`, `Subsingleton`, `Contractible`, or `Finite n` unless that result is
-  correct.
+* Every returned interval MUST contain the actual inhabitant count. In particular, an implementation MUST NOT raise a
+  lower bound or lower a finite upper bound without a sound derivation.
 * `Unknown` is always permitted.
 
 Permitted strengthening:
@@ -37185,9 +37193,9 @@ Permitted strengthening:
   produce.
 * Such rules MAY use bounded normalization, bounded rewriting, bounded finite-domain instantiation, variance tests,
   representable/container decompositions, Yoneda-style simplifications, or similar techniques.
-* Exceeding any implementation-defined bound, encountering exact-cardinality arithmetic overflow, or reaching an
-  unsupported proof obligation during such strengthening MUST yield `Unknown`, not a compile-time error, unless some
-  other rule of this specification already requires rejection of the program.
+* Required exact-cardinality arithmetic MUST use unbounded natural arithmetic or checked arithmetic. Exceeding an
+  implementation-defined optional-analysis bound or reaching an unsupported proof obligation may widen the result,
+  including to `Unknown`, but MUST NOT wrap, clamp, or otherwise produce a false finite bound.
 
 Additional restriction:
 
@@ -37206,6 +37214,8 @@ Source-acceptance stability:
   unsolved hole unless a separate elaboration rule explicitly inserts the unique inhabitant.
 * `Finite n` may justify finite completion and deterministic case-split suggestions, but it MUST NOT by itself solve
   an unsolved hole or insert missing branches.
+* A non-exact `Range` may guide diagnostics and optimization according to its proven bounds, but it MUST NOT be treated
+  as an exact finite enumeration.
 * For source reachability, an implementation MUST NOT use `RuntimeShape` or `Optimization` summaries.
 * For runtime representation and backend optimization, an implementation MAY use `RuntimeShape` and `Optimization`
   summaries subject to §31.2.1 and §34.3.2, but such use MUST NOT create new source-level equality, implicit evidence,

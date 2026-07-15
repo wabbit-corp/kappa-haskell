@@ -1,3 +1,6 @@
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
+
 -- | KBackendIR §30.2.7 inhabitance summaries.
 --
 -- A /conservative/, /terminating/ analysis that classifies how many
@@ -9,8 +12,8 @@
 --
 -- Two non-negotiable invariants make this safe to trust:
 --
---   * __Soundness/conservatism.__ A non-'Unknown' answer is returned only
---     when it is provably correct. 'Unknown' is always a permitted reply, so
+--   * __Soundness/conservatism.__ Every returned interval contains the actual
+--     inhabitant count. 'Unknown' is always a permitted reply, so
 --     anything outside the required structural fragment — functions, recursive
 --     or inductive types, open rows, opaque/'Dyn'/foreign — collapses to
 --     'Unknown'. Acceptance never depends on an optional strengthening rule.
@@ -25,7 +28,10 @@
 -- the value representation and stays free of the @CheckM@ monad, the context,
 -- and the metavariable machinery.
 module Kappa.Inhabitance
-  ( InhabitanceSummary (..)
+  ( CardinalityBound (..)
+  , InhabitanceSummary (Empty, Subsingleton, Contractible, Finite, Unknown)
+  , minCount
+  , maxCount
   , InhabitancePurpose (..)
   , InhabEnv (..)
   , HeadClass (..)
@@ -40,19 +46,67 @@ module Kappa.Inhabitance
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Kappa.Core (GName, Value (..))
+import Numeric.Natural (Natural)
 
--- | The portable summary lattice of §30.2.7. 'Finite' is kept canonical:
--- @Finite 0@ is normalized to 'Empty', @Finite 1@ to 'Contractible', and the
--- 'Finite' constructor is only ever produced for @n >= 2@ (see
--- 'canonicalizeFinite'). 'Subsingleton' is the only non-exact rung — "at most
--- one inhabitant, not known to be inhabited".
-data InhabitanceSummary
-  = Empty -- ^ exactly zero inhabitants
-  | Subsingleton -- ^ at most one inhabitant (upper bound, not exact)
-  | Contractible -- ^ exactly one inhabitant
-  | Finite !Int -- ^ exactly @n@ inhabitants, @n >= 2@
-  | Unknown -- ^ no portable fact established
-  deriving (Eq, Show)
+-- | A finite upper cardinality bound or the absence of a finite upper bound.
+-- 'Unbounded' does not assert a particular infinite cardinality; it says only
+-- that this analysis has established no finite maximum.
+data CardinalityBound
+  = FiniteBound !Natural
+  | Unbounded
+  deriving (Eq, Ord, Show)
+
+-- | A normalized cardinality interval with a finite lower bound and an optional
+-- finite upper bound. The constructor is deliberately hidden: when 'maxCount'
+-- is finite, the invariant @minCount <= maxCount@ must hold. 'Natural' keeps
+-- exact arithmetic from overflowing into a false exact-zero result. There is
+-- intentionally no derived 'Ord': precision is interval containment, not
+-- lexicographic field ordering. Accessors are ordinary functions rather than
+-- record selectors so the hidden constructor cannot be bypassed by record
+-- update syntax.
+data InhabitanceSummary = InhabitanceSummary !Natural !CardinalityBound
+  deriving (Eq)
+
+minCount :: InhabitanceSummary -> Natural
+minCount (InhabitanceSummary lo _) = lo
+
+maxCount :: InhabitanceSummary -> CardinalityBound
+maxCount (InhabitanceSummary _ hi) = hi
+
+-- The familiar §30.2.7 names are canonical interval aliases. Keeping them as
+-- patterns preserves the proof-oriented vocabulary at use sites without
+-- restricting the domain to those five points.
+pattern Empty :: InhabitanceSummary
+pattern Empty = InhabitanceSummary 0 (FiniteBound 0)
+
+pattern Subsingleton :: InhabitanceSummary
+pattern Subsingleton = InhabitanceSummary 0 (FiniteBound 1)
+
+pattern Contractible :: InhabitanceSummary
+pattern Contractible = InhabitanceSummary 1 (FiniteBound 1)
+
+pattern Finite :: Natural -> InhabitanceSummary
+pattern Finite n <- (exactFiniteAboveOne -> Just n)
+  where
+    Finite n = canonicalizeFinite n
+
+pattern Unknown :: InhabitanceSummary
+pattern Unknown = InhabitanceSummary 0 Unbounded
+
+exactFiniteAboveOne :: InhabitanceSummary -> Maybe Natural
+exactFiniteAboveOne (InhabitanceSummary lo (FiniteBound hi))
+  | lo == hi && lo >= 2 = Just lo
+exactFiniteAboveOne _ = Nothing
+
+instance Show InhabitanceSummary where
+  show (InhabitanceSummary 0 (FiniteBound 0)) = "Empty"
+  show (InhabitanceSummary 0 (FiniteBound 1)) = "Subsingleton"
+  show (InhabitanceSummary 1 (FiniteBound 1)) = "Contractible"
+  show (InhabitanceSummary lo (FiniteBound hi))
+    | lo == hi = "Finite " ++ show lo
+    | otherwise = "Range " ++ show lo ++ " " ++ show hi
+  show (InhabitanceSummary 0 Unbounded) = "Unknown"
+  show (InhabitanceSummary lo Unbounded) = "Range " ++ show lo ++ " Unbounded"
 
 -- | Why the summary is being computed (§30.2.7). The same source type may
 -- receive different answers under different purposes. Only 'SourceReachability'
@@ -66,21 +120,17 @@ data InhabitancePurpose
   | Optimization -- ^ backend-independent optimization view
   deriving (Eq, Show)
 
--- | The exact-'Empty' test the reachability checks care about. @Finite 0@ never
--- escapes 'canonicalizeFinite', but we match it anyway for total safety.
+-- | The exact-'Empty' test the reachability checks care about. A lower bound of
+-- zero is not enough: only the singleton interval @[0,0]@ proves unreachable.
 isEmpty :: InhabitanceSummary -> Bool
 isEmpty Empty = True
-isEmpty (Finite 0) = True
 isEmpty _ = False
 
 -- | Collapse a raw cardinality into the canonical summary: @0@ → 'Empty',
 -- @1@ → 'Contractible', @n >= 2@ → @'Finite' n@. Negative inputs cannot arise
--- but are clamped to 'Empty' rather than trusted.
-canonicalizeFinite :: Int -> InhabitanceSummary
-canonicalizeFinite n
-  | n <= 0 = Empty
-  | n == 1 = Contractible
-  | otherwise = Finite n
+-- because the input is a 'Natural'.
+canonicalizeFinite :: Natural -> InhabitanceSummary
+canonicalizeFinite n = InhabitanceSummary n (FiniteBound n)
 
 -- | The elaborator-supplied interface. Every monadic effect the analysis needs
 -- — normalization, table lookups, and speculative GADT refinement — is routed
@@ -269,51 +319,27 @@ classifyByEvidence env t = do
           subE <- ieIsSubsingletonEvidence env t
           pure (if subE then Just Subsingleton else Nothing)
 
--- | The product rule of §30.2.7 (closed nondependent products / records).
---
---   * 'Empty' is absorbing: any 'Empty' factor ⇒ 'Empty'.
---   * 'Contractible' is the identity (exact factor 1).
---   * Exact factors multiply; the canonical form keeps @0,1,n@ tidy.
---   * 'Subsingleton' bounds the product at @<= 1@ only while every /other/
---     factor is 'Contractible' (all-Contractible-but-some-Subsingleton ⇒
---     'Subsingleton'). The moment a 'Subsingleton' meets a @Finite n (n>=2)@ or
---     anything 'Unknown', the upper bound is lost and the result is 'Unknown'.
---   * 'Unknown' poisons the product — unless an 'Empty' factor is also present,
---     in which case 'Empty' (the harder fact) wins. The right-fold below
---     handles that because 'Empty' short-circuits regardless of order.
+-- | Interval product for closed nondependent products / records (§30.2.7).
+-- Cardinalities are nonnegative, so multiplication is monotone at both bounds.
+-- Exact zero remains absorbing even against an unbounded interval.
 multiplySummaries :: InhabitanceSummary -> InhabitanceSummary -> InhabitanceSummary
-multiplySummaries a b = case (a, b) of
-  (Empty, _) -> Empty
-  (_, Empty) -> Empty
-  (Contractible, y) -> y
-  (x, Contractible) -> x
-  (Subsingleton, Subsingleton) -> Subsingleton
-  -- Subsingleton against a >=2 cardinality or anything Unknown loses the bound.
-  (Subsingleton, _) -> Unknown
-  (_, Subsingleton) -> Unknown
-  (Unknown, _) -> Unknown
-  (_, Unknown) -> Unknown
-  (Finite m, Finite n) -> canonicalizeFinite (m * n)
+multiplySummaries (InhabitanceSummary loA hiA) (InhabitanceSummary loB hiB) =
+  InhabitanceSummary (loA * loB) (multiplyUpper hiA hiB)
+  where
+    multiplyUpper (FiniteBound 0) _ = FiniteBound 0
+    multiplyUpper _ (FiniteBound 0) = FiniteBound 0
+    multiplyUpper (FiniteBound a) (FiniteBound b) = FiniteBound (a * b)
+    multiplyUpper Unbounded _ = Unbounded
+    multiplyUpper _ Unbounded = Unbounded
 
--- | The sum rule of §30.2.7 (closed sums / variants / data-type arms).
---
---   * 'Empty' arms contribute exact factor 0 (the identity here).
---   * Exact arms add; a single non-'Empty' 'Contractible'/'Subsingleton' arm
---     among 'Empty's keeps its own summary.
---   * Two non-'Empty' arms known only as 'Subsingleton' lose exactness ⇒
---     'Unknown' (no optional strengthening is applied). A 'Subsingleton' summed
---     with any exact @>= 1@ arm likewise drops to 'Unknown'.
---   * 'Unknown' in any arm with no derivable exact total ⇒ 'Unknown'.
+-- | Interval sum for closed sums / variants / data-type arms (§30.2.7).
+-- Lower and upper bounds add independently. In particular, two subsingleton
+-- arms retain @[0,2]@ and adding an exact inhabited arm to 'Unknown' retains
+-- the established positive lower bound.
 addSummaries :: InhabitanceSummary -> InhabitanceSummary -> InhabitanceSummary
-addSummaries a b = case (a, b) of
-  (Empty, y) -> y
-  (x, Empty) -> x
-  (Unknown, _) -> Unknown
-  (_, Unknown) -> Unknown
-  -- Once two non-empty arms are involved, only fully-exact ones combine.
-  (Subsingleton, _) -> Unknown
-  (_, Subsingleton) -> Unknown
-  (Contractible, Contractible) -> Finite 2
-  (Contractible, Finite n) -> canonicalizeFinite (1 + n)
-  (Finite n, Contractible) -> canonicalizeFinite (n + 1)
-  (Finite m, Finite n) -> canonicalizeFinite (m + n)
+addSummaries (InhabitanceSummary loA hiA) (InhabitanceSummary loB hiB) =
+  InhabitanceSummary (loA + loB) (addUpper hiA hiB)
+  where
+    addUpper (FiniteBound a) (FiniteBound b) = FiniteBound (a + b)
+    addUpper Unbounded _ = Unbounded
+    addUpper _ Unbounded = Unbounded
