@@ -1,0 +1,20 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "LF-CLEAN\n"
+
+-- Spec 5.4 (line terminators) + 6.3.3 (content rule): CRLF and LF spell the
+-- same line terminator, and multiline-string content records U+000A for a
+-- source terminator regardless of spelling. A CRLF-encoded file therefore
+-- denotes the same program as its LF equivalent; this string is "ab\n".
+-- Every line of THIS file ends with CRLF.
+
+module main
+
+sample : String
+let sample = """
+ab
+"""
+
+main : UIO Unit
+let main = println (if sample == "ab\n" then "LF-CLEAN" else "DIRTY")
+-- STATUS(a0497523): FAIL — multiline content keeps raw CRs plus a phantom leading line; prints DIRTY; Spec 6.3.3 now requires U+000A normalization

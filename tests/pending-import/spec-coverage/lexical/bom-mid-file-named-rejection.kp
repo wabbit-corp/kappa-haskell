@@ -1,0 +1,12 @@
+-- Spec 5 (source text and encoding): U+FEFF anywhere other than file start
+-- is rejected, and because it is invisible the diagnostic MUST name it
+-- explicitly (e.g. 'U+FEFF BYTE ORDER MARK'), not merely render it.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch BYTE ORDER MARK|BOM
+
+module main
+
+x : Int
+let x = ï»¿42
+-- STATUS(a0497523): FAIL — mid-file BOM is byte-split by the lexer (message shows raw byte 0xBB); never named as a byte order mark

@@ -42,3 +42,9 @@ a `-- STATUS(a0497523): ...` line recording actual behavior.
 Validation snapshot 2026-07-23 (clean `a0497523` binary, per-file runs):
 **3 pass / 65 fail** across the 68 staged dx units — the fails are the point:
 each pins an expectation the current compiler does not meet.
+
+2026-07-23 promotions: the BOM, CRLF-multiline, comprehension-splice, and
+dead-code-after-return probes were promoted to spec-required behavior (Spec
+SS5 source text, SS5.4 line terminators, SS6.3.3 content normalization,
+SS18.3.1 comprehension boundary, SS18.2.2 + SS3.2.21 W_DO_ITEM_UNREACHABLE)
+and moved to ../spec-coverage/ (lexical/, literals/, do-blocks/).

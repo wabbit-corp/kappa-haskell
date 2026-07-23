@@ -1,0 +1,30 @@
+-- Spec 18.2.2 + 3.2.21: unreachable do-items are not an error, but a
+-- conforming implementation MUST emit W_DO_ITEM_UNREACHABLE (family
+-- kappa.do.unreachable-item) once per maximal unreachable run, computed on
+-- the same reachability facts that already exempt those items from usage
+-- accounting (18.2.4). Expected: one warning after `return`, one after
+-- `break` (two separate regions).
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 2
+module main
+
+-- WARNING EXPECTED: `return 0` is dead — the block already returned.
+afterReturn : Int -> UIO Int
+let afterReturn x =
+    do
+        return (x + 1)
+        return 0
+
+-- WARNING EXPECTED: the loop-body item after `break` is dead.
+afterBreak : Bool -> UIO Unit
+let afterBreak cond =
+    do
+        while cond do
+            break
+            printlnString "dead"
+        pure ()
+
+main : UIO Unit
+let main = printlnString "ok"
+-- STATUS(a0497523): FAIL — 0 warnings; Spec 18.2.2 now requires W_DO_ITEM_UNREACHABLE per maximal dead region (expected 2)

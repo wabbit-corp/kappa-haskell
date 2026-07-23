@@ -1,0 +1,11 @@
+-- Spec 5.4: a U+000D CARRIAGE RETURN not immediately followed by U+000A is
+-- a compile-time error, and the diagnostic MUST name the carriage return.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch CARRIAGE RETURN|U\+000D
+
+module main
+
+x : Int
+let x =  42
+-- STATUS(a0497523): FAIL — a bare CR is silently accepted (0 errors); Spec 5.4 now requires a named rejection

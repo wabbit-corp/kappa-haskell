@@ -855,6 +855,11 @@ E_VAR_IN_STATIC_POSITION
 E_VAR_READ_DUPLICATES_LINEAR_VALUE
 W_VAR_REF_ESCAPE_DISABLES_FLOW
 
+E_SPLICE_OUTSIDE_DO
+E_SPLICE_CROSSES_BOUNDARY
+E_SPLICE_IN_COMPREHENSION
+W_DO_ITEM_UNREACHABLE
+
 E_MISSING_EXPLICIT_SIGNATURE
 I_INFERRED_SIGNATURE_AVAILABLE
 
@@ -1035,10 +1040,18 @@ Meanings:
   signature closure, or fails independent verification.
 * `E_VAR_REF_REQUIRED` is emitted when a mutable variable's reference cell is required but the source occurrence denotes its current value.
 * `E_VAR_READ_OUTSIDE_DO` is emitted when a current-value read of a mutable variable appears outside the expression-lifting context of its enclosing `do` block.
-* `E_VAR_READ_CROSSES_BOUNDARY` is emitted when elaborating a mutable-variable current-value occurrence would require moving the generated read across a user-written lambda, local-function, quote, type, or elaboration-time boundary.
+* `E_VAR_READ_CROSSES_BOUNDARY` is emitted when elaborating a mutable-variable current-value occurrence would require moving the generated read across a user-written lambda, local-function, quote, type, comprehension-clause, or elaboration-time boundary.
 * `E_VAR_IN_STATIC_POSITION` is emitted when a mutable variable is used in a type, static-object, erased proof, elaboration-time macro, or implicit-search position that cannot perform object-phase reads.
 * `E_VAR_READ_DUPLICATES_LINEAR_VALUE` is emitted when a current-value read of a mutable variable would duplicate a non-duplicable runtime-relevant component of the stored value.
 * `W_VAR_REF_ESCAPE_DISABLES_FLOW` MAY be emitted when `ref x` escapes and therefore disables current-value flow typing for mutable variable `x`.
+* `E_SPLICE_OUTSIDE_DO` is emitted when a `!` monadic splice appears with no enclosing `do` block to lift into.
+* `E_SPLICE_CROSSES_BOUNDARY` is emitted when lifting a `!` splice would require moving it across a user-written
+  lambda, local-function, quote, type, static-object, erased-proof, or elaboration-time boundary without an inner
+  enclosing `do` block.
+* `E_SPLICE_IN_COMPREHENSION` is emitted when a `!` splice appears inside a comprehension clause (§18.3.1
+  comprehension boundary).
+* `W_DO_ITEM_UNREACHABLE` is emitted once per maximal run of user-written do-items made unreachable by a preceding
+  abrupt-control item (§18.2.2).
 * `E_MISSING_EXPLICIT_SIGNATURE` is emitted when a declaration requires an explicit signature and none is available.
 * `I_INFERRED_SIGNATURE_AVAILABLE` MAY be emitted as an informational diagnostic carrying an inferred signature that
   tooling may insert.
@@ -4471,6 +4484,65 @@ when that is the intended operation.
 A diagnostic in this family MUST NOT suggest using `!x` as mutable-variable read syntax. The `!` form remains monadic
 splice syntax under §18.3.
 
+<!-- compiler.frontir.standard_diagnostic_families.do_sequencing_splice -->
+#### 3.2.21 Do-item sequencing and splice diagnostics
+
+Family:
+
+```text
+kappa.do.splice-context
+```
+
+Used when a `!` monadic splice appears in a position where the §18.3.1 expression-lifting translation is not
+available: outside any enclosing `do` block, across a lambda, local-function, quote, type, static-object, or
+erased-proof boundary without an inner `do` block, or inside a comprehension clause (§18.3.1 comprehension boundary).
+
+Diagnostics in this family include at least:
+
+```text
+E_SPLICE_OUTSIDE_DO
+E_SPLICE_CROSSES_BOUNDARY
+E_SPLICE_IN_COMPREHENSION
+```
+
+Payload MUST include, when applicable:
+
+* whether the rejected occurrence is a `!` splice or an immediate-application splice head;
+* the nearest enclosing `do` block, when one exists;
+* the boundary construct that blocked lifting, among lambda, local function, quote, type position, static-object
+  position, erased-proof position, elaboration-time position, and comprehension clause;
+* for `E_SPLICE_IN_COMPREHENSION`, the comprehension carrier (list, set, or map) and the clause kind containing the
+  occurrence; and
+* a source-preserving repair when evident, such as binding the computation on an earlier do-item or rewriting the
+  comprehension as an explicit loop (§18.6).
+
+A mutable-variable current-value occurrence rejected at the same boundaries uses the corresponding
+`kappa.var.mutable-binding` code (§3.2.20) rather than this family; exactly one of the two families is primary for
+any one diagnostic.
+
+Family:
+
+```text
+kappa.do.unreachable-item
+```
+
+Used when user-written do-items follow an abrupt-control item on every path that reaches them, so they can never
+execute (§18.2.2).
+
+Diagnostics in this family include at least:
+
+```text
+W_DO_ITEM_UNREACHABLE
+```
+
+Payload MUST include:
+
+* the source range of the maximal unreachable do-item run;
+* the abrupt-control item that terminates every reaching path, as a related origin; and
+* the abrupt completion kind, among `return`, `break`, `continue`, and a raised or abortive equivalent.
+
+This warning follows §3.1.12 hygiene: it reports user-written do-items only, and generated items never produce it.
+
 <!-- compiler.diagnostics.path_sensitive_diagnostics -->
 ### 3.3 Diagnostics for path-sensitive, dependency-sensitive, and borrow-sensitive failures
 
@@ -4991,6 +5063,20 @@ An audit query MUST NOT require parsing human-readable diagnostic prose, canonic
 <!-- lexical -->
 ## 5. Lexical Structure
 
+<!-- lexical.source_text -->
+Source text and encoding:
+
+* Kappa source is Unicode text encoded as UTF-8. A byte sequence that is not valid UTF-8 is rejected with
+  `E_UNICODE_INVALID_UTF8` (§3.1.3).
+* A single U+FEFF byte order mark at the very start of a source file MUST be accepted and discarded before lexing.
+  The discarded mark is not part of the module text: it does not participate in indentation or layout (§5.4), it is
+  not part of any token or comment, and its presence or absence MUST NOT change the meaning or acceptance of the
+  file. Tooling that reports source positions MUST NOT shift positions in the rest of the file to account for it.
+* U+FEFF anywhere else in source text outside string literal content is rejected. Because the character is invisible,
+  the diagnostic MUST name it explicitly (for example `U+FEFF BYTE ORDER MARK`) and SHOULD state that it is usually
+  introduced by editors or tools that emit a byte order mark mid-file; a rendering that shows only the invisible
+  character with no name does not conform.
+
 <!-- lexical.identifiers -->
 ### 5.1 Identifiers
 
@@ -5261,6 +5347,14 @@ Kappa uses a Python-style significant indentation rule.
 Lexical model:
 
 * The lexer emits `NEWLINE`, `INDENT`, and `DEDENT` tokens.
+* A physical line is terminated by U+000A LINE FEED or by the two-character sequence U+000D U+000A (CRLF). The two
+  spellings denote the same single line terminator everywhere: layout, statement boundaries, comments, and string
+  literal content observe one terminator, and a conforming program has the same meaning under either convention.
+  Constructs whose semantics records a line terminator in a value (notably multiline string content, §6.3.3) record
+  it as U+000A regardless of the source spelling.
+* A U+000D CARRIAGE RETURN that is not immediately followed by U+000A is a compile-time error. Because the character
+  is invisible, the diagnostic MUST name it explicitly (for example `U+000D CARRIAGE RETURN`); a rendering that shows
+  only the invisible character with no name does not conform.
 * Indentation is measured in spaces. Tabs are a compile-time error. Implementations MUST NOT offer a flag that silently
   converts tabs to spaces. A diagnostic MUST point to the first tab character.
 * Inside `()`, `[]`, `{}`, `{| |}`, and `<[ ]>`, the lexer does not emit `INDENT`/`DEDENT` (or the parser may
@@ -5914,7 +6008,10 @@ rawMultilineStringLiteral ::= hashes '"""' multiBody '"""' hashes
 
 Normative content rule:
 
-* The content of a multiline literal is first taken as the characters between the opening and closing delimiters.
+* The content of a multiline literal is first taken as the characters between the opening and closing delimiters,
+  with every source line terminator (§5.4: U+000A, or the CRLF pair) represented as a single U+000A. Multiline
+  content never records U+000D from a source line terminator; in an ordinary (non-raw) literal, U+000D may still be
+  produced by the escape `\r` during the later escape-decoding step.
 * If the first character of that content is a newline, that newline is removed.
 * Let `I` be the exact sequence of leading spaces on the line containing the closing delimiter, immediately before that
   delimiter.
@@ -24640,7 +24737,11 @@ Rules:
 * Abrupt-control items such as `return`, `break`, and `continue` may appear anywhere in the sequence.
 * If execution reaches the end of the block normally, the last reached do-item must provide the block result.
 * A do-item that is reached only on unreachable paths need not provide a normal result.
-* Unreachable trailing do-items are permitted, though implementations may warn.
+* Unreachable do-items are permitted and are not an error, but they MUST be reported: a conforming implementation
+  emits `W_DO_ITEM_UNREACHABLE` (family `kappa.do.unreachable-item`, §3.2.21) once for each maximal contiguous run
+  of user-written do-items that is unreachable because every path reaching it has already produced an abrupt
+  completion, with the abrupt-control item as related evidence. The warning is computed on the same reachability
+  facts that exempt unreachable items from usage accounting (§18.2.4) and follows §3.1.12 source-oriented hygiene.
 
 Typing:
 
@@ -25021,6 +25122,25 @@ The translation does not run in type positions, static-object positions, erased 
 synthesis, quotation bodies, elaboration-time macro execution, or inside a nested lambda/local-function body unless that
 nested body has its own enclosing `do` block. A mutable-variable occurrence in such a position is rejected unless the
 source form explicitly selects a non-reading facet such as `ref x`.
+
+Comprehension boundary:
+
+A comprehension (§20.3) is not an expression-lifting context. In v1, a `!` splice MUST NOT appear inside any
+comprehension clause: a source, `let` clause, filter, key, ordering, grouping, join, `on conflict`, or `yield`
+operand. Such an occurrence is a compile-time error in family `kappa.do.splice-context` with portable alias
+`E_SPLICE_IN_COMPREHENSION`, reported at the `!` occurrence and identifying the enclosing comprehension carrier and
+clause kind. A mutable-variable current-value occurrence inside a comprehension clause is rejected the same way under
+`E_VAR_READ_CROSSES_BOUNDARY`, with the comprehension clause as the blocking boundary.
+
+The occurrence MUST NOT instead be hoisted out of the comprehension and elaborated against the enclosing do-item:
+hoisting would evaluate the operand once for the whole comprehension where its source position suggests one
+evaluation per row, and an operand that mentions a row binder would then surface as an unrelated name-resolution
+failure. Both outcomes are forbidden; the rejection above is the only conforming behavior. The local repairs are
+binding the computation on an earlier do-item (for example `let xs = !source` before the comprehension) when
+one-time evaluation is intended, or an explicit loop (§18.6) when per-row effects are intended, and the diagnostic
+SHOULD offer whichever repair matches the occurrence's clause. This restriction is deliberate v1 conservatism: a
+future revision may define per-row effectful comprehension semantics, and until it does a conforming implementation
+MUST reject rather than select a hoisting.
 
 <!-- effects.do_if_without_else -->
 ### 18.4 `if` without `else` in `do`
@@ -27117,6 +27237,9 @@ Top-level clause-boundary rule:
   * and the preceding token does not place the parser in an ordinary continuation context under §5.4.
 
 Otherwise the `NEWLINE` is treated as part of the surrounding expression syntax rather than as a clause boundary.
+
+Comprehension clauses are pure expressions: a `!` splice or a mutable-variable current-value read inside any clause
+is rejected under §18.3.1's comprehension-boundary rule, never hoisted out of the comprehension.
 
 Example:
 

@@ -1,0 +1,12 @@
+﻿-- Spec 5 (source text and encoding): a single U+FEFF byte order mark at the
+-- very start of a source file MUST be accepted and discarded before lexing;
+-- its presence must not change the meaning or acceptance of the file.
+-- The first byte of THIS file is a UTF-8 BOM (before the first comment).
+--! mode check
+--! assertNoErrors
+
+module main
+
+x : Int
+let x = 42
+-- STATUS(a0497523): FAIL — leading BOM rejected as E_UNEXPECTED_CHARACTER quoting invisible U+FEFF; Spec 5 now requires accept-and-discard

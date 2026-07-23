@@ -1,0 +1,14 @@
+-- Spec 18.3.1 (comprehension boundary) + 3.2.20: a mutable-variable
+-- current-value occurrence inside a comprehension clause is rejected under
+-- E_VAR_READ_CROSSES_BOUNDARY with the comprehension clause as the blocking
+-- boundary — the generated read must not be hoisted out of the comprehension.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_VAR_READ_CROSSES_BOUNDARY
+
+main : UIO Unit
+let main = do
+    var threshold = 1
+    let ys = [ for x in [1, 2, 3], if x > threshold, yield x ]    --!! kappa.var.mutable-binding
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): FAIL — var current-value read in a filter clause accepted with 0 errors (hoisted); Spec 18.3.1 now requires E_VAR_READ_CROSSES_BOUNDARY

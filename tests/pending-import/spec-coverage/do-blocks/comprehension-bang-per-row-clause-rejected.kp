@@ -1,0 +1,21 @@
+-- Spec 18.3.1 (comprehension boundary): a `!` splice inside any comprehension
+-- clause is a compile-time error (family kappa.do.splice-context, alias
+-- E_SPLICE_IN_COMPREHENSION) and MUST NOT be hoisted out of the comprehension.
+-- Here the splice sits in a per-row `if` filter; the historical hoisting ran
+-- the effect once total (snapshot semantics) with zero diagnostics.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.do.splice-context
+
+step : Ref Int -> UIO Int
+let step = \r -> do
+    let n = !readRef r
+    writeRef r (n + 1)
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let r <- newRef 0
+    let ys = [ for x in [1, 2, 3], if x > !(step r), yield x ]    --!! kappa.do.splice-context
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): HARNESS-ERROR — family kappa.do.splice-context not registered; compiler currently ACCEPTS the program and hoists the splice (effect runs once total)

@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- Spec 5.4 (line terminators) + 6.3.3 (fixed dedent): with CRLF normalized
+-- to a single terminator before the content rule runs, an INDENTED multiline
+-- string in a CRLF file satisfies the closing-delimiter indent rule exactly
+-- as in an LF file; no E_MULTILINE_STRING_BAD_INDENT may be emitted.
+-- Every line of THIS file ends with CRLF.
+
+module main
+
+sample : String
+let sample = """
+    ab
+    cd
+    """
+-- STATUS(a0497523): FAIL — spurious E_MULTILINE_STRING_BAD_INDENT from invisible CR bytes; Spec 6.3.3 normalization removes them before the indent check

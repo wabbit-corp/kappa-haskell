@@ -1,0 +1,19 @@
+-- Spec 18.2.2: W_DO_ITEM_UNREACHABLE fires ONCE per maximal contiguous
+-- unreachable run, not once per dead item — three consecutive dead items
+-- after one `return` are a single region and produce exactly one warning.
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+module main
+
+threeDead : Int -> UIO Int
+let threeDead x =
+    do
+        return (x + 1)
+        printlnString "dead one"
+        printlnString "dead two"
+        return 0
+
+main : UIO Unit
+let main = printlnString "ok"
+-- STATUS(a0497523): FAIL — 0 warnings; one maximal region must produce exactly 1 warning

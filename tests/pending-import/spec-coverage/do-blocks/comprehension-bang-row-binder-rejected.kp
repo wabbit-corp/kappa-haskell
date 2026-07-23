@@ -1,0 +1,18 @@
+-- Spec 18.3.1 (comprehension boundary): a `!` splice inside a `yield` clause
+-- is rejected with kappa.do.splice-context / E_SPLICE_IN_COMPREHENSION at the
+-- occurrence. Hoisting it to the enclosing do-item is explicitly forbidden:
+-- the historical hoisting moved `!(echoInt x)` out of the comprehension where
+-- the row binder `x` is not in scope, surfacing an absurd E_NAME_UNRESOLVED
+-- on `x` ("did you mean '%'?") instead of naming the splice boundary.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.do.splice-context
+
+echoInt : Int -> UIO Int
+let echoInt = \n -> ioPure n
+
+main : UIO Unit
+let main = do
+    let ys = [ for x in [1, 2, 3], yield !(echoInt x) ]    --!! kappa.do.splice-context
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): HARNESS-ERROR — family kappa.do.splice-context not registered; compiler currently hoists and reports E_NAME_UNRESOLVED on the row binder

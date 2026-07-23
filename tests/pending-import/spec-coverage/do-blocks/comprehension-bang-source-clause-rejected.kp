@@ -1,0 +1,17 @@
+-- Spec 18.3.1 (comprehension boundary): the v1 prohibition is blanket — a `!`
+-- splice is rejected in EVERY comprehension clause, including the source head
+-- of a `for` clause, even though a once-per-comprehension evaluation would be
+-- semantically coherent there. The conforming repair is binding the source on
+-- an earlier do-item (`let xs = !getList`).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.do.splice-context
+
+getList : UIO (List Int)
+let getList = ioPure [1, 2, 3]
+
+main : UIO Unit
+let main = do
+    let ys = [ for x in !getList, yield x ]    --!! kappa.do.splice-context
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): HARNESS-ERROR — family kappa.do.splice-context not registered; compiler currently accepts a spliced source clause
