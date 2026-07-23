@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+-- Spec 3.2.3 (record-row label repairs): when expected and actual are
+-- record rows differing by exactly ONE label pair, the payload MUST carry
+-- that pair as the mismatch path (not only both whole rows) and the
+-- diagnostic MUST attach a rename repair; within one edit (here 'nmae' ->
+-- 'name', an adjacent transposition) the repair MUST be a maybe-applicable
+-- fix, not prose. See also 3.1.9 CandidateRepair.
+--! assertDiagnosticFix error kappa.type.mismatch maybe-applicable
+module main
+
+person : (name : String, age : Integer)
+let person = (nmae = "ada", age = 36) --!! kappa.type.mismatch
+-- STATUS(a0497523): FAIL — generic whole-row mismatch, no mismatch path, no rename fix; Spec 3.2.3 record-row label repair now mandatory

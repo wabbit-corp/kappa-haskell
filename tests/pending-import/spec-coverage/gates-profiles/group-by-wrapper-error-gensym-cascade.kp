@@ -1,0 +1,19 @@
+-- Spec 3.1.11 (internal-placeholder hygiene): suggestion/fix engines MUST
+-- NOT propose replacing one compiler-generated name with another, and a
+-- resolution failure whose subject is a generated binder (here hygienic
+-- comprehension temporaries after the group-by wrapper failed to resolve)
+-- is a recovery artifact that MUST be suppressed under the diagnostic that
+-- rejected the generating construct -- never an independent unresolved
+-- name with a gensym-to-gensym fix. Expected: only the two legitimate
+-- NoSuchWrapper errors.
+--! mode check
+--! assertErrorCount 2
+
+f : Unit -> List Int
+let f u =
+    [
+        for x in [1, 2]
+        group by 1 { c = 1 using NoSuchWrapper } into g
+        yield 0
+    ]
+-- STATUS(a0497523): FAIL — third error still leaks hygienic gensyms with a gensym-to-gensym fix; Spec 3.1.11 hygiene now forbids it

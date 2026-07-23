@@ -854,6 +854,9 @@ E_VAR_READ_CROSSES_BOUNDARY
 E_VAR_IN_STATIC_POSITION
 E_VAR_READ_DUPLICATES_LINEAR_VALUE
 W_VAR_REF_ESCAPE_DISABLES_FLOW
+W_VAR_NEVER_READ
+
+E_NUMERIC_LITERAL_MALFORMED
 
 E_SPLICE_OUTSIDE_DO
 E_SPLICE_CROSSES_BOUNDARY
@@ -1044,6 +1047,10 @@ Meanings:
 * `E_VAR_IN_STATIC_POSITION` is emitted when a mutable variable is used in a type, static-object, erased proof, elaboration-time macro, or implicit-search position that cannot perform object-phase reads.
 * `E_VAR_READ_DUPLICATES_LINEAR_VALUE` is emitted when a current-value read of a mutable variable would duplicate a non-duplicable runtime-relevant component of the stored value.
 * `W_VAR_REF_ESCAPE_DISABLES_FLOW` MAY be emitted when `ref x` escapes and therefore disables current-value flow typing for mutable variable `x`.
+* `W_VAR_NEVER_READ` is emitted once per user-written `var` binding none of whose facets is ever read on any path
+  (§3.2.20), including write-only bindings and bindings with no uses at all.
+* `E_NUMERIC_LITERAL_MALFORMED` is emitted when a numeric literal token is malformed, including a digit that is not
+  valid for the literal's base appearing inside the literal's maximal token run (§6.1.1 token boundary).
 * `E_SPLICE_OUTSIDE_DO` is emitted when a `!` monadic splice appears with no enclosing `do` block to lift into.
 * `E_SPLICE_CROSSES_BOUNDARY` is emitted when lifting a `!` splice would require moving it across a user-written
   lambda, local-function, quote, type, static-object, erased-proof, or elaboration-time boundary without an inner
@@ -1455,6 +1462,17 @@ Examples of local repairs include:
 A machine-applicable local repair MUST edit only source origins and MUST preserve unrelated concrete syntax and trivia
 where possible.
 
+Unresolved-name suggestion quality:
+
+* The edit metric used to rank candidate spellings for typo suggestions MUST count an adjacent transposition as a
+  single edit (Damerau-Levenshtein or an equivalent), so a transposed spelling such as `Bytse` is one edit from the
+  intended `Bytes`, not two.
+* For an unresolved qualifier in dotted position — `X.member` where `X` does not resolve — candidate spellings that
+  would make the whole dotted reference resolve (module names, module aliases, and static objects that export
+  `member`) MUST rank strictly above candidates at equal or smaller edit distance that would leave `.member`
+  unresolved. A candidate whose substitution is known to be ill-formed at the use site MUST NOT be offered as the
+  primary suggestion while a resolving candidate exists.
+
 If a diagnostic suggests enabling a feature gate, the diagnostic MUST report the owning feature gate and the provenance
 of the current gate setting under §2.1.
 
@@ -1723,6 +1741,11 @@ Root-cause suppression:
 * If several diagnostics arise from one malformed binding, missing initializer, duplicate declaration, failed recovery
   choice, duplicated blocked unification report, or equivalent root cause, the implementation SHOULD emit one primary
   diagnostic and place the explained downstream diagnostics in `suppressed`.
+* A missing-argument or arity diagnostic at an application site — including a named constructor application that omits
+  a required field — is the root cause of that same site's residual partial-application or result type mismatch. The
+  residual mismatch MUST be suppressed into the arity diagnostic, not reported as an independent error, and one such
+  source mistake MUST NOT produce more primary diagnostics through the named-argument route than the same mistake
+  produces through the positional route.
 * Suppressed diagnostics MUST retain enough structured summary information for tooling to show them on request.
 * Suppression MUST NOT hide independent root causes.
 
@@ -1744,6 +1767,13 @@ Internal-placeholder hygiene:
   "an inserted implicit argument", "a generated matcher", or "a recovered missing expression".
 * Hole and placeholder diagnostics MUST report the original source placeholder's local context and expected goal when
   available, rather than only the later helper metavariable introduced by lowering.
+* Typo-suggestion and fix engines are in scope for this hygiene: a suggestion or fix MUST NOT propose replacing one
+  compiler-generated name with another, and a machine-applicable or maybe-applicable fix MUST NOT edit user source to
+  introduce a compiler-generated spelling.
+* A resolution failure whose subject is itself a compiler-generated binder — for example a hygienic temporary
+  introduced by comprehension or aggregate elaboration after an earlier error rejected the generating construct — is a
+  recovery artifact, not a user error. It MUST be suppressed under the diagnostic that rejected the generating
+  construct (§3.1.14A), never reported as an independent unresolved name.
 
 Generated-origin provenance:
 
@@ -2305,6 +2335,13 @@ Payload MUST include:
 * alias, opacity, and `clarify` status relevant to rendering the compared types.
 
 A human renderer SHOULD show the smallest useful type difference rather than only printing both complete types.
+
+Record-row label repairs: when the expected and actual types of a mismatch are record rows whose field label sets
+differ by exactly one label pair — one label present only in the actual row, one present only in the expected row —
+and the rows otherwise agree, the payload MUST identify that label pair as the mismatch path rather than only carrying
+the two whole rows, and the diagnostic MUST attach a candidate repair renaming the written label to the expected label
+(§3.1.9). When the two labels are within one edit — a single insertion, deletion, substitution, or adjacent
+transposition — that repair MUST additionally be attached as a `maybe-applicable` fix, not represented only as prose.
 
 Family:
 
@@ -4461,7 +4498,16 @@ E_VAR_READ_CROSSES_BOUNDARY
 E_VAR_IN_STATIC_POSITION
 E_VAR_READ_DUPLICATES_LINEAR_VALUE
 W_VAR_REF_ESCAPE_DISABLES_FLOW
+W_VAR_NEVER_READ
 ```
+
+`W_VAR_NEVER_READ` MUST be emitted once per user-written `var` binding none of whose facets (current value, `ref`,
+assignment target, or var-place) is ever read on any path: both a write-only binding, whose only uses are assignments,
+and a binding with no uses at all. The analysis is flow-precise over the same facts used by §18.6.2 tracked current
+values: a binding assigned on one path and read on another — for example written inside a loop body and read after the
+loop — is read and MUST NOT warn. The warning is anchored at the `var` declaration with any dead assignment sites as
+related origins, and follows §3.1.12 source-oriented hygiene: generated reads do not count as uses, and generated
+bindings never warn.
 
 Payload MUST include, when applicable:
 
@@ -5380,6 +5426,33 @@ after a token that syntactically requires a following expression, including (non
 
 In these cases, the indented lines form a continuation of the expression rather than starting a new statement.
 
+Continuation-leading tokens:
+
+A `NEWLINE` also continues the current construct when the next significant line begins with:
+
+* an operator token that has no prefix parse under the fixity environment in scope — so a line beginning `|| b`
+  continues the preceding expression, while a line beginning `- x` still starts a new negation statement; or
+* `else`, `elif`, or `then` belonging to the innermost conditional of an active continuation region that is still
+  grammatically open for that token.
+
+The leading token's line MUST satisfy the same strictly-greater-than-anchor indentation rule as any other continuation
+line, and it extends exactly the construct it is grammatically able to extend. This makes the conventional
+leading-operator style and the hanging-`else` style well-formed:
+
+```kappa
+let either a b =
+    a
+    || b
+
+let choose x =
+    let y = x
+    in if y > 0 then y
+       else 0
+```
+
+At equal-or-smaller indentation these tokens do not continue anything, and the ordinary statement rules apply
+unchanged.
+
 Continuation regions:
 
 When a `NEWLINE` occurs in a continuation context outside explicit grouping delimiters, the parser enters a
@@ -5700,6 +5773,17 @@ Forms:
 * Binary: `0b1010`, `0b1_0_1_0`
 
 Underscores `_` are allowed between digits for readability; they have no semantic effect.
+
+Token boundary:
+
+A numeric literal token extends maximally. After the literal — including any suffix accepted by §6.1.6 — the next
+source character MUST NOT be an ASCII digit, an identifier-continue character, or `_`. If it is, the entire maximal
+alphanumeric run is one malformed numeric literal, rejected with `E_NUMERIC_LITERAL_MALFORMED`; the diagnostic MUST
+identify the literal's base and the first offending character. For example, `0b12` is one malformed binary literal
+whose digit `2` is not valid for base 2, and `0o778` is one malformed octal literal whose digit `8` is not valid for
+base 8. An implementation MUST NOT instead split the run at the first invalid digit and parse the remainder as an
+adjacent second token; the historical split produced an application error (`(0b1) 2` reported as a non-callable
+`Integer`) two tokens away from the typo.
 
 <!-- literals.numeric_literals.floating_point_float -->
 #### 6.1.2 Floating-point (`Float`)
@@ -18664,6 +18748,16 @@ instance Iterator (List a) =
 
 Free lowercase identifiers in instance premises and the instance head are implicitly universalized per §11.3.3. Thus
 `instance Eq a => Eq (Option a) = ...` is well-formed without an explicit outer binder for `a`.
+
+Instance-head name resolution:
+
+If the trait position of an instance head is a name that does not resolve, the diagnostic is ordinary
+`kappa.name.unresolved` naming that spelling; a head-shape diagnostic ("the head is not a trait applied to type
+arguments") is reserved for a head whose name resolves to a non-trait declaration or whose shape is genuinely
+malformed, and MUST NOT be used for a mere resolution failure. Member definitions inside an instance rejected for an
+unresolved or non-trait head are registered as recovery bindings under §3.1.14A: a later reference that would have
+resolved to such a member is suppressed under the instance's primary diagnostic, not reported as an independent
+unresolved name.
 
 `std.prelude` also provides the canonical bridge from reflective equality to non-reflecting equivalence:
 

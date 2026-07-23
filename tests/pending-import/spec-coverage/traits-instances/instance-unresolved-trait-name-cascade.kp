@@ -1,0 +1,23 @@
+-- Spec 14.3 (instance-head name resolution): an unresolved trait NAME in
+-- an instance head is ordinary kappa.name.unresolved naming that spelling;
+-- the head-shape diagnostic is reserved for heads resolving to a non-trait
+-- or genuinely malformed shapes. Members of the rejected instance are
+-- 3.1.14A recovery bindings: downstream uses of `render` are suppressed
+-- under the primary diagnostic, not independent unresolved names.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name NoSuchTrait
+module main
+
+data Pair = MkPair Int Int
+
+instance NoSuchTrait Pair =
+    let render p = "hi"
+
+use1 : String
+let use1 = render (MkPair 1 2)
+
+use2 : String
+let use2 = render (MkPair 3 4)
+-- STATUS(a0497523): FAIL — 3 errors: head-shape complaint that never names NoSuchTrait plus per-call-site render cascade; Spec 14.3 now routes to kappa.name.unresolved with 3.1.14A member recovery

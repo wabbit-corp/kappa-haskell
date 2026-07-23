@@ -1,0 +1,41 @@
+-- Spec 3.2.20 + 3.1.4: W_VAR_NEVER_READ MUST be emitted once per `var`
+-- binding none of whose facets is ever read on any path -- write-only
+-- bindings (dead stores) and never-touched bindings alike. The analysis is
+-- flow-precise over the 18.6.2 tracked facts: a var written in a loop body
+-- and read after the loop is read and MUST NOT warn (loopOk below).
+-- Expected: one warning for the write-only var, one for the untouched var.
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 2
+module main
+
+-- WARNING EXPECTED: acc is assigned twice and never read anywhere.
+deadStores : Int -> UIO Int
+let deadStores x =
+    do
+        var acc = 0
+        acc = x
+        acc = x + 1
+        return x
+
+-- WARNING EXPECTED: u is initialized and then never read or written.
+neverTouched : UIO Int
+let neverTouched =
+    do
+        var u = 0
+        return 1
+
+-- no warning: s is written in the loop and read after it.
+loopOk : Int -> UIO Unit
+let loopOk limit =
+    do
+        var s = 0
+        var i = 0
+        while i < limit do
+            s = s + i
+            i = i + 1
+        printInt s
+
+main : UIO Unit
+let main = printlnString "ok"
+-- STATUS(a0497523): FAIL — write-only and never-touched vars compile with 0 warnings; Spec 3.2.20 now mandates W_VAR_NEVER_READ (expected 2)

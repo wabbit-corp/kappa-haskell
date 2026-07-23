@@ -1,0 +1,15 @@
+-- Spec 6.1.1 (token boundary): a numeric literal token extends maximally;
+-- an ASCII digit immediately after the literal makes the whole run ONE
+-- malformed literal (E_NUMERIC_LITERAL_MALFORMED naming the base and the
+-- offending digit). Splitting `0b12` into `(0b1) 2` and reporting a remote
+-- E_APPLICATION_NONCALLABLE on Integer is explicitly non-conforming.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_NUMERIC_LITERAL_MALFORMED
+
+badBin : Integer
+let badBin = 0b12
+
+badOct : Integer
+let badOct = 0o778
+-- STATUS(a0497523): FAIL — 0b12/0o778 still split into literal+adjacent token, reported as remote E_APPLICATION_NONCALLABLE; Spec 6.1.1 token boundary now forbids the split

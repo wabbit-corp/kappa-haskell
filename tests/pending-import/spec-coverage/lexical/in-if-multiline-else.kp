@@ -1,0 +1,24 @@
+-- Spec 5.4 (continuation-leading tokens): a line beginning with `else`
+-- that belongs to the innermost open conditional of an active continuation
+-- region continues that conditional when indented strictly deeper than the
+-- anchor. The hanging-else style below is well-formed; the historical
+-- behavior emitted E_IF_MISSING_ELSE + E_UNEXPECTED_INDENTATION.
+--! mode check
+--! assertNoErrors
+--! assertEval positive 4
+--! assertEval negative 0
+
+module main
+
+choose : Int -> Int
+let choose x =
+    let y = x
+    in if y > 0 then y
+       else 0
+
+positive : Int
+let positive = choose 4
+
+negative : Int
+let negative = choose (negInt 2)
+-- STATUS(a0497523): FAIL — hanging else still yields E_UNEXPECTED_INDENTATION + E_IF_MISSING_ELSE; Spec 5.4 continuation-leading tokens now accept it

@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- Spec 3.1.7 (unresolved-name suggestion quality): the suggestion metric
+-- MUST count an adjacent transposition as one edit ('Bytse' -> 'Bytes'),
+-- and for an unresolved qualifier in dotted position X.member, candidates
+-- that make the WHOLE reference resolve (the alias 'Bytes', which exports
+-- bytesLength) MUST outrank same-distance candidates that leave .member
+-- unresolved (the prelude type 'Byte'). Expected suggestion: Bytes.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion Bytes
+module main
+
+import std.bytes as Bytes
+
+n : Nat
+let n = Bytse.bytesLength Bytse.emptyBytes --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — suggestion is still the non-resolving prelude type Byte; Spec 3.1.7 now requires transposition-aware, qualifier-context-aware ranking (expected Bytes)

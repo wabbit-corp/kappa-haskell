@@ -1,0 +1,16 @@
+-- Spec 14.3 (instance-head name resolution) sibling: the head-shape
+-- diagnostic IS the right report when the head name resolves to a
+-- non-trait declaration (here the data type Int). Pins the boundary of the
+-- unresolved-name rule: resolution failure -> kappa.name.unresolved;
+-- resolves-to-non-trait -> head-shape complaint.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_INSTANCE_HEAD
+
+module main
+
+data Pair = MkPair Int Int
+
+instance Int Pair =
+    let render p = "hi"
+-- STATUS(a0497523): PASS

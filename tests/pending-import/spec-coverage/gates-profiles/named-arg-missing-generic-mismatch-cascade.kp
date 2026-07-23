@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAMED_ARG_MISSING
+-- Spec 3.1.11 (root-cause suppression): a missing-argument diagnostic at an
+-- application site is the root cause of that site's residual partial-
+-- application mismatch; the residual mismatch MUST be suppressed into the
+-- arity diagnostic, and the named-argument route MUST NOT be noisier than
+-- the positional route (MkP 1 2 3 reports exactly one error).
+module main
+
+data P : Type = MkP (x : Integer) (y : Integer)
+
+v : P
+let v = MkP { x = 1 } --!! E_NAMED_ARG_MISSING
+-- STATUS(a0497523): FAIL — 2 errors: E_NAMED_ARG_MISSING plus the unsuppressed residual mismatch; Spec 3.1.11 now requires suppression into the arity diagnostic

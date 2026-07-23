@@ -1,0 +1,24 @@
+-- Spec 5.4 (continuation-leading tokens): a next significant line that
+-- begins with an operator token having no prefix parse continues the
+-- current expression when its indentation is strictly greater than the
+-- anchor. The conventional leading-operator style below is well-formed;
+-- the historical behavior rejected it with a REMOTE
+-- E_RECOVERY_DECLARATION_SKIPPED at the FOLLOWING declaration.
+--! mode check
+--! assertNoErrors
+--! assertEval eitherTrue True
+--! assertEval neitherTrue False
+
+module main
+
+either : Bool -> Bool -> Bool
+let either a b =
+    a
+    || b
+
+eitherTrue : Bool
+let eitherTrue = either False True
+
+neitherTrue : Bool
+let neitherTrue = either False False
+-- STATUS(a0497523): FAIL — leading || line still rejected with remote E_RECOVERY_DECLARATION_SKIPPED at the next declaration; Spec 5.4 continuation-leading tokens now accept it

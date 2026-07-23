@@ -48,3 +48,10 @@ dead-code-after-return probes were promoted to spec-required behavior (Spec
 SS5 source text, SS5.4 line terminators, SS6.3.3 content normalization,
 SS18.3.1 comprehension boundary, SS18.2.2 + SS3.2.21 W_DO_ITEM_UNREACHABLE)
 and moved to ../spec-coverage/ (lexical/, literals/, do-blocks/).
+
+2026-07-23 promotions (second batch): var-never-read lint, record-field
+rename fix, radix token boundary, qualifier suggestion ranking, leading-
+operator and hanging-else continuations, named-arg cascade suppression,
+instance-head name resolution, and gensym hygiene were promoted to
+spec-required behavior (Spec SS3.1.7, SS3.1.11, SS3.2.3, SS3.2.20, SS5.4,
+SS6.1.1, SS14.3) and moved to ../spec-coverage/.
