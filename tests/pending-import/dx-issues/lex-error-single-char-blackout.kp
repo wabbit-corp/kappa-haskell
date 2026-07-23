@@ -1,0 +1,33 @@
+-- DX EXPECTATION (not necessarily spec-required): a single stray
+-- character must not black out every other diagnostic in the file.
+--
+-- Today one E_UNEXPECTED_CHARACTER (the ';' in 'mid') is the ONLY error
+-- reported: lexing aborts, so the type mismatch in the already-complete
+-- declaration ABOVE it ('bad') and the unresolved name BELOW it
+-- ('after') both disappear.  Parse-stage recovery does keep checking
+-- unrelated declarations (E_RECOVERY_DECLARATION_SKIPPED files still
+-- report independent type errors), so the lex stage is the odd one out.
+-- §3.1.11 says suppression must not hide independent root causes and
+-- §3.1.14 wants analysis to continue after recoverable frontend
+-- failures; both point at skip-the-character (or skip-to-end-of-line)
+-- recovery like GHC/Rust, but neither MUST names bare lex errors —
+-- hence a DX pin.
+--
+-- Expected: all three independent errors are reported.
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_UNEXPECTED_CHARACTER
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnostic error E_NAME_UNRESOLVED
+module main
+
+bad : Int
+let bad = "not an int"
+
+mid : Int -> Int
+let mid x = x ;
+
+after : Int
+let after = NoSuchName
+
+-- STATUS(a0497523): FAIL — the stray character is the ONLY error; the independent type mismatch above it and unresolved name below it are never reported

@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "seen 1\nseen 2\nresult 2\n"
+
+-- §18.6.3: the loop `else` runs only on NORMAL completion. A `return` out of
+-- the loop body is abrupt control that exits the loop without normal
+-- completion, so the `else` block ("exhausted") must be skipped.
+module main
+
+findTwo : List Int -> UIO Int
+let findTwo xs = do
+    for x in xs do
+        printlnString (stringAppend "seen " (showInt x))
+        if eqInt x 2 then
+            return x
+    else do
+        printlnString "exhausted"
+    pure 0
+
+main : UIO Unit
+let main = do
+    let r <- findTwo (1 :: 2 :: 3 :: Nil)
+    printlnString (stringAppend "result " (showInt r))
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,8 @@
+@NoPrelude module shared
+
+data Local : Type =
+    MkLocal
+
+ok : Local
+let ok = MkLocal
+-- STATUS(a0497523): PASS

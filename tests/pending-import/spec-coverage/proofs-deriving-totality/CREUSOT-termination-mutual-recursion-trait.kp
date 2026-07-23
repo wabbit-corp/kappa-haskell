@@ -1,0 +1,40 @@
+-- Source issues: CREUSOT-910, CREUSOT-1232
+-- Spec: §15.1 (termination-certified definitions), §15.2 (soundness: an
+--       accepted termination argument MUST be well-founded), §15.6
+--       (call edges through elaboration/unfolding), §14.3 (instance
+--       with a structurally smaller premise is search-terminating),
+--       §3.2.11 (kappa.termination.failure)
+-- Pins: the termination SCC must include call edges that go THROUGH
+-- trait-method dispatch: h calls f1 at Wrap Int, whose instance premise
+-- routes to g2 at Int, whose instance body calls h back. The SCC must
+-- not be certified; the kappa.termination.failure family MUST be
+-- reported (a single SCC-level diagnostic anchored at one member is
+-- conforming per §3.2.11).
+
+module main
+
+--! mode check
+
+data Wrap (0 a : Type) : Type =
+    MkWrap (v : a)
+
+trait Tr1 (a : Type) =
+    f1 : a -> Int
+
+trait Tr2 (a : Type) =
+    g2 : a -> Int
+
+h : Int -> Int
+
+-- NEGATIVE: the premise-carrying instance routes the cycle back through
+-- the concrete Tr2 Int instance.
+instance Tr2 t => Tr1 (Wrap t) =
+    let f1 w = match w case MkWrap v -> g2 v
+
+instance Tr2 Int =
+    let g2 x = h x
+
+let h x = f1 (MkWrap x)                       --!! W_TERMINATION_UNVERIFIED
+
+--! assertDiagnosticFamily warning kappa.termination.failure
+-- STATUS(a0497523): PASS

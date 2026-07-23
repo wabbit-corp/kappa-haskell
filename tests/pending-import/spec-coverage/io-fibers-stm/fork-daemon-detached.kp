@@ -38,3 +38,4 @@ let main = do
       case Success v -> printlnString ("daemon:" ++ showInt v)
       case Failure (Interrupt c) -> printlnString "daemon:interrupted"
       case Failure c -> printlnString "daemon:other"
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 35; stdout mismatch: expected "scope-exited\ndaemon:… [was PASS in an earlier STATUS line]

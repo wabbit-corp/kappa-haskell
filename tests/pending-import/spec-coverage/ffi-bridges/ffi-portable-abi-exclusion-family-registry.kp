@@ -1,0 +1,21 @@
+--! assertNoErrors
+--! assertDiagnosticExplainExists kappa.ffi.portable-abi-exclusion
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_NON_FIRST_ORDER_FUNCTION
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_HIGHER_ORDER_VALUE
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_UNMONITORED_CALLBACK
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_DICTIONARY_OR_EVIDENCE
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_DIRECT_BORROW
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_BARE_OWNING_OPAQUE_HANDLE
+--! assertDiagnosticExplainExists E_FFI_PORTABLE_ABI_ERASED_RUNTIME_PARAMETER
+
+-- §3.2.14 (family kappa.ffi.portable-abi-exclusion): the standardized family
+-- used when an ABI-visible parameter/result/member/callback/layout/ownership
+-- shape falls outside the §26.1.1 portable subset, together with the stable
+-- SHOULD-level codes named there. The family and its explanation entries must
+-- be exposed by a conforming diagnostics registry (Appendix T.5.1
+-- assertDiagnosticExplainExists).
+module main
+
+let placeholder = ()
+
+-- STATUS(a0497523): FAIL — the compiler registers no kappa.ffi.portable-abi-exclusion family and none of the E_FFI_PORTABLE_ABI_* codes (no portable-ABI adapter surface is implemented); every explain-exists assertion fails

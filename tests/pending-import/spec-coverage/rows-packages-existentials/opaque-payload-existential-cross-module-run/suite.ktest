@@ -1,0 +1,6 @@
+--! mode run
+--! backend interpreter
+--! packageMode
+--! entry main.main
+--! assertExitCode 0
+--! assertStdout "1\n"

@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.8: std.deriving.shape operations are deterministic for fixed
+-- inputs and environment — two inspections of the same type at the
+-- same site reflect identical constructor lists (names and order must
+-- not depend on hash-table iteration or load order).
+
+import std.deriving.shape.*
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+ctorNames : List ShapeConstructor -> String
+let ctorNames cs =
+    match cs
+    case Nil -> ""
+    case c :: rest -> stringAppend c.renderName (ctorNames rest)
+
+checkStable : Elab (Syntax String)
+let checkStable = do
+    let shape1 <- inspectAdt @Color '{ type Color }
+    let shape2 <- inspectAdt @Color '{ type Color }
+    match ctorNames shape1.constructors == ctorNames shape2.constructors
+    case True -> stringSyntax "ok"
+    case False -> failElab "inspection not deterministic"
+
+ok : String
+let ok = $(checkStable)
+-- STATUS(a0497523): PASS

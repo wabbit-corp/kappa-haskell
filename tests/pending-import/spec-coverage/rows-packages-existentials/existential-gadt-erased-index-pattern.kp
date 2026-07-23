@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 x §10.2 x §31.2: a GADT payload whose constructor carries an
+-- ERASED index binder (forall (0 m : MyNat)) is matchable inside an
+-- opened existential; the pattern discriminates only the runtime
+-- constructor tag, while the erased index and the opened witness `n`
+-- stay quantity-0 static data. The runtime field `x` is freely usable
+-- as the branch result.
+module main
+
+data MyNat : Type =
+    Z
+    S MyNat
+
+data Vec (n : MyNat) (a : Type) : Type =
+    Nil : Vec Z a
+    ECons : forall (0 m : MyNat). (x : a) -> (xs : Vec m a) -> Vec (S m) a
+
+pkg : exists (n : MyNat). Vec n Int
+let pkg = seal (ECons 5 Nil) as exists (n : MyNat). Vec n Int
+
+use : Int
+let use =
+    open pkg as exists (n). v in
+        match v
+        case Nil -> 0
+        case ECons x xs -> x
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,50 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (g (Just "abc") = True; g (Just "xyz") = True; g _ = False).
+-- Spec: §17.1 (`match`), §17.2.1 (literal patterns inside constructor
+--       patterns), §6.3 (string literals).
+--
+-- Pins: a constructor pattern may carry a string literal in a position
+-- whose type is String, and several arms may share the same outer
+-- constructor with different literal arguments. Matching destructures
+-- first, then compares the literal.
+
+module test
+
+--! mode check
+
+isFavoured : Option String -> Bool
+let isFavoured ms =
+    match ms
+    case Some "abc" -> True
+    case Some "xyz" -> True
+    case _ -> False
+
+--! assertNoErrors
+--! assertType isFavoured (Option String -> Bool)
+
+-- POSITIVE: first literal arm matches.
+hitAbc : Bool
+let hitAbc = isFavoured (Some "abc")
+
+--! assertEval hitAbc True
+
+-- POSITIVE: second literal arm matches.
+hitXyz : Bool
+let hitXyz = isFavoured (Some "xyz")
+
+--! assertEval hitXyz True
+
+-- POSITIVE: same outer constructor, non-matching string — catch-all.
+missAb : Bool
+let missAb = isFavoured (Some "ab")
+
+--! assertEval missAb False
+
+-- POSITIVE: different outer constructor — catch-all.
+missNone : Bool
+let missNone = isFavoured None
+
+--! assertNoErrors
+--! assertEval missNone False
+
+-- STATUS(a0497523): PASS

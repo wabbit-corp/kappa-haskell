@@ -1,0 +1,22 @@
+module main
+
+-- §13.2.11 x §8.5.3 x §17.1: an importing module can `open` an
+-- existential whose hidden witness is an opaque data type it cannot
+-- construct or match, and still pattern-match the payload's CONCRETE
+-- outer constructors (Option's are exported); the element stays an
+-- unusable abstract `a`. Sealing across the module boundary with an
+-- opaque payload type must execute like any other package.
+import lib.(box)
+
+n : Int
+let n =
+    open box as exists (a). x in
+        match x
+        case Option.None -> 0
+        case Option.Some _ -> 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt n)
+
+-- STATUS(a0497523): PASS

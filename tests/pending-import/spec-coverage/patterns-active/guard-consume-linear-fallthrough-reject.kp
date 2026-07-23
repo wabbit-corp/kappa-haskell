@@ -1,0 +1,55 @@
+-- §17.1.9 (Spec L22297-L22328) + §12.2 (L14616-L14627) + §17.1.8
+-- (L22276-L22294): a guard runs on the case-SELECTION path, before the
+-- case is committed. If the guard consumes a value available at quantity
+-- 1 and then fails, control falls through to later cases with that value
+-- already consumed; a later case that demands it again gives two runtime
+-- demands on one path, which `1 = [1,1]` forbids. §17.1.8's branchwise
+-- independence covers alternative BRANCH BODIES only — the guard-failure
+-- path is sequenced before the next case, not an alternative to it.
+-- Both flavors below must be rejected (use-after-consume at runtime,
+-- double free once precise RC lands).
+
+--! mode check
+
+data Res : Type =
+    MkRes (n : Int)
+
+spend : (1 r : Res) -> Bool
+let spend (1 r : Res) : Bool =
+    match r
+    case MkRes n -> n > 0
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Box : Type =
+    Box (1 r : Res)
+
+-- NEGATIVE 1 (pattern binder): the guard consumes the linear component r;
+-- on guard failure the next case re-binds the same component and consumes
+-- it again.
+badBinder : (1 b : Box) -> Int
+let badBinder (1 b : Box) : Int =
+    match b
+    case Box r if spend r -> 1
+    case Box r -> resVal r
+
+-- NEGATIVE 2 (function parameter): the first pattern is irrefutable, so
+-- the guard runs on every execution; whenever it is false the fallthrough
+-- case consumes r a second time.
+badParam : (1 r : Res) -> Int -> Int
+let badParam (1 r : Res) (n : Int) : Int =
+    match n
+    case m if spend r -> 1
+    case m -> resVal r
+
+--! assertErrorCount 2
+--! assertDiagnosticMatch quantit|linear|consum|guard
+
+-- STATUS(a0497523): FAIL — both functions are accepted with 0 errors:
+-- guard consumption is never accumulated into the guard-failure
+-- fallthrough path (the same-case param overuse IS caught, see the
+-- sibling guard-plus-body test, so this is specifically the fallthrough
+-- accounting). The <=1 (affine) variant is accepted identically.

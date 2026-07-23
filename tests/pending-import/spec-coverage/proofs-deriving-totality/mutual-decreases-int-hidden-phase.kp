@@ -1,0 +1,48 @@
+-- §15.2 minimum acceptance + §15.4 + §15.10 + §15.11: a mutually recursive
+-- SCC in which every member declares the explicit measure `decreases n`
+-- (an Int measure under §15.4's non-negative-subset rule: the guard
+-- `n <= 0` proves caller and callee components non-negative on the
+-- recursive branch) and in which measure-preserving edges target callees
+-- with strictly smaller canonical phase MUST be accepted as
+-- termination-certified. §15.4 explicitly blesses the
+-- `if n <= 0 then ... else f (n - 1)` shape; §15.10 supplies the phase
+-- component for the nine forward edges that preserve n.
+-- Ten members g0..g9: forward edges pass n unchanged (phase decreases);
+-- only the wrap-around g9 -> g0 passes n - 1.
+-- MINIMIZATION: even the 2-member version (k0 n decreases n = ... k1 n;
+-- k1 n decreases n = ... k0 (n - 1)) is warned today, while the same
+-- 2-member SCC with BOTH edges decreasing n is accepted, and the
+-- structural hidden-phase analogue of this exact 10-member shape is
+-- accepted. The gap is specifically: declared §15.4 term measures do not
+-- combine with the §15.10 hidden phase component.
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+module main
+
+g0 : Int -> Int
+g1 : Int -> Int
+g2 : Int -> Int
+g3 : Int -> Int
+g4 : Int -> Int
+g5 : Int -> Int
+g6 : Int -> Int
+g7 : Int -> Int
+g8 : Int -> Int
+g9 : Int -> Int
+
+let g0 n decreases n = if n <= 0 then 0 else g1 n
+let g1 n decreases n = if n <= 0 then 1 else g2 n
+let g2 n decreases n = if n <= 0 then 2 else g3 n
+let g3 n decreases n = if n <= 0 then 3 else g4 n
+let g4 n decreases n = if n <= 0 then 4 else g5 n
+let g5 n decreases n = if n <= 0 then 5 else g6 n
+let g6 n decreases n = if n <= 0 then 6 else g7 n
+let g7 n decreases n = if n <= 0 then 7 else g8 n
+let g8 n decreases n = if n <= 0 then 8 else g9 n
+let g9 n decreases n = if n <= 0 then 9 else g0 (n - 1)
+
+main : UIO Unit
+let main = printInt (g0 3)
+
+-- STATUS(a0497523): FAIL — all 10 members warned W_TERMINATION_UNVERIFIED (kappa.termination.failure): declared §15.4 Int `decreases n` measures are never combined with the §15.10 hidden phase component (2-member minimal fails identically; the same SCC with both edges decreasing n passes, and the structural no-decreases analogue of this exact 10-member shape passes)

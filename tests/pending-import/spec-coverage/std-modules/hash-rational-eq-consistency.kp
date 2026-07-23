@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nTrue\nTrue\n"
+
+-- §29.3 std.hash: the hashRational primitive and the required Hashable
+-- Rational instance. Eq Rational proves 1/2 = 2/4 (eqSound), so every pure
+-- hash of them agrees by congruence; hashWith is deterministic for a fixed
+-- seed and value within one execution; Ord HashCode's equality class agrees
+-- with Eq HashCode.
+module main
+
+import std.hash.*
+
+half : Rational
+let half = fromInteger 1 / fromInteger 2
+
+twoFourths : Rational
+let twoFourths = fromInteger 2 / fromInteger 4
+
+hRational : Rational -> HashCode
+let hRational r = finishHashState (hashRational r (newHashState defaultHashSeed))
+
+main : UIO Unit
+let main = do
+    println (hRational half == hRational twoFourths)
+    println (hashWith defaultHashSeed half == hashWith defaultHashSeed twoFourths)
+    println (hashWith defaultHashSeed half == hashWith defaultHashSeed half)
+    println (compare (hRational half) (hRational twoFourths) == EQ)
+-- STATUS(a0497523): PASS

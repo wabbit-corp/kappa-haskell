@@ -1,0 +1,20 @@
+module main
+
+-- §19.5/§28.2: `bracket` is the required MonadResource dictionary member.
+-- Exercise it through explicitly named local evidence, with the specified
+-- linear acquire/release and borrowed-use interface, so a similarly behaving
+-- free helper or differently named implementation member cannot mask a
+-- malformed standard trait surface.
+
+viaResourceMember :
+    forall (m : (0 A : Type) -> Type) (a : Type) (b : Type).
+    (@resource : MonadResource m) ->
+    (1 acquire : m a) ->
+    (1 release : (1 owned : a) -> m Unit) ->
+    (1 use : (& borrowed : a) -> m b) ->
+    m b
+let viaResourceMember @resource acquire release use =
+    resource.bracket acquire release use
+
+--! mode check
+--! assertNoErrors

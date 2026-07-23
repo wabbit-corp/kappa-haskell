@@ -1,0 +1,123 @@
+--! mode check
+--! assertNoErrors
+--! assertEval hit 58
+--! assertEval miss 0
+
+-- Robustness: a match with 100 literal arms plus a wildcard must check
+-- (exhaustiveness/reachability analysis, Spec §3.2.10) and dispatch
+-- correctly. Wide (not deep) pattern matrices exercise the per-arm
+-- machinery at a scale single-feature tests never do. File exceeds the
+-- usual line budget because the 100 arms ARE the test subject.
+module main
+
+f : Int -> Int
+let f n =
+    match n
+    case 0 -> 1
+    case 1 -> 2
+    case 2 -> 3
+    case 3 -> 4
+    case 4 -> 5
+    case 5 -> 6
+    case 6 -> 7
+    case 7 -> 8
+    case 8 -> 9
+    case 9 -> 10
+    case 10 -> 11
+    case 11 -> 12
+    case 12 -> 13
+    case 13 -> 14
+    case 14 -> 15
+    case 15 -> 16
+    case 16 -> 17
+    case 17 -> 18
+    case 18 -> 19
+    case 19 -> 20
+    case 20 -> 21
+    case 21 -> 22
+    case 22 -> 23
+    case 23 -> 24
+    case 24 -> 25
+    case 25 -> 26
+    case 26 -> 27
+    case 27 -> 28
+    case 28 -> 29
+    case 29 -> 30
+    case 30 -> 31
+    case 31 -> 32
+    case 32 -> 33
+    case 33 -> 34
+    case 34 -> 35
+    case 35 -> 36
+    case 36 -> 37
+    case 37 -> 38
+    case 38 -> 39
+    case 39 -> 40
+    case 40 -> 41
+    case 41 -> 42
+    case 42 -> 43
+    case 43 -> 44
+    case 44 -> 45
+    case 45 -> 46
+    case 46 -> 47
+    case 47 -> 48
+    case 48 -> 49
+    case 49 -> 50
+    case 50 -> 51
+    case 51 -> 52
+    case 52 -> 53
+    case 53 -> 54
+    case 54 -> 55
+    case 55 -> 56
+    case 56 -> 57
+    case 57 -> 58
+    case 58 -> 59
+    case 59 -> 60
+    case 60 -> 61
+    case 61 -> 62
+    case 62 -> 63
+    case 63 -> 64
+    case 64 -> 65
+    case 65 -> 66
+    case 66 -> 67
+    case 67 -> 68
+    case 68 -> 69
+    case 69 -> 70
+    case 70 -> 71
+    case 71 -> 72
+    case 72 -> 73
+    case 73 -> 74
+    case 74 -> 75
+    case 75 -> 76
+    case 76 -> 77
+    case 77 -> 78
+    case 78 -> 79
+    case 79 -> 80
+    case 80 -> 81
+    case 81 -> 82
+    case 82 -> 83
+    case 83 -> 84
+    case 84 -> 85
+    case 85 -> 86
+    case 86 -> 87
+    case 87 -> 88
+    case 88 -> 89
+    case 89 -> 90
+    case 90 -> 91
+    case 91 -> 92
+    case 92 -> 93
+    case 93 -> 94
+    case 94 -> 95
+    case 95 -> 96
+    case 96 -> 97
+    case 97 -> 98
+    case 98 -> 99
+    case 99 -> 100
+    case _ -> 0
+
+hit : Int
+let hit = f 57
+
+miss : Int
+let miss = f 1000
+-- STATUS(a0497523): PASS

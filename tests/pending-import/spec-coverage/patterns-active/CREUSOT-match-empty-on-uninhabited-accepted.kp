@@ -1,0 +1,38 @@
+-- Source issues: CREUSOT-1439, CREUSOT-114
+-- Spec: §17.1.1 (exhaustiveness for indexed types), §17.1.4
+--       (`impossible` branch bodies), §17.1.5 (`case impossible` empty
+--       remainder), §10 (data with zero constructors)
+-- NOTE: overlaps with tests/conformance/imported-anon/METACOQ-impossible-empty-type.kp
+-- Pins: for a visibly uninhabited (zero-constructor) ADT the canonical
+-- exhaustive match is `case impossible` discharging the empty remainder,
+-- and the same obligation survives composition through a constructor
+-- wrapper (match the wrapper, then eliminate the empty payload).
+
+module main
+
+--! mode check
+
+-- Visibly uninhabited ADT.
+data Bottom : Type
+
+-- POSITIVE: any function out of Bottom uses the empty-remainder form.
+absurd : forall (a : Type). Bottom -> a
+let absurd v =
+    match v
+    case impossible
+
+-- POSITIVE: elimination composed through a constructor wrapper.
+data WrapBottom : Type =
+    Wrap (v : Bottom)
+
+unwrapAbsurd : forall (a : Type). WrapBottom -> a
+let unwrapAbsurd w =
+    match w
+    case Wrap v ->
+        match v
+        case impossible
+
+--! assertNoErrors
+--! assertType absurd forall (a : Type). Bottom -> a
+--! assertType unwrapAbsurd forall (a : Type). WrapBottom -> a
+-- STATUS(a0497523): PASS

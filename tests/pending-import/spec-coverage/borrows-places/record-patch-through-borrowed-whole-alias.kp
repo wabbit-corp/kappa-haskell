@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.4.1 + §13.2.5: `let & q = p` introduces a place-preserving
+-- borrowed view of the whole record; a record patch whose scrutinee is
+-- that borrowed view only READS the original fields (its normative
+-- elaboration is a full record literal of projections) and produces a
+-- fresh owned record, so it is admissible while the borrow is live —
+-- shared borrows permit reads (§12.4: the restriction is against
+-- consuming overlapping paths, not against reading them).
+module main
+
+type Pair = (left : Int, right : Int)
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+ok : (p : Pair) -> Int
+let ok (p : Pair) : Int =
+    let & q = p
+    in let p2 = q.{ left = 1 }
+    in addInt (observe q.right) p2.left
+
+-- STATUS(a0497523): PASS

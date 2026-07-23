@@ -1,0 +1,15 @@
+module lib
+
+-- §8.5.3 x §17.1.5 x §30.2.7: `opaque data` hides the constructor list
+-- outside this module. Never is genuinely empty, and INSIDE the
+-- defining module `case impossible` on it is accepted (constructors —
+-- all zero of them — are visible here).
+opaque data Never : Type
+
+-- plain empty data: constructors (none) stay visible downstream
+data Empty : Type
+
+refuteInside : Never -> Int
+let refuteInside x =
+    match x
+    case impossible

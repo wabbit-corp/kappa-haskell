@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.2 OrderedAdditive/OrderedSemiring law members + §28.2.3 mandated
+-- instances: addMonotoneLeft/addMonotoneRight/mulNonnegativeMonotone are
+-- proof-producing members projectable at their declared types, and the
+-- prelude MUST provide the instances for Nat, Integer, Int, and Rational.
+module main
+
+monoLeft :
+    forall (a : Type). (@_ : OrderedAdditive a) ->
+    (x : a) -> (y : a) -> (z : a) ->
+    (x <= y) = True ->
+    (add z x <= add z y) = True
+let monoLeft x y z h = addMonotoneLeft h
+
+monoRight :
+    forall (a : Type). (@_ : OrderedAdditive a) ->
+    (x : a) -> (y : a) -> (z : a) ->
+    (x <= y) = True ->
+    (add x z <= add y z) = True
+let monoRight x y z h = addMonotoneRight h
+
+mulMono :
+    forall (a : Type). (@_ : OrderedSemiring a) ->
+    (x : a) -> (y : a) -> (z : a) ->
+    (zero <= z) = True ->
+    (x <= y) = True ->
+    (multiply z x <= multiply z y) = True
+let mulMono x y z hz hxy = mulNonnegativeMonotone hz hxy
+
+-- §28.2.3: instances at every mandated carrier.
+natMono : (x : Nat) -> (y : Nat) -> (x <= y) = True -> (add x x <= add x y) = True
+let natMono x y h = monoLeft x y x h
+
+integerMono : (x : Integer) -> (y : Integer) -> (x <= y) = True -> (add x zero <= add y zero) = True
+let integerMono x y h = monoRight x y zero h
+
+intMulMono : (x : Int) -> (y : Int) -> (zero <= x) = True -> (x <= y) = True -> (multiply x x <= multiply x y) = True
+let intMulMono x y hz h = mulMono x y x hz h
+
+rationalMono : (x : Rational) -> (y : Rational) -> (x <= y) = True -> (add x x <= add x y) = True
+let rationalMono x y h = monoLeft x y x h
+-- STATUS(a0497523): FAIL — expected 0 errors, got 12; first error: E_NAME_UNRESOLVED "unresolved name 'addMonotoneLeft' (not in scope)" at line 15 [was PASS in an earlier STATUS line]

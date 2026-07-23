@@ -1,0 +1,57 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_params/comp_params.dl,
+--   tests/semantic/comp_params_inheritance/comp_params_inheritance.dl,
+--   souffle-lang #151 (component parameter name clash),
+--   souffle-lang #2341 (component type parameter name collision with init site).
+-- Spec: §11.3.3 implicit universalization; §7.1 lexical lookup;
+--   §3.2.2 (family kappa.name.unresolved).
+-- Souffle component type parameters are in scope in the component body. The
+-- Kappa analogue pinned here: a free LOWERCASE name in a term signature is
+-- implicitly universalized (§11.3.3) and therefore fine, while an UPPERCASE
+-- name in a signature must resolve to a declared type — an undeclared one is
+-- kappa.name.unresolved.
+
+--! mode check
+
+module main
+
+-- POSITIVE: free lowercase `a` is implicitly universalized (§11.3.3).
+container : a -> List a
+let container x = x :: Nil
+
+identity : a -> a
+let identity x = x
+
+-- POSITIVE: concrete instantiations of the universalized signature.
+wrappedInt : List Int
+let wrappedInt = container 42
+wrappedStr : List String
+let wrappedStr = container "hi"
+
+-- POSITIVE: explicit type parameter in a data declaration is in scope in
+-- constructor fields.
+data Box (a : Type) : Type =
+    MkBox a
+
+makeBox : a -> Box a
+let makeBox x = MkBox x
+
+-- POSITIVE: several universalized parameters.
+pairOf : a -> b -> (a, b)
+let pairOf x y = (x, y)
+
+intStrPair : (Int, String)
+let intStrPair = pairOf 1 "x"
+
+-- POSITIVE: even a fanciful lowercase name is universalized, not resolved.
+ghost : anyoldname -> Int
+let ghost _ = 0
+
+-- NEGATIVE: an uppercase name in a signature is a type reference and must
+-- resolve; implicit universalization does not apply to it (§11.3.3).
+useUndeclared : UndeclaredConcreteType -> Int    --!! kappa.name.unresolved
+let useUndeclared _ = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 1
+
+-- STATUS(a0497523): PASS

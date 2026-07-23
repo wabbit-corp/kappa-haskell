@@ -1,0 +1,9 @@
+module oplib
+
+-- §22.1: the representation of an opaque data type is visible only
+-- where ordinary code could pattern match on its constructors.
+public opaque data Secret : Type =
+    MkSecret (value : Integer)
+
+public mk : Integer -> Secret
+public let mk n = MkSecret n

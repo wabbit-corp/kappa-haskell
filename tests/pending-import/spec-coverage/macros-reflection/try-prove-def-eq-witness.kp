@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.6: tryProveDefEq / proveDefEq / defEq are the witness-bearing
+-- macro-level exact-equality queries. tryProveDefEq returns Some p iff
+-- the elaborator judges the reflected terms definitionally equal under
+-- the current visibility/opacity environment; proveDefEq succeeds iff
+-- tryProveDefEq would return Some; defEq is the Bool projection. Each
+-- definition delegates at the spec signature.
+module main
+
+tryIt : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type). (x : Core G a) -> (y : Core G b) -> Elab (Option (CoreEq x y))
+let tryIt x y = tryProveDefEq x y
+
+proveIt : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type). (x : Core G a) -> (y : Core G b) -> Elab (CoreEq x y)
+let proveIt x y = proveDefEq x y
+
+boolIt : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type). Core G a -> Core G b -> Elab Bool
+let boolIt x y = defEq x y
+
+-- defEq agrees with the Option shape of tryProveDefEq
+viaTry : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type). (x : Core G a) -> (y : Core G b) -> Elab Bool
+let viaTry x y = do
+    let r <- tryProveDefEq x y
+    match r
+    case Some _ -> pure True
+    case None -> pure False
+-- STATUS(a0497523): FAIL — tryProveDefEq/proveDefEq/defEq are E_NAME_UNRESOLVED (witness-bearing def-eq tier unimplemented)

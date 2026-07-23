@@ -1,0 +1,19 @@
+--! mode check
+--! assertNoErrors
+
+-- §25.1: trait BridgeHandle h declares an associated Error : Type and
+-- bridgeFailure : BridgeFailure -> Error, so standard bridge failures
+-- inject into the handle-specific expected-error type. The canonical
+-- declarations project the member as H.Error from named evidence.
+module main
+
+import std.bridge.*
+
+injectFailure :
+    forall (0 h : Type).
+    (@H : BridgeHandle h) ->
+    BridgeFailure ->
+    H.Error
+let injectFailure f = bridgeFailure f
+
+-- STATUS(a0497523): FAIL — the BridgeHandle trait has no associated Error : Type (stub declares bridgeFailure : BridgeFailure -> String), and H.Error projection is rejected as receiver-method sugar (E_UNRESOLVED_MEMBER).

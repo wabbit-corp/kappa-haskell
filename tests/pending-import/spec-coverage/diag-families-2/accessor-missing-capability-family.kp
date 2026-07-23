@@ -13,7 +13,7 @@
 -- use requires the missing `sink` capability.
 module main
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 consumeInt : (1 x : Int) -> Int
 let consumeInt (1 x : Int) : Int = x
@@ -32,4 +32,4 @@ let badSet (cell : Cell) : Cell = cell.{ (.readOnly) = 9 }
 
 badSink : (1 cell : Cell) -> Int
 let badSink (1 cell : Cell) : Int = consumeInt (cellLens cell)
--- STATUS(a51e1bf): FAIL — family kappa.accessor.missing-capability is not registered (harness-error §T.5.1); the compiler reports E_PROJECTION_UPDATE_TARGET_UNSUPPORTED (kappa-hs.projection.update) and E_PROJECTION_CAPABILITY_REQUIRED (kappa-hs.projection.capability) instead of the §3.3.5 family
+-- STATUS(a0497523): HARNESS-ERROR — line 7: directive 'assertDiagnosticFamily': 'kappa.accessor.missing-capability' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-ty… [was FAIL in an earlier STATUS line]

@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.1 (opaque resource handles) + §26.2: bare OpaqueHandle carries no
+-- ownership, validity, or release semantics, so a raw surface may expose it
+-- only with an adjacent explicit release operation, while a refined surface
+-- must wrap the owning resource in a nominal Kappa type whose API states
+-- ownership and release ("an owning foreign resource MUST NOT be exposed as
+-- bare OpaqueHandle in a refined or portable surface").
+module main
+
+import std.ffi.(type OpaqueHandle, ctor MkOpaqueHandle)
+
+-- Raw lane: bare handle plus the adjacent explicit release operation.
+acquire_raw : UIO OpaqueHandle
+let acquire_raw = ioPure (MkOpaqueHandle 1)
+
+release_raw : OpaqueHandle -> UIO Unit
+let release_raw h = ioPure ()
+
+-- Refined lane: a nominal owning wrapper; opacity keeps the raw handle from
+-- leaking, and the API states the ownership and release behavior.
+opaque data Connection : Type =
+    MkConnection (raw : OpaqueHandle)
+
+-- Ownership contract: openConnection transfers ownership to the caller;
+-- closeConnection releases it (documented release behavior, §26.1.1).
+openConnection : UIO Connection
+let openConnection = do
+    let h <- acquire_raw
+    ioPure (MkConnection h)
+
+closeConnection : Connection -> UIO Unit
+let closeConnection conn = match conn
+    case MkConnection h -> release_raw h
+
+-- STATUS(a0497523): PASS

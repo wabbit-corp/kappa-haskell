@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "pair 1 1\ntail 1\npair 2 1\ntail 2\nskip-done\npair 1 2\npair 2 2\ndone\n"
+
+-- §18.8.10/§18.8.12-13: unlabeled break/continue target the NEAREST enclosing
+-- loop; labeled forms target the named loop, and the matching labeled
+-- completion is consumed by that loop after propagating unchanged through the
+-- inner loop it crosses.
+module main
+
+main : UIO Unit
+let main = do
+    -- unlabeled break exits only the INNER loop; the outer body continues
+    for i in 1 :: 2 :: Nil do
+        for j in 1 :: 2 :: Nil do
+            if eqInt j 2 then
+                break
+            printlnString f"pair ${i} ${j}"
+        printlnString f"tail ${i}"
+    -- continue@outer skips the outer body tail from inside the inner loop
+    outer@for i in 1 :: 2 :: Nil do
+        for j in 1 :: 2 :: Nil do
+            continue@outer
+        printlnString "unreachable-tail"
+    printlnString "skip-done"
+    -- unlabeled continue targets the inner loop only
+    for i in 1 :: 2 :: Nil do
+        for j in 1 :: 2 :: Nil do
+            if eqInt j 1 then
+                continue
+            printlnString f"pair ${i} ${j}"
+    printlnString "done"
+
+-- STATUS(a0497523): PASS

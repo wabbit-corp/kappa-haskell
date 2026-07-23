@@ -1,0 +1,25 @@
+-- DX EXPECTATION (not spec-required behavior): Kotlin's most common elvis
+-- idiom is `val y = x ?: return d`. Kappa deliberately makes `return` a
+-- STATEMENT, valid only as a do-item (§18.5), so this must be rejected —
+-- but the rejection should say so: one targeted diagnostic explaining that
+-- `return` is a statement and cannot appear as an elvis default, ideally
+-- suggesting the Kappa equivalent `let? Some y = o else _ -> return d`
+-- (§18.2.1).
+--
+-- CURRENTLY: `return` in expression position falls through to ordinary
+-- name resolution and produces E_NAME_UNRESOLVED "unresolved name
+-- 'return' (not in scope)" with help "did you mean 'retry'?" and a
+-- maybe-applicable FIX replacing `return` with `retry` (the STM retry
+-- primitive) — an actively misleading suggestion for a control-flow
+-- keyword every Kotlin/Swift/Rust user will reach for.
+module main
+
+f : Option Int -> UIO Int
+let f o = do
+    let y = o ?: return (ioPure 0)
+    ioPure (y + 1)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch return.*(statement|do-item)
+-- STATUS(a0497523): FAIL — `o ?: return e` produces E_NAME_UNRESOLVED "unresolved name 'return'" with help "did you mean 'retry'?" and a maybe-applicable fix replacing return with the STM retry primitive; no statement-position explanation.

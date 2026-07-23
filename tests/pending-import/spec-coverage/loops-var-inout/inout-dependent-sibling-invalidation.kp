@@ -1,0 +1,38 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §18.9.4 (write-back is a dependent-record update per §13.2.5): an inout
+-- write-back that changes a field on which a SIBLING field's type depends
+-- invalidates that sibling and is a compile-time error (`bad`) — the spec
+-- names no diagnostic family for this, and the implementation rejects it
+-- as a type-equality mismatch. The spec'd workaround is manual: unpack the
+-- record, run the call on the unpacked root, and reconstruct explicitly
+-- supplying the affected siblings (`ok`).
+module main
+
+data Vec (0 n : Int) : Type =
+    MkVec
+
+type Sized = (len : Int, buffer : Vec this.len, checksum : Int)
+
+grow : (inout len : Int) -> UIO (1 len : Int,)
+let grow (inout len : Int) : UIO (1 len : Int,) =
+    pure (len = addInt len 1,)
+
+consumeSized : (1 s : Sized) -> UIO Unit
+let consumeSized (1 s : Sized) : UIO Unit = pure ()
+
+bad : (1 s : Sized) -> UIO Unit
+let bad (1 s : Sized) : UIO Unit = do
+    grow ~s.len --!! kappa.type.mismatch
+    consumeSized s
+
+ok : (1 s : Sized) -> UIO Unit
+let ok (1 s : Sized) : UIO Unit = do
+    let (len = n0, buffer = b0, checksum = c0) = s
+    grow ~n0
+    let s2 : Sized = (len = n0, buffer = MkVec, checksum = c0)
+    consumeSized s2
+
+-- STATUS(a0497523): PASS

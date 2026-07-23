@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §33.2.2 / §33.1.3: the HardIdentity fast path is an optimization only —
+-- accepted/rejected status must match ordinary conversion (§31.1). Two
+-- fully transparent definitions that fully normalize to the same canonical
+-- normal form MUST be judged definitionally equal, whether the compiler
+-- compares HardIdentity or falls back to conversion: function-level
+-- (δ-unfolding + α-renaming) and value-level (δ + literal normalization).
+module main
+
+double : Int -> Int
+let double x = x + x
+
+double2 : Int -> Int
+let double2 y = y + y
+
+fnEq : double = double2
+let fnEq = refl
+
+a : Int
+let a = double 3
+
+b : Int
+let b = double2 3
+
+valEq : a = b
+let valEq = refl
+-- STATUS(a0497523): PASS

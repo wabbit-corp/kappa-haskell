@@ -1,0 +1,24 @@
+-- §16.1.1.1 x §18.3.1: a receiver section elaborates to a unary LAMBDA
+-- (\__x -> __x.member args), and `!` does not cross lambda boundaries —
+-- receiver sections are not among the desugar-generated closures declared
+-- transparent (loops / comprehensions / using). So a splice inside a
+-- receiver-section body in a do block is rejected, even though the
+-- surrounding do is a monadic context. (Accepting it would force a
+-- surprising once-at-section-creation evaluation of the argument effect.)
+module main
+
+plus : (this n : Int) -> Int -> Int
+let plus (this n : Int) k = n + k
+
+getInt : UIO Int
+let getInt = ioPure 2
+
+main : UIO Unit
+let main = do
+    let f = (.plus !getInt) --!! E_SPLICE_OUTSIDE_DO
+    printlnString (showInt (f 40))
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_SPLICE_OUTSIDE_DO
+-- STATUS(a0497523): PASS

@@ -25,4 +25,4 @@ let shadowed =
 --! assertNoErrors
 --! assertEval refCyr 1
 --! assertEval shadowed 2
--- STATUS(a51e1bf): FAIL — no StrongVisualNameTable lookup: both Cyrillic references are E_NAME_UNRESOLVED (plus a W_UNICODE_CONFUSABLE_IDENTIFIER); the visual-alias warning is never emitted
+-- STATUS(a0497523): FAIL — no StrongVisualNameTable lookup: both Cyrillic references are E_NAME_UNRESOLVED (plus a W_UNICODE_CONFUSABLE_IDENTIFIER); the visual-alias warning is never emitted

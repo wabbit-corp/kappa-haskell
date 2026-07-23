@@ -1,0 +1,25 @@
+module main
+
+-- §10.2 permits a GADT result to instantiate a family argument with an
+-- arbitrary type expression.  §10.4.2 currently checks recursive occurrences
+-- only in constructor ARGUMENT types, so the negative occurrence of D below,
+-- which exists solely in C's result index, passes the written positivity
+-- judgment.  This fixture makes that specification hole executable.
+
+data D (0 index : Type) : Type =
+    C : D (D Nat -> Nat)
+
+witness : D (D Nat -> Nat)
+let witness = C
+
+observe : D (D Nat -> Nat) -> Int
+let observe value =
+    match value
+    case C -> 1
+
+observed : Int
+let observed = observe witness
+
+--! mode check
+--! assertNoErrors
+--! assertEval observed 1

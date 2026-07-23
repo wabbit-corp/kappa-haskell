@@ -1,0 +1,26 @@
+-- §17.1 (L21933): "All branches must have the same type." — unconditional;
+-- reachability grants no exemption. An arm shadowed by a preceding wildcard
+-- can never execute, yet its body must still typecheck against the match
+-- result type. Guards against a checker that skips semantically-dead arms
+-- and thereby accepts an invalid program (cf. §3.1.14: recovery/salvage MUST
+-- NOT cause an invalid program to be accepted).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+module main
+
+data Flag : Type =
+    On
+    Off
+
+-- NEGATIVE: dead arm body has type String, match result is Int.
+f : Flag -> Int
+let f flag =
+    match flag
+      case _ -> 0
+      case On -> "not an int" --!! kappa.type.mismatch
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): PASS

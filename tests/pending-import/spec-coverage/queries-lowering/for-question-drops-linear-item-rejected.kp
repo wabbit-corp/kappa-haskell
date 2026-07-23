@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+
+-- §20.10.7 rule 2 + §20.10.4: `for? pat in src` keeps only matching items and
+-- MUST be rejected when dropping a non-matching item violates droppability.
+-- Items here arrive at quantity 1 (linear, not row-droppable), and TokB items
+-- do not match, so they would be silently discarded. The ω-item variant is
+-- accepted: unrestricted residue is droppable.
+module main
+
+data Tok : Type =
+    TokA (n : Int)
+    TokB
+
+consumeA : (1 n : Int) -> Int
+let consumeA n = n
+
+-- NEGATIVE: non-matching linear items (TokB) are dropped by for?
+bad : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Tok) -> List Int
+let bad src =
+    [ for? TokA n in src, yield consumeA n ] --!! E_QUERY_ROW_NOT_DROPPABLE
+
+-- POSITIVE: with ω items the dropped residue is droppable
+ok : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) ω Tok) -> List Int
+let ok src =
+    [ for? TokA n in src, yield n + 0 ]
+
+-- STATUS(a0497523): FAIL — no diagnostics: for? lowers to a wildcard-fallback match that silently discards non-matching items with no droppability check on the linear item residue, so `bad` is accepted.

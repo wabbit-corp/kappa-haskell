@@ -13,4 +13,4 @@ module main
 -- NEGATIVE: user instance for the intrinsic solver trait IsSubsingleton.
 instance IsSubsingleton Bool = --!! E_INSTANCE_HEAD
 
--- STATUS(a51e1bf): FAIL — the compiler's prelude declares IsSubsingleton as an ordinary marker trait (no members) and accepts the user instance with no diagnostic; the §14.3.1 intrinsic-solver-trait gating is not implemented.
+-- STATUS(a0497523): FAIL — the compiler's prelude declares IsSubsingleton as an ordinary marker trait (no members) and accepts the user instance with no diagnostic; the §14.3.1 intrinsic-solver-trait gating is not implemented.

@@ -1,0 +1,9 @@
+module widget
+
+-- §8.1 x §14.3: this instance lives in a different FILE but the same
+-- effective module as both the trait and the type. It is therefore NOT an
+-- orphan (the same-module test is on modules, not files), so no orphan
+-- warning may be emitted, and the instance participates in global
+-- instance search like any top-level instance.
+instance Weight Widget =
+    let weight w = match w case MkWidget n -> n

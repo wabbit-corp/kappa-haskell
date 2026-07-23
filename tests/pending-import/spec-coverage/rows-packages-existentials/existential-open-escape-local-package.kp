@@ -15,4 +15,4 @@ let leak =
     let p = seal (Some 1) as exists (a : Type). Option a
     in open p as exists (a). x in x --!! E_EXISTENTIAL_WITNESS_ESCAPE
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; no witness-escape check fires when the open body returns the raw payload, even though the local package path is dead
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; no witness-escape check fires when the open body returns the raw payload, even though the local package path is dead

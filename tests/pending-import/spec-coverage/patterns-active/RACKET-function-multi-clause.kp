@@ -1,0 +1,89 @@
+-- Source: Racket guide define.scrbl (function shorthand, multiple clauses)
+-- Source docs: racket guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §17.1 (match/case ordered case analysis), §9.1 (term definitions are single-equation; no clausal groups), §3.2.3 (kappa.type.mismatch)
+--
+-- Kappa has no Haskell-style multi-equation clausal definitions (§9.1 defines a
+-- single body per `let`); ordered case analysis is written as a `match` with
+-- `case` arms tried in order (§17.1). Pins: base-case-first definitions over a
+-- Peano type, enum matching with a catch-all arm, two-list zip via nested
+-- matches, and the requirement that all arms of one match share the declared
+-- result type.
+
+--! mode check
+
+data Peano : Type =
+    PZero
+    PSucc Peano
+
+peanoToInt : Peano -> Int
+let peanoToInt n =
+    match n
+    case PZero   -> 0
+    case PSucc m -> 1 + peanoToInt m
+
+-- POSITIVE: classic factorial, base case first.
+factorial : Peano -> Int
+let factorial n =
+    match n
+    case PZero   -> 1
+    case PSucc m -> peanoToInt (PSucc m) * factorial m
+
+-- POSITIVE: Fibonacci with two base cases before the recursive arm.
+fib : Peano -> Int
+let fib n =
+    match n
+    case PZero           -> 0
+    case PSucc PZero     -> 1
+    case PSucc (PSucc m) -> fib (PSucc m) + fib m
+
+-- POSITIVE: ordered case analysis on a custom enum with a catch-all arm.
+data Weekday : Type =
+    Mon
+    Tue
+    Wed
+    Thu
+    Fri
+    Sat
+    Sun
+
+isWeekend : Weekday -> Bool
+let isWeekend d =
+    match d
+    case Sat -> True
+    case Sun -> True
+    case _   -> False
+
+workHours : Weekday -> Int
+let workHours d =
+    match d
+    case Sat -> 0
+    case Sun -> 0
+    case _   -> 8
+
+-- POSITIVE: case analysis over two arguments via nested matches.
+zipWithInt : (Int -> Int -> Int) -> List Int -> List Int -> List Int
+let zipWithInt f xs ys =
+    match xs
+    case Nil     -> Nil
+    case a :: as0 ->
+        match ys
+        case Nil      -> Nil
+        case b :: bs0 -> f a b :: zipWithInt f as0 bs0
+
+three : Peano
+let three = PSucc (PSucc (PSucc PZero))
+
+fact3 : Int
+let fact3 = factorial three
+
+-- NEGATIVE: arms with inconsistent result types; declared String but the first
+-- arm produces Bool.
+inconsistentReturn : Bool -> String
+let inconsistentReturn b =
+    match b
+    case True  -> False      --!! E_TYPE_MISMATCH
+    case False -> "hello"
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertEval fact3 6
+-- STATUS(a0497523): PASS

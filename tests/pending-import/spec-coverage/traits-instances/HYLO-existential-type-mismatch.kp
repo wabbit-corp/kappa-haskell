@@ -1,0 +1,67 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Existential.hylo
+--                   (diagnostics: "incompatible types 'Bool' and 'A<_>'",
+--                    "type 'B' does not conform to trait 'Copyable'",
+--                    "type 'B' does not conform to trait 'P3'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ExistentialTraitAPI.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Existential.hylo and ExistentialTraitAPI.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §16.3.3 (implicit resolution), §14.3.1 (instance resolution),
+--       §3.2.4 (kappa.implicit.unsolved)
+-- Pins: Hylo's `any P` existential maps to Kappa trait-bounded generics:
+-- passing a value whose type has no instance of the required trait leaves
+-- the implicit trait-evidence goal unsolved (kappa.implicit.unsolved),
+-- for both direct member calls and calls through a constrained generic.
+-- NOTE: overlaps with tests/conformance/traits/missing-instance.kp.
+
+--! mode check
+
+module main
+
+trait Renderable (a : Type) =
+    render : a -> String
+
+trait Measurable (a : Type) =
+    measure : a -> Int
+
+data Circle : Type =
+    Circle Int
+
+data Square : Type =
+    Square Int
+
+data Unknown : Type =
+    MkUnknown
+
+instance Renderable Circle =
+    let render c = match c case Circle r -> stringAppend "circle " (showInt r)
+
+instance Renderable Square =
+    let render s = match s case Square e -> stringAppend "square " (showInt e)
+
+instance Measurable Circle =
+    let measure c = match c case Circle r -> r
+
+-- POSITIVE: conforming types satisfy the bound.
+renderCircle : Circle -> String
+let renderCircle c = render c
+
+-- POSITIVE: trait-bounded generic abstraction over shapes.
+describeAny : (@_ : Renderable a) -> a -> String
+let describeAny x = render x
+
+useDescribe : String
+let useDescribe = describeAny (Square 4)
+
+-- NEGATIVE: Unknown does not conform to Renderable.
+describeUnknown : Unknown -> String
+let describeUnknown u = describeAny u    --!! E_UNSOLVED_IMPLICIT
+
+-- NEGATIVE: Square does not conform to Measurable.
+measureSquare : Square -> Int
+let measureSquare s = measure s    --!! E_UNSOLVED_IMPLICIT
+
+-- NEGATIVE: Int has no Renderable instance either.
+renderInt : Int -> String
+let renderInt n = describeAny n    --!! E_UNSOLVED_IMPLICIT
+
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.implicit.unsolved

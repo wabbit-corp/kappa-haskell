@@ -1,0 +1,29 @@
+-- DX EXPECTATION (not necessarily spec-required): duplicating one
+-- signature+definition pair is ONE duplicate declaration, and should be
+-- reported once.
+--
+-- §3.1.11 root-cause suppression explicitly lists "duplicate
+-- declaration" as a root cause whose downstream diagnostics SHOULD be
+-- suppressed under one primary.  Today the duplicated pair yields TWO
+-- identical E_DUPLICATE_DECLARATION errors — one anchored at the second
+-- 'f :' signature and one at the second 'let f' definition — each with
+-- the same "first declared here" related site.  The second report adds
+-- nothing the first did not already say.
+--
+-- Expected: one primary E_DUPLICATE_DECLARATION (the other report either
+-- suppressed under it or merged into it).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+module main
+
+f : Int -> Int
+let f x = x + 1
+
+f : Int -> Int
+let f x = x + 2
+
+use1 : Int
+let use1 = f 1
+
+-- STATUS(a0497523): FAIL — 2 identical E_DUPLICATE_DECLARATION errors, one at the duplicate signature and one at the duplicate let, same related sites

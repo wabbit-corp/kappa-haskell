@@ -1,0 +1,15 @@
+module mid
+
+-- §8.3.1: an aliased kind-qualified import item imports the selected
+-- declaration under the alias spelling with unchanged semantic identity.
+-- The instance declared through the alias is an instance of lib.Amount.
+import lib.(trait Amount as Worth)
+
+data Coin : Type =
+    MkCoin Int
+
+mkCoin : Int -> Coin
+let mkCoin n = MkCoin n
+
+instance Worth Coin =
+    let amount c = match c case MkCoin n -> n

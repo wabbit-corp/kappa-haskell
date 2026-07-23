@@ -1,0 +1,34 @@
+-- §17.1.8 (Spec L22276-L22294) + §17.3.6.1 (L22806-L22810) + §17.3.2:
+-- an Option-returning active pattern with a BORROWED scrutinee binder
+-- `(& b : Buf)` only borrows the value it inspects. Narrowing is
+-- non-consuming, so matching a quantity-1 scrutinee through such a
+-- pattern leaves the original value owned by the selected branch, which
+-- may (and, being linear, must) still consume it. The wildcard subpattern
+-- discards only the ω-borrowed payload, which is droppable (§12.2.6).
+
+--! mode check
+--! assertNoErrors
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern PosVal (& b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+f : (1 b : Buf) -> Int
+let f (1 b : Buf) : Int =
+    match b
+    case PosVal (_) -> bufValue b
+    case rest -> bufValue rest
+
+-- STATUS(a0497523): FAIL — rejected with E_QTT_LINEAR_OVERUSE
+-- (kappa.quantity.unsatisfied) at `bufValue b`: the borrowed
+-- active-pattern call is itself counted as the consumption of b, so the
+-- branch's real consumption is flagged as a second use (contradicts
+-- §17.1.8 "does not by itself consume" through a borrow-demanding view).

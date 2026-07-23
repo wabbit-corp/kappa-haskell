@@ -1,0 +1,31 @@
+-- §20.5.1: `on conflict combine with f` requires f : V -> V -> V, and the
+-- handler runs once per EXTRA value in each key equality class — i.e. zero
+-- or more times. A handler closure that captures a quantity-1 value can
+-- therefore discharge that obligation zero times (no conflicts) or many
+-- times (several conflicts); either way the ordinary quantity rules must
+-- reject it. Positive pin of correct behavior: the compiler rejects the
+-- linear capture with kappa.quantity.positive-lower-bound (the zero-calls
+-- path would drop 'tok' unconsumed).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+-- (the rejection is currently reported at the definition head, so no inline
+-- line marker; the file-level code assertion pins the diagnostic identity)
+bad : (1 tok : Token) -> Map Int Int
+let bad tok =
+    {
+        for x in [1, 2, 2, 3]
+        yield x : x
+        on conflict combine with (\old new -> old + new + consumeToken tok)
+    }
+-- STATUS(a0497523): PASS

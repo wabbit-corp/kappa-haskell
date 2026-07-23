@@ -1,0 +1,48 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system6/type_system6.dl,
+--   tests/semantic/type_system_negation/type_system_negation.dl,
+--   souffle-lang #201 (unable to deduce type for variable X).
+-- Spec: §9.2 top-level signatures + definitions; §16.4 conditionals;
+--   §3.2.4 (family kappa.type.mismatch).
+-- Pins: a definition body whose result type does not match the declared
+-- return type is rejected with kappa.type.mismatch, including when the
+-- mismatch arises in one branch of a conditional.
+
+--! mode check
+
+module main
+
+-- POSITIVE: bodies matching the declared return types.
+toInt : String -> Int
+let toInt s = 0
+
+addInts : Int -> Int -> Int
+let addInts x y = x + y
+
+-- NEGATIVE: declared return type is String but the body returns Int.
+showBad : Int -> String
+let showBad n = n    --!! kappa.type.mismatch
+
+-- NEGATIVE: declared return type is Int but the body returns Bool.
+badBool : Int -> Int
+let badBool n = True    --!! kappa.type.mismatch
+
+-- NEGATIVE: declared return type is Int but the body returns Float.
+convertBad : Float -> Int
+let convertBad x = x    --!! kappa.type.mismatch
+
+-- POSITIVE: explicit type annotation on an intermediate matches.
+compute : Int -> Int
+let compute x =
+    let y : Int = x + 1
+    y
+
+-- NEGATIVE: conditional branches have inconsistent result types; the
+-- else-branch String does not check against the declared Int (§16.4).
+branchBad : Bool -> Int
+let branchBad b =
+    if b then 42 else "not an int"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 4
+
+-- STATUS(a0497523): PASS

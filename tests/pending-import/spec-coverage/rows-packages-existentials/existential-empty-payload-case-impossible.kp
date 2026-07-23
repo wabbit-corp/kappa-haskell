@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 x §17.1.5: an existential whose payload type is a concrete
+-- EMPTY data type stays eliminable after `open`: the anonymous payload
+-- slot has type Empty (the hidden witness does not occur in it), its
+-- §30.2.7 summary is Empty, so a match with only `case impossible` is
+-- exhaustive. The existential wrapper must not degrade the payload's
+-- inhabitance information when the payload type does not mention the
+-- witness.
+module main
+
+data Empty : Type
+
+absurdPkg : (p : exists (a : Type). Empty) -> Int
+let absurdPkg p =
+    open p as exists (a). x in
+        match x
+        case impossible
+
+-- STATUS(a0497523): PASS

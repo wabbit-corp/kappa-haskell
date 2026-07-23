@@ -1,0 +1,27 @@
+--! mode check
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+-- §7.1 binding-group formation: "Within one lexical scope, a source name
+-- key may contribute at most one ordinary declaration of a given kind",
+-- and two declarations of the same declaration kind whose strictNameKey
+-- values are equal are duplicate declarations.  Two `data T` declarations
+-- are two `type`-kind declarations of one spelling in module scope, so
+-- the second MUST be rejected — exactly like the second of two `let x`
+-- term declarations (tests/conformance/names/duplicate.kp).
+--
+-- Today the compiler instead silently MERGES the two declarations into a
+-- single type T inhabited by BOTH constructor lists: `MkT 1 : T` and
+-- `OtherT True : T` typecheck, a match needs both cases to be exhaustive,
+-- and the program runs.  (Contrast: `let T` next to `data T` — distinct
+-- kinds, which §7.1 says MAY coexist — is rejected as a duplicate.)
+module main
+
+data T : Type = MkT (n : Integer)
+
+data T : Type = OtherT (b : Bool) --!! E_DUPLICATE_DECLARATION
+
+x : T
+let x = MkT 1
+
+y : T
+let y = OtherT True
+-- STATUS(a0497523): FAIL — no diagnostic at all; the two data declarations merge into one type with constructor set {MkT, OtherT} and the file checks clean

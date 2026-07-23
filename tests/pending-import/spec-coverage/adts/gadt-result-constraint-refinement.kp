@@ -38,7 +38,7 @@ let bogus = ReflT --!! kappa.type.mismatch
 
 --! assertErrorCount 1
 
--- STATUS(a51e1bf): FAIL — the forced family-argument equalities are not made
+-- STATUS(a0497523): FAIL — the forced family-argument equalities are not made
 -- available for conversion inside constructor branches: both symmE and
 -- castLen are rejected with E_TYPE_EQUALITY_MISMATCH (3 errors instead of
 -- the 1 expected from 'bogus'). The compiler does use the equalities for

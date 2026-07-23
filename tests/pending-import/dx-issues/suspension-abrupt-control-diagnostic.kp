@@ -1,0 +1,26 @@
+-- DX EXPECTATION (diagnostic quality; the rejection itself is
+-- spec-required): §16.2.2 makes `thunk`/`lazy` user-written closure
+-- boundaries for break/continue/return resolution, so `thunk (break)`
+-- inside a loop must be rejected — and the natural diagnostic is the same
+-- boundary error the compiler emits when a lambda intervenes
+-- (E_BREAK_OUTSIDE_LOOP; see tests/pending-import/spec-coverage/
+-- loops-var-inout/break-continue-lambda-boundary-negative.kp).
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): `break` in a suspension body is not
+-- recognized as abrupt-control syntax at all and reports
+-- "unresolved name 'break'" (E_NAME_UNRESOLVED), which suggests a typo
+-- rather than the §16.2.2 closure-boundary rule. Same for `continue` and
+-- `return` under `thunk`/`lazy`.
+module main
+
+main : UIO Unit
+let main = do
+    for i in 1 :: 2 :: Nil do
+        let t = thunk (break)
+        pure ()
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_BREAK_OUTSIDE_LOOP
+-- STATUS(a0497523): FAIL — break inside a thunk body reports E_NAME_UNRESOLVED "unresolved name 'break'" instead of a boundary diagnostic like the lambda case (E_BREAK_OUTSIDE_LOOP)

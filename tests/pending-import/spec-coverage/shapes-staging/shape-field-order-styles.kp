@@ -1,0 +1,49 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.2: constructor fields are listed in constructor-parameter order
+-- after all constructor syntax sugar has been desugared — for
+-- record-style constructor binders the written field order, and for
+-- GADT-style constructor signatures the telescope order of the
+-- explicit named binders.
+
+import std.deriving.shape.*
+
+data Plain : Type =
+    MkPlain (first : Integer) (second : String)
+
+data Wide : Type =
+    MkWide : (alpha : Integer) -> (beta : String) -> (gamma : Bool) -> Wide
+
+fieldNames : List ShapeField -> List String
+let fieldNames fs =
+    match fs
+    case Nil -> Nil
+    case f :: rest -> f.renderName :: fieldNames rest
+
+checkPlain : Elab (Syntax String)
+let checkPlain = do
+    let shape <- inspectAdt @Plain '{ type Plain }
+    match shape.constructors
+    case c :: Nil ->
+        (match fieldNames c.fields
+         case "first" :: "second" :: Nil -> stringSyntax "ok"
+         case _ -> failElab "wrong record-style field order")
+    case _ -> failElab "wrong constructor count"
+
+checkWide : Elab (Syntax String)
+let checkWide = do
+    let shape <- inspectAdt @Wide '{ type Wide }
+    match shape.constructors
+    case c :: Nil ->
+        (match fieldNames c.fields
+         case "alpha" :: "beta" :: "gamma" :: Nil -> stringSyntax "ok"
+         case _ -> failElab "wrong GADT-style telescope order")
+    case _ -> failElab "wrong constructor count"
+
+plainOk : String
+let plainOk = $(checkPlain)
+
+wideOk : String
+let wideOk = $(checkWide)
+-- STATUS(a0497523): PASS

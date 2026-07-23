@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §19.2 × §18.7 × §18.1.14: `try`/`finally` is specified for a generic
+-- carrier m — the finally-only form needs only the `defer` machinery
+-- (MonadFinally), which the Eff carrier already has: the normative
+-- elaboration of this very form, `do { defer (Log.emit 2); ... }`
+-- (§19.2 rule 5), typechecks in Eff today (cf. effects/kk-handler-eff-defer).
+-- So the surface form must typecheck in the Eff carrier too.
+--
+-- Compiler gap at HEAD: `try` hardcodes the IO carrier — the probe fails
+-- with E_TYPE_EQUALITY_MISMATCH "actual: Eff ... expected: IO _ _", making
+-- the surface form not equivalent to its own normative elaboration.
+module main
+
+effect Log =
+    1 emit : Int -> Unit
+
+comp : Eff <[Log : Log]> Int
+let comp = do
+    try (Log.emit 1)
+      finally -> Log.emit 2
+    pure 3
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Log comp with
+        case return x -> pure x
+        case emit _ k -> k ()
+-- STATUS(a0497523): FAIL — E_TYPE_EQUALITY_MISMATCH x3 "actual: Eff ... expected: IO _ _": surface try/finally hardcodes the IO carrier, while its own §19.2 rule-5 elaboration (defer in the Eff do-block) typechecks.

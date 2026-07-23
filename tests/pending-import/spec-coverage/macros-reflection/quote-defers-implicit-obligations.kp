@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaMacro "7"
+--! assertEval viaHandler "got:7"
+
+-- §21.1: "quotation does not discharge final object-level quantity,
+-- borrow, region-escape, IMPLICIT, visibility, opacity, or linearity
+-- obligations; those obligations are discharged when the syntax is
+-- spliced and elaborated at a splice site." §21.2: at the splice site
+-- the generated syntax is subject to ordinary implicit insertion.
+-- So quoting `show ${e}` where e : Syntax t with t rigid must NOT
+-- demand a `Show t` instance at quotation time - the obligation is
+-- solved at the splice site where t is instantiated (here Integer).
+--
+-- This is what makes §6.3.4 custom handlers able to CONSUME their
+-- Interp fragments (whose payload type is existential inside the
+-- handler); the reference compiler instead solves the implicit at
+-- quotation time and rejects both forms with E_UNSOLVED_IMPLICIT
+-- ("could not resolve implicit argument of type Show @1").
+
+import std.deriving.shape.*
+
+mkShow : forall (@0 t : Type). Syntax t -> Elab (Syntax String)
+let mkShow e = pure '{ show ${e} }
+
+viaMacro : String
+let viaMacro = $(mkShow '{ 7 })
+
+instance InterpolatedMacro String =
+    let buildInterpolated fragments =
+        match fragments
+        case SyntaxFragment.Interp e :: Nil -> pure '{ stringAppend "got:" (show ${e}) }
+        case other -> stringSyntax "unexpected"
+
+pfx : Elab (InterpolatedMacro String)
+let pfx = pure (summon (InterpolatedMacro String))
+
+nVal : Integer
+let nVal = 7
+
+viaHandler : String
+let viaHandler = pfx"${nVal}"
+-- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT (Show @1) at both quotes: the implicit is solved at quotation time instead of being deferred to the splice site per §21.1

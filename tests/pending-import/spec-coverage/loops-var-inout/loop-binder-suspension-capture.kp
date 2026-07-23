@@ -1,0 +1,40 @@
+-- §18.6 (for-loop binder) × §16.2.1/§16.2.2: the `for` binder is a fresh
+-- per-iteration immutable binding, not a mutable slot, so suspensions
+-- constructed in the loop body capture each iteration's own value (no
+-- "last-value capture" bug) and may escape the loop and be forced after it
+-- completes. Covers both by-name (thunk) and memoizing (lazy; Shareable
+-- Int, unrestricted binder — §16.2.2 capture restriction satisfied)
+-- suspensions. Prepending reverses, so each pass prints 3 2 1.
+module main
+
+forceAllT : List (Thunk Int) -> UIO Unit
+let forceAllT ts =
+    match ts
+    case Nil -> pure ()
+    case t :: rest -> do
+        printInt (force t)
+        forceAllT rest
+
+forceAllN : List (Need Int) -> UIO Unit
+let forceAllN ns =
+    match ns
+    case Nil -> pure ()
+    case n :: rest -> do
+        printInt (force n)
+        forceAllN rest
+
+main : UIO Unit
+let main = do
+    var accT : List (Thunk Int) = Nil
+    for i in 1 :: 2 :: 3 :: Nil do
+        accT = (thunk i) :: accT
+    forceAllT accT
+    var accN : List (Need Int) = Nil
+    for j in 1 :: 2 :: 3 :: Nil do
+        accN = (lazy j) :: accN
+    forceAllN accN
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n2\n1\n3\n2\n1\n"
+-- STATUS(a0497523): PASS

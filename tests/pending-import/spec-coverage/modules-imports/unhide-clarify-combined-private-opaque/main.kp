@@ -16,4 +16,4 @@ let proofHidden = refl
 --! allow_unhiding
 --! allow_clarify
 --! assertNoErrors
--- STATUS(a51e1bf): FAIL — unhide does not grant access to private items (E_IMPORT_ITEM_NOT_FOUND on both import items, plus cascades)
+-- STATUS(a0497523): FAIL — unhide does not grant access to private items (E_IMPORT_ITEM_NOT_FOUND on both import items, plus cascades)

@@ -1,0 +1,6 @@
+module basey
+
+type TY = Option Bool
+
+mkTY : TY
+let mkTY = Some True

@@ -5,7 +5,7 @@
 --
 -- A compile-time parameter (`@0` quantity) lives in the static-object
 -- expression position (§11.1.6.2). Its classifier must be one of the
--- recognized compile-time types: `Type`, `Universe`, `Quantity`, `Region`,
+-- recognized compile-time types: `Type`, `TypeLevel`, `Quantity`, `Region`,
 -- `RecRow`, `VarRow`, `EffRow`, `Label`, `EffLabel`, or an intrinsic ground
 -- value type that is canonicalizable at elaboration.
 --

@@ -1,0 +1,22 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.11 (projection): "If p has existential type and its payload
+-- view contains a source-visible field f, then p.f is an ordinary
+-- payload projection", and the receiver "may be any pure term of
+-- signature type". The projection's type mentions the hidden witness
+-- selection internally, but matching on it locally is ordinary
+-- elimination — no `open` is required to CASE on a payload field whose
+-- constructors are concrete (Option), only to name the witness.
+module main
+
+pkg : exists (a : Type). (opt : Option a)
+let pkg = seal exists (a = Int). (opt = Some 1) as exists (a : Type). (opt : Option a)
+
+n : Int
+let n =
+    match pkg.opt
+    case Option.None -> 0
+    case Option.Some _ -> 1
+
+-- STATUS(a0497523): PASS

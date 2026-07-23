@@ -1,0 +1,42 @@
+-- Source issue: ROSETTE-202 (`apply` can't unsplat in certain situations
+--                which work with a base function)
+-- Spec: §16.1 (variables and application),
+--       §3.1.4 (portable aliases E_APPLICATION_NON_CALLABLE /
+--       E_APPLICATION_ARGUMENT_MISMATCH).
+-- Pins: supplying one argument past a fixed-arity function's last arrow
+-- applies a non-function value (E_APPLICATION_NON_CALLABLE); an argument
+-- of the wrong type at an application site is
+-- kappa.application.argument-mismatch. Staged (curried) partial
+-- application remains well-typed.
+
+--! mode check
+
+module main
+
+add3 : Int -> Int -> Int -> Int
+let add3 a b c = a + (b + c)
+
+-- POSITIVE: exact arity.
+ok : Int
+let ok = add3 1 2 3
+
+-- POSITIVE: applying a curried function in stages.
+ok2 : Int
+let ok2 =
+    let plus1 = add3 1
+    let plus12 = plus1 2
+    plus12 3
+
+-- NEGATIVE: one extra argument supplied; the result of `add3 1 2 3` is an
+-- Int, which is not callable.
+badExtra : Int
+let badExtra = add3 1 2 3 4                          --!! E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: a List String passed where the first argument is Int.
+badType : Int
+let badType = add3 ["a"] 2 3                         --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

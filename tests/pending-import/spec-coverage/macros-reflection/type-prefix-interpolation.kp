@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+--! assertType describe SizedArray 3 Integer -> Nat
+
+-- §6.3.5: "There is no built-in type\"...\" intrinsic" and
+-- "type\"...\" follows §6.3.4 exactly and elaborates through
+-- buildInterpolated like any other prefix". §6.3.4.1's own example
+-- list includes `type#"Vec #{n} Int"#` - an INTERPOLATED raw
+-- type-prefixed string. So interpolating a value into a dependent
+-- type through the conventional type handler must be accepted: the
+-- Interp fragment quotes `n` hygienically (§6.3.4.4) and the handler
+-- splices it into the parsed type expression.
+--
+-- The reference compiler instead hardcodes `type` as an intrinsic
+-- that rejects any interpolation fragment (E_PREFIX_HANDLER_TYPE,
+-- "does not support ${...} interpolation").
+
+n : Nat
+let n = 3
+
+describe : type#"SizedArray #{n} Integer"# -> Nat
+let describe arr = n
+-- STATUS(a0497523): FAIL — E_PREFIX_HANDLER_TYPE: the hardcoded `type` intrinsic rejects every interpolation fragment, contradicting §6.3.5 "follows §6.3.4 exactly" and the §6.3.4.1 example type#"Vec #{n} Int"#

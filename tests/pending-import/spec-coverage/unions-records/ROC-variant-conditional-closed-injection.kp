@@ -1,0 +1,35 @@
+-- Source issue: Roc #4150
+-- Spec: §13.1.1 (union formation and injection), §13.1.7 (variant
+--       patterns), §16.4 (`if` expressions).
+-- A conditional whose branches inject different variant members has the
+-- annotated closed row type, and the result can be eliminated exhaustively.
+
+module test
+
+data H : Type =
+    H : String -> H
+
+data J : Type =
+    J : String -> J
+
+--! mode check
+
+choice : Bool -> (| H | J |)
+let choice cond =
+    if cond then
+        (| H "h-built" : H |)
+    else
+        (| J "j-built" : J |)
+
+--! assertNoErrors
+--! assertType choice Bool -> (| H | J |)
+
+labelOf : Bool -> String
+let labelOf cond =
+    match (choice cond)
+      case (| _ : H |) -> "H"
+      case (| _ : J |) -> "J"
+
+--! assertNoErrors
+
+-- STATUS(a0497523): PASS

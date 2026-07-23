@@ -1,0 +1,39 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+
+-- §18.1.21 / §18.1.22 / §32.2.20: a bound resumption whose captured
+-- segment contains PENDING EXIT ACTIONS must not escape the handler
+-- clause — here the ω resumption k captures the do-scope frame with the
+-- registered defer, so returning k as the handler's result value must be
+-- rejected. (Contrast handler-resumption-escape-positive.kp, where the
+-- same escape with no pending obligations is permitted.)
+module main
+
+effect Cap =
+    ω grab : Unit -> Int
+
+effect Log =
+    1 emit : Int -> Unit
+
+type K = (n : Int) -> Eff <[Cap : Cap, Log : Log]> Int
+
+wrap : K -> Eff <[Log : Log]> K
+let wrap f = pure f
+
+fallback : Int -> K
+let fallback x = \n -> pure (addInt x n)
+
+compDefer : Eff <[Cap : Cap, Log : Log]> Int
+let compDefer =
+    do
+        defer (Log.emit 1)
+        let x <- Cap.grab ()
+        pure x
+
+escapedBad : Eff <[Log : Log]> K
+let escapedBad =
+    handle Cap compDefer with
+        case return x -> wrap (fallback x)
+        case grab _ k -> wrap k --!! E_QTT_CONTINUATION_CAPTURE
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): escaping a resumption whose captured segment holds a pending defer is not checked; the §32.2.20 no-escape-with-pending-exit-actions obligation is unimplemented.

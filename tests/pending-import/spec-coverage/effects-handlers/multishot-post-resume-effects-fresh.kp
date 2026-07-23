@@ -1,0 +1,46 @@
+--! mode check
+--! assertNoErrors
+--! assertEval total 13
+
+-- §18.1.20.1: effects that occur AFTER the resumption point are
+-- performed anew on each application of k — the Log.emit following the
+-- ω choose runs once per re-entry (two resumes → two emits of 5), and
+-- heap/handler state is not rolled back between applications:
+-- 5 + 5 + 1 + 2 = 13.
+module main
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+effect Log =
+    1 emit : Int -> Unit
+
+comp : Eff <[Choice : Choice, Log : Log]> Int
+let comp =
+    do
+        let b <- Choice.choose ()
+        let _ <- Log.emit 5
+        if b then 1 else 2
+
+both : Eff <[Log : Log]> Int
+let both =
+    deep handle Choice comp with
+        case return x -> pure x
+        case choose _ k ->
+            do
+                let l <- k True
+                let r <- k False
+                pure (addInt l r)
+
+summed : Eff <[ ]> Int
+let summed =
+    deep handle Log both with
+        case return x -> pure x
+        case emit n k ->
+            do
+                let rest <- k ()
+                pure (addInt rest n)
+
+total : Int
+let total = runPure summed
+-- STATUS(a0497523): PASS

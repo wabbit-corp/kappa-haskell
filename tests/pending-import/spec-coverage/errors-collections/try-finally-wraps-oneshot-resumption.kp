@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "clause-cleanup\nresult:5\n"
+
+-- §19.2/§18.7 × §18.1.22: surface `try (k 5) finally -> fin` in a handler
+-- clause wraps a one-shot resumption call. Because §19.2 rule 5 elaborates
+-- the finally into a defer of the clause do-scope (not into the ω-parameter
+-- trait member `finally`), the single use of the quantity-1 k typechecks,
+-- and the cleanup runs after the deep resumption (which includes the return
+-- clause) completes.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp = do
+    let a <- Ask.ask ()
+    pure a
+
+handled : UIO Int
+let handled =
+    deep handle Ask comp with
+        case return x -> ioPure x
+        case ask _ k ->
+            try (k 5)
+              finally -> printlnString "clause-cleanup"
+
+main : UIO Unit
+let main = do
+    let r <- handled
+    printlnString (stringAppend "result:" (showInt r))
+-- STATUS(a0497523): PASS

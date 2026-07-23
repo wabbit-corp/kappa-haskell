@@ -21,4 +21,4 @@ let amb =
 
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_NAME_AMBIGUOUS
--- STATUS(a51e1bf): FAIL — compiler silently resolves bare X to the trait facet (0 errors) instead of reporting the two-facet fallback ambiguity
+-- STATUS(a0497523): FAIL — compiler silently resolves bare X to the trait facet (0 errors) instead of reporting the two-facet fallback ambiguity

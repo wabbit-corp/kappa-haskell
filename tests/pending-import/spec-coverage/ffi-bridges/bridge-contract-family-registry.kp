@@ -1,0 +1,13 @@
+--! assertNoErrors
+--! assertDiagnosticExplainExists kappa.bridge.contract
+
+-- §3.2.14 (family kappa.bridge.contract): the standardized family used when a
+-- bridge binding, bridge-supplied module, boundary contract, dynamic cast,
+-- marshalling step, or monitored higher-order boundary fails at compile time
+-- (§26.1.6, §26.1.11-§26.1.14). A conforming diagnostics registry must expose
+-- an explanation entry for the family (Appendix T.5.1).
+module main
+
+let placeholder = ()
+
+-- STATUS(a0497523): FAIL — the compiler registers no kappa.bridge.contract family (bridge-contract failures are not diagnosed at compile time); the explain-exists assertion fails

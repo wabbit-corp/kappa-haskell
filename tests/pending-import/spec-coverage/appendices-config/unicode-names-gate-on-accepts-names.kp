@@ -1,0 +1,29 @@
+--! mode check
+--! requires capability unicodeNames
+--! assertErrorCount 1
+--! assertType total Int
+
+-- §2.1A: with the unicode-names gate ACTIVE, unquoted Unicode
+-- identifiers (§5.1) and Unicode operator tokens (§5.5.1) are
+-- semantically accepted. §5.1: the unquoted spelling and the backtick
+-- spelling contribute the same name keys, so `let μ`/`let \`μ\`` is a
+-- duplicate declaration once the gate admits the unquoted form.
+-- Staged: this harness has no capability that enables the gate.
+module main
+
+π : Int
+let π = 3
+
+infix left 60 (⊕)
+
+(⊕) : Int -> Int -> Int
+let (⊕) a b = a + b
+
+total : Int
+let total = π ⊕ 39
+
+let `μ` = 1
+
+let μ = 2 --!! E_DUPLICATE_DECLARATION
+
+-- STATUS(a0497523): UNSUPPORTED — no capability enables the unicode-names gate in this harness/implementation (unquoted Unicode names are always rejected)

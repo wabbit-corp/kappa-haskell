@@ -21,4 +21,4 @@ crossRegion :
 let crossRegion (@0 s : Region) (@0 t : Region) (&[s] x : Int) (&[t] y : Int) : ((Unit -> Int) captures (t)) =
     \() -> x
 
--- STATUS(a51e1bf): FAIL — compiler accepts both definitions (0 errors); the §12.3.1 upper-bound containment check on user-written capture annotations over explicit regions is not enforced.
+-- STATUS(a0497523): FAIL — compiler accepts both definitions (0 errors); the §12.3.1 upper-bound containment check on user-written capture annotations over explicit regions is not enforced.

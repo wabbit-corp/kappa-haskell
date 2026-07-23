@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+--! assertEval rendered "\"a\\nb\\\"c\""
+
+-- DX EXPECTATION (not strictly spec-required): §21.10.1 says default
+-- rendering of Syntax SHOULD be valid Kappa source that parses back
+-- under the same profile. renderSyntax on a quoted string literal
+-- containing a newline and an embedded double quote should therefore
+-- re-ESCAPE the string body (e.g. "a\nb\"c"), because emitting the
+-- raw characters inside quotes yields text that cannot be pasted back
+-- (the raw newline splits the literal and the raw inner quote
+-- terminates it early, leaving trailing garbage).
+--
+-- What currently happens: renderSyntax '{ "a\nb\"c" } produces the
+-- five source lines' worth of raw characters `"a<LF>b"c"` - quotes
+-- added around the DECODED text with no escaping - which is not
+-- parseable Kappa source. Any parse-back-equivalent escaping (\n vs
+-- \u{a}) would satisfy the intent of this pin; the assert encodes the
+-- canonical §6.3.1 escape spelling.
+
+import std.deriving.shape.*
+
+rendered : String
+let rendered = $(do
+    let s <- renderSyntax '{ "a\nb\"c" }
+    stringSyntax s)
+-- STATUS(a0497523): FAIL — renderSyntax emits the decoded text raw inside quotes ("a<LF>b"c"), so the rendering is not paste-back parseable

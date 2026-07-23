@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 + §20.9: FromComprehensionPlan is an elaboration-time sink
+-- hook — with only a Plan instance in scope it is selected during
+-- comprehension lowering, runs as an Elab action, and its Syntax result
+-- elaborates at the original site against the site's expected type.
+module main
+
+data Sink : Type =
+    MkSink (label : String)
+
+instance FromComprehensionPlan Sink =
+    let Item = Int
+    let fromComprehensionPlan plan =
+        pure '{ MkSink "plan" }
+
+ok : Sink
+let ok =
+    Sink [
+        for x in [1, 2, 3]
+        yield x
+    ]
+
+--! assertType ok main.Sink
+-- STATUS(a0497523): PASS

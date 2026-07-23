@@ -1,0 +1,6 @@
+module elib
+
+effect Counter =
+    1 tick : Unit -> Int
+
+effect label counterL : Counter

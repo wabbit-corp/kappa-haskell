@@ -1,0 +1,26 @@
+-- §17.2.3 + §12.2: an or-pattern whose alternatives bind the same name at
+-- identical (linear) quantities is well-formed; alternatives are tried
+-- left-to-right at runtime, and the shared body consumes the linear
+-- binder exactly once regardless of which alternative matched.
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "10\n20\n"
+
+data Tri : Type =
+    TA (1 r : Int)
+    TB (1 r : Int)
+    TC (1 r : Int)
+
+pick : (1 t : Tri) -> Int
+let pick (1 t : Tri) : Int =
+    match t
+    case TA r | TB r -> r
+    case TC r -> r + 10
+
+main : UIO Unit
+let main = do
+    printInt (pick (TA 10))
+    printInt (pick (TC 10))
+
+-- STATUS(a0497523): PASS

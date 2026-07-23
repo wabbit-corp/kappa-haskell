@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §18.7 (restrictions) / §19.2 (restrictions): `break` inside a `finally`
+-- clause targeting the enclosing loop is jumping out of a finalizer and MUST
+-- be rejected at compile time.
+--
+-- Note: the compiler today rejects this via general do-scope break
+-- confinement (E_BREAK_OUTSIDE_LOOP) — the same confinement that WRONGLY
+-- rejects break-through-a-try-body (see errors-collections/
+-- try-finally-break.kp, a known FAIL). This pin documents that the
+-- finally-side rejection must survive any fix to that confinement bug:
+-- break THROUGH a try body must become legal while break OUT OF a finally
+-- clause stays an error.
+module main
+
+worker : UIO Unit
+let worker = do
+    while True do
+        try (printlnString "body")
+          finally -> do
+            break --!! E_BREAK_OUTSIDE_LOOP
+    pure ()
+-- STATUS(a0497523): PASS

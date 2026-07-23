@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertEval delegated 7
+
+-- §18.1.15 / §18.1.18: a binder of compile-time type EffLabel may be
+-- used in effect-label positions — in effect-row syntax and in
+-- operation selection l.op. Passing the label value to a function
+-- delegates authority to perform operations at the handler for that
+-- exact label, so useAt Counter is intercepted by the Counter handler.
+module main
+
+effect Counter =
+    1 tick : Unit -> Int
+
+useAt : (0 l : EffLabel) -> Eff <[l : Counter]> Int
+let useAt (0 l : EffLabel) =
+    do
+        let x <- l.tick ()
+        pure x
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Counter (useAt Counter) with
+        case return x -> pure x
+        case tick _ k -> k 7
+
+delegated : Int
+let delegated = runPure handled
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED: an EffLabel-typed binder is not admitted in effect-row syntax or l.op selection; §18.1.15/§18.1.18 label-value delegation unimplemented.

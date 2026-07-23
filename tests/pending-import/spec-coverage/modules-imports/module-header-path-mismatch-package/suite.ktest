@@ -1,0 +1,12 @@
+-- Appendix T directory suite (packageMode).
+-- §8.1: "In package mode, [an explicit module header] MUST match the
+-- path-derived module name (compile-time error otherwise)."  lib.kp
+-- declares `module wrongname` while its path-derived name is `lib`:
+-- exactly one structured error, anchored in lib.kp at the header line,
+-- and the unrelated main.kp still elaborates without cascade.
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_MODULE_PATH_MISMATCH
+--! assertDiagnosticAt lib.kp error E_MODULE_PATH_MISMATCH 1
+-- STATUS(a0497523): PASS — single E_MODULE_PATH_MISMATCH "module header 'wrongname' does not match the path-derived module name 'lib'" at lib.kp:1

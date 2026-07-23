@@ -1,0 +1,51 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AbstractType.hylo,
+--                   PR#370 (implement conformance checking for method bundles)
+-- Spec: §14.3.1 (instance resolution), §16.3.3, §3.2.4 (kappa.implicit.unsolved)
+-- Pins: a type used through a trait member must have an instance; when no
+-- instance exists for the scrutinized type, each member use is an unsolved
+-- trait-proof obligation with family kappa.implicit.unsolved.
+-- NOTE: overlaps with tests/conformance/traits/missing-instance.kp.
+
+--! mode check
+
+module main
+
+trait Printable (a : Type) =
+    display : a -> String
+
+trait Comparable (a : Type) =
+    lessThan : a -> a -> Bool
+
+data Temp : Type =
+    Celsius Int
+    Fahrenheit Int
+
+data Score : Type =
+    MkScore Int
+
+-- POSITIVE: Score provides all required members for Printable.
+instance Printable Score =
+    let display s = match s case MkScore n -> stringAppend "score:" (showInt n)
+
+printScore : Score -> String
+let printScore s = display s
+
+-- POSITIVE: Score also provides Comparable.
+instance Comparable Score =
+    let lessThan a b =
+        match a
+        case MkScore x ->
+            match b
+            case MkScore y -> x < y
+
+-- NEGATIVE: Temp has no Printable instance.
+printTemp : Temp -> String
+let printTemp t = display t    --!! E_UNSOLVED_IMPLICIT
+
+-- NEGATIVE: Temp has no Comparable instance either.
+compareTemps : Temp -> Temp -> Bool
+let compareTemps a b = lessThan a b    --!! E_UNSOLVED_IMPLICIT
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.implicit.unsolved

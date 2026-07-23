@@ -1,0 +1,19 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- DX expectation, not spec-required.  Any unresolved single-letter
+-- identifier ('q', 'x', 'K', ...) currently gets "help: did you mean
+-- '%'?" plus a maybe-applicable fix replacing it with the prelude
+-- operator spelling '%' — the only 1-character name in scope, so it is
+-- within the length-1 edit-distance threshold of every 1-letter typo.
+-- Applying the fix produces `let y = %`, which does not even parse
+-- (E_RECOVERY_DECLARATION_SKIPPED), and §3.2.2 scopes suggestions to
+-- "the same admissible kind set": a bare operator spelling is not
+-- admissible where an identifier token sits.  Expected-good behavior:
+-- no suggestion at all here (fix count 0, no operator-spelling
+-- candidates for identifier tokens).  Currently: 1 fix ('%').
+--! assertDiagnosticFixCount error kappa.name.unresolved 0
+module main
+
+let y = q --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — the diagnostic carries 1 maybe-applicable fix replacing 'q' with '%'; the applied edit does not parse

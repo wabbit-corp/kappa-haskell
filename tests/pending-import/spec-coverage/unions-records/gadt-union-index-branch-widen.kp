@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.1.8 (Spec.md L16377-L16382): unions interact with GADT-style
+-- families via family-argument unification exactly as in §17.1.1.
+-- Matching SmallShape : Shape (| Integer | String |) against a scrutinee
+-- of type Shape u forces u = (| Integer | String |) in that branch
+-- (§17.1.1 index refinement; §16.1.8 L20902 lists constructor-forced
+-- family-argument equalities as a transport proof source). With that
+-- refinement in scope, v : u IS the small union and §13.1.3 widening
+-- carries it to the (| Integer | String | Bool |) result; in the BigShape
+-- branch v is already at the result type. Both branches MUST be accepted.
+--
+-- Currently NEITHER branch typechecks: the forced index equality never
+-- refines the type-variable index, v keeps its unrefined type, and the
+-- E_TYPE_EQUALITY_MISMATCH diagnostic prints the internal metavariable
+-- name "@3" as the actual type ("actual: @3"), leaking elaborator
+-- internals into a user-facing message.
+module main
+
+data Shape (u : Type) : Type =
+    SmallShape : Shape (| Integer | String |)
+    BigShape   : Shape (| Integer | String | Bool |)
+
+useIt : forall (u : Type). Shape u -> u -> (| Integer | String | Bool |)
+let useIt s v =
+    match s
+    case SmallShape -> v
+    case BigShape   -> v
+
+-- STATUS(a0497523): FAIL — the forced index equality never refines the type-variable index: both arms E_TYPE_EQUALITY_MISMATCH with "actual: @3", leaking the internal metavariable name in the user-facing diagnostic.

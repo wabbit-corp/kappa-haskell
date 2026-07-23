@@ -1,0 +1,16 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticAt long-line-diagnostic-column.kp error E_NAME_UNRESOLVED 15 392
+
+-- Section 5 imposes no line-length limit, and Section 3.1.5 requires
+-- 1-based line/column positions on primary origins. This file pins both
+-- on a 395-character physical line: the lexer must accept the line,
+-- and the single E_NAME_UNRESOLVED for the name at its far end must be
+-- reported at the exact code-point column (392), not clamped, wrapped,
+-- or approximated.
+
+module main
+
+let long = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + oops
+-- STATUS(a0497523): PASS — 395-char line lexes; the sole E_NAME_UNRESOLVED lands at exact column 392

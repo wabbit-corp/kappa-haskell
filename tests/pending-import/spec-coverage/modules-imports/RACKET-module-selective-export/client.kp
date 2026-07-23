@@ -1,0 +1,20 @@
+-- Source: Racket guide module-provide.scrbl (provide with selective lists)
+-- Source docs: racket guide module-provide.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-provide.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §8.3 (selective import), §8.5.1 (private not exported), §3.2.2 (kappa.name.unresolved)
+--
+-- Pins: only the selectively imported names are in scope; a public name that
+-- was not listed stays out of unqualified scope; a public member may freely
+-- use its module's private helpers internally.
+module client
+import mathlib.(plusM, scaleM)
+
+-- POSITIVE: plusM and scaleM are exported and imported.
+result1 : Int
+let result1 = plusM 3 4
+
+result2 : Int
+let result2 = scaleM 5
+
+-- NEGATIVE: multiplyM was not imported; it is not in unqualified scope.
+badMultiply : Int
+let badMultiply = multiplyM 3 3    --!! E_NAME_UNRESOLVED

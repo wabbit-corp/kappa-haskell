@@ -22,7 +22,7 @@ data BadWit (@0 n : Int) : Type =
 
 --! assertErrorCount 1
 
--- STATUS(a51e1bf): FAIL — the erased-use violation in MkBadWit's default is
+-- STATUS(a0497523): FAIL — the erased-use violation in MkBadWit's default is
 -- not reported at the declaration (0 errors); the compiler only flags it when
 -- a call site instantiates the default (e.g. MkBadWit { }), whereas §10.1
 -- checks defaults in the declaration context (cf. the accepted

@@ -1,0 +1,38 @@
+-- §17.1 / §17.1.9 / §17.3.4 (L22732): match cases are tried in source order
+-- and the first matching case wins; §17.3.4 requires any lowering to preserve
+-- "left-to-right case order". With overlapping arms (a wildcard before a
+-- constructor arm; duplicate literal arms) the EARLIER arm must be selected
+-- at runtime — the shadowed arms are dead code, never a later-arm override.
+-- (The compiler currently accepts such overlaps silently; the unreachable-arm
+-- diagnostic gap is pinned separately. This pins the runtime semantics.)
+-- Note: §17.1 never states first-match-wins for plain `match` explicitly; it
+-- is implied by §17.1.9 ("subsequent cases") and §17.3.4's preservation rule.
+--! mode run
+--! assertNoErrors
+--! assertStdout "0\n10\n"
+module main
+
+data Flag : Type =
+    On
+    Off
+
+f : Flag -> Int
+let f flag =
+    match flag
+      case _ -> 0
+      case On -> 1
+
+g : Int -> Int
+let g n =
+    match n
+      case 1 -> 10
+      case 1 -> 20
+      case _ -> 0
+
+main : UIO Unit
+let main =
+    do
+        printInt (f On)
+        printInt (g 1)
+
+-- STATUS(a0497523): PASS

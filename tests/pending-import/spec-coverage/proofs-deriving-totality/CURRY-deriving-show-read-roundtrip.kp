@@ -1,0 +1,77 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestDeriving.curry
+--   (showOfRead x = read (show x) -=- x; showOfReadNat / TreeColor / ...).
+-- Spec: §14.5 (deriving; `derive Eq T` requires synthesizable
+--       eqSound/eqComplete), §10.1 (`data` declarations).
+-- NOTE: overlaps with tests/pending-import/spec-coverage/proofs-deriving-totality/derive-eq-proof-members.kp
+--       (ground derive Eq acceptance); this file adds recursive and
+--       multi-field derive targets with evaluated equality witnesses.
+--
+-- The Curry `read . show = id` round-trip has no portable counterpart:
+-- Kappa's spec defines no Read trait, and §14.5 Phase 0 standardizes
+-- only the Eq (and §14.5.1 Hashable) derivation constraints. Reduced
+-- here to derived-Eq structural-equality witnesses over an enum, a
+-- recursive ADT, and a multi-field constructor — all first-order, so
+-- §14.5's eqSound/eqComplete synthesis obligation is satisfiable and
+-- each derivation MUST be accepted.
+
+module test
+
+--! mode check
+
+data Color : Type =
+    Red
+    Blue
+
+derive Eq Color
+
+data NatLike : Type =
+    NLZero
+    NLSucc NatLike
+
+derive Eq NatLike
+
+data ColorPair : Type =
+    ColorPair (fst : Color) (snd : NatLike)
+
+derive Eq ColorPair
+
+--! assertNoErrors
+
+-- POSITIVE: derived Eq witnesses structural equality for the enum.
+colorsEqual : Bool
+let colorsEqual = Red == Red
+
+colorsDiffer : Bool
+let colorsDiffer = Red == Blue
+
+--! assertType colorsEqual Bool
+--! assertEval colorsEqual True
+--! assertEval colorsDiffer False
+
+-- POSITIVE: derived Eq witnesses structural equality for a recursive
+-- ADT (equal and unequal depths).
+threeNat : NatLike
+let threeNat = NLSucc (NLSucc (NLSucc NLZero))
+
+natsEqual : Bool
+let natsEqual = threeNat == NLSucc (NLSucc (NLSucc NLZero))
+
+natsDiffer : Bool
+let natsDiffer = threeNat == NLSucc NLZero
+
+--! assertType natsEqual Bool
+--! assertEval natsEqual True
+--! assertEval natsDiffer False
+
+-- POSITIVE: derived Eq on a multi-field constructor compares fieldwise.
+pairsEqual : Bool
+let pairsEqual = ColorPair Red threeNat == ColorPair Red (NLSucc (NLSucc (NLSucc NLZero)))
+
+pairsDiffer : Bool
+let pairsDiffer = ColorPair Red threeNat == ColorPair Blue threeNat
+
+--! assertNoErrors
+--! assertEval pairsEqual True
+--! assertEval pairsDiffer False
+
+-- STATUS(a0497523): FAIL — derive declarations are wholly unsupported (E_UNSUPPORTED on every derive), so no Eq evidence exists and each == witness is stuck; §14.5 requires these first-order derivations to be accepted.

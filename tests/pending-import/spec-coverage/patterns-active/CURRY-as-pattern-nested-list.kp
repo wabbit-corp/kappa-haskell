@@ -1,0 +1,67 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestAsPattern.curry
+--   (nested as-pattern positive cases adapted to a constructor-pattern form;
+--   the Curry "functional pattern" non-linear cases are intentionally
+--   excluded — see CURRY-SA-03).
+-- Spec: §17.2.1 (pattern forms: as-pattern), §17.2.2 (scoping and validity;
+--       nested patterns permitted, left-to-right matching).
+--
+-- Pins: as-patterns nest — an outer `whole @ pat` may contain an inner
+-- `first @ pat'`; an as-pattern may also sit inside a tuple pattern.
+-- Every binder introduced by any level is in scope in the branch body.
+
+module test
+
+--! mode check
+
+data Pair : Type =
+    MkPair (a : Int) (b : Int)
+
+data PairList : Type =
+    PNil
+    PCons (head : Pair) (tail : PairList)
+
+-- POSITIVE: nested as-pattern. `whole` names the outer list, `first`
+-- names its head pair, and the inner binders `a`/`b` are also visible.
+firstPair : PairList -> (Pair, PairList)
+let firstPair xs =
+    match xs
+    case PNil -> (MkPair 0 0, PNil)
+    case whole @ (PCons (first @ (MkPair a b)) _rest) ->
+        (first, whole)
+
+--! assertNoErrors
+--! assertType firstPair (PairList -> (Pair, PairList))
+
+-- POSITIVE: as-pattern inside a tuple pattern. The outer tuple is
+-- destructured and the pair inside the cons cell gets its own as-binder.
+peelLeft : (PairList, Int) -> (Pair, Int)
+let peelLeft input =
+    match input
+    case (PCons (whole @ (MkPair a b)) _rest, n) -> (whole, a + b + n)
+    case (_, n) -> (MkPair 0 0, n)
+
+peelSum : Int
+let peelSum =
+    match peelLeft (PCons (MkPair 3 4) PNil, 10)
+    case (_, s) -> s
+
+--! assertNoErrors
+--! assertType peelLeft ((PairList, Int) -> (Pair, Int))
+--! assertEval peelSum 17
+
+-- POSITIVE: the binder of an outer as-pattern is visible alongside the
+-- nested binders of the inner pattern.
+sumWithHead : PairList -> Int
+let sumWithHead xs =
+    match xs
+    case PNil -> 0
+    case _whole @ (PCons (MkPair a b) _rest) -> a + b
+
+summed : Int
+let summed = sumWithHead (PCons (MkPair 5 6) (PCons (MkPair 1 1) PNil))
+
+--! assertNoErrors
+--! assertType sumWithHead (PairList -> Int)
+--! assertEval summed 11
+
+-- STATUS(a0497523): PASS

@@ -49,10 +49,7 @@ let aPair = MkSigma (Suc Zero) (mkVec (Suc Zero))
 -- (see narya issue #27 — under the Kappa obligation this signature
 -- must elaborate cleanly, not raise an internal anomaly).
 data PreCat : Type =
-    MkPreCat :
-        (ob  : Type) ->
-        (hom : ob -> ob -> Type) ->
-        PreCat
+    MkPreCat : (ob : Type) -> (hom : ob -> ob -> Type) -> PreCat
 
 obP : PreCat -> Type
 let obP c =

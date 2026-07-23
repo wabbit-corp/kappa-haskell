@@ -1,0 +1,55 @@
+-- §20.7 (quantity and borrowing): "Every non-droppable pre-group row entry
+-- must be consumed exactly once by the aggregate expressions, transferred
+-- into an aggregate result whose field quantity preserves that obligation,
+-- or otherwise explicitly discharged ... A non-droppable pre-group row entry
+-- that is neither consumed nor transferred into the group result makes the
+-- grouping clause ill-formed." Here the linear item 't' is bound by the
+-- generator and then abandoned by `group by`, so the clause must be
+-- rejected.
+--
+-- Note on blame quality (not asserted): at a0497523 the rejection is
+-- reported as a generic E_QTT_LINEAR_DROP on the outer binder 'src' ("'src'
+-- (linear) may be dropped") rather than naming the row entry 't' at the
+-- group-by clause the way distinct's E_QUERY_ROW_NOT_DROPPABLE does.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Ll]inear|[Dd]rop|[Dd]ischarg
+module main
+
+data Token : Type =
+    Token
+
+data Tally : Type =
+    MkTally (entries : List Int)
+
+instance Pointed Tally =
+    let empty = MkTally Nil
+
+instance Monoid Tally =
+    let append x y =
+        match x
+        case MkTally a ->
+            match y
+            case MkTally b -> MkTally (listAppend a b)
+    let appendLeftIdentity @x =
+        match x
+        case MkTally a -> refl
+    let appendRightIdentity @x =
+        match x
+        case MkTally a -> cong MkTally (listAppendRightIdentity a)
+    let appendAssoc @x @y @z =
+        match x
+        case MkTally a ->
+            match y
+            case MkTally b ->
+                match z
+                case MkTally c -> cong MkTally (listAppendAssoc a b c)
+
+badGroup : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let badGroup src =
+    OnceQuery [
+        for t in src
+        group by 1 { picked = (7 :: Nil) using MkTally } into g
+        yield 0
+    ]
+-- STATUS(a0497523): PASS — rejected, though blamed on outer binder 'src' as generic E_QTT_LINEAR_DROP rather than on row entry 't' at the group-by clause.

@@ -1,0 +1,16 @@
+module main
+
+-- §8.5.3 (Spec.md L7884-L7890): "Exported trait instances for an opaque
+-- data type do not by themselves violate opacity" — the importer may use
+-- the instance at the abstract type, but using it "does not make
+-- constructors name-resolvable", including for construction.
+import lib.(type Token, mkToken, trait Label, label)
+
+-- POSITIVE: the trait interface works at the abstract type.
+r : Int
+let r = label (mkToken 7)
+
+-- NEGATIVE: having used the instance does not leak the constructor.
+bad : Token
+let bad = MkToken 99                 --!! kappa.name.unresolved
+-- STATUS(a0497523): PASS

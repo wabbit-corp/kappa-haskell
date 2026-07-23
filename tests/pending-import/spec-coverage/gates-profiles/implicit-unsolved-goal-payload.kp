@@ -14,4 +14,4 @@ trait Pretty (a : Type) =
 needy : String
 let needy = pretty "hello" --!! E_UNSOLVED_IMPLICIT
 
--- STATUS(a51e1bf): FAIL — kappa.implicit.unsolved payload is kind 'none'; §3.2.4 goal/goalClassifier fields absent
+-- STATUS(a0497523): FAIL — kappa.implicit.unsolved payload is kind 'none'; §3.2.4 goal/goalClassifier fields absent

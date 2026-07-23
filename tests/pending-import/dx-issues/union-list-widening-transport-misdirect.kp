@@ -1,0 +1,33 @@
+-- DX EXPECTATION (not spec-required behavior): union widening (§13.1.3) is
+-- expected-type-directed at the union expression itself and deliberately
+-- does NOT lift congruently under type constructors, so List Small does
+-- not convert to List Big and this program must be rejected — the
+-- rejection itself is correct. But the diagnostic should say WHY in union
+-- terms: an ordinary type mismatch, ideally noting that union widening is
+-- not applied inside type constructors (the fix is mapping the widening
+-- over the list).
+--
+-- CURRENTLY: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's
+-- type differs from the parameter type only in type indices, and no
+-- equality evidence licenses the transport (§16.1.8)" — which sends the
+-- user hunting for equality evidence that cannot exist: Small and Big are
+-- distinct closed unions differing by MEMBERSHIP, not equal-up-to-indices,
+-- and no proof Small = Big is derivable. A transport hint is actively
+-- misleading here; nothing points at widening or at the member-set
+-- difference.
+module main
+
+type Small = (| Integer | String |)
+type Big = (| Integer | String | Bool |)
+
+needsBigList : List Big -> Unit
+let needsBigList (xs : List Big) : Unit = ()
+
+useIt : List Small -> Unit
+let useIt xs = needsBigList xs
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch widen
+
+-- STATUS(a0497523): FAIL — diagnostic is the §16.1.8 transport hint ("differs from the parameter type only in type indices, and no equality evidence licenses the transport"); nothing mentions widening or the member-set difference.

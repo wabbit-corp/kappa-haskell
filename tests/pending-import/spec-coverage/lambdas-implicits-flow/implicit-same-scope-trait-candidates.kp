@@ -1,0 +1,28 @@
+-- §16.3.3 step 1: at the first scope with candidates definitionally equal
+-- to the goal, multiple candidates are an error only when IsTrait G is
+-- unavailable. For trait evidence (here Eq Int), trait proof irrelevance
+-- makes any two candidates coherent and the implementation MUST accept,
+-- selecting a deterministic representative. Supertrait projection also
+-- supplies Eq Int from in-scope Ord Int evidence (§14.1.4).
+module main
+
+eqSelf : forall (a : Type). Eq a => a -> Bool
+let eqSelf x = x == x
+
+-- POSITIVE per spec: two same-scope Eq Int candidates are coherent
+-- because IsTrait (Eq Int) is available; resolution picks a
+-- deterministic representative rather than failing as ambiguous.
+twoCands : (@d1 : Eq Int) -> (@d2 : Eq Int) -> Bool
+let twoCands (@d1 : Eq Int) (@d2 : Eq Int) : Bool = eqSelf 3
+
+-- POSITIVE: local Ord Int evidence yields Eq Int by supertrait
+-- projection (trait Eq a => Ord a in std.prelude).
+viaSupertrait : (@ord : Ord Int) -> Int -> Int -> Bool
+let viaSupertrait (@ord : Ord Int) (a : Int) (b : Int) : Bool =
+    block
+        let eqi : Eq Int = witness
+        a == b
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a0497523): FAIL — twoCands is rejected with E_IMPLICIT_AMBIGUOUS even though IsTrait (Eq Int) is available: the compiler implements the ambiguity arm unconditionally and never applies the §16.3.3 trait-coherence rule (deterministic representative via trait proof irrelevance). viaSupertrait passes.

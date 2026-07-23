@@ -14,4 +14,4 @@ let useSecret = secretVal
 --! assertNoErrors
 --! assertEval useSecret 42
 --! assertAuditLedger unhide
--- STATUS(a51e1bf): FAIL — `unhide` is gated and audited, but the private item is still rejected with E_IMPORT_ITEM_NOT_FOUND ("exists ... but is not exported"); §4.3 private-import semantics are not implemented.
+-- STATUS(a0497523): FAIL — `unhide` is gated and audited, but the private item is still rejected with E_IMPORT_ITEM_NOT_FOUND ("exists ... but is not exported"); §4.3 private-import semantics are not implemented.

@@ -1,0 +1,32 @@
+-- §28.2.3 (L35392: portable Int is definitionally Integer — exact
+-- arbitrary-precision arithmetic). The existing conformance pin
+-- (prelude/stdlib-prelude-positive-integer-exactness.kp) covers +, -, * past
+-- the int64 boundary via assertEval; this run covers CHECKED DIVISION and
+-- MODULO of values far beyond 64 bits, through the run-mode showInt printing
+-- path (which a native backend must reproduce with its bigint runtime):
+--   2^100                    = 1267650600228229401496703205376
+--   2^100 / 2^50             = 2^50 = 1125899906842624
+--   (2^100 + 7) % 2^50       = 7
+-- The divDefined obligations are discharged by branch refinement on the
+-- divisor (§16.4.1), exercising proof-carrying division on bigints.
+--! mode run
+--! assertNoErrors
+--! assertStdout "1267650600228229401496703205376\n1125899906842624\n7\n"
+
+pow2 : Int -> Int
+let pow2 n = if n <= 0 then 1 else 2 * pow2 (n - 1)
+
+big : Int -> Int -> UIO Unit
+let big a b =
+    if b /= 0
+    then do
+        printlnString (showInt (a / b))
+        printlnString (showInt ((a + 7) % b))
+    else printlnString "zero"
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (pow2 100))
+    big (pow2 100) (pow2 50)
+
+-- STATUS(a0497523): PASS — exact 2^100 printing and exact checked / and % above 64 bits.

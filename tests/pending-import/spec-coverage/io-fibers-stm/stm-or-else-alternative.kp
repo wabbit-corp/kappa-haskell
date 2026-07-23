@@ -41,3 +41,4 @@ let main = do
     let m2 <- atomically (readTVar marker2)
     printlnString ("left-first:" ++ showInt v2)
     printlnString ("right-skipped:" ++ showInt m2)
+-- STATUS(a0497523): FAIL — compiler gap: no Alternative STM instance (E_UNSOLVED_IMPLICIT on <|>); §18.1.13 requires STM to participate in Alternative with orElse semantics.

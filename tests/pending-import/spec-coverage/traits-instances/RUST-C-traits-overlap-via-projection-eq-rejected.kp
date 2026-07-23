@@ -1,0 +1,46 @@
+-- Source artifacts: CHALK-515 (Coherence issue with overlapping impls with assoc types),
+--                   CHALK-234 (Ambiguity problems with associated types),
+--                   CHALK-750 (Ambiguity through unrelated env clauses with implied bounds),
+--                   RA-3232 (Associated types in constraints are not normalized).
+-- Spec: §14.3.2 (normalized instance goals and heads: "An implementation
+--       MUST NOT ignore a possible candidate merely because the goal head is
+--       a ... transparent alias ... The program is accepted only when all
+--       surviving normalized candidates are coherent under §33.2.1."),
+--       §14.3.1 step 6 (coherence check)
+-- Pins: two instance heads that are textually different but normalize to the
+-- same head (here through a transparent type alias — surface v1's normalizable
+-- compile-time head form) are overlapping; with differing member bodies the
+-- surviving candidates are incoherent and the program is rejected. The spec
+-- assigns no kappa.* family to instance incoherence; the registered code is
+-- E_INSTANCE_INCOHERENT.
+-- NOTE: overlaps with tests/conformance/traits/instances-negative-overlap-via-associated-member-equality.kp
+-- (same-head instances differing in an associated member).
+
+--! mode check
+
+module main
+
+trait Mark (a : Type) =
+    markName : a -> String
+
+data U32 : Type =
+    MkU32
+
+type AliasU32 = U32
+
+instance Mark U32 =
+    let markName _ = "direct"
+
+-- Textually different head; after transparent-alias normalization it is the
+-- same head `Mark U32` with a DIFFERENT member body: incoherent overlap.
+instance Mark AliasU32 =    --!! E_INSTANCE_INCOHERENT
+    let markName _ = "via_alias"
+
+-- Use site: both normalized candidates match the goal; they are not
+-- equivalent implementations, so resolution rejects the program.
+useMark : String
+let useMark = markName MkU32    --!! E_INSTANCE_INCOHERENT
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+--! assertDiagnosticMatch overlap|coher|instance

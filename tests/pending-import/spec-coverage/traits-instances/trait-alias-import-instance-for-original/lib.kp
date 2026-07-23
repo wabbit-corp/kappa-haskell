@@ -1,0 +1,4 @@
+module lib
+
+trait Amount (a : Type) =
+    amount : a -> Int

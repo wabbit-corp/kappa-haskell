@@ -1,0 +1,18 @@
+module main
+
+-- §5.5.2: "Fixity declarations apply when parsing operator tokens in
+-- both term expressions and TYPE expressions", and imported fixities
+-- take effect from the point of the import onward. Combined with §8.3:
+-- importing a type alias with an operator name ((&&&)) also brings its
+-- exported fixity, so `Int &&& Bool` parses as (&&&) Int Bool = P Int
+-- Bool in a type annotation downstream.
+import lib.((&&&), type P(..))
+
+mk : Int &&& Bool
+let mk = MkP 1 True
+
+first : Int
+let first =
+    match mk
+      case MkP a _ -> a
+-- STATUS(a0497523): PASS

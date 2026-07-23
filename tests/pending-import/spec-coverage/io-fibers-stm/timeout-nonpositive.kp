@@ -33,3 +33,4 @@ let main = do
     let f3 <- fork (timeout (seconds 5) quiet)
     let e3 <- await f3
     report "positive" e3
+-- STATUS(a0497523): FAIL — expected 0 errors, got 3; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type differs from the parameter type only in type indices, and n… [was PASS in an earlier STATUS line]

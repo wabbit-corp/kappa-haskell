@@ -38,3 +38,4 @@ let main = do
     -- typed-failure path in this fiber: locallyFiberRef restores 7 on Fail
     let v <- catchIO (locallyFiberRef ref 55 failing) (\m -> getFiberRef ref)
     printlnString ("after-fail:" ++ showInt v)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 5; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 13; stdout mismatch: expected "restored:7\ninterrupt… [was PASS in an earlier STATUS line]

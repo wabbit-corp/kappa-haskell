@@ -25,7 +25,7 @@ let bad =
         d = summon (Named Int)
     in
         match d
-        case (nameOf = f) -> "reflected" --!! kappa.type.mismatch
+        case (nameOf = f,) -> "reflected" --!! kappa.type.mismatch
         case _ -> "opaque"
 
--- STATUS(a51e1bf): FAIL — the compiler accepts the record pattern on trait evidence once a catch-all makes the match exhaustive (structural reflection of the evidence record; only *using* the bound field errs, and without a catch-all the rejection is E_PATTERN_NON_EXHAUSTIVE rather than a construction-form rejection).
+-- STATUS(a0497523): FAIL — the compiler accepts the record pattern on trait evidence once a catch-all makes the match exhaustive (structural reflection of the evidence record; only *using* the bound field errs, and without a catch-all the rejection is E_PATTERN_NON_EXHAUSTIVE rather than a construction-form rejection).

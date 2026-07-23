@@ -38,3 +38,4 @@ let main = do
       case Success v -> printlnString "completed"
       case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupt:Requested"
       case Failure c -> printlnString "other"
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 14; stdout mismatch: expected "returned\nfin-done\ni… [was PASS in an earlier STATUS line]

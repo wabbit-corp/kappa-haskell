@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"
+
+-- §13.2.11 (direct payload introduction) x §10.2 (GADT-style
+-- constructors) x §17.1: sealing a GADT value at an existential that
+-- hides its INDEX solves the witness metavariable from the payload
+-- checking problem (Cons 5 Nil : Vec (S Z) Int, so n := S Z), and the
+-- opened package's payload is pattern-matchable like any runtime value.
+-- The index witness is quantity-0 static metadata (§31.2) — matching
+-- discriminates only the runtime constructor tag.
+module main
+
+data MyNat : Type =
+    Z
+    S MyNat
+
+data Vec (n : MyNat) (a : Type) : Type =
+    Nil : Vec Z a
+    Cons : forall (m : MyNat). (x : a) -> (xs : Vec m a) -> Vec (S m) a
+
+pkg : exists (n : MyNat). Vec n Int
+let pkg = seal (Cons 5 Nil) as exists (n : MyNat). Vec n Int
+
+len : Int
+let len =
+    open pkg as exists (n). v in
+        match v
+        case Nil -> 0
+        case Cons _ _ -> 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt len)
+
+-- STATUS(a0497523): PASS

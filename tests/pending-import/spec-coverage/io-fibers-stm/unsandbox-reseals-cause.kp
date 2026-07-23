@@ -29,3 +29,4 @@ let main = do
     -- so catchIO observes the original error value.
     let n <- catchIO (unsandbox sealedFail) (\e -> ioPure (e + 1))
     printlnString ("typed:" ++ showInt n)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Interrupt' (not in scope)" at line 12; stdout mismatch: expected "resealed:sealed-tag… [was PASS in an earlier STATUS line]

@@ -1,0 +1,8 @@
+module lib
+
+infix left 60 (+++)
+(+++) : Int -> Int -> Int
+let (+++) x y = addInt (mulInt 10 x) y
+
+ten : Int
+let ten = 10

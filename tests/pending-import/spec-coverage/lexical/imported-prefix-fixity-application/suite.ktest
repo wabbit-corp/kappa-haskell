@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval bare -5
+--! assertEval parenApp -5

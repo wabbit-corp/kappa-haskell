@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "released\n6\n"
+
+-- §28.2 MonadResource (IO e) bracket × MonadRef (IO e) × Add Integer:
+-- bracket acquires a Ref accumulator, `use` folds add through it, and
+-- the release finalizer observes the lifecycle before the bracket
+-- result (the accumulated sum) is returned.
+module main
+
+releaseAcc : Ref Integer -> UIO Unit
+let releaseAcc r = printlnString "released"
+
+useAcc : Ref Integer -> UIO Integer
+let useAcc r = do
+    writeRef r (add 1 2)
+    let cur <- readRef r
+    writeRef r (add cur 3)
+    readRef r
+
+main : UIO Unit
+let main = do
+    let total <- bracket (newRef 0) releaseAcc useAcc
+    println total
+-- STATUS(a0497523): PASS

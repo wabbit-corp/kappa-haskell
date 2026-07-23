@@ -19,4 +19,4 @@ badDotted : Token
 let badDotted = Token.Token 3 --!! E_NAME_UNRESOLVED
 
 --! assertErrorCount 2
--- STATUS(a51e1bf): FAIL — opaque data constructors remain name-resolvable cross-module (both the wildcard-scoped ctor and dotted static-member selection succeed)
+-- STATUS(a0497523): FAIL — opaque data constructors remain name-resolvable cross-module (both the wildcard-scoped ctor and dotted static-member selection succeed)

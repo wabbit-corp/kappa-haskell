@@ -1,0 +1,53 @@
+--! assertNoErrors
+--! assertEval successStatus "delivered"
+--! assertEval defectStatus "callback-defect"
+
+-- §26.1.8 (callback ingress, outcome translation) × §18/§28 Exit/Cause: a
+-- synchronous callback boundary contract must specify how EVERY terminal
+-- Exit of the callback fiber is translated back to the host — success,
+-- typed failure, interruption, and defect, including combined causes. A
+-- precise synchronous callback surface whose contract leaves any terminal
+-- outcome untranslated is ill-formed; a defectless total translation over
+-- Exit e a is therefore expressible, pinned here by exhaustive matches.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+import std.prelude.(type DefectInfo(..), type DefectTag(..))
+
+data CbError : Type =
+    CbBadInput
+
+data HostStatus : Type =
+    HostOk (code : Int)
+    HostError (tag : String)
+
+-- Terminal-cause translation: every Cause shape must map to a host outcome.
+-- For combined causes the contract here reports the primary (left/later)
+-- failure; the point pinned is totality, not a particular priority policy.
+translateCause : Cause CbError -> HostStatus
+let translateCause c = match c
+    case Fail e -> HostError "callback-failed"
+    case Interrupt i -> HostError "callback-interrupted"
+    case Defect d -> HostError "callback-defect"
+    case Both left right -> translateCause left
+    case Then first second -> translateCause second
+
+-- The synchronous boundary waits for the callback fiber's terminal Exit and
+-- translates it before the host invocation returns (§26.1.8).
+translateOutcome : Exit CbError Int -> HostStatus
+let translateOutcome ex = match ex
+    case Success n -> HostOk n
+    case Failure cause -> translateCause cause
+
+statusTag : HostStatus -> String
+let statusTag s = match s
+    case HostOk code -> "delivered"
+    case HostError tag -> tag
+
+successStatus : String
+let successStatus = statusTag (translateOutcome (Success 3))
+
+defectStatus : String
+let defectStatus = statusTag (translateOutcome (Failure (Defect (DefectInfo OtherDefect None))))
+
+-- STATUS(a0497523): PASS

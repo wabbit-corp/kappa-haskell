@@ -32,9 +32,10 @@ let viaLet =
 viaPkg : Int
 let viaPkg =
     block
-        let pkg = (label = Counter)
+        let pkg = (label = Counter,)
         let handled =
             deep handle pkg.label comp with
                 case return x -> pure x
                 case tick _ k -> k 8
         runPure handled
+-- STATUS(a0497523): FAIL — compiler rejects let-/package-rebound labels in `handle` (E_NAME_UNRESOLVED: 'handle' requires an effect label in scope); §18.1.15 rebinding unimplemented.

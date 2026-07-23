@@ -1,0 +1,45 @@
+-- Source issue: nickel #1690
+-- Spec: §13.2.1 (record syntax), §13.2.4 (field projection), §12.2 (forall as
+--       implicit quantity-0 dependent-product sugar), §16 (application and
+--       implicit instantiation)
+-- Pins: a record field annotated with a polymorphic type `forall a. a -> a`
+-- is not prematurely monomorphized: the projected field can be used at
+-- several different instantiations, both directly and through a function
+-- that receives the record as an argument.
+
+module test
+
+--! mode check
+--! assertNoErrors
+
+-- Identity function.
+myId : forall a. a -> a
+let myId x = x
+
+-- POSITIVE: a record type whose field carries a polymorphic type.
+type PolyId = (id : forall a. a -> a,)
+
+polyRecord : PolyId
+let polyRecord = (id = myId,)
+
+-- POSITIVE: using the projected field at a String instantiation.
+polyUsageStr : String
+let polyUsageStr = polyRecord.id "hello"
+
+-- POSITIVE: using the same field at an Int instantiation.
+polyUsageNum : Int
+let polyUsageNum = polyRecord.id 42
+
+-- POSITIVE: a function that takes a record with a polymorphic `id` field and
+-- uses it at two different type instantiations must type-check.
+useIdTwice : PolyId -> (String, Int)
+let useIdTwice r = (r.id "world", r.id 99)
+
+usedTwice : (String, Int)
+let usedTwice = useIdTwice polyRecord
+
+--! assertType polyUsageStr String
+--! assertType polyUsageNum Int
+--! assertType usedTwice (String, Int)
+
+-- STATUS(a0497523): FAIL — record literal is inferred, not checked: the poly field value is instantiated to `_ -> _` before comparing against the expected record type (13.2.3 checking-mode gap; even an explicit `(myId : forall a. a -> a)` ascription fails)

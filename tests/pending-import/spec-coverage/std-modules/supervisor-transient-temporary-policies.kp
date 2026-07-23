@@ -1,0 +1,49 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "a:1\nb:1\nexit:success\n"
+
+-- §29.2 restart policies: a Transient child that exits Success Unit is NOT
+-- restarted; a Temporary child is never restarted and its typed failure does
+-- not by itself terminate the supervisor. Requested shutdown afterwards is a
+-- supervisor-initiated exit, so awaitSupervisor reports Success ().
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+import std.supervisor.*
+import std.atomic.*
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act = catchIO act (\v -> ioPure (absurd v))
+
+okChild : AtomicRef Integer -> Promise Int Unit -> IO Int Unit
+let okChild counter done = do
+    let _ <- weakenVoidIO (atomicFetchAdd RmwSeqCst counter 1)
+    let _ <- weakenVoidIO (completePromise done (Success ()))
+    ioPure ()
+
+failChild : AtomicRef Integer -> Promise Int Unit -> IO Int Unit
+let failChild counter done = do
+    let _ <- weakenVoidIO (atomicFetchAdd RmwSeqCst counter 1)
+    let _ <- weakenVoidIO (completePromise done (Success ()))
+    throwIO 9
+
+main : UIO Unit
+let main = do
+    let ca <- newAtomicRef 0
+    let cb <- newAtomicRef 0
+    let da <- newPromise
+    let db <- newPromise
+    let children = childSpec "a" Transient (okChild ca da) :: childSpec "b" Temporary (failChild cb db) :: Nil
+    let sup <- startSupervisor OneForOne (RestartIntensity 5 (seconds 1)) children
+    let _ <- awaitPromiseExit da
+    let _ <- awaitPromiseExit db
+    shutdownSupervisor sup
+    let a <- atomicLoad LoadSeqCst ca
+    printlnString ("a:" ++ showInt a)
+    let b <- atomicLoad LoadSeqCst cb
+    printlnString ("b:" ++ showInt b)
+    let exit <- awaitSupervisor sup
+    match exit
+      case Success _ -> printlnString "exit:success"
+      case Failure _ -> printlnString "exit:failure"
+-- STATUS(a0497523): FAIL — std.supervisor is a typecheck-only stub: startSupervisor never starts child fibers, so both done-promises are never completed and the run produces no output (expected policy behavior a:1/b:1/exit:success)

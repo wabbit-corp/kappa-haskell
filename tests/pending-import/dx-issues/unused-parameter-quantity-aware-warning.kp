@@ -1,0 +1,34 @@
+-- DX expectation, not (yet) spec-required. An unused ω parameter is
+-- quantity-legal (ω = [0,∞], §12.2 — an unrestricted callee may ignore its
+-- argument), so no error is correct; but common developer expectation is a
+-- lint warning (§3.1.12 recognizes "unused binding" as a lint family). The
+-- lint must be QUANTITY-AWARE: a parameter declared at quantity 0 (erased)
+-- or <=1 (affine) already spells out the intent to not use / maybe drop, and
+-- `_` is an explicit discard — none of those should warn. Only the plain ω
+-- named parameter that is never referenced should. Expected: exactly one
+-- warning (on `y` in g). Currently: compiles silently (0 warnings).
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+module main
+
+-- WARNING EXPECTED on y: ω parameter bound by name, never referenced.
+g : Int -> Int -> Int
+let g x y = x
+
+-- no warning: 0-quantity parameter is declared erased; non-use is the intent.
+k : (0 n : Int) -> Int -> Int
+let k n m = m
+
+-- no warning: <=1 (affine) declares "at most once"; zero uses is declared intent.
+a : (<=1 z : Int) -> Int
+let a z = 5
+
+-- no warning: wildcard parameter is an explicit discard.
+w : Int -> Int
+let w _ = 9
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): FAIL — no unused-parameter lint exists; unused omega param compiles with 0 warnings (expected 1)

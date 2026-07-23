@@ -1,0 +1,31 @@
+-- DX EXPECTATION (diagnostic rendering), not necessarily spec-required.
+-- Statically rejecting `10 / 0` and unguarded `x / y` is CORRECT (§28.2.3:
+-- (/) carries an implicit (@_ : divDefined x y = True) proof). This test pins
+-- the minimum readability of the resulting kappa.implicit.unsolved message:
+-- the unresolved obligation should be printed in surface syntax —
+--     divDefined 10 0 = True        and        divDefined x y = True
+-- — ideally with a hint that the divisor must be provably nonzero.
+-- What currently happens (a0497523): the obligation is rendered as internal
+-- Core in prefix form, leaking the gensym'd prelude evidence binder and
+-- printing the user's own variables as de Bruijn indices:
+--     could not resolve implicit argument of type
+--       = Bool (divDefined Integer __inst_CheckedDiv_12 10 0) True
+--       = Bool (divDefined Integer __inst_CheckedDiv_12 @1 @0) True
+-- Nothing names the actual problem (unproven nonzero divisor), `__inst_*` is
+-- meaningless to users, and `@1 @0` is unreadable for `x y`.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertDiagnosticMatch divDefined 10 0 = True
+--! assertDiagnosticMatch divDefined x y = True
+module main
+
+litDiv : Int
+let litDiv = 10 / 0                --!! kappa.implicit.unsolved
+
+naiveDiv : Int -> Int -> Int
+let naiveDiv x y = x / y           --!! kappa.implicit.unsolved
+
+-- STATUS(a0497523): FAIL — both obligations render as internal Core:
+-- "= Bool (divDefined Integer __inst_CheckedDiv_12 10 0) True" and
+-- "= Bool (divDefined Integer __inst_CheckedDiv_12 @1 @0) True".

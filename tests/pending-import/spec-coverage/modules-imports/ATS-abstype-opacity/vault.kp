@@ -1,0 +1,13 @@
+-- Spec: §8.5.3 (opaque data with several fields).
+module vault
+
+opaque data Secret : Type =
+    MkSecret (tag : String) (key : Int)
+
+makeSecret : String -> Int -> Secret
+let makeSecret s n = MkSecret s n
+
+revealKey : Secret -> Int
+let revealKey sec =
+    match sec
+    case MkSecret _ n -> n

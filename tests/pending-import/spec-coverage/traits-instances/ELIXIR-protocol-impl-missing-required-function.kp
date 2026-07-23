@@ -1,0 +1,69 @@
+--! mode check
+--! assertErrorCount 4
+
+-- Source issues: kernel/warning_test.exs "undefined function for protocol"
+--   ("function foo/1 required by protocol Sample1 is not implemented in module Sample1.Atom"),
+--   ELIXIR-PR-14115, ELIXIR-PR-14117, spec gap ESA-ELIXIR-04
+-- Spec: §14.2 (required trait members), §14.3/§14.3.4 (instance checking
+--       fails when a required member without a default is not defined)
+-- A Kappa trait instance must define every required member; an empty
+-- instance body yields one diagnostic per missing member (3 here) and a
+-- partial instance yields one per omission (1 here).  §3.2 registers no
+-- standard family for a missing runtime instance member (the original's
+-- kappa.implicit.unsolved was a wrong guess), so the error count is
+-- asserted.  The reference implementation reports E_INSTANCE_MEMBER_MISSING.
+-- NOTE: overlaps with ELIXIR-behaviour-callback-missing-impl-warning.kp in
+--       this directory (two-member trait variant).
+module main
+
+-- A trait with three required members.
+trait Container (a : Type) =
+    empty  : a
+    insert : a -> Int -> a
+    size   : a -> Int
+
+-- POSITIVE: complete implementation of Container.
+data Stack : Type =
+    Stack (depth : Int)
+
+instance Container Stack =
+    let empty = Stack { depth = 0 }
+    let insert s n =
+        match s
+        case Stack d -> Stack { depth = d + 1 }
+    let size s =
+        match s
+        case Stack d -> d
+
+-- POSITIVE: complete implementation with a different backing structure.
+data Bag : Type =
+    Bag (count : Int) (total : Int)
+
+instance Container Bag =
+    let empty = Bag { count = 0, total = 0 }
+    let insert b n =
+        match b
+        case Bag c t -> Bag { count = c + 1, total = t + n }
+    let size b =
+        match b
+        case Bag c _ -> c
+
+-- NEGATIVE: instance body is empty; none of the three required members are
+-- provided (three diagnostics).
+data Queue : Type =
+    Queue (len : Int)
+
+instance Container Queue =
+
+-- NEGATIVE: instance provides empty and insert but omits size.
+data Counter : Type =
+    Counter (n : Int)
+
+instance Container Counter =
+    let empty = Counter { n = 0 }
+    let insert c k =
+        match c
+        case Counter n -> Counter { n = n + 1 }
+    -- size is intentionally omitted
+
+-- STATUS(a0497523): PASS

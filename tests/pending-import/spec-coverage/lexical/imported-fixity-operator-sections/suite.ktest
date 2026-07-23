@@ -1,0 +1,6 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval infixUse 23
+--! assertEval lv 23
+--! assertEval rv 23

@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.1: inspecting an 'opaque data' representation is permitted in
+-- its defining module — a representation is visible iff ordinary code
+-- at the same elaboration site could pattern match on the
+-- constructors, which is the case here. (The negative, outside-module
+-- half lives in tests/conformance/spec-coverage/diag-families-2/.)
+
+module main
+
+import std.deriving.shape.*
+
+opaque data Token : Type =
+    MkToken (value : Int)
+
+insideShape : Elab (Syntax String)
+let insideShape = do
+    let shape <- inspectAdt @Token '{ type Token }
+    match shape.constructors
+    case c :: Nil ->
+        (match c.renderName == "MkToken"
+         case True -> stringSyntax "ok"
+         case False -> failElab "wrong constructor reflected")
+    case _ -> failElab "wrong constructor count"
+
+ok : String
+let ok = $(insideShape)
+-- STATUS(a0497523): PASS

@@ -40,3 +40,4 @@ let grab (1 s : Sized n) : Int =
 -- the pattern body's Miss arm gets E_APPLICATION_ARGUMENT_MISMATCH: the
 -- compiler does not transport Small v : Sized Z to Sized n under the
 -- branch's forced n = Z equality (§17.1.2 family-argument refinement gap).
+-- STATUS(a0497523): FAIL — unchanged (E_APPLICATION_ARGUMENT_MISMATCH in the pattern Miss arm; §17.1.2 transport gap).

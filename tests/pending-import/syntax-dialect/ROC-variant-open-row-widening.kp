@@ -1,0 +1,27 @@
+-- Source issue: Roc #4150
+-- Spec: §11.3 (`VarRow` and `LacksVar`), §13.1.5 (variant row
+--       polymorphism).
+-- Pending: the current compiler does not yet expose the spec-required
+-- `VarRow` classifier or `LacksVar` intrinsic in source scope. Keep this
+-- open-row portion pending until those language features exist.
+
+module test
+
+data H : Type =
+    H : String -> H
+
+data J : Type =
+    J : String -> J
+
+--! mode check
+
+-- POSITIVE: widening into an open variant via expected-type-directed insertion
+-- is accepted when the target row has the residual variable.
+widened : forall (r : VarRow). LacksVar r H => LacksVar r J => Bool -> (| H | J | r |)
+let widened cond =
+    if cond then
+        (| H "open" : H |)
+    else
+        (| J "open" : J |)
+
+--! assertNoErrors

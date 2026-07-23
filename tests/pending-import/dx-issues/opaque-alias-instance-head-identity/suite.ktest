@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS — abstract goal Tag Id solves downstream; representation goal Tag Int stays unsolved (E_UNSOLVED_IMPLICIT); NOTE this matches DX expectation but arguably flips a strict §14.3.2/§33.2.1 declaration-site-transparency reading

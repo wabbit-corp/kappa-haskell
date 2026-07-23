@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n84\n"
+
+-- §23.7/§23.7.1: staged-code scope metadata must stay sound under
+-- ordinary control constructs. Code built (and genlet-shared) under
+-- finallyIO remains closable by closeCode and runnable by runCode after
+-- the control construct completes — the dynamic scope-check discipline
+-- must not be corrupted by try/finally-style non-local control.
+module main
+
+plain : UIO (Code Integer)
+let plain =
+    finallyIO (ioPure .< 40 + 2 >.) (ioPure Unit)
+
+shared : UIO (Code Integer)
+let shared = do
+    let s <- finallyIO (ioPure (genlet .< 40 + 2 >.)) (ioPure Unit)
+    ioPure .< .~s + .~s >.
+
+runOne : Code Integer -> UIO Unit
+let runOne c = do
+    match closeCode c
+    case Some cc -> do
+        let v <- runCode cc
+        println v
+    case None ->
+        printlnString "stage error"
+
+main : UIO Unit
+let main = do
+    let a <- plain
+    runOne a
+    let b <- shared
+    runOne b
+-- STATUS(a0497523): PASS

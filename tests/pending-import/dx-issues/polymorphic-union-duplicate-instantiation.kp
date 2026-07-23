@@ -1,0 +1,18 @@
+module main
+
+-- A union family whose members are distinct only while its parameter is
+-- rigid collapses to two identical members when instantiated at Int.  Silently
+-- accepting that specialization makes injection, matching, and MemberId-based
+-- representation ambiguous.  A focused duplicate-member diagnostic at the
+-- specialization is the least surprising behavior.
+
+type Choice (0 a : Type) = (| a | Int |)
+
+type Collapsed = Choice Int --!! E_VARIANT_DUPLICATE
+
+useCollapsed : Collapsed -> Int
+let useCollapsed value = 0
+
+--! mode check
+--! assertDiagnostic error E_VARIANT_DUPLICATE
+-- STATUS(a0497523): FAIL — no diagnostic error[E_VARIANT_DUPLICATE] on line 11 (no diagnostics); no diagnostic error[E_VARIANT_DUPLICATE] was produced (no diagnostics)

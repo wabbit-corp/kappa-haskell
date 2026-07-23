@@ -1,0 +1,47 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "early:99\nlate:6\nrounds:1\n"
+
+-- §18.1.21.1 / §18.1.22.1 (with §18.8): a handler composes with the
+-- completion-carrying elaboration — the handled computation may be a do
+-- block written immediately after the label (§18.1.22 Syntax), and
+-- Return[...] / Break completions raised inside it propagate outward
+-- through the handler unchanged (the `case return` clause handles only
+-- Normal x): `return 99` exits `early`, `break` exits the while loop
+-- after one round.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+early : Bool -> Eff <[ ]> Int
+let early b =
+    deep handle Ask do
+        let a <- Ask.ask ()
+        if b then return 99 else pure ()
+        pure (addInt a 1)
+    with
+        case return x -> pure x
+        case ask _ k -> k 5
+
+rounds : UIO Int
+let rounds = do
+    var n = 0
+    while True do
+        n = n + 1
+        deep handle Ask do
+            let a <- Ask.ask ()
+            if ltInt 2 a then break else pure ()
+            pure ()
+        with
+            case return x -> ioPure x
+            case ask _ k -> k 3
+    ioPure n
+
+main : UIO Unit
+let main = do
+    printlnString (stringAppend "early:" (showInt (runPure (early True))))
+    printlnString (stringAppend "late:" (showInt (runPure (early False))))
+    let r <- rounds
+    printlnString (stringAppend "rounds:" (showInt r))
+-- STATUS(a0497523): FAIL — 3 errors: a do block written immediately after the label is rejected ("the handled computation of 'handle' must have an Eff type", 2x) and the in-handled-do break is E_BREAK_OUTSIDE_LOOP — completions are confined per do-scope, so §18.1.21.1/§18.1.22.1 Break/Return propagation through handlers is unimplemented.

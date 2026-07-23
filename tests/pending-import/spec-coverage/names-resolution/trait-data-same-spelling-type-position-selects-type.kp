@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+-- §7.1 binding-group formation: "Distinct kinds with the same source name
+-- key may coexist in one binding group."  Contextual admissibility: type
+-- position admits declarations of kind `type` (a `trait` is admissible
+-- only in trait-obligation position).  So with `data T` and `trait T`
+-- coexisting, `useTy : T` MUST select the data type's type facet, and the
+-- instance head `instance T Integer` selects the trait facet.
+--
+-- Today the trait declaration silently displaces the data type in the
+-- binding group: `useTy : T` resolves T to the TRAIT and fails with
+-- E_NOT_A_TYPE "expected a type; this expression has type
+-- (0 a : Type) -> Type", even though the admissible-kind filter should
+-- never have offered the trait in plain type position.
+module main
+
+data T : Type = MkT (n : Integer)
+
+trait T a =
+    frob : a -> a
+
+instance T Integer =
+    let frob n = n + 1
+
+useTy : T
+let useTy = MkT 1
+
+useTr : Integer
+let useTr = frob 41
+-- STATUS(a0497523): FAIL — E_NOT_A_TYPE at `useTy : T`: type position resolves T to the trait facet (the trait displaced the data type instead of coexisting kind-filtered)

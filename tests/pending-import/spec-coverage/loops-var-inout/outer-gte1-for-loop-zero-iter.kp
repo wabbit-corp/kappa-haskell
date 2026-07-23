@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- §18.6 (conservative portable rule): a `for` loop contributes lower-bound
+-- usage 0 for an outer >=1 variable on the path where the iterator is empty,
+-- so demands occurring only inside the for-loop body do not discharge the
+-- obligation (`bad`); demanding after the loop, on every normal path, does
+-- (`ok`). Companion to the imported while-loop test.
+module main
+
+consume : (1 n : Int) -> Int
+let consume (1 n : Int) : Int = n
+
+bad : List Int -> (>=1 x : Int) -> UIO Unit
+let bad (xs : List Int) (>=1 x : Int) : UIO Unit = --!! kappa.quantity.positive-lower-bound
+    do
+        for i in xs do
+            let _ = consume x
+        pure ()
+
+ok : List Int -> (>=1 x : Int) -> UIO Unit
+let ok (xs : List Int) (>=1 x : Int) : UIO Unit =
+    do
+        for i in xs do
+            pure ()
+        let _ = consume x
+        pure ()
+
+-- STATUS(a0497523): PASS

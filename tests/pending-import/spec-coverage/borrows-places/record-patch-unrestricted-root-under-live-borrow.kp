@@ -1,0 +1,38 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.2.5 normative elaboration: `p.{ left = 10 }` is assembled as the
+-- full record literal (left = 10, right = p.right) and "the patch
+-- scrutinee is elaborated and evaluated exactly once" — for an
+-- UNRESTRICTED root this is only a read, not a consumption. §12.4:
+-- shared borrows coexist with reads; only operations REQUIRING
+-- quantity-1 ownership of an overlapping path are forbidden while a
+-- borrow is live. So both patches below are legal: the manual
+-- reconstruction okManual (the patch's own normative elaboration!) is
+-- accepted, and the sugar must not be stricter than its elaboration.
+module main
+
+type Pair = (left : Int, right : Int)
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+okManual : (p : Pair) -> Int
+let okManual (p : Pair) : Int =
+    let & l = p.left
+    in let p2 = (left = 10, right = p.right)
+    in addInt (observe l) p2.left
+
+okPatchSameField : (p : Pair) -> Int
+let okPatchSameField (p : Pair) : Int =
+    let & l = p.left
+    in let p2 = p.{ left = 10 }
+    in addInt (observe l) p2.left
+
+okPatchDisjointField : (p : Pair) -> Int
+let okPatchDisjointField (p : Pair) : Int =
+    let & l = p.left
+    in let p2 = p.{ right = 5 }
+    in addInt (observe l) p2.right
+
+-- STATUS(a0497523): FAIL — 2 errors: both patches are rejected with E_QTT_BORROW_OVERLAP ("'p' is consumed while a live borrow ... exists") even though the root is unrestricted; the manual reconstruction okManual (the patch's normative elaboration) is accepted, and patching through a borrowed whole-record alias is accepted, so the patch form alone treats an unrestricted scrutinee as a consuming use.

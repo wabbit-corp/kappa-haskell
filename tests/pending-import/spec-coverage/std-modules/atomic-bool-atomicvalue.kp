@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "load:False\nstored:True\nexchange-old:True\ncas-old:False\ncas-current:True\nfinal:True\n"
+
+-- §29.1: a conforming std.atomic MUST provide an AtomicValue Bool
+-- instance. Bool cells support load/store/exchange/compare-exchange with
+-- representation equality (they are genuine Bool values, not numerics).
+module main
+
+import std.atomic.(ctor LoadAcquire, ctor LoadSeqCst, ctor StoreRelease, ctor RmwAcqRel, ctor RmwSeqCst, ctor CasFailAcquire)
+import std.atomic.(ctor Exchanged, ctor NotExchanged)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicStore, term atomicExchange, term atomicCompareExchange)
+
+showBool : Bool -> String
+let showBool b = if b then "True" else "False"
+
+main : UIO Unit
+let main = do
+    let cell <- newAtomicRef False
+    let v0 <- atomicLoad LoadSeqCst cell
+    printlnString ("load:" ++ showBool v0)
+    atomicStore StoreRelease cell True
+    let v1 <- atomicLoad LoadAcquire cell
+    printlnString ("stored:" ++ showBool v1)
+    let old <- atomicExchange RmwAcqRel cell False
+    printlnString ("exchange-old:" ++ showBool old)
+    -- CAS success: cell holds False, expected False, desired True
+    let r1 <- atomicCompareExchange RmwSeqCst CasFailAcquire cell False True
+    match r1
+      case Exchanged o -> printlnString ("cas-old:" ++ showBool o)
+      case NotExchanged _ -> printlnString "cas-old:wrongly-failed"
+    -- CAS failure: cell now holds True, expected False -> NotExchanged True
+    let r2 <- atomicCompareExchange RmwSeqCst CasFailAcquire cell False False
+    match r2
+      case NotExchanged current -> printlnString ("cas-current:" ++ showBool current)
+      case Exchanged _ -> printlnString "cas-current:wrongly-exchanged"
+    let final <- atomicLoad LoadSeqCst cell
+    printlnString ("final:" ++ showBool final)
+-- STATUS(a0497523): PASS

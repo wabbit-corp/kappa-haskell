@@ -1,0 +1,6 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.ambiguous
+--! assertEval fromAlpha 10
+--! assertEval resolvedAlpha 1
+--! assertEval resolvedBeta 2

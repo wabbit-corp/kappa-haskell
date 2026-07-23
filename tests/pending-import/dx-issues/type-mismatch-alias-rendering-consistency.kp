@@ -1,0 +1,31 @@
+-- DX EXPECTATION (not necessarily spec-required): one diagnostic should
+-- render both sides of an expected/actual pair in one naming environment.
+-- §3.1.8 (renderer SHOULDs): "preserve visible type aliases ... where
+-- possible" and "render expected and actual types using a common local
+-- naming environment"; the alias-mismatch clause says to preserve the
+-- alias by default and reveal the unfolding as an `aka` note.
+--
+-- Here the beginner applied `add` to one argument too few.  The user wrote
+-- `Int` everywhere (prelude alias of Integer), and the diagnostic renders
+-- the ACTUAL side with the alias (`Int -> Int`) but the EXPECTED side
+-- unfolded (`Integer`).  The message reads as if the types differ in two
+-- ways (arity AND Int-vs-Integer), which is exactly the confusion the
+-- §3.1.8 SHOULDs exist to prevent.  Same alias unfolding shows up in
+-- E_APPLICATION_NONCALLABLE's "callee type: Integer" for an `Int` callee.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): payload /payload/actual is
+-- "Int -> Int" (alias preserved) while /payload/expected is "Integer"
+-- (alias unfolded); no aka note.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Int -> Int
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Int
+module main
+
+add : Int -> Int -> Int
+let add a b = a + b
+
+r : Int
+let r = add 1
+-- STATUS(a0497523): FAIL — /payload/actual renders the alias (Int -> Int) but /payload/expected renders the unfolding (Integer); no aka note

@@ -16,4 +16,4 @@ let foo =
 bar : Int
 let bar = 2
 
--- STATUS(a51e1bf): FAIL — recovery skips the whole declaration (recoverySite=declaration) instead of constructing the §3.1.14A missing-expression node
+-- STATUS(a0497523): FAIL — recovery skips the whole declaration (recoverySite=declaration) instead of constructing the §3.1.14A missing-expression node

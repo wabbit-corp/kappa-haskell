@@ -25,4 +25,4 @@ let badLocal =
 
         sizeOf 1
 
--- STATUS(a51e1bf): FAIL — the local instance is rejected, but with E_UNSUPPORTED ("this local declaration form is not supported inside block by this implementation") because ALL local instances are unimplemented; the §14.3 locality condition itself is never checked.
+-- STATUS(a0497523): FAIL — the local instance is rejected, but with E_UNSUPPORTED ("this local declaration form is not supported inside block by this implementation") because ALL local instances are unimplemented; the §14.3 locality condition itself is never checked.

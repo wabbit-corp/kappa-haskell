@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n"
+
+-- §23.3: cross-stage persistence is lift-based — a user 'Lift'
+-- instance for a custom data type persists a present-stage value into
+-- a quote structurally via 'liftCode' and nested escapes. (The base
+-- 'Lift Integer' instance uses the implementation's '__codeQuote'
+-- primitive, as in tests/conformance/staging/code-pipeline.kp.)
+
+data Pt : Type =
+    MkPt (px : Integer) (py : Integer)
+
+instance Lift Integer =
+    let liftCode n = __codeQuote n
+
+instance Lift Pt =
+    let liftCode p =
+        match p
+        case MkPt a b -> .< MkPt .~(liftCode a) .~(liftCode b) >.
+
+sumPt : Pt -> Integer
+let sumPt p =
+    match p
+    case MkPt a b -> a + b
+
+main : UIO Unit
+let main = do
+    let c = .< sumPt .~(liftCode (MkPt 1 2)) >.
+    match closeCode c
+    case Some cc -> do
+        let v <- runCode cc
+        println v
+    case None -> printlnString "not closed"
+-- STATUS(a0497523): PASS

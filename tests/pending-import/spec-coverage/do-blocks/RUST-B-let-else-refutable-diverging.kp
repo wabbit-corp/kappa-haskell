@@ -1,0 +1,31 @@
+-- Source issue: rust#87335 (let-else tracking issue, slice > 50000)
+-- Spec: §18.2.1 (refutable local binding `let?`, `else` form), §18.2
+-- Pins: `let? pat = expr else residuePat -> failExpr` is Kappa's let-else.
+-- On success the pattern binders are in scope for the remaining do-items;
+-- on failure the residue is bound and the failure arm runs terminally (here
+-- an `m Void`-style `throwIO`). The pair (pat, residuePat) is checked as a
+-- disjoint, jointly exhaustive split of the scrutinee type.
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n99\n"
+
+module main
+
+data Signal : Type =
+    NotPresent
+
+-- The failure arm throws: `throwIO NotPresent` is a terminal branch, and
+-- `n : Int` is in scope in the do-items after the let-else.
+parseOrThrow : Option Int -> IO Signal Int
+let parseOrThrow opt = do
+    let? Some n = opt
+    else _ -> throwIO NotPresent
+    pure (n + 1)
+
+main : UIO Unit
+let main = do
+    let a <- catchIO (parseOrThrow (Some 6)) (\_ -> pure 99)
+    println a
+    let b <- catchIO (parseOrThrow None) (\_ -> pure 99)
+    println b

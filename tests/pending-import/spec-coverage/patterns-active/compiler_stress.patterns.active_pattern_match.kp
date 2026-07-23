@@ -1,0 +1,23 @@
+-- Stress test: an active pattern can be used as a pattern head in a match
+-- Spec: §17.3.1 (active-pattern declarations) and §17.3.2
+--       (Option-returning partial active patterns).
+
+--! mode check
+
+-- Active pattern: matches even integers and yields the half.
+pattern Even (n : Int) : Option Int =
+    if n % 2 == 0 then Some (n / 2) else None
+
+-- POSITIVE: Even is used as a pattern head in a match expression.
+describeEven : Int -> String
+let describeEven n =
+    match n
+    case Even (half) -> "even, half is " ++ show half
+    case _         -> "odd"
+
+let r1 : String = describeEven 8
+let r2 : String = describeEven 7
+
+--! assertNoErrors
+
+-- STATUS(a0497523): PASS

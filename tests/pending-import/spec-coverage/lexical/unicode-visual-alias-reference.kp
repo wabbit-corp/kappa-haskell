@@ -20,4 +20,4 @@ let A = 41
 resolved : Int
 let resolved = `А` + 1
 
--- STATUS(a51e1bf): FAIL — no strongVisualNameKey lookup: the Cyrillic reference is E_NAME_UNRESOLVED instead of resolving to A with W_UNICODE_VISUAL_ALIAS_REFERENCE
+-- STATUS(a0497523): FAIL — no strongVisualNameKey lookup: the Cyrillic reference is E_NAME_UNRESOLVED instead of resolving to A with W_UNICODE_VISUAL_ALIAS_REFERENCE

@@ -1,0 +1,36 @@
+-- Source artifacts: CHALK-8 (Tests for partial overlap),
+--                   CHALK-62 (support overlap for marker traits),
+--                   CHALK-DOC-book/src/clauses/coherence.md.
+-- Spec: §14.4 (proof irrelevance: trait evidence is subsingleton),
+--       §14.3.1 step 6 / §33.2.1 (coherence: equivalent surviving evidence
+--       artifacts are harmless overlap; a deterministic representative is
+--       selected)
+-- Pins: for an empty (marker) trait, two instance declarations with the same
+-- head produce subsingleton-equal evidence, so the program is accepted and
+-- resolution selects a coherent representative instead of rejecting overlap.
+-- NOTE: overlaps with tests/conformance/traits/overlap-equivalent.kp
+-- (same-head overlap for a non-empty trait with identical bodies).
+
+--! mode check
+--! assertNoErrors
+--! assertType result Int
+
+module main
+
+-- Empty trait: a pure marker. Evidence is subsingleton by §14.4.
+trait IsMarked (a : Type)
+
+data Token : Type =
+    MkToken
+
+-- Two declarations of the same instance head. For an empty trait both
+-- evidence values are equivalent under §33.2.1, so overlap is harmless.
+instance IsMarked Token =
+
+instance IsMarked Token =
+
+needsMarker : (@_ : IsMarked a) -> a -> Int
+let needsMarker _ = 0
+
+result : Int
+let result = needsMarker MkToken

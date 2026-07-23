@@ -1,0 +1,58 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rel_stratification/rel_stratification.dl,
+--   tests/semantic/rel_stratification2/rel_stratification2.dl,
+--   souffle-lang #719 (cyclic negation not caught in all cases).
+-- Spec: §15 totality ("Kappa is total by default"); §15.2 conservative
+--   boundary; §15.3 structural descent; §3.2.11 (family
+--   kappa.termination.failure).
+-- Souffle rejects negation cycles (no stratification). The Kappa analogue
+-- pinned here: mutual recursion through `not` with no decreasing argument
+-- has no well-founded order, so the SCC fails termination checking and gets
+-- a kappa.termination.failure diagnostic (surfaced at warning severity for
+-- runtime-only definitions, matching the existing §3.2.11 coverage); the
+-- structurally decreasing even/odd SCC is accepted silently.
+
+--! mode check
+
+module main
+
+data PNat : Type =
+    PZero
+    PSucc PNat
+
+-- POSITIVE: mutually recursive functions with structural descent (§15.3).
+even : PNat -> Bool
+let even n =
+    match n
+    case PZero -> True
+    case PSucc m -> odd m
+
+odd : PNat -> Bool
+let odd n =
+    match n
+    case PZero -> False
+    case PSucc m -> even m
+
+-- POSITIVE: self-recursion on a structurally smaller argument.
+countdown : PNat -> PNat
+let countdown n =
+    match n
+    case PZero -> PZero
+    case PSucc m -> countdown m
+
+-- NEGATIVE: mutual recursion through negation with no decrease — the
+-- stratification-cycle analogue (b :- !c, c :- !b).
+positiveFn : PNat -> Bool
+let positiveFn n = not (negativeFn n)    --!! W_TERMINATION_UNVERIFIED
+
+negativeFn : PNat -> Bool
+let negativeFn n = not (positiveFn n)    --!! W_TERMINATION_UNVERIFIED
+
+-- NEGATIVE: self-negating loop (a(X) :- a(X), !a(X) analogue).
+selfNeg : PNat -> Bool
+let selfNeg n = selfNeg n && not (selfNeg n)    --!! W_TERMINATION_UNVERIFIED
+
+--! assertNoErrors
+--! assertWarningCount 3
+--! assertDiagnosticFamily warning kappa.termination.failure
+
+-- STATUS(a0497523): PASS

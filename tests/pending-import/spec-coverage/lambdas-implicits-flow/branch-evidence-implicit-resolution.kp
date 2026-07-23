@@ -1,0 +1,43 @@
+-- §16.4.1 × §16.3.3: if-branch conditions introduce erased implicit
+-- evidence (cond = True on the success side, cond = False on the failure
+-- side) that participates in implicit resolution; a constructor test also
+-- makes the success-side HasCtor strong enough that a subsequent match
+-- may treat the other constructors as unreachable.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+boolProofT : (n : Int) -> (@0 p : (n == 5) = True) -> Int
+let boolProofT n = 1
+
+boolProofF : (n : Int) -> (@0 p : (n == 5) = False) -> Int
+let boolProofF n = 0
+
+-- POSITIVE: each branch supplies the matching erased boolean evidence.
+branchEvidence : (n : Int) -> Int
+let branchEvidence n =
+    if n == 5 then
+        boolProofT n
+    else
+        boolProofF n
+
+-- NEGATIVE: outside any branch there is no (n == 5) = True candidate.
+noEvidence : (n : Int) -> Int
+let noEvidence n = boolProofT n --!! E_UNSOLVED_IMPLICIT
+
+-- POSITIVE: success-side HasCtor lets the single-case match omit the
+-- Empty case as unreachable.
+exhaustAfterTest : Payload -> Int
+let exhaustAfterTest x =
+    if x is Box then
+        match x
+          case Box v -> v
+    else
+        0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+-- STATUS(a0497523): PASS

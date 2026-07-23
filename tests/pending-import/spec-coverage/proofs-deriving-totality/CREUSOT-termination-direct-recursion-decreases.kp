@@ -1,0 +1,31 @@
+-- Source issues: CREUSOT-1966, CREUSOT-1204
+-- Spec: §15.4 (Int measures require non-negativity evidence at BOTH
+--       ends of every recursive edge; unrestricted integer < is not
+--       well-founded and MUST NOT be a default termination order),
+--       §15.11 (explicit decreases: an unsolved call-site decrease goal
+--       rejects the SCC with family kappa.termination.failure),
+--       §3.2.11 (kappa.termination.failure)
+-- Pins: with an explicit `decreases n`, a sign-flipping Int recursion
+-- cannot discharge the §15.4 non-negative-subset side conditions, and a
+-- match binder that rebinds the whole scrutinee gives no strict
+-- decrease. Both SCCs MUST be rejected (error), not merely left
+-- uncertified with a warning.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: measure n flips sign each call; non-negativity unprovable.
+evil : Int -> Int
+let evil n decreases n =                     --!! kappa.termination.failure
+    addInt (evil (subInt 0 n)) 1
+
+-- NEGATIVE: binder pattern rebinds the scrutinee; measure equal, not
+-- strictly smaller, on the recursive edge.
+nonstrict : Int -> Unit
+let nonstrict i decreases i =                --!! kappa.termination.failure
+    match i
+    case j -> nonstrict j
+
+--! assertDiagnosticFamily error kappa.termination.failure
+-- STATUS(a0497523): FAIL — both explicit-decreases SCCs are accepted with W_TERMINATION_UNVERIFIED warnings at the definition sites (0 errors); §15.11 requires rejecting an SCC whose call-site decrease goals are unsolved (same gap as decreases-by-missing-wellfounded.kp)

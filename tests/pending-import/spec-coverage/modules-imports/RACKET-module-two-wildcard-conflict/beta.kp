@@ -1,0 +1,7 @@
+module beta
+
+common : Int
+let common = 2
+
+onlyInBeta : Int
+let onlyInBeta = 20

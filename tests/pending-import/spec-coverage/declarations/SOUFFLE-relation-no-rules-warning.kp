@@ -1,0 +1,33 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_grounded/rule_grounded.dl
+--   (warning: "No rules/facts defined for relation B"),
+--   tests/semantic/rule_undeclared_relation/rule_undeclared_relation.dl.
+-- Spec: §9.1 ("A non-`expect` top-level term signature declaration MUST be
+--   satisfied by exactly one matching top-level definition in the same
+--   source file. If no matching definition exists in that file, compilation
+--   fails. Standalone definitionless top-level items MUST use `expect
+--   term`."). No §3.2 family is standardized for this rejection, so the
+--   assertions pin only that compilation fails, with a message shape check.
+-- Pins the Kappa analogue of Souffle's declared-but-undefined relation: a
+-- top-level signature with no definition is an error, not silently abstract.
+
+--! mode check
+
+module main
+
+-- POSITIVE: declared and defined.
+implemented : Int -> Int
+let implemented x = x + 1
+
+alsoGood : String -> Bool
+let alsoGood _ = True
+
+-- NEGATIVE: declaration without a matching definition.
+noImpl : Int -> String
+
+-- NEGATIVE: another definitionless signature.
+recNoImpl : Nat -> Nat
+
+--! assertErrorCount 2
+--! assertDiagnosticMatch signature|definition
+
+-- STATUS(a0497523): PASS

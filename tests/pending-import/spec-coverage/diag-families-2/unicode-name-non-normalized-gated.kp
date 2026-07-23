@@ -16,4 +16,4 @@ module main
 let café = 1
 
 let caféMenu = 2
--- STATUS(a51e1bf): UNSUPPORTED — requires capability unicodeNames, which this implementation does not provide (unquoted Unicode identifiers are gate-rejected with E_FEATURE_INACTIVE)
+-- STATUS(a0497523): UNSUPPORTED — requires capability unicodeNames, which this implementation does not provide (unquoted Unicode identifiers are gate-rejected with E_FEATURE_INACTIVE)

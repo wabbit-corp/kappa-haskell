@@ -1,0 +1,60 @@
+-- Source issues: rust#67514 (or-patterns in irrefutable match), rust#65490 (bindings_after_at tracking)
+-- Spec: §17.2.1 (pattern forms: or-patterns, as-patterns), §17.2.3
+--       (or-pattern validity: same name set, definitionally equal types,
+--       identical quantities), §17.1.9 (guarded cases)
+-- Pins: an or-pattern arm with a guard binds the same names on every
+-- alternative and the guard/body see them uniformly; `name @ pat` binds the
+-- whole scrutinee together with inner binders. Alternatives binding
+-- different name sets, or the same name at different types, are ill-formed
+-- (§17.2.3 names no kappa.* family; the registered code is
+-- E_OR_PATTERN_BINDER_MISMATCH).
+-- NOTE: overlaps with tests/conformance/patterns/or-pattern-name-mismatch.kp
+-- and tests/conformance/patterns/or-pattern-type-mismatch.kp.
+
+--! mode check
+
+module main
+
+data Outcome : Type =
+    Good Int
+    Bad Int
+
+data Tagged : Type =
+    TagA Int
+    TagB String
+
+-- POSITIVE: or-pattern with identical binders plus guards; the body sees
+-- `x` regardless of which alternative matched.
+classify : Outcome -> Int
+let classify r =
+    match r
+    case (Good x | Bad x) if x > 0 -> x
+    case (Good x | Bad x) if x < 0 -> 0 - x
+    case _ -> 0
+
+-- POSITIVE: bindings after `@` — the as-binder and the inner constructor
+-- binder are both usable in the body.
+sumWithTag : Outcome -> Int
+let sumWithTag r =
+    match r
+    case whole @ (Good x) -> x + tagOf whole
+    case whole @ (Bad e) -> e + tagOf whole
+
+tagOf : Outcome -> Int
+let tagOf _ = 1
+
+-- NEGATIVE: alternatives bind different name sets.
+illBinders : Outcome -> Int
+let illBinders r =
+    match r
+    case (Good x | Bad y) -> x    --!! E_OR_PATTERN_BINDER_MISMATCH
+    case _ -> 0
+
+-- NEGATIVE: alternatives bind the same name at different types.
+mixedTypes : Tagged -> Int
+let mixedTypes t =
+    match t
+    case (TagA v | TagB v) -> 0    --!! E_OR_PATTERN_BINDER_MISMATCH
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_OR_PATTERN_BINDER_MISMATCH

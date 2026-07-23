@@ -1,0 +1,21 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_name_resolution/comp_name_resolution.dl
+--   (.comp E : E {} — a component inheriting from ITSELF).
+-- Spec: §8.2 acyclic imports ("The module dependency graph formed by
+--   `import` statements ... must be acyclic"). A self-import is the
+--   degenerate one-module cycle (an edge main -> main), so §8.2 requires
+--   rejection; the spec grants no exemption for self-edges. No §3.2 family
+--   is standardized for the rejection, so the assertions pin only that an
+--   error naming the cycle is produced.
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch cycle|cyclic|acyclic
+
+module main
+
+import main
+
+ok : Int
+let ok = 0
+
+-- STATUS(a0497523): FAIL — the compiler silently ACCEPTS `import main` inside module main (no diagnostic at all); §8.2 requires the import dependency graph to be acyclic and a self-edge is a cycle, so the missing rejection is a compiler gap (true two-module cycles ARE rejected with E_IMPORT_CYCLE — see the sibling directory suite).

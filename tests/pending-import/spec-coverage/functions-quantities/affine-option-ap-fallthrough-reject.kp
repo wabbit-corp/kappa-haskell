@@ -1,0 +1,39 @@
+-- §12.2 (<=1 = [0,1], at most ONE runtime-relevant demand) + §17.3.2
+-- matching rule (Spec L22618-L22623): to try an Option active-pattern
+-- case, `P s` is evaluated FIRST; only then is Hit/fallthrough decided.
+-- With an AFFINE scrutinee consumed by the pattern function, the
+-- fallthrough path has already spent its single permitted demand inside
+-- the failed `MaybeTake b` call, so the later case's `bufValue rest` is
+-- a second demand on the same path — use-after-consume at runtime.
+-- §17.3.2's explicit MUST-reject is stated for quantity 1; for <=1 the
+-- ordinary interval accounting must reject the re-use just the same.
+
+--! mode check
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (<=1 b : Buf) -> Int
+let bufValue (<=1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern MaybeTake (<=1 b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+-- NEGATIVE: on the None path b is demanded twice (once inside MaybeTake,
+-- once via rest).
+bad : (<=1 b : Buf) -> Int
+let bad (<=1 b : Buf) : Int =
+    match b
+    case MaybeTake (n) -> n
+    case rest -> bufValue rest
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch affine|quantit|consum|linear
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors: the affine
+-- active-pattern call is not accumulated into the fallthrough path
+-- (only the exactly-1 case is rejected, via the blanket
+-- E_ACTIVE_PATTERN_LINEARITY_VIOLATION declaration check).

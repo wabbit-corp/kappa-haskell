@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §24.3: untrusted code MUST NOT fabricate arbitrary DynRep values (they
+-- are trusted runtime evidence for sameDynRep). §24.9 exports Dyn and
+-- DynRep as abstract types only; with §8.5.3, no constructor of either
+-- is name-resolvable outside std.gradual.
+-- POSITIVE: receiving and using representations abstractly is fine.
+module main
+
+import std.gradual.*
+
+packWith : forall (@0 a : Type). DynRep a -> a -> Dyn
+let packWith rep x = toDynWith rep x
+
+-- NEGATIVE: conjuring evidence for Int out of a string tag.
+forgedRep : DynRep Int
+let forgedRep = MkDynRep "Int" --!! kappa.name.unresolved
+
+-- NEGATIVE: conjuring a dynamic package with no stored representation.
+forgedDyn : Dyn
+let forgedDyn = MkDyn "Int" --!! kappa.name.unresolved
+
+-- STATUS(a0497523): FAIL — MkDynRep and MkDyn both resolve in user code (the embedded std.gradual leaks constructors through import std.gradual.*), so fabrication type-checks with 0 diagnostics.

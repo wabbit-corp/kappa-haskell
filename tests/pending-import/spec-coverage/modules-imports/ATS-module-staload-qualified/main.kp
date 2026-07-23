@@ -1,0 +1,51 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`#staload N = $ADD`, `$ME.foo`, qualified `$A.foo`),
+--         tests/srcgen1/TEST/DATA/test02.dats (`#staload M = $FOO$S2E`, `$ME.foo`),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`#staload List = "prelude/SATS/list.sats"`, `$List.foo`)
+-- Spec: §8.3 (import forms: selective `import M.(x)` and module-alias
+--       `import M as X` with qualified access `X.name`),
+--       §8.5.1 (private items are not importable/accessible),
+--       §3.2.2 (family kappa.name.unresolved).
+-- Pins the ATS3 `#staload A = ...` / `$A.foo` obligation: names reach a
+-- consumer only through an import; unimported items, private items, and
+-- unknown members accessed through a module alias are all unresolved.
+
+--! mode check
+
+module main
+
+import mathmod.(square)
+import mathmod as M
+
+-- POSITIVE: a selectively imported item is in unqualified scope.
+area : Int -> Int
+let area r = square r
+
+-- POSITIVE: a module alias gives qualified access to exported items.
+volume : Int -> Int
+let volume r = M.cube r
+
+squareViaAlias : Int -> Int
+let squareViaAlias x = M.square x
+
+-- NEGATIVE: `cube` was not selectively imported, so its unqualified
+-- spelling is not in scope (only `square` was imported that way).
+cubeNotImported : Int
+let cubeNotImported = cube 4          --!! kappa.name.unresolved
+
+-- NEGATIVE: a name that exists nowhere.
+unknownFun : Int
+let unknownFun = nonExistent 0        --!! kappa.name.unresolved
+
+-- NEGATIVE: `helper` is private in mathmod, so it is not an exported
+-- member even through the module alias.
+privateQualified : Int
+let privateQualified = M.helper 5     --!! kappa.name.unresolved
+
+-- NEGATIVE: qualified access to a member that was never declared.
+missingQualified : Int
+let missingQualified = M.nonExistent 1   --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 4

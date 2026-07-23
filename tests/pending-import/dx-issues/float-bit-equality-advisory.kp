@@ -1,0 +1,20 @@
+-- DX / §6.1.3 / §28.2: Kappa deliberately gives (==) on Double raw-bit
+-- equality, so +0.0 == -0.0 is False while floatEq reports True. This reverses
+-- the mainstream meaning of `==`; an advisory at the operator is the minimum
+-- guardrail. The warning's eventual code is intentionally not pinned here so
+-- the fixture remains well-formed before a diagnostic name is standardized.
+--! mode run
+--! assertNoErrors
+--! assertWarningCount 1
+--! assertStdout "False\nTrue\n"
+
+module main
+
+negativeZero : Double
+let negativeZero = negDouble 0.0
+
+main : UIO Unit
+let main = do
+    println (0.0 == negativeZero)
+    println (floatEq 0.0 negativeZero)
+-- STATUS(a0497523): FAIL — expected 1 warnings, got 0

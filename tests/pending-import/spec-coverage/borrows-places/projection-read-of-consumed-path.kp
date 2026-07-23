@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_PATH_CONSUMED
+
+-- §12.4.2: in a non-consuming (here borrow-demanding) position a fully
+-- applied projection call behaves as Read/BorrowProjector, and its
+-- static footprint is the union of the ordinary footprints of its
+-- yielded alternatives — here cell.value. §12.4: that path was already
+-- consumed, so the projection call MUST be rejected exactly like the
+-- direct projection `cell.value` is (the direct form is rejected today
+-- with E_QTT_PATH_CONSUMED "borrowed after the path was consumed").
+module main
+
+data Token : Type =
+    Token
+
+type LinCell = (1 value : Token, tag : Int)
+
+projection linValue (place this : LinCell) : Token =
+    yield this.value
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+observeToken : (& t : Token) -> Int
+let observeToken (& t : Token) : Int = 1
+
+bad : (1 cell : LinCell) -> (Token, Int)
+let bad (1 cell : LinCell) : (Token, Int) =
+    block
+        let moved = takeToken cell.value
+        (moved, observeToken (linValue cell)) --!! E_QTT_PATH_CONSUMED
+
+-- STATUS(a0497523): FAIL — 0 errors: the borrow-position projection call `linValue cell` is accepted after cell.value was moved, while the direct form `observeToken cell.value` is correctly rejected with E_QTT_PATH_CONSUMED; projector elimination does not consult per-path consumed state.

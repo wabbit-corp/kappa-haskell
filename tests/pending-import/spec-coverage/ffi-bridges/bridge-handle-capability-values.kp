@@ -1,0 +1,54 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.11 (dynamic bridge handles): a bridge handle is an ordinary runtime
+-- value and a capability — created at term level, passed as an ordinary
+-- argument. Multiple handles for one runtime family coexist, differing only
+-- in term-level configuration; a bind result is used through §7.3
+-- package-member selection (not qualified module lookup); and a convenience
+-- helper over an application-chosen default handle is an ordinary library
+-- function, never a static import.
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle, term bindModule)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, type BridgeOrigin, ctor MkBridgeOrigin)
+
+-- Handle configuration is ordinary term-level data (§26.1.11: executable
+-- path, timeout policy, and similar are chosen by user code, not by the
+-- static module system).
+data PyHandle : Type =
+    MkPyHandle (executable : String) (timeoutMillis : Int)
+
+instance BridgeHandle PyHandle =
+    let bridgeOrigin h = match h
+        case MkPyHandle exe timeout -> ioPure (MkBridgeOrigin exe)
+    let bridgeFailure f = "python bridge failure"
+
+type Numpy (r : Region) : Type =
+    (mean : List Int -> IO BridgeFailure Int)
+
+instance BridgeBindable Numpy =
+    let bridgeContract = MkBridgeContract "numpy contract"
+
+-- Two coexisting handles for the same runtime family.
+venvPython : PyHandle
+let venvPython = MkPyHandle "/opt/venv/bin/python" 30000
+
+systemPython : PyHandle
+let systemPython = MkPyHandle "/usr/bin/python3" 5000
+
+-- The handle is a capability passed as an ordinary value.
+bindNumpy : forall (r : Region). PyHandle -> IO BridgeFailure (Numpy r)
+let bindNumpy py = bindModule @Numpy py "numpy"
+
+-- Member use on the bound value is §7.3 package-member selection.
+meanOf : forall (r : Region). Numpy r -> List Int -> IO BridgeFailure Int
+let meanOf np xs = np.mean xs
+
+-- Application-level default-handle convenience: an ordinary library
+-- function (§26.1.11), with no effect on the static import graph.
+withDefaultNumpy : forall (r : Region). IO BridgeFailure (Numpy r)
+let withDefaultNumpy = bindNumpy venvPython
+
+-- STATUS(a0497523): PASS

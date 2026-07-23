@@ -1,0 +1,42 @@
+-- Source: nim-lang/Nim#15251, nim-lang/Nim#9156, nim-lang/RFCs#346.
+-- Spec: §14.3.1 and §16.3.3 (instance resolution), §3.2.4
+--       (kappa.implicit.unsolved).
+-- A generic function requiring a higher-kinded Container dictionary must be
+-- rejected when its requested type constructor has no instance.
+
+module test
+
+--! mode check
+
+trait Container (parametric 0 f : (parametric 0 a : Type) -> Type) =
+    empty : forall (a : Type). f a
+    insert : forall (a : Type). a -> f a -> f a
+    toList : forall (a : Type). f a -> List a
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+instance Container List =
+    let empty = Nil
+    let insert x xs = Cons x xs
+    let toList xs = xs
+
+fromSingle :
+    forall (f : (parametric 0 x : Type) -> Type) (a : Type).
+    Container f => a -> f a
+let fromSingle x = insert x empty
+
+singleList : List Int
+let singleList = fromSingle 42
+
+data Queue (a : Type) : Type =
+    MkQueue (List a)
+
+badQueue : Queue Int
+let badQueue = fromSingle 42  --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertErrorCount 1
+
+-- STATUS(a0497523): PASS

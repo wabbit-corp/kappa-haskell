@@ -1,0 +1,42 @@
+-- §17.2.1 (as-pattern `name@pat`, Spec L22378) + §12.2.6 duplication
+-- positions (L15486-L15499): binding BOTH the whole scrutinee (`whole`)
+-- and its component (`r`) of a quantity-1 value creates two live owners
+-- of the same linear component. Consuming both — `resVal r` directly and
+-- `twoVal whole` (which consumes the component again through the whole)
+-- — demands the component twice on one path. Quantity 1 is not
+-- duplicable, so this must be rejected.
+
+--! mode check
+
+data Res : Type =
+    MkRes (n : Int)
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Two : Type =
+    TA (1 r : Res)
+    TB (1 r : Res)
+
+twoVal : (1 t : Two) -> Int
+let twoVal (1 t : Two) : Int =
+    match t
+    case TA r -> resVal r
+    case TB r -> resVal r
+
+-- NEGATIVE: whole@(TA r) double-owns the linear component; the body
+-- consumes it through both handles.
+bad : (1 t : Two) -> Int
+let bad (1 t : Two) : Int =
+    match t
+    case whole @ (TA r) -> resVal r + twoVal whole
+    case TB r -> resVal r
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch linear|quantit|duplic|consum
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors: an as-pattern on a
+-- linear scrutinee hands out the whole and the part as independently
+-- consumable owned bindings (runtime double-consume of the component).

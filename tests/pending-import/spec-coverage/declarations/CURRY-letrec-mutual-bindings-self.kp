@@ -1,0 +1,66 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestLetRec.curry
+--   (let ones = 1 : ones; ...). The Curry corecursive VALUE bindings need
+--   productive corecursion, which portable Kappa reserves (§15.12); the
+--   §9.3.1 local-recursion property is pinned here with terminating
+--   local FUNCTIONS instead.
+-- Spec: §9.3.1 (pure block expressions; local recursion: a local named
+--       binding may be recursive only if the recursively referenced name
+--       has a preceding local signature), §15.14 (local recursion).
+--
+-- Pins: a preceding local signature activates self-recursion for the
+-- local named `let` definition that follows; without the signature the
+-- local binding is non-recursive and the self-reference is unresolved
+-- (negative twin: CURRY-letrec-mutual-bindings-unsigned-negative.kp).
+
+module test
+
+--! mode check
+
+data Nat2 : Type =
+    Z2
+    S2 Nat2
+
+toInt : Nat2 -> Int
+let toInt n =
+    match n
+    case Z2 -> 0
+    case S2 p -> 1 + toInt p
+
+-- POSITIVE: a self-recursive local binding. The preceding local
+-- signature `go : Nat2 -> Nat2` activates §9.3.1's recursion rule for
+-- the named local definition that follows.
+double : Nat2 -> Nat2
+let double n =
+    go : Nat2 -> Nat2
+    let go m =
+        match m
+        case Z2 -> Z2
+        case S2 p -> S2 (S2 (go p))
+    go n
+
+doubled : Int
+let doubled = toInt (double (S2 (S2 Z2)))
+
+--! assertNoErrors
+--! assertType double (Nat2 -> Nat2)
+--! assertEval doubled 4
+
+-- POSITIVE: the same rule applies inside a parameterised builder — the
+-- local recursive function may close over the enclosing parameter.
+replicate2 : Int -> Nat2
+let replicate2 n =
+    build : Int -> Nat2
+    let build k =
+        if k <= 0
+        then Z2
+        else S2 (build (k - 1))
+    build n
+
+replicated : Int
+let replicated = toInt (replicate2 3)
+
+--! assertNoErrors
+--! assertType replicate2 (Int -> Nat2)
+--! assertEval replicated 3
+
+-- STATUS(a0497523): PASS

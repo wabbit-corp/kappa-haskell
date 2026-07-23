@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+--! assertEval ok "not-data"
+
+-- §22.1: 'tryInspectAdt' returns the structured 'ShapeError' (kind
+-- 'ShapeNotData' when the visible head is not a data type) instead of
+-- failing the Elab action, so a derivation macro can recover without
+-- surfacing a diagnostic.
+
+import std.deriving.shape.*
+
+type IntFun = Integer -> Integer
+
+probe : Elab (Syntax String)
+let probe = do
+    let r <- tryInspectAdt @IntFun '{ type IntFun }
+    match r
+    case Err e ->
+        (match e.kind
+         case ShapeNotData -> stringSyntax "not-data"
+         case _ -> failElab "wrong ShapeError kind")
+    case Ok shape -> failElab "a function type must not inspect as a data shape"
+
+ok : String
+let ok = $(probe)
+-- STATUS(a0497523): FAIL — std.deriving.shape exports no tryInspectAdt/ShapeError/ShapeErrorKind (unresolved names); only the failing inspectAdt path exists

@@ -1,0 +1,55 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "await-sees-child-write:42\npromise-sees-completer-write:7\nstm-later-txn-sees-commit:5\n"
+
+-- §32.2.10 portable happens-before edges. Ordinary refs are NOT cross-fiber
+-- primitives by themselves, but each edge below makes a plain-ref write in
+-- one fiber portably visible to a read in another:
+--   * fiber termination happens-before a successful `await` return;
+--   * the first successful completePromise happens-before awaitPromise return;
+--   * a successful STM commit happens-before a later transaction attempt
+--     that observes its writes.
+module main
+
+import std.prelude.(type Exit(..))
+
+main : UIO Unit
+let main = do
+    -- edge 1: child writes an ordinary ref, terminates; await orders the read
+    let r1 <- newRef 0
+    let writer : UIO Unit = writeRef r1 42
+    let f <- fork writer
+    let ex <- await f
+    let _ = ex
+    let v1 <- readRef r1
+    printlnString ("await-sees-child-write:" ++ showInt v1)
+    -- edge 2: completer writes an ordinary ref BEFORE completing the promise;
+    -- the awaiting fiber must observe that write after awaitPromise returns
+    let r2 <- newRef 0
+    let p <- newPromise
+    let completer : UIO Unit = do
+        writeRef r2 7
+        let ok <- completePromise p (Success ())
+        let _ = ok
+        ioPure ()
+    let g <- fork completer
+    let _ = g
+    let _ <- awaitPromise p
+    let v2 <- readRef r2
+    printlnString ("promise-sees-completer-write:" ++ showInt v2)
+    -- edge 3: a committed transaction's writes are visible to any later
+    -- transaction attempt (synchronized here by promise + await)
+    let tv <- atomically (newTVar 0)
+    let q <- newPromise
+    let committer : UIO Unit = do
+        atomically (writeTVar tv 5)
+        let ok <- completePromise q (Success ())
+        let _ = ok
+        ioPure ()
+    let h <- fork committer
+    let _ <- awaitPromise q
+    let hx <- await h
+    let _ = hx
+    let v3 <- atomically (readTVar tv)
+    printlnString ("stm-later-txn-sees-commit:" ++ showInt v3)
+-- STATUS(a0497523): PASS

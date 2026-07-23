@@ -1,0 +1,46 @@
+-- Source issue: ROSETTE-196 (Unsoundness with quantifiers due to
+--                interaction with lexical scope, path conditions, and
+--                rewrite rules)
+-- Spec: §9.3 (`let ... in`: a later binding shadows in subsequent
+--       bindings and the in-body; closures keep the binding captured at
+--       creation).
+-- Pins: introducing a binding for an already-bound name shadows — never
+-- captures — the outer binding; a closure built before the shadowing
+-- still sees the outer binding.
+-- NOTE: split from ROSETTE-let-block-allows-mutual-functions.kp; the
+-- lambda-parameter variant lives in
+-- ROSETTE-let-shadowing-quantifier-binding.kp.
+
+--! mode check
+
+module main
+
+-- POSITIVE: a let-bound name shadowing an outer same-named binding; the
+-- sibling binding y sees the inner x.
+shadows : Int
+let shadows =
+    let
+        x = 1
+    in
+        let
+            x = 99
+            y = x
+        in y
+
+-- POSITIVE: a closure captures the outer x; a later shadowing binding of
+-- x does not retroactively change the captured environment.
+nestedShadow : Int
+let nestedShadow =
+    let
+        x = 10
+        f = \n -> n + x
+    in
+        let
+            x = 100
+        in f 1
+
+--! assertNoErrors
+--! assertEval shadows 99
+--! assertEval nestedShadow 11
+
+-- STATUS(a0497523): PASS

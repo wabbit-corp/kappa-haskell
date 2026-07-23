@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertEval splitHit True
+--! assertEval joinedHit True
+--! assertEval trimmedHit True
+
+-- DX expectation, not spec-required: separator-based string split/join and
+-- whitespace trim.  §28.2 and the std modules are silent on all three; the
+-- nearest existing surfaces are Unicode segmentation (`words`, `graphemes`
+-- in std.unicode), byte-level `bytesBreakOn` (std.bytes), and the
+-- append/(++) monoid.  Parsing "a,b,c", building CSV-ish output, and
+-- trimming user input are day-one string tasks in every mainstream
+-- stdlib (split/join/trim or splitOn/intercalate/strip).
+--
+-- What currently happens: E_NAME_UNRESOLVED for stringSplit, stringJoin,
+-- and stringTrim (no other prelude/std spelling provides them); users must
+-- drop to grapheme cursors or bytes to split a string on a comma.
+
+module main
+
+splitHit : Bool
+let splitHit = stringSplit "a,b" "," == ("a" :: "b" :: Nil)
+
+joinedHit : Bool
+let joinedHit = stringJoin "," ("a" :: "b" :: Nil) == "a,b"
+
+trimmedHit : Bool
+let trimmedHit = stringTrim "  x  " == "x"
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x3: stringSplit/stringJoin/stringTrim absent under any spelling; nearest surfaces are std.unicode words and std.bytes bytesBreakOn

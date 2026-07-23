@@ -1,0 +1,24 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_name_resolution/comp_name_resolution.dl
+--   (.comp E : E {} — invalid cycle in inheritance for component D/E).
+-- Spec: §8.2 acyclic imports ("The module dependency graph formed by
+--   `import` statements ... must be acyclic. Implementations must reject
+--   programs with cyclic module dependencies."). No §3.2 family is
+--   standardized for this rejection, so the assertions pin only that the
+--   cycle is rejected with a cycle-naming message.
+-- Souffle component-inheritance cycles map to Kappa module-import cycles.
+-- This suite has an acyclic chain base <- derived <- main (accepted) and a
+-- two-module cycle cyc_a <-> cyc_b (rejected).
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch cycle|cyclic|acyclic
+
+module main
+
+import derived
+
+-- POSITIVE: the linear dependency chain is acyclic and usable.
+ok : Int
+let ok = derived.derivedFn 5
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,38 @@
+-- §3.1.13: every stable diagnostic family/code must have a deterministic
+-- explanation entry. This covers the universe/observation/KCore families added
+-- after the original explanation-registry campaign.
+--! mode check
+--! assertNoErrors
+--! assertDiagnosticExplainExists kappa.universe.schema-arity
+--! assertDiagnosticExplainExists E_UNIVERSE_SCHEMA_ARITY_MISMATCH
+--! assertDiagnosticExplainExists kappa.universe.schema-scope
+--! assertDiagnosticExplainExists E_UNIVERSE_SCHEMA_SCOPE
+--! assertDiagnosticExplainExists kappa.universe.no-principal-solution
+--! assertDiagnosticExplainExists E_UNIVERSE_NO_PRINCIPAL_SOLUTION
+--! assertDiagnosticExplainExists kappa.universe.inference-requires-annotation
+--! assertDiagnosticExplainExists E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION
+--! assertDiagnosticExplainExists kappa.universe.recursive-schema
+--! assertDiagnosticExplainExists E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE
+--! assertDiagnosticExplainExists E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT
+--! assertDiagnosticExplainExists kappa.generalization.parametric-escape
+--! assertDiagnosticExplainExists E_GENERALIZATION_PARAMETRIC_ESCAPE
+--! assertDiagnosticExplainExists kappa.universe.variance
+--! assertDiagnosticExplainExists E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+--! assertDiagnosticExplainExists E_UNIVERSE_VARIANCE_NOT_APPLICABLE
+--! assertDiagnosticExplainExists kappa.universe.schema-lift
+--! assertDiagnosticExplainExists E_UNIVERSE_SCHEMA_LIFT_INVALID
+--! assertDiagnosticExplainExists kappa.kcore.schema-certificate-invalid
+--! assertDiagnosticExplainExists E_KCORE_SCHEMA_CERTIFICATE_INVALID
+--! assertDiagnosticExplainExists kappa.type.parametric-promotion
+--! assertDiagnosticExplainExists E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticExplainExists kappa.kcore.text-invalid
+--! assertDiagnosticExplainExists E_KCORE_TEXT_INVALID
+--! assertDiagnosticExplainExists kappa.kcore.level-certificate-invalid
+--! assertDiagnosticExplainExists E_KCORE_LEVEL_CERTIFICATE_INVALID
+--! assertDiagnosticExplainExists kappa.kcore.unsupported-version
+--! assertDiagnosticExplainExists E_KCORE_TEXT_UNSUPPORTED_VERSION
+
+module main
+
+ok : Int
+let ok = 1

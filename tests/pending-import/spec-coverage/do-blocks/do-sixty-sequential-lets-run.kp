@@ -1,0 +1,77 @@
+-- §18.2 (do blocks, L24293+) / §9.3: a do block may contain an arbitrary
+-- number of sequential pure `let` do-items; each binding is in scope for all
+-- subsequent items. Robustness pin at program scale: 60 sequential let
+-- bindings in one do block, each depending on the previous one, must
+-- elaborate, check, and evaluate correctly (x59 = 60).
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "60\n"
+module main
+
+main : UIO Unit
+let main =
+    do
+        let x0 = 1
+        let x1 = x0 + 1
+        let x2 = x1 + 1
+        let x3 = x2 + 1
+        let x4 = x3 + 1
+        let x5 = x4 + 1
+        let x6 = x5 + 1
+        let x7 = x6 + 1
+        let x8 = x7 + 1
+        let x9 = x8 + 1
+        let x10 = x9 + 1
+        let x11 = x10 + 1
+        let x12 = x11 + 1
+        let x13 = x12 + 1
+        let x14 = x13 + 1
+        let x15 = x14 + 1
+        let x16 = x15 + 1
+        let x17 = x16 + 1
+        let x18 = x17 + 1
+        let x19 = x18 + 1
+        let x20 = x19 + 1
+        let x21 = x20 + 1
+        let x22 = x21 + 1
+        let x23 = x22 + 1
+        let x24 = x23 + 1
+        let x25 = x24 + 1
+        let x26 = x25 + 1
+        let x27 = x26 + 1
+        let x28 = x27 + 1
+        let x29 = x28 + 1
+        let x30 = x29 + 1
+        let x31 = x30 + 1
+        let x32 = x31 + 1
+        let x33 = x32 + 1
+        let x34 = x33 + 1
+        let x35 = x34 + 1
+        let x36 = x35 + 1
+        let x37 = x36 + 1
+        let x38 = x37 + 1
+        let x39 = x38 + 1
+        let x40 = x39 + 1
+        let x41 = x40 + 1
+        let x42 = x41 + 1
+        let x43 = x42 + 1
+        let x44 = x43 + 1
+        let x45 = x44 + 1
+        let x46 = x45 + 1
+        let x47 = x46 + 1
+        let x48 = x47 + 1
+        let x49 = x48 + 1
+        let x50 = x49 + 1
+        let x51 = x50 + 1
+        let x52 = x51 + 1
+        let x53 = x52 + 1
+        let x54 = x53 + 1
+        let x55 = x54 + 1
+        let x56 = x55 + 1
+        let x57 = x56 + 1
+        let x58 = x57 + 1
+        let x59 = x58 + 1
+        printInt x59
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_UNTERMINATED_STRING_LITERAL
+--! assertType whole Int
+-- §6.3.3 multiline strings / §3.1.17 incomplete files: a `"""` literal
+-- still open at end of file swallows the rest of the source, and must
+-- surface as a SINGLE E_UNTERMINATED_STRING_LITERAL anchored at the
+-- opening delimiter — no cascade from the swallowed text — while the
+-- complete declarations before it still elaborate and answer type
+-- queries (assertType whole Int).  Existing unterminated-string tests
+-- cover only the single-line form ('"' closed by the newline); the
+-- multiline form has no newline terminator and only ends at EOF, so it
+-- exercises a different lexer path.
+--
+-- STATUS(a0497523): PASS — single E_UNTERMINATED_STRING_LITERAL at the
+-- opener (line below), no cascade; `whole` still answers Int.
+-- (STATUS lives up here: any comment after the `"""` line would be
+-- string content, not a comment.)
+module main
+
+whole : Int
+let whole = 42
+
+bad : String
+let bad = """
+    truncated multiline content — the closing delimiter never appears

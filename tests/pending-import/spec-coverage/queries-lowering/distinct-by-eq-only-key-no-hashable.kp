@@ -1,0 +1,35 @@
+-- §20.6.3: "the semantics of distinct / distinct by are defined only in
+-- terms of the corresponding Eq instance ... absence of Hashable evidence
+-- MUST NOT make the program ill-formed"; §20.10.10 makes the same demand of
+-- the built-in collectors. Key type Color has ONLY a hand-written Eq — no
+-- Hashable, no Ord — so this pins that Eq-only keys typecheck and that the
+-- first encountered representative per key class is kept on an Ordered
+-- pipeline (1 is the first Green, 2 the first Red; 1+2=3).
+--! mode run
+--! assertNoErrors
+--! assertEval firstReps 3
+module main
+
+data Color : Type =
+    Red
+    Green
+
+instance Eq Color =
+    let (==) x y =
+        match x
+        case Red ->
+            match y
+            case Red -> True
+            case Green -> False
+        case Green ->
+            match y
+            case Red -> False
+            case Green -> True
+
+colorOf : Int -> Color
+let colorOf n = if n % 2 == 0 then Red else Green
+
+firstReps : Int
+let firstReps =
+    foldl addInt 0 [ for x in [1, 2, 3, 4], distinct by colorOf x, yield x ]
+-- STATUS(a0497523): PASS

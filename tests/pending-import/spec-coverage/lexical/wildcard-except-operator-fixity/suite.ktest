@@ -1,0 +1,3 @@
+--! mode check
+--! packageMode
+--! assertEval keep 10

@@ -25,4 +25,4 @@ let badExported x = x
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticMatch QuantitySatisfies
--- STATUS(a51e1bf): FAIL — quantity polymorphism surface is unimplemented: `QuantitySatisfies` is not a resolvable name (E_NAME_UNRESOLVED) and a quantity-variable binder `(q x : a)` misparses as an application (E_TYPE_EQUALITY_MISMATCH); 4 errors instead of the single spec-required missing-premise rejection of badExported.
+-- STATUS(a0497523): FAIL — quantity polymorphism surface is unimplemented: `QuantitySatisfies` is not a resolvable name (E_NAME_UNRESOLVED) and a quantity-variable binder `(q x : a)` misparses as an application (E_TYPE_EQUALITY_MISMATCH); 4 errors instead of the single spec-required missing-premise rejection of badExported.

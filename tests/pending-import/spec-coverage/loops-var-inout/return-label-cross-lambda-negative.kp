@@ -1,0 +1,21 @@
+-- §18.5 x §18.5.1: labeled return resolution "is confined to the current
+-- user-written function or lambda body; it does not cross user-written
+-- lambda or local-function boundaries". So `return@L` inside an inner
+-- anonymous lambda cannot target the OUTER labeled lambda L (Kappa has no
+-- Kotlin-style non-local return through arbitrary lambdas) — compile-time
+-- error.
+module main
+
+main : UIO Unit
+let main = do
+    let run = L@\ (u : Unit) -> do
+            let g = \ (k : Int) -> do
+                    return@L 9 --!! E_LABEL_UNRESOLVED
+            ioPure (g 1)
+    let r <- run ()
+    printlnString "done"
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_LABEL_UNRESOLVED
+-- STATUS(a0497523): PASS

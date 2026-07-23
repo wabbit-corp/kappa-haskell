@@ -28,3 +28,4 @@ let main = do
       case Failure c -> printlnString "other"
     let v <- atomically (readTVar a)
     printlnString ("value:" ++ showInt v)
+-- STATUS(a0497523): FAIL — compiler gap: the interrupt-abandoned attempt's TVar write is visible afterwards (runs 'value:5'); aborted attempts leak partial writes, violating §18.1.13.

@@ -4,7 +4,7 @@ module main
 -- combined with `@`, `inout`, or an explicit quantity annotation. Each
 -- projection below must therefore be rejected.
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 projection quantityPlace (1 place this : Cell) : Int =
     yield this.value
@@ -17,4 +17,4 @@ projection inoutPlace (inout place this : Cell) : Int =
 
 --! mode check
 --! assertErrorCount 3
--- STATUS(a51e1bf): FAIL — compiler accepts quantity/@/inout on place binders (0 errors); §9.1.1 place-binder restriction not enforced
+-- STATUS(a0497523): FAIL — compiler accepts quantity/@/inout on place binders (0 errors); §9.1.1 place-binder restriction not enforced

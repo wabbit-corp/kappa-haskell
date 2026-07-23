@@ -1,0 +1,12 @@
+module main
+
+-- §8.4 x §14.3 x §33.2.1: `Cash` IS lib.Money (export alias preserves
+-- semantic identity), so this instance head normalizes to the same head
+-- as lib's `Amount Money`. The implementations differ, so the overlap is
+-- NOT harmless and the program must be rejected as incoherent. The alias
+-- spelling must not smuggle in a second instance for the same type.
+import mid.(type Cash, mkMoney, trait Amount, amount)
+
+instance Amount Cash =
+    let amount m = 999
+-- STATUS(a0497523): PASS

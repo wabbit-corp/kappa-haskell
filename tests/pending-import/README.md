@@ -61,6 +61,14 @@ Declared as requiring an unsupported capability.
 ### `hang/` — 1
 Compiler does not terminate (or is very slow) — e.g. a Paterson-condition instance escaping the depth backstop (§14.3.5).
 
+### `spec-coverage/` — spec-coverage campaign (2026-07)
+Different provenance from the ANON corpus above: tests authored directly from
+`docs/Spec.md` by the spec-coverage campaign, targeting sections and feature
+combinations with no existing coverage. See `spec-coverage/README.md` for the
+STATUS-line convention and tallies; passing siblings were imported to
+`tests/conformance/spec-coverage/`. Spec contradictions found on the way live in
+`docs/SPEC_ISSUES.md`.
+
 ## Regeneration
 
 Source: `anon-workspace/new-tests/<name>/*.lang`. Conversion + classification scripts

@@ -1,0 +1,59 @@
+-- Source: WebPPL #30 (primitive functions supported as first-class
+--   higher-order arguments in all contexts), #923 (nested map and reduce
+--   should be admissible as expressions).
+-- Spec: §11.2 (function types), §16.1-§16.2 (application and lambdas),
+--       §20.4 (list literals).
+--
+-- A function value — primitive or user-defined — is admissible as an
+-- argument to a higher-order combinator. Nested higher-order calls are
+-- ordinary expressions and may appear in any expression position.
+
+module test
+
+--! mode check
+
+map : forall a b. (a -> b) -> List a -> List b
+let map f xs =
+    match xs
+    case Nil       -> []
+    case x :: rest -> (f x) :: map f rest
+
+reduce : forall a b. (a -> b -> b) -> b -> List a -> b
+let reduce f z xs =
+    match xs
+    case Nil       -> z
+    case x :: rest -> f x (reduce f z rest)
+
+-- POSITIVE: a user-defined function passed to map.
+inc : Int -> Int
+let inc x = x + 1
+
+mapped : List Int
+let mapped = map inc [1, 2, 3]
+
+--! assertNoErrors
+--! assertType mapped (List Int)
+
+-- POSITIVE: a lambda inline as the map function.
+mappedLambda : List Int
+let mappedLambda = map (\x -> x * 2) [1, 2, 3]
+
+--! assertNoErrors
+
+-- POSITIVE: nested map+reduce expression as the right-hand side of a
+-- let-binding.
+sumOfSquares : Int
+let sumOfSquares = reduce (\x acc -> x + acc) 0 (map (\x -> x * x) [1, 2, 3])
+
+--! assertNoErrors
+--! assertType sumOfSquares Int
+
+-- POSITIVE: nested map producing list-of-lists, then flattened by reduce.
+nestedMap : List Int
+let nestedMap =
+    reduce (\xs acc -> reduce (\x a -> x :: a) acc xs) [] (map (\n -> map (\m -> n * m) [1, 2]) [10, 20])
+
+--! assertNoErrors
+--! assertType nestedMap (List Int)
+
+-- STATUS(a0497523): FAIL (E_PARAMETRIC_TYPE_PROMOTION in finalized Core)

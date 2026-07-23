@@ -1,0 +1,41 @@
+-- §17.1.6 (last line) + §19.3: `try match` success branches over a Bool
+-- value get the same boolean-literal assumption as plain `match`. The
+-- success value is a fresh temporary, so the branch names it with an
+-- as-pattern alias b@True; §16.4.3 stable-alias transport makes the
+-- assumption b = True usable in the body.
+
+--! mode check
+
+needsTrue : (b : Bool) -> (0 p : (=) b True) -> Int
+let needsTrue b p = 1
+
+-- Control (plain match): the same as-pattern alias form, per §17.1.6 +
+-- §16.4.3 the True branch proves (=) b True.
+direct : Bool -> Int
+let direct c =
+    match c
+    case b@True -> needsTrue b refl
+    case b@False -> 0
+
+-- POSITIVE: identical reasoning through `try match` success branches.
+tm : UIO Bool -> UIO Int
+let tm c =
+    try match c
+      case b@True -> pure (needsTrue b refl)
+      case b@False -> pure 0
+
+-- NEGATIVE: the False branch assumption is b = False; refl cannot prove
+-- (=) b True there.
+bad : UIO Bool -> UIO Int
+let bad c =
+    try match c
+      case b@True -> pure (needsTrue b refl)
+      case b@False -> pure (needsTrue b refl)
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a0497523): FAIL — 4 errors: every needsTrue b refl site gets E_APPLICATION_ARGUMENT_MISMATCH; the §17.1.6
+-- assumption does not transport to an as-pattern alias (§16.4.3) even in plain match, and try match inherits the gap.
+-- Separately, ALIGNED try-match case clauses fail to parse (E_RECOVERY_DECLARATION_SKIPPED), contra §19.3; the
+-- indented form used here parses.

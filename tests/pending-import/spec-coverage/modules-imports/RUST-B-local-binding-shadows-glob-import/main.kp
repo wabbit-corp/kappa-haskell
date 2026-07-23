@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertEval localShadows 101
+--! assertEval explicitAccess 101
+
+-- Source issue: rust#71765 (slice > 50000)
+-- Spec: §7.1 ("A nearer admissible declaration shadows outer admissible
+--       declarations of the same source name key"), §8.3 (wildcard imports)
+-- Pins: a local `let` binding shadows same-spelling names brought in by TWO
+-- wildcard imports — the use site is unambiguously the local binding, even
+-- though the bare spelling would be ambiguous without it (rustc's #71765
+-- reproducer wrongly reported ambiguity). Qualified access still reaches
+-- each import.
+module main
+
+import a.*
+import b.*
+
+-- POSITIVE: the local `time` shadows both glob-imported `time`s.
+localShadows : Int
+let localShadows =
+    let time : Int = 100
+    in time + 1
+
+-- POSITIVE: explicit qualification bypasses the local binding.
+explicitAccess : Int
+let explicitAccess =
+    let time : Int = 100
+    in a.time + time

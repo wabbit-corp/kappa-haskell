@@ -1,0 +1,26 @@
+module main
+
+-- §19.2 explicitly requires both aligned and indented except/finally layouts.
+-- The aligned spelling is combined with handled and successful paths plus a
+-- finalizer, so this checks clause ownership rather than merely tokenization.
+
+risky : Bool -> IO String Int
+let risky succeeds =
+    if succeeds then pure 7 else raise "boom"
+
+recover : Bool -> UIO Int
+let recover succeeds =
+    try risky succeeds
+    except _ -> pure 0
+    finally -> printlnString "finalized"
+
+main : UIO Unit
+let main = do
+    let ok <- recover True
+    printlnString (showInt ok)
+    let bad <- recover False
+    printlnString (showInt bad)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "finalized\n7\nfinalized\n0\n"

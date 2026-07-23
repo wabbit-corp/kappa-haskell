@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertType witness Combo1 = Combo2
+
+-- §31.1 + §30.2.4.1: definitional equality and normalization MUST NOT
+-- depend on the source order of unrelated import declarations. mxy and
+-- myx import the same modules in opposite orders and build the same
+-- transparent type; their results must be definitionally equal and
+-- interchangeable here.
+module main
+
+import mxy.*
+import myx.*
+
+witness : Combo1 = Combo2
+let witness = refl
+
+-- values elaborated under the two import orders are interchangeable
+swap1 : Combo1 -> Combo2
+let swap1 c = c
+
+swap2 : Combo2 -> Combo1
+let swap2 c = mkCombo1
+
+-- STATUS(a0497523): PASS

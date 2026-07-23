@@ -18,4 +18,4 @@ let bad2 = missingName --!! E_NAME_UNRESOLVED
 drops : (>=1 x : Int) -> Int
 let drops x = 0 --!! kappa.quantity.positive-lower-bound
 
--- STATUS(a51e1bf): FAIL — the quantity checker is skipped when unrelated elaboration errors exist, so the independent E_QTT_LINEAR_DROP is never emitted (got 2 of 3 errors)
+-- STATUS(a0497523): FAIL — the quantity checker is skipped when unrelated elaboration errors exist, so the independent E_QTT_LINEAR_DROP is never emitted (got 2 of 3 errors)

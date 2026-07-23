@@ -28,7 +28,7 @@ let okCompileTime = (value = (1 : this.T), T = Integer)
 badFwd : P
 let badFwd = (y = this.x, x = 5)
 
--- STATUS(a51e1bf): FAIL — the compiler accepts the forward runtime
+-- STATUS(a0497523): FAIL — the compiler accepts the forward runtime
 -- sibling reference (0 errors): it reorders by the dependency graph and
 -- never enforces the §13.2.3 source-order availability rule. NOTE the
 -- gating test tests/conformance/records/dependent-telescope.kp pins the

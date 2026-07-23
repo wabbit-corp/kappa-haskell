@@ -1,0 +1,25 @@
+-- §20.6.2/§20.3.2: skip/take require an Ordered pipeline. A Set source is
+-- Unordered from the start, and `group by` sets orderedness to Unordered, so
+-- paging in either position is rejected with kappa.query.orderedness /
+-- E_QUERY_UNORDERED_PAGING; the message must say paging needs order.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_QUERY_UNORDERED_PAGING
+--! assertDiagnosticMatch [Oo]rdered pipeline
+module main
+
+-- NEGATIVE: take directly after group by (group output is Unordered).
+badTake : List Int
+let badTake =
+    [
+        for x in [1, 2, 3]
+        group by (x > 1) { items = [x] } into g
+        take 1
+        yield 0
+    ]
+
+-- NEGATIVE: skip on a set-literal source (Unordered from the start).
+badSkip : List Int
+let badSkip =
+    [ for x in {| 3, 1, 2 |}, skip 1, yield x ] --!! E_QUERY_UNORDERED_PAGING
+-- STATUS(a0497523): PASS

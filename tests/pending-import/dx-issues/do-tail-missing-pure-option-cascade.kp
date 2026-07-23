@@ -1,0 +1,26 @@
+-- DX EXPECTATION (not necessarily spec-required): forgetting `pure` on the
+-- final do-item is the classic beginner mistake in any monadic language.
+-- §18.2.2/§18.8.6 require the final expression item to have the block's
+-- monadic type, so an error is correct -- but it should be ONE focused
+-- expected/actual mismatch at the tail (ideally with an insert-`pure`
+-- candidate repair, §3.1.8).  See sibling spec-coverage test
+-- combo-2026-07-23/do-tail-missing-pure-option-mismatch.kp for the bare
+-- variable tail, which already produces exactly that single mismatch.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): for a COMPOUND pure tail `x + 1` the
+-- expected type Option Integer is pushed bidirectionally into `+`, which
+-- manufactures three errors, the first being the bewildering
+-- E_UNSOLVED_IMPLICIT "could not resolve implicit argument of type
+-- Add (Option Integer)", then the real kappa.type.mismatch
+-- (Integer vs Option Integer), then E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+-- ("Option Integer has no FromInteger witness") on the literal.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+module main
+
+f : Option Int
+let f = do
+    let x <- Some 1
+    x + 1
+-- STATUS(a0497523): FAIL — 3 errors instead of 1: E_UNSOLVED_IMPLICIT Add (Option Integer), then the real Integer-vs-Option-Integer mismatch, then E_NUMERIC_LITERAL_DOMAIN_MISMATCH on the literal

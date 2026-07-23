@@ -1,0 +1,27 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- §13.2.11 x §31.2 x §17.1.3: `open` binds record-shaped payload fields
+-- "including the payload field quantities", so `hidden` is bound at
+-- quantity 0 and is deleted from the runtime representation (§31.2). A
+-- match whose discriminating scrutinee is available only at quantity 0
+-- is a compile-time error unless the constructor shape is forced by
+-- non-erased information (§17.1.3) — here neither Option constructor
+-- is forced, so the match must be rejected. (The same rejection DOES
+-- fire for 0-quantity function binders — conformance
+-- patterns-active/erased-scrutinee-ambiguous-discrimination-rejected —
+-- so open-bound payload fields must not bypass it.)
+module main
+
+pkg : exists (a : Type). (0 hidden : Option Int)
+let pkg = seal exists (a = Int). (hidden = Some 1) as exists (a : Type). (0 hidden : Option Int)
+
+bad : Int
+let bad =
+    open pkg as exists (a). (hidden = h) in
+        match h --!! E_QTT_ERASED_RUNTIME_USE
+        case Option.None -> 0
+        case Option.Some k -> k
+
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors: erased-scrutinee discrimination (E_QTT_ERASED_RUNTIME_USE) is enforced for 0-quantity function binders but a 0-quantity payload field bound by open's record pattern is matchable with no diagnostic

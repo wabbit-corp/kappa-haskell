@@ -32,4 +32,4 @@ let sameEvidence d1 d2 =
     in
         sub.allEqual d1 d2
 
--- STATUS(a51e1bf): FAIL — summon (IsTrait ...) succeeds, but IsSubsingleton (Named Int) is not synthesized (E_UNSOLVED_IMPLICIT: the prelude IsTrait carries no IsSubsingleton supertrait) and the prelude IsSubsingleton is a memberless marker, so `allEqual` does not exist.
+-- STATUS(a0497523): FAIL — summon (IsTrait ...) succeeds, but IsSubsingleton (Named Int) is not synthesized (E_UNSOLVED_IMPLICIT: the prelude IsTrait carries no IsSubsingleton supertrait) and the prelude IsSubsingleton is a memberless marker, so `allEqual` does not exist.

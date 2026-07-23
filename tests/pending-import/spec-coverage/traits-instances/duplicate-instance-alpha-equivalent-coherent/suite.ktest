@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+-- STATUS(a0497523): PASS — alpha-equivalent duplicate instances across modules accepted as harmless overlap (syntactically differing but semantically equal bodies are still rejected, within §33.2.1 structural latitude)

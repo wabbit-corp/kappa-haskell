@@ -1,0 +1,52 @@
+--! mode check
+--! assertErrorCount 1
+
+-- Source issues: carp-lang/Carp#481, #624
+-- Spec: §18.9 (inout = linear state threading; the old field value must be
+--       discharged exactly once inside the callee), §18.9.3 (`~` may be
+--       applied only to a place expression admitted by §12.4.2)
+-- Carp #481: the mutating setter leaked the previous field value.  Portable
+-- Kappa obligations: an `inout` setter consumes its receiver linearly, so
+-- the old linear field is discharged exactly once before the successor is
+-- returned; and the `~` receiver must be a stable place — an arbitrary
+-- rvalue is rejected (§18.9.3 assigns no §3.2 family to this rejection;
+-- the reference implementation reports it as E_PROJECTION_ROOT_INVALID).
+module main
+
+data Buf : Type = Buf (n : Int)
+data Bag : Type = MkBag (1 item : Buf)
+
+consumeBuf : (1 b : Buf) -> Int
+let consumeBuf (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+-- The mutating setter: consumes the old linear field exactly once, then
+-- installs the fresh value and returns the threaded successor.
+setItem : (inout b : Bag) -> (1 v : Buf) -> UIO (1 b : Bag,)
+let setItem (inout b : Bag) (1 v : Buf) : UIO (1 b : Bag,) =
+    match b
+    case MkBag old ->
+        do
+            let _ = consumeBuf old
+            pure (b = MkBag v,)
+
+-- POSITIVE: the receiver is a stable place; after the call the root `bag`
+-- is rebound to the successor and remains a well-owned linear value.
+okCaller : UIO Int
+let okCaller =
+    do
+        let 1 bag = MkBag (Buf 0)
+        setItem ~bag (Buf 1)
+        match bag
+        case MkBag rest -> pure (consumeBuf rest)
+
+-- NEGATIVE: `~` applied to an arbitrary rvalue; a constructor application
+-- is not a stable place, so the inout call site is rejected.
+badRvalue : UIO Unit
+let badRvalue =
+    do
+        setItem ~(MkBag (Buf 0)) (Buf 1)
+        pure ()
+
+-- STATUS(a0497523): PASS

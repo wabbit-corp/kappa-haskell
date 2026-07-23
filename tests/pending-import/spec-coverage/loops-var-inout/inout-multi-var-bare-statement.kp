@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "x=11 y=6\na=2 b=6\n"
+
+-- §18.9.4/§18.9.5 (+§18.6.1 var-place facet): a call whose residual record
+-- is EMPTY may be written as a bare statement; multiple ~ arguments write
+-- back to their roots — var cells receive the threaded successor in place,
+-- ordinary immutable bindings are rebound — one write-back per marked
+-- argument.
+module main
+
+step2 : (inout a : Int) -> (inout b : Int) -> UIO (1 a : Int, 1 b : Int)
+let step2 (inout a : Int) (inout b : Int) : UIO (1 a : Int, 1 b : Int) =
+    pure (a = addInt a 1, b = mulInt b 2)
+
+main : UIO Unit
+let main = do
+    var x = 10
+    var y = 3
+    step2 ~x ~y
+    printlnString f"x=${x} y=${y}"
+    let a = 1
+    let b = 3
+    step2 ~a ~b
+    printlnString f"a=${a} b=${b}"
+
+-- STATUS(a0497523): PASS

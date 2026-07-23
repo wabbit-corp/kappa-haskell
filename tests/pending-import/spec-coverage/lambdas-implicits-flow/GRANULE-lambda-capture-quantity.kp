@@ -1,0 +1,50 @@
+-- Source: granule-project/granule PR #108 (Approximation for lambda)
+-- Spec: §16.2.1 (closure capture and quantities; linear contamination;
+--       positive lower-bound capture), §12.2.5, §3.2.5
+-- NOTE: overlaps with tests/conformance/imported-anon/AENEAS-closure-positive-lower-bound-uncalled.kp
+--       (the >=1-never-demanded negative).
+-- §16.2.1: uses of a captured variable are delayed; the induced demand is
+-- closure-use-interval × body-use-interval. A linear capture makes the
+-- closure a quantity-1 resource, so demanding it twice over-demands the
+-- capture (kappa.quantity.unsatisfied); a >=1 capture inside a closure
+-- that is never demanded fails its positive lower bound
+-- (kappa.quantity.positive-lower-bound — re-derived from the original's
+-- kappa.quantity.unsatisfied guess per §12.2.5/§3.2.5).
+
+module test
+
+--! mode check
+
+-- POSITIVE: closure over a linear x, demanded exactly once.
+callOnce : (1 x : Int) -> Int
+let callOnce x =
+    let f = \() -> x
+    f ()
+
+-- POSITIVE: closure over an ω binding may be demanded repeatedly.
+callMany : (ω x : Int) -> Int
+let callMany x =
+    let f = \() -> x
+    f () + f () + f ()
+
+-- NEGATIVE: linear x captured, closure demanded twice — the induced
+-- demand on x is 2, exceeding the linear declaration.
+-- (The demand is attributed to the delayed use of x inside the lambda.)
+callTwice : (1 x : Int) -> Int
+let callTwice x =
+    let f = \() -> x          --!! kappa.quantity.unsatisfied
+    f () + f ()
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: a >=1 capture is only a delayed use; constructing the
+-- closure discharges nothing and f is never demanded.
+-- (The failed lower bound is attributed to x's binder scope.)
+neverCalled : (>=1 x : Int) -> Unit
+let neverCalled x =           --!! kappa.quantity.positive-lower-bound
+    let f = \() -> x
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertErrorCount 2
+-- STATUS(a0497523): PASS

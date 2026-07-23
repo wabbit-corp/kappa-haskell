@@ -1,0 +1,17 @@
+--! mode check
+--! assertNoErrors
+
+-- §18.1.15: the no-recursion restriction forbids only the operation's
+-- RESULT type from mentioning the handled effect label ("its declared
+-- result type must not itself mention the handled effect label").  A
+-- PARAMETER type mentioning the effect's own label is therefore
+-- well-formed: install consumes a computation at the Meta label but
+-- returns a plain Int.
+module main
+
+effect Meta =
+    1 install : (h : Eff <[Meta : Meta]> Int) -> Int
+
+ok : Int
+let ok = 1
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED: the effect's own label is not in scope inside its own operation signatures, so even the spec-permitted parameter-type mention is rejected.

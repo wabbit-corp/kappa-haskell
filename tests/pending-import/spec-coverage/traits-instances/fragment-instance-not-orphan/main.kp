@@ -1,0 +1,7 @@
+module main
+
+import widget.(type Widget, ctor MkWidget, trait Weight, weight)
+
+r : Int
+let r = weight (MkWidget 9)
+-- STATUS(a0497523): PASS

@@ -1,0 +1,50 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestLetRec.curry
+--   (mutual let ones2 = 1 : twos1; twos1 = 2 : ones2). The corecursive
+--   VALUE form needs productive corecursion (reserved, §15.12); the
+--   §9.3.1 mutual-group property is pinned with terminating functions.
+-- Spec: §9.3.1 (local recursion: "a local named binding (or mutually
+--       recursive local group) may be recursive only if each recursively
+--       referenced name has a preceding local signature declaration in
+--       the same block scope"), §15.14 (local recursion).
+--
+-- Pins: two local named definitions with preceding local signatures form
+-- a mutually recursive group; forward reference from the first body to
+-- the second name resolves through the signatures.
+
+module test
+
+--! mode check
+
+data Nat2 : Type =
+    Z2
+    S2 Nat2
+
+-- POSITIVE: mutually recursive local bindings. Both `isEven` and
+-- `isOdd` carry preceding local signatures, so the named definitions
+-- form a mutually recursive group per §9.3.1.
+evenNat : Nat2 -> Bool
+let evenNat n =
+    isEven : Nat2 -> Bool
+    isOdd : Nat2 -> Bool
+    let isEven m =
+        match m
+        case Z2 -> True
+        case S2 p -> isOdd p
+    let isOdd m =
+        match m
+        case Z2 -> False
+        case S2 p -> isEven p
+    isEven n
+
+evenTwo : Bool
+let evenTwo = evenNat (S2 (S2 Z2))
+
+oddThree : Bool
+let oddThree = evenNat (S2 (S2 (S2 Z2)))
+
+--! assertNoErrors
+--! assertType evenNat (Nat2 -> Bool)
+--! assertEval evenTwo True
+--! assertEval oddThree False
+
+-- STATUS(a0497523): FAIL — mutually recursive local group is not implemented: the forward reference from the first local body errors with E_NAME_UNRESOLVED ("isOdd" not in scope) despite both preceding local signatures (§9.3.1 admits the group).

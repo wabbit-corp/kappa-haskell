@@ -1,0 +1,17 @@
+-- Source: Racket guide module-basics.scrbl (submodules), modules.scrbl
+-- Source docs: racket guide module-basics.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-basics.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §8.1 (module names derive from file paths, so nesting is directory
+--       structure: collections/list.kp -> module collections.list), §8.3
+--       (module-only import enables dotted qualified access)
+--
+-- Pins: members of a nested module are reached via dotted qualified paths
+-- after a module-only import of the nested module.
+module client
+import collections.list
+
+-- POSITIVE: qualified access to collections.list members.
+myList : List Int
+let myList = collections.list.consL Int 1 (collections.list.emptyL Int)
+
+myHead : Option Int
+let myHead = collections.list.headL Int myList

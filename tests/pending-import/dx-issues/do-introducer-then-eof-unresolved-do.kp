@@ -1,0 +1,24 @@
+-- DX EXPECTATION (not necessarily spec-required): `let main = do` with
+-- nothing after it (file truncated right after the block introducer)
+-- should produce a parse-stage diagnostic saying the do block's
+-- indented body is missing.  §5.4 lists `do` among the continuation
+-- introducers that require a following indented block, and §3.1.14A
+-- names "missing indentation block after a block introducer" as a
+-- recoverable condition (typed recovery, analyze-mode MUST); §3.1.17
+-- wants "merely incomplete" distinguished from "definitely invalid".
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): because keywords are soft, the
+-- bodyless `do` is reparsed as an ordinary NAME and the user is told
+-- E_NAME_UNRESOLVED "unresolved name 'do' (not in scope)" — a name
+-- -resolution error for a keyword they spelled correctly.  Nothing
+-- mentions the missing block.  (Same family as the pinned
+-- if-missing-then case, but this is the truncated-at-EOF introducer
+-- from §3.1.17's incomplete-file list, not a malformed mid-file form.)
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch block|body|indented
+module main
+
+main : IO Unit
+let main = do
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED "unresolved name 'do' (not in scope)"; no message mentions the missing block/body

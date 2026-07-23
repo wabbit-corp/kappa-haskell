@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.4 portable minimum: DynamicType instances SHOULD cover closed
+-- record types and closed variant types whose field/member types are
+-- dynamically representable, and Result e a for representable e and a.
+-- Each toDyn below demands the corresponding implicit instance (§24.9).
+module main
+
+import std.gradual.*
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+point : (x : Int, y : String)
+let point = (x = 1, y = "one")
+
+-- Closed record with representable field types.
+dRecord : Dyn
+let dRecord = toDyn point
+
+-- Closed variant (all members nullary, trivially representable).
+dVariant : Dyn
+let dVariant = toDyn Green
+
+outcome : Result String Int
+let outcome = Ok 3
+
+-- Result with representable argument types.
+dResult : Dyn
+let dResult = toDyn outcome
+
+-- STATUS(a0497523): FAIL — no DynamicType instances exist for closed records, closed variants, or Result (3x E_UNSOLVED_IMPLICIT).

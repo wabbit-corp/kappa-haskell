@@ -1,0 +1,25 @@
+-- Stress test: unsafe_debug assert proof bypasses totality checking
+-- Spec: §4.4 (assertTerminates) and §15.17 (termination assertion
+--       escapes).
+
+--! mode check
+
+data Nat : Type =
+    Z
+    | S Nat
+
+-- POSITIVE: assertTerminates asserts totality without a structural proof.
+-- The Ackermann function does not decrease on a single argument but is still total.
+ackermann : Nat -> Nat -> Nat
+assertTerminates let ackermann m n =
+    match m
+    case Z    -> S n
+    case S smallerM ->
+        match n
+        case Z    -> ackermann smallerM (S Z)
+        case S smallerN -> ackermann smallerM (ackermann m smallerN)
+
+--! assertNoErrors
+--! allow_assert_terminates
+
+-- STATUS(a0497523): PASS

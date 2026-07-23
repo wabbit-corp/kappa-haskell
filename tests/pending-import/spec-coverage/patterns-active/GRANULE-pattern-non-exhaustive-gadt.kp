@@ -1,0 +1,46 @@
+-- Source: granule-project/granule
+--         tests/cases/negative/indexed/badIndexingMatch.gr,
+--         tests/cases/positive/indexed/PromoteData.gr
+-- Spec: §17.1 (match exhaustiveness), §10.1 (GADT-style constructor
+--       declarations), §3.2.10 (kappa.pattern.non-exhaustive)
+-- A match on an index-refined scrutinee needs only the constructors whose
+-- result indices unify with the scrutinee type; under a polymorphic index
+-- every constructor stays reachable, so a missing case must surface
+-- kappa.pattern.non-exhaustive.
+
+module test
+
+--! mode check
+
+data Flag : Type =
+    On
+    Off
+
+data InOrOut (0 b : Flag) (0 a : Type) : Type =
+    InC  : (x : a) -> InOrOut On a
+    OutC : InOrOut Off a
+
+-- POSITIVE: at concrete index On the single InC clause is exhaustive,
+-- because OutC's index Off cannot unify with On.
+unwrap : forall (a : Type). (1 i : InOrOut On a) -> a
+let unwrap (InC x) = x
+
+--! assertType unwrap (forall (a : Type). (1 i : InOrOut On a) -> a)
+
+-- POSITIVE: a polymorphic index keeps both constructors reachable, so
+-- both cases are required (and sufficient).
+doubleOrZero : forall (b : Flag). (1 i : InOrOut b Int) -> Int
+let doubleOrZero i =
+    match i
+      case InC x -> x + x
+      case OutC  -> 0
+
+-- NEGATIVE: incomplete cover under a polymorphic index.
+badPartial : forall (b : Flag). (1 i : InOrOut b Int) -> Int
+let badPartial i =
+    match i                   --!! kappa.pattern.non-exhaustive
+      case InC x -> x
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

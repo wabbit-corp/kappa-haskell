@@ -1,0 +1,23 @@
+--! mode check
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+-- §7.1 + §7.2: "Distinct-spelling constructors are ordinary `ctor`
+-- declarations in their enclosing binding groups", and two declarations
+-- of the same declaration kind with equal strictNameKey in one lexical
+-- scope are duplicate declarations.  `Mk` declared by `data A` and again
+-- by `data B` is two `ctor`-kind declarations of one spelling in module
+-- scope; the second MUST be rejected (constructors are still reachable
+-- unambiguously as static members `A.Mk` / `B.Mk`, §7.2).
+--
+-- Today the second `Mk` silently shadows the first: `Mk 1` at type A
+-- elaborates against B's constructor and the user gets a misleading
+-- downstream "actual: B / expected: A" type mismatch (plus a literal
+-- domain error), never a duplicate/ambiguity report at the true cause.
+module main
+
+data A : Type = Mk (n : Integer)
+
+data B : Type = Mk (b : Bool) --!! E_DUPLICATE_DECLARATION
+
+useA : A
+let useA = Mk 1
+-- STATUS(a0497523): FAIL — no duplicate diagnostic; unqualified Mk resolves to the later B.Mk, so `Mk 1 : A` reports E_NUMERIC_LITERAL_DOMAIN_MISMATCH + E_TYPE_EQUALITY_MISMATCH (actual B, expected A) instead

@@ -1,0 +1,14 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`#staload N = $ADD`, `$ME.foo`, qualified `$A.foo`)
+-- Spec: §8.5.1 (private items are not exported).
+module mathmod
+
+square : Int -> Int
+let square x = x * x
+
+cube : Int -> Int
+let cube x = x * x * x
+
+-- A private helper: not part of the export interface.
+private helper : Int -> Int
+let helper x = x + 1

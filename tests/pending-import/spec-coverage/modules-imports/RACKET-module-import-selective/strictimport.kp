@@ -1,0 +1,10 @@
+-- Spec: §8.3 (selective import M.(x)): only the single listed name is bound.
+module strictimport
+import geometry.(circleArea)
+
+strictArea : Float
+let strictArea = circleArea 3.0
+
+-- NEGATIVE: piVal was not in this module's selective import list.
+badPi : Float
+let badPi = piVal    --!! E_NAME_UNRESOLVED

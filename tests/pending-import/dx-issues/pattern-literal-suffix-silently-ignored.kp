@@ -1,0 +1,26 @@
+-- DX / §6.1.6 × §17.2.1: a suffixed numeric literal means `px 12` in
+-- expression position (§6.1.6 desugaring), but in PATTERN position the
+-- compiler silently discards the suffix and matches the bare literal:
+-- with px doubling its payload, `12px` denotes 24 as an expression yet
+-- `case 12px` matches the scrutinee 12. The same token must not change
+-- value between the two positions. This is a DX expectation, not a
+-- literal spec quote: the spec never defines suffixed-literal PATTERNS,
+-- and the desugared form (an ordinary function application) is not a
+-- legal pattern (§17.2.2), so the expected-good behavior pinned here is
+-- a compile-time diagnostic at the pattern (applying the suffix and
+-- comparing would also be coherent; silently dropping it is not).
+-- Today: 0 errors, and classify 12 ⇒ 111 / classify 24 ⇒ 999.
+--! mode check
+--! assertErrorCount 1
+
+module main
+
+px : Nat -> Int
+let px n = mulInt (natToInt n) 2
+
+classify : Int -> Int
+let classify n =
+    match n
+    case 12px -> 111
+    case _    -> 999
+-- STATUS(a0497523): FAIL — compiles with 0 errors; suffix silently dropped in pattern position (case 12px matches scrutinee 12, not px 12 = 24)

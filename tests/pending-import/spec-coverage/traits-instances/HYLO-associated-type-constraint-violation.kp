@@ -1,0 +1,55 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/AssociatedTypeLookup.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AssociatedTypesWithConformances.hylo,
+--                   Tests/HyloTests/TestCases/TypeChecking/AbstractType.hylo,
+--                   PR#1072 (enforce associated type constraints)
+-- Spec: §14.2.1 (associated static members), §14.3.4 (associated static member
+--       checking in instances), §14.1.5 (associated constraint bounds),
+--       §3.2.4 (kappa.implicit.unsolved)
+-- Pins: a trait constrains its associated type by declaring a member of
+-- evidence type (`elemPrintable : Printable Element`). §14.3.4 instantiates
+-- that member declaration per instance head, so an instance whose associated
+-- type does not satisfy the constraint cannot define the member: resolving
+-- the evidence fails with kappa.implicit.unsolved.
+
+--! mode check
+
+module main
+
+trait Printable (a : Type) =
+    display : a -> String
+
+instance Printable Int =
+    let display n = showInt n
+
+data IntBox : Type =
+    MkIntBox Int
+
+data RawBox : Type =
+    MkRawBox Bool
+
+-- The associated-type constraint is the evidence-typed member
+-- `elemPrintable`: every instance must exhibit Printable for its Element.
+trait PrintContainer (a : Type) =
+    Element : Type
+    elemPrintable : Printable Element
+    load : a -> Element
+
+-- POSITIVE: Element = Int, and Printable Int holds.
+instance PrintContainer IntBox =
+    let Element = Int
+    let elemPrintable = summon (Printable Int)
+    let load b = match b case MkIntBox n -> n
+
+-- POSITIVE: the constraint evidence is projectable and usable.
+showContents : (@d : PrintContainer IntBox) -> IntBox -> String
+let showContents (@d : PrintContainer IntBox) b = d.elemPrintable.display (d.load b)
+
+-- NEGATIVE: Element = Bool, but Bool is not Printable — the instantiated
+-- member declaration `elemPrintable : Printable Bool` has no evidence.
+instance PrintContainer RawBox =
+    let Element = Bool
+    let elemPrintable = summon (Printable Bool)    --!! E_UNSOLVED_IMPLICIT
+    let load b = match b case MkRawBox v -> v
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved

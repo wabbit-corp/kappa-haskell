@@ -16,4 +16,4 @@ let unwrapped = 3
 
 --! allow_clarify
 --! assertNoErrors
--- STATUS(a51e1bf): FAIL — clarify is gated+audited only; imported opaque items stay non-transparent (E_TYPE_EQUALITY_MISMATCH on both unfolding checks)
+-- STATUS(a0497523): FAIL — clarify is gated+audited only; imported opaque items stay non-transparent (E_TYPE_EQUALITY_MISMATCH on both unfolding checks)

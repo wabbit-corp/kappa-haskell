@@ -1,0 +1,49 @@
+-- Source artifacts: RA-5514 (Type checker does not eagerly select predicates from where-clauses),
+--                   CHALK-DOC-book/src/clauses/goals_and_clauses.md,
+--                   CHALK-727 (Recursive solver reports ambiguity from env clauses).
+-- Spec: §14.3.1 step 1 (local implicit context first), §16.3.3 step 1
+--       (innermost lexical implicit candidates; search stops at the first
+--       level with a candidate)
+-- Pins: inside a function carrying an implicit trait-evidence binder, member
+-- uses resolve to the binder's evidence. This works with an EMPTY global
+-- instance environment (genericTag), and when a matching global instance
+-- also exists for the substituted head no ambiguity is reported — the local
+-- candidate has strictly higher priority (CHALK-727's failure mode).
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "global\nglobal\n"
+
+module main
+
+trait Show2 (a : Type) =
+    showIt : a -> String
+
+data Item : Type =
+    MkItem
+
+instance Show2 Item =
+    let showIt _ = "global"
+
+-- The body's `showIt x` is discharged by the local binder (step 1),
+-- not by global instance search.
+genericShow : (@ev : Show2 a) -> a -> String
+let genericShow x = showIt x
+
+-- Trait with NO instances anywhere: only the local binder can supply
+-- evidence, proving the local implicit context is what is searched.
+trait Tag2 (a : Type) =
+    tagOf : a -> String
+
+genericTag : (@t : Tag2 a) -> a -> String
+let genericTag x = tagOf x
+
+-- Both a local binder and a matching global instance are candidates for
+-- Show2 Item here; §14.3.1 step 1 selects the binder without ambiguity.
+viaBinderAndGlobal : (@ev : Show2 Item) -> Item -> String
+let viaBinderAndGlobal (@ev : Show2 Item) x = showIt x
+
+main : UIO Unit
+let main = do
+    printlnString (genericShow MkItem)
+    printlnString (viaBinderAndGlobal MkItem)

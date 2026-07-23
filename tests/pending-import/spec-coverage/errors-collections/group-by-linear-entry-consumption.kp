@@ -1,0 +1,38 @@
+-- §20.7 quantity rules: every non-droppable pre-group row entry must be
+-- consumed exactly once by the aggregate expressions (or transferred into the
+-- group result); one that is neither consumed nor transferred makes the
+-- grouping clause ill-formed. Here 't' is a linear row entry from a
+-- quantity-1 query source.
+--! mode check
+--! assertErrorCount 1
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+-- POSITIVE: the aggregate consumes the linear entry exactly once per row.
+good : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let good src =
+    OnceQuery [
+        for t in src
+        group by 0 { items = [consumeToken t] } into g
+        yield 0
+    ]
+
+-- NEGATIVE: 't' is neither consumed by an aggregate nor transferred into
+-- the group record.
+bad : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let bad src =
+    OnceQuery [
+        for t in src
+        group by 0 { count = [1] } into g --!! kappa.quantity.positive-lower-bound
+        yield 0
+    ]
+-- STATUS(a0497523): FAIL — compiler reports spurious E_QTT_LINEAR_DROP on 'src' for
+-- BOTH decls (group-by lowering loses the one-shot source consumption), and the
+-- §20.7 unconsumed-pre-group-entry check on 't' itself is absent.

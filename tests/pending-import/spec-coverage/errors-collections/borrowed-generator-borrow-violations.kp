@@ -1,0 +1,29 @@
+-- §20.4: in `for & pat in xs` the bound variables are borrowed row entries
+-- (BorrowView ρ A) under the source's borrow region. Consuming one at an
+-- owned quantity-1 binder must be rejected, and a borrowed binding may not
+-- escape the borrow region inside a yielded closure (§12.3 escape rules).
+--! mode check
+--! assertErrorCount 2
+module main
+
+data Token : Type =
+    MkToken (1 secret : Int)
+
+consume : (1 t : Token) -> Int
+let consume t =
+    match t
+    case MkToken n -> n
+
+-- NEGATIVE: a borrowed item view passed at an owned (1 t : Token) binder.
+badConsume : List Token -> List Int
+let badConsume toks =
+    [ for & t in toks, yield consume t ] --!! kappa.quantity.unsatisfied
+
+-- NEGATIVE: the borrowed binding escapes the borrow region in a closure
+-- that survives the comprehension result.
+badEscape : List Int -> List (Unit -> Int)
+let badEscape xs =
+    [ for & x in xs, yield (\u -> x) ] --!! kappa.borrow.escape
+-- STATUS(a0497523): FAIL — compiler accepts both decls (0 errors): `for &` bindings
+-- elaborate as ordinary owned items; no BorrowView typing, no borrowed-entry
+-- consumption check, no region-escape check on the yielded closure.

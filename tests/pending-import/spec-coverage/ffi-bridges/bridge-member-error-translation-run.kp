@@ -1,0 +1,62 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "store-unavailable\n"
+
+-- §26.1.14 (error translation for bridge-bound members): the error type of
+-- bindModule is the handle's bridge error (here BridgeFailure), while the
+-- error type of a later member call is the member's exposed Kappa type
+-- (here StoreError). The contract's documented translation — bridge
+-- lifecycle failures map to StoreUnavailable — is implemented explicitly;
+-- the member's error type can represent every failure the contract admits
+-- as expected (a MUST for a well-formed precise member surface).
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle, term bindModule)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, ctor MkBridgeFailure)
+import std.bridge.(type BridgeOrigin, ctor MkBridgeOrigin)
+
+data StubHandle : Type =
+    MkStubHandle
+
+instance BridgeHandle StubHandle =
+    let bridgeOrigin h = ioPure (MkBridgeOrigin "kv-runtime")
+    let bridgeFailure f = "kv bridge failure"
+
+-- The member error type: one constructor represents bridge-level failure,
+-- the others represent ordinary domain failures.
+data StoreError : Type =
+    StoreUnavailable (detail : String)
+    KeyMissing
+
+type KvStore (r : Region) : Type =
+    (get : String -> IO StoreError (Option String))
+
+instance BridgeBindable KvStore =
+    let bridgeContract = MkBridgeContract "kv contract: lifecycle failures -> StoreUnavailable"
+
+-- The documented translation from the bind channel into the member channel.
+toStoreError : BridgeFailure -> StoreError
+let toStoreError f = match f
+    case MkBridgeFailure message -> StoreUnavailable message
+
+lookupKey : String -> IO StoreError (Option String)
+let lookupKey key = do
+    let kv <- catchIO (bindModule @KvStore MkStubHandle "kv") (\f -> throwIO (toStoreError f))
+    kv.get key
+
+reportStoreError : StoreError -> UIO (Option String)
+let reportStoreError e = match e
+    case StoreUnavailable detail -> do
+        printlnString "store-unavailable"
+        ioPure None
+    case KeyMissing -> do
+        printlnString "key-missing"
+        ioPure None
+
+main : UIO Unit
+let main = do
+    catchIO (lookupKey "greeting") reportStoreError
+    ioPure ()
+
+-- STATUS(a0497523): PASS

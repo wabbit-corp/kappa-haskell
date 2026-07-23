@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "pre\ncaught: boom\ncleanup\n"
+
+-- §18.1.22 (IO carrier) × §19.2/§19.4: a handler clause that raises instead
+-- of resuming produces an ordinary monadic error in the target carrier; the
+-- error crosses the handler boundary outward, is caught by the enclosing
+-- try/except, and the try's finally (a defer per §19.2 rule 5, so it fires at
+-- scope exit AFTER the except handler body) still runs. The abandoned
+-- captured segment here has no exit actions, so only error routing is pinned.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        pure a
+
+handled : IO String Int
+let handled =
+    deep handle Ask comp with
+        case return x -> ioPure x
+        case ask _ k -> raise "boom"
+
+run : IO String Unit
+let run = do
+    let r <- handled
+    printlnString (stringAppend "got: " (showInt r))
+
+main : UIO Unit
+let main = do
+    printlnString "pre"
+    try run
+      except e -> printlnString (stringAppend "caught: " e)
+      finally -> printlnString "cleanup"
+-- STATUS(a0497523): PASS

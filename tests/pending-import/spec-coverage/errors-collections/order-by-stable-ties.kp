@@ -1,0 +1,45 @@
+-- §20.6.1/§20.3.2: `order by` is a stable sort w.r.t. the CURRENT encounter
+-- order — a second `order by` preserves, among equal keys, the order the
+-- first sort established (lexicographic (k, v) overall: [2,4,1,3] = 2413).
+-- On an Unordered (Set) source, tie order among equal keys is unspecified
+-- but MUST be deterministic for fixed inputs: two enumerations agree.
+--! mode run
+--! assertNoErrors
+--! assertEval chained 2413
+--! assertEval sameTwice True
+module main
+
+type Pair = (k : Int, v : Int)
+
+encodeAcc : Int -> List Int -> Int
+let encodeAcc acc xs =
+    match xs
+    case Nil -> acc
+    case d :: rest -> encodeAcc (10 * acc + d) rest
+
+-- Stability w.r.t. the current encounter order: the v-sort establishes the
+-- encounter order [1,2,3,4]; the stable k-sort must keep that order among
+-- rows with equal k, giving k=1: v2,v4 then k=2: v1,v3.
+chained : Int
+let chained =
+    encodeAcc 0 [
+        for p in [(k = 2, v = 3), (k = 1, v = 4), (k = 2, v = 1), (k = 1, v = 2)]
+        order by p.v
+        order by p.k
+        yield p.v
+    ]
+
+-- Determinism on an Unordered pipeline: 21 and 12 tie under the key, so their
+-- relative order is unspecified — but package-mode evaluation must resolve
+-- the tie the same way every time for the same input (§20.3.2 Determinism).
+runOnce : Unit -> Int
+let runOnce u =
+    encodeAcc 0 [
+        for x in {| 21, 5, 12 |}
+        order by (if x > 10 then 1 else 0)
+        yield x
+    ]
+
+sameTwice : Bool
+let sameTwice = eqInt (runOnce ()) (runOnce ())
+-- STATUS(a0497523): PASS

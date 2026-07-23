@@ -1,0 +1,26 @@
+-- §16.4.1: the unique-remaining-constructor strengthening is stated over
+-- the ACTIVE refinement context, not a single test: "if ... the active
+-- refinement context proves LacksCtor for all but one visible constructor
+-- ... the implementation MUST derive HasCtor for the unique remaining
+-- visible constructor". An elif chain accumulates LacksCtor A then
+-- LacksCtor B, so the final else must derive HasCtor C.
+module main
+
+data Tri : Type =
+    A (avalue : Int)
+    B (bvalue : Int)
+    C (cvalue : Int)
+
+lastOne : Tri -> Int
+let lastOne x =
+    if x is A then
+        x.avalue
+    elif x is B then
+        x.bvalue
+    else
+        x.cvalue
+
+--! mode check
+--! assertNoErrors
+--! assertType lastOne (Tri -> Int)
+-- STATUS(a0497523): FAIL — the compiler rejects x.cvalue in the final else (E_UNRESOLVED_MEMBER): it only implements the single-test two-constructor special case and does not accumulate LacksCtor A + LacksCtor B across an elif chain to derive HasCtor C as §16.4.1 requires ("all but one" over the active refinement context).

@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "False\nTrue\nTrue\nFalse\nTrue\n"
+
+-- §28.2: (&&) and (||) are ordinary prelude terms of type
+-- Bool -> Thunk Bool -> Bool, not special evaluation forms: a deciding
+-- left operand returns without forcing the right Thunk (a trapping
+-- right operand is safe), and an undecided left operand forces it; a
+-- plain Bool right operand is thunked by suspension insertion.
+module main
+
+-- forcing this thunk traps (intToNat of a negative Int has no image).
+boom : Thunk Bool
+let boom = thunk (intToNat (0 - 1) == 0)
+
+shortAnd : Bool
+let shortAnd = False && boom
+
+shortOr : Bool
+let shortOr = True || boom
+
+forcedAnd : Bool
+let forcedAnd = True && thunk True
+
+forcedOr : Bool
+let forcedOr = False || thunk False
+
+-- suspension insertion thunks a plain Bool right operand (§16.2.2).
+insertedAnd : Bool
+let insertedAnd = True && (1 == 1)
+
+main : UIO Unit
+let main = do
+    println shortAnd
+    println shortOr
+    println forcedAnd
+    println forcedOr
+    println insertedAnd
+-- STATUS(a0497523): PASS

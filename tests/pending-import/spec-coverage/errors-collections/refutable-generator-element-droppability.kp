@@ -1,0 +1,34 @@
+-- §20.4.1: `for? pat in xs` is ill-formed if dropping a non-matching element
+-- would discard any component carrying a positive lower-bound quantity (1 or
+-- >=1). Dropping a non-matching Pong discards its quantity-1 Token; elements
+-- whose discarded components are all 0/<=1/ω remain droppable.
+--! mode check
+--! assertErrorCount 1
+module main
+
+data Token : Type =
+    MkToken (1 secret : Int)
+
+data Msg : Type =
+    Ping (1 t : Token)
+    Pong (1 t : Token)
+
+openT : (1 t : Token) -> Int
+let openT t =
+    match t
+    case MkToken n -> n
+
+-- POSITIVE: non-matching None elements carry no positive-lower-bound
+-- component, so filtering them out is permitted.
+ok : List (Option Int) -> List Int
+let ok opts =
+    [ for? Some x in opts, yield x ]
+
+-- NEGATIVE: a non-matching Pong element carries a quantity-1 Token that the
+-- drop would silently discard.
+bad : List Msg -> List Int
+let bad msgs =
+    [ for? Ping t in msgs, yield openT t ] --!! kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): FAIL — compiler accepts bad (0 errors): for? checks ROW
+-- droppability but never the droppability of the discarded non-matching ELEMENT,
+-- so the quantity-1 Token inside Pong is silently dropped.

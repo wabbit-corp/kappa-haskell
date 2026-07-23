@@ -1,0 +1,80 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestAsPattern.curry
+--   (f1 v@(x:_) = x : v, testSimple = (f1 [1,2]) -=- [1,1,2]).
+-- Spec: §17.2.1 (pattern forms: as-pattern `name@pat`), §17.2.2 (scoping:
+--       binders visible in guard and body), §17.1 (`match`).
+--
+-- Pins: an as-pattern `v @ (Cons x rest)` binds both the whole scrutinee
+-- and the inner binders; the as-binder is usable in the branch body (to
+-- rebuild a list sharing the original tail) and in the pattern guard.
+
+module test
+
+--! mode check
+
+data IntList : Type =
+    INil
+    ICons (head : Int) (tail : IntList)
+
+-- POSITIVE: simple as-pattern over a cons cell; `v` names the whole
+-- cell, `x` its head, and the body re-uses both.
+duplicateHead : IntList -> IntList
+let duplicateHead xs =
+    match xs
+    case INil -> INil
+    case v @ (ICons x _rest) -> ICons x v
+
+--! assertNoErrors
+--! assertType duplicateHead (IntList -> IntList)
+
+-- POSITIVE: the rebuilt list preserves the whole original tail.
+sampleResult : IntList
+let sampleResult = duplicateHead (ICons 1 (ICons 2 INil))
+-- expected shape: ICons 1 (ICons 1 (ICons 2 INil))
+
+lengthList : IntList -> Int
+let lengthList xs =
+    match xs
+    case INil -> 0
+    case ICons _ rest -> 1 + lengthList rest
+
+headOr : Int -> IntList -> Int
+let headOr d xs =
+    match xs
+    case INil -> d
+    case ICons h _ -> h
+
+sampleLength : Int
+let sampleLength = lengthList sampleResult
+
+sampleSecond : Int
+let sampleSecond =
+    match sampleResult
+    case ICons _ rest -> headOr 0 rest
+    case INil -> 0 - 1
+
+--! assertNoErrors
+--! assertEval sampleLength 3
+--! assertEval sampleSecond 1
+
+-- POSITIVE: the as-pattern binder is in scope in the guard, too
+-- (§17.2.2: pattern names scope over the guard and the branch body).
+listNonEmpty : IntList -> Bool
+let listNonEmpty xs =
+    match xs
+    case INil -> False
+    case ICons _ _ -> True
+
+keepIfNonempty : IntList -> IntList
+let keepIfNonempty xs =
+    match xs
+    case v @ (ICons _ _) if listNonEmpty v -> v
+    case _ -> INil
+
+keptLength : Int
+let keptLength = lengthList (keepIfNonempty (ICons 7 INil))
+
+--! assertNoErrors
+--! assertType keepIfNonempty (IntList -> IntList)
+--! assertEval keptLength 1
+
+-- STATUS(a0497523): PASS

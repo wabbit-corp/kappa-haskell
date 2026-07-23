@@ -1,0 +1,25 @@
+-- §16.3.2 (unsolved-hole diagnostics): each unsolved hole MUST report its
+-- name and expected type; if the expected type is Contractible the
+-- diagnostic SHOULD include the unique inhabitant, and for Finite n it
+-- SHOULD include the inhabitants as completion candidates (Unit has unique
+-- inhabitant (); Bool is Finite 2 with candidates True and False).
+module main
+
+contractibleHole : Unit
+let contractibleHole = ?u --!! E_HOLE_UNSOLVED
+
+finiteHole : Bool
+let finiteHole = _ --!! E_HOLE_UNSOLVED
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.hole.unsolved
+-- name and expected type are reported:
+--! assertDiagnosticMatch hole \?u : Unit
+--! assertDiagnosticMatch hole _ : Bool
+-- Contractible goal reports its unique inhabitant ():
+--! assertDiagnosticMatch \(\)
+-- Finite 2 goal lists both candidates deterministically:
+--! assertDiagnosticMatch True
+--! assertDiagnosticMatch False
+-- STATUS(a0497523): FAIL — the MUST parts pass (both holes report name + expected type), but the diagnostics carry no structured payload and no inhabitance suggestions: neither the Contractible unique inhabitant () for Unit nor the Finite-2 candidates True/False for Bool are reported (§16.3.2 SHOULD items unimplemented).

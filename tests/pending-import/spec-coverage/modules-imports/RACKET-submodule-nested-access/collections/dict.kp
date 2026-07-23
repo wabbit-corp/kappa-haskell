@@ -1,0 +1,12 @@
+module collections.dict
+
+insertKey : String -> Int -> List (String, Int) -> List (String, Int)
+let insertKey k v m = (k, v) :: m
+
+lookupKey : String -> List (String, Int) -> Option Int
+let lookupKey k m =
+    match m
+    case Nil -> None
+    case entry :: rest ->
+        let (k2, v) = entry
+        if k == k2 then Some v else lookupKey k rest

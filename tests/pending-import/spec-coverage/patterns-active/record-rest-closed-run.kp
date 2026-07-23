@@ -1,0 +1,26 @@
+-- §17.2.1 record-rest capture, closed-record positives: `..rest` binds
+-- the remaining explicit fields as a closed record usable by projection,
+-- and a bare `..` discards droppable omitted fields. Run-mode check of
+-- the bound values.
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n2\n3\n"
+
+first : (x : Int, y : Int) -> Int
+let first p =
+    let (x = a, ..) = p
+    a
+
+grab : (x : Int, y : Int) -> Int
+let grab p =
+    let (x = a, ..rest) = p
+    rest.y
+
+main : UIO Unit
+let main = do
+    printInt (first (x = 1, y = 2))
+    printInt (grab (x = 1, y = 2))
+    printInt (grab (x = 9, y = 3))
+
+-- STATUS(a0497523): PASS

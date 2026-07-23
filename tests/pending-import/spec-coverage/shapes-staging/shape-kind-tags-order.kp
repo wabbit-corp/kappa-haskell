@@ -1,0 +1,60 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.1: AdtShape.kind — 'EnumAdt' iff no constructor has a
+-- runtime-relevant field, 'SumAdt' for multi-constructor types with
+-- payload, and 'ProductAdt' for exactly one constructor, taking
+-- priority over EnumAdt for a one-constructor nullary type. §22.2:
+-- 'constructors' is in declaration order and 'tag' is the zero-based
+-- index of the constructor in that list.
+
+import std.deriving.shape.*
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Solo : Type =
+    MkSolo
+
+data Mixed : Type =
+    NoPayload
+    Payload (v : Integer)
+
+kindName : ShapeAdtKind -> String
+let kindName k =
+    match k
+    case ProductAdt -> "product"
+    case SumAdt -> "sum"
+    case EnumAdt -> "enum"
+
+checkKind : forall (@0 a : Type). Syntax Type -> String -> Elab (Syntax String)
+let checkKind @a target want = do
+    let shape <- inspectAdt @a target
+    match kindName shape.kind == want
+    case True -> stringSyntax "ok"
+    case False -> failElab (stringAppend "wrong shape kind: " (kindName shape.kind))
+
+checkTags : Elab (Syntax String)
+let checkTags = do
+    let shape <- inspectAdt @Color '{ type Color }
+    match shape.constructors
+    case r :: g :: b :: Nil ->
+        if r.tag == 0 && g.tag == 1 && b.tag == 2 && r.renderName == "Red" && b.renderName == "Blue"
+        then stringSyntax "ok"
+        else failElab "wrong tags or constructor order"
+    case _ -> failElab "wrong constructor count"
+
+tagsOk : String
+let tagsOk = $(checkTags)
+
+enumOk : String
+let enumOk = $(checkKind @Color '{ type Color } "enum")
+
+productOk : String
+let productOk = $(checkKind @Solo '{ type Solo } "product")
+
+sumOk : String
+let sumOk = $(checkKind @Mixed '{ type Mixed } "sum")
+-- STATUS(a0497523): PASS

@@ -1,0 +1,18 @@
+module main
+
+-- §8.3.1A: two wildcard imports introduce DISTINCT semantic identities
+-- under the spelling `Tag` (trait kind); lookup for that spelling is a
+-- use-site ambiguity, and the diagnostic "MUST list every surviving
+-- candidate's declaration kind, defining module, import item, and source
+-- or interface origin". A use in an instance head is such a use site:
+-- the error must be the ambiguity (kappa.name.ambiguous, §3.2.2), naming
+-- both candidate traits — not a generic head-shape complaint that hides
+-- the real cause. (Ordinary type-position uses of an ambiguous data-type
+-- spelling already get kappa.name.ambiguous; the instance-head path must
+-- agree.)
+import liba.*
+import libb.*
+
+instance Tag Bool =                   --!! kappa.name.ambiguous
+    let tag b = 1
+-- STATUS(a0497523): FAIL — no diagnostic with family kappa.name.ambiguous was produced; no diagnostic error[kappa.name.ambiguous] on line 16 (saw: E_INSTANCE_HEAD@16)

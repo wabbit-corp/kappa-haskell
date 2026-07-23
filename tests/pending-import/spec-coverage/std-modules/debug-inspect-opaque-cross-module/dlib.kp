@@ -1,0 +1,8 @@
+module dlib
+
+-- §8.5.2 / §29.6: `opaque data` exports the type name but hides the
+-- constructors, so the representation is not inspectable outside dlib.
+opaque data Secret : Type = MkSecret (n : Int)
+
+mkSecret : Int -> Secret
+let mkSecret n = MkSecret n

@@ -15,4 +15,4 @@ module main
 g : (>=1 x : Int) -> (b : Bool) -> Int
 let g x b = if b then x else 0 --!! kappa.quantity.positive-lower-bound
 
--- STATUS(a51e1bf): FAIL — payload is kind 'none' (no §3.2.5 binder/declaredQuantity/failing-path fields), no binder-site related origin, and no branch/path identification in the generic drop message
+-- STATUS(a0497523): FAIL — payload is kind 'none' (no §3.2.5 binder/declaredQuantity/failing-path fields), no binder-site related origin, and no branch/path identification in the generic drop message

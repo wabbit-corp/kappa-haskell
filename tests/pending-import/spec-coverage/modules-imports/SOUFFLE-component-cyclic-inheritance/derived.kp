@@ -1,0 +1,6 @@
+module derived
+
+import base
+
+derivedFn : Int -> Int
+let derivedFn x = base.baseFn x + 1

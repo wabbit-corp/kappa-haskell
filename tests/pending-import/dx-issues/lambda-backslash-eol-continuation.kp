@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertEval applied 42
+
+-- DX EXPECTATION (spec-plausible, Section 5.4): the continuation-context
+-- list ("a NEWLINE ... immediately after a token that syntactically
+-- requires a following expression") is explicitly non-exhaustive and
+-- already contains tokens that require non-expressions (':' requires a
+-- type). A lambda backslash at end of line can never complete any
+-- construct, so the indented binder line should continue the lambda --
+-- exactly as already happens when the line ends after '\\n ->' (arrow at
+-- EOL is accepted today). Currently the whole declaration is skipped:
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of
+-- declaration" on the lambda line, plus a suppressed
+-- E_SIGNATURE_UNSATISFIED for 'f'; neither mentions the lambda or layout.
+
+module main
+
+f : Int -> Int
+let f = \
+    n -> n + 1
+
+applied : Int
+let applied = f 41
+-- STATUS(a0497523): FAIL — backslash at EOL opens no continuation context; the whole declaration is skipped (E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let'") and 'applied' stays unevaluated

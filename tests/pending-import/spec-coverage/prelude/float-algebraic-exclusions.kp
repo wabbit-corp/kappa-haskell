@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+-- §28.2 Float is a mandated prelude type with operation instances
+-- (§28.2.3: Zero/One/Add/Mul/Negatable/CheckedSub/CheckedDiv Float),
+-- but §28.2.2 forbids portable Semiring/Ring/FieldLike Float under
+-- raw-bit Eq. The operation demand must succeed; each algebraic demand
+-- must fail with an unsolved-evidence diagnostic.
+module main
+
+addFloat : Float -> Float -> Float
+let addFloat x y = add x y
+
+needSemiring : forall (a : Type). (@_ : Semiring a) -> a -> a
+let needSemiring x = x
+
+fltSemiring : Float -> Float
+let fltSemiring x = needSemiring x --!! kappa.implicit.unsolved
+
+needRing : forall (a : Type). (@_ : Ring a) -> a -> a
+let needRing x = x
+
+fltRing : Float -> Float
+let fltRing x = needRing x --!! kappa.implicit.unsolved
+
+needField : forall (a : Type). (@_ : FieldLike a) -> a -> a
+let needField x = x
+
+fltField : Float -> Float
+let fltField x = needField x --!! kappa.implicit.unsolved
+-- STATUS(a0497523): PASS

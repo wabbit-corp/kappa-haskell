@@ -21,7 +21,7 @@ let evSub = summon (IsSubsingleton (Eq Int))
 sameEqEvidence : (d1 : Eq Int) -> (d2 : Eq Int) -> d1 = d2
 let sameEqEvidence d1 d2 = allEqual d1 d2
 
--- STATUS(a51e1bf): FAIL — IsTrait (Eq Int) resolves, but the intrinsic
+-- STATUS(a0497523): FAIL — IsTrait (Eq Int) resolves, but the intrinsic
 -- supertrait consequence IsSubsingleton (Eq Int) is E_UNSOLVED_IMPLICIT and
 -- the prelude omits the spec's `allEqual` member (h-level traits are
 -- member-less markers here), so the sameEqEvidence proof cannot be written.

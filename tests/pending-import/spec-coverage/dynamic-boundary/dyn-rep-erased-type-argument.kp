@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.1: the type argument of DynRep a / DynamicType a is compile-time
+-- only (erased under §§11.1.6, 31.2) while the representation VALUE is
+-- runtime data; the implicit DynamicType evidence is runtime-relevant
+-- only through its dynRep member. So DynRep a flows through @0-erased
+-- polymorphism, and Dyn packages are ordinary first-class data.
+module main
+
+import std.gradual.*
+
+-- Evidence is consumed only via its dynRep member (§24.1, §24.9).
+repOf : forall (@0 a : Type). (@_ : DynamicType a) -> DynRep a
+let repOf = dynRep
+
+packViaEvidence : forall (@0 a : Type). (@_ : DynamicType a) -> a -> Dyn
+let packViaEvidence x = toDynWith dynRep x
+
+-- The erased type argument imposes no runtime distinction: packed
+-- values of one erased type populate an ordinary homogeneous List Dyn.
+packBoth : forall (@0 a : Type). DynRep a -> a -> a -> List Dyn
+let packBoth rep x y = [toDynWith rep x, toDynWith rep y]
+
+-- STATUS(a0497523): PASS

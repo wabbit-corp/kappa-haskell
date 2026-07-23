@@ -1,0 +1,52 @@
+--! mode check
+--! assertNoErrors
+
+-- Source issue: carp-lang/Carp#469
+-- Spec: §12.2 (borrowed binder access), §12.3 (borrow lifetimes),
+--       §17.1 (match on a borrowed scrutinee reads through the borrow)
+-- Carp #469: ordinary `match` took ownership of its scrutinee, forcing
+-- copies to match twice.  The portable Kappa obligation: matching through a
+-- borrowed binder does NOT consume the underlying value — the same borrow
+-- can be matched repeatedly, and the owner can still consume the value
+-- after a borrow-form match.
+module main
+
+data Mb : Type =
+    Nothing
+    | Just Int
+
+-- borrow-form elimination: reads the payload without taking ownership.
+peekMb : (& m : Mb) -> Int
+let peekMb m =
+    match m
+    case Nothing -> 0
+    case Just k  -> k
+
+unwrap : (1 m : Mb) -> Int
+let unwrap (1 m : Mb) : Int =
+    match m
+    case Nothing -> 0
+    case Just k  -> k
+
+-- POSITIVE: matching `m` through a borrow-demanding helper does not take
+-- ownership; afterwards `m` is still owned and can be moved into `unwrap`.
+matchBorrowThenConsume : (1 m : Mb) -> Int
+let matchBorrowThenConsume (1 m : Mb) : Int =
+    let n = peekMb m
+    unwrap m + n
+
+-- POSITIVE: matching a borrowed scrutinee twice in succession is allowed
+-- because neither match consumes it.
+matchBorrowTwice : (& m : Mb) -> Int
+let matchBorrowTwice m =
+    let a =
+        match m
+        case Nothing -> 0
+        case Just k  -> k
+    let b =
+        match m
+        case Nothing -> 0
+        case Just k  -> k
+    a + b
+
+-- STATUS(a0497523): PASS

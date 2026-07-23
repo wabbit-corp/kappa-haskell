@@ -17,3 +17,4 @@ let useModule m = m.answer
 
 applied : Int
 let applied = useModule (module lib)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 3; first error: E_UNSUPPORTED "moduleSig is not supported by this implementation" at line 15; assertEval: 'applied' evaluates to _, expec…

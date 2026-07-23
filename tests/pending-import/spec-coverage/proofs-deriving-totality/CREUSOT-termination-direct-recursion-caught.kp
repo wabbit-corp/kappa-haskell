@@ -1,0 +1,21 @@
+-- Source issues: CREUSOT-1966
+-- Spec: §15.1 (termination-certified definitions), §15.2 (soundness: an
+--       accepted termination argument MUST be well-founded; conservative
+--       rejection is permitted), §15.17 (recursion policy: recursive
+--       binding requires a preceding signature), §3.2.11
+--       (kappa.termination.failure)
+-- Pins: a zero-argument definition whose body is an unconditional call
+-- to itself has no termination argument. It must not be certified: the
+-- rejection carries diagnostic family kappa.termination.failure.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: value-level self-recursion with no decrease.
+falso : Unit
+let falso = falso                            --!! kappa.termination.failure
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.termination.failure
+-- STATUS(a0497523): PASS

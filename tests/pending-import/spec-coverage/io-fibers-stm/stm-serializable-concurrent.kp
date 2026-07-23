@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "total:100\n"
+
+-- §18.1.13 (Spec.md L22837-22843): atomically executes a transaction with
+-- SERIALIZABLE semantics relative to other atomically executions in the
+-- same TVar domain. Two fibers each run 50 read-modify-write transactions
+-- on one shared TVar (with a cede between transactions to interleave);
+-- serializability forbids lost updates, so the final value is exactly 100.
+module main
+
+incr : TVar Int -> STM Unit
+let incr t = do
+    let v <- readTVar t
+    writeTVar t (v + 1)
+
+worker : TVar Int -> UIO Unit
+let worker t = do
+    var i = 0
+    while i < 50 do
+        atomically (incr t)
+        cede
+        i = i + 1
+    ioPure ()
+
+main : UIO Unit
+let main = do
+    let t <- atomically (newTVar 0)
+    let f1 <- fork (worker t)
+    let f2 <- fork (worker t)
+    let e1 <- await f1
+    let _ = e1
+    let e2 <- await f2
+    let _ = e2
+    let total <- atomically (readTVar t)
+    printlnString ("total:" ++ showInt total)
+-- STATUS(a0497523): PASS

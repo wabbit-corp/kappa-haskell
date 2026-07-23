@@ -1,0 +1,29 @@
+-- §12.2.5 (L15316-15326): every REACHABLE completion path leaving the scope
+-- of a binder (1 x) must demand x exactly once. An arm shadowed by a
+-- preceding wildcard can never run (first match wins), so a linear binder
+-- demanded ONLY in that arm is dropped on the only reachable path: reject.
+-- Note: §12.2.5 (L15305-15314) lets a compiler treat a path as unreachable
+-- only with a specified proof, but no reading rescues this program — joining
+-- the shadowed arm in still admits a zero-demand wildcard path, and excluding
+-- it leaves x entirely undemanded. Rejection is required either way.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+module main
+
+data Flag : Type =
+    On
+    Off
+
+-- NEGATIVE: x is demanded only in the arm shadowed by `case _`.
+leak : Flag -> (1 x : Int) -> Int
+let leak flag x = --!! E_QTT_LINEAR_DROP
+    match flag
+      case _ -> 0
+      case On -> x
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): PASS

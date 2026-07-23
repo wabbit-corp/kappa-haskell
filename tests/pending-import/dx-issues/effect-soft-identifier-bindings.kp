@@ -1,0 +1,21 @@
+-- DX / §5.2: `effect` is a soft keyword, so ordinary identifier readings
+-- should work consistently at declaration starts, do-bind sites, parameter
+-- positions, and later references. Backticks should not be required only in
+-- the first two contexts.
+--! mode run
+--! assertNoErrors
+--! assertStdout "8\n"
+
+module main
+
+effect : Int
+let effect = 3
+
+addEffect : Int -> Int
+let addEffect effect = effect + 1
+
+main : UIO Unit
+let main = do
+    let effect <- pure (addEffect effect)
+    println effect
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'effect' at start of declaration" at line 11; stdout mismatch: expected "8\n",…

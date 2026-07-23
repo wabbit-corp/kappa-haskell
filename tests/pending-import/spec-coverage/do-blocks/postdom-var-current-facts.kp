@@ -1,0 +1,32 @@
+-- §18.2.3 x §18.6.2 combination: a constructor test whose scrutinee is a
+-- tracked local `var` attaches its success fact to VarCurrent(x,n); when the
+-- else-branch is terminal, the join has ONE continuing predecessor with the
+-- same cell version, so the fact POST-DOMINATES the conditional and licenses
+-- the later projection. A post-join assignment advances the version and
+-- discards the fact (§18.6.2 invalidation), so the second read is rejected.
+module main
+
+data Cell : Type =
+    Full (value : Int)
+    Empty
+
+-- POSITIVE: the `x is Full` fact survives the terminal-else conditional.
+ok : UIO Int
+let ok = do
+    var x = Full 41
+    if x is Full then pure () else do
+        return 0
+    pure (x.value + 1)
+
+-- NEGATIVE: assignment between the guard and the read invalidates the fact.
+bad : UIO Int
+let bad = do
+    var x = Full 41
+    if x is Full then pure () else do
+        return 0
+    x = Empty
+    pure (x.value + 1) --!! E_UNRESOLVED_MEMBER
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

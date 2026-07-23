@@ -1,0 +1,4 @@
+module liba
+
+trait Tag (a : Type) =
+    tag : a -> Int

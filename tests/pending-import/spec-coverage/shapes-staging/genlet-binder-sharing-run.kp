@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "25\n84\n"
+
+-- §23.5: 'genlet' requests a generated let in the nearest enclosing
+-- generated code context containing all uses — under a quoted binder
+-- the insertion point is inside that binder, so 'square' stays
+-- scope-safe; splicing the same genlet result twice preserves typing
+-- and observational semantics modulo administrative let-binding.
+-- (Binder *reuse* itself is unobservable from pure generated code.)
+
+square : Code (Integer -> Integer)
+let square = .< \x -> .~(genlet .< x * x >.) >.
+
+shared : Code Integer
+let shared = genlet .< 21 + 21 >.
+
+twice : Code Integer
+let twice = .< .~shared + .~shared >.
+
+runInt : Code Integer -> UIO Unit
+let runInt c = do
+    match closeCode c
+    case Some cc -> do
+        let v <- runCode cc
+        println v
+    case None -> printlnString "not closed"
+
+main : UIO Unit
+let main = do
+    match closeCode square
+    case Some cc -> do
+        let f <- runCode cc
+        println (f 5)
+    case None -> printlnString "not closed"
+    runInt twice
+-- STATUS(a0497523): PASS

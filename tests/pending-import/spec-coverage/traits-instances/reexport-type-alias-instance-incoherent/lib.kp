@@ -1,0 +1,13 @@
+module lib
+
+data Money : Type =
+    MkMoney Int
+
+mkMoney : Int -> Money
+let mkMoney n = MkMoney n
+
+trait Amount (a : Type) =
+    amount : a -> Int
+
+instance Amount Money =
+    let amount m = match m case MkMoney n -> n

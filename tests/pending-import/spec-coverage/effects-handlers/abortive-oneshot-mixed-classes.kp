@@ -1,0 +1,42 @@
+--! mode check
+--! assertNoErrors
+--! assertEval mixedOk 11
+--! assertEval mixedAbort 42
+
+-- §18.1.17.1: one effect interface may mix resumption classes — an
+-- abortive (q = 0) operation whose clause abandons the captured segment
+-- and a one-shot (q = 1) operation whose clause resumes.  Neither class
+-- requires the rt-multishot-effects backend capability, so both run
+-- under the default profile.
+module main
+
+effect Proto =
+    0 abort : Unit -> Int
+    1 step : Int -> Int
+
+okComp : Eff <[Proto : Proto]> Int
+let okComp =
+    do
+        let a <- Proto.step 10
+        pure (addInt a 1)
+
+abortComp : Eff <[Proto : Proto]> Int
+let abortComp =
+    do
+        let a <- Proto.step 1
+        let b <- Proto.abort ()
+        pure (addInt a b)
+
+handleProto : Eff <[Proto : Proto]> Int -> Eff <[ ]> Int
+let handleProto c =
+    deep handle Proto c with
+        case return x -> pure x
+        case abort _ k -> pure 42
+        case step n k -> k n
+
+mixedOk : Int
+let mixedOk = runPure (handleProto okComp)
+
+mixedAbort : Int
+let mixedAbort = runPure (handleProto abortComp)
+-- STATUS(a0497523): PASS

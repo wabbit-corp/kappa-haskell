@@ -1,0 +1,8 @@
+module main
+
+import dsl.tag.*
+
+-- the t prefix elaborates the quoted literal via buildQuotedLiteral.
+ok : dsl.tag.Tag
+let ok = t'body'
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_UNSUPPORTED "this quoted-literal form is not supported by this implementation" at line 7

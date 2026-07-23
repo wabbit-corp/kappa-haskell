@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n5\n"
+
+-- Appendix G.1: std.prelude's Applicative trait provides the defaulted
+-- member (<*>) : f (a -> b) -> f a -> f b, defined as
+-- \ff fa -> liftA2 (\f x -> f x) ff fa. An instance that supplies only
+-- pureA/liftA2 (like the prelude's Applicative Option) must therefore
+-- already support <*> at use sites.
+module main
+
+star : Option Int
+let star = (Some (\ (x : Int) -> x + 1)) <*> (Some 41)
+
+viaPure : Option Int
+let viaPure = (pureA (\ (x : Int) -> x) : Option (Int -> Int)) <*> (Some 5)
+
+showOpt : Option Int -> UIO Unit
+let showOpt o =
+    match o
+    case Some v -> printInt v
+    case None -> printlnString "none"
+
+main : UIO Unit
+let main = do
+    showOpt star
+    showOpt viaPure
+
+-- STATUS(a0497523): FAIL — std.prelude defines no (<*>); both use sites are E_NAME_UNRESOLVED (Appendix G.1 defaulted Applicative member is missing)

@@ -1,0 +1,24 @@
+-- §20.9/§20.10.1: a reusable inferred query may be checked against a
+-- one-shot expectation (committing to at most one enumeration), and an
+-- explicit `QueryCore mode q [ ... ]` prefix elaborates with exactly the
+-- written mode and item quantity — here re-yielding quantity-1 items.
+--! mode check
+--! assertNoErrors
+--! assertType widened (src : Query Integer) -> OnceQuery Integer
+module main
+
+data Token : Type =
+    Token
+
+-- POSITIVE: reusable plan accepted by the OnceQuery (OneShot) carrier.
+widened : (src : Query Integer) -> OnceQuery Integer
+let widened src =
+    OnceQuery [ for x in src, yield x ]
+
+-- POSITIVE: fully explicit QueryCore prefix with mode and item quantity 1.
+reIndex :
+    (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token) ->
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Token
+let reIndex src =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 [ for t in src, yield t ]
+-- STATUS(a0497523): PASS

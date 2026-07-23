@@ -1,0 +1,28 @@
+-- Source issues: CREUSOT-181, CREUSOT-195
+-- Spec: §5 (identifiers are case-sensitive spellings), §7 (resolution
+--       finds declarations by exact spelling), §3.2.2
+--       (kappa.name.unresolved, with typo-suggestion payload)
+-- Pins: source identifier spelling, including case, is preserved at the
+-- resolution boundary. Referencing a binder or top-level name with the
+-- wrong case MUST be a kappa.name.unresolved error (at most a typo
+-- suggestion), never a silent case-folded rewrite to the other spelling.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: parameter referenced with lower-cased spelling.
+wrongCase : (exampleParameter : Int) -> Int
+let wrongCase exampleParameter =
+    exampleparameter                        --!! kappa.name.unresolved
+
+helperValue : Int
+let helperValue = 3
+
+-- NEGATIVE: top-level name referenced with case-mangled spelling.
+useHelper : Int
+let useHelper = heLperValue                 --!! kappa.name.unresolved
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): PASS

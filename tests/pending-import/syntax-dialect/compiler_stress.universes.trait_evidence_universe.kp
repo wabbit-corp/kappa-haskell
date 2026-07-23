@@ -23,7 +23,7 @@ data List a : Type =
 instance Container List =
     let empty = Nil
 
--- Universe-polymorphic use: the evidence type is inferred at any universe level.
+-- TypeLevel-polymorphic use: the evidence type is inferred at any universe level.
 getEmpty : Container f -> f a
 let getEmpty inst = inst.empty
 

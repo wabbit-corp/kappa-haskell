@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §28.2.3 + FromInteger Nat: numeric literals type at Nat through the
+-- mandated FromInteger Nat instance, and Nat subtraction demands
+-- (y <= x) = True. subDefined 1 2 evaluates to False, so no proof
+-- exists and the implicit obligation of (-) is unsolvable — Nat
+-- subtraction MUST NOT saturate or wrap.
+module main
+
+bad : Nat
+let bad = 1 - 2 --!! kappa.implicit.unsolved
+-- STATUS(a0497523): PASS

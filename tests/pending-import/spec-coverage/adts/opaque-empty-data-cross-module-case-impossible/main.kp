@@ -1,0 +1,28 @@
+module main
+
+-- §30.2.7: the inhabitance-summary query is keyed by "the current
+-- visibility, opacity, unhide, and clarify environment", and §30.2
+-- (L40389): "Outside a module where an opaque data type's constructors
+-- are visible, branch-local normalization MUST NOT infer hidden
+-- constructor facts for that type." An importer therefore may NOT
+-- prove `Never` empty: its summary here is Unknown, and `case
+-- impossible` must be rejected (§17.1.5). Accepting it leaks the
+-- hidden representation: if lib later adds a constructor, this module
+-- still compiles while its "impossible" remainder became reachable.
+import lib.(type Never, type Empty)
+
+-- POSITIVE control: a PLAIN empty data type exports its (empty)
+-- constructor list, so the importer may still prove it empty.
+refuteEmpty : Empty -> Int
+let refuteEmpty x =
+    match x
+    case impossible
+
+-- NEGATIVE: opaque data — constructor facts are hidden; not provably
+-- empty here.
+refuteOutside : Never -> Int
+let refuteOutside x =
+    match x
+    case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- STATUS(a0497523): FAIL — 0 errors: the importer proves the OPAQUE data type empty and accepts case impossible; the inhabitance summary ignores the opacity environment (constructor facts leak across the module boundary). The plain-Empty control is (correctly) accepted.

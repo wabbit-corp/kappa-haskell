@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertNoWarnings
+-- STATUS(a0497523): PASS — fragment instance participates, no warnings (orphan warning also still unimplemented globally)

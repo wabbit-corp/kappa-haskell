@@ -1,0 +1,24 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-expression
+--! x-configSchemaScope std.config std.build
+--! assertNoErrors
+
+-- §35.2.2: config-expression includes all of config-data and adds `if`,
+-- `match`, and saturated calls to config-safe functions from the
+-- loader-supplied schema scope (all explicit arguments supplied,
+-- config-admissible result, deterministic evaluation). §35.8: config-safe
+-- prefixed-string handlers follow the ordinary §6.3.3 pipeline.
+-- Staged until a harness provides the configMode capability.
+
+let major = 1
+let ver = f"$major.0.1"
+let version = semver ver
+let root = sourceRoot "src"
+let osAxis = axis "os" [tag "linux", tag "macos"]
+let flags = if True then "on" else "off"
+let opt = Some "hello"
+let m = match opt case Some s -> s case None -> "none"
+let dep = registry "one.wabbit:kappa" "1.0.1"
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; content verified clean via kappa build --manifest --check

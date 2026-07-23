@@ -1,0 +1,29 @@
+-- §3.1.11 root-cause suppression: one unknown field type inside a data
+-- declaration is ONE root cause.  The declaration still introduces the
+-- type 'Shape' and both constructors, so the later constructor VALUE
+-- uses (Circle 1, Square 2) and constructor PATTERN uses (the match
+-- arms) must not each re-error — downstream diagnostics explained by
+-- the malformed constructor field SHOULD be suppressed under it.
+-- Pins the current good behavior: exactly one E_NAME_UNRESOLVED for
+-- 'NoSuchType' and silence downstream.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticPayload error E_NAME_UNRESOLVED /payload/name NoSuchType
+module main
+
+data Shape = Circle NoSuchType | Square Int
+
+mk1 : Shape
+let mk1 = Circle 1
+
+mk2 : Shape
+let mk2 = Square 2
+
+area : Shape -> Int
+let area sh =
+    match sh
+      case Circle r -> 1
+      case Square s -> s * s
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,50 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "chunk1:[a]\nchunk2:[éb]\nfinish:[]\nagrees:True\nincomplete:err\n"
+
+-- §29.4 incremental UTF-8 decoding: the linear Utf8Decoder buffers an
+-- incomplete sequence across chunk boundaries (é = C3 A9 split between two
+-- chunks), the concatenated chunk outputs equal decodeUtf8 of the concatenated
+-- input, and finishUtf8Decoder fails when a partial sequence is still pending.
+module main
+
+import std.unicode.*
+import std.bytes.*
+
+-- "a" ++ first byte of é
+chunk1 : Bytes
+let chunk1 = bytesFromList (b'\x61' :: b'\xC3' :: Nil)
+
+-- second byte of é ++ "b"
+chunk2 : Bytes
+let chunk2 = bytesFromList (b'\xA9' :: b'\x62' :: Nil)
+
+full : String
+let full =
+    match decodeUtf8 (bytesAppend chunk1 chunk2)
+    case Ok s -> s
+    case Err _ -> "<decode-error>"
+
+main : UIO Unit
+let main = do
+    match decodeUtf8Chunk chunk1 newUtf8Decoder
+      case Err _ -> printlnString "chunk1:err"
+      case Ok r1 -> do
+        printlnString ("chunk1:[" ++ r1.text ++ "]")
+        match decodeUtf8Chunk chunk2 r1.decoder
+          case Err _ -> printlnString "chunk2:err"
+          case Ok r2 -> do
+            printlnString ("chunk2:[" ++ r2.text ++ "]")
+            match finishUtf8Decoder r2.decoder
+              case Err _ -> printlnString "finish:err"
+              case Ok tail -> do
+                printlnString ("finish:[" ++ tail ++ "]")
+                printlnString ("agrees:" ++ (if (r1.text ++ r2.text ++ tail) == full then "True" else "False"))
+    -- an incomplete pending sequence must make finishUtf8Decoder fail
+    match decodeUtf8Chunk (singletonByte b'\xC3') newUtf8Decoder
+      case Err _ -> printlnString "incomplete:early-err"
+      case Ok r3 ->
+        match finishUtf8Decoder r3.decoder
+          case Err _ -> printlnString "incomplete:err"
+          case Ok _ -> printlnString "incomplete:wrongly-ok"
+-- STATUS(a0497523): PASS

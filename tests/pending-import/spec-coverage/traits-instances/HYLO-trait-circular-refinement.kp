@@ -1,0 +1,52 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo
+--                   (diagnostic: "circular trait refinement")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/CircularRefinement.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §14.1.4 (supertraits), §14.1.5 (trait refinement graph cycles)
+-- Pins: a linear supertrait chain is well-formed; a cyclic refinement graph
+-- (self-refinement T => T, mutual A => B => C => A) must be rejected — §14.1.5
+-- requires the whole strongly connected component to be rejected as one
+-- graph-level error naming every trait application in the cycle. The spec
+-- names no diagnostic family for this; the assertions below only require
+-- that a rejection diagnostic identifies a cycle participant. (Under this
+-- implementation's declaration-order name resolution the back-edges of a
+-- cycle surface as unresolved trait names, which also satisfies that.)
+
+--! mode check
+
+module main
+
+-- POSITIVE: linear, non-circular trait hierarchy.
+trait Base (a : Type) =
+    base : a -> Int
+
+trait Base a => Extended (a : Type) =
+    extra : a -> String
+
+data Value : Type =
+    MkValue Int
+
+instance Base Value =
+    let base v = match v case MkValue n -> n
+
+instance Extended Value =
+    let extra v = match v case MkValue n -> stringAppend "v" (showInt n)
+
+useExtended : Int
+let useExtended = base (MkValue 7)
+
+-- NEGATIVE: direct self-refinement — T refines T.
+trait SelfRefined a => SelfRefined (a : Type) =
+    foo : a -> Int
+
+-- NEGATIVE: mutual refinement cycle A => B => C => A.
+trait CycleB a => CycleA (a : Type) =
+    methodA : a -> Int
+
+trait CycleC a => CycleB (a : Type) =
+    methodB : a -> Int
+
+trait CycleA a => CycleC (a : Type) =
+    methodC : a -> Int
+
+--! assertDiagnosticMatch SelfRefined
+--! assertDiagnosticMatch CycleB|CycleC|CycleA

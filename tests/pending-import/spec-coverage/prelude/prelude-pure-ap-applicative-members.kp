@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval poHit True
+--! assertEval prHit True
+--! assertEval apHit True
+
+-- §14.1 (Spec L18094-18107) declares std.prelude's canonical Applicative with
+-- members `pure`, `liftA2`, and default member `(<*>)`; §28.2's term list
+-- (L33605) exports `pure, (>>=), (>>), map, liftA2, (<*>)` and L33699-33703
+-- classifies `pure` and `(<*>)` as overloaded members of that trait.
+--
+-- The compiler's prelude diverges:
+--   * the trait member is spelled `pureA`; the exported `pure` is a
+--     monomorphic IO-only function `pure : a -> IO e a`, so `pure 1 : Option
+--     Integer` is a type mismatch instead of resolving through
+--     Applicative Option;
+--   * `(<*>)` is not in scope at all.
+-- `liftA2` alone matches the spec surface today.
+
+module main
+
+po : Option Integer
+let po = pure 1
+
+poHit : Bool
+let poHit = po == Some 1
+
+pr : Result String Integer
+let pr = pure 2
+
+prHit : Bool
+let prHit = pr == Ok 2
+
+ap : Option Integer
+let ap = (Some (\x -> x + 1)) <*> (Some 1)
+
+apHit : Bool
+let apHit = ap == Some 2
+
+-- working part of the same trait surface, for contrast
+la : Option Integer
+let la = liftA2 (\x -> \y -> x + y) (Some 1) (Some 2)
+-- STATUS(a0497523): FAIL — pure 1 : Option Integer is E_TYPE_EQUALITY_MISMATCH (prelude pure is IO-only, trait member is spelled pureA) and (<*>) is E_NAME_UNRESOLVED; liftA2 conforms

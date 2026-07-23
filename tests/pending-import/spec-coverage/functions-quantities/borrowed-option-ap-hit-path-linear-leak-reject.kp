@@ -1,0 +1,39 @@
+-- §12.2.5/§12.2.6 (linear values are not droppable) + §17.1.8 +
+-- §17.3.6.1: a borrowed active-pattern call does NOT consume its
+-- scrutinee, so on the Hit path below the linear b is never consumed —
+-- the branch body returns the (copied Int) payload and drops b. A
+-- checked completion path that drops a quantity-1 value must be
+-- rejected. (The fallthrough case legitimately consumes b, so the error
+-- is specifically the first branch's leak.)
+--
+-- This is the mirror image of the sibling `-accept` pin: crediting the
+-- borrow-call as a consumption both rejects the sound program and
+-- accepts this leaking one.
+
+--! mode check
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern PosVal (& b : Buf) : Option Int =
+    match b
+    case Buf n -> if n > 0 then Some n else None
+
+-- NEGATIVE: on the PosVal-hit path, b is dropped without being consumed.
+bad : (1 b : Buf) -> Int
+let bad (1 b : Buf) : Int =
+    match b
+    case PosVal (n) -> n
+    case rest -> bufValue rest
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch linear|drop|consum|quantit
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors: the borrowed AP call
+-- is counted as the linear consumption of b, so the leaking Hit path
+-- looks fully discharged to the checker.

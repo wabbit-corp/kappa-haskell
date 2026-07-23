@@ -1,0 +1,4 @@
+module mid
+
+-- §8.4: export alias preserves the trait's semantic identity.
+export lib.(trait Amount as Worth, amount)

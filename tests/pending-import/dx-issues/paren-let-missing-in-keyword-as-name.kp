@@ -1,0 +1,23 @@
+-- DX EXPECTATION (not necessarily spec-required): a parenthesized `let`
+-- binding with a missing `in` (§9.3: `let ... in` is an expression and
+-- may appear anywhere an expression is allowed; the parenthesized
+-- single-line form `(let y = 1 in y + 2)` parses fine) should fail with
+-- one targeted parse diagnostic naming the missing `in`.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): inside the parentheses the keyword
+-- `let` is demoted to an ordinary NAME, producing E_NAME_UNRESOLVED
+-- "unresolved name 'let'" with "help: did you mean 'Set'?" and a
+-- maybe-applicable fix "replace 'let' with 'Set'" -- a repair that
+-- replaces a keyword with a container type -- followed by an
+-- E_APPLICATION_NONCALLABLE cascade ("callee type: Integer") and a
+-- kind-level kappa.type.mismatch (actual Type, from `y = 1` re-parsed as
+-- an equality type).  Three nonsense errors, none mentioning `in`.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch 'in'
+module main
+
+r : Int
+let r = (let y = 1
+         y + 2)
+-- STATUS(a0497523): FAIL — 3 errors, led by E_NAME_UNRESOLVED "unresolved name 'let'" with help "did you mean 'Set'?" and a replace-let-with-Set fix; none mention 'in'

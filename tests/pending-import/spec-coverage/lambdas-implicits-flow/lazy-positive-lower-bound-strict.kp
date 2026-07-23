@@ -1,0 +1,30 @@
+-- §16.2.2: "Because lazy may evaluate its body zero times if it is never
+-- forced, `lazy expr` MUST NOT capture variables with positive lower-bound
+-- obligations unless those obligations are independently satisfied outside
+-- the lazy body." Forcing the Need value does not lift the categorical
+-- prohibition: the at-most-once multiplier is [0,1], so the induced demand
+-- on the captured variable never reaches the >=1 lower bound.
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+-- POSITIVE: obligation satisfied outside the lazy body; the Need value
+-- itself is unrestricted and may be dropped.
+okOutside : (>=1 x : Int) -> Int
+let okOutside (>=1 x : Int) : Int =
+    let n = lazy x
+    in strictId x
+
+-- NEGATIVE: x's only demand sits inside the lazy body. Even though the
+-- Need value is forced on the one path through the function, lazy demand
+-- multiplies by at-most-once [0,1], leaving the >=1 bound unsatisfied.
+badLazyOnly : (>=1 x : Int) -> Int
+let badLazyOnly (>=1 x : Int) : Int = --!! E_QTT_LINEAR_DROP
+    let n = lazy (strictId x)
+    in force n
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): FAIL — the compiler accepts badLazyOnly (0 errors): a forced lazy is treated as demanding its captures at least once, so the §16.2.2 categorical MUST NOT on lazy-capturing >=1 variables is not enforced (see the spec-issue recorded with this batch about the tension with the at-most-once interval paragraph).

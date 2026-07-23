@@ -1,0 +1,19 @@
+module main
+
+-- §8.3.1.1 grammar: importItem admits modifiers, a kind selector, AND
+-- ctorAll together — `clarify type Pair(..)`. §8.5.3: clarify on an
+-- opaque data type makes its constructors available for construction
+-- and pattern matching downstream; §8.3.1: type T(..) imports the type
+-- together with all constructors, including the DISTINCT-spelling
+-- constructor MkPair that no unqualified import would bring. Gated by
+-- allow_clarify (§4.2-§4.3).
+import rlib.(clarify type Pair(..))
+
+mk : Pair
+let mk = MkPair 1 2
+
+second : Int
+let second =
+    match mk
+      case MkPair a b -> b
+-- STATUS(a0497523): PASS

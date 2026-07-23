@@ -1,0 +1,69 @@
+-- Source: Racket guide match.scrbl (nested patterns),
+--         pkgs/racket-test-core/tests/racket/expand.rktl
+-- Spec: §17.1 (match), §17.2 (nested constructor patterns), §3.2.9 (kappa.pattern.non-exhaustive)
+-- NOTE: overlaps with tests/conformance/match/nested-ctor.kp (nested ctor matching)
+--
+-- Pins: patterns may nest constructor sub-patterns (Neg (Neg e)); the type
+-- checker and exhaustiveness checker handle nested constructors; omitting a
+-- constructor of the scrutinee type is non-exhaustive.
+
+--! mode check
+
+data Expr : Type =
+    Lit Int
+    EAdd Expr Expr
+    ENeg Expr
+    EMul Expr Expr
+
+-- POSITIVE: evaluate a nested expression.
+evalExpr : Expr -> Int
+let evalExpr e0 =
+    match e0
+    case Lit n    -> n
+    case EAdd l r -> evalExpr l + evalExpr r
+    case ENeg e1  -> 0 - evalExpr e1
+    case EMul l r -> evalExpr l * evalExpr r
+
+-- POSITIVE: nested pattern matching simplifies double negation.
+simplify : Expr -> Expr
+let simplify e0 =
+    match e0
+    case ENeg (ENeg inner) -> simplify inner
+    case ENeg inner        -> ENeg (simplify inner)
+    case EAdd l r          -> EAdd (simplify l) (simplify r)
+    case EMul l r          -> EMul (simplify l) (simplify r)
+    case other             -> other
+
+maxInt : Int -> Int -> Int
+let maxInt x y = if x >= y then x else y
+
+-- POSITIVE: depth of an expression tree.
+depth : Expr -> Int
+let depth e0 =
+    match e0
+    case Lit _    -> 0
+    case ENeg e1  -> 1 + depth e1
+    case EAdd l r -> 1 + maxInt (depth l) (depth r)
+    case EMul l r -> 1 + maxInt (depth l) (depth r)
+
+-- POSITIVE: nested constructor patterns on a pair of Options.
+andBoth : Option Bool -> Option Bool -> Option Bool
+let andBoth x y =
+    match (x, y)
+    case (Some a, Some b) -> Some (a && b)
+    case _                -> None
+
+evaluated : Int
+let evaluated = evalExpr (EAdd (Lit 2) (ENeg (Lit 5)))
+
+-- NEGATIVE: match missing the EMul constructor is non-exhaustive.
+partialEval : Expr -> Int
+let partialEval e0 =
+    match e0                                       --!! E_PATTERN_NON_EXHAUSTIVE
+    case Lit n    -> n
+    case EAdd l r -> partialEval l + partialEval r
+    case ENeg e1  -> 0 - partialEval e1
+
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+--! assertEval evaluated -3
+-- STATUS(a0497523): PASS

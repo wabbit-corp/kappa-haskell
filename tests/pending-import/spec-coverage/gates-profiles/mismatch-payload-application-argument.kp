@@ -15,4 +15,4 @@ let f n = n
 
 let app = f True --!! E_APPLICATION_ARGUMENT_MISMATCH
 
--- STATUS(a51e1bf): FAIL — E_APPLICATION_ARGUMENT_MISMATCH payload is kind 'none'; no expected/actual payload although both sides are available
+-- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH payload is kind 'none'; no expected/actual payload although both sides are available

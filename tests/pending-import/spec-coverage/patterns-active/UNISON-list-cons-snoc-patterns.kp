@@ -1,0 +1,38 @@
+-- Source issue: UNISON#467 (resolves UNISON#266) — Pattern matching on sequences
+-- Spec: §17.2.1 (constructor patterns), §28.1 (prelude List and Option).
+-- Kappa list patterns admit head-cons patterns `h :: t` and empty `Nil`.
+-- Nested head-cons patterns express prefix matching of arbitrary length.
+-- `:+` snoc and `++` concat forms are source-specific and not portable to Kappa.
+-- This fixture tests:
+--   * head-cons binding;
+--   * empty-list matching;
+--   * skip-n-elements via nested head-cons.
+
+--! mode check
+
+-- POSITIVE: head-cons binding via `::`.
+let head_and_rest (xs : List Int) : Int =
+    match xs
+    case h :: _ -> h
+    case Nil    -> 0
+
+--! assertNoErrors
+
+-- POSITIVE: literal prefix match — the first three elements are bound
+-- and the remaining tail is discarded.
+let first_three (xs : List Int) : Option (Int, Int, Int) =
+    match xs
+    case a :: b :: c :: _ -> Some (a, b, c)
+    case _                -> None
+
+--! assertNoErrors
+
+-- POSITIVE: skip the first two elements using nested head-cons.
+let drop_two (xs : List Int) : List Int =
+    match xs
+    case _ :: _ :: tail -> tail
+    case whole          -> whole
+
+--! assertNoErrors
+
+-- STATUS(a0497523): PASS

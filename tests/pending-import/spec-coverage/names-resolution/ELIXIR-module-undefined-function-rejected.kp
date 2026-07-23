@@ -1,0 +1,45 @@
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- Source issues: kernel/errors_test.exs "undefined function"
+--   ("undefined function bar/0 (expected ... to define such a function or for it to be
+--    imported, but none are available)"), "undefined variables", ELIXIR-PR-12272
+-- Spec: §7.1 (ordinary lexical lookup; an identifier that resolves in no
+--       scope is unresolved), §3.2.2 (kappa.name.unresolved covers
+--       identifiers, module paths, and qualified names)
+-- Any reference to an unknown function, variable, or module path is
+-- kappa.name.unresolved; same-module calls resolve without imports.
+-- (The Elixir private-function half of the source test lives in
+-- modules-imports/ELIXIR-guard-defguardp-not-importable-outside/.)
+module main
+
+-- POSITIVE: functions calling other functions defined in the same module.
+double : Int -> Int
+let double n = n * 2
+
+addThree : Int -> Int
+let addThree n = n + 3
+
+roundTrip : Int -> Int
+let roundTrip n = double (addThree n)
+
+-- POSITIVE: prelude names resolve without explicit import.
+showIt : Int -> String
+let showIt n = showInt n
+
+-- NEGATIVE: `bar` is never defined anywhere in scope.
+callUndefined : Int -> Int
+let callUndefined n = bar n --!! kappa.name.unresolved
+
+-- NEGATIVE: reference to an undefined variable.
+useUndefinedVar : Int -> Int
+let useUndefinedVar n = n + unboundVar --!! kappa.name.unresolved
+
+-- NEGATIVE: qualified reference through a module that does not exist in
+-- this compilation unit.
+callUnimportedModule : Int -> Int
+let callUnimportedModule n = OtherModule.compute n --!! kappa.name.unresolved
+
+-- STATUS(a0497523): PASS

@@ -2,16 +2,18 @@
 --               issue #326 (infer the value of patched record fields),
 --               issue #387 (problem with patching and names),
 --               PR #274 (record patches), PR #327 (infer value of patched fields).
--- Spec: declarations.signatures (spec-gap COOLTT-SA-05)
+-- Spec: §11.1.2.8 (dependent Sigma types), §11.4.1
+--       (propositional equality), and §17.2.1 (tuple patterns).
 --
 -- Record patching fixes some fields of a record type at the type level.
 -- A patched record type `R # [field := val]` is a subtype of `R` whose
 -- elements agree with the patch on the named field. When constructing a
 -- value of a patched type, the fixed field may be omitted and inferred.
 --
--- In Kappa, this maps to subtype constraints on record fields. The closest
--- portable analogue is refinement types or dependent record types where
--- a field's value is constrained to a specific term.
+-- Kappa does not expose CoolTT's record-patch syntax. This portable test pins
+-- the specified dependent-pair/equality encoding instead: the value and its
+-- field-equality witness travel together, and an inconsistent witness is
+-- rejected.
 
 --! mode check
 

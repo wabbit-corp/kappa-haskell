@@ -1,0 +1,28 @@
+-- §3.1.14A: recovery MUST preserve enough surrounding source structure
+-- to support diagnostics for unaffected neighboring declarations.  A
+-- trailing '|' after the last constructor alternative is recovered by
+-- ending the data declaration and skipping the dangling token — the
+-- already-parsed alternatives survive, so 'Circle' and 'Square' remain
+-- usable both as values and in patterns and the three later
+-- declarations elaborate cleanly (no constructor-use cascade, §3.1.11).
+-- Pins the current good behavior: exactly one parse-recovery error.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED
+module main
+
+data Shape = Circle Int | Square Int |
+
+mk1 : Shape
+let mk1 = Circle 1
+
+mk2 : Shape
+let mk2 = Square 2
+
+area : Shape -> Int
+let area sh =
+    match sh
+      case Circle r -> r
+      case Square s -> s * s
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §28.2.1: branch refinement only helps in the branch that establishes
+-- the domain condition. Here division sits in the branch where the
+-- guard proves y == 0, so divDefined x y cannot be True and the
+-- implicit proof argument of (/) stays unsolved.
+module main
+
+bad : Int -> Int -> Int
+let bad x y =
+    if y == 0 then x / y else 0 --!! kappa.implicit.unsolved
+-- STATUS(a0497523): PASS

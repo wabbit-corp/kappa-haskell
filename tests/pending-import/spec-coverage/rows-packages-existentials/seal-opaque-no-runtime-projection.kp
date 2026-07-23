@@ -27,4 +27,4 @@ let tyUse (v : Vec pkg.n Byte) : Vec pkg.n Byte = v
 bad : Nat
 let bad = pkg.n --!! E_QTT_ERASED_RUNTIME_USE
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; projecting the opaque Nat member into a runtime value is not rejected
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; projecting the opaque Nat member into a runtime value is not rejected

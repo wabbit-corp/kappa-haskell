@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch DynamicType
+
+-- §24.4 portable exclusions: arbitrary function types are not required
+-- to be dynamically representable, so toDyn at Int -> Int has no
+-- implicit DynamicType evidence and MUST be rejected. (§3.2.14 assigns
+-- family kappa.dynamic.cast-representation to a missing dynamic
+-- representation; that family pin lives in
+-- spec-coverage/diag-families-2/dynamic-cast-representation-family.kp.)
+-- POSITIVE: generic packing with an explicitly supplied DynRep is fine.
+module main
+
+import std.gradual.*
+
+packWith : forall (@0 a : Type). DynRep a -> a -> Dyn
+let packWith rep x = toDynWith rep x
+
+increment : Int -> Int
+let increment n = n + 1
+
+-- NEGATIVE: no DynamicType (Int -> Int) exists.
+bad : Dyn
+let bad = toDyn increment
+
+-- STATUS(a0497523): PASS

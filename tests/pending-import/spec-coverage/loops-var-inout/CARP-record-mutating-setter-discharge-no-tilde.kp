@@ -1,0 +1,45 @@
+--! mode check
+--! assertErrorCount 1
+
+-- Source issues: carp-lang/Carp#481, #624 (companion of
+--   CARP-record-mutating-setter-discharge.kp)
+-- Spec: §18.9.3: "Every explicitly supplied parameter carrying InoutParam
+--       metadata must be written with `~`.  A surface call to an `inout`
+--       parameter without `~` is a compile-time error."
+-- The spec assigns no §3.2 family to this rejection (the reference
+-- implementation registers E_QTT_INOUT_MARKER_REQUIRED for it), so only the
+-- error count is asserted.
+module main
+
+data Buf : Type = Buf (n : Int)
+data Bag : Type = MkBag (1 item : Buf)
+
+consumeBuf : (1 b : Buf) -> Int
+let consumeBuf (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+consumeBag : (1 b : Bag) -> Int
+let consumeBag (1 b : Bag) : Int =
+    match b
+    case MkBag rest -> consumeBuf rest
+
+setItem : (inout b : Bag) -> (1 v : Buf) -> UIO (1 b : Bag,)
+let setItem (inout b : Bag) (1 v : Buf) : UIO (1 b : Bag,) =
+    match b
+    case MkBag old ->
+        do
+            let _ = consumeBuf old
+            pure (b = MkBag v,)
+
+-- NEGATIVE: the explicit inout parameter is supplied WITHOUT `~`; §18.9.3
+-- makes this a compile-time error even though the ordinary linear shape of
+-- the elaborated callee would otherwise typecheck.
+badNoTilde : UIO Int
+let badNoTilde =
+    do
+        let 1 bag = MkBag (Buf 0)
+        let r <- setItem bag (Buf 1)
+        pure (consumeBag r.b)
+
+-- STATUS(a0497523): PASS

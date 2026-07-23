@@ -1,0 +1,4 @@
+module arithmetic
+
+plus : Int -> Int -> Int
+let plus x y = x + y

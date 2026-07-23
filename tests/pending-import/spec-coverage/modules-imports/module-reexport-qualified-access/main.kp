@@ -1,0 +1,17 @@
+module main
+
+-- §8.4/§7.5: after `export a as util` in b, the module binding `util`
+-- (declaration kind `module`) is part of b's export surface. Downstream:
+--   * `import b.(util)` imports the module binding by item, and
+--   * `import b` gives nested qualified access b.util.answer
+-- (§7.5 lists `module` among module-signature member facet kinds, and
+-- qualified access must agree with module-value projection).
+import b
+import b.(util)
+
+viaItem : Int
+let viaItem = util.answer
+
+viaNested : Int
+let viaNested = b.util.answer
+-- STATUS(a0497523): FAIL — module re-export is not implemented: `import b.(util)` gives E_IMPORT_ITEM_NOT_FOUND "module 'b' does not export 'util'" and b.util.answer gives E_NAME_UNRESOLVED "module 'b' has no exported member 'util'"; same for the unaliased `export a` form

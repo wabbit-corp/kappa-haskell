@@ -1,0 +1,4 @@
+module a
+
+time : Int
+let time = 1

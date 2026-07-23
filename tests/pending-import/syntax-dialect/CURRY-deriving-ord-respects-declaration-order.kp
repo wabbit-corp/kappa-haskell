@@ -14,7 +14,7 @@ module test
 
 data Color : Type =
     Red
-  | Blue
+    Blue
 
 derive Eq Color
 derive Show Color
@@ -37,7 +37,7 @@ let blueIsGreater = Blue > Red
 -- the outer constructor first.
 data List (a : Type) : Type =
     Nil
-  | Cons a (List a)
+    Cons a (List a)
 
 derive Eq (List a)
 derive Show (List a)
@@ -45,7 +45,7 @@ derive Ord (List a)
 
 data Tree (a : Type) : Type =
     Leaf a
-  | Node (List (Tree a))
+    Node (List (Tree a))
 
 derive Eq (Tree a)
 derive Show (Tree a)

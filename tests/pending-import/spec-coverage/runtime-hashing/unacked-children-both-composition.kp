@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "both-unhandled-child-defects\n"
+
+-- §32.2.4 / §32.2.12 / §32.2.3: when TWO attached children terminate with
+-- Failure (Fail _) and both exits are still unacknowledged at scope exit,
+-- the scope acquires one Defect (DefectInfo UnhandledChildFailure _) per
+-- child, combined with `Both` in child-creation order (the msg text is
+-- implementation-defined, so only the Both-of-two-UCF-defects shape is
+-- pinned here, not the order of the two operands).
+module main
+
+failA : IO String Int
+let failA = throwIO "boom-a"
+
+failB : IO String Int
+let failB = throwIO "boom-b"
+
+useScope : Scope -> UIO Int
+let useScope sc = do
+    let fa <- forkIn sc failA
+    let fb <- forkIn sc failB
+    let _ = fa
+    let _ = fb
+    -- let both children reach their (never-acknowledged) typed failures
+    sleepFor (millis 20)
+    ioPure 7
+
+classify : Cause Void -> IO Void String
+let classify c = match c
+    case Both (Defect (DefectInfo UnhandledChildFailure m1)) (Defect (DefectInfo UnhandledChildFailure m2)) -> ioPure "both-unhandled-child-defects"
+    case Both _ _ -> ioPure "both-but-wrong-operands"
+    case Defect (DefectInfo UnhandledChildFailure m) -> ioPure "single-defect-only"
+    case _ -> ioPure "cause:other"
+
+main : UIO Unit
+let main = do
+    let r <- catchIO (ioBind (sandbox (withScope useScope)) (\v -> ioPure "scope-succeeded")) classify
+    printlnString r
+-- STATUS(a0497523): FAIL — prints "scope-succeeded": scope exit ignores unacknowledged child Fail exits entirely (no UnhandledChildFailure defect is produced, so no Both composition either).

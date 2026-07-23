@@ -1,0 +1,32 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §31.1.2 refinement-aware boolean reduction: in a branch whose active
+-- refinement context proves b = True, `if b then t else f` reduces to t
+-- (and dually for False) — including after δ-unfolding a transparent
+-- type-level definition. Outside any branch no fact is available, so the
+-- same type stays neutral and the definition is rejected.
+module main
+
+PickT : Bool -> Type
+let PickT b = if b then Integer else String
+
+-- POSITIVE: if-form; then-branch proves b = True, so PickT b δ-unfolds
+-- and ι-reduces to Integer; else-branch dually to String
+pick : (b : Bool) -> PickT b
+let pick b =
+    if b then 1 else "no"
+
+-- POSITIVE: match-form boolean decision introduces the same facts
+pickM : (b : Bool) -> PickT b
+let pickM b =
+    match b
+    case True -> 2
+    case False -> "still no"
+
+-- NEGATIVE: no branch, no fact — PickT b is neutral and Integer does
+-- not convert to it
+bad : (b : Bool) -> PickT b
+let bad b = 3 --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a0497523): PASS

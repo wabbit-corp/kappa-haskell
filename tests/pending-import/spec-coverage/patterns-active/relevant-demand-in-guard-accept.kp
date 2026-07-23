@@ -1,0 +1,21 @@
+-- §17.1.10 (Spec L22331-L22365) + §17.1.9 (L22297-L22328) + §12.2.5:
+-- a `>=1` binder must be demanded on every checked completion path.
+-- A demand made inside a GUARD counts: the guard is evaluated at runtime
+-- whenever its pattern matches, so with an irrefutable first pattern the
+-- guard `m > x` demands x on every path that reaches case 1, and case 2's
+-- body demands x on the remaining paths. Every completion path demands x
+-- at least once, so this definition is well-typed and must be accepted.
+
+--! mode check
+--! assertNoErrors
+
+f : (>=1 x : Int) -> Int -> Int
+let f (>=1 x : Int) (n : Int) : Int =
+    match n
+    case m if m > x -> m
+    case m -> m + x
+
+-- STATUS(a0497523): FAIL — rejected with E_QTT_LINEAR_DROP
+-- (kappa.quantity.positive-lower-bound): guard usage is not credited to
+-- the guarded case's usage interval, so the checker believes the case-1
+-- path drops x.

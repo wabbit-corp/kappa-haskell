@@ -1,0 +1,28 @@
+module main
+
+-- §18.1.19/§18.1.21/§18.1.22 say the handled expression may be a `do`
+-- block written immediately after the effect label.  The worked example uses
+-- exactly this next-line layout.  Combine it with a scoped effect's canonical
+-- self label, two operation calls, and a deep resumption.
+
+answer : Int
+let answer =
+    block
+        scoped effect Ask =
+            ask : Unit -> Int
+
+        let handled : Eff <[ ]> Int =
+            deep handle Ask
+                do
+                    let x <- Ask.ask ()
+                    let y <- Ask.ask ()
+                    pure (x + y)
+            with
+                case return value -> pure value
+                case ask () k -> k 21
+
+        runPure handled
+
+--! mode check
+--! assertNoErrors
+--! assertEval answer 42

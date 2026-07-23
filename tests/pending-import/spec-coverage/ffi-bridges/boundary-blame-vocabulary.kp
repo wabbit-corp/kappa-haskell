@@ -1,0 +1,53 @@
+--! assertNoErrors
+--! assertEval defaultPrecisionName "conservative"
+--! assertEval blameMessage "boundary violated: demanded I32"
+
+-- §26.1.6 (boundary contracts and blame) + §3.2.14 payload vocabulary:
+-- BoundaryDirection {IntoKappa, OutOfKappa, LaterUse} and BoundaryPrecision
+-- {Exact, Conservative, Lossy} are closed three-constructor enumerations
+-- (pinned by defaultless exhaustive matches); a foreign boundary contract is
+-- Conservative unless stated otherwise; and a bridge failure corresponding
+-- to a gradual boundary violation MUST be convertible to CastBlame through
+-- std.bridge.bridgeFailureToCastBlame.
+module main
+
+import std.bridge.(type BoundaryDirection, ctor IntoKappa, ctor OutOfKappa, ctor LaterUse)
+import std.bridge.(type BoundaryPrecision, ctor Exact, ctor Conservative, ctor Lossy)
+import std.bridge.(type BridgeFailure, ctor MkBridgeFailure, term bridgeFailureToCastBlame)
+import std.gradual.(type CastBlame, ctor MkCastBlame)
+
+directionName : BoundaryDirection -> String
+let directionName d = match d
+    case IntoKappa -> "into-kappa"
+    case OutOfKappa -> "out-of-kappa"
+    case LaterUse -> "later-use"
+
+precisionName : BoundaryPrecision -> String
+let precisionName p = match p
+    case Exact -> "exact"
+    case Conservative -> "conservative"
+    case Lossy -> "lossy"
+
+-- §26.1.6: "Unless an overlay or trusted binding summary explicitly states
+-- otherwise, a foreign boundary contract is Conservative."
+defaultPrecision : BoundaryPrecision
+let defaultPrecision = Conservative
+
+defaultPrecisionName : String
+let defaultPrecisionName = precisionName defaultPrecision
+
+-- §26.1.6 failed-boundary payload: boundary identity, direction of failure,
+-- and the demanded exposed type.
+type BoundaryReport = (direction : BoundaryDirection, precision : BoundaryPrecision, demanded : String)
+
+intoReport : BoundaryReport
+let intoReport = (direction = IntoKappa, precision = defaultPrecision, demanded = "I32")
+
+blameOf : BridgeFailure -> String
+let blameOf f = match bridgeFailureToCastBlame f
+    case MkCastBlame message -> message
+
+blameMessage : String
+let blameMessage = blameOf (MkBridgeFailure "boundary violated: demanded I32")
+
+-- STATUS(a0497523): PASS

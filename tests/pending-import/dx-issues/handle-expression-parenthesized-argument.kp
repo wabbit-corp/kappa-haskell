@@ -1,0 +1,35 @@
+-- DX EXPECTATION (not necessarily spec-required): a `handle ... with
+-- case ...` expression should be usable as a parenthesized argument —
+-- `runPure (deep handle l comp with ...)` — or at minimum fail with a
+-- diagnostic naming the limitation. §18.1.18 treats handle as an
+-- expression form, and wrapping the natural eliminator runPure directly
+-- around it is the obvious way to write a fully-handled computation.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): with the open paren on the same
+-- line, the whole declaration is skipped with
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected '(' at start of
+-- declaration" (pointing at the argument paren, not at `handle`); with
+-- the paren on its own indented line, E_UNEXPECTED_INDENTATION "no block
+-- introducer or continuation context is active" plus a cascaded type
+-- mismatch. Neither diagnostic mentions handle/with or the layout rule
+-- that was violated. Only the named workaround (let handled = deep
+-- handle ...; runPure handled) parses. Related to the pinned
+-- parenthesized-do-argument issue, but a different construct and a
+-- different (worse) failure mode: the declaration is silently skipped.
+module main
+
+effect State =
+    1 get : Unit -> Int
+
+comp : Eff <[State : State]> Int
+let comp = State.get ()
+
+handled : Int
+let handled = runPure (deep handle State comp with
+    case return x -> pure x
+    case get _ k -> k 7)
+
+--! mode check
+--! assertNoErrors
+--! assertEval handled 7
+-- STATUS(a0497523): FAIL — E_RECOVERY_DECLARATION_SKIPPED "unexpected '(' at start of declaration" on the runPure line; the handled declaration is dropped entirely

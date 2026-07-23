@@ -1,0 +1,37 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "words:3\ncant:2\nsentences:2\nfirst:[Hi there. ]\nsigma:True\nsharp-s:True\nfold-vs-eq:True\n"
+
+-- §29.4 segmentation and case folding. `words`/`sentences` MUST use the UAX
+-- #29 default word/sentence boundary algorithms: "foo,bar baz" has the words
+-- foo/bar/baz (the comma is a boundary), "can't" is ONE word (Single_Quote is
+-- word-internal), and a sentence carries its trailing spaces. `caseFold` is
+-- full case folding: ς and Σ both fold to σ, and ß folds to "ss"; folding is
+-- an explicit operation while Eq String stays case-sensitive.
+module main
+
+import std.unicode.*
+
+wordList : String -> List String
+let wordList s = [for w in words s, yield w]
+
+sentenceList : String -> List String
+let sentenceList s = [for x in sentences s, yield x]
+
+firstOr : String -> List String -> String
+let firstOr dflt xs =
+    match xs
+    case w :: _ -> w
+    case Nil -> dflt
+
+main : UIO Unit
+let main = do
+    printlnString ("words:" ++ showInt (listLength (wordList "foo,bar baz")))
+    printlnString ("cant:" ++ showInt (listLength (wordList "can't stop")))
+    let ss = sentenceList "Hi there. Bye."
+    printlnString ("sentences:" ++ showInt (listLength ss))
+    printlnString ("first:[" ++ firstOr "?" ss ++ "]")
+    printlnString ("sigma:" ++ (if caseFold FullCaseFold "\u{03C2}" == caseFold FullCaseFold "\u{03A3}" then "True" else "False"))
+    printlnString ("sharp-s:" ++ (if caseFold FullCaseFold "stra\u{00DF}e" == "strasse" then "True" else "False"))
+    printlnString ("fold-vs-eq:" ++ (if ("A" == "a") then "False" else (if caseFold FullCaseFold "A" == caseFold FullCaseFold "a" then "True" else "False")))
+-- STATUS(a0497523): FAIL — the compiler's `words` is a documented whitespace approximation ("foo,bar baz" gives 2 words, not the UAX#29 3) and `sentences` drops the trailing space ("Hi there." instead of "Hi there. "); all caseFold assertions (final sigma, full-fold ß->ss, fold-vs-Eq) already pass

@@ -1,0 +1,8 @@
+module lib
+
+-- Same-spelling data family: type facet `Pair` + ctor facet `Pair`.
+data Pair : Type =
+    Pair (a : Int) (b : Int)
+
+trait Sum (t : Type) =
+    total : t -> Int

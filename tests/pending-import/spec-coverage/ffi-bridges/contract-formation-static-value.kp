@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.12 + §26.1.13 + §26.1.15: a BridgeContract surface is opaque in the
+-- portable std.bridge API and supplied here through the implementation's
+-- documented contract-builder facility via BridgeBindable; it is
+-- elaboration-time information usable as an ordinary top-level value with no
+-- hidden runtime bridge state. A higher-order member gets contract-specified
+-- deep monitoring (§26.1.13), and a member whose monitoring is unavailable
+-- must fall back to std.gradual.Dyn or a less precise member type.
+module main
+
+import std.bridge.(trait BridgeBindable, term bridgeContract)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure)
+import std.gradual.(type Dyn)
+
+-- One precise deep-monitored higher-order member, and one unmonitorable
+-- legacy member exposed at the Dyn fallback precision (§26.1.13).
+type Plotter (r : Region) : Type =
+    ( plot : (Int -> Int) -> IO BridgeFailure Unit,
+      legacyCallback : Dyn )
+
+instance BridgeBindable Plotter =
+    let bridgeContract = MkBridgeContract "plot: deep-monitored; legacyCallback: unmonitored, exposed as Dyn"
+
+-- §26.1.15: the contract for a surface is retrievable as an ordinary value
+-- at elaboration time — no runtime bridge handle involved.
+plotterContract : BridgeContract Plotter
+let plotterContract = bridgeContract
+
+-- STATUS(a0497523): PASS

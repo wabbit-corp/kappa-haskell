@@ -1,0 +1,45 @@
+-- §16.2.1 + §16.2.2 (positive lower-bound capture): uses inside a closure
+-- or thunk are delayed; a >=1 obligation is discharged only if the closure
+-- or suspension is itself demanded often enough. Passing the closure or
+-- thunk to an ω parameter does not discharge (the callee may ignore it),
+-- and per §16.2.1 "Returning ... a closure whose only use of x is delayed
+-- does not discharge x's positive lower-bound obligation".
+module main
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+callAnyTimes : (ω k : Unit -> Int) -> Int
+let callAnyTimes k = k () + k ()
+
+anyThunk : (ω t : Thunk Int) -> Int
+let anyThunk t = 0
+
+-- POSITIVE: a direct call demands the closure once, discharging x.
+okOneShot : (>=1 x : Int) -> Int
+let okOneShot (>=1 x : Int) : Int =
+    let f = \() -> strictId x
+    in f ()
+
+-- NEGATIVE: an ω higher-order parameter imposes only [0,ω] demand on the
+-- closure, so the captured >=1 obligation is not discharged.
+hofBad : (>=1 x : Int) -> Int
+let hofBad (>=1 x : Int) : Int = --!! E_QTT_LINEAR_DROP
+    callAnyTimes (\() -> strictId x)
+
+-- NEGATIVE: a thunk passed to an ω parameter likewise defers the demand
+-- without ever imposing it.
+thunkBad : (>=1 x : Int) -> Int
+let thunkBad (>=1 x : Int) : Int = --!! E_QTT_LINEAR_DROP
+    anyThunk (thunk (strictId x))
+
+-- NEGATIVE: returning the closure does not discharge the obligation; the
+-- plain function-result type imposes no demand on the closure value.
+escapeUndemanded : (>=1 x : Int) -> (Unit -> Int)
+let escapeUndemanded (>=1 x : Int) : Unit -> Int = --!! E_QTT_LINEAR_DROP
+    \() -> strictId x
+
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): FAIL — hofBad and thunkBad are correctly rejected, but the compiler accepts escapeUndemanded (2 errors, not 3): returning a closure is treated as a demand that discharges the captured >=1 obligation, contrary to §16.2.1 "returning ... does not discharge".

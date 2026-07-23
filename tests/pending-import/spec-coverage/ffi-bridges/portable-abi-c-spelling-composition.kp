@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.1 + §26.2 (C/native ABI spelling types): the std.ffi.c spellings are
+-- PortableAbi component types when the adapter pins the target ABI, so they
+-- must compose under the §26.1.1 grammar — inside closed records, Option,
+-- and Result — and coexist with the exact-width std.ffi scalars without any
+-- implicit identification of e.g. CLong with I64 (§26.2: no silent
+-- normalization of ABI spelling types to exact-width types).
+module main
+
+import std.ffi.(type I64, type RawPtr)
+import std.ffi.c.(type CChar, type CInt, type CUInt, type CLong)
+import std.ffi.c.(type CSize, type CPtrdiff, type CBool)
+
+data StatBuf : Type =
+    MkStatBuf (size : CSize) (mode : CUInt) (mtime : CLong)
+
+readStat : RawPtr -> Option StatBuf
+let readStat _ = None
+
+spanOf : CPtrdiff -> CSize -> Result CInt CSize
+let spanOf _ n = Ok n
+
+flagOf : CBool -> Option CChar
+let flagOf _ = None
+
+-- CLong and I64 remain distinct nominal spellings: a conversion is an
+-- explicit library operation, never an implicit re-typing.
+widenExplicitly : (CLong -> I64) -> CLong -> I64
+let widenExplicitly convert v = convert v
+
+-- STATUS(a0497523): PASS

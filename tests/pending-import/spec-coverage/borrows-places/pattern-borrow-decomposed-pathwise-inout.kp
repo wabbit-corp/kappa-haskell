@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.4: "Borrowing through a record pattern is decomposed pathwise.
+-- For example, `let & (x = bx, y = by) = r` introduces borrows of r.x
+-- and r.y, not one undifferentiated borrow of all of r". Here the
+-- pattern borrows ONLY p.left, so the sibling place p.right is
+-- unlocked and `bump ~p.right` (disjoint footprint, §18.9.3/§12.4)
+-- must be accepted. (Baseline: the same partial pattern borrow with no
+-- inout call, and `bump ~p.right` under a plain `let & bl = p.left`
+-- borrow, are both accepted today.)
+module main
+
+type Pair = (left : Int, right : Int)
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+bump : (inout v : Int) -> UIO (1 v : Int,)
+let bump (inout v : Int) : UIO (1 v : Int,) =
+    pure (v = v,)
+
+ok : (1 p : Pair) -> UIO Int
+let ok (1 p : Pair) : UIO Int =
+    do
+        let & (left = bl) = p
+        bump ~p.right
+        pure (observe bl)
+
+-- STATUS(a0497523): FAIL — 1 error: E_QTT_BORROW_OVERLAP on `bump ~p.right`; the partial-pattern borrow `let & (left = bl) = p` locks the WHOLE record instead of decomposing pathwise to p.left only (the plain `let & bl = p.left` form of the same program is accepted).

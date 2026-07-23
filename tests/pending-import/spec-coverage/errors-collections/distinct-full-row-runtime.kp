@@ -1,0 +1,24 @@
+-- §20.6.3: bare `distinct` deduplicates on the FULL current quantitative row
+-- record Row(Ξ) — every binding in scope at the clause site — keeping the
+-- first encountered representative on an Ordered pipeline. Rows (1,10) and
+-- (1,10) collapse; (2,20) survives: (1+10) + (2+20) = 33.
+--! mode run
+--! assertNoErrors
+--! assertEval dedup 33
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+dedup : Int
+let dedup =
+    sumList [
+        for a in [1, 1, 2]
+        let b = a * 10
+        distinct
+        yield a + b
+    ]
+-- STATUS(a0497523): PASS

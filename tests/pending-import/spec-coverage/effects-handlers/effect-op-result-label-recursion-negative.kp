@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §18.1.15: an operation may not perform the effect it declares — its
+-- declared RESULT type must not mention the handled effect label
+-- (Evil below is rejected; the current compiler rejects via
+-- E_NAME_UNRESOLVED because the self label is not in scope inside the
+-- declaration, the spec implies an effect-family diagnostic).  The
+-- restriction forbids ONLY the same handled label: result types
+-- mentioning a different label (Outer.fetch) or an abstract quantified
+-- EffRow (Gen.gen) are well-formed and produce no diagnostics.
+module main
+
+effect Aux =
+    1 ping : Unit -> Int
+
+effect Evil =
+    1 spawn : Unit -> Eff <[Evil : Evil]> Int
+
+effect Outer =
+    1 fetch : Unit -> Eff <[Aux : Aux]> Int
+
+effect Gen =
+    1 gen : forall (r : EffRow). Unit -> Eff r Int
+
+ok : Int
+let ok = 1
+-- STATUS(a0497523): PASS

@@ -31,4 +31,4 @@ shrink :
 let shrink (f : ((Unit -> Int) captures (s, t))) : ((Unit -> Int) captures (s)) =
     f --!! kappa.capture.mismatch
 
--- STATUS(a51e1bf): FAIL — kappa.capture.mismatch is not registered; the closure-inference negative is ACCEPTED with zero errors (missing region t not detected — soundness gap), and the value-level negative emits generic kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH). Positive half checks clean.
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.capture.mismatch' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1… [was FAIL in an earlier STATUS line]

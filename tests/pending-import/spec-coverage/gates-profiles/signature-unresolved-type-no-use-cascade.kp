@@ -1,0 +1,28 @@
+-- §3.1.11 root-cause suppression + unresolved-name consistency: one
+-- unknown type spelled in a signature is ONE root cause.  'NoSuchType'
+-- appears textually twice (signature line and definition's return
+-- annotation) and 'f' is then used by three later definitions; none of
+-- that may fan out into per-occurrence or per-use diagnostics
+-- ("repeated textual occurrences MUST NOT be treated as unrelated fresh
+-- unknowns", and downstream consequences of the one malformed binding
+-- SHOULD be suppressed).  Pins the current good behavior: exactly one
+-- E_NAME_UNRESOLVED, carrying the §3.2.2 name payload.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticPayload error E_NAME_UNRESOLVED /payload/name NoSuchType
+module main
+
+f : (x : Int) -> NoSuchType
+let f (x : Int) : NoSuchType = x
+
+use1 : Int
+let use1 = f 1
+
+use2 : Int
+let use2 = f 2
+
+use3 : Int
+let use3 = f use1
+
+-- STATUS(a0497523): PASS

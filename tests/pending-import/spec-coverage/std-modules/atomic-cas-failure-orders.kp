@@ -1,0 +1,43 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "fail-relaxed:7\nfail-acquire:7\nfail-seqcst:7\nunchanged:7\nsuccess-old:7\nfinal:99\n"
+
+-- §29.1 compare-exchange: on failure the cell is left unchanged and
+-- `NotExchanged current` is returned under EVERY CasFailureOrder (the
+-- failure order is load-like only — it can never modify or publish), and
+-- on success `Exchanged old` is returned with the success order applied.
+module main
+
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst, ctor RmwRelease)
+import std.atomic.(ctor CasFailRelaxed, ctor CasFailAcquire, ctor CasFailSeqCst)
+import std.atomic.(ctor Exchanged, ctor NotExchanged)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicCompareExchange)
+
+failWitness : String -> CompareExchangeResult Int -> String
+let failWitness label result =
+    match result
+    case NotExchanged current -> label ++ ":" ++ showInt current
+    case Exchanged _ -> label ++ ":wrongly-exchanged"
+
+main : UIO Unit
+let main = do
+    let cell <- newAtomicRef 7
+    -- expected 0 never matches the stored 7: all three failure orders
+    -- must report the same witnessed current value and leave 7 in place.
+    let r1 <- atomicCompareExchange RmwSeqCst CasFailRelaxed cell 0 91
+    let r2 <- atomicCompareExchange RmwSeqCst CasFailAcquire cell 0 92
+    let r3 <- atomicCompareExchange RmwSeqCst CasFailSeqCst cell 0 93
+    printlnString (failWitness "fail-relaxed" r1)
+    printlnString (failWitness "fail-acquire" r2)
+    printlnString (failWitness "fail-seqcst" r3)
+    let unchanged <- atomicLoad LoadSeqCst cell
+    printlnString ("unchanged:" ++ showInt unchanged)
+    -- success path: release success order paired with an acquire failure
+    -- order (the classic pairing) must exchange and report the old value.
+    let r4 <- atomicCompareExchange RmwRelease CasFailAcquire cell 7 99
+    match r4
+      case Exchanged old -> printlnString ("success-old:" ++ showInt old)
+      case NotExchanged _ -> printlnString "success-old:wrongly-failed"
+    let final <- atomicLoad LoadSeqCst cell
+    printlnString ("final:" ++ showInt final)
+-- STATUS(a0497523): FAIL — test bug, not a compiler gap: the type annotation on failWitness references CompareExchangeResult but the import list never imports the type (E_NAME_UNRESOLVED at line 16); adding `import std.atomic.(type CompareExchangeResult)` should make it pass

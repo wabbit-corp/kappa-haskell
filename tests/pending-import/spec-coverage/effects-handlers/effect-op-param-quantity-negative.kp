@@ -25,3 +25,4 @@ let bad : Int =
                 case consume x k -> k (addInt x x)
 
         runPure handled
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): the quantity-1 annotation on the operation-signature binder is not enforced on the handler-clause binder x.

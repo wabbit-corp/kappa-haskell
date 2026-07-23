@@ -1,0 +1,34 @@
+-- Stress test: GADT constructor with forall-quantified erased implicit; inferred at application sites
+-- Spec: §10.2 (GADT constructors), §12.1-§12.2 (erased parameters),
+--       §17.1.1 (GADT branch refinement).
+
+--! mode check
+
+data Pair (0 a : Type) (0 b : Type) : Type =
+    MkPair : a -> b -> Pair a b
+
+-- Propositional equality as a GADT; erased implicit x inferred from application context.
+data Eq (0 a : Type) (0 x : a) (0 y : a) : Type =
+    Refl : forall (@0 x : a). Eq a x x
+
+-- Construct Refl for a known element; erased x is inferred from the return type.
+eqInt : Eq Int 42 42
+let eqInt = Refl
+
+eqBool : Eq Bool True True
+let eqBool = Refl
+
+-- cong: if x = y then f x = f y.  Erased implicit in Refl inferred at both uses.
+cong : forall (a : Type) (b : Type) (x : a) (y : a). (f : a -> b) -> Eq a x y -> Eq b (f x) (f y)
+let cong f pf = match pf
+  case Refl -> Refl
+
+-- trans: transitivity; erased implicits inferred at each Refl.
+trans : forall (a : Type) (x : a) (y : a) (z : a). Eq a x y -> Eq a y z -> Eq a x z
+let trans p q = match p
+  case Refl -> match q
+    case Refl -> Refl
+
+--! assertNoErrors
+
+-- STATUS(a0497523): FAIL (GADT equality refinement is unavailable in branch bodies)

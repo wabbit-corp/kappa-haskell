@@ -1,0 +1,21 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §16.1.1 (L19344-19351): the right-hand side of ?. is restricted to
+-- member-access forms; module qualification, static member selection,
+-- projection sections, and record patch forms "are not reachable
+-- through ?.". Record patch and row extension have distinct spellings
+-- after ?., and both must be rejected at the surface grammar.
+module main
+
+type Cell = (value : Int,)
+
+-- NEGATIVE: record patch is not reachable through ?.
+badPatch : Option Cell -> Option Cell
+let badPatch (o : Option Cell) : Option Cell = o?.{ value = 1 } --!! E_RECOVERY_DECLARATION_SKIPPED
+
+-- NEGATIVE: row extension is not reachable through ?.
+badExtend : Option Cell -> Option (value : Int, extra : Int)
+let badExtend (o : Option Cell) : Option (value : Int, extra : Int) = o?.{ extra := 2 } --!! E_RECOVERY_DECLARATION_SKIPPED
+
+-- STATUS(a0497523): PASS

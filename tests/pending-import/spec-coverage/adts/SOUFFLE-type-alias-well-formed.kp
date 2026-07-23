@@ -1,0 +1,65 @@
+-- Source issues: souffle-lang/souffle tests/semantic/alias/alias.dl,
+--   tests/semantic/record_alias/record_alias.dl, tests/semantic/adt_alias/adt_alias.dl,
+--   souffle-lang #2398 (unexpected type error when aliasing record type).
+-- Spec: §10.3 type aliases (transparent definitional equality); §3.2.4
+--   (family kappa.type.mismatch).
+-- NOTE: overlaps with tests/conformance/data_types/data-types-type-aliases-positive.kp
+--   (alias transparency for projection/patching); this test pins constructor
+--   and match transparency through alias CHAINS plus the negative direction.
+-- Pins: `type A = B` is transparent — constructors, pattern matching, and
+-- recursion through the alias all work, including chained aliases; aliasing
+-- does not blur DISTINCT types, so mismatches through an alias still error.
+
+--! mode check
+
+module main
+
+data Node : Type =
+    End
+    Next Int Node
+
+type NodeAlias = Node
+
+-- POSITIVE: values of the alias type and the original type interchange.
+n1 : Node
+let n1 = Next 1 (Next 2 End)
+n2 : NodeAlias
+let n2 = Next 1 (Next 2 End)
+
+-- POSITIVE: a recursive function declared with the alias type matches the
+-- original constructors and accepts original-typed values.
+countAlias : NodeAlias -> Int
+let countAlias nd =
+    match nd
+    case End -> 0
+    case Next _ rest -> 1 + countAlias rest
+
+ok1 : Int
+let ok1 = countAlias n1
+ok2 : Int
+let ok2 = countAlias n2
+
+-- POSITIVE: chained aliases are transparent.
+type NodeAlias2 = NodeAlias
+
+n3 : NodeAlias2
+let n3 = End
+ok3 : Int
+let ok3 = countAlias n3
+
+-- POSITIVE: alias in a boolean-result elimination ("negation" context).
+notEnd : NodeAlias -> Bool
+let notEnd nd =
+    match nd
+    case End -> False
+    case Next _ _ -> True
+
+-- NEGATIVE: the alias is transparent, not permissive — a NodeAlias value
+-- where Bool is expected is still a type mismatch.
+wrongAlias : NodeAlias -> Bool
+let wrongAlias nd = nd    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1
+
+-- STATUS(a0497523): PASS

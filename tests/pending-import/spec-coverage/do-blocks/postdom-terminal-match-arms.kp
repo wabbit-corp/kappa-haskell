@@ -1,0 +1,27 @@
+-- §18.2.3/§18.8: a branch is terminal iff it cannot reach the following
+-- do-items with a Normal completion. An else-suite ending in a `match`
+-- whose arms ALL end in `return` is terminal, so the success fact
+-- `p is Box` post-dominates the conditional and licenses `p.value` in the
+-- final item. This file must check with no errors.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+viaMatch : Payload -> Payload -> UIO Int
+let viaMatch p q = do
+    if p is Box then pure () else do
+        match q
+        case Box v -> do
+            return v
+        case Empty -> do
+            return 0
+    pure (p.value)
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a0497523): FAIL — E_UNRESOLVED_MEMBER on p.value: an else-suite whose
+-- final item is a match with ALL arms ending in `return` is not recognized as
+-- terminal, so the `p is Box` success fact does not survive the conditional
+-- (nested if/return terminality IS recognized — see postdom-nested-terminal-facts).

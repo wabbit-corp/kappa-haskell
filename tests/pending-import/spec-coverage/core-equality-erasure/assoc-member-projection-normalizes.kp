@@ -1,0 +1,38 @@
+--! mode check
+--! assertNoErrors
+--! assertType result List Int
+
+-- §31.1.1 associated static-member projections: once the governing
+-- evidence is selected and the member is transparent, the projection
+-- normalizes — uniformly in type-signature position and term position —
+-- and the instance head is substituted into the member before the
+-- member body (here itself a transparent alias) unfolds.
+module main
+
+type Payload = List Int
+
+trait Store (a : Type) =
+    Content : Type
+    put : a -> Content
+
+instance Store Int =
+    let Content = Payload
+    let put x = x :: Nil
+
+-- type-signature position: d.Content for the selected instance must
+-- normalize through Content = Payload = List Int
+viaEvidence : (@d : Store Int) -> d.Content
+let viaEvidence (@d : Store Int) = d.put 4
+
+-- the projection normalized all the way to List Int, so the result may
+-- be consumed at the fully expanded type
+result : List Int
+let result = viaEvidence
+
+-- term position: projection from an explicitly summoned dictionary
+stored : List Int
+let stored =
+    let d = summon (Store Int)
+    d.put 3
+
+-- STATUS(a0497523): PASS

@@ -30,4 +30,4 @@ let okIntro = takeNeedS Shared
 badIntro : Unshared
 let badIntro = takeNeedU Unshared                        --!! kappa.implicit.unsolved
 
--- STATUS(a51e1bf): FAIL — compiler accepts the Need introduction for a non-Shareable payload (0 errors); the Shareable A obligation of §11.2 is not enforced
+-- STATUS(a0497523): FAIL — compiler accepts the Need introduction for a non-Shareable payload (0 errors); the Shareable A obligation of §11.2 is not enforced

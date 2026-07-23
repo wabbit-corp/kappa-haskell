@@ -1,0 +1,51 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.4 portable minimum: DynamicType instances for the primitive
+-- scalars (Unit, Bool, Int, String, Double, ...) and for Option/List
+-- (and nestings) when the argument types are representable. Each toDyn
+-- below demands the corresponding implicit instance (§24.9).
+module main
+
+import std.gradual.*
+
+dUnit : Dyn
+let dUnit = toDyn ()
+
+dBool : Dyn
+let dBool = toDyn True
+
+answer : Int
+let answer = 42
+
+dInt : Dyn
+let dInt = toDyn answer
+
+dStr : Dyn
+let dStr = toDyn "hello"
+
+almostPi : Double
+let almostPi = 3.14
+
+dDouble : Dyn
+let dDouble = toDyn almostPi
+
+opt : Option Int
+let opt = Some answer
+
+dOpt : Dyn
+let dOpt = toDyn opt
+
+xs : List Int
+let xs = [1, 2, 3]
+
+dList : Dyn
+let dList = toDyn xs
+
+nested : Option (List Int)
+let nested = Some xs
+
+dNested : Dyn
+let dNested = toDyn nested
+
+-- STATUS(a0497523): FAIL — std.gradual provides no DynamicType instances at all; every toDyn site reports E_UNSOLVED_IMPLICIT (8 errors).

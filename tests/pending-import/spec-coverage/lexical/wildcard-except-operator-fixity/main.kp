@@ -1,0 +1,16 @@
+module main
+
+-- §8.3/§8.3.1: `except` items admit operator nameRefs; the exclusion
+-- removes every imported declaration of that spelling after wildcard
+-- expansion. §5.5.2: "An unqualified fixity enters scope only if that
+-- operator itself is imported unqualified" — since (+++) is excluded,
+-- its exported fixity must NOT enter scope either, so infix use is
+-- rejected by §5.5.3 gating while the rest of the wildcard (ten) works.
+import lib.* except ((+++))
+
+keep : Int
+let keep = ten
+
+bad : Int
+let bad = 2 +++ 3 --!! E_OPERATOR_NO_FIXITY
+-- STATUS(a0497523): PASS — the excluded operator's name and fixity both stay out of scope (E_OPERATOR_NO_FIXITY plus a cascaded E_NAME_UNRESOLVED); other wildcard names import normally

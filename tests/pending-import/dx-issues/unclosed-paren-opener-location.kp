@@ -1,0 +1,33 @@
+-- DX EXPECTATION (not necessarily spec-required): the unclosed-delimiter
+-- diagnostic must tell the user WHERE the unmatched '(' was opened.
+--
+-- Inside brackets newlines are soft (§5.2), so one unclosed '(' swallows
+-- every later declaration and the error surfaces at end of input.  Today
+-- E_EXPECTED_SYNTAX_TOKEN carries: primary span at EOF, a label whose span
+-- is ALSO at EOF ("a '(' opened earlier has no matching closing
+-- delimiter"), empty related, payload kind "none".  No span anywhere
+-- points at the opening '(' (the one in `let broken = (ok1 + 1`) — in a long file the
+-- user must binary-search for the opener.  Rust anchors this diagnostic
+-- at the opener; GHC prints the opener position.  §3.1.11 span-anchoring
+-- and §3.1.14A recovery-node payload point the same direction without
+-- quite requiring it for this lex-stage diagnostic, hence a DX pin: the
+-- diagnostic should carry a related origin identifying the opening
+-- delimiter (role open-delimiter-site).
+--! mode check
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+--! assertDiagnosticRelated error E_EXPECTED_SYNTAX_TOKEN open-delimiter-site
+module main
+
+ok1 : Int
+let ok1 = 1
+
+broken : Int
+let broken = (ok1 + 1
+
+trailing1 : Int
+let trailing1 = 2
+
+trailing2 : Int
+let trailing2 = 3
+
+-- STATUS(a0497523): FAIL — unclosed-paren diagnostic carries no opener span anywhere (primary+label at EOF, related empty, payload kind none)

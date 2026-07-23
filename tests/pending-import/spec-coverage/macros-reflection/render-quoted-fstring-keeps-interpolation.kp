@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdoutContains "n"
+
+-- §21.10/§21.10.1 x §6.3.4: rendering quoted syntax MUST produce "a
+-- faithful raw form derived from ordinary Syntax" even when no output
+-- recovery succeeds. The quote below records the SURFACE prefixed
+-- string f"v=${n}" including its Interp fragment (that is what later
+-- splicing elaborates), so any faithful rendering must mention the
+-- interpolated expression `n` in some form - as `${n}`, or at minimum
+-- as the expanded show-application of n. This test asserts only that
+-- weakest necessary condition: the rendered text contains "n" at all.
+--
+-- The reference compiler renders it as `"v="` - the interpolation
+-- fragment is silently DROPPED from the rendering, which is not a
+-- faithful raw form (stdout today contains no "n").
+
+import std.deriving.shape.*
+
+n : Integer
+let n = 7
+
+rendered : String
+let rendered = $(do
+    let s <- renderSyntax '{ f"v=${n}" }
+    stringSyntax s)
+
+main : UIO Unit
+let main = do
+    printlnString rendered
+-- STATUS(a0497523): FAIL — renderSyntax renders the quoted f-string as just "v="; the Interp fragment is dropped and stdout contains no "n"

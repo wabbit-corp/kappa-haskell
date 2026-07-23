@@ -1,0 +1,33 @@
+-- §18.3.1 x §16.1.2: the immediate-application splice operand is the
+-- maximal APPLICATION spine only, so `!getOpt ?: 0` parses as
+-- `(!getOpt) ?: 0` — the infix elvis (precedence 2) is NOT pulled into the
+-- splice operand. (Were it included, getOpt would need type m (m Int) and
+-- this file would not typecheck.) And because ordinary surface sugar
+-- (elvis => match, §16.1.2) lowers BEFORE Lift_m and Lift_m sequences
+-- match arms branch-locally (§18.3.1), an effectful spliced elvis DEFAULT
+-- runs only on the None path, exactly once.
+module main
+
+getOpt : UIO (Option Int)
+let getOpt = ioPure (Some 5)
+
+loud : String -> Int -> UIO Int
+let loud tag n = do
+    printlnString tag
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let x = !getOpt ?: 0
+    printlnString (showInt x)
+    -- Some side: the spliced default must NOT run.
+    let a = Some 1 ?: !(loud "default-a" 10)
+    printlnString (showInt a)
+    -- None side: the spliced default runs exactly once.
+    let b = None ?: !(loud "default-b" 20)
+    printlnString (showInt b)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\n1\ndefault-b\n20\n"
+-- STATUS(a0497523): PASS

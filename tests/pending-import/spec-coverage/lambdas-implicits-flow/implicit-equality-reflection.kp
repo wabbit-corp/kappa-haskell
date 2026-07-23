@@ -1,0 +1,28 @@
+-- §16.3.3 step 4 (equality reflection from ==): a goal x = y with
+-- p : (x == y) = True in the implicit context and Eq A available is
+-- solved via Eq.eqSound x y p. Only Eq supports reflection — the
+-- compiler never synthesizes x = y from (x ~= y) = True (Equiv).
+module main
+
+-- POSITIVE: reflection through the resolved Eq Int dictionary.
+reflectFive : (n : Int) -> (@0 p : (n == 5) = True) -> n = 5
+let reflectFive n = witness
+
+data Color : Type =
+    Red
+    Green
+
+-- An Equiv instance with no underlying Eq: (~=) evidence must not reflect.
+instance Equiv Color =
+    let (~=) a b = True
+
+-- NEGATIVE: only Equiv evidence is available, so the propositional
+-- equality goal has no solution and the implicit goal must be reported
+-- unsolved.
+noReflect : (a : Color) -> (b : Color) -> (@0 p : (a ~= b) = True) -> a = b
+let noReflect a b = witness --!! E_UNSOLVED_IMPLICIT
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+-- STATUS(a0497523): FAIL — the compiler accepts noReflect (0 errors). Worse, implicit resolution solves ANY propositional-equality goal a = b via witness with no evidence at all (probed separately: (a : Color) -> (b : Color) -> a = b with empty context is accepted), an unsound over-acceptance that masks the Eq-only restriction of §16.3.3 step 4; the positive reflectFive therefore passes only vacuously.

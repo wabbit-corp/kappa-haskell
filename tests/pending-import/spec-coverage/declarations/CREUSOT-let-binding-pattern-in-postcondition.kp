@@ -1,0 +1,35 @@
+-- Source issues: CREUSOT-605, CREUSOT-911
+-- Spec: §9.1.2 (irrefutable patterns for let bindings), §9.3 (let-in
+--       bindings must use irrefutable underlying patterns)
+-- NOTE: overlaps with tests/conformance/spec-coverage/declarations/let-pattern-refutable-negative.kp
+-- Pins: a refutable pattern (constructor of a multi-constructor type)
+-- in a `let ... in` binding does not bind unconditionally and MUST be
+-- rejected (§9.1.2, last paragraph). The provable-single-constructor
+-- case may be treated as irrefutable and is accepted. (The original
+-- fixture placed the `let` inside a Creusot `ensures` clause; Kappa has
+-- no contract clauses, so the binding-position rule itself is pinned.)
+
+module main
+
+--! mode check
+
+data Two : Type =
+    TA (n : Int)
+    TB (m : Int)
+
+-- NEGATIVE: two-constructor scrutinee, constructor pattern in `let`.
+getA : Two -> Int
+let getA t =
+    let TA n = t in n                   --!! E_REFUTABLE_LET_PATTERN
+
+data One : Type =
+    MkOne (v : Int)
+
+-- POSITIVE: provably single-constructor scrutinee may destructure.
+getOne : One -> Int
+let getOne o =
+    let MkOne v = o in v
+
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_REFUTABLE_LET_PATTERN
+-- STATUS(a0497523): PASS

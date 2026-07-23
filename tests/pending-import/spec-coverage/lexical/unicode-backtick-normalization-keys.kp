@@ -23,4 +23,4 @@ let `café` = 42
 resolved : Int
 let resolved = `café`
 
--- STATUS(a51e1bf): FAIL — backtick lookup keys are raw source bytes, not NFKC strictNameKey: the decomposed reference is E_NAME_UNRESOLVED (the W_UNICODE_NON_NORMALIZED_SOURCE_TEXT hygiene warning itself IS emitted)
+-- STATUS(a0497523): FAIL — backtick lookup keys are raw source bytes, not NFKC strictNameKey: the decomposed reference is E_NAME_UNRESOLVED (the W_UNICODE_NON_NORMALIZED_SOURCE_TEXT hygiene warning itself IS emitted)

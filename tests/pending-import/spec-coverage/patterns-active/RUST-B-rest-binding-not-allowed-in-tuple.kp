@@ -1,0 +1,53 @@
+-- Source issue: rust#72574 (`@ ..` placement, slice > 50000)
+-- Spec: §17.2.1 ("Record-rest syntax applies only to anonymous record
+--       patterns. Tuple patterns do not gain a `..` form from this rule."),
+--       §3.2.10 (kappa.pattern.constructor-arity)
+-- Pins: the rest item `..` is valid only in anonymous record patterns.
+-- `..` (and `name @ ..`) inside a tuple pattern does not parse — tuples have
+-- exact arity, and `@` requires a real pattern on its right (the grammar
+-- rejection has no kappa.* family; it surfaces as a parse-recovery error).
+-- A constructor pattern with too few positional subpatterns is rejected
+-- with kappa.pattern.constructor-arity: no rest form absorbs the missing
+-- positions.
+
+--! mode check
+
+module main
+
+data Triple : Type =
+    MkTriple Int Int Int
+
+-- POSITIVE: full tuple pattern.
+fullTuple : (Int, Int, Int) -> Int
+let fullTuple p =
+    match p
+    case (a, b, c) -> a + b + c
+
+-- POSITIVE: rest pattern in an anonymous record pattern.
+projX : (x : Int, y : Int, z : Int) -> Int
+let projX p =
+    match p
+    case (x = a, ..) -> a
+
+-- NEGATIVE: `..` inside a tuple pattern is ill-formed (parse rejection).
+restInTuple : (Int, Int, Int) -> Int
+let restInTuple p =
+    match p
+    case (a, ..) -> a
+
+-- NEGATIVE: `name @ ..` inside a tuple pattern is the rust#72574 form;
+-- the rest item is not a pattern, so `@` has no valid right-hand side.
+namedRestInTuple : (Int, Int, Int) -> Int
+let namedRestInTuple p =
+    match p
+    case (a, rest @ ..) -> a
+
+-- NEGATIVE: constructor-pattern arity is fixed by the declaration.
+restInCtor : Triple -> Int
+let restInCtor t =
+    match t
+    case MkTriple a -> a    --!! E_PATTERN_CONSTRUCTOR_ARITY_MISMATCH
+
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+--! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED

@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §25.1: bridgeFailureToCastBlame : BridgeFailure -> std.gradual.CastBlame
+-- embeds bridge failures into the gradual blame vocabulary, so boundary
+-- outcomes (§26.1.6) can be reported uniformly as Result CastBlame a
+-- alongside checked-cast failures (§24.7).
+module main
+
+import std.bridge.(type BridgeFailure, term bridgeFailureToCastBlame)
+import std.gradual.(type CastBlame)
+
+convert : BridgeFailure -> CastBlame
+let convert f = bridgeFailureToCastBlame f
+
+-- §26.1.6 integration pattern: a bridge-shaped outcome re-expressed in
+-- the gradual blame vocabulary.
+normalize : forall (@0 a : Type). Result BridgeFailure a -> Result CastBlame a
+let normalize r =
+    match r
+    case Ok x -> Ok x
+    case Err f -> Err (bridgeFailureToCastBlame f)
+
+-- STATUS(a0497523): PASS

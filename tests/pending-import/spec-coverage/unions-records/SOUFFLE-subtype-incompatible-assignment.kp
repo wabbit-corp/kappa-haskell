@@ -1,0 +1,64 @@
+-- Source issues: souffle-lang/souffle tests/semantic/union_types/union_types.dl,
+--   tests/semantic/rule_typecompat/rule_typecompat.dl,
+--   souffle-lang #201 (union type failing when it expands to different primitive types),
+--   souffle-lang #832 (subtyping not checked — crash instead of error).
+-- Spec: §16.1.7.1 argument checking; §6.1.5 integer-literal domains
+--   (family kappa.type.literal-domain-mismatch); §13.1 union membership;
+--   §3.2.4 (family kappa.type.mismatch — §3.1 admits either the ordinary
+--   expected-versus-actual family or kappa.application.argument-mismatch
+--   for a mismatching argument, and this implementation reports a
+--   checked-argument application in the ordinary family).
+-- Pins: incompatible values are rejected at every surface Souffle's
+-- "argument type is not a subtype" covers — wrong data type as an argument,
+-- an integer literal against a type with no FromInteger witness, and a
+-- non-member value against a union type.
+
+--! mode check
+
+module main
+
+data NumberLike : Type =
+    NatVal Nat
+    IntVal Int
+
+data SymbolLike : Type =
+    StrVal String
+
+-- POSITIVE: function accepts exactly NumberLike.
+showNum : NumberLike -> String
+let showNum n =
+    match n
+    case NatVal x -> "nat"
+    case IntVal x -> "int"
+
+ok1 : String
+let ok1 = showNum (NatVal 3)
+ok2 : String
+let ok2 = showNum (IntVal 7)
+
+-- NEGATIVE: passing SymbolLike where NumberLike is expected.
+bad1 : String
+let bad1 = showNum (StrVal "x")    --!! kappa.type.mismatch
+
+-- NEGATIVE: an integer literal where NumberLike is expected; NumberLike has
+-- no FromInteger witness, so no literal domain admits it (§6.1.5).
+bad2 : String
+let bad2 = showNum 42    --!! kappa.type.literal-domain-mismatch
+
+-- POSITIVE: union-typed bindings via injection (§13.1.2).
+type NumOrSym = (| NumberLike | SymbolLike |)
+
+e1 : NumOrSym
+let e1 = (| NatVal 5 : NumberLike |)
+e2 : NumOrSym
+let e2 = (| StrVal "hi" : SymbolLike |)
+
+-- NEGATIVE: an Int value is not a member of NumOrSym.
+bad3 : NumOrSym
+let bad3 = 99    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 3
+
+-- STATUS(a0497523): PASS

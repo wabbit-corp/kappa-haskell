@@ -1,0 +1,32 @@
+-- §18.5 x §18.2.5: `return@L` may target only a named function/method
+-- named L or a lambda carrying label L — a DO-scope label named L is not a
+-- return target and does not block or shadow resolution. Two cases:
+--   * a nested statement do labeled `f` (same name as the enclosing
+--     function): return@f still exits the FUNCTION f;
+--   * inside a lambda labeled L, an inner do labeled L: return@L still
+--     exits the LAMBDA (the do label is invisible to return resolution).
+module main
+
+f : Option Int -> UIO Int
+let f opt = do
+    f@do
+        printlnString "in-f"
+        return@f 0
+    ioPure 1
+
+main : UIO Unit
+let main = do
+    let a <- f None
+    printlnString (showInt a)
+    let run = L@\ (u : Unit) -> do
+            L@do
+                printlnString "in-lambda"
+                return@L 5
+            ioPure 1
+    let r <- run ()
+    printlnString (showInt r)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "in-f\n0\nin-lambda\n5\n"
+-- STATUS(a0497523): PASS

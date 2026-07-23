@@ -1,0 +1,46 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "interrupted-after-commit\ncommitted:42\n"
+
+-- §32.2.9 × §32.2.5: once commit has begun, commit is uninterruptible; a
+-- masked pending interrupt (recorded, not delivered — §32.2.5) must not
+-- abort the transaction. The worker masks, handshakes so the interrupt
+-- request is definitely pending, commits t:=42 under the mask, and only
+-- observes the interrupt at the explicit poll after the masked region.
+-- The parent then reads 42, proving the commit survived the request.
+module main
+
+import std.prelude.(type Exit(..), type Cause(..), type InterruptCause(..), type InterruptTag(..))
+
+maskedPart : TVar Int -> Promise Void Unit -> Promise Void Unit -> (forall (x : Type). IO Void x -> IO Void x) -> UIO Unit
+let maskedPart t ready goAhead restore = do
+    let _ <- completePromise ready (Success ())
+    -- parent interrupts us (request pends: we are masked), then completes goAhead
+    let _ <- awaitPromise goAhead
+    atomically (writeTVar t 42)
+    ioPure ()
+
+worker : TVar Int -> Promise Void Unit -> Promise Void Unit -> UIO Int
+let worker t ready goAhead = do
+    mask (maskedPart t ready goAhead)
+    -- unmasked again: the pending interrupt is delivered here
+    poll
+    ioPure 0
+
+main : UIO Unit
+let main = do
+    let t <- atomically (newTVar 0)
+    let ready <- newPromise
+    let goAhead <- newPromise
+    let f <- fork (worker t ready goAhead)
+    let _ <- awaitPromise ready
+    interruptFork f
+    let _ <- completePromise goAhead (Success ())
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "worker-finished-uninterrupted"
+      case Failure (Interrupt (InterruptCause Requested by)) -> printlnString "interrupted-after-commit"
+      case Failure c -> printlnString "worker-other-cause"
+    let v <- atomically (readTVar t)
+    printlnString ("committed:" ++ showInt v)
+-- STATUS(a0497523): PASS

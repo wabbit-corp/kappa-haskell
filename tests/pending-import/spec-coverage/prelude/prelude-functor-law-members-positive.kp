@@ -1,0 +1,27 @@
+module main
+
+-- §14.1's canonical std.prelude Functor declaration includes mapId and
+-- mapComp as proof-valued dictionary members.  Merely testing operational
+-- `map` does not cover that required trait shape, so project both laws through
+-- explicitly named generic evidence.
+
+identityLaw :
+    forall (f : (0 A : Type) -> Type) (a : Type).
+    (@functor : Functor f) ->
+    (value : f a) ->
+    (=) (functor.map (\x -> x) value) value
+let identityLaw @functor value =
+    functor.mapId value
+
+compositionLaw :
+    forall (f : (0 A : Type) -> Type) (a : Type) (b : Type) (c : Type).
+    (@functor : Functor f) ->
+    (g : b -> c) ->
+    (h : a -> b) ->
+    (value : f a) ->
+    (=) (functor.map (\x -> g (h x)) value) (functor.map g (functor.map h value))
+let compositionLaw @functor g h value =
+    functor.mapComp g h value
+
+--! mode check
+--! assertNoErrors

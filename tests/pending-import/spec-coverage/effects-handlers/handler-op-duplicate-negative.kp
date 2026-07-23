@@ -25,3 +25,4 @@ let bad =
 
 result : Int
 let result = runPure bad
+-- STATUS(a0497523): HARNESS-ERROR — line 3: directive 'assertDiagnosticCodes': 'E_HANDLER_OP_DUPLICATE' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1) [was FAIL in an earlier STATUS line]

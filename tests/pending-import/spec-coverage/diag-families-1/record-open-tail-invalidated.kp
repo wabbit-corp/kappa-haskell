@@ -21,7 +21,7 @@ let addAge (@0 r : RecRow) (@_ : LacksRec r age) (rec : (name : String | r)) : (
     rec.{ age := 36 }
 
 -- POSITIVE: updating a closed record preserves no abstract tail.
-type Counter : Type = (count : Nat)
+type Counter : Type = (count : Nat,)
 
 bump : Counter -> Counter
 let bump (c : Counter) : Counter = c.{ count = 2 }
@@ -36,4 +36,4 @@ setLen :
 let setLen (@0 r : RecRow) (rec : (len : Nat | r)) (n : Nat) : (len : Nat | r) =
     rec.{ len = n } --!! E_RECORD_OPEN_TAIL_INVALIDATED
 
--- STATUS(a51e1bf): FAIL — family/alias not registered, and the compiler ACCEPTS the tail-preserving patch with zero errors: no StableUnderRecChange obligation is generated for the preserved residual row (soundness gap vs §13.2.5 L12985-12997). Positive halves check clean.
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnostic': 'E_RECORD_OPEN_TAIL_INVALIDATED' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5… [was FAIL in an earlier STATUS line]

@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertType y Int
+--! assertType z Rational
+--! assertEval y 42
+
+-- §6.1.5 × traits × defaulting: an unsuffixed integer literal fed to a
+-- function polymorphic over (Add a, FromInteger a) leaves the type
+-- undetermined; after inference completes on the declaration the
+-- literal's metavariable defaults to Int (integer literal → Int) and
+-- the trait constraints stay satisfiable at Int. When the RESULT type
+-- is demanded (z : Rational), context determines T = Rational, no
+-- defaulting occurs, and the literal elaborates through the prelude
+-- FromInteger Rational witness. Float literals reach Rational through
+-- FromFloat Rational the same way (half).
+module main
+
+twice : forall (a : Type). (@_ : Add a) -> (@_ : FromInteger a) -> a -> a
+let twice x = add x x
+
+let y = twice 21
+
+z : Rational
+let z = twice 21
+
+half : Rational
+let half = 0.5
+-- STATUS(a0497523): PASS

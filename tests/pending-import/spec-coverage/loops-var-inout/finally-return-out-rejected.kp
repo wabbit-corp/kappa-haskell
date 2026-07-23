@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §18.7 (restrictions) / §19.2 (restrictions): a `finally` clause is
+-- elaborated via `defer`, so abrupt control that targets any scope outside
+-- the finalizer itself — here `return 42` targeting the enclosing function —
+-- MUST be a compile-time error ("Attempting to jump out of a defer or
+-- finally block is a compile-time error").
+--
+-- Compiler gap at HEAD: the return-in-DEFER twin is rejected
+-- (E_DEFER_ABRUPT_CONTROL, do-blocks/return-in-defer-rejected.kp PASSes),
+-- but the same return inside a FINALLY clause is accepted, and at runtime
+-- the `return 42` is silently ignored (worker yields 7 on the normal path;
+-- on an error path the primary error propagates unchanged).
+module main
+
+worker : UIO Int
+let worker = do
+    try (printlnString "body")
+      finally -> do
+        printlnString "fin"
+        return 42 --!! E_DEFER_ABRUPT_CONTROL
+    pure 7
+
+main : UIO Unit
+let main = do
+    let r <- worker
+    printlnString (stringAppend "result:" (showInt r))
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): `return` inside a finally clause is not rejected (unlike the defer twin, E_DEFER_ABRUPT_CONTROL); at runtime the return is silently ignored on both normal and error paths.

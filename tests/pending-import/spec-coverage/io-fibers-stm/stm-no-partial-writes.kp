@@ -32,3 +32,4 @@ let main = do
       case Failure c -> printlnString "failed"
     let fin <- atomically (readTVar a)
     printlnString ("after-commit:" ++ showInt fin)
+-- STATUS(a0497523): FAIL — compiler gap: the parked retrying attempt's write is visible to other atomically executions (runs 'during-retry:99'); STM writes are applied in place with no attempt isolation, violating §18.1.13.

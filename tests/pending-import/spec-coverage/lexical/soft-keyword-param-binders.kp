@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+-- §5.2: keywords are soft — "implementations must permit their use as
+-- ordinary identifiers in contexts where a keyword is not syntactically
+-- expected".  A bare function-parameter position admits only binders,
+-- never a match/case/do expression or clause, so these spellings must
+-- bind like any identifier (the same position already accepts the
+-- keyword 'effect': `let addEffect effect = ...` parses today).
+-- Currently each declaration below is skipped whole with
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of
+-- declaration" — anchored at the declaration's own 'let' (column 1)
+-- rather than at the keyword-spelled parameter, so nothing points the
+-- user at the actual collision.
+module main
+
+applyM : (Integer -> Integer) -> Integer -> Integer
+let applyM match x = x
+
+applyC : (Integer -> Integer) -> Integer -> Integer
+let applyC case x = x
+
+applyD : (Integer -> Integer) -> Integer -> Integer
+let applyD do x = x
+-- STATUS(a0497523): FAIL — all three declarations skipped whole (E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let'" at col 1); match/case/do rejected as bare param binders while 'effect' is accepted there

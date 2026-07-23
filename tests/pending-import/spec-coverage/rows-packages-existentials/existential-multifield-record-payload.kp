@@ -31,4 +31,4 @@ let use =
     open pkg as exists (a). (tc = tc, value = v) in
         tc.pretty v
 
--- STATUS(a51e1bf): FAIL — witness binders are not in scope inside multi-field record payloads: each field type mentioning the witness gets E_NAME_UNRESOLVED (single-field payloads work)
+-- STATUS(a0497523): FAIL — witness binders are not in scope inside multi-field record payloads: each field type mentioning the witness gets E_NAME_UNRESOLVED (single-field payloads work)

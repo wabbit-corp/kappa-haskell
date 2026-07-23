@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "left-wins:1\nmarker-untouched:0\nright-after-retry:2\n"
+
+-- §32.2.9 / §18.1.13: transactional choice — `Alternative STM` is required,
+-- `<|>` runs its right operand ONLY when the left operand retries. When the
+-- left branch succeeds the right branch must not run (its writes must never
+-- become visible); when the left branch retries, the choice commits the
+-- right branch instead of parking the fiber.
+module main
+
+rightWrite : TVar Int -> STM Int
+let rightWrite marker = do
+    writeTVar marker 99
+    stmPure 2
+
+main : UIO Unit
+let main = do
+    let marker <- atomically (newTVar 0)
+    -- left succeeds: right operand must not run
+    let a <- atomically (stmPure 1 <|> rightWrite marker)
+    printlnString ("left-wins:" ++ showInt a)
+    let m <- atomically (readTVar marker)
+    printlnString ("marker-untouched:" ++ showInt m)
+    -- left retries: right operand runs and commits
+    let clean <- atomically (newTVar 0)
+    let b <- atomically (retry <|> rightWrite clean)
+    printlnString ("right-after-retry:" ++ showInt b)
+-- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT: the prelude declares the Alternative trait but provides no `Alternative STM` instance, so the §18.1.13-required transactional choice (`<|>` / orElse) is not implemented.

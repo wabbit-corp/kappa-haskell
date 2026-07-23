@@ -1,0 +1,13 @@
+-- §35.13/§35.8: a well-formed portable manifest — helper bindings feed
+-- config-safe prefixed strings (the §35.8 worked example shape:
+-- majorVersion -> version -> dependency coordinate), saturated calls to
+-- the std.build schema vocabulary describe intentions only, and exactly
+-- one buildConfig : BuildConfig binding is produced. No build resolution
+-- or external discovery happens during evaluation (§35.6/§35.13).
+-- Staged until a harness evaluates kappa.build.kp in config-expression
+-- mode (buildManifest capability).
+--! mode check
+--! requires capability buildManifest
+--! assertNoErrors
+
+-- STATUS(a0497523): UNSUPPORTED — buildManifest capability not provided; kappa build --manifest --check accepts this manifest and reports the resolved package description

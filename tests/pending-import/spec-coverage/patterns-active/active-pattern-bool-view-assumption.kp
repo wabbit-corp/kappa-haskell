@@ -1,0 +1,35 @@
+-- Combination: §17.3.5 total active pattern returning Bool + §17.1.6.
+-- Grouped total-view elaboration matches the Bool view value IsPos n once
+-- against the literal subpatterns, so the True branch is checked under
+-- @p : IsPos n = True. Since IsPos unfolds to isPos (§17.3.1: an ordinary
+-- pure function), that assumption proves (=) (isPos n) True — and only in
+-- the True branch.
+
+--! mode check
+
+isPos : Int -> Bool
+let isPos n = ltInt 0 n
+
+pattern IsPos (n : Int) : Bool = isPos n
+
+-- POSITIVE: the True subpattern's branch holds the boolean assumption.
+prove : (n : Int) -> Option ((=) (isPos n) True)
+let prove n =
+    match n
+    case IsPos (True) -> Some refl
+    case IsPos (False) -> None
+
+-- NEGATIVE: the False branch assumption is isPos n = False; refl cannot
+-- inhabit (=) (isPos n) True there.
+bad : (n : Int) -> Option ((=) (isPos n) True)
+let bad n =
+    match n
+    case IsPos (True) -> Some refl
+    case IsPos (False) -> Some refl
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a0497523): FAIL — all three refl sites get E_APPLICATION_ARGUMENT_MISMATCH: the §17.1.6 assumption is only
+-- introduced for VARIABLE scrutinees, so the elaborated view application (isPos n) never yields @p : isPos n = True
+-- (a direct `match isPos n` fails identically; also, a pattern-decl name like IsPos does not resolve in type position).

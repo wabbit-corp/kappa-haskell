@@ -1,0 +1,24 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-expression
+--! x-configSchemaScope std.config std.build
+--! x-configInput host "localhost"
+--! x-configInput port 8080
+--! assertNoErrors
+
+-- §35.4: external inputs are explicit, typed, and provenance-marked:
+-- ConfigInputKey : (0 A : Type) -> Type with
+-- input : forall (a : Type). ConfigInputKey a -> a in the schema scope.
+-- `input key` succeeds only when the loader supplies a value of the
+-- corresponding type for the key; the evaluator itself must not read
+-- environment/files/network directly (§35.6).
+-- Staged until a harness provides the configMode capability and a
+-- loader-input surface (modeled here as x-configInput).
+
+let hostKey : ConfigInputKey String = configInput "host"
+let host : String = input hostKey
+let portKey : ConfigInputKey Int = configInput "port"
+let port = input portKey
+let endpoint = f"$host:$port"
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; manifest-checker cross-check: ConfigInputKey/configInput resolve, but the §35.4 standard form input is not in the schema scope (unimplemented)

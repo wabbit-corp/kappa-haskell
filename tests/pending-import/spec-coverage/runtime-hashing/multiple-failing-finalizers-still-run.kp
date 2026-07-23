@@ -1,0 +1,34 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "finalizers-composed-in-run-order\n"
+
+-- §32.2.12: a failing exit action does not cancel the remaining ones —
+-- every registered defer runs, and cleanup causes contribute sequentially
+-- in the masked LIFO order in which the finalizers run (defer 9 registered
+-- last runs first, then defer 8). The spec does not fix the associativity
+-- of the sequential Then chain, so both nestings of
+-- body(7) / first-run(9) / second-run(8) are accepted; any composition
+-- placing 8 before 9 (or dropping a cause) is rejected.
+module main
+
+body : IO Int Int
+let body = do
+    defer (throwIO 8)
+    defer (throwIO 9)
+    throwIO 7
+
+classify : Cause Int -> IO Void String
+let classify c = match c
+    case Then (Fail 7) (Then (Fail 9) (Fail 8)) -> ioPure "finalizers-composed-in-run-order"
+    case Then (Then (Fail 7) (Fail 9)) (Fail 8) -> ioPure "finalizers-composed-in-run-order"
+    case Then (Fail 7) (Then (Fail 8) (Fail 9)) -> ioPure "wrong-order"
+    case Then (Then (Fail 7) (Fail 8)) (Fail 9) -> ioPure "wrong-order"
+    case Then (Fail 7) (Fail 9) -> ioPure "second-finalizer-lost"
+    case Then (Fail 7) (Fail 8) -> ioPure "first-finalizer-lost"
+    case _ -> ioPure "cause:other"
+
+main : UIO Unit
+let main = do
+    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "succeeded")) classify
+    printlnString r
+-- STATUS(a0497523): PASS

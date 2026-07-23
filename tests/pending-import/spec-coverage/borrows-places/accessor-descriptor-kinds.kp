@@ -10,7 +10,7 @@
 -- Projector.
 module main
 
-type Cell = (value : Int)
+type Cell = (value : Int,)
 
 consumeInt : (1 x : Int) -> Int
 let consumeInt (1 x : Int) : Int = x
@@ -45,4 +45,4 @@ notAProjector : Unit -> Projector (this : Cell,) Int
 let notAProjector () : Projector (this : Cell,) Int =
     readOnly --!! E_TYPE_EQUALITY_MISMATCH
 
--- STATUS(a51e1bf): FAIL — accessor bundles are not assigned the §12.4.3 first-class descriptor types: binding readOnly/sinkOnly at Getter/Sinker (this : Cell,) Int is E_TYPE_EQUALITY_MISMATCH (bare `Getter Cell Int` also mismatches), so descriptors cannot be stored or returned; only the final Projector-mismatch line errors as specified.
+-- STATUS(a0497523): FAIL — accessor bundles are not assigned the §12.4.3 first-class descriptor types: binding readOnly/sinkOnly at Getter/Sinker (this : Cell,) Int is E_TYPE_EQUALITY_MISMATCH (bare `Getter Cell Int` also mismatches), so descriptors cannot be stored or returned; only the final Projector-mismatch line errors as specified.

@@ -1,0 +1,62 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "opened\nbusy\n"
+
+-- §26.1.4 + §26.1.5: a raw native surface MAY expose status-code returns
+-- directly (backend-specific, in UIO — no typed error channel is invented
+-- from metadata alone), and the refined overlay names the error type and
+-- implements the documented status-code translation in Kappa source. A raw
+-- host failure is never treated as success (§26.1.5.1).
+module main
+
+import std.ffi.c.(type CInt, ctor MkCInt)
+
+-- Raw surface: UIO result, ABI status-code convention exposed as-is.
+open_raw : String -> UIO CInt
+let open_raw path =
+    if path == "/dev/null"
+    then ioPure (MkCInt 0)
+    else ioPure (MkCInt 16)
+
+data OpenError : Type =
+    DeviceBusy
+    UnknownStatus (code : Integer)
+
+-- UIO embeds into any IO e by discharging the uninhabited Void error.
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
+
+-- Overlay translation contract: 0 -> success, 16 (EBUSY) -> DeviceBusy,
+-- anything else -> UnknownStatus.
+statusToResult : CInt -> IO OpenError Unit
+let statusToResult status = match status
+    case MkCInt code ->
+        if code == 0 then ioPure ()
+        else if code == 16 then throwIO DeviceBusy
+        else throwIO (UnknownStatus code)
+
+openDevice : String -> IO OpenError Unit
+let openDevice path = do
+    let status <- weakenVoidIO (open_raw path)
+    statusToResult status
+
+reportOpenError : OpenError -> UIO Unit
+let reportOpenError e = match e
+    case DeviceBusy -> printlnString "busy"
+    case UnknownStatus code -> printlnString "unknown"
+
+openAndReport : String -> IO OpenError Unit
+let openAndReport path = do
+    openDevice path
+    printlnString "opened"
+
+tryOpen : String -> UIO Unit
+let tryOpen path = catchIO (openAndReport path) reportOpenError
+
+main : UIO Unit
+let main = do
+    tryOpen "/dev/null"
+    tryOpen "/dev/disk1"
+
+-- STATUS(a0497523): PASS

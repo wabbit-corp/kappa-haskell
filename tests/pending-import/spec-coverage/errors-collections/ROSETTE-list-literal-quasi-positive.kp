@@ -1,0 +1,61 @@
+-- Source issue: ROSETTE-47 (Quasiquote and length don't work well together),
+--                ROSETTE-131 (quasiquote and unquote-slicing's handling
+--                of symbolic list)
+-- Spec: §20.1 (built-in collection literals), §16.1 (application),
+--       §28.2 (prelude List, (::), Monoid append (++)).
+-- Pins: Kappa has no quasiquote — list construction uses the cons
+-- operator (::), list literals, and (++); a list built by consing onto
+-- any tail (including one produced by a function) is still a proper
+-- List a, and a recursive length is defined on it.
+
+--! mode check
+
+module main
+
+len : forall (a : Type). List a -> Int
+let len xs =
+    match xs
+    case Nil -> 0
+    case _ :: t -> 1 + len t
+
+-- POSITIVE: cons makes a proper list.
+prependFoo : List String -> List String
+let prependFoo xs = "foo" :: xs
+
+-- POSITIVE: length is defined on the result.
+prependLen : Int
+let prependLen = len (prependFoo ["bar"])
+
+-- POSITIVE: cons-and-append composition.
+glue : List Int -> List Int -> List Int
+let glue xs ys = 0 :: (xs ++ ys)
+
+-- POSITIVE: list literal with a tail supplied through a let binding.
+withTail : List Int -> List Int
+let withTail t =
+    let base = [1, 2, 3]
+    base ++ t
+
+-- POSITIVE: pattern matching on a cons-prepended list.
+firstSym : List String -> String
+let firstSym xs =
+    match xs
+    case Nil -> "empty"
+    case h :: _ -> h
+
+useFirstSym : String
+let useFirstSym = firstSym (prependFoo ["bar"])
+
+glueLen : Int
+let glueLen = len (glue [1, 2] [3, 4])
+
+tailLen : Int
+let tailLen = len (withTail [9])
+
+--! assertNoErrors
+--! assertEval prependLen 2
+--! assertEval useFirstSym "foo"
+--! assertEval glueLen 5
+--! assertEval tailLen 4
+
+-- STATUS(a0497523): PASS

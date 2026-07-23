@@ -1,0 +1,82 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestMaybeMonad.curry
+--   (doMaybe1 = do x <- return True ; Nothing ; y <- return 42 ; return (x,y);
+--    testDoMaybe1 = doMaybe1 -=- Nothing).
+-- Spec: §18.2 (`do` blocks: bind items and expression items desugar
+--       through the enclosing monad's `>>=`), §28.2 (prelude Option and
+--       its Monad/Applicative instances).
+--
+-- Pins: a `do` block over the Option monad short-circuits at the first
+-- None (Curry's Maybe/Nothing); with no None, binds thread through and
+-- the block commits to the final pure result.
+
+module test
+
+--! mode check
+
+-- POSITIVE: a None in the middle of a `do` block short-circuits; the
+-- later bind and the final pure result are never reached.
+shortCircuit : Option (Bool, Int)
+let shortCircuit =
+    do
+        let x <- Some True
+        let _ <- (None : Option Int)
+        let y <- Some 42
+        pureA (x, y)
+
+isNone : Option (Bool, Int) -> Bool
+let isNone o =
+    match o
+    case None -> True
+    case Some _ -> False
+
+sawNothing : Bool
+let sawNothing = isNone shortCircuit
+
+--! assertNoErrors
+--! assertType shortCircuit (Option (Bool, Int))
+--! assertEval sawNothing True
+
+-- POSITIVE: no None ⇒ the block produces Some of the paired result.
+threadsThrough : Option (Bool, Int)
+let threadsThrough =
+    do
+        let x <- Some True
+        let y <- Some 42
+        pureA (x, y)
+
+pairScore : Option (Bool, Int) -> Int
+let pairScore o =
+    match o
+    case None -> 0 - 1
+    case Some (b, n) -> if b then n else 0
+
+threadedScore : Int
+let threadedScore = pairScore threadsThrough
+
+--! assertNoErrors
+--! assertType threadsThrough (Option (Bool, Int))
+--! assertEval threadedScore 42
+
+-- POSITIVE: a chain of three Somes commits to the final value.
+threeStep : Option Int
+let threeStep =
+    do
+        let a <- Some 1
+        let b <- Some 2
+        let c <- Some (a + b)
+        pureA (c + 100)
+
+intScore : Option Int -> Int
+let intScore o =
+    match o
+    case None -> 0 - 1
+    case Some n -> n
+
+threeStepScore : Int
+let threeStepScore = intScore threeStep
+
+--! assertNoErrors
+--! assertType threeStep (Option Int)
+--! assertEval threeStepScore 103
+
+-- STATUS(a0497523): PASS

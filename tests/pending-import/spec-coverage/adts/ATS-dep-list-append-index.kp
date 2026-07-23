@@ -1,0 +1,59 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> append(xs:list(a),ys:list(a)): list(a)`,
+--          list_make_elt loop with {i:nat|i<=n} .<i>. metric),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (typedef List0, List1, listLt, listLte, listGt, listGte, listBtw)
+-- Spec: §10.1.3 (uniform data-family arguments), §10.2 (GADT-style
+--       constructors), §3.2.3 (family kappa.type.mismatch).
+-- ATS3's `list(a, m) ++ list(a, n) : list(a, m+n)` obligation, pinned at
+-- literal indices: consing onto carriers of known length must yield the
+-- correctly folded combined length, and any other stated length is
+-- kappa.type.mismatch. The fully symbolic append signature
+-- `SL m a -> SL n a -> SL (m + n) a` needs `0 + n = n` definitionally,
+-- which prelude Nat arithmetic (a primitive) does not provide, so the
+-- symbolic form is not pinned here (see the companion
+-- ATS-dep-list-append-index-branch-refinement.kp for the branch-equality
+-- half of that story).
+
+--! mode check
+
+module main
+
+-- Length-indexed list.
+data SL (n : Nat) (0 a : Type) : Type =
+    SLNil  : SL 0 a
+    SLCons : (head : a) -> (tail : SL n a) -> SL (n + 1) a
+
+-- POSITIVE: literal-length constructions.
+sl2 : SL 2 Integer
+let sl2 = SLCons 1 (SLCons 2 SLNil)
+
+sl3 : SL 3 Integer
+let sl3 = SLCons 3 (SLCons 4 (SLCons 5 SLNil))
+
+-- POSITIVE: prepending 2 elements onto a 3-element carrier gives 5;
+-- the index (3 + 1) + 1 folds to 5 during checking.
+sl5 : SL 5 Integer
+let sl5 = SLCons 1 (SLCons 2 sl3)
+
+-- POSITIVE: an index-erasing observer.
+headOption : forall (n : Nat) (a : Type). SL n a -> Option a
+let headOption xs =
+    match xs
+    case SLNil -> None
+    case SLCons x tl -> Some x
+
+-- NEGATIVE: 2 + 3 = 5, not 6.
+badSix : SL 6 Integer
+let badSix = SLCons 1 (SLCons 2 sl3)     --!! kappa.type.mismatch
+
+-- NEGATIVE: 2 + 3 = 5, not 4.
+badFour : SL 4 Integer
+let badFour = SLCons 1 (SLCons 2 sl3)    --!! kappa.type.mismatch
+
+-- NEGATIVE: three cons cells annotated as four.
+badConstruct : SL 4 Integer
+let badConstruct = SLCons 1 (SLCons 2 (SLCons 3 SLNil))  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 3

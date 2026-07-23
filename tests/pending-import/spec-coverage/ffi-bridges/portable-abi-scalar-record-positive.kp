@@ -1,0 +1,48 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.1 (PortableAbi type grammar, positive): first-order signatures over
+-- the admitted types — Unit, Bool, the std.ffi exact-width scalars, RawPtr,
+-- OpaqueHandle, a closed record of PortableAbi fields, and Option/Result of
+-- PortableAbi types — must all elaborate. Quantity-0 and erased type
+-- parameters are not ABI-visible and must not disturb the first-order shape.
+module main
+
+import std.ffi.(type I8, type I16, type I32, type I64)
+import std.ffi.(type U8, type U16, type U32, type U64)
+import std.ffi.(type Isize, type Usize, type F32, type F64)
+import std.ffi.(type RawPtr, type OpaqueHandle)
+
+-- Closed nominal record whose runtime-relevant fields are all PortableAbi.
+data Point : Type =
+    MkPoint (x : I32) (y : I32)
+
+-- Closed structural record of PortableAbi fields (§26.1.1 record rule).
+type Extent = (width : U32, height : U32)
+
+scalars : I8 -> I16 -> I32 -> I64 -> U8 -> U16 -> U32 -> U64 -> Isize -> Usize -> F32 -> F64 -> Unit
+let scalars _ _ _ _ _ _ _ _ _ _ _ _ = ()
+
+unitBoolPtr : Unit -> Bool -> RawPtr -> OpaqueHandle -> RawPtr
+let unitBoolPtr _ _ p _ = p
+
+movePoint : Point -> Point
+let movePoint p = match p
+    case MkPoint x y -> MkPoint y x
+
+keepExtent : Extent -> Extent
+let keepExtent e = e
+
+-- Option/Result composition over PortableAbi component types.
+lookupSlot : U32 -> Option RawPtr
+let lookupSlot _ = None
+
+classify : Option I32 -> Result U8 F64 -> Option RawPtr -> Bool
+let classify _ _ _ = True
+
+-- Quantity-0 value parameters and erased type parameters are erased and are
+-- not ABI-visible (§26.1.1 "Foreign-call arity after erasure").
+stampNoRuntime : forall (@0 a : Type). (0 tag : a) -> U32 -> U32
+let stampNoRuntime (@0 a : Type) (0 tag : a) n = n
+
+-- STATUS(a0497523): PASS

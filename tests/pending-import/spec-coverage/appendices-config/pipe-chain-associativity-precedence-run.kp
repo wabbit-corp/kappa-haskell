@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "16\n13\n6\n7\n42\n"
+
+-- Appendix B.1/B.2: std.prelude exports (|>) : a -> (a -> b) -> b at
+-- `infix left 1` and (<|) : (a -> b) -> a -> b at `infix right 0`. A |>
+-- chain groups left, `f <| g <| x` means `f (g x)`, and both pipes sit
+-- below arithmetic, so tighter-binding operator expressions on either
+-- side group there first.
+module main
+
+addN : Int -> Int -> Int
+let addN n x = x + n
+
+double : Int -> Int
+let double x = x * 2
+
+main : UIO Unit
+let main = do
+    -- left-associative chain: ((10 |> addN 1) |> addN 2) |> addN 3
+    printInt (10 |> addN 1 |> addN 2 |> addN 3)
+    -- right-associative: addN 1 <| (addN 2 <| 10)
+    printInt (addN 1 <| addN 2 <| 10)
+    -- |> (precedence 1) is below '+': parses as (2 + 3) |> addN 1
+    printInt (2 + 3 |> addN 1)
+    -- <| (precedence 0) is below '*': parses as addN 1 <| (2 * 3)
+    printInt (addN 1 <| 2 * 3)
+    -- mixed pipes: |> (1) binds tighter than <| (0): double <| (20 |> addN 1)
+    printInt (double <| 20 |> addN 1)
+
+-- STATUS(a0497523): PASS

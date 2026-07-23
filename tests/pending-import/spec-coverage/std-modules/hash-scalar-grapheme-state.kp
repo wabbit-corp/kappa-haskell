@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nTrue\nTrue\n"
+
+-- §29.3 std.hash: hashUnicodeScalar/hashGrapheme thread the linear HashState,
+-- and the required Hashable UnicodeScalar/Grapheme instances follow exact Eq
+-- semantics (no implicit normalization). Extracting the single grapheme of
+-- NFC-normalized "e\u{301}" yields a value Eq-equal to g'\u{00E9}', so their
+-- hashes must agree; hashing the same value twice is deterministic per seed.
+module main
+
+import std.hash.*
+import std.unicode.*
+
+hScalar : UnicodeScalar -> HashCode
+let hScalar c = finishHashState (hashUnicodeScalar c (newHashState defaultHashSeed))
+
+hGrapheme : Grapheme -> HashCode
+let hGrapheme g = finishHashState (hashGrapheme g (newHashState defaultHashSeed))
+
+twoScalars : UnicodeScalar -> UnicodeScalar -> HashCode
+let twoScalars c1 c2 = finishHashState (hashUnicodeScalar c2 (hashUnicodeScalar c1 (newHashState defaultHashSeed)))
+
+nfcGraphemeHashMatches : Bool
+let nfcGraphemeHashMatches =
+    match graphemeFromString (normalize NFC "e\u{301}")
+    case Some g -> hGrapheme g == hGrapheme g'\u{00E9}'
+    case None -> False
+
+main : UIO Unit
+let main = do
+    println (hScalar 'a' == hScalar 'a')
+    println (twoScalars 'a' 'b' == twoScalars 'a' 'b')
+    println (hashWith defaultHashSeed g'e\u{301}' == hashWith defaultHashSeed g'e\u{301}')
+    println nfcGraphemeHashMatches
+-- STATUS(a0497523): PASS

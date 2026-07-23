@@ -1,0 +1,32 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n0\n1\n"
+
+-- §18.2.3 x §18.4: the else-suite is terminal even though it contains
+-- NESTED control — an if-without-else whose branch returns, followed by an
+-- unconditional return — so the success fact `p is Box` survives to the
+-- post-dominating item and licenses `p.value`. Both terminal sub-paths of
+-- the else (k > 0 and k <= 0) are exercised via Empty.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+viaNested : Payload -> Int -> UIO Int
+let viaNested p k = do
+    if p is Box then pure () else do
+        if k > 0 then
+            return 0
+        return 1
+    pure (p.value)
+
+main : UIO Unit
+let main = do
+    let a <- viaNested (Box 42) 5
+    printlnString (showInt a)
+    let b <- viaNested Empty 3
+    printlnString (showInt b)
+    let c <- viaNested Empty 0
+    printlnString (showInt c)
+-- STATUS(a0497523): PASS

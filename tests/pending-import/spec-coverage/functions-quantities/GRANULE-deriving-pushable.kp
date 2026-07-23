@@ -1,0 +1,41 @@
+-- Source: granule-project/granule PR #220 (deriving improvements);
+--         PR #239 v0.9.5.0 release notes; PR #326 (pull derivation fixes)
+-- Spec: §12.2 (quantity polymorphism), §12.2.1-§12.2.3 (reified
+--       QuantitySatisfies obligations and explicit premises),
+--       §3.2.5 (kappa.quantity.satisfies)
+-- Granule derives `push : (List a) [q] -> List (a [q])` only for grades
+-- carrying a `Pushable q` witness; a linear grade is not Pushable. Kappa's
+-- v1 counterpart for a predicate on a grade is an explicit
+-- `QuantitySatisfies` premise (§12.2.1-§12.2.3; user-defined grade algebras
+-- are excluded by §12.2.8): an operation demanding `QuantitySatisfies q ω`
+-- is available at ω (table row ω ⊑ ω) and unavailable at 1, surfacing the
+-- reified-obligation family kappa.quantity.satisfies — re-derived from the
+-- original's kappa.implicit.unsolved mechanical guess.
+
+module test
+
+--! mode check
+
+data List2 (0 a : Type) : Type =
+    Nil2
+    Cons2 (head : a) (tail : List2 a)
+
+-- The push-style operation is gated on the caller's grade supporting
+-- unrestricted (duplicating) use of xs.
+expect term push :
+    forall (q : Quantity) (a : Type).
+    QuantitySatisfies q ω =>
+    (q xs : List2 a) -> List2 a
+
+-- POSITIVE: an ω capability satisfies the demanded ω (§12.2 table).
+pushOmega : (ω xs : List2 Int) -> List2 Int
+let pushOmega xs = push xs
+
+-- NEGATIVE: a linear capability does not satisfy ω; the premise's
+-- obligation `QuantitySatisfies 1 ω` is a concrete contradiction
+-- (§3.2.5: "whether the failure is a concrete contradiction").
+pushLinear : (1 xs : List2 Int) -> List2 Int
+let pushLinear xs = push xs   --!! kappa.quantity.satisfies
+
+--! assertDiagnosticFamily error kappa.quantity.satisfies
+-- STATUS(a0497523): HARNESS-ERROR — asserted family kappa.quantity.satisfies is registered by Spec §3.2.5 but not in the harness/compiler diagnostic registry; independently, quantity polymorphism is unimplemented (QuantitySatisfies is E_NAME_UNRESOLVED and the `(q xs : ...)` binder misparses).

@@ -1,0 +1,24 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.1.1A: "unresolved-name diagnostics SHOULD include the use site";
+-- §3.2.2 kappa.name.unresolved payload MUST include (when applicable)
+-- the unresolved spelling.  An unresolved name in TERM or TYPE position
+-- gets both today (payload kind "name-unresolved" with /payload/name and
+-- a use-site related origin); the identical mistake in PATTERN-HEAD
+-- position emits a bare record with related: [] and payload kind "none".
+-- The same family must carry the same machine-readable structure
+-- regardless of the syntactic position of the unresolved spelling.
+-- (Complementary to ctor-pattern-typo-suggestion.kp, which pins the
+-- suggestion payload/fix; this pins the base name payload + use site.)
+--! assertDiagnosticRelated error kappa.name.unresolved use-site
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name Rd
+module main
+
+data C : Type = Red | Blue
+
+f : C -> Integer
+let f c =
+    match c
+    case Rd -> 1 --!! E_NAME_UNRESOLVED
+    case Blue -> 2
+-- STATUS(a0497523): FAIL — pattern-position E_NAME_UNRESOLVED ("unresolved constructor 'Rd'") has related: [] and payload {"kind":"none"}; term/type positions emit the name-unresolved payload and a use-site related origin for the same mistake

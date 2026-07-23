@@ -1,0 +1,121 @@
+-- §10 (ADTs) + §17.1 exhaustiveness at scale: a data type with FIFTY
+-- nullary constructors, and a match with one case per constructor. The
+-- match is exhaustive, so it must check with no diagnostics, and case
+-- selection must pick the right arm at runtime for both the first and the
+-- last constructor (idx K49 + idx K00 = 49).
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "49\n"
+module main
+
+data Big : Type =
+    K00
+    K01
+    K02
+    K03
+    K04
+    K05
+    K06
+    K07
+    K08
+    K09
+    K10
+    K11
+    K12
+    K13
+    K14
+    K15
+    K16
+    K17
+    K18
+    K19
+    K20
+    K21
+    K22
+    K23
+    K24
+    K25
+    K26
+    K27
+    K28
+    K29
+    K30
+    K31
+    K32
+    K33
+    K34
+    K35
+    K36
+    K37
+    K38
+    K39
+    K40
+    K41
+    K42
+    K43
+    K44
+    K45
+    K46
+    K47
+    K48
+    K49
+
+idx : Big -> Int
+let idx b =
+    match b
+      case K00 -> 0
+      case K01 -> 1
+      case K02 -> 2
+      case K03 -> 3
+      case K04 -> 4
+      case K05 -> 5
+      case K06 -> 6
+      case K07 -> 7
+      case K08 -> 8
+      case K09 -> 9
+      case K10 -> 10
+      case K11 -> 11
+      case K12 -> 12
+      case K13 -> 13
+      case K14 -> 14
+      case K15 -> 15
+      case K16 -> 16
+      case K17 -> 17
+      case K18 -> 18
+      case K19 -> 19
+      case K20 -> 20
+      case K21 -> 21
+      case K22 -> 22
+      case K23 -> 23
+      case K24 -> 24
+      case K25 -> 25
+      case K26 -> 26
+      case K27 -> 27
+      case K28 -> 28
+      case K29 -> 29
+      case K30 -> 30
+      case K31 -> 31
+      case K32 -> 32
+      case K33 -> 33
+      case K34 -> 34
+      case K35 -> 35
+      case K36 -> 36
+      case K37 -> 37
+      case K38 -> 38
+      case K39 -> 39
+      case K40 -> 40
+      case K41 -> 41
+      case K42 -> 42
+      case K43 -> 43
+      case K44 -> 44
+      case K45 -> 45
+      case K46 -> 46
+      case K47 -> 47
+      case K48 -> 48
+      case K49 -> 49
+
+main : UIO Unit
+let main = printInt (idx K49 + idx K00)
+
+-- STATUS(a0497523): PASS

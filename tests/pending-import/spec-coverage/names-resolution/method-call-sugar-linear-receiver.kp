@@ -24,4 +24,4 @@ let bad (1 r : Res) : Int =
 
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_QTT_LINEAR_OVERUSE
--- STATUS(a51e1bf): FAIL — the sugared r.consume bypasses receiver quantity accounting (0 errors); the explicit 'consume r' double use is correctly rejected with E_QTT_LINEAR_OVERUSE
+-- STATUS(a0497523): FAIL — the sugared r.consume bypasses receiver quantity accounting (0 errors); the explicit 'consume r' double use is correctly rejected with E_QTT_LINEAR_OVERUSE

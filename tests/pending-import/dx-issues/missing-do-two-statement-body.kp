@@ -1,0 +1,23 @@
+-- DX EXPECTATION (not necessarily spec-required): forgetting `do` before a
+-- statement sequence should produce a targeted diagnostic at the SECOND
+-- statement -- the first token that cannot continue a pure block -- with a
+-- do-block suggestion.  §9.3.1 defines the indented-suite sugar this body
+-- elaborates under ("pure block"), states "Non-final items in a pure block
+-- are declarations or definitions only", and even names the repair: "Use
+-- an explicit `do` block for those forms".
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the whole declaration is skipped with
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of
+-- declaration" whose primary origin is the DECLARATION HEAD (the `let
+-- main` line), plus a suppressed E_SIGNATURE_UNSATISFIED on the signature.
+-- Nothing points at `printInt 2` and nothing mentions `do`.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch do.block|'do'
+module main
+
+main : UIO Unit
+let main =
+    printInt 1
+    printInt 2
+-- STATUS(a0497523): FAIL — E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration" at the declaration head (4:1); nothing points at the second statement, nothing mentions 'do'

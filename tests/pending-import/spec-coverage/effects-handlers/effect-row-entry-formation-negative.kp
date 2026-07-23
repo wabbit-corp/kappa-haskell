@@ -1,0 +1,43 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+--! assertEval permuted 3
+
+-- §18.1.15 / §11.3.2: a row entry <[l : E | r]> associates an effect
+-- label with an EFFECT INTERFACE — a non-interface type (Int) in entry
+-- position is a row-formation error. Rows are equal up to entry
+-- permutation: comp declared at <[A : A, B : B]> flows through a handler
+-- chain annotated at <[B : B, A : A]> with no diagnostics.
+module main
+
+effect A =
+    1 opA : Unit -> Int
+
+effect B =
+    1 opB : Unit -> Int
+
+comp : Eff <[A : A, B : B]> Int
+let comp =
+    do
+        let a <- A.opA ()
+        let b <- B.opB ()
+        pure (addInt a b)
+
+handleB : Eff <[B : B, A : A]> Int -> Eff <[A : A]> Int
+let handleB c =
+    deep handle B c with
+        case return x -> pure x
+        case opB _ k -> k 2
+
+handleA : Eff <[A : A]> Int -> Eff <[ ]> Int
+let handleA c =
+    deep handle A c with
+        case return x -> pure x
+        case opA _ k -> k 1
+
+permuted : Int
+let permuted = runPure (handleA (handleB comp))
+
+bad : Eff <[A : Int]> Int --!! E_TYPE_EQUALITY_MISMATCH
+let bad = pure 0
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): row-entry interface positions are not kind-checked (Int admitted as an effect interface); the permutation half is clean (permuted evaluates to 3).

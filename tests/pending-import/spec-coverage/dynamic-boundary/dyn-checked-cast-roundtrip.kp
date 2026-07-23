@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "ok 42\nblamed\n"
+
+-- §24.1, §24.9: a Dyn behaves as (exists 0 a. (rep : DynRep a, value : a)).
+-- checkedCast at the packed representation MUST return Ok of the stored
+-- payload; at a different representation it MUST return Err (§24.1) and
+-- MUST NOT silently coerce to the demanded type (§24.7). Uses the §24.4
+-- portable-minimum DynamicType instances for Int and String.
+module main
+
+import std.gradual.*
+
+answer : Int
+let answer = 42
+
+describeInt : Result CastBlame Int -> String
+let describeInt r =
+    match r
+    case Ok n -> stringAppend "ok " (showInt n)
+    case Err _ -> "int cast failed"
+
+describeStr : Result CastBlame String -> String
+let describeStr r =
+    match r
+    case Ok s -> stringAppend "unsound " s
+    case Err _ -> "blamed"
+
+main : UIO Unit
+let main = do
+    let packed = toDyn answer
+    printlnString (describeInt (checkedCast packed))
+    printlnString (describeStr (checkedCast packed))
+
+-- STATUS(a0497523): FAIL — no portable-minimum DynamicType instances exist (E_UNSOLVED_IMPLICIT at Int/String), and checkedCastWith unconditionally returns Err ("dynamic payloads are not carried"), so the Ok arm is unreachable.

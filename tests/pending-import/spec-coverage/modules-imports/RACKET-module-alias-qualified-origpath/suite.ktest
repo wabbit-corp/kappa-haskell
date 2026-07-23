@@ -1,0 +1,2 @@
+--! mode check
+--! assertErrorCount 1

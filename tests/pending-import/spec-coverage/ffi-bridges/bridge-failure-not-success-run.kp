@@ -1,0 +1,56 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "bridge-failure\n"
+
+-- §26.1.6.1 (bridge failure is not successful completion) + §26.1.6 failure
+-- vocabulary: when a runtime bridge bind fails (here: this implementation's
+-- std.bridge provides no live bridge runtime, a bridge-lifecycle failure),
+-- bindModule must fail through its typed expected-error channel. The success
+-- continuation must never run — no fabricated package, no fabricated Int —
+-- and the failure embeds into gradual blame via bridgeFailureToCastBlame.
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle, term bindModule)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, type BridgeOrigin, ctor MkBridgeOrigin)
+import std.bridge.(term bridgeFailureToCastBlame)
+import std.gradual.(type CastBlame)
+
+data StubHandle : Type =
+    MkStubHandle
+
+instance BridgeHandle StubHandle =
+    let bridgeOrigin h = ioPure (MkBridgeOrigin "stub-runtime")
+    let bridgeFailure f = "bridge failure"
+
+type Counter (r : Region) : Type =
+    (next : Unit -> IO BridgeFailure Int)
+
+-- §26.1.12: portable code does not construct BridgeContract directly; the
+-- MkBridgeContract spelling is this implementation's documented
+-- contract-builder facility.
+instance BridgeBindable Counter =
+    let bridgeContract = MkBridgeContract "counter contract"
+
+-- §26.1.6: a bridge failure must be convertible to CastBlame.
+toBlame : BridgeFailure -> CastBlame
+let toBlame f = bridgeFailureToCastBlame f
+
+useCounter : IO BridgeFailure Int
+let useCounter = do
+    let c <- bindModule @Counter MkStubHandle "counter"
+    let n <- c.next ()
+    printlnString "unreachable: bind reported success"
+    ioPure n
+
+reportFailure : BridgeFailure -> UIO Int
+let reportFailure err = do
+    printlnString "bridge-failure"
+    ioPure 0
+
+main : UIO Unit
+let main = do
+    catchIO useCounter reportFailure
+    ioPure ()
+
+-- STATUS(a0497523): PASS

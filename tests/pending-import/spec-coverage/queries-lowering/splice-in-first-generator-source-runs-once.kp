@@ -1,0 +1,24 @@
+-- §18.3.1: `!e` is valid inside an expression elaborated as part of the
+-- nearest enclosing `do` block, and the boundary list (lambda, local
+-- function, quote, type) does NOT include comprehension clauses; the
+-- translation must preserve exactly-once evaluation of each user-written
+-- effectful occurrence. The FIRST generator's source expression is consumed
+-- exactly once by toQuery (§20.10.7 clause 1), so a splice there has an
+-- unambiguous meaning: run the action once, iterate the produced list.
+-- Pins that this works end-to-end and the effect runs exactly once.
+-- (Splices in genuinely per-row clauses are a separate, currently
+-- unspecified story — see the dx-issues pins from the same campaign.)
+--! mode run
+--! assertNoErrors
+--! assertStdout "fetch\n6\n"
+
+getList : UIO (List Int)
+let getList = do
+    printlnString "fetch"
+    ioPure [1, 2, 3]
+
+main : UIO Unit
+let main = do
+    let ys = [ for x in !getList, yield x ]
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): PASS

@@ -1,0 +1,75 @@
+-- Source issues: souffle-lang/souffle tests/semantic/extended_subtypes/extended_subtypes.dl,
+--   tests/semantic/extended_subtypes2/extended_subtypes2.dl,
+--   tests/semantic/union_types/union_types.dl.
+-- Spec: §13.1 union types (§13.1.2 injection, §13.1.3 expected-type-directed
+--   injection and widening, §13.1.4 elimination); §3.2.4 (kappa.type.mismatch);
+--   §16.1.7.1 (kappa.application.argument-mismatch).
+-- Souffle subtype chains are directional. The Kappa analogue pinned here:
+-- member -> union widening is accepted (both explicit `(| e : T |)` and
+-- expected-type-directed injection of a bare member value), while the
+-- reverse direction — a member type where a DIFFERENT member type or the
+-- narrower type is required — is rejected.
+
+--! mode check
+
+module main
+
+data Animal : Type =
+    Cat
+    Dog
+    Fish
+
+data Pet : Type =
+    PetCat
+    PetDog
+
+-- A union that is wider than both member types.
+type LivingThing = (| Animal | Pet |)
+
+-- POSITIVE: explicit injection of a member value (§13.1.2).
+lt1 : LivingThing
+let lt1 = (| Cat : Animal |)
+
+-- POSITIVE: expected-type-directed injection of a bare member (§13.1.3).
+lt2 : LivingThing
+let lt2 = PetDog
+
+-- POSITIVE: eliminating the union by member type (§13.1.4).
+describe : LivingThing -> String
+let describe lt =
+    match lt
+    case (| a : Animal |) -> "animal"
+    case (| p : Pet |) -> "pet"
+
+-- NEGATIVE: a function requiring Pet cannot receive an Animal member —
+-- widening is into the union only, never across members.
+needsPet : Pet -> String
+let needsPet p =
+    match p
+    case PetCat -> "cat"
+    case PetDog -> "dog"
+
+bad : String
+let bad = needsPet Cat    --!! kappa.application.argument-mismatch
+
+-- POSITIVE: a three-level chain of nominal wrappers, each layer explicit.
+data Level1 : Type =
+    L1 Int
+data Level2 : Type =
+    L2 Level1
+data Level3 : Type =
+    L3 Level2
+
+l3 : Level3
+let l3 = L3 (L2 (L1 10))
+
+-- NEGATIVE: a Level3 value where Level1 is expected — wrapper nesting is
+-- not a subtype chain.
+badL : Level1
+let badL = L3 (L2 (L1 1))    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

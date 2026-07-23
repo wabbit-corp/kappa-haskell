@@ -1,0 +1,28 @@
+-- §18.2.4/§12.2.5: positive lower-bound checking is completion-indexed. A
+-- demand that occurs only inside a `while` body does not discharge a `>=1`
+-- obligation of the enclosing scope, because the loop may execute zero
+-- times; a demand after the loop does.
+module main
+
+burnInt : (>=1 x : Int) -> Int
+let burnInt (>=1 x : Int) : Int = x
+
+-- POSITIVE: the post-loop demand satisfies the bound on every path.
+ok : (>=1 x : Int) -> Bool -> UIO Unit
+let ok (>=1 x : Int) (b : Bool) : UIO Unit = do
+    while b do
+        pure ()
+    let _ = burnInt x
+    pure ()
+
+-- NEGATIVE: the only demand of x is inside the loop body, which may not run.
+bad : (>=1 x : Int) -> Bool -> UIO Unit
+let bad (>=1 x : Int) (b : Bool) : UIO Unit = do --!! E_QTT_LINEAR_DROP
+    while b do
+        let _ = burnInt x
+        pure ()
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

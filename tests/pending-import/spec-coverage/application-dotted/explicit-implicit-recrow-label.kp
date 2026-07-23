@@ -23,3 +23,5 @@ let wantLabel (@0 l : Label) (x : Int) : Int = x
 -- NEGATIVE: record-type syntax elaborates to a Type, not a RecRow.
 badType : Int
 let badType = wantRow @(x : Int, y : String) 1 --!! kappa.application.explicit-implicit-classifier
+
+-- STATUS(a0497523): FAIL — 'Label' is not in scope (E_NAME_UNRESOLVED x2, intrinsic classifier unimplemented), so 3 errors instead of 1; the RecRow halves behave as specced (the expected classifier mismatch does fire on the last line).

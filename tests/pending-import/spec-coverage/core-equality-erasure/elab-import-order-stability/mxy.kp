@@ -1,0 +1,10 @@
+module mxy
+
+-- imports written x-then-y
+import basex.*
+import basey.*
+
+type Combo1 = Pair TX TY
+
+mkCombo1 : Combo1
+let mkCombo1 = MkPair mkTX mkTY

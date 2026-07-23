@@ -15,4 +15,4 @@ let chain = 2 +++ 3 +++ 4
 prec : Int
 let prec = 1 + 2 +++ 4
 
--- STATUS(a51e1bf): FAIL — the compiler exports/applies the FIRST fixity declaration (left 55: chain=234, prec=34) instead of the spec-mandated last one in scope at end of module (right 65: chain=54, prec=25)
+-- STATUS(a0497523): FAIL — the compiler exports/applies the FIRST fixity declaration (left 55: chain=234, prec=34) instead of the spec-mandated last one in scope at end of module (right 65: chain=54, prec=25)

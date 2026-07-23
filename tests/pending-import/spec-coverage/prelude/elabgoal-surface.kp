@@ -1,0 +1,16 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 ElabGoal: the exported goal type is the dependent record alias
+-- (ctx : CoreCtx, expected : Option (Core this.ctx Type)); both fields
+-- project, with expected's type depending on the projected ctx.
+module main
+
+goalCtx : ElabGoal -> CoreCtx
+let goalCtx g = g.ctx
+
+goalExpected : (g : ElabGoal) -> Option (Core g.ctx Type)
+let goalExpected g = g.expected
+
+--! assertType goalCtx ElabGoal -> CoreCtx
+-- STATUS(a0497523): FAIL — ElabGoal is not exported by the prelude (E_NAME_UNRESOLVED x2, then E_UNRESOLVED_MEMBER on .ctx/.expected because the receiver type is undetermined).

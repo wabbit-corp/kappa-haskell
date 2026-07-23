@@ -1,0 +1,44 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo
+--                   (diagnostic: "conformance to non-trait type 'Int'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/TraitDecl.hylo
+--                   (diagnostic: "conformance to non-trait type 'Self.X'")
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/Conformance.hylo and TraitDecl.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §7.1 (trait-obligation position requires IsTrait), §14.1.4
+--       (supertrait context), §14.3 (instance heads), §3.2.3 (kappa.type.mismatch)
+-- Pins: positions that require a trait reject non-trait types. Three shapes:
+-- a value binder's name used as a type (kappa.type.mismatch via E_NOT_A_TYPE),
+-- a data type in a supertrait premise, and a data type as an instance head.
+-- The spec names no dedicated family for the latter two rejections.
+
+--! mode check
+
+module main
+
+trait Printable (a : Type) =
+    display : a -> String
+
+data Box : Type =
+    MkBox Int
+
+-- POSITIVE: conforming to an actual trait.
+instance Printable Box =
+    let display b = "box"
+
+usePrintable : String
+let usePrintable = display (MkBox 1)
+
+-- NEGATIVE: `(a : Int)` is a value binder; using `a` where a type is
+-- expected is a term-in-type-position mismatch, not a trait bound.
+requiresInt : forall (a : Int). a -> String    --!! E_NOT_A_TYPE
+let requiresInt x = display x
+
+-- NEGATIVE: supertrait premise references a concrete data type, not a trait.
+trait Box a => BadSuper (a : Type) =    --!! E_APPLICATION_NONCALLABLE
+    foo : a -> Int
+
+-- NEGATIVE: instance head must be a trait application; Box is a data type.
+instance Box Int =    --!! E_INSTANCE_HEAD
+    let whatever x = x
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnostic error E_INSTANCE_HEAD

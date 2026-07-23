@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval useEscaped 6
+
+-- §18.1.21 / §32.2.20: a bound resumption may escape its handler clause
+-- when the captured segment carries NO pending exit-action obligations
+-- (and, being ω, no linear state). The shallow k escapes as the handler's
+-- result value, is extracted with runPure, applied later, and the resumed
+-- suffix (addInt x 1) then completes under a second handler: 5 + 1 = 6.
+module main
+
+effect Cap =
+    ω grab : Unit -> Int
+
+type K = (n : Int) -> Eff <[Cap : Cap]> Int
+
+wrap : K -> Eff <[ ]> K
+let wrap f = pure f
+
+fallback : Int -> K
+let fallback x = \n -> pure (addInt x n)
+
+compPlain : Eff <[Cap : Cap]> Int
+let compPlain =
+    do
+        let x <- Cap.grab ()
+        pure (addInt x 1)
+
+escapedOk : Eff <[ ]> K
+let escapedOk =
+    handle Cap compPlain with
+        case return x -> wrap (fallback x)
+        case grab _ k -> wrap k
+
+resumeIt : Eff <[Cap : Cap]> Int -> Eff <[ ]> Int
+let resumeIt c =
+    deep handle Cap c with
+        case return x -> pure x
+        case grab _ k2 -> k2 0
+
+useEscaped : Int
+let useEscaped = runPure (resumeIt ((runPure escapedOk) 5))
+-- STATUS(a0497523): PASS

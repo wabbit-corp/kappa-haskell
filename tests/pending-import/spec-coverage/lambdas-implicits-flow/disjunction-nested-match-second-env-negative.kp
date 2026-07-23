@@ -1,0 +1,22 @@
+-- §16.4.2: under ||, the then-body is checked separately in each success
+-- environment. A nested match omitting the Empty arm is justified in the
+-- `p is Box` environment but NOT in the `q is Box` environment (which
+-- proves nothing about p), so the body's second check must reject with a
+-- non-exhaustiveness error. Guards this from any future "union the
+-- environments" shortcut, which would be unsound.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+badDisj : Payload -> Payload -> Int
+let badDisj p q =
+    if p is Box || q is Box then
+        match p --!! E_PATTERN_NON_EXHAUSTIVE
+        case Box x -> x
+    else 0
+-- STATUS(a0497523): PASS — correctly rejects with 1x E_PATTERN_NON_EXHAUSTIVE in the second || environment

@@ -16,4 +16,4 @@ import host.python.json_tools as jt
 
 value : Int
 let value = 1
--- STATUS(a51e1bf): UNSUPPORTED — gated on `requires backend python` (not provided here); note the harness currently reports a HARNESS-ERROR instead, because §T.3 ill-typed-directive validation (kappa.host.python unregistered) runs before the §T.4 requires precondition — see spec-issue note on T.3/T.4 ordering
+-- STATUS(a0497523): HARNESS-ERROR — line 5: directive 'assertDiagnosticFamily': 'kappa.host.python' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1) [was UNSUPPORTED in an earlier STATUS line]

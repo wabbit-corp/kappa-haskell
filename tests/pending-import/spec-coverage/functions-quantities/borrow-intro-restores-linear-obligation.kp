@@ -36,4 +36,4 @@ let badLendOnly (1 t : Token) : Int = --!! E_QTT_LINEAR_DROP
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
--- STATUS(a51e1bf): FAIL — the compiler accepts badLendOnly (0 errors): a borrow-read is treated as discharging the linear lower bound, so the §12.2.3 restored quantity-1 obligation is never re-checked at scope exit (see also the §12.2.3/§12.2.5 ambiguity recorded with this batch).
+-- STATUS(a0497523): FAIL — the compiler accepts badLendOnly (0 errors): a borrow-read is treated as discharging the linear lower bound, so the §12.2.3 restored quantity-1 obligation is never re-checked at scope exit (see also the §12.2.3/§12.2.5 ambiguity recorded with this batch).

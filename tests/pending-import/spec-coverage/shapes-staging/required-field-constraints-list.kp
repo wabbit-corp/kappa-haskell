@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.4: 'requiredRuntimeFieldConstraints tc shape' returns exactly
+-- one 'FieldConstraint tc' for every runtime-relevant constructor
+-- field — the erased 'ghost' field contributes no constraint, so a
+-- constructor with two runtime fields yields exactly two constraints.
+
+import std.deriving.shape.*
+
+data PairT : Type =
+    MkPairT (0 ghost : Nat) (x : Integer) (y : Integer)
+
+checkCount : Elab (Syntax String)
+let checkCount = do
+    let shape <- inspectAdt @PairT '{ type PairT }
+    let cs <- requiredRuntimeFieldConstraints @Eq @PairT shape
+    match listLength cs == 2
+    case True -> stringSyntax "ok"
+    case False -> failElab "expected one FieldConstraint per runtime-relevant field"
+
+ok : String
+let ok = $(checkCount)
+-- STATUS(a0497523): FAIL — std.deriving.shape exports no requiredRuntimeFieldConstraints (unresolved name); §22.4 constraint listing unimplemented

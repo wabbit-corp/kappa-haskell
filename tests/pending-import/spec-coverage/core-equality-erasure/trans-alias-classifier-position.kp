@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1.1: an implementation MUST NOT leave a transparent alias stuck
+-- (or, a fortiori, unresolved) solely because it occurs in
+-- kind/classifier position — here as the classifier of a data-family
+-- parameter. `K (n : Idx)` must behave exactly like `K (n : Int)`.
+module main
+
+type Idx = Int
+
+data K (n : Idx) : Type =
+    MkK
+
+useK : K 3 -> K 3
+let useK k = k
+
+-- the parameter classifier normalized to Int, so an Int-typed index
+-- from elsewhere is accepted
+three : Int
+let three = 3
+
+atIndex : K three -> K 3
+let atIndex k = k
+
+-- STATUS(a0497523): FAIL — a top-level type alias is not even in scope as a data-parameter classifier (E_NAME_UNRESOLVED on Idx), so kind-position normalization is unreachable

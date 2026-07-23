@@ -1,0 +1,23 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-expression
+--! x-configSchemaScope std.config std.build
+--! assertErrorCount 4
+
+-- §35.2.2: config-expression rejects user-defined functions and local
+-- `data`, MUST NOT admit first-class function values (a lambda on the
+-- right-hand side of a config binding), and rejects partial application:
+-- a call is well-formed only with all explicit arguments supplied, so a
+-- bare reference to a config-safe function (semver) is
+-- E_CONFIG_PARTIAL_APPLICATION (§35.11).
+-- Staged until a harness provides the configMode capability.
+
+let helper x = x --!! E_CONFIG_RESTRICTED_FORM
+
+data Local = MkLocal Int --!! E_CONFIG_RESTRICTED_FORM
+
+let lam = \ (x : Int) -> x --!! E_CONFIG_RESTRICTED_FORM
+
+let partial = semver --!! E_CONFIG_PARTIAL_APPLICATION
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; manifest-checker cross-check: fn/data/lambda rejected as marked, but a bare config-safe function reference is ACCEPTED (missing the §35.2.2 E_CONFIG_PARTIAL_APPLICATION rejection)

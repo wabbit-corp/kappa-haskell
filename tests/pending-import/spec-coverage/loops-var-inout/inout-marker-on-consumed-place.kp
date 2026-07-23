@@ -1,0 +1,31 @@
+--! mode check
+--! assertDiagnostic error E_QTT_PATH_CONSUMED
+
+-- §18.9.3 + §12.4: a `~` marked argument opens its place at quantity 1;
+-- a place whose path was already moved out cannot be opened, so
+-- `useToken ~box.tok` after `takeToken box.tok` must be rejected as a
+-- consumed-path use. (This file pins only the presence of the
+-- consumed-path diagnostic, not the exact count of collateral
+-- diagnostics.)
+module main
+
+data Token : Type =
+    Token
+
+type Box = (1 tok : Token, tag : Int)
+
+useToken : (inout t : Token) -> UIO (1 t : Token,)
+let useToken (inout t : Token) : UIO (1 t : Token,) =
+    pure (t = t,)
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+bad : (1 box : Box) -> UIO Token
+let bad (1 box : Box) : UIO Token =
+    do
+        let moved = takeToken box.tok
+        useToken ~box.tok
+        pure moved
+
+-- STATUS(a0497523): PASS — E_QTT_PATH_CONSUMED is produced (plus one collateral E_QTT_LINEAR_DROP claiming box.tok "may be dropped" on the same call, which this file deliberately does not pin).

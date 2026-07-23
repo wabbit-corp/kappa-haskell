@@ -1,0 +1,8 @@
+-- Appendix T directory suite.
+-- §28.1: fragments without an explicit module header inherit the
+-- effective module @NoPrelude setting, so the implicit constructor
+-- subset (True, ...) is unavailable in the headerless fragment too.
+--! scriptMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- STATUS(a0497523): PASS

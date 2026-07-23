@@ -1,0 +1,39 @@
+-- Source issues: CREUSOT-1538
+-- Spec: §10 (member projection on single-constructor data), §12.1
+--       (forall binder telescopes), §11.4 (equality propositions over
+--       ordinary endpoints)
+-- Pins: a member projection of a universally quantified binder is a
+-- valid term inside the quantifier's body, including nested projections
+-- and projections under further binders; elaboration preserves the
+-- projection (each proposition below is proved by refl, which requires
+-- the two projected endpoints to remain definitionally equal).
+
+module main
+
+--! mode check
+
+data Foo : Type =
+    MkFoo (bar : Unit)
+
+-- POSITIVE: trivial quantified proposition projecting the binder.
+trivialProjectionInForall : forall (@0 f : Foo). f.bar = f.bar
+let trivialProjectionInForall = refl
+
+-- POSITIVE: nested projection under the quantifier.
+data Outer : Type =
+    MkOuter (inner : Foo)
+
+nestedProjection : forall (@0 o : Outer). o.inner.bar = o.inner.bar
+let nestedProjection = refl
+
+-- POSITIVE: projection used inside a binary relation with a further
+-- explicit binder in scope.
+data PairI : Type =
+    MkPairI (first : Int) (second : Int)
+
+projectionInEquality : forall (@0 p : PairI). (k : Int) -> addInt p.first k = addInt p.first k
+let projectionInEquality k = refl
+
+--! assertNoErrors
+--! assertType trivialProjectionInForall forall (@0 f : Foo). f.bar = f.bar
+-- STATUS(a0497523): PASS

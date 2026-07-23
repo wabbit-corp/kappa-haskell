@@ -1,0 +1,22 @@
+-- DX EXPECTATION (not necessarily spec-required): a data declaration
+-- truncated right after its trailing `=` (file ends before any
+-- constructor) should say the constructor block / expression after `=`
+-- is missing.  §3.1.14A lists "missing expression after `=`" and
+-- "missing indentation block after a block introducer" as recoverable
+-- conditions, and §8.4's block form introduces constructors with
+-- exactly this trailing `=`.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the whole declaration is skipped
+-- with E_RECOVERY_DECLARATION_SKIPPED "unexpected 'data' at start of
+-- declaration", anchored at the `data` keyword itself.  `data` at the
+-- start of a declaration is perfectly legal — the message blames the
+-- one token the user got right and never mentions the missing
+-- constructor list, inviting users to "fix" the head of the
+-- declaration instead of its truncated tail.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch constructor|expression|after '='
+module main
+
+data Foo : Type =
+-- STATUS(a0497523): FAIL — E_RECOVERY_DECLARATION_SKIPPED "unexpected 'data' at start of declaration"; nothing mentions the missing constructor block

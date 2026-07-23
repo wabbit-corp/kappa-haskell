@@ -1,0 +1,16 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+-- §23.6 / §23.1: staged code may execute only when closed — 'runCode'
+-- accepts 'ClosedCode t', and 'Code' and 'ClosedCode' are distinct
+-- built-in types with no implicit conversion, so an arbitrary
+-- 'Code Integer' value is rejected statically before any execution.
+-- (Deliberately not spelled 'runCode .< 1 >.': §23.4 permits a
+-- statically-closed quotation to elaborate directly at type
+-- 'ClosedCode t', so that spelling MAY be accepted conformantly.)
+
+bad : Code Integer -> UIO Integer
+let bad c =
+    runCode c   --!! E_TYPE_MISMATCH
+-- STATUS(a0497523): PASS

@@ -1,0 +1,11 @@
+-- §35.13: a build manifest MAY contain helper config bindings but MUST
+-- define exactly one final `let buildConfig : BuildConfig = ...`; a
+-- manifest without it is rejected with E_CONFIG_EXPECTED_VALUE (§35.11).
+-- Staged until a harness evaluates kappa.build.kp in config-expression
+-- mode (buildManifest capability).
+--! mode check
+--! requires capability buildManifest
+--! assertErrorCount 1
+--! assertDiagnostic error E_CONFIG_EXPECTED_VALUE
+
+-- STATUS(a0497523): UNSUPPORTED — buildManifest capability not provided; kappa build --manifest --check emits exactly the asserted E_CONFIG_EXPECTED_VALUE

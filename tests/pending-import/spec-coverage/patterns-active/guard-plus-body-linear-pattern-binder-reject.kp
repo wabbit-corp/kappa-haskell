@@ -1,0 +1,43 @@
+-- §17.1.9 (Spec L22297-L22328) + §12.2 (L14616-L14627): the guard of a
+-- case is checked under the bindings introduced by the pattern, and a
+-- guard use of a binder is an ordinary runtime-relevant demand. Here the
+-- SUCCESS path of the first case demands the linear component r twice —
+-- once in the guard (`spend r`, a `1` demand) and once in the body
+-- (`resVal r`) — which `1 = [1,1]` forbids. Must be rejected.
+--
+-- Isolation: the identical shape with r as a linear FUNCTION PARAMETER
+-- is correctly rejected with E_QTT_LINEAR_OVERUSE, so the gap is that
+-- guard usage of the case's own PATTERN binders is not tracked at all.
+
+--! mode check
+
+data Res : Type =
+    MkRes (n : Int)
+
+spend : (1 r : Res) -> Bool
+let spend (1 r : Res) : Bool =
+    match r
+    case MkRes n -> n > 0
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Box : Type =
+    Box (1 r : Res)
+
+-- NEGATIVE: guard consumes r, then the body consumes r again.
+bad : (1 b : Box) -> Int
+let bad (1 b : Box) : Int =
+    match b
+    case Box r if spend r -> resVal r
+    case Box r -> resVal r
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch quantit|linear|consum|overuse
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors; guard usage of
+-- pattern-bound linear binders is invisible to the quantity checker
+-- (the function-parameter analogue is rejected with
+-- E_QTT_LINEAR_OVERUSE, kappa.quantity.unsatisfied).

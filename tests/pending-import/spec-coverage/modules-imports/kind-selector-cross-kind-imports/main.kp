@@ -1,0 +1,25 @@
+module main
+
+-- §8.3.1/§8.3.1A: kind selectors slice imports so the same spelling can
+-- be taken from different modules at different declaration kinds with no
+-- collision: `ctor Box` imports ONLY a's constructor facet, `type Box`
+-- imports ONLY b's alias. §7.1 contextual admissibility then resolves
+-- each position: type position sees only b's alias (= Int), while
+-- term-expression and pattern-head positions see only a's constructor —
+-- a type's reified static facet is selected in term position only when
+-- ordinary lookup fails (§7.6 fallback), which it does not here.
+import a
+import a.(ctor Box)
+import b.(type Box)
+
+t : Box
+let t = 3
+
+bx : a.Box
+let bx = Box 5
+
+got : Int
+let got =
+    match bx
+      case Box n -> n
+-- STATUS(a0497523): FAIL — kind selectors do not slice the import (ctor also drags the type, type also drags its facets) and the collision silently last-wins: term position `Box 5` resolves to b's reified alias facet giving E_APPLICATION_NONCALLABLE (3 errors total)

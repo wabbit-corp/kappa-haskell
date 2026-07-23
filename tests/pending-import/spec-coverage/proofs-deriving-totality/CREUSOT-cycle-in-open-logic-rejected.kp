@@ -1,0 +1,25 @@
+-- Source issues: CREUSOT-cycle
+-- Source tests: creusot should_fail/cycle.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/cycle.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: §15.1 (termination-certified definitions), §15.2 (soundness: an
+--       accepted termination argument MUST be well-founded), §15.17
+--       (mutually recursive top-level group requires preceding
+--       signatures), §3.2.11 (kappa.termination.failure)
+-- Pins: two definitions whose bodies call each other unconditionally
+-- form a cycle with no decreasing measure. The SCC must not be
+-- certified; the kappa.termination.failure family MUST be reported (a
+-- single SCC-level diagnostic anchored at one member, with the SCC
+-- members in its payload, is conforming per §3.2.11).
+
+module main
+
+--! mode check
+
+-- NEGATIVE: unconditional mutual cycle, no measure.
+f : Unit
+g : Bool -> Unit
+
+let f = g True
+let g x = if x then f else f                 --!! W_TERMINATION_UNVERIFIED
+
+--! assertDiagnosticFamily warning kappa.termination.failure
+-- STATUS(a0497523): PASS

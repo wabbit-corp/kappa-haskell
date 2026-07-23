@@ -1,0 +1,52 @@
+-- Source issue: ROSETTE-215 (Raising hard errors — distinguishing
+--                infeasibility from user-visible failure)
+-- Spec: §10.1 (data declarations), §17.1 (match), §6.1.5 (numeric
+--       literal domain), §3.2.3 (kappa.type.literal-domain-mismatch).
+-- Pins: errors modeled as explicit Result values flow through the type
+-- system; an `Err` constructor carries a typed String payload, and a
+-- wrong-typed payload (a numeric literal with no FromInteger witness at
+-- String) is rejected statically, never silently elided.
+
+--! mode check
+
+module main
+
+data MyResult (a : Type) : Type =
+    Ok a
+    Err String
+
+data InputShape : Type =
+    ShapeOk
+    ShapeBad String
+
+-- POSITIVE: a library function exhaustively decides shape; failure is a
+-- typed Err.
+process : InputShape -> MyResult Int
+let process s =
+    match s
+    case ShapeOk -> Ok 0
+    case ShapeBad msg -> Err msg
+
+-- POSITIVE: a guarded computation produces Err for the failure case.
+mustPositive : Int -> MyResult Int
+let mustPositive n =
+    if 0 < n then Ok n else Err "must be positive"
+
+-- POSITIVE: combining results with explicit dispatch.
+fetch : Int -> MyResult (Int, Int)
+let fetch i =
+    if i < 0 then Err "negative key" else Ok (i, i * 2)
+
+-- POSITIVE: higher-order use with an explicit error path.
+applyOrFail : (Int -> Int) -> Int -> MyResult Int
+let applyOrFail f x =
+    if x == 0 then Err "zero input" else Ok (f x)
+
+-- NEGATIVE: Err expects a String payload, not an Int literal.
+badErr : MyResult Int
+let badErr = Err 42                                 --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertErrorCount 1
+
+-- STATUS(a0497523): PASS

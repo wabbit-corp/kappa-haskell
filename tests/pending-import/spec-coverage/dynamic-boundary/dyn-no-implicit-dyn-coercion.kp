@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §24.8: this part of the language is explicit dynamic values only — no
+-- ambient unknown type and no implicit consistency-based coercions.
+-- §24.9 introduces no cast insertion between Dyn and non-Dyn types, so
+-- an Int argument is NOT silently packed where Dyn is demanded.
+-- POSITIVE: the same call with an explicit toDyn boundary is fine.
+module main
+
+import std.gradual.*
+
+consume : Dyn -> Dyn
+let consume d = d
+
+answer : Int
+let answer = 7
+
+-- NEGATIVE: no implicit Int ~> Dyn coercion exists.
+bad : Dyn
+let bad = consume answer --!! kappa.application.argument-mismatch
+
+-- POSITIVE half: the boundary must be spelled explicitly (evidence is
+-- taken as a parameter so this half does not depend on §24.4 instances).
+good : (@_ : DynamicType Int) -> Dyn
+let good = consume (toDyn answer)
+
+-- STATUS(a0497523): PASS

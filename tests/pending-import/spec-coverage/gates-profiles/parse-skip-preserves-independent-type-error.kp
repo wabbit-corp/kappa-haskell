@@ -1,0 +1,25 @@
+-- §3.1.11 "Suppression MUST NOT hide independent root causes" +
+-- §3.1.14 (analysis SHOULD continue after recoverable frontend
+-- failures): a parse failure in one declaration must not gate semantic
+-- checking of declarations it did not touch.
+--
+-- The unclosed '(' in 'broken' (last declaration, so nothing after it
+-- is swallowed) produces a recovery skip whose knock-on
+-- E_SIGNATURE_UNSATISFIED for the now-definitionless 'broken' signature
+-- is correctly suppressed under the skip — while the INDEPENDENT type
+-- mismatch in 'bad' is still reported.  Pins that split: 2 primary
+-- errors, mismatch included, signature fallout suppressed.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_RECOVERY_DECLARATION_SKIPPED
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertSuppressedDiagnostic E_RECOVERY_DECLARATION_SKIPPED E_SIGNATURE_UNSATISFIED
+module main
+
+bad : Int
+let bad = "not an int"
+
+broken : Int
+let broken = (1
+
+-- STATUS(a0497523): PASS

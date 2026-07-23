@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_TYPE_EQUALITY_MISMATCH
+
+-- §18.1.21 / §18.1.22: all clauses of one handler MUST elaborate to the
+-- SAME target carrier m. Here the return clause commits to m = IO
+-- (ioPure) while an operation clause body is an Eff <[ ]> computation —
+-- mixed carriers are rejected. (handler-io-carrier.kp pins the positive
+-- IO-carrier case.)
+module main
+
+effect Tick =
+    1 tick : Unit -> Int
+
+effOnly : Eff <[ ]> Int
+let effOnly = pure 3
+
+bad : IO String Int
+let bad =
+    deep handle Tick (Tick.tick ()) with
+        case return x -> ioPure x
+        case tick _ k -> effOnly --!! E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a0497523): PASS

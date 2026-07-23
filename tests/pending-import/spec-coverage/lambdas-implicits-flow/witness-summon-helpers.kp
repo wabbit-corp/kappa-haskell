@@ -1,0 +1,34 @@
+-- §16.3.3.1: witness and summon are ordinary library functions, not
+-- syntax. witness reifies any implicit ordinary value (so evaluating a
+-- block that binds (@ω hidden : Int) = 41 and returns witness + 1 must
+-- yield 42); summon exposes already-resolved trait evidence. Note that
+-- summon's (0 t : Type) parameter is explicit, so the trait type is
+-- passed as an ordinary erased argument.
+module main
+
+-- POSITIVE: witness picks up the block-local implicit binding; the
+-- reified value participates in ordinary evaluation.
+grab : Int
+let grab =
+    block
+        let (@ω hidden : Int) = 41
+        witness + 1
+
+-- POSITIVE: summon retrieves resolved Eq Int instance evidence.
+eqInt : Eq Int
+let eqInt = summon (Eq Int)
+
+-- POSITIVE: the summoned dictionary is an ordinary value usable as a
+-- local implicit candidate.
+sameEq : Bool
+let sameEq =
+    block
+        let (@ω d : Eq Int) = eqInt
+        3 == 3
+
+--! mode check
+--! assertNoErrors
+--! assertType eqInt Eq Int
+--! assertEval grab 42
+--! assertEval sameEq True
+-- STATUS(a0497523): FAIL — checking passes and summon works, but assertEval grab yields `addInt _ 1` instead of 42: the interpreter never substitutes the resolved implicit argument for witness, so the reified value is lost at evaluation time (§16.3.3.1 witness must behave as an ordinary function returning the implicit value).

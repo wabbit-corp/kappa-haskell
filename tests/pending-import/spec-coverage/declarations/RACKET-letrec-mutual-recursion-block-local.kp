@@ -1,0 +1,45 @@
+-- Source: Racket guide let.scrbl (named let, letrec),
+--         pkgs/racket-test-core/tests/racket/letrec.rktl
+-- Spec: §9.3.1 (pure blocks: "A local named binding (or mutually recursive local
+--       group) may be recursive only if each recursively referenced name has a
+--       preceding local signature declaration in the same block scope")
+--
+-- Pins Racket's letrec semantics for LOCAL definitions: inside a `block`, two
+-- local functions may call each other when both have preceding local signature
+-- declarations. Per §9.3.1 this program is well-formed and must produce no
+-- errors.
+
+--! mode check
+
+data Peano : Type =
+    PZero
+    PSucc Peano
+
+checkParity : Peano -> String
+let checkParity n =
+    block
+        ev : Peano -> Bool
+        od : Peano -> Bool
+
+        let ev k =
+            match k
+            case PZero   -> True
+            case PSucc m -> od m
+
+        let od k =
+            match k
+            case PZero   -> False
+            case PSucc m -> ev m
+
+        if ev n then "even" else "odd"
+
+parityTwo : String
+let parityTwo = checkParity (PSucc (PSucc PZero))
+
+parityThree : String
+let parityThree = checkParity (PSucc (PSucc (PSucc PZero)))
+
+--! assertNoErrors
+--! assertEval parityTwo "even"
+--! assertEval parityThree "odd"
+-- STATUS(a0497523): FAIL — compiler does not implement §9.3.1 local mutual recursion: the preceding local signature for `od` does not bring the name into scope inside the earlier local definition (E_NAME_UNRESOLVED), so the group is rejected

@@ -11,4 +11,4 @@ module main
 bad : exists (value : Type). (value : Int)
 let bad = seal exists (value = Int). (value = 1) as exists (value : Type). (value : Int)
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; the witness/payload-field name collision in the explicit-witness seal surface view is not detected
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; the witness/payload-field name collision in the explicit-witness seal surface view is not detected

@@ -17,4 +17,4 @@ let ping n = pong n
 pong : Int -> Int
 let pong n = ping n
 
--- STATUS(a51e1bf): FAIL — the termination diagnostic carries no related origins (no declaration-site or call-site for the SCC)
+-- STATUS(a0497523): FAIL — the termination diagnostic carries no related origins (no declaration-site or call-site for the SCC)

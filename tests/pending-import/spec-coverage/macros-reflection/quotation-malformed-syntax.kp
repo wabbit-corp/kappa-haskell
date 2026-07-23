@@ -1,0 +1,16 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.syntax.quotation
+
+-- §21.1.1: malformed syntax inside a quotation MUST fail with an
+-- ordinary structured diagnostic in family kappa.syntax.quotation with
+-- portable alias E_QUOTE_MALFORMED_SYNTAX (never a panic or an unframed
+-- parse-recovery state). The `if` head with no branches is not
+-- expression syntax under the active grammar. (The portable alias is
+-- not registered by this implementation, so the assertion is pinned by
+-- the mandated family instead.)
+module main
+
+bad : Syntax Integer
+let bad = '{ if } --!! kappa.syntax.quotation
+-- STATUS(a0497523): FAIL — compiler parses the quote body with the ordinary parser and emits E_NAME_UNRESOLVED for 'if'; no kappa.syntax.quotation framing (alias E_QUOTE_MALFORMED_SYNTAX unregistered)

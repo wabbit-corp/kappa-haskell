@@ -18,4 +18,4 @@ import util.helpers --!! kappa.import.ambiguous-dotted
 x : Int
 let x = helpers
 
--- STATUS(a51e1bf): FAIL — kappa.import.ambiguous-dotted is not registered; the doubly-resolvable dotted import is accepted SILENTLY (zero diagnostics), one interpretation is picked without any ambiguity report. Forced-rewrite positive checks clean.
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.import.ambiguous-dotted' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed … [was FAIL in an earlier STATUS line]

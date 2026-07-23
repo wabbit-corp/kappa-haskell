@@ -13,7 +13,7 @@ module main
 effect Count =
     bump : Unit -> Int
 
-type Cell = (count : Int)
+type Cell = (count : Int,)
 
 step : (inout v : Int) -> Eff <[Count : Count]> (1 v : Int, old : Int)
 let step (inout v : Int) : Eff <[Count : Count]> (1 v : Int, old : Int) = do
@@ -29,4 +29,4 @@ bad : (1 c : Cell) -> Eff <[Count : Count]> Int
 let bad (1 c : Cell) : Eff <[Count : Count]> Int = do
     let (v = after, old = before) <- step ~c.count --!! E_QTT_INOUT_RESIDUAL_PATTERN
     pure before
--- STATUS(a51e1bf): FAIL — call-site '~' inout arguments are not supported for Eff-typed callees at all: both halves die with E_QTT_INOUT_MARKER_UNEXPECTED ("requires resolved inout-parameter metadata") + cascade type mismatches, so the §18.9.4 residual-pattern check never runs across an effect row
+-- STATUS(a0497523): FAIL — call-site '~' inout arguments are not supported for Eff-typed callees at all: both halves die with E_QTT_INOUT_MARKER_UNEXPECTED ("requires resolved inout-parameter metadata") + cascade type mismatches, so the §18.9.4 residual-pattern check never runs across an effect row

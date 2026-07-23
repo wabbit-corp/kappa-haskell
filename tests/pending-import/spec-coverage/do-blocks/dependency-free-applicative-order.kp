@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "one\ntwo\nthree\n6\n"
+
+-- §18.2.6/Appendix G: the three binds below are mutually independent, so an
+-- implementation MAY elaborate them with Applicative operations instead of
+-- the §18.2 monadic chain — but ONLY if observationally equivalent to the
+-- monadic desugaring. Pinned here: left-to-right effect order is preserved
+-- whichever elaboration is chosen.
+module main
+
+emit : String -> Int -> UIO Int
+let emit tag n = do
+    printlnString tag
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let a <- emit "one" 1
+    let b <- emit "two" 2
+    let c <- emit "three" 3
+    printlnString (showInt (a + b + c))
+-- STATUS(a0497523): PASS

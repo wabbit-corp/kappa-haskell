@@ -1,0 +1,37 @@
+-- §16.1.1.2 chain grammar ('?.' safeMember applicationArg*) x §18.3.1
+-- Lift_m: an effectful spliced ARGUMENT of a safe-navigation method call
+-- belongs to the residual, which elaborates inside the success arm of the
+-- desugared match — so the argument effect runs exactly once when the
+-- receiver is Some and NOT AT ALL when it is None (short-circuit, matching
+-- Kotlin argument semantics and §18.3.1 branch-local sequencing).
+--
+-- NOTE: the check-mode half of the member-argument gap is already pinned at
+-- tests/pending-import/spec-coverage/application-dotted/safe-nav-member-args.kp
+-- (compiler wraps the member in Option before applying arguments). This
+-- test additionally pins the RUN-mode branch-locality contract for spliced
+-- arguments once that gap is fixed.
+module main
+
+type Rec = (base : Int,)
+
+plus : (this r : Rec) -> Int -> Int
+let plus (this r : Rec) k = r.base + k
+
+loud : String -> Int -> UIO Int
+let loud tag n = do
+    printlnString tag
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let s : Option Rec = Some (base = 1,)
+    let b = s?.plus (!(loud "arg-some" 2))
+    printlnString (showInt (b ?: -1))
+    let n : Option Rec = None
+    let c = n?.plus (!(loud "arg-none" 3))
+    printlnString (showInt (c ?: -1))
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "arg-some\n3\n-1\n"
+-- STATUS(a0497523): FAIL — safe-nav member application args are applied AFTER Option-wrapping the member: E_APPLICATION_NONCALLABLE on callee Option (Int -> Int); same root cause as the pinned check-mode gap in application-dotted/safe-nav-member-args.kp, so the run-mode branch-locality contract is unobservable today.

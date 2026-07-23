@@ -1,0 +1,20 @@
+-- §12.1.1: parametric-to-ordinary function checking is allowed only along
+-- the outer Pi spine. It must not recursively rewrite a function type nested
+-- inside another Pi domain. The inner binder-mode difference therefore makes
+-- these two higher-order contracts distinct.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+
+module main
+
+takesParametricConsumer :
+    ((parametric 0 A : Type) -> Int) ->
+    Int
+let takesParametricConsumer consume =
+    consume Int
+
+bad :
+    ((ordinary 0 A : Type) -> Int) ->
+    Int
+let bad = takesParametricConsumer

@@ -1,0 +1,74 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestHigher.curry
+--   (map, foldr, foldr with operator section, foldr with lambda).
+-- Spec: §16.2 (lambdas), §16.1 (named function application), §11.3
+--       (universal quantification), §10.1 (`data` declarations).
+--
+-- Pins: higher-order pillars — locally defined map/foldr over the
+-- prelude List, used with (a) a named top-level function and (b) an
+-- explicit lambda, both yielding the KiCS2 testsuite's expected values.
+-- (The original staged file passed the recursive foldr arguments in the
+-- wrong order; fixed here to match the declared signature.)
+
+module test
+
+--! mode check
+
+mapList : forall (a : Type) (b : Type). (a -> b) -> List a -> List b
+let mapList f xs =
+    match xs
+    case Nil -> Nil
+    case x :: rest -> f x :: mapList f rest
+
+--! assertNoErrors
+--! assertType mapList (forall (a : Type) (b : Type). (a -> b) -> List a -> List b)
+
+foldrList : forall (a : Type) (b : Type). (a -> b -> b) -> b -> List a -> b
+let foldrList f z xs =
+    match xs
+    case Nil -> z
+    case x :: rest -> f x (foldrList f z rest)
+
+--! assertNoErrors
+
+inc : Int -> Int
+let inc x = x + 1
+
+sample : List Int
+let sample = 0 :: 2 :: 1 :: Nil
+
+-- POSITIVE: top-level function used as the mapped function.
+mapIncSample : List Int
+let mapIncSample = mapList inc sample
+
+sumList : List Int -> Int
+let sumList xs = foldrList (\x y -> x + y) 0 xs
+
+mapIncSum : Int
+let mapIncSum = sumList mapIncSample
+
+--! assertNoErrors
+--! assertType mapIncSample (List Int)
+--! assertEval mapIncSum 6
+
+-- POSITIVE: an explicit lambda used as the mapped function.
+mapLambdaSample : List Int
+let mapLambdaSample = mapList (\x -> x + 1) sample
+
+mapLambdaSum : Int
+let mapLambdaSum = sumList mapLambdaSample
+
+--! assertNoErrors
+--! assertEval mapLambdaSum 6
+
+-- POSITIVE: foldr with a lambda multiplier (5! = 120).
+oneToFive : List Int
+let oneToFive = 1 :: 2 :: 3 :: 4 :: 5 :: Nil
+
+foldrLambdaSample : Int
+let foldrLambdaSample = foldrList (\x y -> x * y) 1 oneToFive
+
+--! assertNoErrors
+--! assertType foldrLambdaSample Int
+--! assertEval foldrLambdaSample 120
+
+-- STATUS(a0497523): PASS

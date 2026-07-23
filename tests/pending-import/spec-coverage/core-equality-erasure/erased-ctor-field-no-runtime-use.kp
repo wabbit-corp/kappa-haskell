@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §31.2: quantity-0 constructor fields are deleted from the runtime
+-- representation, so a match-bound erased field may flow only into
+-- erased positions (types, indices, other 0-demand slots) — returning
+-- it as the runtime-relevant result MUST be rejected.
+module main
+
+data Boxed : Type =
+    MkBoxed (0 hidden : Int) (shown : Int)
+
+data At (n : Int) : Type =
+    MkAt
+
+-- POSITIVE: the erased field may appear in a TYPE (0-demand) position
+useErasedInType : Boxed -> Type
+let useErasedInType b =
+    match b
+    case MkBoxed h s -> At h
+
+-- POSITIVE: the runtime field is freely usable
+useShown : Boxed -> Int
+let useShown b =
+    match b
+    case MkBoxed h s -> s
+
+-- NEGATIVE: the erased field is not runtime data
+useHidden : Boxed -> Int
+let useHidden b =
+    match b
+    case MkBoxed h s -> h --!! E_QTT_ERASED_RUNTIME_USE
+
+-- STATUS(a0497523): FAIL — the compiler accepts the file with 0 errors: a match-bound quantity-0 constructor field returned as the runtime result is not usage-checked (binder-level erased-use checking exists; ctor-field patterns are not covered)

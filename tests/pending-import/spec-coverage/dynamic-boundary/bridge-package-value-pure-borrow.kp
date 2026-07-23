@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- §25.1: bridgePackageValue borrows an owned BridgePackage and exposes
+-- the underlying surface for the borrow duration — it is a PURE borrow
+-- returning (surface r) captures (r), not an IO action.
+-- bridgePackageOrigin likewise only borrows the package (UIO result).
+module main
+
+import std.bridge.*
+
+packageValueShape :
+    forall (r : Region) (@0 surface : Region -> Type).
+    (&[r] package : BridgePackage surface) ->
+    (surface r) captures (r)
+let packageValueShape package = bridgePackageValue package
+
+originShape :
+    forall (@0 surface : Region -> Type).
+    (& package : BridgePackage surface) -> UIO BridgeOrigin
+let originShape package = bridgePackageOrigin package
+
+-- STATUS(a0497523): FAIL — bridgePackageValue is a by-value stub returning IO BridgeFailure (surface r), not the canonical pure region-borrow returning (surface r) captures (r) (E_TYPE_EQUALITY_MISMATCH).

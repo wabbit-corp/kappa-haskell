@@ -1,0 +1,29 @@
+-- §16.4.3 × §18.6.2: `let alias = cell` on a tracked local var records a
+-- flow alias of the current-value representative VarCurrent(cell, n).
+-- Testing `cell` refines that representative, so `alias.value` transports.
+-- A write to the cell is an invalidation event: the alias relation ceases
+-- to be available, so a later `alias.value` has no remaining justification
+-- and must be rejected.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+canonical : Payload -> UIO Unit
+let canonical p = do
+    var cell : Payload = p
+    let alias = cell
+    if cell is Box then
+        do
+            let good = alias.value
+            cell = Empty
+            let bad = alias.value --!! E_UNRESOLVED_MEMBER
+            printlnString (showInt (good + bad))
+    else
+        pure ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): FAIL — the compiler accepts alias.value after the cell write (0 errors): the transported refinement survives on the snapshot alias even though §16.4.3 says the alias relation ceases at any var invalidation event. Semantically safe (the snapshot really is still a Box) but contrary to the normative invalidation list.

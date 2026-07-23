@@ -36,3 +36,5 @@ let demandZeroOk (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : 
 relevantBad : forall (x : Bool) (y : Bool). (ω p : x = y) -> FlagBox x -> Unit
 let relevantBad (@0 x : Bool) (@0 y : Bool) (ω p : x = y) (box : FlagBox x) : Unit =
     needsSame y box --!! kappa.application.argument-mismatch
+
+-- STATUS(a0497523): FAIL — all three sites rejected with E_APPLICATION_ARGUMENT_MISMATCH: explicit-proof transports are unimplemented, so the erased-proof and demand-0 positives never reach the §16.1.8 runtime-relevance rule (the negative fires, but for the wrong reason).

@@ -1,0 +1,30 @@
+-- §20.4.1/§20.10.4: refutable comprehension forms may also drop the incoming
+-- row, so the row residue on the failure path must be row-droppable — not
+-- merely the unmatched item. A linear row entry bound from a quantity-1 query
+-- source makes both `let?` and `for?` reject.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+toOpt : Int -> Option Int
+let toOpt n = if n > 0 then Some n else None
+
+-- NEGATIVE: let? failure would drop the row holding linear entry 't'.
+badLet : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let badLet src =
+    OnceQuery [ for t in src, let? Some x = toOpt 0, yield x + consumeToken t ] --!! E_QUERY_ROW_NOT_DROPPABLE
+
+-- NEGATIVE: for? may match zero elements, dropping the row holding 't'.
+badFor : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let badFor src =
+    OnceQuery [ for t in src, for? Some x in [Some 1, None], yield x + consumeToken t ] --!! E_QUERY_ROW_NOT_DROPPABLE
+-- STATUS(a0497523): PASS

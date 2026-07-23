@@ -1,0 +1,39 @@
+-- §17.1.4 / §17.1.5 × §16.4.1 × §30.2.2.11 (L39060-L39061): "every branch
+-- body, guard body, `impossible` check, ... is evaluated with an explicit
+-- active refinement context". Under `if p is Box`, the success branch holds
+-- HasCtor p ⟨Box⟩, so a nested `match p` may state the excluded remainder
+-- explicitly: `case Empty -> impossible` and `case impossible` MUST be
+-- accepted — the same remainder is already treated as unreachable when it
+-- is merely omitted (see is-evidence-nested-match-omission.kp).
+--! mode check
+--! assertNoErrors
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE per spec: the Empty arm is contradicted by HasCtor p Box.
+namedImpossible : Payload -> Int
+let namedImpossible p =
+    if p is Box then
+        match p
+        case Box v -> v
+        case Empty -> impossible
+    else 0
+
+-- POSITIVE per spec: the uncovered remainder (Empty) is unreachable under
+-- the active refinement context, so `case impossible` is accepted.
+remainderImpossible : Payload -> Int
+let remainderImpossible p =
+    if p is Box then
+        match p
+        case Box v -> v
+        case impossible
+    else 0
+
+-- STATUS(a0497523): FAIL — 2 errors: E_IMPOSSIBLE_REACHABLE and
+-- E_INDEXED_IMPOSSIBLE_REACHABLE. The impossible/case-impossible checkers
+-- ignore flow-typing HasCtor evidence, while the exhaustiveness checker
+-- consults it (omitting the Empty arm outright is accepted) — inconsistent
+-- and contrary to the §30.2.2.11 MUST.

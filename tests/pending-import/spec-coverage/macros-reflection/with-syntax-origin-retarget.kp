@@ -1,0 +1,24 @@
+--! mode run
+--! assertNoErrors
+--! assertType retag forall (@0 t : Type). Syntax Integer -> Syntax t -> Elab (Syntax t)
+--! assertStdout "3\n"
+
+-- §21.5: syntaxOrigin returns the origin of a Syntax value during
+-- elaboration and withSyntaxOrigin o s returns syntax observationally
+-- equal to s with o as its nearest origin. Retargeting the origin of
+-- generated syntax onto user-written syntax must not change the
+-- elaborated meaning of the spliced result.
+module main
+
+retag : forall (@0 t : Type). Syntax Integer -> Syntax t -> Elab (Syntax t)
+let retag src gen = do
+    let o <- syntaxOrigin src
+    withSyntaxOrigin o gen
+
+use : Integer
+let use =
+    $(retag '{ 0 } '{ 1 + 2 })
+
+main : UIO Unit
+let main = println use
+-- STATUS(a0497523): PASS

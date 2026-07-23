@@ -26,6 +26,6 @@ let okEvidence r = r.id
 bad : (x : Integer, @buf : String) -> Integer
 let bad r = r.x
 
--- STATUS(a51e1bf): FAIL — the compiler accepts `@buf : String` (0
+-- STATUS(a0497523): FAIL — the compiler accepts `@buf : String` (0
 -- errors); the §13.2.9 sort restriction on implicit record fields is not
 -- enforced.

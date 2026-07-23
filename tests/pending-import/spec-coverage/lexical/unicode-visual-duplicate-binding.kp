@@ -16,4 +16,4 @@ let A = 1
 let `Α` = 2 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
 let `А` = 3 --!! E_UNICODE_VISUAL_DUPLICATE_BINDING
 
--- STATUS(a51e1bf): FAIL — no visual-duplicate detection: only hygiene W_UNICODE_CONFUSABLE_IDENTIFIER is emitted; the three visually-colliding bindings are accepted (E_UNICODE_VISUAL_DUPLICATE_BINDING is registered in Explain.hs but never emitted)
+-- STATUS(a0497523): FAIL — no visual-duplicate detection: only hygiene W_UNICODE_CONFUSABLE_IDENTIFIER is emitted; the three visually-colliding bindings are accepted (E_UNICODE_VISUAL_DUPLICATE_BINDING is registered in Explain.hs but never emitted)

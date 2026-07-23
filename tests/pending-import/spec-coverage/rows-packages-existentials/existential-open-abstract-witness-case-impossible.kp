@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- §13.2.11 x §17.1.5 x §30.2.7: after `open`, the witness `a` is a
+-- RIGID abstract type. The anonymous payload `x : a` therefore has
+-- inhabitance summary Unknown (an abstract type proves neither
+-- emptiness nor inhabitance), so a `match` on it may NOT end in
+-- `case impossible` — the remainder is not provably uninhabited.
+-- The package really does hide an inhabited type (Int), so accepting
+-- this would compile an unreachable-claimed branch that IS reachable.
+module main
+
+pkg : exists (a : Type). a
+let pkg = seal exists (a = Int). 1 as exists (a : Type). a
+
+bad : Int
+let bad =
+    open pkg as exists (a). x in
+        match x
+        case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- STATUS(a0497523): PASS

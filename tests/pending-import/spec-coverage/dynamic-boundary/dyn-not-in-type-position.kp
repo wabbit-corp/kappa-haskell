@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §24.6: Dyn values are ordinary runtime data. A value of type Dyn MUST
+-- NOT be used in type position, and Dyn does not participate in
+-- definitional equality with any non-Dyn type (no new convertibility).
+-- POSITIVE: Dyn used as an ordinary type of runtime data is fine.
+module main
+
+import std.gradual.(type Dyn)
+
+identityDyn : Dyn -> Dyn
+let identityDyn d = d
+
+-- NEGATIVE: a term-level Dyn binder used as a type.
+useAsType : forall (x : Dyn). x -> Int --!! kappa.type.mismatch
+let useAsType v = 0
+
+-- NEGATIVE: Dyn is not definitionally equal to Int.
+dynIsNotInt : Dyn = Int
+let dynIsNotInt = refl --!! kappa.type.mismatch
+
+-- STATUS(a0497523): PASS

@@ -20,4 +20,4 @@ let addZ (@0 r : RecRow) (@_ : LacksRec r z) (rec : (x : Int | r)) : (x : Int, z
 bad : Int
 let bad = (addZ (x = 1, z = False)).x --!! kappa.row.lacks-failed
 
--- STATUS(a51e1bf): FAIL — compiler rejects, but as E_UNSOLVED_IMPLICIT (kappa.implicit.unsolved) rather than the §3.2.9-mandated kappa.row.lacks-failed family
+-- STATUS(a0497523): FAIL — compiler rejects, but as E_UNSOLVED_IMPLICIT (kappa.implicit.unsolved) rather than the §3.2.9-mandated kappa.row.lacks-failed family

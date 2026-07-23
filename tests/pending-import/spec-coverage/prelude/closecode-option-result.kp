@@ -1,0 +1,29 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\n"
+
+-- §28.2 + §23.4-§23.6: closeCode has type
+-- Code t -> Option (ClosedCode t) — the Option forces callers to handle
+-- the still-open case; runCode runs the Some payload in UIO. The
+-- assertType pins the partial result type.
+module main
+
+closed : Code Integer
+let closed = .< 40 + 2 >.
+
+maybeClosed : Option (ClosedCode Integer)
+let maybeClosed = closeCode closed
+
+runOr : Code Integer -> Integer -> UIO Integer
+let runOr c dflt =
+    match closeCode c
+    case Some cc -> runCode cc
+    case None -> ioPure dflt
+
+main : UIO Unit
+let main = do
+    let v <- runOr closed 0
+    println v
+
+--! assertType maybeClosed Option (ClosedCode Integer)
+-- STATUS(a0497523): PASS

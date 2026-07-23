@@ -1,0 +1,61 @@
+-- Source: WebPPL #907 (unexpected behavior with arrays of functions),
+--   #422 (support over functions).
+-- Spec: §11.2 (function types), §16.1 (application), §17.2.1
+--       (list-constructor patterns), §20.4 (list literals).
+--
+-- A list whose elements are function values is admissible. Selecting an
+-- element by indexing and applying the result is the same as applying
+-- the function directly.
+
+module test
+
+--! mode check
+
+f1 : Int -> Int
+let f1 x = x + 1
+
+f2 : Int -> Int
+let f2 x = x * 2
+
+-- POSITIVE: a list of function values.
+fs : List (Int -> Int)
+let fs = [f1, f2]
+
+--! assertNoErrors
+--! assertType fs (List (Int -> Int))
+
+-- POSITIVE: head-then-apply.
+applyHead : Int
+let applyHead =
+    match fs
+    case Nil    -> 0
+    case f :: _ -> f 10
+
+--! assertNoErrors
+--! assertType applyHead Int
+
+-- POSITIVE: apply the second element directly.
+applySecond : Int
+let applySecond =
+    match fs
+    case _ :: f :: _ -> f 7
+    case _           -> 0
+
+--! assertNoErrors
+--! assertType applySecond Int
+
+-- POSITIVE: list of functions is a valid argument to a higher-order
+-- combinator.
+applyAll : Int -> List (Int -> Int) -> List Int
+let applyAll x gs =
+    match gs
+    case Nil       -> []
+    case g :: rest -> (g x) :: applyAll x rest
+
+results : List Int
+let results = applyAll 3 fs
+
+--! assertNoErrors
+--! assertType results (List Int)
+
+-- STATUS(a0497523): PASS

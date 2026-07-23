@@ -1,0 +1,13 @@
+module main
+
+-- §8.3.1A: two modules exporting the same spelling and kind would be a
+-- use-site ambiguity if imported unqualified; "aliases may be used to
+-- remove or rename colliding candidates". Importing each under a
+-- distinct alias makes both usable side by side, and neither import
+-- introduces the original spelling (§8.3).
+import a.(value as av)
+import b.(value as bv)
+
+both : Int
+let both = addInt av bv
+-- STATUS(a0497523): PASS

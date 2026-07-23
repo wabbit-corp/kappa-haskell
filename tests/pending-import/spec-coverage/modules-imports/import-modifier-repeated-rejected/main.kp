@@ -11,4 +11,4 @@ import mlib.(clarify clarify y) --!! E_IMPORT_ITEM_MALFORMED
 --! allow_unhiding
 --! allow_clarify
 --! assertErrorCount 2
--- STATUS(a51e1bf): FAIL — repeated unhide/clarify modifiers are accepted silently (parser collapses them into boolean flags)
+-- STATUS(a0497523): FAIL — repeated unhide/clarify modifiers are accepted silently (parser collapses them into boolean flags)

@@ -1,0 +1,27 @@
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+
+-- §33.2.1: two instances whose bodies call DIFFERENT transparent helpers
+-- have different Easy Hashes AND different HardIdentity values after full
+-- normalization ("a" vs "b"), so under every coherence_mode — including the
+-- script-mode default semantic-if-available — the overlap violates
+-- coherence and MUST be rejected at resolution.
+module main
+
+trait Label (a : Type) =
+    label : a -> String
+
+helperA : Integer -> String
+let helperA n = "a"
+
+helperB : Integer -> String
+let helperB n = "b"
+
+instance Label Integer =
+    let label n = helperA n
+
+instance Label Integer =
+    let label n = helperB n
+
+use : String
+let use = label 5 --!! E_INSTANCE_INCOHERENT
+-- STATUS(a0497523): PASS

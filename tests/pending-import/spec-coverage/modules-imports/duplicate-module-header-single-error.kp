@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa-hs.parse.error
+--! assertType x Int
+-- §8.1: "A source file may contain at most one module header."  A file
+-- with a second `module` header is rejected with a SINGLE structured
+-- parse diagnostic anchored at the duplicate header, and — per §3.1.17
+-- (partial results over incomplete/invalid files) — the declarations
+-- after the duplicate header still elaborate and answer type queries
+-- (assertType x Int).  The spec pins no diagnostic identity for this,
+-- so only the family and the single-error shape are asserted.
+module main
+
+module main
+
+x : Int
+let x = 1
+-- STATUS(a0497523): PASS — one E_RECOVERY_DECLARATION_SKIPPED ("unexpected 'module' at start of declaration") at the second header; x still typechecks

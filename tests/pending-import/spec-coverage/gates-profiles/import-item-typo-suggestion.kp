@@ -1,0 +1,21 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_IMPORT_ITEM_NOT_FOUND
+-- §3.2.2: an import item that fails to resolve is reported with family
+-- kappa.name.unresolved, so the payload MUST include the unresolved
+-- spelling and the candidate spellings considered for typo suggestions.
+-- std.bytes exports 'bytesLength', edit distance 1 from the misspelled
+-- item 'bytesLenght' (an adjacent transposition), in exactly the
+-- admissible kind set (the module's exported names), so a
+-- maybe-applicable fix SHOULD be attached (§3.1.7: a source-preserving
+-- token repair inside the same import item).  Today the payload is
+-- {"kind":"none"} and there is no fix.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name bytesLenght
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion bytesLength
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+import std.bytes.(bytesLenght) --!! kappa.name.unresolved
+
+let x = 1
+-- STATUS(a0497523): FAIL — E_IMPORT_ITEM_NOT_FOUND payload is {"kind":"none"}: no name, no suggestion, no fix despite exported 'bytesLength' at distance 1

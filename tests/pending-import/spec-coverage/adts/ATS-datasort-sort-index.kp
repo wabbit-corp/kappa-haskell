@@ -1,0 +1,57 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`datasort ilist = ilist_nil | ilist_cons of (int, ilist)`,
+--          `datasort ilist2 = ilist2_nil | ilist2_cons of (int, int, ilist2)`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats
+--         (sort-level definitions, `#abssort view`, sort-indexed types)
+-- Spec: §10.1.3 (uniform data-family arguments), §10.2 (GADT-style
+--       constructors), §3.2.3 (family kappa.type.mismatch).
+-- ATS3 datasorts are sort-level inductive indices. The Kappa counterpart
+-- is a uniform data-family argument (here of type `List Nat` or `Nat`)
+-- instantiated by GADT constructor result types. Annotating a value at a
+-- wrong family-argument (index) value is kappa.type.mismatch.
+-- Symbolic index identities (e.g. `0 + n = n`) are not definitional
+-- (prelude Nat arithmetic is primitive), so only literal indices are
+-- pinned here.
+
+--! mode check
+
+module main
+
+-- A type indexed by a compile-time list of Nats (models datasort ilist).
+data TBL (ns : List Nat) : Type =
+    TBLNil  : TBL Nil
+    TBLCons : (@0 hd : Nat) -> (tail : TBL ns) -> TBL (hd :: ns)
+
+-- POSITIVE: constructing TBL carriers at their stated indices.
+tbl0 : TBL Nil
+let tbl0 = TBLNil
+
+tbl1 : TBL (3 :: Nil)
+let tbl1 = TBLCons TBLNil
+
+tbl2 : TBL (3 :: 5 :: Nil)
+let tbl2 = TBLCons (TBLCons TBLNil)
+
+-- NEGATIVE: a two-element index is not a one-element index.
+badLen : TBL (42 :: Nil)
+let badLen = tbl2                        --!! kappa.type.mismatch
+
+-- A doubly indexed family (models datasort ilist2's extra index).
+data Matrix (rows : Nat) (cols : Nat) : Type =
+    MatZero : Matrix 0 cols
+    MatRow  : (prev : Matrix rows cols) -> Matrix (rows + 1) cols
+
+-- POSITIVE: a 2 x 3 matrix witness; literal `+` folds during checking.
+m2x3 : Matrix 2 3
+let m2x3 = MatRow (MatRow MatZero)
+
+-- NEGATIVE: claiming two MatRow layers give 3 rows.
+badRows : Matrix 3 3
+let badRows = MatRow (MatRow MatZero)    --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming a 2 x 3 witness has 4 columns.
+badCols : Matrix 2 4
+let badCols = m2x3                       --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 3

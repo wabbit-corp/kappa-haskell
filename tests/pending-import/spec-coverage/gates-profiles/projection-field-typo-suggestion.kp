@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_RECORD_PROJECTION_MISSING_FIELD
+-- §3.2.2: E_RECORD_PROJECTION_MISSING_FIELD is emitted with family
+-- kappa.name.unresolved (field names are one of the listed name kinds),
+-- so its payload MUST include the unresolved spelling and the candidate
+-- spellings considered for typo suggestions, and — since 'name' is edit
+-- distance 1 from 'nmae' in the admissible kind set (the record's field
+-- labels, which the renderer even lists in prose) — the diagnostic
+-- SHOULD carry a maybe-applicable fix.  Today the payload is
+-- {"kind":"none"} with no fix.  Payload keys follow the schema already
+-- used by the name-unresolved kind (see conformance/names/unresolved.kp).
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name nmae
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion name
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+person : (name : String, age : Integer)
+let person = (name = "ada", age = 36)
+
+let x = person.nmae --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — E_RECORD_PROJECTION_MISSING_FIELD lists the fields in prose but payload is {"kind":"none"}: no name, no suggestion, no fix

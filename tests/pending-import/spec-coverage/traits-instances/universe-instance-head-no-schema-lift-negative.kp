@@ -1,0 +1,29 @@
+-- §14.3 "Universe-schema cumulativity and instance resolution": Box has an
+-- irrelevant universe role, so Box.{0} Int can be schema-lifted to
+-- Box.{3} Int during ordinary expected-type checking. Instance search must
+-- nevertheless compare exact normalized heads and must not manufacture a
+-- Tagged (Box.{3} Int) candidate from the ground level-0 instance.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+data Box.{irrelevant u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)
+
+trait Tagged (A : Type) =
+    tag : Int
+
+instance Tagged (Box.{0} Int) =
+    let tag = 0
+
+needTag :
+    (@_ : Tagged (Box.{3} Int)) ->
+    Int
+let needTag @evidence = evidence.tag
+
+bad : Int
+let bad = needTag

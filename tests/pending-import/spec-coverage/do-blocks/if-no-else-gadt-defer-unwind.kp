@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "int 5\nbranch-exit\nafter\nafter\n"
+
+-- §18.4 x §10.2 (GADT narrowing): an if-without-else branch suite is a
+-- fresh nested do-scope — its `defer` unwinds on BRANCH exit (before
+-- "after"), and the missing else is implicitly `pure ()` (the BoolVal call
+-- prints only "after"). The tag-test form `v is IntVal` refines the GADT
+-- scrutinee, licensing the `v.n` projection inside the branch.
+module main
+
+data Value (a : Type) : Type =
+    IntVal  : (n : Int) -> Value Int
+    BoolVal : (b : Bool) -> Value Bool
+
+peek : forall (a : Type). Value a -> UIO Unit
+let peek v = do
+    if v is IntVal then
+        defer printlnString "branch-exit"
+        printlnString (stringAppend "int " (showInt v.n))
+    printlnString "after"
+
+main : UIO Unit
+let main = do
+    peek (IntVal 5)
+    peek (BoolVal True)
+-- STATUS(a0497523): PASS

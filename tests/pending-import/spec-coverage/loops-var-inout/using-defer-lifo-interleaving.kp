@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquire 1\nacquire 2\nbody\ndefer 2\nrelease 2\ndefer 1\nrelease 1\n"
+
+-- §18.8.3/§18.8.8: `using` release obligations and `defer` actions share ONE
+-- exit-action stack per scope frame, executed in strict LIFO order on scope
+-- exit — interleaved by scheduling order, not grouped by kind.
+module main
+
+data Res : Type =
+    MkRes (rid : Int)
+
+instance Releasable (IO e) Res =
+    let release r =
+        match r
+        case MkRes i -> printlnString (stringAppend "release " (showInt i))
+
+acquireRes : Int -> UIO Res
+let acquireRes i = do
+    printlnString (stringAppend "acquire " (showInt i))
+    pure (MkRes i)
+
+main : UIO Unit
+let main = do
+    using a <- acquireRes 1
+    defer (printlnString "defer 1")
+    using b <- acquireRes 2
+    defer (printlnString "defer 2")
+    printlnString "body"
+
+-- STATUS(a0497523): PASS

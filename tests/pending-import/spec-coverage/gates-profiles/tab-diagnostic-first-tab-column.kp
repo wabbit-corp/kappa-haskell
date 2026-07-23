@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnostic error E_TAB_IN_INDENTATION
+--! assertDiagnosticAt tab-diagnostic-first-tab-column.kp error E_TAB_IN_INDENTATION 15 3
+
+-- Section 5.4: "A diagnostic MUST point to the first tab character."
+-- Existing coverage pins a tab at column 1; this file pins the MIXED
+-- spaces-then-tabs case: indentation "  \t\t" must be reported at the
+-- FIRST tab (line 15, column 3) -- not at the line start, not at the
+-- second tab, and not at the first non-blank token.
+
+module main
+
+main : UIO Unit
+let main = do
+  		printInt 1
+-- STATUS(a0497523): PASS — E_TAB_IN_INDENTATION reported at 15:3, the first tab of the mixed "  \t\t" indentation

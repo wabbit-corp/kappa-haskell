@@ -1,0 +1,25 @@
+--! mode check
+--! assertDiagnosticFamily error kappa.syntax.quotation
+
+-- §21.1.1: a quotation parses embedded expressions with the active
+-- source grammar, so surface forms accepted in ordinary expression
+-- position (let-in, match, lambda) are accepted inside '{ ... } (the
+-- positive half). Malformed embedded syntax MUST fail in family
+-- kappa.syntax.quotation, and any parser-recovered partial Syntax value
+-- MUST NOT be accepted by ordinary splicing as if it were valid.
+module main
+
+ok : Syntax Integer
+let ok = '{ let y = 1 in match Some y
+            case Some n -> (\m -> m + 1) n
+            case None -> 0 }
+
+okUse : Integer
+let okUse = $(pure ok)
+
+bad : Integer
+let bad =
+    block
+        let s : Syntax Integer = '{ -> } --!! kappa.syntax.quotation
+        $(pure s)
+-- STATUS(a0497523): FAIL — malformed quote leaks raw parse recovery (E_UNEXPECTED_INDENTATION / E_NAME_UNRESOLVED), never a kappa.syntax.quotation diagnostic

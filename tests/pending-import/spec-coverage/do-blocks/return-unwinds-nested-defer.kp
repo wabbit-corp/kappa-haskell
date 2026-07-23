@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\ninner-defer\nouter-defer\nafter-call\n"
+
+-- §18.5/§18.7/§18.8: `return` exits its target function; ALL enclosing
+-- dynamic do-scopes within the target are exited first, running their
+-- deferred actions innermost-first (LIFO across scopes). Items after the
+-- return in BOTH scopes are unreachable-but-permitted (§18.2.2) and never
+-- run; scopes outside the target (main's) are not unwound.
+module main
+
+worker : UIO Unit
+let worker = do
+    defer printlnString "outer-defer"
+    inner@do
+        defer printlnString "inner-defer"
+        printlnString "body"
+        return ()
+        printlnString "skipped-inner"
+    printlnString "skipped-outer"
+
+main : UIO Unit
+let main = do
+    worker
+    printlnString "after-call"
+-- STATUS(a0497523): PASS

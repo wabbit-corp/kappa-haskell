@@ -1,0 +1,15 @@
+module main
+
+-- §14.3.3 x §8.5.3: inside `both`, the goal `Base a` has no global
+-- candidate; it must be solved by supertrait projection from the local
+-- implicit evidence `e : Extra a` — with the trait hierarchy defined in
+-- another module. Instantiating at the opaque type `Handle` then uses
+-- lib's instances at the abstract type without violating opacity.
+import lib.(type Handle, mkHandle, trait Base, trait Extra, baseVal, extraVal)
+
+both : forall (a : Type). (@ e : Extra a) -> a -> Int
+let both x = baseVal x + extraVal x
+
+r : Int
+let r = both (mkHandle 5)
+-- STATUS(a0497523): PASS

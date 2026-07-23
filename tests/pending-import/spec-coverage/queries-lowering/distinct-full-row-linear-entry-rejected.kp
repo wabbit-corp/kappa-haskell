@@ -1,0 +1,31 @@
+-- §20.10.7 clause 12 (`distinct`): "require every row that may be discarded
+-- as a duplicate to be row-droppable"; §20.10.4: a quantity-1 row entry is
+-- not row-droppable. The existing conformance suite pins this for
+-- `distinct by` (queries-qtt-appendix-t-10) but not for bare full-row
+-- `distinct`, whose duplicate-discard path likewise drops the row holding
+-- the linear entry. An Eq Token instance is supplied so the only error is
+-- the droppability rejection, not implicit resolution.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+module main
+
+data Token : Type =
+    Token
+
+instance Eq Token =
+    let (==) x y = True
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+bad : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> OnceQuery Int
+let bad src =
+    OnceQuery [
+        for t in src
+        distinct --!! E_QUERY_ROW_NOT_DROPPABLE
+        yield consumeToken t
+    ]
+-- STATUS(a0497523): PASS

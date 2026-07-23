@@ -1,0 +1,22 @@
+--! mode check
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+-- §7.1 binding-group formation: two declarations of the same declaration
+-- kind with equal strictNameKey in one lexical scope are duplicate
+-- declarations.  Two `type T = ...` aliases are two `type`-kind
+-- declarations of one spelling, so the second MUST be rejected, with the
+-- same diagnostic family the compiler already uses for duplicate term
+-- declarations (E_DUPLICATE_DECLARATION for `let x` twice).
+--
+-- Today the second alias silently wins: after `type T = Integer` and
+-- `type T = Bool`, `x : T; let x = True` checks clean (last-wins), so the
+-- same semantic mistake gets an error via the term route and silence via
+-- the type-alias route.
+module main
+
+type T = Integer
+
+type T = Bool --!! E_DUPLICATE_DECLARATION
+
+x : T
+let x = True
+-- STATUS(a0497523): FAIL — no diagnostic; the second alias silently replaces the first (x : T checks against Bool)

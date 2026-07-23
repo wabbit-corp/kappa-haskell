@@ -1,0 +1,31 @@
+-- §18.6.1 (no-read contexts) × §11.2/§16.2.2: a mutable binding's
+-- current-value occurrence may not be captured under a `lazy` suspension —
+-- the generated read would have to cross a delayed-evaluation boundary, and
+-- hoisting it out would create a snapshot the user did not write ("MUST NOT
+-- be hoisted ... to create a snapshot unless the user explicitly writes
+-- that snapshot"). §18.6.1's boundary list names lambda/local-function/
+-- quote/type/static/macro but not suspension bodies — see the spec-issue
+-- recorded with this batch; the implementation correctly extends the list.
+-- The thunk twin is pinned in
+-- tests/conformance/diagnostics-coverage/e_var_read_crosses_boundary_thunk.
+-- The spec-prescribed repair (bind a snapshot first) must be accepted.
+module main
+
+bad : UIO Unit
+let bad = do
+    var x = 1
+    let n = lazy x                      --!! E_VAR_READ_CROSSES_BOUNDARY
+    printInt (force n)
+
+ok : UIO Unit
+let ok = do
+    var x = 1
+    let snap = x
+    let n = lazy snap
+    x = 2
+    printInt (force n)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_VAR_READ_CROSSES_BOUNDARY
+-- STATUS(a0497523): PASS

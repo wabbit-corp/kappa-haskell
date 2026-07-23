@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+-- STATUS(a0497523): PASS — instance search resolves through the aliased re-export spelling

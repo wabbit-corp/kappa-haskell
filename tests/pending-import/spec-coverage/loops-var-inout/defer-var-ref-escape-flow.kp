@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive
+
+-- §18.6.2 (+§18.7): `ref x` captured by a `defer` action is an ESCAPE event
+-- — the cell stops participating in current-value flow typing for the rest
+-- of its lexical lifetime, so a later `is`-refinement does not license a
+-- Full-only match (`bad`). Reading the current value INSIDE a deferred
+-- action remains an ordinary permitted (live) read (`okDefer`).
+module main
+
+data Cell : Type =
+    Empty
+    Full (val : Int)
+
+showCell : Cell -> String
+let showCell c =
+    match c
+    case Empty -> "empty"
+    case Full v -> showInt v
+
+okDefer : UIO Unit
+let okDefer = do
+    var cell : Cell = Full 2
+    defer (printlnString (showCell cell))
+    cell = Empty
+
+bad : UIO Unit
+let bad = do
+    var cell : Cell = Full 1
+    defer (writeRef (ref cell) Empty)
+    if cell is Full then
+        let n =
+            match cell --!! kappa.pattern.non-exhaustive
+            case Full v -> v
+        printlnString (showInt n)
+    else
+        printlnString "empty"
+
+-- STATUS(a0497523): PASS

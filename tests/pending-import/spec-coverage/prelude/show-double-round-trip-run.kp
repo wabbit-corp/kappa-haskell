@@ -1,0 +1,37 @@
+-- §28.4 requires Show Double; the reference implementation renders Doubles in
+-- Haskell-`show` shortest-round-trip form (fixed notation for 0.1 <= |x| <
+-- 1e7, scientific with a one-digit mantissa head otherwise; "-0.0",
+-- "Infinity", "-Infinity", "NaN" for the specials). The native runtime
+-- (runtime/show.c) ports GHC floatToDigits over GMP precisely so every
+-- backend must agree with these strings. This run pins the reference outputs:
+--  * 0.1 + 0.2 must print the shortest round-trip 0.30000000000000004;
+--  * the fixed/scientific boundary sits between 9999999.0 and 1.0e7;
+--  * 5.0e-324 is the minimum subnormal; negative zero keeps its sign;
+--  * 1428571428571428.25 is the documented generate-loop tie case (bits
+--    0x43144d1cd2252491) where the retired native printf-based printer got
+--    the LAST DIGIT wrong — it must print 1.4285714285714283e15;
+--  * intToDouble (2^53 + 1) rounds to 2^53 and prints ...992, not ...993;
+--  * the max finite double round-trips; divDouble specials are IEEE-total.
+--! mode run
+--! assertNoErrors
+--! assertStdout "0.1\n0.30000000000000004\n9999999.0\n1.0e7\n0.5\n5.0e-2\n5.0e-324\n0.0\n1.4285714285714283e15\n-0.0\n9.007199254740992e15\n1.7976931348623157e308\nInfinity\n-Infinity\nNaN\n"
+
+main : UIO Unit
+let main = do
+    printlnString (showDouble 0.1)
+    printlnString (showDouble (0.1 + 0.2))
+    printlnString (showDouble 9999999.0)
+    printlnString (showDouble 10000000.0)
+    printlnString (showDouble 0.5)
+    printlnString (showDouble 0.05)
+    printlnString (showDouble 5.0e-324)
+    printlnString (showDouble (0.0 - 0.0))
+    printlnString (showDouble (intToDouble (4503599627370496 + 1210686086915217) / 4.0))
+    printlnString (showDouble (negate 0.0))
+    printlnString (showDouble (intToDouble 9007199254740993))
+    printlnString (showDouble 1.7976931348623157e308)
+    printlnString (showDouble (divDouble 1.0 0.0))
+    printlnString (showDouble (divDouble (-1.0) 0.0))
+    printlnString (showDouble (divDouble 0.0 0.0))
+
+-- STATUS(a0497523): PASS — interpreter matches all 15 reference renderings, including the 0x43144d1cd2252491 tie case.

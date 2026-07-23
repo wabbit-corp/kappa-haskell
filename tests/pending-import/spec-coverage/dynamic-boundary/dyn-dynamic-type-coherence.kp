@@ -1,0 +1,35 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.3: multiple coherent DynamicType a instances in one effective
+-- instance environment MUST produce extensionally equivalent
+-- representations for purposes of sameDynRep. Pins the canonical
+-- observation vocabulary: comparing the dynRep members of two evidences
+-- for the SAME type yields Dec (a = a) (§24.9), and packing with one
+-- evidence's rep while casting with the other's is Result CastBlame a.
+module main
+
+import std.gradual.*
+
+observeCoherence :
+    forall (@0 a : Type).
+    (@d1 : DynamicType a) ->
+    (@d2 : DynamicType a) ->
+    Bool
+let observeCoherence (@d1 : DynamicType a) (@d2 : DynamicType a) =
+    match sameDynRep d1.dynRep d2.dynRep
+    case Yes _ -> True
+    case No _ -> False
+
+-- Cross-instance round-trip: extensional equivalence means a payload
+-- packed under one evidence's representation is castable under the
+-- other's (§24.1 semantics of checkedCastWith).
+crossCast :
+    forall (@0 a : Type).
+    (@d1 : DynamicType a) ->
+    (@d2 : DynamicType a) ->
+    a -> Result CastBlame a
+let crossCast (@d1 : DynamicType a) (@d2 : DynamicType a) x =
+    checkedCastWith d2.dynRep (toDynWith d1.dynRep x)
+
+-- STATUS(a0497523): FAIL — sameDynRep still returns Option (Dec ((=) a b)), so the Yes/No elimination is rejected (E_TYPE_EQUALITY_MISMATCH); the cross-instance pack/cast half type-checks fine.

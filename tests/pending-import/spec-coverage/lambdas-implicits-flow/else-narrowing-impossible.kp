@@ -1,0 +1,37 @@
+-- §16.4.1 (failure-side narrowing) × §17.1.5 × §30.2.2.11: in the else
+-- branch of `if p is Empty`, the context holds LacksCtor p ⟨Empty⟩ and the
+-- two-constructor narrowing rule MUST derive HasCtor p ⟨Box⟩. A nested
+-- match there may spell the excluded constructor with `-> impossible`, and
+-- `case impossible` may close the (empty) remainder — the impossible check
+-- MUST be evaluated under the active refinement context (L39060-L39061).
+-- Projection (p.value) and plain omission already work in this position.
+--! mode check
+--! assertNoErrors
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE per spec: Empty arm is contradicted by the branch's LacksCtor.
+elseNamedImpossible : Payload -> Int
+let elseNamedImpossible p =
+    if p is Empty then 0
+    else
+        match p
+        case Box x -> x
+        case Empty -> impossible
+
+-- POSITIVE per spec: remainder after Box is Empty, excluded by LacksCtor.
+elseRemainderImpossible : Payload -> Int
+let elseRemainderImpossible p =
+    if p is Empty then 0
+    else
+        match p
+        case Box x -> x
+        case impossible
+
+-- STATUS(a0497523): FAIL — 2 errors (E_IMPOSSIBLE_REACHABLE,
+-- E_INDEXED_IMPOSSIBLE_REACHABLE): the impossible/case-impossible checkers
+-- do not consult failure-side LacksCtor/narrowed HasCtor flow facts, even
+-- though exhaustiveness (omitting the Empty arm) and projection do.

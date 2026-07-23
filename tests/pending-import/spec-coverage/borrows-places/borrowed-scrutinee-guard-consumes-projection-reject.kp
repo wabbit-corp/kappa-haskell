@@ -1,0 +1,35 @@
+-- §17.1.8 (Spec L22291-L22294) + §17.1.9 + §12.2: under a borrowed
+-- scrutinee, pattern binders are borrowed projections; a GUARD that
+-- passes such a projection to a quantity-1 parameter consumes state the
+-- caller still owns (and does so on a mere selection attempt — even when
+-- the guard fails, the resource is already gone at runtime). Must be
+-- rejected: a borrow never satisfies a `1` demand.
+
+--! mode check
+
+data Res : Type =
+    MkRes (n : Int)
+
+spend : (1 r : Res) -> Bool
+let spend (1 r : Res) : Bool =
+    match r
+    case MkRes n -> n > 0
+
+data Two : Type =
+    TA (1 r : Res)
+    TB (1 r : Res)
+
+-- NEGATIVE: the guard consumes the borrowed projection r.
+bad : (& t : Two) -> Int
+let bad (& t : Two) : Int =
+    match t
+    case TA r if spend r -> 1
+    case _ -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch borrow|linear|consum|quantit
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors: guard usage of
+-- pattern binders is not quantity-checked at all, and projections under
+-- a borrowed scrutinee are not marked borrowed, so the consuming guard
+-- passes both checks it should fail.

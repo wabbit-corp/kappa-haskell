@@ -1,0 +1,30 @@
+module main
+
+-- DX EXPECTATION pin (not necessarily spec-required; arguably spec-
+-- contradicting — see below). An instance declared at an opaque type
+-- alias `Id` should serve downstream goals at the ABSTRACT spelling
+-- `Tag Id`, and should NOT be reachable at the hidden representation
+-- (`Tag Int`): that is what makes `opaque type` + trait instances a
+-- usable abstraction pattern (mirroring §8.5.3's story for opaque data).
+--
+-- This is what the compiler currently does, and this test pins it.
+--
+-- CAUTION: a strict reading of §14.3.2 + §33.2.1 says the OPPOSITE: the
+-- normalized instance head is computed at the declaration site "in the
+-- defining modules' own transparency environments", where Id = Int is
+-- transparent — making the canonical head `Tag Int`. Under that reading
+-- `tag (5 : Int)` must solve and `tag (mkId 0)` (goal `Tag Id`, opaque
+-- here, §14.3.2 "preserving opacity boundaries") must NOT. That defeats
+-- the abstraction and leaks the representation. Filed as a spec issue;
+-- if the spec is clarified toward declaration-site transparency, this
+-- pin should be re-evaluated, not silently flipped.
+import lib.(type Id, mkId, trait Tag, tag)
+
+-- EXPECTED-good: goal at the abstract type solves.
+rId : Int
+let rId = tag (mkId 0)
+
+-- EXPECTED-good: the hidden representation type gains no instance.
+rInt : Int
+let rInt = tag (5 : Int)             --!! E_UNSOLVED_IMPLICIT
+-- STATUS(a0497523): PASS

@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.2.2: a qualified name whose member part cannot be resolved is a
+-- kappa.name.unresolved failure, so the payload MUST include the
+-- unresolved spelling and the candidate spellings considered for typo
+-- suggestions.  The admissible candidate set here is B's export list,
+-- which contains 'bytesLength' at edit distance 1 from 'bytesLenght',
+-- so the diagnostic SHOULD carry a maybe-applicable fix.  Today the
+-- message ("module 'B' has no exported member ...") has payload
+-- {"kind":"none"} and no fix, while the same typo on an unqualified
+-- in-scope name does get the rename fix.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name bytesLenght
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion bytesLength
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+import std.bytes as B
+
+n : Nat
+let n = B.bytesLenght B.emptyBytes --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — "module 'B' has no exported member" payload is {"kind":"none"}: no name, no suggestion, no fix despite 'bytesLength' at distance 1

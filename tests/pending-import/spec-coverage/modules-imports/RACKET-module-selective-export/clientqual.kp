@@ -1,0 +1,21 @@
+-- Spec: §8.3 (module alias), §8.5.1 (private members are not visible through
+--       qualified access either), §3.2.2 (kappa.name.unresolved)
+--
+-- Pins: alias-qualified access reaches exported members only; private items
+-- are invisible through the alias and through the module path.
+module clientqual
+import mathlib as m
+import mathlib
+
+-- POSITIVE: qualified access through the module alias works.
+qualResult : Int
+let qualResult = m.plusM 10 20
+
+-- NEGATIVE: twiceM is private and cannot be accessed from outside mathlib.
+badTwice : Int
+let badTwice = m.twiceM 7           --!! E_NAME_UNRESOLVED
+
+-- NEGATIVE: defaultScale is private and not part of mathlib's export surface.
+badScale : Int
+let badScale = mathlib.defaultScale --!! E_NAME_UNRESOLVED
+-- STATUS(a0497523): PASS (whole suite)

@@ -1,0 +1,31 @@
+-- DX / §6.1.5 × §17.2.1 × §28.2: a numeric literal pattern against a
+-- Rational scrutinee type-checks (Rational is an "ordinary user-facing
+-- numeric type" with FromInteger, and `case 0.5` works at Double), but
+-- at runtime the match gets STUCK: `case 0` neither matches nor fails
+-- against the internal `__rat 0 1` value and run mode dies with
+-- "unhandled IO primitive: printlnString/1 args=if match __rat 0 1 ...".
+-- The spec does not pin literal-pattern typing, but an accepted,
+-- exhaustive match (wildcard present) must take a branch — accept-then-
+-- stuck is wrong under every reading. Note the same compiler already
+-- REJECTS literal patterns at user FromInteger types at check time
+-- ("a literal pattern cannot match a scrutinee of type 'Meters'
+-- (§17.2.1)"), so Rational is accepted by one rule and unsupported by
+-- the other. Expected-good behavior pinned here: the literal pattern
+-- matches the literal's elaborated value, as at Double.
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nFalse\n"
+
+module main
+
+isZeroR : Rational -> Bool
+let isZeroR x =
+    match x
+    case 0 -> True
+    case _ -> False
+
+main : UIO Unit
+let main = do
+    println (isZeroR (fromInteger 0))
+    println (isZeroR (fromInteger 3))
+-- STATUS(a0497523): FAIL — check accepts, run produces no stdout: runtime failure "unhandled IO primitive: printlnString/1 args=if match __rat 0 1 ..." (literal pattern is stuck against the Rational value)

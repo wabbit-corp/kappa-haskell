@@ -29,4 +29,4 @@ let takeName (@0 r : RecRow) (rec : (name : String | r)) : String =
         let (name = n, ..) = rec --!! E_ROW_TAIL_QUANTITY_UNSATISFIED
         n
 
--- STATUS(a51e1bf): FAIL — E_ROW_TAIL_QUANTITY_UNSATISFIED/kappa.row.tail-quantity are registered but never produced here: the open-record '..' discard mis-elaborates to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH), no RecTailSatisfies r 0 obligation is generated. Closed-record positive checks clean.
+-- STATUS(a0497523): FAIL — E_ROW_TAIL_QUANTITY_UNSATISFIED/kappa.row.tail-quantity are registered but never produced here: the open-record '..' discard mis-elaborates to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH), no RecTailSatisfies r 0 obligation is generated. Closed-record positive checks clean.

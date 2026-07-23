@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "200\n"
+
+-- §13.1.1 (member types are arbitrary types, identity by MemberId) x
+-- §13.2.1 (L16426-L16434: open record types with a RecRow tail): a union
+-- may hold two record members that differ ONLY by the row tail,
+-- (x : Integer | r) versus (x : Integer,). With r rigid the two MemberIds
+-- are distinct, so the union is well-formed, member patterns distinguish
+-- the arms, and projection p.x works on both. Injecting a CLOSED record
+-- (x = 1) must select the exact-MemberId member — the closed arm (prints
+-- 200) — not unify the record against the open member by instantiating
+-- its tail. (If a call-site instantiation of r ever made the two members
+-- collide, that lands in the known §13.1.1 duplicate-collapse gap;
+-- docs/SPEC_ISSUES.md item on §13.1.1.)
+module main
+
+f : forall (r : RecRow). (| (x : Integer | r) | (x : Integer,) |) -> Integer
+let f u =
+    match u
+    case (| p : (x : Integer | r) |) -> 100
+    case (| q : (x : Integer,) |)    -> 200
+
+useIt : Integer
+let useIt = f (x = 1)
+
+main : UIO Unit
+let main = do
+    printlnString (showInt useIt)
+-- STATUS(a0497523): PASS

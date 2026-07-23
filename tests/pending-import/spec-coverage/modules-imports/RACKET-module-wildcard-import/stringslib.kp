@@ -1,0 +1,10 @@
+module stringslib
+
+concatS : String -> String -> String
+let concatS a b = a ++ b
+
+emptyS : String
+let emptyS = ""
+
+private internalBuf : String
+let internalBuf = "<<buf>>"

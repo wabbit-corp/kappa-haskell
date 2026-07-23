@@ -1,0 +1,16 @@
+module main
+
+-- §8.3 itemAlias ::= 'as' ident — an operator may be imported under an
+-- ordinary identifier spelling. The aliased binding is the same
+-- function (viaIdent = plus 2 3 = 23), and per §8.3 "The original
+-- spelling x is not introduced by that import item", so using +++ in
+-- infix position downstream has no fixity (and no binding) in scope:
+-- §5.5.3 infix gating rejects it.
+import lib.((+++) as plus)
+
+viaIdent : Int
+let viaIdent = plus 2 3
+
+bad : Int
+let bad = 2 +++ 3 --!! E_OPERATOR_NO_FIXITY
+-- STATUS(a0497523): PASS — alias binds the operator function under the ident spelling; the original operator spelling is rejected (E_OPERATOR_NO_FIXITY plus a cascaded E_NAME_UNRESOLVED on the same line)

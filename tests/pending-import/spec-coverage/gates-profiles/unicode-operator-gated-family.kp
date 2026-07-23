@@ -17,4 +17,4 @@ let g = 3
 
 let composed = f ∘ g --!! E_FEATURE_INACTIVE
 
--- STATUS(a51e1bf): FAIL — the Unicode operator is rejected as bare E_UNEXPECTED_CHARACTER with no family/payload; the lexer's kappa.feature.gated unicode-operator path is unreachable
+-- STATUS(a0497523): FAIL — the Unicode operator is rejected as bare E_UNEXPECTED_CHARACTER with no family/payload; the lexer's kappa.feature.gated unicode-operator path is unreachable

@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.1 (Spec L35062-35077) canonically declares the operation traits
+--     trait Successor (0 a : Type) = succ : a -> a
+--     trait Max (0 a : Type) = max : (& x : a) -> (& y : a) -> a
+-- "used by both ordinary numeric-like types and compile-time-only
+-- index-like types", and §10.4 (L10455) calls `succ` "the standard
+-- prelude operation".  §28.2.3 then requires the Successor TypeLevel and
+-- Max TypeLevel instances (L34939).  So the trait names and their members
+-- must resolve — even where no instance for a given carrier is required,
+-- generic use through explicit evidence must typecheck.
+--
+-- In the compiler neither trait nor member exists: Successor, Max, succ,
+-- and max are all E_NAME_UNRESOLVED (max's fix-it suggests 'map').
+
+module main
+
+useSucc : forall (a : Type). (@_ : Successor a) -> a -> a
+let useSucc x = succ x
+
+useMax : forall (a : Type). (@_ : Max a) -> a -> a -> a
+let useMax x y = max x y
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x4: Successor, succ, Max, and max are all absent from the prelude despite the §28.2.1 canonical declarations

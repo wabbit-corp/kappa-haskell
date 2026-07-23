@@ -1,0 +1,47 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "normal-body\nnormal-defer\nret-defer\niter 1\niter-defer 1\niter 2\niter-defer 2\nafter-loop\ncont-defer\ncont-defer\ndone\n"
+
+-- §18.8.3 (+§18.7): exit actions run on EVERY path leaving the do-scope —
+-- normal completion, `return`, `break`, and `continue` — exactly once per
+-- dynamic execution of the scope (each loop iteration is a fresh scope).
+module main
+
+normalPath : UIO Unit
+let normalPath = do
+    defer (printlnString "normal-defer")
+    printlnString "normal-body"
+
+retPath : Bool -> UIO Unit
+let retPath b = do
+    defer (printlnString "ret-defer")
+    if b then
+        return ()
+    printlnString "ret-not-taken"
+
+breakPath : UIO Unit
+let breakPath = do
+    for i in 1 :: 2 :: 3 :: Nil do
+        defer (printlnString (stringAppend "iter-defer " (showInt i)))
+        printlnString (stringAppend "iter " (showInt i))
+        if eqInt i 2 then
+            break
+    printlnString "after-loop"
+
+contPath : Bool -> UIO Unit
+let contPath b = do
+    for i in 1 :: 2 :: Nil do
+        defer (printlnString "cont-defer")
+        if b then
+            continue
+        printlnString "cont-not-taken"
+
+main : UIO Unit
+let main = do
+    normalPath
+    retPath True
+    breakPath
+    contPath True
+    printlnString "done"
+
+-- STATUS(a0497523): PASS

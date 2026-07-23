@@ -1,0 +1,15 @@
+module main
+
+-- §3.2.2: the kappa.name.unresolved payload MUST include "import or
+-- prelude status relevant to the lookup", and §3.1.9 lists "adding an
+-- import or qualification" as a structured candidate repair (§3.1.7
+-- rank 3).  'helperValue' is exported by the sibling module 'lib' in
+-- this same compilation unit, so the relevant import status is "would
+-- resolve via 'import lib...'" and the diagnostic should say so — the
+-- prelude analog already does exactly this ("implicit prelude is
+-- disabled ... std.prelude" under @NoPrelude, see
+-- spec-coverage/prelude/no-prelude-import-suggestion.kp).  Today the
+-- message is only "unresolved name 'helperValue' (not in scope)" with
+-- no mention of lib.
+let x = helperValue --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — no diagnostic message matches /lib/ (saw: "unresolved name 'helperValue' (not in scope)")

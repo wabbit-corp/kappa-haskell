@@ -1,0 +1,30 @@
+-- §20.7 scoping: aggregate fields may refer to names bound by earlier
+-- clauses but NOT to other aggregate fields; and after `into name` the row
+-- environment is replaced by the singleton row `name`, so pre-group names
+-- are out of scope in later clauses.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_NAME_UNRESOLVED
+module main
+
+-- NEGATIVE: aggregate 'doubled' refers to sibling aggregate 'items'.
+badAggRef : List Int
+let badAggRef =
+    [
+        for x in [1, 2, 3]
+        group by (x > 1) {
+            items = [x]
+            doubled = items --!! E_NAME_UNRESOLVED
+        } into g
+        yield 0
+    ]
+
+-- NEGATIVE: 'x' is not in scope after `into g`.
+badPostScope : List Int
+let badPostScope =
+    [
+        for x in [1, 2, 3]
+        group by (x > 1) { items = [x] } into g
+        yield x --!! E_NAME_UNRESOLVED
+    ]
+-- STATUS(a0497523): PASS

@@ -1,0 +1,76 @@
+-- Source: ATS-Xanadu tests/srcgen1/FROZEN0/xinterp-*/TEST/prelude/sieve.dats
+--         ($lazy(cons(x0, sieve(filter(xs, x0)))), $eval(xs), case- xs of cons),
+--         tests/srcgen1/TEST/DATA/syntax_dyn.dats (`val- cons(x0,xs) = $eval(xs)`),
+--         tests/srcgen2/TEST/JS/DATA/basics0.sats (`datatype strmcon(a:type+)`)
+-- Spec: §11.2 (suspension types `Thunk A`; `thunk`/`force`),
+--       §16 (force expr : A when expr : Thunk A),
+--       §10.1 (a constructor parameter of type `Thunk T` accepts a
+--       supplied argument of type `T` by elaborating it as `thunk expr`).
+-- ATS3's $lazy / $eval, mapped to Kappa's thunk / force. Positive-only:
+-- suspension introduction, nested suspension, forcing, the constructor
+-- auto-thunk sugar, and a demand-bounded traversal of a suspended
+-- stream. The original's infinite corecursive streams are NOT portable:
+-- Kappa is total by default (§15) and has no productivity checker, and
+-- a data type recursive under Thunk fails strict positivity (§10.4.2;
+-- see the companion ATS-lazy-stream-eval-positivity.kp), so the stream
+-- here suspends its tail behind `Unit ->` and traversal is fuel-bounded.
+
+--! mode check
+
+module main
+
+-- Basic suspension and forcing.
+t1 : Thunk Int
+let t1 = thunk (1 + 2)
+
+forcedT1 : Int
+let forcedT1 = force t1
+
+-- Nested suspensions force one layer at a time.
+nested : Thunk (Thunk Int)
+let nested = thunk (thunk 5)
+
+forcedNested : Int
+let forcedNested = force (force nested)
+
+-- A constructor field may be suspended.
+data LazyPair : Type =
+    MkLazyPair (first : Int) (second : Thunk Int)
+
+pairExplicit : LazyPair
+let pairExplicit = MkLazyPair 1 (thunk 10)
+
+-- §10.1 sugar: a plain Int argument for a `Thunk Int` field is
+-- elaborated as `thunk expr`.
+pairSugar : LazyPair
+let pairSugar = MkLazyPair 1 10
+
+sndOf : LazyPair -> Int
+let sndOf p =
+    match p
+    case MkLazyPair _ tl -> force tl
+
+-- A stream whose tail is suspended behind a function type (admissible
+-- for strict positivity, unlike Thunk).
+data FStream : Type =
+    FSEmpty : FStream
+    FSCons  : (fshead : Int) -> (fstail : Unit -> FStream) -> FStream
+
+finite : FStream
+let finite = FSCons 1 (\u -> FSCons 2 (\v -> FSEmpty))
+
+-- Fuel-bounded traversal: demand-driven evaluation of the suspended
+-- tail, terminating by the explicit Int measure.
+takeN : Int -> FStream -> List Int
+let takeN n s decreases n =
+    if leInt n 0 then Nil
+    else
+        match s
+        case FSEmpty -> Nil
+        case FSCons x tl -> x :: takeN (subInt n 1) (tl ())
+
+firstTwo : List Int
+let firstTwo = takeN 2 finite
+
+--! assertNoErrors
+--! assertNoWarnings

@@ -21,4 +21,4 @@ let viaSugar = p.pick --!! E_NAME_AMBIGUOUS
 
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_NAME_AMBIGUOUS
--- STATUS(a51e1bf): FAIL — compiler silently elaborates p.pick via the projection definition (0 errors, evaluates to 9) instead of reporting the two-eligible-callable ambiguity
+-- STATUS(a0497523): FAIL — compiler silently elaborates p.pick via the projection definition (0 errors, evaluates to 9) instead of reporting the two-eligible-callable ambiguity

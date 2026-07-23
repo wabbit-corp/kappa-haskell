@@ -1,0 +1,7 @@
+--! mode check
+--! assertType client.importedAddr configlib.ServerAddr
+--! assertType client.hostFromImport String
+--! assertType client.portFromImport Int
+--! assertType client.createdAddr configlib.ServerAddr
+--! assertType client.localAlias configlib.ServerAddr -> String
+--! assertDiagnosticFamily error kappa.type.mismatch

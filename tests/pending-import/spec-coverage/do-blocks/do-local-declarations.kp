@@ -1,0 +1,27 @@
+-- §18.2.7/§9.3.1/§30.1.1: a do block is a block scope — a do-local `data`
+-- declaration scopes from its declaration site to the end of the block and
+-- its names do NOT escape. Per spec the ONLY errors here are the two
+-- top-level uses of the local names after the block.
+module main
+
+useLocal : UIO Int
+let useLocal = do
+    data Flag : Type =
+        On
+        Off
+    let tag = \ f ->
+        match f
+        case On -> 1
+        case Off -> 0
+    ioPure (tag On)
+
+-- NEGATIVE: the local type name and constructor are not in scope here.
+leak : Flag --!! kappa.name.unresolved
+let leak = On --!! kappa.name.unresolved
+
+--! mode check
+--! assertErrorCount 2
+-- STATUS(a0497523): FAIL — local data inside do is E_UNSUPPORTED ("this local
+-- declaration form inside do is not supported by this implementation"), so the
+-- file reports 6 errors (the unsupported decl + cascaded unresolved On/Off)
+-- instead of the 2 spec-expected escape errors.

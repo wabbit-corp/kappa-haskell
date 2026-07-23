@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_ESCAPE
+
+-- §18.1.25.1 bracket law 3 (no use after release): the use phase
+-- receives only a BORROWED view of the resource — the normative
+-- signature is use : (& r : a) -> m b — so returning the resource out
+-- of `use` would let it outlive `release r` and must be rejected by the
+-- borrow/region rules of §12.3. (bracket's release-on-every-path laws
+-- are pinned by tests/conformance/effects/bracket.kp.)
+module main
+
+data Res : Type = MkRes (rid : Int)
+
+leak : IO Unit Res
+let leak = bracket (ioPure (MkRes 1)) (\r -> ioPure ()) (\r -> ioPure r) --!! E_QTT_BORROW_ESCAPE
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): the prelude types bracket's use phase as a -> IO e b (owned view), not the §18.1.25.1 borrowed view, so the resource escape from use is not rejected.

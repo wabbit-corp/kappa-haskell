@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertType callThunk (v : Thunk Int) -> Int
+
+-- §30.2.2 + §31.1 suspension reduction: force (thunk e) ↦ e and
+-- force (lazy e) ↦ e are definitional equalities, and `(thunk x : A)`
+-- binder sugar is only surface sugar for `(x : Thunk A)` — it does not
+-- introduce a distinct core binder identity.
+module main
+
+forceThunk : (x : Int) -> (force (thunk x)) = x
+let forceThunk x = refl
+
+forceLazy : (x : Int) -> (force (lazy x)) = x
+let forceLazy x = refl
+
+-- binder sugar: the declared type below is (thunk v : Int) -> Int and
+-- must be definitionally the same as (v : Thunk Int) -> Int
+callThunk : (thunk v : Int) -> Int
+let callThunk v = force v
+
+-- and callable through the desugared spelling
+useDesugared : ((v : Thunk Int) -> Int) -> Int
+let useDesugared f = f (thunk 41)
+
+applied : Int
+let applied = useDesugared callThunk
+
+-- STATUS(a0497523): PASS

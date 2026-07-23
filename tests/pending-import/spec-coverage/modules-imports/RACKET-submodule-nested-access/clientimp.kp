@@ -1,0 +1,10 @@
+-- Spec: §8.3 (selective import from a nested module binds unqualified names)
+module clientimp
+import collections.list.(consL, emptyL, headL)
+
+-- POSITIVE: import the nested module's members and use unqualified access.
+listA : List Int
+let listA = consL Int 42 (emptyL Int)
+
+headA : Option Int
+let headA = headL Int listA

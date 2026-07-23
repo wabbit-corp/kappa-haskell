@@ -1,0 +1,43 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaHex 255
+--! assertEval viaBin 10
+--! assertEval viaHexSuffix 255
+
+-- §6.1.1 × §6.1.5 × §6.1.6: hex and binary integer literals are
+-- ordinary integer literals, so they elaborate through a USER
+-- FromInteger instance at a demanded user type with the decoded value
+-- as the Nat payload (0xFF ↦ fromInteger 255, 0b1010 ↦ fromInteger 10).
+-- They may also take suffixes (§6.1.6 example `0xFFu32`): the suffix
+-- path takes priority and receives the decoded payload as Nat.
+module main
+
+data Meters : Type =
+    MkMeters Int
+
+instance FromInteger Meters =
+    let fromInteger n = MkMeters (natToInt n)
+
+unwrap : Meters -> Int
+let unwrap m =
+    match m
+    case MkMeters n -> n
+
+hexDirect : Meters
+let hexDirect = 0xFF
+
+binDirect : Meters
+let binDirect = 0b1010
+
+viaHex : Int
+let viaHex = unwrap hexDirect
+
+viaBin : Int
+let viaBin = unwrap binDirect
+
+u32 : Nat -> Int
+let u32 n = natToInt n
+
+viaHexSuffix : Int
+let viaHexSuffix = 0xFFu32
+-- STATUS(a0497523): PASS

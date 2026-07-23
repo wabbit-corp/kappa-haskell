@@ -29,4 +29,4 @@ let badBuild = do
 
 bad : Wrap
 let bad = $(badBuild)
--- STATUS(a51e1bf): FAIL — std.deriving.shape does not provide constructAdt (unresolved name); §22 expect-term surface incomplete, so no kappa.deriving.shape BAD_CONSTRUCTOR_ARGUMENTS is emitted
+-- STATUS(a0497523): FAIL — std.deriving.shape does not provide constructAdt (unresolved name); §22 expect-term surface incomplete, so no kappa.deriving.shape BAD_CONSTRUCTOR_ARGUMENTS is emitted

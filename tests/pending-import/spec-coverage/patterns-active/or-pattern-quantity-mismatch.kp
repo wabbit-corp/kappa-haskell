@@ -35,3 +35,4 @@ let badOr (1 f : Uneven a) : a =
 -- STATUS(a51e1bf): FAIL — the compiler accepts badOr with 0 errors: the
 -- §17.2.3 requirement that corresponding or-pattern binders carry
 -- identical quantities is not checked (okOr correctly passes).
+-- STATUS(a0497523): FAIL — unchanged (badOr accepted; or-pattern quantity agreement still unchecked).

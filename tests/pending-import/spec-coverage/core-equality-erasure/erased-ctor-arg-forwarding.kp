@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.2 (with §12.2.1): a quantity-0 constructor field is an ERASED
+-- argument position, so forwarding a quantity-0 binder into it is a
+-- demand-0 use and MUST be accepted — exactly as forwarding an erased
+-- binder into an erased function parameter is accepted.
+module main
+
+data Tracked (n : Int) : Type =
+    Witness : forall (m : Int). Tracked m
+
+data Counted : Type =
+    MkCounted (n : Int) (0 prf : Tracked n)
+
+-- control (accepted today): erased-to-erased forwarding across
+-- ordinary function binders
+sink : (n : Int) -> (0 q : Tracked n) -> Int
+let sink n q = n
+
+passAlong : (n : Int) -> (0 p : Tracked n) -> Int
+let passAlong n p = sink n p
+
+-- erased binder into an erased CONSTRUCTOR field
+mk : (n : Int) -> (0 p : Tracked n) -> Counted
+let mk n p = MkCounted n p
+
+-- STATUS(a0497523): FAIL — forwarding an erased binder into a quantity-0 CONSTRUCTOR field is rejected with E_QTT_ERASED_RUNTIME_USE ("used at runtime"), though the same forwarding across function binders is accepted

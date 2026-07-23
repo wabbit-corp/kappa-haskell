@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.inout.restoration
+
+-- §18.9.4 step 7 / §18.9.6: the user-written residual pattern must NOT bind
+-- any name that also appears as a ~ argument in the same application
+-- (`bad`); binding only genuine residual fields is accepted (`ok`).
+module main
+
+readx : (inout f : Int) -> (n : Int) -> UIO (payload : Int, 1 f : Int)
+let readx (inout f : Int) (n : Int) : UIO (payload : Int, 1 f : Int) =
+    pure (payload = n, f = addInt f 1)
+
+ok : UIO Unit
+let ok = do
+    var file = 0
+    let (payload = d) <- readx ~file 5
+    printlnString (showInt d)
+
+bad : UIO Unit
+let bad = do
+    var file = 0
+    let (payload = file) <- readx ~file 5 --!! E_QTT_INOUT_RESIDUAL_PATTERN
+    pure ()
+
+-- STATUS(a0497523): PASS

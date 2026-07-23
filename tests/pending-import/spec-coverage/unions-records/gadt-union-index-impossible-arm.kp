@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.1.8 (Spec.md L16377-L16382): "Exhaustiveness and reachability are
+-- determined by family-argument unification exactly as in §17.1.1" for
+-- union-typed GADT indices, and §13.1.1 (L16260-L16263) makes VarRow
+-- equality modulo permutation. viaPermuted pins the working half: the
+-- permuted index spelling (| String | Integer |) is definitionally the
+-- SmallShape index. classify pins the broken half: BigShape's index
+-- (| Integer | String | Bool |) cannot unify with the two-member
+-- scrutinee index, so the single-arm match MUST be exhaustive.
+--
+-- Currently classify is rejected with E_PATTERN_NON_EXHAUSTIVE "missing
+-- cases: BigShape": the coverage checker never refutes constructors by
+-- Type-valued index unification (the same failure occurs with scalar type
+-- indices, e.g. IntRep/BoolRep at Rep Integer), although it does refute
+-- by term-level constructor indices such as Nat's Z/S.
+module main
+
+data Shape (u : Type) : Type =
+    SmallShape : Shape (| Integer | String |)
+    BigShape   : Shape (| Integer | String | Bool |)
+
+viaPermuted : Shape (| String | Integer |)
+let viaPermuted = SmallShape
+
+classify : Shape (| String | Integer |) -> Integer
+let classify s =
+    match s
+    case SmallShape -> 1
+
+-- STATUS(a0497523): FAIL — viaPermuted is accepted (VarRow equality modulo permutation works in index position) but classify gets E_PATTERN_NON_EXHAUSTIVE "missing cases: BigShape": the coverage checker never refutes constructors by Type-valued index unification (scalar Rep Integer / IntRep-BoolRep fails identically).

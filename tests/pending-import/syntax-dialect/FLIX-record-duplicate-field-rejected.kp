@@ -24,6 +24,6 @@ let good_record : (x : Int, y : String) =
 
 -- POSITIVE TEST: row extension with a label not in the tail.
 let add_field (r : (x : Int | rest)) : (x : Int, z : Bool | rest) =
-    (z = True | r)
+    (z = True | r,)
 
 -- expect: bad_type, bad_literal, bad_open_type rejected; good_record, add_field accepted

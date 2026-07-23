@@ -1,0 +1,6 @@
+-- Support module: a second trait exporting a member with the SAME spelling
+-- `encode` as ser.Serializer's member.
+module fmt
+
+trait Formatter (a : Type) =
+    encode : a -> String

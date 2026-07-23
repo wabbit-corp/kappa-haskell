@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_HANDLER_OP_MISSING, E_HANDLER_OP_UNKNOWN
+
+-- §18.1.21: a handler must contain exactly one operation clause for
+-- each operation declared by the effect interface and no extra
+-- clauses — omitting `put` is rejected, and a clause for an operation
+-- the interface does not declare (`flip`) is rejected.
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+comp : Eff <[State : State]> Int
+let comp = State.get ()
+
+missingPut : Eff <[ ]> Int
+let missingPut =
+    deep handle State comp with --!! E_HANDLER_OP_MISSING
+        case return x -> pure x
+        case get _ k -> k 1
+
+unknownFlip : Eff <[ ]> Int
+let unknownFlip =
+    deep handle State comp with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+        case flip _ k -> k () --!! E_HANDLER_OP_UNKNOWN
+
+r : Int
+let r = 0
+-- STATUS(a0497523): PASS

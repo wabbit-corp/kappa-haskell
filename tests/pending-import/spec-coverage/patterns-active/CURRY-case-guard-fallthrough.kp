@@ -1,0 +1,54 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (posFirstOrSecond zs = case zs of (x:_) | x>0 -> x ; (_:y:_) | y>0 -> y).
+-- Spec: §17.1 (`match`; a case whose guard evaluates to False falls
+--       through to the next case), §17.1.9 (guard success evidence).
+--
+-- Pins: guard fall-through. When `case pat if guard -> body` matches the
+-- pattern but the guard is False, matching continues with the next case
+-- as if the pattern had not matched.
+
+module test
+
+--! mode check
+
+data IntList : Type =
+    INil
+    ICons (head : Int) (tail : IntList)
+
+posFirstOrSecond : IntList -> Int
+let posFirstOrSecond zs =
+    match zs
+    case ICons x _ if x > 0 -> x
+    case ICons _ (ICons y _) if y > 0 -> y
+    case _ -> 0
+
+--! assertNoErrors
+--! assertType posFirstOrSecond (IntList -> Int)
+
+-- POSITIVE: scrutinee whose first head is positive — first clause fires.
+firstWins : Int
+let firstWins = posFirstOrSecond (ICons 3 (ICons 2 INil))
+
+--! assertEval firstWins 3
+
+-- POSITIVE: first guard fails (head = 0) → fall through to the second
+-- clause, which binds y=2 and succeeds.
+secondWins : Int
+let secondWins = posFirstOrSecond (ICons 0 (ICons 2 (ICons 3 INil)))
+
+--! assertEval secondWins 2
+
+-- POSITIVE: both guards fail → fall through to the catch-all `_`.
+allFail : Int
+let allFail = posFirstOrSecond (ICons 0 (ICons (0 - 1) INil))
+
+--! assertEval allFail 0
+
+-- POSITIVE: scrutinee is the empty list — catch-all `_`.
+emptyHits : Int
+let emptyHits = posFirstOrSecond INil
+
+--! assertNoErrors
+--! assertEval emptyHits 0
+
+-- STATUS(a0497523): PASS

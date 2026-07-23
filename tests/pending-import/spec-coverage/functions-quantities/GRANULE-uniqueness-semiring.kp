@@ -1,0 +1,39 @@
+-- Source: granule-project/granule PR #164 (uniqueness semiring),
+--         PR #296 (Improve Rename in clone, fix uniqueness laws)
+-- Spec: §12.2 (linear quantity), §12.2.5 (dropped 1-binder violates its
+--       positive lower bound), §12.2.6 (duplication positions), §9.4,
+--       §3.2.5
+-- NOTE: the duplication negative overlaps
+--       tests/conformance/spec-coverage/functions-quantities/affine-linear-not-duplicable.kp.
+-- A unique (here: linear, quantity 1) value can be neither shared nor
+-- silently dropped. Duplication is kappa.quantity.unsatisfied; the silent
+-- drop is kappa.quantity.positive-lower-bound (re-derived from the
+-- original's kappa.quantity.unsatisfied guess per §12.2.5/§3.2.5).
+
+module test
+
+--! mode check
+
+expect type Unq (a : Type)
+
+expect term mkUnq   : forall (a : Type). (1 x : a) -> Unq a
+expect term openUnq : forall (a : Type). (1 u : Unq a) -> a
+
+-- POSITIVE: open a unique value exactly once.
+useOnce : (1 u : Unq Bool) -> Bool
+let useOnce u = openUnq u
+
+--! assertType useOnce ((1 u : Unq Bool) -> Bool)
+
+-- NEGATIVE: duplicate a unique value directly.
+badDup : (1 u : Unq Bool) -> (Unq Bool, Unq Bool)
+let badDup u = (u, u)         --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: drop a unique value silently.
+badDrop : (1 u : Unq Bool) -> Unit
+let badDrop u = ()            --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): PASS

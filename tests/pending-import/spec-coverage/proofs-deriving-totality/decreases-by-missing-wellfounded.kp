@@ -25,7 +25,7 @@ climb : Int -> Int
 let climb n decreases n by revLt = --!! kappa.termination.failure
     if leInt n 0 then 0 else climb (subInt n 1)
 
--- STATUS(a51e1bf): FAIL — both SCCs are accepted with
+-- STATUS(a0497523): FAIL — both SCCs are accepted with
 -- W_TERMINATION_UNVERIFIED warnings and 0 errors: the missing WellFounded
 -- evidence for the opaque Type-valued relation is never demanded, and the
 -- false decrease goal of the reversed Bool relation never rejects.

@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "start\nin-inner\ninner-defer\nloop-defer\nafter-loop\nouter-defer\n"
+
+-- §18.8.3.1: a `break` exiting several nested do-scopes at once unwinds them
+-- inner-to-outer — every exit action of an inner crossed frame runs before
+-- any exit action of an outer crossed frame — while a `defer@outer`
+-- scheduled from the innermost scope stays pending across those exits and
+-- runs only when the labeled outer scope itself unwinds.
+module main
+
+main : UIO Unit
+let main = outer@do
+    printlnString "start"
+    for i in 1 :: 2 :: Nil do
+        defer (printlnString "loop-defer")
+        inner@do
+            defer (printlnString "inner-defer")
+            defer@outer (printlnString "outer-defer")
+            printlnString "in-inner"
+            break
+        printlnString "unreachable"
+    printlnString "after-loop"
+
+-- STATUS(a0497523): PASS

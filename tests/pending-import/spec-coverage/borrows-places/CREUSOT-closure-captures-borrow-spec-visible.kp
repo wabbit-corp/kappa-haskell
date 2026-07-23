@@ -1,0 +1,37 @@
+-- Source issues: CREUSOT-1398, CREUSOT-1396
+-- Spec: §12.3 (borrow lifetimes and escape prevention: region tracking,
+--       skolem-escape rule), §12.3.1 (capture-annotated types),
+--       §3.2.7 (kappa.borrow.escape)
+-- NOTE: overlaps with tests/conformance/qtt/borrow-escape.kp
+-- Pins: a closure that captures a borrowed binder carries the borrow's
+-- rigid region in its hidden environment; returning that closure from
+-- the function that introduced the borrow is a skolem escape (§12.3
+-- escape rule, first bullet) because the declared result type
+-- `Unit -> Int` does not mention the region. A downward-only use of the
+-- same capture inside the borrow's scope stays legal.
+
+module main
+
+--! mode check
+
+data Box : Type =
+    MkBox (n : Int)
+
+read : (& b : Box) -> Int
+let read b = 0
+
+-- POSITIVE: capturing the borrow in a closure consumed inside the
+-- borrow's scope is downward-only and accepted (§12.3).
+useDownward : (& b : Box) -> Int
+let useDownward b =
+    (\u -> read b) ()
+
+-- NEGATIVE: the returned closure's hidden region environment mentions
+-- the rigid region of `b`; the closure would outlive the borrow.
+escapeCapture : (& b : Box) -> (Unit -> Int)
+let escapeCapture b =
+    \u -> read b                       --!! kappa.borrow.escape
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+-- STATUS(a0497523): PASS

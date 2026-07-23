@@ -1,0 +1,20 @@
+-- DX / §5.5.1: longest-match tokenization of `]>` makes an otherwise ordinary
+-- list-literal boundary plus greater-than operator fail unless whitespace is
+-- inserted. Mainstream longest-match expectations still reset at a balanced
+-- closing delimiter; accepting this form avoids a highly non-local effect-row
+-- parse error in code that contains no effect row.
+--! mode check
+--! assertNoErrors
+--! assertEval probe True
+
+module main
+
+firstOrZero : List Int -> Int
+let firstOrZero xs =
+    match xs
+    case x :: rest -> x
+    case Nil -> 0
+
+probe : Bool
+let probe = firstOrZero [1]>0
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected '[' at start of declaration" at line 19; assertEval: 'probe' evaluates to \xs …

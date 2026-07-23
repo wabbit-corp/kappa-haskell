@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+--! assertEval probe "CUSTOM"
+
+-- §6.3.4: "The prefix is resolved by ordinary term name resolution
+-- using the prefix identifier's NameKey. It has no special parser
+-- status beyond introducing this literal form." §6.3.4.5: the standard
+-- `f` prefix supplied by std.prelude is "an ordinary term
+-- participating in this mechanism" receiving "no special parser
+-- treatment", and §28.2 (L33426) says prelude exports participate in
+-- lexical lookup and may be rebound. Therefore a module-level `f`
+-- handler must win over the prelude's conventional show-concatenation
+-- handler, and f"x${n}y" below must elaborate through the user
+-- handler, yielding "CUSTOM".
+
+import std.deriving.shape.*
+
+instance InterpolatedMacro String =
+    let buildInterpolated fragments = stringSyntax "CUSTOM"
+
+f : Elab (InterpolatedMacro String)
+let f = pure (summon (InterpolatedMacro String))
+
+n : Integer
+let n = 7
+
+probe : String
+let probe = f"x${n}y"
+-- STATUS(a0497523): FAIL — the `f` prefix is hardcoded in Check.hs elabString; the in-scope user handler is ignored and probe evaluates to "x7y"

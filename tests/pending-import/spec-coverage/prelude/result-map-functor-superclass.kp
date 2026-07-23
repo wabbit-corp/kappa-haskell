@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+--! assertEval mappedHit True
+--! assertEval errKept True
+
+-- §14.1 (Spec L18094): std.prelude's Applicative is declared as
+-- `trait Functor f => Applicative ...`, and §28.2 (L34902) reaffirms that
+-- declaration is the standard prelude's.  The prelude provides
+-- `Applicative (Result e)` / `Monad (Result e)` (observable below via
+-- liftA2, and relied on by conformance do-notation tests), so Functor
+-- (Result e) evidence must be available through the superclass, making
+-- `map` over Result well-typed.
+--
+-- The compiler's Applicative omits the Functor superclass, provides no
+-- `instance Functor (Result e)`, and so everyday `map f (Ok x)` fails with
+-- E_UNSOLVED_IMPLICIT (Functor (Result String)) even though liftA2/(>>=)
+-- over the same Result type work.
+
+module main
+
+-- premise: Applicative (Result e) is provided
+viaLiftA2 : Result String Integer
+let viaLiftA2 = liftA2 (\x -> \y -> x + y) (Ok 20) (Ok 22)
+
+-- consequence: Functor (Result e) must be solvable
+mapped : Result String Integer
+let mapped = map (\x -> x + 1) (Ok 41)
+
+mappedHit : Bool
+let mappedHit = mapped == Ok 42
+
+errMapped : Result String Integer
+let errMapped = map (\x -> x + 1) (Err "boom")
+
+errKept : Bool
+let errKept = errMapped == Err "boom"
+-- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT (Functor (Result String)) x2: prelude Applicative lacks the §14.1 Functor superclass and no Functor (Result e) instance exists, while liftA2 over the same Result type solves

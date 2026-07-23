@@ -18,4 +18,4 @@ let sub2 = (infix -)
 probe : Int
 let probe = sub2 9 4
 
--- STATUS(a51e1bf): FAIL — (infix -) skips the eta-expansion/proof-insertion path that bare (-) gets, so it reports E_TYPE_EQUALITY_MISMATCH against Int -> Int -> Int (actual type keeps the subDefined proof argument)
+-- STATUS(a0497523): FAIL — (infix -) skips the eta-expansion/proof-insertion path that bare (-) gets, so it reports E_TYPE_EQUALITY_MISMATCH against Int -> Int -> Int (actual type keeps the subDefined proof argument)

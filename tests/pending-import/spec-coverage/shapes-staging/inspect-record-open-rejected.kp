@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+
+-- §22.1: open record types are rejected by Phase 0 record inspection —
+-- 'inspectRecord' requires normalization to a *closed* record type
+-- (portable meaning E_DERIVING_SHAPE_NOT_CLOSED_RECORD). Here the
+-- residual row 'r' is still abstract at the splice site, so the record
+-- type '(x : Int | r)' is open and inspection MUST fail.
+
+import std.deriving.shape.*
+
+badFields : forall (@0 r : RecRow). Elab (Syntax String)
+let badFields @r = do
+    let shape <- inspectRecord @((x : Int | r)) '{ (x : Int | r) }
+    stringSyntax "unreachable"
+
+bad : forall (@0 r : RecRow). (x : Int | r) -> String
+let bad @r rec = $(badFields @r)
+-- STATUS(a0497523): PASS

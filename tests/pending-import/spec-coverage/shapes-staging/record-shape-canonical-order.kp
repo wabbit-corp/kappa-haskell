@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.2 (with §§13.2.1.1, 31.4): RecordShape.fields is listed in the
+-- canonical dependency-respecting record order, not source spelling
+-- order. 'item' depends on 'size' via 'this.size', so the canonical
+-- telescope is (size, item) even though the source spells item first.
+
+import std.deriving.shape.*
+
+data Sized (n : Nat) : Type =
+    MkSized
+
+type Dep = (item : Sized this.size, size : Nat)
+
+fieldNames : List ShapeField -> List String
+let fieldNames fs =
+    match fs
+    case Nil -> Nil
+    case f :: rest -> f.renderName :: fieldNames rest
+
+checkOrder : Elab (Syntax String)
+let checkOrder = do
+    let shape <- inspectRecord @Dep '{ type Dep }
+    match fieldNames shape.fields
+    case "size" :: "item" :: Nil -> stringSyntax "ok"
+    case _ -> failElab "record fields not in canonical dependency order"
+
+ok : String
+let ok = $(checkOrder)
+-- STATUS(a0497523): FAIL — RecordShape.fields comes back in source spelling order ("item,size"), not the §22.2/§13.2.1.1 canonical dependency order

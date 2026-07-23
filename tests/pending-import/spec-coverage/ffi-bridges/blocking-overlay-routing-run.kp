@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "checksum-ok\n"
+
+-- §26.1.4 (foreign-call invocation routing): a raw foreign declaration
+-- classified `blocking` executes as if wrapped by the source-level
+-- `blocking` combinator; a refined overlay MAY expose that routing
+-- explicitly as `blocking rawCall`, and the overlay's observable result
+-- must equal the raw call's result (observational equivalence to the
+-- classification-and-routing rules).
+module main
+
+import std.ffi.(type I32, term i32, term i32Value)
+
+-- Stand-in for a raw binding whose trusted summary classifies it `blocking`.
+checksum_raw : I32 -> UIO I32
+let checksum_raw v = ioPure (i32 (i32Value v + 1))
+
+-- Refined overlay: explicit blocking routing (§26.1.4 + §18.1.11).
+checksum : I32 -> UIO I32
+let checksum v = blocking (checksum_raw v)
+
+main : UIO Unit
+let main = do
+    let r <- checksum (i32 2)
+    if i32Value r == 3 then printlnString "checksum-ok" else printlnString "checksum-bad"
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,30 @@
+-- §18.2.2 (do-item sequences: an expression item is a MONADIC expression
+-- item, `expr : m a`, and the last reached do-item provides the block
+-- result), §18.8.6 (result-producing item: "Expression item `final` where
+-- `final : m A`"), §18.3 (Lift_m applies only to items containing `!`
+-- splices or mutable-variable current-value reads; a bare pure expression
+-- contains neither).  Nothing in §18 licenses implicitly `pure`-lifting a
+-- pure-typed final expression item, so this program -- whose do block over
+-- `UIO Int` ends in the bare `Int` variable `n` -- must be rejected with a
+-- type mismatch (n : Integer vs IO Void Int).
+--
+-- The compiler instead accepts it (an IO-family-only "corpus
+-- accommodation": an inferable statement may check at the bare pure type).
+-- The same shape over Option IS rejected (see sibling test
+-- do-tail-missing-pure-option-mismatch.kp), so acceptance here is both
+-- contrary to §18.8.6 and inconsistent across monads: beginners learn
+-- "a do block may end in a plain value" from IO and are then baffled
+-- when Option/user monads reject exactly that with a 1-3 error cascade.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+module main
+
+n : Int
+let n = 42
+
+main : UIO Int
+let main = do
+    printInt 1
+    n
+-- STATUS(a0497523): FAIL — accepted with 0 errors: the IO-family do block silently passes the bare pure Int tail through (Check.hs statementInferable corpus accommodation), contra §18.2.2/§18.8.6; the identical shape over Option is rejected

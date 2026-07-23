@@ -32,7 +32,7 @@ let got = get picked
 --! assertWarningCount 2
 --! assertEval got 9
 
--- STATUS(a51e1bf): FAIL — no warnings are emitted (got 0, want 2): the
+-- STATUS(a0497523): FAIL — no warnings are emitted (got 0, want 2): the
 -- §10.1.2 MUST-warning for lowercase-generalizable data/constructor names
 -- is not implemented. The declaration itself parses and evaluates fine
 -- (positional patterns; see lowercase-ctor-named-pattern.kp for the

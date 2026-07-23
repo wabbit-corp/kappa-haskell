@@ -24,7 +24,7 @@ let walkAlias xs =
 walkProj : List Int -> Int
 let walkProj xs =
     block
-        let boxed = (payload = xs)
+        let boxed = (payload = xs,)
         match boxed.payload
         case Nil -> 0
         case _ :: rest -> addInt 1 (walkProj rest)
@@ -40,7 +40,7 @@ let walkOpaque xs = --!! W_TERMINATION_UNVERIFIED
     case Nil -> 0
     case _ :: rest -> addInt 1 (walkOpaque (hide rest))
 
--- STATUS(a51e1bf): FAIL — the §15.3 normalization pipeline is not
+-- STATUS(a0497523): FAIL — the §15.3 normalization pipeline is not
 -- implemented: walkAlias (transparent local alias) and walkProj
 -- (projection reduction) are both W_TERMINATION_UNVERIFIED, giving 3
 -- warnings where the spec requires acceptance of the first two (only the

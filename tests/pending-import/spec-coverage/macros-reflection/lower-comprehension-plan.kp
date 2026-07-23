@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.6/§20.10: lowerComprehension performs the normative comprehension
+-- lowering (query-mode inference, item-quantity inference, quantitative
+-- row checking, capture inference, droppability/duplicability
+-- obligations) from the stable RawComprehension reflection type to the
+-- stable normalized ComprehensionPlan type. The definitions delegate at
+-- the spec signature, including from inside a custom sink hook where a
+-- RawComprehension value is actually available.
+module main
+
+lowerIt : forall (a : Type). RawComprehension a -> Elab (ComprehensionPlan a)
+let lowerIt r = lowerComprehension r
+
+data Sink : Type =
+    Sink
+
+instance FromComprehensionRaw Sink =
+    let Item = Integer
+    let fromComprehensionRaw raw = do
+        let plan <- lowerComprehension raw
+        pure '{ Sink }
+-- STATUS(a0497523): FAIL — lowerComprehension is E_NAME_UNRESOLVED (RawComprehension/ComprehensionPlan are opaque tokens with no lowering/inspection API)

@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "l:1\nr:2\nclause-fin\nsum:3\n"
+
+-- §32.2.19 boundary (contrast case): only do-scope frames INSIDE the
+-- captured segment are cloned per resumption use. A defer registered in the
+-- handler CLAUSE's own do-scope (IO carrier) is outside the segment, so a
+-- multi-shot clause that resumes k twice still runs its clause defer exactly
+-- ONCE, at clause do-scope exit, after both re-entries. (The in-segment
+-- per-resume cloning twin is effects-handlers/
+-- multishot-defer-cloned-per-resume.kp.)
+module main
+
+effect Choice =
+    ω choose : Unit -> Bool
+
+comp : Eff <[Choice : Choice]> Int
+let comp = do
+    let b <- Choice.choose ()
+    if b then pure 1 else pure 2
+
+handled : UIO Int
+let handled =
+    deep handle Choice comp with
+        case return x -> ioPure x
+        case choose _ k -> do
+            defer (printlnString "clause-fin")
+            let l <- k True
+            let r <- k False
+            printlnString (stringAppend "l:" (showInt l))
+            printlnString (stringAppend "r:" (showInt r))
+            ioPure (addInt l r)
+
+main : UIO Unit
+let main = do
+    let r <- handled
+    printlnString (stringAppend "sum:" (showInt r))
+-- STATUS(a0497523): PASS

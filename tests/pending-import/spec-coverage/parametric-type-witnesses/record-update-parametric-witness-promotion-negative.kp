@@ -1,0 +1,18 @@
+-- §11.1.2.3B + §13.2.5 + §17.1.7A: neither a dependent update nor a
+-- subsequent record pattern may turn a parametric type field into an ordinary
+-- Type result.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PARAMETRIC_TYPE_PROMOTION
+--! assertDiagnosticFamily error kappa.type.parametric-promotion
+
+module main
+
+type Packed : Type =
+    (A : Type, value : A)
+
+bad : (p : Packed) -> Type
+let bad p =
+    match p.{ value = p.value }
+    case (A = A, value = value) ->
+        A

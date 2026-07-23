@@ -1,0 +1,41 @@
+-- §17.1.8 (Spec L22291-L22294): "Constructor-field projections made
+-- available by such a refinement are borrowed projections of that same
+-- underlying source path, not copied values." + §12.2/§12.3: a borrow
+-- cannot satisfy a `1` demand (passing a borrowed BINDER to a linear
+-- parameter is already rejected — cf.
+-- conformance/qtt/borrow-qtt-030-borrow-reject-borrow-to-linear).
+-- The same must hold for a field binder introduced by matching a
+-- borrowed scrutinee: consuming it would free state the caller still
+-- owns. Must be rejected.
+
+--! mode check
+
+data Res : Type =
+    MkRes (n : Int)
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Two : Type =
+    TA (1 r : Res)
+    TB (1 r : Res)
+
+-- NEGATIVE: r is a borrowed projection of the borrowed scrutinee t, but
+-- the TA body passes it to a parameter demanding quantity 1. (The TB
+-- branch only drops its ω-borrowed projection, which is fine.)
+bad : (& t : Two) -> Int
+let bad (& t : Two) : Int =
+    match t
+    case TA r -> resVal r
+    case TB _ -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticMatch borrow|linear|consum|quantit
+
+-- STATUS(a0497523): FAIL — accepted with 0 errors: field binders under a
+-- borrowed scrutinee are not marked as borrowed projections, so they can
+-- be consumed at quantity 1 (the direct borrowed-binder-to-linear case IS
+-- rejected). The or-pattern form `case TA r | TB r -> resVal r` is
+-- accepted identically.

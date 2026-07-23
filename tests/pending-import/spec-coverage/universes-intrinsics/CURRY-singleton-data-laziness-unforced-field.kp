@@ -1,0 +1,59 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (headIfTrue (LIST xs) b = if b then head xs else 42;
+--    testNonStrictNT = headIfTrue failed False -=- 42).
+-- Spec: §11.2 (suspension types Thunk/Need; `force`), §10.1 (constructor
+--       suspension binder sugar `(thunk f : T)` and suspension
+--       elaboration of constructor arguments), §16.4 (conditionals).
+--
+-- Curry observes non-strictness through `failed`; a total language
+-- cannot diverge, so the pinned counterpart: a wrapper whose payload is
+-- a `Thunk` field is destructured WITHOUT forcing the payload; the
+-- branch that ignores the payload returns its constant even though the
+-- suspended list would decode to a different answer, and only the
+-- demanding branch forces it.
+
+module test
+
+--! mode check
+
+-- A wrapper whose payload is a suspended list of Ints: matching the
+-- constructor binds the suspension itself, never the payload.
+data Wrapped : Type =
+    MkWrapped (thunk payload : List Int)
+
+-- The consumer takes a Wrapped and a Bool. Only the True branch forces
+-- the payload; the False branch returns a default constant.
+headIfTrue : Wrapped -> Bool -> Int
+let headIfTrue w b =
+    match w
+    case MkWrapped t ->
+        if b
+        then
+            match force t
+            case Nil -> 0 - 1
+            case h :: _ -> h
+        else 42
+
+--! assertNoErrors
+--! assertType headIfTrue (Wrapped -> Bool -> Int)
+
+-- The suspended payload decodes to head 7 — deliberately different from
+-- the False branch's 42, so the observations below distinguish "forced"
+-- from "not forced".
+sevenFirst : Wrapped
+let sevenFirst = MkWrapped (7 :: 8 :: Nil)
+
+-- POSITIVE: the False branch answers 42 without consulting the payload.
+defaultedResult : Int
+let defaultedResult = headIfTrue sevenFirst False
+
+--! assertEval defaultedResult 42
+
+-- POSITIVE: the True branch forces the suspension and sees the payload.
+forcedResult : Int
+let forcedResult = headIfTrue sevenFirst True
+
+--! assertNoErrors
+--! assertEval forcedResult 7
+
+-- STATUS(a0497523): PASS

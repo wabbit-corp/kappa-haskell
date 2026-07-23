@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 IntoQuery (normative member shape of §23.7: Mode, ItemQuantity,
+-- Item, SourceDemand, toQuery): a user instance makes a custom type
+-- usable in comprehension source position, with the item binder typed
+-- by the instance's Item member.
+module main
+
+data Pair : Type =
+    MkPair (a : Int) (b : Int)
+
+instance IntoQuery Pair =
+    let Mode = QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore
+    let ItemQuantity = ω
+    let Item = Int
+    let SourceDemand = ω
+    let toQuery p =
+        match p
+        case MkPair a b -> toQuery (a :: b :: Nil)
+
+collect : Pair -> List Int
+let collect p =
+    [
+        for x in p
+        yield x + 1
+    ]
+-- STATUS(a0497523): FAIL — 7 errors: the prelude IntoQuery declares IntoItem/toQuery instead of the §23.7 Mode/ItemQuantity/Item/SourceDemand members (E_INSTANCE_MEMBER_MISSING IntoItem + 4x E_ASSOCIATED_MEMBER_UNDECLARED + 2x E_TYPE_EQUALITY_MISMATCH at toQuery/for-lowering).

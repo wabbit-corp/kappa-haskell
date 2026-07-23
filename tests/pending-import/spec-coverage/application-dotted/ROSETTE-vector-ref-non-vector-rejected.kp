@@ -1,0 +1,53 @@
+-- Source issue: ROSETTE-133 (no type checking in `verify`?)
+-- Spec: §16.1 (variables and application), §17.1 (match scrutinees are
+--       ordinary typed expressions), §3.1.4 (portable alias
+--       E_APPLICATION_ARGUMENT_MISMATCH), §6.1 (numeric literal domain).
+-- Pins: every expression — including one used only as a match scrutinee
+-- mirroring an assertion body — must satisfy the typing rules of its
+-- context. Applying a vector accessor to a non-vector literal is a
+-- compile-time application-argument failure, not a silently accepted
+-- form.
+
+--! mode check
+
+module main
+
+data Vec (a : Type) : Type =
+    VNil
+    VCons a (Vec a)
+
+vecRef : forall (a : Type). Vec a -> Int -> Option a
+let vecRef v i =
+    match v
+    case VNil -> None
+    case VCons h rest -> if i == 0 then Some h else vecRef rest (subInt i 1)
+
+-- POSITIVE: vecRef applied to a Vec value.
+ok : Option Int
+let ok = vecRef (VCons 10 (VCons 20 (VCons 30 VNil))) 1
+
+-- POSITIVE: the same obligation holds inside a Boolean expression that
+-- mirrors an assertion.
+checked : Bool
+let checked =
+    let v = VCons 1 (VCons 2 VNil)
+    match vecRef v 0
+    case Some x -> x == 1
+    case None -> False
+
+-- NEGATIVE: applying vecRef to an Int literal as the vector argument.
+badVec : Option Int
+let badVec = vecRef 3 4                     --!! kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: the obligation also fires when the ill-typed application is
+-- only a match scrutinee.
+badInsideAssertion : Bool
+let badInsideAssertion =
+    match vecRef 3 4                        --!! kappa.type.literal-domain-mismatch
+    case Some _ -> True
+    case None -> False
+
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

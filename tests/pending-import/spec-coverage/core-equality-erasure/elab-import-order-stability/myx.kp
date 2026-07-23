@@ -1,0 +1,10 @@
+module myx
+
+-- the SAME imports written y-then-x
+import basey.*
+import basex.*
+
+type Combo2 = Pair TX TY
+
+mkCombo2 : Combo2
+let mkCombo2 = MkPair mkTX mkTY

@@ -29,14 +29,14 @@ let test_add : Int =
 -- POSITIVE TEST: row-polymorphic record extension.
 -- Returns a new record with field `tag` added, preserving all original fields.
 let tag_record (forall (r : RecRow)) (rec : r) (t : String) : (tag : String | r) =
-    (tag = t | rec)
+    (tag = t | rec,)
 
 let test_tag : (tag : String, x : Int) =
     tag_record (x = 7) "hello"
 
 -- POSITIVE TEST: polymorphic function returning open record type.
 let duplicate_x (forall (r : RecRow)) (rec : (x : Int | r)) : (x : Int, orig_x : Int | r) =
-    (orig_x = rec.x | rec)
+    (orig_x = rec.x | rec,)
 
 -- expect: all functions accepted; row polymorphism resolves correctly
 --! assertType test_closed Int

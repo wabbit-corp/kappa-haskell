@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body 1\nbody 2\nelse-body\nelse-defer\nafter-for\nwhile-else\nafter-while\n"
+
+-- §18.6.3/§18.8.12/§18.7: the loop `else` block runs iff the loop completes
+-- normally, and executes as a FRESH do-scope — a `defer` inside it runs when
+-- the else block itself exits (after the else body, before the code after
+-- the loop). A `while` whose condition is false before the first iteration
+-- completes normally with zero iterations, so its `else` also runs.
+module main
+
+main : UIO Unit
+let main = do
+    for i in 1 :: 2 :: Nil do
+        printlnString (stringAppend "body " (showInt i))
+    else do
+        defer (printlnString "else-defer")
+        printlnString "else-body"
+    printlnString "after-for"
+    while False do
+        printlnString "never"
+    else do
+        printlnString "while-else"
+    printlnString "after-while"
+
+-- STATUS(a0497523): PASS

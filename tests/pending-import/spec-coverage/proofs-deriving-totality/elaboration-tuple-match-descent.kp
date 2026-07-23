@@ -26,7 +26,7 @@ let zipLenTuple xs ys =
     case (_ :: rx, _ :: ry) -> addInt 1 (zipLenTuple rx ry)
     case _ -> 0
 
--- STATUS(a51e1bf): FAIL — the tuple-scrutinee lowering loses the
+-- STATUS(a0497523): FAIL — the tuple-scrutinee lowering loses the
 -- structural subterm facts: zipLenTuple is W_TERMINATION_UNVERIFIED even
 -- though the equivalent explicit nested form is accepted, exactly the
 -- rejection-through-lost-evidence §15.15 forbids.

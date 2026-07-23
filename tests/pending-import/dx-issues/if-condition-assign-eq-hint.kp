@@ -1,0 +1,23 @@
+-- DX EXPECTATION (not necessarily spec-required): writing `=` instead of
+-- `==` in an `if` condition is the classic beginner slip.  In term position
+-- `x = 1` parses as the propositional-equality TYPE, so the condition
+-- elaborates at type `Type` and the checker reports a bare kind-level
+-- mismatch "actual: Type / expected: Bool" with no mention of `==`
+-- anywhere in the message, helps, or fixes.  A beginner has no path from
+-- "Type" to "use ==".  §3.1.8's candidateRepairs contract and §3.2.3's
+-- "smallest useful difference" SHOULD surface a `did you mean '=='?`
+-- repair when the Bool-expected expression is literally an equality type.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): exactly one error, family
+-- kappa.type.mismatch, primary message just "type mismatch"
+-- (notes: actual Type / expected Bool); no ==-repair hint.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticMatch ==
+module main
+
+classify : Int -> Int
+let classify x =
+    if x = 1 then 2 else 3
+-- STATUS(a0497523): FAIL — one kappa.type.mismatch (actual Type / expected Bool) at the condition; no ==/repair hint anywhere in message, helps, or fixes

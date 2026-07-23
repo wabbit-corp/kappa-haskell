@@ -17,3 +17,5 @@ let hof (@0 q : Quantity) (f : (q x : Int) -> Int) : Int = 0
 -- NEGATIVE: q is unsolved; must not default to any quantity.
 ambiguous : Int
 let ambiguous = hof (\x -> 0)
+
+-- STATUS(a0497523): FAIL — no unsolved-quantity error: the compiler emits kappa.type.mismatch ("actual Int, expected (x : Int) -> Int") at the lambda, mishandling the Quantity-typed implicit rather than reporting the unsolved quantity metavariable.

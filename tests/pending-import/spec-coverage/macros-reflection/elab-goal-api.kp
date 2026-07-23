@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.9: ElabGoal carries the splice-site lexical context and optional
+-- expected type; currentGoal returns it; asCoreGoal elaborates Syntax
+-- in g.ctx with expected-type direction when g.expected is Some;
+-- withExpectedGoal overrides the expected type for an action's dynamic
+-- extent; ensureDefEqGoal asserts definitional equality in g.ctx under
+-- the goal's visibility/opacity environment.
+module main
+
+expectedKnown : Elab Bool
+let expectedKnown = do
+    let g <- currentGoal
+    match g.expected
+    case Some _ -> pure True
+    case None -> pure False
+
+elabInGoal : forall (@0 g : ElabGoal) (@0 t : Type). Syntax t -> Elab (Core g.ctx t)
+let elabInGoal s = asCoreGoal s
+
+overrideExpected : forall (@0 g : ElabGoal) (@0 a : Type). Core g.ctx Type -> Elab a -> Elab a
+let overrideExpected ty act = withExpectedGoal ty act
+
+ensureEq : forall (@0 g : ElabGoal) (@0 a : Type) (@0 b : Type). Core g.ctx a -> Core g.ctx b -> Elab Unit
+let ensureEq x y = ensureDefEqGoal x y
+-- STATUS(a0497523): FAIL — ElabGoal/currentGoal/asCoreGoal/withExpectedGoal/ensureDefEqGoal are E_NAME_UNRESOLVED (goal API unimplemented)

@@ -1,0 +1,21 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- §3.2.2 (kappa.name.unresolved): the payload MUST include "candidate
+-- spellings considered for typo suggestions" when applicable, and when a
+-- close spelling exists in the same admissible kind set the diagnostic
+-- SHOULD carry a maybe-applicable or placeholder fix.  'Sone' is edit
+-- distance 1 from the constructor 'Some', which is admissible in this
+-- pattern-head position (§13.1).  Expression position already gets the
+-- fix (a bare `Sme 5` suggests 'Some'); pattern position must not be
+-- worse.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion Some
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+f : Option Integer -> Integer
+let f o =
+    match o
+    case Sone _ -> 1 --!! kappa.name.unresolved
+    case None -> 0
+-- STATUS(a0497523): FAIL — pattern-position ctor typo gets bare "unresolved constructor 'Sone'": no suggestion payload, no fix (expression position does suggest 'Some')

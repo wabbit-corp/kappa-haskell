@@ -1,0 +1,50 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "note:40\nnote:3\nnote:2\nnote:1\nresult:0\n"
+
+-- §32.2.17 / §32.2.21 / §32.2.20 (× §18.8.3): an abortive (quantity-0)
+-- clause that never resumes MUST still unwind the captured segment's
+-- do-scope exit actions exactly once, in masked LIFO order: defer 3, then
+-- defer 2, then the `using` release (note 1, registered first). The pre-op
+-- effect (note 40) happens exactly once and is not rolled back; the post-op
+-- note 99 must never run; the handler value 0 completes only afterwards.
+module main
+
+effect Log =
+    1 note : Int -> Unit
+
+effect Abort =
+    0 stop : Unit -> Int
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (Eff <[Log : Log, Abort : Abort]>) Res =
+    let release r = match r case MkRes i -> Log.note i
+
+acquireRes : Int -> Eff <[Log : Log, Abort : Abort]> Res
+let acquireRes i = pure (MkRes i)
+
+comp : Eff <[Log : Log, Abort : Abort]> Int
+let comp = do
+    using a <- acquireRes 1
+    defer (Log.note 2)
+    defer (Log.note 3)
+    let _ <- Log.note 40
+    let _ <- Abort.stop ()
+    let _ <- Log.note 99
+    pure 999
+
+handledAbort : Eff <[Log : Log]> Int
+let handledAbort =
+    deep handle Abort comp with
+        case return x -> pure x
+        case stop _ k -> pure 0
+
+main : UIO Unit
+let main =
+    deep handle Log handledAbort with
+        case return r -> printlnString ("result:" ++ showInt r)
+        case note n k -> do
+            printlnString ("note:" ++ showInt n)
+            k ()
+-- STATUS(a0497523): FAIL — prints "note:1\nnote:2\nnote:3\nnote:40\nresult:0": the using-release and both defers run EAGERLY in registration order at the moment they are registered (before the op site), instead of unwinding masked-LIFO at abandonment; only the suppression of the post-op note 99 is honored.

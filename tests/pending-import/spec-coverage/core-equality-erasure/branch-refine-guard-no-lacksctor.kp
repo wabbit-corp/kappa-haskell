@@ -1,0 +1,33 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §31.1.2 guarded branches: failure of a guard does NOT introduce
+-- LacksCtor evidence for the guarded pattern's constructor, so a
+-- residual branch after `case Full v if g` must not see `c is Full`
+-- reduce to False. Guard SUCCESS contributes constructor evidence
+-- inside the guarded body.
+module main
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+-- NEGATIVE: in the residual arm the context has no LacksCtor c ⟨Full⟩
+-- (the guarded arm may have been skipped by guard failure), so the tag
+-- test stays neutral and refl is rejected. The guard is a neutral
+-- parameter so the arm cannot be discharged statically.
+bad : (g : Cell -> Bool) -> (c : Cell) -> Option ((c is Full) = False)
+let bad g c =
+    match c
+    case Full v if g c -> None
+    case _ -> Some refl --!! E_TYPE_EQUALITY_MISMATCH
+
+-- POSITIVE: constructor-success evidence is available in the body
+-- reached after the guard succeeds
+good : (c : Cell) -> Option ((c is Full) = True)
+let good c =
+    match c
+    case Full v if True -> Some refl
+    case _ -> None
+
+-- STATUS(a0497523): FAIL — compiler accepts the file with 0 errors: the residual arm after a neutrally-guarded constructor arm unsoundly gets LacksCtor c Full, proving (c is Full) = False against the guarded-branches rule

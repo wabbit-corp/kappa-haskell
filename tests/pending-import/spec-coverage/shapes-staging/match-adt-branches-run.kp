@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "Red\nGreen\nBlue\n"
+
+-- §22.5: 'matchAdt' constructs an exhaustive match with exactly one
+-- branch per constructor in shape order; for an enum every branch
+-- receives its own constructor summary and an empty field list, so a
+-- derived tag function maps each constructor to its own name (§22.2
+-- order — exhaustiveness is by construction).
+
+import std.deriving.shape.*
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+deriveTag : forall (@0 a : Type). Syntax Type -> Syntax a -> Elab (Syntax String)
+let deriveTag @a target value = do
+    let shape <- inspectAdt @a target
+    matchAdt shape value \ctor fields ->
+        stringSyntax ctor.renderName
+
+tagName : Color -> String
+let tagName value =
+    $(deriveTag @Color '{ type Color } '{ value })
+
+main : UIO Unit
+let main = do
+    printlnString (tagName Red)
+    printlnString (tagName Green)
+    printlnString (tagName Blue)
+-- STATUS(a0497523): PASS

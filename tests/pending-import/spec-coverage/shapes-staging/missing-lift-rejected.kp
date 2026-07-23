@@ -1,0 +1,17 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch (Lift|lift|cross-stage)
+
+-- §23.3: a present-stage value may occur inside '.< ... >.' only when
+-- inserted by 'liftCode' — explicitly, or via elaboration of a simple
+-- variable occurrence (which requires a 'Lift' instance). No 'Lift
+-- NoLift' instance is in scope, so capturing 'o' MUST be rejected.
+-- (The spec standardizes no diagnostic code for this, hence the
+-- message-text assertion.)
+
+data NoLift : Type =
+    MkNoLift (v : Integer)
+
+bad : NoLift -> Code NoLift
+let bad (o : NoLift) : Code NoLift = .< o >.
+-- STATUS(a0497523): FAIL — the compiler accepts the un-lifted capture (0 errors): quotes capture the value environment without a §23.3 Lift obligation

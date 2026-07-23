@@ -1,0 +1,6 @@
+module b
+
+-- §8.4: re-export of an imported name; "The declaration's semantic
+-- identity and metadata are preserved", and §8.3 lists fixity metadata
+-- among the preserved first-class metadata.
+export a.((+++))

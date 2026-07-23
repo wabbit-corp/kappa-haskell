@@ -7,17 +7,17 @@
 --! mode check
 
 -- A dependent pair type.
-data DPair (A : Type) (B : A -> Type) : Type =
-    MkDPair : (x : A) -> B x -> DPair A B
+data DPair (0 A : Type) (0 B : A -> Type) : Type =
+    MkDPair : (x : A) -> (y : B x) -> DPair A B
 
 -- The first projector must reduce definitionally.
-dpair_fst : {A : Type} -> {B : A -> Type} -> DPair A B -> A
+dpair_fst : forall (A : Type) (B : A -> Type). DPair A B -> A
 let dpair_fst p =
     match p
       case MkDPair x _ -> x
 
 -- The second projector depends on the first.
-dpair_snd : {A : Type} -> {B : A -> Type} -> (p : DPair A B) -> B (dpair_fst p)
+dpair_snd : forall (A : Type) (B : A -> Type). (p : DPair A B) -> B (dpair_fst p)
 let dpair_snd p =
     match p
       case MkDPair _ y -> y
@@ -26,7 +26,9 @@ let dpair_snd p =
 -- must hold without proof (definitional, not propositional).
 check_fst_reduces : (a : Nat) -> (b : { n : Nat | n > a }) -> { result : Nat | result = a }
 let check_fst_reduces a b =
-    let p : DPair Nat (\x -> { n : Nat | n > x }) = MkDPair a b
-    dpair_fst p
+    block
+        p : DPair Nat (\x -> { n : Nat | n > x })
+        let p = MkDPair a b
+        dpair_fst p
 
 --! assertNoErrors

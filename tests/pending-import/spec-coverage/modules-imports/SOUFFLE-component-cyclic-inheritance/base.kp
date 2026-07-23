@@ -1,0 +1,4 @@
+module base
+
+baseFn : Int -> Int
+let baseFn x = x

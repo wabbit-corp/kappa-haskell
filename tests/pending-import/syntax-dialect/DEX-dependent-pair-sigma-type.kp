@@ -2,14 +2,17 @@
 --   dex-lang #1131 (can't unpack dependent pairs),
 --   dex-lang type-tests.dx (`tp = (n:Nat &> (Fin n) => Nat)`,
 --   `pair = (5 ,> buffer) :: tp`, `(3 ,> [0, 2, 4])`).
--- Spec: types.dependent.sigma (§DSA-DEX-05),
---       expressions.patterns.dependent_pair_destructure.
+-- Spec: §11.1.2.8 (dependent Sigma formation) and §17.2.1
+--       (tuple patterns, including dependent tuples).
 -- A dependent pair (sigma type) `(n : A, B n)` packages a first component
 -- together with a second component whose type depends on the first.
 -- The key obligation: when the pair is deconstructed, the first component's
 -- value must be available to type-check the second component. Construction
 -- must check that both components have compatible types. Pattern matching on
 -- a dependent pair must introduce both binders with the correct dependency.
+-- Stays in syntax-dialect: this source also depends on `Fin`, `tabulate`,
+-- `toList`, and direct bracket construction of a length-indexed array; the
+-- current Kappa surface/standard modules do not provide that combination.
 
 --! mode check
 

@@ -1,0 +1,13 @@
+-- Source issues: nickel #316, #430, #1482
+-- Spec: §8 (modules, imports, exports), §10 (type aliases)
+-- Library module with typed exports; see suite.ktest for the pinned property.
+
+module configlib
+
+type ServerAddr = (host : String, port : Int)
+
+defaultAddr : ServerAddr
+let defaultAddr = (host = "localhost", port = 8080)
+
+mkAddr : String -> Int -> ServerAddr
+let mkAddr h p = (host = h, port = p)

@@ -1,0 +1,4 @@
+module a
+
+data Box : Type =
+    Box (n : Int)

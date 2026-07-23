@@ -1,0 +1,10 @@
+import std.prelude --!! E_CONFIG_IMPORT_NOT_SAFE
+
+name : String --!! E_CONFIG_RESTRICTED_FORM
+
+let name = "demo"
+
+let helper x = x --!! E_CONFIG_RESTRICTED_FORM
+
+let buildConfig : BuildConfig = package name (semver "1.0.0") [] [] [] [] []
+-- STATUS(a0497523): UNSUPPORTED — requires capability buildManifest: not provided

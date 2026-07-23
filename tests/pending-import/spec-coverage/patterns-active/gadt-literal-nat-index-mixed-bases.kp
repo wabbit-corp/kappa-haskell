@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+--! assertEval narrowed 33
+
+-- §6.1.1 × §6.1.5 × §17.1.1/§13.1.8: numeric literals in GADT INDEX
+-- position. Decimal, hex, and binary spellings of the same Nat value
+-- must be definitionally equal as indices (underscores/base prefixes
+-- have no semantic effect, §6.1.1), so `Tag 0x3` accepts `Three : Tag 3`
+-- and `Tag 0b101` accepts `Five : Tag 5`. A ground literal index also
+-- drives exhaustiveness: at `Tag 3` the constructor `Five : Tag 5` is
+-- refuted by index disequality (5 ≠ 3), so matching `Three` alone is
+-- exhaustive.
+module main
+
+data Tag (n : Nat) : Type =
+    Three : Tag 3
+    Five  : Tag 5
+
+viaHex : Tag 0x3
+let viaHex = Three
+
+viaBin : Tag 0b101
+let viaBin = Five
+
+-- exhaustive at ground index 3: Five is refuted by 5 ≠ 3
+pick : Tag 3 -> Int
+let pick t =
+    match t
+    case Three -> 33
+
+narrowed : Int
+let narrowed = pick viaHex
+-- STATUS(a0497523): PASS

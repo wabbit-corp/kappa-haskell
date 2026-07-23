@@ -1,0 +1,4 @@
+module traitmod
+
+trait Tag (a : Type) =
+    tag : a -> Int

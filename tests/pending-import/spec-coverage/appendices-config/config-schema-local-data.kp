@@ -1,0 +1,24 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-schema
+--! x-configSchemaScope std.config
+--! assertErrorCount 2
+
+-- §35.2.3: config-schema includes all of config-expression and adds
+-- closed first-order local `data` with config-admissible constructor
+-- fields (usable via constructor application and projection). It still
+-- rejects user function definitions and traits (E_CONFIG_RESTRICTED_FORM,
+-- §35.11). Recursion is implementation-conditional, so not asserted.
+-- Staged until a harness provides the configMode capability.
+
+data Point = MkPoint (x : Int) (y : Int)
+
+let origin = MkPoint 0 0
+
+let shifted = MkPoint 1 2
+
+trait Marker (0 a : Type) --!! E_CONFIG_RESTRICTED_FORM
+
+let helper x = x --!! E_CONFIG_RESTRICTED_FORM
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; the implementation has no config-schema checker yet (local data in config units is currently always rejected by the config-expression checker)

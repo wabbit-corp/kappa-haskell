@@ -1,0 +1,14 @@
+-- Appendix T directory suite (packageMode).
+-- Robustness/degenerate input: a TRULY EMPTY source file (lib.kp is
+-- zero bytes — no header, no declarations, not even a newline) is a
+-- valid module.  §8.1: with no module header the module name is the
+-- path-derived name (`lib`), so `import lib` resolves; a module with
+-- zero declarations is not an error, and the importing module still
+-- elaborates and answers type queries.  (The header-only empty module
+-- is covered by KITTEN-empty-program-accepted; the zero-byte file in a
+-- package was previously untested.)
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertType main.x Int
+-- STATUS(a0497523): PASS — zero-byte lib.kp accepted, import lib resolves, main.x : Int

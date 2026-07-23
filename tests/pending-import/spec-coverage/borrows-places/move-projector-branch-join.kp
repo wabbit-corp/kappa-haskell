@@ -26,4 +26,4 @@ let bad (1 t : Pair) (which : Bool) : (Token, Token) =
         let first = eitherEnd t which
         (first, takeToken t.right) --!! E_QTT_PATH_CONSUMED
 
--- STATUS(a51e1bf): FAIL — compiler reports 0 errors: after a multi-yield move it leaves BOTH alternatives available (consuming t.left afterwards is accepted too, and no linear-drop fires), so the §12.4.2 branchwise-join/union post-state is not tracked. Same-root whole-record consume after a single-yield move IS caught (E_QTT_LINEAR_OVERUSE), so the gap is specific to per-path post-state of multi-yield moves.
+-- STATUS(a0497523): FAIL — compiler reports 0 errors: after a multi-yield move it leaves BOTH alternatives available (consuming t.left afterwards is accepted too, and no linear-drop fires), so the §12.4.2 branchwise-join/union post-state is not tracked. Same-root whole-record consume after a single-yield move IS caught (E_QTT_LINEAR_OVERUSE), so the gap is specific to per-path post-state of multi-yield moves.

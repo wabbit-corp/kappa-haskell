@@ -1,0 +1,15 @@
+-- §18.5 (restrictions)/§18.7: `return` MUST NOT appear within a `defer`
+-- action when it would target the enclosing do-scope or function — a
+-- deferred action may not complete abruptly out of itself.
+module main
+
+badDefer : UIO Unit
+let badDefer = do
+    defer --!! E_DEFER_ABRUPT_CONTROL
+        do
+            return ()
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

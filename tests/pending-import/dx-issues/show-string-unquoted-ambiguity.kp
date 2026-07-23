@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertEval distinct True
+
+-- DX expectation, not spec-required: `show` on String should render a
+-- source-like quoted/escaped literal inside structured output, the way
+-- Haskell show and Rust Debug do.  §28.2 requires Show String (Spec
+-- L34918) but never pins any rendering, so the current identity rendering
+-- is spec-permitted.
+--
+-- What currently happens: show "hi" = hi (no quotes), so structurally
+-- different values collide: show (Some "None") and
+-- show (Some (None : Option String)) BOTH render as "Some None", and
+-- show of a List String is indistinguishable from show of a flat string
+-- containing ", ".  Debug output that cannot distinguish values it was
+-- asked to distinguish routinely misleads during troubleshooting.
+
+module main
+
+innerString : Option String
+let innerString = Some "None"
+
+innerNone : Option (Option String)
+let innerNone = Some None
+
+distinct : Bool
+let distinct = show innerString /= show innerNone
+-- STATUS(a0497523): FAIL — typechecks clean but distinct evaluates to False: show (Some "None") and show (Some None) both render "Some None" because Show String is identity (no quoting/escaping)

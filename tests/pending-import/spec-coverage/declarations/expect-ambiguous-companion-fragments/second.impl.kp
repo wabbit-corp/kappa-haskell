@@ -1,0 +1,4 @@
+module expected.fragments
+
+selected : Int
+let selected = 2

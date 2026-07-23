@@ -22,4 +22,4 @@ hideTailW : forall (r : RecRow). (rec : (x : Int | r)) -> (x : Int,)
 let hideTailW (@0 r : RecRow) (rec : (x : Int | r)) : (x : Int,) =
     seal rec as (x : Int,) --!! kappa.row.tail-quantity
 
--- STATUS(a51e1bf): FAIL — compiler rejects both seals but as generic kappa.type.mismatch, not the §3.2.4-mandated kappa.row.tail-quantity family (rejection behavior itself is spec-conformant)
+-- STATUS(a0497523): FAIL — compiler rejects both seals but as generic kappa.type.mismatch, not the §3.2.4-mandated kappa.row.tail-quantity family (rejection behavior itself is spec-conformant)

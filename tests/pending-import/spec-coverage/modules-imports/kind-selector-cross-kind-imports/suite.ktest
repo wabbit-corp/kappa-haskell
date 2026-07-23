@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval t 3
+--! assertEval got 5

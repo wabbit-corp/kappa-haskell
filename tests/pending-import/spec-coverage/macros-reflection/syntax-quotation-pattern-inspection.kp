@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.5: a conforming implementation MUST provide quotation-pattern
+-- matching on Syntax t (or an observationally equivalent stable public
+-- inspection API) distinguishing at minimum identifiers, literals, and
+-- application spines. This file pins the quotation-pattern option: a
+-- literal pattern, an application-spine pattern binding head and
+-- argument sub-syntax, and a wildcard fallback.
+module main
+
+classify : Syntax Integer -> Elab (Syntax String)
+let classify s =
+    match s
+    case '{ 0 } -> pure '{ "zero literal" }
+    case '{ ${f} ${x} } -> pure '{ "application" }
+    case _ -> pure '{ "other" }
+
+zeroCase : String
+let zeroCase = $(classify '{ 0 })
+
+appCase : String
+let appCase = $(classify '{ addInt 1 2 })
+
+otherCase : String
+let otherCase = $(classify '{ 7 })
+-- STATUS(a0497523): FAIL — quotation patterns in match do not parse (E_RECOVERY_DECLARATION_SKIPPED) and no equivalent Syntax inspection API exists

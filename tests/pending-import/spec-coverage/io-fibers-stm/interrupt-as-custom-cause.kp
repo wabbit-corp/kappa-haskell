@@ -31,3 +31,4 @@ let main = do
     interruptForkAs (InterruptCause (Custom "rebalance") None) f2
     let e2 <- await f2
     report "forkAs" e2
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Custom' (not in scope)" at line 26; stdout mismatch: expected "as:shed-load\nforkAs:r… [was PASS in an earlier STATUS line]

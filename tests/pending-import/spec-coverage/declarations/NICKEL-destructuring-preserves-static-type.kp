@@ -1,0 +1,60 @@
+-- Source issues: nickel #933, #1098, #1318
+-- Spec: §9.1.2 (irrefutable patterns for let bindings), §9.3 (local let-in
+--       bindings), §13.2.4 (field projection), §3.2.3 (kappa.type.mismatch)
+-- Pins: destructuring a statically typed record with an anonymous record
+-- pattern in a let binding gives each bound component the field's declared
+-- static type (not a dynamic/widened type); using a destructured component
+-- at a contradictory type is rejected with kappa.type.mismatch.
+
+module test
+
+--! mode check
+
+-- POSITIVE: destructuring a fully typed record preserves the field type.
+recordWithA : (a : Int,)
+let recordWithA = (a = 1,)
+
+destructureOk : Int
+let destructureOk =
+    let (a = a1,) = recordWithA in
+    a1
+
+--! assertType destructureOk Int
+
+-- POSITIVE: multi-field destructuring preserves all field types.
+-- The remaining field `active` is ignored via the record-rest discard `..`.
+multiRecord : (name : String, count : Int, active : Bool)
+let multiRecord = (name = "test", count = 42, active = True)
+
+destructureMulti : String
+let destructureMulti =
+    let (name = n, count = c, ..) = multiRecord in
+    let _ : Int = c in
+    n
+
+--! assertType destructureMulti String
+
+-- POSITIVE: nested destructuring also preserves types.
+nestedRecord : (outer : (inner : Int,),)
+let nestedRecord = (outer = (inner = 7,),)
+
+destructureNested : Int
+let destructureNested =
+    let (outer = (inner = i,),) = nestedRecord in
+    i
+
+--! assertType destructureNested Int
+
+-- NEGATIVE: using a destructured field at a type that contradicts the
+-- record's static field type must be rejected.
+typedRecord : (value : Int,)
+let typedRecord = (value = 100,)
+
+badDestructureUsage : String
+let badDestructureUsage =
+    let (value = v,) = typedRecord in
+    (v : String)             --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a0497523): PASS

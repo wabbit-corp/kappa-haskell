@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "6\n10\n"
+
+-- §31.2 erasure soundness: a quantity-0 constructor field (here a
+-- proof-shaped indexed family over the runtime field) is deleted from
+-- the runtime representation, and runtime behavior of the
+-- computational fragment is preserved — construction, destructuring,
+-- and arithmetic on the retained field behave exactly as without it.
+module main
+
+data Tracked (n : Int) : Type =
+    Witness : forall (m : Int). Tracked m
+
+data Counted : Type =
+    MkCounted (n : Int) (0 prf : Tracked n)
+
+double : Counted -> Int
+let double c =
+    match c
+    case MkCounted n _ -> n + n
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (double (MkCounted 3 Witness)))
+    printlnString (showInt (double (MkCounted 5 Witness)))
+
+-- STATUS(a0497523): PASS

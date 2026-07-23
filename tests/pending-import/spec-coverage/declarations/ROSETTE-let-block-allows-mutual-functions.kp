@@ -1,0 +1,51 @@
+-- Source issue: ROSETTE-196 (Unsoundness with quantifiers due to
+--                interaction with lexical scope, path conditions, and
+--                rewrite rules)
+-- Spec: §9.3.1 (pure block expressions — "A local named binding (or
+--       mutually recursive local group) may be recursive only if each
+--       recursively referenced name has a preceding local signature
+--       declaration in the same block scope").
+-- Pins: two mutually recursive local functions may reference one another
+-- inside a single block scope when both signatures precede both
+-- definitions.
+
+--! mode check
+
+module main
+
+-- POSITIVE: mutually recursive local functions in a single block scope;
+-- both signatures precede both definitions, so `od` is in scope inside
+-- `ev`'s body per §9.3.1 local recursion.
+parity : Int -> String
+let parity n =
+    block
+        ev : Int -> Bool
+        od : Int -> Bool
+        let ev k = if k == 0 then True else od (subInt k 1)
+        let od k = if k == 0 then False else ev (subInt k 1)
+        if ev n then "even" else "odd"
+
+-- POSITIVE: local self-recursion under a preceding signature (the
+-- baseline the mutual group generalizes).
+countDown : Int -> Int
+let countDown n =
+    block
+        go : Int -> Int
+        let go k = if k == 0 then 0 else go (subInt k 1)
+        go n
+
+evenFour : String
+let evenFour = parity 4
+
+oddThree : String
+let oddThree = parity 3
+
+counted : Int
+let counted = countDown 3
+
+--! assertNoErrors
+--! assertEval evenFour "even"
+--! assertEval oddThree "odd"
+--! assertEval counted 0
+
+-- STATUS(a0497523): FAIL — local mutual recursion is unimplemented: `od` in `ev`'s body is E_NAME_UNRESOLVED even though both local signatures precede both definitions (§9.3.1 permits the mutually recursive local group); self-recursion under a preceding signature works.

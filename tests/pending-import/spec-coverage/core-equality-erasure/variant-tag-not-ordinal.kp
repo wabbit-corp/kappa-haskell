@@ -1,0 +1,46 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "int 1\nstr a\nstr b\nbool\n"
+
+-- §31.3: variant runtime tags are stable member-type identities, not
+-- row-local ordinals — a value flows unchanged through differently-
+-- ordered row spellings, and elaboration-inserted widening from a
+-- narrower row is zero-cost, so dispatch still selects the branch for
+-- the member TYPE, never the member position.
+module main
+
+type AB = (| Integer | String |)
+type BA = (| String | Integer |)
+
+describe : AB -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+
+-- same canonical row: the reordered spelling converts without coercion
+flipSpelling : BA -> AB
+let flipSpelling v = v
+
+type Small = (| String |)
+type Big = (| Integer | String | Bool |)
+
+-- widening Small ⊆ Big: representation (and tag) unchanged
+widen : Small -> Big
+let widen v = v
+
+describeBig : Big -> String
+let describeBig v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+    case (| b : Bool |) -> "bool"
+
+main : UIO Unit
+let main = do
+    printlnString (describe (flipSpelling (1 : BA)))
+    printlnString (describe (flipSpelling ("a" : BA)))
+    printlnString (describeBig (widen ("b" : Small)))
+    printlnString (describeBig (True : Big))
+
+-- STATUS(a0497523): PASS

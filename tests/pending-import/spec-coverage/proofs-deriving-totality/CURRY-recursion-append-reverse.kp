@@ -1,0 +1,89 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestFunctional.curry
+--   (append, rev, appendIsAssociative, revAntiDistributesOverAppend);
+--   also testsuite/SpecialTests/rev.curry.
+-- Spec: §15.3 (structural descent certifies these recursions), §17.1
+--       (`match`), §11.3 (universal quantification), §10.1.
+--
+-- Pins: structural recursion over a user list ADT — polymorphic append
+-- and (quadratic) reverse are total by structural descent, and compute
+-- the expected values at an Int instantiation.
+
+module test
+
+--! mode check
+
+data Chain (a : Type) : Type =
+    CNil
+    CCons (head : a) (tail : Chain a)
+
+append : forall (a : Type). Chain a -> Chain a -> Chain a
+let append xs ys =
+    match xs
+    case CNil -> ys
+    case CCons x rest -> CCons x (append rest ys)
+
+--! assertNoErrors
+--! assertType append (forall (a : Type). Chain a -> Chain a -> Chain a)
+
+reverseChain : forall (a : Type). Chain a -> Chain a
+let reverseChain xs =
+    match xs
+    case CNil -> CNil
+    case CCons x rest -> append (reverseChain rest) (CCons x CNil)
+
+--! assertNoErrors
+--! assertType reverseChain (forall (a : Type). Chain a -> Chain a)
+
+-- POSITIVE: append on Int chains produces [1,2,3,4].
+sample1234 : Chain Int
+let sample1234 = append (CCons 1 (CCons 2 CNil)) (CCons 3 (CCons 4 CNil))
+
+chainLength : Chain Int -> Int
+let chainLength xs =
+    match xs
+    case CNil -> 0
+    case CCons _ rest -> 1 + chainLength rest
+
+headOr : Int -> Chain Int -> Int
+let headOr d xs =
+    match xs
+    case CNil -> d
+    case CCons h _ -> h
+
+sampleLength : Int
+let sampleLength = chainLength sample1234
+
+sampleHead : Int
+let sampleHead = headOr 0 sample1234
+
+--! assertNoErrors
+--! assertType sample1234 (Chain Int)
+--! assertEval sampleLength 4
+--! assertEval sampleHead 1
+
+-- POSITIVE: reverse flips the chain — head becomes 4, length preserved.
+revSample : Chain Int
+let revSample = reverseChain sample1234
+
+revHead : Int
+let revHead = headOr 0 revSample
+
+revLength : Int
+let revLength = chainLength revSample
+
+--! assertNoErrors
+--! assertEval revHead 4
+--! assertEval revLength 4
+
+-- POSITIVE: a singleton reverses to itself (checked polymorphically).
+revSingleton : forall (a : Type). a -> Chain a
+let revSingleton x = reverseChain (CCons x CNil)
+
+singletonHead : Int
+let singletonHead = headOr 0 (revSingleton 9)
+
+--! assertNoErrors
+--! assertType revSingleton (forall (a : Type). a -> Chain a)
+--! assertEval singletonHead 9
+
+-- STATUS(a0497523): PASS

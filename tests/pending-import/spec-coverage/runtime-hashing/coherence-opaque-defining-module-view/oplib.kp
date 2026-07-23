@@ -1,0 +1,10 @@
+module oplib
+
+-- §33.1.2: full-normalization identity respects `opaque` from the consuming
+-- module's perspective — `secret` must NOT unfold downstream, while the
+-- transparent `seven` must.
+secret : Int
+opaque let secret = 7
+
+seven : Int
+let seven = 7

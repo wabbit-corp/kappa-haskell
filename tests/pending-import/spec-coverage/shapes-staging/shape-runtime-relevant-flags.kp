@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.3: 'runtimeRelevant' is False for erased (quantity-0) fields and
+-- for implicit trait-evidence fields, True for ordinary runtime
+-- payload; 'runtimeConstructorFields' returns exactly the
+-- runtime-relevant subsequence. §22 (ShapeField): the 'implicit' flag
+-- reflects the '@' evidence binder.
+
+import std.deriving.shape.*
+
+data Mix : Type =
+    MkMix (@ev : Eq Integer) (0 ghost : Nat) (payload : Integer)
+
+checkFlags : Elab (Syntax String)
+let checkFlags = do
+    let shape <- inspectAdt @Mix '{ type Mix }
+    match shape.constructors
+    case c :: Nil ->
+        (match c.fields
+         case e :: g :: p :: Nil ->
+            if e.runtimeRelevant == False && e.implicit == True
+               && g.runtimeRelevant == False && p.runtimeRelevant == True
+            then stringSyntax "ok"
+            else failElab "wrong runtimeRelevant/implicit flags"
+         case _ -> failElab "expected three reflected fields")
+    case _ -> failElab "wrong constructor count"
+
+checkFilter : Elab (Syntax String)
+let checkFilter = do
+    let shape <- inspectAdt @Mix '{ type Mix }
+    match shape.constructors
+    case c :: Nil ->
+        (match listLength (runtimeConstructorFields c) == 1
+         case True -> stringSyntax "ok"
+         case False -> failElab "runtimeConstructorFields must keep only runtime-relevant fields")
+    case _ -> failElab "wrong constructor count"
+
+flagsOk : String
+let flagsOk = $(checkFlags)
+
+filterOk : String
+let filterOk = $(checkFilter)
+-- STATUS(a0497523): FAIL — ShapeField has no runtimeRelevant/implicit members; implicit evidence fields are dropped from ctor.fields entirely, and runtimeConstructorFields returns erased fields too (reflects "ghost,payload")

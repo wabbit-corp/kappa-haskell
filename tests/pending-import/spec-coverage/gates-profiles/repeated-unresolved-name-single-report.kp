@@ -1,0 +1,17 @@
+-- §3.1.11 unresolved-name consistency: "Repeated textual occurrences
+-- MUST NOT be treated as unrelated fresh unknowns" and diagnostics
+-- SHOULD common up the report.  'missingHelper' occurs twice in one
+-- definition body (once applied, once as an argument's head); the
+-- compiler must produce one commoned report, not two independent
+-- unknowns with separately-invented roles.  Pins the current good
+-- behavior: exactly one E_NAME_UNRESOLVED for the slice.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticPayload error E_NAME_UNRESOLVED /payload/name missingHelper
+module main
+
+f : Int -> Int
+let f x = missingHelper (missingHelper x)
+
+-- STATUS(a0497523): PASS

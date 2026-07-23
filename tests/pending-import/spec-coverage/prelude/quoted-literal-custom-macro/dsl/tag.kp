@@ -1,0 +1,17 @@
+module dsl.tag
+
+data Tag : Type =
+    Tag (raw : String)
+
+-- §28.2 QuotedLiteralMacro: the handler receives the decoded
+-- QuotedLiteral payload (sourceBody/text/bytes) and returns
+-- Elab (Syntax Tag).
+instance QuotedLiteralMacro Tag =
+    let buildQuotedLiteral lit =
+        match lit
+        case QuotedLiteral.QuotedLiteral src txt bys ->
+            pure '{ Tag "handled" }
+
+-- §6.5: a prefix must resolve to Elab (QuotedLiteralMacro t).
+t : Elab (QuotedLiteralMacro Tag)
+let t = pure (summon (QuotedLiteralMacro Tag))

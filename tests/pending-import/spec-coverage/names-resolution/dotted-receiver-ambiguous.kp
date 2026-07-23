@@ -9,7 +9,7 @@ module main
 data B : Type =
     Mk (v : Int)
 
-let B = (Mk = 1)
+let B = (Mk = 1,)
 
 amb : Int
 let amb =
@@ -19,4 +19,4 @@ let amb =
 
 --! assertErrorCount 1
 --! assertDiagnosticCodes E_NAME_AMBIGUOUS
--- STATUS(a51e1bf): FAIL — compiler conflates 'let B' with the data type's reified facet (E_TYPE_EQUALITY_MISMATCH at the let, record vs Type) instead of forming a two-kind binding group and reporting B.Mk ambiguous
+-- STATUS(a0497523): FAIL — compiler conflates 'let B' with the data type's reified facet (E_TYPE_EQUALITY_MISMATCH at the let, record vs Type) instead of forming a two-kind binding group and reporting B.Mk ambiguous

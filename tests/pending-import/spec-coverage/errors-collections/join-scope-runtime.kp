@@ -1,0 +1,38 @@
+-- §20.8: `join pat in xs on cond` leaves pat's bindings in scope for later
+-- clauses (here the if filter reads y). `left join ... into name` preserves
+-- each outer row exactly once and binds only `name`, a first-class query of
+-- the matching inner elements for that outer row.
+--! mode run
+--! assertNoErrors
+--! assertEval joined 54
+--! assertEval leftJoined 3
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+lenQ : forall (a : Type). Query a -> Int
+let lenQ q = sumList [ for x in q, yield 1 ]
+
+-- x=2 pairs with (2,20) and (2,30); the filter keeps both: 22 + 32 = 54.
+joined : Int
+let joined =
+    sumList [
+        for x in [1, 2]
+        join y in [(1, 10), (2, 20), (2, 30)] on y._1 == x
+        if y._2 > 15
+        yield x + y._2
+    ]
+
+-- both outer rows survive: |matches(1)| + |matches(2)| = 1 + 2 = 3.
+leftJoined : Int
+let leftJoined =
+    sumList [
+        for x in [1, 2]
+        left join y in [(1, 10), (2, 20), (2, 30)] on y._1 == x into ys
+        yield lenQ ys
+    ]
+-- STATUS(a0497523): PASS

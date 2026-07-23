@@ -1,0 +1,52 @@
+-- Source issues: nickel #384, #579, #701, #758, #942, #1240
+-- Spec: §3.2.2 (kappa.name.unresolved), §7 (names and resolution),
+--       §13.2.4 (field projection: a missing field is an unresolved name)
+-- NOTE: overlaps with tests/conformance/imported-anon/LAMDU-record-projection-missing-field.kp
+--       (the missing-field projection case only)
+-- Pins: an unresolved identifier in a type annotation, in a local binding
+-- annotation, in a value expression, and in field-projection position each
+-- produce kappa.name.unresolved (not a panic or an ill-formed-type error);
+-- properly declared names and type aliases resolve.
+
+module test
+
+--! mode check
+
+-- NEGATIVE: unbound type identifier in a top-level type annotation.
+badTypeAnnotation : UnknownType -> Int     --!! kappa.name.unresolved
+let badTypeAnnotation x = 0
+
+-- NEGATIVE: unbound type identifier in a local binding annotation.
+badLocalAnnotation : Int
+let badLocalAnnotation =
+    let _ : UndeclaredContract = 42   --!! kappa.name.unresolved
+    in 0
+
+-- NEGATIVE: unbound identifier in a value expression.
+badValueRef : Int
+let badValueRef = undeclaredVariable + 1     --!! kappa.name.unresolved
+
+-- NEGATIVE: projecting a field that does not exist on the record's type is
+-- an unresolved name in field-access position.
+missingFieldAccess : Int
+let missingFieldAccess =
+    let r : (a : Int,) = (a = 1,) in
+    r.nonExistentField    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- POSITIVE: a properly declared and in-scope identifier resolves correctly.
+declaredOk : Int
+let declaredOk =
+    let myVal : Int = 99 in
+    myVal
+
+--! assertType declaredOk Int
+
+-- POSITIVE: a type alias used in a type annotation resolves to its definition.
+type MyNum = Int
+
+aliasOk : MyNum -> MyNum
+let aliasOk n = n
+
+-- STATUS(a0497523): PASS

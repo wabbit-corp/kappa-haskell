@@ -1,0 +1,7 @@
+module lib
+
+data P (a : Type) (b : Type) : Type =
+    MkP (fst : a) (snd : b)
+
+infix right 30 (&&&)
+type (&&&) a b = P a b

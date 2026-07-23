@@ -1,0 +1,23 @@
+--! mode check
+--! assertNoErrors
+
+-- DX EXPECTATION, not necessarily spec-required (spec is silent on source
+-- line terminators): CRLF files are accepted by the layout rules of
+-- Section 5.4, so an INDENTED multiline string (Section 6.3.3) in a CRLF
+-- file should also be accepted, with the LF-equivalent content. Currently
+-- it is rejected with E_MULTILINE_STRING_BAD_INDENT ("multiline string
+-- line does not begin with the closing delimiter's indentation") pointing
+-- at indentation that LOOKS correct in every editor -- the offending CR
+-- bytes are invisible, and nothing in the message mentions them. Same
+-- root cause as crlf-multiline-string-content.kp (CR is honored in layout
+-- but not in multiline-string bodies).
+-- Every line of THIS file ends with CRLF.
+
+module main
+
+sample : String
+let sample = """
+    ab
+    cd
+    """
+-- STATUS(a0497523): FAIL — spurious E_MULTILINE_STRING_BAD_INDENT at the string opener: invisible CR bytes make the (visually correct) body lines fail the Spec 6.3.3 indent check

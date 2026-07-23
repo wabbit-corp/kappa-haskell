@@ -1,0 +1,84 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestNat.curry and
+--   testsuite/TypeclassTests/TestBinInt.curry (user-defined `Num` instance).
+-- Spec: §14.1 (trait headers), §14.2 (trait members), §14.3 (instances;
+--       instance methods may recurse through the instance's own
+--       evidence), §10.1 (`data` declarations), §15.3 (structural descent).
+--
+-- Pins: a user ADT implements a miniature numeric trait (add, mul,
+-- fromInt) by structural recursion on Peano naturals; dispatch selects
+-- the user instance and the operations compute the expected values.
+
+module test
+
+--! mode check
+
+data PNat : Type =
+    PZero
+    PSucc PNat
+
+-- A miniature numeric trait analogous to Haskell `Num` (just `+`, `*`,
+-- and the integer-literal constructor; abs/negate omitted).
+trait Numeric (a : Type) =
+    addN : a -> a -> a
+    mulN : a -> a -> a
+    fromInt : Int -> a
+
+--! assertNoErrors
+
+instance Numeric PNat =
+    let addN n m =
+        match n
+        case PZero -> m
+        case PSucc p -> PSucc (addN p m)
+
+    let mulN n m =
+        match n
+        case PZero -> PZero
+        case PSucc p -> addN m (mulN p m)
+
+    let fromInt n =
+        if n <= 0
+        then PZero
+        else PSucc (fromInt (n - 1))
+
+--! assertNoErrors
+
+-- POSITIVE: the instance methods have the expected instantiated types.
+addNNat : PNat -> PNat -> PNat
+let addNNat = addN
+
+mulNNat : PNat -> PNat -> PNat
+let mulNNat = mulN
+
+fromIntNat : Int -> PNat
+let fromIntNat = fromInt
+
+--! assertType addNNat (PNat -> PNat -> PNat)
+--! assertType mulNNat (PNat -> PNat -> PNat)
+--! assertType fromIntNat (Int -> PNat)
+
+toInt : PNat -> Int
+let toInt n =
+    match n
+    case PZero -> 0
+    case PSucc p -> 1 + toInt p
+
+-- POSITIVE: 2 + 3 = 5 in the user-defined numeric.
+sumOfTwoAndThree : Int
+let sumOfTwoAndThree = toInt (addN (fromInt 2) (fromInt 3))
+
+--! assertNoErrors
+--! assertEval sumOfTwoAndThree 5
+
+-- POSITIVE: 2 * 3 = 6, and PZero absorbs on the left.
+productOfTwoAndThree : Int
+let productOfTwoAndThree = toInt (mulN (fromInt 2) (fromInt 3))
+
+zeroAbsorbsLeft : Int
+let zeroAbsorbsLeft = toInt (mulN PZero (fromInt 7))
+
+--! assertNoErrors
+--! assertEval productOfTwoAndThree 6
+--! assertEval zeroAbsorbsLeft 0
+
+-- STATUS(a0497523): PASS

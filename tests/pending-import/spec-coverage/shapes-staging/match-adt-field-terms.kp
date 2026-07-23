@@ -1,0 +1,45 @@
+--! mode check
+--! assertNoErrors
+--! assertType sumFields Pair2 -> Integer
+--! assertType eqP2 P2 -> P2 -> Bool
+
+-- §22.5: each 'BoundField' passed to a matchAdt branch callback
+-- carries 'term' — syntax for the hygienically bound field variable,
+-- definitionally typed by the reflected field type — and each
+-- 'BoundFieldPair' of matchAdt2 carries 'left'/'right' term syntax.
+-- The callback-produced bodies re-elaborate at the splice site.
+
+import std.deriving.shape.*
+
+data Pair2 : Type =
+    MkPair2 (a : Integer) (b : Integer)
+
+data P2 : Type =
+    MkP2 (u : Integer) (v : Integer)
+
+deriveSum : forall (@0 a : Type). Syntax Type -> Syntax a -> Elab (Syntax Integer)
+let deriveSum @a target value = do
+    let shape <- inspectAdt @a target
+    matchAdt shape value \ctor fields ->
+        match fields
+        case fa :: fb :: Nil -> pure '{ ${fa.term} + ${fb.term} }
+        case _ -> failElab "expected two bound fields"
+
+allPairs : List BoundFieldPair -> Syntax Bool -> Elab (Syntax Bool)
+let allPairs ps acc =
+    match ps
+    case Nil -> pure acc
+    case p :: rest -> allPairs rest '{ ${acc} && ${p.left} == ${p.right} }
+
+deriveEq : forall (@0 a : Type). Syntax Type -> Syntax a -> Syntax a -> Elab (Syntax Bool)
+let deriveEq @a target l r = do
+    let shape <- inspectAdt @a target
+    matchAdt2 shape l r (\ctor pairs -> allPairs pairs '{ True }) (\lc rc -> boolSyntax False)
+
+sumFields : Pair2 -> Integer
+let sumFields value =
+    $(deriveSum @Pair2 '{ type Pair2 } '{ value })
+
+eqP2 : P2 -> P2 -> Bool
+let eqP2 l r = $(deriveEq @P2 '{ type P2 } '{ l } '{ r })
+-- STATUS(a0497523): FAIL — BoundField/BoundFieldPair carry only 'field' (no 'term'/'left'/'right' members), so §22.5 callbacks cannot use bound-field syntax (E_UNRESOLVED_MEMBER)

@@ -1,0 +1,16 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- §3.1.1A: "type-mismatch diagnostics MUST include the actual expression
+-- site and the source origin of the expected type when available."  The
+-- expected type Integer originates from the user-written signature
+-- `x : Integer`, which is available, so the diagnostic must carry a
+-- related origin naming it (signature-site is the standardized role that
+-- preserves that meaning).  §3.2.3's kappa.type.mismatch payload likewise
+-- lists the expected-type origin (`expectedOrigin`).
+--! assertDiagnosticRelated error kappa.type.mismatch use-site
+--! assertDiagnosticRelated error kappa.type.mismatch signature-site
+module main
+
+x : Integer
+let x = "hi" --!! E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a0497523): FAIL — the mismatch carries only the use-site related origin (actual side); no related origin (and no payload expectedOrigin) points at the `x : Integer` signature that supplied the expected type

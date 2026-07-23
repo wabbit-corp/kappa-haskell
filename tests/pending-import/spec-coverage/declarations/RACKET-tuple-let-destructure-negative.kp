@@ -1,0 +1,31 @@
+-- Source: Racket guide define.scrbl (define-values for multiple values),
+--         Racket match.scrbl (let-values / destructuring bind)
+-- Source docs: racket guide define.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/define.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §9.1.2 ("Tuple patterns (p1, ..., pn) [are irrefutable iff] the
+--       scrutinee type is a tuple type of arity n"; "Implementations must
+--       reject any let pat = expr binding whose pat is not irrefutable for
+--       the inferred/annotated type of expr"), §3.2.3 (kappa.type.mismatch)
+--
+-- Pins: a tuple pattern of the wrong arity, or a tuple pattern against a
+-- non-tuple scrutinee type, is ill-typed at the scrutinee type and must be
+-- rejected at compile time (the well-typed-pattern failure surfaces as a type
+-- mismatch; an implementation-specific refutable-let classification would also
+-- express the same §9.1.2 rejection).
+
+--! mode check
+
+-- NEGATIVE: binding more components than the tuple has.
+badDestructure : Int
+let badDestructure =
+    let (a, b, c) = (1, 2)   --!! E_TYPE_MISMATCH
+    a + b + c
+
+-- NEGATIVE: applying a tuple pattern to a non-tuple type.
+badPairType : Int
+let badPairType =
+    let (x, y) = 42          --!! E_TYPE_MISMATCH
+    x + y
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 2
+-- STATUS(a0497523): FAIL — compiler emits NO diagnostic for either binding (§9.1.2 mandates rejecting non-irrefutable let patterns); the elaborated match simply gets stuck at runtime ("evaluates to match (_1 = 1, _2 = 2) ...")

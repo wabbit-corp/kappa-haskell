@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa-hs.trait.incoherent
+-- STATUS(a0497523): PASS — E_INSTANCE_INCOHERENT: export-aliased trait keeps identity, duplicate rejected

@@ -1,0 +1,28 @@
+-- Source issues: CREUSOT-910, CREUSOT-1232
+-- Spec: §15.1 (termination-certified definitions), §15.2 (soundness: an
+--       accepted termination argument MUST be well-founded — a
+--       nonterminating SCC must not be silently certified), §15.6 (call
+--       edges through elaboration/unfolding), §14.2 (trait member
+--       defaults), §3.2.11 (kappa.termination.failure)
+-- Pins: mutual recursion routed through a trait DEFAULT member: the
+-- default body of fB calls the required member fA, and the Bool
+-- instance's fA calls fB back. The instantiated SCC
+-- {LoopTr.Bool.fA, LoopTr.Bool.fB} has no decreasing measure and must
+-- not be certified: the kappa.termination.failure family MUST be
+-- reported.
+
+module main
+
+--! mode check
+
+trait LoopTr (a : Type) =
+    fA : a -> Int
+    fB : a -> Int
+    let fB x = fA x
+
+-- NEGATIVE: required member calls the default back; unconditional cycle.
+instance LoopTr Bool =
+    let fA b = fB b
+
+--! assertDiagnosticFamily warning kappa.termination.failure
+-- STATUS(a0497523): FAIL — no diagnostic at all: the fA/fB cycle routed through the trait DEFAULT member is silently certified (every other unverified SCC gets W_TERMINATION_UNVERIFIED, so silence = certified), violating §15.2 soundness; the premise-routed variant in CREUSOT-termination-mutual-recursion-trait.kp IS caught

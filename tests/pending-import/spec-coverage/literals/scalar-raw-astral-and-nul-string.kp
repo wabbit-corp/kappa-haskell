@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nTrue\nTrue\nTrue\n"
+
+-- SPEC COVERAGE (robust literals): boundary code points written as RAW
+-- source characters, and NUL embedded in string literals.
+-- Spec 6.4: a Unicode scalar literal may contain any single scalar
+-- value; U+10FFFF (the greatest scalar) written directly in source MUST
+-- equal its '\u{10FFFF}' escape spelling, and Ord UnicodeScalar places
+-- it above U+E000 (first scalar after the surrogate gap).
+-- Spec 6.3.1 + 6.3.6: \0 and \x00 both denote U+0000 as ordinary TEXT;
+-- a String containing NUL is ordinary 5-scalar/5-byte text (NUL is not
+-- a terminator), and equals the \u{0} spelling scalar-for-scalar.
+
+import std.unicode.*
+
+maxRaw : UnicodeScalar
+let maxRaw = '􏿿'
+
+withNul : String
+let withNul = "a\0b\x00c"
+
+main : UIO Unit
+let main = do
+    println (maxRaw == '\u{10FFFF}')
+    println (maxRaw > '\u{E000}')
+    println (byteLength withNul == 5)
+    println (scalarCount withNul == 5)
+    println (withNul == "a\u{0}b\u{0}c")
+-- STATUS(a0497523): PASS

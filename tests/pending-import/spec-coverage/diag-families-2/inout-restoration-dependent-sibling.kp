@@ -24,12 +24,12 @@ let mkVec n = VNil
 
 type Sized : Type = (len : Nat, buffer : Vec this.len Byte)
 
-grow : forall (@0 n : Nat). (inout b : Vec n Byte) -> UIO (1 b : Vec 2 Byte)
-let grow @n (inout b : Vec n Byte) : UIO (1 b : Vec 2 Byte) =
-    pure (b = mkVec 2)
+grow : forall (@0 n : Nat). (inout b : Vec n Byte) -> UIO (1 b : Vec 2 Byte,)
+let grow @n (inout b : Vec n Byte) : UIO (1 b : Vec 2 Byte,) =
+    pure (b = mkVec 2,)
 
 bad : (1 s : Sized) -> UIO Unit
 let bad (1 s : Sized) : UIO Unit = do
     grow ~s.buffer
     pure ()
--- STATUS(a51e1bf): FAIL — the restoration failure is reported as E_TYPE_EQUALITY_MISMATCH in kappa.type.mismatch (actual Vec 2 Byte vs expected Vec s.len Byte) instead of the §3.3.6 kappa.inout.restoration family
+-- STATUS(a0497523): FAIL — the restoration failure is reported as E_TYPE_EQUALITY_MISMATCH in kappa.type.mismatch (actual Vec 2 Byte vs expected Vec s.len Byte) instead of the §3.3.6 kappa.inout.restoration family

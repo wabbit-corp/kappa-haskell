@@ -1,0 +1,35 @@
+-- DX EXPECTATION (not necessarily spec-required): an instance head whose
+-- trait NAME does not resolve should be reported as an unresolved name,
+-- once — not as a head-shape complaint plus one error per method use.
+--
+-- Today `instance NoSuchTrait Pair` produces:
+--   1. E_INSTANCE_HEAD "instance head must be a trait applied to type
+--      arguments" — misleading: the head is perfectly shaped, the trait
+--      name simply is not in scope (the same code/message as the truly
+--      malformed `instance Int Pair`), and the diagnostic never mentions
+--      'NoSuchTrait';
+--   2. a separate E_NAME_UNRESOLVED for 'render' at EVERY call site,
+--      even though 'render' is textually defined right there in the
+--      rejected instance — a §3.1.11 single-root-cause cascade.
+--
+-- Expected: one kappa.name.unresolved diagnostic naming 'NoSuchTrait';
+-- downstream uses of the members the rejected instance defined are
+-- suppressed under it.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name NoSuchTrait
+module main
+
+data Pair = MkPair Int Int
+
+instance NoSuchTrait Pair =
+    let render p = "hi"
+
+use1 : String
+let use1 = render (MkPair 1 2)
+
+use2 : String
+let use2 = render (MkPair 3 4)
+
+-- STATUS(a0497523): FAIL — 3 errors: E_INSTANCE_HEAD shape complaint that never names NoSuchTrait, plus E_NAME_UNRESOLVED(render) at each call site

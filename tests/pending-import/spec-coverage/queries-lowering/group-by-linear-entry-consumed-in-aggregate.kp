@@ -1,0 +1,48 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+
+-- §20.7 (quantity and borrowing) + §20.10.7 rule 11: group by replaces the
+-- row environment, so every non-droppable pre-group row entry must be
+-- consumed exactly once by the aggregate expressions or transferred into the
+-- group result. `good` consumes the linear item in an aggregate; `bad`
+-- abandons it at the group boundary and must be rejected. Group keys are
+-- checked non-consumingly (borrowed `keyOf`).
+module main
+
+data Tok : Type =
+    MkTok (n : Int)
+
+openTok : (1 t : Tok) -> List Int
+let openTok t =
+    match t
+    case MkTok n -> n :: Nil
+
+keyOf : (& t : Tok) -> Int
+let keyOf t = 0
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+-- POSITIVE: the linear row entry is consumed once per row by the aggregate
+good : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Tok) -> List Int
+let good src =
+    [
+        for t in src
+        group by keyOf t { opened = openTok t } into g
+        yield sumList g.opened
+    ]
+
+-- NEGATIVE: the linear row entry is neither consumed nor transferred
+bad : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 1 Tok) -> List Int
+let bad src =
+    [
+        for t in src
+        group by keyOf t { count = (1 :: Nil) } into g --!! E_QUERY_ROW_NOT_DROPPABLE
+        yield sumList g.count
+    ]
+
+-- STATUS(a0497523): FAIL — no diagnostics: group by replaces the row environment without checking that the non-droppable (linear) pre-group entry t was consumed or transferred, so `bad` is accepted; the positive `good` half checks clean.

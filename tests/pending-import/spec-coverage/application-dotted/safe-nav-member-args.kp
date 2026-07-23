@@ -1,0 +1,24 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.1.2 chain grammar (L19433-19447): a '?.' suffix is
+-- "'?.' safeMember applicationArg*" — method-call sugar with explicit
+-- application arguments is reachable through safe navigation, and the
+-- whole residual (member plus its arguments) elaborates under the fresh
+-- payload binder, wrapping the non-Option result (L19471-19477).
+module main
+
+let bump (this n : Int) : Int = n + 1
+
+-- POSITIVE: zero-argument receiver-sugar member through ?.
+safeBump : Option Int -> Option Int
+let safeBump (o : Option Int) : Option Int = o?.bump
+
+let plus (this n : Int) (delta : Int) : Int = n + delta
+
+-- POSITIVE: method sugar with an application argument through ?.; the
+-- residual __x.plus 5 : Int wraps to Option Int.
+safePlus : Option Int -> Option Int
+let safePlus (o : Option Int) : Option Int = o?.plus 5
+
+-- STATUS(a0497523): FAIL — o?.plus 5 gives E_APPLICATION_NONCALLABLE: the compiler wraps the member access in Option BEFORE applying the argument (the applicationArg* stays outside the residual), instead of elaborating __x.plus 5 under the payload binder; the zero-argument case passes.

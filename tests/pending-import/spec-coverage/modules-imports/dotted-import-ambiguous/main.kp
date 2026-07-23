@@ -8,4 +8,4 @@ module main
 import a.b.c --!! E_NAME_AMBIGUOUS
 
 --! assertErrorCount 1
--- STATUS(a51e1bf): FAIL — no ambiguity error; the compiler silently prefers the singleton-item interpretation of the bare dotted form
+-- STATUS(a0497523): FAIL — no ambiguity error; the compiler silently prefers the singleton-item interpretation of the bare dotted form

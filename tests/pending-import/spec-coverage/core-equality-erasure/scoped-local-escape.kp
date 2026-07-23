@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §30.1.1 scoped escape restriction: a `scoped` local family closure-
+-- converts over the hidden nominal-scope token σ, which is not
+-- interface-representable, so a TRANSPARENT escape of the family is a
+-- compile-time error in the defining block; an escaping result whose
+-- exposed interface omits the family is permitted.
+module main
+
+-- NEGATIVE: the block's result type IS the scoped local family
+badEscape : Type
+let badEscape =
+    block
+        scoped data Token : Type =
+            MkToken
+        Token
+
+-- POSITIVE: the block uses the scoped family internally but its result
+-- type (Int) omits the family and its scope token
+okOmits : Int
+let okOmits =
+    block
+        scoped data Token2 : Type =
+            MkToken2
+        let consume : Token2 -> Int =
+            \t -> 7
+        consume MkToken2
+
+-- STATUS(a0497523): FAIL — `scoped data` inside block is E_UNSUPPORTED (5 errors), so the transparent-escape rejection and the omitting-interface acceptance are both unreachable

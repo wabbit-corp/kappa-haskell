@@ -23,4 +23,4 @@ let boom = needsBoth (y = True, x = 1)
 varBoth : forall (v : VarRow). (ContainsVar v Int, LacksVar v Int) => Int -> Int
 let varBoth (n : Int) : Int = n
 
--- STATUS(a51e1bf): FAIL — ContainsRec/ContainsVar/LacksVar intrinsic traits not in scope (9 unresolved-name errors instead of the single unsolvable LacksRec obligation at boom)
+-- STATUS(a0497523): FAIL — ContainsRec/ContainsVar/LacksVar intrinsic traits not in scope (9 unresolved-name errors instead of the single unsolvable LacksRec obligation at boom)

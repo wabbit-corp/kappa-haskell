@@ -24,7 +24,7 @@ let got = get (some 9)
 --! assertNoErrors
 --! assertEval got 9
 
--- STATUS(a51e1bf): FAIL — 'case some { v } -> v' does not parse: the whole
+-- STATUS(a0497523): FAIL — 'case some { v } -> v' does not parse: the whole
 -- enclosing let is dropped with E_RECOVERY_DECLARATION_SKIPPED "unexpected
 -- 'let' at start of declaration". Positional 'case some v' works, and named
 -- patterns on capitalized constructors work, so the named-pattern grammar

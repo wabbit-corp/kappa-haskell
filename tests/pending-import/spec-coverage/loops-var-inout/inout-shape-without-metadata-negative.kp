@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §18.9.3/§18.9.6: `~` is accepted ONLY where the resolved callable
+-- interface carries InoutParam metadata from a named declaration or trait
+-- member. A named function whose ordinary shape exactly resembles linear
+-- state threading but was not declared `inout` (`bad1`), and a call through
+-- an ordinary function-typed parameter of that same shape (`bad2`), must
+-- both reject `~`.
+module main
+
+shapeLike : (1 v : Int) -> UIO (1 v : Int,)
+let shapeLike (1 v : Int) : UIO (1 v : Int,) =
+    pure (v = v,)
+
+bad1 : UIO Unit
+let bad1 = do
+    var x = 1
+    shapeLike ~x --!! E_QTT_INOUT_MARKER_UNEXPECTED
+    pure ()
+
+bad2 : ((1 v : Int) -> UIO (1 v : Int,)) -> UIO Unit
+let bad2 f = do
+    var x = 1
+    f ~x --!! E_QTT_INOUT_MARKER_UNEXPECTED
+    pure ()
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 suspensions: Thunk (non-memoized) and Need (memoized) share the
+-- single overloaded force name via its two primitive typing cases; Need
+-- introduction from a plain value requires Shareable evidence
+-- (§16.2.2), provided here by a user instance for a custom type.
+module main
+
+data Token : Type =
+    MkToken
+
+instance Shareable Token =
+
+fromNeed : Need Token -> Token
+let fromNeed n = force n
+
+fromThunk : Thunk Token -> Token
+let fromThunk t = force t
+
+-- implicit Need-suspension insertion at the argument position uses the
+-- Shareable Token evidence.
+inserted : Token
+let inserted = fromNeed MkToken
+
+-- explicit thunk introduction feeds the Thunk typing case of force.
+forcedThunk : Token
+let forcedThunk = fromThunk (thunk MkToken)
+
+--! assertType inserted main.Token
+--! assertType forcedThunk main.Token
+-- STATUS(a0497523): PASS

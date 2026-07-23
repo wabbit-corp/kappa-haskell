@@ -1,0 +1,21 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 MonadError (IO e) × §28.2.1 CheckedDiv: divDefined obligations
+-- are discharged by boolean branch refinement inside IO code, and a
+-- catchError handler must (and can) re-establish its own proof before
+-- dividing again — the original branch fact does not leak into the
+-- handler's context.
+module main
+
+checkedDivIO : Int -> Int -> IO String Int
+let checkedDivIO x y =
+    if y == 0 then throwError "div-by-zero" else ioPure (x / y)
+
+recover : Int -> Int -> IO String Int
+let recover x y =
+    catchError (checkedDivIO x y) (\e ->
+        if divDefined x y then ioPure (x / y) else ioPure 0)
+
+--! assertType recover Int -> Int -> IO String Int
+-- STATUS(a0497523): PASS

@@ -1,0 +1,33 @@
+-- §28.2.3 (L35430-35439): for Integer/Int, divDefined x y = modDefined x y =
+-- (y /= zero), and "for exact signed integer division, the implementation
+-- MUST document the quotient/remainder convention and use it consistently in
+-- the EuclideanSemiring instance". The reference implementation uses
+-- TRUNCATED division (quotient rounds toward zero; the remainder takes the
+-- sign of the DIVIDEND — C `%` / Haskell quot/rem, not floored/Euclidean
+-- modulus). This run pins the full four-quadrant convention plus the
+-- §28.2.2 divModIdentity residual check (q*b + r == a) in every quadrant.
+-- The existing conformance pin (stdlib-prelude-positive-checked-div-mod.kp)
+-- only covers a negative dividend; the negative-divisor cases were untested.
+-- NOTE: the convention itself is stated nowhere in Spec.md or docs/ — the
+-- MUST-document requirement is currently unmet (reported as a spec issue).
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n1\nTrue\n-3\n-1\nTrue\n-3\n1\nTrue\n3\n-1\nTrue\n"
+
+check : Int -> Int -> UIO Unit
+let check a b =
+    if b /= 0
+    then do
+        printlnString (showInt (a / b))
+        printlnString (showInt (a % b))
+        println ((a / b) * b + (a % b) == a)
+    else printlnString "zero"
+
+main : UIO Unit
+let main = do
+    check 10 3
+    check (-10) 3
+    check 10 (-3)
+    check (-10) (-3)
+
+-- STATUS(a0497523): PASS — truncated quot/rem in all four quadrants, Euclidean identity holds.

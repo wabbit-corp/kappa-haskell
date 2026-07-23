@@ -31,4 +31,4 @@ let badPoly x = x
 badDrop : forall (q : Quantity) (a : Type). (q x : a) -> Unit
 let badDrop x = ()
 
--- STATUS(a51e1bf): FAIL — family kappa.quantity.satisfies is not registered; 'QuantitySatisfies' is not even a resolvable source name (positive premise half gets E_NAME_UNRESOLVED), and symbolic-quantity binders (q x : a) mis-elaborate to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH).
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.quantity.satisfies' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5… [was FAIL in an earlier STATUS line]

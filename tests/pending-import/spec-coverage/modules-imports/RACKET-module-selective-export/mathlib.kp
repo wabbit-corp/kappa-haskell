@@ -1,0 +1,20 @@
+-- Spec: §8.5.1 (private items are not exported), §9.1 (private modifier)
+module mathlib
+
+plusM : Int -> Int -> Int
+let plusM x y = x + y
+
+multiplyM : Int -> Int -> Int
+let multiplyM x y = x * y
+
+-- Private helper — not part of the module's export surface.
+private twiceM : Int -> Int
+let twiceM x = x * 2
+
+-- Private constant.
+private defaultScale : Int
+let defaultScale = 10
+
+-- Public function that uses private helpers internally.
+scaleM : Int -> Int
+let scaleM x = multiplyM x defaultScale

@@ -1,0 +1,19 @@
+-- §11.1.2.3B + §13.2.5: updating a dependent runtime payload must preserve
+-- the parametric observation mode of the record's type witness. The record
+-- pattern then rebinds that witness parametrically (§17.1.7A) and repacks it.
+--! mode check
+--! assertNoErrors
+
+module main
+
+type Packed : Type =
+    (A : Type, value : A)
+
+replaceAndRepack :
+    (p : Packed) ->
+    p.A ->
+    Packed
+let replaceAndRepack p next =
+    match p.{ value = next }
+    case (A = A, value = value) ->
+        (A = A, value = value)

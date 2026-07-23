@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+-- STATUS(a0497523): PASS — instance declared via import alias serves goals at the original spelling

@@ -1,0 +1,20 @@
+--! mode check
+--! assertDiagnosticMatch [Ee]scape|BorrowItemsIntoQuery|BorrowView|instance|borrow|region
+
+-- §20.10.2 + §20.10.7 rule 4: `for & x in xs` elaborates through
+-- `BorrowItemsIntoQuery`, binds x as a borrowed item view under a fresh
+-- region ρ, and any later escape of the borrowed entries must be rejected.
+-- Yielding x into the collected result lets the view outlive the borrow, so
+-- a conforming compiler rejects this either via the region-escape rule
+-- (E_QTT_BORROW_ESCAPE) or, if it provides no BorrowItemsIntoQuery (List a)
+-- instance, via implicit-resolution failure. Acceptance is non-conformant.
+module main
+
+leak : (xs : List Int) -> List Int
+let leak xs =
+    [
+        for & x in xs
+        yield x
+    ]
+
+-- STATUS(a0497523): FAIL — no diagnostics: the parser's borrowed-items flag is dropped during comprehension lowering (Check.hs `S.CFor refut _ pat src _`), so x binds as an ordinary ω item and the escape is accepted; BorrowItemsIntoQuery is never consulted.

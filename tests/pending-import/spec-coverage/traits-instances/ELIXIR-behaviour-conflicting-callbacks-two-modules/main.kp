@@ -1,0 +1,44 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_AMBIGUOUS
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- Source issues: kernel/warning_test.exs "conflicting behaviour"
+--   ("conflicting behaviours found. Callback function foo/0 is defined by both Sample1
+--    and Sample2 (in module Sample3)"), spec gap ESA-ELIXIR-04
+-- Spec: §14.2.1 (each trait term member induces an overloaded term name),
+--       §8.3.1A (two imports introducing distinct same-spelling term
+--       declarations make the bare spelling a use-site ambiguity),
+--       §3.2.2 (kappa.name.ambiguous)
+-- Two traits from two modules both declare a member `encode`; a type may
+-- implement both, but a BARE use of the shared spelling finds two admissible
+-- overloaded term names and is ambiguous.  Explicit evidence projection
+-- (`d.encode`, §14.2.1) selects one candidate and stays well-formed.
+-- NOTE: overlaps with tests/conformance/spec-coverage/diag-families-1/name-ambiguous-imports
+--       (plain terms; this suite pins trait-member overloaded names).
+module main
+
+import ser.*
+import fmt.*
+
+data Message : Type =
+    Message (body : String)
+
+-- POSITIVE: one type may implement both traits; the instances themselves
+-- are not in conflict.
+instance Serializer Message =
+    let encode m = "ser"
+
+instance Formatter Message =
+    let encode m = "fmt"
+
+-- POSITIVE: explicit trait-evidence projection disambiguates.
+useExplicit : (@d : Serializer Message) -> Message -> String
+let useExplicit (@d : Serializer Message) (m : Message) : String = d.encode m
+
+-- NEGATIVE: both imported traits provide `encode`; the bare spelling is
+-- ambiguous at the use site.
+badCall : Message -> String
+let badCall m = encode m --!! kappa.name.ambiguous
+
+-- STATUS(a0497523): PASS

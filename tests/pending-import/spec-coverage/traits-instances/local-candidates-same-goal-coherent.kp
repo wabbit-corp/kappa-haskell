@@ -27,4 +27,4 @@ let twoDicts (@d1 : Tag Int) (@d2 : Tag Int) = tag 5
 localFirst : (@d : Tag Int) -> Int
 let localFirst (@d : Tag Int) = tag 6
 
--- STATUS(a51e1bf): FAIL — the compiler reports E_IMPLICIT_AMBIGUOUS ("two implicit candidates in the same scope satisfy this implicit goal") for twoDicts instead of applying the §16.3.3 IsTrait-goal coherence rule and picking a deterministic representative.
+-- STATUS(a0497523): FAIL — the compiler reports E_IMPLICIT_AMBIGUOUS ("two implicit candidates in the same scope satisfy this implicit goal") for twoDicts instead of applying the §16.3.3 IsTrait-goal coherence rule and picking a deterministic representative.

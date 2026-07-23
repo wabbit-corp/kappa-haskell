@@ -1,0 +1,22 @@
+-- DX: a value `if` introduced immediately after `in` should remain open for
+-- its conventionally indented `else`. Users should not receive the misleading
+-- pair E_IF_MISSING_ELSE + E_UNEXPECTED_INDENTATION for this ordinary layout.
+--! mode check
+--! assertNoErrors
+--! assertEval positive 4
+--! assertEval negative 0
+
+module main
+
+choose : Int -> Int
+let choose x =
+    let y = x
+    in if y > 0 then y
+       else 0
+
+positive : Int
+let positive = choose 4
+
+negative : Int
+let negative = choose (negInt 2)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_UNEXPECTED_INDENTATION "unexpected indentation: no block introducer or continuation context is active; consider a comma…

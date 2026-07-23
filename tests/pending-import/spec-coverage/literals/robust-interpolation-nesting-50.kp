@@ -1,0 +1,14 @@
+--! mode check
+--! assertNoErrors
+--! assertType s String
+
+-- Robustness: string interpolation bodies are parsed by ordinary Kappa
+-- expression parsing, and nested strings inside an interpolation are
+-- handled "exactly as in ordinary source code" (Spec §6.3.4.2, L6002+).
+-- Consequently an f-string nested inside its own interpolation to depth
+-- 50 must lex and parse. This pins the lexer's interpolation-mode stack.
+module main
+
+s : String
+let s = f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ f"<${ "end" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>" }>"
+-- STATUS(a0497523): PASS

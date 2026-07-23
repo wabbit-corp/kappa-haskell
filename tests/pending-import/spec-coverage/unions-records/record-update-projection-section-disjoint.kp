@@ -40,7 +40,7 @@ let badSame (p : Pair) : Pair = p.{ (.leftLens) = 1, (.leftLens) = 2 }
 badMixed : Pair -> Pair
 let badMixed (p : Pair) : Pair = p.{ (.leftLens) = 1, left = 2 }
 
--- STATUS(a51e1bf): FAIL — the compiler restricts a projection-section
+-- STATUS(a0497523): FAIL — the compiler restricts a projection-section
 -- update to be the ONLY item of its patch
 -- (E_PROJECTION_UPDATE_TARGET_UNSUPPORTED), so the spec-legal okDisjoint
 -- is rejected and the two overlap negatives are rejected for the wrong

@@ -1,0 +1,34 @@
+-- §16.4.1 × §17.1.2 × §17.1.5 × §30.2.2.11: for v : Natural (S Z), the
+-- else branch of `if v is Succ` holds LacksCtor v ⟨Succ⟩; the only other
+-- constructor Zero forces the index equation Z = S Z (no-confusion
+-- contradiction, §30.2.7 ground-index refutation the compiler already
+-- performs for exhaustiveness). The whole remainder is therefore empty and
+-- `match v case impossible` in the else branch MUST be accepted;
+-- "contradictory refinement contexts mark the branch unreachable"
+-- (§30.2.2.11, L39136-L39137).
+--! mode check
+--! assertNoErrors
+module main
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- POSITIVE per spec: else side is unreachable — Succ is excluded by flow
+-- evidence and Zero is refuted by the ground index.
+predOf : Natural (S Z) -> Natural Z
+let predOf v =
+    if v is Succ then v.pred
+    else
+        match v
+        case impossible
+
+-- STATUS(a0497523): FAIL — E_INDEXED_IMPOSSIBLE_REACHABLE: the empty-match
+-- remainder check does not combine the branch's LacksCtor Succ flow fact
+-- with ground-index refutation of Zero, although each ingredient works
+-- alone (single-arm Succ matches are exhaustive at this index, and
+-- narrowing-derived projection works on non-indexed types).

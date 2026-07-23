@@ -20,4 +20,4 @@ type OpenAsk (e : EffRow) : Type = Eff <[AskE : AskE | e]> Int
 lacksViolated : OpenAsk <[AskE : AskE]>
 let lacksViolated = pure 2
 
--- STATUS(a51e1bf): FAIL — compiler accepts both the duplicated closed effect row and the LacksEff-violating tail instantiation (0 errors); §11.3.2 label uniqueness is unenforced
+-- STATUS(a0497523): FAIL — compiler accepts both the duplicated closed effect row and the LacksEff-violating tail instantiation (0 errors); §11.3.2 label uniqueness is unenforced

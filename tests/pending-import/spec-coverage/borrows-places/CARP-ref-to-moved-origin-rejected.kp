@@ -1,0 +1,51 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.path.consumed
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- Source issues: carp-lang/Carp#470, #1260
+-- Spec: §12.4 (path-sensitive consumption: no borrow after consume),
+--       §12.3 (borrow tethered to origin scope; skolem escape),
+--       §3.2.5 (kappa.path.consumed), §3.2.7 (kappa.borrow.escape)
+-- Carp #470: a reference stayed usable after its origin was moved out.
+-- Carp #1260: a `let s = ...; &s` leaked out of the test body.  Portable
+-- Kappa obligations: borrowing a path after the origin has been consumed is
+-- rejected; a borrow of a local may not escape the origin's lexical scope.
+-- NOTE: overlaps with tests/conformance/qtt/borrow-after-consume.kp and
+--       tests/conformance/qtt/borrow-escape.kp (single-family variants).
+module main
+
+data Buf : Type = Buf (n : Int)
+
+consume : (1 b : Buf) -> Int
+let consume (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+peek : (& b : Buf) -> Int
+let peek b = 0
+
+-- POSITIVE: borrow first, read through it, then move the origin; the read
+-- happens while the borrow is alive and the move comes after.
+borrowThenMove : Int
+let borrowThenMove =
+    let 1 b = Buf 5
+    let n = peek b
+    consume b + n
+
+-- NEGATIVE: the origin is moved by `consume`; a later borrow-demanding use
+-- of the same root is a use-after-consume.
+useAfterMoveBad : Int
+let useAfterMoveBad =
+    let 1 b = Buf 5
+    let x = consume b
+    x + peek b --!! kappa.path.consumed
+
+-- NEGATIVE: a borrow of a local (hidden root scoped to the binding body)
+-- escapes its lexical scope through the returned closure.
+escapeLocalBad : Unit -> (Unit -> Int)
+let escapeLocalBad () =
+    let & r = Buf 1
+    \() -> peek r --!! kappa.borrow.escape
+
+-- STATUS(a0497523): PASS

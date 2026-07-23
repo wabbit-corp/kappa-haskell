@@ -1,0 +1,6 @@
+module expected.fragments
+
+expect term selected : Int
+
+--! mode check
+--! assertDiagnostic error E_EXPECT_AMBIGUOUS

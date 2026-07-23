@@ -1,0 +1,39 @@
+-- Source issues: nickel #1312, #718
+-- Spec: §3.2.3 (kappa.type.mismatch: payload must carry expected/actual
+--       types with alias/opacity status for rendering — i.e. resolved
+--       concrete types, not raw unifier variables), §13.2.7 (record row
+--       polymorphism), §11.3 (RecRow, LacksRec)
+-- Pins: a row-polymorphic function whose element type variable is forced to
+-- two different concrete types by one call site is rejected with
+-- kappa.type.mismatch; consistent instantiations at Int and String succeed.
+
+module test
+
+--! mode check
+
+-- A polymorphic function extracting a field of uniform type from a record.
+getUniform : forall a. forall (r : RecRow).
+             LacksRec r bla => LacksRec r blo => LacksRec r ble =>
+             (bla : Bool, blo : a, ble : a | r) -> a
+let getUniform x =
+    if x.bla then x.blo else x.ble
+
+-- POSITIVE: the polymorphic function at consistent concrete instantiations.
+goodResult : Int
+let goodResult = getUniform (bla = True, blo = 42, ble = 99)
+
+goodResultStr : String
+let goodResultStr = getUniform (bla = False, blo = "hello", ble = "world")
+
+--! assertType goodResult Int
+--! assertType goodResultStr String
+
+-- NEGATIVE: `blo` and `ble` must share the element type `a`, but one call
+-- supplies Int and String. The diagnostic must be a type mismatch reporting
+-- the resolved types.
+badUniformMismatch : Int
+let badUniformMismatch = getUniform (bla = True, blo = 1, ble = "oops")  --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a0497523): PASS

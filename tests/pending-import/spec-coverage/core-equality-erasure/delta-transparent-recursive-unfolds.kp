@@ -1,0 +1,38 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1 δ-reduction: a transparent definition whose totality is
+-- ordinarily verified is conversion-reducible — it unfolds for
+-- definitional equality both in term-level equality goals and inside
+-- type indices, with ι-reduction finishing the job. (The contrast that
+-- assertTerminates/assertTotal alone never grant unfolding is pinned by
+-- tests/conformance/spec-coverage/unsafe-debug/assert-terminates-never-reducible.)
+module main
+
+data N : Type =
+    Z
+    S N
+
+plus : N -> N -> N
+let plus a b =
+    match a
+    case Z -> b
+    case S x -> S (plus x b)
+
+-- δ + ι in an equality goal
+twoPlusOne : plus (S (S Z)) (S Z) = S (S (S Z))
+let twoPlusOne = refl
+
+-- unfolding under a binder: the recursive call is stuck on the neutral
+-- head a, but the Z-case still reduces
+zeroPlus : (b : N) -> plus Z b = b
+let zeroPlus b = refl
+
+-- δ + ι inside a type index: the index is normalized before comparison
+data Vec (n : N) : Type =
+    MkVec
+
+grow : Vec (plus (S Z) (S Z)) -> Vec (S (S Z))
+let grow v = v
+
+-- STATUS(a0497523): PASS

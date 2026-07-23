@@ -1,0 +1,5 @@
+module main
+
+x : Int
+let x = 1
+-- STATUS(a0497523): PASS

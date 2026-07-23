@@ -1,0 +1,33 @@
+-- §11.1.1 + §11.1.2.5 + §17.1: a stable opaque total TypeLevel
+-- application is an admissible universe index. Destructuring a record that
+-- stores the level must preserve the equality between the projection and the
+-- pattern binder so an indexed helper can consume the same A value.
+--! mode check
+--! assertNoErrors
+
+module main
+
+opaque let shifted (u : TypeLevel) : TypeLevel =
+    succ u
+
+type LevelBox : Type =
+    (level : TypeLevel,)
+
+atLevel :
+    (u : TypeLevel) ->
+    (@0 bounded : shifted u < omega + 1) ->
+    (A : Type (shifted u)) ->
+    A ->
+    A
+let atLevel u bounded A value = value
+
+throughPattern :
+    (box : LevelBox) ->
+    (@0 bounded : shifted box.level < omega + 1) ->
+    (A : Type (shifted box.level)) ->
+    A ->
+    A
+let throughPattern box bounded A value =
+    match box
+    case (level = u,) ->
+        atLevel u @bounded A value

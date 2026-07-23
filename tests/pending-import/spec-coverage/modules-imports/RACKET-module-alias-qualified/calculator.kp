@@ -1,0 +1,32 @@
+-- Source: Racket guide module-require.scrbl (prefix-in, module alias for qualified access)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §8.3 (import M as A: alias-qualified access only), §3.2.2 (kappa.name.unresolved)
+-- NOTE: overlaps with tests/pending-import/spec-coverage/modules-imports/module-alias-qualification/aliased.kp
+--
+-- Pins: after `import arithmetic as arith`, members are reachable as
+-- `arith.name` (including chained/nested calls) but NOT as bare `name` —
+-- the alias form introduces no unqualified bindings (Racket prefix-in
+-- analogue). The alias-only-vs-original-path negative lives in the sibling
+-- suite RACKET-module-alias-qualified-origpath.
+module calculator
+import arithmetic as arith
+
+-- POSITIVE: qualified access through the alias works.
+sumResult : Int
+let sumResult = arith.plus 10 5
+
+diffResult : Int
+let diffResult = arith.minus 10 5
+
+prodResult : Int
+let prodResult = arith.times 3 4
+
+-- POSITIVE: chained qualified calls work.
+combined : Int
+let combined = arith.plus (arith.times 3 4) (arith.minus 10 5)
+
+-- NEGATIVE: the alias introduces only qualified names; the unqualified
+-- spelling is not in scope.
+badPlus : Int
+let badPlus = plus 1 2     --!! E_NAME_UNRESOLVED
+-- STATUS(a0497523): PASS (whole suite)

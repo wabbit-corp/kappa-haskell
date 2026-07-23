@@ -1,0 +1,35 @@
+-- §18.3.1: `!` is valid only in expressions elaborated as part of the
+-- nearest enclosing do block — it does not cross user-written lambda
+-- boundaries unless the nested body has its own do. A mutable-variable
+-- current-value occurrence obeys the same nearest-do rule (no-read
+-- positions); `ref x` or a snapshot must be used instead.
+module main
+
+getInt : UIO Int
+let getInt = ioPure 7
+
+-- NEGATIVE: splice inside a nested lambda with no inner do block.
+badSplice : UIO Int
+let badSplice = do
+    let f = \ u -> !getInt + 1 --!! E_SPLICE_OUTSIDE_DO
+    ioPure (f ())
+
+-- NEGATIVE: the generated current-value read of `n` would be hoisted
+-- across the user-written lambda boundary.
+badVarRead : UIO Int
+let badVarRead = do
+    var n = 5
+    let g = \ u -> n + 1 --!! E_VAR_READ_CROSSES_BOUNDARY
+    ioPure (g ())
+
+-- POSITIVE: an inner do block re-enables the splice inside the lambda.
+okInner : UIO Int
+let okInner = do
+    let h = \ u -> do
+            let m = !getInt
+            ioPure (m + 1)
+    h ()
+
+--! mode check
+--! assertErrorCount 2
+-- STATUS(a0497523): PASS

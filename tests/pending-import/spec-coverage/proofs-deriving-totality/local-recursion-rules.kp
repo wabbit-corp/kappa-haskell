@@ -38,7 +38,7 @@ let wob n =
         let go3 k = go3 k --!! W_TERMINATION_UNVERIFIED
         go3 n
 
--- STATUS(a51e1bf): FAIL — local recursive helpers are not
+-- STATUS(a0497523): FAIL — local recursive helpers are not
 -- termination-checked at all: the top-level counterpart of go3 gets
 -- W_TERMINATION_UNVERIFIED, but the local self-loop is silently accepted
 -- (no warning), violating §15.14 "same termination rules as top-level".

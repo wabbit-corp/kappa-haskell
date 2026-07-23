@@ -1,0 +1,53 @@
+-- Source: granule-project/granule PR #192 (3-element Sec lattice),
+--         PR #118 (security lattice three-element structure);
+--         tests/cases/positive/security/level_pos0.gr,
+--         tests/cases/negative/security/leak.gr
+-- Spec: §10.1 (value-indexed data declarations), §31 (definitional
+--       equality of type applications), §3.2.3 (kappa.type.mismatch)
+-- Granule grades Sec with a security lattice. Information-flow grading is
+-- outside Kappa v1 (reserved modal/coeffect lane, §12.2.7-§12.2.8), so
+-- this pins the portable core of the leak test: a type constructor
+-- indexed by distinct constructor values (`Sec Public a` vs
+-- `Sec Private a`) yields definitionally distinct types, and supplying
+-- one where the other is demanded is kappa.type.mismatch.
+
+module test
+
+--! mode check
+
+data Level : Type =
+    Public
+    Private
+
+data Sec (0 l : Level) (0 a : Type) : Type =
+    MkSec (payload : a)
+
+-- POSITIVE: storing a public value, eliminating publicly.
+publicRoundtrip : Bool
+let publicRoundtrip =
+    match (MkSec True : Sec Public Bool)
+      case MkSec b -> b
+
+-- POSITIVE: storing a private value, eliminating privately.
+privateRoundtrip : Bool
+let privateRoundtrip =
+    match (MkSec True : Sec Private Bool)
+      case MkSec b -> b
+
+-- POSITIVE: explicit re-boxing at a different level is a fresh
+-- construction, not a coercion between the distinct indexed types
+-- (Granule's `weakenUp` direction, made explicit).
+reclassify : (x : Sec Public Bool) -> Sec Private Bool
+let reclassify x =
+    match x
+      case MkSec b -> MkSec b
+
+-- NEGATIVE: leak — the signature claims `Sec Public Bool` but the body
+-- produces a `Sec Private Bool`; the Level indices differ, so the types
+-- are definitionally distinct.
+leak : Sec Public Bool
+let leak = (MkSec True : Sec Private Bool)   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

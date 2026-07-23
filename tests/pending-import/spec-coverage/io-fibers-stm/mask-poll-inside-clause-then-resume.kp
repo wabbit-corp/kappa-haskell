@@ -1,0 +1,42 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "masked-clause\nrestored\nret:5\nresult:5\n"
+
+-- §18.1.12 × §18.1.22: a handler clause body may enter a masked section,
+-- use the rank-2 `restore` for a selected subcomputation, `poll` (Unit when
+-- nothing is pending), compute the resume payload under the mask, and resume
+-- the one-shot k AFTER the mask returns. (Resuming INSIDE mask's body is
+-- ill-typed today because mask's body parameter is unannotated = ω; see
+-- dx-issues/oneshot-resumption-omega-combinators.kp.)
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp = do
+    let a <- Ask.ask ()
+    pure a
+
+maskedPayload : (forall (x : Type). IO Void x -> IO Void x) -> UIO Int
+let maskedPayload restore = do
+    printlnString "masked-clause"
+    restore (printlnString "restored")
+    poll
+    ioPure 5
+
+handled : UIO Int
+let handled =
+    deep handle Ask comp with
+        case return x -> do
+            printlnString (stringAppend "ret:" (showInt x))
+            ioPure x
+        case ask _ k -> do
+            let v <- mask maskedPayload
+            k v
+
+main : UIO Unit
+let main = do
+    let r <- handled
+    printlnString (stringAppend "result:" (showInt r))
+-- STATUS(a0497523): PASS

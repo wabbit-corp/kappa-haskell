@@ -1,0 +1,61 @@
+-- Source: Curry/KiCS2 testsuite/SpecialTests/TestPolySubExp.curry
+--   (poly3 = case [] of _ -> 42; testMatchingEmptyList = poly3 -=- 42).
+-- Spec: §17.1 (`match`), §17.2.1 (wildcard pattern), §11.3 (universal
+--       quantification), §16.1 (application/instantiation).
+--
+-- Pins: a match whose only case is a wildcard never constrains the
+-- scrutinee's element type — the same generic list functions elaborate
+-- at ANY element instantiation, including a function type, and matching
+-- a list of functions requires no equality or further instantiation of
+-- the elements. (The Curry original leaves the element type as a free
+-- metavariable; total Kappa pins the analogous property at an explicit
+-- higher-order instantiation instead.)
+
+module test
+
+--! mode check
+
+data Chain (a : Type) : Type =
+    CNil
+    CCons (head : a) (tail : Chain a)
+
+-- POSITIVE: wildcard catch-all over a list whose elements are functions.
+-- No case binds an element, so the element type is never inspected.
+poly3 : Int
+let poly3 =
+    match (CNil : Chain (Int -> Int))
+    case _ -> 42
+
+--! assertNoErrors
+--! assertType poly3 Int
+--! assertEval poly3 42
+
+-- POSITIVE: a polymorphic `null`-style check works regardless of the
+-- element type.
+nullChain : forall (a : Type). Chain a -> Bool
+let nullChain xs =
+    match xs
+    case CNil -> True
+    case CCons _ _ -> False
+
+--! assertNoErrors
+--! assertType nullChain (forall (a : Type). Chain a -> Bool)
+
+-- POSITIVE: applying nullChain at a function-type instantiation.
+emptyOfFunctions : Bool
+let emptyOfFunctions = nullChain (CNil : Chain (Int -> Int))
+
+--! assertEval emptyOfFunctions True
+
+-- POSITIVE: a nonempty list of functions matches the shape cases
+-- without demanding anything about its elements beyond the shape.
+inc : Int -> Int
+let inc x = x + 1
+
+nonEmptyOfFunctions : Bool
+let nonEmptyOfFunctions = nullChain (CCons inc CNil)
+
+--! assertNoErrors
+--! assertEval nonEmptyOfFunctions False
+
+-- STATUS(a0497523): PASS

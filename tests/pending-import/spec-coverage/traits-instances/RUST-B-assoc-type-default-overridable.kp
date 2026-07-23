@@ -1,0 +1,77 @@
+-- Source issues: rust#53907, rust#54182, rust#62211 (slice > 50000)
+-- Spec: §14.2 (trait members: `let Name : S = ...` defaults), §14.2.1
+--       (associated static members), §14.3.4 (associated static member
+--       checking in instances), §3.2.4 (kappa.implicit.unsolved)
+-- Pins: (a) an instance may keep or override a defaulted associated static
+-- member, and a default method whose signature does not mention it stays
+-- valid either way (rust#53907); (b) an evidence-typed member constraining
+-- the associated type is instantiated with the EFFECTIVE (default or
+-- overridden) member value per §14.3.4, so keeping a default that does not
+-- satisfy the constraint at the instance is rejected (rust#62211 analog —
+-- Kappa checks the obligation per instance, not at the trait declaration).
+
+--! mode check
+
+module main
+
+data Color : Type =
+    Red
+    Green
+
+data ColorMsg : Type =
+    Picked Color
+
+trait DeviceApp (a : Type) =
+    let Msg : Type = Unit
+    handleMsg : a -> Msg -> a
+    let process : a -> a = \x -> x
+
+-- POSITIVE: instance keeps the default Msg = Unit; the default method
+-- `process` needs no reimplementation.
+instance DeviceApp Int =
+    let handleMsg x _ = x
+
+-- POSITIVE: instance overrides the associated type to ColorMsg; the default
+-- `process` (whose signature does not mention Msg) remains valid unchanged.
+instance DeviceApp Color =
+    let Msg = ColorMsg
+    let handleMsg c m = match m case Picked c2 -> c2
+
+useDefault : Int
+let useDefault = handleMsg 5 ()
+
+useOverride : Color
+let useOverride = handleMsg Red (Picked Green)
+
+useProcess : Color
+let useProcess = process Red
+
+-- (b) constraint on a defaulted associated member, checked per instance.
+trait Eq2 (a : Type) =
+    eq2 : a -> a -> Bool
+
+instance Eq2 Int =
+    let eq2 x y = x == y
+
+data NoEqTy : Type =
+    MkNoEqTy
+
+trait WithEq (a : Type) =
+    let Output : Type = NoEqTy
+    outEq : Eq2 Output
+    emit : a -> Output
+
+-- POSITIVE: overriding the default to a type satisfying the constraint.
+instance WithEq Int =
+    let Output = Int
+    let outEq = summon (Eq2 Int)
+    let emit x = x
+
+-- NEGATIVE: keeping the default Output = NoEqTy leaves the instantiated
+-- constraint member `outEq : Eq2 NoEqTy` unsatisfiable.
+instance WithEq Color =
+    let outEq = summon (Eq2 NoEqTy)    --!! E_UNSOLVED_IMPLICIT
+    let emit c = MkNoEqTy
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved

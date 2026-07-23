@@ -1,0 +1,21 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test00.dats
+--         (`abstype abc0: type == int`, `absimpl abc0 = int`),
+--         tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`abstype foo(tbox+, prop-): type`, `absimpl $FOO.foo(x:int): type = bar`)
+-- Spec: §8.5.3 (opaque data: representation hiding).
+-- Library module: `Token` is an opaque data type. Inside this module the
+-- constructor `MkToken` is available for construction and matching.
+module tokens
+
+opaque data Token : Type =
+    MkToken (tokenId : Int)
+
+-- Smart constructor: exported.
+makeToken : Int -> Token
+let makeToken n = MkToken n
+
+-- Extractor: exported.
+tokenIdOf : Token -> Int
+let tokenIdOf t =
+    match t
+    case MkToken n -> n

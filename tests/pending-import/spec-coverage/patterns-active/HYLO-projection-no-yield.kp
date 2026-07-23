@@ -1,0 +1,39 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/Lowering/ProjectionWithNoYields.hylo
+--                   (diagnostic: "not all paths of the projection contain a yield"),
+--                   Tests/HyloTests/TestCases/Lowering/ProjectionYieldMissingOnSomePaths.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/Lowering/ProjectionWithNoYields.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §17.1 (`match` exhaustiveness), §3.2.10 (kappa.pattern.non-exhaustive)
+-- Pins: the Kappa analogue of "every accessor path must yield" is that every
+-- value path through a match must be covered: a literal Bool field pattern
+-- covering only True, and a match missing a constructor arm entirely, are
+-- both non-exhaustive.
+
+--! mode check
+
+module main
+
+data SafeValue : Type =
+    MkSafeValue (value : Int) (valid : Bool)
+
+-- POSITIVE: match covers both Bool cases; every path produces a value.
+safeRead : SafeValue -> Int
+let safeRead v =
+    match v
+    case MkSafeValue { value = n, valid = True } -> n
+    case MkSafeValue { value = _, valid = False } -> 0
+
+-- NEGATIVE: only the True case is covered; the False path produces no
+-- value (Hylo: "not all paths of the projection contain a yield").
+partialRead : SafeValue -> Int
+let partialRead v =
+    match v    --!! E_PATTERN_NON_EXHAUSTIVE
+    case MkSafeValue { value = n, valid = True } -> n
+
+-- NEGATIVE: missing constructor arm — no path handles None.
+missingArm : Option Int -> Int
+let missingArm o =
+    match o    --!! E_PATTERN_NON_EXHAUSTIVE
+    case Some x -> x
+
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.pattern.non-exhaustive

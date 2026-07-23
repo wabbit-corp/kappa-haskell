@@ -1,0 +1,14 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticMatch implicit prelude is disabled
+--! assertDiagnosticMatch std.prelude
+
+-- §28.1: when the implicit prelude is disabled (@NoPrelude) and a name
+-- would have resolved only through it, the unresolved-name diagnostic
+-- SHOULD report that the prelude is disabled and suggest an explicit
+-- import (here: importing add from std.prelude).
+@NoPrelude module main
+
+let x = add --!! kappa.name.unresolved
+-- STATUS(a0497523): PASS

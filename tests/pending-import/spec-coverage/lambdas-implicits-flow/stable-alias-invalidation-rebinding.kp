@@ -1,0 +1,35 @@
+-- §16.4.3 (stable aliases): refinement evidence transports across simple
+-- local alias bindings in both directions, and the alias relation ceases
+-- to be available after rebinding/shadowing of the alias name — a
+-- projection through the freshly rebound name must not reuse the old
+-- alias's evidence.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE: testing the alias refines the representative, so both the
+-- alias and the original project.
+bothDirections : Payload -> Int
+let bothDirections p =
+    block
+        let q = p
+        if q is Box then p.value + q.value else 0
+
+-- NEGATIVE: after `let q = r` shadows the refined alias, q aliases the
+-- unrefined r; the old evidence must not apply to the new binding.
+shadowInvalidate : Payload -> Payload -> Int
+let shadowInvalidate p r =
+    block
+        let q = p
+        if q is Box then
+            block
+                let q = r
+                q.value --!! E_UNRESOLVED_MEMBER
+        else 0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): PASS

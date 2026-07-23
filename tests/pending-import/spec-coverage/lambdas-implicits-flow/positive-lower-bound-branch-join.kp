@@ -1,0 +1,42 @@
+-- §16.4.4 (positive lower bounds through conditionals): a conditional's
+-- usage of x is the join qt ⊔ qf of the branch intervals, so a >=1 binder
+-- must be demanded on every reachable branch — an else-branch that only
+-- lends x to an ω parameter contributes lower bound 0 and fails the join.
+-- Post-dominating terminal branches must independently satisfy the
+-- obligation for binders whose scope they exit.
+module main
+
+weak : (ω n : Int) -> Int
+let weak n = n
+
+-- POSITIVE: both branches demand x with lower bound >= 1.
+okBoth : (>=1 x : Int) -> Bool -> Int
+let okBoth x b =
+    if b then x else x + 1
+
+-- NEGATIVE: the else branch's demand through an ω parameter is [0,ω];
+-- the join [1,1] ⊔ [0,ω] has lower bound 0, violating >=1.
+joinBad : (>=1 x : Int) -> Bool -> Int
+let joinBad x b = --!! E_QTT_LINEAR_DROP
+    if b then x else weak x
+
+-- POSITIVE: the terminal branch demands x itself; the continuing path
+-- demands x in a later do-item.
+terminalOk : (>=1 x : Int) -> Bool -> Int
+let terminalOk x b = do
+    if b then
+        return x
+    x + 1
+
+-- NEGATIVE: the terminal branch exits x's scope without demanding it,
+-- so the obligation is unsatisfied on that path.
+terminalBad : (>=1 x : Int) -> Bool -> Int
+let terminalBad x b = do --!! E_QTT_LINEAR_DROP
+    if b then
+        return 0
+    x + 1
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): PASS

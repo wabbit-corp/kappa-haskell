@@ -1,0 +1,51 @@
+-- Source: granule-project/granule PR #226 (explicit rankN types)
+-- Spec: §12.1 (higher-rank binder types), §16.1.7.1 (application-spine
+--       argument check), §3.1 (kappa.application.argument-mismatch is a
+--       standardized expected/actual family)
+-- A rank-2 parameter `forall b. (1 x : b) -> (Int, b)` may be
+-- instantiated at several types in the body; supplying a monomorphic
+-- function where the polymorphic one is demanded is rejected at the
+-- application argument position. Family re-derived from the original's
+-- kappa.type.mismatch guess: the argument/parameter mismatch family is
+-- kappa.application.argument-mismatch (§3.1; the §3.2 registry lacks a
+-- dedicated entry for it — see docs/SPEC_ISSUES.md).
+
+module test
+
+--! mode check
+
+data MyChar : Type =
+    MkChar
+
+data IntChar : Type =
+    MkIntChar (n : Int) (c : MyChar)
+
+data IntUnit : Type =
+    MkIntUnit (n : Int) (u : Unit)
+
+-- POSITIVE: the rank-2 argument is instantiated at two different types.
+foo : (k : forall (b : Type). (1 x : b) -> (Int, b)) -> (IntChar, IntUnit)
+let foo k =
+    let (n1, c) = k @MyChar MkChar
+    let (n2, u) = k @Unit ()
+    (MkIntChar n1 c, MkIntUnit n2 u)
+
+-- POSITIVE: the caller supplies a genuinely polymorphic function.
+mkPair : forall (b : Type). (1 x : b) -> (Int, b)
+let mkPair x = (42, x)
+
+result : (IntChar, IntUnit)
+let result = foo mkPair
+
+-- NEGATIVE: a monomorphic function cannot inhabit the rank-2 forall;
+-- the expected type is `forall b. (1 x : b) -> (Int, b)`, the actual is
+-- `(1 x : MyChar) -> (Int, MyChar)`.
+mono : (1 x : MyChar) -> (Int, MyChar)
+let mono x = (0, x)
+
+bad : (IntChar, IntUnit)
+let bad = foo mono            --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

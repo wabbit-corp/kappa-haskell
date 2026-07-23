@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "released 7\ncaught: boom\n"
+
+-- §18.8.3 (linearity note): the unwinder executes every exit action before
+-- propagating the selected error, so a quantity-1 obligation held by a
+-- deferred action is consumed exactly once even when the scope exits by a
+-- monadic error raised before normal completion.
+module main
+
+data Token : Type =
+    MkToken (1 secret : Int)
+
+consumeToken : (1 t : Token) -> IO String Unit
+let consumeToken (1 t : Token) : IO String Unit =
+    match t
+    case MkToken s -> printlnString (stringAppend "released " (showInt s))
+
+risky : IO String Unit
+let risky = do
+    let 1 t = MkToken 7
+    defer (consumeToken t)
+    raise "boom"
+
+main : UIO Unit
+let main = do
+    try risky
+    except msg ->
+        printlnString (stringAppend "caught: " msg)
+
+-- STATUS(a0497523): PASS

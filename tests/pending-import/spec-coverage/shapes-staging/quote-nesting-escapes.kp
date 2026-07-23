@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertType nested Code (Code Integer)
+--! assertType closer Code Integer -> Option (ClosedCode Integer)
+--! assertStdout "5\n6\n"
+
+-- §23.2: quotation nests — '.< .< 1 >. >.' has type Code (Code
+-- Integer) — and a single quote may contain several escapes; an
+-- escaped subterm may itself be built from prior staged code.
+-- §23.4/§23.6: 'closeCode' has type Code t -> Option (ClosedCode t)
+-- and closed code runs via 'runCode'.
+
+closer : Code Integer -> Option (ClosedCode Integer)
+let closer = closeCode
+
+nested : Code (Code Integer)
+let nested = .< .< 1 >. >.
+
+twoEscapes : Code Integer -> Code Integer -> Code Integer
+let twoEscapes c1 c2 = .< .~c1 + .~c2 >.
+
+composed : Code Integer
+let composed =
+    block
+        let c = .< 1 + 2 >.
+        .< .~c + 3 >.
+
+runInt : Code Integer -> UIO Unit
+let runInt c = do
+    match closer c
+    case Some cc -> do
+        let v <- runCode cc
+        println v
+    case None -> printlnString "not closed"
+
+main : UIO Unit
+let main = do
+    runInt (twoEscapes .< 2 >. .< 3 >.)
+    runInt composed
+-- STATUS(a0497523): PASS

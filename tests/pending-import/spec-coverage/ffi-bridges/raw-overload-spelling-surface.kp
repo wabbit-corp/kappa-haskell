@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.2 (raw host binding surfaces): the deterministic-overload worked
+-- example's generated shapes are ordinary Kappa declarations — an unsuffixed
+-- unique spelling plus a deterministically suffixed spelling for the second
+-- overload; constructors exposed as ordinary terms named `new` (not a
+-- reserved word); and instance methods exposed with exactly one
+-- receiver-marked binder so the §7.4 dotted-call rules apply.
+module main
+
+import std.ffi.(type RawPtr, ctor MkRawPtr)
+import std.ffi.c.(type CInt, ctor MkCInt)
+
+data HostError : Type =
+    HostFailure (code : Integer)
+
+-- Generated raw overload spellings (worked example, §26.1.2): the raw
+-- surface is ordinary Kappa surface syntax, not a separate declaration
+-- language.
+parse : RawPtr -> IO HostError CInt
+let parse text = ioPure (MkCInt 0)
+
+parse__arity2 : RawPtr -> CInt -> IO HostError CInt
+let parse__arity2 text radix = ioPure (MkCInt 0)
+
+-- Constructor exposure: `new` is an ordinary term name.
+type Parser = (state : CInt)
+
+new : CInt -> IO HostError Parser
+let new radix = ioPure ((state = radix))
+
+-- Instance-method exposure: exactly one receiver-marked binder makes the
+-- imported member eligible for §7.4 dotted calls.
+projection remaining (place this : Parser) : CInt =
+    yield this.state
+
+sample : Parser
+let sample = (state = MkCInt 8)
+
+sampleRemaining : CInt
+let sampleRemaining = sample.remaining
+
+-- STATUS(a0497523): PASS

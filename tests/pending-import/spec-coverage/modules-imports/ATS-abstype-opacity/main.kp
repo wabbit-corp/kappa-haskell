@@ -1,0 +1,62 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/test00.dats
+--         (`abstype abc0: type == int`, `absimpl abc0 = int`)
+-- Spec: §8.5.3 (opaque data: constructors are not exported and are not
+--       name-resolvable outside the defining module, including for
+--       pattern matching), §3.2.2 (family kappa.name.unresolved),
+--       §3.2.3 (family kappa.type.mismatch).
+-- Pins: outside the defining module, matching on or constructing an
+-- opaque data type's constructor is a name-resolution error, and an
+-- ascription between the opaque type and its hidden representation type
+-- is an ordinary type mismatch (opacity = no definitional transparency).
+
+--! mode check
+
+module main
+
+import tokens.(type Token, makeToken, tokenIdOf)
+import vault.(type Secret, makeSecret, revealKey)
+
+-- POSITIVE: consumers use the exported interface normally.
+myToken : Token
+let myToken = makeToken 7
+
+myId : Int
+let myId = tokenIdOf myToken
+
+double : Token -> Int
+let double t = tokenIdOf t * 2
+
+eqToken : Token -> Token -> Bool
+let eqToken t1 t2 = tokenIdOf t1 == tokenIdOf t2
+
+s1 : Secret
+let s1 = makeSecret "pw" 1234
+
+k1 : Int
+let k1 = revealKey s1
+
+-- NEGATIVE: the constructor of an opaque data type is not
+-- name-resolvable outside `tokens`, so it cannot be matched.
+badPattern : Token -> Int
+let badPattern t =
+    match t
+    case MkToken n -> 0              --!! kappa.name.unresolved
+
+-- NEGATIVE: nor can it be used to construct a value.
+badConstruct : Token
+let badConstruct = MkToken 99        --!! kappa.name.unresolved
+
+-- NEGATIVE: the representation equality Token == Int is hidden, so an
+-- ascription of an Int at type Token is a type mismatch.
+badCoerce : Int -> Token
+let badCoerce n = (n : Token)        --!! kappa.type.mismatch
+
+-- NEGATIVE: the same holds for the multi-field opaque type in `vault`.
+badReveal : Secret -> String
+let badReveal sec =
+    match sec
+    case MkSecret s _ -> "leak"      --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 4

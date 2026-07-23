@@ -1,0 +1,35 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_PATH_CONSUMED
+
+-- §16.1.5 via §12.4.2: "For static overlap, disjointness, borrow
+-- introduction, and ~ admissibility, a projector descriptor
+-- application is treated exactly like the corresponding fully applied
+-- projection call." Applying the first-class descriptor `proj` to a
+-- root whose selected path cell.value is already consumed MUST
+-- therefore be rejected exactly like the direct projection
+-- (E_QTT_PATH_CONSUMED today for `cell.value`).
+module main
+
+data Token : Type =
+    Token
+
+type LinCell = (1 value : Token, tag : Int)
+
+projection linValue (place this : LinCell) : Token =
+    yield this.value
+
+takeToken : (1 t : Token) -> Token
+let takeToken (1 t : Token) : Token = t
+
+observeToken : (& t : Token) -> Int
+let observeToken (& t : Token) : Int = 1
+
+bad : (1 cell : LinCell) -> (Token, Int)
+let bad (1 cell : LinCell) : (Token, Int) =
+    block
+        let proj = linValue
+        let moved = takeToken cell.value
+        (moved, observeToken (proj cell)) --!! E_QTT_PATH_CONSUMED
+
+-- STATUS(a0497523): FAIL — 0 errors: the descriptor application `proj cell` is accepted after cell.value was moved (same gap as the fully applied projection call form; direct projection is rejected with E_QTT_PATH_CONSUMED).

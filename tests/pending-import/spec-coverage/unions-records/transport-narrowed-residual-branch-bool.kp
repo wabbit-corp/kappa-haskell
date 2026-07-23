@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §13.1.4 residual narrowing x §16.1.8 branch-bool transport x §13.1.1 row
+-- canonicalization: after the String arm of (| FlagBox b | String | Bool |)
+-- the residual binder has the NARROWED type (| Bool | FlagBox b |); inside
+-- the then-branch, evidence b = True must license transporting that
+-- narrowed residual to the demanded (| FlagBox True | Bool |) (plan shape
+-- 1 with context K[#] = (| Bool | FlagBox # |), modulo row permutation).
+-- This stacks three features: residual narrowing produces the source type,
+-- transport rewrites a member index inside it, and row equality modulo
+-- permutation aligns the spellings.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsRest : (| FlagBox True | Bool |) -> Unit
+let needsRest (u : (| FlagBox True | Bool |)) : Unit = ()
+
+useIt : (b : Bool) -> (| FlagBox b | String | Bool |) -> Unit
+let useIt (b : Bool) (u : (| FlagBox b | String | Bool |)) : Unit =
+    match u
+    case (| s : String |) -> ()
+    case (| ..rest |)     ->
+        if b then needsRest rest else ()
+
+-- STATUS(a0497523): PASS

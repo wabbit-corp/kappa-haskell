@@ -1,0 +1,58 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.2 Ring/FieldLike/Semiring law members + §28.2.3 mandated
+-- instances: subDefinedAlways/subtractAsAddInverse (Ring),
+-- divisionRightInverse (FieldLike), addAssoc/leftDistribute
+-- (AdditiveMonoid/Semiring) are ordinary proof-producing members, so
+-- demanding the evidence lets a program project each law at its
+-- declared type; Ring Integer/Int and FieldLike Rational MUST exist.
+module main
+
+ringSubTotal :
+    forall (a : Type). (@_ : Ring a) ->
+    (x : a) -> (y : a) ->
+    subDefined x y = True
+let ringSubTotal x y = subDefinedAlways
+
+ringSubAsInverse :
+    forall (a : Type). (@_ : Ring a) ->
+    (x : a) -> (y : a) -> (@p : subDefined x y = True) ->
+    subtract x y @p = add x (negate y)
+let ringSubAsInverse x y @p = subtractAsAddInverse
+
+-- Ring gives total subtraction: subDefinedAlways builds the proof.
+ringMinus :
+    forall (a : Type). (@_ : Ring a) ->
+    (x : a) -> (y : a) -> a
+let ringMinus x y = subtract x y @(subDefinedAlways)
+
+fieldInverse :
+    forall (a : Type). (@_ : FieldLike a) ->
+    (x : a) -> (y : a) -> (@p : divDefined x y = True) ->
+    multiply (divide x y @p) y = x
+let fieldInverse x y @p = divisionRightInverse
+
+assocPoly :
+    forall (a : Type). (@_ : AdditiveMonoid a) ->
+    (x : a) -> (y : a) -> (z : a) ->
+    add (add x y) z = add x (add y z)
+let assocPoly x y z = addAssoc
+
+natDistribute :
+    (x : Nat) -> (y : Nat) -> (z : Nat) ->
+    multiply x (add y z) = add (multiply x y) (multiply x z)
+let natDistribute x y z = leftDistribute
+
+-- §28.2.3 instances: Ring Integer, Ring Int, FieldLike Rational.
+integerMinus : Integer -> Integer -> Integer
+let integerMinus x y = ringMinus x y
+
+intMinus : Int -> Int -> Int
+let intMinus x y = ringMinus x y
+
+rationalInverse :
+    (x : Rational) -> (y : Rational) -> (@p : divDefined x y = True) ->
+    multiply (divide x y @p) y = x
+let rationalInverse x y @p = fieldInverse x y
+-- STATUS(a0497523): FAIL — 10 errors: the §28.2.2 law members are not implemented (algebraic traits are empty marker traits: subDefinedAlways/subtractAsAddInverse/divisionRightInverse/addAssoc/leftDistribute all E_NAME_UNRESOLVED), and the surface subtract/divide take no proof argument, so `subtract x y @p` / `divide x y @p` hit E_APPLICATION_ARGUMENT_MISMATCH.

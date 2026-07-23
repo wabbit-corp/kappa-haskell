@@ -1,0 +1,59 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "owned-bind-failure\nstub-runtime\n"
+
+-- §26.1.16 (borrowed and owned bridge-bound values): bindModuleOwned returns
+-- an owned BridgePackage surface (not a borrowed surface value); its failures
+-- flow through the same typed BridgeFailure channel as bindModule (§26.1.6.1
+-- — never fabricated success). Borrowing the surface back out is a separate
+-- bridgePackageValue operation, and bridgePackageOrigin is an ordinary UIO
+-- query on the owned package value.
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle)
+import std.bridge.(term bindModuleOwned, term bridgePackageValue, term bridgePackageOrigin)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, type BridgeOrigin, ctor MkBridgeOrigin)
+import std.bridge.(type BridgePackage, ctor MkBridgePackage)
+
+data StubHandle : Type =
+    MkStubHandle
+
+instance BridgeHandle StubHandle =
+    let bridgeOrigin h = ioPure (MkBridgeOrigin "stub-runtime")
+    let bridgeFailure f = "bridge failure"
+
+type Store (r : Region) : Type =
+    (get : String -> IO BridgeFailure (Option String))
+
+instance BridgeBindable Store =
+    let bridgeContract = MkBridgeContract "store contract"
+
+-- Owned lane: the package may outlive any lexical borrow of the handle;
+-- borrowing its surface is the explicit bridgePackageValue step.
+useOwned : IO BridgeFailure Unit
+let useOwned = do
+    let package <- bindModuleOwned @Store MkStubHandle "store"
+    let store <- bridgePackageValue package
+    let v <- store.get "greeting"
+    printlnString "unreachable: owned bind reported success"
+    ioPure ()
+
+reportOwnedFailure : BridgeFailure -> UIO Unit
+let reportOwnedFailure err = printlnString "owned-bind-failure"
+
+-- An owned package constructed locally still answers the UIO origin query.
+localPackage : BridgePackage Store
+let localPackage = MkBridgePackage (MkBridgeOrigin "stub-runtime")
+
+describeOrigin : BridgeOrigin -> String
+let describeOrigin o = match o
+    case MkBridgeOrigin description -> description
+
+main : UIO Unit
+let main = do
+    catchIO useOwned reportOwnedFailure
+    let origin <- bridgePackageOrigin localPackage
+    printlnString (describeOrigin origin)
+
+-- STATUS(a0497523): PASS

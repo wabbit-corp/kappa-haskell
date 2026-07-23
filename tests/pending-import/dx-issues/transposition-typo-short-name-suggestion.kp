@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- DX expectation, not spec-required (§3.2.2 requires candidate
+-- spellings but fixes no distance metric).  Adjacent-transposition
+-- typos ('vaule' for 'value') are the most common real-world class,
+-- but the suggestion engine uses plain Levenshtein distance, where a
+-- transposition costs 2, over the documented threshold
+-- max 1 (min 2 (len/3)) — i.e. 1 for names up to 8 characters.  So the
+-- 5-char typo below gets NO suggestion, while the same transposition
+-- inside a 13-char name ('confgiuration') is caught by the threshold
+-- of 2.  Expected-good behavior: Damerau-style handling so an adjacent
+-- transposition counts as one edit and 'value' is suggested with a
+-- maybe-applicable fix.  Currently: no help, no fix.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion value
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+value : Integer
+let value = 5
+
+let x = vaule --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — no suggestion at all for 'vaule' (Levenshtein transposition cost 2 > threshold 1 for 5-char names)

@@ -1,0 +1,27 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n"
+
+-- §18.9.1/§18.9.2: `inout` is permitted on trait-member signatures, and
+-- InoutParam metadata is part of the trait-member interface. A call through
+-- the trait member therefore resolves the metadata and accepts `~`, with
+-- the usual write-back (empty residual, bare-statement form).
+module main
+
+trait Stepper (0 t : Type) =
+    step : (inout st : t) -> UIO (1 st : t,)
+
+instance Stepper Int =
+    let step (inout st : Int) : UIO (1 st : Int,) =
+        pure (st = addInt st 1,)
+
+main : UIO Unit
+let main = do
+    var x = 1
+    step ~x
+    printlnString (showInt x)
+
+-- STATUS(a0497523): FAIL — the compiler emits E_QTT_INOUT_MARKER_UNEXPECTED at the
+-- trait-member call site: InoutParam metadata declared on a trait-member
+-- signature is not propagated to ~ resolution (§18.9.2/§18.9.3 require
+-- trait-member interfaces to carry it). Declaration and instance are accepted.

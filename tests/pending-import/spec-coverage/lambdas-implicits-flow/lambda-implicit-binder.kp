@@ -1,0 +1,23 @@
+-- §16.2 × §16.3 (combination): a lambda binder list may contain implicit
+-- binders ((@0 t : Type) here, the spec's own example \ (@0 t : Type)
+-- (x : t) -> x); call sites may discharge the implicit explicitly with
+-- the @e application form or leave it to inference.
+module main
+
+polyId : (@0 t : Type) -> t -> t
+let polyId = \ (@0 t : Type) (x : t) -> x
+
+-- POSITIVE: explicit implicit argument via @e application.
+useExplicit : Int
+let useExplicit = polyId @Int 5
+
+-- POSITIVE: the implicit type argument is inferred.
+useImplicit : Bool
+let useImplicit = polyId True
+
+--! mode check
+--! assertNoErrors
+--! assertType polyId (@0 t : Type) -> t -> t
+--! assertEval useExplicit 5
+--! assertEval useImplicit True
+-- STATUS(a0497523): PASS

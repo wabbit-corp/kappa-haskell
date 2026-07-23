@@ -1,0 +1,51 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "200000.0\n7\n200000.0\n1255\n1010\n1511\n2000\n1.2044281714e24\n4095\nTrue\n"
+
+-- SPEC COVERAGE (robust literals): maximal numeric-literal suffix
+-- combinations, Spec 6.1.6.
+--   * `1e5rad`  : exponent then Double-payload suffix (`rad 1e5`).
+--   * `1ex`     : `e` NOT followed by sign?digits is not an exponent,
+--                 so it begins the identifier suffix `ex` on integer 1
+--                 (explicit rule in 6.1.6).
+--   * `1e+5rad` : signed exponent then suffix.
+--   * `0xFFpx` / `0b1010px` / `0o777px` : hex, binary, and octal
+--                 literals MAY take suffixes; payload arrives as Nat.
+--   * `1_000px` : digit-separator underscores compose with a suffix.
+--   * `6.022_140_857E23rad` : underscored mantissa + uppercase
+--                 exponent + suffix.
+--   * `0xFFf`   : `f` IS a hex digit, so greedy hexDigits munch makes
+--                 this the plain literal 0xFFF (4095) with NO suffix —
+--                 not `f 0xFF`.
+--   * suffix on a huge payload: the suffix term receives the exact
+--                 arbitrary-precision Nat (120 digits here; 6.1.6 +
+--                 28.2).
+
+px : Nat -> Integer
+let px n = natToInt n + 1000
+
+rad : Double -> Double
+let rad d = d * 2.0
+
+ex : Nat -> Integer
+let ex n = natToInt n * 7
+
+f : Nat -> Integer
+let f n = 0 - 1
+
+big : Nat -> Nat
+let big n = n
+
+main : UIO Unit
+let main = do
+    println 1e5rad
+    println 1ex
+    println 1e+5rad
+    println 0xFFpx
+    println 0b1010px
+    println 0o777px
+    println 1_000px
+    println 6.022_140_857E23rad
+    println 0xFFf
+    println (999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999big == 999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999)
+-- STATUS(a0497523): PASS

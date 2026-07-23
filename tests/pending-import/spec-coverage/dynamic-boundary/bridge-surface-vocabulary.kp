@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+
+-- §25.1: bridge surfaces are region-indexed type families of kind
+-- Region -> Type, accepted by BridgeContract / BridgePackage /
+-- BridgeBindable; BoundaryDirection has exactly IntoKappa / OutOfKappa /
+-- LaterUse and BoundaryPrecision has Exact / Conservative / Lossy.
+module main
+
+import std.bridge.*
+
+type CounterSurface (r : Region) = (bump : Int -> Int,)
+
+contractOf : BridgeContract CounterSurface -> BridgeContract CounterSurface
+let contractOf c = c
+
+packageOf : BridgePackage CounterSurface -> BridgePackage CounterSurface
+let packageOf p = p
+
+canonicalContract : (@_ : BridgeBindable CounterSurface) -> BridgeContract CounterSurface
+let canonicalContract (@binding : BridgeBindable CounterSurface) = binding.bridgeContract
+
+describe : BoundaryDirection -> String
+let describe d =
+    match d
+    case IntoKappa -> "into"
+    case OutOfKappa -> "out"
+    case LaterUse -> "later"
+
+precisionName : BoundaryPrecision -> String
+let precisionName p =
+    match p
+    case Exact -> "exact"
+    case Conservative -> "conservative"
+    case Lossy -> "lossy"
+
+-- STATUS(a0497523): PASS

@@ -2,11 +2,9 @@
 --         (#impltmp foldl$fopr<a><int>(r0, x0) = r0 + 1 inside where block),
 --         tests/srcgen1/TEST/DATA/test02.dats (impltmp g_foldl, local where overrides),
 --         tests/srcgen1/xatslib/TEST/test01_miscell.dats (#impltmp ... inside where)
--- Spec: implicit.resolution_algorithm (§14.3.1),
---       declarations.let_binding (§9.3),
---       spec_addition ATS-SA-04 (locally scoped implicit implementation),
---       compiler.frontir.standard_diagnostic_families.implicit_trait_proof
---       (family kappa.implicit.unsolved).
+-- Spec: §30.1.1 (local instances have lexical scope), §14.3.1 and
+--       §16.3.3 (implicit resolution), §3.2.4
+--       (kappa.implicit.unsolved).
 -- ATS3 pattern: `impltmp {env} list_iforitm$work<a><env> (i, x, env) = ...`
 --   inside a `let` block provides a locally scoped implementation for a
 --   parameterized template slot. The outer implementation does not conflict.

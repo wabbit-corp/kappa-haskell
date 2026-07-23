@@ -1,0 +1,43 @@
+-- §16.2 (lambda binder forms): bare identifiers, wildcard binders (each a
+-- distinct fresh parameter, not an expression hole), the Unit binder ()
+-- ≡ (_ : Unit), mixed bare/typed binder styles with currying, and an
+-- indented pure block suite as the lambda body (elaborating to block).
+module main
+
+-- POSITIVE: wildcards mixed with a typed binder; distinct parameters.
+konst : Int -> Int -> Int -> Int
+let konst = \ _ (y : Int) _ -> y
+
+-- POSITIVE: mixed bare and typed binders, curried.
+addThree : Int -> Int -> Int -> Int
+let addThree = \ x (y : Int) z -> x + y + z
+
+-- POSITIVE: the () binder denotes one anonymous explicit Unit parameter.
+unitLam : Unit -> Bool
+let unitLam = \() -> True
+
+-- POSITIVE: the body may be an indented pure block suite.
+suiteBody : Int -> Int
+let suiteBody = \ x ->
+    let y = x + 1
+    y + 1
+
+r1 : Int
+let r1 = konst 1 7 3
+
+r2 : Int
+let r2 = addThree 1 2 3
+
+r3 : Bool
+let r3 = unitLam ()
+
+r4 : Int
+let r4 = suiteBody 40
+
+--! mode check
+--! assertNoErrors
+--! assertEval r1 7
+--! assertEval r2 6
+--! assertEval r3 True
+--! assertEval r4 42
+-- STATUS(a0497523): PASS

@@ -1,0 +1,15 @@
+module lib
+
+-- §8.5.3 x §14.3: an instance for an `opaque data` type is declared in
+-- the defining module, where the representation is available.
+opaque data Token : Type =
+    MkToken Int
+
+mkToken : Int -> Token
+let mkToken n = MkToken n
+
+trait Label (a : Type) =
+    label : a -> Int
+
+instance Label Token =
+    let label t = match t case MkToken n -> n

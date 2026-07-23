@@ -1,0 +1,13 @@
+-- §20.5: only MAP comprehensions read `yield k : v` as key/value. In a LIST
+-- comprehension `yield x : Int` is ordinary type ascription (the spec's own
+-- example), so this comprehension has type List Int.
+--! mode check
+--! assertNoErrors
+--! assertType ascribed List Int
+module main
+
+ascribed : List Int
+let ascribed = [ for x in [1, 2], yield x : Int ]
+-- STATUS(a0497523): FAIL — the compiler parses `yield x : Int` as key/value even in
+-- a LIST comprehension (result type List (key : Integer, value : Type)); the
+-- §20.5 map-only `:` rule leaks into list/set carriers.

@@ -1,0 +1,31 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestLetRec.curry
+--   (letrec scoping, negative direction derived from §9.3.1's rule).
+-- Spec: §9.3.1 (local recursion: "A local named binding is non-recursive
+--       by default."), §3.2 family kappa.name.unresolved.
+--
+-- Pins: WITHOUT a preceding local signature, a local named `let`
+-- definition is non-recursive, so a self-reference in its body does not
+-- resolve to the binding being defined — the name is unresolved.
+
+module test
+
+--! mode check
+
+data Nat2 : Type =
+    Z2
+    S2 Nat2
+
+-- NEGATIVE: no preceding local signature for `go`, so the body's `go`
+-- self-reference is an unresolved name per §9.3.1.
+broken : Nat2 -> Nat2
+let broken n =
+    let go = \m ->
+        match m
+        case Z2 -> Z2
+        case S2 p -> S2 (S2 (go p))
+    go n
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- STATUS(a0497523): PASS

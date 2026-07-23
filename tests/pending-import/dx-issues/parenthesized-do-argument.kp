@@ -1,0 +1,29 @@
+-- DX EXPECTATION (not necessarily spec-required): a `do` block should be
+-- usable as a parenthesized argument expression — `f (do ...)`,
+-- `thunk (do ...)` — or at minimum fail with a diagnostic naming the
+-- limitation. §18.2 treats do blocks as expressions of type m T, and
+-- §5.4's continuation-context list is explicitly non-exhaustive; nothing
+-- says `do` is unusable inside explicit grouping parentheses.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the parser treats `do` in these
+-- positions as an ordinary identifier and reports "unresolved name 'do'"
+-- (E_NAME_UNRESOLVED, kappa.name.unresolved). This is doubly confusing
+-- because the compiler's own E_VAR_READ_CROSSES_BOUNDARY diagnostic
+-- advises "use an inner do block" — under a `thunk` that advice cannot be
+-- followed without separately naming the action with a let binding
+-- (`let act = do ...` then `thunk act` works). Same failure for
+-- `let _ <- (do ...)` and `thunk (do x)`.
+module main
+
+twice : UIO Unit -> UIO Unit
+let twice a = do
+    let _ <- a
+    a
+
+main : UIO Unit
+let main = twice (do
+    printInt 7)
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a0497523): FAIL — parser reports "unresolved name 'do'" (E_NAME_UNRESOLVED) for a parenthesized do-block argument; same for thunk (do ...) and let _ <- (do ...); only a named let-bound action works

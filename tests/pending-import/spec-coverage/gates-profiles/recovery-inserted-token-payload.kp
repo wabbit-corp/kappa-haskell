@@ -15,4 +15,4 @@ let foo = (1
 bar : Int
 let bar = 2
 
--- STATUS(a51e1bf): FAIL — the unclosed-delimiter diagnostic has payload kind 'none': no typed recovery-node payload (suppression under the root works)
+-- STATUS(a0497523): FAIL — the unclosed-delimiter diagnostic has payload kind 'none': no typed recovery-node payload (suppression under the root works)

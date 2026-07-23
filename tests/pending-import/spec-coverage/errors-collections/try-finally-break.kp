@@ -1,0 +1,21 @@
+-- §19.2/§18.8.3.1: except handlers do not intercept break; a break inside the
+-- try body propagates outward to the enclosing loop, and the finally clause
+-- (elaborated via defer) still runs while the do-scope unwinds — spec §19.2
+-- lists "a break/continue propagating through the try" as a finally trigger.
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\nfin\nafter\n"
+module main
+
+main : UIO Unit
+let main = do
+    while True do
+        try do
+            printlnString "body"
+            break
+        finally ->
+            printlnString "fin"
+    printlnString "after"
+-- STATUS(a0497523): FAIL — E_BREAK_OUTSIDE_LOOP: the compiler treats the `try do`
+-- body as a completion-confining fresh do-scope, so break cannot reach the
+-- enclosing loop through a try (contra §19.2 control-flow interaction).

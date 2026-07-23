@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNKNOWN_FIELD
+-- §3.2.2: the record-patch unknown-field diagnostic (E_UNKNOWN_FIELD) is
+-- emitted with family kappa.name.unresolved, so the §3.2.2 payload MUST
+-- items apply: unresolved spelling and candidate spellings considered
+-- for typo suggestions.  'agee' is edit distance 1 from the record's
+-- field 'age', so a maybe-applicable rename fix SHOULD be attached
+-- (§3.1.7 rank 1-2: a local spelling repair preserving the construct).
+-- Today the payload is {"kind":"none"}, there is no fix, and — unlike
+-- the projection form — the message does not even list the available
+-- fields.  (conformance/records/patch-unknown-field.kp pins only the
+-- code, with a spelling that is not close to any field.)
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/name agee
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion age
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+module main
+
+base : (name : String, age : Integer)
+let base = (name = "ada", age = 36)
+
+let bad = base.{ agee = 37 } --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — E_UNKNOWN_FIELD payload is {"kind":"none"}: no name, no suggestion, no fix (message does not even list the fields)

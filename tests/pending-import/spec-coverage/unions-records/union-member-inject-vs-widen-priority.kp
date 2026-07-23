@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n"
+
+-- §13.1.3 (Spec.md L16282-L16299) states two expected-type-directed rules
+-- that BOTH apply when the expression's type Inner = (| Integer | String |)
+-- is itself a member of the expected row AND all of Inner's members are in
+-- that row: Both = (| Inner | Integer | String |). Injection would tag the
+-- value as the Inner member (whichArm -> 1); widening reuses the
+-- Integer/String member tags (whichArm -> 2). The two rules are observably
+-- different at runtime (§31.3 tag identity), yet §13.1.3 states no
+-- priority between them — reported as a spec ambiguity. This test
+-- documents the implementation's choice: WIDENING wins, so the Integer arm
+-- prints 2. (Note the Inner arm is currently unreachable in general —
+-- see union-of-union-member-uninhabitable.kp.) If the spec later fixes
+-- the priority the other way, the expected stdout must flip to "1\n".
+module main
+
+type Inner = (| Integer | String |)
+type Both = (| Inner | Integer | String |)
+
+toBoth : Inner -> Both
+let toBoth v = v
+
+whichArm : Both -> Integer
+let whichArm u =
+    match u
+    case (| i : Inner |)   -> 1
+    case (| n : Integer |) -> 2
+    case (| s : String |)  -> 3
+
+viaInt : Inner
+let viaInt = 42
+
+main : UIO Unit
+let main = do
+    printlnString (showInt (whichArm (toBoth viaInt)))
+
+-- STATUS(a0497523): PASS — widening wins over member injection; prints 2.

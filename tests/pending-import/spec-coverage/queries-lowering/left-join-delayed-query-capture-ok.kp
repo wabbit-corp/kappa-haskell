@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+--! assertType pairUp List Int -> List Int -> List (_1 : Int, _2 : Query Int)
+
+-- §20.8 + §20.10.7 rule 10 (left join): `left join y in ys on cond into name`
+-- binds `name` to a delayed first-class query that may capture the
+-- unrestricted outer row entry x non-consumingly; for the ordinary
+-- reusable/unrestricted case its type displays as `Query t`. `name` is in
+-- scope in later clauses (the `let` below) and in `yield`; each outer row is
+-- preserved exactly once (per-input row multiplicity QOne).
+module main
+
+pairUp : List Int -> List Int -> List (_1 : Int, _2 : Query Int)
+let pairUp xs ys =
+    [
+        for x in xs
+        left join y in ys on y == x into matches
+        yield (x, matches)
+    ]
+
+withCounts : List Int -> List Int -> List (_1 : Int, _2 : Int)
+let withCounts xs ys =
+    [
+        for x in xs
+        left join y in ys on y == x into matches
+        let n = listLength [ for m in matches, yield m ]
+        yield (x, n)
+    ]
+
+-- STATUS(a0497523): PASS

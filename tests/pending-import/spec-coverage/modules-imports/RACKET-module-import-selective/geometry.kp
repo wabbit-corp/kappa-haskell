@@ -1,0 +1,13 @@
+module geometry
+
+piVal : Float
+let piVal = 3.14159
+
+circleArea : Float -> Float
+let circleArea r = piVal * r * r
+
+circumference : Float -> Float
+let circumference r = 2.0 * piVal * r
+
+diameterOf : Float -> Float
+let diameterOf r = 2.0 * r

@@ -10,4 +10,4 @@ module main
 
 type Bad : Type = (x : Int, @s : String)
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; the computational implicit field '@s : String' is not rejected
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; the computational implicit field '@s : String' is not rejected

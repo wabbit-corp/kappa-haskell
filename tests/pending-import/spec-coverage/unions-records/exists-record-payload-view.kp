@@ -30,7 +30,7 @@ let flat = dyn.shown
 witnessLeak : Type
 let witnessLeak = pkg.a                 --!! E_RECORD_PROJECTION_MISSING_FIELD
 
--- STATUS(a51e1bf): FAIL — single-field payloads, alpha-equivalence, and
+-- STATUS(a0497523): FAIL — single-field payloads, alpha-equivalence, and
 -- witness non-addressability all behave; but a MULTI-field record
 -- payload does not scope the witness over the field telescope
 -- (E_NAME_UNRESOLVED "unresolved name 'a'" on the `dyn` signature and

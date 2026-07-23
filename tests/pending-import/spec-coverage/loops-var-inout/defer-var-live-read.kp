@@ -1,0 +1,19 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body\n2\n"
+
+-- §18.7 (+§18.6.1): `defer` schedules the computation `e`; a current-value
+-- read inside the deferred action is a LIVE read performed when the action
+-- runs at scope exit, not a snapshot taken at the registration site. The
+-- assignment AFTER the `defer` statement is therefore observed by the
+-- deferred print.
+module main
+
+main : UIO Unit
+let main = do
+    var x = 1
+    defer (printlnString (showInt x))
+    x = 2
+    printlnString "body"
+
+-- STATUS(a0497523): PASS

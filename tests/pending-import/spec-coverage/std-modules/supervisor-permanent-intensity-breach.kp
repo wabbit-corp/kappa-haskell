@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "exit:fail:7\nruns:3\n"
+
+-- §29.2 std.supervisor: Permanent children are restarted after any terminal
+-- exit other than supervisor-requested shutdown; a nonpositive RestartIntensity
+-- window puts every restart attempt in one window, so a permanently failing
+-- child runs exactly 1 + maxRestarts times before the breach terminates the
+-- supervisor, and the triggering child Failure (Fail e) propagates as Fail e.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+import std.supervisor.*
+import std.atomic.*
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act = catchIO act (\v -> ioPure (absurd v))
+
+child : AtomicRef Integer -> IO Int Unit
+let child counter = do
+    let _ <- weakenVoidIO (atomicFetchAdd RmwSeqCst counter 1)
+    throwIO 7
+
+main : UIO Unit
+let main = do
+    let counter <- newAtomicRef 0
+    let children = childSpec "boom" Permanent (child counter) :: Nil
+    let sup <- startSupervisor OneForOne (RestartIntensity 2 (millis 0)) children
+    let exit <- awaitSupervisor sup
+    match exit
+      case Failure c ->
+        match c
+          case Fail e -> printlnString ("exit:fail:" ++ showInt e)
+          case _ -> printlnString "exit:other-cause"
+      case Success _ -> printlnString "exit:success"
+    let runs <- atomicLoad LoadSeqCst counter
+    printlnString ("runs:" ++ showInt runs)
+-- STATUS(a0497523): FAIL — std.supervisor is a typecheck-only stub (Prelude.hs): children never run and awaitSupervisor always returns Success (), so the run prints exit:success/runs:0 instead of the spec'd restart-until-breach behavior

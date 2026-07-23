@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+--! assertEval hi 2
+--! assertEval lo 1
+
+-- DX expectation, not (directly) spec-required: `min`/`max` usable on
+-- ordinary ordered types.  §28.2.1 declares a Max trait (member `max`,
+-- Spec L35075) but the only instance the spec requires is Max TypeLevel
+-- (L34939) — nothing gives Integer a max, and `min` appears nowhere in
+-- the spec at all.  Every mainstream prelude ships binary min/max for
+-- Ord-comparable values, and Kappa already has Ord Integer, so users
+-- reasonably write `max 1 2` on day one.  (The missing trait/name
+-- resolution itself is pinned as spec coverage in
+-- spec-coverage/combo-2026-07-23/prelude-successor-max-trait-surface.kp.)
+--
+-- What currently happens: E_NAME_UNRESOLVED for both names, with
+-- actively misleading fix-its — "did you mean 'map'?" for max and
+-- "did you mean 'sin'?" for min (a trig function exists but integer
+-- min does not).  The workaround is `if a < b then a else b`.
+
+module main
+
+hi : Integer
+let hi = max 1 2
+
+lo : Integer
+let lo = min 1 2
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x2: neither min nor max exists for ordinary types; fix-its suggest map/sin

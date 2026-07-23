@@ -20,4 +20,4 @@ type Public : Type = (x : Int,)
 bad : (1 w : WithRes) -> Public
 let bad (w : WithRes) : Public = seal w as Public --!! E_QTT_LINEAR_DROP
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; seal silently discards the hidden field declared at quantity 1
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; seal silently discards the hidden field declared at quantity 1

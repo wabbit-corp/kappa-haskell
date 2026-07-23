@@ -13,4 +13,4 @@ module main
 readX : (x : Int | r) -> Int
 let readX rec = rec.x
 
--- STATUS(a51e1bf): FAIL — a free lowercase identifier in open-record residual position is not implicitly universalized to RecRow (E_NAME_UNRESOLVED 'r')
+-- STATUS(a0497523): FAIL — a free lowercase identifier in open-record residual position is not implicitly universalized to RecRow (E_NAME_UNRESOLVED 'r')

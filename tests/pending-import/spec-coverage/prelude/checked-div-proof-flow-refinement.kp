@@ -1,0 +1,47 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.1 checked operations × boolean branch refinement (branch
+-- facts, §17.1.6 companion rules for if): divDefined/subDefined
+-- obligations are discharged by if-refinement of the domain condition,
+-- including refining directly on the definedness predicate itself; the
+-- predicates take their operands by borrow (§28.2.1).
+module main
+
+-- refine directly on the trait predicate: divDefined x y = True holds
+-- in the then branch, which is exactly the (/) obligation.
+predDiv : Int -> Int -> Int
+let predDiv x y = if divDefined x y then x / y else 0
+
+-- §28.2.3 Nat: subDefined x y = (y <= x); the guard refines the branch.
+natSafeSub : Nat -> Nat -> Nat
+let natSafeSub x y = if y <= x then x - y else 0
+
+-- §28.2.3 Nat literals type through FromInteger Nat; the concrete
+-- domain obligation (2 <= 5) = True discharges by evaluation.
+natLitSub : Nat
+let natLitSub = 5 - 2
+
+-- §28.2.1: definedness predicates borrow their operands, so a wrapper
+-- holding only borrows can evaluate them.
+canDivide : (& x : Int) -> (& y : Int) -> Bool
+let canDivide x y = divDefined x y
+
+p1 : Int
+let p1 = predDiv 9 3
+
+p2 : Int
+let p2 = predDiv 9 0
+
+s1 : Nat
+let s1 = natSafeSub 7 2
+
+s2 : Nat
+let s2 = natSafeSub 2 7
+
+--! assertEval p1 3
+--! assertEval p2 0
+--! assertEval s1 5
+--! assertEval s2 0
+--! assertEval natLitSub 3
+-- STATUS(a0497523): PASS

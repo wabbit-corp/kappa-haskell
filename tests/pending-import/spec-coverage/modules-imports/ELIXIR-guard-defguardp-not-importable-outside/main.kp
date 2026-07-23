@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- Source issues: kernel/guard_test.exs "defguardp defines private guards that work inside
+--   and outside guard clauses" (positive part) and "cannot find or invoke local is_even/1"
+--   (negative: importing a defguardp fails).
+-- Spec: §8.5.1 (private items are not part of the export interface),
+--       §8.3 (import items select only exported declarations),
+--       §3.2.2 (kappa.name.unresolved; E_IMPORT_ITEM_NOT_FOUND maps here)
+-- Elixir's defguardp is private to its module; Kappa's `private` marker
+-- keeps a declaration out of the export interface, so neither an explicit
+-- import item nor a qualified reference can reach it from outside.  The
+-- public wrapper that uses the private predicate in a guard stays usable.
+module main
+
+import filters.*
+import filters.(isEven) --!! kappa.name.unresolved
+
+-- POSITIVE: the public wrapper (which uses the private predicate in its
+-- guard internally) is importable and usable.
+useDescribe : String
+let useDescribe = describeEven 4
+
+-- NEGATIVE: qualified access to the private predicate from outside the
+-- defining module does not resolve.
+badDirect : Int -> Bool
+let badDirect n = filters.isEven n --!! kappa.name.unresolved
+
+-- STATUS(a0497523): PASS

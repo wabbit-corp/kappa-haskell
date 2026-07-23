@@ -1,0 +1,38 @@
+-- §16.1.7.1 (application-spine elaboration, L20557-20578) × §16.1.7.2
+-- (classifier-directed explicit implicit arguments) × §28.2.3 (proof-carrying
+-- checked division): in `divide x y @p` the spine is processed left-to-right;
+-- the leading implicits ((0 a : Type), (@ev : CheckedDiv a)) are synthesized
+-- via §16.3.3 because the next surface argument is not @-shaped, each accepted
+-- argument is "substituted through later binder types before elaboration
+-- continues" (L20561-20562), and the trailing surface `@p` then supplies the
+-- (@_ : divDefined x y = True) binder. Both definitions below are therefore
+-- well-typed. The prelude defines (/) with exactly this body shape
+-- (`let (/) x y @p = divide x y @p`, Prelude.hs L1818-1819), and
+-- tests/conformance/prelude/stdlib-prelude-positive-checked-div-mod.kp
+-- (needDiv/needMod) relies on the same form.
+--! mode check
+--! assertNoErrors
+module main
+
+-- prelude-(/)-shaped wrapper over the CheckedDiv accessor
+mydivop : forall (a : Type). (@_ : CheckedDiv a) -> (x : a) -> (y : a) -> (@_ : divDefined x y = True) -> a
+let mydivop x y @p = divide x y @p
+
+-- same shape over a user trait declared in this module: the classifier of @p
+-- depends on the auto-synthesized evidence argument
+trait MyOp (0 a : Type) =
+    opDefined : (& x : a) -> (& y : a) -> Bool
+    opRun : (x : a) -> (y : a) -> (@_ : opDefined x y = True) -> a
+
+useOp : forall (a : Type). (@_ : MyOp a) -> (x : a) -> (y : a) -> (@_ : opDefined x y = True) -> a
+let useOp x y @p = opRun x y @p
+
+-- STATUS(a0497523): FAIL — both bodies are rejected. `divide x y @p` dies with
+-- E_APPLICATION_ARGUMENT_MISMATCH ("an explicit implicit argument was
+-- supplied, but the callee has no implicit parameter here"); `opRun x y @p`
+-- dies with E_EXPLICIT_IMPLICIT_CLASSIFIER_MISMATCH whose expected type
+-- prints as "= Bool (__stuck_app _.opDefined @2 @1) True": the synthesized
+-- evidence implicit is left as an unsolved meta instead of being substituted
+-- through the later proof binder before the explicit @p is aligned. The
+-- existing conformance test stdlib-prelude-positive-checked-div-mod.kp FAILS
+-- against this same clean binary with the first error shape.

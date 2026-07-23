@@ -1,0 +1,8 @@
+-- no module header: in script mode this file's path-derived module
+-- name is `shared` (§8.1/§T.2), so it is a fragment of the same module
+-- as a.kp and (§28.1) inherits the effective @NoPrelude setting — the
+-- fixed constructor subset (True, ...) is NOT inserted here either.
+ok2 : Local
+let ok2 = MkLocal
+
+let bad = True --!! kappa.name.unresolved

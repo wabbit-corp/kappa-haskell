@@ -1,0 +1,25 @@
+-- §18.2.2 (do-item sequences: expression items are monadic, `expr : m a`,
+-- and the last reached do-item provides the block result), §18.8.6
+-- (result-producing item requires `final : m A`), §28.2 (prelude Option
+-- and its Monad instance).  A `do` block over `Option Int` whose final
+-- item is the bare pure variable `x : Int` omits the required `pure`:
+-- the block must be rejected with exactly one expected/actual mismatch
+-- at the tail (actual Integer, expected Option Integer).
+--
+-- This pins the compiler's CORRECT single focused diagnostic for the
+-- classic forgot-`pure` mistake in a user monad; contrast sibling test
+-- do-tail-pure-value-io-not-lifted.kp, where the same shape over IO is
+-- (incorrectly) accepted, and dx-issues
+-- do-tail-missing-pure-option-cascade.kp, where a compound tail `x + 1`
+-- degrades into a three-error cascade.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Integer
+module main
+
+f : Option Int
+let f = do
+    let x <- Some 1
+    x
+-- STATUS(a0497523): PASS

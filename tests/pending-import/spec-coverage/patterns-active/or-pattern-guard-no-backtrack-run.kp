@@ -1,0 +1,31 @@
+-- §17.2.3 (Spec L22546-L22555, "Or-patterns are tried left-to-right at
+-- runtime") x §17.1.9 (guard failure "excludes only the conjunction of
+-- pat and guard"): the spec does NOT say whether guard failure on
+-- or-alternative k retries alternatives k+1..n (Rust retries; OCaml/
+-- Haskell-style abandons the whole case). This run pins the CURRENT
+-- Kappa behavior: the first alternative that structurally matches
+-- commits the case's bindings; if the guard then fails, the whole case
+-- is abandoned without retrying later alternatives.
+--
+-- [1,7]: alt1 binds x=1, guard 1>5 fails; alt2 (x=7, guard would pass)
+-- is NOT retried -> falls to the default case (-1).
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "-1\n9\n-1\n"
+
+f : List Int -> Int
+let f (xs : List Int) : Int =
+    match xs
+    case (x :: _ ) | (_ :: x :: Nil) if x > 5 -> x
+    case _ -> 0 - 1
+
+main : UIO Unit
+let main = do
+    printInt (f (1 :: 7 :: Nil))
+    printInt (f (9 :: 1 :: Nil))
+    printInt (f (1 :: 2 :: Nil))
+
+-- STATUS(a0497523): PASS — documents no-backtracking semantics; the
+-- choice itself is spec-silent (recorded as a spec ambiguity: §17.2.3
+-- and §17.1.9 admit both the retry and the abandon reading).

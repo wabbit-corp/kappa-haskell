@@ -1,0 +1,21 @@
+-- §10.4.3.2 + §11.1.2.3A.2: role inference is a monotone fixed point over
+-- the whole mutually recursive nominal signature block. Right's ordinary
+-- type-code consumer forces its universe parameter invariant; Left reaches
+-- Right, so Left must tighten to invariant as well rather than retaining an
+-- order-dependent provisional role.
+--! mode check
+--! assertNoErrors
+--! assertUniverseRole Left 0 invariant
+--! assertUniverseRole Right 0 invariant
+--! assertSchemaCertificateValid Left
+--! assertSchemaCertificateValid Right
+
+module main
+
+data Left.{u} : Type (succ u) =
+    MkLeft (right : Right.{u})
+
+data Right.{u} : Type (succ u) =
+    MkRight
+        (consume : (ordinary 0 A : Type u) -> Int)
+        (left : Left.{u})

@@ -1,0 +1,38 @@
+-- DX EXPECTATION (arguably §16.4.1/§17.1.7, at minimum a spec ambiguity):
+-- unique-remaining constructor narrowing should count index-refuted
+-- constructors as already excluded. At Choice True the visible set is
+-- {Always, Also, Never}, but Never : Choice False is refuted by
+-- family-argument unification — the exhaustiveness checker itself already
+-- accepts matches on Choice True that omit Never. Ruling out Always via a
+-- failed is-test (or a residual catch-all, §17.1.7) therefore leaves
+-- exactly one reachable constructor, Also, and a developer expects
+-- HasCtor Also to be derived so c.size projects. §16.4.1's narrowing MUST
+-- is phrased as "proves LacksCtor for all but one visible constructor";
+-- whether index refutation counts as proving LacksCtor is not stated —
+-- but rejecting here is inconsistent with the same compiler's own
+-- index-aware exhaustiveness.
+--
+-- CURRENTLY (a0497523): both projections fail with E_UNRESOLVED_MEMBER
+-- (receiver type: Choice True) — narrowing only counts explicit LacksCtor
+-- facts, so two constructors "remain" and no HasCtor is derived.
+--! mode check
+--! assertNoErrors
+module main
+
+data Choice (flag : Bool) : Type =
+    Always : (size : Int) -> Choice True
+    Also : (size : Int) -> Choice True
+    Never : Choice False
+
+-- EXPECTED: else side derives HasCtor Also (Never is index-refuted).
+narrowTrim : Choice True -> Int
+let narrowTrim c =
+    if c is Always then c.size else c.size
+
+-- EXPECTED: residual branch after the unguarded Always arm likewise.
+narrowTrimMatch : Choice True -> Int
+let narrowTrimMatch c =
+    match c
+    case Always s -> s
+    case _ -> c.size
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_UNRESOLVED_MEMBER "no member 'size' on this receiver (\167\&7.3)" at line 30

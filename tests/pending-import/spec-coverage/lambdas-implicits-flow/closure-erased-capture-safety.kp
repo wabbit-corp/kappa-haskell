@@ -1,0 +1,30 @@
+-- §16.2.1 (erased safety): variables captured at quantity 0 MUST NOT
+-- appear in computationally relevant positions in the lambda body, but
+-- capturing quantity-0 variables imposes no restriction on the closure's
+-- own multiplicity (an ω context may still demand the closure repeatedly).
+module main
+
+callAnyTimes : (ω k : Unit -> Int) -> Int
+let callAnyTimes k = k () + k ()
+
+-- NEGATIVE: an erased (quantity-0) capture used relevantly in the body.
+badErased : (0 n : Int) -> (Unit -> Int)
+let badErased (0 n : Int) : Unit -> Int =
+    \() -> n --!! E_QTT_ERASED_RUNTIME_USE
+
+-- POSITIVE: an erased type variable captured only in a type-annotation
+-- position is a safe (non-relevant) capture.
+okTypePos : (@0 t : Type) -> (x : t) -> Unit -> t
+let okTypePos (@0 t : Type) (x : t) : Unit -> t =
+    \() -> (x : t)
+
+-- POSITIVE: a closure capturing only unrestricted and erased variables
+-- may be used unrestrictedly — the 0-capture does not linearize it.
+okOmegaClosure : (@0 t : Type) -> (f : t -> Int) -> (x : t) -> Int
+let okOmegaClosure (@0 t : Type) (f : t -> Int) (x : t) : Int =
+    callAnyTimes (\() -> f (x : t))
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
+-- STATUS(a0497523): PASS

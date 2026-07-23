@@ -1,0 +1,55 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_udef/type_udef.dl,
+--   tests/semantic/rule_undeclared_relation/rule_undeclared_relation.dl,
+--   tests/semantic/rule_undeclared_relation2/rule_undeclared_relation2.dl.
+-- Spec: §7.1 ordinary lexical lookup; §3.2.2 (family kappa.name.unresolved).
+-- Pins: an UPPERCASE type name referenced from a signature, a constructor
+-- field annotation, a union-type member, or a binding annotation must
+-- resolve; an undefined one is kappa.name.unresolved. (Free lowercase names
+-- in signatures would instead be implicitly universalized, §11.3.3.)
+
+--! mode check
+
+module main
+
+-- POSITIVE: type annotations referencing defined types.
+validInt : Int
+let validInt = 42
+validStr : String
+let validStr = "hello"
+
+data Known : Type =
+    MkKnown Int String
+
+useKnown : Known -> Int
+let useKnown k =
+    match k
+    case MkKnown n _ -> n
+
+-- NEGATIVE: function signature references undefined type `Colour`.
+useUndef : Colour -> Int    --!! kappa.name.unresolved
+let useUndef c = 0
+
+-- NEGATIVE: constructor field annotation references an undefined type.
+data WithBadField : Type =
+    MkWBF (good : Int) (bad : UnknownType)    --!! kappa.name.unresolved
+
+-- NEGATIVE: union type references an undefined member type.
+type BadUnion = (| Int | UndeclaredType |)    --!! kappa.name.unresolved
+
+-- NEGATIVE: binding annotation references an undefined type.
+result : MissingReturnType    --!! kappa.name.unresolved
+let result = 0
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 4
+
+-- POSITIVE: a type declared earlier in the file is usable afterward.
+data Forward : Type =
+    FwdCtor Int
+
+useFwd : Forward -> Int
+let useFwd f =
+    match f
+    case FwdCtor n -> n
+
+-- STATUS(a0497523): PASS

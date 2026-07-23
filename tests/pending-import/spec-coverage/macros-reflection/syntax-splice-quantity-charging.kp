@@ -1,0 +1,24 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+
+-- §21.2/§21.4: duplicating a Syntax value duplicates only meta-level
+-- data; object-level uses are charged at each splice. Splicing syntax
+-- that mentions an unrestricted local twice is fine (positive half),
+-- but splicing the SAME Syntax value twice when it captures a linear
+-- binder exceeds that binder's quantity and is rejected by ordinary QTT
+-- checking at the second splice site — not by a scope-escape error.
+module main
+
+ok : Integer -> Integer
+let ok n =
+    block
+        let s : Syntax Integer = '{ n }
+        addInt $(pure s) $(pure s)
+
+bad : (1 t : Integer) -> Integer
+let bad t =
+    block
+        let s : Syntax Integer = '{ t }
+        addInt $(pure s) $(pure s)
+-- STATUS(a0497523): PASS

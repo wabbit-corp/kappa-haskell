@@ -1,0 +1,42 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system2/type_system2.dl,
+--   souffle-lang #293 (type checker fails to give errors for records of lesser size).
+-- Spec: §10.1.1 named constructor application ("a missing label whose
+--   corresponding constructor parameter has no default is an error");
+--   §3.2.10 (family kappa.constructor.arity, portable alias
+--   E_CONSTRUCTOR_ARITY_MISMATCH).
+-- Pins: a named constructor application omitting required (defaultless)
+-- fields is rejected in family kappa.constructor.arity. Only named
+-- application is arity-checked this way — positional under-application is
+-- ordinary partial application per §10.1 and is covered elsewhere.
+
+--! mode check
+
+module main
+
+data Triple : Type =
+    Triple (x : Int) (y : Int) (z : Int)
+
+data Pair : Type =
+    Pair (a : String) (b : String)
+
+-- POSITIVE: exact field counts.
+okT : Triple
+let okT = Triple { x = 1, y = 2, z = 3 }
+okP : Pair
+let okP = Pair { a = "x", b = "y" }
+
+-- NEGATIVE: Triple given only one field (y and z missing, no defaults).
+badT1 : Triple
+let badT1 = Triple { x = 1 }    --!! kappa.constructor.arity
+
+-- NEGATIVE: Triple given only two fields (z missing).
+badT2 : Triple
+let badT2 = Triple { x = 1, y = 2 }    --!! kappa.constructor.arity
+
+-- NEGATIVE: Pair given only one field (b missing).
+badP : Pair
+let badP = Pair { a = "only" }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- STATUS(a0497523): PASS

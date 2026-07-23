@@ -1,0 +1,52 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.20 + §26.1.20.1 (precision-preserving Kappa-to-Kappa bridges): the
+-- bridge surface is the exact Kappa signature — typed IO e a members keep
+-- their error channel, higher-order members keep their function types, and
+-- erased type parameters stay compile-time ("erasure is not precision
+-- loss"). The importing side typechecks against this precise surface; the
+-- bridge MUST NOT substitute Dyn, RawPtr, or a first-order facade.
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle, term bindModule)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, type BridgeOrigin, ctor MkBridgeOrigin)
+
+data MathError : Type =
+    DomainError
+
+-- The provider is another compiled Kappa artifact reached through a bridge
+-- handle (dynamic realization lane of §26.1.20).
+data NativeArtifact : Type =
+    MkNativeArtifact
+
+instance BridgeHandle NativeArtifact =
+    let bridgeOrigin h = ioPure (MkBridgeOrigin "kappa.jni: native provider artifact")
+    let bridgeFailure f = "kappa-to-kappa bridge failure"
+
+-- The provider's exported interface, reused verbatim as the bridge surface:
+-- a typed-error member and a higher-order member. (A member quantifying over
+-- an erased type parameter, as in the §26.1.15/§26.1.19 example surfaces, is
+-- exercised separately in polymorphic-surface-member-numpy-shape.kp.)
+type MathLib (r : Region) : Type =
+    ( increment : Int -> IO MathError Int,
+      fold : (Int -> Int -> Int) -> List Int -> IO MathError Int )
+
+-- §26.1.20 additional rules: a precision-preserving contract is Exact for
+-- the surface it claims (recorded in the contract description here).
+instance BridgeBindable MathLib =
+    let bridgeContract = MkBridgeContract "generated from MathLib interface artifact; Exact"
+
+acquire : forall (r : Region). IO BridgeFailure (MathLib r)
+let acquire = bindModule @MathLib MkNativeArtifact "mathlib"
+
+-- The consumer uses every member at its precise type: the IO MathError
+-- channel survives and the higher-order member accepts an ordinary Kappa
+-- function value — no degradation to Dyn or a serialized facade.
+useFold : forall (r : Region). MathLib r -> IO MathError Int
+let useFold lib = do
+    let one <- lib.increment 0
+    lib.fold (\x -> \y -> x + y) [one, one]
+
+-- STATUS(a0497523): PASS

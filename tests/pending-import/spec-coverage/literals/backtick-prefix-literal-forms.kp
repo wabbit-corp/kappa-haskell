@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- SPEC COVERAGE (robust literals): backtick-identifier literal
+-- prefixes. Spec 6.3.4: a prefixed string's prefix is "an identifier
+-- accepted by 5.1 under the active language profile, including
+-- backtick identifiers"; Spec 6.5: literalPrefix ::= ident |
+-- backtick_ident. Spec 5.1: backticks are NOT a second namespace — a
+-- backtick identifier whose text is a valid plain identifier
+-- contributes the SAME name keys as the unquoted spelling. Therefore
+-- `b`'a' MUST elaborate exactly like b'a' (prelude Byte handler) and
+-- `f`"..." exactly like f"..." (prelude interpolation handler).
+
+n : Integer
+let n = 1
+
+plainByte : Byte
+let plainByte = b'a'
+
+quotedByte : Byte
+let quotedByte = `b`'a'
+
+plainStr : String
+let plainStr = f"n = $n"
+
+quotedStr : String
+let quotedStr = `f`"n = $n"
+-- STATUS(a0497523): FAIL — `b`'a' and `f`"..." report E_NAME_UNRESOLVED for b/f (with a nonsense "did you mean '%'" hint) while the unquoted spellings resolve; backtick literal prefixes never reach the handler lookup

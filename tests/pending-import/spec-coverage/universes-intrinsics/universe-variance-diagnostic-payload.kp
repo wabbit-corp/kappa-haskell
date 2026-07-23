@@ -1,0 +1,18 @@
+-- §3.2.3 + §10.4.3: a role failure must expose the explicit, inferred, and
+-- effective roles and the nominal declaration it concerns. This is the
+-- diagnostic-shape companion to the acceptance/rejection role tests in the
+-- imported universe-variance bundle.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+--! assertDiagnosticFamily error kappa.universe.variance
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/nominalDeclarationIdentity main.BadWitness
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/universeParameterIndex 0
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/explicitRole irrelevant
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/inferredRole covariant
+--! assertDiagnosticPayload error E_UNIVERSE_VARIANCE_TOO_PERMISSIVE /payload/effectiveRole covariant
+
+module main
+
+data BadWitness.{irrelevant u} : Type0 =
+    BadWitness (parametric 0 A : Type u)

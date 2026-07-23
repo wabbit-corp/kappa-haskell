@@ -1,0 +1,46 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaQuote "L<x>IL<y>"
+--! assertEval viaMacro "L<a>IL<b>"
+
+-- §6.3.4.3-5 x §21.1/§21.2 combo: a USER-DEFINED InterpolatedMacro
+-- handler (not the conventional `f`) drives a prefixed string that
+-- occurs inside quoted syntax, both when the quote is spliced directly
+-- and when a macro's Elab action returns syntax containing the
+-- prefixed string. The §6.3.4.4 fragment pipeline must run when the
+-- quoted syntax is elaborated at the splice site, with the fragment
+-- list preserving source order and merged/omitted Lit fragments.
+
+import std.deriving.shape.*
+
+fragTag : SyntaxFragment -> String
+let fragTag frag =
+    match frag
+    case SyntaxFragment.Lit s -> stringAppend "L<" (stringAppend s ">")
+    case SyntaxFragment.Interp e -> "I"
+    case SyntaxFragment.InterpFmt e fmt -> stringAppend "F<" (stringAppend fmt ">")
+
+summarize : List SyntaxFragment -> String
+let summarize frags =
+    match frags
+    case Nil -> ""
+    case frag :: rest -> stringAppend (fragTag frag) (summarize rest)
+
+instance InterpolatedMacro String =
+    let buildInterpolated fragments = stringSyntax (summarize fragments)
+
+tag : Elab (InterpolatedMacro String)
+let tag = pure (summon (InterpolatedMacro String))
+
+n : Integer
+let n = 7
+
+viaQuote : String
+let viaQuote = $(pure '{ tag"x${n}y" })
+
+mkTagged : Elab (Syntax String)
+let mkTagged = pure '{ tag"a${n}b" }
+
+viaMacro : String
+let viaMacro = $(mkTagged)
+-- STATUS(a0497523): PASS

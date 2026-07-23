@@ -1,0 +1,11 @@
+module main
+
+-- §8.4 x §14.3 x §33.2.1: `Worth` IS lib.Amount, so `instance Worth Bool`
+-- declares a second instance for the same normalized head `Amount Bool`.
+-- The implementation differs from lib's, so the program must be rejected
+-- as incoherent; the aliased trait spelling is not a distinct trait.
+import mid.(trait Worth, amount)
+
+instance Worth Bool =
+    let amount b = 42
+-- STATUS(a0497523): PASS

@@ -1,0 +1,44 @@
+-- Source: granule-project/granule PR #196 (linearity bug);
+--         tests/cases/negative/concurrent/resourceAllocator.gr
+-- Spec: §12.2 (linear quantity), §12.2.5 (a dropped 1-binder violates its
+--       positive lower bound), §12.2.6 (no generic discard; duplication
+--       positions), §9.4 (abstract resource via expect type), §3.2.5
+-- NOTE: the duplication negative overlaps
+--       tests/conformance/spec-coverage/functions-quantities/affine-linear-not-duplicable.kp.
+-- An exclusive resource (channel, handle) held at quantity 1 can be
+-- neither silently dropped (kappa.quantity.positive-lower-bound —
+-- re-derived from the original's kappa.quantity.unsatisfied guess: a drop
+-- violates the [1,1] lower bound, §12.2.5) nor duplicated
+-- (kappa.quantity.unsatisfied).
+
+module test
+
+--! mode check
+
+-- An opaque resource type; its only consumer is close (§12.2.6
+-- destructor discipline).
+expect type Channel
+expect term close : (1 c : Channel) -> Unit
+
+-- POSITIVE: a channel passed linearly to its destructor.
+useChannel : (1 c : Channel) -> Unit
+let useChannel c = close c
+
+--! assertType useChannel ((1 c : Channel) -> Unit)
+
+-- NEGATIVE: silently dropping a linear channel (no close).
+dropChan : (1 c : Channel) -> Unit
+let dropChan c = ()           --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- NEGATIVE: duplicating a linear channel.
+dupChan : (1 c : Channel) -> (Channel, Channel)
+let dupChan c = (c, c)        --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- NEGATIVE: weakening by returning without consuming.
+discardChan : (1 c : Channel) -> Int
+let discardChan c = 0         --!! kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): PASS

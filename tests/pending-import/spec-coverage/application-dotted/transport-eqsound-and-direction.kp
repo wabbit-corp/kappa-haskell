@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 proof sources (L20242-20253): "Eq.eqSound applied to an
+-- available proof of (x == y) = True" is an enumerated transport proof
+-- source; branch-local (x == y) = True arises in the then-branch
+-- (L20247). §14.1.2 (L17664): eqSound turns that into x = y. Transport
+-- steps also carry a direction (L20191-20197), and one proof p : v = u
+-- suffices (L20225), so a backward proof y = x licenses FlagBox x ->
+-- FlagBox y just as x = y does.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsSame : (b : Bool) -> FlagBox b -> Unit
+let needsSame (b : Bool) (x : FlagBox b) : Unit = ()
+
+-- POSITIVE: then-branch evidence (x == y) = True + Eq.eqSound gives
+-- x = y, transporting FlagBox x to the demanded FlagBox y.
+viaEqSound : (x : Bool) -> (y : Bool) -> FlagBox x -> Unit
+let viaEqSound (x : Bool) (y : Bool) (box : FlagBox x) : Unit =
+    if x == y then needsSame y box else ()
+
+-- POSITIVE: a backward-direction explicit proof y = x licenses the same
+-- single-replacement transport as the forward spelling.
+viaBackward : forall (x : Bool) (y : Bool). (@0 p : y = x) -> FlagBox x -> Unit
+let viaBackward (@0 x : Bool) (@0 y : Bool) (@0 p : y = x) (box : FlagBox x) : Unit =
+    needsSame y box
+
+-- STATUS(a0497523): FAIL — both sites rejected with E_APPLICATION_ARGUMENT_MISMATCH "no equality evidence licenses the transport (§16.1.8)": neither Eq.eqSound-on-branch-evidence nor an explicit backward-direction proof is wired as a transport proof source.

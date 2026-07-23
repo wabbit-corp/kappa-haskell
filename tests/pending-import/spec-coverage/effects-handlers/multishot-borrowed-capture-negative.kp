@@ -1,0 +1,44 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_CONTINUATION_CAPTURE
+
+-- §18.1.20 / §18.1.20.2: if the resumption quantity permits more than
+-- one use, every runtime-relevant captured value in the suffix MUST be
+-- unrestricted and free of borrow-lifetime obligations. The borrowed
+-- binder b is live after the ω operation (used in the captured suffix),
+-- so the invocation must be rejected — §18.1.20.2 requires the
+-- diagnostic to cite the borrowed-capture reason. This is the
+-- conservative rule: rejection is required even though both resumes
+-- here would dynamically stay inside b's borrow scope.
+module main
+
+data Box : Type =
+    Box Int
+
+read : (& b : Box) -> Int
+let read b =
+    match b
+      case Box n -> n
+
+bad : (& b : Box) -> Int
+let bad b =
+    block
+        scoped effect Choice =
+            ω choose : Unit -> Bool
+
+        let comp : Eff <[Choice : Choice]> Int =
+            do
+                let c <- Choice.choose () --!! E_QTT_CONTINUATION_CAPTURE
+                if c then read b else 0
+
+        let handled =
+            deep handle Choice comp with
+                case return y -> pure y
+                case choose _ k ->
+                    do
+                        let l <- k True
+                        let r <- k False
+                        pure (addInt l r)
+
+        runPure handled
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): a live borrowed binder in the captured suffix of an ω operation is not rejected; §18.1.20.2 borrowed-capture checking unimplemented (quantity-1 capture IS checked, cf. multishot-capture-linear.kp).

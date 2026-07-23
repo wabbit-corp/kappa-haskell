@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.application.explicit-implicit-classifier
+
+-- §16.1.7.2 step 3 (L20056-20069): EffRow and EffLabel are intrinsic
+-- compile-time classifiers, so an @payload against such a binder
+-- elaborates in static-object expression position. A row/label variable
+-- is a valid payload; an ordinary term against EffRow fails with no
+-- reclassification retry (step 6, L20081-20082).
+module main
+
+wantEff : (@0 e : EffRow) -> Int -> Int
+let wantEff (@0 e : EffRow) (x : Int) : Int = x
+
+-- POSITIVE: an effect-row variable is an EffRow static object.
+passEff : forall (e : EffRow). Int -> Int
+let passEff (@0 e : EffRow) (x : Int) : Int = wantEff @e x
+
+wantEffLabel : (@0 l : EffLabel) -> Int -> Int
+let wantEffLabel (@0 l : EffLabel) (x : Int) : Int = x
+
+-- POSITIVE: an effect-label variable is an EffLabel static object.
+passEffLabel : forall (l : EffLabel). Int -> Int
+let passEffLabel (@0 l : EffLabel) (x : Int) : Int = wantEffLabel @l x
+
+fortyTwo : Int
+let fortyTwo = 42
+
+-- NEGATIVE: an ordinary term where EffRow is demanded fails static-
+-- object classification; no token-shape retry is permitted.
+badTerm : Int
+let badTerm = wantEff @(fortyTwo) 1 --!! kappa.application.explicit-implicit-classifier
+
+-- STATUS(a0497523): PASS

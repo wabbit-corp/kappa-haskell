@@ -1,0 +1,25 @@
+-- DX EXPECTATION (not necessarily spec-required): when the declaration
+-- containing an unclosed '(' is the LAST declaration in the file, the
+-- diagnostic must still mention the unclosed delimiter.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the delimiter diagnostic exists
+-- only mid-file.  With declarations AFTER the broken one, the compiler
+-- emits E_EXPECTED_SYNTAX_TOKEN "unclosed '(' at end of input (Spec
+-- §5.2)" plus the recovery skip.  When the broken declaration is last,
+-- that E_EXPECTED_SYNTAX_TOKEN vanishes entirely: the ONLY error is
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of
+-- declaration" (labels/notes/related/fixes all empty, payload carries
+-- no rootCause), which both fails to mention the paren and misdescribes
+-- a perfectly ordinary `let` head as "unexpected".  §3.1.16 "most
+-- specific structured diagnostic" and §3.1.14A's rootCause field point
+-- the other way.  (Sibling pin unclosed-paren-opener-location.kp covers
+-- the mid-file case lacking an opener span; this pins the at-EOF case
+-- where the delimiter message is lost altogether.)
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch unclosed|delimiter|matching
+module main
+
+x : Int
+let x = (1 + 2
+-- STATUS(a0497523): FAIL — sole error is E_RECOVERY_DECLARATION_SKIPPED "unexpected 'let' at start of declaration"; no emitted message mentions the unclosed '('

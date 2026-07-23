@@ -1,0 +1,43 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "end:5\né\nat:3\nf\nat:2\nstart:True\ncjk:书\ncjk-at:0\n"
+
+-- §29.4 string cursors: stringPrevScalar steps backward one Unicode scalar,
+-- returning the scalar stepped over and the cursor BEFORE it. Byte offsets
+-- shrink by the scalar's UTF-8 length ("café": é is 2 bytes, so 5 -> 3 -> 2),
+-- and stepping back from stringStart yields None. Multi-byte CJK works too.
+module main
+
+import std.unicode.*
+
+stepBack : String -> StringCursor -> Unit -> UIO StringCursor
+let stepBack s c u =
+    match stringPrevScalar s c
+    case Some r -> do
+        printlnString (scalarToString r.scalar)
+        printlnString ("at:" ++ showInt (natToInt (stringCursorOffset s r.prev)))
+        ioPure r.prev
+    case None -> do
+        printlnString "unexpected-none"
+        ioPure c
+
+isNone : forall (a : Type). Option a -> Bool
+let isNone o =
+    match o
+    case None -> True
+    case Some _ -> False
+
+main : UIO Unit
+let main = do
+    let s = "café"
+    printlnString ("end:" ++ showInt (natToInt (stringCursorOffset s (stringEnd s))))
+    let c1 <- stepBack s (stringEnd s) ()
+    let _ <- stepBack s c1 ()
+    printlnString ("start:" ++ (if isNone (stringPrevScalar s (stringStart s)) then "True" else "False"))
+    let t = "书"
+    match stringPrevScalar t (stringEnd t)
+      case Some r -> do
+        printlnString ("cjk:" ++ scalarToString r.scalar)
+        printlnString ("cjk-at:" ++ showInt (natToInt (stringCursorOffset t r.prev)))
+      case None -> printlnString "cjk:none"
+-- STATUS(a0497523): PASS

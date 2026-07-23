@@ -18,4 +18,4 @@ let useTerm = T
 
 --! assertNoErrors
 --! assertEval useTerm 5
--- STATUS(a51e1bf): FAIL — E_DUPLICATE_DECLARATION for 'let T' after 'type T': distinct declaration kinds do not coexist in one binding group in the implementation
+-- STATUS(a0497523): FAIL — E_DUPLICATE_DECLARATION for 'let T' after 'type T': distinct declaration kinds do not coexist in one binding group in the implementation

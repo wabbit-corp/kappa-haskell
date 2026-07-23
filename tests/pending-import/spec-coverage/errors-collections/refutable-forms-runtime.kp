@@ -1,0 +1,23 @@
+-- §20.4.1: runtime semantics of the refutable forms — `for? pat in xs` keeps
+-- only matching elements, `let? pat = e` keeps the row on match and drops it
+-- on failure. Unrestricted elements/rows are droppable, so both compile and
+-- filter as specified. Only x=3 survives both filters: (3+1) = 4.
+--! mode run
+--! assertNoErrors
+--! assertEval kept 4
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+kept : Int
+let kept =
+    sumList [
+        for? Some x in [Some 1, None, Some 3]
+        let? Some y = (if x > 2 then Some x else None)
+        yield y + 1
+    ]
+-- STATUS(a0497523): PASS

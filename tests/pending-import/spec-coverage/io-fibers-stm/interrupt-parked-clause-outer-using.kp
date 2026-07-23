@@ -1,0 +1,63 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "acquired\nclause-entered\nreleased\ninterrupted\n"
+
+-- §18.1.12/§18.8.3 × §32.2.21: an interrupt delivered while the fiber is
+-- parked INSIDE a handler clause (before it resumes its one-shot k) unwinds
+-- across the active handler frame; the `using` release registered in the
+-- OUTER IO scope runs (masked) on the interrupt path, and the parent
+-- observes a Failure exit. Promise handshake: the clause completes `ready`
+-- before parking, so the interrupt lands at the sleep suspension point.
+module main
+
+import std.prelude.(type Exit(..))
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act =
+    catchIO act (\v -> ioPure (absurd v))
+
+effect Ask =
+    1 ask : Unit -> Int
+
+data Res : Type = MkRes (rid : Int)
+
+instance Releasable (IO e) Res =
+    let release r = match r case MkRes i -> printlnString "released"
+
+acquireRes : IO String Res
+let acquireRes = do
+    printlnString "acquired"
+    ioPure (MkRes 1)
+
+comp : Eff <[Ask : Ask]> Int
+let comp = do
+    let a <- Ask.ask ()
+    pure a
+
+handledPark : Promise Void Unit -> IO String Int
+let handledPark ready =
+    deep handle Ask comp with
+        case return x -> ioPure x
+        case ask _ k -> do
+            printlnString "clause-entered"
+            let _ <- weakenVoidIO (completePromise ready (Success ()))
+            sleepFor (seconds 10)
+            k 5
+
+child : Promise Void Unit -> IO String Unit
+let child ready = do
+    using r <- acquireRes
+    let v <- handledPark ready
+    printlnString (stringAppend "body-done:" (showInt v))
+
+main : UIO Unit
+let main = do
+    let ready <- newPromise
+    let f <- fork (child ready)
+    let _ <- awaitPromise ready
+    interrupt f
+    let ex <- await f
+    match ex
+      case Success v -> printlnString "completed"
+      case Failure c -> printlnString "interrupted"
+-- STATUS(a0497523): PASS

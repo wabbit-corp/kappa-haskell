@@ -1,0 +1,27 @@
+-- Stress test: mutually recursive functions with explicit decreases clauses are accepted
+-- Spec: §15.3, §15.10, §15.11, and §15.16 (mutually recursive SCCs
+--       with uniform structural measures).
+
+--! mode check
+
+data Nat : Type =
+    Z
+    | S Nat
+
+-- POSITIVE: isEven and isOdd are mutually recursive; each decreases structurally on n.
+isEven : Nat -> Bool
+isOdd : Nat -> Bool
+
+let isEven n decreases structural n =
+    match n
+    case Z    -> True
+    case S smaller -> isOdd smaller
+
+let isOdd n decreases structural n =
+    match n
+    case Z    -> False
+    case S smaller -> isEven smaller
+
+--! assertNoErrors
+
+-- STATUS(a0497523): PASS

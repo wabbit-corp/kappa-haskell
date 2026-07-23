@@ -1,0 +1,16 @@
+module main
+
+-- §3.2.2: an unresolvable module path is a kappa.name.unresolved
+-- failure ("identifier, operator name, module path, ..."), so the
+-- payload MUST include candidate spellings considered for typo
+-- suggestions, and a close spelling SHOULD yield a maybe-applicable
+-- fix.  'Lib' differs from the sibling module 'lib' only in case; §8.1
+-- makes module names case-sensitive AND rejects case-fold collisions
+-- inside one unit, so a case-only miss can never be a reference to a
+-- different real module — it is always a repairable spelling mistake.
+-- Today E_MODULE_NAME_UNRESOLVED reports only "not part of this
+-- compilation unit" with no candidates and no fix.
+import Lib --!! kappa.name.unresolved
+
+let x = 1
+-- STATUS(a0497523): FAIL — no error diagnostic matching kappa.name.unresolved has payload /payload/suggestion = lib (saw: /payload/suggestion=<absent>); no error diagnostic matching kappa…

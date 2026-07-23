@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+--! assertEval hitCase 1
+--! assertEval missCase 0
+
+-- DX expectation, not spec-required: Option default-extraction under its
+-- conventional name `getOrElse` (Scala/Kotlin; Haskell fromMaybe, Rust
+-- unwrap_or).  The functionality EXISTS today but is bound to `orElse`
+-- (`orElse : Option a -> a -> a`) — a name §28.2 reserves for the
+-- Alternative trait's alternation member `orElse : f a -> f a -> f a`
+-- (Spec L34532-34537; see spec-coverage/combo-2026-07-23/
+-- prelude-alternative-empty-orelse-members.kp).  When that conformance
+-- gap is fixed, default-extraction loses its only prelude spelling, so
+-- the conventional name matters doubly.
+--
+-- What currently happens: E_NAME_UNRESOLVED for `getOrElse`; users must
+-- know the (spec-colliding) `orElse` spelling or pattern-match.
+
+module main
+
+hitCase : Integer
+let hitCase = getOrElse (Some 1) 0
+
+missCase : Integer
+let missCase = getOrElse (None : Option Integer) 0
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x2: getOrElse absent; the semantics exist only under the spec-colliding name orElse : Option a -> a -> a

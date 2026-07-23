@@ -1,0 +1,45 @@
+module main
+
+-- §14.1/§28.2: Applicative refines Functor and Traversable refines both
+-- Functor and Foldable.  §19.1/§19.5 likewise require MonadError and
+-- MonadResource to refine MonadFinally.  Direct local evidence for each
+-- derived trait must therefore be enough to solve calls through its declared
+-- supertraits, without a second independent implicit argument.
+
+mapFromApplicative :
+    forall (f : (0 A : Type) -> Type) (a : Type) (b : Type).
+    (@app : Applicative f) ->
+    (a -> b) -> f a -> f b
+let mapFromApplicative @app f value =
+    map f value
+
+mapFromTraversable :
+    forall (t : (0 A : Type) -> Type) (a : Type) (b : Type).
+    (@trav : Traversable t) ->
+    (a -> b) -> t a -> t b
+let mapFromTraversable @trav f value =
+    map f value
+
+foldFromTraversable :
+    forall (t : (0 A : Type) -> Type) (a : Type) (b : Type).
+    (@trav : Traversable t) ->
+    (a -> b -> b) -> b -> t a -> b
+let foldFromTraversable @trav step initial value =
+    foldr step initial value
+
+finallyFromMonadError :
+    forall (m : (0 A : Type) -> Type) (a : Type).
+    (@err : MonadError m) ->
+    m a -> m Unit -> m a
+let finallyFromMonadError @err body cleanup =
+    finally body cleanup
+
+finallyFromMonadResource :
+    forall (m : (0 A : Type) -> Type) (a : Type).
+    (@resource : MonadResource m) ->
+    m a -> m Unit -> m a
+let finallyFromMonadResource @resource body cleanup =
+    finally body cleanup
+
+--! mode check
+--! assertNoErrors

@@ -33,7 +33,7 @@ let main = do
     -- (L15036-L15038)
     println (hEq ((x = 1, y = 2) : Pt) ((y = 2, x = 1) : Pt))
 
--- STATUS(a51e1bf): FAIL — derive declarations are unsupported
+-- STATUS(a0497523): FAIL — derive declarations are unsupported
 -- (E_UNSUPPORTED on all four derives; the program never runs). A
 -- handwritten-instance variant of the same runtime assertions passes, so
 -- the expected output is achievable on this runtime.

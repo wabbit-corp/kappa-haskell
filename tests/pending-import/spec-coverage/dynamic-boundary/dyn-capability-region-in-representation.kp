@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.5: a value valid only relative to a runtime capability must
+-- mention that capability in its Kappa type (here: a bridge-lifetime
+-- region carried via captures, §25.1), and a DynRep for such a type
+-- MUST NOT erase capability identity — so the demanded DynamicType
+-- evidence is indexed by the full region-mentioning type, and every
+-- checked cast re-validates at that capability-indexed type.
+module main
+
+import std.gradual.*
+
+packCapabilitySensitive :
+    forall (r : Region) (@0 surface : Region -> Type).
+    (@_ : DynamicType ((surface r) captures (r))) ->
+    ((surface r) captures (r)) ->
+    Dyn
+let packCapabilitySensitive v = toDyn v
+
+-- Re-check at every use (§24.5 second bullet): unpacking demands the
+-- same capability-mentioning type, never a capability-stripped one.
+recheckAtCapability :
+    forall (r : Region) (@0 surface : Region -> Type).
+    (@_ : DynamicType ((surface r) captures (r))) ->
+    Dyn ->
+    Result CastBlame ((surface r) captures (r))
+let recheckAtCapability d = checkedCast d
+
+-- STATUS(a0497523): PASS

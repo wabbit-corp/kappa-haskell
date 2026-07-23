@@ -1,0 +1,36 @@
+--! mode check
+--! assertNoErrors
+--! assertType intsAtRational (List Rational)
+
+-- §6.1.5 × §20.1: defaulting applies ONLY "if elaboration cannot
+-- determine a unique T for an unsuffixed numeric literal from context",
+-- and only "after all type inference completes on the enclosing
+-- declaration". A collection literal at a demanded type determines the
+-- element type, so `[1, 2] : List Rational` must elaborate every
+-- element through the prelude FromInteger Rational witness (and 0.5
+-- through FromFloat Rational) — exactly as the equivalent cons
+-- spelling, tuple, and constructor application already do (positive
+-- controls below). No rule licenses defaulting the elements of an
+-- annotated collection literal to Integer/Double.
+module main
+
+intsAtRational : List Rational
+let intsAtRational = [1, 2]
+
+floatAtRational : List Rational
+let floatAtRational = [0.5]
+
+setAtRational : Set Rational
+let setAtRational = {|1, 2|}
+
+-- positive controls (accepted today): the same demand propagates
+-- through cons, tuples, and constructor application
+consControl : List Rational
+let consControl = 1 :: 2.5 :: Nil
+
+pairControl : (Rational, Rational)
+let pairControl = (1, 2)
+
+someControl : Option Rational
+let someControl = Some 1
+-- STATUS(a0497523): FAIL — List/Set literal elements are inferred standalone and defaulted to Integer/Double, then unified: "actual: List Integer, expected: List Rational" (3 errors); the cons/tuple/Some controls pass, so only the built-in collection-literal forms drop the demanded element type

@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1.2 finite visible constructor-set rule: when the context proves
+-- LacksCtor s ⟨C⟩ for every visible constructor except one D, it proves
+-- HasCtor s ⟨D⟩ — so in the else branch of `if c is Hole`, {Hole, Full}
+-- minus Hole leaves Full and `c is Full` MUST reduce to True. (Member
+-- projection already exploits this derivation; tag-test normalization
+-- must agree.)
+module main
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+uniqueRemaining : (c : Cell) -> Option ((c is Full) = True)
+let uniqueRemaining c =
+    if c is Hole then None
+    else Some refl
+
+-- control: the same derivation already licenses residual projection
+projects : Cell -> Int
+let projects c =
+    if c is Hole then 0
+    else c.val
+
+-- STATUS(a0497523): FAIL — the derived unique-remaining HasCtor licenses residual projection but NOT tag-test normalization: refl is rejected with E_APPLICATION_ARGUMENT_MISMATCH

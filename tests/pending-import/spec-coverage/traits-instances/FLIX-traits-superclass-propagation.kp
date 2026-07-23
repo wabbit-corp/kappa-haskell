@@ -1,0 +1,62 @@
+-- Source issue: FLIX-1556
+-- Spec: §14.1.4 (supertrait evidence is projected during local implicit
+--       resolution) and §14.3.3 (supertrait projection).
+-- A supertrait constraint on a trait header (`trait Eq a => Ord a`) means
+-- that any function requiring `Ord a` also implicitly has access to `Eq a`
+-- methods. The compiler must propagate supertrait evidence automatically.
+
+--! mode check
+
+-- Define a supertrait chain: Eq is a supertrait of Ord.
+trait Eq (a : Type) =
+    (==) : (& x : a) -> (& y : a) -> Bool
+
+trait Eq a => Ord (a : Type) =
+    compare : (& x : a) -> (& y : a) -> Int
+
+-- A function requiring only `Ord` must have access to `Eq` methods.
+min_by_eq : forall (a : Type). Ord a => a -> a -> a
+let min_by_eq x y =
+    -- compare is from Ord; (==) is from Eq via supertrait
+    if (compare x y) < 0 then x else y
+
+-- A function requiring `Ord a` can delegate to `Eq a` functions.
+contains : forall (a : Type). Ord a => List a -> a -> Bool
+let contains xs target =
+    match xs
+    case Nil -> False
+    case (::) h t ->
+        if h == target then True    -- uses Eq via supertrait of Ord
+        else contains t target
+
+-- POSITIVE TEST: providing Ord for Int implies Eq for Int.
+data MyInt : Type =
+    MyInt Int
+
+instance Eq MyInt =
+    let (==) (MyInt x) (MyInt y) = eqInt x y
+
+instance Ord MyInt =
+    let compare (MyInt x) (MyInt y) =
+        if x < y then -1
+        else if x > y then 1
+        else 0
+
+let test_contains : Bool =
+    contains [MyInt 3, MyInt 1, MyInt 4] (MyInt 1)
+
+-- NEGATIVE TEST: a function asking for only `Eq` does not get `Ord` methods.
+uses_eq_only : forall (a : Type). Eq a => a -> a -> Bool
+let uses_eq_only x y =
+    x == y
+
+bad_compare : forall (a : Type). Eq a => a -> a -> Int
+let bad_compare x y =
+    compare x y           -- compare requires Ord, not just Eq --!! kappa.implicit.unsolved
+
+-- expect: min_by_eq, contains, test_contains, uses_eq_only accepted;
+--         bad_compare rejected because compare is not available from Eq alone
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

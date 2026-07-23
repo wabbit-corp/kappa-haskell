@@ -1,0 +1,24 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "int 3\nstr hi\n"
+
+-- §31.3 TagId stability across modules: values injected in vlib carry
+-- tags derived from the canonical elaborated member type, so a match
+-- in this module (against its own spelling of the row) dispatches
+-- correctly.
+module main
+
+import vlib.*
+
+describe : (| Integer | String |) -> String
+let describe v =
+    match v
+    case (| n : Integer |) -> stringAppend "int " (showInt n)
+    case (| s : String |) -> stringAppend "str " s
+
+main : UIO Unit
+let main = do
+    printlnString (describe (mkInt 3))
+    printlnString (describe (mkStr "hi"))
+
+-- STATUS(a0497523): PASS

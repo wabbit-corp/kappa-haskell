@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4.2: the static footprint of a fully applied projection call is
+-- the UNION of the ordinary footprints of all its yielded alternatives
+-- regardless of which branch runs; §18.9.3 uses that summary for `~`
+-- disjointness. `choosePairField True pair` statically covers BOTH
+-- pair.left and pair.right, so it overlaps the sibling `~pair.right`
+-- marker even though only one branch is taken at runtime.
+module main
+
+type Pair = (left : Int, right : Int)
+
+projection choosePairField (chooseLeft : Bool) (place this : Pair) : Int =
+    if chooseLeft then
+        yield this.left
+    else
+        yield this.right
+
+step2 : (inout a : Int) -> (inout b : Int) -> UIO (1 a : Int, 1 b : Int)
+let step2 (inout a : Int) (inout b : Int) : UIO (1 a : Int, 1 b : Int) =
+    pure (a = b, b = a)
+
+bad : (1 pair : Pair) -> UIO Unit
+let bad (1 pair : Pair) : UIO Unit =
+    do
+        step2 ~(choosePairField True pair) ~pair.right --!! E_QTT_BORROW_OVERLAP
+        pure ()
+
+-- STATUS(a0497523): PASS

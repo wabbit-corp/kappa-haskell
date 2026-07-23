@@ -1,0 +1,33 @@
+-- §17.1.10 (final paragraph) + §17.3.3: for Match-returning active
+-- patterns BOTH the Hit and the Miss paths are checked for positive
+-- lower-bound obligations. A >=1 variable must be demanded in the Hit
+-- body and along the Miss-side threaded chain, including the final
+-- residue case.
+
+--! mode check
+
+data Buf : Type =
+    Buf (n : Int)
+
+pattern TakePos (b : Buf) : Match Int Buf =
+    match b
+    case Buf n -> if n > 0 then Match.Hit n else Match.Miss (Buf n)
+
+-- POSITIVE: x is demanded on the Hit body and on the Miss-side final case.
+ok : (>=1 x : Int) -> Buf -> Int
+let ok (>=1 x : Int) (b : Buf) : Int =
+    match b
+    case TakePos (n) -> n + x
+    case _ -> x
+
+-- NEGATIVE: the Miss path's final case does not demand x.
+bad : (>=1 x : Int) -> Buf -> Int
+let bad (>=1 x : Int) (b : Buf) : Int =
+    match b
+    case TakePos (n) -> n + x
+    case _ -> 0
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- STATUS(a0497523): PASS

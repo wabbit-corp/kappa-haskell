@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertEval hasTab True
+
+-- Section 5.4: "Indentation is measured in spaces. Tabs are a
+-- compile-time error." The implemented (and sensible) scope of that rule
+-- is source LAYOUT: tab in indentation (E_TAB_IN_INDENTATION) or between
+-- tokens (E_TAB_IN_SOURCE). It does not reach comment interiors or
+-- string-literal content, which are trivia/content, not layout. This
+-- file pins the acceptance: a tab inside a line comment, inside a block
+-- comment, and inside a string literal (where it denotes U+0009, equal
+-- to the "\t" escape of Section 6.3). The spec wording is unconditional,
+-- so this scoping is recorded as a spec ambiguity (see SPEC_ISSUES).
+
+module main
+
+-- line comment with a	tab inside
+{- block comment with a	tab inside -}
+
+s : String
+let s = "a	b"
+
+hasTab : Bool
+let hasTab = s == "a\tb"
+-- STATUS(a0497523): PASS — tabs inside line/block comments and string-literal content accepted; string tab equals "\t"

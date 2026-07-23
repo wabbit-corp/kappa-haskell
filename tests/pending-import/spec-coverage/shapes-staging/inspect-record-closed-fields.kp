@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+--! assertEval ok "x,y,"
+
+-- §22.1: 'inspectRecord' succeeds iff the target is definitionally
+-- equal to a closed record type whose explicit field telescope is
+-- visible at the site. §22.2: reflected record fields carry stable
+-- names — 'sourceName' is 'Some' for source-named fields and
+-- 'renderName' matches the written spelling.
+
+import std.deriving.shape.*
+
+type Point = (x : Int, y : Int)
+
+joinNames : List ShapeField -> String
+let joinNames fs =
+    match fs
+    case Nil -> ""
+    case f :: rest ->
+        (match f.sourceName
+         case Some n -> stringAppend n (stringAppend "," (joinNames rest))
+         case None -> "unnamed!")
+
+showFields : Elab (Syntax String)
+let showFields = do
+    let shape <- inspectRecord @Point '{ type Point }
+    stringSyntax (joinNames shape.fields)
+
+ok : String
+let ok = $(showFields)
+-- STATUS(a0497523): PASS

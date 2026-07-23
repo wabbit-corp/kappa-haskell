@@ -1,0 +1,24 @@
+-- DX EXPECTATION (not necessarily spec-required): `match n` truncated
+-- before its arms (file ends after the scrutinee) should be reported as
+-- an incomplete match — missing case arms — per §5.4 (`match` is a
+-- block introducer) and §3.1.17 (report "merely incomplete" as such).
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the soft-keyword fallback turns
+-- the armless `match` into an application headed by the NAME `match`,
+-- yielding E_NAME_UNRESOLVED "unresolved name 'match'" PLUS an actively
+-- harmful suggestion chain: help "did you mean 'Match'?" and an
+-- attached fix "replace 'match' with 'Match'" [maybe-applicable] —
+-- steering the user toward rewriting the match KEYWORD into an
+-- unrelated prelude constructor.  Applying that fix can never produce
+-- the program the user meant.  A typo-distance suggestion engine should
+-- not offer keyword-to-constructor renames when the identifier is
+-- exactly a reserved/soft keyword spelling that failed to parse as its
+-- keyword form.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch arm|case|scrutinee|incomplete
+module main
+
+f : Int -> Int
+let f n = match n
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED "unresolved name 'match'" with help "did you mean 'Match'?" and fix "replace 'match' with 'Match'" [maybe-applicable]; nothing mentions the missing arms

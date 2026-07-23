@@ -1,0 +1,74 @@
+-- Source: Racket PR #4435 (support required methods in racket/generic),
+--         Racket generics protocol (#:methods gen:name [...])
+-- Spec: §14.2 (required member vs member with default), §14.3 (instances),
+--       §18262-area rule "If a required associated static member has no default
+--       and the instance does not define it, instance checking fails"
+--
+-- Pins: an instance must define every trait member that has no default; an
+-- instance may omit a defaulted member (the default applies) or override it.
+-- Omitting a required member is a compile-time rejection. Neither §3.2 nor the
+-- §3.1 portable-alias list names a diagnostic for this rejection, so this test
+-- asserts this implementation's stable code E_INSTANCE_MEMBER_MISSING.
+
+--! mode check
+
+trait Describable a =
+    describe : a -> String
+
+trait Sized a =
+    sizeOf : a -> Int
+    isEmptyC : a -> Bool
+    let isEmptyC x = sizeOf x == 0
+
+data Point : Type =
+    MkPoint Int Int
+
+-- POSITIVE: instance provides the required member `describe`.
+instance Describable Point =
+    let describe p =
+        match p
+        case MkPoint _ _ -> "point"
+
+-- POSITIVE: instance provides `sizeOf`; `isEmptyC` falls back to its default.
+instance Sized Point =
+    let sizeOf p = 2
+
+data IntWrapper : Type =
+    Wrap Int
+
+-- POSITIVE: instance provides both the required and the defaulted member.
+instance Describable IntWrapper =
+    let describe w = "wrap"
+
+instance Sized IntWrapper =
+    let sizeOf w = 1
+    let isEmptyC w = False
+
+usePoint : String
+let usePoint = describe (MkPoint 1 2)
+
+useDefault : Bool
+let useDefault = isEmptyC (MkPoint 1 2)
+
+useOverride : Bool
+let useOverride = isEmptyC (Wrap 5)
+
+-- NEGATIVE: instance missing the required `describe` member.
+data Token : Type =
+    MkToken String
+
+instance Describable Token =    --!! E_INSTANCE_MEMBER_MISSING
+
+-- NEGATIVE: instance provides only the defaulted member and omits the
+-- required `sizeOf` (which has no default).
+data Tag : Type =
+    MkTag Int
+
+instance Sized Tag =            --!! E_INSTANCE_MEMBER_MISSING
+    let isEmptyC t = True
+
+--! assertErrorCount 2
+--! assertEval usePoint "point"
+--! assertEval useDefault False
+--! assertEval useOverride False
+-- STATUS(a0497523): PASS

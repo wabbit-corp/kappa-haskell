@@ -1,0 +1,28 @@
+-- DX EXPECTATION (not necessarily spec-required): a line consisting of
+-- ONLY a tab character (a "blank" line with invisible trailing
+-- whitespace, as editors and copy-paste routinely leave behind) should
+-- not make the file uncompilable.  §5.4 says "Blank lines and
+-- comment-only lines do not affect indentation and do not produce
+-- INDENT/DEDENT changes" — a whitespace-only line has no indentation
+-- to measure, so the tab-in-indentation ban ("Indentation is measured
+-- in spaces. Tabs are a compile-time error") arguably does not reach
+-- it.  Python, which the spec cites as the layout model, accepts tabs
+-- on blank lines.  The strict reading (unqualified "Tabs are a
+-- compile-time error") is also defensible, hence a DX pin rather than
+-- a spec-coverage pin; the whitespace-only-file degenerate case fails
+-- the same way.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): E_TAB_IN_INDENTATION "tab
+-- character in source layout" on the tab-only line below, rejecting an
+-- otherwise perfectly valid file for an invisible character on a line
+-- that contributes nothing.
+--! mode check
+--! assertNoErrors
+module main
+
+x : Int
+let x = 1
+	
+y : Int
+let y = 2
+-- STATUS(a0497523): FAIL — E_TAB_IN_INDENTATION at the tab-only blank line (line 25, col 1)

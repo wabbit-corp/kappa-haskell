@@ -30,6 +30,6 @@ let gB xs decreases structural xs =
     case Nil -> fB 0
     case _ :: rest -> gB rest
 
--- STATUS(a51e1bf): FAIL — the one-kind/same-arity SCC rule is not
+-- STATUS(a0497523): FAIL — the one-kind/same-arity SCC rule is not
 -- enforced: both ill-formed SCCs are accepted with W_TERMINATION_UNVERIFIED
 -- warnings (0 errors) instead of being rejected.

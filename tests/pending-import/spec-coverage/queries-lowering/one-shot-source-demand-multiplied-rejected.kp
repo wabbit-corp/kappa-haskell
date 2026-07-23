@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Oo]ne[- ]?[Ss]hot|[Ll]inear|more than once|[Cc]onsum|[Cc]ardinality
+
+-- §20.10.5: demands on outer lexical variables are multiplied by the
+-- cardinality of the current input pipeline; "a one-shot variable from an
+-- outer lexical scope cannot be used as the source expression of a nested
+-- `for` under a pipeline that may contain more than one row". Here the
+-- one-shot (quantity-1) query os would be consumed once per outer row of a
+-- QZeroOrMore pipeline. Unlike §20.8's one-shot left join, no
+-- materialization escape hatch applies to a plain nested `for`.
+module main
+
+badNested : (1 os : OnceQuery Int) -> List Int
+let badNested os =
+    [
+        for x in [1, 2]
+        for y in os
+        yield x + y
+    ]
+
+-- STATUS(a0497523): FAIL — no diagnostics: demands on outer lexical variables are not multiplied by pipeline cardinality, so the one-shot os used as a nested source under a two-row pipeline is accepted (sequential double-use is caught, per appendix-t-15, but multiplicity-driven reuse is not).

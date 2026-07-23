@@ -37,3 +37,4 @@ let branchwise (1 c : Choice) : Int =
 -- E_QTT_LINEAR_OVERUSE: the compiler counts the `if c is L` discrimination
 -- as a consumption of c (a plain `if b` with the same branches is
 -- accepted), contradicting §17.1.8 "does not by itself consume".
+-- STATUS(a0497523): FAIL — unchanged (E_QTT_LINEAR_OVERUSE on `if c is L` discrimination).

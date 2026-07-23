@@ -1,0 +1,19 @@
+module main
+
+-- §8.3.1 x §14.3: `type Pair as P` imports the TYPE facet of the
+-- same-spelling family under `P`, "including its reified static-object
+-- term facet". `P` is therefore usable as an instance head, and the
+-- constructor stays reachable as the static member `P.Pair` (§7.2:
+-- constructors are static members of their type). The instance declared
+-- at the aliased spelling is an instance of lib.Pair.
+import lib.(type Pair as P, trait Sum, total)
+
+instance Sum P =
+    let total p = match p case P.Pair a b -> a + b
+
+v : P
+let v = P.Pair 3 4
+
+r : Int
+let r = total v
+-- STATUS(a0497523): PASS

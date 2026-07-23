@@ -1,0 +1,31 @@
+-- §18.2.5 x §18.7 x §12.3: `defer@L` schedules its action on the labeled
+-- do-scope L. An action capturing a borrowed binding inherits the borrow's
+-- region obligations, so scheduling it on a scope that OUTLIVES the borrow
+-- scope (the hidden temporary root for `MkCell 5` is scoped to the inner
+-- block's remaining items) must be rejected; a same-scope capture is fine.
+module main
+
+data Cell : Type =
+    MkCell (val : Int)
+
+-- POSITIVE: deferred action capturing a borrow of its own scope.
+okSame : UIO Unit
+let okSame = do
+    let & c = MkCell 6
+    defer printlnString (showInt c.val)
+    pure ()
+
+-- NEGATIVE: the outer-labeled defer runs after the inner borrow scope
+-- has been unwound.
+bad : UIO Unit
+let bad = outer@do
+    inner@do
+        let & c = MkCell 5
+        defer@outer printlnString (showInt c.val) --!! E_QTT_BORROW_ESCAPE
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): defer@outer capturing the
+-- inner-scoped borrow is not checked against the borrow scope, so the escape
+-- to the outer do-scope goes undiagnosed.

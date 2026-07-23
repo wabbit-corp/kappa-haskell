@@ -1,0 +1,66 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestNewtype.curry
+--   (newtype LIST a = LIST [a] deriving (Eq, Read, Show); testReadShowNT).
+-- Spec: §10.1 (`data` declarations: a Curry newtype is a
+--       single-constructor single-field data declaration), §14.3
+--       (instances), §17.1.
+--
+-- Pins: the wrapper-as-data mapping — equality on wrapped values is
+-- equality on their payloads, via an ordinary handwritten Eq instance
+-- that unwraps the single constructor. (The standalone-`derive` half of
+-- the original lives in
+-- CURRY-singleton-data-wrapper-deriving-derive-eq.kp.)
+
+module test
+
+--! mode check
+
+-- A transparent single-constructor wrapper around `List Int`.
+data IntListW : Type =
+    MkIntListW (payload : List Int)
+
+-- POSITIVE: the constructor applies as an ordinary function.
+wrap : List Int -> IntListW
+let wrap xs = MkIntListW xs
+
+--! assertNoErrors
+--! assertType wrap (List Int -> IntListW)
+
+eqIntList : List Int -> List Int -> Bool
+let eqIntList xs ys =
+    match (xs, ys)
+    case (Nil, Nil) -> True
+    case (x :: xr, y :: yr) -> if x == y then eqIntList xr yr else False
+    case _ -> False
+
+instance Eq IntListW =
+    let (==) a b =
+        match a
+        case MkIntListW xs ->
+            match b
+            case MkIntListW ys -> eqIntList xs ys
+
+--! assertNoErrors
+
+-- POSITIVE: equality on wrapped lists is equality on their contents.
+twoCopies : IntListW
+let twoCopies = MkIntListW (1 :: 2 :: Nil)
+
+eqWrapped : Bool
+let eqWrapped = twoCopies == MkIntListW (1 :: 2 :: Nil)
+
+--! assertType eqWrapped Bool
+--! assertEval eqWrapped True
+
+-- POSITIVE: wrapped lists with different contents are unequal (checked
+-- through the prelude's derived-from-Eq `/=`).
+oneCopy : IntListW
+let oneCopy = MkIntListW (1 :: Nil)
+
+distinct : Bool
+let distinct = oneCopy /= twoCopies
+
+--! assertNoErrors
+--! assertType distinct Bool
+--! assertEval distinct True
+
+-- STATUS(a0497523): PASS

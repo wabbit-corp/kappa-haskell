@@ -13,3 +13,4 @@ let viaProj = m.answer
 
 viaQual : Int
 let viaQual = lib.answer
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'lib' (not in scope)" at line 9; assertEval: 'viaProj' evaluates to _, expected 42

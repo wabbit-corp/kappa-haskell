@@ -1,0 +1,46 @@
+module main
+
+-- §5.2 calls these spellings soft/contextual keywords.  In the declaration
+-- head `name : Type`, the following token (`:`) rules out the keyword forms,
+-- so users reasonably expect the same ordinary-name behavior already
+-- implemented for `type`.  This matrix exposes keyword-by-keyword parser
+-- inconsistencies instead of testing only expression or parameter positions.
+
+type : Int
+let type = 1
+
+effect : Int
+let effect = 2
+
+pattern : Int
+let pattern = 3
+
+projection : Int
+let projection = 4
+
+instance : Int
+let instance = 5
+
+derive : Int
+let derive = 6
+
+expect : Int
+let expect = 7
+
+scoped : Int
+let scoped = 8
+
+ordinary : Int
+let ordinary = 9
+
+parametric : Int
+let parametric = 10
+
+total : Int
+let total =
+    type + effect + pattern + projection + instance + derive + expect + scoped + ordinary + parametric
+
+--! mode check
+--! assertNoErrors
+--! assertEval total 55
+-- STATUS(a0497523): FAIL — expected 0 errors, got 7; first error: E_RECOVERY_DECLARATION_SKIPPED "unexpected 'type' at start of declaration" at line 9

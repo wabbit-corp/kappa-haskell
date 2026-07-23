@@ -1,0 +1,28 @@
+-- §19.3/§19.2/§17.1.9: a guarded except handler of a `try match` introduces
+-- guard-success evidence in its body, just like a plain-match guard — here the
+-- guard `leInt (natToInt y) (natToInt x)` discharges the checked-subtraction
+-- obligation of Nat subtraction `x - y` inside the handler.
+--! mode run
+--! assertNoErrors
+--! assertStdout "diff: 2\n"
+module main
+
+risky : IO String Nat
+let risky = raise "boom"
+
+diff : Nat -> Nat -> IO String Nat
+let diff x y = do
+    try match risky
+      case n -> pure n
+      except _ if leInt (natToInt y) (natToInt x) ->
+        pure (x - y)
+      except _ ->
+        pure (natOfInt 0)
+
+main : UIO Unit
+let main = do
+    try do
+        let d <- diff (natOfInt 5) (natOfInt 3)
+        printlnString (stringAppend "diff: " (showInt (natToInt d)))
+    except _ -> printlnString "err"
+-- STATUS(a0497523): PASS

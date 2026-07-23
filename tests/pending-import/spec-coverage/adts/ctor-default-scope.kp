@@ -26,7 +26,7 @@ data BadLaterImplicit : Type =
 --! assertErrorCount 1
 --! assertEval defaulted (5, 5)
 
--- STATUS(a51e1bf): FAIL — the later-implicit negative is caught (correct
+-- STATUS(a0497523): FAIL — the later-implicit negative is caught (correct
 -- E_NAME_UNRESOLVED), but instantiating MkRepeat { seed = 5 } fails with
 -- E_TYPE_EQUALITY_MISMATCH: a default that refers to an earlier constructor
 -- parameter breaks whenever the data type has a type parameter (the same

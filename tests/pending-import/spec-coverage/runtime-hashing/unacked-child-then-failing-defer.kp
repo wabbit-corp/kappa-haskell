@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "then:child-defect-first-defer-fail-second\n"
+
+-- §32.2.4 + §32.2.12: cleanup-cause construction at scope exit. The body
+-- succeeds; cleanup produces (a) an UnhandledChildFailure defect for an
+-- unacknowledged failed child and (b) a Fail cause from a failing defer.
+-- §32.2.12 mandates child-shutdown causes are composed BEFORE finalizer
+-- causes are appended (children are drained before the scope's own exit
+-- actions run, §32.2.3), so the overall cleanup cause is
+-- Then (Defect UnhandledChildFailure) (Fail 9), and the body's success
+-- makes that cleanup cause the whole result: Failure (Then _ _).
+module main
+
+failingChild : IO Int Int
+let failingChild = throwIO 7
+
+body : IO Int Int
+let body = do
+    defer (throwIO 9)
+    let f <- fork failingChild
+    let _ = f
+    -- let the child terminate with its (never-acknowledged) typed failure
+    sleepFor (millis 20)
+    ioPure 1
+
+classify : Cause Int -> IO Void String
+let classify c = match c
+    case Then (Defect (DefectInfo UnhandledChildFailure m)) (Fail 9) -> ioPure "then:child-defect-first-defer-fail-second"
+    case Then (Fail 9) (Defect (DefectInfo UnhandledChildFailure m)) -> ioPure "then:wrong-order"
+    case Fail 9 -> ioPure "defer-fail-only"
+    case Defect (DefectInfo UnhandledChildFailure m) -> ioPure "child-defect-only"
+    case _ -> ioPure "cause:other"
+
+main : UIO Unit
+let main = do
+    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "body-succeeded")) classify
+    printlnString r
+-- STATUS(a0497523): FAIL — prints "defer-fail-only": the defer's Fail 9 propagates as the whole cleanup cause, but the unacknowledged child's UnhandledChildFailure defect is never produced, so no Then composition happens.

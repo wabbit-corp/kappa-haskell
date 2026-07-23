@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §16.1.8 (Spec.md L20860-L20867 plan shape 1; L20901 branch-local boolean
+-- evidence) x §13.1.1 (L16237-L16263): the one-hole type context of a
+-- transport step may lie INSIDE a union row member, K[#] = (| FlagBox # |
+-- String |). Branch-local boolean evidence must license transporting the
+-- whole variant type, not merely a bare FlagBox: b = True in the
+-- then-branch and b = False in the else-branch each rewrite the member
+-- index under the Variant former. Prior transport coverage
+-- (spec-coverage/application-dotted/) only exercises bare indexed types.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+needsTrueU : (| FlagBox True | String |) -> Unit
+let needsTrueU (u : (| FlagBox True | String |)) : Unit = ()
+
+needsFalseU : (| FlagBox False | String |) -> Unit
+let needsFalseU (u : (| FlagBox False | String |)) : Unit = ()
+
+useIt : (b : Bool) -> (| FlagBox b | String |) -> Unit
+let useIt (b : Bool) (u : (| FlagBox b | String |)) : Unit =
+    if b then needsTrueU u else needsFalseU u
+
+-- STATUS(a0497523): PASS

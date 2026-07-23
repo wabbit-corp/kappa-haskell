@@ -1,0 +1,64 @@
+-- Source: Curry/KiCS2 testsuite/TypeclassTests/TestBinInt.curry
+--   (instance Show Nat where showsPrec _ x = showTerm 1 0 x).
+-- Spec: §14.1 (trait headers), §14.2 (trait members), §14.3 (instances),
+--       §16.1 (named function application), §15.3 (structural descent).
+--
+-- Pins: a hand-written Show-like instance (not derived) renders a
+-- binary-numeral ADT by structural recursion; both the trait-method
+-- rendering and an independent structural interpreter agree on a
+-- sample value. (Curry's showsPrec continuation form is expressed as a
+-- direct `showValue : a -> String` member.)
+
+module test
+
+--! mode check
+
+data BinTag : Type =
+    IHi
+    OD BinTag
+    ID BinTag
+-- "OD n" = even bit (2*n), "ID n" = odd bit (2*n + 1), IHi = top "1".
+
+trait Showable (a : Type) =
+    showValue : a -> String
+
+--! assertNoErrors
+
+-- Interpret a BinTag as an Int by recursive shift.
+binToInt : BinTag -> Int
+let binToInt t =
+    match t
+    case IHi -> 1
+    case OD n -> 2 * binToInt n
+    case ID n -> 2 * binToInt n + 1
+
+--! assertNoErrors
+--! assertType binToInt (BinTag -> Int)
+
+-- The manual instance renders the binary numeral as its digit string,
+-- by structural recursion on the constructors (msb first).
+instance Showable BinTag =
+    let showValue t =
+        match t
+        case IHi -> "1"
+        case OD n -> stringAppend (showValue n) "0"
+        case ID n -> stringAppend (showValue n) "1"
+
+--! assertNoErrors
+
+-- POSITIVE: a sample BinTag (binary "101" = 5).
+sampleTag : BinTag
+let sampleTag = ID (OD IHi)
+
+showSample : String
+let showSample = showValue sampleTag
+
+sampleValue : Int
+let sampleValue = binToInt sampleTag
+
+--! assertNoErrors
+--! assertType showSample String
+--! assertEval showSample "101"
+--! assertEval sampleValue 5
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,29 @@
+-- §34 prelude: `(++) : forall m. (@_ : Monoid m) -> m -> m -> m` (append),
+-- so `String ++ <operand>` forces the operand to String; §3.2.3 (family
+-- kappa.type.mismatch with expected/actual payload at the offending
+-- operand); §6.1.5 (integer literals admit only types with a FromInteger
+-- witness; family kappa.type.literal-domain-mismatch names the missing
+-- witness).  The classic beginner "string + number" concatenation attempt
+-- therefore gets, for a non-literal Int operand, one focused mismatch
+-- (actual Integer / expected String) at the operand, and for a literal
+-- operand a literal-domain error explaining String has no FromInteger
+-- witness.  Both diagnostics point at the operand, not the whole
+-- concatenation.  (The prelude also accepts `+` on String with identical
+-- diagnostics for these operand errors.)
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected String
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Integer
+module main
+
+n : Int
+let n = 3
+
+a : String
+let a = "count: " ++ n --!! E_TYPE_EQUALITY_MISMATCH
+
+b : String
+let b = "count: " ++ 1 --!! E_NUMERIC_LITERAL_DOMAIN_MISMATCH
+-- STATUS(a0497523): PASS

@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+--! assertEval x 42
+--! assertEval y 1
+--! assertEval z 3
+
+-- Section 5.4 opens a continuation region when the NEWLINE occurs
+-- "immediately after a token that syntactically requires a following
+-- expression". Trailing trivia between that token and the line break --
+-- trailing spaces, a trailing line comment, a trailing block comment --
+-- must not defeat the continuation context: "immediately after" reads
+-- modulo trivia, since trivia is invisible and semantically inert.
+-- (The wording itself is recorded as a spec ambiguity; this pins the
+-- only sane reading, which the implementation follows.)
+-- NOTE: the line 'let x =' below intentionally ends with three spaces.
+
+module main
+
+x : Int
+let x =   
+    40 +
+    2
+
+y : Int
+let y = -- trailing line comment after '='
+    1
+
+z : Int
+let z = 1 + {- trailing block comment after the operator -}
+    2
+-- STATUS(a0497523): PASS — trailing spaces / line comment / block comment after '=' and after an infix operator still open the continuation region

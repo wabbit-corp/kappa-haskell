@@ -1,0 +1,20 @@
+-- §12.1.1: observation mode, quantity, and borrowed access are independent.
+-- Explicit parametric observation is legal for a non-kind domain and remains
+-- legal on a shared borrowed binder; an ordinary borrowed value may be passed
+-- to that parametric position by ordinary-to-parametric subsumption.
+--! mode check
+--! assertNoErrors
+
+module main
+
+ignoreParametricBorrow :
+    (parametric ω & n : Nat) ->
+    Int
+let ignoreParametricBorrow n =
+    7
+
+fromOrdinaryBorrow :
+    (& n : Nat) ->
+    Int
+let fromOrdinaryBorrow n =
+    ignoreParametricBorrow n

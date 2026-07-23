@@ -1,0 +1,19 @@
+-- §11.1.2.3B + §14.3.1A + §21.2: generated syntax is checked under the
+-- same observation rules as handwritten syntax. A macro may mention a
+-- parametric type witness when the splice places it in another parametric
+-- constructor field. The dependent runtime payload exercises that the type
+-- witness and the value remain paired through constructor elaboration.
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Packed : Type =
+    Packed (A : Type) (value : A)
+
+repackThroughSyntax :
+    (A : Type) ->
+    A ->
+    Packed
+let repackThroughSyntax A value =
+    Packed $(pure '{ A }) $(pure '{ value })

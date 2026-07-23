@@ -1,0 +1,12 @@
+module main
+
+-- §8.3.1 x §14.3: main uses the ORIGINAL trait spelling; the instance was
+-- declared in mid via the import alias `Worth`. Because alias preserves
+-- semantic identity and instance search is global over the module closure
+-- and spelling-independent, `amount (mkCoin 3)` must resolve.
+import lib.(trait Amount, amount)
+import mid.(type Coin, mkCoin)
+
+r : Int
+let r = amount (mkCoin 3)
+-- STATUS(a0497523): PASS

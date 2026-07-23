@@ -1,0 +1,10 @@
+module lib
+
+-- §13.2.10-11 x §8.5.3: the sealing module may freely use the hidden
+-- representation; the existential hides the type Secret itself, and
+-- `opaque data` additionally hides Secret's constructors downstream.
+opaque data Secret : Type =
+    MkSecret (n : Int)
+
+box : exists (a : Type). Option a
+let box = seal (Some (MkSecret 7)) as exists (a : Type). Option a

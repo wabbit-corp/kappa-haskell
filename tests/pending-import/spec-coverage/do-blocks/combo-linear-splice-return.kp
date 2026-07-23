@@ -1,0 +1,43 @@
+-- §18.2.4 x §18.3.1 x §18.5 combination: splices, quantity-1/(>=1)
+-- bindings, and abrupt control in one do block. A linear value bound from a
+-- spliced action and consumed exactly once is accepted; a `return` on a
+-- path that never demands a `>=1` parameter is rejected before elaborating
+-- the return, even though a spliced computation ran earlier on that path.
+module main
+
+data Token : Type =
+    MkToken
+
+mkToken : UIO Token
+let mkToken = ioPure MkToken
+
+burn : (1 t : Token) -> Int
+let burn (1 t : Token) : Int =
+    match t
+    case MkToken -> 0
+
+burnInt : (>=1 x : Int) -> Int
+let burnInt (>=1 x : Int) : Int = x
+
+getInt : UIO Int
+let getInt = ioPure 1
+
+-- POSITIVE: `let 1 t = !mkToken` sequences the splice, then binds t at
+-- quantity 1; `burn t` consumes it exactly once.
+ok : UIO Int
+let ok = do
+    let 1 t = !mkToken
+    ioPure (burn t)
+
+-- NEGATIVE: the `return ()` path exits without demanding x.
+bad : (>=1 x : Int) -> UIO Unit
+let bad (>=1 x : Int) : UIO Unit = do --!! E_QTT_LINEAR_DROP
+    let y = !getInt
+    if y > 0 then
+        return ()
+    let _ = burnInt x
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

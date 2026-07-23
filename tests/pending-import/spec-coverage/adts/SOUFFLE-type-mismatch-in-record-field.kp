@@ -1,0 +1,56 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system1/type_system1.dl,
+--   tests/semantic/fact_number2/fact_number2.dl,
+--   souffle-lang #238 (type checker fails to detect wrong values where record expected).
+-- Spec: §10.1.1 named constructor application (each supplied field is
+--   elaborated against the declared parameter type); §3.2.4 (family
+--   kappa.type.mismatch); §6.1.5 integer-literal domains (family
+--   kappa.type.literal-domain-mismatch when a literal has no admissible
+--   domain at the field type).
+-- Pins: constructor field values are checked against the declared field
+-- types at the application site, one diagnostic per offending field.
+
+--! mode check
+
+module main
+
+data Pair : Type =
+    Pair (first : Int) (second : Int)
+
+data Named : Type =
+    Named (label : String) (value : Int)
+
+-- POSITIVE: correct field types.
+goodPair : Pair
+let goodPair = Pair { first = 1, second = 2 }
+goodNamed : Named
+let goodNamed = Named { label = "ok", value = 42 }
+
+-- NEGATIVE: String literal where an Int field is expected.
+badFirst : Pair
+let badFirst = Pair { first = "oops", second = 2 }    --!! kappa.type.mismatch
+
+-- NEGATIVE: integer literal where a String field is expected — String has
+-- no FromInteger witness, so the literal admits no domain (§6.1.5).
+badLabel : Named
+let badLabel = Named { label = 99, value = 10 }    --!! kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: both fields wrong — one diagnostic per field.
+bothWrong : Pair
+let bothWrong = Pair { first = "a", second = "b" }    --!! kappa.type.mismatch
+
+-- POSITIVE: Bool field given correctly.
+data Flag : Type =
+    Flag (name : String) (active : Bool)
+
+goodFlag : Flag
+let goodFlag = Flag { name = "feature", active = True }
+
+-- NEGATIVE: Bool where a String field is expected.
+badFlag : Flag
+let badFlag = Flag { name = False, active = True }    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertErrorCount 5
+
+-- STATUS(a0497523): PASS

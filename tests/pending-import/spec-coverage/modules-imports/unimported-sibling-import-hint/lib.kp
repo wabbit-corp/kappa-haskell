@@ -1,0 +1,4 @@
+module lib
+
+helperValue : Integer
+let helperValue = 42

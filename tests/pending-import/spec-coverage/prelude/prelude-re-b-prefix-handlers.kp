@@ -1,0 +1,20 @@
+--! mode check
+--! assertNoErrors
+
+-- §6.3.4.5 (L6156): "The standard `f`, `re`, `b`, and `type` prefixes
+-- supplied by `std.prelude` are ordinary terms participating in this
+-- mechanism." §28.1 (L33403): std.prelude "must include ... the
+-- conventional prefixed-string handlers `f`, `re`, `b`, and `type` if
+-- prefixed strings are supported". Prefixed strings ARE supported, so
+-- re"..." and b"..." must resolve to prelude handlers and elaborate
+-- without errors. (The result types are the handlers' respective
+-- InterpolatedMacro indices - conventionally Regex and Bytes - so the
+-- bindings below are deliberately unannotated.)
+
+probe : Unit
+let probe =
+    block
+        let compiled = re"[a-z]+"
+        let raw = b"payload"
+        ()
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED for both `re` and `b`: std.prelude supplies no re/b prefixed-string handlers (§28.1 minimum contents violated)

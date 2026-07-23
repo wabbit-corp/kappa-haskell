@@ -1,0 +1,26 @@
+-- §18.2.4 (defer interaction)/§18.7: `defer e` runs during scope unwinding,
+-- so merely mentioning a `>=1` variable inside the deferred action does NOT
+-- discharge the surrounding scope's positive lower-bound obligation; an
+-- ordinary source demand must still occur before the scope exits.
+module main
+
+burnInt : (>=1 x : Int) -> Int
+let burnInt (>=1 x : Int) : Int = x
+
+-- POSITIVE: defer may capture x (upper bound ω) while an ordinary demand
+-- satisfies the lower bound.
+ok : (>=1 x : Int) -> UIO Unit
+let ok (>=1 x : Int) : UIO Unit = do
+    defer printlnString (showInt x)
+    let _ = burnInt x
+    pure ()
+
+-- NEGATIVE: only the deferred action mentions x; the obligation is unmet.
+bad : (>=1 x : Int) -> UIO Unit
+let bad (>=1 x : Int) : UIO Unit = do --!! E_QTT_LINEAR_DROP
+    defer printlnString (showInt x)
+    pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

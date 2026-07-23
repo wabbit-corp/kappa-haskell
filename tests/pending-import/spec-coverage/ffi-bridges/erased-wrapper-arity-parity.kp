@@ -1,0 +1,30 @@
+--! assertNoErrors
+--! assertEval baseResult 12
+--! assertEval wrappedResult 12
+
+-- §26.1.1 (foreign-call arity after erasure): erased type parameters and
+-- quantity-0 parameters are never implicit runtime foreign-call arguments,
+-- and a Kappa wrapper that adds them MUST NOT shift the host-call arity of
+-- the wrapped binding. At the term level the wrapper applied to the same
+-- single runtime argument must agree observationally with the base binding.
+module main
+
+import std.ffi.(type I32, term i32, term i32Value)
+
+-- Stand-in for a raw binding taking exactly one runtime argument.
+addFive : I32 -> I32
+let addFive v = i32 (i32Value v + 5)
+
+-- Wrapper adding an erased type parameter and a quantity-0 witness: the
+-- runtime argument list is still exactly one I32 (§26.1.1 "Adding an erased
+-- type parameter to a Kappa wrapper MUST NOT shift the host-call arity").
+addFiveTagged : forall (@0 tag : Type). (0 witness : tag) -> I32 -> I32
+let addFiveTagged (@0 tag : Type) (0 witness : tag) v = addFive v
+
+baseResult : Integer
+let baseResult = i32Value (addFive (i32 7))
+
+wrappedResult : Integer
+let wrappedResult = i32Value (addFiveTagged @Bool True (i32 7))
+
+-- STATUS(a0497523): PASS

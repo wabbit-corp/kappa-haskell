@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "11\n21\n22\n"
+
+-- §21.4/§21.5.1: generated binders are hygienic semantic objects. A
+-- macro-introduced `let g` must not capture the user's `g` spliced into
+-- its body, the user's `g` must not capture the generated one, and two
+-- invocations of the same macro in ONE scope must produce alpha-distinct
+-- generated binders (no duplicate-definition or capture between them).
+module main
+
+mk : Syntax Integer -> Elab (Syntax Integer)
+let mk e =
+    pure '{ let g = 10 in g + ${e} }
+
+user : Integer
+let user =
+    block
+        let g = 1
+        $(mk '{ g })
+
+second : Integer
+let second =
+    block
+        let g = 11
+        $(mk '{ g })
+
+both : Integer
+let both =
+    block
+        let g = 1
+        addInt $(mk '{ g }) $(mk '{ g })
+
+main : UIO Unit
+let main = do
+    println user
+    println second
+    println both
+-- STATUS(a0497523): PASS

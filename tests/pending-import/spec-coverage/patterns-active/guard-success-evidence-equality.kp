@@ -1,0 +1,28 @@
+-- §17.1.9: the body of `case pat if guard -> body` is checked under the
+-- erased evidence @p : guard = True. The evidence participates in
+-- definitional equality, so refl proves (=) guard True inside the guarded
+-- body — and only there.
+
+--! mode check
+
+-- POSITIVE: the guarded body holds @p : (ltInt 0 n) = True.
+proveGuard : (n : Int) -> Option ((=) (ltInt 0 n) True)
+let proveGuard n =
+    match n
+    case _ if ltInt 0 n -> Some refl
+    case _ -> None
+
+-- NEGATIVE: the unguarded catch-all has no such evidence; refl cannot
+-- prove (=) (ltInt 0 n) True there.
+bad : (n : Int) -> Option ((=) (ltInt 0 n) True)
+let bad n =
+    match n
+    case _ if ltInt 0 n -> Some refl
+    case _ -> Some refl
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- STATUS(a0497523): FAIL — 3 errors: even the guarded-positive refl sites get E_APPLICATION_ARGUMENT_MISMATCH
+-- ("no equality evidence licenses the transport"); the §17.1.9 guard-success evidence @p : guard = True is never
+-- registered as equality evidence for §16.1.8 transport / normalization.

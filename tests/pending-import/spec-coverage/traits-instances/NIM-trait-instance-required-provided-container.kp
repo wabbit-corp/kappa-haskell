@@ -1,0 +1,42 @@
+-- Source: nim-lang/Nim#15251, nim-lang/Nim#9156, nim-lang/RFCs#346.
+-- Spec: §14.3.1 and §16.3.3 (instance resolution).
+-- Supplying a matching higher-kinded Container instance makes the same
+-- generic call valid.
+
+module test
+
+--! mode check
+
+trait Container (parametric 0 f : (parametric 0 a : Type) -> Type) =
+    empty : forall (a : Type). f a
+    insert : forall (a : Type). a -> f a -> f a
+    toList : forall (a : Type). f a -> List a
+
+data List (a : Type) : Type =
+    Nil
+    Cons a (List a)
+
+instance Container List =
+    let empty = Nil
+    let insert x xs = Cons x xs
+    let toList xs = xs
+
+fromSingle :
+    forall (f : (parametric 0 x : Type) -> Type) (a : Type).
+    Container f => a -> f a
+let fromSingle x = insert x empty
+
+data Queue (a : Type) : Type =
+    MkQueue (List a)
+
+instance Container Queue =
+    let empty = MkQueue Nil
+    let insert x (MkQueue xs) = MkQueue (Cons x xs)
+    let toList (MkQueue xs) = xs
+
+goodQueue : Queue Int
+let goodQueue = fromSingle 42
+
+--! assertNoErrors
+
+-- STATUS(a0497523): PASS

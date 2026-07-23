@@ -12,10 +12,10 @@ module test
 -- POSITIVE: default value is overridden by a plain value.
 -- `base.firewall_enabled | default = True` loses to `patch.firewall_enabled = False`.
 baseConfig : (firewall_enabled : Bool | default)
-let baseConfig = (firewall_enabled = True)
+let baseConfig = (firewall_enabled = True,)
 
 patchConfig : (firewall_enabled : Bool)
-let patchConfig = (firewall_enabled = False)
+let patchConfig = (firewall_enabled = False,)
 
 mergedConfig : (firewall_enabled : Bool)
 let mergedConfig = baseConfig & patchConfig
@@ -33,10 +33,10 @@ let resolvedFirewall = mergedConfig.firewall_enabled
 
 -- POSITIVE: default numeric priority loses to priority 0.
 defaultNum : (x : Number | default)
-let defaultNum = (x = 10)
+let defaultNum = (x = 10,)
 
 overrideNum : (x : Number)
-let overrideNum = (x = 99)
+let overrideNum = (x = 99,)
 
 mergedNum : (x : Number)
 let mergedNum = defaultNum & overrideNum
@@ -61,7 +61,7 @@ let reverseResult = reverseOrderNum.x
 -- POSITIVE: default value is used when there is nothing to override it.
 -- A default field that is never merged with a plain value retains its default.
 onlyDefault : (y : String | default)
-let onlyDefault = (y = "fallback")
+let onlyDefault = (y = "fallback",)
 
 defaultRetained : String
 let defaultRetained = onlyDefault.y

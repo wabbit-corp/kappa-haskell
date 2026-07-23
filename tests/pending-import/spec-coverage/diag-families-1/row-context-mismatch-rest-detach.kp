@@ -30,4 +30,4 @@ let detach (@0 r : RecRow) (rec : (name : String | r)) : String =
         let (name = n, ..rest) = rec --!! E_ROW_CONTEXT_MISMATCH
         n
 
--- STATUS(a51e1bf): FAIL — family/alias E_ROW_CONTEXT_MISMATCH not registered; the open-record '..rest' capture mis-elaborates to kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH at the destructure). Closed-record positive checks clean.
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnostic': 'E_ROW_CONTEXT_MISMATCH' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-typed (§T.5.1); lin… [was FAIL in an earlier STATUS line]

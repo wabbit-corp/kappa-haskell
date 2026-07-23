@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "initial:none\nset:svc\nlocal:tmp\nrestored:svc\nchild:none\n"
+
+-- §18.1.10 (Spec.md L22683-22702): fiber labels are diagnostic metadata.
+-- getFiberLabel starts as None; setFiberLabel replaces the current fiber's
+-- label; locallyFiberLabel installs a label for the dynamic extent of the
+-- body and restores the previous one on completion; labels are NOT
+-- inherited by child fibers — a forked child begins unlabeled.
+module main
+
+import std.prelude.(type Option(..), type Exit(..))
+
+showLabel : Option String -> String
+let showLabel o = match o
+    case Some s -> s
+    case None -> "none"
+
+report : String -> UIO Unit
+let report prefix = do
+    let l <- getFiberLabel
+    printlnString (prefix ++ ":" ++ showLabel l)
+
+main : UIO Unit
+let main = do
+    report "initial"
+    setFiberLabel (Some "svc")
+    report "set"
+    locallyFiberLabel (Some "tmp") (report "local")
+    report "restored"
+    let f <- fork (report "child")
+    let ex <- await f
+    let _ = ex
+    ioPure ()
+-- STATUS(a0497523): FAIL — compiler gap: the §18.1.10 label surface (getFiberLabel/setFiberLabel/locallyFiberLabel) is not declared in the prelude at all (E_NAME_UNRESOLVED).

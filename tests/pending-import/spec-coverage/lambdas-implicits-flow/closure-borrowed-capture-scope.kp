@@ -1,0 +1,31 @@
+-- §16.2.1 (borrowed capture) + §12.3 (skolem escape): a lambda capturing a
+-- borrowed-access variable gets a hidden region environment. Using the
+-- closure inside the borrow scope is fine; a closure whose environment
+-- would require the anonymous borrow region to escape (here: returned as
+-- the function result) MUST be rejected by the skolem-escape rule.
+module main
+
+data Res : Type =
+    MkRes Int
+
+peek : (& r : Res) -> Int
+let peek (& r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+-- POSITIVE: closure capturing the borrow, demanded before scope closes.
+useLocally : (& r : Res) -> Int
+let useLocally (& r : Res) : Int =
+    let f = \() -> peek r
+    in f ()
+
+-- NEGATIVE: the closure escapes through the result; its inferred region
+-- environment mentions the anonymous borrow region of `r`.
+escape : (& r : Res) -> (Unit -> Int)
+let escape (& r : Res) : Unit -> Int =
+    \() -> peek r --!! E_QTT_BORROW_ESCAPE
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+-- STATUS(a0497523): PASS

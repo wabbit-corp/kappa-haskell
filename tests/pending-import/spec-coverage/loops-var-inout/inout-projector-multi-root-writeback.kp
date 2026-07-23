@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "a=11 b=20\n"
+
+-- §18.9.3/§18.9.4 (+§16.1.5): a projector descriptor application under ~
+-- elaborates as OpenProjector with an internal place pack built from the
+-- closed roots record literal; on return the zipper fill rebuilds the pack
+-- and scatters the rebuilt roots back to the actual stable roots in
+-- declaration order — here a TWO-root pack whose focus was selected from
+-- the first root, so only that root observes the update.
+module main
+
+type Cell = (value : Int,)
+
+projection chooseCell (chooseLeft : Bool) (place l : Cell) (place r : Cell) : Int =
+    if chooseLeft then
+        yield l.value
+    else
+        yield r.value
+
+bump : (inout v : Int) -> UIO (1 v : Int,)
+let bump (inout v : Int) : UIO (1 v : Int,) =
+    pure (v = addInt v 1,)
+
+main : UIO Unit
+let main = do
+    let a : Cell = (value = 10,)
+    let b : Cell = (value = 20,)
+    bump ~(chooseCell True (l = a, r = b))
+    printlnString f"a=${a.value} b=${b.value}"
+
+-- STATUS(a0497523): FAIL — E_PROJECTION_ROOT_INVALID on the marked call: the
+-- compiler accepts single-root projector applications under ~ but rejects a
+-- MULTI-root pack even in the §16.1.5 roots-record-literal form; the
+-- §18.9.4 multi-root scatter write-back is unimplemented.

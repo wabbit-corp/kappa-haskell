@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "2\n2\n2\n"
+
+-- §21.6: whnfSyntax / normalizeSyntax elaborate at the call site, use
+-- the ordinary normalization machinery, and reify back to Syntax.
+-- Splicing the reified result must preserve the meaning of the original
+-- expression, including delta-unfolding of a transparent definition.
+module main
+
+two : Integer
+let two = 2
+
+viaWhnf : Integer
+let viaWhnf = $(whnfSyntax '{ 1 + 1 })
+
+viaNorm : Integer
+let viaNorm = $(normalizeSyntax '{ 1 + 1 })
+
+viaDelta : Integer
+let viaDelta = $(normalizeSyntax '{ two })
+
+main : UIO Unit
+let main = do
+    println viaWhnf
+    println viaNorm
+    println viaDelta
+-- STATUS(a0497523): PASS

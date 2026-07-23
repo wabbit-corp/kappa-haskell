@@ -1,0 +1,16 @@
+module main
+
+-- §5.5.2/§8.4: a re-exported operator carries its fixity metadata.
+-- Importing (+++) from the re-exporting module b must bring a's
+-- exported fixity (infix left 60) into scope exactly as importing it
+-- from a directly would. With (+++) x y = 10x + y:
+--   chain = (2 +++ 3) +++ 4 = 23 +++ 4 = 234   (left associativity)
+--   sec   = (+++ 4) 3 = 3 +++ 4 = 34           (§5.5.3 right section)
+import b.((+++))
+
+chain : Int
+let chain = 2 +++ 3 +++ 4
+
+sec : Int
+let sec = (+++ 4) 3
+-- STATUS(a0497523): FAIL — the operator itself re-exports (the term resolves) but its fixity metadata is dropped: E_OPERATOR_NO_FIXITY on both uses, and recovery silently parses the chain right-associatively (evaluates to 54)

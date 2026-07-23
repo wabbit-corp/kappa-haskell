@@ -27,6 +27,6 @@ data Blob : Type =
 -- diagnostic family for a failed derivation).
 derive Eq Blob
 
--- STATUS(a51e1bf): FAIL — derive declarations are wholly unsupported
+-- STATUS(a0497523): FAIL — derive declarations are wholly unsupported
 -- (E_UNSUPPORTED on BOTH derives, plus a cascading unsolved (==) at
 -- sameRed); no eqSound/eqComplete synthesis path exists yet.

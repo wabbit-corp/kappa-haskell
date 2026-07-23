@@ -1,0 +1,19 @@
+--! allow_assert_terminates
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.macro.failure
+
+-- §21.8: macro definitions get ordinary termination checking; a macro
+-- accepted only via assertTerminates that then fails to terminate under
+-- the elaboration-time evaluator MUST be detected and aborted (e.g. a
+-- deterministic step limit) as a compile-time error at the splice — the
+-- compiler MUST NOT hang. The abort is an error, not proof of either
+-- termination or non-termination.
+module main
+
+spin : Integer -> Elab (Syntax Integer)
+assertTerminates let spin n = spin n
+
+bad : Integer
+let bad = $(spin 0)
+-- STATUS(a0497523): PASS

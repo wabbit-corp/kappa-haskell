@@ -1,0 +1,45 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaAlias "wrapped"
+--! assertEval viaConstraintAlias "wrapped"
+
+-- §31.1.1: a transparent alias MUST NOT be left stuck merely because it
+-- occurs in instance-head position or constraint position. An instance
+-- declared through an alias head is the instance of the underlying
+-- nominal type, and a constraint alias discharges like the trait
+-- application it unfolds to.
+module main
+
+data Wrapped : Type =
+    MkWrapped Int
+
+type A = Wrapped
+
+trait Named (a : Type) =
+    name : a -> String
+
+-- instance-head position: alias normalizes to the nominal head
+instance Named A =
+    let name w = "wrapped"
+
+-- resolution at the nominal spelling uses the alias-headed instance
+atNominal : Wrapped -> String
+let atNominal w = name w
+
+-- resolution at the alias spelling agrees
+atAlias : A -> String
+let atAlias w = name w
+
+viaAlias : String
+let viaAlias = atAlias (MkWrapped 1)
+
+-- constraint position: an alias of a trait application
+type NamedA = Named Wrapped
+
+useConstraint : NamedA => Wrapped -> String
+let useConstraint w = name w
+
+viaConstraintAlias : String
+let viaConstraintAlias = useConstraint (MkWrapped 2)
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,45 @@
+--! mode check
+--! assertNoErrors
+
+-- DX EXPECTATION, not necessarily spec-required.
+--
+-- Expected-good behavior encoded here: `uninterruptible (k 5)` — wrapping a
+-- single call of a one-shot resumption in a run-exactly-once combinator —
+-- should typecheck.
+--
+-- What currently happens: E_QTT_LINEAR_OVERUSE "'k' is consumed more often
+-- than its affine quantity permits" even though k appears exactly once. The
+-- §18.1.12 signatures (mask, uninterruptible, ensuring) and §18.1.25
+-- `finally` take their computation/body arguments at unannotated (= ω)
+-- quantity, so QTT scales the argument's usages by ω. Consequence: NO
+-- standard masking/finalization combinator can wrap a one-shot resumption
+-- (`finally (k 5) fin`, `mask (\restore -> k 5)`, `ensuring (k 5) fin` all
+-- fail identically), while the SURFACE form `try (k 5) finally -> fin` —
+-- §19.2's own elaboration of the same idea via defer — is accepted. This
+-- collides with §18.1.20.2's stated ergonomics ("one-shot resumptions are
+-- the ordinary effect-programming mode for code that may interact with ...
+-- `using`, or `defer`") and §32.2.13's mask-state-at-resume semantics.
+-- Either the prelude signatures should take these arguments at quantity 1,
+-- or the diagnostic should at least explain that the overuse comes from the
+-- ω argument position, not from a repeated use of k.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp = do
+    let a <- Ask.ask ()
+    pure a
+
+handled : UIO Int
+let handled =
+    deep handle Ask comp with
+        case return x -> ioPure x
+        case ask _ k -> uninterruptible (k 5)
+
+main : UIO Unit
+let main = do
+    let r <- handled
+    printlnString (stringAppend "result:" (showInt r))
+-- STATUS(a0497523): FAIL — E_QTT_LINEAR_OVERUSE on the single syntactic use of k: uninterruptible takes its argument at omega quantity, so the k-usage is scaled to omega; same for mask/ensuring/finally-the-trait-member, while surface try/finally around (k 5) is accepted.

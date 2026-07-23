@@ -1,0 +1,40 @@
+-- Source issue: ROSETTE-111 (Broken error message for assoc — host-language
+--                contract violation surfaces through a different
+--                identifier)
+-- Spec: §16.1 (variables and application), §3.1.4 (portable alias
+--       E_APPLICATION_ARGUMENT_MISMATCH), §6.1 (numeric literal domain).
+-- Pins: a library function annotated with precise argument types surfaces
+-- a static application-site diagnostic — never an internal failure on an
+-- unrelated identifier — when arguments are misordered or of the wrong
+-- type.
+
+--! mode check
+
+module main
+
+assocInt : Int -> List (Int, String) -> Option String
+let assocInt k xs =
+    match xs
+    case Nil -> None
+    case (kp, v) :: rest ->
+        if k == kp then Some v else assocInt k rest
+
+-- POSITIVE: well-typed assoc.
+ok : Option String
+let ok = assocInt 1 [(1, "one"), (2, "two")]
+
+-- NEGATIVE: arguments swapped — passing the table as the key (argument
+-- mismatch) and the key as the table (a numeric literal has no
+-- FromInteger witness at List (Int, String), §6.1.5).
+badSwap : Option String
+let badSwap = assocInt [(1, "one")] 1               --!! kappa.application.argument-mismatch kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: table contains the wrong inner type; the literal element
+-- (1, 2) cannot check against (Int, String).
+badEntries : Option String
+let badEntries = assocInt 1 [(1, 2), (2, 3)]
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 3
+
+-- STATUS(a0497523): PASS

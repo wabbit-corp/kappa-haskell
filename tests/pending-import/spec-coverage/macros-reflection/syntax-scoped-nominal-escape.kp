@@ -1,0 +1,18 @@
+--! mode check
+--! assertDiagnosticMatch (scoped|nominal).*(escape|scope)|(escape|scope).*(scoped|nominal)
+
+-- §21.4 + §9.3.1.1: a Syntax value's hidden scope metadata records local
+-- nominal-scope tokens; a Syntax value mentioning a scoped local nominal
+-- token is subject to the scoped-nominal escape rule, so returning
+-- '{ type Token } past the block that declared `scoped data Token` MUST
+-- be rejected. The Syntax Type index itself does not mention Token, so
+-- only the escape rule (not the signature) can catch this.
+module main
+
+bad : Syntax Type
+let bad =
+    block
+        scoped data Token : Type =
+            Token
+        '{ type Token }
+-- STATUS(a0497523): FAIL — 'scoped data' inside block is E_UNSUPPORTED (scoped local declarations unimplemented), so the scoped-nominal Syntax escape rule is unreachable

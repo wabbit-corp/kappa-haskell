@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval viaItem 42
+--! assertEval viaNested 42

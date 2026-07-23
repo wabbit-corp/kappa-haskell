@@ -1,0 +1,7 @@
+module lib
+
+trait Amount (a : Type) =
+    amount : a -> Int
+
+instance Amount Bool =
+    let amount b = if b then 1 else 0

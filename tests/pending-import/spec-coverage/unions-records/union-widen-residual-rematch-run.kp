@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "str hi\nint 3\n"
+
+-- §13.1.3 (Spec.md L16301-L16302: widening is zero-cost, no row-relative
+-- retagging, §31.3 tag identity) x §13.1.4 residual narrowing: a value
+-- injected at Small = (| Integer | String |) and widened to Big =
+-- (| Integer | String | Bool |) must fall through the non-member Bool arm
+-- into the residual branch, and the narrowed rest : (| Integer | String |)
+-- must re-match by member with the payload intact. A row-relative retag at
+-- the widening (or a residual binder carrying stale tag ordinals) would
+-- select a wrong arm or corrupt the payload here.
+module main
+
+type Small = (| Integer | String |)
+type Big = (| Integer | String | Bool |)
+
+viaSmallStr : Small
+let viaSmallStr = "hi"
+
+viaSmallInt : Small
+let viaSmallInt = 3
+
+classify : Big -> String
+let classify v =
+    match v
+    case (| b : Bool |) -> "bool"
+    case (| ..rest |)   ->
+        match rest
+        case (| n : Integer |) -> stringAppend "int " (showInt n)
+        case (| s : String |)  -> stringAppend "str " s
+
+main : UIO Unit
+let main = do
+    printlnString (classify viaSmallStr)
+    printlnString (classify viaSmallInt)
+
+-- STATUS(a0497523): PASS

@@ -51,3 +51,4 @@ let bad v =
 -- sameIf also fail with E_TYPE_EQUALITY_MISMATCH: constructor-forced
 -- family-argument equalities over an ABSTRACT index (n = Z in the Zero
 -- branch) do not participate in definitional equality as §17.1.2 requires.
+-- STATUS(a0497523): FAIL — unchanged (6 errors; abstract-index branch equalities still not in definitional equality).

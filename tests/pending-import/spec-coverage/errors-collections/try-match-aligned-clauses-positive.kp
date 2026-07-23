@@ -1,0 +1,25 @@
+module main
+
+-- §19.3 independently requires aligned success cases, except clauses, and
+-- finally.  This also combines closed success-pattern coverage with typed
+-- error recovery, which prevents a parser from accepting only a degenerate
+-- one-clause form.
+
+data Flag : Type =
+    On
+    Off
+
+source : Bool -> IO String Flag
+let source succeeds =
+    if succeeds then pure On else raise "unavailable"
+
+classify : Bool -> IO String Int
+let classify succeeds =
+    try match source succeeds
+    case On -> pure 1
+    case Off -> pure 2
+    except _ -> pure 0
+    finally -> pure ()
+
+--! mode check
+--! assertNoErrors

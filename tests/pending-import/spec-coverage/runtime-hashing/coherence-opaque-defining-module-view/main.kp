@@ -1,0 +1,35 @@
+--! assertDiagnostic error E_INSTANCE_INCOHERENT
+
+-- §33.1.2 × §33.2.1: full normalization for coherence identities respects
+-- opacity. The TagA pair (`secret` vs literal 7) is NOT canonically equal —
+-- opaque `secret` does not δ-unfold here — so the overlap MUST be rejected.
+-- The TagB pair (`seven` vs literal 7) IS equal after δ-unfolding the
+-- transparent import, so it is harmless overlap and must be accepted.
+module main
+
+import oplib.(secret, seven)
+
+trait TagA (a : Type) =
+    tagA : a -> Int
+
+trait TagB (a : Type) =
+    tagB : a -> Int
+
+instance TagA Integer =
+    let tagA n = secret
+
+instance TagA Integer =
+    let tagA n = 7
+
+instance TagB Integer =
+    let tagB n = seven
+
+instance TagB Integer =
+    let tagB n = 7
+
+useA : Int
+let useA = tagA 5 --!! E_INSTANCE_INCOHERENT
+
+useB : Int
+let useB = tagB 5
+-- STATUS(a0497523): PASS

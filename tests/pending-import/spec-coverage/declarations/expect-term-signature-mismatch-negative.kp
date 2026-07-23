@@ -12,4 +12,4 @@ let convert x = x
 
 --! mode check
 --! assertDiagnosticCodes E_EXPECT_UNSATISFIED
--- STATUS(a51e1bf): FAIL — compiler accepts the mismatched same-file definition as satisfying the expect; §9.4 definitional-equality matching is not enforced
+-- STATUS(a0497523): FAIL — compiler accepts the mismatched same-file definition as satisfying the expect; §9.4 definitional-equality matching is not enforced

@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.9: sameDynRep : forall (@0 a b : Type). DynRep a -> DynRep b ->
+-- Dec (a = b). §24.1: checkedCastWith consults exactly this decision,
+-- Yes p carrying propositional equality between the represented types.
+-- Pins the declared Dec result shape and its Yes/No elimination.
+module main
+
+import std.gradual.*
+
+-- Prefix (=) application: semantically the canonical §24.9 type.
+sameDynRepDec :
+    forall (@0 a : Type) (@0 b : Type).
+    DynRep a -> DynRep b -> Dec ((=) a b)
+let sameDynRepDec ra rb = sameDynRep ra rb
+
+-- The literal canonical spelling from §24.9 (infix = at type endpoints).
+sameDynRepDecInfix :
+    forall (@0 a : Type) (@0 b : Type).
+    DynRep a -> DynRep b -> Dec (a = b)
+let sameDynRepDecInfix ra rb = sameDynRep ra rb
+
+decideEq :
+    forall (@0 a : Type) (@0 b : Type).
+    DynRep a -> DynRep b -> Bool
+let decideEq ra rb =
+    match sameDynRep ra rb
+    case Yes _ -> True
+    case No _ -> False
+
+-- STATUS(a0497523): FAIL — sameDynRep still returns Option (Dec ((=) a b)) instead of Dec (a = b), and the infix Dec (a = b) spelling additionally trips E_APPLICATION_ARGUMENT_MISMATCH.

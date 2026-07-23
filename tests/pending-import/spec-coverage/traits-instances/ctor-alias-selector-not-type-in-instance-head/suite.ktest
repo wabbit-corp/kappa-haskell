@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+-- STATUS(a0497523): FAIL — expected 1 error, got 0: `ctor Pair as mkP` also imports the TYPE facet under mkP, so `instance Sum mkP` (and `v : mkP`) are accepted; aliased kind selector does not filter same-spelling-family facets

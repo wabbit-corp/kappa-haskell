@@ -14,7 +14,7 @@ module test
 -- POSITIVE: A type annotation in a record field generates a contract.
 -- The contract is checked when the field is forced.
 recordAnnotated : (value : Number)
-let recordAnnotated = (value = 42)
+let recordAnnotated = (value = 42,)
 
 -- Accessing the field forces the contract check; with the correct value it passes.
 recordOk : Number

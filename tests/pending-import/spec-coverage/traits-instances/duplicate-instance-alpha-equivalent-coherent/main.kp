@@ -1,0 +1,13 @@
+module main
+
+-- §14.3 x §33.2.1: two modules declare an instance for the same head
+-- `Tag Bool` with alpha-equivalent implementations. §33.2.1 step 3:
+-- candidates in the same Easy-Hash group are "identical harmless
+-- overlap"; the goal is accepted and a deterministic representative is
+-- selected. Overlap across modules is only an error when the
+-- implementations are NOT equivalent.
+import traitmod.(trait Tag, tag)
+
+r : Int
+let r = tag True
+-- STATUS(a0497523): PASS

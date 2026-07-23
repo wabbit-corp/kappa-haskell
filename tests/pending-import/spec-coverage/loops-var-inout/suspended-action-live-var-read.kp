@@ -1,0 +1,28 @@
+-- §18.6.1 × §16.2.2: the two spec-blessed ways to move a var's value into
+-- a suspension, distinguished observationally. A pure snapshot bound before
+-- the suspension is a construction-time copy (prints the pre-write value 1).
+-- A nested-do action suspended as `Thunk (m Int)` performs its generated
+-- current-value read only when the forced action RUNS ("a generated
+-- current-value read inside a nested user-written computation is a live
+-- read at the time that nested computation runs; it is not a snapshot"),
+-- so it observes the post-write value 2 even though the thunk was
+-- constructed before the write.
+module main
+
+main : UIO Unit
+let main = do
+    var x = 1
+    let snap = x
+    let tSnap = thunk snap
+    let act = do
+        x
+    let tLive = thunk act
+    x = 2
+    printInt (force tSnap)
+    let live <- force tLive
+    printInt live
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n2\n"
+-- STATUS(a0497523): PASS

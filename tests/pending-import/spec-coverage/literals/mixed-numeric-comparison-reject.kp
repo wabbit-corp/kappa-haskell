@@ -1,0 +1,31 @@
+-- §6.1.5 (numeric literal typing) × §28.2.1 (Ord: (<) is homogeneous,
+-- (& x : a) -> (& y : a) -> Bool): Kappa has no implicit numeric promotion,
+-- so comparing across Int/Double is rejected — and the two failure shapes get
+-- DIFFERENT, correctly-targeted diagnostic families:
+--  * `1 < 2.0`: the unsuffixed 1 elaborates at the type demanded by the other
+--    operand's literal domain; Integer admits no float literal (no FromFloat
+--    Integer witness, §6.1.5), reported as the literal-domain family with a
+--    §6.1.5 citation rather than a generic mismatch;
+--  * comparing an Int VARIABLE with a Double VARIABLE is an ordinary type
+--    mismatch with actual/expected notes.
+-- Pinned because diagnostic identity here is what makes the no-promotion rule
+-- teachable; both messages are currently good.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertDiagnosticFamily error kappa.type.mismatch
+module main
+
+litMixed : Bool
+let litMixed = 1 < 2.0             --!! kappa.type.literal-domain-mismatch
+
+i : Int
+let i = 3
+
+d : Double
+let d = 4.0
+
+varMixed : Bool
+let varMixed = i < d               --!! kappa.type.mismatch
+
+-- STATUS(a0497523): PASS — literal case gets kappa.type.literal-domain-mismatch with a §6.1.5 citation; variable case gets a plain actual/expected mismatch.

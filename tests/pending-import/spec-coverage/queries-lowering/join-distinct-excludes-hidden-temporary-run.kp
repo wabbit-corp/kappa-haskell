@@ -1,0 +1,21 @@
+module main
+
+-- §20.8/§20.10.3: the `tmp` in join's schematic lowering is compiler-
+-- generated, not a surface binding in Xi.  Bare `distinct` therefore sees
+-- only `outer` and the pattern-bound `key`; the ignored tuple component must
+-- not secretly distinguish the two rows.
+
+rows : List Int
+let rows = [
+    for outer in [0]
+    join (key, _) in [(1, 10), (1, 20)] on True
+    distinct
+    yield outer + key
+]
+
+rowCount : Int
+let rowCount = listLength rows
+
+--! mode check
+--! assertNoErrors
+--! assertEval rowCount 1

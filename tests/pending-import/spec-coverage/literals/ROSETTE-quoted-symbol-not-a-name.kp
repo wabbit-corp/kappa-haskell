@@ -1,0 +1,45 @@
+-- Source issue: ROSETTE-202 (`apply` can't unsplat — quoted symbol is
+--                data, not a variable reference)
+-- Spec: §6.3 (string literals), §16.1 (application),
+--       §3.2.3 (kappa.type.mismatch / kappa.application.argument-mismatch).
+-- Pins: Kappa has no implicit quoting — a string literal that happens to
+-- spell a binder's name is data of type String, never a reference to the
+-- binder. Passing it where Int is required is a static argument-type
+-- mismatch.
+
+--! mode check
+
+module main
+
+twice : Int -> Int
+let twice n = n * 2
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case h :: t -> h + sumList t
+
+theX : Int
+let theX = 7
+
+-- POSITIVE: passing the actual binding by name.
+ok : Int
+let ok = twice theX
+
+-- POSITIVE: a String literal stays a String.
+ok2 : String
+let ok2 = "x"
+
+-- NEGATIVE: a String literal passed where Int is expected.
+badArg : Int
+let badArg = twice "x"                              --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: a List String passed to a function expecting List Int.
+badList : Int
+let badList = sumList ["x", "1"]                    --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

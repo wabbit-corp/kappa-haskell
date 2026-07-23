@@ -1,0 +1,31 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "1\n"
+
+-- §13.2.11 (projection + introduction): a record-shaped payload field
+-- (`pkg.opt : Option ⟨wit⟩`) may be PARTIALLY projected out of one
+-- existential and immediately repackaged under a fresh existential —
+-- the hidden witness selection introduced by the projection is
+-- escape-relevant, and the new `seal` hides it again (the §13.2.10
+-- sealing form discharges the non-escape obligation). The repackaged
+-- value remains openable and matchable.
+module main
+
+pkg : exists (a : Type). (opt : Option a)
+let pkg = seal exists (a = Int). (opt = Some 1) as exists (a : Type). (opt : Option a)
+
+repack : exists (b : Type). Option b
+let repack = seal pkg.opt as exists (b : Type). Option b
+
+n : Int
+let n =
+    open repack as exists (b). x in
+        match x
+        case Option.None -> 0
+        case Option.Some _ -> 1
+
+main : UIO Unit
+let main = do
+    printlnString (showInt n)
+
+-- STATUS(a0497523): PASS

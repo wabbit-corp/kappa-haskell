@@ -1,0 +1,16 @@
+module utilslib
+
+safeDiv : Int -> Int -> Option Int
+let safeDiv n d = if d == 0 then None else Some n
+
+safeMod : Int -> Int -> Option Int
+let safeMod n d = if d == 0 then None else Some d
+
+doubleU : Int -> Int
+let doubleU x = x * 2
+
+tripleU : Int -> Int
+let tripleU x = x * 3
+
+identityFn : Int -> Int
+let identityFn x = x

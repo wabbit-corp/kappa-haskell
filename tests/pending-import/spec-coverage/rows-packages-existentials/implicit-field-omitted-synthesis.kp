@@ -20,7 +20,7 @@ type SafeInt : Type = (v : Int, @p : this.v > 0)
 
 -- omitted @p must be synthesized: `5 > 0` reduces to True, refl closes it
 safe : SafeInt
-let safe = (v = 5)
+let safe = (v = 5,)
 
 type Box : Type = (a : Type, @tc : Pretty this.a, val : this.a)
 
@@ -28,4 +28,4 @@ type Box : Type = (a : Type, @tc : Pretty this.a, val : this.a)
 box : Box
 let box = (a = Int, val = 5)
 
--- STATUS(a51e1bf): FAIL — omitted @-fields are never synthesized; the literal is rejected with E_TYPE_EQUALITY_MISMATCH 'record literal fields do not match the expected record type'
+-- STATUS(a0497523): FAIL — omitted @-fields are never synthesized; the literal is rejected with E_TYPE_EQUALITY_MISMATCH 'record literal fields do not match the expected record type'

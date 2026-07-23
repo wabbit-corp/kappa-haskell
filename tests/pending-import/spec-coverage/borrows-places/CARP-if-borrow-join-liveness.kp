@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- Source issue: carp-lang/Carp#1107
+-- Spec: §12.3 (region environments of closures; skolem escape rule),
+--       §3.2.7 (kappa.borrow.escape)
+-- Carp #1107 freed an `if`-joined reference before use.  The portable Kappa
+-- obligation: an `if` whose arms produce values over different borrows joins
+-- their region environments (the union); the joined value is usable only
+-- where every mentioned region is still live, and escapes are rejected.
+module main
+
+data Box : Type =
+    Box Int
+
+read : (& b : Box) -> Int
+let read b = 0
+
+-- POSITIVE: the joined closure mentions both rho_a and rho_b; both regions
+-- are live for the whole function body, so a downward call is admitted.
+okJoin : Bool -> (& a : Box) -> (& b : Box) -> Int
+let okJoin flag a b =
+    let f = if flag then (\() -> read a) else (\() -> read b)
+    f ()
+
+-- NEGATIVE: only one arm mentions rho_a, but the join's region environment
+-- still contains it; returning the joined closure escapes the borrow that
+-- one arm depends on.
+badJoin : Bool -> (& a : Box) -> (Unit -> Int)
+let badJoin flag a =
+    if flag then (\_ -> read a) else (\_ -> 0) --!! kappa.borrow.escape
+
+-- STATUS(a0497523): PASS

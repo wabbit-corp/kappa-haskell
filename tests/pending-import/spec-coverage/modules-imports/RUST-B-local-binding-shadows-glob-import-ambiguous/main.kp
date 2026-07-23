@@ -1,0 +1,18 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_AMBIGUOUS
+--! assertDiagnosticFamily error kappa.name.ambiguous
+
+-- Source issue: rust#71765 (slice > 50000)
+-- Spec: §7.1 (lexical lookup), §8.3.1A (imported binding collisions),
+--       §3.2.2 (kappa.name.ambiguous)
+-- Pins: the contrast case for the shadowing suite — WITHOUT a local binding,
+-- a bare use of a spelling exported by two wildcard imports is ambiguous.
+-- NOTE: overlaps with tests/conformance/spec-coverage/diag-families-1/name-ambiguous-imports.
+module main
+
+import a.*
+import b.*
+
+unqualified : Int
+let unqualified = time + 1    --!! E_NAME_AMBIGUOUS

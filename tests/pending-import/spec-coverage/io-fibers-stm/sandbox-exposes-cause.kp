@@ -57,3 +57,4 @@ let main = do
     match ex
       case Success v -> printlnString ("child:" ++ showInt v)
       case Failure c -> printlnString "child:failed"
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 26; stdout mismatch: expected "sandbox-fail:boom\nsa… [was PASS in an earlier STATUS line]

@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): PASS — instance usable at abstract type; MkToken stays unresolved downstream

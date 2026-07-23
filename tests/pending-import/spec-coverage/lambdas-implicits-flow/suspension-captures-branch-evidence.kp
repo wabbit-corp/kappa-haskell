@@ -1,0 +1,32 @@
+-- §16.2.2 × §16.4.1 (combination): thunk/lazy are closure boundaries for
+-- return/break/continue, but they do not sever the branch-local refinement
+-- context — a constructor-field projection inside a suspension body
+-- constructed in the success branch of `p is Box` still sees HasCtor, and
+-- forcing recovers the projected value.
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE: projection inside a thunk body under branch refinement.
+inThunk : Payload -> Int
+let inThunk p =
+    if p is Box then force (thunk p.value) else 0
+
+-- POSITIVE: same through a memoizing lazy suspension (Shareable Int).
+inLazy : Payload -> Int
+let inLazy p =
+    if p is Box then force (lazy p.value) else 0
+
+fromBox : Int
+let fromBox = inThunk (Box 41)
+
+fromEmpty : Int
+let fromEmpty = inLazy Empty
+
+--! mode check
+--! assertNoErrors
+--! assertEval fromBox 41
+--! assertEval fromEmpty 0
+-- STATUS(a0497523): PASS

@@ -1,0 +1,48 @@
+-- Source artifacts: Hylo PR#1264 (make sure synthesized conformances are sound;
+--                   fixes issue where generic type with unsatisfied element
+--                   constraint caused a compiler crash during codegen),
+--                   Tests/HyloTests/TestCases/Lowering/MissingDeinit.hylo
+-- Spec: §14.3.1 (instance resolution), §16.3.3, §12.2 (quantities),
+--       §3.2.4 (kappa.implicit.unsolved)
+-- Pins: a generic linear consumer requiring trait evidence for the element
+-- type must have that sub-obligation checked at every call site during type
+-- checking (never deferred to codegen): calling it at an element type with
+-- no instance is kappa.implicit.unsolved, while the conforming element type
+-- is accepted with the linear payload consumed exactly once.
+
+--! mode check
+
+module main
+
+trait Droppable (a : Type) =
+    dropIt : (1 x : a) -> Unit
+
+data Slot (a : Type) : Type =
+    MkSlot a
+
+instance Droppable Int =
+    let dropIt x = ()
+
+-- Generic function that drops a Slot by dropping its inner element.
+-- Requires Droppable a to be satisfied at the call site.
+dropAny : (@_ : Droppable a) -> (1 s : Slot a) -> Unit
+let dropAny (1 s : Slot a) : Unit =
+    match s
+    case MkSlot x -> dropIt x
+
+data Opaque : Type =
+    MkOpaque Int
+
+-- No Droppable instance for Opaque.
+
+-- POSITIVE: Int is Droppable, so Slot Int can be dropped.
+dropIntSlot : (1 s : Slot Int) -> Unit
+let dropIntSlot (1 s : Slot Int) : Unit = dropAny s
+
+-- NEGATIVE: Opaque is not Droppable; the implicit proof is unavailable.
+-- A synthesized conformance silently bypassing this check would be unsound.
+dropOpaqueSlot : (1 s : Slot Opaque) -> Unit
+let dropOpaqueSlot (1 s : Slot Opaque) : Unit = dropAny s    --!! E_UNSOLVED_IMPLICIT
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved

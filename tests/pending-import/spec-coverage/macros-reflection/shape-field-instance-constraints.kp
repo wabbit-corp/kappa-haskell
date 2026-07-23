@@ -1,0 +1,48 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+--! assertDiagnosticMatch second|Blob
+
+-- §22.4: requireRuntimeFieldInstances requires each runtime field's
+-- trait obligation to be solved by ordinary implicit resolution at the
+-- splice site. With a user trait Pretty and an instance for Integer
+-- only, AllInts passes (positive half) while Mixed fails naming the
+-- offending field `second` of type Blob (portable meaning
+-- E_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE).
+module main
+
+import std.deriving.shape.*
+
+trait Pretty (0 a : Type) =
+    pretty : a -> String
+
+instance Pretty Integer =
+    let pretty n = showInt n
+
+data Blob : Type =
+    Blob
+
+data Mixed : Type =
+    Mixed (first : Integer) (second : Blob)
+
+data AllInts : Type =
+    AllInts (left : Integer) (right : Integer)
+
+checkGood : Elab (Syntax String)
+let checkGood = do
+    let shape <- inspectAdt @AllInts '{ type AllInts }
+    let _ <- requireRuntimeFieldInstances @Pretty @AllInts shape
+    stringSyntax "ok"
+
+checkBad : Elab (Syntax String)
+let checkBad = do
+    let shape <- inspectAdt @Mixed '{ type Mixed }
+    let _ <- requireRuntimeFieldInstances @Pretty @Mixed shape
+    stringSyntax "unreachable"
+
+good : String
+let good = $(checkGood)
+
+bad : String
+let bad = $(checkBad)
+-- STATUS(a0497523): FAIL — requireRuntimeFieldInstances does not consult user-defined instances (Pretty Integer resolves by ordinary implicit search at the same site but the shape query reports the Integer fields as missing), so the positive half errors and the diagnostic names the wrong fields

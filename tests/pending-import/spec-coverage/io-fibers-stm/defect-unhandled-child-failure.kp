@@ -32,3 +32,4 @@ main : UIO Unit
 let main = do
     let r <- catchIO (ioBind (sandbox parent) (\v -> ioPure "scope-succeeded")) classify
     printlnString r
+-- STATUS(a0497523): FAIL — compiler gap: scope exit ignores the unacknowledged failed child (runs 'scope-succeeded'); no Defect(DefectInfo UnhandledChildFailure _) promotion per §18.1.3.

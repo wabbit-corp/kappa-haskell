@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §27.6 / §26.1.4: foreign calls that may suspend a host execution
+-- resource are classified nonblocking | blocking | blocking-cancellable,
+-- and the classification is carried by a binding's raw declarations. The
+-- std.build schema exposes that vocabulary as FfiClass together with the
+-- ClassifyInput realization input consumed by host-binding descriptions.
+module main
+
+import std.build.(type FfiClass, type NativeInput)
+import std.build.(ctor FfiNonblocking, ctor FfiBlocking, ctor FfiBlockingCancellable)
+import std.build.(ctor ClassifyInput)
+
+cNonblocking : FfiClass
+let cNonblocking = FfiNonblocking
+
+cBlocking : FfiClass
+let cBlocking = FfiBlocking
+
+cCancellable : FfiClass
+let cCancellable = FfiBlockingCancellable
+
+-- classification metadata attached to a native binding's inputs
+classifiedInput : NativeInput
+let classifiedInput = ClassifyInput FfiBlockingCancellable
+
+-- STATUS(a0497523): PASS

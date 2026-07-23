@@ -1,0 +1,33 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "12\n25\nnone\n"
+
+-- Appendix G.1 / §14.1.4: Monad refines Applicative — any Monad m
+-- instance determines an Applicative m for the same m. Generic code
+-- constrained only by `Monad m` may therefore use liftA2 and pureA
+-- through the projected superclass evidence, and a do block in the same
+-- generic function elaborates against that m (Appendix G applies to it).
+module main
+
+sumTwo : forall (m : (0 A : Type) -> Type). (@_ : Monad m) -> m Int -> m Int -> m Int
+let sumTwo ma mb = liftA2 (\a b -> a + b) ma mb
+
+addTwenty : forall (m : (0 A : Type) -> Type). (@_ : Monad m) -> m Int -> m Int
+let addTwenty ma = do
+    let a <- ma
+    let b <- pureA 20
+    pureA (a + b)
+
+showOpt : Option Int -> UIO Unit
+let showOpt o =
+    match o
+    case Some v -> printInt v
+    case None -> printlnString "none"
+
+main : UIO Unit
+let main = do
+    showOpt (sumTwo (Some 5) (Some 7))
+    showOpt (addTwenty (Some 5))
+    showOpt (addTwenty None)
+
+-- STATUS(a0497523): PASS

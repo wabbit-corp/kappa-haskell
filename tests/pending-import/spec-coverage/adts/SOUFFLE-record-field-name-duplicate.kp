@@ -1,0 +1,55 @@
+-- Source issues: souffle-lang/souffle tests/semantic/attrib_dupl/attrib_dupl.dl
+--   ("Doubly defined attribute name" for `.decl R(type:Type, type:Type)`).
+-- Spec: §10.1.1 named constructor application ("Duplicate labels are an
+--   error", family kappa.constructor.arity); §11.3.1 ("RecRow is a
+--   contextual finite labelled telescope tail with unique labels" — record
+--   rows are label-unique, so a record type/literal repeating a label is
+--   rejected; no §3.2 family is standardized for that case).
+-- Pins both duplicate-label surfaces Kappa defines. NOTE: §10.1 states no
+-- declaration-site rule that a single constructor's NAMED PARAMETERS be
+-- pairwise distinct, even though §10.1.1 named application presupposes it
+-- ("must correspond to a distinct explicit constructor argument name") —
+-- see spec-issue note below; that case is deliberately not asserted here.
+
+--! mode check
+
+module main
+
+-- POSITIVE: distinct field names.
+data GoodRecord : Type =
+    GoodRecord (first : Int) (second : String) (third : Bool)
+
+good : GoodRecord
+let good = GoodRecord { first = 1, second = "x", third = True }
+
+-- NEGATIVE: named application supplying the same label twice (§10.1.1).
+data Pt : Type =
+    Pt (x : Int) (y : Int)
+
+badApp : Pt
+let badApp = Pt { x = 1, x = 2, y = 3 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- NEGATIVE: a record TYPE with a repeated label violates §11.3.1 label
+-- uniqueness; the record literal repeating a label is likewise rejected.
+badRec : (x : Int, x : Bool)
+let badRec = (x = 1, x = True)
+
+--! assertDiagnosticMatch duplicate
+--! assertErrorCount 3
+
+-- Spec-gap observation (not asserted): the compiler currently ACCEPTS a
+-- data declaration whose single constructor repeats a parameter name, e.g.
+--     data Shape : Type =
+--         Rect (side : Float) (side : Float)
+-- §10.1 never requires declaration-site distinctness, yet named
+-- application/projection semantics presuppose it. Recorded as a spec issue.
+
+-- POSITIVE: two different constructors may reuse parameter names
+-- (parameters are local to each constructor).
+data Vec2D : Type =
+    IntVec (ix : Int) (iy : Int)
+    FloatVec (ix : Float) (iy : Float)
+
+-- STATUS(a0497523): PASS

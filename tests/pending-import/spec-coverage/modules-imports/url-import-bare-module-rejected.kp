@@ -8,4 +8,4 @@ module main
 import "https://example.com/lib" --!! E_IMPORT_ITEM_MALFORMED
 
 --! assertErrorCount 1
--- STATUS(a51e1bf): FAIL — the bare URL form is diagnosed only via the pinning gate (E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE), not rejected as an ill-formed bare module form
+-- STATUS(a0497523): FAIL — the bare URL form is diagnosed only via the pinning gate (E_URL_IMPORT_UNPINNED_IN_PACKAGE_MODE), not rejected as an ill-formed bare module form

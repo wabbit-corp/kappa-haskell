@@ -29,7 +29,7 @@ data BadImplicitDefault : Type =
 
 --! assertErrorCount 2
 
--- STATUS(a51e1bf): FAIL — the inout rejection works (E_QTT_INOUT_BINDER_
+-- STATUS(a0497523): FAIL — the inout rejection works (E_QTT_INOUT_BINDER_
 -- CONTEXT), but a default clause on an implicit constructor binder
 -- (@w : Nat = Zero) is accepted silently at the declaration (1 error
 -- instead of 2); the default is then ignored — a use site reports

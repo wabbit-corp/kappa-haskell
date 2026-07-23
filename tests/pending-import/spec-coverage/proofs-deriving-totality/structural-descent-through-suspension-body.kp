@@ -1,0 +1,31 @@
+-- §15.3/§15.11 × §16.2.2: a recursive call sitting inside a `thunk`/`lazy`
+-- suspension body still participates in termination checking, and a
+-- decreasing argument must still be CERTIFIED: §15.3's acceptance criterion
+-- quantifies over "every recursive call" after elaboration wherever it
+-- syntactically sits, and §15.2 makes acceptance with an explicit
+-- `decreases` clause mandatory for definitions satisfying §§15.3/15.4.
+-- The whole file must certify warning-free (no W_TERMINATION_UNVERIFIED):
+-- a suspension wrapper is not an opaque barrier that loses the descent.
+module main
+
+fThunk : List Int -> Int
+let fThunk xs decreases structural xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> force (thunk (fThunk rest))
+
+fLazy : List Int -> Int
+let fLazy xs decreases structural xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> force (lazy (fLazy rest))
+
+countdown : Int -> Int
+let countdown n decreases n =
+    if leInt n 0 then 0
+    else force (thunk (countdown (subInt n 1)))
+
+--! mode check
+--! assertNoErrors
+--! assertNoWarnings
+-- STATUS(a0497523): PASS

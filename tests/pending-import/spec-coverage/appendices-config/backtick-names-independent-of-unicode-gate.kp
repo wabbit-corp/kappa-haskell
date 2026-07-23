@@ -1,0 +1,22 @@
+--! mode check
+--! assertErrorCount 1
+--! assertType usesIt Int
+
+-- §2.1A / §5.1: backtick identifiers remain available while the
+-- unicode-names gate is INACTIVE — a backtick Unicode name can be both
+-- declared and referenced. And backticks are not a second namespace: a
+-- name declared with backticks contributes the same name keys as the
+-- corresponding unquoted identifier, so redeclaring it unquoted is a
+-- duplicate declaration.
+module main
+
+let `λ` = 42
+
+usesIt : Int
+let usesIt = `λ` + 1
+
+let `abc` = 1
+
+let abc = 2 --!! E_DUPLICATE_DECLARATION
+
+-- STATUS(a0497523): PASS

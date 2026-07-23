@@ -1,0 +1,71 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_arity/rule_arity.dl,
+--   tests/semantic/fact_arity/fact_arity.dl ("Mismatching arity of relation").
+-- Spec: §16.1 application (curried; portable alias E_APPLICATION_NON_CALLABLE
+--   when a non-function result is applied further); §10.1 ("valid partial
+--   application ... never default-completed" — positional constructor
+--   under-application is ordinary partial application); §3.2.4
+--   (family kappa.type.mismatch).
+-- Pins the Kappa reading of relation-arity errors: over-application of a
+-- FUNCTION applies a non-callable result; under-application produces a
+-- function value that fails to match the expected result type (positional
+-- constructor under-application is partial application, §10.1). Positional
+-- CONSTRUCTOR over-application supplies a positional count exceeding the
+-- telescope, which §3.2.10 places in family kappa.constructor.arity.
+
+--! mode check
+
+module main
+
+f1 : Int -> String
+let f1 n = "one"
+
+f2 : Int -> Int -> String
+let f2 a b = "two"
+
+f3 : Int -> Int -> Int -> String
+let f3 a b c = "three"
+
+-- POSITIVE: correct number of arguments.
+ok1 : String
+let ok1 = f1 1
+ok2 : String
+let ok2 = f2 1 2
+ok3 : String
+let ok3 = f3 1 2 3
+
+-- NEGATIVE: f1 over-applied — the String result is applied to 2.
+bad1 : String
+let bad1 = f1 1 2    --!! E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: f2 over-applied.
+bad2 : String
+let bad2 = f2 1 2 3    --!! E_APPLICATION_NON_CALLABLE
+
+-- NEGATIVE: f3 under-applied — the partial application has function type,
+-- which does not match the expected String.
+bad3 : String
+let bad3 = f3 1    --!! kappa.type.mismatch
+
+data Triple : Type =
+    MkTriple Int Int Int
+
+-- POSITIVE: saturated positional constructor application.
+t : Triple
+let t = MkTriple 1 2 3
+
+-- NEGATIVE: positional under-application is a partial application (§10.1);
+-- the function-typed value mismatches the expected Triple.
+badTriple : Triple
+let badTriple = MkTriple 1 2    --!! kappa.type.mismatch
+
+-- NEGATIVE: positional constructor over-application — supplied positional
+-- count exceeds the constructor telescope (§3.2.10).
+badTriple2 : Triple
+let badTriple2 = MkTriple 1 2 3 4    --!! kappa.constructor.arity
+
+--! assertDiagnostic error E_APPLICATION_NON_CALLABLE
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.constructor.arity
+--! assertErrorCount 5
+
+-- STATUS(a0497523): PASS

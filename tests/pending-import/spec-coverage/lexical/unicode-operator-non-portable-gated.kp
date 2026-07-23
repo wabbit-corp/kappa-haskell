@@ -15,4 +15,4 @@ infix left 60 (🐍) --!! E_UNICODE_NAME_PROFILE_VIOLATION
 (🐍) : Int -> Int -> Int
 let (🐍) x y = addInt x y
 
--- STATUS(a51e1bf): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)
+-- STATUS(a0497523): UNSUPPORTED — requires capability unicode-names (gate not provided by this implementation)

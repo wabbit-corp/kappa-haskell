@@ -25,4 +25,4 @@ let bad (@0 r : RecRow) (@_ : ContainsRec r buf Int) (rec : (name : String | r))
     let & b = rec.buf
     in consume rec --!! E_QTT_BORROW_OVERLAP
 
--- STATUS(a51e1bf): FAIL — the §11.3.1B intrinsic trait ContainsRec is not exposed (E_NAME_UNRESOLVED), so residual-field projection/borrow cannot be justified at all; the abstract-tail overlap check is unreachable.
+-- STATUS(a0497523): FAIL — the §11.3.1B intrinsic trait ContainsRec is not exposed (E_NAME_UNRESOLVED), so residual-field projection/borrow cannot be justified at all; the abstract-tail overlap check is unreachable.

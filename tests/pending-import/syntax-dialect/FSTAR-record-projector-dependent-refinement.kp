@@ -7,16 +7,16 @@
 --! mode check
 
 -- A record type where the second field's type depends on the first.
-type Container = (pred : Nat -> Type0, value : Nat)
+type Container : Type = (pred : Nat -> Type0, value : Nat)
 
 get_value : Container -> Nat
 let get_value c = c.value
 
 -- A more constrained record: second field type is a refinement involving the first.
-type SizedVec (A : Type0) = (size : Nat, vec : { n : Nat | n = size })
+type SizedVec (0 A : Type0) : Type = (size : Nat, vec : { n : Nat | n = size })
 
 -- Projecting `vec` must yield a value whose type mentions `size` from the record.
-get_vec_len : {A : Type0} -> (sv : SizedVec A) -> { n : Nat | n = sv.size }
+get_vec_len : forall (A : Type0). (sv : SizedVec A) -> { n : Nat | n = sv.size }
 let get_vec_len sv = sv.vec
 
 --! assertNoErrors

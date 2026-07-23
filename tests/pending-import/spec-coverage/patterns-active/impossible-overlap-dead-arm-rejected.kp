@@ -1,0 +1,29 @@
+-- §17.1.4 (L22027-22030): a branch body `impossible` is accepted ONLY via
+-- definitional equality, family-argument unification, or the §30.2.7
+-- structural inhabitance rules. Pattern-order overlap is not on that list:
+-- an arm that is dead solely because a preceding wildcard shadows it is NOT
+-- provably unreachable by the admissible proof methods, so claiming
+-- `impossible` there is a compile-time error (family kappa.pattern.unreachable
+-- per §3.2.10 covers branches "incorrectly claimed unreachable").
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_IMPOSSIBLE_REACHABLE
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+module main
+
+data Flag : Type =
+    On
+    Off
+
+-- NEGATIVE: the On arm never runs, but its fiber (Flag ~ On case) is
+-- inhabited; overlap-deadness is not an admissible unreachability proof.
+f : Flag -> Int
+let f flag =
+    match flag
+      case _ -> 0
+      case On -> impossible --!! E_IMPOSSIBLE_REACHABLE
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): PASS

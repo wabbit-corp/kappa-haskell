@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch [Aa]ffine|<=1|at most once|more than once|[Qq]uantity|[Cc]onsum
+
+-- §20.10.5 x §12.2.1: demands on outer lexical variables are multiplied by
+-- the cardinality of the current input pipeline; the rule applies to yield
+-- expressions. An affine (<=1) variable consumed in yield is legal under an
+-- Option source (cardinality QZeroOrOne: [0,1]*1 ⊑ <=1) but ill-formed under
+-- a list source (QZeroOrMore: the multiplied demand admits more than one
+-- consumption of t).
+module main
+
+data Tok : Type =
+    MkTok (n : Int)
+
+consumeTok : (1 t : Tok) -> Int
+let consumeTok t =
+    match t
+    case MkTok n -> n
+
+-- POSITIVE: QZeroOrOne pipeline; t is consumed at most once
+okOnce : (<=1 t : Tok) -> (opt : Option Int) -> List Int
+let okOnce t opt =
+    [
+        for x in opt
+        yield consumeTok t + x
+    ]
+
+-- NEGATIVE: QZeroOrMore pipeline; t may be consumed more than once
+badMany : (<=1 t : Tok) -> List Int
+let badMany t =
+    [
+        for x in [1, 2, 3]
+        yield consumeTok t + x --!! E_QTT_LINEAR_OVERUSE
+    ]
+
+-- STATUS(a0497523): FAIL — the negative is rejected correctly, but the positive is too: comprehension-body demands on outer lexical variables are blanket-multiplied to ω instead of by the pipeline cardinality (§20.10.5), so consuming t under a QZeroOrOne Option-source pipeline gets E_QTT_LINEAR_OVERUSE at line 26.

@@ -1,0 +1,62 @@
+--! mode check
+--! assertNoErrors
+
+-- Source issues: carp-lang/Carp#1064, #1065, #1395
+-- Spec: §12.3 (downward-only closures over borrows; region environments),
+--       §17.1 (match arms are independent scopes),
+--       §12.2.5 (per-arm discharge of loop/branch-local linear bindings)
+-- Carp bugs: match-ref arm allocations leaked (#1064), sibling match-refs
+-- confused liveness (#1065), match-ref inside a lambda mis-reported the
+-- binder as dead (#1395).  Portable Kappa obligations: each arm is its own
+-- scope; sibling matches on the same borrow do not interact; a closure over
+-- a borrowed scrutinee may match it when used downward.
+module main
+
+data State : Type =
+    Intro Int
+    | Outro Int
+
+data Buf : Type = Buf (n : Int)
+
+consumeBuf : (1 b : Buf) -> Int
+let consumeBuf (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+-- POSITIVE: a closure capturing the borrowed scrutinee matches it; the
+-- closure is applied downward (inside the borrow's region), so no escape.
+stateRead : (& s : State) -> Int
+let stateRead s =
+    let f (u : Unit) : Int =
+        match s
+        case Intro a -> a + 13
+        case Outro b -> b + 13
+    f ()
+
+-- POSITIVE: two separate matches on the same borrowed scrutinee do not
+-- interact; the second match's binders are unconstrained by the first's.
+twoMatches : (& s : State) -> Int
+let twoMatches s =
+    let a =
+        match s
+        case Intro _ -> 1
+        case Outro _ -> 2
+    let b =
+        match s
+        case Intro _ -> 3
+        case Outro _ -> 4
+    a + b
+
+-- POSITIVE: a linear allocation inside one arm is discharged within that
+-- arm; siblings start with a clean ownership state.
+allocInsideArm : (& s : State) -> Int
+let allocInsideArm s =
+    match s
+    case Intro _ ->
+        let 1 t = Buf 7
+        consumeBuf t
+    case Outro _ ->
+        let 1 t = Buf 9
+        consumeBuf t
+
+-- STATUS(a0497523): PASS

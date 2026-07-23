@@ -1,0 +1,6 @@
+-- Support module: a trait exporting the term member `encode` (§14.2.1
+-- gives each term member an overloaded term name in the defining module).
+module ser
+
+trait Serializer (a : Type) =
+    encode : a -> String

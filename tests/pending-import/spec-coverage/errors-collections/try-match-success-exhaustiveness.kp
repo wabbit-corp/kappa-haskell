@@ -1,0 +1,27 @@
+-- §19.3: `try match` desugars to a monadic bind plus `match` on the success
+-- value, so success-side `case` arms get ordinary §17.1 match exhaustiveness
+-- checking. Arms that miss a constructor of the success type are rejected
+-- exactly as a plain non-exhaustive match.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
+module main
+
+opt : IO String (Option Int)
+let opt = pure (Some 1)
+
+-- POSITIVE: exhaustive case arms elaborate cleanly.
+good : IO String Int
+let good = do
+    try match opt
+      case Some n -> pure n
+      case None -> pure 0
+      except _ -> pure 9
+
+-- NEGATIVE: the success side misses the None constructor.
+bad : IO String Int
+let bad = do
+    try match opt --!! E_PATTERN_NON_EXHAUSTIVE
+      case Some n -> pure n
+      except _ -> pure 9
+-- STATUS(a0497523): PASS

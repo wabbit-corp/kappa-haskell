@@ -1,0 +1,32 @@
+-- Source issues: inko#707, docs/pattern-matching
+-- Spec: §17.1.3 (reachability), §3.2.10 (pattern diagnostics).
+-- Inko: a wildcard pattern (_) covers all remaining cases. Any arm that
+-- appears after a wildcard is unreachable and is flagged as an error.
+
+--! mode check
+
+data Shape : Type =
+    Circle
+    Square
+    Triangle
+
+-- POSITIVE: wildcard as the final arm.
+classifyOk : Shape -> String
+let classifyOk s =
+    match s
+    case Circle -> "circle"
+    case Square -> "square"
+    case _      -> "other"
+
+
+-- NEGATIVE: Triangle appears after the wildcard _ which already covers it.
+classifyBad : Shape -> String
+let classifyBad s =
+    match s
+    case Circle   -> "circle"
+    case _        -> "other"
+    case Triangle -> "triangle"   --!! kappa.pattern.unreachable
+
+--! assertDiagnosticFamily error kappa.pattern.unreachable
+
+-- STATUS(a0497523): FAIL (unreachable arm after wildcard is not diagnosed)

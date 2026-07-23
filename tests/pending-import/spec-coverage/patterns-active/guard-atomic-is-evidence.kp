@@ -1,0 +1,35 @@
+-- §17.1.9 × §16.4.1: a guard is a flow-sensitive condition position, and
+-- the body is checked under the guard-success evidence. When the guard is
+-- the ATOMIC test `q is Box` (no &&/||/not — so this does not depend on
+-- the §16.4.2 lowering pinned as failing in
+-- spec-coverage/patterns-active/guard-flow-typing-boolean-operators.kp),
+-- the body holds HasCtor q ⟨Box⟩ and may project q.value and run a
+-- narrowed match on q.
+--! mode check
+--! assertNoErrors
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE per spec: projection licensed by the atomic guard's evidence.
+guardProj : Payload -> Payload -> Int
+let guardProj p q =
+    match p
+    case Box w if q is Box -> w + q.value
+    case _ -> 0
+
+-- POSITIVE per spec: nested match omission licensed by the same evidence.
+guardMatch : Payload -> Payload -> Int
+let guardMatch p q =
+    match p
+    case Box w if q is Box ->
+        match q
+        case Box x -> w + x
+    case _ -> 0
+
+-- STATUS(a0497523): FAIL — E_UNRESOLVED_MEMBER on q.value and
+-- E_PATTERN_NON_EXHAUSTIVE on the nested match: guard-success constructor
+-- evidence is not installed even for atomic is-test guards, so the gap is
+-- broader than the boolean-operator lowering already pinned.

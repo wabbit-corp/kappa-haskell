@@ -1,0 +1,13 @@
+module lib
+
+opaque type Id = Int
+
+trait Tag (a : Type) =
+    tag : a -> Int
+
+-- Declared at the ABSTRACT spelling. Inside lib, `Id` is transparent.
+instance Tag Id =
+    let tag n = n + 1
+
+mkId : Int -> Id
+let mkId n = n

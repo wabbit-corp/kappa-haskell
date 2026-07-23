@@ -1,0 +1,6 @@
+module b
+
+-- §8.4: "Re-export module with alias" — export M as A is a valid export
+-- form giving downstream users qualified access. It introduces the same
+-- module dependency as the corresponding import would.
+export a as util

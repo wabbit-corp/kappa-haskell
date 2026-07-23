@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §24.2: sameDynRep, checkedCastWith, and checkedCast are pure
+-- operations. Their results are plain Result/Dec values (no IO in any
+-- signature, §24.9), so packing, casting, and representation comparison
+-- must all type-check inside ordinary pure function bodies.
+module main
+
+import std.gradual.*
+
+packPure : forall (@0 a : Type). DynRep a -> a -> Dyn
+let packPure rep x = toDynWith rep x
+
+castPure : forall (@0 a : Type). DynRep a -> Dyn -> Result CastBlame a
+let castPure rep d = checkedCastWith rep d
+
+-- Full pure round-trip: no effect wrapper anywhere.
+reround : forall (@0 a : Type). DynRep a -> a -> Result CastBlame a
+let reround rep x = checkedCastWith rep (toDynWith rep x)
+
+comparePure :
+    forall (@0 a : Type) (@0 b : Type).
+    DynRep a -> DynRep b -> Bool
+let comparePure ra rb =
+    let evidence = sameDynRep ra rb in
+    True
+
+-- STATUS(a0497523): PASS

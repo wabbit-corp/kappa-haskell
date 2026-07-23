@@ -20,7 +20,7 @@ data Tok : Type =
 -- NEGATIVE: user-defined IsTrait instances are forbidden (L14893).
 instance IsTrait Tok --!! E_INSTANCE_HEAD
 
--- STATUS(a51e1bf): FAIL — the intrinsic __isTraitWitness solves IsTrait t
+-- STATUS(a0497523): FAIL — the intrinsic __isTraitWitness solves IsTrait t
 -- at ANY type (Int, List Int included), so both unsolved-implicit
 -- expectations are missed (soundness gap vs §14.4); only the
 -- instance-head rejection fires (1 of the 3 expected errors).

@@ -1,0 +1,73 @@
+-- Source: granule-project/granule PR #157, #180, #181 (Sessions);
+--         tests/cases/positive/concurrent/session.gr
+-- Spec: §10.1 with the §10 note (Spec.md L9219: indexed data plus
+--       quantity-1 arguments encode typestate and session-style
+--       protocols), §12.2 (linear binders), §12.2.5, §9.4, §3.2.5
+-- Session-typed channels are linear: each protocol step consumes the
+-- channel and yields the continuation channel. Dropping an unclosed
+-- channel violates the [1,1] lower bound
+-- (kappa.quantity.positive-lower-bound — re-derived from the original's
+-- kappa.quantity.unsatisfied guess per §12.2.5); consuming the same
+-- channel twice exceeds the linear upper bound
+-- (kappa.quantity.unsatisfied — re-derived from the original's
+-- kappa.path.consumed guess: binder overuse is the unsatisfied family,
+-- same convention as
+-- tests/conformance/imported-anon/PONY-linear-consume-then-reuse.kp).
+
+module test
+
+--! mode check
+
+-- Phantom protocol indices.
+data SEnd : Type
+
+data Send (0 a : Type) (0 s : Type) : Type
+
+data Recv (0 a : Type) (0 s : Type) : Type
+
+-- The channel itself is abstract (§9.4).
+expect type LChan (s : Type)
+
+expect term send :
+    forall (a : Type) (s : Type).
+    (1 c : LChan (Send a s)) -> (1 x : a) -> LChan s
+
+expect term recv :
+    forall (a : Type) (s : Type).
+    (1 c : LChan (Recv a s)) -> (a, LChan s)
+
+expect term close : (1 c : LChan SEnd) -> Unit
+
+data Msg : Type =
+    MkMsg
+
+-- POSITIVE: send one Msg, then close the continuation channel.
+sender : (1 c : LChan (Send Msg SEnd)) -> Unit
+let sender c =
+    let c2 = send c MkMsg
+    close c2
+
+--! assertType sender ((1 c : LChan (Send Msg SEnd)) -> Unit)
+
+-- POSITIVE: receive one Msg, then close the continuation channel.
+receiver : (1 c : LChan (Recv Msg SEnd)) -> Unit
+let receiver c =
+    let (m, c2) = recv c
+    close c2
+
+-- NEGATIVE: forget to close the channel (silent drop of a 1-binder).
+badNoClose : (1 c : LChan SEnd) -> Unit
+let badNoClose c = ()         --!! kappa.quantity.positive-lower-bound
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- NEGATIVE: use the same channel twice (linearity violation).
+badReuse : (1 c : LChan (Send Msg SEnd)) -> Unit
+let badReuse c =
+    let c2 = send c MkMsg
+    let c3 = send c MkMsg     --!! kappa.quantity.unsatisfied
+    let u1 = close c2
+    close c3
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+-- STATUS(a0497523): PASS

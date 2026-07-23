@@ -1,0 +1,29 @@
+-- §20.3.1/§20.5: bracket disambiguation and the ':' rule. In a map
+-- comprehension `yield k : v` is ALWAYS key/value — ascription needs parens
+-- `(x : Int)`. A literal whose first element is a would-be comprehension
+-- starter (`yield`, `for`) uses the escape hatch: parens or backticks.
+--! mode check
+--! assertNoErrors
+--! assertType kv Map Int Int
+module main
+
+-- ':' after yield in a map comprehension is key/value (x+1 is a VALUE, and
+-- would be nonsense as a type).
+kv : Map Int Int
+let kv = { for x in [1, 2], yield x : x + 1 }
+
+-- parenthesised ascriptions on both key and value elaborate unambiguously.
+kvAscribed : Map Int String
+let kvAscribed = { for x in [1, 2], yield (x : Int) : ("v" : String) }
+
+-- §20.3.1 escape hatch: an identifier spelled like a comprehension starter
+-- can head a literal when parenthesised or backticked.
+yield : Int
+let yield = 1
+
+lit : List Int
+let lit = [ (yield), 2 ]
+
+litTick : List Int
+let litTick = [ `yield`, 2 ]
+-- STATUS(a0497523): PASS

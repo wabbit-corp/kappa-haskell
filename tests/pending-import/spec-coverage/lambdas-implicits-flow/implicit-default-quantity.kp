@@ -1,0 +1,41 @@
+-- §16.3 (implicit binder default quantity): the default is decided by the
+-- classification of T alone — 0 if T is compile-time (§11.1.6.1), else ω.
+-- Trait evidence types are ordinary types, so (@ev : Eq Int) defaults to ω
+-- and may flow into explicit ω parameters; an explicit @0 override makes a
+-- computationally relevant use of the binder ill-formed.
+module main
+
+data Env : Type =
+    MkEnv Int
+
+useE : (ω e : Env) -> Int
+let useE e = 0
+
+eqBoth : (ω d : Eq Int) -> Int -> Int -> Bool
+let eqBoth d a b = a == b
+
+-- POSITIVE: trait evidence implicit defaults to ω, not 0, despite the
+-- dictionary being erasable — usable at an unrestricted explicit param.
+evOmega : (@ev : Eq Int) -> Bool
+let evOmega (@ev : Eq Int) : Bool = eqBoth ev 1 1
+
+-- POSITIVE: a runtime data type is not compile-time, so the implicit
+-- defaults to ω and the binder may be returned (a relevant use).
+envOmega : (@env : Env) -> Int
+let envOmega (@env : Env) : Int = useE env
+
+-- POSITIVE: Type is compile-time (§11.1.6.1), so (@t : Type) defaults
+-- to 0; type-annotation uses are the only uses it needs.
+tyDefaultErased : (@t : Type) -> (x : t) -> t
+let tyDefaultErased (@t : Type) (x : t) : t = (x : t)
+
+-- NEGATIVE: an explicit @0 override forbids relevant use of the binder,
+-- pinning that the ω behavior above comes from the default, not from
+-- ignoring quantities on implicits.
+zeroOverride : (@0 n : Int) -> Int
+let zeroOverride (@0 n : Int) : Int = n --!! E_QTT_ERASED_RUNTIME_USE
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_ERASED_RUNTIME_USE
+-- STATUS(a0497523): PASS

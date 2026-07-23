@@ -1,0 +1,4 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+-- STATUS(a0497523): PASS — supertrait projection from local implicit evidence works cross-module at an opaque type

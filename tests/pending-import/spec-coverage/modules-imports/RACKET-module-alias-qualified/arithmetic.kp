@@ -1,0 +1,10 @@
+module arithmetic
+
+plus : Int -> Int -> Int
+let plus x y = x + y
+
+minus : Int -> Int -> Int
+let minus x y = x - y
+
+times : Int -> Int -> Int
+let times x y = x * y

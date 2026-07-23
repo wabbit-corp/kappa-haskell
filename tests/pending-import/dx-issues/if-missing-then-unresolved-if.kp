@@ -1,0 +1,19 @@
+-- DX EXPECTATION (not necessarily spec-required): `if` with a missing
+-- `then` should fail with a parse diagnostic that names `then` at the
+-- point where it was expected (§16.4 conditionals are if/then/else).
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): because `if` is treated as a soft
+-- identifier once the `then` fails to appear, the definition misparses as
+-- an application headed by a NAME `if`, yielding a suppressed
+-- E_NAME_UNRESOLVED "unresolved name 'if' (not in scope)" under
+-- E_RECOVERY_DECLARATION_SKIPPED "unexpected 'else' at start of
+-- declaration".  Telling a beginner that `if` is an unresolved name is
+-- maximally confusing; neither message mentions `then`.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch 'then'|missing.then|expected.then
+module main
+
+r : Int
+let r = if True 1 else 2
+-- STATUS(a0497523): FAIL — E_RECOVERY_DECLARATION_SKIPPED "unexpected 'else' at start of declaration" with suppressed E_NAME_UNRESOLVED "unresolved name 'if'"; no message mentions 'then'

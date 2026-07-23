@@ -1,0 +1,30 @@
+-- §20.4/§20.10.2: the borrowed generator forms. `for & x in xs` converts via
+-- BorrowItemsIntoQuery and binds borrowed views of the items; `for x in &xs`
+-- converts via BorrowSourceIntoQuery and binds ORDINARY items under the
+-- source's borrow region; `for? & pat in xs` keeps matching borrowed items
+-- (dropping a non-matching borrowed item is always permitted).
+--! mode run
+--! assertNoErrors
+--! assertEval borrowedSum 6
+--! assertEval sourceSum 6
+--! assertEval borrowedFiltered 4
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+borrowedSum : Int
+let borrowedSum =
+    sumList [ for & x in [1, 2, 3], yield x ]
+
+sourceSum : Int
+let sourceSum =
+    sumList [ for x in &[1, 2, 3], yield x ]
+
+borrowedFiltered : Int
+let borrowedFiltered =
+    sumList [ for? & Some x in [Some 1, None, Some 3], yield x ]
+-- STATUS(a0497523): PASS

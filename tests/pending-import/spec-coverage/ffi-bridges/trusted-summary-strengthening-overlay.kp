@@ -1,0 +1,54 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.4 + §26.1.5/§26.1.5.1 (conservative raw surface, overlay
+-- strengthening): the worked example's shapes must elaborate — a raw binding
+-- conservatively typed IO HostError (Option RawPtr) (nullability unknown =>
+-- Option; effects unproven => effectful, §26.1.4), and a refined overlay that
+-- strengthens it to IO UserError (Option UserHandle) by implementing the
+-- documented error-translation and nullability contract in Kappa source
+-- (§26.1.5: overlay must make the translation contract explicit).
+module main
+
+import std.ffi.(type RawPtr)
+import std.ffi.c.(type CInt)
+
+data HostError : Type =
+    HostErrno (code : CInt)
+
+-- Raw surface (§26.1.2: ordinary Kappa surface syntax). Purity is unproven,
+-- so the declaration is effectful; nullability is unknown, so the pointer
+-- result is Option RawPtr, never bare RawPtr (§26.1.4, §26.2).
+find_user_raw : CInt -> IO HostError (Option RawPtr)
+let find_user_raw _ = ioPure None
+
+-- Refined overlay (§26.1.5.1). The trusted contract implemented here:
+--   nullability: null result means user not found
+--   ownership:   non-null result wraps a live handle
+--   errors:      every host errno maps to a typed UserError constructor
+opaque data UserHandle : Type =
+    MkUserHandle (ptr : RawPtr)
+
+data UserError : Type =
+    OutOfMemory
+    StorageFailure
+
+translateHost : HostError -> UserError
+let translateHost e = match e
+    case HostErrno _ -> StorageFailure
+
+wrapFound : Option RawPtr -> Option UserHandle
+let wrapFound raw = match raw
+    case None -> None
+    case Some p -> Some (MkUserHandle p)
+
+findUserTrusted : CInt -> IO HostError (Option UserHandle)
+let findUserTrusted uid = do
+    let raw <- find_user_raw uid
+    ioPure (wrapFound raw)
+
+findUser : CInt -> IO UserError (Option UserHandle)
+let findUser uid =
+    catchIO (findUserTrusted uid) (\hostErr -> throwIO (translateHost hostErr))
+
+-- STATUS(a0497523): PASS

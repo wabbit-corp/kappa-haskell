@@ -34,3 +34,4 @@ let main = do
     let r <- catchIO (sandbox (unsandbox sealed)) classify
     let _ = r
     ioPure ()
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_UNEXPECTED_INDENTATION "unexpected indentation: no block introducer or continuation context is active; consider a comma… [was PASS in an earlier STATUS line]

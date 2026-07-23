@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! allow_clarify
+--! assertNoErrors
+--! assertEval second 2

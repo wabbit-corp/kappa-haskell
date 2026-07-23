@@ -1,0 +1,22 @@
+-- §19.2/§18.8.3: a return propagating through a try does not get intercepted
+-- by except handlers, but the finally clause still runs during unwinding, and
+-- items after the return in the try body are never reached.
+--! mode run
+--! assertNoErrors
+--! assertStdout "start\nfin\ndone\n"
+module main
+
+early : UIO Unit
+let early = do
+    try do
+        printlnString "start"
+        return ()
+        printlnString "unreachable"
+    finally ->
+        printlnString "fin"
+
+main : UIO Unit
+let main = do
+    early
+    printlnString "done"
+-- STATUS(a0497523): PASS

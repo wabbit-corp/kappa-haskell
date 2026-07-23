@@ -38,4 +38,4 @@ let projStatic (@d : Keyed Int) k = k
 badBareStatic : Type
 let badBareStatic = Key --!! E_NAME_UNRESOLVED
 
--- STATUS(a51e1bf): FAIL — the bare static-member use IS rejected, but as E_TYPE_EQUALITY_MISMATCH ("type mismatch"), not as an unresolved name: the compiler resolves bare `Key` to some term-level symbol instead of inducing no overloaded name at all. All positive halves check clean.
+-- STATUS(a0497523): FAIL — the bare static-member use IS rejected, but as E_TYPE_EQUALITY_MISMATCH ("type mismatch"), not as an unresolved name: the compiler resolves bare `Key` to some term-level symbol instead of inducing no overloaded name at all. All positive halves check clean.

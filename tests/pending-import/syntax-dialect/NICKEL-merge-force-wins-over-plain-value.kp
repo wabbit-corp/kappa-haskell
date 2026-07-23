@@ -14,10 +14,10 @@ module test
 -- POSITIVE: forced value wins over plain value.
 -- `lock.version | force = "1.0"` beats `project.version = "2.0"`.
 lockConfig : (version : String | force)
-let lockConfig = (version = "1.0")
+let lockConfig = (version = "1.0",)
 
 projectConfig : (version : String)
-let projectConfig = (version = "2.0")
+let projectConfig = (version = "2.0",)
 
 merged1 : (version : String)
 let merged1 = lockConfig & projectConfig
@@ -41,13 +41,13 @@ let resolvedVersion2 = merged2.version
 
 -- POSITIVE: forced value with numeric priority: force > priority 100 > priority 0.
 highPriority : (x : Number | priority 100)
-let highPriority = (x = 42)
+let highPriority = (x = 42,)
 
 forcedX : (x : Number | force)
-let forcedX = (x = 1)
+let forcedX = (x = 1,)
 
 plainX : (x : Number)
-let plainX = (x = 99)
+let plainX = (x = 99,)
 
 -- force beats both priority 100 and plain.
 forceVsHigh : (x : Number)
@@ -60,10 +60,10 @@ let forceResult = forceVsHigh.x
 
 -- NEGATIVE: two forced fields with different values cannot be merged.
 force1 : (x : Number | force)
-let force1 = (x = 1)
+let force1 = (x = 1,)
 
 force2 : (x : Number | force)
-let force2 = (x = 2)
+let force2 = (x = 2,)
 
 forceConflict : (x : Number)
 let forceConflict = force1 & force2      --!! kappa.type.mismatch
@@ -72,10 +72,10 @@ let forceConflict = force1 & force2      --!! kappa.type.mismatch
 
 -- POSITIVE: two forced fields with the same value CAN be merged (equal values are idempotent).
 forceEq1 : (x : Number | force)
-let forceEq1 = (x = 7)
+let forceEq1 = (x = 7,)
 
 forceEq2 : (x : Number | force)
-let forceEq2 = (x = 7)
+let forceEq2 = (x = 7,)
 
 forceEqMerge : (x : Number)
 let forceEqMerge = forceEq1 & forceEq2

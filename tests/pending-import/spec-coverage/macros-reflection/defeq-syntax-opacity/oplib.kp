@@ -1,0 +1,6 @@
+module oplib
+
+-- §8.5.2: an opaque term definition's equation is available for
+-- definitional equality only inside its defining module.
+public secret : Integer
+public opaque let secret = 7

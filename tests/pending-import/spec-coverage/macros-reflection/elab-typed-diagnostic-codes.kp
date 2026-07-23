@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §21.9: diagnostic identity values available to Elab are TYPED values,
+-- not strings — `Elab` code MUST NOT fabricate diagnostic code strings.
+-- failElabWith's `code` parameter has type DiagnosticCode, so passing a
+-- bare String literal where DiagnosticCode is required MUST be an
+-- ordinary type error.
+module main
+
+fabricated : Elab Unit
+let fabricated =
+    failElabWith "FAKE-CODE" "fabricated string code" [] --!! kappa.type.mismatch
+-- STATUS(a0497523): FAIL — compiles cleanly: the implementation's failElabWith takes a String code, so the fabricated string is accepted instead of failing the mandated DiagnosticCode type check

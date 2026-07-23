@@ -1,0 +1,45 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "note:10\nnote:50\nnote:90\nresult:7\n"
+
+-- §32.2.13 / §32.2.20: the captured continuation runs from the operation
+-- site to the nearest matching handler — it includes the do-scope frames of
+-- that segment (inner defer, note 10, unwound at abandonment) but NOT
+-- frames outside the handler (outer defer, note 90, which stays pending
+-- until the outer do-scope itself exits, after note 50). A wrong boundary
+-- would emit note 90 before note 50.
+module main
+
+effect Log =
+    1 note : Int -> Unit
+
+effect Abort =
+    0 stop : Unit -> Int
+
+inner : Eff <[Log : Log, Abort : Abort]> Int
+let inner = do
+    defer (Log.note 10)
+    let _ <- Abort.stop ()
+    pure 1
+
+handledInner : Eff <[Log : Log]> Int
+let handledInner =
+    deep handle Abort inner with
+        case return x -> pure x
+        case stop _ k -> pure 7
+
+outer : Eff <[Log : Log]> Int
+let outer = do
+    defer (Log.note 90)
+    let r <- handledInner
+    let _ <- Log.note 50
+    pure r
+
+main : UIO Unit
+let main =
+    deep handle Log outer with
+        case return r -> printlnString ("result:" ++ showInt r)
+        case note n k -> do
+            printlnString ("note:" ++ showInt n)
+            k ()
+-- STATUS(a0497523): FAIL — prints "note:90\nnote:10\nnote:50\nresult:7": an Eff do-block defer whose action performs an effect runs EAGERLY at registration time (probed separately: with no abandonment at all, "defer (Log.note 90)" still fires before a later Log.note 50), so exit-action stacks never reach the captured segment and the boundary rule cannot be exercised.

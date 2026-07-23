@@ -16,4 +16,4 @@ setLen :
 let setLen (@0 r : RecRow) (@_ : StableUnderRecChange r len) (rec : (len : Int | r)) (n : Int) : (len : Int | r) =
     rec.{ len = n }
 
--- STATUS(a51e1bf): FAIL — the §11.3.1B intrinsic trait StableUnderRecChange is not exposed (E_NAME_UNRESOLVED); the spec's own setLen example cannot be written.
+-- STATUS(a0497523): FAIL — the §11.3.1B intrinsic trait StableUnderRecChange is not exposed (E_NAME_UNRESOLVED); the spec's own setLen example cannot be written.

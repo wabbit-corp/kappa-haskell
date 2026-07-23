@@ -1,0 +1,24 @@
+-- DX EXPECTATION (not necessarily spec-required): a monadic splice inside a
+-- comprehension clause whose operand mentions a ROW BINDER should produce a
+-- targeted diagnostic about the splice/comprehension boundary (per-row
+-- effects are not part of the §20.10 pure pipeline model, and §18.3.1's
+-- Lift_m has no comprehension rule).
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the compiler hoists the splice out of
+-- the comprehension to the enclosing do-item, where the row binder is not
+-- in scope, and reports plain E_NAME_UNRESOLVED on 'x' — with the absurd
+-- suggestion/fix "did you mean '%'?" — even though `x` is visibly bound by
+-- the enclosing `for x in ...` clause two tokens to the left. The user gets
+-- no hint that `!` is the problem.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch splice|comprehension|!
+
+echoInt : Int -> UIO Int
+let echoInt = \n -> ioPure n
+
+main : UIO Unit
+let main = do
+    let ys = [ for x in [1, 2, 3], yield !(echoInt x) ]
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED "unresolved name 'x'" with help "did you mean '%'?" and an auto-applicable replace-x-with-% fix; no mention of the splice or comprehension boundary.

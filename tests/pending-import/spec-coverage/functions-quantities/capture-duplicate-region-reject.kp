@@ -14,4 +14,4 @@ let badDup (@0 s : Region) (&[s] x : Box) : ((Unit -> Int) captures (s, s)) =
 
 --! mode check
 --! assertErrorCount 1
--- STATUS(a51e1bf): FAIL — the compiler accepts `captures (s, s)` (0 errors); the §12.3.1 duplicate-region compile-time error is not implemented.
+-- STATUS(a0497523): FAIL — the compiler accepts `captures (s, s)` (0 errors); the §12.3.1 duplicate-region compile-time error is not implemented.

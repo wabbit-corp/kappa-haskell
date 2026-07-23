@@ -1,0 +1,33 @@
+-- Source: Racket PR #2843 (expander: improve error reporting of conflicts during require)
+-- Spec: §8.3/§7.1 (colliding wildcard imports make a use-site ambiguous),
+--       §3.2.2 (kappa.name.ambiguous)
+-- NOTE: overlaps with tests/conformance/modules-imported/modules-names-negative-ambiguous-imported-ordinary-name
+--
+-- Pins: when two wildcard-imported modules both export `common`, an
+-- unqualified use of `common` is ambiguous; names unique to one module stay
+-- unambiguous; explicit module qualification disambiguates.
+module importer
+import alpha.*
+import beta.*
+import alpha
+import beta
+
+-- POSITIVE: names unique to each module are unambiguous.
+fromAlpha : Int
+let fromAlpha = onlyInAlpha
+
+fromBeta : Int
+let fromBeta = onlyInBeta
+
+-- NEGATIVE: `common` is exported by both alpha and beta; the wildcard imports
+-- collide at this use site.
+badCommon : Int
+let badCommon = common    --!! E_NAME_AMBIGUOUS
+
+-- POSITIVE: qualification resolves the ambiguity.
+resolvedAlpha : Int
+let resolvedAlpha = alpha.common
+
+resolvedBeta : Int
+let resolvedBeta = beta.common
+-- STATUS(a0497523): PASS (whole suite)

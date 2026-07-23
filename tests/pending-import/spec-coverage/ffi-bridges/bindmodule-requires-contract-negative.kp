@@ -1,0 +1,43 @@
+--! mode check
+
+-- §26.1.11 + §26.1.12: a runtime bridge bind MUST be checked and enforced by
+-- an explicit BridgeContract surface value; the erased type argument
+-- `surface` alone is never sufficient. In this implementation the contract is
+-- supplied through the BridgeBindable instance, so a bind for a surface with
+-- no such instance must be rejected as an unsolved implicit, never accepted
+-- on the strength of the erased @-argument.
+module main
+
+import std.bridge.(trait BridgeBindable, trait BridgeHandle, term bindModule)
+import std.bridge.(type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure, type BridgeOrigin, ctor MkBridgeOrigin)
+
+data StubHandle : Type =
+    MkStubHandle
+
+instance BridgeHandle StubHandle =
+    let bridgeOrigin h = ioPure (MkBridgeOrigin "stub-runtime")
+    let bridgeFailure f = "bridge failure"
+
+type Contracted (r : Region) : Type =
+    (ping : Unit -> IO BridgeFailure Unit)
+
+instance BridgeBindable Contracted =
+    let bridgeContract = MkBridgeContract "contracted surface"
+
+-- POSITIVE: with a BridgeBindable-supplied contract the bind elaborates.
+bindContracted : forall (r : Region). IO BridgeFailure (Contracted r)
+let bindContracted = bindModule @Contracted MkStubHandle "contracted"
+
+-- NEGATIVE: no BridgeBindable instance exists for this (structurally
+-- distinct) surface, so no contract can be supplied; the bind must not
+-- typecheck.
+type Uncontracted (r : Region) : Type =
+    (peek : Unit -> IO BridgeFailure Int)
+
+bindUncontracted : forall (r : Region). IO BridgeFailure (Uncontracted r)
+let bindUncontracted = bindModule @Uncontracted MkStubHandle "uncontracted"   --!! kappa.implicit.unsolved
+
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- STATUS(a0497523): PASS

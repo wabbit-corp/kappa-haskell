@@ -1,0 +1,30 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_HANDLER_RETURN_MISSING, E_HANDLER_RETURN_DUPLICATE
+
+-- §18.1.21: a handler requires EXACTLY ONE return clause — a handler
+-- with no `case return` is rejected, and a handler with two `case
+-- return` clauses is rejected.
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp = Ask.ask ()
+
+noReturn : Eff <[ ]> Int
+let noReturn =
+    deep handle Ask comp with --!! E_HANDLER_RETURN_MISSING
+        case ask _ k -> k 1
+
+twoReturns : Eff <[ ]> Int
+let twoReturns =
+    deep handle Ask comp with
+        case return x -> pure x
+        case return y -> pure y --!! E_HANDLER_RETURN_DUPLICATE
+        case ask _ k -> k 1
+
+r : Int
+let r = 0
+-- STATUS(a0497523): PASS

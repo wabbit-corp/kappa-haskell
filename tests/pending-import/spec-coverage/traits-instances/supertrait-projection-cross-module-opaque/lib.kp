@@ -1,0 +1,19 @@
+module lib
+
+opaque data Handle : Type =
+    MkHandle Int
+
+mkHandle : Int -> Handle
+let mkHandle n = MkHandle n
+
+trait Base (a : Type) =
+    baseVal : a -> Int
+
+trait Base a => Extra (a : Type) =
+    extraVal : a -> Int
+
+instance Base Handle =
+    let baseVal h = match h case MkHandle n -> n
+
+instance Extra Handle =
+    let extraVal h = baseVal h + 1

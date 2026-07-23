@@ -1,0 +1,36 @@
+-- §17.1.2: "In a constructor branch of match, the branch-local environment
+-- includes all family-argument equalities forced by the matched constructor
+-- result type. ... These equalities participate in definitional equality,
+-- reachability, and implicit resolution within the refined branch."
+-- §17.1.4: `impossible` is accepted when family-argument unification proves
+-- the case unreachable. Two scrutinees share the abstract index n: the
+-- outer Zero branch forces n = Z, so the inner Succ arm (forcing n = S m)
+-- is a no-confusion contradiction and MUST accept `impossible`.
+--! mode check
+--! assertNoErrors
+module main
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- POSITIVE per spec: contradictory indices across two nested matches.
+sameIndex : Natural n -> Natural n -> Int
+let sameIndex v w =
+    match v
+    case Zero ->
+        match w
+        case Zero -> 0
+        case Succ p -> impossible
+    case Succ p -> 1
+
+-- STATUS(a0497523): FAIL — E_IMPOSSIBLE_REACHABLE on the inner Succ arm:
+-- the n = Z equality learned from the outer Zero branch does not reach the
+-- inner match's reachability check (same root as the known abstract-index
+-- definitional-equality gap pinned in
+-- spec-coverage/patterns-active/gadt-branch-family-refinement.kp, here
+-- manifesting on the reachability side across two scrutinees).

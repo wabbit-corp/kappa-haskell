@@ -5,4 +5,4 @@ module mid
 export xlib.(type Rose(..) as Tree) --!! E_IMPORT_ITEM_MALFORMED
 
 --! assertErrorCount 1
--- STATUS(a51e1bf): FAIL — export items accept ctorAll+alias without diagnostic (the import side rejects the same combination)
+-- STATUS(a0497523): FAIL — export items accept ctorAll+alias without diagnostic (the import side rejects the same combination)

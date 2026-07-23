@@ -1,0 +1,35 @@
+-- §16.2.2 × §12.2 (interval multiplication for suspension demand), corners
+-- not covered by tests/conformance/qtt/borrow-qtt-020-* (which pin >=1
+-- forced-once vs unforced): (a) a linear (1) capture forced TWICE
+-- overconsumes — [2,2]·[1,1] = [2,2] exceeds quantity 1; (b) exactly one
+-- force of a linear capture is exact and accepted; (c) forcing only on one
+-- branch of an `if` leaves a >=1 lower bound undischarged — the closure
+-- demand interval [0,1] multiplies the body demand [1,1] to lower bound 0.
+module main
+
+consume : (1 x : Int) -> Int
+let consume (1 x : Int) : Int = x
+
+strictId : (>=1 x : Int) -> Int
+let strictId (>=1 x : Int) : Int = x
+
+doubleForce : (1 x : Int) -> Int
+let doubleForce (1 x : Int) : Int =
+    let t = thunk (consume x)           --!! E_QTT_LINEAR_OVERUSE
+    addInt (force t) (force t)
+
+singleForce : (1 x : Int) -> Int
+let singleForce (1 x : Int) : Int =
+    let t = thunk (consume x)
+    force t
+
+branchForce : Bool -> (>=1 x : Int) -> Int
+let branchForce b (>=1 x : Int) : Int = --!! E_QTT_LINEAR_DROP
+    let t = thunk (strictId x)
+    if b then force t else 0
+
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_QTT_LINEAR_OVERUSE
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): PASS

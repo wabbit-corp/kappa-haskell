@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticCodes E_NAME_UNRESOLVED, E_NAME_UNRESOLVED
+
+-- §6.1.6 × §17.2.1: `12zz` is one numericLiteral token (literal +
+-- identifier suffix). The suffix resolution rules are unconditional:
+-- "The suffix identifier MUST resolve to a term in scope at the use
+-- site" and "If the suffix identifier is not in scope, compilation
+-- fails with a compile-time error that identifies the missing suffix
+-- name." Nothing exempts pattern position — §17.2.1's literal pattern
+-- form covers numeric literals, and a suffixed numeric literal only
+-- means anything via its suffix desugaring. Today BOTH patterns below
+-- compile clean: the suffix is silently discarded in pattern position
+-- (the arms match the bare literals 12 / 2.5), so an out-of-scope
+-- suffix is never even looked up.
+module main
+
+classifyI : Int -> Int
+let classifyI n =
+    match n
+    case 12zz -> 1 --!! kappa.name.unresolved
+    case _    -> 0
+
+classifyD : Double -> Int
+let classifyD d =
+    match d
+    case 2.5ww -> 1 --!! kappa.name.unresolved
+    case _     -> 0
+-- STATUS(a0497523): FAIL — both suffixed literal patterns compile with 0 errors: the suffix identifier is silently discarded in pattern position and never resolved (out-of-scope 12zz/2.5ww accepted; arms match bare 12/2.5)

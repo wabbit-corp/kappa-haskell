@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- §29.8 std.build: the schema vocabulary is config-safe — constructing
+-- std.build values is plain (effect-free) data construction, so builder
+-- results can be bound in ordinary non-IO definitions; no discovery,
+-- resolution, or host inspection is entailed by construction (§35.5).
+module main
+
+import std.build.(type PackageVersion, term semver)
+import std.build.(type SourceRoot, term sourceRoot)
+import std.build.(type FragmentTag, term tag)
+import std.build.(type FragmentAxis, term axis)
+
+version : PackageVersion
+let version = semver "1.2.3"
+
+root : SourceRoot
+let root = sourceRoot "src"
+
+platformAxis : FragmentAxis
+let platformAxis = axis "platform" (tag "posix" :: tag "windows" :: Nil)
+
+main : UIO Unit
+let main = ioPure ()
+-- STATUS(a0497523): PASS

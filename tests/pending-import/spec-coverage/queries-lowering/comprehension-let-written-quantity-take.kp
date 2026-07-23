@@ -1,0 +1,38 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_ROW_NOT_DROPPABLE
+
+-- §20.10.7 rule 6: `let pat = expr` in a comprehension "uses the quantities
+-- written in pat when present" (same binder-quantity surface as §9.3 local
+-- lets; §21.6 plan metadata likewise records "user-written quantity
+-- annotations on binder patterns"). `okConsume` binds a linear row entry and
+-- consumes it in yield. `badTake` carries the linear entry into `take`,
+-- which may discard rows (§20.6.2/§20.10.4) and must be rejected.
+module main
+
+data Tok : Type =
+    MkTok (n : Int)
+
+consumeTok : (1 t : Tok) -> Int
+let consumeTok t =
+    match t
+    case MkTok n -> n
+
+okConsume : List Int
+let okConsume =
+    [
+        for x in [1, 2, 3]
+        let 1 t = MkTok x
+        yield consumeTok t
+    ]
+
+badTake : List Int
+let badTake =
+    [
+        for x in [1, 2, 3]
+        let 1 t = MkTok x
+        take 1 --!! E_QUERY_ROW_NOT_DROPPABLE
+        yield consumeTok t
+    ]
+
+-- STATUS(a0497523): FAIL — parse-level gap: the comprehension `let` clause parses a bare pattern only, so `let 1 t = ...` breaks the whole declaration (2x E_RECOVERY_DECLARATION_SKIPPED); binder quantities in comprehension let clauses (§20.10.7 rule 6) are unsupported, and the take-droppability check is never reached.

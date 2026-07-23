@@ -1,0 +1,71 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "a:2\nb:2\nc:2\nexit:success\n"
+
+-- §29.2 OneForAll: when one child fails, ALL live children are interrupted,
+-- waited for, and every restartable (here Permanent) child is restarted in
+-- original child-list order. Each child's per-child atomic counter therefore
+-- reaches exactly 2. The failing child gates on its siblings' first-run
+-- markers so the failure deterministically happens after both incremented.
+module main
+
+import std.prelude.(type Cause(..), type Exit(..))
+import std.supervisor.*
+import std.atomic.*
+
+weakenVoidIO : forall (e : Type) (a : Type). UIO a -> IO e a
+let weakenVoidIO act = catchIO act (\v -> ioPure (absurd v))
+
+-- Complete `mark`, then block forever on `never`.
+markThenBlock : Promise Int Unit -> Promise Int Unit -> IO Int Unit
+let markThenBlock mark never = do
+    let _ <- weakenVoidIO (completePromise mark (Success ()))
+    awaitPromise never
+
+-- Wait for both sibling first-run markers, then fail with a typed error.
+gateThenFail : Promise Int Unit -> Promise Int Unit -> IO Int Unit
+let gateThenFail gate1 gate2 = do
+    let _ <- weakenVoidIO (awaitPromiseExit gate1)
+    let _ <- weakenVoidIO (awaitPromiseExit gate2)
+    throwIO 5
+
+-- Steady child: mark first run and block; on restart complete `done`, block.
+steady : AtomicRef Integer -> Promise Int Unit -> Promise Int Unit -> Promise Int Unit -> IO Int Unit
+let steady counter first done never = do
+    let old <- weakenVoidIO (atomicFetchAdd RmwSeqCst counter 1)
+    if old == 0 then markThenBlock first never else markThenBlock done never
+
+-- Failing child: fail once after both siblings ran; on restart mark `done`.
+failer : AtomicRef Integer -> Promise Int Unit -> Promise Int Unit -> Promise Int Unit -> Promise Int Unit -> IO Int Unit
+let failer counter gate1 gate2 done never = do
+    let old <- weakenVoidIO (atomicFetchAdd RmwSeqCst counter 1)
+    if old == 0 then gateThenFail gate1 gate2 else markThenBlock done never
+
+main : UIO Unit
+let main = do
+    let ca <- newAtomicRef 0
+    let cb <- newAtomicRef 0
+    let cc <- newAtomicRef 0
+    let fa <- newPromise
+    let fc <- newPromise
+    let da <- newPromise
+    let db <- newPromise
+    let dc <- newPromise
+    let never <- newPromise
+    let children = childSpec "a" Permanent (steady ca fa da never) :: childSpec "b" Permanent (failer cb fa fc db never) :: childSpec "c" Permanent (steady cc fc dc never) :: Nil
+    let sup <- startSupervisor OneForAll (RestartIntensity 10 (seconds 1)) children
+    let _ <- awaitPromiseExit da
+    let _ <- awaitPromiseExit db
+    let _ <- awaitPromiseExit dc
+    let a <- atomicLoad LoadSeqCst ca
+    printlnString ("a:" ++ showInt a)
+    let b <- atomicLoad LoadSeqCst cb
+    printlnString ("b:" ++ showInt b)
+    let c <- atomicLoad LoadSeqCst cc
+    printlnString ("c:" ++ showInt c)
+    shutdownSupervisor sup
+    let exit <- awaitSupervisor sup
+    match exit
+      case Success _ -> printlnString "exit:success"
+      case Failure _ -> printlnString "exit:failure"
+-- STATUS(a0497523): FAIL — std.supervisor is a typecheck-only stub: startSupervisor never starts child fibers, so the done-promises never complete and the run produces no output (expected OneForAll restart counters a:2/b:2/c:2)

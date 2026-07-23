@@ -1,0 +1,25 @@
+--! assertNoErrors
+--! assertEval use "tag"
+
+-- §33.1.1 × §33.2.1: the Easy Hash is computed after FULL unfolding of type
+-- aliases, so these two instances (heads `Integer` vs alias `MyInt`,
+-- identical bodies) fall into the same Easy-Hash group. Step 3 of the
+-- coherence algorithm treats an identical Easy-Hash group as harmless
+-- overlap in EVERY coherence_mode — structural included — selecting a
+-- deterministic representative.
+module main
+
+type MyInt = Integer
+
+trait Label (a : Type) =
+    label : a -> String
+
+instance Label Integer =
+    let label n = "tag"
+
+instance Label MyInt =
+    let label n = "tag"
+
+use : String
+let use = label 5
+-- STATUS(a0497523): PASS

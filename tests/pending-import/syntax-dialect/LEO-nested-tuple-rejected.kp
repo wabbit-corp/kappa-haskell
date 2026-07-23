@@ -28,7 +28,8 @@ flatTriple : (Int, Bool, String)
 let flatTriple = (1, True, "ok")
 
 -- POSITIVE: using a 2-tuple where a 2-tuple is expected.
-let usePair (p : (Int, Bool)) : Int = p.0
+usePair : (Int, Bool) -> Int
+let usePair p = p.0
 
 okUsePair : Int
 let okUsePair = usePair flatPair
@@ -45,7 +46,8 @@ let badNestedExpr = (1, (True, False))    --!! kappa.type.mismatch
 -- NEGATIVE: a tuple type annotation that names a nested tuple.
 -- The type `(Int, (Bool, String))` specifies a nested tuple, but we declare
 -- the binding against a context expecting flat `(Int, Bool)`.
-let expectsFlat (p : (Int, Bool)) : Int = p.0
+expectsFlat : (Int, Bool) -> Int
+let expectsFlat p = p.0
 
 badPassNested : Int
 let badPassNested = expectsFlat (1, (True, False))    --!! kappa.type.mismatch
@@ -68,4 +70,3 @@ data Outer : Type =
 
 validNested : Outer
 let validNested = Outer 1 (Inner True False)
-

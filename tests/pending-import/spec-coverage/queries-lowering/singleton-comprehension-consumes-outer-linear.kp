@@ -1,0 +1,32 @@
+-- §20.10.5 (demands on outer lexical variables): demands are multiplied by
+-- the cardinality of the current input pipeline; §20.10.6: a comprehension
+-- with no pre-yield clauses starts from a singleton QOne pipeline over
+-- Row(∅). So a yield that consumes an outer quantity-1 binding is exactly a
+-- 1×1 demand and must be ACCEPTED — the linear-consumption analogue of the
+-- rejection pinned by queries-qtt-appendix-t-05 (nested `for` duplicates a
+-- linear outer). Runtime half proves the value flows through collection.
+--
+-- COMPILER GAP at a0497523: rejected with E_QTT_LINEAR_OVERUSE ("'tok' is
+-- consumed more often than its linear quantity permits") — the checker
+-- appears to multiply the yield demand by the internal row stream's ω outer
+-- item quantity (§20.10.3) instead of the QOne pipeline cardinality that
+-- §20.10.5 prescribes for demands on outer lexical variables.
+--! mode run
+--! assertNoErrors
+--! assertEval useOnce 1 :: 9 :: Nil
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+single : (1 tok : Token) -> List Int
+let single tok = [ yield consumeToken tok ]
+
+useOnce : List Int
+let useOnce = listAppend (single Token) [ yield 9 ]
+-- STATUS(a0497523): FAIL — E_QTT_LINEAR_OVERUSE "'tok' is consumed more often than its linear quantity permits" on the singleton-yield definition, despite the QOne empty-clause pipeline of §20.10.6.

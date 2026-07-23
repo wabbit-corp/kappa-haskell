@@ -1,0 +1,7 @@
+module alpha
+
+common : Int
+let common = 1
+
+onlyInAlpha : Int
+let onlyInAlpha = 10

@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1 η-equality for functions: f ≡ (\(x : A) -> f x) when x is not
+-- free in f, definitionally; η-expansion preserves binder quantities
+-- (quantities are part of a function type's identity).
+module main
+
+addOne : Int -> Int
+let addOne x = x + 1
+
+etaPlain : addOne = (\x -> addOne x)
+let etaPlain = refl
+
+etaAnnotated : addOne = (\(x : Int) -> addOne x)
+let etaAnnotated = refl
+
+-- η at a linear binder: the expansion carries the same quantity, so
+-- the equation still holds at type (1 s : String) -> String
+consume : (1 s : String) -> String
+let consume s = s
+
+etaLinear : consume = (\(1 s : String) -> consume s)
+let etaLinear = refl
+
+-- η under partial application: two-argument function, one arg fixed
+append2 : String -> String -> String
+let append2 a b = stringAppend a b
+
+etaPartial : append2 "x" = (\rest -> append2 "x" rest)
+let etaPartial = refl
+
+-- STATUS(a0497523): PASS

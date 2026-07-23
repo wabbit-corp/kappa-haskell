@@ -1,0 +1,5 @@
+module libb
+
+-- Distinct trait, same spelling as liba.Tag.
+trait Tag (a : Type) =
+    tagb : a -> Int

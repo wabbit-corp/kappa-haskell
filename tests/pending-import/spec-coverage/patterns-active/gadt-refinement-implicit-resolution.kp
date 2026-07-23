@@ -1,0 +1,37 @@
+-- §17.1.2 (Spec, "these equalities participate in definitional equality,
+-- reachability, and implicit resolution"): in a Zero branch of a match on
+-- Natural n, the forced equality n = Z must be available to implicit
+-- resolution, so an implicit parameter (@0 p : (=) n Z) is solvable
+-- without annotations.
+
+--! mode check
+--! assertNoErrors
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+needsZ : forall (@0 n : PNat). (@0 p : (=) n Z) -> Int
+let needsZ = 3
+
+-- Ground-index control: at n := Z the goal (=) Z Z holds by refl, passed
+-- explicitly; only the implicit-argument plumbing is exercised.
+control : Natural Z -> Int
+let control v =
+    match v
+    case Zero -> needsZ @(Z) @(refl)
+
+-- Abstract index: the Zero branch's forced family-argument equality
+-- n = Z must let implicit resolution discharge @p (§17.1.2).
+classify : Natural n -> Int
+let classify v =
+    match v
+    case Zero -> needsZ
+    case Succ q -> 0
+
+-- STATUS(a0497523): FAIL — control passes, but classify gets E_UNSOLVED_IMPLICIT for (=) n Z in the Zero branch:
+-- the constructor-forced family-argument equality does not participate in implicit resolution (§17.1.2).

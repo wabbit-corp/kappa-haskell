@@ -1,0 +1,58 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "success-unacked:ok\nshutdown-interrupted:ok\nacked-failure:ok\n"
+
+-- §32.2.4 acknowledgement classes that introduce NO scope obligation:
+--   * an attached child that terminates with Success needs no acknowledgement;
+--   * an attached child interrupted by mandatory scope shutdown introduces no
+--     unhandled-child defect;
+--   * a child failure whose exit IS acknowledged (observed by `await`) before
+--     scope exit introduces no defect either.
+-- In all three cases the enclosing scope must exit successfully.
+module main
+
+okChild : IO Int Int
+let okChild = ioPure 3
+
+sleepyChild : IO Int Int
+let sleepyChild = do
+    sleepFor (seconds 5)
+    ioPure 4
+
+failingChild : IO Int Int
+let failingChild = throwIO 7
+
+successUnacked : Scope -> UIO Int
+let successUnacked sc = do
+    let f <- forkIn sc okChild
+    let _ = f
+    sleepFor (millis 20)
+    ioPure 1
+
+shutdownInterrupted : Scope -> UIO Int
+let shutdownInterrupted sc = do
+    let f <- forkIn sc sleepyChild
+    let _ = f
+    -- still-live at scope exit: mandatory shutdown interrupts (ScopeShutdown)
+    ioPure 1
+
+ackedFailure : Scope -> UIO Int
+let ackedFailure sc = do
+    let f <- forkIn sc failingChild
+    sleepFor (millis 20)
+    let ex <- await f
+    match ex
+      case Success v -> ioPure 0
+      case Failure c -> ioPure 1
+
+probe : String -> UIO Int -> UIO Unit
+let probe tag body = do
+    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure (tag ++ ":ok"))) (\c -> ioPure (tag ++ ":scope-failed"))
+    printlnString r
+
+main : UIO Unit
+let main = do
+    probe "success-unacked" (withScope successUnacked)
+    probe "shutdown-interrupted" (withScope shutdownInterrupted)
+    probe "acked-failure" (withScope ackedFailure)
+-- STATUS(a0497523): PASS

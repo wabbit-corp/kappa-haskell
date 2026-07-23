@@ -1,0 +1,35 @@
+-- §12.2.2 (quantity obligations at application sites) + §12.2.6 (a linear
+-- obligation is discharged only by transfer "that preserves the ownership
+-- obligation"): List's constructor fields are unannotated, hence quantity ω
+-- (§13.2.1), and §20.10.2 gives the built-in `IntoQuery (List a)` item
+-- quantity ω. So a list literal must NOT absorb a quantity-1 value — the
+-- resulting `List Token` would be freely droppable and its items freely
+-- duplicable, erasing the obligation. (Records DO preserve the obligation:
+-- an inferred quantity-1 field in a record literal is tracked and its drop
+-- rejected, see §13.2.1/§12.2.5 — the list path must not be weaker.)
+--
+-- COMPILER GAP at a0497523: both definitions are accepted. `dupTok` RUNS and
+-- consumes the linear token TWICE (prints 2) via two generators over the
+-- laundering list; `dropTok` silently drops it. Linearity soundness hole.
+--! mode check
+--! assertErrorCount 2
+module main
+
+data Token : Type =
+    Token
+
+consumeToken : (1 t : Token) -> Int
+let consumeToken t =
+    match t
+    case Token -> 1
+
+dupTok : (1 a : Token) -> Int
+let dupTok a =
+    let xs = [a] --!! kappa.quantity.unsatisfied
+    foldl addInt 0 [ for t in xs, for u in xs, yield addInt (consumeToken t) (consumeToken u) ]
+
+dropTok : (1 a : Token) -> Int
+let dropTok a =
+    let xs = [a] --!! kappa.quantity.unsatisfied
+    42
+-- STATUS(a0497523): FAIL — accepted (0 errors); dupTok runs and consumes the linear token TWICE (prints 2), dropTok silently leaks it. Contrast: `useOmega a` for (1 a) is correctly rejected E_QTT_LINEAR_OVERUSE, and record literals DO track inferred linear fields.

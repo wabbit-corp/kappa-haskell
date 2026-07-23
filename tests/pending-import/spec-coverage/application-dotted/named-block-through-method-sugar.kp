@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+
+-- Combination: §16.1.1 dotted method sugar and §16.1.1.1 receiver
+-- sections with §16.1.7 named application. After receiver insertion the
+-- callee is a named-binder function (metadata per §16.1.7A L20165), so
+-- a named block may supply the remaining explicit binder suffix — both
+-- on a dotted call and inside a receiver-section body (L19387-19396).
+module main
+
+let plus (this n : Int) (delta : Int) : Int = n + delta
+
+-- POSITIVE: named block after dotted method sugar; the receiver has
+-- discharged 'n', the block supplies the residual binder 'delta'.
+viaSugarNamed : Int
+let viaSugarNamed = (7).plus { delta = 5 }
+
+-- POSITIVE: the same shape inside a receiver-section body, which
+-- elaborates to \__x -> __x.plus { delta = 5 }.
+viaSectionNamed : Int -> Int
+let viaSectionNamed = (.plus { delta = 5 })
+
+useSection : Int
+let useSection = viaSectionNamed 37
+
+-- STATUS(a0497523): PASS

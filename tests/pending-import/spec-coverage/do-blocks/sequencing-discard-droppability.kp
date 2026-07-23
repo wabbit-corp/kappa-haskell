@@ -36,3 +36,5 @@ let badDiscard = do
 -- expression-item discard path skips the §12.2.6 droppability check that the
 -- equivalent explicit `let h <- acquireH; pure ()` DOES perform (that twin is
 -- correctly rejected), so a >=1 component is silently dropped.
+-- STATUS(a0497523): FAIL — unchanged: compiler still accepts badDiscard (0
+-- errors); the expression-item discard path still skips the droppability check.

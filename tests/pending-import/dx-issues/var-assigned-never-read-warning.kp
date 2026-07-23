@@ -1,0 +1,47 @@
+-- DX expectation, not (yet) spec-required. A `var` mutable binding that is
+-- assigned but never read (or never touched at all) compiles in total
+-- silence — there is no dead-store / unused-var lint (§3.2.20 defines the
+-- kappa.var.mutable-binding family and even W_VAR_REF_ESCAPE_DISABLES_FLOW,
+-- but nothing for write-only vars; §3.1.12 recognizes unused-binding lints
+-- generally). The lint must stay flow-precise: a var written inside a loop
+-- and read after it is NOT unused (cf. pending-import/syntax-dialect/
+-- compiler.frontir.warning_hygiene.loop_assigned_variable_not_unused.kp,
+-- the Move #251 false-positive analog — loopOk below must never warn).
+-- Expected: one warning for the write-only var, one for the untouched var.
+-- Currently: compiles silently (0 warnings).
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 2
+module main
+
+-- WARNING EXPECTED: acc is assigned twice and never read anywhere.
+deadStores : Int -> UIO Int
+let deadStores x =
+    do
+        var acc = 0
+        acc = x
+        acc = x + 1
+        return x
+
+-- WARNING EXPECTED: u is initialized and then never read or written.
+neverTouched : UIO Int
+let neverTouched =
+    do
+        var u = 0
+        return 1
+
+-- no warning: s is written in the loop and read after it.
+loopOk : Int -> UIO Unit
+let loopOk limit =
+    do
+        var s = 0
+        var i = 0
+        while i < limit do
+            s = s + i
+            i = i + 1
+        printInt s
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): FAIL — write-only and never-touched vars compile with 0 warnings (expected 2)

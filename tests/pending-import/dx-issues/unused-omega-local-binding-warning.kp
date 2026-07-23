@@ -1,0 +1,26 @@
+-- DX expectation, not (yet) spec-required. §3.1.12 names "unused binding" as
+-- a recognized source-oriented lint family and §3.1.2 (L664) uses
+-- W_UNUSED_BINDING as its example code, but the compiler implements no
+-- unused-binding lint at all: an omega-quantity local `let` binding that is
+-- never referenced compiles with zero diagnostics. Dropping an ω binder is
+-- quantity-legal (ω = [0,∞], §12.2), hence assertNoErrors; the developer
+-- expectation is exactly one warning on the unused local, and none for a
+-- used binding or an explicit `_` discard. The eventual warning code/family
+-- is intentionally not pinned (none is standardized in §3.2).
+-- Currently: compiles silently (0 warnings).
+--! mode check
+--! assertNoErrors
+--! assertWarningCount 1
+module main
+
+f : Int -> Int
+let f x =
+    let unusedLocal = 41 -- WARNING EXPECTED: bound, never referenced
+    let used = x + 1     -- no warning: referenced twice below
+    let _ = used * 0     -- no warning: explicit discard position
+    used
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): FAIL — no unused-binding lint exists; the unused local compiles with 0 warnings (expected 1)

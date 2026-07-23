@@ -1,0 +1,35 @@
+-- §18.6.2 (escape) × §16.2.2: storing `ref x` inside a suspension body is
+-- an escape event ("`ref x` is stored in a ... closure ... or other
+-- runtime value"), so the tracked cell stops participating in
+-- current-value flow typing even though the thunk is never forced: the
+-- later `x is Full` refinement no longer licenses the `x.value`
+-- constructor-field projection. `good` shows the refinement working when
+-- nothing escapes. The rejection surfaces as the projection failing
+-- without refinement (unresolved member on the unrefined receiver).
+module main
+
+data Cell : Type =
+    Full (value : Int)
+    Hollow
+
+good : UIO Unit
+let good = do
+    var x = Full 1
+    if x is Full then
+        printInt x.value
+    else
+        pure ()
+
+bad : UIO Unit
+let bad = do
+    var x = Full 1
+    let t = thunk (readRef (ref x))
+    if x is Full then
+        printInt x.value                --!! E_UNRESOLVED_MEMBER
+    else
+        pure ()
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_UNRESOLVED_MEMBER
+-- STATUS(a0497523): PASS

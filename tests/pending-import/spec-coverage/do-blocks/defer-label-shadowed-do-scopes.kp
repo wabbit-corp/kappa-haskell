@@ -1,0 +1,23 @@
+-- §18.2.5 x §18.7: nested labeled do-scopes with the SAME label — shadowing
+-- by nested labels is permitted, and `defer@L` resolves to the NEAREST
+-- enclosing labeled do-scope. Here the outer function-body do and an inner
+-- first-class do value both carry label L; defer@L inside the inner block
+-- schedules onto the INNER scope, so it fires when `!block` finishes, not
+-- when main exits. (The statement-position variant of a labeled nested do
+-- is pinned separately in defer-label-nested-do-item.kp — it is currently
+-- rejected outright.)
+module main
+
+main : UIO Unit
+let main = L@do
+    printlnString "start"
+    let block = L@do
+            defer@L printlnString "inner-defer"
+            printlnString "inner-body"
+    !block
+    printlnString "after"
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "start\ninner-body\ninner-defer\nafter\n"
+-- STATUS(a0497523): PASS

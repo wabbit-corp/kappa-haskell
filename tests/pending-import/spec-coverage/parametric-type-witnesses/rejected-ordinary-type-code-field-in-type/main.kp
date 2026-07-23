@@ -1,6 +1,0 @@
---! assertErrorCount 1
---! assertDiagnostic error E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
---! assertDiagnosticFamily error kappa.universe.constraint
-
-type SigTooSmall : Type =
-    (A : Type, value : A)

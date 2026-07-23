@@ -1,0 +1,14 @@
+module no_entry_here
+
+-- Appendix T run mode still goes through ordinary entrypoint selection.  A
+-- missing entrypoint is an expected user/build error and should be reported as
+-- a registered structured diagnostic rather than silently succeeding, causing
+-- a harness failure, or surfacing a host exception.  Keep an otherwise valid
+-- declaration so this is not an empty-source special case.
+
+answer : Int
+let answer = 42
+
+--! mode run
+--! assertDiagnostic error E_NO_MAIN
+-- STATUS(a0497523): FAIL — no diagnostic error[E_NO_MAIN] was produced (no diagnostics)

@@ -1,0 +1,23 @@
+--! mode run
+--! entry main
+--! assertNoErrors
+--! assertExitCode 0
+--! assertStdout "Hi\n"
+
+-- Source issue: carp-lang/Carp#89
+-- Spec: Appendix T.4 (`entry <qualifiedName>` names the program entrypoint,
+--       valid only for mode run), Appendix T.5.4 (assertExitCode/assertStdout)
+-- POSITIVE half of Carp #89: the function nominated through `entry` is
+-- executed as the program entrypoint; a conventional `UIO Unit` main runs,
+-- produces its output, and exits successfully.
+-- (The NEGATIVE half — rejecting a wrongly-typed main — is not portable:
+-- neither T.4 nor §36.14.2 fixes a required entrypoint signature; see the
+-- companion original left in syntax-dialect/.)
+module main
+
+main : UIO Unit
+let main =
+    do
+        printlnString "Hi"
+
+-- STATUS(a0497523): PASS

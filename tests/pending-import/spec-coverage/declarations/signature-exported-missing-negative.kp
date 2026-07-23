@@ -13,4 +13,4 @@ let partial (x : Int) y : Int = x + y --!! E_MISSING_EXPLICIT_SIGNATURE
 
 --! mode check
 --! assertDiagnosticCodes E_MISSING_EXPLICIT_SIGNATURE, E_MISSING_EXPLICIT_SIGNATURE
--- STATUS(a51e1bf): FAIL — compiler emits no diagnostic; the §9.2 explicit-signature requirement for exported definitions is not enforced (E_MISSING_EXPLICIT_SIGNATURE is registered but never produced)
+-- STATUS(a0497523): FAIL — compiler emits no diagnostic; the §9.2 explicit-signature requirement for exported definitions is not enforced (E_MISSING_EXPLICIT_SIGNATURE is registered but never produced)

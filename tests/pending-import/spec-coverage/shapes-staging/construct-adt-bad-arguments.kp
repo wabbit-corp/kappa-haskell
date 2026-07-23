@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+
+-- §22.6: 'constructAdt' argument checking — every non-implicit
+-- constructor field must receive exactly one 'SuppliedFieldArgument';
+-- omitting the required field 'b' MUST fail with the spec'd code
+-- KAPPA_DERIVING_SHAPE_BAD_CONSTRUCTOR_ARGUMENTS (family
+-- kappa.deriving.shape) identifying the selected constructor and the
+-- malformed argument list. The code is not yet a registered
+-- diagnostic, so only the family is asserted here.
+
+import std.deriving.shape.*
+
+data Pair2 : Type =
+    MkPair2 (a : Integer) (b : Integer)
+
+buildBad : Elab (Syntax Pair2)
+let buildBad = do
+    let shape <- inspectAdt @Pair2 '{ type Pair2 }
+    match shape.constructors
+    case ctor :: Nil ->
+        (match ctor.fields
+         case fa :: fb :: Nil ->
+            constructAdt shape ctor (fieldArgument fa '{ 1 } :: Nil)
+         case _ -> failElab "wrong field count")
+    case _ -> failElab "wrong constructor count"
+
+bad : Pair2
+let bad = $(buildBad)
+-- STATUS(a0497523): FAIL — std.deriving.shape exports no constructAdt/fieldArgument (unresolved names) and KAPPA_DERIVING_SHAPE_BAD_CONSTRUCTOR_ARGUMENTS is not a registered diagnostic code; the §22.6 argument-validation surface is unimplemented

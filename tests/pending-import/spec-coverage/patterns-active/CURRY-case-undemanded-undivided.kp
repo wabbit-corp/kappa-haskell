@@ -1,0 +1,70 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (testh3 = (h [2,div 1 0]) -=- False, where h [1,2] = True; h _ = False).
+-- Spec: §17.1 (`match`), §17.2.1 (literal patterns), §10.1 (constructor
+--       suspension binder sugar `(thunk f : T)`), §11.2 (Thunk).
+--
+-- Curry's original obligation — an undemanded list slot is never
+-- evaluated — is observed there through divergence, which a total
+-- language cannot express. The portable Kappa counterpart pinned here:
+-- a constructor field of suspension type `Thunk A` is bound by pattern
+-- matching WITHOUT being forced; a failed head-literal match returns
+-- through the catch-all with the tail suspension untouched, and only an
+-- explicit `force` evaluates it (§11.2).
+
+module test
+
+--! mode check
+
+data Cell : Type =
+    CNil
+    CCell (head : Int) (thunk tail : List Int)
+-- The tail field is a Thunk (List Int); constructing a CCell suspends
+-- the tail expression (§10.1 suspension elaboration of arguments).
+
+-- A head check that only inspects the first cell; the tail suspension
+-- is bound by `_` and never forced.
+isHeadOne : Cell -> Bool
+let isHeadOne c =
+    match c
+    case CCell 1 _ -> True
+    case _ -> False
+
+--! assertNoErrors
+--! assertType isHeadOne (Cell -> Bool)
+
+buildBig : Int -> List Int
+let buildBig n =
+    if n <= 0
+    then Nil
+    else n :: buildBig (n - 1)
+
+-- The tail argument is suspended at construction time.
+twoThenSuspended : Cell
+let twoThenSuspended = CCell 2 (buildBig 3)
+
+-- POSITIVE: head pattern disagrees → match returns False; the suspended
+-- tail is never demanded on this path.
+result : Bool
+let result = isHeadOne twoThenSuspended
+
+--! assertNoErrors
+--! assertEval result False
+
+-- POSITIVE: the suspension is a first-class value; an explicit `force`
+-- retrieves the payload (§11.2).
+lengthList : List Int -> Int
+let lengthList xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> 1 + lengthList rest
+
+forcedLen : Int
+let forcedLen =
+    match twoThenSuspended
+    case CNil -> 0
+    case CCell _ t -> lengthList (force t)
+
+--! assertNoErrors
+--! assertEval forcedLen 3
+
+-- STATUS(a0497523): PASS

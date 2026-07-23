@@ -1,0 +1,38 @@
+-- §20.10.10 (built-in collection obligations): for map comprehensions,
+-- "discarded keys and discarded conflict-losing values must be droppable
+-- unless the conflict policy explicitly consumes or transfers them"; for set
+-- comprehensions, "elements discarded as duplicates must be droppable unless
+-- the set representation explicitly preserves their ownership obligations".
+-- §20.10.4: quantity-1 entries are not row-droppable. A `keep last` map
+-- policy and set dedup both DISCARD losing values, so collecting quantity-1
+-- items through them must be rejected.
+--
+-- COMPILER GAP at a0497523: both definitions are accepted, and at runtime
+-- the losing linear Token is silently dropped (observed: 2 same-key yields
+-- produce a 1-entry map, first Token never consumed) — a linearity
+-- soundness hole.
+--! mode check
+--! assertErrorCount 2
+module main
+
+data Token : Type =
+    Token
+
+instance Eq Token =
+    let (==) x y = True
+
+badMap : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> Map Int Token
+let badMap src =
+    {
+        for t in src
+        yield 1 : t
+        on conflict keep last
+    } --!! kappa.quantity.positive-lower-bound
+
+badSet : (1 src : QueryCore (QueryMode.QueryMode QueryUse.OneShot QueryCard.QZeroOrMore) 1 Token) -> Set Token
+let badSet src =
+    {|
+        for t in src
+        yield t
+    |} --!! kappa.quantity.positive-lower-bound
+-- STATUS(a0497523): FAIL — both accepted (0 errors); at runtime the losing linear Token is silently dropped (keep-last over 2 same-key linear yields leaves a 1-entry map).

@@ -1,0 +1,53 @@
+-- Source: granule-project/granule PR #144 (Exceptions)
+-- Spec: §18.1.14 (Eff and effect rows), §18.1.15 (effect declarations),
+--       §18.1.17.1 (abortive class, resumption quantity 0),
+--       §18.1.21 (handlers), §17.1.5 (case impossible),
+--       §3.2.9 (kappa.effect.row-mismatch)
+-- An exception is an abortive algebraic effect: resumption quantity 0
+-- makes the handler-bound resumption unusable (§18.1.17.1), and the
+-- raising computation carries the effect label in its row. A handler
+-- discharges the label; a declaration claiming the empty row <[]> while
+-- performing the operation must be rejected — §3.2.9's family for a row
+-- that "cannot be checked against the demanded effect row" is
+-- kappa.effect.row-mismatch.
+
+module test
+
+--! mode check
+
+data Empty : Type
+
+-- An exception-style abortive effect: quantity 0 forbids resuming.
+effect Exn =
+    0 throw : Int -> Empty
+
+-- POSITIVE: performing throw puts label Exn in the row; the Empty result
+-- is eliminated by `case impossible` (§17.1.5).
+boom : Eff <[Exn : Exn]> Int
+let boom = do
+    let v <- Exn.throw 42
+    match v
+      case impossible
+
+-- POSITIVE: a handler discharges the label; the abortive clause drops
+-- the quantity-0 resumption and produces the result directly.
+handled : Eff <[]> Int
+let handled =
+    handle Exn boom with
+        case return v -> pure v
+        case throw e _ -> pure e
+
+runBoom : Int
+let runBoom = runPure handled
+
+-- NEGATIVE: claims the empty effect row but performs Exn.throw.
+mislabel : Eff <[]> Int
+let mislabel = do
+    let v <- Exn.throw 1        --!! kappa.effect.row-mismatch
+    match v
+      case impossible
+
+--! assertDiagnosticFamily error kappa.effect.row-mismatch
+-- NOTE: the §3.2.3-vs-§3.2.9 family-precedence ambiguity on this shape is
+-- already recorded in docs/SPEC_ISSUES.md (writer1:diag-families-1 entry).
+-- STATUS(a0497523): FAIL — compiler emits kappa.type.mismatch (E_TYPE_EQUALITY_MISMATCH on the Eff row types) plus a cascaded kappa.proof.impossible-reachable; the dedicated §3.2.9 row family is never produced (the §3.2.3-vs-§3.2.9 precedence gap is already recorded in docs/SPEC_ISSUES.md).

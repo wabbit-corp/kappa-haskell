@@ -1,0 +1,43 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_UNORDERED_PAGING
+
+-- §20.3.2 orderedness state machine, §20.6.2, §20.7: `distinct` preserves
+-- Ordered when the input is Ordered (list source -> skip stays legal) and
+-- preserves Unordered when it is not (set source -> skip rejected with
+-- E_QUERY_UNORDERED_PAGING); `group by` always destroys orderedness, and a
+-- later `order by` re-establishes it, making paging legal again.
+module main
+
+-- POSITIVE: list source is Ordered; distinct preserves it
+okListDistinctSkip : List Int
+let okListDistinctSkip =
+    [
+        for x in [3, 1, 2, 1]
+        distinct
+        skip 1
+        yield x
+    ]
+
+-- NEGATIVE: set source is Unordered; distinct preserves Unordered
+badSetDistinctSkip : List Int
+let badSetDistinctSkip =
+    [
+        for x in {| 3, 1, 2 |}
+        distinct
+        skip 1 --!! E_QUERY_UNORDERED_PAGING
+        yield x
+    ]
+
+-- POSITIVE: group by destroys orderedness; order by restores it before skip
+okGroupOrderSkip : List Int
+let okGroupOrderSkip =
+    [
+        for x in [1, 2, 3, 40]
+        group by (if x < 10 then 0 else 1) { total = (x :: Nil) } into g
+        order by g.key
+        skip 1
+        yield g.key
+    ]
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,5 @@
+module lib
+
+prefix 80 (~~)
+(~~) : Int -> Int
+let (~~) x = subInt 0 x

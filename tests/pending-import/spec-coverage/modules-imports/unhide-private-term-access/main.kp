@@ -12,4 +12,4 @@ let result = helper + 1
 --! allow_unhiding
 --! assertErrorCount 1
 --! assertEval result 42
--- STATUS(a51e1bf): FAIL — unhide is gated+audited only; the unhide import of a private item still fails with E_IMPORT_ITEM_NOT_FOUND
+-- STATUS(a0497523): FAIL — unhide is gated+audited only; the unhide import of a private item still fails with E_IMPORT_ITEM_NOT_FOUND

@@ -1,0 +1,32 @@
+module main
+
+-- §21.6/§21.8: defEqSyntax uses the same definitional-equality
+-- machinery as ordinary elaboration at the call site, and MUST obey the
+-- module's visibility/opacity rules: a transparent global delta-unfolds
+-- (True), beta-reduction applies (True), but an imported opaque
+-- definition stays opaque here, so `secret` is NOT judged equal to its
+-- hidden body 7 (False).
+import oplib.(secret)
+
+two : Integer
+let two = 2
+
+deltaEq : Bool
+let deltaEq = defEqSyntax '{ two } '{ 2 }
+
+betaEq : Bool
+let betaEq = defEqSyntax '{ (\x -> x) 2 } '{ 2 }
+
+opaqueEq : Bool
+let opaqueEq = defEqSyntax '{ secret } '{ 7 }
+
+main : UIO Unit
+let main = do
+    println deltaEq
+    println betaEq
+    println opaqueEq
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nTrue\nFalse\n"
+-- STATUS(a0497523): PASS

@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §30.2.7 source-acceptance stability: only exact Empty justifies
+-- `case impossible`. A constructor arm whose field summarizes to Empty
+-- makes the whole type Empty (product rule), so `impossible` is
+-- accepted; an equality type at a neutral endpoint is at best
+-- Subsingleton (interval [0,1]) and MUST NOT be treated as unreachable.
+module main
+
+data Bottom : Type
+
+-- constructor-arm product with an Empty field is Empty
+data Dead : Type =
+    MkDead (n : Int) (w : Bottom)
+
+fromDead : forall (a : Type). Dead -> a
+let fromDead d =
+    match d
+    case impossible
+
+-- Subsingleton is not Empty: b = True with neutral b has at most one
+-- inhabitant but is not known-uninhabited, so impossible is rejected
+notEmpty : forall (b : Bool). (q : b = True) -> Int
+let notEmpty q =
+    match q
+    case impossible --!! E_INDEXED_IMPOSSIBLE_REACHABLE
+
+-- control: an equality that IS refuted by no-confusion on distinct
+-- visible constructors summarizes to Empty and discharges
+falseIsNotTrue : (q : False = True) -> Int
+let falseIsNotTrue q =
+    match q
+    case impossible
+
+-- STATUS(a0497523): FAIL — fromDead and notEmpty behave per spec (Empty ctor-field propagation accepted; Subsingleton impossible rejected with E_INDEXED_IMPOSSIBLE_REACHABLE), but falseIsNotTrue gets an extra E_PATTERN_NON_EXHAUSTIVE: the no-confusion Empty summary for False = True is not applied to case impossible

@@ -29,4 +29,4 @@ let leak (& x : Int) : (Unit -> Int) =
         let v = captureBorrow x
         withBorrowView v (\m -> \() -> observe m) --!! E_QTT_BORROW_ESCAPE
 
--- STATUS(a51e1bf): FAIL — compiler reports 0 errors: a closure over the withBorrowView-reinstated borrowed binder m escapes through the result unflagged (direct closures over & parameters ARE caught), so §12.4.3 elimination does not reinstate the §12.3 escape tainting.
+-- STATUS(a0497523): FAIL — compiler reports 0 errors: a closure over the withBorrowView-reinstated borrowed binder m escapes through the result unflagged (direct closures over & parameters ARE caught), so §12.4.3 elimination does not reinstate the §12.3 escape tainting.

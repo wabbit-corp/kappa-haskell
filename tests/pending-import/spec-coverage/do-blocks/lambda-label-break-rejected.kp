@@ -1,0 +1,16 @@
+-- §18.5.1/§18.2.5: `break@L` (and `continue@L`) target labeled LOOPS only.
+-- A lambda label is not a valid break target, even though `return@L` could
+-- target the same label.
+module main
+
+badBreak : UIO Unit
+let badBreak = do
+    let f = lab@\ n -> do
+            while True do
+                break@lab --!! E_LABEL_UNRESOLVED
+            pure ()
+    f 1
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

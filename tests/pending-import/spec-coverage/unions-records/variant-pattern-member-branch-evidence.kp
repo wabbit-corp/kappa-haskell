@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.1.4/§13.1.7 (Spec.md L16305-L16374): member patterns name member
+-- types of the scrutinee's row, identified by MemberId. FlagBox True is
+-- not a member of (| FlagBox b | String |), so withoutEvidence MUST be
+-- rejected (the single expected error, E_VARIANT_MEMBER at the FlagBox
+-- True pattern). withEvidence pins the accepting side: inside the
+-- then-branch, branch-local evidence b = True makes the scrutinee
+-- transportable to (| FlagBox True | String |) (§16.1.8 L20901), and the
+-- implementation identifies the FlagBox True member pattern against the
+-- refined row. The spec is silent on evidence-modulated member patterns
+-- (§16.1.8 covers expressions checked against expected types); this test
+-- documents the accepting behavior together with the required
+-- no-evidence rejection.
+module main
+
+data FlagBox (b : Bool) : Type =
+    MakeFlagBox
+
+withEvidence : (b : Bool) -> (| FlagBox b | String |) -> Integer
+let withEvidence (b : Bool) (u : (| FlagBox b | String |)) : Integer =
+    if b
+    then
+        match u
+        case (| f : FlagBox True |) -> 1
+        case (| s : String |)       -> 2
+    else 0
+
+withoutEvidence : (b : Bool) -> (| FlagBox b | String |) -> Integer
+let withoutEvidence (b : Bool) (u : (| FlagBox b | String |)) : Integer =
+    match u
+    case (| f : FlagBox True |) -> 1
+    case (| s : String |)       -> 2
+
+-- STATUS(a0497523): PASS — exactly one error (E_VARIANT_MEMBER at the no-evidence pattern); the evidence-refined member pattern is accepted.

@@ -1,0 +1,36 @@
+-- §19.2: runtime behavior of except coverage over a variant error type — a
+-- specific member handler fires for its member; the residual-row handler
+-- receives the remaining members as rest : Variant r and can dispatch on it;
+-- a trailing catch-all `_` also covers whatever remains.
+--! mode run
+--! assertNoErrors
+--! assertStdout "string: boom\nint: 7\nother\ndone\n"
+module main
+
+risky1 : IO (| String | Int |) Unit
+let risky1 = raise "boom"
+
+risky2 : IO (| String | Int |) Unit
+let risky2 = raise (| 7 : Int |)
+
+viaResidual : IO (| String | Int |) Unit -> UIO Unit
+let viaResidual act = do
+    try act
+    except (| s : String |) -> printlnString (stringAppend "string: " s)
+    except (| ..rest |) ->
+        match rest
+        case (| n : Int |) -> printlnString (stringAppend "int: " (showInt n))
+
+viaWildcard : IO (| String | Int |) Unit -> UIO Unit
+let viaWildcard act = do
+    try act
+    except (| s : String |) -> printlnString (stringAppend "string: " s)
+    except _ -> printlnString "other"
+
+main : UIO Unit
+let main = do
+    viaResidual risky1
+    viaResidual risky2
+    viaWildcard risky2
+    printlnString "done"
+-- STATUS(a0497523): PASS

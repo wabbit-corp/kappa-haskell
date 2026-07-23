@@ -17,4 +17,4 @@ bad :
 let bad (@0 r : RecRow) (@_ : LacksRec r y) (rec : (x : Int | r)) : ((x : Int, y : Int | r), (x : Int | r)) =
     (rec.{ y := 1 }, rec)
 
--- STATUS(a51e1bf): FAIL — compiler accepts with 0 errors; row extension is not counted as consumption of the 1-receiver (double consume via two function calls IS caught, so the extension is the missing edge)
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors; row extension is not counted as consumption of the 1-receiver (double consume via two function calls IS caught, so the extension is the missing edge)

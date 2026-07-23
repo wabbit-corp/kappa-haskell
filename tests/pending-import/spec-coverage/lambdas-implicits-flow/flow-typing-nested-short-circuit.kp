@@ -1,0 +1,48 @@
+-- §16.4.2 (flow typing through &&, ||, not, applied recursively): under
+-- ||, the then-body is checked once per success environment, so a common
+-- projection needs every environment to prove a constructor declaring the
+-- field; `not` swaps environments, and the failure side of a two-ctor
+-- test feeds §16.4.1 unique-remaining narrowing for the && right operand.
+module main
+
+data Shape : Type =
+    Circle (size : Int)
+    Square (size : Int)
+    Dot
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE: both || success environments (Circle&&b, Square&&not b)
+-- prove a constructor with `size : Int`, so the common body checks twice.
+pick : Shape -> Bool -> Int
+let pick sh b =
+    if (sh is Circle && b) || (sh is Square && not b) then
+        sh.size
+    else
+        0
+
+-- NEGATIVE: the second || disjunct (bare `b`) proves no constructor for
+-- sh, so the shared then-body fails its second check.
+badDisjunct : Shape -> Bool -> Int
+let badDisjunct sh b =
+    if (sh is Circle && b) || b then
+        sh.size --!! E_UNRESOLVED_MEMBER
+    else
+        0
+
+-- POSITIVE: `not (p is Empty)` succeeds in the failure environment of the
+-- inner test; two-ctor narrowing derives HasCtor Box there, and the &&
+-- right operand is checked under that environment.
+notThenProject : Payload -> Int
+let notThenProject p =
+    if not (p is Empty) && p.value == 1 then
+        p.value
+    else
+        0
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): PASS

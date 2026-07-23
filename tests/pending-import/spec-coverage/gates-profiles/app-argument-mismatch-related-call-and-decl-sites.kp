@@ -1,0 +1,21 @@
+--! mode check
+--! assertDiagnostic error E_APPLICATION_ARGUMENT_MISMATCH
+-- §3.1.1A: "application diagnostics MUST include the call site and the
+-- declaration or inferred callable type site when available."  Here the
+-- callee is a directly declared top-level function, so both origins are
+-- available: the application `f "hi"` (call-site) and the declaration
+-- `f : Integer -> Integer` (declaration-site; a signature-site related
+-- origin would equally satisfy the spec — this pins the natural
+-- standardized role).  Compare: the same wrong-value mistake routed
+-- through an annotation (kappa.type.mismatch) does carry a related
+-- origin, so the application route must not be structurally poorer.
+--! assertDiagnosticRelated error kappa.application.argument-mismatch call-site
+--! assertDiagnosticRelated error kappa.application.argument-mismatch declaration-site
+module main
+
+f : Integer -> Integer
+let f n = n
+
+y : Integer
+let y = f "hi" --!! E_APPLICATION_ARGUMENT_MISMATCH
+-- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH is emitted but its JSON has related: [] (and payload kind "none"): neither call-site nor declaration-site related origins are attached

@@ -21,6 +21,6 @@ let peek s =
     case MkSecret n -> n --!! kappa.name.unresolved
     case _ -> 0
 
--- STATUS(a51e1bf): FAIL — derive is unsupported (E_UNSUPPORTED in lib), so
+-- STATUS(a0497523): FAIL — derive is unsupported (E_UNSUPPORTED in lib), so
 -- no Eq Secret instance is ever published and main additionally gets an
 -- unsolved (==) implicit: 4 errors instead of the 2 opacity errors.

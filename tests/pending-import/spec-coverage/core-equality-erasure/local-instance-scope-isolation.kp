@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §30.1.1 local instances: a local instance participates in implicit
+-- resolution only within its block scope, and it is permitted only if
+-- its head mentions at least one trait or type declared in the same (or
+-- an enclosing local) block scope — a block-local instance for a fully
+-- global head is rejected.
+module main
+
+-- POSITIVE: local trait + local data + local instance, resolved inside
+-- the block via closure-converted bare occurrences
+withLocal : String
+let withLocal =
+    block
+        data Tag : Type =
+            MkTag
+        trait Desc (a : Type) =
+            describe : a -> String
+        instance Desc Tag =
+            let describe t = "tag"
+        describe MkTag
+
+-- NEGATIVE: the instance head mentions only the global trait and the
+-- global type, so the local instance declaration is not permitted
+-- (the spec registers no dedicated family; error count only)
+trait Greet (a : Type) =
+    greet : a -> String
+
+data G : Type =
+    MkG
+
+bad : String
+let bad =
+    block
+        instance Greet G =
+            let greet g = "hi"
+        greet MkG
+
+-- STATUS(a0497523): FAIL — local data/trait/instance declarations inside block are E_UNSUPPORTED (6 errors), so neither the positive local-resolution half nor the global-head rejection is reachable

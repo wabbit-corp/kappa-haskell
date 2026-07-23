@@ -1,0 +1,36 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §16.1.7.1 Step 3 (L19970-19977) applies only when exact unification
+-- failed "solely because ... outermost binder QUANTITIES differ"; §12.2
+-- (L14017-14019): "& is not a quantity" but a borrowed access marker.
+-- So a borrowed-binder arrow and an owned ω-binder arrow must not unify
+-- and must not be coerced by arrow subsumption, in either direction.
+module main
+
+data Token : Type =
+    MkToken Int
+
+applyBorrowFn : ((& x : Token) -> Int) -> Int
+let applyBorrowFn (f : (& x : Token) -> Int) : Int = 0
+
+omegaFn : (ω x : Token) -> Int
+let omegaFn (ω x : Token) : Int = 0
+
+-- NEGATIVE: owned ω-binder function where a borrowed-binder function is
+-- demanded: the callee would hand it a borrowed view as if owned.
+badOwnedForBorrow : Int
+let badOwnedForBorrow = applyBorrowFn omegaFn --!! kappa.application.argument-mismatch
+
+applyOmegaFn : ((ω x : Token) -> Int) -> Int
+let applyOmegaFn (f : (ω x : Token) -> Int) : Int = 0
+
+borrowFn : (& x : Token) -> Int
+let borrowFn (& x : Token) : Int = 0
+
+-- NEGATIVE: borrowed-binder function where an owned-binder function is
+-- demanded: access mode is not an arrow-subsumption quantity case.
+badBorrowForOwned : Int
+let badBorrowForOwned = applyOmegaFn borrowFn --!! kappa.application.argument-mismatch
+
+-- STATUS(a0497523): FAIL — the compiler accepts BOTH directions (0 errors): borrowed-binder and ω-binder arrows unify at application boundaries, i.e. binder access modes are dropped when arrow types are compared (soundness-relevant: an ω function can be passed where a borrowed-view consumer is demanded).

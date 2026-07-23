@@ -14,4 +14,4 @@ let use = A
 
 --! assertErrorCount 2
 --! assertDiagnosticCodes E_UNICODE_VISUAL_DUPLICATE_BINDING, E_UNICODE_VISUAL_DUPLICATE_BINDING
--- STATUS(a51e1bf): FAIL — compiler accepts all three same-kind declarations (0 errors, only W_UNICODE_CONFUSABLE_IDENTIFIER); visual-duplicate detection is unimplemented
+-- STATUS(a0497523): FAIL — compiler accepts all three same-kind declarations (0 errors, only W_UNICODE_CONFUSABLE_IDENTIFIER); visual-duplicate detection is unimplemented

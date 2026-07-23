@@ -1,0 +1,37 @@
+--! mode check
+--! assertNoErrors
+--! assertEval sameSpan True
+--! assertEval spanOrder LT
+
+-- §28.2 "Instances" (Spec L34907-34919) requires coherent portable evidence
+-- for Eq Duration, Eq Instant, Ord Duration, Ord Instant, Show Duration,
+-- and Show Instant.  The prelude currently exposes only the ad-hoc
+-- durationCompare/instantNanos helpers; the trait-based surface (==,
+-- compare, show) that every other required prelude type gets is absent
+-- for the time types.
+
+module main
+
+-- Eq Duration: 5 ms and 5000 us are the same span
+sameSpan : Bool
+let sameSpan = millis 5 == micros 5000
+
+-- Ord Duration
+spanOrder : Ordering
+let spanOrder = compare (millis 5) (seconds 1)
+
+-- Show Duration (rendering is implementation-defined; only resolution is pinned)
+spanText : String
+let spanText = show (millis 5)
+
+-- Eq/Ord/Show Instant: no portable pure constructor, so pin resolution
+-- through generic use sites.
+instantEqAt : Instant -> Instant -> Bool
+let instantEqAt a b = a == b
+
+instantOrderAt : Instant -> Instant -> Ordering
+let instantOrderAt a b = compare a b
+
+instantTextAt : Instant -> String
+let instantTextAt a = show a
+-- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT x6: no Eq/Ord/Show instances for Duration or Instant; only the ad-hoc durationCompare/instantNanos helpers exist

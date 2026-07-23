@@ -1,0 +1,57 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+-- §18.8.14 (+§18.6): a for loop with NO break/continue/return/else MUST
+-- accept a source supplying only Foldable-style traversal (`sumTwo`), and
+-- MUST NOT require the Iterator protocol or a Monad for it. When the body
+-- can exit early, the standard Iterator protocol IS required — a
+-- Foldable-only source is rejected (`firstNeg`) while an Iterator-only
+-- source is accepted (`drain`).
+module main
+
+data Two (0 a : Type) : Type =
+    MkTwo (fst : a) (snd : a)
+
+instance Foldable Two =
+    let foldr f z t = match t case MkTwo x y -> f x (f y z)
+    let foldl f acc t = match t case MkTwo x y -> f (f acc x) y
+    let foldMap f t = match t case MkTwo x y -> append (f x) (f y)
+
+data Countdown : Type =
+    MkCountdown (n : Int)
+
+instance Iterator Countdown =
+    Item = Int
+    let next this =
+        match this
+        case MkCountdown n ->
+            if leInt n 0 then None
+            else Some (item = n, rest = MkCountdown (subInt n 1))
+
+sumTwo : Two Int -> UIO Unit
+let sumTwo t = do
+    var acc = 0
+    for x in t do
+        acc = addInt acc x
+    printlnString (showInt acc)
+
+firstNeg : Two Int -> UIO Unit
+let firstNeg t = do
+    for x in t do --!! kappa.implicit.unsolved
+        break
+    pure ()
+
+drain : UIO Unit
+let drain = do
+    for x in MkCountdown 3 do
+        if eqInt x 2 then
+            break
+        printlnString (showInt x)
+    pure ()
+
+-- STATUS(a0497523): FAIL — the compiler hardcodes for-loop sources to List (plus
+-- Array/Set/Map/Option/Query/range conversions): all three loops emit
+-- E_TYPE_EQUALITY_MISMATCH against `List ?a`. Neither the §18.8.14 Foldable
+-- fallback for simple loops nor the Iterator protocol for early-exit loops
+-- is implemented.

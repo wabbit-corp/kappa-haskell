@@ -1,0 +1,28 @@
+-- Source: Racket guide module-require.scrbl (only-in)
+-- Source docs: racket guide module-require.scrbl (corpus repos/github-racket-racket/docs/pkgs/racket-doc/scribblings/guide/module-require.scrbl; restored 2026-06-11 from RACKET_CANDIDATE_LEDGER.md)
+-- Spec: §8.3 (selective import M.(x, y)), §3.2.2 (kappa.name.unresolved)
+-- NOTE: overlaps with tests/pending-import/spec-coverage/modules-imports/module-alias-qualification/selective.kp (selective import vs qualified access)
+--
+-- Pins: `import M.(x, y)` brings ONLY the listed names into unqualified scope
+-- (Racket only-in analogue); other public members stay reachable solely via
+-- qualified access when M is separately module-imported; names not listed are
+-- unresolved unqualified.
+module circleonly
+import geometry.(circleArea, piVal)
+import geometry
+
+-- POSITIVE: circleArea and piVal were imported and are directly in scope.
+areaFive : Float
+let areaFive = circleArea 5.0
+
+piCopy : Float
+let piCopy = piVal
+
+-- POSITIVE: circumference is accessible via the qualified name.
+circFive : Float
+let circFive = geometry.circumference 5.0
+
+-- NEGATIVE: diameterOf was not imported; the unqualified name is unresolved.
+badDiameter : Float
+let badDiameter = diameterOf 5.0    --!! E_NAME_UNRESOLVED
+-- STATUS(a0497523): PASS (whole suite)

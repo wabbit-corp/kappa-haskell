@@ -1,0 +1,51 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_dyn.dats
+--         (`fun<a:type> list_length(xs) = (...) withtype {n:nat} list(a,n) -> int(n)`),
+--         tests/srcgen1/TEST/DATA/test01.dats
+--         (`fun<a:type> list_length ... withtype {n:nat} list(a,n)->int(n)`,
+--          `fun<a:type> power(x,n) = if n>0 then ... withtype (a,int)->a`)
+-- Spec: §9.1-§9.2 (a signature and its defining `let` form one binding
+--       group; the definition must satisfy the declared type),
+--       §10.2 (GADT constructors), §3.2.3 (family kappa.type.mismatch).
+-- ATS3's `withtype` attaches a precise type to a definition after the
+-- fact; Kappa's counterpart is the separate signature declaration that
+-- the following definition is checked against. A body whose computed
+-- literal index contradicts the declared one is kappa.type.mismatch.
+
+--! mode check
+
+module main
+
+-- Size-indexed list.
+data IList (n : Nat) (0 a : Type) : Type =
+    ILNil  : IList 0 a
+    ILCons : (head : a) -> (tail : IList n a) -> IList (n + 1) a
+
+-- POSITIVE: an index-erasing length function checks against its
+-- declared signature.
+iLength : forall (n : Nat) (a : Type). IList n a -> Nat
+let iLength xs =
+    match xs
+    case ILNil -> 0
+    case ILCons _ tl -> 1 + iLength tl
+
+-- POSITIVE: the declared index matches the construction.
+ilOne : IList 1 Integer
+let ilOne = ILCons 42 ILNil
+
+ilThree : IList 3 Integer
+let ilThree = ILCons 1 (ILCons 2 (ILCons 3 ILNil))
+
+-- NEGATIVE: declared as a 5-element list, defined with 3 cons cells.
+fixed5 : IList 5 Integer
+let fixed5 = ILCons 1 (ILCons 2 (ILCons 3 ILNil))   --!! kappa.type.mismatch
+
+-- NEGATIVE: declared empty, defined non-empty.
+notEmpty : IList 0 Integer
+let notEmpty = ILCons 9 ILNil                        --!! kappa.type.mismatch
+
+-- NEGATIVE: declared non-empty, defined empty.
+notNil : IList 1 Integer
+let notNil = ILNil                                   --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 3

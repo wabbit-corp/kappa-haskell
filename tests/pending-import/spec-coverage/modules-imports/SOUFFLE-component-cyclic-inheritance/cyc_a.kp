@@ -1,0 +1,7 @@
+-- Half of the two-module import cycle rejected under §8.2.
+module cyc_a
+
+import cyc_b
+
+aFn : Int -> Int
+let aFn x = x

@@ -1,0 +1,52 @@
+-- §16.4.1 (success-side projection through named GADT constructor
+-- parameters) × §17.1.2 (index refinement from an is-test) × §16.4.3
+-- (alias transport): `v is Succ` on Natural (S Z) licenses v.pred, and the
+-- projection's type is refined by the forced index equation to Natural Z.
+-- Evidence transports across a stable alias in both directions. The else
+-- branches are index-unreachable but still typecheck with literal values.
+--! mode check
+--! assertNoErrors
+--! assertEval rDeep 1
+module main
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Natural (n : PNat) : Type =
+    Zero : Natural Z
+    Succ : (pred : Natural n) -> Natural (S n)
+
+-- POSITIVE: projection typed at the refined index (pred : Natural Z).
+predOf : Natural (S Z) -> Natural Z
+let predOf v =
+    if v is Succ then v.pred else Zero
+
+-- POSITIVE: deeper ground index; pred : Natural (S Z).
+predOfTwo : Natural (S (S Z)) -> Natural (S Z)
+let predOfTwo v =
+    if v is Succ then v.pred else Succ Zero
+
+-- POSITIVE: test the alias, project the original.
+aliasProj : Natural (S Z) -> Natural Z
+let aliasProj v =
+    block
+        let w = v
+        if w is Succ then v.pred else Zero
+
+-- POSITIVE: test the original, project the alias.
+aliasProj2 : Natural (S Z) -> Natural Z
+let aliasProj2 v =
+    block
+        let w = v
+        if v is Succ then w.pred else Zero
+
+toInt : Natural n -> Int
+let toInt v =
+    match v
+    case Zero -> 0
+    case Succ p -> 1
+
+rDeep : Int
+let rDeep = toInt (predOfTwo (Succ (Succ Zero)))
+-- STATUS(a0497523): PASS

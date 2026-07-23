@@ -1,0 +1,46 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system2/type_system2.dl,
+--   tests/semantic/fact_arity/fact_arity.dl,
+--   souffle-lang #293 (records of the wrong size).
+-- Spec: §10.1.1 named constructor application ("Extra labels not present in
+--   the constructor's argument list are an error"); §3.2.10 (family
+--   kappa.constructor.arity, portable alias E_CONSTRUCTOR_ARITY_MISMATCH).
+-- Pins: a named constructor application supplying a label the constructor
+-- does not declare is rejected in family kappa.constructor.arity.
+
+--! mode check
+
+module main
+
+data Single : Type =
+    Single (x : Int)
+
+data Double : Type =
+    Double (x : Int) (y : Int)
+
+data Triple : Type =
+    Triple (x : Int) (y : Int) (z : Int)
+
+-- POSITIVE: exact field counts.
+s : Single
+let s = Single { x = 1 }
+d : Double
+let d = Double { x = 1, y = 2 }
+t : Triple
+let t = Triple { x = 1, y = 2, z = 3 }
+
+-- NEGATIVE: Single given an extra unknown label `y`.
+badS : Single
+let badS = Single { x = 1, y = 2 }    --!! kappa.constructor.arity
+
+-- NEGATIVE: Double given an extra unknown label `z`.
+badD : Double
+let badD = Double { x = 1, y = 2, z = 3 }    --!! kappa.constructor.arity
+
+-- NEGATIVE: Triple given an extra unknown label `w`.
+badT : Triple
+let badT = Triple { x = 1, y = 2, z = 3, w = 4 }    --!! kappa.constructor.arity
+
+--! assertDiagnosticFamily error kappa.constructor.arity
+--! assertErrorCount 3
+
+-- STATUS(a0497523): PASS

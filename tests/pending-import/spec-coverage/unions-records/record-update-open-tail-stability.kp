@@ -28,7 +28,7 @@ addAge : forall (r : RecRow). LacksRec r age =>
 let addAge (@0 r : RecRow) (@_ : LacksRec r age) (1 rec : (name : String | r)) : (name : String, age : Integer | r) =
     rec.{ age := 36 }
 
--- STATUS(a51e1bf): FAIL — the compiler accepts setLen (0 errors): the
+-- STATUS(a0497523): FAIL — the compiler accepts setLen (0 errors): the
 -- StableUnderRecChange obligation of §13.2.5 is never generated, and the
 -- kappa.record.open-tail-invalidated family is not registered. This is
 -- the soundness hole the spec rule exists to close.

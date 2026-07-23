@@ -19,10 +19,10 @@ module test
 type Positive = Number  -- conceptually: Number with value > 0, modeled as a contract
 
 leftSide : (count : Number)
-let leftSide = (count = 5)
+let leftSide = (count = 5,)
 
 rightSide : (count : Number)
-let rightSide = (count = 5)
+let rightSide = (count = 5,)
 
 merged1 : (count : Number)
 let merged1 = leftSide & rightSide
@@ -40,10 +40,10 @@ let mergedCount = merged1.count
 type GreaterThan1024 = Number  -- models the contract: value > 1024
 
 leftPort : (port : GreaterThan1024)
-let leftPort = (port = 80)    -- violates GreaterThan1024
+let leftPort = (port = 80,)    -- violates GreaterThan1024
 
 rightPort : (port : Number)
-let rightPort = (port = 80)
+let rightPort = (port = 80,)
 
 -- Merging accumulates both contracts on `port`.
 -- The value 80 fails GreaterThan1024, so the merged result must fail.
@@ -54,10 +54,10 @@ let mergedPort = leftPort & rightPort      --!! kappa.type.mismatch
 
 -- POSITIVE: value 8080 satisfies both Number and GreaterThan1024.
 leftPortOk : (port : GreaterThan1024)
-let leftPortOk = (port = 8080)
+let leftPortOk = (port = 8080,)
 
 rightPortOk : (port : Number)
-let rightPortOk = (port = 8080)
+let rightPortOk = (port = 8080,)
 
 mergedPortOk : (port : Number)
 let mergedPortOk = leftPortOk & rightPortOk

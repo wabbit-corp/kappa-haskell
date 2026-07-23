@@ -1,0 +1,66 @@
+-- Source: ATS-Xanadu tests/srcgen1/TEST/DATA/syntax_sta.sats
+--         (`fun fact{n:nat}(x: int(n)): int(fact(n))`,
+--          `fun fact: {n:nat} int(n) -> int(fact(n))`,
+--          declared vs. actual type),
+--         ATS-Xanadu issue #15 (parsing impldecl; `{a}<b> ident (funargs) = ...`)
+-- Spec: §9.1-§9.2 (signatures and definitions form one binding group;
+--       the definition is checked against the declared signature),
+--       §10.2 (GADT-style constructors), §3.2.3 (kappa.type.mismatch).
+-- Pins the ATS3 obligation that a declared dependent signature's index
+-- values must be satisfied by the implementation: a constructor chain
+-- whose computed literal index differs from the annotation is rejected.
+-- Literal Nat arithmetic (`+`, `*`) folds during definitional equality;
+-- symbolic identities are not definitional and are not relied on.
+
+--! mode check
+
+module main
+
+-- Peano-style singletons: PeanoNat n has exactly the shape of n.
+data PeanoNat (n : Nat) : Type =
+    PZero : PeanoNat 0
+    PSucc : (pred : PeanoNat n) -> PeanoNat (n + 1)
+
+-- POSITIVE: an index-erasing function needs no index reasoning.
+toNat : forall (n : Nat). PeanoNat n -> Nat
+let toNat p =
+    match p
+    case PZero -> 0
+    case PSucc p2 -> 1 + toNat p2
+
+-- POSITIVE: declared index matches the construction.
+two : PeanoNat 2
+let two = PSucc (PSucc PZero)
+
+-- NEGATIVE: declared index 3, actual construction 2.
+badTwo : PeanoNat 3
+let badTwo = PSucc (PSucc PZero)         --!! kappa.type.mismatch
+
+-- A witness family for factorial: FactWitness n r  ~  fact(n) = r.
+data FactWitness (n : Nat) (r : Nat) : Type =
+    FactZero : FactWitness 0 1
+    FactSucc : (prev : FactWitness n r) -> FactWitness (n + 1) ((n + 1) * r)
+
+-- POSITIVE: fact 0 = 1, fact 1 = 1, fact 2 = 2, fact 3 = 6.
+fact1 : FactWitness 1 1
+let fact1 = FactSucc FactZero
+
+fact2 : FactWitness 2 2
+let fact2 = FactSucc fact1
+
+fact3 : FactWitness 3 6
+let fact3 = FactSucc fact2
+
+fact4 : FactWitness 4 24
+let fact4 = FactSucc fact3
+
+-- NEGATIVE: claiming fact 3 = 5 (wrong result index).
+badFact3 : FactWitness 3 5
+let badFact3 = FactSucc fact2            --!! kappa.type.mismatch
+
+-- NEGATIVE: claiming fact 4 = 25 (4 * 6 = 24, not 25).
+badFact4 : FactWitness 4 25
+let badFact4 = FactSucc fact3            --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 3

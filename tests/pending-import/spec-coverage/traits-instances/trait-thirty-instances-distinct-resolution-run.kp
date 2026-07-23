@@ -1,0 +1,139 @@
+-- §14 (traits) at scale: THIRTY instances of one trait on thirty distinct
+-- nominal types in one module. Instance resolution must select the correct
+-- dictionary per use site (first, middle, last: 0 + 13 + 29 = 42), with no
+-- coherence or overlap diagnostics — all heads are distinct.
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "42\n"
+module main
+
+trait Tag (0 a : Type) =
+    tag : a -> Int
+
+data T00 : Type =
+    MkT00
+data T01 : Type =
+    MkT01
+data T02 : Type =
+    MkT02
+data T03 : Type =
+    MkT03
+data T04 : Type =
+    MkT04
+data T05 : Type =
+    MkT05
+data T06 : Type =
+    MkT06
+data T07 : Type =
+    MkT07
+data T08 : Type =
+    MkT08
+data T09 : Type =
+    MkT09
+data T10 : Type =
+    MkT10
+data T11 : Type =
+    MkT11
+data T12 : Type =
+    MkT12
+data T13 : Type =
+    MkT13
+data T14 : Type =
+    MkT14
+data T15 : Type =
+    MkT15
+data T16 : Type =
+    MkT16
+data T17 : Type =
+    MkT17
+data T18 : Type =
+    MkT18
+data T19 : Type =
+    MkT19
+data T20 : Type =
+    MkT20
+data T21 : Type =
+    MkT21
+data T22 : Type =
+    MkT22
+data T23 : Type =
+    MkT23
+data T24 : Type =
+    MkT24
+data T25 : Type =
+    MkT25
+data T26 : Type =
+    MkT26
+data T27 : Type =
+    MkT27
+data T28 : Type =
+    MkT28
+data T29 : Type =
+    MkT29
+
+instance Tag T00 =
+    let tag x = 0
+instance Tag T01 =
+    let tag x = 1
+instance Tag T02 =
+    let tag x = 2
+instance Tag T03 =
+    let tag x = 3
+instance Tag T04 =
+    let tag x = 4
+instance Tag T05 =
+    let tag x = 5
+instance Tag T06 =
+    let tag x = 6
+instance Tag T07 =
+    let tag x = 7
+instance Tag T08 =
+    let tag x = 8
+instance Tag T09 =
+    let tag x = 9
+instance Tag T10 =
+    let tag x = 10
+instance Tag T11 =
+    let tag x = 11
+instance Tag T12 =
+    let tag x = 12
+instance Tag T13 =
+    let tag x = 13
+instance Tag T14 =
+    let tag x = 14
+instance Tag T15 =
+    let tag x = 15
+instance Tag T16 =
+    let tag x = 16
+instance Tag T17 =
+    let tag x = 17
+instance Tag T18 =
+    let tag x = 18
+instance Tag T19 =
+    let tag x = 19
+instance Tag T20 =
+    let tag x = 20
+instance Tag T21 =
+    let tag x = 21
+instance Tag T22 =
+    let tag x = 22
+instance Tag T23 =
+    let tag x = 23
+instance Tag T24 =
+    let tag x = 24
+instance Tag T25 =
+    let tag x = 25
+instance Tag T26 =
+    let tag x = 26
+instance Tag T27 =
+    let tag x = 27
+instance Tag T28 =
+    let tag x = 28
+instance Tag T29 =
+    let tag x = 29
+
+main : UIO Unit
+let main = printInt (tag MkT00 + tag MkT13 + tag MkT29)
+
+-- STATUS(a0497523): PASS

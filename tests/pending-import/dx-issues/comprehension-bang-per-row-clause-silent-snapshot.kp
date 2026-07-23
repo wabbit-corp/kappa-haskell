@@ -1,0 +1,28 @@
+-- DX EXPECTATION (not necessarily spec-required): a monadic splice inside a
+-- PER-ROW comprehension clause (here an `if` filter, evaluated once per row
+-- per §20.10.7/§20.10.11) should be rejected with a targeted diagnostic —
+-- or given genuine per-row semantics — because §18.3.1's Lift_m defines no
+-- comprehension rule and the two readings differ observably.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the program is ACCEPTED silently; the
+-- splice is hoisted before the whole comprehension and the effect runs
+-- exactly ONCE TOTAL (verified: with a counting Ref, 3 rows leave the
+-- counter at 1), so the filter compares every row against a snapshot. A
+-- user who writes `if x > !(nextThreshold r)` expecting a fresh threshold
+-- per row gets silent snapshot semantics with zero warnings.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch splice|comprehension|per-row|!
+
+step : Ref Int -> UIO Int
+let step = \r -> do
+    let n = !readRef r
+    writeRef r (n + 1)
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let r <- newRef 0
+    let ys = [ for x in [1, 2, 3], if x > !(step r), yield x ]
+    printlnString (showInt (foldl addInt 0 ys))
+-- STATUS(a0497523): FAIL — accepted with 0 errors/warnings; the spliced effect is hoisted before the comprehension and runs once total (counter ends at 1 for 3 rows).

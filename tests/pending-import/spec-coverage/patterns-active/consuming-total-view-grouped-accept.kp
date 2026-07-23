@@ -1,0 +1,57 @@
+-- §17.3.1 (Spec L22595-L22599: a data-type result is a legal active
+-- pattern result) + §17.3.5 "Linear fallthrough restriction for
+-- consuming total views" (L22783-L22792) + §17.3.6.2 (L22812-L22821):
+-- a TOTAL active pattern MAY consume its scrutinee at quantity 1. Its
+-- use is restricted — a refutable subpattern needs a grouped total-view
+-- match that exhausts the view type, or an irrefutable subpattern — but
+-- the declaration itself and both use shapes below are spec-legal.
+-- Total views never "miss", so no Match residue is needed.
+
+--! mode check
+--! assertNoErrors
+
+data Res : Type =
+    MkRes (n : Int)
+
+resVal : (1 r : Res) -> Int
+let resVal (1 r : Res) : Int =
+    match r
+    case MkRes n -> n
+
+data Wrap : Type =
+    Wrap (1 r : Res)
+
+data View : Type =
+    VSmall (1 r : Res)
+    VBig (1 r : Res)
+
+-- Consuming total active pattern: legal per §17.3.5/§17.3.6.2.
+pattern See (1 w : Wrap) : View =
+    match w
+    case Wrap r ->
+        match r
+        case MkRes n -> if n < 10 then VSmall (MkRes n) else VBig (MkRes n)
+
+-- POSITIVE: grouped total-view match, subpatterns exhaust View.
+grouped : (1 w : Wrap) -> Int
+let grouped (1 w : Wrap) : Int =
+    match w
+    case See (VSmall r) -> resVal r
+    case See (VBig r) -> resVal r + 100
+
+-- POSITIVE: an exhaustive or-pattern subpattern is irrefutable in
+-- aggregate for the view type, so a single case suffices.
+orSub : (1 w : Wrap) -> Int
+let orSub (1 w : Wrap) : Int =
+    match w
+    case See (VSmall r | VBig r) -> resVal r
+
+-- STATUS(a0497523): FAIL — the DECLARATION of `See` is rejected outright
+-- with E_ACTIVE_PATTERN_LINEARITY_VIOLATION (kappa-hs.pattern.active,
+-- "cannot thread a residue back on a miss; return 'Match item residue'
+-- instead"): the compiler bans every consuming non-Match active pattern,
+-- so §17.3.5's grouped/irrefutable allowances are unreachable. NOTE this
+-- also means conformance/spec-coverage/patterns-active/
+-- total-active-view-linear-fallthrough.kp passes coincidentally: its one
+-- asserted error anchors at the declaration, not at the `bad` use it
+-- means to pin, and its `ok` (grouped) function is not actually accepted.

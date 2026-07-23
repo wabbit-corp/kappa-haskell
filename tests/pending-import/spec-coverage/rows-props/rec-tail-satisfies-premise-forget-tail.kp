@@ -21,4 +21,4 @@ let forgetExtras (@0 r : RecRow) (@_ : RecTailSatisfies r 0) (rec : (name : Stri
 useClosed : String
 let useClosed = forgetExtras (name = "grace", age = 36)
 
--- STATUS(a51e1bf): FAIL — RecTailSatisfies intrinsic trait not in scope (E_NAME_UNRESOLVED); the spec'd explicit premise form is inexpressible in this implementation
+-- STATUS(a0497523): FAIL — RecTailSatisfies intrinsic trait not in scope (E_NAME_UNRESOLVED); the spec'd explicit premise form is inexpressible in this implementation

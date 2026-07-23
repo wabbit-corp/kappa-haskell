@@ -1,0 +1,47 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.1/§28.2.3: one polymorphic function over Zero/Add evidence is
+-- reused across Nat, Integer, Int, Rational, and Double without
+-- instance hints; portable Int is a transparent alias of Integer, so
+-- values flow between Int and Integer positions with the same evidence.
+module main
+
+sumAll : forall (a : Type). (@_ : Zero a) -> (@_ : Add a) -> List a -> a
+let sumAll xs = foldl (\acc x -> add acc x) zero xs
+
+natSum : Nat
+let natSum = sumAll (1 :: 2 :: 3 :: Nil)
+
+integerSum : Integer
+let integerSum = sumAll (4 :: 5 :: Nil)
+
+intSum : Int
+let intSum = sumAll (6 :: 7 :: Nil)
+
+doubleSum : Double
+let doubleSum = sumAll (1.5 :: 2.5 :: Nil)
+
+rationalSum : Rational
+let rationalSum = sumAll (fromInteger 1 :: fromInteger 2 :: Nil)
+
+-- §28.2.3: Int ≡ Integer transparency, both directions.
+asInteger : Integer -> Integer
+let asInteger x = x
+
+intToIntegerFlow : Integer
+let intToIntegerFlow = asInteger intSum
+
+asInt : Int -> Int
+let asInt x = x
+
+integerToIntFlow : Int
+let integerToIntFlow = asInt integerSum
+
+--! assertEval natSum 6
+--! assertEval integerSum 9
+--! assertEval intSum 13
+--! assertEval doubleSum 4
+--! assertEval intToIntegerFlow 13
+--! assertEval integerToIntFlow 9
+-- STATUS(a0497523): PASS

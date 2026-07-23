@@ -15,4 +15,4 @@ let useTag = tag "hi"
 
 --! assertDiagnosticMatch unsafe
 --! assertAuditLedger unsafeAssertProof
--- STATUS(a51e1bf): FAIL — the safe importer compiles with zero diagnostics: the unsafe-erasure evidence from ulib is silently trusted even though the build profile never accepted unsafe proof assertions (only the ledger entry survives).
+-- STATUS(a0497523): FAIL — the safe importer compiles with zero diagnostics: the unsafe-erasure evidence from ulib is silently trusted even though the build profile never accepted unsafe proof assertions (only the ledger entry survives).

@@ -12,4 +12,4 @@ module main
 
 let λ = 1 --!! E_FEATURE_INACTIVE
 
--- STATUS(a51e1bf): FAIL — kappa.feature.gated payload carries no parser-recovery status field; the §3.2.1 'recognized only for recovery' case is not distinguished
+-- STATUS(a0497523): FAIL — kappa.feature.gated payload carries no parser-recovery status field; the §3.2.1 'recognized only for recovery' case is not distinguished

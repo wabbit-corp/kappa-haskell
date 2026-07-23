@@ -1,0 +1,19 @@
+-- §20.4: in `for & pat in collection`, pat must be irrefutable for the
+-- borrowed item type; refutable borrowed matching requires `for? & pat`.
+-- The refutable-pattern rejection is the same E_QUERY_FOR_REFUTABLE family
+-- as the plain `for` form (§20.4.1).
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_FOR_REFUTABLE
+module main
+
+-- NEGATIVE: Some x is refutable for the borrowed Option Int item.
+bad : List (Option Int) -> List Int
+let bad opts =
+    [ for & Some x in opts, yield x ] --!! E_QUERY_FOR_REFUTABLE
+
+-- POSITIVE: the for? & form accepts the same refutable pattern.
+good : List (Option Int) -> List Int
+let good opts =
+    [ for? & Some x in opts, yield x ]
+-- STATUS(a0497523): PASS

@@ -25,4 +25,4 @@ let thunkCase (>=1 y : Int) : Unit =
     let t = thunk (strictId y)
     in () --!! kappa.quantity.positive-lower-bound
 
--- STATUS(a51e1bf): FAIL — delayed uses are not classified: payload is kind 'none' (no §3.2.5 delayed-use classification) and uncalled closure vs unforced thunk get the same generic drop message
+-- STATUS(a0497523): FAIL — delayed uses are not classified: payload is kind 'none' (no §3.2.5 delayed-use classification) and uncalled closure vs unforced thunk get the same generic drop message

@@ -1,0 +1,38 @@
+-- §16.4.1 (failure-side constructor narrowing): a failed test introduces
+-- LacksCtor evidence; when the visible constructor set is finite and
+-- exactly one visible constructor remains, HasCtor for it MUST be derived.
+-- With more than one remaining constructor no positive fact is introduced,
+-- so a constructor-field projection in that branch is ill-formed.
+module main
+
+data Duo : Type =
+    Lit (dvalue : Int)
+    Nil
+
+data Tri : Type =
+    A (avalue : Int)
+    B (bvalue : Int)
+    C (cvalue : Int)
+
+-- POSITIVE: two-constructor type; the else branch derives HasCtor Lit,
+-- so the Lit-only field projects.
+twoCtor : Duo -> Int
+let twoCtor x =
+    if x is Nil then
+        0
+    else
+        x.dvalue
+
+-- NEGATIVE: three-constructor type; ruling out A leaves {B, C}, which is
+-- not unique, so no positive fact exists and the projection fails.
+threeCtor : Tri -> Int
+let threeCtor x =
+    if x is A then
+        0
+    else
+        x.bvalue --!! E_UNRESOLVED_MEMBER
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+-- STATUS(a0497523): PASS

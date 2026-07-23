@@ -1,0 +1,42 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- Source issues: kernel/guard_test.exs "refuses to compile nonsensical code"
+--   ("cannot find or invoke local undefined/1"), ELIXIR-PR-5156,
+--   errors_test.exs "macro with undefined local"
+-- Spec: §21.1 (quotation is scope-aware and type-directed: it records the
+--       binding structure of every free object-language name),
+--       §3.2.2 (kappa.name.unresolved)
+-- Elixir rejects a macro whose body references a nonexistent local.  Kappa
+-- macros are ordinary functions over Syntax; a quotation referencing a name
+-- that resolves nowhere is rejected at the quotation itself, at compile
+-- time, with the ordinary unresolved-name family.
+module main
+
+-- POSITIVE: a macro whose quoted body references only defined names.
+addOne : Syntax Integer -> Elab (Syntax Integer)
+let addOne e = pure '{ ${e} + 1 }
+
+viaMacro : Integer
+let viaMacro = $(addOne '{ 41 })
+
+-- POSITIVE: a quoted body referencing a locally defined helper.
+checkRange : Integer -> Integer -> Bool
+let checkRange lo v = lo < v
+
+inRange : Syntax Integer -> Syntax Bool
+let inRange e = '{ checkRange 0 ${e} }
+
+-- NEGATIVE: the quoted body references `undefined1`, which resolves
+-- nowhere; the quotation is rejected at compile time.
+badQuote : Syntax Integer -> Syntax Integer
+let badQuote e =
+    '{ undefined1 ${e} } --!! kappa.name.unresolved
+
+-- NEGATIVE: a second quoted body referencing a nonexistent helper.
+badGuardMacro : Syntax Integer -> Syntax Bool
+let badGuardMacro e =
+    '{ nonexistentGuard ${e} } --!! kappa.name.unresolved
+
+-- STATUS(a0497523): PASS

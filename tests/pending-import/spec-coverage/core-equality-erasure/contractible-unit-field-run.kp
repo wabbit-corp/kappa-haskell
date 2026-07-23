@@ -1,0 +1,28 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "n=5 u=ok\nsum=8\n"
+
+-- §31.2.1 inhabitant-driven representation elision is an as-if
+-- optimization: a Unit-typed (Contractible) record field may be elided
+-- from storage, but every surviving elimination form — projection,
+-- reconstruction, passing through functions — must behave exactly as
+-- if the field were stored.
+module main
+
+type Tagged = (u : Unit, n : Int)
+
+passThrough : Tagged -> Tagged
+let passThrough t = t
+
+-- reconstruct from projections (record η) and update the payload
+bump : Tagged -> Tagged
+let bump t = (u = t.u, n = t.n + 3)
+
+main : UIO Unit
+let main = do
+    let t = passThrough (u = (), n = 5)
+    let ignored : Unit = t.u
+    printlnString (stringAppend "n=" (stringAppend (showInt t.n) " u=ok"))
+    printlnString (stringAppend "sum=" (showInt (bump t).n))
+
+-- STATUS(a0497523): PASS

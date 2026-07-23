@@ -1,0 +1,56 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system_sum_types2/type_system_sum_types2.dl,
+--   souffle-lang #2448 (ADTs with negation and undeclared branches).
+-- Spec: §7.1 ordinary lexical lookup; §3.2.2 name/import diagnostics
+--   (family kappa.name.unresolved).
+-- Pins: a constructor name never declared by any data type in scope is an
+-- unresolved name (Souffle's "Undeclared branch"), whether it looks like a
+-- misspelled constructor of a known type or a wholly unknown name. Error
+-- tolerance (§3.1) still resolves and checks the rest of the file.
+
+--! mode check
+
+module main
+
+data Color : Type =
+    Red
+    Green
+    Blue
+
+data Wrap (0 a : Type) : Type =
+    WNone
+    WSome a
+
+-- POSITIVE: declared constructors used correctly.
+c1 : Color
+let c1 = Red
+c2 : Color
+let c2 = Blue
+m1 : Wrap Int
+let m1 = WNone
+m2 : Wrap Int
+let m2 = WSome 42
+
+-- NEGATIVE: Yellow is not declared in Color (or any other type).
+bad1 : Color
+let bad1 = Yellow    --!! kappa.name.unresolved
+
+-- NEGATIVE: WSomee is not a constructor of Wrap (misspelling).
+bad2 : Wrap Int
+let bad2 = WSomee 10    --!! kappa.name.unresolved
+
+-- NEGATIVE: completely unknown constructor name.
+bad3 : Color
+let bad3 = Magenta    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 3
+
+-- POSITIVE: pattern matching on declared constructors.
+describeColor : Color -> String
+let describeColor c =
+    match c
+    case Red -> "red"
+    case Green -> "green"
+    case Blue -> "blue"
+
+-- STATUS(a0497523): PASS

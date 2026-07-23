@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch (borrow)
+
+-- §12.4.1: a borrowed binding is a place alias — "Projecting from the
+-- alias extends that same path rather than creating a fresh root."
+-- With `let & c = n.inner`, the source form `~c.value` therefore
+-- denotes the place n.inner.value, whose consumption overlaps the live
+-- borrow footprint n.inner, so the call MUST be rejected
+-- (§12.4, §18.9.3). Accepting it consumes the quantity-1 place
+-- n.inner.value twice: once through the borrow, once via `finishNest`.
+module main
+
+data Token : Type =
+    Token
+
+type Cell = (1 tok : Token, tag : Int)
+type Nest = (inner : Cell, other : Int)
+
+useToken : (inout t : Token) -> UIO (1 t : Token,)
+let useToken (inout t : Token) : UIO (1 t : Token,) =
+    pure (t = t,)
+
+finishNest : (1 n : Nest) -> UIO Int
+let finishNest (1 n : Nest) : UIO Int =
+    match n.inner.tok
+    case Token -> pure n.other
+
+bad : (1 n : Nest) -> UIO Int
+let bad (1 n : Nest) : UIO Int =
+    do
+        do
+            let & c = n.inner
+            useToken ~c.tok
+        finishNest n
+
+-- STATUS(a0497523): FAIL — 0 errors: `~c.tok` through the borrowed alias is accepted as if `c` were a fresh root; write-back rebinds only `c`, n.inner.tok is never consumed nor restored, and the token is consumed twice (callee + finishNest). Run-mode probe on an Int variant prints alias=successor, root=old value.

@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 declares the Alternative trait (Spec L34532-34537) with members
+--     empty : f a
+--     (<|>) : f a -> f a -> f a
+--     let orElse : f a -> f a -> f a = (<|>)
+-- and the §28.2 term list (L33623-33624, restated as overloaded members at
+-- L33705) exports `empty`, `(<|>)`, and `orElse` as that trait's members.
+--
+-- The compiler's prelude diverges twice:
+--   * the empty member is spelled `emptyA`, so `alt.empty` (and unqualified
+--     `empty` under Alternative evidence) does not resolve;
+--   * `orElse` is a standalone monomorphic `Option a -> a -> a`
+--     default-extractor, not the trait's alternation member, so generic
+--     `orElse x y : f a` is a type mismatch and `alt.orElse` is unresolved.
+-- Only `(<|>)` matches the spec surface today.
+
+module main
+
+chooseOp : forall (f : (0 A : Type) -> Type) (a : Type). (@_ : Alternative f) -> f a -> f a -> f a
+let chooseOp x y = x <|> y
+
+chooseByName : forall (f : (0 A : Type) -> Type) (a : Type). (@_ : Alternative f) -> f a -> f a -> f a
+let chooseByName x y = orElse x y
+
+chooseByProjection : forall (f : (0 A : Type) -> Type) (a : Type). (@alt : Alternative f) -> f a -> f a -> f a
+let chooseByProjection @alt x y = alt.orElse x y
+
+emptyByProjection : forall (f : (0 A : Type) -> Type) (a : Type). (@alt : Alternative f) -> f a
+let emptyByProjection @alt = alt.empty
+-- STATUS(a0497523): FAIL — generic orElse is E_TYPE_EQUALITY_MISMATCH (prelude binds orElse : Option a -> a -> a, not the Alternative member); alt.orElse and alt.empty are E_UNRESOLVED_MEMBER (members are spelled emptyA / absent); only (<|>) conforms

@@ -12,4 +12,4 @@ module main
 nested : (outer : (inner : Integer))
 let nested = (outer = (inner = True)) --!! E_TYPE_MISMATCH
 
--- STATUS(a51e1bf): FAIL — mismatch payload has no mismatchPath; only the whole-type expected/actual pair is exposed
+-- STATUS(a0497523): FAIL — mismatch payload has no mismatchPath; only the whole-type expected/actual pair is exposed

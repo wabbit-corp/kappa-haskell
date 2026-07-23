@@ -1,0 +1,41 @@
+-- Source artifacts: Hylo Tests/HyloTests/TestCases/TypeChecking/DuplicateCapture.hylo
+--                   (diagnostics: "duplicate capture name 'z'", "ambiguous use of 'z'"),
+--                   Tests/HyloTests/TestCases/TypeChecking/ExplicitCapture.hylo
+-- Source tests: corpus repos/github-hylo-lang-hylo/tests/Tests/HyloTests/TestCases/TypeChecking/DuplicateCapture.hylo (restored 2026-06-11 from HYLO_ISSUE_IMPORT_PLAN.md)
+-- Spec: §17.2.2 ("Duplicate binders within the same pattern are an error")
+-- Pins: Kappa has no lambda capture lists (captures are implicit), so Hylo's
+-- duplicate-capture maps to the duplicate-binder rule: one pattern binding
+-- the same name twice — flat or nested — is rejected. The spec assigns no
+-- kappa.* family to this; the registered code is E_DUPLICATE_PATTERN_BINDER.
+-- NOTE: overlaps with tests/conformance/patterns/patterns-as-pattern-negative-duplicate-binder.kp
+-- (as-pattern name colliding with an inner binder).
+
+--! mode check
+
+module main
+
+data Pair2 : Type =
+    MkPair2 (first : Option Int) (second : Option Int)
+
+-- POSITIVE: distinct binders in one pattern.
+sumPair : (Int, Int) -> Int
+let sumPair p =
+    match p
+    case (x, y) -> x + y
+
+-- NEGATIVE: one tuple pattern binding `z` twice; any use of `z` in the
+-- body would be ambiguous between the two bindings.
+dupTuple : (Int, Int) -> Int
+let dupTuple p =
+    match p
+    case (z, z) -> z    --!! E_DUPLICATE_PATTERN_BINDER
+
+-- NEGATIVE: the same duplication nested under constructor patterns.
+dupNested : Pair2 -> Int
+let dupNested q =
+    match q
+    case MkPair2 { first = Some z, second = Some z } -> z    --!! E_DUPLICATE_PATTERN_BINDER
+    case _ -> 0
+
+--! assertErrorCount 2
+--! assertDiagnostic error E_DUPLICATE_PATTERN_BINDER

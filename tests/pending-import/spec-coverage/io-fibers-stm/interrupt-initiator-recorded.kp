@@ -32,3 +32,4 @@ let main = do
           else printlnString "initiator:other-fiber"
       case Failure (Interrupt (InterruptCause Requested None)) -> printlnString "initiator:none"
       case Failure c -> printlnString "other-cause"
+-- STATUS(a0497523): FAIL — compiler gap AND test bug: (gap) prelude 'interrupt' sends InterruptCause Requested None, spec §18.1.4 requires Some(caller id) — fixed copy runs 'initiator:none'; (bug) if/then/else must be one line (§5.4) and the ctor import is missing.

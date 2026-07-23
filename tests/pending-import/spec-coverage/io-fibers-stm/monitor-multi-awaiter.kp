@@ -1,0 +1,45 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "a1:7\na2:7\n"
+
+-- §18.1.8 (Spec.md L22600-22609): a monitor is one-way, non-destructive
+-- termination observation. Two fibers concurrently awaitMonitor the SAME
+-- Monitor while the monitored fiber is still parked; when it terminates,
+-- both awaiters receive the recorded Exit (observation does not consume
+-- it, and neither awaiter becomes a parent of the monitored fiber).
+module main
+
+import std.prelude.(type Exit(..))
+
+target : Promise Void Unit -> UIO Int
+let target gate = do
+    let _ <- awaitPromise gate
+    ioPure 7
+
+awaiter : Monitor Void Int -> UIO Int
+let awaiter mon = do
+    let ex <- awaitMonitor mon
+    match ex
+      case Success v -> ioPure v
+      case Failure c -> ioPure (0 - 1)
+
+report : String -> Exit Void Int -> UIO Unit
+let report label ex = match ex
+    case Success v -> printlnString (label ++ ":" ++ showInt v)
+    case Failure c -> printlnString (label ++ ":failed")
+
+main : UIO Unit
+let main = do
+    let gate <- newPromise
+    let tf <- fork (target gate)
+    let mon <- monitor tf
+    let a1 <- fork (awaiter mon)
+    let a2 <- fork (awaiter mon)
+    -- let both awaiters park on the monitor before the target terminates
+    sleepFor (millis 20)
+    let _ <- completePromise gate (Success ())
+    let e1 <- await a1
+    report "a1" e1
+    let e2 <- await a2
+    report "a2" e2
+-- STATUS(a0497523): PASS

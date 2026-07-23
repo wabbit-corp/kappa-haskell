@@ -1,0 +1,45 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "body-and-defer:then-7-9\ndefer-only:fail-9\nbody-only:fail-7\n"
+
+-- §32.2.12 canonical composition rows, observed through sandbox (§18.1.2):
+--   * body fails (Fail 7) and its do-scope defer also fails (Fail 9)
+--     -> Failure (Then (Fail 7) (Fail 9));
+--   * body succeeds and cleanup fails -> Failure (Fail 9) with NO Then wrapper;
+--   * body fails and cleanup is clean -> Failure (Fail 7) with NO Then wrapper.
+module main
+
+bodyAndDeferFail : IO Int Int
+let bodyAndDeferFail = do
+    defer (throwIO 9)
+    throwIO 7
+
+deferFailOnly : IO Int Int
+let deferFailOnly = do
+    defer (throwIO 9)
+    ioPure 1
+
+bodyFailOnly : IO Int Int
+let bodyFailOnly = do
+    defer (ioPure ())
+    throwIO 7
+
+classify : Cause Int -> IO Void String
+let classify c = match c
+    case Then (Fail 7) (Fail 9) -> ioPure "then-7-9"
+    case Then (Fail 9) (Fail 7) -> ioPure "then-9-7-wrong-order"
+    case Fail 9 -> ioPure "fail-9"
+    case Fail 7 -> ioPure "fail-7"
+    case _ -> ioPure "cause:other"
+
+probe : String -> IO Int Int -> UIO Unit
+let probe tag body = do
+    let r <- catchIO (ioBind (sandbox body) (\v -> ioPure "succeeded")) classify
+    printlnString (tag ++ ":" ++ r)
+
+main : UIO Unit
+let main = do
+    probe "body-and-defer" bodyAndDeferFail
+    probe "defer-only" deferFailOnly
+    probe "body-only" bodyFailOnly
+-- STATUS(a0497523): PASS

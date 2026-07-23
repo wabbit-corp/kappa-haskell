@@ -1,0 +1,49 @@
+--! mode check
+--! assertNoErrors
+--! assertEval folded 6
+--! assertEval keptSum 5
+--! assertEval fmSum 6
+--! assertEval travSum 6
+
+-- §28.2 "Container and traversal" (Spec L35022-35025) requires the portable
+-- instances: Functor Array, Foldable Array, Traversable Array,
+-- Filterable Array, FilterMap Array.  §28.2 restates it prose-side at
+-- L34525: "The portable prelude MUST provide coherent instances of
+-- Foldable, Traversable, Filterable, and FilterMap for List and Array."
+-- The List instances exist (tests/conformance/prelude/
+-- stdlib-prelude-positive-container-instances.kp); this pins the Array half.
+
+module main
+
+arr : Array Integer
+let arr = arrayFromList (1 :: 2 :: 3 :: Nil)
+
+sumList : List Integer -> Integer
+let sumList xs =
+    match xs
+      case Nil -> 0
+      case h :: t -> h + sumList t
+
+-- Functor Array
+mapped : Array Integer
+let mapped = map (\x -> x * 2) arr
+
+-- Foldable Array
+folded : Integer
+let folded = foldr (\x -> \acc -> x + acc) 0 arr
+
+-- Filterable Array
+keptSum : Integer
+let keptSum = sumList (arrayToList (filter (\x -> 1 < x) arr))
+
+-- FilterMap Array
+fmSum : Integer
+let fmSum = sumList (arrayToList (filterMap (\x -> if x == 2 then None else Some (x * 2)) arr))
+
+-- Traversable Array (into Applicative Option)
+travSum : Integer
+let travSum =
+    match traverse (\x -> Some x) arr
+      case Some ys -> sumList (arrayToList ys)
+      case None -> 0 - 1
+-- STATUS(a0497523): FAIL — E_UNSOLVED_IMPLICIT x5: no Functor/Foldable/Filterable/FilterMap/Traversable Array instances; every §28.2-required Array container operation is unsolvable

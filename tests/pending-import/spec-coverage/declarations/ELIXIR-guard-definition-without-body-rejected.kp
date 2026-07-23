@@ -1,0 +1,34 @@
+--! mode check
+--! assertErrorCount 1
+
+-- Source issues: kernel/errors_test.exs "guard without definition"
+--   ("implementation not provided for predefined defmacro foo/1"),
+--   errors_test.exs "function without definition"
+-- Spec: §9.1: "A non-`expect` top-level term signature declaration MUST be
+--       satisfied by exactly one matching top-level definition in the same
+--       source file. If no matching definition exists in that file,
+--       compilation fails.  Standalone definitionless top-level items MUST
+--       use `expect term`."
+-- Elixir rejects a def/defguard header with no body; Kappa's counterpart is
+-- a top-level signature with no matching definition.  §3.2 registers no
+-- standard family for this failure (the original's
+-- kappa.type.missing-signature guess names a family that does not exist in
+-- the registry), so the error count is asserted; the reference
+-- implementation reports E_SIGNATURE_UNSATISFIED.
+-- (Kappa has no header-only macro declaration form: macros are ordinary
+-- functions over Syntax (§21), so the "defguard without when-body" half
+-- collapses into the same signature-without-definition rule.)
+module main
+
+-- POSITIVE: a signature satisfied by a matching definition.
+double : Int -> Int
+let double n = n * 2
+
+-- POSITIVE: a second complete declaration-definition pair.
+square : Int -> Int
+let square n = n * n
+
+-- NEGATIVE: a signature never given a body anywhere in this file.
+tripled : Int -> Int
+
+-- STATUS(a0497523): PASS

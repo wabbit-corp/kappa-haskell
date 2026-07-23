@@ -8,11 +8,11 @@ module main
 nested : Int
 let nested =
     block
-        let x = (m = 42)
+        let x = (m = 42,)
         block
             let x = 5
             x.m
 
 --! assertNoErrors
 --! assertEval nested 42
--- STATUS(a51e1bf): FAIL — receiver lookup stops at the nearest spelled binding group: E_UNRESOLVED_MEMBER (no member 'm') on the inner x instead of continuing outward to the record x
+-- STATUS(a0497523): FAIL — receiver lookup stops at the nearest spelled binding group: E_UNRESOLVED_MEMBER (no member 'm') on the inner x instead of continuing outward to the record x

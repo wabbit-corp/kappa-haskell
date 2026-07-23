@@ -1,0 +1,10 @@
+module widget
+
+-- §8.1: `widget.kp` and `widget.impl.kp` have the same path-derived
+-- module name (`impl` is a fragment tag, not part of the module name), so
+-- they are fragments of the SAME module `widget`.
+data Widget : Type =
+    MkWidget Int
+
+trait Weight (a : Type) =
+    weight : a -> Int

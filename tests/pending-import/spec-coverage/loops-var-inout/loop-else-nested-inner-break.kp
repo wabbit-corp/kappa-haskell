@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "inner 1\ninner 2\nouter-else\ndone\n"
+
+-- §18.6.3/§18.8.13: `break` skips only the `else` of the loop it TARGETS.
+-- An unlabeled break in the inner loop skips the inner else on every outer
+-- iteration, while the outer loop still completes normally (its iteration is
+-- exhausted, no break targets it) and runs its own else.
+module main
+
+main : UIO Unit
+let main = do
+    for i in 1 :: 2 :: Nil do
+        printlnString (stringAppend "inner " (showInt i))
+        for j in 1 :: 2 :: Nil do
+            break
+        else do
+            printlnString "inner-else"
+    else do
+        printlnString "outer-else"
+    printlnString "done"
+
+-- STATUS(a0497523): PASS

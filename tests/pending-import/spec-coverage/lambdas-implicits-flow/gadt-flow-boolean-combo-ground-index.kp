@@ -1,0 +1,40 @@
+-- §16.4.2 × §17.1.2 × §16.3.4: boolean flow typing composes with GADT
+-- family-argument refinement at a ground index. Under ||, the then-body is
+-- checked once per success environment, each proving a size-declaring
+-- constructor of Choice True; under &&, the success evidence feeds a
+-- nested match that omits every other arm (Also excluded only by flow
+-- evidence, Never by index refutation).
+--! mode check
+--! assertNoErrors
+--! assertEval rPick 3
+--! assertEval rPickAlso 5
+--! assertEval rAnd 4
+module main
+
+data Choice (flag : Bool) : Type =
+    Always : (size : Int) -> Choice True
+    Also : (size : Int) -> Choice True
+    Never : Choice False
+
+-- POSITIVE: shared-field projection under each || success environment.
+pick : Choice True -> Bool -> Int
+let pick c b =
+    if (c is Always && b) || (c is Also && not b) then c.size else 0
+
+-- POSITIVE: && success evidence lets the nested match keep only Always.
+andMatch : Choice True -> Bool -> Int
+let andMatch c b =
+    if c is Always && b then
+        match c
+        case Always s -> s
+    else 0
+
+rPick : Int
+let rPick = pick (Always 3) True
+
+rPickAlso : Int
+let rPickAlso = pick (Also 5) False
+
+rAnd : Int
+let rAnd = andMatch (Always 4) True
+-- STATUS(a0497523): PASS

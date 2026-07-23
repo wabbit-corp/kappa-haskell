@@ -1,0 +1,52 @@
+-- Combination: §17.3.5 grouped total-view matching + §17.1.1 indexed-type
+-- exhaustiveness. A total active pattern returns a GADT-indexed view; the
+-- grouped subpatterns are exhaustive exactly when they exhaust the view's
+-- RESULT type, and index unification rules out the view constructors whose
+-- indices cannot match (VZ at S Z, VPos/VNeg at Z).
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "0\n7\n0\n"
+
+data PNat : Type =
+    Z
+    S PNat
+
+data Box (n : PNat) : Type =
+    Box (v : Int)
+
+data View (n : PNat) : Type =
+    VZ : View Z
+    VPos : (v : Int) -> View (S n)
+    VNeg : (v : Int) -> View (S n)
+
+pattern PeekZ (b : Box Z) : View Z =
+    match b
+    case Box v -> VZ
+
+pattern PeekS (b : Box (S Z)) : View (S Z) =
+    match b
+    case Box v -> if v > 0 then VPos v else VNeg v
+
+-- Single subpattern VZ exhausts View Z: VPos/VNeg are unreachable at
+-- index Z by family-argument unification (§17.1.1 via §17.3.5).
+useZ : Box Z -> Int
+let useZ b =
+    match b
+    case PeekZ (VZ) -> 0
+
+-- Grouped total-view match (same head, same args): VPos and VNeg exhaust
+-- View (S Z) because VZ : View Z is unreachable at index S Z.
+useS : Box (S Z) -> Int
+let useS b =
+    match b
+    case PeekS (VPos v) -> v
+    case PeekS (VNeg v) -> 0 - v
+
+main : UIO Unit
+let main = do
+    printInt (useZ (Box 3))
+    printInt (useS (Box 7))
+    printInt (useS (Box 0))
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,41 @@
+-- Source: granule-project/granule PR #191 (Fix unification);
+--         tests/cases/negative/polymorphism/badExistential.gr
+-- Spec: §12.1 (rank-2 parameter types), §16.1.7.1 (application-spine
+--       argument check), §3.1 (kappa.application.argument-mismatch is a
+--       standardized expected/actual family)
+-- The checker must keep rigid (universally quantified) variables distinct
+-- from the fresh skolem introduced by a rank-2 continuation: a consumer
+-- specialised to a rigid `t` cannot be supplied where
+-- `forall (a : Type). a -> b` is demanded. Recast from the original's
+-- higher-kinded church encoding (f : Type -> Type) to a plain abstract
+-- payload — the rigid-vs-skolem property is unchanged; family re-derived
+-- from the original's kappa.type.mismatch guess to the application
+-- argument family used at this site (§3.1; registry gap noted in
+-- docs/SPEC_ISSUES.md).
+
+module test
+
+--! mode check
+
+-- An abstract package hiding some payload type (§9.4).
+expect type Hidden
+
+expect term withHidden :
+    forall (b : Type).
+    (e : Hidden) -> (k : forall (a : Type). a -> b) -> b
+
+-- POSITIVE: a properly polymorphic continuation (constant function)
+-- checks against the rank-2 parameter.
+useHidden : (e : Hidden) -> Int
+let useHidden e = withHidden e (\_ -> 0)
+
+-- NEGATIVE: the continuation is specialised to the rigid `t`; the
+-- existential eliminator only guarantees a fresh skolem `a`, so `t -> b`
+-- cannot be supplied for `forall (a : Type). a -> b`.
+unpackBad :
+    forall (t : Type) (b : Type).
+    (e : Hidden) -> (g : t -> b) -> b
+let unpackBad e g = withHidden e g   --!! kappa.application.argument-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+-- STATUS(a0497523): PASS

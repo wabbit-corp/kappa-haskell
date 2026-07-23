@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.6: the witness-level exact-equality algebra over CoreEq MUST
+-- include transCoreEq and substCoreEq (alongside reflCoreEq/symCoreEq,
+-- which are covered elsewhere). Each definition delegates at the spec
+-- signature. Note the spec renders substCoreEq's motive application as
+-- `P a x` even though P's universe argument is an @0 implicit binder;
+-- here it is applied explicitly as `P @a x`.
+module main
+
+trans : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type) (@0 c : Type) (@0 x : Core G a) (@0 y : Core G b) (@0 z : Core G c). CoreEq x y -> CoreEq y z -> CoreEq x z
+let trans p q = transCoreEq p q
+
+-- transitivity composed with symmetry round-trips to reflexive shape
+loopBack : forall (@0 G : CoreCtx) (@0 a : Type) (@0 b : Type) (@0 x : Core G a) (@0 y : Core G b). CoreEq x y -> CoreEq x x
+let loopBack p = transCoreEq p (symCoreEq p)
+
+subst : forall (@0 G : CoreCtx) (@0 P : forall (@0 u : Type). Core G u -> Type) (@0 a : Type) (@0 b : Type) (@0 x : Core G a) (@0 y : Core G b). CoreEq x y -> P @a x -> P @b y
+let subst p v = substCoreEq p v
+
+-- §21.6: `substCoreEq reflCoreEq v` reduces to `v`
+substRefl : forall (@0 G : CoreCtx) (@0 P : forall (@0 u : Type). Core G u -> Type) (@0 a : Type) (@0 x : Core G a). P @a x -> P @a x
+let substRefl v = substCoreEq reflCoreEq v
+-- STATUS(a0497523): FAIL — transCoreEq/substCoreEq are E_NAME_UNRESOLVED (explicitly deferred in the implementation's prelude)

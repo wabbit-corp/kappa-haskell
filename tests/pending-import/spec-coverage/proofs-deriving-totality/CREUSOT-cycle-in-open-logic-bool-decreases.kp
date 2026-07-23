@@ -1,0 +1,26 @@
+-- Source issues: CREUSOT-cycle
+-- Source tests: creusot should_fail/cycle.rs (corpus repos/github-creusot-rs-creusot/tests/tests/should_fail/cycle.rs; restored 2026-06-11 from CREUSOT_CANDIDATE_LEDGER.md)
+-- Spec: §15.4 (the portable measure forms are Nat, Int/Integer under
+--       the non-negative-subset rule, and tuples thereof — Bool is not
+--       a measure type), §15.11 (explicit decreases: unsolved decrease
+--       goals reject the SCC; within one SCC all decreases clauses must
+--       be of one kind), §3.2.11 (kappa.termination.failure)
+-- Pins: annotating a mutual cycle with `decreases x` where x : Bool
+-- supplies no well-founded measure; the argument merely flips between
+-- calls. The SCC MUST be rejected (error), not accepted with the
+-- annotation ignored.
+
+module main
+
+--! mode check
+
+-- NEGATIVE: Bool is not a §15.4 measure form; no decrease goal can be
+-- discharged for either edge of the cycle.
+p : Bool -> Unit
+q : Bool -> Unit
+
+let p x decreases x = q x                    --!! kappa.termination.failure
+let q x decreases x = p x                    --!! kappa.termination.failure
+
+--! assertDiagnosticFamily error kappa.termination.failure
+-- STATUS(a0497523): FAIL — the Bool-measure `decreases x` cycle is accepted with W_TERMINATION_UNVERIFIED warnings (0 errors); Bool is not a §15.4 measure form and §15.11 requires rejecting the SCC

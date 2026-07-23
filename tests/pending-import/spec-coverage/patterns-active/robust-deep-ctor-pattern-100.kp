@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+--! assertEval hitDeep 1
+
+-- Robustness: a constructor pattern nested 100 deep (and the matching
+-- 100-deep constructor value) must parse, check, and match. Pattern
+-- position has its own recursive descent distinct from expression
+-- position (Spec §14 patterns), so expression-depth coverage does not
+-- imply this shape.
+module main
+
+data Box = MkBox Box | Leaf
+
+probe : Box -> Int
+let probe x =
+    match x
+    case MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (Leaf)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) -> 1
+    case _ -> 0
+
+deepVal : Box
+let deepVal = MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (MkBox (Leaf))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
+
+hitDeep : Int
+let hitDeep = probe deepVal
+-- STATUS(a0497523): PASS

@@ -1,0 +1,46 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §30.1.1: a local data declaration closure-converts over its captured
+-- free variables; the resulting local nominal family has ONE identity
+-- per declaration site, so escaped occurrences are equal iff they are
+-- the same family at definitionally equal captured arguments. Distinct
+-- captured arguments — or distinct declaration sites — do not unify.
+module main
+
+LocalOf : (A : Type) -> Type
+let LocalOf A =
+    block
+        data L : Type =
+            MkL (payload : A)
+        L
+
+-- POSITIVE: same site, equal captured argument, across two separate
+-- normalizations of the escaping application
+idLocal : LocalOf Int -> LocalOf Int
+let idLocal x = x
+
+-- POSITIVE: agreement through a transparent alias spelling
+type LI = LocalOf Int
+
+viaAlias : LI -> LocalOf Int
+let viaAlias x = x
+
+-- a second declaration site with an identical body
+OtherOf : (A : Type) -> Type
+let OtherOf A =
+    block
+        data L : Type =
+            MkL (payload : A)
+        L
+
+-- NEGATIVE: same site, DIFFERENT captured arguments
+badArgs : LocalOf Int -> LocalOf String
+let badArgs x = x --!! E_TYPE_EQUALITY_MISMATCH
+
+-- NEGATIVE: different declaration sites never unify, even with equal
+-- captured arguments and identical bodies
+badSites : LocalOf Int -> OtherOf Int
+let badSites x = x --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a0497523): FAIL — local data declarations inside block are E_UNSUPPORTED ("this local declaration form is not supported inside block"), so closure conversion, Type-valued escape, and site-identity are all unreachable

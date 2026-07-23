@@ -1,0 +1,50 @@
+--! mode check
+--! assertNoErrors
+--! assertEval same True
+
+-- §22.6: 'constructAdt' applies a constructor to checked field
+-- arguments packaged by 'fieldArgument'; an implicit evidence field
+-- may be represented by 'omitImplicitFieldArgument', letting ordinary
+-- implicit insertion solve it at the construction site.
+-- 'constructRecord' builds a closed record literal in canonical
+-- dependency-respecting order even when arguments arrive out of order.
+
+import std.deriving.shape.*
+
+data Wrap : Type =
+    MkWrap (@ev : Eq Integer) (value : Integer)
+
+type Point = (x : Integer, y : Integer)
+
+firstCtor : forall (@0 a : Type). AdtShape a -> Elab ShapeConstructor
+let firstCtor shape =
+    match shape.constructors
+    case c :: _ -> pure c
+    case Nil -> failElab "no constructors"
+
+buildWrap : Elab (Syntax Wrap)
+let buildWrap = do
+    let shape <- inspectAdt @Wrap '{ type Wrap }
+    let ctor <- firstCtor shape
+    match ctor.fields
+    case ev :: v :: Nil ->
+        constructAdt shape ctor (omitImplicitFieldArgument ev :: fieldArgument v '{ 7 } :: Nil)
+    case _ -> failElab "wrong field count"
+
+buildPoint : Elab (Syntax Point)
+let buildPoint = do
+    let shape <- inspectRecord @Point '{ type Point }
+    match shape.fields
+    case fx :: fy :: Nil ->
+        constructRecord shape (fieldArgument fy '{ 2 } :: fieldArgument fx '{ 1 } :: Nil)
+    case _ -> failElab "wrong record field count"
+
+built : Wrap
+let built = $(buildWrap)
+
+pt : Point
+let pt = $(buildPoint)
+
+same : Bool
+let same = pt.x == 1 && pt.y == 2
+-- STATUS(a0497523): FAIL — std.deriving.shape exports no constructAdt/fieldArgument/omitImplicitFieldArgument/constructRecord (unresolved names); the §22.6 generated-construction surface is unimplemented

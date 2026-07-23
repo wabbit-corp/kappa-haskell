@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+-- §3.1.13 / Appendix T.5.1 (assertDiagnosticExplainExists): long-form
+-- explanation entries must be exposed for the diagnostic families and
+-- codes that ordinary mistakes most commonly reach.  These are the exact
+-- families/codes produced by the everyday mistake routes probed by the
+-- sibling consistency tests (annotation vs application vs branch
+-- mismatch, positional vs named arity, duplicates, unresolved names,
+-- literal domains, non-exhaustive matches, parse recovery).  The family
+-- spellings themselves (kappa.*) must resolve in the registry, not just
+-- the implementation codes (conformance/run/explain-registry.kp pins a
+-- code-heavy set; this pins the family-level lookups for the common
+-- checker families).
+--! assertDiagnosticExplainExists kappa.type.mismatch
+--! assertDiagnosticExplainExists kappa.name.unresolved
+--! assertDiagnosticExplainExists kappa.application.argument-mismatch
+--! assertDiagnosticExplainExists kappa.constructor.arity
+--! assertDiagnosticExplainExists kappa.type.literal-domain-mismatch
+--! assertDiagnosticExplainExists kappa.pattern.non-exhaustive
+--! assertDiagnosticExplainExists E_DUPLICATE_DECLARATION
+--! assertDiagnosticExplainExists E_NAMED_ARG_MISSING
+--! assertDiagnosticExplainExists E_RECOVERY_DECLARATION_SKIPPED
+--! assertDiagnosticExplainExists E_NOT_A_TYPE
+module main
+
+x : Integer
+let x = 1
+-- STATUS(a0497523): PASS

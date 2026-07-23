@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+--! assertEval v 42
+
+-- §6.3.5 declares the conventional handler signature
+--     type : Elab (InterpolatedMacro Type)
+-- and adds "Implementations MAY provide additional ordinary
+-- type-producing prefixed-string handlers." For either to exist,
+-- `InterpolatedMacro Type` must be well-kinded, i.e. the §6.3.4.3
+-- trait `InterpolatedMacro (0 t : Type)` must accept `Type` itself as
+-- its index (universe-polymorphically or via cumulativity). A user
+-- type-producing handler then works like any other prefix, in type
+-- position.
+--
+-- The reference compiler rejects `InterpolatedMacro Type` outright
+-- (E_APPLICATION_ARGUMENT_MISMATCH: actual Type1, expected Type), so
+-- no user-written type-producing handler - nor the spec's own `type`
+-- signature - can even be stated.
+
+import std.deriving.shape.*
+
+instance InterpolatedMacro Type =
+    let buildInterpolated fragments = pure '{ Integer }
+
+myty : Elab (InterpolatedMacro Type)
+let myty = pure (summon (InterpolatedMacro Type))
+
+v : myty"ignored"
+let v = 42
+-- STATUS(a0497523): FAIL — E_APPLICATION_ARGUMENT_MISMATCH (actual Type1, expected Type): InterpolatedMacro Type is ill-kinded, so no type-producing handler (including the §6.3.5 `type` signature) can be written

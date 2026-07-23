@@ -1,0 +1,61 @@
+--! mode check
+--! assertNoErrors
+--! assertEval nearest 1
+--! assertEval distinct 10
+
+-- §18.1.18 / §18.1.19: handler matching is by effect-label identity.
+-- (1) Nested handlers for the SAME label: the nearest dynamically
+-- enclosing handler intercepts (inner k 1 wins over outer k 2).
+-- (2) Two distinct labels carrying the same interface are handled
+-- independently: inner.get is answered by the handler for `inner`
+-- (k 10), never by the handler for `outer` (k 20).
+module main
+
+effect State =
+    1 get : Unit -> Int
+    1 put : Int -> Unit
+
+effect label inner : State
+effect label outer : State
+
+innerH : Eff <[State : State]> Int
+let innerH =
+    deep handle State (State.get ()) with
+        case return x -> pure x
+        case get _ k -> k 1
+        case put _ k -> k ()
+
+outerH : Eff <[ ]> Int
+let outerH =
+    deep handle State innerH with
+        case return x -> pure x
+        case get _ k -> k 2
+        case put _ k -> k ()
+
+nearest : Int
+let nearest = runPure outerH
+
+comp : Eff <[outer : State, inner : State]> Int
+let comp =
+    do
+        let _ <- inner.put 1
+        let _ <- outer.put 2
+        inner.get ()
+
+innerHandled : Eff <[outer : State]> Int
+let innerHandled =
+    deep handle inner comp with
+        case return x -> pure x
+        case get _ k -> k 10
+        case put _ k -> k ()
+
+bothHandled : Eff <[ ]> Int
+let bothHandled =
+    deep handle outer innerHandled with
+        case return x -> pure x
+        case get _ k -> k 20
+        case put _ k -> k ()
+
+distinct : Int
+let distinct = runPure bothHandled
+-- STATUS(a0497523): PASS

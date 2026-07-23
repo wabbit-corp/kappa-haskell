@@ -1,0 +1,59 @@
+-- Source issues: souffle-lang/souffle tests/semantic/type_system1/type_system1.dl
+--   (`NumberRelation(nil)` → "Nil constant used as a non-record"),
+--   souffle-lang #479 (weird errors on records).
+-- Spec: §3.2.4 type-equality diagnostics (family kappa.type.mismatch);
+--   §16.1.7.1 argument checking (family kappa.application.argument-mismatch,
+--   portable alias E_APPLICATION_ARGUMENT_MISMATCH); §10.1 named
+--   constructor application.
+-- Kappa has no null: the analogue of Souffle's `nil` misuse is `None` (an
+-- Option constructor) supplied where a non-Option type is required. Pins
+-- that this is rejected — as kappa.type.mismatch in a binding position and
+-- as kappa.application.argument-mismatch in an argument position.
+
+--! mode check
+
+module main
+
+-- POSITIVE: Option types accept None/Some.
+maybeVal : Option Int
+let maybeVal = None
+justVal : Option Int
+let justVal = Some 42
+
+-- POSITIVE: eliminating an Option covers None.
+fromOption : Option Int -> Int
+let fromOption opt =
+    match opt
+    case None -> 0
+    case Some n -> n
+
+-- NEGATIVE: None where Int (non-optional) is expected, binding position.
+badInt : Int
+let badInt = None    --!! kappa.type.mismatch
+
+-- NEGATIVE: None where Int is expected, argument position.
+addOne : Int -> Int
+let addOne n = n + 1
+
+badCall : Int
+let badCall = addOne None    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: None supplied for a String-typed constructor field.
+data WithString : Type =
+    WithString (label : String) (count : Int)
+
+badStruct : WithString
+let badStruct = WithString { label = None, count = 1 }    --!! kappa.type.mismatch
+
+-- POSITIVE: an Option-typed field accepts None.
+data WithOptional : Type =
+    WithOptional (label : Option String) (count : Int)
+
+goodStruct : WithOptional
+let goodStruct = WithOptional { label = None, count = 0 }
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertErrorCount 3
+
+-- STATUS(a0497523): PASS

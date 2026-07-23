@@ -29,4 +29,4 @@ let dupRow =
         let bad : Eff <[C : C, C : C]> Int = pure 1      --!! kappa.effect.row-mismatch
         0
 
--- STATUS(a51e1bf): FAIL — duplicate labels in one effect row are accepted (0 errors); §11.3.2 label uniqueness is not enforced
+-- STATUS(a0497523): FAIL — duplicate labels in one effect row are accepted (0 errors); §11.3.2 label uniqueness is not enforced

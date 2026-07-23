@@ -1,0 +1,22 @@
+-- §18.2.5 x §18.3.1 x §12.3: a spliced computation may take a borrowed
+-- binding downward — the splice runs at its occurrence point, inside the
+-- borrow scope, so passing `x` to a borrowed-accepting action is accepted
+-- and nothing escapes the borrow scope.
+module main
+
+data Cell : Type =
+    MkCell (val : Int)
+
+useB : (& c : Cell) -> UIO Int
+let useB (& c : Cell) : UIO Int = ioPure c.val
+
+-- POSITIVE: borrow of a temporary, consumed downward by a spliced action.
+okSplice : UIO Int
+let okSplice = do
+    let & x = MkCell 9
+    let r = !(useB x)
+    ioPure r
+
+--! mode check
+--! assertNoErrors
+-- STATUS(a0497523): PASS

@@ -1,0 +1,28 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+
+-- §16.1.7.1 Step 3 (L19970-19989): outermost-arrow subsumption checks
+-- BOTH the contravariant inner condition q_inner_dem ⊑ q_inner_cap AND
+-- the ordinary outer argument-slot capability check q_cap ⊑ q_dem, and
+-- an inserted coercion/eta-expansion "does not increase the permitted
+-- usage of the closure value itself" (L19983-19984). A linear closure
+-- may serve a 1-slot via inner coercion, but never an ω-slot.
+module main
+
+applyOmegaSlot : (ω f : (ω x : Int) -> Int) -> Int
+let applyOmegaSlot (ω f : (ω x : Int) -> Int) : Int = f 1 + f 2
+
+applyOnceSlot : (1 f : (ω x : Int) -> Int) -> Int
+let applyOnceSlot (1 f : (ω x : Int) -> Int) : Int = f 1
+
+-- POSITIVE: inner ω ⊑ 1 holds (coercion inserted), outer 1 ⊑ 1 holds.
+useOk : (1 g : (1 x : Int) -> Int) -> Int
+let useOk (1 g : (1 x : Int) -> Int) : Int = applyOnceSlot g
+
+-- NEGATIVE: inner ω ⊑ 1 holds, but outer 1 ⊑ ω fails — the coercion
+-- must not launder g's linearity into an ω-usable closure.
+useBad : (1 g : (1 x : Int) -> Int) -> Int
+let useBad (1 g : (1 x : Int) -> Int) : Int = applyOmegaSlot g --!! kappa.quantity.unsatisfied
+
+-- STATUS(a0497523): PASS

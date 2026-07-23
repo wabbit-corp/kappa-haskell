@@ -1,0 +1,49 @@
+--! mode check
+--! assertNoErrors
+--! assertEval widenedRun 4
+--! assertEval chained 11
+
+-- §18.1.14 row weakening: if r1 ⊆ r2 then Eff r1 a coerces implicitly to
+-- Eff r2 a. Pinned twice: (1) a fully handled Eff <[ ]> computation is
+-- bound at the two-effect row and threaded through both handlers
+-- unchanged; (2) a computation performing only A ops is typed at
+-- <[A, B]> and handled stepwise <[A,B]> -> <[A]> -> <[ ]> (transitive,
+-- behavior-preserving).
+module main
+
+effect A =
+    1 opA : Unit -> Int
+
+effect B =
+    1 opB : Unit -> Int
+
+pureComp : Eff <[ ]> Int
+let pureComp = pure 4
+
+widened : Eff <[A : A, B : B]> Int
+let widened = pureComp
+
+handleB : Eff <[A : A, B : B]> Int -> Eff <[A : A]> Int
+let handleB c =
+    deep handle B c with
+        case return x -> pure x
+        case opB _ k -> k 100
+
+handleA : Eff <[A : A]> Int -> Eff <[ ]> Int
+let handleA c =
+    deep handle A c with
+        case return x -> pure x
+        case opA _ k -> k 7
+
+widenedRun : Int
+let widenedRun = runPure (handleA (handleB widened))
+
+onlyA : Eff <[A : A, B : B]> Int
+let onlyA =
+    do
+        let a <- A.opA ()
+        pure (addInt a 4)
+
+chained : Int
+let chained = runPure (handleA (handleB onlyA))
+-- STATUS(a0497523): PASS

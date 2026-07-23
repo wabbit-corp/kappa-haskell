@@ -21,4 +21,4 @@ let total = addInt secretA secretB
 --! allow_clarify
 --! assertNoErrors
 --! assertEval total 33
--- STATUS(a51e1bf): FAIL — both orderings parse and are gated/audited symmetrically, but the imports are rejected with E_IMPORT_ITEM_NOT_FOUND (unhide does not grant private access) and the refl proofs fail (clarify does not grant transparency).
+-- STATUS(a0497523): FAIL — both orderings parse and are gated/audited symmetrically, but the imports are rejected with E_IMPORT_ITEM_NOT_FOUND (unhide does not grant private access) and the refl proofs fail (clarify does not grant transparency).

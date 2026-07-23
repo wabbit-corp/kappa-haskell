@@ -16,4 +16,4 @@ let applyBoth (@0 q : Quantity) (@0 r : RecRow) (f : (q x : Int) -> Int) (rec : 
 useOmega : Int
 let useOmega = applyBoth @ω (\x -> x) (v = 4, extra = True)
 
--- STATUS(a51e1bf): FAIL — a bound Quantity variable is rejected in binder position ((q x : Int) -> Int gives E_TYPE_EQUALITY_MISMATCH); quantity polymorphism in signatures unimplemented
+-- STATUS(a0497523): FAIL — a bound Quantity variable is rejected in binder position ((q x : Int) -> Int gives E_TYPE_EQUALITY_MISMATCH); quantity polymorphism in signatures unimplemented

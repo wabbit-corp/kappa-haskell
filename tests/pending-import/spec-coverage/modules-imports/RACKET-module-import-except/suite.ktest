@@ -1,0 +1,5 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertEval doubled 14
+--! assertEval tripled 12

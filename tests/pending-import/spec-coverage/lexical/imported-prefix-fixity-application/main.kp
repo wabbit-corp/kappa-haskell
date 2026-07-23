@@ -1,0 +1,14 @@
+module main
+
+-- §5.5.2/§5.5.3: an imported prefix fixity gates prefix use in the
+-- importing module. §5.5.1.1: when a matching prefix fixity is in scope
+-- at that occurrence, (op e) is parsed as unary PREFIX APPLICATION, not
+-- as a right section — so (~~ 5) is (~~) applied to 5, i.e. -5.
+import lib.((~~))
+
+bare : Int
+let bare = ~~5
+
+parenApp : Int
+let parenApp = (~~ 5)
+-- STATUS(a0497523): PASS

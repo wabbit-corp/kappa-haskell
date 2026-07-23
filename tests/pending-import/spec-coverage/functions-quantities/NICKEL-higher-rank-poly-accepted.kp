@@ -1,0 +1,59 @@
+-- Source: nickel tests/typecheck/higher_rank_eval.ncl, higher_rank_coeval.ncl
+-- Spec: §12.2 (forall as implicit quantity-0 dependent-product sugar; rank-2
+--       parameter types), §16.2 (lambdas checked against expected polytypes),
+--       §16.1 (application and implicit instantiation)
+-- NOTE: overlaps with tests/conformance/imported-anon/KITTEN-higher-rank-polymorphic-callable.kp
+-- Pins: rank-2 function types are accepted; a polymorphic argument may be
+-- applied at several types inside one body, lambdas check against rank-2
+-- parameter positions, and a consumer of polymorphic functions (co-eval)
+-- also type-checks.
+
+module test
+
+--! mode check
+--! assertNoErrors
+
+-- POSITIVE: eval applies a rank-2 polymorphic function argument to a value.
+-- `f : forall b. b -> b` can be applied at any type inside the body.
+eval : forall a. (forall b. b -> b) -> a -> a
+let eval f x = f x
+
+evalNumber : Int
+let evalNumber = eval (\x -> x) 42
+
+evalString : String
+let evalString = eval (\x -> x) "hello"
+
+--! assertType evalNumber Int
+--! assertType evalString String
+
+-- POSITIVE: co-eval — a function that accepts a consumer of polymorphic
+-- functions. The argument `consumer` takes the polymorphic identity.
+coEval : ((forall a. a -> a) -> Int) -> Int
+let coEval consumer =
+    let polyF : forall b. b -> b = \y -> y in
+    consumer polyF
+
+coEvalResult : Int
+let coEvalResult = coEval (\f -> f 42)
+
+--! assertType coEvalResult Int
+
+-- POSITIVE: using a rank-2 argument at two different concrete types in one
+-- call.
+useAtTwoTypes : (forall a. a -> a) -> (Int, String)
+let useAtTwoTypes f = (f 1, f "two")
+
+twoTypesResult : (Int, String)
+let twoTypesResult = useAtTwoTypes (\x -> x)
+
+--! assertType twoTypesResult (Int, String)
+
+-- POSITIVE: passing an explicitly polymorphic function to a rank-2 position.
+myId : forall a. a -> a
+let myId x = x
+
+directResult : (Int, String)
+let directResult = useAtTwoTypes myId
+
+-- STATUS(a0497523): PASS

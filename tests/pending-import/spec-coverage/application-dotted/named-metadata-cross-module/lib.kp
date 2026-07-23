@@ -1,0 +1,7 @@
+-- §16.1.7A (L20170-20172): module interface artifacts MUST serialize
+-- named-call metadata for exported callable values when downstream
+-- named application is intended to remain valid.
+module lib
+
+public resize : (image : Int) -> (width : Int) -> Int
+public let resize (image : Int) (width : Int) : Int = image + width

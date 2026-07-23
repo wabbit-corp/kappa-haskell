@@ -1,0 +1,42 @@
+--! mode check
+--! assertNoErrors
+
+-- Source issue: carp-lang/Carp#843
+-- Spec: §12.2 (borrowed binder access), §17.1 (catch-all under a borrowed
+--       scrutinee binds a borrow, not an owned value), §12.2.6 (no
+--       destructor obligation is created by borrow-form elimination)
+-- Carp #843: a match-ref catch-all arm deleted its wildcard binder as if
+-- owned, double-freeing.  Portable Kappa obligation: under a borrowed
+-- scrutinee the catch-all/wildcard introduces no ownership, and the owner
+-- can still consume the value after the borrow-form match.
+module main
+
+data Ex : Type =
+    One
+    | Two String
+
+strLen : (& s : String) -> Int
+let strLen s = 0
+
+-- POSITIVE: the field binder `s` and the catch-all under a borrowed
+-- scrutinee are borrows; the body reads through them and consumes nothing.
+catchAllBorrow : (& ex : Ex) -> Int
+let catchAllBorrow ex =
+    match ex
+    case Two s -> strLen s
+    case _     -> 0
+
+unwrap : (1 ex : Ex) -> Int
+let unwrap (1 ex : Ex) : Int =
+    match ex
+    case One   -> 0
+    case Two _ -> 1
+
+-- POSITIVE: the underlying `Ex` value remains alive after the borrow-form
+-- elimination; the owner still consumes it exactly once afterwards.
+useAfterBorrowMatch : (1 ex : Ex) -> Int
+let useAfterBorrowMatch (1 ex : Ex) : Int =
+    let n = catchAllBorrow ex
+    unwrap ex + n
+
+-- STATUS(a0497523): PASS

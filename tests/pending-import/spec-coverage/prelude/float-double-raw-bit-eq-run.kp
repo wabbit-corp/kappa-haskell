@@ -1,0 +1,26 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "True\nFalse\nFalse\nTrue\nFalse\nTrue\n"
+
+-- §28.2 + §6.1.3: Eq Double is raw IEEE-754 bit equality — a NaN value
+-- equals itself (same bit payload) and 0.0 == -0.0 is False (sign bit
+-- differs). floatEq is IEEE numeric equality — NaN is never
+-- floatEq-equal and +0.0 floatEq -0.0 is True. (sqrt is an
+-- implementation-provided prelude extension used only to obtain NaN.)
+module main
+
+nan : Double
+let nan = sqrt (0.0 - 1.0)
+
+negZero : Double
+let negZero = -0.0
+
+main : UIO Unit
+let main = do
+    println (nan == nan)
+    println (floatEq nan nan)
+    println (0.0 == negZero)
+    println (floatEq 0.0 negZero)
+    println (nan == 1.0)
+    println (floatEq 1.5 1.5)
+-- STATUS(a0497523): PASS

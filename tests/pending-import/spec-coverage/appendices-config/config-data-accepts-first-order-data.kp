@@ -1,0 +1,30 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-data
+--! x-configSchemaScope std.config std.build
+--! assertNoErrors
+
+-- §35.1/§35.2.1: a config unit has no module header and only top-level
+-- non-recursive `let`s; the config-data profile admits first-order data
+-- construction: literals, earlier bindings, records, tuples, lists,
+-- schema-scope constructor application, field projection, record update,
+-- type ascription, and loader-admitted config-safe prefixed strings
+-- (§35.8 — no config-specific interpolation syntax is added).
+-- Staged until a harness provides the configMode capability.
+
+let n = 3
+let earlier = n
+let point = (x = 1, y = 2)
+let projected = point.x
+let updated = point.{ y = 5 }
+let pairT = (1, "two")
+let items = [1, 2, 3]
+let consed = 0 :: items
+let opt = Some "hello"
+let res : Result String Int = Ok 7
+let ord = LT
+let ascribed = (4 : Int)
+let major = 1
+let ver = f"$major.0.1"
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; every form here verified admissible under the implemented config-expression superset via kappa build --manifest --check

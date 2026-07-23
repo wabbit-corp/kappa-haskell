@@ -1,0 +1,45 @@
+-- §15.10 (hidden phase components) at scale: a mutually recursive SCC of
+-- TEN functions forming a single call cycle s0 -> s1 -> ... -> s9 -> s0,
+-- where only the wrap-around edge s9 -> s0 structurally decreases the list
+-- and the nine forward edges preserve the measure entirely. Each forward
+-- edge targets a callee with strictly smaller canonical phase (source
+-- order), so §15.2 minimum acceptance + §15.10 REQUIRE this SCC to be
+-- accepted as termination-certified with no diagnostics. Extends the
+-- existing 2- and 3-member conformance pins
+-- (spec-coverage/proofs-deriving-totality/hidden-phase-mutual-recursion.kp)
+-- to a phase chain of length 10.
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "3\n"
+module main
+
+s0 : List Int -> Int
+s1 : List Int -> Int
+s2 : List Int -> Int
+s3 : List Int -> Int
+s4 : List Int -> Int
+s5 : List Int -> Int
+s6 : List Int -> Int
+s7 : List Int -> Int
+s8 : List Int -> Int
+s9 : List Int -> Int
+
+let s0 xs = s1 xs
+let s1 xs = s2 xs
+let s2 xs = s3 xs
+let s3 xs = s4 xs
+let s4 xs = s5 xs
+let s5 xs = s6 xs
+let s6 xs = s7 xs
+let s7 xs = s8 xs
+let s8 xs = s9 xs
+let s9 xs =
+    match xs
+    case Nil -> 0
+    case _ :: rest -> addInt 1 (s0 rest)
+
+main : UIO Unit
+let main = printInt (s0 (1 :: 2 :: 3 :: Nil))
+
+-- STATUS(a0497523): PASS

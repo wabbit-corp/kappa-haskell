@@ -1,0 +1,48 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2.2 EuclideanSemiring law members + §28.2.3 `EuclideanSemiring Nat`:
+-- `divAndModSameDomain` and `divModIdentity` are ordinary proof-producing
+-- trait members, so demanding the evidence lets a program project each law
+-- at its declared type, both polymorphically and at the mandated Nat
+-- instance.
+module main
+
+-- Polymorphic projection of divAndModSameDomain at its §28.2.2 type.
+sameDomain :
+    forall (a : Type). (@_ : EuclideanSemiring a) ->
+    (x : a) -> (y : a) ->
+    divDefined x y = modDefined x y
+let sameDomain x y = divAndModSameDomain
+
+-- Polymorphic projection of divModIdentity at its §28.2.2 type.
+euclidId :
+    forall (a : Type). (@_ : EuclideanSemiring a) ->
+    (x : a) -> (y : a) ->
+    (@pd : divDefined x y = True) ->
+    (@pm : modDefined x y = True) ->
+    add (multiply (divide x y @pd) y) (modulo x y @pm) = x
+let euclidId x y @pd @pm = divModIdentity
+
+-- §28.2.3: the portable prelude MUST provide EuclideanSemiring Nat, so
+-- both projections instantiate at Nat.
+natSameDomain : (x : Nat) -> (y : Nat) -> divDefined x y = modDefined x y
+let natSameDomain x y = sameDomain x y
+
+natEuclidId :
+    (x : Nat) -> (y : Nat) ->
+    (@pd : divDefined x y = True) ->
+    (@pm : modDefined x y = True) ->
+    add (multiply (divide x y @pd) y) (modulo x y @pm) = x
+let natEuclidId x y @pd @pm = euclidId x y
+
+-- A pd-proof converts to a pm-proof through divAndModSameDomain, so a
+-- caller holding only divDefined evidence can still invoke modulo.
+modFromDivProof :
+    forall (a : Type). (@_ : EuclideanSemiring a) ->
+    (x : a) -> (y : a) ->
+    (@pd : divDefined x y = True) ->
+    a
+let modFromDivProof x y @pd =
+    modulo x y @(trans (sym divAndModSameDomain) pd)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 11; first error: E_APPLICATION_ARGUMENT_MISMATCH "an explicit implicit argument was supplied, but the callee has no implicit parameter he… [was PASS in an earlier STATUS line]

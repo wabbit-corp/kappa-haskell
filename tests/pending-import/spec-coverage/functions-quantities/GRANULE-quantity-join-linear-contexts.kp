@@ -1,0 +1,60 @@
+-- Source: granule-project/granule PR #196 (Fix #195 — linearity bug)
+-- Spec: §12.2.5 (positive lower bounds are completion-path-indexed),
+--       §12.2.6 (destructor use by visible-constructor decomposition),
+--       §12.2.9 (alternative control-flow paths join by the ordinary
+--       quantity join rules), §3.2.5
+-- NOTE: related (>=1 through if/else) coverage:
+--       tests/pending-import/spec-coverage/lambdas-implicits-flow/positive-lower-bound-branch-join.kp
+-- Every match branch must leave a linear binder's obligation in the same
+-- state. A branch that drops it violates the [1,1] lower bound on that
+-- completion path (kappa.quantity.positive-lower-bound — re-derived from
+-- the original's kappa.quantity.unsatisfied guess per §12.2.5/§3.2.5); a
+-- branch that consumes it twice exceeds the upper bound
+-- (kappa.quantity.unsatisfied).
+
+module test
+
+--! mode check
+
+data Tag : Type =
+    TagA
+    TagB
+
+data Token : Type =
+    MkToken (n : Int)
+
+-- Consuming destructor: visible-constructor decomposition (§12.2.6).
+burn : (1 t : Token) -> Int
+let burn t =
+    match t
+      case MkToken n -> n
+
+-- POSITIVE: both branches consume the linear t exactly once.
+balanced : (1 t : Token) -> Tag -> Int
+let balanced t tag =
+    match tag
+      case TagA -> burn t
+      case TagB -> burn t
+
+--! assertType balanced ((1 t : Token) -> Tag -> Int)
+
+-- NEGATIVE: branch TagA consumes t; branch TagB silently drops it.
+-- (The failed lower bound is attributed to t's binder scope.)
+unbalancedDrop : (1 t : Token) -> Tag -> Int
+let unbalancedDrop t tag =     --!! kappa.quantity.positive-lower-bound
+    match tag
+      case TagA -> burn t
+      case TagB -> 0
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+-- NEGATIVE: branch TagB consumes t twice.
+unbalancedDup : (1 t : Token) -> Tag -> Int
+let unbalancedDup t tag =
+    match tag
+      case TagA -> burn t
+      case TagB -> burn t + burn t   --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertErrorCount 2
+-- STATUS(a0497523): PASS

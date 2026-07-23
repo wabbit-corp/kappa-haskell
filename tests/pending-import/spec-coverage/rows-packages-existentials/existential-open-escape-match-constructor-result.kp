@@ -1,0 +1,29 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_EXISTENTIAL_WITNESS_ESCAPE
+
+-- §13.2.11 unpacking: "No opened witness may appear free in the
+-- externally visible type ... returned value ... produced by body";
+-- "if the body type is inferred, the inferred type is checked for the
+-- same non-escape condition before the open expression is accepted."
+-- Here the open body is a MATCH whose branches rebuild the payload, so
+-- its inferred type is `Option a` with `a` the opened witness. The
+-- package is a dead LOCAL binding, so the type cannot be re-rendered
+-- as a stable package projection — the witness escapes and the open
+-- must be rejected. (The check DOES fire when the body's type is an
+-- arrow `a -> a` — see conformance
+-- diagnostics-coverage/e_existential_witness_escape — so a
+-- constructor-applied result type must not slip through.)
+module main
+
+useIt : Int
+let useIt =
+    let p = seal (Some 1) as exists (a : Type). Option a in
+    let esc =
+        open p as exists (a). x in --!! E_EXISTENTIAL_WITNESS_ESCAPE
+            match x
+            case Option.None -> Option.None
+            case Option.Some y -> Option.Some y
+    in 0
+
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors: the witness-escape check fires for arrow-shaped body types (a -> a) but not for a constructor-applied inferred type (Option a) built by a match; the opened witness escapes into the local binding's type unflagged

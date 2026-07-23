@@ -1,0 +1,4 @@
+module rlib
+
+opaque data Pair : Type =
+    MkPair (a : Int) (b : Int)

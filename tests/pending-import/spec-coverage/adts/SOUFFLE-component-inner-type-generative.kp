@@ -1,0 +1,57 @@
+-- Source issues: souffle-lang/souffle tests/semantic/comp_types/comp_types.dl,
+--   tests/semantic/comp_inner_types/comp_inner_types.dl.
+-- Spec: §10.1 data declarations (nominal generativity); §3.2.4
+--   (family kappa.type.mismatch).
+-- Souffle's parameterised components yield nominally distinct inner types
+-- per instantiation. Kappa has no module functors; the §-defined analogue
+-- pinned here is data-declaration generativity: two `data` wrappers around
+-- the same underlying type are nominally distinct and never interchange.
+
+--! mode check
+
+module main
+
+-- Two distinct newtypes wrapping Int — nominally incompatible.
+data IntBox1 : Type =
+    MkBox1 Int
+
+data IntBox2 : Type =
+    MkBox2 Int
+
+make1 : Int -> IntBox1
+let make1 x = MkBox1 x
+
+make2 : Int -> IntBox2
+let make2 x = MkBox2 x
+
+-- POSITIVE: each wrapper is usable at its own type.
+v1 : IntBox1
+let v1 = make1 42
+v2 : IntBox2
+let v2 = make2 99
+
+-- NEGATIVE: an IntBox2 value where IntBox1 is expected.
+combined : IntBox1
+let combined = make2 10    --!! kappa.type.mismatch
+
+-- Two distinct newtypes wrapping different types.
+data StrBox : Type =
+    MkStrBox String
+
+data BoolBox : Type =
+    MkBoolBox Bool
+
+-- POSITIVE: each wrapper with its own payload type.
+s1 : StrBox
+let s1 = MkStrBox "hi"
+b1 : BoolBox
+let b1 = MkBoolBox True
+
+-- NEGATIVE: a StrBox value where BoolBox is expected.
+cross : BoolBox
+let cross = MkStrBox "oops"    --!! kappa.type.mismatch
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

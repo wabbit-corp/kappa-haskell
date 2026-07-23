@@ -1,0 +1,41 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "mixed:0x01686921\nsource-intact:0x6869\nempty-rt:True\nempty-len:0\nfromsized-len:True\n"
+
+-- §29.5 std.bytes: finishBytesBuilder returns the appends concatenated in
+-- source order across all three append forms (byte, Bytes, SizedArray view),
+-- builder operations never mutate an existing Bytes value, and the
+-- bytesAsSizedArray/bytesFromSizedArray round-trip holds for empty input with
+-- bytesLength (bytesFromSizedArray arr) = n (the packed witness).
+module main
+
+import std.bytes.*
+
+src : Bytes
+let src = bytesFromList (b'\x68' :: b'\x69' :: Nil)
+
+mixed : Bytes
+let mixed =
+    open bytesAsSizedArray (singletonByte b'\x21') as exists (n). arr in
+        finishBytesBuilder (bytesBuilderSizedArray arr (bytesBuilderBytes src (bytesBuilderByte b'\x01' newBytesBuilder)))
+
+emptyRoundTrip : Bool
+let emptyRoundTrip =
+    open bytesAsSizedArray emptyBytes as exists (n). arr in (bytesFromSizedArray arr) == emptyBytes
+
+emptyLen : Nat
+let emptyLen =
+    open bytesAsSizedArray emptyBytes as exists (n). arr in bytesLength (bytesFromSizedArray arr)
+
+fromSizedLenAgrees : Bool
+let fromSizedLenAgrees =
+    open bytesAsSizedArray src as exists (n). arr in bytesLength (bytesFromSizedArray arr) == bytesLength src
+
+main : UIO Unit
+let main = do
+    printlnString ("mixed:" ++ showBytes mixed)
+    printlnString ("source-intact:" ++ showBytes src)
+    printlnString ("empty-rt:" ++ (if emptyRoundTrip then "True" else "False"))
+    printlnString ("empty-len:" ++ showInt (natToInt emptyLen))
+    printlnString ("fromsized-len:" ++ (if fromSizedLenAgrees then "True" else "False"))
+-- STATUS(a0497523): PASS

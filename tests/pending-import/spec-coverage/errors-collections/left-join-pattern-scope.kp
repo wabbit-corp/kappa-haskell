@@ -1,0 +1,23 @@
+-- §20.8: in `left join pat in xs on cond into name`, the bindings introduced
+-- by pat are NOT in scope after the left join — only `name` is. Referencing
+-- the pattern binding in a later clause is an unresolved name.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_NAME_UNRESOLVED
+module main
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+bad : Int
+let bad =
+    sumList [
+        for x in [1, 2]
+        left join y in [(1, 10), (2, 20)] on y._1 == x into ys
+        if y._2 > 5 --!! E_NAME_UNRESOLVED
+        yield x
+    ]
+-- STATUS(a0497523): PASS

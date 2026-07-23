@@ -38,3 +38,4 @@ let main = do
     let ex <- await f
     let _ = ex
     printlnString "child-done"
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2; first error: E_NAME_UNRESOLVED "unresolved name 'Success' (not in scope)" at line 21; stdout does not contain "finalizer-completed"; s… [was PASS in an earlier STATUS line]

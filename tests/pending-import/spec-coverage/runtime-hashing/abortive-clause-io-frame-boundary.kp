@@ -1,0 +1,36 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "abort-seen\nafter:7\nouter-fin\n"
+
+-- §32.2.13 (boundary, IO side) × §32.2.20: when an abortive (q=0) clause
+-- declines to resume, abandonment unwinds ONLY the captured segment (op site
+-- to the matching handler). A defer in the IO do-scope OUTSIDE the handler is
+-- not part of that segment: it stays pending until the outer IO scope itself
+-- exits — "outer-fin" prints after "after:7", never before. (The Eff-side
+-- twin, with frames INSIDE the segment, is pinned by
+-- runtime-hashing/continuation-boundary-do-frames.kp.)
+module main
+
+effect Abort =
+    0 stop : Unit -> Int
+
+comp : Eff <[Abort : Abort]> Int
+let comp =
+    do
+        let x <- Abort.stop ()
+        pure (addInt x 1)
+
+handled : UIO Int
+let handled =
+    deep handle Abort comp with
+        case return x -> ioPure x
+        case stop _ k -> do
+            printlnString "abort-seen"
+            ioPure 7
+
+main : UIO Unit
+let main = do
+    defer (printlnString "outer-fin")
+    let r <- handled
+    printlnString (stringAppend "after:" (showInt r))
+-- STATUS(a0497523): PASS

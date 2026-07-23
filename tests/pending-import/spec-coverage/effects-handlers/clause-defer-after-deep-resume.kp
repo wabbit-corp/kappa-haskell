@@ -1,0 +1,38 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "op-seen\nresumed:5\nret:6\nclause-fin\nresult:6\n"
+
+-- §18.7 × §18.1.22: a defer registered in a handler CLAUSE body's do-block
+-- (IO carrier) belongs to the clause's own do-scope, not to the captured
+-- segment. A deep resumption k runs the entire rest of the handled
+-- computation plus the return clause; the clause's defer then fires when the
+-- clause do-scope exits — i.e. AFTER everything the resumption produced
+-- ("ret:6" before "clause-fin").
+module main
+
+effect Ask =
+    1 ask : Unit -> Int
+
+comp : Eff <[Ask : Ask]> Int
+let comp =
+    do
+        let a <- Ask.ask ()
+        pure (addInt a 1)
+
+handled : UIO Int
+let handled =
+    deep handle Ask comp with
+        case return x -> do
+            printlnString (stringAppend "ret:" (showInt x))
+            ioPure x
+        case ask _ k -> do
+            defer (printlnString "clause-fin")
+            printlnString "op-seen"
+            printlnString "resumed:5"
+            k 5
+
+main : UIO Unit
+let main = do
+    let r <- handled
+    printlnString (stringAppend "result:" (showInt r))
+-- STATUS(a0497523): PASS

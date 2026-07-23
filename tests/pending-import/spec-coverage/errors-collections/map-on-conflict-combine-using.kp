@@ -1,0 +1,50 @@
+-- §20.5.1: `on conflict combine using Wrapper` needs Wrapper : V -> W with W
+-- a newtype-like wrapper carrying a Monoid instance; per-key values are
+-- wrapped, folded left with Monoid.append from Monoid.empty, and unwrapped.
+-- Bag wraps List Int; its (lawful) monoid delegates to the prelude List
+-- lemmas, so [1] and [2] under the same key combine to [1, 2] (sum 3).
+--! mode run
+--! assertNoErrors
+--! assertStdout "3\n"
+module main
+
+data Bag : Type =
+    MkBag (List Int)
+
+unBag : Bag -> List Int
+let unBag b =
+    match b
+    case MkBag xs -> xs
+
+instance Pointed Bag =
+    let empty = MkBag Nil
+
+instance Monoid Bag =
+    let append a b = MkBag (listAppend (unBag a) (unBag b))
+    let appendAssoc @x @y @z =
+        match x
+        case MkBag xs ->
+            match y
+            case MkBag ys ->
+                match z
+                case MkBag zs -> cong MkBag (listAppendAssoc xs ys zs)
+    let appendLeftIdentity @x =
+        match x
+        case MkBag xs -> refl
+    let appendRightIdentity @x =
+        match x
+        case MkBag xs -> cong MkBag (listAppendRightIdentity xs)
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+main : UIO Unit
+let main = do
+    let m = { for w in [[1], [2]], yield 0 : w on conflict combine using MkBag }
+    match mapLookup 0 m
+    case Some vs -> printlnString (showInt (sumList vs))
+    case None -> printlnString "none"
+-- STATUS(a0497523): PASS

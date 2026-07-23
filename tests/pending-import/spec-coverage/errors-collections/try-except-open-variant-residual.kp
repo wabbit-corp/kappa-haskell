@@ -1,0 +1,22 @@
+-- §19.2: when MonadError.Error m is an open variant (| ... | r |), except
+-- coverage requires a catch-all `_` or a residual-row pattern
+-- `except (| ..rest |)`. In the residual branch rest : Variant r (§13.1.4)
+-- and may be re-raised at (| r |). Without either, coverage fails.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_PATTERN_NON_EXHAUSTIVE
+module main
+
+-- POSITIVE: peel the String case, forward the residual row.
+peel : forall r. IO (| String | r |) Int -> IO (| r |) Int
+let peel act = do
+    try act
+    except (| _s : String |) -> pure 0
+    except (| ..rest |) -> raise rest
+
+-- NEGATIVE: the residual row r is not covered and there is no catch-all.
+leaky : forall r. IO (| String | r |) Int -> IO (| String | r |) Int
+let leaky act = do
+    try act --!! E_PATTERN_NON_EXHAUSTIVE
+    except (| _s : String |) -> pure 0
+-- STATUS(a0497523): PASS

@@ -1,0 +1,33 @@
+--! mode check
+--! assertNoErrors
+
+-- §26.1.15 + §26.1.19: the spec's own example bridge surfaces contain a
+-- member quantifying over an erased type parameter with runtime DynamicType
+-- evidence, at surface kind Region -> Type:
+--     array : forall (@0 a : Type). (@_ : DynamicType a) -> List a -> ...
+-- Such a surface must be expressible and BridgeBindable so a contract can
+-- supply its static skeleton while runtime binding validates only the
+-- runtime members (§26.1.15: compile-time members never come from the
+-- foreign runtime).
+module main
+
+import std.bridge.(trait BridgeBindable, type BridgeContract, ctor MkBridgeContract)
+import std.bridge.(type BridgeFailure)
+import std.gradual.(trait DynamicType)
+
+data PyError : Type =
+    PyRaised
+
+data PyList : Type =
+    MkPyList
+
+type Numpy (r : Region) : Type =
+    ( array :
+          forall (@0 a : Type).
+          (@_ : DynamicType a) ->
+          List a -> IO PyError PyList )
+
+instance BridgeBindable Numpy =
+    let bridgeContract = MkBridgeContract "numpy contract: array deep-monitored"
+
+-- STATUS(a0497523): FAIL — the surface record with a forall-(@0 a : Type) member is kinded Region -> Type1, but std.bridge BridgeBindable/BridgeContract only accept Region -> Type, so the §26.1.15/§26.1.19 example shape cannot be given a contract (universe accounting for bridge surfaces unresolved; see spec issue)

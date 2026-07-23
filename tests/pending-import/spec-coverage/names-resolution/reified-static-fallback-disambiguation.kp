@@ -24,4 +24,4 @@ let traitSelector =
 
 --! assertNoErrors
 --! assertEval traitSelector 9
--- STATUS(a51e1bf): FAIL — the binding group keeps only the later trait declaration: bare X at expected type Type still yields the trait facet (E_TYPE_EQUALITY_MISMATCH) and 'type X' reports E_STATIC_OBJECT_KIND_MISMATCH ('X' names a trait)
+-- STATUS(a0497523): FAIL — the binding group keeps only the later trait declaration: bare X at expected type Type still yields the trait facet (E_TYPE_EQUALITY_MISMATCH) and 'type X' reports E_STATIC_OBJECT_KIND_MISMATCH ('X' names a trait)

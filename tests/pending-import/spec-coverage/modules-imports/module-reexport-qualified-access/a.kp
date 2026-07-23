@@ -1,0 +1,4 @@
+module a
+
+answer : Int
+let answer = 42

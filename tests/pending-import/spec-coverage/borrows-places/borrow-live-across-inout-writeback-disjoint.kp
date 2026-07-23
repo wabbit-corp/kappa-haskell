@@ -1,0 +1,37 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_QTT_BORROW_OVERLAP
+
+-- §12.4 + §18.9.4 combo: a `let &` do-item borrow stays live for the
+-- remaining do-items, and an inout call's write-back rebinds the root
+-- by filling ONLY the marked path (§30.2.2.1 FillPlace). So a live
+-- borrow of the DISJOINT sibling p.right must not block `bump ~p.left`
+-- (fn ok, including using the borrow after the write-back rebinds p),
+-- while marking the BORROWED path itself must be rejected as an
+-- overlap (fn bad).
+module main
+
+type Pair = (left : Int, right : Int)
+
+observe : (& x : Int) -> Int
+let observe (& x : Int) : Int = x
+
+bump : (inout v : Int) -> UIO (1 v : Int,)
+let bump (inout v : Int) : UIO (1 v : Int,) =
+    pure (v = v,)
+
+ok : (1 p : Pair) -> UIO Int
+let ok (1 p : Pair) : UIO Int =
+    do
+        let & r = p.right
+        bump ~p.left
+        pure (observe r)
+
+bad : (1 p : Pair) -> UIO Int
+let bad (1 p : Pair) : UIO Int =
+    do
+        let & r = p.right
+        bump ~p.right --!! E_QTT_BORROW_OVERLAP
+        pure (observe r)
+
+-- STATUS(a0497523): PASS

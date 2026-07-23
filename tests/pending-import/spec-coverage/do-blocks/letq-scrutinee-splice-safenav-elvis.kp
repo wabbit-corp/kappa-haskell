@@ -1,0 +1,39 @@
+-- §18.2.1 x §18.3.1 x §16.1.1.2 x §16.1.2: the `let?` scrutinee is an
+-- ordinary do-item subterm, so it receives the full surface-sugar +
+-- Lift_m treatment before refutable matching: safe-navigation chains,
+-- splices, and elvis defaults all work in the RHS. Failure goes through
+-- the else arm (here m Void via throwIO).
+module main
+
+data Sig : Type =
+    Boom
+
+type Rec = (next : Option Int,)
+
+fromNav : Option Rec -> IO Sig Int
+let fromNav r = do
+    let? Some n = r?.next
+    else _ -> throwIO Boom
+    pure (n + 1)
+
+fromSplice : IO Sig (Option (Option Int)) -> IO Sig Int
+let fromSplice act = do
+    let? Some x = !act ?: None
+    else _ -> throwIO Boom
+    pure (x + 1)
+
+main : UIO Unit
+let main = do
+    let a <- catchIO (fromNav (Some (next = Some 6,))) (\_ -> pure 99)
+    printlnString (showInt a)
+    let b <- catchIO (fromNav None) (\_ -> pure 99)
+    printlnString (showInt b)
+    let c <- catchIO (fromSplice (ioPure (Some (Some 4)))) (\_ -> pure 99)
+    printlnString (showInt c)
+    let d <- catchIO (fromSplice (ioPure None)) (\_ -> pure 99)
+    printlnString (showInt d)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n99\n5\n99\n"
+-- STATUS(a0497523): PASS

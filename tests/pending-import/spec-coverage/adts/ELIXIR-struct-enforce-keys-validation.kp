@@ -1,0 +1,53 @@
+--! mode check
+--! assertDiagnostic error E_CONSTRUCTOR_ARITY_MISMATCH
+--! assertDiagnosticFamily error kappa.constructor.arity
+
+-- Source issues: kernel/errors_test.exs "enforce @enforce_keys"
+--   ("the following keys must also be given when building struct MyStruct: [:name]"),
+--   errors_test.exs "struct fields on defstruct"
+-- Spec: §10.1.1 (named constructor application: omitting a label is
+--       permitted iff the parameter has a default), §3.2.10
+--       (kappa.constructor.arity, portable alias E_CONSTRUCTOR_ARITY_MISMATCH)
+-- Elixir's @enforce_keys = Kappa constructor parameters WITHOUT defaults:
+-- they must be supplied in named construction; parameters with defaults may
+-- be omitted; undeclared fields are rejected.  The original's
+-- kappa.pattern.constructor-arity guess named the PATTERN-side family; the
+-- expression side is kappa.constructor.arity (§3.2.10).
+-- No assertErrorCount: the reference implementation adds cascading
+-- type-mismatch diagnostics after a malformed named application.
+-- NOTE: overlaps with tests/conformance/records/ctor-field-default-missing.kp
+--       (single missing-field case).
+module main
+
+-- Fields without defaults are required; fields with defaults are optional.
+data User : Type =
+    User (id : Int) (name : String) (email : String = "")
+
+data Config : Type =
+    Config (host : String) (port : Int) (timeout : Int)
+
+-- POSITIVE: all required fields (id, name) provided; default used.
+newUser : User
+let newUser = User { id = 1, name = "alice" }
+
+-- POSITIVE: all fields provided explicitly.
+fullUser : User
+let fullUser = User { id = 2, name = "bob", email = "bob@example.com" }
+
+-- POSITIVE: all three required fields provided.
+goodConfig : Config
+let goodConfig = Config { host = "localhost", port = 8080, timeout = 30 }
+
+-- NEGATIVE: `name` is required (no default) but omitted.
+missingName : User
+let missingName = User { id = 4 } --!! kappa.constructor.arity
+
+-- NEGATIVE: `host` and `timeout` required but only `port` provided.
+badConfig : Config
+let badConfig = Config { port = 9000 } --!! kappa.constructor.arity
+
+-- NEGATIVE: `role` is not declared by the constructor.
+unknownField : User
+let unknownField = User { id = 5, name = "dave", role = "admin" } --!! kappa.constructor.arity
+
+-- STATUS(a0497523): PASS

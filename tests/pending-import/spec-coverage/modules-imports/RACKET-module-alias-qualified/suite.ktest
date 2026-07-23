@@ -1,0 +1,4 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertEval combined 17

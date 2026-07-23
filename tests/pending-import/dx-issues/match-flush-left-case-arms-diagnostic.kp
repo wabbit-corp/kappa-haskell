@@ -1,0 +1,23 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_EXPECTED_SYNTAX_TOKEN
+
+-- DX EXPECTATION (diagnostic quality, Sections 5.4 + 3.1.11): dedenting
+-- the 'case' arms to column 1 ends the continuation region, so 'match n'
+-- is left with no case clauses. Expected: ONE parse-family error saying
+-- the match expression is missing its 'case' clauses (anchored at the
+-- match or at the dedented 'case'), since the layout mistake is the one
+-- thing the user must fix. Currently THREE errors, none about layout:
+-- two E_RECOVERY_DECLARATION_SKIPPED ("unexpected 'case' at start of
+-- declaration") plus E_NAME_UNRESOLVED 'match' with help "did you mean
+-- 'Match'?" and a maybe-applicable fix-it that RENAMES match to the Match
+-- data constructor -- actively misleading for a pure indentation slip.
+
+module main
+
+f : Int -> Int
+let f n =
+    match n
+case 0 -> 1
+case _ -> 2
+-- STATUS(a0497523): FAIL — 3 errors, none about layout: 2x E_RECOVERY_DECLARATION_SKIPPED on the case lines + E_NAME_UNRESOLVED 'match' with a fix-it renaming match to the Match constructor

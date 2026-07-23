@@ -1,0 +1,5 @@
+--! mode check
+--! packageMode
+--! assertNoErrors
+--! assertEval chain 234
+--! assertEval sec 34

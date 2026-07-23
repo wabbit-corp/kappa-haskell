@@ -1,0 +1,20 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_TYPE_MISMATCH
+-- DX expectation, not strictly spec-required.  A record literal with
+-- one misspelled field label checks against its signature as a whole
+-- and fails as a generic type mismatch that prints BOTH complete row
+-- types ("actual: (age : Integer, nmae : String)" vs "expected: ...")
+-- and leaves the user to eye-diff them; the payload carries no
+-- mismatchPath, no candidateRepairs, and no fix.  §3.1.9 explicitly
+-- lists "replacing a constructor or field name" as a CandidateRepair
+-- that "MUST NOT be represented only as human prose", and §3.2.3 wants
+-- the smallest useful difference shown.  Expected-good behavior: a
+-- maybe-applicable fix renaming 'nmae' to 'name' (edit distance 1, and
+-- the only label difference between the two rows).  Currently: no fix.
+--! assertDiagnosticFix error kappa.type.mismatch maybe-applicable
+module main
+
+person : (name : String, age : Integer)
+let person = (nmae = "ada", age = 36) --!! kappa.type.mismatch
+-- STATUS(a0497523): FAIL — generic type mismatch printing both whole rows; payload has no mismatchPath/candidateRepairs and the diagnostic has no fix

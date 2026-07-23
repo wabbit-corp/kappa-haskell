@@ -1,0 +1,52 @@
+-- §16.4.1 (L21634-L21637): success-side constructor evidence from `e is C`
+-- MUST be strong enough that "a subsequent `match e` may treat non-`C` cases
+-- as unreachable". §16.4.3: the same evidence transports across stable
+-- aliases in both directions (test alias / match original and vice versa).
+--! mode check
+--! assertNoErrors
+--! assertEval rDirect 7
+--! assertEval rAlias 8
+--! assertEval rRev 9
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE: nested match under the is-test omits the Empty case.
+direct : Payload -> Int
+let direct p =
+    if p is Box then
+        match p
+        case Box v -> v
+    else 0
+
+-- POSITIVE: test the original, run the narrowed match on the alias.
+aliasMatch : Payload -> Int
+let aliasMatch v =
+    block
+        let w = v
+        if v is Box then
+            match w
+            case Box x -> x
+        else 0
+
+-- POSITIVE: test the alias, run the narrowed match on the original.
+revAlias : Payload -> Int
+let revAlias v =
+    block
+        let w = v
+        if w is Box then
+            match v
+            case Box x -> x
+        else 0
+
+rDirect : Int
+let rDirect = direct (Box 7)
+
+rAlias : Int
+let rAlias = aliasMatch (Box 8)
+
+rRev : Int
+let rRev = revAlias (Box 9)
+-- STATUS(a0497523): PASS

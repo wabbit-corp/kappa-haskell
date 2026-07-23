@@ -1,0 +1,57 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "11\n42\n"
+
+-- §23.7.1: staged-code scope checks must be sound under ordinary
+-- control effects — code built inside a deep-handled computation
+-- (construction suspended and resumed around an effect operation) and
+-- closed code transported across a fiber boundary must both close and
+-- run; a checker relying on an unprotected ambient quotation stack
+-- must not false-positive on either transfer.
+
+instance Lift Integer =
+    let liftCode n = __codeQuote n
+
+buildCode : Integer -> Code Integer
+let buildCode n = .< n + 1 >.
+
+viaHandler : Code Integer
+let viaHandler =
+    block
+        scoped effect Ask =
+            1 ask : Unit -> Integer
+
+        let comp : Eff <[Ask : Ask]> (Code Integer) =
+            do
+                let n <- Ask.ask ()
+                pure (buildCode n)
+
+        let handled =
+            deep handle Ask comp with
+                case return x -> pure x
+                case ask _ k -> k 10
+
+        runPure handled
+
+buildInFiber : UIO (Code Integer)
+let buildInFiber = do
+    let c = .< 40 + 2 >.
+    ioPure c
+
+runInt : Code Integer -> UIO Unit
+let runInt c = do
+    match closeCode c
+    case Some cc -> do
+        let v <- runCode cc
+        println v
+    case None -> printlnString "not closed"
+
+main : UIO Unit
+let main = do
+    runInt viaHandler
+    let f <- fork buildInFiber
+    let ex <- await f
+    match ex
+    case Success c -> runInt c
+    case Failure _ -> printlnString "fiber failed"
+-- STATUS(a0497523): PASS

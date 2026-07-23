@@ -1,0 +1,17 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "'{ x } and ${ y } end\n${ unclosed and '{ half\n"
+
+-- §6.3.4.1 x §21.1 combo: in a raw prefixed string (hash count 1),
+-- `$` has no special meaning and only exactly-one-`#` before `{`
+-- opens interpolation, so quote syntax `'{ ... }` and splice syntax
+-- `${ ... }` embedded in the raw text are ordinary literal characters.
+-- This must hold even when the embedded quote/splice syntax is
+-- UNBALANCED - the string content never re-enters the quotation
+-- grammar of §21.1.1.
+
+main : UIO Unit
+let main = do
+    printlnString f#"'{ x } and ${ y } end"#
+    printlnString f#"${ unclosed and '{ half"#
+-- STATUS(a0497523): PASS

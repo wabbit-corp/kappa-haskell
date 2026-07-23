@@ -1,0 +1,56 @@
+-- §9.3 (L8475+) / §18.2 (L24337+) linear state threading at scale: a
+-- quantity-1 binding may be shadowed by a rebind whose RHS consumes the
+-- previous linear binding exactly once ('without requiring users to invent
+-- x1, x2, x3, ...'). Thirty rebinds of one linear name in a single do
+-- block; exactly ONE mid-chain rebind fails to consume the shadowed
+-- linear binding. §9.3: 'Merely shadowing a positive-lower-bound name
+-- without demanding it is a compile-time error.' Precision pin: the
+-- checker must report exactly one drop (kappa.quantity.
+-- positive-lower-bound / E_QTT_LINEAR_DROP) and accept the other 29
+-- consuming rebinds with no cascade. The diagnostic anchors on the
+-- BINDING THAT IS DROPPED (the last consuming rebind, marked below), not
+-- on the non-consuming rebind that follows it.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QTT_LINEAR_DROP
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+module main
+
+main : UIO Unit
+let main =
+    do
+        let 1 x = 0
+        let 1 x = x + 1
+        let 1 x = x + 2
+        let 1 x = x + 3
+        let 1 x = x + 4
+        let 1 x = x + 5
+        let 1 x = x + 6
+        let 1 x = x + 7
+        let 1 x = x + 8
+        let 1 x = x + 9
+        let 1 x = x + 10
+        let 1 x = x + 11
+        let 1 x = x + 12
+        let 1 x = x + 13
+        let 1 x = x + 14        --!! kappa.quantity.positive-lower-bound
+        let 1 x = 999
+        let 1 x = x + 16
+        let 1 x = x + 17
+        let 1 x = x + 18
+        let 1 x = x + 19
+        let 1 x = x + 20
+        let 1 x = x + 21
+        let 1 x = x + 22
+        let 1 x = x + 23
+        let 1 x = x + 24
+        let 1 x = x + 25
+        let 1 x = x + 26
+        let 1 x = x + 27
+        let 1 x = x + 28
+        let 1 x = x + 29
+        let 1 x = x + 30
+        let r = x + 0
+        printInt r
+
+-- STATUS(a0497523): PASS

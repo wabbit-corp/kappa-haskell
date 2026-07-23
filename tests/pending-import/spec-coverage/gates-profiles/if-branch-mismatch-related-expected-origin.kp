@@ -1,0 +1,19 @@
+--! mode check
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+-- §3.1.1A: type-mismatch diagnostics MUST include the source origin of
+-- the expected type when available.  Reaching the same wrong-literal
+-- mistake through an if/else branch instead of a direct annotation must
+-- produce the same diagnostic structure (same family kappa.type.mismatch,
+-- same related-origin shape): the expected Integer for the else branch
+-- originates from the declared result type of `pick`'s signature, so a
+-- signature-site related origin must be attached.  Without it, a
+-- two-location mistake (branch expression here, controlling signature
+-- there) renders as a one-location report.
+--! assertDiagnosticRelated error kappa.type.mismatch use-site
+--! assertDiagnosticRelated error kappa.type.mismatch signature-site
+module main
+
+pick : Bool -> Integer
+let pick b =
+    if b then 1 else "hi" --!! E_TYPE_EQUALITY_MISMATCH
+-- STATUS(a0497523): FAIL — the branch mismatch carries only the use-site related origin at the "hi" literal; nothing points back at the `pick : Bool -> Integer` signature that supplied the expected type

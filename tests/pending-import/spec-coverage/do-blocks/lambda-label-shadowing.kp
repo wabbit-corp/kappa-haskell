@@ -1,0 +1,23 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "from-inner\ndone\n"
+
+-- §18.5.1: lambda labels follow lexical scoping — an inner labeled lambda
+-- shadows an outer one with the same label, so `return@L` exits the INNER
+-- lambda only. (If it targeted the outer lambda, the String result would
+-- not type against `UIO Unit`, and neither line would print.)
+module main
+
+main : UIO Unit
+let main = do
+    let run = L@\ (u : Unit) -> do
+            let step = L@\ (n : Int) -> do
+                    if n > 0 then
+                        return@L "from-inner"
+                    ioPure "inner-normal"
+            let s <- step 5
+            printlnString s
+            ioPure ()
+    run ()
+    printlnString "done"
+-- STATUS(a0497523): PASS

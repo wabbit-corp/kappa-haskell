@@ -1,0 +1,15 @@
+module main
+
+-- §8.4 x §14.3: `Cash` IS lib.Money (semantic identity preserved under
+-- the export alias), so the instance `Amount Money` declared in lib must
+-- apply to a value typed via the aliased re-export spelling. Instance
+-- search is spelling-independent (§14.3: ordinary imports affect name
+-- resolution only).
+import mid.(type Cash, mkMoney, trait Amount, amount)
+
+v : Cash
+let v = mkMoney 5
+
+r : Int
+let r = amount v
+-- STATUS(a0497523): PASS

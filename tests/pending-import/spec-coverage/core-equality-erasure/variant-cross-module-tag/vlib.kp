@@ -1,0 +1,13 @@
+module vlib
+
+-- §31.3: injection happens HERE, in a different module from the match,
+-- so the runtime tag must be the stable canonical member-type identity
+-- shared by both modules — not a module-local ordinal.
+
+type Payload = (| Integer | String |)
+
+mkInt : Integer -> Payload
+let mkInt n = n
+
+mkStr : String -> Payload
+let mkStr s = s

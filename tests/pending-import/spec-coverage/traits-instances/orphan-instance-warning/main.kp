@@ -18,4 +18,4 @@ let total = tag 4 + tag (MkWrapped 2) + tag True + orphanMarker
 --! assertWarningCount 1
 --! assertType total Int
 
--- STATUS(a51e1bf): FAIL — no orphan-instance warning is implemented; the suite compiles with 0 warnings (the orphan `Tag Bool` instance is accepted silently). SHOULD-level requirement.
+-- STATUS(a0497523): FAIL — no orphan-instance warning is implemented; the suite compiles with 0 warnings (the orphan `Tag Bool` instance is accepted silently). SHOULD-level requirement.

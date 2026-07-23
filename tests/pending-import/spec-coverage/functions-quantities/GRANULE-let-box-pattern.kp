@@ -1,0 +1,55 @@
+-- Source: granule-project/granule docs/README.md
+--         (`dup : a [2] -> (a, a)` introduced by `dup [x] = (x, x)`);
+--         tests/cases/positive/polymorphism/poly.gr
+-- Spec: §10.1 (constructor parameters carry binder prefixes),
+--       §12.2.6 (componentwise duplicability/droppability of "constructor
+--       payloads with visible field quantities"), §12.2.1, §3.2.5
+-- Granule's `[x]` pattern unboxes `a [q]` giving x with grade q. The Kappa
+-- counterpart: a constructor field declared at quantity q introduces a
+-- pattern binder with capability q, checked componentwise by §12.2.6.
+-- Granule's exact numeric grade [2] has no v1 surface counterpart
+-- (§12.2/§12.2.7: only 0/1/ω/<=1/>=1), so the dup case is pinned at ω.
+
+module test
+
+--! mode check
+
+data BoxW (0 a : Type) : Type =
+    MkBoxW (ω payload : a)
+
+data BoxL (0 a : Type) : Type =
+    MkBoxL (1 payload : a)
+
+data BoxE (0 a : Type) : Type =
+    MkBoxE (0 payload : a)
+
+-- POSITIVE: an ω field may be demanded twice after unboxing.
+dup : forall (a : Type). (1 b : BoxW a) -> (a, a)
+let dup b =
+    match b
+      case MkBoxW x -> (x, x)
+
+-- POSITIVE: an erased (0) payload is droppable; consuming the box by
+-- visible-constructor decomposition discharges the outer linear binder
+-- (§12.2.6).
+weak : forall (a : Type). (1 b : BoxE a) -> Unit
+let weak b =
+    match b
+      case MkBoxE _ -> ()
+
+-- NEGATIVE: a linear (1) field is not duplicable (§12.2.6 table).
+badDup1 : forall (a : Type). (1 b : BoxL a) -> (a, a)
+let badDup1 b =
+    match b
+      case MkBoxL x -> (x, x)     --!! kappa.quantity.unsatisfied
+
+-- NEGATIVE: an erased (0) field must not be demanded at runtime
+-- (§12.2.1; same family as E_QTT_ERASED_RUNTIME_USE on binders).
+badUse0 : forall (a : Type). (1 b : BoxE a) -> a
+let badUse0 b =
+    match b
+      case MkBoxE x -> x          --!! kappa.quantity.unsatisfied
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertErrorCount 2
+-- STATUS(a0497523): FAIL — compiler does not enforce constructor-field quantities in patterns: all four definitions are accepted with 0 diagnostics, though §12.2.6 applies the duplicability/droppability test componentwise to "constructor payloads with visible field quantities".

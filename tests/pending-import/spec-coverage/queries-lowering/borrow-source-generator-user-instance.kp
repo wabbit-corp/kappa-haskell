@@ -1,0 +1,28 @@
+--! mode check
+--! assertNoErrors
+
+-- §20.10.2 (borrowed-source generator) + §34 prelude surface: `for x in &src`
+-- elaborates through `BorrowSourceIntoQuery srcType` (members Mode /
+-- ItemQuantity / Item / toBorrowSourceQuery), introduces a fresh rigid region
+-- for the borrowed source, and binds `pat` to ordinary items of type `Item`
+-- at `ItemQuantity`. The instance here ignores its borrowed argument, which
+-- is legal: borrows are non-consuming and droppable.
+module main
+
+data Store : Type =
+    MkStore (label : String)
+
+instance BorrowSourceIntoQuery Store =
+    let Mode = QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore
+    let ItemQuantity = ω
+    let Item = Int
+    let toBorrowSourceQuery s = Query [ for x in [1, 2, 3], yield x ]
+
+use : (s : Store) -> List Int
+let use s =
+    [
+        for x in &s
+        yield x + 1
+    ]
+
+-- STATUS(a0497523): FAIL — 6 errors: the prelude trait declares BorrowSrcItem/toBorrowSourceQuery instead of the §34 Mode/ItemQuantity/Item members (E_INSTANCE_MEMBER_MISSING + 3x E_ASSOCIATED_MEMBER_UNDECLARED), and `for x in &s` ignores the borrow entirely, lowering s as a plain list source (E_TYPE_EQUALITY_MISMATCH: Store vs List _).

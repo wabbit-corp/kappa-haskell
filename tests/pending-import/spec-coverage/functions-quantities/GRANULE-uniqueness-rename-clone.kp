@@ -1,0 +1,43 @@
+-- Source: granule-project/granule PR #296 (Improve Rename in clone,
+--         fix uniqueness laws)
+-- Spec: §12.2 (linear consumption), §12.2.6 (consuming uses; transfer
+--       through linear parameters), §9.4, §3.2.5
+-- The OOPSLA-style clone law: cloning a unique reference consumes the
+-- original and yields two fresh references. A later use of the original
+-- is a second consumption of a 1-binder — kappa.quantity.unsatisfied
+-- (re-derived from the original's kappa.path.consumed guess: binder
+-- overuse is classified in the unsatisfied family, while
+-- kappa.path.consumed covers place/borrow paths; same convention as
+-- tests/conformance/imported-anon/PONY-linear-consume-then-reuse.kp).
+
+module test
+
+--! mode check
+
+expect type Ref (a : Type)
+
+expect term newRef   : forall (a : Type). (1 x : a) -> Ref a
+expect term readRef  : forall (a : Type). (1 r : Ref a) -> (a, Ref a)
+expect term cloneRef : forall (a : Type). (1 r : Ref a) -> (Ref a, Ref a)
+expect term freeRef  : forall (a : Type). (1 r : Ref a) -> Unit
+
+-- POSITIVE: clone, then use both resulting refs linearly and free them.
+twoUses : (1 r : Ref Bool) -> Bool
+let twoUses r =
+    let (r1, r2)  = cloneRef r
+    let (v1, r1b) = readRef r1
+    let (v2, r2b) = readRef r2
+    let u1 = freeRef r1b
+    let u2 = freeRef r2b
+    v1
+
+-- NEGATIVE: use the original r after cloneRef consumed it.
+badAfterClone : (1 r : Ref Bool) -> (Bool, Bool)
+let badAfterClone r =
+    let (r1, r2) = cloneRef r
+    let (v1, x1) = readRef r1
+    let (v2, x2) = readRef r      --!! kappa.quantity.unsatisfied
+    (v1, v2)
+
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+-- STATUS(a0497523): PASS

@@ -32,3 +32,4 @@ let bad s b =
 -- to be uninhabited": it demands an uninhabited scrutinee type instead of
 -- computing the uncovered remainder after the preceding cases and guards
 -- (§17.1.5), so the spec-valid `ok` is also rejected.
+-- STATUS(a0497523): FAIL — unchanged (both matches rejected with E_INDEXED_IMPOSSIBLE_REACHABLE; remainder not computed).

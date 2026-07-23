@@ -1,0 +1,25 @@
+--! mode check
+--! requires capability configMode
+--! x-configProfile config-data
+--! x-configSchemaScope std.config std.build
+--! assertErrorCount 5
+
+-- §35.2.1: config-data rejects `if`, `match`, ordinary function calls
+-- (constructor application and `input key` are the only call forms —
+-- even a schema-scope config-safe function like semver is not callable
+-- here), local `data`, and imports (§35.1/§35.3). §35.11: each rejected
+-- form is E_CONFIG_RESTRICTED_FORM identifying form and active profile;
+-- imports are E_CONFIG_IMPORT_NOT_SAFE.
+-- Staged until a harness provides the configMode capability.
+
+import std.prelude --!! E_CONFIG_IMPORT_NOT_SAFE
+
+data Local = MkLocal Int --!! E_CONFIG_RESTRICTED_FORM
+
+let flag = if True then 1 else 2 --!! E_CONFIG_RESTRICTED_FORM
+
+let m = match Some 1 case Some v -> v case None -> 0 --!! E_CONFIG_RESTRICTED_FORM
+
+let called = semver "1.0.0" --!! E_CONFIG_RESTRICTED_FORM
+
+-- STATUS(a0497523): UNSUPPORTED — configMode capability not provided; the implementation has no config-data checker yet (only config-expression, for build manifests)

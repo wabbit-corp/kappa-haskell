@@ -42,3 +42,4 @@ let deepHandled =
 
 deepResult : Int
 let deepResult = runPure deepHandled
+-- STATUS(a0497523): FAIL — E_TYPE_EQUALITY_MISMATCH at the shallow clause: compiler forces shallow clause bodies into the residual carrier and rejects m = Eff <[label : E | r]> (k 1 as body), which §18.1.21 permits.

@@ -1,0 +1,17 @@
+-- §17.1.10 (Spec L22331-L22365) + §17.1.9: a guard demand does NOT
+-- rescue a `>=1` obligation when the guarded pattern is refutable: on the
+-- path where the pattern itself fails (here: None), the guard never runs,
+-- and the final case's body demands nothing. That completion path drops
+-- x, so the definition must be rejected.
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+
+f : (>=1 x : Int) -> Option Int -> Int
+let f (>=1 x : Int) (o : Option Int) : Int =
+    match o
+    case Some y if y > x -> y
+    case _ -> 0
+
+-- STATUS(a0497523): PASS

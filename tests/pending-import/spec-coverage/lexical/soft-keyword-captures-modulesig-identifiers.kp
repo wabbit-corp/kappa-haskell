@@ -19,4 +19,4 @@ let main = do
     let moduleSig = 15
     println moduleSig
 
--- STATUS(a51e1bf): FAIL — `captures`/`moduleSig` are not usable as ordinary term binders: the parameter-binder line fails to parse (E_RECOVERY_DECLARATION_SKIPPED) and the do-local `let captures =`/`let moduleSig =` forms misparse as well (type-mismatch/unexpected-indentation cascades)
+-- STATUS(a0497523): FAIL — `captures`/`moduleSig` are not usable as ordinary term binders: the parameter-binder line fails to parse (E_RECOVERY_DECLARATION_SKIPPED) and the do-local `let captures =`/`let moduleSig =` forms misparse as well (type-mismatch/unexpected-indentation cascades)

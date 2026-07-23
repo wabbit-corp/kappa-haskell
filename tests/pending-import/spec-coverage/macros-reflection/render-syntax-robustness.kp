@@ -1,0 +1,22 @@
+--! mode check
+--! assertNoErrors
+--! assertType rendered Elab String
+--! assertType lambdaType Elab (Syntax Type)
+
+-- §21.6/§21.10.1: renderSyntax is a deterministic elaboration-time
+-- rendering that preserves binding structure; rendering nested block
+-- forms (match with case arms, lambdas) MUST NOT fail merely because a
+-- pretty-printer table has no entry. typeOfSyntax infers and reifies
+-- the type of quoted syntax at the call site.
+module main
+
+rendered : Elab String
+let rendered =
+    renderSyntax '{ match Some 1
+                    case Some n -> (\m -> m + 1) n
+                    case None -> 0 }
+
+lambdaType : Elab (Syntax Type)
+let lambdaType =
+    typeOfSyntax '{ \x -> addInt x 1 }
+-- STATUS(a0497523): PASS

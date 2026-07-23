@@ -1,0 +1,26 @@
+--! mode check
+--! assertNoErrors
+--! assertEval total 15
+
+-- §18.1.23 / §18.1.24: Kappa v1 provides no raw continuation operators,
+-- and absent the reserved expert-control feature gate the names shift,
+-- reset, control, prompt, newPrompt, and subcontinuation have NO
+-- reserved source meaning — they are ordinary identifiers, freely
+-- bindable and applicable.
+module main
+
+shift : Int -> Int
+let shift x = addInt x 1
+
+reset : Int -> Int
+let reset x = addInt x 2
+
+total : Int
+let total =
+    block
+        let control = 3
+        let prompt = 4
+        let newPrompt = 5
+        let subcontinuation = shift (reset control)
+        addInt subcontinuation (addInt prompt newPrompt)
+-- STATUS(a0497523): PASS

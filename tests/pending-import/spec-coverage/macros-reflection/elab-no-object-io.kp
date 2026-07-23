@@ -1,0 +1,16 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §21.8/§21.9: the elaboration-time evaluator provides no object-phase
+-- IO capability, and object-phase runtime actions cannot be directly
+-- captured by an Elab action — object terms enter Elab only through the
+-- specified reflection carriers. Binding an IO action inside an Elab do
+-- block is an ordinary type error, not a permitted effect.
+module main
+
+bad : Elab Unit
+let bad = do
+    let _ <- printlnString "side effect" --!! kappa.type.mismatch
+    pure Unit
+-- STATUS(a0497523): PASS

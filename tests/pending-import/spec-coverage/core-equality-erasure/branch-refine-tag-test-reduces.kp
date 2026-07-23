@@ -1,0 +1,29 @@
+--! mode check
+--! assertNoErrors
+
+-- §31.1.2 refinement-aware constructor-tag-test reduction: `s is C`
+-- reduces to True under HasCtor s ⟨C⟩ and to False under LacksCtor
+-- s ⟨C⟩ derived from HasCtor of a distinct constructor of the same
+-- type. (The finite-set unique-remaining derivation is split out into
+-- branch-refine-unique-remaining.kp, which currently fails.)
+module main
+
+data Cell : Type =
+    Hole
+    Full (val : Int)
+
+-- HasCtor c ⟨Full⟩ in the Full arm: the tag test reduces to True
+proveHas : (c : Cell) -> Option ((c is Full) = True)
+let proveHas c =
+    match c
+    case Full v -> Some refl
+    case Hole -> None
+
+-- HasCtor c ⟨Hole⟩ derives LacksCtor c ⟨Full⟩: the test reduces to False
+proveLacks : (c : Cell) -> Option ((c is Full) = False)
+let proveLacks c =
+    match c
+    case Hole -> Some refl
+    case Full v -> None
+
+-- STATUS(a0497523): PASS

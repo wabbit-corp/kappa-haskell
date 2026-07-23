@@ -1,0 +1,41 @@
+-- Source issues: rust#112219, rust#112124, rust#112125 (slice > 50000)
+-- Spec: §11.1.6.1-11.1.6.2 (compile-time bindings and static-object
+--       positions), §10.1 (data parameters as erased indices), §12.3
+--       ("An explicit borrowed binder `&[s]` uses a user-written region
+--       variable `s : Region` already in scope"), §3.2.2 (kappa.name.unresolved)
+-- Pins: Kappa's analog of Rust const parameters is erased data-type value
+-- indices; those admit ordinary canonical value types (Int) and Type.
+-- Borrows are binder ACCESS MODES, not types, so a "borrow-classified"
+-- parameter is unrepresentable; the nearest ill-formed spelling is an
+-- explicit-region borrowed binder on a data parameter whose region variable
+-- is not in scope — `s` must fail name resolution.
+-- NOTE: the sibling `&`-where-Quantity-is-expected property (§3.2.6,
+-- kappa.quantity.borrow-not-quantity) is covered by
+-- tests/pending-import/harness-error-unregistered-family/AENEAS-quantity-borrow-not-quantity-trait.kp.
+
+--! mode check
+
+module main
+
+-- POSITIVE: an erased compile-time value parameter classified by Int.
+data BoxAt (0 v : Int) : Type =
+    MkBoxAt
+
+one : BoxAt 1
+let one = MkBoxAt
+
+-- POSITIVE: an erased parameter classified by Type.
+data BoxTy (0 a : Type) : Type =
+    MkBoxTy
+
+boxInt : BoxTy Int
+let boxInt = MkBoxTy
+
+-- NEGATIVE: an explicit borrowed binder on a data parameter names region
+-- `s`, but no `s : Region` is in scope at the declaration; name resolution
+-- must reject it (§12.3).
+data BadBorrowLoose (0 &[s] v : Int) : Type =    --!! E_NAME_UNRESOLVED
+    MkBadBorrowLoose
+
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.name.unresolved

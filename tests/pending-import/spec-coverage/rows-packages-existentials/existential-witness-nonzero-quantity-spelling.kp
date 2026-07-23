@@ -1,0 +1,15 @@
+--! mode check
+--! assertErrorCount 1
+
+-- §13.2.11 (L17652-L17654): "The binder spelling `(@0 a : S)` is
+-- accepted only as an explicit erased-witness spelling. ... Other `@`
+-- quantities are not accepted for existential witnesses." An
+-- existential witness is always quantity-0 static metadata; a spelled
+-- `@1` witness would promise a runtime carrier that sealed packages do
+-- not have (§13.2.10, §31.2), so `exists (@1 a : Type). T` must be
+-- rejected.
+module main
+
+type Bad : Type1 = exists (@1 a : Type). Option a
+
+-- STATUS(a0497523): FAIL — compiler accepts with 0 errors: exists (@1 a : Type). T parses and elaborates like an ordinary witness; the "@0-only" spelling restriction of L17652-L17654 is not enforced

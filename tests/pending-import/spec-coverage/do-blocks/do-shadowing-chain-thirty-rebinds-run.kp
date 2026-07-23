@@ -1,0 +1,55 @@
+-- §18.2 (L24337+): 'A binding form in a do block may introduce a name
+-- already in scope; the new binding shadows the old one for all subsequent
+-- do-items.' §9.3 (L8475) states the same for let bindings. Shadowing is
+-- ordinary and unrestricted for unrestricted bindings; nothing bounds the
+-- chain depth, and the shadowing binding may change the type. Robustness
+-- pin: one name rebound 32 times in a single do block (30 numeric rebinds,
+-- each RHS reading the immediately previous binding, then two type-changing
+-- rebinds Int -> Bool -> Int). Sum 1..30 = 465, so the tail prints 1.
+-- Local-shadowing-local must not trigger the (optional, top-level-only)
+-- W_SUSPICIOUS_TOPLEVEL_SHADOWING lint of §3 (L1846).
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "1\n"
+module main
+
+main : UIO Unit
+let main =
+    do
+        let x = 0
+        let x = x + 1
+        let x = x + 2
+        let x = x + 3
+        let x = x + 4
+        let x = x + 5
+        let x = x + 6
+        let x = x + 7
+        let x = x + 8
+        let x = x + 9
+        let x = x + 10
+        let x = x + 11
+        let x = x + 12
+        let x = x + 13
+        let x = x + 14
+        let x = x + 15
+        let x = x + 16
+        let x = x + 17
+        let x = x + 18
+        let x = x + 19
+        let x = x + 20
+        let x = x + 21
+        let x = x + 22
+        let x = x + 23
+        let x = x + 24
+        let x = x + 25
+        let x = x + 26
+        let x = x + 27
+        let x = x + 28
+        let x = x + 29
+        let x = x + 30
+        let x = x == 465
+        let x = if x then 1 else 0
+        printInt x
+
+-- STATUS(a0497523): PASS

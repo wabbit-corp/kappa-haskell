@@ -1,0 +1,23 @@
+module main
+
+-- §19.2 lists `continue` alongside `break`: it propagates through `try`
+-- without being caught, while `finally` runs during every iteration's unwind.
+-- This isolates the Continue completion tag from the already-covered Break
+-- and Return tags and combines it with mutable loop state.
+
+main : UIO Unit
+let main = do
+    var i = 0
+    while i < 3 do
+        i = i + 1
+        try do
+            printlnString (stringAppend "body:" (showInt i))
+            continue
+        finally ->
+            printlnString (stringAppend "fin:" (showInt i))
+        printlnString "unreachable"
+    printlnString "after"
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "body:1\nfin:1\nbody:2\nfin:2\nbody:3\nfin:3\nafter\n"

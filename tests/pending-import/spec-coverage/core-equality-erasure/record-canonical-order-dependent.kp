@@ -1,0 +1,57 @@
+--! mode check
+--! assertErrorCount 1
+--! assertType flipTy (x : Int, y : Int) -> Int
+
+-- §31.4 record canonicalization: record types and values normalize to
+-- the canonical dependency-respecting field order (ties broken by
+-- Unicode field-name order), definitional equality is field-wise on
+-- canonical forms — and field quantities are part of that identity.
+module main
+
+-- type-level: two source orders of the same nondependent record type
+type O1 = (x : Int, y : Int)
+type O2 = (y : Int, x : Int)
+
+tyEq : O1 = O2
+let tyEq = refl
+
+flipTy : O2 -> Int
+let flipTy r = r.x + r.y
+
+-- value-level: literals written in different source orders are
+-- definitionally equal after canonicalization
+a : O1
+let a = (x = 1, y = 2)
+
+b : O1
+let b = (y = 2, x = 1)
+
+sameVal : a = b
+let sameVal = refl
+
+-- dependent record: literal field order may differ from telescope order
+data Arr (n : Nat) : Type =
+    MkArr
+
+mkArr : (n : Nat) -> Arr n
+let mkArr n = MkArr
+
+type Sized = (len : Nat, buf : Arr this.len)
+
+inOrder : Sized
+let inOrder = (len = 2, buf = mkArr 2)
+
+reordered : Sized
+let reordered = (buf = mkArr this.len, len = 2)
+
+depEq : inOrder = reordered
+let depEq = refl
+
+-- NEGATIVE: identical fields at different quantities are NOT equal
+type Q1 = (@0 tag : Int, v : Int)
+type Q2 = (tag : Int, v : Int)
+
+qtyEq : Q1 = Q2
+let qtyEq = refl --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a0497523): FAIL — the quantity-mismatch negative is accepted (0 errors): record-type definitional equality ignores field quantities, against §31.4 "including identical field quantities"

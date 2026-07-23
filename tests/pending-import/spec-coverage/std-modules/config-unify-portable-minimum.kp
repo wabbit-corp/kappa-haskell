@@ -1,0 +1,27 @@
+--! mode check
+--! assertNoErrors
+
+-- §29.7 std.config portable minimum: the module must export ConfigPath,
+-- ConfigConflict, ConfigConflictSide, the ConfigUnify/ConfigOverride/
+-- ConfigMerge traits, and the input/tryUnify/unify/(<&>) terms with the
+-- declared signatures. Generic wrappers pin each declared type; the checked
+-- forms carry an (@_ : IsOk (tryUnify xs) = True) obligation that a caller's
+-- identical implicit assumption must discharge.
+module main
+
+import std.config.(type ConfigInputKey, type ConfigPath, type ConfigConflict, type ConfigConflictSide)
+import std.config.(trait ConfigUnify, trait ConfigOverride, trait ConfigMerge)
+import std.config.(term input, term tryUnify, term unify)
+
+readInput : forall (a : Type). ConfigInputKey a -> a
+let readInput k = input k
+
+tryAll : forall (a : Type). (@_ : ConfigUnify a) -> List a -> Result ConfigConflict a
+let tryAll xs = tryUnify xs
+
+unifyChecked : forall (a : Type). (@_ : ConfigUnify a) -> (xs : List a) -> (@_ : IsOk (tryUnify xs) = True) -> a
+let unifyChecked xs = unify xs
+
+main : UIO Unit
+let main = ioPure ()
+-- STATUS(a0497523): FAIL — the compiler's std.config only exports ConfigInputKey and a `configInput` key constructor; the §29.7 portable minimum (ConfigPath, ConfigConflict, ConfigConflictSide, ConfigUnify/ConfigOverride/ConfigMerge, input, tryUnify, unify, <&>) is missing (E_IMPORT_ITEM_NOT_FOUND x16)

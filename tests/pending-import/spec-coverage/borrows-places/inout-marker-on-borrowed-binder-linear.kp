@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch (borrow)
+
+-- §12.4.1: `let & v = box.tok` is a place-preserving borrowed binding;
+-- `v` carries the SAME underlying root and path (box.tok), it is not a
+-- fresh borrow root. §18.9.3/§18.9.4: a `~` argument consumes the
+-- marked place at quantity 1 and writes the successor back to that
+-- place. Consuming box.tok while its own shared borrow `v` is live is
+-- forbidden (§12.4 consequences; compare: a direct quantity-1 use of
+-- `v` is rejected with E_QTT_BORROW_CONSUME, and `~box.tok` under a
+-- live borrow of box.tok is rejected with E_QTT_BORROW_OVERLAP).
+-- Therefore `useToken ~v` MUST be rejected. Accepting it lets the
+-- quantity-1 token be consumed TWICE: once by the callee through the
+-- borrow, and once by `finish box` after the borrow scope ends.
+module main
+
+data Token : Type =
+    Token
+
+type Box = (1 tok : Token, tag : Int)
+
+useToken : (inout t : Token) -> UIO (1 t : Token,)
+let useToken (inout t : Token) : UIO (1 t : Token,) =
+    pure (t = t,)
+
+finish : (1 b : Box) -> UIO Int
+let finish (1 b : Box) : UIO Int =
+    match b.tok
+    case Token -> pure b.tag
+
+bad : (1 box : Box) -> UIO Int
+let bad (1 box : Box) : UIO Int =
+    do
+        do
+            let & v = box.tok
+            useToken ~v
+        finish box
+
+-- STATUS(a0497523): FAIL — 0 errors: `~v` on the borrowed binding is accepted, treated as a fresh root (write-back rebinds only `v`, never box.tok), so the quantity-1 token is consumed by the callee AND again by `finish box`; run-mode sibling probe shows the alias diverging from its root (alias sees successor, root keeps old value).

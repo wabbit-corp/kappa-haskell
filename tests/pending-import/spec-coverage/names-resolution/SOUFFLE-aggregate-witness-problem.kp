@@ -1,0 +1,56 @@
+-- Source issues: souffle-lang/souffle tests/semantic/witness_check/witness_check.dl,
+--   souffle-lang #556 (aggregator and variable-scoping issue),
+--   souffle-lang #876 (excessive aggregates cause well-typed programs to fail type checking),
+--   souffle-lang #877 (names for variables bound by aggregates are different in errors),
+--   souffle-lang #2552 (variable bound outside aggregation used as free within).
+-- Spec: §7.1 ordinary lexical lookup; §16.2 lambdas; §20.4 comprehension
+--   `for` clauses; §3.2.2 (family kappa.name.unresolved).
+-- Pins the Kappa analogue of Souffle's aggregate "witness problem": a name
+-- bound only inside an inner scope (a lambda binder, a comprehension `for`
+-- binder) is NOT visible in the enclosing scope, while outer bindings remain
+-- visible inside the inner scope.
+
+--! mode check
+
+module main
+
+-- POSITIVE: outer binding visible inside the inner lambda scope.
+sumUsesOuter : Int -> Int -> Int
+let sumUsesOuter threshold x =
+    let boost = \y -> y + threshold
+    boost x
+
+-- NEGATIVE: a lambda binder is only in scope inside the lambda body.
+witnessLeak : Int -> Int
+let witnessLeak x =
+    let double = \y -> y * 2
+    let applied = double x
+    y + 1    --!! kappa.name.unresolved
+
+-- NEGATIVE: a comprehension `for` binder is only in scope inside the
+-- comprehension clauses (§20.4); it does not ground the outer scope.
+compLeak : List Int -> Int
+let compLeak xs =
+    let squares =
+        [
+            for z in xs
+            yield z * z
+        ]
+    z + 1    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 2
+
+-- POSITIVE: results flow out of the inner scope via an ordinary binding.
+safeResult : Int -> Int
+let safeResult x =
+    let doubled =
+        [
+            for w in [x]
+            yield w * 2
+        ]
+    match doubled
+    case Nil -> 0
+    case first :: _ -> first
+
+-- STATUS(a0497523): PASS

@@ -32,7 +32,7 @@ let bad u =
     match u                             --!! kappa.pattern.non-exhaustive
     case (| n : Integer |) -> n
 
--- STATUS(a51e1bf): FAIL — VarRow/LacksVar unresolved (open variant rows
+-- STATUS(a0497523): FAIL — VarRow/LacksVar unresolved (open variant rows
 -- are not implemented), so open-union exhaustiveness checking cannot be
 -- reached; the file dies with E_NAME_UNRESOLVED instead of the single
 -- expected non-exhaustiveness error.

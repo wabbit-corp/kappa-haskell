@@ -1,0 +1,68 @@
+-- Source issues: CAIRO-2462, CAIRO-2576, CAIRO-2612, CAIRO-2688 (PR: Linear types),
+--               CAIRO-3943, CAIRO-8467
+-- Spec: §12.2 (quantities: 1 = [1,1], exactly one demand),
+--       §12.2.5 (positive lower-bound obligations; family
+--       kappa.quantity.positive-lower-bound for a dropped linear binding),
+--       §3.2.5 (kappa.quantity.unsatisfied — a second whole-binder
+--       consumption exceeds the linear interval [1,1]).
+-- Pins: a quantity-1 value must be consumed exactly once — dropping it
+-- violates the lower bound, consuming it twice exceeds the upper bound;
+-- a record with a linear field is itself a linear resource.
+
+--! mode check
+
+module main
+
+-- A resource type with no way to duplicate or discard it implicitly.
+data Dict : Type =
+    MkDict Int
+
+-- A destructor that consumes the Dict by matching it apart (§12.2.6).
+finalize : (1 d : Dict) -> Unit
+let finalize d =
+    match d
+    case MkDict _ -> ()
+
+-- POSITIVE: explicit consumption via finalize.
+useDict : Unit
+let useDict =
+    let 1 d = MkDict 42
+    finalize d
+
+-- POSITIVE: consuming the Dict by returning it.
+passDict : (1 d : Dict) -> Dict
+let passDict d = d
+
+-- NEGATIVE: silently dropping a linear value violates its lower bound.
+dropSilently : Unit
+let dropSilently =
+    let 1 d = MkDict 99
+    ()
+
+-- NEGATIVE: consuming a linear value twice exceeds the linear quantity
+-- (kappa.quantity.unsatisfied; the whole-binder analogue of §3.3.2).
+doubleUse : Unit
+let doubleUse =
+    let 1 d = MkDict 7
+    let u1 = finalize d
+    finalize d
+
+-- POSITIVE: a record with a linear field is consumed by consuming the
+-- field.
+data Wrapper : Type =
+    MkWrapper (1 inner : Dict)
+
+consumeWrapper : (1 w : Wrapper) -> Unit
+let consumeWrapper w =
+    match w
+    case MkWrapper d -> finalize d
+
+-- NEGATIVE: dropping a Wrapper without consuming its linear field.
+dropWrapper : Unit
+let dropWrapper =
+    let 1 w = MkWrapper (MkDict 3)
+    ()
+
+--! assertDiagnosticFamily error kappa.quantity.positive-lower-bound
+--! assertDiagnosticFamily error kappa.quantity.unsatisfied
+--! assertErrorCount 3

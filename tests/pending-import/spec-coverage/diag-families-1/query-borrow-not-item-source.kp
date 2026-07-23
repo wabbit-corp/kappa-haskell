@@ -22,4 +22,4 @@ instance IntoQuery Chan =
     let SourceDemand = & --!! kappa.query.borrow-not-source-demand
     let toQuery c = __queryFromList Nil
 
--- STATUS(a51e1bf): FAIL — kappa.query.borrow-not-item-quantity / kappa.query.borrow-not-source-demand are not registered; the instance body parse-recovers on '&' and the prelude IntoQuery declares IntoItem/toQuery instead of the §23.7 Mode/ItemQuantity/Item/SourceDemand members (E_INSTANCE_MEMBER_MISSING).
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.query.borrow-not-item-quantity' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill… [was FAIL in an earlier STATUS line]

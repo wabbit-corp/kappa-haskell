@@ -1,0 +1,33 @@
+--! assertNoErrors
+--! assertEval result 17
+
+-- §32.2.22 × §32.2.14: each use of a multi-shot deep resumption reinstalls
+-- the SAME deep handler around the resumed computation, afresh per use. The
+-- ω `choose` is resumed twice; each resumed run then performs `bonus`,
+-- which only the reinstalled deep handler can intercept (bonus ↦ 7):
+-- (7 + 1) + (7 + 2) = 17.
+module main
+
+effect Toss =
+    ω choose : Unit -> Bool
+    1 bonus : Unit -> Int
+
+comp : Eff <[Toss : Toss]> Int
+let comp = do
+    let b <- Toss.choose ()
+    let n <- Toss.bonus ()
+    if b then pure (n + 1) else pure (n + 2)
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Toss comp with
+        case return x -> pure x
+        case choose _ k -> do
+            let l <- k True
+            let r <- k False
+            pure (l + r)
+        case bonus _ k -> k 7
+
+result : Int
+let result = runPure handled
+-- STATUS(a0497523): PASS

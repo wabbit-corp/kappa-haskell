@@ -1,0 +1,18 @@
+--! mode check
+--! assertNoErrors
+--! assertEval seven 7
+--! assertType unitVal Unit
+
+-- §22.7: 'natSyntax' and 'unitSyntax' construct hygienic literal
+-- syntax with the obvious object-language types, re-elaborated at the
+-- splice site like any other Syntax value ('stringSyntax'/'boolSyntax'
+-- are pinned by tests/conformance/deriving/shape_reflection.kp).
+
+import std.deriving.shape.*
+
+seven : Nat
+let seven = $(natSyntax 7)
+
+unitVal : Unit
+let unitVal = $(unitSyntax)
+-- STATUS(a0497523): PASS

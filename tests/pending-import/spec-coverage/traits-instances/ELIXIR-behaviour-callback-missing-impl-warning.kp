@@ -1,0 +1,55 @@
+--! mode check
+--! assertErrorCount 3
+
+-- Source issues: kernel/warning_test.exs "undefined function for behaviour"
+--   ("function foo/0 required by behaviour Sample1 is not implemented in module Sample2"),
+--   kernel/impl_test.exs "warns of callbacks without impl", spec gap ESA-ELIXIR-04
+-- Spec: §14.2 (required trait members), §14.3/§14.3.4 (an instance that does
+--       not define a required member without a default fails instance checking)
+-- Elixir warns when a @behaviour callback is unimplemented; Kappa REJECTS an
+-- instance missing a required member.  §3.2 registers NO standard family for
+-- a missing runtime instance member (the original's kappa.implicit.unsolved
+-- was a wrong guess — that family is for unsynthesizable implicit arguments),
+-- so only the error count is asserted here.  The reference implementation
+-- reports E_INSTANCE_MEMBER_MISSING (family kappa-hs.trait.member-missing),
+-- one per missing member.
+module main
+
+trait Printable (a : Type) =
+    display  : a -> String
+    describe : a -> String
+
+-- POSITIVE: instance implements every required member.
+data Celsius : Type =
+    Celsius (value : Int)
+
+instance Printable Celsius =
+    let display c = "Celsius"
+    let describe c = "a Celsius temperature"
+
+-- POSITIVE: single-member trait, fully implemented.
+trait Named (a : Type) =
+    name : a -> String
+
+data Thing : Type =
+    Thing (id : Int)
+
+instance Named Thing =
+    let name t = "thing"
+
+-- NEGATIVE: instance provides neither display nor describe (two missing
+-- members, two diagnostics).
+data Kelvin : Type =
+    Kelvin (value : Int)
+
+instance Printable Kelvin =
+
+-- NEGATIVE: instance provides display but omits describe.
+data Fahrenheit : Type =
+    Fahrenheit (value : Int)
+
+instance Printable Fahrenheit =
+    let display f = "Fahrenheit"
+    -- describe is intentionally omitted
+
+-- STATUS(a0497523): PASS

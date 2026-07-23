@@ -1,0 +1,23 @@
+-- §18.5: bare `return` targets only a named function, method, or
+-- inherited-name lambda — NOT other anonymous lambdas. Here the return
+-- site sits inside a match-arm lambda (`pick`'s RHS is a match, so §9.1
+-- inherited naming does not apply), and that user-written lambda boundary
+-- between the return and `pick` makes bare return a compile-time error
+-- whose diagnostic MUST identify the intervening lambda.
+module main
+
+pick : Bool -> (Int -> UIO Unit)
+let pick b =
+    match b
+    case True -> \ n -> do
+        return ()
+    case False -> \ n -> pure ()
+
+--! mode check
+--! assertErrorCount 1
+-- (No dedicated diagnostic code is registered for the intervening-lambda
+-- rejection; §18.5 nonetheless requires a compile-time error here.)
+-- STATUS(a0497523): FAIL — compiler accepts (0 errors): bare return inside the
+-- anonymous match-arm lambda is resolved to the LAMBDA itself (return () types
+-- against the lambda result UIO Unit, not pick's), contradicting §18.5 which
+-- forbids bare return from targeting anonymous lambdas.

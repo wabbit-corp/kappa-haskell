@@ -22,4 +22,4 @@ let badOriginal = (0 : Box) --!! E_NAME_UNRESOLVED
 
 --! assertErrorCount 1
 --! assertEval result 9
--- STATUS(a51e1bf): FAIL — aliased same-spelling import constructs via the alias, but the alias is rejected as a pattern head (E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN)
+-- STATUS(a0497523): FAIL — aliased same-spelling import constructs via the alias, but the alias is rejected as a pattern head (E_PATTERN_HEAD_NOT_CONSTRUCTOR_OR_ACTIVE_PATTERN)

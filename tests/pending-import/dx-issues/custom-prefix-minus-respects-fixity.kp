@@ -1,0 +1,23 @@
+module main
+
+-- Kappa exposes prefix operators and fixity declarations as ordinary scoped
+-- bindings.  Once a local prefix (-) for Token is in scope, `-Token` should
+-- resolve through that binding just like any other prefix operator.  Routing
+-- every minus-shaped expression directly to the prelude `negate` operation is
+-- surprising and makes the advertised operator model non-uniform.
+
+data Token : Type =
+    Token
+
+prefix 90 (-)
+
+(-) : Token -> Int
+let (-) token = 99
+
+result : Int
+let result = -Token
+
+--! mode check
+--! assertNoErrors
+--! assertEval result 99
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type does not match the parameter type (\167\&16.1.7.1)" at line…

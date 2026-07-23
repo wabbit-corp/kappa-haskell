@@ -15,7 +15,7 @@ trait AT (t : Type) =
 trait BT (t : Type) =
     viaA : (@_ : AT t) -> t -> Int
 
--- STATUS(a51e1bf): FAIL — the group is rejected with a downstream
+-- STATUS(a0497523): FAIL — the group is rejected with a downstream
 -- E_NAME_UNRESOLVED on BT (source-order checking of AT against an
 -- incomplete environment). §15.16 permits not admitting mutual trait
 -- groups, but then the diagnostic MUST say so directly; an unresolved-name

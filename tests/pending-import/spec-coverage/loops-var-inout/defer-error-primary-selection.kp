@@ -1,0 +1,41 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "d2-ran\nd1-ran\ncaught: BODY\nbody-ok\ne2-ran\ne1-ran\ncaught: E2\n"
+
+-- §18.8.3 (+§18.7): ALL deferred actions are attempted during unwinding even
+-- when some propagate errors. The propagated error is the FIRST error in the
+-- unwinding sequence: the body's error when the body failed (later deferred
+-- errors are suppressed, but the actions still run), otherwise the first
+-- deferred error encountered in LIFO order.
+module main
+
+announceRaise : String -> String -> IO String Unit
+let announceRaise tag msg = do
+    printlnString tag
+    raise msg
+
+bodyFails : IO String Unit
+let bodyFails = do
+    defer (printlnString "d1-ran")
+    defer (announceRaise "d2-ran" "D2")
+    raise "BODY"
+
+bodySucceeds : IO String Unit
+let bodySucceeds = do
+    defer (announceRaise "e1-ran" "E1")
+    defer (announceRaise "e2-ran" "E2")
+    printlnString "body-ok"
+
+main : UIO Unit
+let main = do
+    try bodyFails
+    except msg ->
+        printlnString (stringAppend "caught: " msg)
+    try bodySucceeds
+    except msg ->
+        printlnString (stringAppend "caught: " msg)
+
+-- STATUS(a0497523): HARNESS-ERROR — internal exception: reraised cause [was FAIL in an earlier STATUS line]
+-- whenever a deferred action raises while a primary error is already tracked
+-- (body error + raising defer, or two raising defers); the §18.8.3 primary
+-- error never reaches `except`. Single-error defer paths work.

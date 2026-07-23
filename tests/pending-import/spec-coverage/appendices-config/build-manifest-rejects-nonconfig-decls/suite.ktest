@@ -1,0 +1,13 @@
+-- §35.13 (with §35.1/§35.2.2/§35.3): a portable build manifest must not
+-- contain ordinary import declarations, top-level signatures separate
+-- from definitions, or user-defined functions. Each is rejected with the
+-- §35.11 class identifying the form and the config-expression profile.
+-- Staged until a harness evaluates kappa.build.kp in config-expression
+-- mode (buildManifest capability).
+--! mode check
+--! requires capability buildManifest
+--! assertErrorCount 3
+--! assertDiagnostic error E_CONFIG_IMPORT_NOT_SAFE
+--! assertDiagnostic error E_CONFIG_RESTRICTED_FORM
+
+-- STATUS(a0497523): UNSUPPORTED — buildManifest capability not provided; kappa build --manifest --check emits exactly the three asserted diagnostics at the marked lines

@@ -1,0 +1,25 @@
+--! mode check
+--! assertNoErrors
+
+-- §20.10.4: compile-time-only / quantity-0 row entries are both
+-- row-droppable and row-duplicable. The erased entry s is duplicated by the
+-- nested `for` (per-input multiplicity QZeroOrMore) and discarded by `skip`
+-- and `take` (row drops), all of which must be accepted; §20.6.2 paging is
+-- legal because the list pipeline is Ordered after `order by`.
+module main
+
+data Spec : Type =
+    MkSpec
+
+ok : (src : QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrMore) 0 Spec) -> List Int
+let ok src =
+    [
+        for s in src
+        for x in [1, 2, 3]
+        order by x
+        skip 1
+        take 1
+        yield x
+    ]
+
+-- STATUS(a0497523): PASS

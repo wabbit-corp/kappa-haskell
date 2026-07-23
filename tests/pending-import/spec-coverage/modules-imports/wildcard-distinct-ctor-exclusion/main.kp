@@ -19,4 +19,4 @@ let badCtor = Red --!! E_NAME_UNRESOLVED
 
 --! assertErrorCount 1
 --! assertEval boxed 4
--- STATUS(a51e1bf): FAIL — wildcard import brings distinct-spelling constructors into scope (Red resolves without an explicit ctor item)
+-- STATUS(a0497523): FAIL — wildcard import brings distinct-spelling constructors into scope (Red resolves without an explicit ctor item)

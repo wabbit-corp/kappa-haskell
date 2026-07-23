@@ -1,0 +1,35 @@
+-- Source issues: nickel #316, #430, #1482
+-- Spec: §8 (imports; imported declarations keep their declared types),
+--       §3.2.3 (kappa.type.mismatch)
+-- Pins: values, functions, and type aliases imported from another module are
+-- seen by the importer at their declared static types (not as some dynamic
+-- type); a wrongly typed argument to an imported function is rejected.
+
+module client
+
+import configlib
+
+-- POSITIVE: the importer uses configlib.defaultAddr at its static type.
+importedAddr : configlib.ServerAddr
+let importedAddr = configlib.defaultAddr
+
+hostFromImport : String
+let hostFromImport = importedAddr.host
+
+portFromImport : Int
+let portFromImport = importedAddr.port
+
+-- POSITIVE: calling a typed function from the imported module.
+createdAddr : configlib.ServerAddr
+let createdAddr = configlib.mkAddr "api.example.com" 443
+
+-- NEGATIVE: passing a wrong-typed argument to an imported typed function
+-- must be rejected — the type information survives the import boundary.
+badAddrCall : configlib.ServerAddr
+let badAddrCall = configlib.mkAddr "api.example.com" "not-a-port"   --!! kappa.type.mismatch
+
+-- POSITIVE: using an imported type alias in a local type annotation.
+localAlias : configlib.ServerAddr -> String
+let localAlias addr = addr.host
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,32 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "42\nzero\n"
+
+-- The spec (Sections 5, 5.4) is silent on source line terminators; it
+-- speaks only of NEWLINE. This implementation accepts CRLF-encoded
+-- files: CR is skipped in indentation and between tokens, so Section
+-- 5.4 layout (INDENT/DEDENT, continuation regions, do blocks,
+-- match/case blocks) behaves exactly as in the LF-equivalent file.
+-- Pinned so CRLF acceptance does not regress silently; recorded in
+-- SPEC_ISSUES as a spec gap. Every line of THIS file ends with CRLF.
+-- (The one known CRLF divergence -- multiline-string bodies -- is
+-- pinned separately under dx-issues.)
+
+module main
+
+x : Int
+let x =
+    40 +
+    2
+
+describe : Int -> String
+let describe n =
+    match n
+    case 0 -> "zero"
+    case _ -> "other"
+
+main : UIO Unit
+let main = do
+    printInt x
+    println (describe 0)
+-- STATUS(a0497523): PASS — full-CRLF file: indentation, continuation region, do block and match/case behave exactly as the LF equivalent

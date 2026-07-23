@@ -1,0 +1,34 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.6: the semantic-reflection value tier. Implementations MUST
+-- provide elaboration-time operations equivalent to asCore, asCoreIn,
+-- reifyCore, inferType, whnf, normalize, and headSymbol at the spec
+-- signatures. Each definition below delegates at exactly the normative
+-- type, so the file elaborates iff the operations exist with those
+-- signatures.
+module main
+
+viaAsCore : forall (@0 t : Type). Syntax t -> Elab (exists (G : CoreCtx). Core G t)
+let viaAsCore s = asCore s
+
+viaAsCoreIn : forall (@0 G : CoreCtx) (@0 t : Type). Syntax t -> Elab (Core G t)
+let viaAsCoreIn s = asCoreIn s
+
+roundTrip : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Syntax t)
+let roundTrip c = reifyCore c
+
+typeOf : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Core G Type)
+let typeOf c = inferType c
+
+weakHead : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Core G t)
+let weakHead c = whnf c
+
+normThenReify : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Syntax t)
+let normThenReify c = do
+    let n <- normalize c
+    reifyCore n
+
+headOf : forall (@0 G : CoreCtx) (@0 t : Type). Core G t -> Elab (Option Symbol)
+let headOf c = headSymbol c
+-- STATUS(a0497523): FAIL — asCore/asCoreIn/reifyCore/inferType/whnf/normalize/headSymbol are all E_NAME_UNRESOLVED (semantic value tier unimplemented)

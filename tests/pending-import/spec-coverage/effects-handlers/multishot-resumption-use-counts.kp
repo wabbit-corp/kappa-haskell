@@ -1,0 +1,53 @@
+--! mode check
+--! assertNoErrors
+--! assertEval abandoned 99
+--! assertEval once 8
+--! assertEval thrice 9
+
+-- §18.1.16 / §18.1.17 / §18.1.21: a multi-shot (ω) resumption k may be
+-- used 0, 1, or many times within the ordinary quantity rules — one
+-- handler abandons the segment (0 uses), one resumes once, one resumes
+-- three times (2+3+4 = 9), all against the same operation declaration.
+module main
+
+effect Choice =
+    ω pick : Unit -> Int
+
+comp : Eff <[Choice : Choice]> Int
+let comp =
+    do
+        let v <- Choice.pick ()
+        pure (addInt v 1)
+
+abandonedH : Eff <[ ]> Int
+let abandonedH =
+    deep handle Choice comp with
+        case return x -> pure x
+        case pick _ k -> pure 99
+
+abandoned : Int
+let abandoned = runPure abandonedH
+
+onceH : Eff <[ ]> Int
+let onceH =
+    deep handle Choice comp with
+        case return x -> pure x
+        case pick _ k -> k 7
+
+once : Int
+let once = runPure onceH
+
+thriceH : Eff <[ ]> Int
+let thriceH =
+    deep handle Choice comp with
+        case return x -> pure x
+        case pick _ k ->
+            do
+                let a <- k 1
+                let b <- k 2
+                let c <- k 3
+                pure (addInt a (addInt b c))
+
+thrice : Int
+let thrice = runPure thriceH
+-- STATUS(a0497523): PASS

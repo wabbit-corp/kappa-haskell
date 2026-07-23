@@ -1,0 +1,39 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "child 21\npromise 99\nelapsed T\n"
+
+-- §27.6 rt-core: a backend advertising rt-core must actually provide
+-- fibers (fork/await with typed Exit), source-visible fiber identities
+-- (fiberId), promises (newPromise/completePromise/awaitPromise),
+-- monotonic timers (nowMonotonic/sleepFor), not just a syntactic surface.
+-- Also §27.6: absence of rt-parallel does not make `fork` invalid —
+-- this program's behavior may not rely on parallel execution.
+module main
+
+import std.prelude.(type Exit(..))
+
+child : UIO Int
+let child = ioPure 21
+
+main : UIO Unit
+let main = do
+    let t0 <- nowMonotonic
+    let fib <- fork child
+    -- source-visible fiber identity (§27.6 rt-core, §18.1)
+    let fid <- fiberId fib
+    let _ = fid
+    let ex <- await fib
+    match ex
+      case Success v -> printlnString (stringAppend "child " (showInt v))
+      case Failure _ -> printlnString "child failed"
+    let p <- newPromise
+    let done <- completePromise p (Success 99)
+    let _ = done
+    let v <- awaitPromise p
+    printlnString (stringAppend "promise " (showInt v))
+    sleepFor (millis 1)
+    let t1 <- nowMonotonic
+    -- the monotonic clock never runs backwards across a timer sleep
+    printlnString (stringAppend "elapsed " (if instantNanos t0 <= instantNanos t1 then "T" else "F"))
+
+-- STATUS(a0497523): PASS

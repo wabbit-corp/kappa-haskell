@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "7\n8\n9\n"
+
+-- Appendix B.2: pipe operators are ordinary infix operators — they do not
+-- alter dotted forms, method-call sugar, or receiver sections (§16.1.1.1).
+-- `x |> obj.adder` parses as `x |> (obj.adder)`: the projection happens on
+-- obj in its own scope (x here is an Int with no members, so retargeting
+-- would not even typecheck). Piping into a member access needs an explicit
+-- receiver section: x |> (.method arg), x |> (.field.subfield).
+module main
+
+type Adders = (adder : Int -> Int,)
+
+obj : Adders
+let obj = (adder = \ (v : Int) -> v + 2,)
+
+let plus (this n : Int) (delta : Int) : Int = n + delta
+
+type Inner = (value : Int, tag : Int)
+type Outer = (inner : Inner, other : Int)
+
+nested : Outer
+let nested = (inner = (value = 9, tag = 0), other = 1)
+
+main : UIO Unit
+let main = do
+    -- parses as 5 |> (obj.adder): obj's member, applied to the piped 5
+    printInt (5 |> obj.adder)
+    -- receiver section with an argument: (.plus 3) is a Int -> Int section
+    printInt (5 |> (.plus 3))
+    -- nested receiver-projection section retargets onto the piped record
+    printInt (nested |> (.inner.value))
+
+-- STATUS(a0497523): PASS

@@ -1,0 +1,58 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "ab:3\nabc:6\n"
+
+-- Appendix G.2/G.3 (amending §18.2): a do block whose `<-` binds are
+-- independent MAY elaborate through Applicative (liftA2/<*>) alone, but
+-- the result MUST stay observationally equivalent to the §18.2 monadic
+-- desugaring (G.3 as-if rule). For a log-accumulating monad both
+-- elaborations run e1's effects before e2's, so the accumulated log pins
+-- the required left-to-right effect order; a G.3 mixed block (x3 depends
+-- on earlier `<-` results) partitions but keeps the same observable order.
+module main
+
+data W (0 a : Type) : Type = MkW (log : String) (value : a)
+
+instance Applicative W =
+    let pureA x = MkW "" x
+    let liftA2 f wa wb =
+        match wa
+        case MkW la a ->
+          match wb
+          case MkW lb b -> MkW (stringAppend la lb) (f a b)
+
+instance Monad W =
+    let (>>=) wa f =
+        match wa
+        case MkW la a ->
+          match f a
+          case MkW lb b -> MkW (stringAppend la lb) b
+
+-- G.2 shape: independent `<-` binds, a pure let, and a final expression.
+indep : W Int
+let indep = do
+    let x1 <- MkW "a" 1
+    let x2 <- MkW "b" 2
+    let y = x1 + x2
+    pureA y
+
+-- G.3 mixed block: x3's right-hand side uses x1 and x2, so it must sit in
+-- a later group combined with >>=; the log stays in program order.
+mixed : W Int
+let mixed = do
+    let x1 <- MkW "a" 1
+    let x2 <- MkW "b" 2
+    let x3 <- MkW "c" (x1 + x2)
+    pureA (x1 + x2 + x3)
+
+render : W Int -> String
+let render w =
+    match w
+    case MkW l v -> stringAppend l (stringAppend ":" (showInt v))
+
+main : UIO Unit
+let main = do
+    printlnString (render indep)
+    printlnString (render mixed)
+
+-- STATUS(a0497523): PASS

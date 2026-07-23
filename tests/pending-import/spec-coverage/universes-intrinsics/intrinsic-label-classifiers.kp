@@ -18,4 +18,4 @@ readAt : forall (r : RecRow) (lab : Label).
 let readAt (@0 r : RecRow) (@0 lab : Label) (@_ : LacksRec r lab) (rec : (name : String | r)) : String =
     rec.name
 
--- STATUS(a51e1bf): FAIL — 'Label' is not implemented (E_NAME_UNRESOLVED x3); EffLabel resolves, Label does not
+-- STATUS(a0497523): FAIL — 'Label' is not implemented (E_NAME_UNRESOLVED x3); EffLabel resolves, Label does not

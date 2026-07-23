@@ -1,0 +1,30 @@
+-- §18.3.1 x §16.1.1.2 x §16.1.2 in ONE do-item: a spliced safe-navigation
+-- RECEIVER always runs (it is the chain prefix, evaluated before the
+-- desugared match), while a spliced elvis DEFAULT is branch-local (None
+-- path only). Left-to-right order: receiver effect, then match, then (on
+-- None) the default effect.
+module main
+
+type Rec = (base : Int,)
+
+mkRec : String -> Option Rec -> UIO (Option Rec)
+let mkRec tag r = do
+    printlnString tag
+    ioPure r
+
+loud : String -> Int -> UIO Int
+let loud tag n = do
+    printlnString tag
+    ioPure n
+
+main : UIO Unit
+let main = do
+    let a = (!(mkRec "recv-some" (Some (base = 8,))))?.base ?: !(loud "dflt-a" 0)
+    printlnString (showInt a)
+    let b = (!(mkRec "recv-none" None))?.base ?: !(loud "dflt-b" (-3))
+    printlnString (showInt b)
+
+--! mode run
+--! assertNoErrors
+--! assertStdout "recv-some\n8\nrecv-none\ndflt-b\n-3\n"
+-- STATUS(a0497523): PASS

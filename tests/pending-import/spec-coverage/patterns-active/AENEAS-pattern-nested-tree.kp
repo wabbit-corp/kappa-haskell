@@ -1,0 +1,25 @@
+-- Source issues: AENEAS-161, AENEAS-30 (background context only).
+-- Spec: §17.2.1 and §17.2.2 (nested constructor patterns), plus §17.1
+--       (`match`).
+-- Aeneas generates nested ADT patterns. This case checks recursive nested
+-- tree destructuring without changing the original computation.
+
+module test
+
+--! mode check
+
+data Tree (a : Type) : Type =
+    Leaf
+    | Node (Tree a) a (Tree a)
+
+depth : forall (a : Type). Tree a -> Int
+let depth t =
+    match t
+    case Leaf           -> 0
+    case (Node l _ r)   -> 1 + (if depth l > depth r then depth l else depth r)
+
+--! assertNoErrors
+
+-- Finalized Core reports E_PARAMETRIC_TYPE_PROMOTION for the structurally
+-- recursive polymorphic calls after syntax/type checking.
+-- STATUS(a0497523): FAIL

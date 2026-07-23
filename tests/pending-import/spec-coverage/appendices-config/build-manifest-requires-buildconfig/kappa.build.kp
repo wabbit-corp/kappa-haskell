@@ -1,0 +1,7 @@
+-- §35.13: helper bindings alone do not make a manifest — the single
+-- required buildConfig binding is missing here.
+
+let name = "demo"
+
+let version = semver "1.0.0"
+-- STATUS(a0497523): UNSUPPORTED — requires capability buildManifest: not provided

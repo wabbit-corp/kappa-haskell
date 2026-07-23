@@ -1,0 +1,54 @@
+--! mode run
+--! assertNoErrors
+--! assertEval report (_1 = 0, _2 = 6) :: (_1 = 1, _2 = 40) :: Nil
+
+-- §20.7 aggregate `field = valueExpr using Wrapper`: Wrapper must be a
+-- newtype-like constructor T -> W with an implicit (lawful) Monoid W; per
+-- group the wrapped values are folded with Monoid.append in encounter order
+-- and the accumulator is unwrapped through the single constructor, so
+-- g.picked has the unwrapped type List Int. The Tally laws are lifted from
+-- the prelude's List monoid proofs via cong.
+module main
+
+data Tally : Type =
+    MkTally (entries : List Int)
+
+instance Pointed Tally =
+    let empty = MkTally Nil
+
+instance Monoid Tally =
+    let append x y =
+        match x
+        case MkTally a ->
+            match y
+            case MkTally b -> MkTally (listAppend a b)
+    let appendLeftIdentity @x =
+        match x
+        case MkTally a -> refl
+    let appendRightIdentity @x =
+        match x
+        case MkTally a -> cong MkTally (listAppendRightIdentity a)
+    let appendAssoc @x @y @z =
+        match x
+        case MkTally a ->
+            match y
+            case MkTally b ->
+                match z
+                case MkTally c -> cong MkTally (listAppendAssoc a b c)
+
+sumList : List Int -> Int
+let sumList xs =
+    match xs
+    case Nil -> 0
+    case x :: rest -> x + sumList rest
+
+report : List (_1 : Int, _2 : Int)
+let report =
+    [
+        for x in [1, 2, 3, 40]
+        group by (if x < 10 then 0 else 1) { picked = (x :: Nil) using MkTally } into g
+        order by g.key
+        yield (g.key, sumList g.picked)
+    ]
+
+-- STATUS(a0497523): PASS

@@ -5,7 +5,7 @@
 --! mode check
 
 -- A type alias for a pair where the second component exceeds the first.
-type PosPair = (x : Int, y : { n : Int | n > x })
+type PosPair : Type = (x : Int, y : { n : Int | n > x })
 
 -- Using the alias in a function: the refinement must be visible after unfolding.
 fst_pair : PosPair -> Int

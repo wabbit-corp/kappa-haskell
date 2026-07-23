@@ -1,0 +1,46 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.borrow.escape
+
+-- Source issues: carp-lang/Carp#381, #806
+-- Spec: §12.3 (hidden-root introduction for borrowed local bindings),
+--       §12.4.1 (stable places), §3.2.7 (kappa.borrow.escape)
+-- Carp rejected `&rvalue` outright.  Kappa instead ADMITS `let & pat = expr`
+-- for a non-place `expr` by introducing a hidden temporary scoped exactly to
+-- the binding's body (§12.3); the portable obligation becomes that the borrow
+-- of that hidden root is tethered to its scope: a value whose region
+-- environment mentions the borrow's rigid region may not escape (§12.3).
+module main
+
+data Box : Type =
+    Box Int
+
+read : (& b : Box) -> Int
+let read b = 0
+
+mkBox : Unit -> Box
+let mkBox () = Box 1
+
+-- POSITIVE: a borrow of an l-value (a let-bound name) is admitted and the
+-- underlying place is preserved for the body of the borrowed binding.
+borrowBinding : Int
+let borrowBinding =
+    let b = Box 5
+    let & r = b
+    read r
+
+-- POSITIVE: a borrow of an arbitrary rvalue (a call result) is admitted via
+-- the §12.3 hidden temporary; the borrow is usable within the binding body.
+borrowRvalue : Int
+let borrowRvalue =
+    let & r = mkBox ()
+    read r
+
+-- NEGATIVE: the rvalue's hidden root is scoped to the binding body; a
+-- closure whose region environment mentions the borrow may not be returned.
+badEscape : Unit -> (Unit -> Int)
+let badEscape () =
+    let & r = mkBox ()
+    \() -> read r --!! kappa.borrow.escape
+
+-- STATUS(a0497523): PASS

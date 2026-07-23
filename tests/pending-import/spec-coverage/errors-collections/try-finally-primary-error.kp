@@ -1,0 +1,23 @@
+-- §19.2 rule 6 / §18.8.3 steps 4-6: when both the try body and the finalizer
+-- raise, the propagated error is `throwError primary` — the finalizer error
+-- may be attached as suppressed information or discarded, but it MUST NOT
+-- replace the primary error as the ordinary propagated error.
+--! mode run
+--! assertNoErrors
+--! assertStdout "cleanup\ncaught: primary\n"
+module main
+
+both : IO String Unit
+let both = do
+    try (raise "primary")
+    finally -> do
+        printlnString "cleanup"
+        raise "secondary"
+
+main : UIO Unit
+let main = do
+    try both
+    except e -> printlnString (stringAppend "caught: " e)
+-- STATUS(a0497523): FAIL — stdout is "cleanup\ncaught: secondary\n": the finalizer
+-- error REPLACES the primary error instead of being suppressed per §18.8.3
+-- steps 4-6 (primary must win; secondary may only be attached or discarded).

@@ -25,4 +25,4 @@ let ambiguous = apply inc 41 --!! kappa.implicit.unsolved
 --! mode check
 --! assertErrorCount 1
 --! assertDiagnosticMatch unsolved
--- STATUS(a51e1bf): FAIL — the QuantitySatisfies/quantity-variable surface is unimplemented, so elaboration emits a 5-error unresolved-name/mismatch cascade instead of the single spec-required unsolved-metavariable report at the call site.
+-- STATUS(a0497523): FAIL — the QuantitySatisfies/quantity-variable surface is unimplemented, so elaboration emits a 5-error unresolved-name/mismatch cascade instead of the single spec-required unsolved-metavariable report at the call site.

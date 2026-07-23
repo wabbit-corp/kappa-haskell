@@ -1,0 +1,9 @@
+module basex
+
+data Pair (a : Type) (b : Type) : Type =
+    MkPair (fst : a) (snd : b)
+
+type TX = List Int
+
+mkTX : TX
+let mkTX = 1 :: Nil

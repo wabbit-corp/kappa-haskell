@@ -28,3 +28,5 @@ viaForced : forall (x : Bool) (y : Bool). EqT Bool x y -> FlagBox x -> Unit
 let viaForced (@0 x : Bool) (@0 y : Bool) (p : EqT Bool x y) (box : FlagBox x) : Unit =
     match p
     case ReflT -> needsSame y box
+
+-- STATUS(a0497523): FAIL — both positives rejected with E_APPLICATION_ARGUMENT_MISMATCH "no equality evidence licenses the transport (§16.1.8)": explicit local proofs and constructor-forced family equalities are not wired as transport proof sources (only branch-bool and stable-alias evidence work today).

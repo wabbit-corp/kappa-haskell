@@ -1,0 +1,45 @@
+--! mode check
+--! assertNoErrors
+--! assertType idT List Int -> List Int
+
+-- §31.1.1: transparent normalization is position-independent — the same
+-- transparent type alias MUST reduce uniformly in term types, record
+-- field types, constructor field types, and equality goals; none may
+-- leave the alias stuck. (Classifier/kind position is split out into
+-- trans-alias-classifier-position.kp, which currently fails.)
+module main
+
+type T = List Int
+
+-- term-type position
+idT : T -> T
+let idT x = x
+
+-- record field type position
+type R = (items : T)
+
+mkR : List Int -> R
+let mkR xs = (items = xs)
+
+readR : R -> T
+let readR r = r.items
+
+-- constructor field position
+data D : Type =
+    MkD (payload : T)
+
+openD : D -> List Int
+let openD d =
+    match d
+    case MkD xs -> xs
+
+-- equality-goal position
+goal : T = List Int
+let goal = refl
+
+-- cross-position agreement: a value typed at the expanded form flows
+-- into an alias-typed position and back through every helper above
+roundTrip : List Int -> T
+let roundTrip xs = readR (mkR (openD (MkD (idT xs))))
+
+-- STATUS(a0497523): PASS

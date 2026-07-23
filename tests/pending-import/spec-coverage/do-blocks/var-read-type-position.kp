@@ -1,0 +1,27 @@
+-- §18.3.1 (no-read positions): the current-value translation does not run in
+-- TYPE positions — a mutable-variable occurrence there is rejected unless the
+-- source selects a non-reading facet. Binding an ordinary snapshot first and
+-- mentioning the snapshot in the type is the accepted spelling.
+module main
+
+f : Int -> Type
+let f k = Int
+
+-- POSITIVE: a pure snapshot of the current value may appear in a type.
+okSnapshot : UIO Int
+let okSnapshot = do
+    var n = 5
+    let k = n
+    let p : f k = 3
+    pure p
+
+-- NEGATIVE: the var's current-value occurrence sits in a type annotation.
+bad : UIO Int
+let bad = do
+    var n = 5
+    let p : f n = 3 --!! E_VAR_IN_STATIC_POSITION
+    pure p
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): PASS

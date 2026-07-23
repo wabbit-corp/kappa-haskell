@@ -1,0 +1,52 @@
+-- Source issue: ROSETTE-44 (xor broken? — non-boolean arguments accepted),
+--                Rosette PR #149 (Add logical xor operation)
+-- Spec: §28.2 (prelude Boolean operations: not, (&&), (||)),
+--       §16.1 (application), §6.1.5 / §3.2.3 (literal-domain and
+--       argument mismatches).
+-- Pins: the prelude Boolean operators and a user xor helper are typed at
+-- Bool; a non-Bool operand is a static error — never a silently accepted
+-- symbolic value.
+
+--! mode check
+
+module main
+
+xor : Bool -> Bool -> Bool
+let xor a b = (a || b) && not (a && b)
+
+-- POSITIVE: well-typed Boolean operator usage.
+ok : Bool
+let ok = xor True False
+
+ok2 : Bool
+let ok2 = xor (0 < 1) (2 < 0)
+
+allOps : Bool
+let allOps =
+    let a = True && False
+    let b = True || False
+    let c = not a
+    let d = xor a b
+    c && d
+
+-- NEGATIVE: xor with an Int operand (no FromInteger witness at Bool).
+bad1 : Bool
+let bad1 = xor True 11                      --!! kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: xor with a String operand.
+bad2 : Bool
+let bad2 = xor "x" False                    --!! kappa.application.argument-mismatch
+
+-- NEGATIVE: (&&) with an Int operand.
+bad3 : Bool
+let bad3 = 1 && True                        --!! kappa.type.literal-domain-mismatch
+
+-- NEGATIVE: not on a non-Bool literal.
+bad4 : Bool
+let bad4 = not 0                            --!! kappa.type.literal-domain-mismatch
+
+--! assertDiagnosticFamily error kappa.application.argument-mismatch
+--! assertDiagnosticFamily error kappa.type.literal-domain-mismatch
+--! assertErrorCount 4
+
+-- STATUS(a0497523): PASS

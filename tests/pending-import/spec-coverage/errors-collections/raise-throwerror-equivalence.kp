@@ -1,0 +1,26 @@
+-- §19.4: `raise` is an ordinary prelude helper, definitionally equivalent to
+-- `throwError`, permitted wherever m a is expected and implicit resolution
+-- supplies MonadError m. Both spellings must produce the same caught error.
+--! mode run
+--! assertNoErrors
+--! assertStdout "caught: boom\ncaught: boom\n"
+module main
+
+viaRaise : IO String Int
+let viaRaise = raise "boom"
+
+viaThrow : IO String Int
+let viaThrow = throwError "boom"
+
+show1 : IO String Int -> UIO Unit
+let show1 act = do
+    try do
+        let _ <- act
+        pure ()
+    except e -> printlnString (stringAppend "caught: " e)
+
+main : UIO Unit
+let main = do
+    show1 viaRaise
+    show1 viaThrow
+-- STATUS(a0497523): PASS

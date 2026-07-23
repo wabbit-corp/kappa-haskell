@@ -15,4 +15,4 @@ import foo.(effect-label counterLabel) --!! kappa.import.effect-label-selector
 x : Int
 let x = 1
 
--- STATUS(a51e1bf): FAIL — kappa.import.effect-label-selector is not registered; the 'effect-label' selector merely parse-recovers (E_RECOVERY_DECLARATION_SKIPPED: unexpected '.') with no selector-spelling payload or effectLabel repair.
+-- STATUS(a0497523): HARNESS-ERROR — line 2: directive 'assertDiagnosticFamily': 'kappa.import.effect-label-selector' is not a registered diagnostic code or family (§3.1.2A); the assertion is ill-t… [was FAIL in an earlier STATUS line]

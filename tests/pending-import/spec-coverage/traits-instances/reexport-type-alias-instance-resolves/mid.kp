@@ -1,0 +1,6 @@
+module mid
+
+-- §8.4: "An aliased export re-exports the selected declaration ... under
+-- the alias spelling. The declaration's semantic identity and metadata
+-- are preserved under the export alias."
+export lib.(type Money as Cash, mkMoney, trait Amount, amount)

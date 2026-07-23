@@ -1,0 +1,20 @@
+--! mode check
+--! assertDiagnostic error E_NAME_UNRESOLVED
+-- DX expectation, not spec-required.  The user typos the module alias
+-- 'Bytes' as 'Bytse' in qualified references.  The suggestion engine
+-- (plain Levenshtein, threshold 1 at this length) offers 'Byte' — the
+-- prelude TYPE, edit distance 1 — whose application 'Byte.bytesLength'
+-- is nonsense, while the intended alias 'Bytes' (an adjacent
+-- transposition, Damerau distance 1) is never considered.  §3.1.7 asks
+-- repairs to "preserve the user's local source intent": a dotted
+-- `X.member` head whose member IS exported by the alias's module makes
+-- the alias the overwhelmingly likely intent.  Expected-good behavior:
+-- suggest 'Bytes' here.  Currently: both occurrences suggest 'Byte'.
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion Bytes
+module main
+
+import std.bytes as Bytes
+
+n : Nat
+let n = Bytse.bytesLength Bytse.emptyBytes --!! kappa.name.unresolved
+-- STATUS(a0497523): FAIL — both occurrences suggest 'Byte' (payload suggestion=Byte), the transposed alias 'Bytes' is never considered

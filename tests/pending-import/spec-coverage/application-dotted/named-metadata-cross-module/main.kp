@@ -1,0 +1,20 @@
+-- §16.1.7 (L19838-19840): an imported value whose module interface
+-- records named-call metadata preserves it, so a downstream named
+-- application block against the imported callee is well-formed.
+module main
+
+import lib
+
+-- POSITIVE: named application against an imported callee.
+direct : Int
+let direct = lib.resize { image = 1, width = 2 }
+
+-- POSITIVE: transparent local rebinding of the import keeps metadata
+-- (§16.1.7A L20166-20167).
+viaAlias : Int
+let viaAlias =
+    block
+        let r = lib.resize
+        r { image = 3, width = 4 }
+
+-- STATUS(a0497523): PASS

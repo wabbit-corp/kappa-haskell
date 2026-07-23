@@ -1,0 +1,71 @@
+-- Source: spec-derived exercise from Racket's optional value patterns and contracts for optional args (RACKET_CANDIDATE_LEDGER.md staged-tests entry: "Racket option patterns"; no single tracker issue)
+-- Spec: §10.1 (data declarations), §11.3.3 (implicit universalization), §17.1 (match), §16.1.7.1 (application argument checking), §3.2.3 (kappa.type.mismatch)
+--
+-- Pins: a user-declared parametric two-constructor optional type (Maybe/Option
+-- shape); every consumer match covers both constructors; the type parameter is
+-- threaded through map/bind/fromOpt/andOpt/guardedOpt via §11.3.3 implicit
+-- universalization. Negatives: an Opt Bool argument where Opt Int is required,
+-- and a non-Opt value at Opt type, are type mismatches.
+
+--! mode check
+
+data Opt (0 a : Type) : Type =
+    ONone
+    OSome a
+
+-- POSITIVE: map over an Opt.
+mapOpt : (a -> b) -> Opt a -> Opt b
+let mapOpt f o =
+    match o
+    case ONone   -> ONone
+    case OSome x -> OSome (f x)
+
+-- POSITIVE: bind (flatMap) for Opt.
+bindOpt : Opt a -> (a -> Opt b) -> Opt b
+let bindOpt o f =
+    match o
+    case ONone   -> ONone
+    case OSome x -> f x
+
+-- POSITIVE: fromMaybe with a default.
+fromOpt : a -> Opt a -> a
+let fromOpt def o =
+    match o
+    case ONone   -> def
+    case OSome x -> x
+
+-- POSITIVE: sequence two Opts, keeping the second value.
+andOpt : Opt a -> Opt b -> Opt b
+let andOpt oa ob =
+    match oa
+    case ONone   -> ONone
+    case OSome _ -> ob
+
+-- POSITIVE: convert a Bool-guarded value to Opt.
+guardedOpt : Bool -> a -> Opt a
+let guardedOpt cond x =
+    match cond
+    case False -> ONone
+    case True  -> OSome x
+
+isPos : Int -> Bool
+let isPos n = n > 0
+
+-- POSITIVE: the parameter threads through concrete uses.
+okThread : Opt Bool
+let okThread = mapOpt isPos (OSome 5)
+
+okDefault : Int
+let okDefault = fromOpt 0 (OSome 42)
+
+-- NEGATIVE: mapOpt isPos demands Opt Int, but the argument is Opt Bool.
+badMap : Opt Bool
+let badMap = mapOpt isPos (OSome True)   --!! E_TYPE_MISMATCH
+
+-- NEGATIVE: a non-Opt value where Opt Int is expected.
+badOpt : Opt Int
+let badOpt = True    --!! E_TYPE_MISMATCH
+
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertEval okDefault 42
+-- STATUS(a0497523): PASS

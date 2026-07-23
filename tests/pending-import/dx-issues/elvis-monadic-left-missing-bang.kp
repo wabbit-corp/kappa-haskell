@@ -1,0 +1,24 @@
+-- DX EXPECTATION (not spec-required behavior): forgetting the `!` splice
+-- on a monadic elvis left side inside `do` is the most likely user error
+-- combining §18.3.1 and §16.1.2: `let x = getOpt ?: 0` where
+-- getOpt : UIO (Option Int). Expected: ONE targeted diagnostic on the
+-- elvis left operand (m (Option T) where Option T is required), ideally
+-- with a hint to insert `!` — and no downstream cascade.
+--
+-- CURRENTLY: three cascaded errors — the §16.1.2 operand-type error, then
+-- E_NUMERIC_LITERAL_DOMAIN_MISMATCH trying to fit the literal default `0`
+-- to IO Void (Option Int), then E_APPLICATION_ARGUMENT_MISMATCH at the
+-- showInt use site — and no splice hint anywhere.
+module main
+
+getOpt : UIO (Option Int)
+let getOpt = ioPure (Some 5)
+
+main : UIO Unit
+let main = do
+    let x = getOpt ?: 0 --!! E_TYPE_EQUALITY_MISMATCH
+    printlnString (showInt x)
+
+--! mode check
+--! assertErrorCount 1
+-- STATUS(a0497523): FAIL — three cascaded errors (elvis operand mismatch, E_NUMERIC_LITERAL_DOMAIN_MISMATCH fitting the default literal to IO Void (Option Int), downstream E_APPLICATION_ARGUMENT_MISMATCH) and no insert-`!` hint.

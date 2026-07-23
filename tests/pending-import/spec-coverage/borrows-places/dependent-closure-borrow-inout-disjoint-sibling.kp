@@ -1,0 +1,31 @@
+--! mode check
+--! assertNoErrors
+
+-- §12.4 dependency closure: borrowing s.buffer also locks s.len
+-- (buffer's type mentions len), but NOT the independent sibling
+-- s.checksum. So an inout call on `~s.checksum` while the buffer
+-- borrow is live has a disjoint footprint and must be accepted, and
+-- restoring checksum : Nat invalidates no dependent sibling
+-- (§18.9.4/§13.2.5).
+module main
+
+data Byte : Type =
+    Byte
+
+type Sized = (len : Nat, buffer : Array this.len Byte, checksum : Nat)
+
+observeBuf : forall (n : Nat). (& b : Array n Byte) -> Int
+let observeBuf (@0 n : Nat) (& b : Array n Byte) : Int = 1
+
+touchChecksum : (inout n : Nat) -> UIO (1 n : Nat,)
+let touchChecksum (inout n : Nat) : UIO (1 n : Nat,) =
+    pure (n = n,)
+
+ok : (1 s : Sized) -> UIO Int
+let ok (1 s : Sized) : UIO Int =
+    do
+        let & b = s.buffer
+        touchChecksum ~s.checksum
+        pure (observeBuf b)
+
+-- STATUS(a0497523): PASS

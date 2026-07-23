@@ -1,0 +1,25 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "old:50\nafter:43\nold2:43\nnegative:-57\n"
+
+-- §29.1 atomicFetchSub returns the OLD value and atomically replaces the
+-- cell with old - operand. The portable Integer AtomicInteger instance is
+-- exact, so subtracting past zero yields an exact negative value (overflow
+-- semantics belong only to fixed-width instances).
+module main
+
+import std.atomic.(ctor LoadSeqCst, ctor RmwSeqCst)
+import std.atomic.(term newAtomicRef, term atomicLoad, term atomicFetchSub)
+
+main : UIO Unit
+let main = do
+    let cell <- newAtomicRef 50
+    let old <- atomicFetchSub RmwSeqCst cell 7
+    printlnString ("old:" ++ showInt old)
+    let after <- atomicLoad LoadSeqCst cell
+    printlnString ("after:" ++ showInt after)
+    let old2 <- atomicFetchSub RmwSeqCst cell 100
+    printlnString ("old2:" ++ showInt old2)
+    let negative <- atomicLoad LoadSeqCst cell
+    printlnString ("negative:" ++ showInt negative)
+-- STATUS(a0497523): PASS

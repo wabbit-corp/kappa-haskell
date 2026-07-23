@@ -1,0 +1,7 @@
+--! mode check
+--! packageMode
+--! assertErrorCount 1
+--! assertDiagnostic error E_MODULE_NAME_UNRESOLVED
+--! assertDiagnosticPayload error kappa.name.unresolved /payload/suggestion lib
+--! assertDiagnosticFix error kappa.name.unresolved maybe-applicable
+-- STATUS(a0497523): FAIL — E_MODULE_NAME_UNRESOLVED says only "imported module 'Lib' is not part of this compilation unit"; no case-fix suggestion, no fix

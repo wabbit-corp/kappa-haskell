@@ -1,0 +1,46 @@
+--! mode check
+--! assertNoErrors
+--! assertEval viaMacro 5
+--! assertEval viaPrefix 5
+
+-- §21.4: "Syntax quotes are hygienic ... Spliced syntax preserves its
+-- own binding structure", and the hidden syntax-scope metadata records
+-- "resolved global declarations". A quote that references a
+-- module-level binding must keep referring to THAT declaration when
+-- spliced somewhere a local of the same name is in scope. The
+-- reference compiler re-resolves the quoted global by name at the
+-- splice site, so the splice-site local `hidden = 999` captures it
+-- and both probes wrongly evaluate to 999. (Local-binder shadowing is
+-- handled correctly - see tests/conformance/macros/hygiene_escape.kp -
+-- the bug is specific to quoted GLOBAL references.)
+--
+-- The prefixed-string variant matters for §6.3.4 handlers: a handler
+-- quoting helper globals would silently rebind against literal-site
+-- locals.
+
+import std.deriving.shape.*
+
+hidden : Integer
+let hidden = 5
+
+mkQuote : Elab (Syntax Integer)
+let mkQuote = pure '{ addInt hidden 0 }
+
+viaMacro : Integer
+let viaMacro =
+    block
+        let hidden = 999
+        $(mkQuote)
+
+instance InterpolatedMacro Integer =
+    let buildInterpolated fragments = pure '{ addInt hidden 0 }
+
+pfxI : Elab (InterpolatedMacro Integer)
+let pfxI = pure (summon (InterpolatedMacro Integer))
+
+viaPrefix : Integer
+let viaPrefix =
+    block
+        let hidden = 999
+        pfxI"ignored"
+-- STATUS(a0497523): FAIL — both probes evaluate to 999: quoted references to globals are re-resolved by name at the splice site, so the splice-site local `hidden` captures them (§21.4 hygiene violation, wrong result)

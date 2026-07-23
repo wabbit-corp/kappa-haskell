@@ -1,0 +1,13 @@
+module collections.list
+
+emptyL : (0 a : Type) -> List a
+let emptyL _ = Nil
+
+consL : (0 a : Type) -> a -> List a -> List a
+let consL _ h t = h :: t
+
+headL : (0 a : Type) -> List a -> Option a
+let headL _ xs =
+    match xs
+    case Nil    -> None
+    case h :: _ -> Some h

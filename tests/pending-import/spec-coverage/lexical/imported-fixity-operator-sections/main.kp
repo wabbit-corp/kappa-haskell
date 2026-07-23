@@ -1,0 +1,27 @@
+module main
+
+-- §5.5.3: operator sections (op e) and (e op) require a matching infix
+-- fixity in scope at that occurrence. §5.5.2: an unqualified import of
+-- the operator brings the exported fixity into scope from the point of
+-- import onward. Combined: an IMPORTED fixity must gate infix use and
+-- both section forms in the importing module.
+--   infixUse = 2 +++ 3           = 23
+--   leftSec  = (2 +++) 3 = 2+++3 = 23
+--   rightSec = (+++ 3) 2 = 2+++3 = 23
+import lib.((+++))
+
+infixUse : Int
+let infixUse = 2 +++ 3
+
+leftSec : Int -> Int
+let leftSec = (2 +++)
+
+rightSec : Int -> Int
+let rightSec = (+++ 3)
+
+lv : Int
+let lv = leftSec 3
+
+rv : Int
+let rv = rightSec 2
+-- STATUS(a0497523): PASS

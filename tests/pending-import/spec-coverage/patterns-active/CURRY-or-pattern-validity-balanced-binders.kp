@@ -1,0 +1,69 @@
+-- Source: Curry/KiCS2 testsuite/LanguageTests/TestCase.curry
+--   (multi-arm matching with overlapping head binders);
+--   cross-mapped to or-pattern validity. The Curry "functional pattern"
+--   non-linear cases are intentionally excluded — see CURRY-SA-03.
+-- Spec: §17.2.3 (or-pattern validity: same binder set, definitionally
+--       equal binder types), §17.2.1 (pattern alternatives), §17.1.
+-- NOTE: overlaps with tests/conformance/patterns/or-pattern-type-mismatch.kp
+--       (single negative); this file adds the positive balanced cases.
+--
+-- Pins: every or-alternative must bind the same names at definitionally
+-- equal types. Positives bind one name at one type across all
+-- alternatives; the negative binds `payload` at String in one arm and
+-- Int in the other, which §17.2.3 rejects. §17.2.3 names no diagnostic
+-- family for this rejection, so only the error count is pinned.
+
+module test
+
+--! mode check
+
+data Msg : Type =
+    Greeting (text : String)
+    Question (text : String)
+    Warning (text : String)
+
+-- POSITIVE: every alternative binds `s` with type `String`.
+extract : Msg -> String
+let extract m =
+    match m
+    case Greeting s | Question s | Warning s -> s
+
+--! assertType extract (Msg -> String)
+
+got : String
+let got = extract (Question "why")
+
+--! assertEval got "why"
+
+data IntEither : Type =
+    ILeft (l : Int)
+    IRight (r : Int)
+
+-- POSITIVE: every alternative binds `n` with type `Int`.
+takeInt : IntEither -> Int
+let takeInt e =
+    match e
+    case ILeft n | IRight n -> n
+
+--! assertType takeInt (IntEither -> Int)
+
+taken : Int
+let taken = takeInt (IRight 9)
+
+--! assertEval taken 9
+
+-- NEGATIVE: both alternatives bind the same name `payload`, but the
+-- types disagree (`String` vs `Int`). §17.2.3 requires the binder types
+-- to be definitionally equal, so this pattern is ill-formed.
+data Mixed : Type =
+    HasString (s : String)
+    HasInt (n : Int)
+
+badOr : Mixed -> Int
+let badOr m =
+    match m
+    case HasString payload | HasInt payload -> 0
+
+--! assertErrorCount 1
+
+-- STATUS(a0497523): PASS

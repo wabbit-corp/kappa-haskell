@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.pattern.constructor-arity
+
+-- Source issues: ELIXIR-PR-13518, module/types/pattern_test.exs (duplicate
+--   key in a struct pattern); companion of
+--   ELIXIR-pattern-struct-unknown-field-rejected.kp
+-- Spec: §3.2.10 kappa.pattern.constructor-arity: "Used when a constructor
+--       pattern ... duplicates named fields ...", with payload listing the
+--       duplicated fields.
+-- A named-field constructor pattern that names the same field twice must be
+-- rejected under kappa.pattern.constructor-arity.
+module main
+
+data Point : Type =
+    Point (x : Int) (y : Int)
+
+-- NEGATIVE: the field `x` is supplied twice in one pattern.
+dupField : Point -> Int
+let dupField p =
+    match p
+    case Point { x = a, x = b } -> a + b --!! kappa.pattern.constructor-arity
+    case _                      -> 0
+
+-- STATUS(a0497523): FAIL — the duplicate field is silently dropped; the compiler emits E_NAME_UNRESOLVED for the second binder body use instead of kappa.pattern.constructor-arity on the pattern

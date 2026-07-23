@@ -1,0 +1,15 @@
+-- §35.8 worked-example shape: a tool updating only the major version
+-- should be able to trace provenance back through version/majorVersion.
+
+let majorVersion = 1
+let version = f"$majorVersion.0.1"
+let packageGroup = "one.wabbit"
+let packageFullName = f"$packageGroup:kappa"
+
+let deps = [registry packageFullName version]
+let roots = [sourceRoot "src"]
+let axes = [axis "os" [tag "linux", tag "macos"]]
+let cli = executable "cli" (native "cc" "arm64-apple-darwin") (tags []) (SelModule "main") (modulesUnder "src") [] []
+
+let buildConfig : BuildConfig = package "kappa-demo" (semver version) roots axes deps [] [cli]
+-- STATUS(a0497523): UNSUPPORTED — requires capability buildManifest: not provided

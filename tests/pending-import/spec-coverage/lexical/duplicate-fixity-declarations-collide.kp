@@ -1,0 +1,27 @@
+--! mode check
+--! assertDiagnostic error E_DUPLICATE_DECLARATION
+-- §5.5.1A (operator name keys): "Two operator declarations or fixity
+-- declarations in the same lexical scope and same declaration kind
+-- collide when their operator strictNameKey values are equal" — the same
+-- collide/duplicate rule §7.1 applies to ordinary declarations (and the
+-- compiler enforces for duplicate operator TERM definitions, which get
+-- E_DUPLICATE_DECLARATION).  A second `infix` declaration for the same
+-- operator in one scope MUST therefore be rejected, not silently dropped.
+--
+-- Today the second fixity declaration is silently ignored (first-wins):
+-- with `infix left 70` then `infix left 30`, `2 <+> 3 + 4` parses as
+-- (2 <+> 3) + 4; flipping the declaration order flips the parse.  A
+-- programmer "re-tuning" an operator by adding a new fixity line gets no
+-- diagnostic and a parse governed by whichever line comes first.
+module main
+
+infix left 70 (<+>)
+
+infix left 30 (<+>) --!! E_DUPLICATE_DECLARATION
+
+(<+>) : Integer -> Integer -> Integer
+let (<+>) a b = a * b
+
+v : Integer
+let v = 2 <+> 3 + 4
+-- STATUS(a0497523): FAIL — no diagnostic; the later fixity declaration is silently ignored (v parses under the first, evaluating to 10; with the declarations swapped it becomes 14)

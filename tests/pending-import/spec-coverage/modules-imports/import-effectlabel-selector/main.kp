@@ -19,4 +19,4 @@ let result = runPure handledEff
 
 --! assertNoErrors
 --! assertEval result 42
--- STATUS(a51e1bf): FAIL — effect labels are not importable by explicit item (E_IMPORT_ITEM_NOT_FOUND) and the effect interface constructor is not exported at all
+-- STATUS(a0497523): FAIL — effect labels are not importable by explicit item (E_IMPORT_ITEM_NOT_FOUND) and the effect interface constructor is not exported at all

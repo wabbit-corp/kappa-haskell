@@ -1,0 +1,26 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticCodes E_APPLICATION_ARGUMENT_MISMATCH
+
+-- §18.1.14: runPure : Eff <[ ]> a -> a eliminates a computation ONLY
+-- when its effect row is empty — applying it at a non-empty row is a
+-- type error. runPure may however eliminate Eff <[ ]> (IO e a) to
+-- IO e a with no extra eliminator (extract below type-checks with no
+-- diagnostics).
+module main
+
+effect A =
+    1 opA : Unit -> Int
+
+comp : Eff <[A : A]> Int
+let comp = A.opA ()
+
+bad : Int
+let bad = runPure comp --!! E_APPLICATION_ARGUMENT_MISMATCH
+
+liftedIO : Eff <[ ]> (IO String Int)
+let liftedIO = pure (ioPure 5)
+
+extract : IO String Int
+let extract = runPure liftedIO
+-- STATUS(a0497523): PASS

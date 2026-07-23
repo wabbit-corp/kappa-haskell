@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "371\n"
+
+-- §16.1.2 (L19656-19669): e ?: d desugars to a two-arm match selecting
+-- the Some payload or the default, and ?: is right-associative. Run mode
+-- pins the desugared selection end-to-end: both-None falls through the
+-- chain to the rightmost default, an inner Some stops the chain, and an
+-- outer Some wins immediately. 3*100 + 7*10 + 1 = 371.
+module main
+
+noneInt : Option Int
+let noneInt = None
+
+-- Both None: a ?: (b ?: c) reaches the final default 3.
+pick1 : Int
+let pick1 = noneInt ?: noneInt ?: 3
+
+-- Right-assoc: noneInt ?: (Some 7 ?: 9) selects the inner payload 7.
+pick2 : Int
+let pick2 = noneInt ?: Some 7 ?: 9
+
+-- Outer Some wins over the default.
+pick3 : Int
+let pick3 = Some 1 ?: 5
+
+main : UIO Unit
+let main = printlnString (showInt (pick1 * 100 + pick2 * 10 + pick3))
+
+-- STATUS(a0497523): PASS

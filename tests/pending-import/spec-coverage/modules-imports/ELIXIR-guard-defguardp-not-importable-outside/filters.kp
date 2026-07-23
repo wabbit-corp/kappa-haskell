@@ -1,0 +1,13 @@
+-- Support module: a private predicate usable inside its defining module,
+-- including in match guards (§17.1 guards are ordinary Bool expressions).
+module filters
+
+private isEven : Int -> Bool
+let isEven n = modInt n 2 == 0
+
+-- POSITIVE: the private predicate is usable in a guard within the module.
+describeEven : Int -> String
+let describeEven n =
+    match n
+    case _ if isEven n -> "even"
+    case _             -> "odd"

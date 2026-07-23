@@ -1,0 +1,40 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "parked-no-partial-write:10\nwoke:10\nfinal:10\n"
+
+-- §32.2.9 / §18.1.13: writes become visible only on successful commit, and
+-- aborted attempts expose no partial writes. Attempt 1 writes t:=99 and then
+-- retries (parks); that journaled write MUST be discarded — invisible both
+-- while the fiber is parked and after the transaction later commits via a
+-- second attempt that takes the non-writing branch.
+module main
+
+import std.prelude.(type Exit(..))
+
+attempt : TVar Int -> TVar Int -> STM Int
+let attempt flag t = do
+    let fl <- readTVar flag
+    if fl == 0 then do
+        writeTVar t 99
+        retry
+    else
+        readTVar t
+
+main : UIO Unit
+let main = do
+    let flag <- atomically (newTVar 0)
+    let t <- atomically (newTVar 10)
+    let f <- fork (atomically (attempt flag t))
+    cede
+    -- the transaction is parked after a retry that journaled t:=99;
+    -- no partial write may be visible
+    let mid <- atomically (readTVar t)
+    printlnString ("parked-no-partial-write:" ++ showInt mid)
+    atomically (writeTVar flag 1)
+    let ex <- await f
+    match ex
+      case Success v -> printlnString ("woke:" ++ showInt v)
+      case Failure c -> printlnString "woke:failed"
+    let fin <- atomically (readTVar t)
+    printlnString ("final:" ++ showInt fin)
+-- STATUS(a0497523): FAIL — prints 99/99/99: the interpreter applies TVar writes directly to the cell, so the write journaled by the retried (aborted) attempt is permanently visible instead of being discarded.

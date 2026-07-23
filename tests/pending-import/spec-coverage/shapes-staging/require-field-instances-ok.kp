@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §22.4: 'requireRuntimeFieldInstances tc shape' succeeds when
+-- ordinary implicit resolution can synthesize coherent evidence for
+-- every runtime-relevant field obligation at the elaboration site.
+-- 'Eq Custom' is provided by a visible instance, and 'direct' shows
+-- the same obligation resolves ordinarily at this site.
+
+import std.deriving.shape.*
+
+data Custom : Type =
+    MkCustom (n : Integer)
+
+instance Eq Custom =
+    let (==) a b = True
+
+data Holder : Type =
+    MkHolder (x : Custom)
+
+direct : Bool
+let direct = MkCustom 1 == MkCustom 2
+
+checkInstances : Elab (Syntax String)
+let checkInstances = do
+    let shape <- inspectAdt @Holder '{ type Holder }
+    requireRuntimeFieldInstances @Eq @Holder shape
+    stringSyntax "ok"
+
+ok : String
+let ok = $(checkInstances)
+-- STATUS(a0497523): FAIL — requireRuntimeFieldInstances reports KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE even though 'Eq Custom' resolves ordinarily at this site (the impl's satisfiability probe finds no instance)

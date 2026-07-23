@@ -1,0 +1,45 @@
+-- §18.2.4 (L24704-24707): "Once a source-level abrupt completion is produced,
+-- later do-items on that path are unreachable and do not contribute usage."
+-- Existing coverage (do-blocks/lower-bound-break-continue.kp) pins the DROP
+-- direction: a dead consume cannot rescue an obligation. This pins the
+-- OVERUSE direction: a second consume of an already-consumed linear binder
+-- sitting in dead code after `return`/`break` contributes no usage, so it
+-- must NOT be rejected as E_QTT_LINEAR_OVERUSE. Accept with no diagnostics.
+--! mode check
+--! assertNoErrors
+module main
+
+data Token : Type =
+    MkToken
+
+burn : (1 t : Token) -> Int
+let burn (1 t : Token) : Int =
+    match t
+    case MkToken -> 0
+
+-- POSITIVE: x is consumed exactly once on the reachable path; the second
+-- `burn x` is dead code after `return` and contributes no usage.
+afterReturn : (1 x : Token) -> UIO Int
+let afterReturn x =
+    do
+        let a = burn x
+        return a
+        let b = burn x
+        return b
+
+-- POSITIVE: the loop-body linear t is consumed before `break`; the second
+-- `burn t` after `break` is dead and contributes no usage.
+afterBreak : Bool -> UIO Unit
+let afterBreak cond =
+    do
+        while cond do
+            let 1 t = MkToken
+            let _ = burn t
+            break
+            let _ = burn t
+        pure ()
+
+main : UIO Unit
+let main = printlnString "ok"
+
+-- STATUS(a0497523): PASS

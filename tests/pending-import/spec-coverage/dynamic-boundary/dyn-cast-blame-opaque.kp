@@ -1,0 +1,25 @@
+--! mode check
+--! assertErrorCount 2
+
+-- §24.7: CastBlame is opaque. §24.9 exports it as an abstract type, so
+-- user code can neither construct a blame value nor pattern-match its
+-- representation (§8.5.3).
+-- POSITIVE: blame values still flow abstractly through Result.
+module main
+
+import std.gradual.*
+
+repackage : forall (@0 a : Type). CastBlame -> Result CastBlame a
+let repackage blame = Err blame
+
+-- NEGATIVE: constructing blame directly.
+forged : CastBlame
+let forged = MkCastBlame "fabricated" --!! kappa.name.unresolved
+
+-- NEGATIVE: inspecting the hidden representation.
+message : CastBlame -> String
+let message blame =
+    match blame
+    case MkCastBlame m -> m --!! kappa.name.unresolved
+
+-- STATUS(a0497523): FAIL — CastBlame is not opaque: std.gradual exposes MkCastBlame, so both forging and matching type-check (0 diagnostics instead of 2).

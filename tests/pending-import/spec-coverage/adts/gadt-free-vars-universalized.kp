@@ -26,7 +26,7 @@ let fromString = observe (Hidden { item = "abc", measure = \(_ : String) -> 9 })
 --! assertEval fromInt 5
 --! assertEval fromString 9
 
--- STATUS(a51e1bf): FAIL — the compiler does not universalize free lowercase
+-- STATUS(a0497523): FAIL — the compiler does not universalize free lowercase
 -- identifiers in GADT constructor signatures: E_NAME_UNRESOLVED "unresolved
 -- name 'e' (not in scope)" on the Hidden signature (same for multi-letter
 -- lowercase names), while §10.2 L8771-8772 requires implicit

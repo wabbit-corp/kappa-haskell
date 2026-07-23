@@ -1,0 +1,35 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "closed\n4\n"
+
+-- §23.4/§23.7: `closeCode c` returns Some iff c is closed under the
+-- scope-safety discipline required by runCode, and implementations MUST
+-- prevent scope extrusion for Code. Inside a quotation's escape,
+-- `.< x >.` mentions the future-stage lambda binder x, so it is OPEN
+-- code and closeCode on it MUST return None (negative half); a
+-- genuinely closed quotation still closes (positive half).
+module main
+
+probe : Code (Integer -> Integer)
+let probe = .< \x -> .~(
+    match closeCode .< x >.
+    case Some cc -> .< x + 100 >.
+    case None -> .< x >.
+  ) >.
+
+closedOk : UIO Unit
+let closedOk = do
+    match closeCode .< 40 + 2 >.
+    case Some cc -> printlnString "closed"
+    case None -> printlnString "not closed"
+
+main : UIO Unit
+let main = do
+    closedOk
+    match closeCode probe
+    case Some cc -> do
+        let g <- runCode cc
+        println (g 4)
+    case None ->
+        printlnString "outer not closed"
+-- STATUS(a0497523): FAIL — closeCode returns Some for OPEN code mentioning the future-stage lambda binder (prints 104, taking the Some branch), so scope extrusion through closeCode is not prevented

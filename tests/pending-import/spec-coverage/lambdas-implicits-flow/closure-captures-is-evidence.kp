@@ -1,0 +1,48 @@
+-- §16.4.1 × §16.2 (lambdas): constructor-refinement evidence is erased,
+-- lexically scoped context; a plain lambda written inside the success
+-- branch of `p is Box` is checked under HasCtor p ⟨Box⟩, so it may project
+-- p.value and run a narrowed match — including when the closure escapes
+-- the branch and is applied later (the subject p is an immutable binding,
+-- so no invalidation event of §16.4.3 occurs). Complements the pinned
+-- thunk/lazy variant (suspension-captures-branch-evidence.kp) with plain
+-- and escaping lambdas.
+--! mode check
+--! assertNoErrors
+--! assertEval rEscBox 7
+--! assertEval rEscEmpty 0
+--! assertEval rMatch 8
+module main
+
+data Payload : Type =
+    Box (value : Int)
+    Empty
+
+-- POSITIVE: immediate application of a branch-local lambda.
+inLambda : Payload -> Int
+let inLambda p =
+    if p is Box then (\ (u : Int) -> p.value) 0 else 0
+
+-- POSITIVE: the closure escapes the branch; evidence about the immutable
+-- capture remains valid at every later call.
+escaping : Payload -> (Int -> Int)
+let escaping p =
+    if p is Box then \ (u : Int) -> p.value else \ (u : Int) -> 0
+
+-- POSITIVE: narrowed match inside a lambda inside the branch.
+lamMatch : Payload -> Int
+let lamMatch p =
+    if p is Box then
+        (\ (u : Int) ->
+            match p
+            case Box v -> v + u) 1
+    else 0
+
+rEscBox : Int
+let rEscBox = escaping (Box 7) 0
+
+rEscEmpty : Int
+let rEscEmpty = escaping Empty 0
+
+rMatch : Int
+let rMatch = lamMatch (Box 7)
+-- STATUS(a0497523): PASS

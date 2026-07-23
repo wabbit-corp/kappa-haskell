@@ -1,0 +1,30 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "5\nclosed\n"
+
+-- §23.4: 'closeCode c' returns Some iff c is closed under the §23.7
+-- scope-safety discipline, otherwise None. Inside an escape under a
+-- quoted binder, '.< x >.' mentioning the quote-bound 'x' is open
+-- code, so closeCode MUST return None (probe splices 0, so f 5 = 5);
+-- a variable-free quote built the same way remains closable.
+
+probe : Code Integer -> Code Integer
+let probe c =
+    match closeCode c
+    case None -> .< 0 >.
+    case Some _ -> .< 1 >.
+
+host : Code (Integer -> Integer)
+let host = .< \x -> x + .~(probe .< x >.) >.
+
+main : UIO Unit
+let main = do
+    match closeCode host
+    case Some hc -> do
+        let f <- runCode hc
+        println (f 5)
+    case None -> printlnString "host not closed"
+    match closeCode .< 7 >.
+    case Some _ -> printlnString "closed"
+    case None -> printlnString "open"
+-- STATUS(a0497523): FAIL — closeCode returns Some for open code '.< x >.' mentioning the enclosing quote's binder (prints 6, not 5): the scope check does not treat quote-bound-variable freeness as open per §23.4

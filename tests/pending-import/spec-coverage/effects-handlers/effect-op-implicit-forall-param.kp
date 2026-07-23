@@ -1,0 +1,30 @@
+--! mode check
+--! assertNoErrors
+--! assertEval result 7
+
+-- §18.1.15: operation signatures may include IMPLICIT parameters
+-- ("multiple explicit or implicit parameters"). Here the operation
+-- carries an implicit type binder; the call site infers it (Int) and
+-- the handler clause treats it as a rigid skolem, resuming
+-- parametrically (compare effect-forall-op.kp, which pins the explicit
+-- forall form).
+module main
+
+effect Imp =
+    1 idop : forall {a : Type}. a -> a
+
+comp : Eff <[Imp : Imp]> Int
+let comp =
+    do
+        let n <- Imp.idop 5
+        pure (addInt n 2)
+
+handled : Eff <[ ]> Int
+let handled =
+    deep handle Imp comp with
+        case return x -> pure x
+        case idop x k -> k x
+
+result : Int
+let result = runPure handled
+-- STATUS(a0497523): FAIL — implicit forall binders are not parsed in operation signatures (E_NAME_UNRESOLVED "unresolved name 'forall'"); only the explicit form `forall (a : Type).` is accepted.

@@ -13,11 +13,11 @@ module main
 observe : (& x : Int) -> Int
 let observe (& x : Int) : Int = x
 
-type Held (r : Region) = (view : BorrowView r Int)
+type Held (r : Region) = (view : BorrowView r Int,)
 
 pack : forall (r : Region). (&[r] x : Int) -> Held r
 let pack (@0 r : Region) (&[r] x : Int) : Held r =
-    (view = captureBorrow x)
+    (view = captureBorrow x,)
 
 readHeld : forall (r : Region). Held r -> Int
 let readHeld (@0 r : Region) (h : Held r) : Int =
@@ -30,4 +30,4 @@ let bad () : (Unit -> Int) =
         let v = captureBorrow n
         \() -> withBorrowView v (\m -> observe m) --!! E_QTT_BORROW_ESCAPE
 
--- STATUS(a51e1bf): FAIL — compiler reports 0 errors: the closure captures the reified BorrowView v (region env {rho}) and returns it from the introducing scope, but view-values are not taint-tracked through closures, violating §12.3 "the same rule applies to first-class borrowed-view values".
+-- STATUS(a0497523): FAIL — compiler reports 0 errors: the closure captures the reified BorrowView v (region env {rho}) and returns it from the introducing scope, but view-values are not taint-tracked through closures, violating §12.3 "the same rule applies to first-class borrowed-view values".

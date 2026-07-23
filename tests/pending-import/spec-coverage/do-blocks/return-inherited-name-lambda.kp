@@ -1,0 +1,21 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "neg\ndone\n"
+
+-- §18.5/§9.1: a direct lambda definition `let name = \binders -> body`
+-- counts as a NAMED function for bare `return` — even as a do-local
+-- binding. The bare return below exits `describe` only (skipping
+-- "nonneg"), not the enclosing `main` ("done" still prints; if the return
+-- mistargeted main, "done" would be missing).
+module main
+
+main : UIO Unit
+let main = do
+    let describe = \ n -> do
+            if n < 0 then
+                printlnString "neg"
+                return ()
+            printlnString "nonneg"
+    describe (0 - 1)
+    printlnString "done"
+-- STATUS(a0497523): PASS

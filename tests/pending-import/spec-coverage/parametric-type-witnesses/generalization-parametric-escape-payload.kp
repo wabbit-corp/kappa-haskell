@@ -1,0 +1,16 @@
+-- §3.2.3 + §11.1.2.3A: the generalization-specific diagnostic is not only a
+-- code. Its structured payload must identify the declaration/SCC, the rigid
+-- candidate kind, and the ordinary observation that prevented abstraction.
+-- The pointers use the field spellings already established by the imported
+-- universe diagnostic fixtures.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_GENERALIZATION_PARAMETRIC_ESCAPE
+--! assertDiagnosticFamily error kappa.generalization.parametric-escape
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/declarationIdentity main.bad
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/declarationSccIdentity main.bad
+--! assertDiagnosticPayload error E_GENERALIZATION_PARAMETRIC_ESCAPE /payload/failedCandidateKind type
+
+module main
+
+let bad = \A -> A

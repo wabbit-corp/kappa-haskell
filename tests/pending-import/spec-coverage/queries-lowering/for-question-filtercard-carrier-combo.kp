@@ -1,0 +1,31 @@
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnostic error E_QUERY_CARDINALITY_MISMATCH
+
+-- §20.10.1 (filterCard) x §20.10.7 rule 2 x §20.9 carrier checking:
+-- `for?` uses filterCard(sourceCard) as per-input row multiplicity, so a QOne
+-- source filtered by a refutable pattern infers QZeroOrOne. That widens to
+-- Query's QZeroOrMore and checks exactly against QZeroOrOne, but may NOT be
+-- narrowed back to a QOne demand: the lower bound is gone. The `mk` helper
+-- also pins §20.10.6: a clause-free `[ yield o ]` is a singleton (QOne) plan.
+module main
+
+mk : Option Int -> QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω (Option Int)
+let mk o = QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [ yield o ]
+
+-- POSITIVE: QZeroOrOne widens to Query's QZeroOrMore
+okWide : Option Int -> Query Int
+let okWide o =
+    Query [ for? Some x in mk o, yield x ]
+
+-- POSITIVE: exact QZeroOrOne demand
+okExact : Option Int -> QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrOne) ω Int
+let okExact o =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QZeroOrOne) ω [ for? Some x in mk o, yield x ]
+
+-- NEGATIVE: for? removed the positive lower bound; QOne may not be demanded
+badNarrow : Option Int -> QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω Int
+let badNarrow o =
+    QueryCore (QueryMode.QueryMode QueryUse.Reusable QueryCard.QOne) ω [ for? Some x in mk o, yield x ] --!! E_QUERY_CARDINALITY_MISMATCH
+
+-- STATUS(a0497523): FAIL — no diagnostics: for? is treated as cardinality-preserving (filterCard is not applied), so the QOne source still satisfies the QOne demand and `badNarrow` is accepted; both positives check clean.

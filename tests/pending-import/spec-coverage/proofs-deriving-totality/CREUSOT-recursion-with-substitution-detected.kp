@@ -1,0 +1,40 @@
+-- Source issues: CREUSOT-recursion_with_substitution, CREUSOT-1232
+-- Spec: §15.1 (termination-certified definitions), §15.2 (soundness: an
+--       accepted termination argument MUST be well-founded), §15.6
+--       (recursive call edges exposed by elaboration/unfolding), §15.16
+--       (recursive groups elaborated from the semantic fixpoint),
+--       §3.2.11 (kappa.termination.failure)
+-- Pins: the termination SCC must be closed over the call graph AFTER
+-- instance resolution. `callMe` does not recurse at the source level —
+-- it calls the trait method `go` at Int; the Int instance's `go` calls
+-- `callMe` back. The SCC {callMe, Go.Int.go} has no decreasing measure
+-- and must be rejected with family kappa.termination.failure (a single
+-- diagnostic anchored at one member with the SCC in its payload is
+-- conforming, §3.2.11).
+
+module main
+
+--! mode check
+
+trait Go (a : Type) =
+    go : a -> Unit
+
+callMe : Unit
+
+instance Go Int =
+    let go _x = callMe
+
+-- NEGATIVE: cycle visible only after instance substitution.
+let callMe = go (0 : Int)                     --!! kappa.termination.failure
+
+-- The same cycle reached through a generic wrapper: `runGo` itself is
+-- not recursive (its body uses only abstract evidence), so no further
+-- diagnostic is mandated for callMe2/runGo.
+runGo : forall (a : Type). (@_ : Go a) -> a -> Unit
+let runGo x = go x
+
+callMe2 : Unit
+let callMe2 = runGo (0 : Int)
+
+--! assertDiagnosticFamily error kappa.termination.failure
+-- STATUS(a0497523): PASS

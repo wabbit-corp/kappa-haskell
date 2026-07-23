@@ -1,0 +1,44 @@
+--! mode check
+--! assertNoErrors
+--! assertEval got 12
+--! assertEval gotBare 5
+
+-- §6.1.6 (L5796-5797): "If the user prefers typeclass-mediated
+-- construction, they may define a term such as
+-- `px = FromInteger.fromInteger @Length`; then `12px` works by
+-- ordinary name resolution." This pins the spec's own recipe with a
+-- user FromInteger type. The bare-member spelling (`fromInteger
+-- @Meters`, control `m` below) is accepted today; the trait-qualified
+-- projection the spec example uses is rejected with E_UNRESOLVED_MEMBER
+-- ("'fromInteger' has no receiver-marked binder, so it is not eligible
+-- for method-call sugar (§7.4)"). Either Trait.member projection must
+-- resolve as §6.1.6 (and the pervasive `Eq.eqSound` spelling of
+-- §14.2.4/§16.1.8) assume, or the spec example is unimplementable as
+-- written.
+module main
+
+data Meters : Type =
+    MkMeters Int
+
+instance FromInteger Meters =
+    let fromInteger n = MkMeters (natToInt n)
+
+unwrap : Meters -> Int
+let unwrap x =
+    match x
+    case MkMeters n -> n
+
+-- the spec's exact idiom: trait-qualified member + type application
+px : Nat -> Meters
+let px = FromInteger.fromInteger @Meters
+
+got : Int
+let got = unwrap 12px
+
+-- control: bare overloaded member reference works today
+m : Nat -> Meters
+let m = fromInteger @Meters
+
+gotBare : Int
+let gotBare = unwrap 5m
+-- STATUS(a0497523): FAIL — `FromInteger.fromInteger @Meters` rejected: E_UNRESOLVED_MEMBER "no receiver-marked binder, not eligible for method-call sugar (§7.4)" plus cascading E_APPLICATION_ARGUMENT_MISMATCH on @Meters; bare `fromInteger @Meters` control passes

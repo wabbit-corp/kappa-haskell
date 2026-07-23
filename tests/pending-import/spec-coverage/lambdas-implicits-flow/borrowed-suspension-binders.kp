@@ -1,0 +1,38 @@
+-- §16.2 (borrowed suspension binders): (& thunk x : A) ≜ (ω & x : Thunk A),
+-- (1 & thunk x : A) ≜ (1 & x : Thunk A), (& lazy x : A) ≜ (ω & x : Need A).
+-- The desugared types are pinned via assertType; a borrowed ω thunk may be
+-- forced repeatedly without consuming, and a caller lends an owned place.
+-- (The non-form `thunk & x` is a parse error and is not testable inline.)
+module main
+
+-- POSITIVE: ω-borrowed thunk; forcing reads without consuming.
+readTwice : (& thunk x : Int) -> Int
+let readTwice x = (force x) + (force x)
+
+-- POSITIVE: linear borrowed thunk; the borrow is demanded exactly once.
+linThunk : (1 & thunk x : Int) -> Int
+let linThunk x = force x
+
+-- POSITIVE: ω-borrowed by-need suspension.
+borrowLazy : (& lazy y : Int) -> Int
+let borrowLazy y = (force y) + (force y)
+
+-- POSITIVE: callers lend owned suspension places.
+useIt : Int
+let useIt =
+    block
+        let t = thunk 5
+        readTwice t + linThunk t
+
+useNeed : Int
+let useNeed =
+    block
+        let n = lazy 7
+        borrowLazy n
+
+--! mode check
+--! assertNoErrors
+--! assertType readTwice (& x : Thunk Int) -> Int
+--! assertType linThunk (1 & x : Thunk Int) -> Int
+--! assertType borrowLazy (& y : Need Int) -> Int
+-- STATUS(a0497523): PASS

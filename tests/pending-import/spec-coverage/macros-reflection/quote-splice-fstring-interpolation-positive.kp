@@ -1,0 +1,32 @@
+--! mode run
+--! assertNoErrors
+--! assertStdout "n=7\nk=41\nv=9\n"
+
+-- §6.3.4 x §21.1/§21.2 combo: string interpolation inside quoted
+-- syntax. A prefixed string with ${...} interpolation may appear
+-- inside '{ ... } (§21.1.1: quotes use the active source grammar) and
+-- its interpolation refers hygienically to (a) module-level bindings
+-- and (b) quote-local lambda binders. A macro may also produce an
+-- f-string whose interpolation expression itself contains an in-quote
+-- splice, i.e. f"v=${ ${e} }": the string-interpolation `${` and the
+-- quote-splice `${` occur in disjoint lexical contexts (§21.1.1 note)
+-- and must disambiguate.
+
+n : Integer
+let n = 7
+
+sGlobal : Syntax String
+let sGlobal = '{ f"n=${n}" }
+
+sLambda : Syntax (Integer -> String)
+let sLambda = '{ \k -> f"k=${k}" }
+
+mk : Syntax Integer -> Elab (Syntax String)
+let mk e = pure '{ f"v=${ ${e} }" }
+
+main : UIO Unit
+let main = do
+    printlnString $(pure sGlobal)
+    printlnString ($(pure sLambda) 41)
+    printlnString $(mk '{ 9 })
+-- STATUS(a0497523): PASS

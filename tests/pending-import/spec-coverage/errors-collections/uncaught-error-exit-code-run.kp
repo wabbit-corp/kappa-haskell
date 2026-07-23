@@ -1,0 +1,23 @@
+-- Runtime behavior of an UNCAUGHT expected error: main : IO String Unit
+-- throws mid-program. Observed reference contract (pinned here):
+--  * the process exits nonzero (exit code 1);
+--  * stdout produced before the failure point is preserved and flushed;
+--  * stderr carries the rendered error payload;
+--  * the do-items after the throw never run.
+-- Appendix T defines assertExitCode (§T.5.4, L52359: "compares the process or
+-- task exit code observed by the harness") but the spec nowhere states WHICH
+-- exit code an uncaught run-task failure produces — this pin records the
+-- de-facto contract (reported as a spec documentation gap).
+--! mode run
+--! assertExitCode 1
+--! assertStdout "before\n"
+--! assertStderrContains "kaboom"
+module main
+
+main : IO String Unit
+let main = do
+    printlnString "before"
+    throwIO "kaboom"
+    printlnString "after"
+
+-- STATUS(a0497523): PASS — exit 1, stdout "before\n" preserved, stderr 'runtime failure: "kaboom"'.

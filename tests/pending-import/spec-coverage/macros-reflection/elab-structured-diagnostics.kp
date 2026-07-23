@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §21.9: Elab MUST provide the structured diagnostic surface —
+-- emitElabDiagnostic / failElabDiagnostic over the typed ElabDiagnostic
+-- record, with typed DiagnosticSeverity and DiagnosticFixApplicability
+-- values and fix edits denoting concrete source ranges. The definitions
+-- delegate at the spec types; constructing DiagnosticCode values is
+-- implementation-namespaced (§21.9 requires checked constructors), so
+-- this file pins only the standardized type-level surface.
+module main
+
+emitIt : ElabDiagnostic -> Elab Unit
+let emitIt d = emitElabDiagnostic d
+
+failIt : forall (@0 a : Type). ElabDiagnostic -> Elab a
+let failIt d = failElabDiagnostic d
+
+warnSeverity : DiagnosticSeverity
+let warnSeverity = DiagnosticWarning
+
+machine : DiagnosticFixApplicability
+let machine = MachineApplicable
+
+mkFix : String -> List ElabDiagnosticEdit -> ElabDiagnosticFix
+let mkFix title edits =
+    (title = title, applicability = MachineApplicable, edits = edits)
+
+mkEdit : SyntaxOrigin -> String -> ElabDiagnosticEdit
+let mkEdit o replacement =
+    (origin = o, replacement = replacement)
+-- STATUS(a0497523): FAIL — ElabDiagnostic/DiagnosticSeverity/DiagnosticFixApplicability/emitElabDiagnostic/failElabDiagnostic are all E_NAME_UNRESOLVED (structured diagnostic surface unimplemented)

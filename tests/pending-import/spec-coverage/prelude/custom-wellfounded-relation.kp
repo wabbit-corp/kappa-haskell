@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+
+-- §28.2 WellFoundedRelation: a user instance for a custom type whose
+-- rel is built with the standard measureRelation combinator; the
+-- lexRelation combinator then instantiates at the user instance, alone
+-- and mixed with the mandated WellFoundedRelation Nat instance.
+module main
+
+data Tree : Type =
+    Leaf
+    Node Tree Tree
+
+size : Tree -> Nat
+let size t =
+    match t
+    case Leaf -> 1
+    case Node l r -> add (size l) (size r)
+
+instance WellFoundedRelation Tree =
+    let rel x y = measureRelation size x y
+
+-- the user instance feeds the standard combinators like any other.
+measured : Tree -> Tree -> Type
+let measured x y = measureRelation size x y
+
+treePairs : WellFoundedRelation (Tree, Tree)
+let treePairs = lexRelation
+
+mixedPairs : WellFoundedRelation (Tree, Nat)
+let mixedPairs = lexRelation
+-- STATUS(a0497523): FAIL — 3x E_UNSOLVED_IMPLICIT "WellFoundedRelation Nat": the §28.2-mandated `instance WellFoundedRelation Nat` is not provided by the prelude (the user Tree instance itself is accepted).

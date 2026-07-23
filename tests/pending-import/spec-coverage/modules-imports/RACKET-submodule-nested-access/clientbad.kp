@@ -1,0 +1,18 @@
+-- Spec: §8.3 (a nested module's members are NOT in unqualified scope unless
+--       imported), §3.2.2 (kappa.name.unresolved)
+module clientbad
+import collections.dict
+
+-- POSITIVE: the imported sibling submodule works via qualified access.
+okDict : List (String, Int)
+let okDict = collections.dict.insertKey "a" 1 Nil
+
+-- NEGATIVE: collections.list members are not in unqualified scope here —
+-- only collections.dict was imported.
+badAccess : List Int
+let badAccess = emptyL Int                   --!! E_NAME_UNRESOLVED
+
+-- NEGATIVE: accessing a non-existent member of a submodule.
+badMember : List Int
+let badMember = collections.dict.sortD Nil   --!! E_NAME_UNRESOLVED
+-- STATUS(a0497523): PASS (whole suite)

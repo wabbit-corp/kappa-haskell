@@ -1,0 +1,16 @@
+-- Source: Racket guide module-require.scrbl (prefix-in, module alias for qualified access)
+-- Spec: §8.3 (import M as A binds ONLY the alias; the original module path is
+--       not brought into scope by the alias form)
+-- NOTE: overlaps with tests/pending-import/spec-coverage/modules-imports/module-alias-qualification/aliased.kp (same known compiler gap)
+--
+-- Pins: when a module is imported ONLY under an alias, qualified access
+-- through the ORIGINAL module path must not resolve — only the alias is bound.
+module main
+import arithmetic as arith
+
+ok : Int
+let ok = arith.plus 1 2
+
+badQual : Int
+let badQual = arithmetic.plus 1 2   --!! E_NAME_UNRESOLVED
+-- STATUS(a0497523): FAIL — qualified access through the ORIGINAL module path resolves even under an alias-only import (no E_NAME_UNRESOLVED); same gap already pinned by modules-imports/module-alias-qualification/aliased.kp

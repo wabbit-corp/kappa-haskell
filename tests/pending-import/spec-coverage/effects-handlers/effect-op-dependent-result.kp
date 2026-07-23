@@ -33,3 +33,4 @@ let handled =
 
 sizedOk : Int
 let sizedOk = runPure handled
+-- STATUS(a0497523): HARNESS-ERROR — internal exception: Kappa.Eval.lookupEnv: internal error: de Bruijn index -1 out of range (environment has 0 entries) [was FAIL in an earlier STATUS line]

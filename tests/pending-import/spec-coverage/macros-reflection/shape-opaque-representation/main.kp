@@ -1,0 +1,36 @@
+module main
+
+-- §21.7/§22.1: derivation-shape reflection is opacity-respecting.
+-- inspectAdt on an imported opaque data type MUST fail with a
+-- kappa.deriving.shape diagnostic (portable meaning
+-- E_DERIVING_SHAPE_OPAQUE_REPRESENTATION), because ordinary code at
+-- this site could not match on its constructors. A local transparent
+-- data type is inspectable at the same splice shape (positive half).
+import oplib.(type Secret, mk)
+import std.deriving.shape.*
+
+data Color : Type =
+    Red
+    Green
+
+goodShape : Elab (Syntax String)
+let goodShape = do
+    let shape <- inspectAdt @Color '{ type Color }
+    stringSyntax "ok"
+
+badShape : Elab (Syntax String)
+let badShape = do
+    let shape <- inspectAdt @Secret '{ type Secret }
+    stringSyntax "saw representation"
+
+good : String
+let good = $(goodShape)
+
+bad : String
+let bad = $(badShape)
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.deriving.shape
+--! assertDiagnosticMatch opaque
+-- STATUS(a0497523): PASS

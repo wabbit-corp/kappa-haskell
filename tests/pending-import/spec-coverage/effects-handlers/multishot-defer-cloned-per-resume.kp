@@ -44,3 +44,4 @@ let summed =
 
 total : Int
 let total = runPure summed
+-- STATUS(a0497523): FAIL — evaluates to 13: the captured defer runs once total, not once per application of k (§18.1.20.1 do-scope-frame cloning unimplemented).

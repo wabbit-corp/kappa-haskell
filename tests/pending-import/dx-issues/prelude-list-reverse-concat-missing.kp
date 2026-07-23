@@ -1,0 +1,32 @@
+--! mode check
+--! assertNoErrors
+--! assertEval reversedHit True
+--! assertEval flatHit True
+--! assertEval n 3
+
+-- DX expectation, not spec-required: everyday List helpers `reverse`,
+-- `concat`, and a `length` spelled the way most users first type it.
+-- §28.2 requires only `listLength`/`listAppend` (L33679) plus the
+-- Foldable/Filterable machinery; it is silent on reverse/concat/length.
+-- But every mainstream list library ships reverse and concat, and the
+-- prelude already has concatMap — concat is its identity instance.
+--
+-- What currently happens: E_NAME_UNRESOLVED for `reverse` (fix-it
+-- suggests 'release'), `concat`, and `length`; users must hand-roll
+-- reverse via foldl and concat via concatMap identity, and discover
+-- the listLength spelling.
+
+module main
+
+xs : List Integer
+let xs = 1 :: 2 :: 3 :: Nil
+
+reversedHit : Bool
+let reversedHit = reverse xs == (3 :: 2 :: 1 :: Nil)
+
+flatHit : Bool
+let flatHit = concat ((1 :: Nil) :: (2 :: 3 :: Nil) :: Nil) == xs
+
+n : Nat
+let n = length xs
+-- STATUS(a0497523): FAIL — E_NAME_UNRESOLVED x3: reverse, concat, and length all absent (spec provides only listLength/listAppend + Foldable machinery)

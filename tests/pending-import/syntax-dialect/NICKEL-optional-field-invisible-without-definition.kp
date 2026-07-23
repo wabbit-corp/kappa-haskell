@@ -20,7 +20,7 @@ type MaybeNamed = (required : Number, nickname | optional : String)
 
 -- POSITIVE: providing only the required field is valid — the optional `nickname` is absent.
 onlyRequired : MaybeNamed
-let onlyRequired = (required = 42)
+let onlyRequired = (required = 42,)
 
 requiredOk : Number
 let requiredOk = onlyRequired.required

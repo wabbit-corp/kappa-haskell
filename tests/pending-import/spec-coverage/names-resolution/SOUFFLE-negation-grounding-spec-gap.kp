@@ -1,0 +1,49 @@
+-- Source issues: souffle-lang/souffle tests/semantic/rule_grounded/rule_grounded.dl,
+--   souffle-lang #183 (better error message for unground variable),
+--   souffle-lang #730 (negations with relatively grounded variables),
+--   souffle-lang #2318 (problem about ungrounded variable),
+--   souffle-lang #2379 (insufficient checking on unground variable).
+-- Spec: §7.1 ordinary lexical lookup; §9.3.1 pure block suites;
+--   §3.2.2 (family kappa.name.unresolved).
+-- Pins the Kappa analogue of Souffle's rule-grounding rule: every name used
+-- in a definition body must be bound (a parameter, an earlier `let` in the
+-- block, or a top-level name). A sub-expression such as `not (...)` never
+-- introduces bindings into the enclosing scope (Souffle: !R(x) does not
+-- ground x).
+
+--! mode check
+
+module main
+
+-- POSITIVE: function body uses only bound variables.
+grounded : Int -> Int -> Int
+let grounded x y = x + y
+
+conditionalUse : Bool -> Int -> Int
+let conditionalUse flag n =
+    if flag then n * 2 else n
+
+-- POSITIVE: block-suite `let` intermediates are bound for the rest of
+-- the block (§9.3.1).
+withLet : Int -> Int
+let withLet x =
+    let doubled = x * 2
+    let shifted = doubled + 1
+    shifted
+
+-- NEGATIVE: `z` appears in the result expression but was never bound.
+ungroundedVar : Int -> Int
+let ungroundedVar x =
+    x + z    --!! kappa.name.unresolved
+
+-- NEGATIVE: a negation sub-expression does not bind any name in the outer
+-- scope; `result` was never bound.
+notGrounded : Int -> Int
+let notGrounded x =
+    let _ = not (x > 0)
+    result + x    --!! kappa.name.unresolved
+
+--! assertDiagnosticFamily error kappa.name.unresolved
+--! assertErrorCount 2
+
+-- STATUS(a0497523): PASS

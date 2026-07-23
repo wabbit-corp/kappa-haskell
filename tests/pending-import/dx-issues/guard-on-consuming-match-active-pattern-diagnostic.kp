@@ -1,0 +1,45 @@
+-- DX expectation, not necessarily spec-required behavior.
+--
+-- A guard on a Match-returning active-pattern case over a linear
+-- scrutinee is inherently unusable: if the pattern Hits (consuming the
+-- buffer) and the guard then fails, there is no residue to thread to the
+-- next case (§17.3.3 threads only the Miss arm). Rejecting the program
+-- is correct. But the current diagnostic is
+--   E_PATTERN_NON_EXHAUSTIVE "match is not exhaustive / missing cases:
+--   Hit"
+-- anchored at the whole match — phrased in terms of the internal
+-- Hit/Miss elaboration, mentioning a constructor the user never wrote
+-- and never mentioning the guard that causes the hole. Adding more
+-- cases (even a second identical active-pattern case) cannot fix it,
+-- so "not exhaustive" sends the user in the wrong direction.
+--
+-- Expected-good behavior: a targeted diagnostic at the guarded case
+-- explaining that a guard cannot be used on a consuming Match-returning
+-- active-pattern case because guard failure would need to fall through
+-- after the scrutinee was consumed.
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch guard
+
+data Buf : Type =
+    Buf (n : Int)
+
+bufValue : (1 b : Buf) -> Int
+let bufValue (1 b : Buf) : Int =
+    match b
+    case Buf n -> n
+
+pattern TakePositive (1 b : Buf) : Match Int Buf =
+    match b
+    case Buf n -> if n > 0 then Match.Hit n else Match.Miss (Buf n)
+
+f : (1 b : Buf) -> Int
+let f (1 b : Buf) : Int =
+    match b
+    case TakePositive (n) if n > 10 -> n
+    case rest -> bufValue rest
+
+-- STATUS(a0497523): FAIL — the single error is E_PATTERN_NON_EXHAUSTIVE
+-- (kappa.pattern.non-exhaustive) "missing cases: Hit" at the match head;
+-- no diagnostic mentions the guard.
