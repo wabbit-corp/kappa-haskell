@@ -884,6 +884,21 @@ E_UNIVERSE_LEVEL_EXPRESSION
 E_UNIVERSE_UNBOUNDED_TELESCOPE
 E_DATA_CONSTRUCTOR_FIELD_UNIVERSE
 E_PARAMETRIC_TYPE_PROMOTION
+E_UNIVERSE_SCHEMA_ARITY_MISMATCH
+E_UNIVERSE_SCHEMA_SCOPE
+E_UNIVERSE_NO_PRINCIPAL_SOLUTION
+E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION
+E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE
+E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT
+E_GENERALIZATION_PARAMETRIC_ESCAPE
+E_UNIVERSE_VARIANCE_TOO_PERMISSIVE
+E_UNIVERSE_VARIANCE_NOT_APPLICABLE
+E_UNIVERSE_SCHEMA_LIFT_INVALID
+
+E_KCORE_TEXT_INVALID
+E_KCORE_TEXT_UNSUPPORTED_VERSION
+E_KCORE_LEVEL_CERTIFICATE_INVALID
+E_KCORE_SCHEMA_CERTIFICATE_INVALID
 
 E_QUOTE_MALFORMED_SYNTAX
 E_GENERATED_SYNTAX_INVALID
@@ -950,20 +965,74 @@ Meanings:
   cannot be solved.
 * `E_UNIVERSE_SELF_CONTAINMENT` is emitted when checking would require a universe level to contain its own successor,
   for example a constraint equivalent to `succ u ≤ u`, or a judgment equivalent to `Type u : Type u`.
-* `E_UNIVERSE_LEVEL_EXPRESSION` is emitted when an expression supplied as a `Type` index, universe annotation,
-  universe-level bound, or universe-level constraint does not elaborate to a solver-level expression admitted by §11.1.1.
-* `E_UNIVERSE_UNBOUNDED_TELESCOPE` is emitted when a Pi, Sigma, existential, record, tuple, package, data-constructor
-  telescope, module signature, or equivalent dependent telescope has no universe ceiling independent of the variables
-  introduced by that telescope.
+* `E_UNIVERSE_LEVEL_EXPRESSION` is emitted when an expression used as a `Type` index or level-ordering operand:
+  * does not have type `TypeLevel`;
+  * is not total in the accepted KCore program;
+  * is not stable for the lifetime of the dependent type containing it;
+  * contains an unresolved universe metavariable at a checkpoint that requires rigid level terms;
+  * contains an ill-scoped identity; or
+  * cannot be represented as a well-scoped KCore level term.
+
+  A stable opaque or neutral function application of type `TypeLevel` is not rejected merely because it does not reduce
+  to `zero`, `omega`, `succ`, `+`, or `max`.
+* `E_UNIVERSE_UNBOUNDED_TELESCOPE` is emitted when an ordinary-observation Pi, Sigma, existential, record, tuple,
+  package, constructor telescope, module signature, or equivalent dependent telescope contains an ordinary type-code
+  component whose universe has no ceiling independent of the variables introduced by that telescope.
+
+  A parametric type-witness field does not by itself trigger this diagnostic. Later ordinary payload fields whose types
+  depend on that witness remain subject to the ordinary ceiling rule.
 * `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE` is emitted when a constructor-local binder type is too large for the declared
   result universe of the enclosing data family under §10.4.1.
-* `E_PARAMETRIC_TYPE_PROMOTION` is emitted when a parametric type witness introduced by a `0 Type ρ` binder, field,
-  constructor binder, pattern binder, or projection is used where an ordinary inspectable value of type `Type ρ` is
-  required.
+* `E_PARAMETRIC_TYPE_PROMOTION` is emitted when an expression carrying `parametric` observation mode is used where an
+  `ordinary`-observable value of the same classifier is required.
 
-  This includes returning it from a term whose result type is `Type ρ`, storing it in an ordinary `(A : Type ρ)` field,
-  passing it to a nonzero or unrestricted `(A : Type ρ)` binder, reifying it as a static type object, or otherwise
-  dropping its parametric capability.
+  This includes:
+
+  * returning a parametric type or type-former witness as an ordinary universe value;
+  * storing it in an ordinary field;
+  * passing it to an ordinary binder;
+  * reifying it as an ordinary static object;
+  * selecting ordinary static-object members through it;
+  * reflecting or type-casing it without explicit evidence;
+  * losing its observation mode through aliasing, projection, pattern matching, partial application, interface
+    serialization, KCore transformation, or lowering.
+
+  The diagnostic applies to base type witnesses and higher-kinded parametric witnesses.
+* `E_UNIVERSE_SCHEMA_ARITY_MISMATCH` is emitted when an explicit universe instantiation supplies the wrong number of
+  arguments for a declaration universe schema.
+* `E_UNIVERSE_SCHEMA_SCOPE` is emitted when a declaration-universe parameter is used in an ordinary runtime position,
+  captured as a term value, or otherwise escapes the static universe-expression positions admitted by §11.1.2.3A.
+* `E_UNIVERSE_NO_PRINCIPAL_SOLUTION` is emitted when declaration universe inference has valid solutions but no unique
+  least normalized solution under §11.1.2.4B. The declaration requires an explicit universe schema or a more precise
+  result-classifier annotation.
+* `E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION` is emitted when a minimizable universe metavariable remains outside the
+  portable principal-inference fragment and cannot legally be generalized. The diagnostic does not claim that no
+  semantic principal solution exists; it requires an explicit result universe, declaration schema, or other local
+  annotation.
+* `E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE` is emitted when a recursive call inside one declaration SCC explicitly
+  instantiates a declaration-universe parameter at a level not proved less than or equal to the current SCC instance.
+* `E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT` is emitted when a recursive call attempts a non-identity declaration-universe
+  instantiation without an explicit `.{...}` instantiation, or when such a call occurs in an SCC without a complete
+  explicit recursive signature.
+* `E_GENERALIZATION_PARAMETRIC_ESCAPE` is emitted when a candidate declaration generalization fails rigid parametric
+  rechecking because the candidate generalized variable would be observed, reified, returned, stored, or otherwise
+  used ordinarily.
+* `E_UNIVERSE_VARIANCE_TOO_PERMISSIVE` is emitted when an explicit declaration-universe variance annotation is more
+  permissive than the role certified for that parameter.
+* `E_UNIVERSE_VARIANCE_NOT_APPLICABLE` is emitted when a variance annotation is written on a declaration that does not
+  introduce a nominal family or another standardized nominal-signature block.
+* `E_UNIVERSE_SCHEMA_LIFT_INVALID` is emitted when an attempted cumulative use of one nominal-family universe instance
+  at another instance fails role comparison, declaration constraints, saturation, family-argument alignment, or
+  certificate verification.
+* `E_KCORE_TEXT_INVALID` is emitted when a `.kcore` unit is lexically malformed, syntactically malformed, ill-scoped,
+  ill-typed, references unavailable semantic identities, or fails KCore checkpoint verification.
+* `E_KCORE_TEXT_UNSUPPORTED_VERSION` is emitted when a KCoreText schema version is well-formed but unsupported by the
+  selected implementation.
+* `E_KCORE_LEVEL_CERTIFICATE_INVALID` is emitted when a KCoreText level certificate is malformed, references unavailable
+  assumptions, proves a different constraint, or fails the independent certificate checker.
+* `E_KCORE_SCHEMA_CERTIFICATE_INVALID` is emitted when a KCore or KCoreText nominal-signature action certificate is
+  missing, malformed, stale, forged, produced by an unsupported checker version, disagrees with the declaration's
+  signature closure, or fails independent verification.
 * `E_VAR_REF_REQUIRED` is emitted when a mutable variable's reference cell is required but the source occurrence denotes its current value.
 * `E_VAR_READ_OUTSIDE_DO` is emitted when a current-value read of a mutable variable appears outside the expression-lifting context of its enclosing `do` block.
 * `E_VAR_READ_CROSSES_BOUNDARY` is emitted when elaborating a mutable-variable current-value occurrence would require moving the generated read across a user-written lambda, local-function, quote, type, or elaboration-time boundary.
@@ -2288,17 +2357,22 @@ Family:
 kappa.universe.unbounded-telescope
 ```
 
-Used when a dependent telescope has no universe ceiling independent of the variables introduced by that telescope.
+Used when an ordinary-observation dependent telescope contains an ordinary type-code component whose universe has no
+ceiling independent of the variables introduced by that telescope.
 
 This includes forms such as:
 
 ```kappa
-(i : TypeLevel) -> Type i
-exists (i : TypeLevel). Type i
-(i : TypeLevel, T : Type i)
+(ordinary 0 i : TypeLevel) -> Type i
+exists (ordinary 0 i : TypeLevel).
+(ordinary 0 T : Type i)
+(ordinary 0 i : TypeLevel, ordinary 0 T : Type i)
 ```
 
 when no earlier erased level-comparison proof supplies a bound independent of `i`.
+
+A parametric type-witness field does not by itself trigger this diagnostic. A later ordinary payload whose type depends
+on that witness remains subject to the ordinary ceiling rule.
 
 Payload MUST include:
 
@@ -2326,15 +2400,15 @@ Family:
 kappa.universe.level-expression
 ```
 
-Used when a source expression supplied where a solver-level universe expression is required does not elaborate to an
-admitted level expression.
+Used when a source expression supplied as a universe index or level-ordering operand fails the level-admissibility
+judgment.
 
 Payload MUST include:
 
 * source expression;
 * expected classifier `TypeLevel`;
 * normalized expression when available;
-* reason the expression is not a solver-level universe expression;
+* reason the expression is not level-admissible;
 * whether transparent reduction was attempted;
 * blocked opacity, associated member, macro, or normalization facts when relevant.
 
@@ -2369,13 +2443,189 @@ A diagnostic in this family MUST use portable alias `E_DATA_CONSTRUCTOR_FIELD_UN
 Family:
 
 ```text
+kappa.universe.schema-arity
+```
+
+Used when a declaration reference supplies an explicit universe instantiation whose arity differs from the referenced
+declaration universe schema.
+
+A diagnostic in this family MUST use portable alias `E_UNIVERSE_SCHEMA_ARITY_MISMATCH`.
+
+Family:
+
+```text
+kappa.universe.schema-scope
+```
+
+Used when a declaration-universe parameter escapes the static universe-expression positions admitted by §11.1.2.3A.1.
+
+A diagnostic in this family MUST use portable alias `E_UNIVERSE_SCHEMA_SCOPE`.
+
+Family:
+
+```text
+kappa.universe.no-principal-solution
+```
+
+Used when declaration universe inference has valid solutions but no unique least normalized solution under
+§11.1.2.4B.
+
+Payload MUST include:
+
+* declaration identity;
+* declaration SCC identity;
+* unresolved universe metavariables;
+* normalized lower and upper bounds for each metavariable;
+* candidate incomparable minimal solutions;
+* source origins that introduced the relevant metas and constraints;
+* whether an explicit universe schema was present;
+* a source rendering of the smallest explicit schema or result annotation known to repair the declaration.
+
+A diagnostic in this family MUST use portable alias `E_UNIVERSE_NO_PRINCIPAL_SOLUTION`.
+
+Family:
+
+```text
+kappa.universe.inference-requires-annotation
+```
+
+Used when a minimizable universe metavariable is outside the portable assignable fragment and cannot legally remain in a
+generalized declaration schema.
+
+Payload MUST include:
+
+* declaration and SCC identities;
+* selected metavariable identity;
+* normalized constraints mentioning that metavariable;
+* rigid assumptions in scope;
+* which portable assignment rules were attempted;
+* whether a semantic least solution is known not to exist, unknown, or merely outside the portable fragment;
+* the smallest known explicit annotation or schema repair.
+
+This family uses `E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION`.
+
+Family:
+
+```text
+kappa.universe.recursive-schema
+```
+
+Used for invalid recursive declaration-schema instantiation.
+
+Payload MUST include:
+
+* recursive SCC identity;
+* caller and callee declaration identities;
+* current and requested universe instances;
+* per-parameter normalized `<=` obligations;
+* whether the instantiation was explicit or inferred;
+* whether the SCC has a complete explicit recursive signature;
+* the first failed inequality or missing explicit instantiation;
+* the recursive call origin.
+
+An upward or incomparable call uses `E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE`.
+A non-identity implicit call or non-identity call without a complete signature uses
+`E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT`.
+
+Family:
+
+```text
+kappa.generalization.parametric-escape
+```
+
+Used when rigid parametric rechecking rejects a proposed generalized declaration.
+
+Payload MUST include:
+
+* declaration and SCC identities;
+* candidate generalized metavariables and their classifiers;
+* the rigid parametric binders introduced for rechecking;
+* the first ordinary-observation dependency that escapes;
+* whether the failed candidate was a type, universe, row, quantity, or extension-defined variable;
+* the source origin of the ordinary use;
+* the nearest explicit monomorphic annotation known to repair the declaration.
+
+This family uses `E_GENERALIZATION_PARAMETRIC_ESCAPE`.
+
+Family:
+
+```text
+kappa.universe.variance
+```
+
+Used for invalid explicit universe-variance annotations and failures while inferring or validating a nominal family's
+role vector.
+
+Payload MUST include:
+
+* nominal declaration identity;
+* nominal signature-block identity;
+* universe-schema parameter index and source name, when available;
+* explicit role, when present;
+* inferred role;
+* effective role;
+* role-checker version;
+* the normalized signature clause or generated obligation that forced the tighter role;
+* source or synthetic origin of that clause;
+* whether the declaration is current ordinary data, trait evidence, or an extension-defined nominal signature;
+* the extension gate and clause kind when an extension is involved;
+* the nearest stricter role that would be accepted.
+
+An annotation that is too permissive uses `E_UNIVERSE_VARIANCE_TOO_PERMISSIVE`.
+
+An annotation on a declaration for which roles have no semantics uses `E_UNIVERSE_VARIANCE_NOT_APPLICABLE`.
+
+Family:
+
+```text
+kappa.universe.schema-lift
+```
+
+Used when cumulative nominal-family subsumption cannot be justified.
+
+Payload MUST include:
+
+* family identity;
+* source and target universe instances;
+* certified role vector;
+* source and target normalized declaration constraints;
+* saturation arity and supplied family-argument count;
+* source and target aligned family arguments;
+* per-role obligations and their evidence;
+* certificate identity and checker version;
+* first failed invariant equality, covariant inequality, family-argument alignment, or clause-action obligation;
+* whether the attempted use originated in expected-type checking, constructor checking, pattern matching, trait search,
+  an explicit source ascription, or hand-authored KCore.
+
+This family uses `E_UNIVERSE_SCHEMA_LIFT_INVALID`.
+
+Family:
+
+```text
+kappa.kcore.schema-certificate-invalid
+```
+
+Used when the independent KCore checker rejects a nominal-signature action certificate.
+
+Payload MUST include:
+
+* certificate identity;
+* family or signature-block identity;
+* recorded and recomputed signature-closure hashes;
+* recorded and recomputed role vectors;
+* checker format version;
+* clause kind and clause identity of the first failed action or coherence obligation;
+* whether the certificate came from the current unit or an imported interface artifact.
+
+This family uses `E_KCORE_SCHEMA_CERTIFICATE_INVALID`.
+
+Family:
+
+```text
 kappa.type.parametric-promotion
 ```
 
-Used when a parametric type witness is used as an ordinary inspectable type-code value.
-
-A **parametric type witness** is a type expression introduced by a binder, field, constructor binder, pattern binder, or
-projection whose source form carries quantity `0` and whose annotation is exactly `Type`, as specified by §11.1.2.3A.
+A **parametric static witness** is an expression whose KCore observation mode is `parametric`.
 
 A diagnostic in this family MUST use portable alias:
 
@@ -2385,20 +2635,59 @@ E_PARAMETRIC_TYPE_PROMOTION
 
 Payload MUST include:
 
-* the parametric witness expression;
-* the origin that introduced the witness;
-* the use site where ordinary type-code capability was demanded;
-* the demanded construct kind, among `ordinary-type-field`, `ordinary-type-binder`, `term-result-Type`,
-  `static-object-reification`, `reflection`, `typecase`, `macro-semantic-query`, `associated-member-definition`,
-  `constructor-argument`, `record-field`, `package-field`, or implementation-defined equivalent;
-* whether the witness came from a binder, record field, constructor field, pattern, projection, or generated term;
-* whether the rejected use was user-written or generated;
-* the nearest binder or field whose annotation should be changed, when a local repair is evident;
-* the expected capability, always `ordinary-type-code`;
-* the actual capability, always `parametric-type-witness`.
+* witness expression;
+* witness classifier;
+* witness origin;
+* actual observation mode, always `parametric`;
+* demanded observation mode, always `ordinary`;
+* use site;
+* operation that demanded ordinary observation;
+* quantity, access mode, and explicitness of the relevant binder or field;
+* application spine already supplied, when the witness is higher-kinded;
+* residual parametric kind after partial application, when applicable;
+* whether the failure arose in source, generated syntax, interface loading, KCore verification, or lowering.
 
-A human renderer SHOULD say that `0 A : Type ρ` may be used as a type and passed to compatible `0 Type κ` binders, but
-cannot be repackaged as an ordinary `Type ρ` value.
+Family:
+
+```text
+kappa.kcore.text-invalid
+```
+
+Used when a `.kcore` unit is lexically malformed, syntactically malformed, ill-scoped, ill-typed, references unavailable
+semantic identities, or fails KCore checkpoint verification.
+
+A diagnostic in this family MUST use portable alias `E_KCORE_TEXT_INVALID`.
+
+Payload MUST include:
+
+* KCoreText schema version, when readable;
+* source path;
+* source range;
+* declaration or node being parsed or checked;
+* whether the failure occurred during lexing, parsing, name resolution, scoping, typing, or checkpoint verification;
+* violated KCore invariant;
+* nearest semantic identity, when available.
+
+Family:
+
+```text
+kappa.kcore.level-certificate-invalid
+```
+
+Used when a KCoreText level certificate is malformed, references unavailable assumptions, proves a different
+constraint, or fails independent certificate verification.
+
+A diagnostic in this family MUST use portable alias `E_KCORE_LEVEL_CERTIFICATE_INVALID`.
+
+Family:
+
+```text
+kappa.kcore.unsupported-version
+```
+
+Used when a KCoreText schema version is well-formed but unsupported by the selected implementation.
+
+A diagnostic in this family MUST use portable alias `E_KCORE_TEXT_UNSUPPORTED_VERSION`.
 
 Family:
 
@@ -4918,6 +5207,7 @@ infix, postfix, prefix, left, right,
 var, ref, while, break, continue, using, inout,
 yield, for, for?, group, by, distinct, order, skip, take, top, join, left, asc, desc,
 public, private, opaque, seal, unhide, clarify,
+ordinary, parametric,
 ?., ?:
 ```
 
@@ -4929,6 +5219,8 @@ Keywords are **soft** (contextual) keywords:
 `moduleSig` is a soft keyword used only in type positions for the module-signature form of §7.5.
 `effectLabel` is a soft keyword used only as a source-level kind-qualified selector and import/export selector for
 declarations of internal kind `effect-label`.
+`ordinary` and `parametric` are soft keywords only in binder and field prefixes. Outside a position that admits a binder
+observation mode, they may be used as ordinary identifiers.
 
 * The lexer recognizes the keyword tokens, but implementations must permit their use as ordinary identifiers in contexts
   where a keyword is not syntactically expected.
@@ -6318,19 +6610,20 @@ Contextual admissibility:
 * term-expression position primarily admits `term`, `ctor`, and `module`;
 * type position admits:
   * declarations of kind `type`;
-  * ordinary compile-time term expressions whose elaborated value has ordinary type-code capability and type
+  * ordinary term expressions whose elaborated value has ordinary observation mode and type
     `Type u` for some universe `u`;
-  * parametric type witnesses, provided the surrounding use preserves their parametric capability.
-* trait-obligation position admits `trait`, type expressions, parametric type witnesses used as type expressions, and
-  compile-time term expressions whose elaborated value has ordinary type-code capability and type `Type u` for some
-  universe `u`, provided the compiler can establish `IsTrait C` for the resulting type `C`;
+  * parametric static witnesses, provided the surrounding use preserves their observation mode.
+* trait-obligation position admits `trait`, type expressions, parametric static witnesses used as type expressions, and
+  term expressions whose elaborated value has ordinary observation mode and type `Type u` for some universe `u`,
+  provided the compiler can establish `IsTrait C` for the resulting type `C`;
 * pattern-head position admits `ctor` and terms declared with `pattern`;
 * effect-label position admits `effect-label` and compile-time term expressions whose elaborated type is `EffLabel`.
 
-A parametric type witness selected by lookup or projection is not an ordinary term-expression value of type `Type ρ`.
+A parametric static witness selected by lookup or projection is not an ordinary-observation term-expression value of its
+classifier.
 
-If a term-expression position demands an ordinary type-code value and lookup would supply only a parametric type
-witness, the use is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+If a term-expression position demands ordinary observation and lookup would supply only a parametric static witness, the
+use is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
 
 Reified-static fallback in term-expression position:
 
@@ -6680,10 +6973,10 @@ Trait declarations:
   ```
 
   then its reified term facet has that same compile-time function type.
-* Thus a declaration `trait Eq (0 a : Type) = ...` introduces a reified term facet:
+* Thus a declaration `trait Eq (parametric 0 a : Type) = ...` introduces a reified term facet:
 
   ```kappa
-  Eq : (0 A : Type) -> Type
+  Eq : (parametric 0 A : Type) -> Type
   ```
 * For every well-formed full application `Tr args`, the compiler provides intrinsic evidence:
 
@@ -6742,56 +7035,27 @@ let ops = (get = l.get, put = l.put)
 <!-- names.static_object_facets.parametric -->
 #### 7.6.1 Parametric and higher-universe static-object facets
 
-A type declaration, type alias, trait declaration, data declaration, or effect declaration introduces a reified
-static-object term facet only when its reified facet type checks with ordinary type-code capability.
+A declaration may expose an ordinary static-object facet, a parametric static facet, or both when each is independently
+well-typed.
 
-A declaration whose RHS, classifier, or reified facet depends on a parametric type witness may still introduce a
-type-level name usable in type expressions.
-
-It does not automatically introduce an ordinary reified static-object term facet of type `Type ρ`.
-
-Examples:
-
-```kappa
-let f (0 A : Type) (x : A) : A =
-    type T = A
-    let y : T = x
-    y
-```
-
-The alias `T` is usable as a type expression in the scope where `A` remains parametric.
-
-But this is rejected:
-
-```kappa
-let f (0 A : Type) =
-    let T : Type = A
-    T
-```
-
-because it promotes `A` to ordinary type-code capability.
-
-Rebinding and dotted static-member lookup apply only to ordinary reified static-object values.
-
-A projected or rebound parametric type witness may be used as a type expression and passed to compatible `0 Type κ`
-binders, but it does not preserve or create static-object identity for ordinary dotted static-member lookup.
-
-A reified static-object facet whose type contains parametric `0 Type ρ` binders is an ordinary value, and the
-parametric binders remain part of its type.
+A type alias depending on parametric inputs may expose a parametric higher-kinded facet suitable for another parametric
+binder without exposing an ordinary type-code function.
 
 Example:
 
 ```kappa
-Option : (0 A : Type) -> Type
+type Id A = A
 ```
 
-Such a value may be named, imported, exported, aliased, stored, and instantiated like any other value, provided ordinary
-capability checking preserves every parametric type witness.
+may instantiate:
 
-A reified static-object facet whose type uses explicit higher universes such as `Type1`, `Type2`, `Typeω`, or `Type u`
-is governed by ordinary universe checking.
+```kappa
+(parametric 0 f : (A : Type) -> Type)
+```
 
-Kappa v1 does not introduce a separate universe-schema object for these facets.
+but does not thereby become an ordinary-observable function returning type codes.
+
+Rebinding, projection, storage, imports, exports, and interface serialization preserve the facet observation mode.
 
 <!-- modules -->
 ## 8. Modules, Files, Imports, Exports, Visibility, and Opacity
@@ -7832,7 +8096,7 @@ do
 Grammar:
 
 ```text
-projectionDecl   ::= [public|private] 'projection' ident projectionBinder+ ':' type '=' projectionRhs
+projectionDecl   ::= [public|private] 'projection' ident universeSchema? projectionBinder+ ':' type '=' projectionRhs
 
 projectionBinder ::= '(' 'place' ident ':' type ')'
                    | '(' 'place' 'this' ':' type ')'
@@ -8189,6 +8453,8 @@ Typing:
 
 * In `bindPat`, a binder prefix applies uniformly to every variable bound by the underlying pattern.
 * If the binder prefix contains only a quantity, that quantity applies to each bound variable with ordinary access.
+  Observation mode is selected independently by §12.1.1 from the elaborated annotation and any explicit `ordinary` or
+  `parametric` keyword.
 * If the binder prefix contains borrowed access, each bound variable is introduced as a borrowed binding.
 * `let & pat = expr` is legal and is sugar for `let ω & pat = expr`.
 * `let q & pat = expr` binds every variable introduced by `pat` as borrowed, with interval usage quantity `q`.
@@ -8434,7 +8700,7 @@ Forms:
 expect type Int
 expect type String
 expect data Nat : Type
-expect data IO (0 e : Type) (0 a : Type) : Type
+expect data IO (e : Type) (a : Type) : Type
 expect trait Eq a
 expect term toFloat : (this : Int) -> Float
 expect term print   : (this : String) -> UIO Unit
@@ -8496,8 +8762,13 @@ Opening grammar:
 dataName ::= ident | '(' operator_token ')' | '(' '=' ')'
 
 dataDecl ::=
-    [public|private] [opaque] 'data' dataName dataParam* ':' type
-  | [public|private] [opaque] 'data' dataName dataParam* ':' type '=' constructorBlock
+    [public|private] [opaque] 'data' dataName universeSchema? dataParam* ':' type
+  | [public|private] [opaque] 'data' dataName universeSchema? dataParam* ':' type '=' constructorBlock
+
+dataParam ::=
+    ident
+  | '(' explicitBinderBody ')'
+  | '(' implicitBinderBody ')'
 
 constructorBlock ::=
     NEWLINE INDENT constructorDecl+ DEDENT
@@ -8526,7 +8797,7 @@ data Maybe (0 a : Type) : Type =
     Nothing
     Just a
 
-data Result (0 e : Type) (0 a : Type) : Type =
+data Result (e : Type) (a : Type) : Type =
     Ok a
     Err e
 ```
@@ -8544,7 +8815,9 @@ data Point : Type =
 Grammar addition (extends the existing constructor declaration):
 
 ```text
-constructorDecl ::= ident [ ctorBinder+ ]
+constructorDecl ::= ident constructorUniverseInstantiation? ctorBinder*
+
+constructorUniverseInstantiation ::= universeInstantiation
 
 ctorBinder      ::= ctorPositionalField
                   | '(' ctorParam ')'
@@ -8554,12 +8827,16 @@ ctorBinder      ::= ctorPositionalField
 ctorPositionalField ::= ident
                       | '(' type ')'
 
-ctorParam       ::= [quantity] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
+ctorParam       ::= binderPrefix? ('thunk' | 'lazy')? ident ':' type defaultClause?
 
-fieldDecl       ::= [quantity] [ 'thunk' | 'lazy' ] ident ':' type [ defaultClause ]
+fieldDecl       ::= binderPrefix? ('thunk' | 'lazy')? ident ':' type defaultClause?
 
 defaultClause   ::= '=' expr
 ```
+
+A constructor reference or application may write `constructorName universeInstantiation` to state the enclosing
+declaration's universe arguments explicitly. Omitting the instantiation creates fresh universe metavariables under
+§11.1.2.3A.1.
 
 Bare constructor fields:
 
@@ -9064,10 +9341,10 @@ Unified declaration principle:
 
 Type aliases vs type-level definitions:
 
-Because Kappa is dependently typed, ordinary type-code expressions are terms.
+Because Kappa is dependently typed, ordinary-observation type-code expressions are terms.
 
-However, a type expression may contain parametric type witnesses introduced by `0 Type ρ` binders, fields, constructor
-binders, projections, or pattern binders.
+However, a type expression may contain parametric static witnesses introduced by binders, fields, constructor binders,
+projections, pattern binders, or higher-kinded partial applications.
 
 Such expressions are valid type expressions, but they are not automatically ordinary term expressions of type `Type ρ`.
 
@@ -9086,16 +9363,16 @@ type T = RHS
 let T : Type = RHS
 ```
 
-holds only when `RHS` checks with ordinary type-code capability.
+holds only when `RHS` checks with ordinary observation mode.
 
-If `RHS` depends on a parametric type witness, then `T` is a parametric type alias. It may be used as a type expression
-in contexts preserving that witness, but it does not introduce an ordinary reified static-object term facet of type
-`Type`.
+If `RHS` depends on a parametric static witness, then `T` is a parametric type alias. It may be used as a type
+expression or higher-kinded parametric facet in contexts preserving that mode, but it does not thereby introduce an
+ordinary reified static-object term facet.
 
 Example:
 
 ```kappa
-let f (0 A : Type) : Type =
+let f (parametric 0 A : Type) : Type =
     A
 ```
 
@@ -9104,7 +9381,7 @@ is rejected.
 But a local type alias used only as a type expression is permitted:
 
 ```kappa
-let f (0 A : Type) (x : A) : A =
+let f (parametric 0 A : Type) (x : A) : A =
     type T = A
     let y : T = x
     y
@@ -9170,83 +9447,60 @@ those binders held abstract, which enforces them for every instantiation.
 If a constraint is unsatisfiable, the data declaration is rejected with diagnostic family
 `kappa.universe.constructor-size` and portable alias `E_DATA_CONSTRUCTOR_FIELD_UNIVERSE`.
 
-This rule applies regardless of implicitness or erasure, except for constructor-local binders classified as parametric
-type binders under §11.1.2.3A.
+A constructor-local field whose selected observation mode is `parametric` does not contribute the classifier of its own
+domain merely by storing the parametric witness.
 
-A constructor-local binder of the form:
+Every later constructor field is checked normally.
 
-```kappa
-(0 A : Type ρ)
-```
+Generated constructor functions, accessors, projections, matchers, pattern binders, metadata, interfaces, and KCore
+nodes preserve the field observation mode.
 
-or:
-
-```kappa
-(@0 A : Type ρ)
-```
-
-does not store an ordinary type-code value and therefore does not generate a constructor-size obligation:
-
-```text
-succ ρ ≤ data-result-universe
-```
-
-Instead, it introduces a parametric type witness at level `ρ`.
-
-Every constructor type, constructor application, pattern binder, generated accessor, generated projection, generated
-matcher, constructor metadata entry, and branch-local binder derived from that parameter MUST preserve the parameter's
-parametric capability.
-
-This exception applies only to the parametric binder itself.
-
-Later constructor fields whose annotations mention the parametric witness are checked normally.
+A generated operation that changes a parametric field to ordinary observation is rejected with
+`E_PARAMETRIC_TYPE_PROMOTION`.
 
 Examples:
 
 ```kappa
 data Box : Type =
-    Box (0 T : Type3) (foo : Int)
+    Box (parametric 0 T : Type3) (foo : Int)
 ```
 
-is accepted, because `T` is parametric and `foo : Int` is small.
-
-```kappa
-data BadBox : Type =
-    BadBox (0 T : Type3) (foo : T)
-```
-
-is rejected, because the field annotation `T` is classified by `Type3`, so the field `foo : T` is too large for a data
-type declared in `Type`.
-
-The latter may be written:
+is accepted.
 
 ```kappa
 data LargeBox : Type3 =
-    LargeBox (0 T : Type3) (foo : T)
+    LargeBox (parametric 0 T : Type3) (foo : T)
 ```
 
-Erasure alone is not enough for this exception.
-
-The following remains rejected:
+is accepted at `Type3` because the payload field `foo : T` contributes level `3`.
 
 ```kappa
-data Bad : Type =
-    Bad (@0 A : Type1)
+data BadBox : Type =
+    BadBox (parametric 0 T : Type3) (foo : T)
 ```
 
-unless `A` is classified as a parametric type binder and every generated operation preserves parametric capability.
+is rejected because the payload is too large for `Type`.
 
-The following remains rejected:
+The omitted mode defaults to parametric for a parametric-kind domain, so these controls are also accepted:
 
 ```kappa
-data Bad : Type =
-    Bad (A : Type)
+data PhantomCode : Type0 =
+    PhantomCode (parametric 0 T : Type3)
+
+data PhantomCodeDefault : Type0 =
+    PhantomCodeDefault (T : Type3)
 ```
 
-because `A` is an ordinary type-code field.
+Later payloads still count:
 
-If any generated operation would expose a parametric constructor binder as an ordinary value of type `Type ρ`, the data
-declaration or use site is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+```kappa
+data LargePayload : Type3 =
+    LargePayload
+        (parametric 0 T : Type3)
+        (value : T)
+```
+
+The same declaration at `Type0` is rejected because `value : T` is an ordinary payload field classified at level `3`.
 
 The data-family header telescope `Δ` is checked by the ordinary type-constructor rules (including explicit `TypeLevel`
 parameters, §11.1.2.5). Header binders are not constructor-local payload fields merely because constructors are
@@ -9266,7 +9520,7 @@ By contrast, the following declaration is rejected:
 
 ```kappa
 data U : Type0 =
-    MkU (t : Type0)
+    MkU (ordinary 0 T : Type0)
 ```
 
 because the constructor-local binder annotation `Type0` has classifier:
@@ -9281,7 +9535,7 @@ The following is also rejected:
 
 ```kappa
 data U : Type0 =
-    MkU (@0 t : Type0)
+    MkU (@ordinary 0 T : Type0)
 ```
 
 because erased constructor-local binders are still subject to constructor universe-size checking.
@@ -9290,7 +9544,7 @@ The following is accepted:
 
 ```kappa
 data U1 : Type1 =
-    MkU1 (t : Type0)
+    MkU1 (ordinary 0 T : Type0)
 ```
 
 because `Type0 : Type1`, and `1 ≤ 1` is solvable.
@@ -9299,14 +9553,14 @@ Limit universes follow the same rule:
 
 ```kappa
 data Uω : Typeω =
-    MkUω (t : Type0)
+    MkUω (ordinary 0 T : Type0)
 ```
 
 is accepted, because `1 ≤ ω` is solvable.
 
 ```kappa
 data Badω : Typeω =
-    MkBadω (t : Typeω)
+    MkBadω (ordinary 0 T : Typeω)
 ```
 
 is rejected, because `Typeω : Type(ω+1)` and `ω + 1 ≤ ω` is not solvable.
@@ -9328,7 +9582,7 @@ Thus the following is rejected:
 
 ```kappa
 data G : Type0 =
-    MkG : (A : Type0) -> G
+    MkG : (ordinary 0 A : Type0) -> G
 ```
 
 because `A` is a constructor-local binder whose annotation is too large for `Type0`.
@@ -9510,6 +9764,421 @@ data Tree a = Leaf | Branch (Tree a) a (Tree a)
 data Rose a = Node a (List (Rose a))
 ```
 
+<!-- data_types.nominal_signature_variance -->
+#### 10.4.3 Nominal signature closure and cumulative-action certification
+
+After constructor universe-size checking and positivity checking succeed, every nominal declaration is elaborated to a
+normalized **nominal signature closure**.
+
+For ordinary `data`, the closure contains at least:
+
+```text
+* the nominal family head and complete term telescope;
+* the declaration universe telescope and normalized constraints;
+* every point constructor telescope and result;
+* generated projections, recursors, inductors, and eliminators that are part of source or interface semantics;
+* every definitional or propositional computation rule generated for those eliminators;
+* observation modes, quantities, access modes, and explicitness of all binders and fields;
+* the runtime representation summary required to establish representation-identity lifting.
+```
+
+A future nominal extension adds its extension-defined clauses under §10.5.
+
+The closure excludes presentation-only syntax, source names after identity resolution, diagnostics, and backend-specific
+layout choices.
+
+A **nominal-signature action certificate** for a role vector proves that for every pair of well-formed universe instances
+related by that role vector:
+
+```text
+1. each fully saturated family instance has a target instance;
+2. every point constructor is preserved;
+3. every higher/path constructor, quotient equation, recursive operation, recursive equation, and boundary clause is
+   preserved when the extension provides such clauses;
+4. every generated eliminator remains well typed;
+5. every declared computation rule commutes with the lift;
+6. the action is identity on equal universe instances;
+7. action composition agrees with direct action;
+8. the value-level lift is runtime representation identity;
+9. observation dependencies, quantities, borrowing, and erasedness are preserved.
+```
+
+The certificate is checked by a standardized certificate checker. A compiler-generated certificate is not trusted merely
+because the same compiler generated it.
+
+If no valid non-invariant certificate can be generated for a parameter, that parameter is inferred `invariant`.
+If an extension clause has no standardized action rule, every universe parameter occurring in or controlling that clause
+is forced to `invariant`.
+
+<!-- data_types.nominal_signature_variance.ordinary_data -->
+##### 10.4.3.1 Ordinary-data action rules
+
+For ordinary data, a constructor action is synthesized left-to-right over the constructor telescope.
+
+A source field value may be reused at the target only when the target field type is obtained by:
+
+* definitional equality;
+* a classifier-only `universeLift`;
+* a recursively certified `schemaLift` on a fully saturated nominal field type;
+* rebuilding an erased proof from checked level/equality evidence without changing runtime representation.
+
+The action may not require:
+
+* an eta-wrapper around a function field;
+* mapping over a container;
+* pattern matching on a runtime field;
+* allocation of a replacement runtime value;
+* invocation of user code;
+* a contravariant type conversion;
+* a change of constructor tag, field order, or retained runtime field representation.
+
+If any runtime-relevant field would require such a transformation, every schema parameter responsible for that
+transformation is forced to `invariant`.
+
+A direct constructor-local field:
+
+```kappa
+(ordinary 0 T : Type u)
+```
+
+or:
+
+```kappa
+(parametric 0 T : Type u)
+```
+
+may be reused from a lower `u` at a higher `u` through a classifier-only lift, so such a field generally requires at
+most `covariant` rather than `invariant`.
+
+A universe parameter appearing only in the classifier of a fully supplied family argument does not by itself constrain
+the role. Family arguments are fixed and rechecked at both instances.
+
+A universe parameter in a function-field domain forces `invariant`; Kappa does not infer a contravariant role.
+
+The result classifier of the nominal family alone does not constrain the role. An empty family may therefore infer an
+`irrelevant` role even when its result is written `Type u`.
+
+<!-- data_types.nominal_signature_variance.inference -->
+##### 10.4.3.2 Deterministic role inference
+
+Universe-role inference is performed after principal universe inference, constructor-size checking, positivity checking,
+and normalization of the nominal signature closure.
+
+The role lattice is pointwise:
+
+```text
+invariant < covariant < irrelevant
+```
+
+For an ordinary singleton family or a mutually checked nominal signature block, inference computes a greatest fixed
+point.
+
+Let `R` assign one tentative role to every pair of introduced nominal family and declaration-universe parameter.
+
+```text
+R0     = every role is irrelevant
+Rk+1   = recomputeVariance(Rk)
+```
+
+`recomputeVariance` runs the standardized signature-action checker using symbolic source and target universe instances.
+It returns the most permissive role requirements justified by all clauses, using tentative roles from `Rk` for recursive
+references to families in the same block and recorded roles for external families.
+
+The operator MUST be monotone in the role order and MUST only retain or tighten roles. Iteration stops at the first fixed
+point.
+
+The stable vector is the inferred vector.
+
+For current ordinary data, the standardized action rules of §10.4.3 determine `recomputeVariance`.
+For extension-defined clause kinds, the extension supplies standardized monotone transfer rules under §10.5.
+
+If a generated requirement couples distinct schema parameters in a way not expressible by independent pointwise roles,
+all parameters involved in that coupled requirement are tightened to `invariant`.
+
+A conforming implementation MAY use constraint solving or another algorithm instead of literal iteration, but it MUST
+produce the same fixed-point role vectors.
+
+Roles are inferred jointly for all families in one mutually recursive or future inductive-inductive signature block.
+The certificate records a separate role vector for each introduced nominal family head, even when the source extension
+uses one shared block schema.
+
+<!-- data_types.nominal_signature_variance.independence -->
+##### 10.4.3.3 Relationship to positivity and observation
+
+Universe variance is independent of strict positivity and parameter-positivity signatures.
+
+```text
+parameter positivity
+    says whether a type-parameter position preserves recursive positivity;
+
+universe variance
+    says when two declaration-universe instances of the same fully saturated nominal family are cumulatively related;
+
+observation mode
+    says whether a value may be observed or reified ordinarily;
+
+quantity
+    says how often a value is demanded and whether it erases.
+```
+
+A role never makes a non-positive recursive occurrence acceptable.
+A parametric field is not automatically universe-irrelevant.
+An erased field is not automatically universe-irrelevant.
+A universe-irrelevant parameter is not automatically erased or parametric.
+
+The normative check order for ordinary data is:
+
+```text
+1. ordinary elaboration and principal universe inference;
+2. constructor universe-size checking;
+3. strict positivity and parameter-positivity fixed point;
+4. nominal signature closure construction;
+5. universe-role fixed point;
+6. nominal-signature action certificate verification;
+7. generated eliminator and computation-rule verification.
+```
+
+<!-- data_types.nominal_signature_variance.level_monotonicity -->
+##### 10.4.3.4 Level-expression monotonicity
+
+Role inference uses ordinary checked evidence of the canonical trait:
+
+```kappa
+trait Monotone
+    (ordinary 0 f : TypeLevel -> TypeLevel) =
+
+    monotone :
+        (x : TypeLevel) ->
+        (y : TypeLevel) ->
+        (@0 p : x <= y) ->
+        (f x <= f y) = True
+```
+
+The authoritative trait identity is `std.typelevel.Monotone`. Recognition is by resolved semantic identity, never by
+spelling.
+
+The standard prelude provides checked `IsTrait`, `IsSubsingleton`, and `RuntimeErased` evidence for `Monotone f`. Its
+only member is erased proof evidence; multiple coherent proofs therefore cannot produce runtime or semantic-identity
+differences.
+
+The standard prelude supplies coherent evidence for canonical standard operations and their supported partial
+applications, including:
+
+```text
+succ
+\x -> x + k
+\x -> k + x
+\x -> max x k
+\x -> max k x
+```
+
+using the checked standard level theorems.
+
+For a user-defined or opaque level function `f`, the compiler forms the ordinary goal:
+
+```kappa
+Monotone f
+```
+
+Evidence discovery uses normal implicit resolution:
+
+1. explicit or implicit local evidence;
+2. ordinary visible instances;
+3. standard instances and instance combinators.
+
+The compiler does not scan arbitrary declarations in the same module for a theorem whose type happens to resemble
+monotonicity.
+
+A theorem may be made discoverable by packaging it as an ordinary instance:
+
+```kappa
+fooMonotoneProof :
+    (x y : TypeLevel) ->
+    (@0 p : x <= y) ->
+    foo x <= foo y
+
+instance Monotone foo =
+    monotone = fooMonotoneProof
+```
+
+or by passing local evidence:
+
+```kappa
+(@0 mono : Monotone foo)
+```
+
+For a compound occurrence, the role checker forms the normalized one-hole function whose argument is the schema
+parameter and requests `Monotone` for that function.
+
+Selected monotonicity evidence is resolved and frozen before the universe-role fixed point begins. The fixed-point
+checker consumes selected evidence; it does not launch trait search during iteration.
+
+Evidence whose typing depends on the not-yet-established role vector or schema-action certificate of the same nominal
+signature block is cyclic and rejected.
+
+If no evidence is selected, every affected schema parameter is conservatively forced to `invariant`. If the user wrote a
+more permissive explicit role, the existing variance diagnostic identifies the unsolved `Monotone` goal.
+
+The normalized `Monotone f` proposition and its dependencies participate in the nominal signature closure. The arbitrary
+identity of one proof object does not participate in semantic hashing, though it remains audit provenance.
+
+Monotonicity does not justify cancellation or order reflection.
+
+The standard prelude may separately define:
+
+```kappa
+trait Monotone f => OrderEmbedding
+    (ordinary 0 f : TypeLevel -> TypeLevel) =
+
+    reflectLe :
+        (x : TypeLevel) ->
+        (y : TypeLevel) ->
+        (@0 p : f x <= f y) ->
+        x <= y
+```
+
+Only an `OrderEmbedding`-like fact may justify generic inverse-order reasoning. The principal solver's standard
+successor and common-addition cancellation is justified by the corresponding checked standard theorems, not by
+`Monotone` alone.
+<!-- data_types.nominal_signature_variance.examples -->
+##### 10.4.3.5 Examples and required standard summaries
+
+```kappa
+data Phantom.{u} : Type0 =
+    Phantom
+```
+
+infers `irrelevant u`.
+
+```kappa
+data Box.{u}
+    (A : Type u)
+    : Type u =
+    Box (value : A)
+```
+
+infers `irrelevant u`: the fully saturated argument `A` is fixed and rechecked at both instances, while the payload type
+is the same aligned argument.
+
+```kappa
+data SomeWitness.{u} : Type0 =
+    SomeWitness (parametric 0 A : Type u)
+```
+
+infers `covariant u`: increasing `u` admits reuse of the witness through a classifier-only lift, while decreasing `u`
+is not generally valid.
+
+```kappa
+data SomeCode.{u} : Type (succ u) =
+    SomeCode (ordinary 0 A : Type u)
+```
+
+infers `covariant u`.
+
+```kappa
+data Consumer.{u} : Type (succ u) =
+    Consumer (run : (ordinary 0 A : Type u) -> Int)
+```
+
+infers `invariant u`: lifting would require widening a function domain, and Kappa has no contravariant role.
+
+```kappa
+data Empty.{covariant u} : Type u
+```
+
+is accepted even though the inferred role is `irrelevant`; `covariant` is a valid stricter annotation.
+
+The standard prelude MUST publish verified role summaries for every universe-polymorphic nominal family.
+At minimum, the expected summaries include:
+
+```text
+(=).{u}                 irrelevant u
+TypeBelow.{u}           covariant u
+TypeAtMost.{u}          covariant u
+```
+
+For equality, `u` classifies fully supplied parametric family arguments and endpoints; it is not stored as a
+constructor-local code witness.
+
+<!-- data_types.future_nominal_signatures -->
+### 10.5 Required nominal-signature contract for future inductive extensions
+
+Any future feature that introduces one or more mutually defined nominal families and wants declaration-universe
+cumulativity MUST elaborate to a checked nominal signature block.
+
+This requirement applies at least to future:
+
+```text
+* higher inductive types;
+* higher inductive-inductive types (HIITs);
+* higher inductive-recursive or higher inductive-inductive-recursive types (HIRTs/HIIRTs);
+* quotient inductive types (QITs);
+* quotient inductive-inductive types (QIITs);
+* quotient or higher inductive-recursive combinations;
+* extension-defined nominal types with non-free constructors or equations.
+```
+
+A nominal signature block may contain standardized clause kinds:
+
+```text
+NominalSignatureClauseKind ::=
+    sort-declaration
+  | point-constructor
+  | path-constructor
+  | higher-boundary
+  | quotient-equation
+  | recursive-operation
+  | recursive-equation
+  | eliminator
+  | computation-rule
+  | truncation-rule
+  | extension-defined-clause
+```
+
+The extension specification MUST define:
+
+1. well-formedness and positivity/strict-positivity for every recursive occurrence;
+2. the normalized signature closure contributed by every clause;
+3. a monotone variance-transfer rule for every clause kind;
+4. a checked action of schema lifts on every introduced sort;
+5. action on every point constructor;
+6. naturality of every path constructor, higher boundary, quotient equation, and recursive equation;
+7. preservation of every generated eliminator and computation rule;
+8. identity and composition coherence of the schema action;
+9. the runtime representation argument establishing that the lift erases;
+10. interface and KCoreText serialization of all clauses needed to recheck the certificate.
+
+Path, quotient, and recursive equations participate even when their proof terms or witnesses erase. Runtime erasure is
+not permission to omit an equation from variance certification.
+
+For inductive-inductive blocks, roles are inferred jointly across all introduced sorts. The block certificate records a
+separate effective role vector for every exported family head.
+
+For inductive-recursive blocks, every recursively defined operation and every defining equation must commute with the
+schema action. A recursive operation returning an ordinary universe code may force `covariant` or `invariant`; an
+operation occurring in a negative or unsupported position forces `invariant`.
+
+For higher or quotient constructors, the lifted endpoints, faces, boundaries, and equations must be accepted by the
+extension's path/equality theory. Merely preserving point-constructor runtime tags is insufficient.
+
+Large elimination, truncation restrictions, univalence, and cubical computation rules must be included in the
+certificate whenever the extension exposes them.
+
+If the extension cannot generate and independently verify all required action and coherence obligations for a schema
+parameter, that parameter is `invariant`.
+
+An implementation MUST NOT enable cumulative roles for an extension merely because its point constructors resemble an
+ordinary data declaration.
+
+<!-- data_types.future_nominal_signatures.v1_fallback -->
+#### 10.5.1 Conservative v1 fallback
+
+Portable Kappa v1 contains no source syntax for HIIT, HIRT, QIT, or QIIT declarations unless a separately standardized
+feature gate supplies it.
+
+The interface and KCore structures introduced here are forward-compatible storage and verification contracts.
+Unknown extension clause kinds do not inherit cumulative behavior automatically.
+
 ---
 
 <!-- types -->
@@ -9532,207 +10201,248 @@ The intrinsic compile-time row and label types `RecRow`, `VarRow`, `EffRow`, `La
 §11.3.1 and each inhabit `Type0`.
 
 `Type u` is a primitive universe family indexed by a universe level `u : TypeLevel`. It is not ordinary first-order
-function application, even though `TypeLevel` itself is an ordinary compile-time type.
+function application, even though `TypeLevel` itself is an ordinary runtime-capable prelude type.
 
-<!-- types.universes.level_expressions -->
-#### 11.1.1 Level expressions and `TypeLevel`
+<!-- types.universes.typelevel_data -->
+#### 11.1.1 `TypeLevel`
 
-`TypeLevel` is the intrinsic compile-time type of universe-level codes admitted by the universe solver.
+`TypeLevel` is an actual opaque algebraic data type declared by the standard prelude.
 
 ```kappa
-TypeLevel : Type
+opaque data TypeLevel : Type0 =
+    Level
+        (omegaCoefficient : Nat)
+        (finiteRemainder  : Nat)
 ```
 
-Values of type `TypeLevel` are compile-time-only values (§11.1.6). They may be bound, passed, returned, stored in
-records or packages, projected, sealed, opened, and used in existentials wherever the surrounding form is otherwise
-well-formed.
+The `opaque data` declaration hides `Level` outside `std.typelevel`; no per-constructor `private` syntax is used.
+
+The value `Level c n` denotes the level `ω·c + n`.
+
+Kappa v1 therefore represents levels below `ω^2`.
+
+The public representation is opaque. Programs outside `std.typelevel` cannot construct or pattern-match `Level`
+directly.
+
+`TypeLevel` is runtime-capable ordinary data:
+
+* an ordinary `u : TypeLevel` may be stored, returned, captured, compared, or passed to runtime code;
+* `0 u : TypeLevel` is erased by quantity;
+* a meta-phase `TypeLevel` value is erased by phase;
+* use of `u` as a universe index is static and does not itself require runtime representation;
+* one source binder may have both static index uses and ordinary runtime uses.
+
+Compiler universe metavariables and solver constraints are compiler metadata over `TypeLevel` terms. They are not
+runtime inhabitants of `TypeLevel`.
 
 A `TypeLevel` value is not restricted to finite levels. It may denote a finite level, the limit level `ω`, or a
 successor, addition, or maximum expression containing `ω`.
 
-Portable v1 solver-level expressions are canonical elaborated expressions, not source spellings.
+<!-- types.universes.level_terms -->
+##### Level terms and universe-index admissibility
 
-They are generated by:
+Kappa distinguishes ordinary typing of a level value from admissibility of that value as a universe index.
 
 ```text
-levelExpr ::=
-    levelVariable
-  | levelMetavariable
-  | __typeLevelZero
-  | __typeLevelOmega
-  | __typeLevelSucc levelExpr
-  | __typeLevelAdd levelExpr levelExpr
-  | __typeLevelMax levelExpr levelExpr
+Γ ⊢ t : TypeLevel
 ```
 
-The names beginning with `__typeLevel` are specification names for compiler-owned intrinsic heads. They are not source
-identifiers, ordinary prelude names, or user-definable declarations.
+is the ordinary term-typing judgment.
 
-Source-level level expressions are admitted into this grammar only after ordinary resolution, implicit insertion, trait
-selection, and permitted transparent normalization.
+```text
+Γ ⊢level t : TypeLevel
+```
 
-The following source forms are admitted as solver-level expressions when their resolved semantic identities are the
-standard prelude operations and compiler-owned `TypeLevel` instances specified by §11.1.2.2:
+is the universe-index admissibility judgment.
+
+A term is level-admissible when all of the following hold:
+
+1. `Γ ⊢ t : TypeLevel`;
+2. `t` is total in the accepted KCore program;
+3. `t` is stable for the lifetime of every dependent type containing that occurrence;
+4. every free identity of `t` is in scope at the dependent type occurrence;
+5. the occurrence can be serialized as a well-scoped KCore term;
+6. no unresolved universe metavariable remains when rigid level checking is required.
+
+`stable` means that the denotation of the term cannot change while the dependent type containing it remains in scope.
+It does not mean that the term is known during compilation, closed, reducible, or built only from standard level
+operations.
+
+Accepted level terms include:
 
 ```kappa
-0
-1
-2
-n
-ω
-succ u
-u + v
-max u v
-Type0
-Type1
-Typeω
-Type(ω+1)
-Type u
-Type(max u v)
+u
+record.level
+chooseLevel b
+f x
+max (chooseLevel b) otherLevel
 ```
 
-The derived source spellings mean:
+provided the terms satisfy the ordinary totality and stability rules.
 
-```text
-0          means the standard `zero` value at `TypeLevel`
-1          means the standard `one` value at `TypeLevel`
-n          means the standard nonnegative integer literal at `TypeLevel`
-ω          means the standard `omegaTypeLevel` value
-succ u     means the standard `succ` operation at `TypeLevel`
-u + v      means the standard `+` operation at `TypeLevel`
-max u v    means the standard `max` operation at `TypeLevel`
+Expression lifting and `do` elaboration occur before the level-admissibility judgment is checked.
 
-Type0      means Type 0
-Type1      means Type 1
-Typeω      means Type ω
-Type(ω+1)  means Type (ω + 1)
-```
-
-The spellings `ω`, `Typeω`, and `Type(ω+n)` are reserved universe-level spellings. They are not ordinary identifiers
-and do not require the `unicode-names` feature gate.
-
-`Type u` is a primitive universe family indexed by a solver-level expression `u : TypeLevel`. It is not ordinary
-first-order function application.
-
-The universe solver recognizes resolved semantic operations, not source spellings.
-
-A user-defined function named `succ`, `max`, `+`, or `omegaTypeLevel` is not a solver-level operation merely because it
-has the same rendered name.
-
-A source expression of type `TypeLevel` that does not normalize to the canonical grammar above is rejected with
-diagnostic family:
-
-```text
-kappa.universe.level-expression
-```
-
-and portable alias:
-
-```text
-E_UNIVERSE_LEVEL_EXPRESSION
-```
-
-Examples admitted as universe expressions:
+For example, source syntax morally equivalent to:
 
 ```kappa
-Type0
-Type1
-Typeω
-Type(ω+1)
-Type u
-Type(succ u)
-Type(u + 1)
-Type(max u v)
+!readLevel
 ```
 
-when the `TypeLevel` operations resolve to the compiler-owned standard operations.
-
-The following is not admitted as a universe expression unless `f u` transparently normalizes to the canonical solver
-grammar above:
+inside a larger lifted expression is first elaborated to an ordinary monadic bind:
 
 ```kappa
-Type (f u)
+do
+    let tmp <- readLevel
+    ... tmp ...
 ```
 
-The universe solver is not a general evaluator for arbitrary Kappa programs returning `TypeLevel`.
+A later type occurrence `Type tmp` is checked using the immutable binder `tmp`. There is no separate effectful
+universe-index operation.
 
-`TypeLevel` is not an inductive datatype in portable Kappa v1. It has no source-visible constructors, pattern matching,
-recursor, induction principle, or user-defined eliminator that participates in universe solving. Its portable
-introduction and computation forms are the solver-level expressions listed above and the intrinsic operations of
-§11.1.2.2.
+A mutable current-value facet is not stable in v1 and is not admitted directly in a universe index:
 
-Ordinary compile-time code may bind and pass `TypeLevel` values. Such ordinary use does not make arbitrary functions
-over `TypeLevel` admissible in universe indices.
+```kappa
+do
+    var u = 0
+    pure (Type u)       -- rejected by the existing mutable-value static-position rule
+```
 
-**Universe operation identity.**
+An immutable snapshot may be admitted:
 
-Universe operation recognition is based on resolved semantic identity.
+```kappa
+do
+    var u = 0
+    let u0 = u
+    pure (Type u0)
+```
 
-The following are solver-recognized only when they resolve to the standard prelude declarations and compiler-owned
-`TypeLevel` instances:
+provided the snapshot is otherwise valid in the containing dependent type.
+
+A future extension may admit flow-versioned mutable values such as `VarCurrent(cell, version)` as level terms. Kappa v1
+does not.
+
+The universe family uses the level-admissibility judgment:
+
+```text
+Γ ⊢level u : TypeLevel
+────────────────────────────
+Γ ⊢ Type u : Type (succ u)
+```
+
+A dependent Pi binder records whether its bound variable occurs in a universe-index or level-ordering position in the
+codomain.
+
+Application uses the following rule:
+
+```text
+Γ ⊢ f : (u : TypeLevel) -> B
+Γ ⊢ a : TypeLevel
+Γ ⊢level a : TypeLevel       when B contains a level dependency on u
+────────────────────────────────────────────────────────────────────
+Γ ⊢ f a : B[a/u]
+```
+
+No second source-level `TypeLevel` binder kind is introduced. The level dependency is a checked property of the
+elaborated telescope.
+
+KCore substitution MUST preserve level admissibility:
+
+```text
+Γ, u : TypeLevel ⊢level l : TypeLevel
+Γ ⊢level a : TypeLevel
+──────────────────────────────────────
+Γ ⊢level l[a/u] : TypeLevel
+```
+
+The standard universe operations are ordinary `std.typelevel` declarations.
+
+When a level term is translated into the solver view, the checker decomposes applications whose resolved semantic
+identities are the canonical standard operations:
 
 ```kappa
 zero
 one
 fromInteger
+omega
 succ
 (+)
 max
-compare
-(==)
-(<)
-(<=)
-(>)
-(>=)
 ```
 
-A source declaration, import alias, module alias, local binding, operator declaration, fixity declaration, macro output,
-or generated helper that shadows one of these names does not change the universe solver's meaning of level expressions.
+A stable total term that does not decompose through those operations becomes a rigid neutral atom rather than being
+rejected.
 
-If shadowing causes an expression in universe position to resolve to a nonstandard operation, the expression is rejected
-with `E_UNIVERSE_LEVEL_EXPRESSION` unless it transparently normalizes back to the canonical solver-level grammar.
+The portable solver view is:
+
+```text
+LevelExpr ::=
+    ClosedLevel(Nat omegaCoefficient, Nat finiteRemainder)
+  | RigidAtom(LevelAtomId)
+  | LevelMeta(LevelMetaId)
+  | Add(LevelExpr, LevelExpr)
+  | Max(LevelExpr, LevelExpr)
+
+LevelAtomId ::=
+    LocalLevelBinderId
+  | DeclarationUniverseParameterId
+  | DependentFieldLevelId
+  | ProjectionLevelId
+  | NeutralLevelTermId
+```
+
+`succ x` is represented as `Add(x, ClosedLevel(0, 1))` after constructor normalization.
+
+A `NeutralLevelTermId` contains an alpha-normalized structural digest of the KCore term, resolved global identities, and
+free-variable identities. The digest is computed independently of the enclosing type, the level constraint being solved,
+and any proof object, so its definition is not circular. Two definitionally equal level terms denote the same rigid atom.
+Equal source spelling alone is irrelevant.
 
 Examples:
 
-Accepted:
-
 ```kappa
-type A : Type(max u v) =
-    ...
+opaque let chooseLevel
+    (b : Bool)
+    : TypeLevel =
+    if b then 0 else omega
 
-type B : Type(u + 1) =
-    ...
-
-type C : Type(succ ω) =
-    ...
+chooseLevel b
 ```
 
-when `max`, `+`, and `succ` resolve to the standard compiler-owned `TypeLevel` operations.
+is a valid level term and, while opaque, is represented by one rigid neutral atom.
 
-Rejected:
+The solver does not automatically split every opaque term by unfolding its body. Transparent reduction and ordinary
+branch refinement may expose more structure when the language's existing conversion rules permit it. A user may also
+supply ordinary erased proof evidence about a neutral level term.
 
-```kappa
-let myMax x y = x
-
-type Bad : Type(myMax u v) =
-    ...
-```
-
-unless `myMax` is a transparent alias that reduces to the standard `max` operation.
-
-Rejected:
+For example:
 
 ```kappa
-let (+) x y = x
-
-type Bad : Type(u + v) =
-    ...
+chooseLevelBounded :
+    (b : Bool) ->
+    chooseLevel b < omega + 1
 ```
 
-when this local operator shadows the standard `Add TypeLevel` operation.
+may discharge a bound required by a caller.
 
-The source spelling is not enough. The resolved operation must be the standard solver-recognized operation.
+The compiler recognizes standard operations by resolved semantic identity, never by spelling. Shadowing `+`, `max`,
+`succ`, or `omega` changes ordinary resolution, but an otherwise stable result of type `TypeLevel` remains a valid
+neutral level term.
 
+Explicit and inferred declaration-schema instantiations accept the same level-admissible terms. For example,
+`f.{chooseLevel b}` is valid when `chooseLevel b` is stable and total. The instantiation is static and erased even when
+its level term mentions an immutable runtime-originating value.
+
+Thus this is valid even when `myMax` is opaque:
+
+```kappa
+Type (myMax u v)
+```
+
+The solver treats `myMax u v` as a rigid atom unless transparent reduction or selected evidence exposes additional
+relations.
+
+`E_UNIVERSE_LEVEL_EXPRESSION` is reserved for ill-typed, unstable, non-total, ill-scoped, meta-bearing, or otherwise
+unrepresentable level terms. It is not emitted merely because a term is nonstandard or opaque.
 <!-- types.universes.typing -->
 #### 11.1.2 Universe typing
 
@@ -9742,7 +10452,7 @@ Universe typing is predicative:
 Type u : Type (succ u)
 ```
 
-Here `succ` is the standard prelude operation resolved through the compiler-owned `Successor TypeLevel` instance.
+Here `succ` is the standard prelude operation resolved through the canonical `Successor TypeLevel` instance.
 
 After elaboration, this classifier is represented canonically as:
 
@@ -9825,8 +10535,9 @@ u ≤ v
 
 on the argument's own level `u`. It does not generate equality.
 
-The ordering on `TypeLevel` is the ordinal ordering over canonical solver-level expressions after standard `TypeLevel`
-operations have been resolved and normalized to the intrinsic heads of §11.1.2.2.
+The ordering on `TypeLevel` is the lexicographic ordering of the rigid semantic pairs specified by §11.1.2.4A after
+standard operations have been resolved, admitted neutral terms have become rigid atoms, and constructor syntax has been
+normalized.
 
 In particular, the ordering validates:
 
@@ -9852,10 +10563,10 @@ succ ω ≤ ω
 
 for any level expression `u`.
 
-The occurrences of `succ` and `max` in this subsection refer to the standard compiler-owned `TypeLevel` operations
+The occurrences of `succ` and `max` in this subsection refer to the canonical standard `TypeLevel` operations
 specified by §11.1.2.2.
 
-After elaboration, these operations are represented by the intrinsic heads:
+After elaboration, these operations are represented by the canonical solver heads:
 
 ```text
 __typeLevelSucc
@@ -9872,8 +10583,8 @@ succ u ≤ u
 
 for any level expression `u`.
 
-The ordering relation is decidable for the portable solver-level expression fragment. A conforming solver MUST be
-complete for that fragment: it MUST prove every semantically valid level inequality and reject every invalid one.
+Rigid entailment is decidable for the portable paired QF Presburger theory. A conforming solver MUST prove every
+entailed rigid level inequality and reject or report non-entailment for every satisfiable refutation.
 
 Level assumptions in scope are introduced by erased proof binders whose types are recognized level-comparison
 propositions (§11.1.2.2). Such assumptions are local to their lexical scope.
@@ -9881,111 +10592,172 @@ propositions (§11.1.2.2). Such assumptions are local to their lexical scope.
 <!-- types.universes.level_operations -->
 ##### 11.1.2.2 Type-level operations, comparison, and level bounds
 
-Kappa provides compiler-owned intrinsic operations for `TypeLevel`.
-
-The implementation behaves as if the following intrinsic heads exist:
+The canonical `std.typelevel` module defines actual ordinary opaque declarations with these normative bodies:
 
 ```kappa
-intrinsic __typeLevelZero :
-    TypeLevel
+opaque let typeLevelZero : TypeLevel =
+    Level 0 0
 
-intrinsic __typeLevelOmega :
-    TypeLevel
+opaque let typeLevelOne : TypeLevel =
+    Level 0 1
 
-intrinsic __typeLevelSucc :
-    TypeLevel -> TypeLevel
+opaque let typeLevelOmega : TypeLevel =
+    Level 1 0
 
-intrinsic __typeLevelAdd :
-    TypeLevel -> TypeLevel -> TypeLevel
+opaque let typeLevelFromInteger
+    (n : Nat) : TypeLevel =
+    Level 0 n
 
-intrinsic __typeLevelMax :
-    TypeLevel -> TypeLevel -> TypeLevel
+opaque let typeLevelSucc
+    (x : TypeLevel) : TypeLevel =
+    match x
+    case Level c n ->
+        Level c (n + 1)
 
-intrinsic __compareTypeLevel :
-    TypeLevel -> TypeLevel -> Ordering
+opaque let typeLevelAdd
+    (x : TypeLevel)
+    (y : TypeLevel)
+    : TypeLevel =
+    match (x, y)
+    case (Level xc xn, Level yc yn) ->
+        Level (xc + yc) (xn + yn)
+
+opaque let typeLevelCompare
+    (x : TypeLevel)
+    (y : TypeLevel)
+    : Ordering =
+    match (x, y)
+    case (Level xc xn, Level yc yn) ->
+        match compare xc yc
+        case Less -> Less
+        case Greater -> Greater
+        case Equal -> compare xn yn
+
+opaque let typeLevelMax
+    (x : TypeLevel)
+    (y : TypeLevel)
+    : TypeLevel =
+    match typeLevelCompare x y
+    case Less -> y
+    case Equal -> x
+    case Greater -> x
 ```
 
-These intrinsic heads are solver-owned. They are reducible by the universe solver for solver-level expressions admitted
-by §11.1.1. For open level variables, comparison may remain neutral unless level assumptions in scope force a result.
+The representation denotes:
 
-The standard prelude MUST expose these operations through ordinary standard typeclasses and ordinary standard functions.
+```text
+Level c n = omega * c + n
+```
 
-The compiler-owned prelude evidence for `TypeLevel` includes at least:
+for levels below `omega^2`.
 
-```kappa
+`typeLevelAdd` is the commutative natural/Hessenberg sum on this represented fragment:
+
+```text
+(omega * a + m) + (omega * b + n)
+    = omega * (a + b) + (m + n)
+```
+
+Therefore:
+
+```text
+1 + omega = omega + 1
+omega + omega = omega * 2
+(omega + 1) + omega = omega * 2 + 1
+```
+
+The dot or multiplication sign in mathematical renderings is not the source `Mul TypeLevel` operation. Kappa v1 does
+not provide `Mul TypeLevel`.
+
+The standard instances delegate to these definitions:
+
+```text
 Eq TypeLevel
 Ord TypeLevel
-
 Zero TypeLevel
 One TypeLevel
 FromInteger TypeLevel
-
 Successor TypeLevel
 Add TypeLevel
 Max TypeLevel
 ```
 
-Source `instance` declarations for these `TypeLevel` instances are rejected.
+`FromInteger TypeLevel` accepts nonnegative integer literals only.
 
-The standard instances are observationally defined as:
-
-```kappa
-zero = __typeLevelZero
-
-one = __typeLevelSucc __typeLevelZero
-
-fromInteger n =
-    -- accepted only for nonnegative integer literals
-    __typeLevelSucc applied n times to __typeLevelZero
-
-succ = __typeLevelSucc
-
-add = __typeLevelAdd
-
-max = __typeLevelMax
-
-compare = __compareTypeLevel
-```
-
-The standard source spelling `ω` denotes `__typeLevelOmega`.
-
-The source expression `u + v` uses the ordinary overloaded `+` operator resolved through `Add TypeLevel`.
-
-The source expression `succ u` uses the ordinary overloaded `succ` operation resolved through `Successor TypeLevel`.
-
-The source expression `max u v` uses the ordinary overloaded `max` operation resolved through `Max TypeLevel`.
-
-The standard comparison operators `==`, `<`, `<=`, `>`, and `>=` use the ordinary `Eq TypeLevel` and
-`Ord TypeLevel` instances.
-
-The universe solver recognizes a source expression as a solver-level expression only when the resolved operations are
-these compiler-owned standard `TypeLevel` operations, or transparent aliases reducing to them.
-
-A source expression using an ordinary user function, user instance, shadowed operator, or nonstandard overload is not
-recognized as a solver-level expression merely because it renders as `succ`, `+`, `max`, `<`, or `<=`.
-
-Design note:
-
-The standard prelude may define the rendered implementation of `succ` for `TypeLevel` as:
-
-```kappa
-succ x = x + one
-```
-
-provided normalization for universe checking reduces this expression to the canonical intrinsic head:
+The prelude MUST also provide checked instances and laws for:
 
 ```text
-__typeLevelSucc x
+AdditiveMonoid TypeLevel
+CommutativeAdditiveMonoid TypeLevel
+OrderedAdditive TypeLevel
+JoinSemilattice TypeLevel
 ```
 
-or to the equivalent:
+Required checked theorems include:
+
+```kappa
+typeLevelAddAssoc
+typeLevelAddComm
+typeLevelAddZero
+typeLevelSuccIsAddOne
+typeLevelSuccStrict
+typeLevelLtIffSuccLe
+typeLevelAddMonotone
+typeLevelAddStrictMonotone
+typeLevelMaxAssoc
+typeLevelMaxComm
+typeLevelMaxIdempotent
+typeLevelFiniteBelowOmega
+typeLevelOmegaPlusOmega
+typeLevelOnePlusOmega
+```
+
+The operation bodies are opaque outside `std.typelevel` for ordinary delta reduction.
+
+The universe solver has a certified normalization bridge for the resolved semantic identities of these exact
+declarations and instances.
+
+The bridge MUST be extensionally equivalent to the checked source definitions. It may normalize them while:
+
+* checking an index of `Type`;
+* comparing universe indices;
+* solving universe inequalities;
+* checking cumulativity;
+* checking universe ceilings;
+* checking constructor universe-size obligations.
+
+Recognition is by resolved semantic identity, never by source spelling.
+
+A compiler may lower a standard operation to an intrinsic, constant-fold it, or compile its ordinary body. Runtime,
+compile-time, and solver behavior MUST be extensionally equivalent.
+
+A runtime-reachable intrinsic application must have a backend lowering or be replaced by the ordinary implementation.
+A solver-only intrinsic must not survive to KBackendIR.
+
+<!-- types.universes.bootstrap_versions -->
+##### `TypeLevel` bootstrap and semantic versions
+
+The standard prelude declarations are the source-level authority for `TypeLevel` and its operations.
+
+A compiler may predeclare their canonical semantic identities while bootstrapping the prelude, but it MUST:
+
+1. check the actual source declarations against the required signatures;
+2. check or verify the normative operation bodies and law evidence;
+3. verify that its solver bridge is extensionally equivalent to those declarations;
+4. reject a mismatching bootstrap prelude rather than silently replacing it.
+
+Interfaces, KCoreText modules, caches, level certificates, schema certificates, and semantic hashes record:
 
 ```text
-__typeLevelAdd x (__typeLevelSucc __typeLevelZero)
+typeLevelAlgebraVersion
+levelConstructorNormalizerVersion
+levelRigidEntailmentVersion
+levelPrincipalInferenceVersion
+levelCertificateVersion
 ```
 
-The choice of canonical internal representation is implementation-defined, but a conforming implementation must preserve
-the specified ordinal ordering and predicative universe typing.
+Changing the represented level domain, ordering, addition, maximum, successor, or certificate semantics requires a
+corresponding version change and invalidates incompatible artifacts.
 
 The comparison expressions:
 
@@ -10025,7 +10797,7 @@ means:
 ```
 
 The universe checker recognizes erased proof binders of these forms as local level assumptions when the comparison
-operators resolve to the compiler-owned `Ord TypeLevel` instance:
+operators resolve to the canonical standard `Ord TypeLevel` instance:
 
 ```text
 @0 p : i <  j   introduces  succ i ≤ j
@@ -10083,10 +10855,58 @@ i < i
 A level-comparison proof binder introduces an assumption only in its lexical scope. The assumption does not become a
 global universe constraint and does not escape its binder scope.
 
-The active level-assumption set used for universe checking MUST be satisfiable. If adding a level-comparison proof binder
-would make the active level assumptions inconsistent, a conforming implementation MUST either reject the binder with
-diagnostic family `kappa.universe.constraint` or treat the proof as an ordinary proposition that is not usable as a
-universe-level assumption. It MUST NOT use an inconsistent local level context to justify universe self-containment.
+If adding a recognized level-comparison proof binder makes the active level-assumption context inconsistent, the binder
+is rejected.
+
+A direct or transitive strict cycle, including `i < i`, `i < j` with `j <= i`, or any normalized equivalent, is rejected
+with:
+
+```text
+E_UNIVERSE_SELF_CONTAINMENT
+```
+
+Any other inconsistent recognized level-assumption set is rejected with:
+
+```text
+E_UNIVERSE_CONSTRAINT_UNSATISFIABLE
+```
+
+A conforming implementation MUST NOT retain an inconsistent recognized comparison merely as an ordinary proposition and
+continue universe checking. This rule is deterministic across implementations.
+
+A level-comparison proof may affect universe formation only through the designated universe-proof interface.
+
+Logical explosion from an arbitrary inconsistent proposition context does not establish universe inequalities.
+
+A strict cycle such as `i < i`, directly or transitively, may not justify self-containment.
+
+Every KCore universe-ceiling derivation records the proof or solver certificate that supplied the bound.
+
+Substitution replaces the level term and its bound evidence together.
+
+A recognized comparison proposition may mention any admissible level term, including a neutral atom.
+
+For example:
+
+```kappa
+(@0 p : chooseLevel b < omega + 1)
+```
+
+introduces the ordinary local assumption:
+
+```text
+succ (chooseLevel b) <= omega + 1
+```
+
+where `chooseLevel b` is represented by its rigid neutral atom while opaque.
+
+The solver may prove only consequences entailed for every assignment of unconstrained rigid atoms in the portable level
+semantics. A satisfiable refutation means that the theorem is not entailed by the available level facts. For an opaque
+neutral term, it does not claim that the source definition can realize the displayed abstract countermodel.
+
+Checkpoint verification rechecks the substituted universe derivation.
+
+Subject reduction under local level evidence is a required metatheory obligation for Kappa's trusted core.
 
 Examples:
 
@@ -10125,323 +10945,865 @@ is rejected by §11.1.2.7 and §11.1.2.8.
 <!-- types.universes.bare_type -->
 ##### 11.1.2.3 Bare `Type`
 
-Bare `Type` is not universe-polymorphic.
+Bare `Type` is universe-polymorphic surface syntax.
 
-The source spelling:
+Each source occurrence of:
 
 ```kappa
 Type
 ```
 
-means:
+elaborates initially to:
+
+```text
+Type ?u
+```
+
+where `?u : TypeLevel` is a fresh universe metavariable unless an expected classifier or surrounding constraint already
+determines the level.
+
+The spelling `*` is sugar for the same floating bare-`Type` form.
+
+Explicit universe spellings remain fixed:
 
 ```kappa
 Type0
+Type1
+Type u
+Type(max u v)
+Typeω
 ```
 
-The spelling:
+`Type0` never introduces a universe metavariable.
+
+Two independent bare-`Type` annotations introduce distinct universe metavariables unless ordinary elaboration
+constraints equate them.
+
+A grouped annotation shares one metavariable:
 
 ```kappa
-*
+(A B : Type)
 ```
 
-remains syntactic sugar for bare `Type`, and therefore also means `Type0`.
+Separate annotations are independent initially:
+
+```kappa
+(A : Type) (B : Type)
+```
 
 Universe typing remains predicative:
 
 ```text
-Type  : Type1
-Type1 : Type2
-Type2 : Type3
-...
+Type u : Type (succ u)
 ```
 
-Equivalently:
+A compact renderer may omit inferred universe levels. A verbose renderer MUST expose the solved or generalized levels.
 
-```text
-Type0 : Type1
-Type1 : Type2
-Type2 : Type3
-```
-
-A renderer MUST NOT display:
-
-```text
-Type : Type
-```
-
-as a compact judgment for ordinary checked Kappa code.
-
-If a renderer omits the `0` in `Type0`, it MUST still preserve the predicative classifier in verbose output:
-
-```text
-Type : Type1
-```
-
-The source forms:
+Compact:
 
 ```kappa
-Type1
-Type2
-Typeω
-Type(ω+1)
-Type u
-Type(max u v)
+id : (A : Type) -> A -> A
 ```
 
-remain explicit universe forms governed by §§11.1.1, 11.1.2, 11.1.2.1, and 11.1.2.2. They are not introduced by bare
-`Type`.
-
-Consequences:
-
-```kappa
-Type       -- Type0
-Type0      -- same as Type
-Type1      -- the next predicative universe
-Typeω      -- explicit limit universe, not the meaning of bare Type
-```
-
-Ordinary polymorphic programming over `Type` is not expressed by hidden universe metavariables. It is expressed by
-parametric type witnesses (§11.1.2.3A).
-
-<!-- types.universes.parametric_type_witnesses -->
-##### 11.1.2.3A Parametric type witnesses
-
-Kappa distinguishes two capabilities for expressions whose apparent classifier is a universe:
+Verbose:
 
 ```text
-ordinary type-code value
-parametric type witness
+id.{u} : (parametric 0 A : Type u) -> A -> A
 ```
 
-An **ordinary type-code value at level ρ** is an inspectable compile-time value classified by:
+A renderer MUST NOT interpret compact `Type : Type` as self-containment. Verbose output must reveal the distinct
+predicative levels.
+
+<!-- types.universes.declaration_parameters -->
+##### 11.1.2.3A Hidden declaration universe parameters
+
+At a declaration generalization boundary, an unsolved universe metavariable that occurs in the declaration's
+user-observable type is generalized into a hidden declaration universe parameter.
+
+A hidden declaration universe parameter is part of the semantic declaration telescope.
+
+It is not:
+
+* an ordinary source binder;
+* an ordinary Pi over `TypeLevel`;
+* a quantity-`0` term argument;
+* a runtime argument;
+* a first-class value;
+* a source-level universe-schema quantifier.
+
+This specification renders hidden declaration universe parameters as:
 
 ```text
-Type ρ
+name.{u, v}
 ```
 
-A **parametric type witness at level ρ** is an erased abstract type witness classified for type-position use by:
+The notation is used by verbose diagnostics, interfaces, KCoreText, and tooling. Kappa v1 does not require source syntax
+for writing a hidden schema. §11.1.2.3A.1 defines the optional explicit source form.
 
-```text
-Type ρ
-```
+Generalization rules:
 
-but it is not an ordinary inspectable value of type `Type ρ`.
-
-A binder introduces a parametric type witness when all of the following hold:
-
-* the binder quantity is exactly `0`;
-* the binder annotation normalizes to a universe expression `Type ρ`, including bare `Type`, `Type0`, `Type1`,
-  `Typeω`, or `Type u`; and
-* the binder is not inside an implementation-defined unsafe extension that explicitly changes this rule.
-
-Examples of parametric binders:
-
-```kappa
-(0 A : Type) -> A -> A
-
-(@0 A : Type) -> A -> A
-
-(0 T : Type3) -> Int
-
-(0 U : Typeω) -> Int
-
-forall A. A -> A
-
-forall (A : Type). A -> A
-```
-
-The following introduces an ordinary type-code binder, not a parametric type witness:
-
-```kappa
-(A : Type) -> B
-```
-
-The distinction is capability-based. It is not merely runtime erasure.
-
-The following one-way use is permitted:
-
-```text
-ordinary type-code value at level ρ  ->  parametric type witness at level κ
-```
-
-when the universe solver proves:
-
-```text
-ρ ≤ κ
-```
-
-An ordinary type-code value may instantiate a compatible `0 Type κ` binder.
-
-The reverse direction is forbidden:
-
-```text
-parametric type witness at level ρ  ->  ordinary type-code value at level ρ
-```
-
-A parametric type witness may be used:
-
-* as a type expression;
-* as an argument to another compatible `0 Type κ` binder;
-* as a parameter to type constructors;
-* in trait obligations;
-* in associated type and associated member types;
-* in equality propositions;
-* in dependent result types;
-* in record fields, package fields, data constructor fields, and pattern matches, provided its parametric capability is
-  preserved;
-* in generated syntax that is rechecked under the same capability rules.
-
-A parametric type witness may not be used:
-
-* as an ordinary term of type `Type ρ`;
-* as the result of a term whose declared result type is `Type ρ`;
-* as an argument to a nonzero or unrestricted `(A : Type ρ)` binder;
-* as a field value for an ordinary `(A : Type ρ)` field;
-* as the body of an ordinary type-code-valued static object;
-* as the RHS of a declaration that reifies to an ordinary static-object term facet of type `Type ρ`;
-* as input to typecase, type reflection, static-object lookup, or semantic reflection APIs that demand ordinary
-  type-code capability;
-* as a constructor argument, record field, package field, associated member, or generated term that would expose it
-  without its parametric capability.
-
-If a program attempts such a promotion, compilation fails with diagnostic family:
-
-```text
-kappa.type.parametric-promotion
-```
-
-and portable alias:
-
-```text
-E_PARAMETRIC_TYPE_PROMOTION
-```
+* Generalize every unsolved universe metavariable that occurs in an exported, stored, reified, interface-visible, or
+  otherwise user-observable declaration type.
+* Retain and normalize constraints among generalized universe parameters.
+* Order parameters by deterministic first occurrence in the fully elaborated declaration type.
+* Generalize once per semantic declaration SCC.
+* Instantiate declaration universe parameters freshly at every declaration reference before ordinary unification and
+  cumulativity.
+* Different uses of one declaration may instantiate its universe parameters differently.
+* Declaration universe parameters and constraints participate in interface identity, semantic hashing, instance-head
+  identity, KCore identity, and tooling output.
+* Generalization MUST NOT turn a declaration universe parameter into a term-level `(u : TypeLevel)` binder.
 
 Examples:
 
 ```kappa
-id :
-    (0 A : Type) -> A -> A
-
-let id A x =
-    x
+id : (A : Type) -> A -> A
+let id A x = x
 ```
 
-is accepted.
+elaborates schematically to:
 
-```kappa
-bad :
-    (0 A : Type) -> Type
-
-let bad A =
-    A
+```text
+id.{u} : (parametric 0 A : Type u) -> A -> A
 ```
 
-is rejected, because the body attempts to return the parametric witness `A` as an ordinary value of type `Type`.
+```kappa
+const : (A : Type) -> (B : Type) -> A -> B -> A
+```
 
-This is accepted:
+elaborates schematically to:
+
+```text
+const.{u, v} :
+    (parametric 0 A : Type u) ->
+    (parametric 0 B : Type v) ->
+    A -> B -> A
+```
+
+<!-- types.universes.constraint_telescope -->
+##### Declaration-universe constraint proof telescope
+
+There is one source and core mechanism for declaration-universe constraints: erased proof binders.
+
+A user may write a bound directly:
 
 ```kappa
-useParam :
-    (0 A : Type) ->
-    ((0 B : Type) -> B -> B) ->
+expect let liftCode.{u, v}
+    (@0 p : u <= v)
+    (ordinary 0 A : Type u)
+    : Type v
+```
+
+When elaboration infers a declaration-universe constraint not already represented by an equivalent user binder, it
+inserts an anonymous implicit erased binder immediately after the declaration-universe telescope and before the
+user-written term telescope:
+
+```kappa
+(@0 __universeConstraint0 : u <= v)
+```
+
+Generated constraint binders are ordered by deterministic first occurrence of their normalized propositions in the
+fully elaborated declaration signature, with duplicate propositions removed by semantic level equality.
+
+At a declaration reference:
+
+* schema levels are instantiated first;
+* generated and user-written implicit constraint binders are solved by ordinary level-proof insertion;
+* explicit user-written term-level `TypeLevel` arguments are never supplied by schema instantiation;
+* the resulting application spine records every proof argument explicitly in KCore.
+
+The interface records:
+
+* each normalized comparison proposition;
+* its telescope position;
+* its rigid dependencies;
+* whether it was source-written or generated;
+* the solver and algebra versions required to check it.
+
+The proposition participates in interface and semantic identity. The arbitrary identity of one proof object does not.
+
+For nominal families, constraint proof binders belong to the complete family telescope and therefore participate in full
+saturation and schema-action alignment. They erase at runtime and do not alter representation.
+
+<!-- types.universes.explicit_declaration_schemas -->
+##### 11.1.2.3A.1 Explicit declaration universe schemas
+
+A declaration may expose its declaration universe telescope explicitly.
+
+Surface grammar:
+
+```text
+universeSchema ::=
+    '.{' universeSchemaParam (',' universeSchemaParam)* '}'
+
+universeSchemaParam ::=
+    universeVariance? ident
+
+universeVariance ::=
+    'invariant'
+  | 'covariant'
+  | 'irrelevant'
+
+universeInstantiation ::=
+    '.{' levelExpr (',' levelExpr)* '}'
+```
+
+The declaration schema appears immediately after the declared name and before ordinary term parameters.
+
+Examples:
+
+```kappa
+data Box.{u} (A : Type u) : Type u =
+    Box (value : A)
+
+data (=).{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+
+    refl : x = x
+
+type Endo.{u} (A : Type u) : Type u =
     A -> A
 
-let useParam A f x =
-    f A x
+trait Functor.{u, v}
+    (parametric 0 F : (A : Type u) -> Type v) =
+    ...
 ```
 
-because `A` is passed to another compatible `0 Type κ` binder.
+The three universe-variance words are contextual keywords only inside declaration universe schemas and KCoreText
+universe-role positions.
 
-This is rejected:
+Examples with explicit roles:
 
 ```kappa
-useCode :
-    (0 A : Type) ->
-    ((B : Type) -> B -> B) ->
-    A -> A
+data Phantom.{irrelevant u} : Type0 =
+    Phantom
 
-let useCode A f x =
-    f A x
+data StoredCode.{covariant u} : Type (succ u) =
+    StoredCode (ordinary 0 T : Type u)
+
+data Consumer.{invariant u} : Type (succ u) =
+    Consumer (run : (ordinary 0 T : Type u) -> Int)
 ```
 
-because `f` demands an ordinary type-code argument.
+A schema parameter with no written role is inferred under §11.1.2.3A.2.
 
-Higher-universe parametric witnesses follow the same rule.
+A role annotation is accepted only on a declaration that elaborates to a nominal signature block, including:
 
-Accepted:
+* `data` and `opaque data` declarations;
+* nominal record or variant sugar elaborating to `data`;
+* trait declarations when their evidence type is represented by a nominal signature block;
+* future extension declarations that explicitly adopt the nominal-signature contract of §10.5.
+
+A role annotation on an ordinary term, transparent type alias, effect declaration without a nominal evidence family,
+projection, or other non-nominal declaration is rejected with `E_UNIVERSE_VARIANCE_NOT_APPLICABLE`.
+
+Unannotated universe parameters remain valid on every declaration kind that already admits an explicit schema.
+
+A role controls only cumulative comparison between instances of the same nominal family. It does not imply:
+
+* runtime erasure;
+* quantity `0`;
+* parametric observation mode;
+* proof irrelevance;
+* term-parameter variance;
+* representation polymorphism;
+* positivity of recursive occurrences.
+
+In particular, `irrelevant` means only that no relation between the corresponding source and target universe levels is
+required by the family certificate. It does not mean that the universe parameter is absent from interface identity or
+that values mentioning the parameter may be observed ordinarily.
+
+A declaration-universe parameter:
+
+* is rigid within the declaration;
+* is not an ordinary `TypeLevel` term binder;
+* is not a runtime argument;
+* is not captured by closures;
+* may appear in `Type u`, `succ u`, `max u v`, standard `TypeLevel` arithmetic used in universe expressions, and
+  recognized erased level-comparison propositions;
+* may appear in explicit cumulative-lift evidence;
+* participates in declaration interface identity, semantic hashing, KCore identity, and instance-head identity.
+
+A declaration-universe parameter may not be:
+
+* returned as a `TypeLevel` value;
+* stored in an ordinary record or constructor field;
+* passed to an ordinary runtime `TypeLevel` binder;
+* pattern matched;
+* reflected as runtime data.
+
+Such a use is rejected with `E_UNIVERSE_SCHEMA_SCOPE`.
+
+If a declaration has an explicit universe schema, the schema is complete. Every unsolved universe metavariable that
+would otherwise need declaration-level generalization must be solved from the explicit schema and generated constraints.
+The implementation MUST NOT silently append hidden parameters.
+
+If a declaration omits the schema, hidden declaration universe inference remains available under §11.1.2.4B.
+
+At a reference site, an explicit instantiation supplies one level expression per schema parameter:
 
 ```kappa
-largeParam :
-    (0 T : Type3) ->
-    ((0 U : Type3) -> Int) ->
-    Int
-
-let largeParam T f =
-    f T
+Box.{0} Int
+Endo.{3} T
 ```
 
-Rejected:
+If the instantiation is omitted, elaboration creates fresh universe metavariables and solves them by ordinary expected
+classifier, unification, and cumulativity constraints.
+
+An explicit instantiation with the wrong arity is rejected with `E_UNIVERSE_SCHEMA_ARITY_MISMATCH`.
+
+Declaration universe parameters are alpha-bound. Their source names do not affect interface or semantic identity; their
+order and normalized constraints do.
+
+Constraints among schema parameters are ordinary erased proof binders. Source-written `@0` comparison binders and
+compiler-generated anonymous comparison binders have the same KCore meaning. Kappa introduces no second constraint
+language.
+
+`universeSchema?` appears immediately after the declared name in every declaration form that may introduce a semantic
+object, including term signatures and definitions, type aliases, data declarations, trait declarations, instance
+declarations that generalize levels, effect declarations, projection declarations, module-signature members, and local
+function or type declarations.
+
+The relevant productions are amended schematically as follows:
+
+```text
+dataDecl   ::= modifiers? 'data' dataName universeSchema? dataParam* ':' type ...
+typeDecl   ::= modifiers? 'type' typeName universeSchema? typeParam* ...
+traitDecl  ::= modifiers? 'trait' traitName universeSchema? traitParam* ...
+effectDecl ::= modifiers? 'effect' effectName universeSchema? effectParam* ...
+termSig    ::= termName universeSchema? ':' type
+termDef    ::= 'let' termName universeSchema? binder* ...
+```
+
+The signature and definition of one declaration MUST expose alpha-equivalent universe schemas.
+
+<!-- types.universes.schema_reification -->
+##### Reifying declaration schemas as bounded first-class functions
+
+Declaration-universe polymorphism remains declaration-level when no single first-class type can classify every
+instantiation.
+
+When an expected type supplies a bounded first-class level telescope, elaboration may eta-expand a declaration schema.
+
+For example, an expected type:
 
 ```kappa
-badLargePromote :
-    (0 T : Type3) ->
-    Type3
-
-let badLargePromote T =
-    T
+(u : TypeLevel) ->
+(@0 p : u < k) ->
+Result u
 ```
 
-because `T` is a parametric type witness at level `3`, not an ordinary inspectable type-code value at level `3`.
-
-Rejected:
+may reify `f.{u}` as:
 
 ```kappa
-badLevelDrop :
-    (0 T : Type3) ->
-    ((0 U : Type) -> Int) ->
-    Int
-
-let badLevelDrop T f =
-    f T
+\ (u : TypeLevel) (@0 p : u < k) ->
+    f.{u}
 ```
 
-unless the solver can prove `3 ≤ 0`, which it cannot.
+provided every schema constraint is discharged by `p` or the surrounding context.
 
-Accepted:
+Rules:
+
+* reification is triggered only by a known expected first-class polymorphic type;
+* generated level lambdas and proof binders are explicit in KCore;
+* hidden declaration-universe arguments may be instantiated;
+* implicit erased proof arguments may be inserted;
+* an omitted explicit term-level `TypeLevel` argument is never supplied;
+* without an expected polymorphic type, a declaration-polymorphic value is instantiated once at the use site;
+* the transformation preserves observation mode, quantity, and runtime representation.
+
+Thus a source function:
 
 ```kappa
-largeAsLarger :
-    (0 T : Type3) ->
-    ((0 U : Type4) -> Int) ->
-    Int
-
-let largeAsLarger T f =
-    f T
+g : (u : TypeLevel) -> T u
 ```
 
-because `3 ≤ 4`.
+is not applied merely by writing `g`. Explicit term arguments remain explicit.
 
-Parametric type witnesses may participate in trait search. If behavior depends on trait evidence, that dependency must
-appear in the elaborated term as ordinary explicit or implicit evidence.
+<!-- types.universes.nominal_variance -->
+##### 11.1.2.3A.2 Cumulative nominal families and declaration-universe variance
 
-For example:
+A declaration-universe parameter of a nominal family has one role:
+
+```text
+UniverseVariance ::= invariant | covariant | irrelevant
+```
+
+Roles are ordered from least to most permissive:
+
+```text
+invariant < covariant < irrelevant
+```
+
+For one schema parameter with source level `a` and target level `b`, define:
+
+```text
+a <=[invariant] b   iff   a ≡ b
+
+a <=[covariant] b   iff   a <= b
+
+a <=[irrelevant] b  always
+```
+
+Here `≡` is normalized definitional equality of universe-level expressions and `<=` is the checked universe ordering.
+
+For a role vector `r̄` and equally sized universe instances `ā` and `b̄`:
+
+```text
+ā <=[r̄] b̄
+```
+
+holds pointwise.
+
+Both `ā` and `b̄` must independently satisfy the declaration's normalized universe-schema constraints. An irrelevant
+role does not waive those declaration constraints.
+
+There is no contravariant universe role in Kappa v1. Any occurrence that would require reversal of a universe
+inequality, contravariant function-domain subtyping, a wrapper function, a traversal, or another non-identity runtime
+map forces the affected role to `invariant`.
+
+A role annotation is a user-requested upper bound on permissiveness. Let `inferred` be the role certified by the checker
+and `written` the explicit role:
+
+```text
+written is accepted iff written <= inferred
+```
+
+Thus an inferred `irrelevant` role may be tightened to `covariant` or `invariant`; an inferred `covariant` role may be
+tightened to `invariant`; an inferred `invariant` role may not be loosened.
+
+The effective role is the explicit accepted role when present, otherwise the inferred role.
+
+Verbose renderers MUST show effective roles in nominal declaration schemas, including inferred roles. For example:
+
+```text
+List.{irrelevant u}
+TypeBelow.{covariant u}
+Consumer.{invariant u}
+```
+
+Compact source-like renderings MAY omit inferred role words when doing so cannot hide the cause of a diagnostic or a
+semantic-identity difference.
+
+Every nominal family has a checked effective role vector, including a family whose vector is entirely invariant.
+All-invariant is the conservative fallback and requires no cross-instance cumulativity.
+
+<!-- types.universes.nominal_variance.saturation -->
+###### Fully saturated family applications
+
+Cross-instance nominal-family cumulativity applies only to a fully saturated application of the family head.
+
+A family application is fully saturated when every binder of the declared data-family or nominal-family term telescope
+has been supplied, including explicit, implicit, erased, parametric, and ordinary binders.
+
+Kappa has no parameter/index partition. Universe variance does not infer variance for family term arguments.
+
+To relate:
+
+```text
+D.{ā} x̄
+D.{b̄} ȳ
+```
+
+all of the following are required:
+
+1. `D` is the same resolved nominal declaration in both types;
+2. both applications are fully saturated;
+3. `ā <=[roles(D)] b̄`;
+4. the declaration constraints hold at both instances;
+5. the family arguments align left-to-right under the family telescope;
+6. the checked nominal-signature action certificate for `D` is available.
+
+Family-argument alignment rechecks the same source argument term against the corresponding target binder after earlier
+aligned arguments have been substituted. It may insert only:
+
+* ordinary definitional conversion;
+* classifier-only `universeLift` nodes;
+* recursively certified `schemaLift` nodes for fully saturated nominal family arguments.
+
+It does not invoke user coercions, trait search, function extensionality, propositional equality, arbitrary mapping,
+container traversal, or general subtyping.
+
+If alignment succeeds, the target family arguments are the canonical rechecked arguments produced by this process.
+
+A partially applied family or constructor is never directly related by universe variance. Surface elaboration MAY
+eta-expand a partial application and insert lifts only after the nominal result becomes fully saturated. Such
+eta-expansion must be explicit in KCore and must preserve observation mode, quantity, and runtime behavior.
+
+<!-- types.universes.nominal_variance.not_judgmental_equality -->
+###### Cumulativity is not judgmental equality
+
+Different universe instances related by `covariant` or `irrelevant` roles are not made judgmentally equal merely by the
+role declaration.
+
+Surface Kappa may insert cumulative subsumption implicitly, but KCore represents it with `schemaLift` (§30.2.1B).
+
+This applies even to `irrelevant` roles. `irrelevant` removes the cross-instance level obligation; it does not erase the
+explicit lift from checked KCore.
+
+This choice keeps Kappa conversion smaller than role-sensitive convertibility and ensures every nominal cross-instance
+step remains auditable, hashable, and independently checkable.
+
+<!-- types.generalization.declaration_boundaries -->
+##### Declaration generalization boundaries
+
+Fresh implicit generalization occurs only at semantic declaration boundaries.
+
+Declaration boundaries include:
+
+* top-level term definitions and signatures;
+* local `let` term declarations;
+* local type declarations and aliases;
+* trait, data, effect, projection, and instance declarations where their ordinary rules permit generalization;
+* one complete top-level or local recursive declaration SCC.
+
+The following binders are not declaration generalization boundaries:
+
+* lambda parameters;
+* constructor and pattern binders;
+* match branch binders;
+* record destructuring binders;
+* monadic `<-` binders;
+* handler clause binders;
+* comprehension binders;
+* ordinary function application.
+
+A `<-` binder is introduced by ordinary elaboration of `bind`. The action is instantiated before the bound value exists.
+No new outer quantifier is introduced around that value.
+
+Existing polymorphism is preserved.
+
+If:
+
+```text
+Γ ⊢ foo : forall a. F a
+```
+
+then:
 
 ```kappa
-show :
-    (0 A : Type) ->
-    Show A =>
-    A ->
-    String
+let boo = foo
 ```
 
-is parametric in `A` relative to the explicit `Show A` evidence. The witness `A` alone does not provide reflection,
-typecase, or ordinary type-code capability.
+may bind `boo` at the same polymorphic type. This does not invent or move a quantifier.
 
-A trait such as `Typeable`, `Generic`, `ShapeOf`, or equivalent reflection evidence is permitted only as ordinary
-evidence. Its instance declarations and member definitions are checked by the same parametric capability rules as all
-other code. Such evidence may provide runtime or compile-time representation values when its declared members say so,
-but no standard rule converts a parametric type witness itself into an ordinary type-code value.
+Fresh declaration generalization proceeds as follows:
+
+1. Infer the declaration body at a type containing candidate metavariables.
+2. Select candidates that:
+   * are not free in the surrounding typing environment;
+   * occur in a classifier admitted for declaration generalization;
+   * are not fixed by an expected monomorphic signature;
+   * are not blocked by an unsolved higher-priority obligation.
+3. Replace selected candidates by fresh rigid variables with `parametric` observation mode.
+4. Recheck the complete declaration body or declaration SCC under those rigid variables.
+5. Require that no selected variable occurs in the body's ordinary-observation dependency set.
+6. Abstract the selected variables only at the outer declaration boundary.
+7. For universe candidates, create hidden or explicit declaration-universe parameters and generated erased constraint
+   binders under §§11.1.2.3A and 11.1.2.3A.1.
+
+Schematically:
+
+```text
+Γ, parametric a1, ..., an ⊢ rhs : T[a1, ..., an] ▷ D
+{a1, ..., an} ∩ FV(Γ) = {}
+{a1, ..., an} ∩ D = {}
+────────────────────────────────────────────────────────
+Γ ⊢ declaration x = rhs
+    with x : forall a1 ... an. T[a1, ..., an]
+```
+
+Universe variables are abstracted in the declaration-universe telescope rather than as ordinary term-level `forall`
+binders.
+
+A candidate that fails rigid parametric rechecking is not silently widened to ordinary observation. The declaration is
+kept monomorphic when an expected monomorphic type fixes it; otherwise it is rejected with
+`E_GENERALIZATION_PARAMETRIC_ESCAPE`.
+
+Local recursive declarations generalize once per local SCC. Outer rigid variables remain rigid and are not generalized
+again. Every use outside the SCC freshly instantiates the local declaration telescope.
+
+The generalization rule is independent of whether the declaration body syntactically looks like a value, constructor,
+lambda, monadic action, lazy value, or foreign call. Soundness comes from the declaration boundary, the free-variable
+condition, and rigid parametric rechecking, not from a blacklist of suspicious nouns.
+
+<!-- types.generalization.no_quantifier_commutation -->
+##### Generalization does not commute quantifiers through type constructors
+
+Declaration generalization changes:
+
+```text
+T[?a]
+```
+
+into an outer abstraction:
+
+```text
+forall a. T[a]
+```
+
+It does not transform:
+
+```text
+forall a. G (F a)
+```
+
+into:
+
+```text
+G (forall a. F a)
+```
+
+and does not perform the reverse transformation.
+
+Those types may be related only through explicit ordinary evidence supplied by the relevant type constructor, such as
+`PreservesParametricForall` (§14.1).
+
+<!-- types.universes.recursive_schemas -->
+##### Recursive declaration-universe schemas
+
+Kappa distinguishes:
+
+```text
+first-class recursion over `(u : TypeLevel)`
+```
+
+from:
+
+```text
+polymorphic recursion through a declaration schema `f.{u}`.
+```
+
+A first-class `TypeLevel` parameter is an ordinary term parameter. Recursive calls may increase, decrease, or otherwise
+change that parameter when the ordinary type checker and termination checker accept the call.
+
+For a recursive declaration SCC with current rigid universe instance:
+
+```text
+.{u1, ..., un}
+```
+
+an internal recursive reference at:
+
+```text
+.{v1, ..., vn}
+```
+
+is valid in Kappa v1 only when the checker proves pointwise:
+
+```text
+v1 <= u1
+...
+vn <= un
+```
+
+Rules:
+
+* an identity recursive instantiation may omit `.{...}`;
+* every non-identity recursive instantiation must be written explicitly;
+* every SCC containing a non-identity recursive instantiation must have complete explicit recursive signatures and
+  explicit declaration-universe schemas;
+* recursive schema instantiations are not inferred from an expected result type;
+* required `universeLift` and `schemaLift` nodes remain explicit in KCore;
+* an upward or incomparable recursive schema instance is rejected with `E_UNIVERSE_RECURSIVE_SCHEMA_INCREASE`;
+* a non-identity implicit instance or non-identity call without complete signatures is rejected with
+  `E_UNIVERSE_RECURSIVE_SCHEMA_IMPLICIT`.
+
+The pointwise `<=` restriction is a typing rule, not a termination proof.
+
+A call at the same schema instance still requires ordinary structural, size-change, sized, or well-founded descent.
+
+A strict schema decrease:
+
+```text
+vi < ui
+```
+
+may contribute a static size-change `<` edge because the standard `TypeLevel` ordering is well founded on the admitted
+level domain.
+
+For a recursive SCC, the size-change graph may include declaration-universe parameters as static rows and columns.
+Every accepted cycle must still contain an ordinary or static strict decrease under the existing termination rules.
+
+Kappa v1 does not admit an upward recursive declaration-schema call even when another runtime argument decreases.
+A future explicit polymorphic-recursion extension may do so only with complete signatures, explicit schema arguments,
+and a separately checked well-founded measure. It is not inferred from ordinary `.{u}` syntax.
+
+<!-- types.universes.parametric_observation -->
+##### 11.1.2.3B Parametric kinds and observation mode
+
+Kappa tracks quantity and observation mode independently.
+
+Observation modes are:
+
+```text
+ordinary
+parametric
+```
+
+`ordinary` permits every observation otherwise allowed by the value's type, phase, access mode, and available evidence.
+
+`parametric` permits the value to influence typing parametrically but forbids reifying, returning, storing, or passing
+it as an ordinary-observable value of the same classifier.
+
+There is one-way observation subsumption:
+
+```text
+ordinary -> parametric
+```
+
+An ordinary value may be used where a parametric value is expected.
+
+There is no implicit reverse subsumption:
+
+```text
+parametric -/-> ordinary
+```
+
+Quantity and observation mode are distinct:
+
+* quantity controls runtime demand, copying, dropping, and erasure;
+* observation mode controls static observability and reification;
+* a parametric value is not erased merely because it is parametric;
+* a quantity-`0` value is not automatically parametric.
+
+A **parametric kind** is generated by:
+
+```text
+paramKind ::=
+    Type u
+  | (parametric 0 x : paramKind) -> paramKind
+```
+
+Implicit parametric binders are admitted in the same grammar.
+
+Examples:
+
+```kappa
+Type
+Type3
+(parametric 0 A : Type) -> Type
+(parametric 0 A : Type) -> (parametric 0 B : Type) -> Type
+(parametric 0 F : (parametric 0 A : Type) -> Type) -> Type
+```
+
+The following is not a parametric kind in Kappa v1:
+
+```kappa
+(n : Nat) -> Type
+```
+
+Explicit `parametric` observation is nevertheless legal for every well-formed binder domain. Parametric-kind
+recognition controls defaulting and participates in type-former formation; observation mode alone does not select an
+impredicative formation rule.
+
+A value bound parametrically at classifier `K` is a **parametric static witness at K**.
+
+Base example:
+
+```kappa
+(parametric 0 A : Type u)
+```
+
+Higher-kinded example:
+
+```kappa
+(parametric 0 m : (parametric 0 A : Type u) -> Type v)
+```
+
+Parametric application propagates according to the dependency calculus of §30.2.0.
+
+If:
+
+```text
+f :parametric (parametric 0 x : K1) -> K2
+```
+
+and `a` validly instantiates `x`, then the dependency on `a` is retained when `x` occurs in `K2` or `K2` normalizes to
+a parametric kind. In that case:
+
+```text
+f a :parametric K2[a/x]
+```
+
+Partial application preserves the residual parametric kind. A genuinely constant function such as `forall A. Int` may
+return an ordinary `Int` because its result does not depend on `A`.
+
+Parametric positions include:
+
+* type expressions;
+* arguments to parametric binders;
+* parametric fields and constructor arguments;
+* trait goals and associated types that preserve the dependency;
+* dependent result types;
+* aliases, projections, patterns, and applications whose result remains parametric;
+* equality propositions whose carrier formation is independently well-formed;
+* generated syntax checked under the same rules.
+
+Ordinary-observation positions include:
+
+* returning a type or type former as an ordinary universe value;
+* storing it in an ordinary field;
+* passing it to an ordinary binder;
+* constructing an ordinary static-object facet from it;
+* reflection, typecase, or ordinary static-object lookup not justified by explicit evidence.
+
+Trait evidence may provide observations explicitly.
+
+A declaration constrained by `Typeable A`, `Generic A`, or equivalent evidence is parametric in `A` relative to the
+evidence it receives. The witness `A` alone does not provide those observations.
+
+Examples:
+
+```kappa
+id : (A : Type) -> A -> A
+```
+
+uses the default `parametric 0` mode for `A`.
+
+```kappa
+bad : (A : Type) -> Type
+let bad A = A
+```
+
+is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
+
+```kappa
+chooseType : Bool -> Type
+let chooseType b = if b then Int else String
+```
+
+is accepted. It has no type binder; it returns an ordinary type-code value.
+
+```kappa
+arrowCode :
+    (ordinary 0 A : Type) ->
+    (ordinary 0 B : Type) ->
+    Type
+
+let arrowCode A B =
+    A -> B
+```
+
+is accepted. `A` and `B` are erased at runtime but remain ordinary-observable type-code values statically.
+
+```kappa
+type Packed =
+    (A : Type, value : A)
+```
+
+uses a default parametric field `A` and may project `A` only parametrically.
+
+```kappa
+type Structure =
+    (ordinary 0 Carrier : Type,
+     operation : Carrier -> Carrier)
+```
+
+stores an ordinary-observable carrier code.
 
 <!-- types.universes.inference -->
 ##### 11.1.2.4 Universe inference
@@ -10450,47 +11812,40 @@ Elaboration generates universe constraints from explicit universe forms, ordinar
 cumulativity, constructor-size checking (§10.4.1), implicit insertion, unification, and explicit level-comparison proof
 evidence.
 
-Bare `Type` does not introduce a fresh universe metavariable. It means `Type0`.
+Bare `Type` introduces fresh universe metavariables under §11.1.2.3.
 
-Universe metavariables arise only from explicit universe metavariable syntax, implementation-internal inference for
-explicit higher-universe forms, or rules that this specification explicitly says introduce a universe metavariable.
+Universe metavariables are solved by ordinary universe constraints and definitional equality of admitted level terms.
 
-Universe inference may use only canonical solver-level expressions.
+At a declaration generalization boundary, remaining universe metavariables in the generalized type become hidden
+declaration universe parameters under §11.1.2.3A.
 
-A source expression of type `TypeLevel` may contribute to a universe constraint only after it normalizes to the canonical
-level grammar of §11.1.1.
+A declaration universe parameter is instantiated freshly at every declaration reference.
 
-Normalization for this purpose recognizes the compiler-owned standard `TypeLevel` instances of:
+A first-class term-level binder:
 
 ```kappa
-FromInteger
-Zero
-One
-Successor
-Add
-Max
-Eq
-Ord
+(u : TypeLevel) -> T
 ```
 
-and transparent aliases reducing to those operations.
+is not interchangeable with declaration universe polymorphism.
 
-Normalization for universe inference does not unfold arbitrary user code, user instances, shadowed prelude names, or
-nonstandard overloads merely because they return `TypeLevel`.
+Erasing a term-level `TypeLevel` argument does not turn it into a declaration universe parameter and does not supply a
+universe ceiling.
 
-If a source expression cannot be normalized to canonical solver-level form, elaboration rejects it with diagnostic
-family:
+Universe inference may use any term satisfying the level-admissibility judgment of §11.1.1.
 
-```text
-kappa.universe.level-expression
-```
+Before solving, elaboration converts each admitted term into the solver view:
 
-and portable alias:
+* canonical standard `zero`, `omega`, `succ`, `+`, and `max` applications are decomposed;
+* closed standard operations are evaluated;
+* transparent ordinary reduction may expose additional standard structure;
+* every remaining stable total neutral term becomes a rigid atom;
+* inference metavariables remain `LevelMeta` nodes until solved or generalized.
 
-```text
-E_UNIVERSE_LEVEL_EXPRESSION
-```
+An opaque or user-defined term of type `TypeLevel` is not unfolded merely to improve solver precision.
 
+Failure to prove a required relation involving a neutral atom is an unsolved universe constraint, not an invalid level
+expression.
 Explicit universe variables introduced by ordinary `TypeLevel` binders participate in the same constraint solving.
 
 Occurrences of `Type u` share exactly the same user-written universe variable rather than introducing fresh
@@ -10520,73 +11875,305 @@ otherwise it MUST expose `E_UNIVERSE_CONSTRAINT_UNSATISFIABLE`.
 Unconstrained or underconstrained universe metavariables follow the defaulting and generalization discipline of
 §11.1.3.
 
+<!-- types.universes.level_solver -->
+##### 11.1.2.4A Level constructor normalization and rigid entailment
+
+Kappa separates:
+
+```text
+1. deterministic constructor normalization;
+2. exact rigid semantic entailment;
+3. assignable universe-metavariable inference.
+```
+
+No one layer is claimed to be a complete replacement for either of the others.
+
+<!-- types.universes.level_solver.constructor_normal_form -->
+###### Stored constructor normal form
+
+After level-admissibility checking and translation to the solver view, constructor normalization produces:
+
+```text
+LevelNF ::=
+    Closed(c : Nat, n : Nat)
+  | Atom(LevelAtomId)
+  | AddNF(nonempty sorted list LevelNF)
+  | MaxNF(nonempty sorted duplicate-free list LevelNF)
+  | Meta(LevelMetaId)
+```
+
+Normalization performs exactly these equations:
+
+```text
+succ x = x + 1
+
+addition:
+    associative
+    commutative
+    zero-eliminating
+    closed-constant-folding
+    multiplicity-preserving
+
+maximum:
+    associative
+    commutative
+    idempotent
+    zero-eliminating
+```
+
+Nested additions and maxima are flattened and rebuilt left-associated from their canonical lists.
+
+No distributivity, cancellation, absorption, semantic dominance, or general Presburger simplification is part of
+constructor normalization.
+
+A portable total ordering for constructor-normal forms is:
+
+```text
+Closed < Atom < AddNF < MaxNF < Meta
+```
+
+with:
+
+* closed pairs compared lexicographically;
+* atom kinds ordered as local binder, declaration parameter, field, projection, neutral term;
+* atom payloads compared by canonical semantic-identity bytes;
+* addition and maximum lists compared lexicographically by this same recursive order;
+* metavariables compared by deterministic declaration-local metavariable identity.
+
+The exact rank has no mathematical significance but is normative for canonical KCoreText and hashing.
+
+The following expressions need not share constructor normal forms:
+
+```text
+max u (succ u)                  and succ u
+u + max v w                     and max (u + v) (u + w)
+max (u + 1) (u + omega)         and u + omega
+```
+
+They are semantically equal when rigid entailment proves both inequalities.
+
+<!-- types.universes.level_solver.rigid_semantic_domain -->
+###### Rigid semantic domain
+
+Every rigid level expression denotes a pair in:
+
+```text
+Nat x Nat
+```
+
+where `(c, n)` denotes `omega * c + n`.
+
+```text
+zero                = (0, 0)
+finite k            = (0, k)
+omega               = (1, 0)
+succ(c, n)          = (c, n + 1)
+(c, n) + (d, m)     = (c + d, n + m)
+max                  = lexicographic maximum
+```
+
+Ordering is lexicographic:
+
+```text
+(c, n) <= (d, m)
+iff
+c < d or (c = d and n <= m)
+```
+
+Each rigid atom receives one independent pair of nonnegative integer variables unless ordinary definitional equality or
+explicit assumptions identify it with another atom.
+
+<!-- types.universes.level_solver.rigid_entailment -->
+###### Rigid entailment
+
+To decide whether a consistent rigid assumption context `A` entails `x <= y`:
+
+1. normalize constructor syntax;
+2. reject unresolved inference metavariables;
+3. assign two nonnegative integer variables to every distinct rigid atom;
+4. translate `succ`, addition, and lexicographic ordering to quantifier-free Presburger arithmetic;
+5. translate `max a b` using a guarded conditional selecting the lexicographically greater pair;
+6. decide satisfiability of:
+
+   ```text
+   nonnegative atom components
+   and translation(A)
+   and not translation(x <= y)
+   ```
+
+The theorem is entailed exactly when the refutation formula is unsatisfiable.
+
+A conforming implementation may use any complete decision procedure for this exact QF Presburger translation.
+
+Rigid semantic equality is mutual entailment:
+
+```text
+A entails x = y
+iff
+A entails x <= y
+and
+A entails y <= x
+```
+
+Constructor-normal equality is a sound fast path only.
+
+For a neutral opaque atom, a satisfying refutation model proves only that the inequality is not entailed by the available
+abstract facts. It does not assert that the source function can realize that model.
+
+Solver results are classified as:
+
+```text
+Entailed
+NotEntailed
+BlockedByMetavariables
+ContradictoryAssumptions
+IndeterminateResourceLimit
+```
+
+`IndeterminateResourceLimit` never permits acceptance.
+
+Recognized contradictory assumption contexts are rejected before they may justify any universe formation.
+
+<!-- types.universes.principal_inference -->
+##### 11.1.2.4B Portable principal universe-metavariable inference
+
+Rigid entailment is complete for the portable rigid theory. Inference assignments are guaranteed only for the portable
+assignable fragment defined here.
+
+The solver receives:
+
+```text
+* a finite selected set of minimizable metas;
+* a finite unselected set of residual or generalizable metas;
+* normalized inequalities under consistent rigid assumption contexts.
+```
+
+The pointwise order on assignments is the rigid semantic `<=` relation after substitution.
+
+The portable solver performs, in order:
+
+1. constructor normalization;
+2. cancellation of a common additive multiset on both sides;
+3. cancellation of a common successor, since `succ x = x + 1`;
+4. extraction of direct lower bounds `lower <= ?m`;
+5. reduction of maximum-only self occurrences, including:
+   * `max ?m lower <= ?m` to `lower <= ?m`;
+   * internal SCC occurrences that appear only beneath `max`;
+6. joining lower-bound contributions with `max`;
+7. solving selected-meta SCCs together;
+8. closed residuation for a selected meta in a closed additive right context;
+9. selected single-meta maximum contexts of either form:
+   * `max(?m, rigidArms...) <= ?m`, contributing every rigid arm as a lower bound;
+   * `lower <= max(?m, rigidArms...)`, contributing `lower` exactly when rigid entailment proves that the rigid arms
+     alone do not satisfy `lower`;
+10. substitution, renormalization, and rigid rechecking of every resulting constraint.
+
+Common additive cancellation validates, for example:
+
+```text
+p + 1 <= ?u + 1     becomes p <= ?u
+succ p <= succ ?u   becomes p <= ?u
+```
+
+Closed residuation validates:
+
+```text
+5 <= ?u + 2         gives ?u := 3
+```
+
+For closed pairs `L = (lc, ln)` and `C = (cc, cn)`, the least `M` satisfying `L <= M + C` is:
+
+```text
+(0, 0)                              when lc < cc
+(0, max(0, ln - cn))                when lc = cc
+(lc - cc, max(0, ln - cn))          when lc > cc
+```
+
+The result is rechecked by rigid entailment before assignment.
+
+The solver rejects recursive self-containment through positive addition or successor, including:
+
+```text
+succ ?u <= ?u
+?u + 1 <= ?u
+```
+
+The solver does not claim a pointwise least assignment for:
+
+```text
+omega <= max ?u ?v
+```
+
+because the two metas admit incomparable minimal assignments.
+
+Each minimizable meta receives one result:
+
+```text
+SolvedPrincipal(level)
+Unsatisfiable
+NoPointwiseLeastSolution
+OutsidePortableInferenceFragment
+BlockedByUnselectedMetas
+```
+
+`NoPointwiseLeastSolution` may be reported only when the solver has a checked certificate of non-principality, such as
+incomparable minimal solutions.
+
+`OutsidePortableInferenceFragment` does not claim that no semantic principal solution exists.
+
+At a declaration boundary:
+
+* remaining legal generalizable metas become declaration-universe parameters and erased constraint binders;
+* a minimizable meta with `OutsidePortableInferenceFragment` is rejected with
+  `E_UNIVERSE_INFERENCE_REQUIRES_ANNOTATION`;
+* `NoPointwiseLeastSolution` uses `E_UNIVERSE_NO_PRINCIPAL_SOLUTION`;
+* unsatisfiable constraints use the existing universe-constraint diagnostics.
+
+A conforming portable implementation MUST NOT silently accept additional out-of-fragment inference merely because an
+implementation-specific SMT solver can guess a useful assignment. A future standardized extension may enlarge this
+fragment and must version the inference contract.
 <!-- types.universes.first_class_levels -->
 ##### 11.1.2.5 First-class `TypeLevel` values
 
-Values of type `TypeLevel` are compile-time values. They may denote finite levels, `ω`, successors of `ω`, or maximum
-expressions over admitted level expressions.
+Values of type `TypeLevel` are ordinary runtime-capable values. They may denote finite levels, `ω`, successors of `ω`,
+or maximum expressions over admitted level expressions.
 
 They may be bound, passed, returned, stored in records or packages, projected, sealed, opened, and used in existentials
 wherever the surrounding form is otherwise well-formed.
 
 This first-class status does not by itself make every `TypeLevel`-indexed family classifiable.
 
-A value `i : TypeLevel` may index `Type` only when the expression used as the index is a solver-level expression under
-§11.1.1 after permitted transparent compile-time normalization.
+A value `i : TypeLevel` may index `Type` when the corresponding term satisfies the level-admissibility judgment of
+§11.1.1.
 
-A dependent type former whose component classifier mentions a bound `TypeLevel` variable requires a universe ceiling
-independent of that bound variable (§11.1.2.8). Such a ceiling may be supplied by erased level-comparison proof binders,
-for example:
+The exact dependent result is retained.
 
-```kappa
-(i : TypeLevel) ->
-(@0 p : i < κ) ->
-Type i
-```
-
-Kappa provides no implicit runtime reflection over `TypeLevel` values.
-
-An implementation MAY provide explicit runtime reification of level expressions through a library carrier, but such
-reification is ordinary runtime data construction. It is not implicit erasure reversal and it does not participate in
-definitional equality.
-
-Ordinary compile-time code may use the standard `TypeLevel` operations:
+For example:
 
 ```kappa
-zero
-one
-succ
-(+)
-max
-compare
-(==)
-(<)
-(<=)
-(>)
-(>=)
+use :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    Type u ->
+    Type u
 ```
 
-through ordinary prelude resolution.
-
-However, a `TypeLevel` value is admissible as a `Type` index or universe annotation only when the expression normalizes
-to the canonical solver-level grammar of §11.1.1.
-
-Thus:
+may be applied to an opaque level term:
 
 ```kappa
-Type (max u v)
-Type (u + 1)
-Type (succ u)
+use (chooseLevel b) proof x
 ```
 
-are accepted when `max`, `+`, and `succ` resolve to the compiler-owned standard `TypeLevel` operations.
-
-This is rejected unless `myMax` transparently reduces to the standard `TypeLevel` `max` operation:
+with exact result type:
 
 ```kappa
-Type (myMax u v)
+Type (chooseLevel b)
 ```
 
+The compiler does not widen this result merely because the index is opaque.
+
+A cumulative common universe may be selected when an expected type or branch join intentionally forgets the exact
+index. Such widening is expected-type-directed and is represented by explicit KCore lifts.
 <!-- types.universes.level_bounds_by_evidence -->
 ##### 11.1.2.6 Level bounds are ordinary erased evidence
 
@@ -10646,124 +12233,89 @@ u ≤ κ
 
 No other source syntax is required.
 
-<!-- types.universes.no_universe_of_universes -->
-##### 11.1.2.7 No universe of all universes
+<!-- types.universes.no_ordinary_universe_of_all_codes -->
+##### 11.1.2.7 No ordinary universe of all ordinary type codes
 
-Kappa has first-class compile-time level codes:
+Kappa permits small packages containing parametric type witnesses from arbitrary first-class universe levels.
 
-```kappa
-TypeLevel : Type
-```
-
-and it has limit universes such as:
+For example:
 
 ```kappa
-Typeω
-Type(ω+1)
-Type(ω+2)
+type AnyTypeWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     parametric 0 T : Type level)
 ```
 
-but it has no universe containing all types from all universe levels.
-
-Having a type of universe-level codes is not the same thing as having a universe of all types.
-
-The following forms are rejected:
+The shorter form uses the default mode on the second field:
 
 ```kappa
-(i : TypeLevel) -> Type i
-exists (i : TypeLevel). Type i
-(i : TypeLevel, T : Type i)
+type AnyTypeWitness : Type =
+    (ordinary 0 level : TypeLevel,
+     T : Type level)
 ```
 
-because the component `Type i` has classifier:
+This type is well formed. The field `T` is a parametric witness. It does not store an ordinary observable type code and
+therefore contributes no `succ level` universe obligation to the enclosing Sigma.
+
+Projection preserves the mode:
 
 ```text
-Type (succ i)
+p.T :parametric Type p.level
 ```
 
-and no universe ceiling independent of `i` exists.
+The projected witness may be used:
 
-Bounded forms are accepted:
+* as a type expression;
+* as an argument to another parametric type or higher-kinded binder;
+* in equality propositions whose endpoint binders are parametric;
+* in another parametric field or constructor argument.
+
+It may not be returned, stored, or passed as an ordinary value of `Type p.level`.
+
+Therefore this remains rejected:
 
 ```kappa
-(i : TypeLevel) ->
-(@0 p : i < κ) ->
-Type i
+reify :
+    AnyTypeWitness ->
+    Type 0
+
+let reify p =
+    p.T
 ```
 
-which has classifier:
+The precise result annotation may differ by level; the rejection is mode-based, not merely a level mismatch.
+
+An unbounded ordinary type-code package remains rejected:
 
 ```kappa
-Type κ
+type AllOrdinaryCodes =
+    (ordinary 0 level : TypeLevel,
+     ordinary 0 T : Type level)
 ```
 
-provided `κ` is well-formed outside the binder for `i`.
+The ordinary field `T` has classifier `Type (succ level)`, for which no ceiling independent of `level` exists.
 
-Likewise:
+Likewise, an ordinary code-producing function remains rejected:
 
 ```kappa
-exists (i : TypeLevel).
-(@0 p : i < κ, T : Type i)
+(level : TypeLevel) -> Type level
 ```
 
-has classifier:
+because its result is an ordinary universe value, not a sealed parametric field.
+
+A later ordinary payload field remains subject to its own universe:
 
 ```kappa
-Type κ
+(ordinary 0 level : TypeLevel,
+ parametric 0 T : Type level,
+ value : T)
 ```
 
-provided all other fields also fit under `κ`.
+is unbounded unless an external ceiling is available, because the ordinary payload field `value : T` is classified at
+`Type level`.
 
-Examples:
-
-```kappa
-(i : TypeLevel) ->
-(@0 p : i < ω) ->
-Type i
-```
-
-is classified at:
-
-```kappa
-Typeω
-```
-
-and ranges over all finite universe levels.
-
-```kappa
-(i : TypeLevel) ->
-(@0 p : i < ω + 1) ->
-Type i
-```
-
-is classified at:
-
-```kappa
-Type(ω+1)
-```
-
-and ranges over finite universe levels and `ω`.
-
-The unbounded form:
-
-```kappa
-(i : TypeLevel) -> Type i
-```
-
-is not classified by `Typeω`, `Type(ω+1)`, or any other universe. For any proposed ceiling `κ`, the instantiation
-`i = κ` would require `Type κ : Type κ`, contradicting predicativity.
-
-A conforming implementation rejects such forms with diagnostic family:
-
-```text
-kappa.universe.unbounded-telescope
-```
-
-and portable alias:
-
-```text
-E_UNIVERSE_UNBOUNDED_TELESCOPE
-```
+The accepted parametric witness package is not a universe of all ordinary type codes. It has no ordinary decoding
+projection and cannot satisfy the ordinary code-production assumptions used by Girard/Hurkens constructions.
 
 <!-- types.universes.formation -->
 ##### 11.1.2.8 Universe formation for dependent type formers
@@ -10788,71 +12340,105 @@ and by transparent aliases reducing to those forms.
 
 There is no automatic `ω` ceiling for an unbounded `TypeLevel` variable.
 
-**Parametric universe binders.**
+<!-- types.universes.observation_modal_formation -->
+##### Observation and formation modes for dependent products and sums
 
-A parametric type binder contributes no ordinary type-code field to the universe level of the enclosing type former.
-
-If:
-
-```text
-Γ, A : ParamTypeWitness ρ ⊢ B : Type κ
-```
-
-then:
+Kappa and KCore distinguish binder observation mode from dependent-former formation mode.
 
 ```text
-Γ ⊢ (0 A : Type ρ) -> B : Type κ
+observation mode: ordinary | parametric
+formation mode:   ordinary | parametric
 ```
 
-and likewise for the implicit erased form:
+Observation mode controls whether the bound value may be observed ordinarily. Formation mode controls the universe
+contribution of the binder domain. An explicit `parametric` observation annotation is legal for every well-formed
+domain and does not by itself select impredicative formation.
+
+A surface Pi or Sigma whose binder is observed parametrically and whose domain normalizes to a parametric kind uses the
+parametric formation rule. Other well-formed binders use ordinary formation unless a construct-specific rule in this
+specification selects parametric formation. An explicit `ordinary` observation always uses ordinary formation.
+
+Ordinary Pi formation is predicative:
 
 ```text
-Γ ⊢ (@0 A : Type ρ) -> B : Type κ
+Γ ⊢ A : Type u
+Γ, x :mode A ⊢ B : Type v
+────────────────────────────────────────────
+Γ ⊢ Π[formation=ordinary,mode,q] x : A. B : Type (max u v)
 ```
 
-The binder `A` is available in `B` as a parametric type witness at level `ρ`. It may appear in type expressions and may
-be passed to other `0 Type κ` binders when the relevant universe-level constraint is satisfied, but it may not be used
-as an ordinary type-code value.
+The existing universe-ceiling rule applies when `v` depends on `x`.
 
-The parametric binder itself does not contribute `succ ρ` to the enclosing classifier merely because:
+Parametric Pi formation is impredicative in its domain:
 
 ```text
-Type ρ : Type (succ ρ)
+Γ ⊢ A : Type u
+Γ, x :parametric A ⊢ B : Type v
+────────────────────────────────────────────
+Γ ⊢ Π[formation=parametric,mode=parametric,q] x : A. B : Type v
 ```
+
+The domain universe `u` does not raise the product universe.
+
+The body's universe still contributes normally.
+
+The parametric rule is an explicit trusted language rule. It is not derived from quantity zero or runtime erasure.
 
 Examples:
 
 ```kappa
-(0 A : Type) -> A -> A
+(parametric 0 A : Type3) -> Int
 ```
 
-has classifier:
+has classifier `Type` when `Int : Type`.
 
 ```kappa
-Type
+(parametric 0 A : Type3) -> A -> A
 ```
+
+has classifier `Type3`, because the body contains value types classified by `Type3`.
 
 ```kappa
-(0 A : Type3) -> Int
+(parametric 0 m : (A : Type) -> Type) ->
+(A : Type) ->
+m A -> m A
 ```
 
-has classifier:
+has the universe determined by `m A`, not by the classifier of the higher-kinded domain itself.
+
+Ordinary Sigma, record, tuple, package, constructor, and existential fields use the predicative ceiling rule.
+
+Parametric Sigma formation is impredicative in its field domain:
+
+```text
+Γ ⊢ A : Type u
+Γ, x :parametric A ⊢ B : Type v
+────────────────────────────────────────────
+Γ ⊢ Σ[formation=parametric,mode=parametric,q] x : A. B : Type v
+```
+
+The field's own domain universe does not raise the enclosing telescope. Later field types and payloads still contribute
+normally.
+
+Examples:
 
 ```kappa
-Type
+(parametric 0 T : Type3, foo : Int)
 ```
+
+has classifier `Type`.
 
 ```kappa
-(0 A : Type3) -> A -> A
+(parametric 0 T : Type3, foo : T)
 ```
 
-has classifier:
+has classifier `Type3`.
 
-```kappa
-Type3
-```
+Projection and pattern matching preserve observation mode.
 
-because the value parameter has type `A`, and `A` as a type expression is classified by `Type3`.
+The impredicative parametric Pi and Sigma rules are distinct KCore rules. A conforming implementation MUST NOT simulate
+them by constructing ordinary Pi or Sigma nodes and omitting selected universe checks, and MUST NOT infer formation mode
+merely from a binder observation tag after the relevant type former has been elaborated.
 
 **Pi types.**
 
@@ -10860,19 +12446,19 @@ If:
 
 ```text
 Γ ⊢ A : Type α
-Γ, x : A ⊢ B : Type β
+Γ, x :mode A ⊢ B : Type β
 ```
 
 and the solver can prove under the level assumptions in scope:
 
 ```text
-Γ, x : A ⊢ β ≤ κ
+Γ, x :mode A ⊢ β ≤ κ
 ```
 
 for some level `κ` well-formed in `Γ` and not mentioning `x`, then:
 
 ```text
-Γ ⊢ (q x : A) -> B : Type (max α κ)
+Γ ⊢ Π[formation=ordinary,mode,q] x : A. B : Type (max α κ)
 ```
 
 If `β` does not mention `x`, the rule may choose `κ = β`.
@@ -10890,13 +12476,13 @@ E_UNIVERSE_UNBOUNDED_TELESCOPE
 ```
 
 The binder quantity, implicitness, erasedness, borrowed access, suspension sugar, receiver metadata, and parameter name
-do not change the ordinary Pi universe rule, except for parametric `0 Type ρ` binders governed by the parametric rule
-above.
+do not change the ordinary Pi universe rule. Formation mode is selected independently from those properties and from
+observation mode except for the explicit surface selection rule above.
 
 Examples:
 
 ```kappa
-(A : Type) -> A -> A
+(ordinary A : Type0) -> A -> A
 ```
 
 has classifier:
@@ -10905,10 +12491,10 @@ has classifier:
 Type1
 ```
 
-because `A` is an ordinary inspectable type-code binder.
+because `A` is an ordinary-observation type-code binder.
 
 ```kappa
-(0 A : Type) -> A -> A
+(A : Type0) -> A -> A
 ```
 
 has classifier:
@@ -10917,7 +12503,7 @@ has classifier:
 Type
 ```
 
-because `A` is a parametric type witness.
+because `A` defaults to parametric observation.
 
 ```kappa
 (i : TypeLevel) -> Nat
@@ -10962,7 +12548,7 @@ Type(ω+1)
 ```
 
 ```kappa
-(X : Typeω) -> X -> X
+(ordinary X : Typeω) -> X -> X
 ```
 
 has classifier:
@@ -11008,19 +12594,20 @@ E_UNIVERSE_UNBOUNDED_TELESCOPE
 Parametric fields of the form:
 
 ```kappa
-(0 A : Type ρ)
+(parametric q A : Type ρ)
 ```
 
 do not contribute `succ ρ` to the enclosing telescope merely because `Type ρ : Type (succ ρ)`.
 
-They introduce a parametric type witness at level `ρ`.
+They introduce a parametric static witness at level `ρ`.
 
-Projection from such a field preserves parametric capability. It does not return an ordinary term of type `Type ρ`.
+Projection from such a field preserves observation mode. It does not return an ordinary-observation term of type
+`Type ρ`.
 
 Examples:
 
 ```kappa
-(0 A : Type, value : A)
+(A : Type0, value : A)
 ```
 
 has classifier:
@@ -11032,7 +12619,7 @@ Type
 provided every non-parametric field is classified by `Type`.
 
 ```kappa
-(A : Type, value : A)
+(ordinary A : Type0, value : A)
 ```
 
 has classifier at least:
@@ -11041,10 +12628,10 @@ has classifier at least:
 Type1
 ```
 
-because `A` is an ordinary inspectable type-code field.
+because `A` is an ordinary-observation type-code field.
 
 ```kappa
-(0 T : Type3, foo : Int)
+(parametric 0 T : Type3, foo : Int)
 ```
 
 has classifier:
@@ -11056,7 +12643,7 @@ Type
 because the parametric field `T` itself contributes no universe level and `foo : Int` is small.
 
 ```kappa
-(0 T : Type3, foo : T)
+(parametric 0 T : Type3, foo : T)
 ```
 
 has classifier:
@@ -11067,95 +12654,116 @@ Type3
 
 because `T` as a type expression is classified by `Type3`, and the field `foo` has type `T`.
 
-The following is rejected:
+The following is accepted:
 
 ```kappa
-(i : TypeLevel, T : Type i)
+(ordinary 0 i : TypeLevel,
+ T : Type i)
 ```
 
-because the second field has classifier `Type (succ i)` and there is no ceiling independent of `i`.
+The `T` field defaults to parametric observation and the package is small.
 
-The bounded form is accepted:
+The ordinary version is rejected:
 
 ```kappa
-(i : TypeLevel, @0 p : i < κ, T : Type i)
+(ordinary 0 i : TypeLevel,
+ ordinary 0 T : Type i)
 ```
 
-with classifier:
+An ordinary package is accepted under an external schema ceiling:
 
 ```kappa
-Type κ
+type OrdinaryCodesBelow.{u} : Type u =
+    (ordinary 0 i : TypeLevel,
+     @0 p : i < u,
+     ordinary 0 T : Type i)
 ```
 
-provided `κ` is well-formed outside the telescope.
+**Standard bounded ordinary-code schemas.**
 
-**Standard bounded type packages.**
-
-The standard prelude provides the following universe-packaging types:
+The standard prelude provides declaration-universe schemas:
 
 ```kappa
-data TypeBelow (κ : TypeLevel) : Type κ =
+data TypeBelow.{covariant u} : Type u =
     PackTypeBelow
-        (i : TypeLevel)
-        (@0 p : i < κ)
-        (T : Type i)
+        (ordinary 0 level : TypeLevel)
+        (@0 bound : level < u)
+        (ordinary 0 T : Type level)
 
-data TypeAtMost (κ : TypeLevel) : Type (succ κ) =
+data TypeAtMost.{covariant u} : Type (succ u) =
     PackTypeAtMost
-        (i : TypeLevel)
-        (@0 p : i <= κ)
-        (T : Type i)
+        (ordinary 0 level : TypeLevel)
+        (@0 bound : level <= u)
+        (ordinary 0 T : Type level)
 ```
 
-`TypeBelow κ` packages a type whose level is strictly below `κ`.
+`u` is a declaration-universe parameter, not a term-level `TypeLevel` binder.
 
-`TypeAtMost κ` packages a type whose level is at most `κ`.
+`TypeBelow.{u}` packages an ordinary observable type code whose level is strictly below `u`.
 
-These definitions are well-formed because the erased proof binders are in scope as level assumptions when the later field
-`T : Type i` is checked.
+`TypeAtMost.{u}` packages an ordinary observable type code whose level is at most `u`; the package itself lives in
+`Type (succ u)`.
 
-The unbounded package:
+The proof binder supplies the constructor-size obligation for the ordinary `T` field.
+
+The nominal-signature action certificate derives a target bound from the source bound and the covariant schema
+inequality. The ordinary type-code field is reused under classifier cumulativity. Both proof reconstruction and code
+reclassification erase before runtime.
+
+A reference may infer or state the schema level:
 
 ```kappa
-exists (i : TypeLevel). Type i
+TypeBelow.{3}
+TypeAtMost.{omega}
 ```
 
-is not a safe Kappa type.
+The earlier declarations:
 
-Universe and parametricity invariant:
+```kappa
+data TypeBelow (k : TypeLevel) : Type k = ...
+data TypeAtMost (k : TypeLevel) : Type (succ k) = ...
+```
 
-1. `TypeLevel` is the compile-time code type of admitted universe levels, including `ω`.
+are not Kappa v1 declarations and must be removed. Their type constructors would require unbounded ordinary Pis over a
+first-class level.
 
-2. `Type u` is predicative:
+Kappa observation and universe invariant:
 
-   ```text
-   Type u : Type (succ u)
-   ```
+1. Bare `Type` introduces a fresh universe metavariable.
 
-3. A type former whose classifier would depend on a bound `TypeLevel` variable must have a ceiling independent of that
-   variable.
+2. Principal inference minimizes result-only universe metavariables and generalizes remaining legal polymorphic metas
+   into explicit or hidden declaration universe parameters, never ordinary term Pis.
 
-4. Such a ceiling may be supplied by erased level-comparison proof evidence:
+3. Every KCore binder and dependent field records observation mode and quantity independently; Pi and Sigma formation
+   mode is a separate checked choice.
 
-   ```kappa
-   @0 p : i < κ
-   @0 p : i <= κ
-   ```
+4. Omitted mode on a parametric-kind binder defaults to `parametric`; omitted quantity then defaults to `0`.
 
-5. There is no automatic `ω` ceiling for an unbounded `TypeLevel` variable.
+5. Omitted mode on any other binder defaults to `ordinary`.
 
-6. Parametric type witnesses do not store ordinary type-code values:
+6. `Type0` fixes the level but does not change the mode.
 
-   ```kappa
-   0 A : Type ρ
-   ```
+7. Ordinary values may instantiate parametric binders.
 
-   contributes no `succ ρ` to the enclosing type former merely because `Type ρ : Type (succ ρ)`.
+8. Parametric values do not implicitly become ordinary values.
 
-7. Uses of a parametric witness as a type expression are still classified at its level `ρ`.
+9. Parametric Pi and Sigma formation is impredicative in the domain; an observation tag alone does not select it.
 
-8. No accepted safe Kappa program may promote a parametric type witness at level `ρ` to an ordinary type-code value of
-   type `Type ρ`.
+10. Ordinary Pi and Sigma formation remains predicative.
+
+11. Equality is a user-definable explicit universe-schema family with parametric endpoints and no special universe
+    exception.
+
+12. Cumulative subsumption is explicit in KCore.
+
+13. `TypeLevel` is real opaque runtime-capable prelude data; compiler normalization is a certified semantic bridge.
+
+14. Proof-directed universe bounds remain explicit evidence and are rechecked after substitution.
+
+15. KCoreText is parseable, round-trippable, independently checkable, and fully explicit.
+
+16. A declared parametric witness field seals its dependencies in a package; projecting it restores parametric
+    capability. Ordinary type-code fields and later ordinary payloads remain predicative.
 
 <!-- types.universes.defaulting_non_user_written_inference_variables -->
 #### 11.1.3 Defaulting of non-user-written inference variables
@@ -11178,12 +12786,16 @@ checking convenient.
 
 Universe variables:
 
-* At a generalization boundary, an unconstrained or underconstrained universe metavariable that appears in the
-  generalized type is generalized.
-* A universe metavariable that does not appear in any exported, stored, or user-observable type MAY be instantiated to
-  the least universe level satisfying its constraints.
-* This least-level instantiation is permitted only when it is order-independent for the fixed constraint set.
-* Failure to determine such a least level is an unsolved-metavariable error, not implementation-defined behavior.
+* Every bare `Type` occurrence may introduce a universe metavariable.
+* At a declaration generalization boundary, the complete declaration SCC is solved once by the principal-universe
+  algorithm of §11.1.2.4B.
+* Minimizable metavariables in the portable assignable fragment are solved to their principal normalized solutions;
+  remaining legal generalizable metavariables become the declaration universe telescope.
+* Generalized universe constraints are retained and normalized.
+* A universe metavariable not appearing in a user-observable polymorphic position is solved to the least level satisfying
+  its constraints when that solution is deterministic.
+* A universe metavariable MUST NOT be defaulted merely to avoid adding a declaration universe parameter.
+* A hidden declaration universe parameter MUST NOT be emitted as an ordinary source or KCore term binder.
 
 Kind and classifier variables:
 
@@ -11258,10 +12870,10 @@ When an unresolved variable is rejected, the diagnostic MUST identify:
 * if defaulting was attempted, why it failed.
 
 <!-- types.universes.trait_evidence -->
-#### 11.1.4 Intrinsic compile-time values and trait evidence
+#### 11.1.4 Compile-time values and trait evidence
 
-`TypeLevel`, `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`, `Label`, and `EffLabel` are intrinsic compile-time
-types, not extra meta-level sorts.
+`Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`, `Label`, and `EffLabel` are intrinsic compile-time types, not extra
+meta-level sorts. `TypeLevel` is an ordinary runtime-capable opaque prelude data type under §11.1.1.
 
 Terms of these intrinsic compile-time types may be used in ordinary explicit binders, record fields, package members,
 projections, existential witnesses, and local bindings wherever the surrounding surface form otherwise permits them.
@@ -11280,9 +12892,9 @@ In particular, a record field, package member, local binding, or existential wit
 * `Label`
 * `EffLabel`
 
-The fact that such values are compile-time only affects erasure under §§11.1.6 and 31.2. It does not remove their
-ordinary first-class status for binding, projection, packaging, sealing, opening, equality, or storage inside records
-and packages.
+For the intrinsic compile-time types, compile-time status affects erasure under §§11.1.6 and 31.2. It does not remove
+their ordinary first-class status for binding, projection, packaging, sealing, opening, equality, or storage inside
+records and packages. `TypeLevel` values use the ordinary runtime-capable erasure rules.
 
 Examples of well-formed source types therefore include:
 
@@ -11299,8 +12911,8 @@ This section does not by itself add arbitrary new surface constructors or elimin
 `TypeLevel`, `Quantity`, or `Region`. Surface v1 provides only the forms explicitly specified elsewhere. KCore and
 elaboration, however, MAY carry such terms as ordinary compile-time bindable values.
 
-A value of type `TypeLevel` may appear in ordinary compile-time binding and packaging positions. It may index the
-primitive family `Type` only when the expression used as the index is a solver-level expression admitted by §11.1.1.
+A value of type `TypeLevel` may appear in ordinary runtime or compile-time binding and packaging positions. It may index
+the primitive family `Type` when the corresponding term satisfies the level-admissibility judgment of §11.1.1.
 
 Intended use:
 
@@ -11422,9 +13034,9 @@ trait IsSubsingleton (0 t : Type) =
         (y : t) ->
         x = y
 
-trait IsSubsingleton p => IsProp (0 p : Type)
+trait IsSubsingleton p => IsProp (parametric 0 p : Type)
 
-trait IsSet (0 a : Type) =
+trait IsSet (parametric 0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
@@ -11574,8 +13186,8 @@ Some types are intrinsically compile-time-only. Values of those types are always
 
 Compile-time-only values include:
 
-* inhabitants of the intrinsic compile-time types `TypeLevel`, `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`,
-  `Label`, and `EffLabel`;
+* inhabitants of the intrinsic compile-time types `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`, `Label`, and
+  `EffLabel`;
 * universe terms appearing in `Type u`;
 * inhabitants of `Syntax t`, `SyntaxOrigin`, and `SyntaxFragment`;
 * inhabitants of the elaboration-time reflection types `CoreCtx`, `Symbol`, `Core Γ t`, and `CoreEq x y` of §21.6;
@@ -11585,6 +13197,12 @@ Compile-time-only values include:
 * internal nominal-scope tokens introduced by scoped local declarations; and
 * function values whose complete explicit/implicit application result is compile-time-only, including functions whose
   eventual result is `Elab a`.
+
+`TypeLevel` is not intrinsically compile-time-only.
+
+Erasure is justified by quantity, phase, erased-index status, ambient demand, or ordinary dead-code elimination.
+
+Compiler ownership of a declaration or instance is not an erasure justification.
 
 A value of an ordinary runtime-capable type such as `String`, `Bool`, `List a`, or a record type may still exist at the
 meta phase when it is introduced inside an `Elab` computation or another explicitly meta-phase context. Such a value is
@@ -11625,6 +13243,14 @@ Runtime-erased propositions and proof terms:
   specialization.
 * Equality types are not propositions by default. For arbitrary `A`, the type `x = y` is not assumed to satisfy
   `IsProp`. Such evidence is available from `IsSet A`, from a more specific theorem, or from an intrinsic rule.
+
+Compiler ownership, canonical instance identity, coherence, and intrinsic introduction do not imply runtime erasure.
+
+A method-bearing dictionary may be erased only after every runtime-relevant observation has been specialized,
+devirtualized, inlined, or otherwise discharged.
+
+Different members of one dictionary may have different runtime relevance. For example, `Ord TypeLevel.compare` may be
+runtime-relevant while law proofs are erased.
 
 A value of a `RuntimeErased` type may be used freely in type positions, erased proof positions, erased implicit
 arguments, erased indices, compile-time-only positions, and expressions checked under ambient demand `0`. It may affect
@@ -11681,7 +13307,7 @@ A static-object expression position whose expected classifier is `TypeLevel` acc
 of type `TypeLevel`.
 
 A source expression supplied specifically as a `Type` index, a universe annotation, or a universe bound is stricter: it
-must elaborate to a solver-level expression under §11.1.1.
+must satisfy the level-admissibility judgment of §11.1.1.
 
 Static-object expression positions are meta-phase only unless the surrounding type explicitly uses a runtime carrier.
 Trait evidence types are ordinary `Type` inhabitants; they are not static-object expression positions merely because
@@ -11756,6 +13382,24 @@ The only standardized ways for meta-phase computation to re-enter object-languag
 * producing `Syntax t` for a `$(...)` splice; and
 * reifying semantic reflection values back to `Syntax t` and then splicing that syntax.
 
+<!-- types.universes.hurkens_barrier -->
+##### Hurkens/Girard barrier
+
+The parametric modality permits impredicative abstraction and instantiation but forbids reifying a result that depends
+parametrically on a universe argument as an ordinary universe value.
+
+The ordinary route remains predicative.
+
+Therefore a direct Hurkens/Girard encoding must fail in one of two places:
+
+* the parametric encoding fails when it attempts parametric-to-ordinary promotion; or
+* the ordinary encoding fails a predicative universe-formation or self-containment obligation.
+
+The standard conformance suite includes both minimal barriers and a larger Hurkens-style attempted encoding.
+
+A negative test is not a consistency proof. It is a required adversarial regression test identifying the intended
+blocking obligation.
+
 <!-- types.functions.suspension_types_strict_binder_sugar -->
 ### 11.2 Suspension types and non-strict binder sugar
 
@@ -11804,97 +13448,56 @@ Introduction of `Need A` suspensions requires `Shareable A` and obeys the captur
 <!-- types.quantification -->
 ### 11.3 Universal quantification
 
-`forall` is syntactic sugar over erased Pi-types.
+`forall` is implicit quantity-`0` dependent-product sugar.
 
 ```kappa
-forall a. T        ==   (0 a : Type) -> T
-forall (a : S). T  ==   (@0 a : S) -> T
+forall a. T
 ```
 
-When `S` normalizes to a universe expression `Type ρ`, the binder introduced by `forall (a : S). T` is a parametric
-type witness at level `ρ` under §11.1.2.3A.
-
-Consequently:
+elaborates as if written:
 
 ```kappa
-forall A. A -> A
-forall (A : Type). A -> A
+(@parametric 0 a : Type ?u) -> T
 ```
 
-both elaborate to:
+where `?u` is a fresh bare-`Type` universe metavariable.
 
 ```kappa
-(0 A : Type) -> A -> A
+forall (A : Type0). T
 ```
 
-and have classifier:
+elaborates as:
 
 ```kappa
-Type
+(@parametric 0 A : Type0) -> T
 ```
 
-The explicit function type:
+An explicit mode is respected:
 
 ```kappa
-(A : Type) -> A -> A
+forall (ordinary A : Type). T
 ```
 
-does not use `forall` sugar. It binds `A` as an ordinary type-code value and is classified by the ordinary predicative
-Pi rule.
-
-Higher-universe parametric quantification may be written explicitly:
+elaborates as:
 
 ```kappa
-forall (A : Type3). Int
+(@ordinary 0 A : Type ?u) -> T
 ```
 
-which elaborates to:
+For a domain that is not a parametric kind, omitted mode is ordinary:
 
 ```kappa
-(0 A : Type3) -> Int
+forall (n : Nat). T
 ```
 
-and is classified by:
+elaborates as:
 
 ```kappa
-Type
+(@ordinary 0 n : Nat) -> T
 ```
 
-If the body contains values of type `A`, the body determines the universe:
-
-```kappa
-forall (A : Type3). A -> A
-```
-
-is classified by:
-
-```kappa
-Type3
-```
-
-There is no separate source-level universe-schema `forall` form in Kappa v1.
-
-In particular, Kappa does not use a special declaration-level form such as:
-
-```kappa
-forall {u : TypeLevel}. T
-```
-
-for ordinary type polymorphism.
-
-Ordinary type polymorphism is expressed by parametric `0 Type` binders.
-
-Explicit quantification over `TypeLevel` values remains ordinary Pi quantification and is used only for explicit
-universe-index programming:
-
-```kappa
-(u : TypeLevel) ->
-(@0 p : u < κ) ->
-Type u
-```
-
-Such code is governed by the universe rules of §11.1, including the requirement for a ceiling independent of `u`. It is
-not the default elaboration of ordinary `Type`.
+`forall` does not directly introduce declaration universe parameters. Bare-`Type` metavariables in the completed
+declaration type are generalized at the declaration boundary.
 
 <!-- types.quantification.rows_labels -->
 #### 11.3.1 Rows and labels
@@ -12228,66 +13831,52 @@ Free lowercase identifiers in signatures and heads:
   premises and head are checked.
 * Outside the sites listed above, ordinary unbound-identifier rules apply.
 
-Parametric default for inferred type variables:
+When implicit declaration-level universalization introduces a binder whose inferred domain is a parametric kind, the
+binder is generalized with:
 
-When implicit declaration-level universalization introduces a binder for a type variable whose inferred classifier is
-bare `Type`, and the variable is used only as a type expression or as an argument to other `0 Type` binders, the
-generalized binder is parametric:
-
-```kappa
-(0 a : Type)
+```text
+observation mode = parametric
+quantity         = 0
 ```
 
-not ordinary:
+unless an ordinary-observation use requires an ordinary binder.
 
-```kappa
-(a : Type)
-```
+The compiler chooses the least permissive mode that typechecks.
 
 Examples:
 
 ```kappa
-let id A x =
-    x
+let id A x = x
 ```
 
 may infer:
 
 ```kappa
-id :
-    (0 A : Type) -> A -> A
+id : (A : Type) -> A -> A
 ```
 
-An unannotated type parameter in a type, data, trait, effect, or projection declaration is likewise generalized
-parametrically when its uses permit it:
+with verbose elaboration:
+
+```text
+id.{u} : (parametric 0 A : Type u) -> A -> A
+```
 
 ```kappa
-data Option a : Type =
-    None
-    Some (value : a)
+trait Functor f =
+    map : forall a b. (a -> b) -> f a -> f b
 ```
 
-elaborates as if written:
+infers schematically:
 
-```kappa
-data Option (0 a : Type) : Type =
-    None
-    Some (value : a)
+```text
+trait Functor.{u,v}
+    (parametric 0 f :
+        (parametric 0 A : Type u) -> Type v) =
+    ...
 ```
 
-A variable is generalized as an ordinary type-code binder only when some use demands ordinary type-code capability.
-
-Examples of such demands include:
-
-* returning the variable from a term of result type `Type`;
-* storing it in a field annotated `(A : Type)`;
-* passing it to a binder `(A : Type)` without quantity `0`;
-* using it as input to a reflection or typecase API that demands ordinary type-code capability;
-* selecting static members from it as an ordinary reified type object.
-
-If inference cannot decide whether a generalized type variable should be parametric or ordinary type-code, the compiler
-SHOULD prefer the parametric binder and report the first later ordinary-code demand as `E_PARAMETRIC_TYPE_PROMOTION`.
-An implementation MAY instead require an explicit binder annotation when doing so produces a more local diagnostic.
+A source-written binder that defaults to parametric is never silently widened. The compiler reports the first ordinary
+use and suggests the `ordinary` keyword.
 
 If an implicitly universalized identifier is inferred to have type `RecRow`, the identifier is generalized as an ordinary
 source binder:
@@ -12323,7 +13912,8 @@ trait Functor f =
 elaborates as if:
 
 ```kappa
-trait Functor (f : (0 A : Type) -> Type) =
+trait Functor
+    (parametric 0 f : (parametric 0 A : Type) -> Type) =
     map : forall (a : Type) (b : Type). (a -> b) -> f a -> f b
 ```
 
@@ -12337,7 +13927,7 @@ trait GreekFunctor f =
 elaborates as if:
 
 ```kappa
-trait GreekFunctor (f : (0 A : Type) -> Type) =
+trait GreekFunctor (parametric 0 f : (parametric 0 A : Type) -> Type) =
     mapGreek : forall (α : Type) (β : Type). (α -> β) -> f α -> f β
 ```
 
@@ -12365,20 +13955,44 @@ forall (a : Type).
 <!-- types.propositions -->
 ### 11.4 Propositions via booleans and propositional equality
 
-Kappa supports propositional equality as a built-in inductive family.
+Kappa supports propositional equality as an ordinary user-definable inductive family exported by the standard prelude.
 
 <!-- types.propositions.propositional_equality_type_positions -->
-#### 11.4.1 Propositional equality (`=`) in type positions
+#### 11.4.1 Propositional equality
 
-The propositional equality type `x = y` is the distinguished propositional equality data family exported by
-`std.prelude`.
-
-Normative declaration:
+Equality is an ordinary user-definable universe-schema data family:
 
 ```kappa
-data (=) (@0 a : Type) (x : a) (y : a) : Type =
+data (=).{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+
     refl : x = x
 ```
+
+The normative elaborated interface is:
+
+```text
+(=).{u} :
+    (@parametric 0 A : Type u) ->
+    (parametric 0 x : A) ->
+    (parametric 0 y : A) ->
+    Type u
+```
+
+There is no equality-specific universe exception, endpoint marker bypass, resizing rule, or privileged kind-check path.
+Any user declaration with the same legal schema and binder modes receives the same ordinary typing behavior.
+
+Ordinary values may instantiate the parametric endpoint binders by ordinary-to-parametric observation subsumption.
+Parametric endpoints may also instantiate them directly.
+
+The endpoints have quantity `0`; they are explicit semantic arguments in `x = y` but do not contribute runtime demand.
+The proof term itself is erased or retained independently according to its own quantity and proof-relevance rules.
+
+If `a,b : Type u`, then equality between the types instantiates the carrier with `Type u` and therefore lives in
+`Type (succ u)` by ordinary predicative universe typing.
 
 This is an ordinary data-family declaration using the uniform data-family argument discipline of §10.1.3. It does not
 introduce, rely on, or expose a parameter/index partition.
@@ -12394,7 +14008,7 @@ term. It does not mean that the left endpoint is a parameter and the right endpo
 
 Formation:
 
-* If `A : Type` and `x : A` and `y : A`, then `(x = y) : Type`.
+* If `A : Type u` and `x : A` and `y : A`, then `(x = y) : Type u`.
 * The surface type expression `x = y` elaborates to the equality family applied to the inferred endpoint type and the
   two endpoint terms.
 
@@ -12403,22 +14017,54 @@ Introduction:
 * `refl` is the canonical reflexivity proof and inhabits `x = x`.
 * If `x` and `y` are definitionally equal, then `refl` may be used at type `x = y`.
 
-Eliminators:
+The standard eliminators are universe-generalized declarations:
 
 ```kappa
-expect term pathInd :
-    forall (@0 a : Type)
-           (@0 x : a)
-           (@0 C : forall (@0 y : a). (@0 p : x = y) -> Type).
-    C x refl ->
-    forall (@0 y : a).
-    (p : x = y) ->
-    C y p
+pathInd.{u, v} :
+    (@parametric 0 A : Type u) ->
+    (@parametric 0 x : A) ->
+    (parametric 0 motive : (parametric 0 y : A) -> x = y -> Type v) ->
+    motive x refl ->
+    (parametric 0 y : A) ->
+    (parametric 0 p : x = y) ->
+    motive y p
 
-expect term subst :
-    forall (@0 a : Type) (@0 P : a -> Type) (@0 x : a) (@0 y : a).
-    (p : x = y) -> P x -> P y
+subst.{u, v} :
+    (@parametric 0 A : Type u) ->
+    (parametric 0 P : (parametric 0 z : A) -> Type v) ->
+    (parametric 0 x : A) ->
+    (parametric 0 y : A) ->
+    x = y ->
+    P x ->
+    P y
 ```
+
+`Dec` is similarly explicit:
+
+```kappa
+data Dec.{u}
+    (parametric 0 P : Type u)
+    : Type u =
+
+    Yes (proof : P)
+    No  (refute : P -> Void)
+```
+
+The required dynamic-representation signature remains:
+
+```kappa
+sameDynRep :
+    forall a b.
+    DynRep a ->
+    DynRep b ->
+    Dec (a = b)
+```
+
+It typechecks by the ordinary parametric endpoint binders of `(=).{u}` and the ordinary universe schema of `Dec`.
+
+The standard prelude source declaration of equality MUST be accepted by the same surface elaborator and KCore checker
+used for an equivalent user-written equality family. A compiler MUST NOT identify equality by source spelling in order
+to bypass ordinary universe or observation checks.
 
 Normative behavior:
 
@@ -12430,7 +14076,7 @@ Normative behavior:
 
 Endpoint discipline:
 
-* The equality family has two ordinary endpoint arguments.
+* The equality family has two parametric endpoint arguments.
 * The apparent orientation of `pathInd` and `subst` is eliminator orientation only.
 * Implementations MUST NOT treat the left endpoint of `x = y` as a declaration-level parameter and the right endpoint as
   a declaration-level index.
@@ -12619,8 +14265,12 @@ applies only in the following forms:
   (@0 p : i <= κ)
   ```
 
-  when `i` and `κ` elaborate to `TypeLevel` solver-level expressions and `<` or `<=` resolves to the standard
-  comparison operation supplied by the compiler-owned `Ord TypeLevel` instance.
+  when `i` and `κ` are level-admissible `TypeLevel` terms and `<` or `<=` resolves to the standard
+  comparison operation supplied by the canonical standard `Ord TypeLevel` instance.
+* as the result of a function type when the result is itself an authenticated standard `TypeLevel`
+  comparison of the preceding form. This admits ordinary named proof theorems such as
+  `(b : Bool) -> chooseLevel b < omega + 1`; it does not admit arbitrary `Bool`-valued
+  function results as types.
 
 This is a special boolean-proposition sugar rule. It does not mean that `@` by itself implies quantity `0`. For ordinary
 implicit binders, omitted quantity is governed by §16.3.
@@ -12655,7 +14305,7 @@ is shorthand for:
 ```
 
 Such proof binders are recognized by the universe checker as local level assumptions under §11.1.2.2 only when `<` or
-`<=` resolves to the standard comparison operation supplied by the compiler-owned `Ord TypeLevel` instance.
+`<=` resolves to the standard comparison operation supplied by the canonical `Ord TypeLevel` instance.
 
 A user-defined operator named `<` or `<=`, or a nonstandard `Ord TypeLevel` instance, cannot introduce universe-level
 assumptions.
@@ -12752,7 +14402,7 @@ computation is definitional, propositional, or runtime-relevant.
   (q thunk x : A) -> B
   (q lazy x : A) -> B
 
-  (x : A) -> B            -- defaults to (ω x : A) -> B
+  (x : A) -> B            -- mode and quantity default by §12.1.1
   ```
 
   which denotes a function whose result type may depend on `x`.
@@ -12785,10 +14435,15 @@ computation is definitional, propositional, or runtime-relevant.
 <!-- types.functions.shared_binder_prefixes -->
 #### 12.1.1 Shared binder prefixes
 
-The following grammar is shared by function binders, lambda binders, record fields, local binders, implicit binders,
-and any other source form that admits an explicit quantity or borrowed access marker.
+The following grammar is shared by function binders, lambda binders, record fields, constructor fields, local binders,
+implicit binders, trait parameters, effect parameters, and every other source form that admits an explicit binder
+prefix.
 
 ```text
+observationMode ::=
+    'ordinary'
+  | 'parametric'
+
 quantity ::=
     '0'
   | '1'
@@ -12802,13 +14457,10 @@ borrowMarker ::=
   | '&' '[' regionRef ']'
 
 binderPrefix ::=
-    quantity
-  | borrowMarker
-  | quantity borrowMarker
+    observationMode? quantity? borrowMarker?
 
 explicitBinderBody ::=
-    binderPrefix? ident ':' type
-  | binderPrefix? '_' ':' type
+    binderPrefix? binderName+ ':' type
   | binderPrefix? 'this' ':' type
   | binderPrefix? 'this' ident ':' type
 
@@ -12818,75 +14470,135 @@ implicitBinderBody ::=
     '@' binderPrefix? binderName ':' type
 ```
 
-`quantityExpr` is an expression checked in a static-object expression position with expected classifier `Quantity`.
+Grouped explicit binders share one elaborated annotation and, when that annotation is bare `Type`, one universe
+metavariable.
 
-`regionRef` must resolve to an explicit region variable already in scope.
+The canonical prefix order is:
 
-Canonical `@` rule:
+```text
+observation mode, quantity, borrow marker, binder name, annotation
+```
 
-The token `@` never denotes a quantity.
-
-In binder and field declarations, `@` marks the binder or field as implicit. If an explicit quantity follows `@`, as in
-`(@0 x : T)`, `(@1 x : T)`, or `(@ω x : T)`, that quantity is the token after `@`.
-
-Thus:
+Examples:
 
 ```kappa
-(@ω x : T)
+(parametric 0 A : Type)
+(ordinary 0 A : Type)
+(ordinary ω A : Type)
+(parametric 1 F : (A : Type) -> Type)
+(ordinary 1 & x : Buffer)
+(@parametric 0 A : Type)
+(@ordinary 0 p : Proof)
+```
+
+The following are invalid prefix orders:
+
+```kappa
+(0 parametric A : Type)
+(& ordinary x : A)
+(@0 parametric A : Type)
+```
+
+`@` marks implicitness and is written before the ordinary binder prefix. It never denotes a quantity or observation
+mode.
+
+`quantityExpr` is checked in a static-object expression position with expected classifier `Quantity`.
+
+`regionRef` must resolve to a region variable already in scope.
+
+Observation mode, quantity, access mode, and explicitness are independent:
+
+* observation mode controls parametric versus ordinary static observability;
+* quantity controls permitted runtime-relevant demand;
+* a borrow marker controls borrowed access;
+* `@` controls implicit application.
+
+An explicit quantity does not select an observation mode.
+
+An explicit universe such as `Type0` does not select an observation mode.
+
+Explicit `parametric` observation is legal for every well-formed binder domain and remains independent of borrowed
+access. Observation mode alone does not select the Pi or Sigma formation rule.
+
+Default observation mode and quantity:
+
+1. If the binder domain elaborates to a parametric kind under §11.1.2.3B:
+
+   * omitted observation mode defaults to `parametric`;
+   * omitted quantity defaults to `0`;
+   * an explicit quantity changes only the quantity;
+   * an explicit `ordinary` changes only the observation mode.
+
+2. If the binder domain does not elaborate to a parametric kind:
+
+   * omitted observation mode defaults to `ordinary`;
+   * an explicit explicit-binder quantity defaults to `ω` when omitted;
+   * an implicit-binder quantity follows §16.3 when omitted;
+   * explicit `parametric` changes only the observation mode.
+
+Consequently:
+
+```kappa
+(A : Type)
+```
+
+means approximately:
+
+```kappa
+(parametric 0 A : Type ?u)
+```
+
+while:
+
+```kappa
+(A : Type0)
 ```
 
 means:
 
-```text
-implicit binder `x`, quantity `ω`, type `T`
+```kappa
+(parametric 0 A : Type0)
 ```
 
-not:
-
-```text
-binder with a special quantity token `@ω`
-```
-
-When an implicit binder omits its quantity:
+and:
 
 ```kappa
-(@x : T)
+(ordinary A : Type)
 ```
 
-the quantity is determined by the implicit-binder defaulting rule of §16.3, except for explicitly specified special
-sugars such as boolean-proposition sugar in §11.4.2.
-
-If `binderPrefix` is omitted in an explicit binder body, the binder has quantity `ω` and ordinary access.
-
-If `binderPrefix` is omitted in an implicit binder body, the binder is implicit and its quantity is determined by §16.3.
-
-If `binderPrefix` is a `borrowMarker` without an explicit quantity, the quantity component defaults to `ω`, including
-inside implicit binders.
-
-If `binderPrefix` is `quantity borrowMarker`, the binder has that interval quantity and borrowed access.
-
-The grammar intentionally does not include `borrowMarker quantity`.
-Consequently, these are valid:
+means approximately:
 
 ```kappa
-(1 & x : A)
-(>=1 &[ρ] x : A)
-(@1 & evidence : C)
+(ordinary ω A : Type ?u)
 ```
 
-and these are invalid:
+The annotation `Type0` fixes a universe level. It does not grant ordinary observation.
+
+A source-written binder whose default is parametric is not silently widened to ordinary observation. If its body
+requires ordinary observation, elaboration rejects the use and SHOULD suggest adding `ordinary` at the binder.
+
+A compiler-generated binder introduced by signature inference or implicit declaration-level universalization uses the
+least permissive observation mode that typechecks:
+
+* choose `parametric` when every use is parametric;
+* choose `ordinary` only when an ordinary-observation use requires it.
+
+The chosen mode is recorded explicitly in KCore and is not reinferred by later phases.
+
+Non-dependent arrow remains sugar:
 
 ```kappa
-(& 1 x : A)
-(&[ρ] >=1 x : A)
-(@& 1 evidence : C)
+A -> B == (_ : A) -> B
 ```
 
-* Non-dependent arrow is sugar:
+The anonymous binder of a non-dependent arrow has ordinary observation mode. Its quantity is the ordinary omitted
+quantity for a value binder.
 
-  ```kappa
-  A -> B    ==    (_ : A) -> B
-  ```
+In checking direction, observation mode is contravariant along the outer Pi spine: a function with a `parametric`
+binder may be used where the expected function type has an `ordinary` binder, because it accepts every argument the
+expected contract permits. A function with an `ordinary` binder may not be used where a `parametric` binder is
+expected. This is one-way observation subsumption, not definitional equality, and does not apply inside Pi domains or
+other nested type arguments.
 
 A function value type may be capture-annotated under §12.3.1. For example:
 
@@ -14774,7 +16486,13 @@ Opaque members:
 * Opaqueness affects introduction, projection transparency, and sealing (§13.2.10). It does not change dependency
   analysis, lawful reordering, or canonical field order.
 
-* One-element record type: `(x : T,)`
+* A one-element record type MUST include the trailing comma: `(x : T,)`.
+  This remains true when the field has an implicit marker, quantity, borrow,
+  suspension, or opacity marker. For example, `(@x : T,)`, `(1 x : T,)`,
+  and `(& x : T,)` are singleton record types; the corresponding forms
+  without the comma are not record types. A marked parenthesized binder such
+  as `(@x : T) -> U` remains a function binder because the following arrow is
+  part of that grammar.
 * The zero-field closed record has no distinct surface syntax in v1; it is identified with `Unit` / `()`.
 * If an ordinary explicit field quantity is omitted, it defaults to `ω`.
 * Implicit fields declared with `@` use the defaulting rule of §13.2.9.
@@ -14913,6 +16631,11 @@ rules above.
 (x = 1,)           -- one-field record value
 (len = 10, buffer = mkBuffer this.len, checksum = checksumOf this.buffer)
 ```
+
+A one-field record value MUST include the trailing comma. Thus `(x = 1,)` is
+a record value, while `(x = 1)` is the parenthesized propositional-equality
+expression. This syntactic distinction is independent of the surrounding
+expected type.
 
 Each `eᵢ` has type `Tᵢ` with dependencies substituted according to the dependency-respecting order chosen during
 elaboration (§13.2.1.1). Each field also carries the quantity determined by the chosen record type; if that quantity is
@@ -15060,74 +16783,16 @@ let n = r.len
 <!-- records.parametric_type_fields -->
 #### 13.2.4A Parametric type fields
 
-A record, tuple, package, or existential field written:
+Every KCore field records an explicit observation mode.
 
-```kappa
-0 A : Type ρ
-```
+Projection preserves the field's observation mode.
 
-introduces a parametric type field at level `ρ`.
+Repacking a parametric projection into another parametric field is permitted.
 
-The projected field:
+Using a parametric projection where an ordinary-observable value is required is rejected with
+`E_PARAMETRIC_TYPE_PROMOTION`.
 
-```kappa
-r.A
-```
-
-has parametric type-witness capability at level `ρ`.
-
-It may be used as a type expression.
-
-It may be passed to another parametric `0 Type κ` binder when the solver proves:
-
-```text
-ρ ≤ κ
-```
-
-It may be repackaged into another parametric field.
-
-It may not be projected as an ordinary value of type `Type ρ`.
-
-Examples:
-
-```kappa
-type SigSmall : Type =
-    (0 A : Type, value : A)
-```
-
-```kappa
-type LargeParamSmallRecord : Type =
-    (0 T : Type3, foo : Int)
-```
-
-The latter remains small because `T` is parametric and `foo` does not have type `T`.
-
-```kappa
-type LargeParamLargeRecord : Type3 =
-    (0 T : Type3, foo : T)
-```
-
-This lives in `Type3` because `foo : T` uses `T` as a field annotation classified by `Type3`.
-
-Rejected:
-
-```kappa
-bad :
-    (r : (0 T : Type3, foo : Int)) ->
-    Type3
-
-let bad r =
-    r.T
-```
-
-because `r.T` is a parametric type witness, not an ordinary type-code value.
-
-```kappa
-type SigLarge : Type1 =
-    (A : Type, value : A)
-```
-
-is a dependent record with an inspectable type-code field.
+An omitted field mode follows §12.1.1 from the elaborated field annotation.
 
 <!-- types.records.update -->
 #### 13.2.5 Record update
@@ -16179,7 +17844,8 @@ seal.
 Existential binders may range over any well-formed type `S : Type u`. The witness is bound at quantity `0`; therefore
 it may be used in types, erased positions, compile-time obligations, and other ambient-demand-`0` positions, but not in
 runtime-relevant computation unless a separate runtime carrier is present in the payload. This includes ordinary erased
-indices such as `Nat`, as well as intrinsic compile-time types such as `Region`, `Quantity`, `TypeLevel`, rows, and
+indices such as `Nat`, as well as runtime-capable `TypeLevel` values and intrinsic compile-time types such as `Region`,
+`Quantity`, rows, and
 labels.
 
 If an existential witness has type `RecRow`, the witness's inferred hidden home prefix is part of the hidden witness
@@ -16307,7 +17973,7 @@ Traits describe typeclasses / interfaces.
 Trait declarations use Haskell/Idris-style headers, optionally with a supertrait context:
 
 ```kappa
-trait Equiv (0 a : Type) =
+trait Equiv (parametric 0 a : Type) =
     (~=) : (& x : a) -> (& y : a) -> Bool
 
     equivRefl :
@@ -16321,13 +17987,13 @@ trait Equiv (0 a : Type) =
         (& x : a) -> (& y : a) -> (& z : a) ->
         ((x ~= y) = True -> (y ~= z) = True -> (x ~= z) = True)
 
-trait Eq (0 a : Type) =
+trait Eq (parametric 0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (& x : a) -> (& y : a) -> ((x == y) = True  -> x = y)
     eqComplete : (& x : a) -> (& y : a) -> (x = y -> (x == y) = True)
     eqIsSet    : IsSet a
 
-trait Eq a => Ord (0 a : Type) =
+trait Eq a => Ord (parametric 0 a : Type) =
     compare : (& x : a) -> (& y : a) -> Ordering
 
     compareEqSound :
@@ -16403,7 +18069,15 @@ let (>=) x y =
     case EQ -> True
     case GT -> True
 
-trait Functor (f : (0 A : Type) -> Type) =
+```
+
+A higher-kinded binder whose domain is a parametric kind defaults to `parametric 0`.
+
+Canonical higher-kinded trait declarations show that mode explicitly:
+
+```kappa
+trait Functor
+    (parametric 0 f : (parametric 0 A : Type) -> Type) =
     map :
         forall (a : Type) (b : Type).
         (a -> b) -> f a -> f b
@@ -16417,7 +18091,8 @@ trait Functor (f : (0 A : Type) -> Type) =
                (g : b -> c) (h : a -> b) (x : f a).
         map (\x -> g (h x)) x = map g (map h x)
 
-trait Functor f => Applicative (f : (0 A : Type) -> Type) =
+trait Functor f => Applicative
+    (parametric 0 f : (parametric 0 A : Type) -> Type) =
     pure :
         forall (a : Type).
         a -> f a
@@ -16448,7 +18123,8 @@ trait Functor f => Applicative (f : (0 A : Type) -> Type) =
         forall (a : Type) (b : Type) (u : f (a -> b)) (y : a).
         u <*> pure y = pure (\f0 -> f0 y) <*> u
 
-trait Applicative m => Monad (m : (0 A : Type) -> Type) =
+trait Applicative m => Monad
+    (parametric 0 m : (parametric 0 A : Type) -> Type) =
     (>>=) :
         forall (a : Type) (b : Type).
         m a -> (a -> m b) -> m b
@@ -16472,6 +18148,22 @@ trait Applicative m => Monad (m : (0 A : Type) -> Type) =
         ((x >>= f) >>= g) = (x >>= (\a -> f a >>= g))
 ```
 
+The inner binder `(A : Type)` also defaults to `parametric 0`.
+
+A higher-kinded parametric argument may be a named type constructor, partial application, transparent alias, type
+lambda, or projected parametric type-former field. Examples include `Option`, `List`, `Result Error`, `State Store`, and
+`Id`.
+
+A type former that demands an ordinary type-code argument does not match a parametric kind:
+
+```kappa
+G : (ordinary 0 A : Type) -> Type
+```
+
+Instance-head matching for higher-kinded arguments uses definitional equality after permitted transparent alias
+unfolding, beta reduction, and canonical type-constructor normalization. Instance resolution does not use function
+extensionality to compare arbitrary type-former arguments.
+
 <!-- traits.headers.abstract_evidence_records -->
 #### 14.1.1 Trait declarations as abstract evidence records
 
@@ -16480,7 +18172,7 @@ A trait declaration introduces an abstract evidence record family.
 For example:
 
 ```kappa
-trait Eq (0 a : Type) =
+trait Eq (parametric 0 a : Type) =
     (==) : (& x : a) -> (& y : a) -> Bool
     eqSound    : (x : a) -> (y : a) -> ((x == y) = True -> x = y)
     eqComplete : (x : a) -> (y : a) -> (x = y -> (x == y) = True)
@@ -16490,7 +18182,7 @@ trait Eq (0 a : Type) =
 elaborates as if it introduced an abstract evidence type:
 
 ```text
-Eq : (0 A : Type) -> Type
+Eq : (parametric 0 A : Type) -> Type
 ```
 
 with public eliminators for `(==)`, `eqSound`, and `eqComplete`, and with compiler-private introduction.
@@ -16618,6 +18310,35 @@ Consequences for collections and queries:
   temporary keys to be droppable unless those keys are transferred into an output value; and
 * `std.hash.Hashable.hashInto` remains borrow-based and therefore agrees with the non-consuming shape of `Eq`.
 
+<!-- traits.preserves_parametric_forall -->
+#### `PreservesParametricForall`
+
+The standard prelude provides the ordinary trait:
+
+```kappa
+trait PreservesParametricForall.{u, v, w}
+    (parametric 0 G : (A : Type v) -> Type w) =
+
+    pullForall :
+        (parametric 0 F : (A : Type u) -> Type v) ->
+        (forall (A : Type u). G (F A)) ->
+        G (forall (A : Type u). F A)
+```
+
+Evidence states that `G` lawfully moves one parametric universal quantifier from outside `G` into its argument.
+
+The compiler may insert `pullForall` only:
+
+* when an expected type requires this exact interchange;
+* after normal implicit resolution selects unique coherent evidence;
+* without supplying an omitted explicit source argument;
+* with the selected evidence application represented explicitly in KCore.
+
+This trait is not implied by `Functor`, `Applicative`, `Monad`, laziness, memoization, purity, or runtime representation
+similarity alone.
+
+A lawful `Need`-like type constructor may provide the evidence. A mutable `Ref`-like constructor ordinarily cannot.
+
 <!-- traits.hashable -->
 #### 14.1.3 `Hashable` and equality-compatible runtime hashing
 
@@ -16626,7 +18347,7 @@ The standard trait `std.hash.Hashable` is a runtime collection-acceleration trai
 It is deliberately not a replacement for `Eq`.
 
 ```kappa
-trait Eq a => Hashable (0 a : Type) =
+trait Eq a => Hashable (parametric 0 a : Type) =
     hashInto :
         (& value : a) -> (1 state : std.hash.HashState) -> std.hash.HashState
 ```
@@ -16920,6 +18641,23 @@ regardless of whether any names from that module are imported.
 This is a global program property, not an import-side effect. Adding a dependency may introduce new instance candidates
 and therefore new ambiguity or coherence failures. This is by design.
 
+<!-- traits.universe_schema_cumulativity -->
+#### Universe-schema cumulativity and instance resolution
+
+Universe-schema cumulativity does not participate in global instance-head overlap, orphan, or coherence comparison.
+
+Instance heads are compared using exact normalized declaration universe instantiations after ordinary declaration-schema
+instantiation. The resolver does not use one-way or irrelevant `schemaLift` edges to manufacture additional matching
+instance heads.
+
+A universe-polymorphic instance should generalize or explicitly declare its own universe schema.
+
+After a unique candidate has been selected by ordinary coherence rules, its resulting evidence value may be subjected to
+ordinary expected-type cumulativity, including a checked `schemaLift`, when the evidence type is a certified nominal
+family.
+
+This ordering prevents bidirectional irrelevant lifts from creating ambiguous or overlapping instances.
+
 <!-- traits.instances.resolution_algorithm -->
 #### 14.3.1 Instance resolution algorithm
 
@@ -17017,47 +18755,22 @@ Instance candidate collection and representative selection MUST NOT depend on im
 order, interface reload order, hash-map iteration order, cache insertion order, or worker scheduling.
 
 <!-- traits.instances.parametric_type_witnesses_trait_evidence -->
-#### 14.3.1A Parametric type witnesses and trait evidence
+#### 14.3.1A Parametric observation and trait evidence
 
-Trait search may form goals involving parametric type witnesses.
+Trait search may form goals mentioning parametric values.
 
-Example:
+Behavior may depend on explicit or implicit evidence such as `Typeable A`, `Generic A`, or `Show A`.
 
-```kappa
-show :
-    (0 A : Type) ->
-    Show A =>
-    A ->
-    String
-```
+That dependence is ordinary dictionary passing. It does not convert the witness `A` itself to ordinary observation.
 
-The parameter `A` remains parametric. The function may depend on the explicit or implicit `Show A` evidence.
-
-This is ordinary dictionary passing: the term is parametric in `A` relative to the evidence it receives.
-
-Trait evidence may expose operations, runtime representations, compile-time representations, associated types, or
-associated values exactly as declared by the trait. Such members are checked by ordinary typing and by the parametric
-capability rules of §11.1.2.3A.
-
-No trait search rule implicitly converts a parametric type witness into an ordinary type-code value.
-
-A generic reflection trait such as `Typeable A`, `Generic A`, `ShapeOf A`, or implementation-defined equivalent is
-permitted only through explicit evidence. Its instances and members must be checked normally.
-
-A method or associated member definition that attempts to implement an ordinary `Type` result by returning a parametric
-type witness is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
-
-Example rejected instance body shape:
-
-```kappa
-trait BadReflect (0 A : Type) =
-    code : Type
-
-instance BadReflect A =
-    code = A
-```
-
-unless `A` is an ordinary type-code parameter rather than a parametric type witness.
+An ordinary callable may close over associated static-member projections from
+ordinary trait evidence when its terminal result has an ordinary runtime
+classifier. The dependency remains tagged with the resolved trait identity:
+it is discharged only at that callable-behavior boundary. Returning the
+projected witness itself, returning static code that contains it, projecting
+from a non-trait package, or combining it with any unrelated parametric origin
+remains a parametric-to-ordinary promotion. This is the evidence-relative
+behavior rule above, not a generic sealing eliminator.
 
 <!-- traits.instances.normalized_instance_heads -->
 #### 14.3.2 Normalized instance goals and heads
@@ -17249,9 +18962,9 @@ trait IsSubsingleton (0 t : Type) =
         (y : t) ->
         x = y
 
-trait IsSubsingleton p => IsProp (0 p : Type)
+trait IsSubsingleton p => IsProp (parametric 0 p : Type)
 
-trait IsSet (0 a : Type) =
+trait IsSet (parametric 0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
@@ -17594,11 +19307,15 @@ Without an explicit relation or proof in the `decreases` clause, the portable us
 
 * a term of type `Nat`;
 * a term of type `Int` or `Integer`, interpreted through the non-negative subset rule below; or
+* a term of type `TypeLevel`; or
 * a tuple whose components are any mixture of the preceding measure types.
 
 A bare measure is treated as a 1-tuple. Tuples are ordered lexicographically componentwise.
 
 For a `Nat` component, the component order is the ordinary `<` relation on `Nat`.
+
+For a `TypeLevel` component, the component order is the standard `<` relation of §11.1.2.2. The admitted level domain is
+well founded, so no non-negativity side condition is required.
 
 For an `Int` or `Integer` component, the component order is ordinary integer `<` restricted to values proved
 non-negative at the recursive edge being checked. Therefore a recursive edge may use an integer component as its strict
@@ -20520,97 +22237,40 @@ In the residual branch, normalization of `foo left Nil` skips the first alternat
 reduces the second decision using the known `right = Nil` argument.
 
 <!-- expressions.match.parametric_constructor_binders_patterns -->
-#### 17.1.7A Parametric constructor binders in patterns
+#### 17.1.7A Observation modes in constructor patterns
 
-When a constructor field was declared as a parametric type binder:
+A pattern binder inherits the observation mode of the constructor field it binds.
 
-```kappa
-(0 A : Type ρ)
-```
+A parametric branch binder may be used in types and other parametric positions.
 
-or:
+It may not be returned, stored, reflected, or passed as an ordinary-observable value.
 
-```kappa
-(@0 A : Type ρ)
-```
-
-the corresponding pattern binder is introduced as a parametric type witness at level `ρ`.
+Pattern matching does not require a special unpack form. It preserves the mode structurally.
 
 Example:
 
 ```kappa
 data Some : Type =
-    Some (0 A : Type) (value : A)
+    Some (A : Type) (value : A)
 
-let repack (x : Some) : Some =
+repack : Some -> Some
+let repack x =
     match x
     case Some A value ->
         Some A value
 ```
 
-The branch binder `A` may be used as a type expression and may be passed to other compatible `0 Type κ` binders when
-the solver proves `ρ ≤ κ`.
-
-It may not be returned, stored, reflected, or repackaged as an ordinary value of type `Type ρ`.
-
-Rejected:
+is accepted because the default mode of `A : Type` is parametric.
 
 ```kappa
-bad :
-    Some -> Type
-
+bad : Some -> Type
 let bad x =
     match x
     case Some A value ->
         A
 ```
 
-Accepted:
-
-```kappa
-consume :
-    Some ->
-    ((0 B : Type) -> B -> R) ->
-    R
-
-let consume x k =
-    match x
-    case Some A value ->
-        k A value
-```
-
-Accepted:
-
-```kappa
-data LargeSome : Type3 =
-    LargeSome (0 A : Type3) (value : A)
-
-largeRepack :
-    LargeSome -> LargeSome
-
-let largeRepack x =
-    match x
-    case LargeSome A value ->
-        LargeSome A value
-```
-
-Rejected:
-
-```kappa
-badLargeType :
-    LargeSome -> Type3
-
-let badLargeType x =
-    match x
-    case LargeSome A value ->
-        A
-```
-
-The latter is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
-
-Pattern matching does not seal parametric type witnesses behind a special unpacking form. Ordinary records and data
-constructors project and pattern-match normally. The only restriction is capability preservation: a `0 Type ρ` witness
-must remain a `0 Type ρ` witness.
+is rejected with `E_PARAMETRIC_TYPE_PROMOTION`.
 
 <!-- expressions.match.narrowing_is_consuming -->
 #### 17.1.8 Narrowing is non-consuming
@@ -22539,7 +24199,7 @@ or portable conformance tests.
 Kappa provides a trait for monads that support reliable finalization:
 
 ```kappa
-trait MonadFinally (m : (0 A : Type) -> Type) =
+trait MonadFinally (parametric 0 m : (parametric 0 A : Type) -> Type) =
     finally : forall a. m a -> m Unit -> m a
 ```
 
@@ -22784,7 +24444,7 @@ Valid do-items inside `do`:
     It requires an implicit instance:
 
     ```kappa
-    trait Releasable (m : (0 A : Type) -> Type) (0 a : Type) =
+    trait Releasable (parametric 0 m : (parametric 0 A : Type) -> Type) (a : Type) =
         release : (1 resource : a) -> m Unit
     ```
 
@@ -23622,7 +25282,7 @@ Rejected: `continue` exits the scope of `x` without demanding it.
 A `var` declaration inside a `do` block of monad `m` requires an implicit instance:
 
 ```kappa
-trait MonadRef (m : (0 A : Type) -> Type) =
+trait MonadRef (parametric 0 m : (parametric 0 A : Type) -> Type) =
     Ref : (0 A : Type) -> Type
     newRef   : a -> m (Ref a)
     readRef  : Ref a -> m a
@@ -25136,7 +26796,7 @@ step ~weights ~bias
 Error-aware monads are described via a trait like:
 
 ```kappa
-trait MonadFinally m => MonadError (m : (0 A : Type) -> Type) =
+trait MonadFinally m => MonadError (parametric 0 m : (parametric 0 A : Type) -> Type) =
     Error : Type
     throwError : Error -> m a
     catchError : m a -> (Error -> m a) -> m a
@@ -25296,7 +26956,7 @@ Therefore:
 
 ```kappa
 raise :
-    forall (m : (0 A : Type) -> Type) (a : Type).
+    forall (parametric 0 m : (parametric 0 A : Type) -> Type) (a : Type).
     (@_ : MonadError m) ->
     MonadError.Error m ->
     m a
@@ -25317,7 +26977,7 @@ refines `MonadFinally` with a scoped-allocation combinator that guarantees relea
 ordinary `do`-scope unwinding behavior of §18.8.
 
 ```kappa
-trait MonadFinally m => MonadResource (m : (0 A : Type) -> Type) =
+trait MonadFinally m => MonadResource (parametric 0 m : (parametric 0 A : Type) -> Type) =
     bracket :
         forall (a : Type) (b : Type).
         (1 acquire : m a) ->
@@ -27837,23 +29497,23 @@ reflection path.
 <!-- types.macros.parametric_witnesses_reflection -->
 #### 21.6.2 Parametric witnesses and reflection
 
-Generated syntax, macro output, plugin output, and reflected syntax are checked by the same parametric capability rules
-as user-written source.
+Generated syntax, macro output, plugin output, and reflected syntax are checked by the same observation-mode rules as
+user-written source.
 
-A macro may generate code that mentions a parametric type witness. The generated code is accepted exactly when the same
-source-written code would be accepted.
+A macro may generate code that mentions a parametric static witness. The generated code is accepted exactly when the
+same source-written code would be accepted.
 
 A macro or plugin does not receive a special operation that converts:
 
 ```text
-parametric type witness -> ordinary type-code value
+parametric static witness -> ordinary static value
 ```
 
-Semantic reflection may represent a parametric type witness as a rigid semantic entity. Such representation does not
-grant ordinary type-code capability.
+Semantic reflection may represent a parametric static witness as a rigid semantic entity. Such representation does not
+grant ordinary observation.
 
-If generated code attempts to return, store, reflect, typecase, or reify a parametric type witness as an ordinary
-`Type`, elaboration rejects the generated code with `E_PARAMETRIC_TYPE_PROMOTION`.
+If generated code attempts to return, store, reflect, typecase, or reify a parametric static witness as an
+ordinary-observation value, elaboration rejects the generated code with `E_PARAMETRIC_TYPE_PROMOTION`.
 
 This rule does not restrict ordinary syntax inspection. It restricts only accepted elaborated output.
 
@@ -32203,7 +33863,7 @@ performance and implementation-defined profiling/debug APIs.
 
 ```kappa
 
-data List (0 a : Type) : Type =
+data List (a : Type) : Type =
     Nil
     (::) (head : a) (tail : List a)
 
@@ -32325,14 +33985,16 @@ data Match (0 a : Type) (0 r : Type) : Type =
     Hit a
     Miss r
 
-data Dec (0 p : Type) : Type =
-    Yes p
-    No (p -> Void)
+data Dec.{u} (parametric 0 P : Type u) : Type u =
+    Yes (proof : P)
+    No  (refute : P -> Void)
+
+-- Runtime-capable opaque level type exported from std.typelevel.
+TypeLevel : Type0
 
 -- Intrinsic compile-time classifiers exported by std.prelude.
 -- These are primitive declarations with ordinary source-level name resolution.
 
-TypeLevel : Type0
 Quantity : Type0
 Region   : Type0
 
@@ -32361,7 +34023,7 @@ trait IsSubsingleton (0 t : Type) =
 
 trait IsSubsingleton p => IsProp (0 p : Type)
 
-trait IsSet (0 a : Type) =
+trait IsSet (parametric 0 a : Type) =
     pathIsProp :
         forall (x : a) (y : a).
         IsProp (x = y)
@@ -32395,7 +34057,7 @@ intrinsic trait SplitEff    (r : EffRow) (l : EffLabel) (0 e : Type) (rest : Eff
 
 Variant : VarRow -> Type
 
-expect data Eff (r : EffRow) (0 a : Type) : Type
+expect data Eff (r : EffRow) (a : Type) : Type
 
 Code       : (0 A : Type) -> Type
 ClosedCode : (0 A : Type) -> Type
@@ -32464,20 +34126,20 @@ Proof-directed termination clauses in §15.11 use erased source proofs of relati
 values of the selected relation type, checked at ambient demand `0`; there is no runtime representation requirement for
 termination proof arguments.
 
-expect data IO (0 e : Type) (0 a : Type) : Type
-type UIO (0 a : Type) = IO Void a
+expect data IO (e : Type) (a : Type) : Type
+type UIO (a : Type) = IO Void a
 
-trait MonadFinally (m : (0 A : Type) -> Type) =
+trait MonadFinally (parametric 0 m : (parametric 0 A : Type) -> Type) =
     finally :
         forall (a : Type).
         m a -> m Unit -> m a
 
-trait MonadFinally m => MonadError (m : (0 A : Type) -> Type) =
+trait MonadFinally m => MonadError (parametric 0 m : (parametric 0 A : Type) -> Type) =
     Error : Type
     throwError : Error -> m a
     catchError : m a -> (Error -> m a) -> m a
 
-trait MonadFinally m => MonadResource (m : (0 A : Type) -> Type) =
+trait MonadFinally m => MonadResource (parametric 0 m : (parametric 0 A : Type) -> Type) =
     bracket :
         forall (a : Type) (b : Type).
         (1 acquire : m a) ->
@@ -32485,13 +34147,13 @@ trait MonadFinally m => MonadResource (m : (0 A : Type) -> Type) =
         (1 use : (& r : a) -> m b) ->
         m b
 
-trait MonadRef (m : (0 A : Type) -> Type) =
+trait MonadRef (parametric 0 m : (parametric 0 A : Type) -> Type) =
     Ref : (0 A : Type) -> Type
     newRef   : a -> m (Ref a)
     readRef  : Ref a -> m a
     writeRef : Ref a -> a -> m Unit
 
-trait Releasable (m : (0 A : Type) -> Type) (0 a : Type) =
+trait Releasable (parametric 0 m : (parametric 0 A : Type) -> Type) (a : Type) =
     release :
         (1 resource : a) -> m Unit
 
@@ -32588,25 +34250,35 @@ data RaceResult (0 a : Type) (0 b : Type) : Type =
     LeftWins a
     RightWins b
 
-data (=) (@0 a : Type) (x : a) (y : a) : Type =
+data (=).{u}
+    (@parametric 0 A : Type u)
+    (parametric 0 x : A)
+    (parametric 0 y : A)
+    : Type u =
+
     refl : x = x
 
 expect term absurd :
     forall (@0 a : Type).
     Void -> a
 
-expect term pathInd :
-    forall (@0 a : Type)
-           (@0 x : a)
-           (@0 C : forall (@0 y : a). (@0 p : x = y) -> Type).
-    C x refl ->
-    forall (@0 y : a).
-    (p : x = y) ->
-    C y p
+expect term pathInd.{u, v} :
+    (@parametric 0 A : Type u) ->
+    (@parametric 0 x : A) ->
+    (parametric 0 motive : (parametric 0 y : A) -> x = y -> Type v) ->
+    motive x refl ->
+    (parametric 0 y : A) ->
+    (parametric 0 p : x = y) ->
+    motive y p
 
-expect term subst :
-    forall (@0 a : Type) (@0 P : a -> Type) (@0 x : a) (@0 y : a).
-    (p : x = y) -> P x -> P y
+expect term subst.{u, v} :
+    (@parametric 0 A : Type u) ->
+    (parametric 0 P : (parametric 0 z : A) -> Type v) ->
+    (parametric 0 x : A) ->
+    (parametric 0 y : A) ->
+    x = y ->
+    P x ->
+    P y
 
 expect term unsafeAssertProof :
     forall (@0 P : Type).
@@ -32630,7 +34302,7 @@ let summon (@0 t : Type) (@_ : IsTrait t) (@evidence : t) =
     evidence
 
 raise :
-    forall (m : (0 A : Type) -> Type) (a : Type).
+    forall (parametric 0 m : (parametric 0 A : Type) -> Type) (a : Type).
     (@_ : MonadError m) ->
     MonadError.Error m ->
     m a
@@ -32795,7 +34467,7 @@ trait Monoid (0 m : Type) =
 
 let (++) x y = append x y
 
-trait Foldable (t : (0 A : Type) -> Type) =
+trait Foldable (parametric 0 t : (parametric 0 A : Type) -> Type) =
     foldr :
         forall (a : Type) (b : Type).
         (a -> b -> b) -> b -> t a -> b
@@ -32809,36 +34481,43 @@ trait Foldable (t : (0 A : Type) -> Type) =
         (@_ : Monoid m) ->
         (a -> m) -> t a -> m
 
-trait (Functor t, Foldable t) => Traversable (t : (0 A : Type) -> Type) =
+trait (Functor t, Foldable t) => Traversable
+    (parametric 0 t : (parametric 0 A : Type) -> Type) =
     traverse :
-        forall (f : (0 A : Type) -> Type) (a : Type) (b : Type).
+        forall (parametric 0 f : (parametric 0 A : Type) -> Type) (a : Type) (b : Type).
         (@_ : Applicative f) ->
         (a -> f b) -> t a -> f (t b)
 
-trait Filterable (t : (0 A : Type) -> Type) =
+trait Filterable (parametric 0 t : (parametric 0 A : Type) -> Type) =
     filter :
         forall (a : Type).
         (a -> Bool) -> t a -> t a
 
-trait FilterMap (t : (0 A : Type) -> Type) =
+trait FilterMap (parametric 0 t : (parametric 0 A : Type) -> Type) =
     filterMap :
         forall (a : Type) (b : Type).
         (a -> Option b) -> t a -> t b
 
 expect term for_ :
-    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
+    forall (parametric 0 t : (parametric 0 A : Type) -> Type)
+           (parametric 0 m : (parametric 0 A : Type) -> Type)
+           (a : Type).
     (@_ : Foldable t) ->
     (@_ : Applicative m) ->
     t a -> (a -> m Unit) -> m Unit
 
 expect term sequence :
-    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
+    forall (parametric 0 t : (parametric 0 A : Type) -> Type)
+           (parametric 0 m : (parametric 0 A : Type) -> Type)
+           (a : Type).
     (@_ : Traversable t) ->
     (@_ : Applicative m) ->
     t (m a) -> m (t a)
 
 expect term sequence_ :
-    forall (t : (0 A : Type) -> Type) (m : (0 A : Type) -> Type) (a : Type).
+    forall (parametric 0 t : (parametric 0 A : Type) -> Type)
+           (parametric 0 m : (parametric 0 A : Type) -> Type)
+           (a : Type).
     (@_ : Foldable t) ->
     (@_ : Applicative m) ->
     t (m a) -> m Unit
@@ -32850,7 +34529,7 @@ The portable prelude MUST provide coherent instances of `Foldable`, `Traversable
 defined by Chapter 20. A `Foldable Set` or `Foldable Map` instance must obey the Ordered/Unordered rules of §20.3.2 and
 must not expose hash-bucket order as portable behavior.
 
-trait Alternative (f : (0 A : Type) -> Type) =
+trait Alternative (parametric 0 f : (parametric 0 A : Type) -> Type) =
     empty : f a
     (<|>) : f a -> f a -> f a
 
@@ -33186,7 +34865,33 @@ or `AdditiveMonoid Instant`.
 * `Void` is the empty type.
 * `absurd` is ex falso elimination from `Void`.
 * `Dec p` packages a decision procedure for proposition `p`, carrying either positive evidence `Yes p` or a refutation
-  `No (p -> Void)`.
+  `No (p -> False)`.
+
+`Option`, `List`, `Result`, `IO`, `Eff`, `Eq`, `Ord`, `IsProp`, `IsSet`, `sameDynRep`, and `checkedCastWith` are
+universe-generalized through hidden declaration universe parameters wherever their elaborated types permit it. `Dec`,
+`(=)`, `pathInd`, and `subst` expose the explicit standard schemas specified by §11.4.1.
+
+The required dynamic representation signature remains ordinary equality:
+
+```kappa
+expect term sameDynRep :
+    forall a b.
+    DynRep a ->
+    DynRep b ->
+    Dec (a = b)
+```
+
+There is no special `TypeEq` family and no equality kind-check bypass.
+
+A signature such as:
+
+```kappa
+compareTypes :
+    (a b : Type) ->
+    IO Error (a = b)
+```
+
+is well-formed by ordinary hidden universe generalization of equality and `IO`.
 
 `WellFounded`, `Acc`, `WellFoundedRelation`, `measureRelation`, and `lexRelation` are the standard erased
 well-founded-relation vocabulary used by termination checking. Their evidence is compile-time only; relation evidence
@@ -33214,12 +34919,14 @@ Show Unit, Show Bool, Show Byte, Show Bytes, Show UnicodeScalar, Show Grapheme, 
 Show Ordering, Show Duration, Show Instant
 ```
 
-The `Eq TypeLevel` and `Ord TypeLevel` instances are compiler-owned intrinsic instances defined by §11.1.2.2.
+The `Eq TypeLevel` and `Ord TypeLevel` instances are actual standard instances defined by §11.1.2.2. The universe
+solver recognizes their resolved semantic identities through its certified normalization bridge.
 
-Source instances for `Eq TypeLevel` or `Ord TypeLevel` are rejected.
+Additional source instances for `Eq TypeLevel` or `Ord TypeLevel` are rejected by ordinary instance coherence. The
+standard instances above remain actual source-visible instances rather than intrinsic-only evidence.
 
-Their operations are compile-time-only when applied to compile-time-only `TypeLevel` values. They may be used by ordinary
-compile-time code, by erased proof binders, and by universe checking as specified in §11.1.2.2.
+Their operations may be runtime-relevant or compile-time, according to quantity, phase, and demand. They may also be
+used by erased proof binders and universe checking as specified in §11.1.2.2.
 
 Numeric:
 
@@ -33237,11 +34944,13 @@ Zero Int, One Int, Add Int, Mul Int, Negatable Int, CheckedSub Int, CheckedDiv I
 Zero Rational, One Rational, Add Rational, Mul Rational, Negatable Rational, CheckedSub Rational, CheckedDiv Rational,
 Zero Float, One Float, Add Float, Mul Float, Negatable Float, CheckedSub Float, CheckedDiv Float,
 Zero Double, One Double, Add Double, Mul Double, Negatable Double, CheckedSub Double, CheckedDiv Double
+Zero TypeLevel, One TypeLevel, FromInteger TypeLevel, Successor TypeLevel, Add TypeLevel, Max TypeLevel
 ```
 
-The `TypeLevel` numeric-like operation instances are compiler-owned intrinsic instances defined by §11.1.2.2.
+The `TypeLevel` numeric-like operation instances are actual standard instances defined by §11.1.2.2 and recognized by
+semantic identity through the certified normalization bridge.
 
-Source instances for:
+Additional source instances for:
 
 ```kappa
 FromInteger TypeLevel
@@ -33252,7 +34961,7 @@ Add TypeLevel
 Max TypeLevel
 ```
 
-are rejected.
+are rejected by ordinary instance coherence. The canonical standard instances remain actual source-visible instances.
 
 `FromInteger TypeLevel` accepts only nonnegative integer literals. Negative integer literals are rejected in `TypeLevel`
 contexts.
@@ -33269,16 +34978,17 @@ CheckedMod TypeLevel
 
 unless a later specification explicitly adds them.
 
-The portable prelude also does not provide algebraic law instances such as:
+The portable prelude provides the following checked algebraic law instances for the complete `TypeLevel` algebra of
+§11.1.2.2:
 
 ```kappa
 AdditiveMonoid TypeLevel
-Semiring TypeLevel
-Ring TypeLevel
-FieldLike TypeLevel
+CommutativeAdditiveMonoid TypeLevel
+OrderedAdditive TypeLevel
+JoinSemilattice TypeLevel
 ```
 
-unless a later specification explicitly standardizes their law interpretation for universe levels.
+It does not provide `Semiring TypeLevel`, `Ring TypeLevel`, or `FieldLike TypeLevel`.
 
 `FromString` is an ordinary library conversion trait in v1. Ordinary unprefixed string literals have type `String`
 directly and do not elaborate through `FromString`. Custom string-like literal behavior is expressed through prefixed
@@ -33302,6 +35012,9 @@ AdditiveMonoid Rational, AdditiveGroup Rational,
 MultiplicativeMonoid Rational, Semiring Rational, Ring Rational,
 OrderedAdditive Rational, OrderedSemiring Rational,
 FieldLike Rational
+
+AdditiveMonoid TypeLevel, CommutativeAdditiveMonoid TypeLevel,
+OrderedAdditive TypeLevel, JoinSemilattice TypeLevel
 ```
 
 Container and traversal:
@@ -33480,8 +35193,8 @@ standardized.
 
 For ordinary ordered types, a library may define `max` from `Ord` when that is appropriate.
 
-For `TypeLevel`, the portable prelude MUST provide a compiler-owned `Max TypeLevel` instance whose `max` method reduces
-to the intrinsic `__typeLevelMax`.
+For `TypeLevel`, the portable prelude MUST provide the canonical `Max TypeLevel` instance whose `max` method is
+recognized by the certified solver bridge and is extensionally equivalent to the solver's canonical maximum.
 
 The generic definition:
 
@@ -33490,8 +35203,9 @@ let max x y =
     if x <= y then y else x
 ```
 
-is not sufficient for the `TypeLevel` solver, because it does not reduce to a canonical solver-level expression for open
-level variables.
+remains a valid level term when total and stable. Unless it transparently reduces to the standard `max` operation or
+selected evidence exposes its behavior, the solver treats an application at open level variables as one rigid neutral
+atom rather than as the canonical maximum constructor.
 
 Rules:
 
@@ -33530,6 +35244,24 @@ trait (Eq a, Zero a, Add a) => AdditiveMonoid (0 a : Type) =
     addRightIdentity :
         forall (x : a).
         add x zero = x
+
+trait AdditiveMonoid a => CommutativeAdditiveMonoid (0 a : Type) =
+    addCommutative :
+        forall (x : a) (y : a).
+        add x y = add y x
+
+trait (Eq a, Max a) => JoinSemilattice (0 a : Type) =
+    joinAssoc :
+        forall (x : a) (y : a) (z : a).
+        max (max x y) z = max x (max y z)
+
+    joinCommutative :
+        forall (x : a) (y : a).
+        max x y = max y x
+
+    joinIdempotent :
+        forall (x : a).
+        max x x = x
 
 trait (AdditiveMonoid a, Negatable a) => AdditiveGroup (0 a : Type) =
     addLeftInverse :
@@ -34200,7 +35932,7 @@ expect term hashDoubleRaw :
 expect term hashNatTag :
     Nat -> (1 state : HashState) -> HashState
 
-trait Eq a => Hashable (0 a : Type) =
+trait Eq a => Hashable (parametric 0 a : Type) =
     hashInto :
         (& value : a) -> (1 state : HashState) -> HashState
 
@@ -35652,8 +37384,8 @@ KCore is after:
 
 KCore retains all compile-time structure needed by the source semantics. In particular, KCore may contain:
 
-* intrinsic compile-time types and their inhabitants, including `TypeLevel`, `Quantity`, `Region`, row types, label
-  types, universe terms, trait-obligation type expressions, and `Type u`;
+* runtime-capable `TypeLevel` values and intrinsic compile-time types and inhabitants, including `Quantity`, `Region`,
+  row types, label types, universe terms, trait-obligation type expressions, and `Type u`;
 * source/synthetic origin chains and syntax-scope metadata needed to justify generated code, diagnostics, and interface
   identity after macro expansion;
 * explicit binder quantities, explicit regions, and explicit implicit binders;
@@ -35664,6 +37396,9 @@ KCore retains all compile-time structure needed by the source semantics. In part
 * explicit handler forms, resumption quantities, completion constructors, `DoScope` frames, and exit-action scheduling
   for cleanup;
 * explicit application spines aligned with Pi telescopes;
+* explicit classifier-only `universeLift` nodes and certified nominal-family `schemaLift` nodes;
+* resolved nominal-family identity, declared saturation arity, universe instantiation, and aligned family arguments on
+  every nominal application that may participate in `schemaLift` checking;
 * primitive suspension type formers `Thunk` and `Need`, together with explicit suspension introduction and forcing;
 * explicit stable places, scoped place borrows, first-class projector descriptors, first-class accessor descriptors,
   first-class borrowed-view values, and opened-place packages;
@@ -35695,6 +37430,758 @@ Any modality-predicate evidence introduced by an enabled modal/coeffect extensio
 proof-irrelevant for typechecking unless that extension explicitly introduces a user-visible runtime carrier. Such
 evidence is erased before KBackendIR and does not participate in definitional equality of ordinary terms or types,
 except through the extension's own specified type formers.
+
+<!-- compiler.kcore.observation_calculus -->
+#### 30.2.0 Observation dependency calculus
+
+KCore checks observation mode with an independently defined dependency judgment:
+
+```text
+Gamma |- t : A ▷ D
+```
+
+`D` is a finite set of parametric origins on which ordinary observation of `t` depends.
+
+A term is admissible in an `ordinary` position exactly when `D` is empty.
+
+Every term is admissible in a `parametric` position.
+
+This yields the one-way subsumption:
+
+```text
+ordinary -> parametric
+```
+
+and forbids the reverse.
+
+Parametric origins include:
+
+```text
+* parametric binder identities;
+* parametric field projections;
+* parametric static facets;
+* implementation-generated origins that preserve one of the above.
+```
+
+The checker computes `D`; KCoreText does not serialize a trusted precomputed dependency set.
+
+<!-- compiler.kcore.observation_calculus.variables -->
+##### Variables and globals
+
+```text
+ordinary binder x       => deps(x) = {}
+parametric binder x     => deps(x) = {x}
+ordinary global facet   => deps(g) = {}
+parametric global facet => deps(g) = {g}
+```
+
+<!-- compiler.kcore.observation_calculus.checking -->
+##### Checking against a binder or field
+
+An argument or field value with dependency set `D` may instantiate:
+
+```text
+ordinary binder/field    only when D = {}
+parametric binder/field  for any D
+```
+
+<!-- compiler.kcore.observation_calculus.application -->
+##### Application
+
+Suppose:
+
+```text
+f : Pi[mode,q] x : A. B
+```
+
+with dependency sets `Df` and `Da` for `f` and argument `a`.
+
+The argument must satisfy the binder mode.
+
+The result dependency set is:
+
+```text
+Df union propagate(mode, x, B, Da)
+```
+
+where:
+
+```text
+propagate(ordinary,  x, B, Da) = {}
+
+propagate(parametric, x, B, Da) =
+    Da, when x occurs in B or B normalizes to a parametric kind;
+    {}, otherwise.
+```
+
+This permits a genuinely constant value function such as `forall A. Int` to return an ordinary `Int`, while ensuring
+that type-constructor application, dependent result formation, and higher-kinded partial application preserve
+parametric dependencies.
+
+<!-- compiler.kcore.observation_calculus.lambda -->
+##### Lambda
+
+If the body has dependencies `D`, then:
+
+```text
+deps(lambda x { body }) = D minus {x}
+```
+
+Abstraction discharges dependence on its own binder but not on captured outer parametric origins.
+
+<!-- compiler.kcore.observation_calculus.let -->
+##### Let and substitution
+
+For:
+
+```text
+let x = rhs in body
+```
+
+let `Dr` be the dependencies of `rhs` and `Db` the dependencies of `body` with binder origin `x`.
+
+```text
+deps(let x = rhs in body) =
+    (Db minus {x}) union (Dr when x is in Db, otherwise {})
+```
+
+KCore substitution MUST satisfy the same equation:
+
+```text
+deps(t[s/x]) =
+    (deps(t) minus {x}) union
+    (deps(s) when x is in deps(t), otherwise {})
+```
+
+<!-- compiler.kcore.observation_calculus.static_code -->
+##### Pi, Sigma, and other static code construction
+
+Constructing an ordinary static code term does not seal dependencies.
+
+For Pi, Sigma, type-family application, and other ordinary code constructors, dependencies of component code terms are
+unioned after removing locally bound origins from dependent bodies.
+
+Consequently, constructing `A -> A` from a parametric `A` yields a parametric type witness rather than an ordinary type
+code.
+
+<!-- compiler.kcore.observation_calculus.construction -->
+##### Record, tuple, package, and data construction
+
+A declared parametric field is a sealing boundary.
+
+During construction:
+
+```text
+* dependencies supplied to ordinary fields propagate to the enclosing value;
+* dependencies supplied to parametric fields are sealed and do not make the whole container parametric;
+* every field argument is still checked against its declared observation mode.
+```
+
+Projection restores the declared field mode:
+
+```text
+ordinary field projection:
+    dependencies are those of the scrutinee;
+
+parametric field projection:
+    dependencies are those of the scrutinee plus a fresh projection origin.
+```
+
+Constructor arguments and pattern binders use the same rules.
+
+<!-- compiler.kcore.observation_calculus.case -->
+##### Case analysis
+
+Pattern binders receive the observation modes declared by the selected constructor or field.
+
+The result dependency set is the union of branch dependencies after branch-local binder substitution.
+
+Dependencies of a parametric scrutinee propagate through case analysis.
+
+Kappa v1 has no generic user-declared or compiler-declared "sealing eliminator" that may discard observation
+dependencies.
+
+Construction into a declared parametric field is the sealing boundary. Projection or pattern binding restores a
+parametric origin. Construction into an ordinary field propagates the dependency. An ordinary result is accepted only
+when its computed ordinary-observation dependency set is empty.
+
+<!-- compiler.kcore.observation_calculus.conversion -->
+##### Aliases, conversion, and lifts
+
+Transparent aliases preserve dependency sets.
+
+Definitional conversion does not change dependencies.
+
+`universeLift` and `schemaLift` preserve observation dependencies.
+
+A reverse conversion is a separate checked lift requiring independently valid reverse level or schema evidence.
+Covariant lifts have no implicit inverse.
+
+<!-- compiler.kcore.observation_calculus.metatheory -->
+##### Required metatheory
+
+The KCore checker MUST validate:
+
+```text
+weakening
+substitution
+subject reduction
+ordinary-to-parametric subsumption
+absence of parametric-to-ordinary promotion
+preservation through beta, iota, zeta, and projection reduction
+```
+
+An expression checked with an empty ordinary-observation dependency set cannot reify a type code or static value that is
+available only through parametric fields, constructor arguments, projections, pattern binders, aliases, or higher-kinded
+applications.
+
+A hand-authored KCoreText file is rejected if any node requires a nonempty dependency set in an ordinary position.
+
+Every KCore binder and dependent field records observation mode and formation mode independently from quantity, access
+mode, and explicitness. Pi and Sigma formation is checked under §11.1.2.8 from the explicit formation claim, binder
+mode, normalized domain, and construct-specific formation rule. KCoreText supplies the claim so round trips preserve
+the elaborator's judgment, but the KCore checker treats it as untrusted and rejects an invalid claim. Observation
+mode participates in KCore typing, interfaces, semantic hashing, normalized instance heads, KCoreText, stage dumps, and
+checkpoint verification, but is not itself a runtime field. Erasure still requires an ordinary erasure justification.
+
+A KCore declaration records an explicit or inferred universe telescope separately from its term telescope:
+
+```text
+DeclarationUniverseTelescope =
+    List UniverseParameter
+
+DeclarationConstraintSummary =
+    List NormalizedLevelProposition
+```
+
+`DeclarationConstraintSummary` is derived from the declaration's implicit erased proof binders. It is a checked cache
+for interfaces, diagnostics, role comparison, and solver startup; it is not a second source of authority.
+
+The authoritative KCore declaration type contains the generated or source-written proof binders in its ordinary term
+telescope.
+
+Universe parameters are instantiated at global-reference sites. They are not local variables, term binders, closure
+fields, or runtime arguments.
+
+Local KCore declarations may carry local declaration universe telescopes under §11.1.2.3A.1. A local reference
+instantiates that telescope freshly at each use; local recursive SCCs share one generalized telescope and derived
+constraint summary. These facts are serialized in KCoreText, stage dumps, and semantic hashes and introduce no runtime
+closure field.
+
+<!-- compiler.kcore.text_format -->
+#### 30.2.0A Canonical KCoreText
+
+A conforming implementation MUST provide a canonical, parseable, human-readable KCore serialization named
+`KCoreText`.
+
+KCoreText is deliberately Kappa-like, but it is not Kappa source syntax.
+
+It uses braces and semicolons. Indentation is ignored.
+
+It performs no overload resolution, implicit insertion, universe inference, modality inference, quantity defaulting,
+name lookup by source spelling, or cumulative-lift insertion.
+
+Every such fact is explicit in the file.
+
+A `.kcore` unit is accepted only after parsing and ordinary KCore checkpoint verification.
+
+<!-- compiler.kcore.text_format.header_modules -->
+##### Header and modules
+
+```text
+kcoreFile ::=
+    'kcore' integer ';'
+    kcoreModule+
+
+kcoreModule ::=
+    'module' globalRef moduleMetadata? '{' kcoreDecl* '}'
+
+moduleMetadata ::=
+    '[' metadataEntry (',' metadataEntry)* ']'
+
+metadataEntry ::=
+    identifier '=' stringLiteral
+```
+
+Required metadata includes:
+
+```text
+languageVersion
+compilerInterfaceVersion
+sourceModuleIdentity
+typeLevelAlgebraVersion
+levelConstructorNormalizerVersion
+levelRigidEntailmentVersion
+levelPrincipalInferenceVersion
+levelCertificateVersion
+```
+
+<!-- compiler.kcore.text_format.identities -->
+##### Identities
+
+```text
+globalRef   ::= '@' qualifiedName '#' stableId
+localRef    ::= '%' identifier '#' integer
+universeRef ::= '^' identifier '#' integer
+stableId    ::= hexDigit+
+
+globalUse ::=
+    globalRef universeInstantiation?
+```
+
+The readable name is present for humans. The stable identity is authoritative.
+
+Canonical output uses fully qualified global names and deterministic local numbering.
+
+<!-- compiler.kcore.text_format.declarations -->
+##### Declarations
+
+```text
+kcoreDecl ::=
+    defDecl
+  | axiomDecl
+  | dataDecl
+  | levelCertificateDecl
+  | schemaCertificateDecl
+  | extensionDecl
+  | genericDecl
+
+defDecl ::=
+    'def' observationMode globalRef universeTelescope? ':' term '{'
+        'body' '=' term ';'
+    '}'
+
+axiomDecl ::=
+    'axiom' observationMode globalRef universeTelescope? ':' term ';'
+
+dataDecl ::=
+    'data' globalRef nominalUniverseTelescope? binder* ':' term
+        'certificate' schemaCertificateRef
+        '{' constructorDecl* '}'
+
+constructorDecl ::=
+    'constructor' globalRef universeTelescope? ':' term constructorFieldBlock? ';'
+
+constructorFieldBlock ::=
+    'fields' '{' (fieldRef '=' integer ';')* '}'
+
+universeTelescope ::=
+    '.{' universeRef (',' universeRef)* '}'
+
+nominalUniverseTelescope ::=
+    '.{' nominalUniverseBinder (',' nominalUniverseBinder)* '}'
+
+nominalUniverseBinder ::=
+    universeVariance universeRef
+
+universeVariance ::=
+    'invariant' | 'covariant' | 'irrelevant'
+
+constraintBlock ::=
+    'where' '{' universeConstraint* '}'
+
+universeConstraint ::=
+    level '<=' level ';'
+  | level '<' level ';'
+```
+
+`constraintBlock` appears only in level-certificate and schema-certificate declarations as the explicit assumption
+context of the certificate being checked.
+
+Canonical KCoreText prints generated declaration constraints as ordinary-observation, ordinary-formation, implicit
+quantity-`0` binders with `generated` binder provenance in the declaration type or nominal family telescope. The
+provenance is semantic interface data: it distinguishes obligations that a declaration use may synthesize from
+source-written implicit proof arguments, which remain governed by ordinary implicit application.
+
+For example, a generated constraint is printed schematically as:
+
+```kcore
+(ordinary ordinary 0 implicit value generated %__universeConstraint0#7 :
+    term-node "boolean-proof" {
+      term-value = term-value(apply @std.typelevel.le#... (...));
+    })
+```
+
+using the actual canonical Boolean-to-proposition KCore node standardized by the surrounding specification.
+
+Nominal family saturation includes these binders. Role checking aligns their normalized propositions and inserts the
+corresponding erased proof evidence at the target instance.
+
+Future standardized nominal signature declarations use the same `nominalUniverseTelescope` and certificate reference.
+
+<!-- compiler.kcore.text_format.binders -->
+##### Binders
+
+```text
+binder ::=
+    '(' observationMode formationMode quantity explicitness accessMode binderOrigin? localRef ':' term ')'
+
+observationMode ::= 'ordinary' | 'parametric'
+formationMode   ::= 'ordinary' | 'parametric'
+explicitness    ::= 'explicit' | 'implicit'
+accessMode      ::= 'value' | 'borrow' | 'borrow[' regionRef ']'
+binderOrigin    ::= 'generated'
+quantity        ::= '0' | '1' | 'omega' | 'affine' | 'relevant' | 'quantity-term(' term ')'
+regionRef       ::= localRef | globalRef
+fieldRef        ::= '@field:' qualifiedName '#' stableId
+```
+
+Every declaration observation mode and every binder attribute, including formation mode, is mandatory in canonical
+output. Absence of `binderOrigin` means source-written. `generated` is valid only on an authenticated ordinary,
+implicit, quantity-`0` declaration-universe comparison proof binder; a verifier MUST reject it on any other binder.
+Binder provenance participates in canonical interface text and semantic identity, while the allocation identity of the
+proof value does not. A definition's or
+axiom's mode is the independently verified dependency summary for uses of that global facet; it is not inferred from
+quantity, from its result classifier, or from readable naming.
+
+A constructor field block maps each named field's authoritative `fieldRef` to its zero-based position in the direct
+constructor payload telescope. Anonymous positional fields are omitted. Field identities and positions are checked
+against the constructor signature; local binder presentation names are never used as field identity.
+
+<!-- compiler.kcore.text_format.terms -->
+##### Terms
+
+```text
+term ::=
+    localRef
+  | globalUse
+  | 'Type' level
+  | '(' binder '->' term ')'
+  | 'sigma' binder '{' term '}'
+  | 'lambda' binder '{' term '}'
+  | 'apply' term '(' argumentList? ')'
+  | 'block' '{' blockItem* term '}'
+  | 'case' term ':' term '{' caseAlt* '}'
+  | 'construct' globalUse '(' argumentList? ')'
+  | 'project' fieldRef term
+  | 'lift' '[' level '<=' level 'by' evidenceRef ']' term
+  | schemaLiftTerm
+  | 'ascribe' term ':' term
+  | localRecGroup
+  | genericTerm
+
+universeInstantiation ::=
+    '.{' level (',' level)* '}'
+
+argumentList ::=
+    argument (',' argument)*
+
+argument ::=
+    'explicit' term
+  | 'implicit' term
+
+blockItem ::=
+    'let' binder '=' term ';'
+
+localDef ::=
+    'def' observationMode localRef universeTelescope? ':' term '{'
+        'body' '=' term ';'
+    '}'
+
+localRecGroup ::=
+    'letrec' '{' localDef+ '}' 'in' term
+
+caseAlt ::=
+    'case' globalUse binder* '{' term '}'
+  | 'default' '{' term '}'
+```
+
+<!-- compiler.kcore.text_format.generic_extension_nodes -->
+##### Generic extension nodes
+
+Every KCore node without a standardized specialized spelling is represented by:
+
+```text
+genericDecl ::=
+    'decl-node' stringLiteral '{' namedValue* '}'
+
+genericTerm ::=
+    'term-node' stringLiteral '{' namedValue* '}'
+
+extensionDecl ::=
+    'extension' identifier integer ';'
+
+namedValue ::=
+    identifier '=' coreValue ';'
+
+coreValue ::=
+    'integer-value' '(' integer ')'
+  | 'string-value' '(' stringLiteral ')'
+  | 'level-value' '(' level ')'
+  | 'quantity-value' '(' quantityExpr ')'
+  | 'term-value' '(' term ')'
+  | 'global-ref-value' '(' globalUse ')'
+  | 'local-ref-value' '(' localRef ')'
+```
+
+A module using `genericDecl` or `genericTerm` from extension `x` MUST contain exactly one compatible declaration:
+
+```text
+extension x version;
+```
+
+Unknown undeclared extension tags are rejected with `E_KCORE_TEXT_INVALID`.
+
+The token `0` never relies on context to decide whether it is an integer, level, quantity, or term value inside a generic
+extension payload.
+
+<!-- compiler.kcore.text_format.levels_evidence -->
+##### Levels and evidence
+
+```text
+level ::=
+    integer
+  | globalRef
+  | universeRef
+  | 'succ' '(' level ')'
+  | 'max' '(' level ',' level ')'
+  | 'add' '(' level ',' level ')'
+  | 'level-term' '(' term ')'
+
+evidenceRef ::=
+    localRef
+  | globalUse
+  | 'certificate' '(' certificateRef universeInstantiation? ')'
+
+certificateRef ::= '@certificate.' qualifiedName '#' stableId
+
+levelCertificateDecl ::=
+    'level-certificate' certificateRef universeTelescope? ':' universeConstraint constraintBlock? '{'
+        levelProof
+    '}'
+
+levelProof ::=
+    'assumption' '(' integer ')' ';'
+  | 'arithmetic' '[' integerList? ']' ';'
+  | 'closed' ';'
+  | 'zero-left' level ';'
+  | 'refl' level ';'
+  | 'trans' '{' levelProof levelProof '}'
+  | 'succ-mono' '{' levelProof '}'
+  | 'max-left' level level ';'
+  | 'max-right' level level ';'
+  | 'max-least' '{' levelProof levelProof '}'
+  | 'add-mono-left' level '{' levelProof '}'
+  | 'add-mono-right' level '{' levelProof '}'
+
+integerList ::=
+    integer (',' integer)*
+```
+
+`arithmetic [i1, ..., in]` is the complete portable replay form for rigid level entailment.
+
+Its verifier:
+
+1. selects exactly the listed normalized assumptions from the certificate's constraint block;
+2. rejects duplicate, unavailable, out-of-range, ill-scoped, or meta-bearing assumptions;
+3. checks that the selected assumption context is satisfiable;
+4. converts strict propositions to `succ lhs <= rhs`;
+5. constructor-normalizes every endpoint;
+6. translates the selected assumptions and stated theorem to the normative paired QF Presburger semantics of
+   §11.1.2.4A;
+7. accepts exactly when the selected assumptions entail the theorem.
+
+The structural forms are compact conveniences. They are not the completeness boundary.
+
+After a structural or arithmetic proof is verified, KCore stores canonical level-entailment evidence containing:
+
+```text
+* normalized theorem;
+* a deterministic irredundant ordered subset of normalized assumptions;
+* TypeLevel algebra version;
+* rigid-entailment verifier version.
+```
+
+The deterministic irredundant subset is computed by visiting assumptions in normalized order and removing an assumption
+when the theorem remains entailed without it.
+
+Canonical KCoreText prints verified level-entailment evidence as:
+
+```text
+arithmetic [canonical dependency indices];
+```
+
+regardless of whether the input used a structural proof.
+
+Resource exhaustion rejects the certificate or reports an indeterminate verification failure. It never validates the
+certificate.
+
+Invalid or forged certificates are rejected with `E_KCORE_LEVEL_CERTIFICATE_INVALID`.
+
+A `level-term(term)` is valid when `term` passes ordinary KCore typing, totality, stability, scoping, and the
+level-admissibility judgment.
+
+Canonical standard operations are printed structurally as `add`, `max`, and closed levels after constructor
+normalization. A neutral term is printed as `level-term(canonicalTerm)`.
+
+KCoreText canonicalization requires:
+
+```text
+* every printed level is in the recursive AC/ACI constructor normal form of §11.1.2.4A;
+* addition operands retain multiplicity and use the normative portable ordering;
+* maximum operands are duplicate-free and use the same ordering;
+* neutral level terms are represented by canonical KCore term syntax;
+* semantic level equality is checked by mutual entailment, never by constructor-tree equality alone;
+* proof syntax is not part of level-evidence semantic identity;
+* two verified proofs of the same normalized theorem from the same canonical dependency set have the same semantic hash.
+```
+
+<!-- compiler.kcore.text_format.schema_certificates -->
+##### Nominal-schema certificates and lifts
+
+```text
+schemaCertificateRef ::=
+    '@schema:' qualifiedName '#' stableId
+
+schemaCertificateDecl ::=
+    'schema-certificate' schemaCertificateRef
+    'for' globalRef constraintBlock?
+    '['
+        'checkerVersion' '=' integer ','
+        'signatureHash' '=' schemaSignatureBinding ','
+        'saturationArity' '=' integer
+    ']'
+    '{'
+        'roles' '=' '[' universeVariance (',' universeVariance)* ']' ';'
+        'clauseKinds' '=' '[' nominalClauseKind (',' nominalClauseKind)* ']' ';'
+    '}'
+
+schemaSignatureBinding ::=
+    'local'
+  | stringLiteral
+
+nominalClauseKind ::=
+    'sort_declaration'
+  | 'point_constructor'
+  | 'path_constructor'
+  | 'higher_boundary'
+  | 'quotient_equation'
+  | 'recursive_operation'
+  | 'recursive_equation'
+  | 'eliminator'
+  | 'computation_rule'
+  | 'truncation_rule'
+  | 'extension_clause'
+
+schemaLiftTerm ::=
+    'schema-lift' '['
+        'family' '=' globalRef ','
+        'from' '=' universeInstantiation ','
+        'to' '=' universeInstantiation ','
+        'certificate' '=' schemaCertificateRef ','
+        'roles' '=' '[' schemaRoleEvidence (',' schemaRoleEvidence)* ']' ','
+        'targetArgs' '=' '(' argumentList? ')'
+    ']' term
+
+schemaRoleEvidence ::=
+    'invariant'
+  | 'irrelevant'
+  | 'covariant' evidenceRef
+```
+
+A certificate declaration is not accepted merely because its recorded hash and roles are well formed. The independent
+checker recomputes or verifies the certificate against the normalized local signature closure, or validates it against a
+previously verified imported interface artifact.
+
+`signatureHash = local` is valid only when the referenced nominal signature block is declared in the same KCoreText
+unit. It instructs the independent checker to compute the closure hash from that local declaration; it is not a trusted
+hash shortcut. Canonical local KCoreText retains the token `local`.
+
+An imported certificate uses an exact digest string obtained from the verified interface artifact. The checker compares
+that digest with the imported `NominalCumulativitySummary` before accepting any lift.
+
+A stable identity alone never proves a schema action.
+
+Canonical KCoreText prints every role and every covariant proof explicitly.
+
+KCoreText rejection of a bad certificate uses `E_KCORE_SCHEMA_CERTIFICATE_INVALID`.
+A well-formed certificate with an invalid lift use uses `E_UNIVERSE_SCHEMA_LIFT_INVALID`.
+
+<!-- compiler.kcore.text_format.canonicalization -->
+##### Canonicalization
+
+Canonical KCoreText obeys all of the following:
+
+* braces, commas, colons, and semicolons are emitted exactly as prescribed;
+* indentation is two spaces but is semantically irrelevant;
+* declaration SCCs are ordered topologically by semantic dependency;
+* within one mutually recursive SCC, declarations are ordered lexicographically by authoritative stable identity, not
+  source spelling, allocation order, or hash-map iteration order;
+* level-certificate declarations precede the first declaration that references them and are ordered by certificate
+  stable identity when otherwise independent;
+* nominal universe roles appear in declaration-schema order;
+* schema-certificate declarations precede the first declaration or lift that references them;
+* a local schema certificate is ordered by authoritative certificate identity after its signature block;
+* schema lifts are normalized by identity elimination and composition before canonical printing;
+* irrelevant and invariant role entries never carry evidence;
+* covariant role entries always carry evidence;
+* `targetArgs` contains the canonical aligned full family telescope;
+* no partial-family schema lift is printable as valid canonical KCoreText;
+* local binders are numbered deterministically in preorder;
+* universe parameters are numbered independently and appear only in declaration universe telescopes;
+* all quantities, modes, explicitness values, access modes, universe instantiations, and lifts are explicit;
+* resolved references include semantic identities;
+* aliases remain only where KCore itself retains them;
+* opaque or unavailable bodies are represented by an explicit `body-unavailable` generic node;
+* canonical output contains no comments;
+* a parser MAY accept line comments in hand-authored test input;
+* printing a parsed and verified canonical unit produces byte-identical canonical text modulo LF line endings.
+
+Every global use includes an explicit universe instantiation when the referenced declaration has a nonempty universe
+schema.
+
+Every local use includes an explicit universe instantiation when the local declaration has a nonempty local universe
+schema.
+
+Every cumulative lift cites one of:
+
+* a local proof reference;
+* a verified level-certificate reference.
+
+A stable ID alone never constitutes proof.
+
+<!-- compiler.kcore.text_format.example -->
+##### KCoreText example
+
+```kcore
+kcore 1;
+
+module @sample.identity#9af2 [
+  languageVersion = "kappa-v1",
+  compilerInterfaceVersion = "1",
+  sourceModuleIdentity = "sample.identity"
+] {
+  def ordinary @sample.identity.id#31ce .{^u#0} :
+    ((parametric parametric 0 explicit value %A#0 : Type ^u#0) ->
+      ((ordinary ordinary omega explicit value %x#1 : %A#0) -> %A#0))
+  {
+    body =
+      lambda (parametric parametric 0 explicit value %A#0 : Type ^u#0) {
+        lambda (ordinary ordinary omega explicit value %x#1 : %A#0) {
+          %x#1
+        }
+      };
+  }
+}
+```
+
+<!-- compiler.kcore.text_format.verification_round_trip -->
+##### Verification and round trip
+
+For every accepted KCore unit `C`:
+
+```text
+parse(printCanonical(C)) ≡α C
+check(parse(printCanonical(C))) = accepted
+semanticHash(parse(printCanonical(C))) = semanticHash(C)
+printCanonical(parse(printCanonical(C))) = printCanonical(C)
+```
+
+Parsing does not trust the input. Checkpoint verification is mandatory.
+
+Malformed syntax uses `E_KCORE_TEXT_INVALID`.
+
+A well-formed but unsupported schema version uses `E_KCORE_TEXT_UNSUPPORTED_VERSION`.
 
 <!-- compiler.kcore.application_spines -->
 #### 30.2.1 Application spines and Pi telescopes
@@ -35733,6 +38220,218 @@ Rules:
   lifetimes, receiver insertion, and `inout` rewriting.
 * KCore normalization of an `AppSpine` is by ordinary left-to-right beta-reduction or an observationally equivalent
   strategy.
+
+<!-- compiler.kcore.universe_lifts -->
+#### 30.2.1A Explicit universe lifts
+
+Surface classifier cumulativity is implicit.
+
+KCore records every classifier cumulative subsumption explicitly:
+
+```text
+universeLift [from = u, to = v, evidence = p] t
+```
+
+Typing rule:
+
+```text
+Γ ⊢ t : A
+Γ ⊢ A : Type u
+Γ ⊢ p : u <= v
+────────────────────────────────────────────
+Γ ⊢ universeLift[u,v,p] t : A at classifier Type v
+```
+
+The node changes only the classifier at which `A` is used.
+
+Rules:
+
+* identity lifts normalize away;
+* nested lifts compose canonically;
+* composition preserves evidence dependencies;
+* lifts preserve observation mode;
+* lifts are runtime representation identity and erase before KBackendIR;
+* semantic identity includes the canonical source level, canonical target level, normalized theorem `source <= target`,
+  canonical dependency set of active level assumptions, and the `TypeLevel` algebra and rigid-entailment versions;
+* the arbitrary identity or syntax of the proof object does not participate in semantic identity;
+* original proof and certificate identities remain available as provenance and audit metadata;
+* checkpoint verification rejects missing, ill-scoped, or invalid lift evidence.
+
+A direct lift and a transitively composed lift with the same canonical source, target, theorem, and dependency set have
+the same semantic hash.
+
+`universeLift` changes only the classifier of one type or code term. It does not change a nominal-family universe
+instance. Nominal-family instance changes use the separately checked `schemaLift` below; neither lift subsumes the
+other.
+
+<!-- compiler.kcore.schema_lifts -->
+#### 30.2.1B Explicit nominal-schema lifts
+
+Surface cumulative use between universe instances of the same nominal family is implicit.
+
+Surface elaboration considers a `schemaLift` only when both are already known:
+
+```text
+synthesized type = D.{a1, ..., an} x1 ... xm
+expected type    = D.{b1, ..., bn} y1 ... ym
+```
+
+and both applications are fully saturated applications of the same resolved nominal family.
+
+The elaborator attempts one direct source-to-target lift.
+
+It does not:
+
+* search a graph of intermediate universe instances;
+* invent a target family instance to solve an unconstrained metavariable;
+* use `irrelevant` roles to default unrelated levels;
+* lift a partial family head or constructor constant;
+* invoke user coercion or trait search;
+* participate in instance-head candidate matching or overlap checking.
+
+KCore records it explicitly:
+
+```text
+schemaLift [
+    family      = D,
+    from        = .{a1, ..., an},
+    to          = .{b1, ..., bn},
+    certificate = cert,
+    roles       = [r1, ..., rn],
+    targetArgs  = [y1, ..., ym]
+] t
+```
+
+Each role entry is one of:
+
+```text
+invariant
+irrelevant
+covariant evidence
+```
+
+where `evidence` proves the corresponding source level is `<=` the target level.
+
+Typing rule, schematically:
+
+```text
+Γ ⊢ t : D.{ā} x̄
+D is fully saturated by x̄
+roles(D) = r̄
+Γ ⊢ ā <=[r̄] b̄
+Γ ⊢ align_D(ā, x̄; b̄) = ȳ
+Γ ⊢ cert : SchemaActionCertificate(D, r̄)
+────────────────────────────────────────────────────────
+Γ ⊢ schemaLift[D,ā,b̄,cert,ȳ] t : D.{b̄} ȳ
+```
+
+Rules:
+
+* the family head and saturation arity are verified from semantic identity;
+* invariant entries carry no proof and require normalized equality;
+* irrelevant entries carry no proof and impose no cross-instance relation;
+* covariant entries carry checked level evidence;
+* source and target declaration constraints are rechecked;
+* family arguments are aligned by the restricted process of §11.1.2.3A.2;
+* the certificate is independently verified or imported from a verified interface artifact;
+* the node preserves observation dependencies, quantities, access modes, and family-argument refinements;
+* the node is runtime representation identity and erases before KBackendIR;
+* identity schema lifts normalize away;
+* nested schema lifts compose to one direct lift when certificate identity and argument alignment agree;
+* a direct lift and a composed lift have the same semantic hash after canonicalization;
+* no `schemaLift` is inserted during trait-instance candidate matching or overlap checking;
+* checkpoint verification rejects a lift on an unsaturated family, a mismatched family head, mismatched family arguments,
+  an invalid role relation, or an invalid certificate.
+
+A schema-action certificate's semantic identity is derived from:
+
+* family semantic identity;
+* normalized nominal signature-closure hash;
+* effective role vector;
+* certificate-checker version;
+* `TypeLevel` algebra version.
+
+Allocation identity and proof-object identity do not participate.
+
+<!-- compiler.kcore.schema_lifts.coherence -->
+##### 30.2.1B.1 Constructor and eliminator coherence
+
+For ordinary data, `schemaLift` satisfies constructor and eliminator coherence.
+
+A lifted constructor value is observationally the corresponding target-instance constructor with aligned fields.
+KCore may retain the outer `schemaLift` or normalize it through the constructor, but both representations must be
+judgmentally coherent for iota reduction.
+
+Case analysis on a lifted scrutinee uses the target family instance while binding fields with the modes and types
+specified by the certified constructor action.
+
+The following diagrams commute in checked KCore:
+
+```text
+constructor action followed by schemaLift
+    = target constructor applied to aligned fields
+
+case/induction after schemaLift
+    = source case/induction with target motive and certified branch alignment
+```
+
+No branch-local equality or GADT family-argument fact may be invented by a schema lift. Existing family arguments must
+align definitionally after explicit classifier and nominal lifts.
+
+<!-- compiler.kcore.schema_lifts.partial_applications -->
+##### 30.2.1B.2 Partial applications
+
+`schemaLift` is not defined on a bare or partially applied nominal family head or constructor constant.
+
+When source ergonomics require a relation between first-class type formers, elaboration may generate an eta-expansion:
+
+```text
+lambda remainingArgs {
+    schemaLift (sourceHead remainingArgs)
+}
+```
+
+only when:
+
+* the remaining telescope is known;
+* every generated application becomes fully saturated before lifting;
+* the expansion preserves observation mode and quantity;
+* no runtime wrapper survives after specialization and erasure;
+* the expanded KCore term independently typechecks.
+
+<!-- compiler.kcore.schema_lifts.metatheory -->
+##### 30.2.1B.3 Required metatheory
+
+Cumulative nominal-family support requires mechanized or otherwise independently checked proofs of:
+
+```text
+* reflexivity and transitivity of the role-indexed nominal cumulativity relation;
+* preservation under substitution of declaration-universe parameters and family arguments;
+* subject reduction for constructor, projection, iota, and schema-lift reduction;
+* identity and composition coherence for schema actions;
+* preservation of observation dependencies and quantities;
+* representation identity and erasure of schema lifts;
+* coherence between constructor actions and generated eliminators;
+* stability under opacity and imported certificate use;
+* consistency of role inference with mutual fixed points;
+* extension-specific path/equation/recursive-operation naturality for every enabled future nominal extension;
+* substitution closure of the level-admissibility judgment;
+* subject reduction for dependent types indexed by opaque neutral `TypeLevel` terms;
+* stability of neutral-atom identity under alpha-renaming and definitional equality;
+* soundness and completeness of paired QF Presburger rigid entailment;
+* soundness of the portable principal-assignment fragment;
+* correctness of common-addition and successor cancellation;
+* correctness and determinism of arithmetic-certificate replay;
+* proof irrelevance of recognized erased level-ordering evidence for semantic identity;
+* soundness of rigid parametric declaration generalization;
+* separation of declaration generalization from quantifier interchange;
+* noninterference for unbounded parametric package elimination without sealing exceptions;
+* subject reduction for same-or-lower recursive schema instantiation;
+* preservation of termination certificates when static schema-level rows participate in SCT;
+* coherence of expected-type-directed schema eta-reification;
+* soundness of role inference using selected `Monotone` evidence; and
+* cache and interface soundness across `TypeLevel` algebra and solver version changes.
+```
 
 <!-- compiler.kcore.suspensions -->
 #### 30.2.2 KCore suspensions
@@ -36195,9 +38894,10 @@ packaging of inhabitants of the intrinsic compile-time types of §11.1.4 and of 
 
 Rules:
 
-* `TypeLevel`, `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`, `Label`, `EffLabel`, and the internal nominal-scope
-  type `NomScope` are ordinary compile-time types in KCore.
-* `TypeLevel` values denote admitted universe-level codes.
+* `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`, `Label`, `EffLabel`, and the internal nominal-scope type
+  `NomScope` are ordinary compile-time types in KCore.
+* `TypeLevel` is ordinary runtime-capable data. Its values denote admitted universe-level codes and may remain
+  runtime-relevant when quantity, phase, and demand require representation.
 * KCore canonical level expressions are represented with intrinsic heads:
 
   ```text
@@ -36210,23 +38910,28 @@ Rules:
 
   together with level variables and level metavariables.
 * Source operations such as `0`, `1`, `ω`, `succ u`, `u + v`, and `max u v` appear in KCore universe indices only after
-  resolving through the compiler-owned standard `TypeLevel` operations and normalizing to these intrinsic heads.
-* `Type u` is a primitive universe family indexed by a canonical solver-level expression `u : TypeLevel`; it is not
-  represented as ordinary first-order application.
-* KCore contains intrinsic comparison for `TypeLevel`, observationally equivalent to `__compareTypeLevel`.
+  resolving through the canonical `std.typelevel` declarations and certified normalization bridge, then normalizing to
+  these solver heads.
+* Any other stable total level-admissible term appears as a canonical `level-term` and is assigned a rigid neutral-atom
+  identity for solver translation.
+* `Type u` is a primitive universe family indexed by a level-admissible KCore term `u : TypeLevel`; canonical standard
+  operations use intrinsic heads, while stable opaque or neutral indices use canonical `level-term` representation. It
+  is not represented as ordinary first-order application.
+* KCore may contain ordinary runtime-relevant `TypeLevel` comparison and solver-internal comparison. Their behavior is
+  extensionally equivalent for admitted level values.
 * KCore recognizes erased proof binders of the forms `(i < j) = True`, `(i <= j) = True`, `LevelLt i j`, and
-  `LevelLe i j` as local level assumptions only when the comparison resolves to the compiler-owned standard
+  `LevelLe i j` as local level assumptions only when the comparison resolves to the canonical standard
   `Ord TypeLevel` operation.
 * KCore MUST NOT contain a safe checked judgment equivalent to `Type u : Type u`.
 * KCore MUST NOT contain solved level-comparison evidence equivalent to `succ u ≤ u`.
 * `CoreCtx`, `Symbol`, `Core Γ t`, and `CoreEq x y` are ordinary elaboration-time-only compile-time types in KCore.
-* KCore contains no implicit coercion from a parametric type witness at level `ρ` to an ordinary type-code value of type
-  `Type ρ`.
+* KCore contains no implicit coercion from parametric to ordinary observation.
 * `Core Γ t` values are well-scoped and well-typed by construction. Public reflection operations MUST preserve that
   invariant.
 * Compile-time binders, fields, and package members may carry any quantity annotation otherwise admitted by source or
   KCore.
-* Erasure of compile-time terms is classifier-based under §§11.1.6 and 31.2.
+* Erasure follows quantity, phase, erased-index status, ambient demand, and ordinary dead-code elimination under
+  §§11.1.6 and 31.2.
 * Trait declarations elaborate to abstract evidence record families in KCore. Their constructors are not represented as
   source-nameable constants.
 * A KCore trait evidence value may be projected through the public eliminators of its trait and through canonical
@@ -36238,37 +38943,12 @@ Rules:
 * Reflection values MUST NOT survive lowering to KBackendIR except through ordinary reification to `Syntax` followed by
   ordinary elaboration.
 
-KCore distinguishes ordinary type-code values from parametric type witnesses.
+Every KCore binder and dependent field carries the explicit observation mode of §30.2.0. KCore typing independently
+computes observation dependency sets through variables, applications, partial applications, projections, patterns,
+aliases, packages, constructors, traits, and static-object facets. KCoreText never supplies a trusted precomputed set.
 
-A KCore binder corresponding to source:
-
-```kappa
-(0 A : Type ρ)
-```
-
-or:
-
-```kappa
-(@0 A : Type ρ)
-```
-
-binds `A` with parametric type-witness capability at level `ρ`.
-
-KCore typing rules preserve the invariant:
-
-```text
-a parametric type witness may occur in type expressions and may instantiate compatible parametric `0 Type ρ` binders,
-but it may not be used as an ordinary value of type `Type ρ`.
-```
-
-KCore contains no implicit coercion:
-
-```text
-ParamTypeWitness ρ -> TypeCode ρ
-```
-
-A KCore term, interface artifact, or generated helper that would require such a coercion is rejected by checkpoint
-verification with diagnostic family:
+A KCore term, interface artifact, or generated helper that would require implicit parametric-to-ordinary observation is
+rejected by checkpoint verification with diagnostic family:
 
 ```text
 kappa.type.parametric-promotion
@@ -36281,18 +38961,18 @@ E_PARAMETRIC_TYPE_PROMOTION
 ```
 
 KCore may contain ordinary explicit evidence whose members compute or carry runtime or compile-time representations
-related to a parametric witness. That evidence is ordinary data or proof evidence and does not constitute an implicit
-promotion of the witness itself.
+related to a parametric static witness. That evidence is ordinary data or proof evidence and does not constitute an
+implicit promotion of the witness itself.
 
 KCore erasure justification records MUST preserve enough information to distinguish:
 
 ```text
-erased ordinary type-code values
-erased parametric type witnesses
+erased ordinary static values
+erased parametric static witnesses
 erased trait/proof evidence
 ```
 
-because these have different source-level capabilities even when all erase before backend lowering.
+because these have different source-level observation modes even when all erase before backend lowering.
 
 <!-- compiler.kcore.application_spines.capture_annotated_types -->
 ##### 30.2.2.10 KCore capture-annotated types
@@ -36793,6 +39473,12 @@ Semantic objects include at least:
 * escaped local nominal families that appear in exported signatures, exported compile-time members, transparent
   definitional content, or other interface-visible semantic artifacts; and
 * any other implementation-defined top-level semantic artifact that is imported, browsed, or separately cached.
+
+For a nominal family, the effective declaration-universe role vector, normalized signature-closure hash, and verified
+action-certificate identity are part of semantic identity. They are also reproducibility inputs and query-key inputs.
+Verbose type displays, hover information, interface dumps, and KCoreText MUST expose the effective roles and certificate
+identity when that information is relevant to cumulative checking. Ordinary term declaration schemas do not acquire
+nominal roles.
 
 A semantic object identity is distinct from:
 
@@ -37804,8 +40490,13 @@ A KBackendIR term MUST NOT contain a runtime dependency on a KCore occurrence wh
 KBackendIR MAY retain erasure justifications as debug, trace, source-map, or verifier metadata, but such metadata is not
 runtime data and MUST NOT affect target execution.
 
-A KBackendIR legality verifier MUST reject a runtime term that refers to erased `Type`, `TypeLevel`, `Quantity`, `Region`,
-row, label, proof, syntax, `Elab`, capture-annotation, or meta-phase data except through a specified runtime carrier or
+KBackendIR may contain runtime-relevant `TypeLevel` values and operations.
+
+KBackendIR must not contain universe metavariables, solver constraints, solver proof state, erased quantity-`0`
+occurrences, or `Type u` as a runtime universe object.
+
+A KBackendIR legality verifier MUST reject a runtime term that refers to erased `Type`, `Quantity`, `Region`, row,
+label, proof, syntax, `Elab`, capture-annotation, or meta-phase data except through a specified runtime carrier or
 backend intrinsic whose evidence is explicit in the KBackendIR metadata.
 
 <!-- core_semantics.inhabitant_driven_representation_elision -->
@@ -39113,6 +41804,11 @@ The `json` and `sexpr` serializations for the same checkpoint MUST carry equival
 Neither format is required to round-trip through the source parser.
 They are observability formats, not source syntax.
 
+The KCore checkpoint additionally MUST support canonical `kcore` format under §30.2.0A.
+
+`kcore` is a round-trippable core language. `json` and `sexpr` remain general stage-dump schemas and are not required to
+round-trip through the KCoreText parser.
+
 Every stage dump MUST be self-describing and versioned.
 At minimum it MUST identify:
 
@@ -39305,7 +42001,16 @@ For `KCore`:
 * every erased occurrence has an `ErasureJustification`;
 * branch refinements are explicit erased evidence;
 * stable places, captures, effects, handlers, projectors, accessors, seals, and local nominal identities are represented
-  by the KCore forms required by this specification.
+  by the KCore forms required by this specification;
+* the level-admissibility judgment is rechecked for every `level-term`;
+* substitution closure is rechecked for every dependent `TypeLevel` application spine;
+* no mutable current-value facet is embedded in a v1 universe index;
+* every arithmetic level certificate is replayed with the normative rigid verifier;
+* canonical level-evidence dependencies are recomputed;
+* every recursive schema edge is same-or-lower, and every non-identity edge is explicit;
+* schema reification has inserted no omitted explicit term-level argument;
+* selected `Monotone` evidence is verified before role-certificate checking; and
+* no lift semantic identity depends on proof-object allocation identity.
 
 For `KBackendIR`:
 
@@ -39438,6 +42143,52 @@ SemanticCertificateSummary =
      unsafeDebugLedgerSummary   : Option UnsafeDebugAuditLedgerSummary)
 ```
 
+Every exported nominal signature block MUST additionally record:
+
+```text
+NominalCumulativitySummary =
+    (blockIdentity          : NominalSignatureBlockId,
+     familyIdentity         : SemanticObjectId,
+     universeParameters     : List UniverseParameter,
+     effectiveRoles         : List UniverseVariance,
+     rolesWereExplicit      : List Bool,
+     declarationConstraints : DeclarationConstraintSummary,
+     saturationArity        : Nat,
+     signatureClosureHash   : Digest,
+     certificateIdentity    : SchemaActionCertificateId,
+     certificateVersion     : Nat,
+     clauseKinds            : List NominalSignatureClauseKind,
+     representationIdentity : Bool,
+     extensionGate          : Option FeatureGateId)
+```
+
+Rules:
+
+* `representationIdentity` MUST be true for any certificate used by Kappa's implicit cumulative subsumption;
+* role vectors and certificate identity participate in interface and semantic identity;
+* changing an effective role is an interface-semantic change even when source term signatures print identically;
+* imported opaque families may be used cumulatively only through a supported verified summary;
+* if the summary is absent, malformed, stale, or produced by an unsupported checker, all roles are treated as invariant
+  and any attempted nontrivial schema lift is rejected;
+* downstream compilation does not re-infer roles from opaque implementation bodies;
+* a paranoid verification mode may recompute certificates when the complete normalized signature closure is available;
+* instance-head metadata records exact schema instantiations independently from the cumulative summary.
+
+Declaration universe telescopes and nominal roles remain separate semantic records:
+
+```text
+DeclarationUniverseTelescope =
+    List UniverseParameter
+
+DeclarationConstraintSummary =
+    List NormalizedLevelProposition
+
+NominalUniverseRoles =
+    List (UniverseParameterId, UniverseVariance)
+```
+
+Term and transparent type declarations have no `NominalUniverseRoles` unless they also introduce a nominal family.
+
 `ExportedErasureMetadata` MUST record, when relevant:
 
 * which exported binders, fields, arguments, members, or indices are erased;
@@ -39475,6 +42226,22 @@ A module interface artifact MUST record at least:
   Capture annotations recorded in a module interface artifact are part of the exported type itself. A conforming
   implementation MUST NOT instead require a second hidden region-summary channel outside the exported signature to make
   ordinary downstream escape checking sound.
+* for every exported semantic declaration, its explicit or inferred declaration universe schema, generated
+  declaration-universe proof binders and normalized propositions, observation mode on every binder and field,
+  parametric-result dependency summary required by application checking, and every verified level-certificate identity
+  used by its exported universe derivations;
+* canonical KCore terms and referenced semantic identities for neutral level terms used in exported types, with opaque
+  declaration bodies included only when ordinary transparency rules require them;
+* level-admissibility dependency summaries for term-level `TypeLevel` binders used in exported dependent types;
+* canonical level-evidence dependency sets excluding proof-object identity;
+* recursive SCC schema-instantiation policy and every non-identity recursive schema edge;
+* selected `Monotone` goals and evidence dependencies used by exported role certificates;
+* all five `TypeLevel` solver and algebra version fields;
+* for every exported nominal declaration, its effective universe roles, explicit-role flags, saturation arity,
+  normalized nominal-signature closure hash, verified action-certificate identity and version, clause kinds,
+  representation-identity result, and extension gate under `NominalCumulativitySummary`;
+* local universe schemas and normalized constraints whenever local declarations are emitted into an interface-visible
+  artifact;
 * for each exported projection definition, enough metadata to perform downstream projection-call elaboration and
   admissibility checking, including:
   * projection-vs-ordinary-term classification,
@@ -47553,6 +50320,10 @@ A hover response SHOULD include:
 
 Hover rendering SHOULD hide advanced details by default but make them available through render options.
 
+Signature and hover rendering MUST preserve observation mode independently from quantity. Compact source-like output
+MAY omit an observation mode when it is exactly the default of §12.1.1, but structured and verbose output MUST expose
+the selected mode.
+
 <!-- tooling_ide.x_15_2.inlay_hints -->
 #### 37.15.2 Inlay hints
 
@@ -47562,6 +50333,7 @@ The language service SHOULD provide inlay hints for:
 * erased arguments;
 * inferred type arguments;
 * universe arguments;
+* inferred observation modes;
 * inferred quantities;
 * borrowed access regions;
 * capture sets;
@@ -47583,6 +50355,8 @@ A client SHOULD allow users to enable, disable, and filter classes of inlay hint
 Semantic tokens SHOULD distinguish at least:
 
 * term variables;
+* ordinary-observation variables;
+* parametric-observation variables;
 * erased variables;
 * linear variables;
 * borrowed variables;
@@ -47852,7 +50626,8 @@ A refactoring query MUST preserve unchanged concrete syntax and trivia where pos
 
 A refactoring query MUST return source edits with stale-source preconditions.
 
-A refactoring query MUST reject rather than produce an edit when it cannot preserve binding, typing, quantities, effects, captures, imports, or semantic identity.
+A refactoring query MUST reject rather than produce an edit when it cannot preserve binding, typing, observation modes,
+quantities, effects, captures, imports, or semantic identity.
 
 The reference implementation SHOULD support at least the following refactorings.
 
@@ -47870,6 +50645,7 @@ The transformation MUST preserve:
 
 * explicit dependencies;
 * implicit dependencies;
+* observation modes;
 * quantity obligations;
 * borrowed access;
 * region and capture requirements;
@@ -47893,7 +50669,7 @@ The transformation SHOULD:
 
 * generalize over required local context;
 * preserve erased and implicit binders;
-* preserve quantities;
+* preserve observation modes and quantities independently;
 * preserve universe variables;
 * preserve region and capture binders;
 * preserve equality refinements;
@@ -47905,7 +50681,7 @@ The transformation SHOULD:
 
 Generalize over variable lifts a local dependency into an explicit, implicit, erased, quantity, region, row, or universe parameter.
 
-The generated binder MUST use a quantity and access mode compatible with all uses.
+The generated binder MUST use an observation mode, quantity, and access mode compatible with all uses.
 
 The transformation MUST update call sites or return an edit plan that updates them.
 
@@ -47917,7 +50693,7 @@ Specialize substitutes a selected parameter, implicit argument, trait evidence v
 The transformation MUST preserve definitional equality and source acceptance.
 
 <!-- tooling_ide.x_18_6.make_implicit_and_make_explicit -->
-#### 37.18.6 Make implicit and make explicit
+#### 37.18.6 Binder-mode, implicitness, and erasure refactorings
 
 The implementation SHOULD support transformations that:
 
@@ -47926,9 +50702,13 @@ The implementation SHOULD support transformations that:
 * reveal inserted implicit arguments;
 * hide explicit implicit arguments where inference can solve them;
 * reveal erased arguments;
-* hide erased arguments where legal.
+* hide erased arguments where legal;
+* make a binder `parametric`; and
+* make a binder `ordinary`.
 
-These transformations MUST preserve application semantics.
+These transformations MUST preserve application semantics. Observation-mode transformations are independent from
+quantity and MUST update affected call sites, field constructions, projections, signatures, and explicit KCore-facing
+goldens or reject when the requested mode is not type-correct.
 
 <!-- tooling_ide.x_18_7.add_import_or_qualification -->
 #### 37.18.7 Add import or qualification
@@ -48716,7 +51496,7 @@ This appendix amends §18.2.
 `std.prelude` provides:
 
 ```kappa
-trait Applicative (f : (0 A : Type) -> Type) =
+trait Applicative (parametric 0 f : (parametric 0 A : Type) -> Type) =
     pure    : a -> f a
     liftA2  : (a -> b -> c) -> f a -> f b -> f c
 
@@ -49168,6 +51948,8 @@ stdinFile <path>
 
 dumpFormat json
 dumpFormat sexpr
+dumpFormat kcore
+canonicalDumps
 
 requires backend <profile>
 requires mode package
@@ -49200,15 +51982,19 @@ Rules:
   `<path>` is relative to the suite root.
   The contents of the named file are supplied to the program's standard input as raw bytes.
   If `stdinFile` is omitted, the default standard input is empty.
-* `dumpFormat json` and `dumpFormat sexpr` select the default stage-dump format for assertions whose expected-file path
-  does not itself determine the format.
+* `dumpFormat json`, `dumpFormat sexpr`, and `dumpFormat kcore` select the default stage-dump format for assertions.
+  An expected-file path may instead determine the format.
   If no `dumpFormat` is specified, the default is `json`.
+* `dumpFormat kcore` is valid only for a KCore stage dump.
+* `canonicalDumps` requests deterministic alpha-renaming, semantic ordering, and omission of presentation-only unstable
+  identifiers without removing semantic information.
 * `requires ...` directives are preconditions.
   If any required condition is not met, the test result is **unsupported**, not failed.
 
 Portable capability names are:
 
 * `stageDumps`
+* `kcoreText`
 * `pipelineTrace`
 * `incremental`
 * `runTask`
@@ -49374,6 +52160,35 @@ Supported directives:
 assertType <name> <typeExpr>
 assertDeclKinds <kindList>
 assertFileDeclKinds <path> <kindList>
+assertUniverseRole <qualified-declaration> <parameter-index> <invariant|covariant|irrelevant>
+assertSchemaLiftCount <integer>
+assertSchemaLiftPresent <qualified-declaration>
+assertSchemaCertificateValid <qualified-declaration>
+assertInterfaceContainsUniverseRoles <qualified-declaration> <role-list>
+assertSemanticHashDiffersFrom <artifact-or-target>
+assertLevelNormalForm <levelExpr> equals <levelExpr>
+assertLevelEntails <comparisonExpr>
+assertLevelDoesNotEntail <comparisonExpr>
+assertPrincipalUniverse <qualified-declaration> <levelExpr>
+assertUniverseInferenceClass <qualified-declaration> <inference-class>
+assertLevelSolve <selected-meta-list> where <constraint-list> gives <assignment-list>
+assertLevelSolveClass <selected-meta-list> where <constraint-list> <inference-class>
+assertSemanticHashEquals <artifact-or-target>
+assertRecursiveSchemaEdge <caller> <callee> <relation>
+assertSelectedEvidence <goalType> <qualified-evidence>
+```
+
+where:
+
+```text
+inference-class ::=
+    SolvedPrincipal
+  | Unsatisfiable
+  | NoPointwiseLeastSolution
+  | OutsidePortableInferenceFragment
+  | BlockedByUnselectedMetas
+
+relation ::= identity | lower-or-equal | strict-lower
 ```
 
 where `kindList` is a comma-separated list of declaration kinds drawn from:
@@ -49420,6 +52235,44 @@ In both declaration-kind assertions:
 * the optional module header does not count as a declaration kind;
 * imports, exports, and fixity declarations do count when present.
 
+Universe-variance assertions:
+
+* `assertUniverseRole` checks the effective exported role after inference and explicit tightening.
+* `assertSchemaLiftCount` checks canonical verified KCore after identity and composition normalization.
+* `assertSchemaLiftPresent` checks that at least one verified lift of the named family is present.
+* `assertSchemaCertificateValid` independently verifies the family certificate.
+* `assertInterfaceContainsUniverseRoles` checks ordered interface metadata, not rendered prose.
+* `assertSemanticHashDiffersFrom` checks that changing a role or certificate-relevant signature fact changes semantic
+  identity.
+* `assertLevelNormalForm` elaborates both expressions as `TypeLevel`, translates them into the solver view, and compares
+  their recursive AC/ACI constructor normal forms.
+* `assertLevelEntails` succeeds iff the active test-level assumptions rigidly entail the comparison under §11.1.2.4A.
+* `assertLevelDoesNotEntail` succeeds iff the rigid refutation formula is satisfiable. It does not claim that an opaque
+  source function realizes the abstract countermodel.
+* `assertPrincipalUniverse` checks the solved minimizable result universe of the named declaration before any expected
+  cumulative lift.
+* `assertUniverseInferenceClass` checks the portable principal-solver classification of the named declaration.
+* `assertLevelSolve` invokes the portable principal solver directly over test-local rigid atoms and selected
+  metavariables and checks the canonical assignment.
+* `assertLevelSolveClass` checks the solver classification when no assignment is expected.
+* `assertSemanticHashEquals` is the equality counterpart of `assertSemanticHashDiffersFrom` and compares canonical
+  semantic identities, not raw file bytes.
+* `assertRecursiveSchemaEdge` inspects verified KCore and checks the canonical recursive edge classification.
+* `assertSelectedEvidence` checks the evidence selected by ordinary implicit resolution for the normalized goal. It does
+  not perform a second search during assertion evaluation.
+
+Future-extension test suites may use capability requirements:
+
+```text
+--! requires capability hiitUniverseVariance
+--! requires capability hirtUniverseVariance
+--! requires capability qitUniverseVariance
+--! requires capability qiitUniverseVariance
+```
+
+A capability-gated suite is skipped only when the extension itself is unavailable. Once an implementation advertises
+the capability, every such suite is mandatory.
+
 <!-- appendices.test_harness.assertion_directives.stage_dump_assertions -->
 #### T.5.3 Stage-dump assertions
 
@@ -49427,6 +52280,12 @@ Supported directives:
 
 ```text
 assertStageDump <checkpoint> equals <path>
+assertStageDumpRoundTrips <checkpoint>
+assertKCoreParses <path>
+assertKCoreRoundTrips <path>
+assertKCoreRejects <path> <diagnostic-code>
+assertKCoreLevelEvidence <path> <certificate-ref> dependencies <integer-list>
+assertKCoreSemanticHashEquals <path1> <path2>
 ```
 
 Rules:
@@ -49436,17 +52295,36 @@ Rules:
 * The harness requests a stage dump for that checkpoint in the format determined as follows:
   * if `<path>` ends in `.json`, the requested format is JSON;
   * if `<path>` ends in `.sexpr`, the requested format is S-expression;
+  * if `<path>` ends in `.kcore`, the requested format is KCoreText and `<checkpoint>` must be `KCore`;
   * otherwise, the requested format is the suite's selected `dumpFormat`.
 * Therefore one suite MAY assert both JSON and S-expression dumps by using golden files with the corresponding
   extensions.
 * If the effective format is JSON, the expected file MUST contain JSON.
 * If the effective format is S-expression, the expected file MUST contain an S-expression serialization.
+* If the effective format is KCoreText, the expected file MUST contain a `.kcore` unit under §30.2.0A.
+
+Additional KCoreText assertions:
+
+* `assertStageDumpRoundTrips KCore` requests canonical textual KCore, parses it, verifies it, serializes it again, and
+  succeeds iff the canonical serializations are equal.
+* `assertKCoreParses path` succeeds iff the `.kcore` file parses and passes KCore checkpoint verification.
+* `assertKCoreRoundTrips path` additionally requires canonical parse-print-parse stability and semantic-hash stability.
+* `assertKCoreRejects path code` succeeds iff the file parses as KCoreText and checkpoint verification rejects it with
+  the requested diagnostic code.
+* `assertKCoreLevelEvidence path certificate-ref dependencies integer-list` parses and verifies the KCoreText file,
+  resolves the certificate, and checks its canonical irredundant dependency set after arithmetic replay.
+* `assertKCoreSemanticHashEquals path1 path2` parses and verifies both KCoreText files and compares their canonical KCore
+  semantic hashes. Raw source bytes and proof syntax are ignored.
+* A parser failure satisfies `assertKCoreRejects` only when `code` is `E_KCORE_TEXT_INVALID` or
+  `E_KCORE_TEXT_UNSUPPORTED_VERSION` as appropriate.
+* A `.kcore` suffix on `assertStageDump <checkpoint> equals <path>` selects KCoreText for the KCore checkpoint.
 
 Comparison semantics:
 
 * JSON dumps are compared after parsing and canonicalization.
   Object-key order is ignored.
 * S-expression dumps are compared after parsing and canonicalization.
+* KCoreText dumps are compared after parsing, checkpoint verification, and canonical serialization.
 * Implementations MUST NOT compare stage dumps as raw bytes alone for the purpose of this assertion.
 
 <!-- appendices.test_harness.assertion_directives.run_assertions -->
@@ -49750,8 +52628,11 @@ Erasure justification:
   erased compile-time values, and erased branch-refinement evidence;
 * erased equality transport through `subst` compiles without a runtime proof branch when the equality proof is erased;
 * a runtime-relevant branch on an erased proof is rejected unless it uses a specified runtime-safe eliminator;
-* KBackendIR dumps contain no runtime operand of classifier `Type`, `TypeLevel`, `Quantity`, `Region`, `RecRow`,
-  `VarRow`, `EffRow`, `Label`, `EffLabel`, proof, syntax, `Elab`, or capture annotation.
+* KBackendIR dumps may contain runtime-relevant `TypeLevel` values and operations, but contain no universe
+  metavariables, solver constraints, solver proof state, erased quantity-`0` occurrences, or `Type u` as a runtime
+  universe object;
+* KBackendIR dumps contain no runtime operand of classifier `Type`, `Quantity`, `Region`, `RecRow`, `VarRow`, `EffRow`,
+  `Label`, `EffLabel`, proof, syntax, `Elab`, or capture annotation.
 
 Checkpoint verification:
 
