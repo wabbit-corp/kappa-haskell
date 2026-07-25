@@ -862,6 +862,7 @@ E_SPLICE_OUTSIDE_DO
 E_SPLICE_CROSSES_BOUNDARY
 E_SPLICE_IN_COMPREHENSION
 W_DO_ITEM_UNREACHABLE
+W_FLOAT_LITERAL_EXTREME_ROUNDING
 
 E_MISSING_EXPLICIT_SIGNATURE
 I_INFERRED_SIGNATURE_AVAILABLE
@@ -1059,6 +1060,8 @@ Meanings:
   comprehension boundary).
 * `W_DO_ITEM_UNREACHABLE` is emitted once per maximal run of user-written do-items made unreachable by a preceding
   abrupt-control item (§18.2.2).
+* `W_FLOAT_LITERAL_EXTREME_ROUNDING` is emitted once per numeric literal at `Double` whose correctly rounded value
+  overflows to an infinity or totally underflows to zero from a nonzero mathematical value (§6.1.3).
 * `E_MISSING_EXPLICIT_SIGNATURE` is emitted when a declaration requires an explicit signature and none is available.
 * `I_INFERRED_SIGNATURE_AVAILABLE` MAY be emitted as an informational diagnostic carrying an inferred signature that
   tooling may insert.
@@ -1958,6 +1961,7 @@ containing typed recovery nodes for the following recoverable conditions:
 * missing indentation block after a block introducer;
 * unexpected indentation or dedentation;
 * missing expression after `=`, `->`, `<-`, `then`, `else`, `case`, `return`, or a field initializer;
+* missing constructor block after a `data` declaration's trailing `=`;
 * malformed import or export item;
 * malformed binder annotation;
 * malformed record field, constructor field, or patch item;
@@ -1991,6 +1995,10 @@ speculative
 Rules:
 
 * Recovery MUST NOT cause an invalid program to be accepted.
+* For a listed recoverable condition, the primary diagnostic MUST name the missing or malformed element and anchor at
+  the truncation or insertion point. Skipping the construct and reporting only a generic unexpected-token complaint
+  anchored at the construct's well-formed head token (for example blaming the `data` keyword when the constructor
+  block after `=` is what is missing) does not satisfy this contract.
 * A recovery insertion MUST be represented as synthetic syntax with provenance, not as if the user had written it.
 * A downstream diagnostic that depends only on speculative recovery SHOULD be suppressed under the root recovery
   diagnostic.
@@ -5358,6 +5366,16 @@ observation mode, they may be used as ordinary identifiers.
   where a keyword is not syntactically expected.
 * Example: `let type = 42` is permitted (where `type` is a term name), while `type Foo = ...` uses `type` as a keyword.
 
+Declaration-head disambiguation:
+
+At a declaration head (top level, block scope, or do-item head), a soft keyword that can introduce a declaration form
+is read as that introducer only when its declaration grammar can continue from the next token. When the next token
+instead continues an ordinary term declaration — a `:` beginning a signature, or `=` or `<-` beginning a definition or
+bind — the identifier reading MUST be chosen; one token of lookahead suffices for these cases. Thus `effect : Int`
+begins a signature for the term name `effect` and `let effect <- e` binds the identifier `effect` in a `do` block,
+while `effect Console = ...` begins an effect declaration. A soft keyword usable as an identifier in binder position
+(`let addEffect effect = effect + 1`) resolves as that binder in its body like any ordinary name.
+
 If an implementation accepts `intrinsic trait` in source or generated prelude declarations, `intrinsic` belongs to this
 contextual-keyword set.
 
@@ -5675,7 +5693,11 @@ Token recognition uses longest-match-first.
   token.
 * `~=` is recognized as an ordinary operator token in preference to standalone `~`, so the `Equiv` operator remains
   available even though `~` itself is reserved for `inout` call sites (§18.9).
-* `<[` and `]>` are recognized as single reserved tokens in preference to `<` plus `[` and `]` plus `>`.
+* `<[` and `]>` are recognized as single reserved tokens in preference to `<` plus `[` and `]` plus `>`, but only
+  where the effect-row reading is possible: `]>` is one token only when an unmatched `<[` is open in the current
+  balanced-delimiter context. Otherwise `]` closes its bracket normally and `>` begins an ordinary operator token —
+  longest-match tokenization resets at a balanced closing delimiter, so `firstOrZero [1]>0` is a comparison of a
+  list-literal application, not a stray effect-row closer.
 * In particular, `?.` is recognized before `?` plus `.`, `?:` is recognized before `?` plus `:`, and a standalone `?`
   remains available as an ordinary operator token (for example, a user-defined postfix operator per §5.5.2).
 
@@ -5836,13 +5858,34 @@ semantics below apply equally to both names.
 * `floatEq : Float -> Float -> Bool` is provided for IEEE "numeric" equality (the common `==` in many languages), where
   `NaN` is never equal and `+0.0` equals `-0.0`.
 
+Out-of-range literals:
+
+A syntactically well-formed floating-point literal denotes the IEEE-754 binary64 value obtained by correct rounding
+(round-to-nearest, ties-to-even) of its mathematical value. When that rounding is extreme, the literal is still
+accepted, but the implementation MUST emit warning `W_FLOAT_LITERAL_EXTREME_ROUNDING`, once per literal occurrence:
+
+* overflow — the literal's mathematical value is finite but rounds to positive or negative infinity (for example
+  `1e309`); or
+* total underflow — the literal's mathematical value is nonzero but rounds to positive or negative `0.0` (for example
+  `1e-324`, which is below half the smallest subnormal).
+
+The same rule applies to any numeric literal elaborated at `Double` (directly, through `Float`, or through a
+`FromFloat` witness whose carrier is `Double`), including integer literals of extreme magnitude. A literal that rounds
+to a finite nonzero value — including the representable extremes `1e308` and `5e-324` — is not flagged, and ordinary
+precision loss from rounding to the nearest representable value is never flagged.
+
 <!-- literals.numeric_literals.sign -->
 #### 6.1.4 Sign
 
-`-` is a **unary operator**, not part of the literal.
+`-` is a **unary prefix operator**, not part of the literal.
 
-* `-123` is parsed as `negate 123`
-* `-3.14e2` is `negate (3.14e2)`
+The prefix operator `(-)` is resolved by ordinary operator name resolution and fixity lookup (§5.5.2, §5.5.3, §7.1).
+The prelude declares the prefix `(-)` binding as `negate`; a local or imported prefix `(-)` binding in scope shadows
+it exactly like any other scoped operator binding. `-e` applies whichever prefix `(-)` is in scope at the use site; it
+MUST NOT be hard-wired to the prelude `negate` operation.
+
+* `-123` elaborates as `(-) 123` — under the prelude binding, `negate 123`.
+* `-3.14e2` is `(-) (3.14e2)`.
 
 Operator precedence rules determine association (see expressions).
 
@@ -18980,6 +19023,16 @@ For a trait evidence goal `Tr args`, the normalized goal is obtained by:
 
 For an instance declaration, the normalized instance head is obtained by the same process at the instance declaration
 site, then serialized into the module interface as part of the instance identity.
+
+Opaque aliases in instance identity:
+
+Alias normalization for instance goals and instance heads never unfolds an `opaque` type alias (§8.5.2) — not even at
+the alias's defining site, where the alias is otherwise transparent. An opaque alias is a stable public head identity:
+an instance declared at `Tr Id`, where `opaque type Id = Int`, is identified, serialized, and matched as `Tr Id`
+everywhere, and a goal at the hidden representation (`Tr Int`) does not select it in any module, including the
+defining one. Computing the head in the defining module's private transparency environment would leak the
+representation into the interface and make the instance unreachable at its abstract spelling outside the module,
+defeating the abstraction that `opaque type` exists to provide.
 
 Candidate collection in §14.3.1 step 2 uses normalized goals and normalized instance heads.
 

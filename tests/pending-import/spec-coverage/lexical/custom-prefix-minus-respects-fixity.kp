@@ -1,3 +1,8 @@
+-- Spec 6.1.4: prefix (-) resolves by ordinary operator name resolution and
+-- fixity lookup (5.5.2/5.5.3); the prelude binding is negate, and a scoped
+-- prefix (-) binding shadows it like any other operator. -Token must apply
+-- the local Token -> Int binding; hard-wiring minus to negate is
+-- non-conforming.
 module main
 
 -- Kappa exposes prefix operators and fixity declarations as ordinary scoped
@@ -20,4 +25,4 @@ let result = -Token
 --! mode check
 --! assertNoErrors
 --! assertEval result 99
--- STATUS(a0497523): FAIL — expected 0 errors, got 1; first error: E_APPLICATION_ARGUMENT_MISMATCH "the supplied argument's type does not match the parameter type (\167\&16.1.7.1)" at line…
+-- STATUS(a0497523): FAIL — minus still hard-routed to prelude negate; the scoped prefix (-) binding is bypassed (E_APPLICATION_ARGUMENT_MISMATCH); Spec 6.1.4 now requires ordinary operator resolution

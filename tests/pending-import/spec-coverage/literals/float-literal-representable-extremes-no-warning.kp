@@ -1,0 +1,26 @@
+-- Spec 6.1.3 (out-of-range literals) boundary sibling: literals that round
+-- to a finite nonzero value are NOT flagged -- including the representable
+-- extremes 1e308 (near DBL_MAX) and 5e-324 (the smallest subnormal).
+-- Ordinary nearest-representable rounding (0.1) is never flagged either.
+--! mode run
+--! assertNoErrors
+--! assertNoWarnings
+--! assertStdout "ok\n"
+
+module main
+
+big : Double
+let big = 1e308
+
+small : Double
+let small = 5e-324
+
+frac : Double
+let frac = 0.1
+
+main : UIO Unit
+let main =
+    if big > 0.0 && small > 0.0 && frac > 0.0
+    then printlnString "ok"
+    else printlnString "bad"
+-- STATUS(a0497523): PASS

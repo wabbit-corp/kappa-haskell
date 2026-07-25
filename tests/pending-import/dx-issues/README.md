@@ -81,3 +81,10 @@ prove-then-transport chains, flow-bridge discharges, the PNat vector
 journey) and 5 rerouted compiler-gap pins under
 `../spec-coverage/` (TypeLevel solver identities not reachable from
 ordinary source; bool-match comparison bridge).
+
+2026-07-24 promotions: float extreme-rounding warnings, opaque-alias
+instance-head identity, prefix-minus operator resolution, data-header EOF
+recovery quality, context-sensitive ']>' lexing, soft-keyword declaration
+heads, and the Eq eqSound/eqComplete member gap were promoted (Spec SS6.1.3,
+SS14.3.2, SS6.1.4, SS3.1.14A, SS5.5.1, SS5.2; eq-eqsound needed no spec
+change) and moved to ../spec-coverage/.

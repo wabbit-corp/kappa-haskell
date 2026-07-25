@@ -1,0 +1,18 @@
+-- Spec 14.1 + 14.1.2 (no spec change needed -- pure implementation gap):
+-- the prelude Eq trait declares eqSound/eqComplete, and 14.1.2 makes
+-- eqSound the sole sound bridge from (x == y) = True to x = y. Projecting
+-- these members from Eq evidence (7.3 member projection) must resolve for
+-- prelude instances at the declared types.
+--! mode check
+--! assertNoErrors
+module main
+
+natEqSound : forall (x : Nat) (y : Nat). (@d : Eq Nat) -> (@0 p : (x == y) = True) -> x = y
+let natEqSound x y d p = d.eqSound x y p
+
+natEqComplete : forall (x : Nat) (y : Nat). (@d : Eq Nat) -> (@0 p : x = y) -> (x == y) = True
+let natEqComplete x y d p = d.eqComplete x y p
+
+-- 'no member eqSound/eqComplete on this receiver (§7.3), receiver type:
+-- Eq Nat'; the shipped prelude Eq carries only (==).
+-- STATUS(a0497523): FAIL — prelude Eq still carries only (==): E_UNRESOLVED_MEMBER for eqSound/eqComplete; pure implementation gap against Spec 14.1/14.1.2 (no spec change needed)

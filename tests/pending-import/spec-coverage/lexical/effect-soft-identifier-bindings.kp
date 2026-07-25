@@ -1,0 +1,21 @@
+-- Spec 5.2 (declaration-head disambiguation): a soft keyword is read as a
+-- declaration introducer only when its declaration grammar can continue
+-- from the next token; 'effect : Int' begins a signature for the term name
+-- 'effect', and 'let effect <- e' binds the identifier in a do block.
+--! mode run
+--! assertNoErrors
+--! assertStdout "8\n"
+
+module main
+
+effect : Int
+let effect = 3
+
+addEffect : Int -> Int
+let addEffect effect = effect + 1
+
+main : UIO Unit
+let main = do
+    let effect <- pure (addEffect effect)
+    println effect
+-- STATUS(a0497523): FAIL — effect : Int still misread as an effect declaration head (E_RECOVERY_DECLARATION_SKIPPED); Spec 5.2 declaration-head disambiguation now requires the identifier reading

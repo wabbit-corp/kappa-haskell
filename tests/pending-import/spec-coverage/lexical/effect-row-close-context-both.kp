@@ -1,0 +1,20 @@
+-- Spec 5.5.1 sibling (positive control): with the context-sensitive
+-- ']>'-rule, a real effect row <[Console : Console]> must keep lexing its
+-- closer as one token (an unmatched '<[' is open) alongside ordinary
+-- list-plus-comparison code in the same file. The tight no-space case
+-- ([1]>0) is pinned by effect-row-close-vs-list-greater-than.kp.
+--! mode check
+--! assertNoErrors
+--! assertEval cmp True
+
+module main
+
+effect Console =
+    say : String -> Unit
+
+useRow : Unit -> Eff <[Console : Console]> Unit
+let useRow u = Console.say "hi"
+
+cmp : Bool
+let cmp = listLength [1] > 0
+-- STATUS(a0497523): PASS

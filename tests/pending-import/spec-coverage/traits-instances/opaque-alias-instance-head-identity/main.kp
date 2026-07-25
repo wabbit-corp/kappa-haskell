@@ -1,0 +1,19 @@
+module main
+
+-- Spec 14.3.2 (opaque aliases in instance identity): alias normalization
+-- for instance goals and heads never unfolds an opaque type alias, not
+-- even at its defining site. An instance declared at Tag Id is matched as
+-- Tag Id everywhere; a goal at the hidden representation (Tag Int) does
+-- not select it in any module. This preserves the abstraction that
+-- 'opaque type' exists to provide (8.5.2), and is what the compiler
+-- already does -- this suite pins it as now spec-required.
+import lib.(type Id, mkId, trait Tag, tag)
+
+-- EXPECTED-good: goal at the abstract type solves.
+rId : Int
+let rId = tag (mkId 0)
+
+-- EXPECTED-good: the hidden representation type gains no instance.
+rInt : Int
+let rInt = tag (5 : Int)             --!! E_UNSOLVED_IMPLICIT
+-- STATUS(a0497523): PASS — abstract goal solves, representation goal stays unsolved; Spec 14.3.2 now makes this abstraction-preserving identity normative

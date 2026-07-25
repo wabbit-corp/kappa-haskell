@@ -1,0 +1,12 @@
+-- Spec 3.1.14A: 'missing constructor block after a data declaration's
+-- trailing =' is a listed recoverable condition, and the primary diagnostic
+-- MUST name the missing element and anchor at the truncation point --
+-- skipping the declaration with a generic unexpected-token complaint at the
+-- (well-formed) 'data' head token does not satisfy the recovery contract.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch constructor|expression|after '='
+module main
+
+data Foo : Type =
+-- STATUS(a0497523): FAIL — still E_RECOVERY_DECLARATION_SKIPPED blaming the data keyword; Spec 3.1.14A now requires naming the missing constructor block at the truncation point
