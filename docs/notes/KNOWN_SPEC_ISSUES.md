@@ -23,22 +23,61 @@ Severity legend: **high** = unsoundness or a contradiction affecting real
 programs; **medium** = divergent-implementations ambiguity or missing
 normative machinery; **low** = footgun, wording defect, or minor gap.
 
+
+**Merged 2026-07-23** with the spec-coverage campaign ledger (formerly
+`docs/SPEC_ISSUES.md`); campaign findings that survive verification are Part
+III below. Items verified as fully fixed in the current spec were removed;
+their numbers stay reserved and are listed here so cross-references (for
+example "KNOWN_SPEC_ISSUES §16/§17" in ROADMAP.md and UNIVERSES-PLAN.md)
+remain meaningful.
+
+## Resolved and removed (verified against the current spec, 2026-07-23)
+
+Numbered entries removed from Parts I-II:
+
+* **1.** §5.5.1: longest-match-first made `[1]>x` lex as `]>` — resolved 2026-07-24: `]>` is now one token only
+  under an unmatched open `<[`; longest-match resets at balanced closing delimiters (§5.5.1).
+* **3.** §16.1.3 vs §16.4.2: short-circuit operators as ordinary terms vs flow typing — §16.4.2 now states the fix verbatim: "This rule is keyed by resolved semantic identity, not by spelling ... If any of these names is shadowed, rebound, imported under a different s…
+* **6.** §31.3: variant member identity by canonical rendering not pinned for interop — Identity is no longer rendering-keyed: `MemberId(T)` is now "computed from the fully elaborated member type using the same canonical defining-module view used for Hard Hashes (§33.…
+* **14.** §28.2: proof-helper bodies still use erased primitives instead of equality matching — The spec now specifies equality-pattern refinement as a required elaboration feature with its typing rules: "A source pattern match on `refl` MUST elaborate to equality induction (…
+* **15.** §4: unhide/clarify recognized/gated/audited but carry no deeper semantic effect — §4.3 now explicitly defines the semantics the possible fix requested: "`unhide` imports a name that is marked `private` in the imported module, as if it were exported"; "`clarify` …
+* **16.** §10.1.3,§10.2 vs §11.1: No universe size check for data ctor args — §10.4.1 'Constructor universe-size rule' (L9579) now requires every constructor-local binder `A : Type α` to satisfy solver-proved `α ≤ ρ` under the declared result universe `F Δ :…
+* **17.** RESOLVED: §11.1/§11.1.2/§11.3 lacked Pi formation & level discipline — Redesigned §11 supplies the missing rules: `TypeLevel` is an ordinary opaque prelude type whose values include `ω` (L10390-10419); universe formation `Γ ⊢ Type u : Type (succ u)` (…
+* **47.** Exported fixity was per operator, not per fixity kind — resolved 2026-07-24: operator identity, fixity,
+  export, and import selectors are now per role (infix/prefix/postfix) (§5.5.2, §7.1.1, §8.3.1).
+* **88.** Conflicting imported fixities of the same operator and kind — resolved 2026-07-24: same-role fixity
+  disagreements are §8.3.1A imported-binding collisions; use requires local declaration or selective import (§5.5.2).
+* **89.** Prefix minus hard-wired to `negate` — resolved 2026-07-24: minus has per-role identities resolved by
+  ordinary operator/fixity lookup; occurrence roles are classified lexically by adjacency (§5.5.1, §6.1.4).
+
+Campaign findings resolved by spec commits (removed from Part III):
+
+* **§11.1.2, §11.1.3** (L9041-L9042 vs L9066-L9068) `[writer1:universes-intrinsics]` — Resolved by TypeLevel/universes revision. §11.1.2.3A L11201-11202 now states mandatory generalization: 'At a declaration generalization boundary, an u…
+* **§3.2.20** (L3967-L3971) `[analysis:diag-families-2]` — §3.2.20 diagnostic list now interleaves W_ codes with E_ codes (L4500 `W_VAR_REF_ESCAPE_DISABLES_FLOW`, L4501 `W_VAR_NEVER_READ`), so the list is no l…
+* **§5.4** (L4813-L4848) `[analysis:lexical]` — L5476-5477 'The continuation region ends immediately before the first significant physical line whose indentation is less than or equal to the anchor …
+* **§5.5.1.1** (L4984-L4990) `[analysis:lexical]` — L5638 now reads '`(op e)` (right section) desugars to `\__x -> __x op e`, equivalently `flip (op) e`', explicitly stating the flip equivalence.
+* **§7.2, §8.3.1** (L6199 vs L6791-6804) `[writer1:names-resolution]` — §8.3.1 now distinguishes unqualified imports (both facets, L7503-7504) from kind-selected imports: `type` selects only the type constructor (L7493), `…
+* **§7.5** (L6409-L6415) `[analysis:names-resolution]` — L7088-7093 now enumerate per-position selection ('m.T in type position selects the exported type facet; m.C in trait-obligation position selects the e…
+* **§8.3.1A** (L6854-L6855) `[analysis:modules-imports]` — L7555 now gates the warning 'when it can prove that no downstream use can observe it', defining what 'unused' means for the collision.
+* **§13.2.10** (L13576-L13585) `[analysis:rows-packages-existentials]` — §13.2.10 L17797-17801 now states 'A seal may not hide an anonymous rigid borrow region... in a way that lets the resulting package escape the lexical …
+* **§13.2.11** (L13659-L13664) `[analysis:rows-packages-existentials]` — §13.2.11 L17875-17880 now clarifies 'If a record should be packaged as one payload value rather than flattened into visible payload fields, wrap it in…
+* **§14.4** (L14853-L14856) `[analysis:proofs-deriving-totality]` — §14.4 L19189-19190 now formalizes it: 'The compiler provides intrinsic RuntimeErased P evidence whenever IsProp P is available' and 'RuntimeErased T d…
+* **§18.1.13, §32.2.9** (docs/Spec.md 18.1.13 expect-term list and Alternative bullets (near… — orElse is now a declared prelude name: Alternative trait member 'let orElse : f a -> f a -> f a = (<|>)' (L34753), exported at L33841, so a conformanc…
+* **§18.1.20, §18.1.20.1** (L19596-L19649) `[analysis:io-fibers-stm]` — §18.1.20.1 L24015-24016 now states 'general heap state is not rolled back... Ordinary unrestricted values and references reachable from the captured e…
+* **§18.1.4** (L18870-L18874) `[analysis:io-fibers-stm]` — §18.1.4 L23240-23243 now defines the hidden region environment as 'regions captured by closures, thunks, lazy values, handlers, resumptions,... and ot…
+* **§5, §5.4** (L4992-5272) `[r3:dx-layout]` — §5 intro L5117-5124 now specifies the BOM ('A single U+FEFF byte order mark at the very start... MUST be accepted and discarded'; rejected elsewhere).…
+* **§18.3.1, §20.10.5, §20.10.7, §20.10.11** (L24865-L24996 (§18.3.1), L27187-L27240 (§20.3.… — §18.3.1 'Comprehension boundary' (L25220-25237) now adds it explicitly: 'a ! splice MUST NOT appear inside any comprehension clause' → compile-time er…
+
+Campaign findings that duplicate numbered entries above (removed):
+
+* **§G.2** (L50684-50710) `[writer2:appendices-config]` — already tracked as **#24** above
+* **§14.3.1, §14.3.2** (docs/Spec.md L18793, current working tree) `[delta-audit:2026-07-22]… — already tracked as **#54** above
+* **§5.5.2, §5.5.3, §6.1.4** `[whole-spec-missed:2026-07-22]` — already tracked as **#89** above
+* **§29.3** (docs/Spec.md L35204-35223 vs L35265-35266) `[writer2:std-modules]` — already tracked as **#60** above
+* **§5.1A, §2.1A** (L4667-L4671, L428-L431) `[writer1:lexical]` — already tracked as **#73** above
+* **§15.10, §15.16** (L15380-L15385, L15661-L15662) `[writer1:proofs-deriving-totality]` — already tracked as **#69** above
+* **§17.3.3, §17.1.9** (L22675-L22712, L22297-L22328) `[r3:combo-qtt-patterns]` — already tracked as **#20** above
 # Part I — found during implementation
-
-## 1. §5.5.1: longest-match-first makes `[1]>x` lex as `]>`
-
-§5.5.1 reserves `<[` and `]>` as single tokens and states they are
-recognized "in preference to `<` plus `[` and `]` plus `>`"
-(longest-match-first, §5.5.1 "Token recognition uses
-longest-match-first"). Therefore `xs[1]>x` and `[1]>x` lex with an
-effect-row close-bracket token `]>` in the middle of ordinary
-index/comparison code, producing a confusing parse error far from the
-cause. Whitespace (`[1] > x`) is required. The spec neither warns about
-this nor requires a tailored diagnostic. Evidence: the lexer here
-follows the rule literally (`Kappa.Lexer` longest-match table) and the
-misparse reproduces.
-
-**Possible fix:** Amend §5.5.1 to require a targeted diagnostic when `]>` is lexed with no matching `<[` open (suggesting `] >`), or restrict the `]>` single-token rule to positions where an effect-row bracket is syntactically live; document the whitespace workaround normatively.
 
 ## 2. §6.3.5 / §7.1.1 / §9: the soft keyword `type` needs unbounded lookahead
 
@@ -67,22 +106,7 @@ normative form is unsupported on its account.
 
 **Possible fix:** Add a normative disambiguation note (§5.2/§9): at `type`, adjacency to a quote selects the prefixed-string handler (§6.3.4); identifier followed by `=`/`:` in declaration position selects the declaration; otherwise the kind-qualifier reading. State that one token of lookahead plus the adjacency flag suffices, so implementations need not fear unbounded scan.
 
-## 3. §16.1.3 vs §16.4.2: short-circuit operators are "ordinary terms", yet flow typing must see through them
-
-§16.1.3 defines `(&&)` and `(||)` as ordinary prelude functions over
-`Thunk Bool` — first-class values, shadowable, passable. §16.4.2 then
-requires flow typing to recurse through conditions built with `&&`,
-`||`, and `not`, keyed (per §1, "resolved semantic identity", and the
-§16.4.2 rules) to those exact prelude identities, not spellings. The
-combination forces every conforming implementation to special-case
-three "ordinary" functions inside its refinement engine, and leaves
-unstated what happens when a user rebinds `(&&)` locally to a function
-of the same type (refinement silently off? error?). The two sections
-read as if written under different assumptions. (This implementation
-sidesteps it only because flow typing is unimplemented —
-SPEC_COMPLIANCE.md §16.4.)
-
-**Possible fix:** State in §16.4.2 that refinement is keyed on the resolved prelude identities of `(&&)`/`(||)`/`not`, and that a local rebinding (any type) simply does not participate in refinement — no error, refinement silently off for that condition. One sentence closes the divergence.
+**Status (2026-07-23):** The handler-vs-declaration disambiguation is now normatively pinned in §6.3.5, confirming the entry's "RESOLVED for the handler form." What remains: the spec still adds no normative note acknowledging `type`'s three roles (declaration / prefixed-string handler / kind-qualifier) or the one-token-lookahead-plus-adjacency disambiguation the possible fix requested; §5.2 keeps only the general soft-keyword rule with a single `type` example (5359).
 
 ## 4. §28.2.1 + §16.4.4: checked subtraction makes ordinary `x - y` unwritable without flow facts
 
@@ -139,21 +163,7 @@ behaviour but fail purely on the asserted code name.
 
 **Possible fix:** Expand the §3.1.4 portable-alias registry to cover every diagnostic code asserted anywhere in Appendix T fixtures, and add a T-side rule that portable fixtures MUST assert only registered aliases or §3.2 families, never raw implementation codes.
 
-## 6. §31.3: variant member identity by "canonical rendering" is not pinned enough for interop
-
-§31.3 keys variant runtime representation to stable member identities
-derived from the member *type*, with alias-transparent identity. But
-the canonical rendering itself (parenthesization, spacing, qualified vs
-unqualified names, ordering inside nested unions) is not normatively
-specified, even though §33 content-addressed identity and any
-cross-implementation data exchange depend on byte-stable tags. Two
-conforming implementations can pass §13/§17 tests yet disagree on every
-tag. Evidence: this implementation had to invent a rendering
-(`Kappa.Pretty`, alias-normalized; commit `bc08ecd` "alias-stable
-variant tags") and external fixtures still cannot check it
-portably.
-
-**Possible fix:** Normatively pin the canonical rendering as a small grammar (token spelling, single-space separation, parenthesization rule, fully-qualified names, nested-union member ordering) with byte-stable output — or replace rendering-keyed identity with a structural hash defined over the elaborated type tree (§33-style), making the byte format irrelevant.
+**Status (2026-07-23):** The portable-alias registry is now much larger (~100 entries at §3.1.4), addressing the "much larger normative alias registry" need in large part. What remains: no T-side rule requiring portable fixtures to assert only registered aliases or §3.2 families (`assertDiagnostic` still admits raw §3.1 codes), and ordinary codes like unresolved-name and layout-error naming are still absent from the registry.
 
 ## 7. §6.1.3 / §28.2: two float equalities with the surprising one on `(==)`
 
@@ -372,145 +382,11 @@ Evidence: `Kappa.Prelude` (trait declarations near `Iterator`).
 
 **Possible fix:** Either add the missing normative rules for referencing an associated member in applied type positions inside sibling member signatures (name resolution + reduction during unification), or restate the affected §28.2/§23.7 signatures (`Iterator.next`, `IntoQuery.toQuery`) in an explicit-projection form that is expressible without that feature — and pin whichever is chosen so implementations agree on the surfaced signatures.
 
-## 14. §28.2: proof-helper bodies still use erased primitives instead of equality matching
-
-The §28.2 proof/equality helpers `absurd`, `subst`, `sym`, `trans`,
-`cong`, `pathInd`, `unsafeAssertProof`, and `witness` are all declared as
-prelude terms with their spec signatures and resolve by name. Their
-*bodies*, however, cannot be written by `match eq case refl -> ...`,
-because this implementation does not yet propagate the branch-local
-family-argument equality forced by the `refl` result type. They are
-therefore realized through erased-proof primitives (`__transport`,
-identity on the runtime payload since the witness is erased; `__eqProof`,
-an inhabitant of the erased equality goal; `__absurd`).
-
-Endpoint inference for ordinary uses of `sym`/`trans`/`cong` works by
-unifying the explicit equality proof argument with the helper's equality
-family domain (`tests/conformance/prelude/proof_helpers_use.kp`). The
-remaining limitation is equality-pattern refinement itself, plus the
-ordinary need to make motives explicit for `subst`/`pathInd` when they
-cannot be inferred from surrounding type information. Evidence:
-`Kappa.Prelude` (proof-helper block), `tests/conformance/prelude/`
-`proof_helpers_resolve.kp`, `tests/conformance/prelude/proof_helpers_use.kp`.
-
-**Possible fix:** Specify equality-pattern refinement — matching `refl` refines the family argument within the branch — as a required elaboration feature with its typing rules, or normatively bless primitive-backed helper bodies (`__transport`/`__eqProof`/`__absurd` realizations) as a conforming implementation strategy for the §28.2 helpers.
-
-## 15. §4: unsafe/debug facilities are recognized, build-gated, and audited, but `unhide`/`clarify` carry no deeper semantic effect
-
-The §4 unsafe/debug facilities are now recognized and gated by the §4.2
-build configuration (`UnsafeConfig` in `Kappa.Check`, all `allow_*`
-settings default to `false` for package mode). The §4.4 escapes
-`assertTerminates`/`assertReducible`/`assertTotal` parse as a decl prefix
-(`DUnsafeAssert`), the §4.5 `unsafeAssertProof` reference is gated at name
-resolution, and the §8.3.1.1 `unhide`/`clarify` import modifiers are gated
-during import resolution. Each disabled use is a compile-time error
-(`E_FEATURE_INACTIVE` / `kappa.feature.gated`) naming both the offending
-form and the disabling setting (§4.2). Each *permitted* use is recorded in
-the §4.7 audit ledger (`csAuditLedger`), exposed as machine-readable JSON
-by `kappa audit PATH` and asserted in tests via `assertAuditLedger`. The
-test harness enables a facility per suite with the matching `allow_*`
-directive.
-
-Two scope limitations remain, neither weakening the gating MUST:
-
-* **`unhide`/`clarify` semantics (§4.3) are gating + audit only.** The
-  modifiers are recognized, gated, and audited, but `unhide` does not yet
-  grant access to a `private` imported name and `clarify` does not change
-  definitional-equality transparency of an `opaque` item. This
-  implementation has no separate-compilation artifacts (§31.x is
-  interpreter-scoped), so the §4.3 "compiler does not have access to the
-  requested private/opaque content" condition is moot; the modifiers are
-  therefore exercised on ordinary public names. Full visibility-escape
-  semantics are out of scope for the interpreter.
-
-* **Assertion effect is deliberately narrow.** `assertTerminates` is gating +
-  audit only. Gated `assertReducible` records a conversion-reducibility
-  override for the whole asserted recursive SCC, but it never changes runtime
-  semantics (§4.4), and the wrapped definition is elaborated normally so no
-  spurious §9.1 cascade piles onto the gate error. The §4.7 ledger records
-  the core fields §4.7 enumerates
-  (facility, module, origin, affected declaration, permitting build
-  setting, reason); the hash/ABI/coherence-identity fields are
-  separate-compilation-scoped and not modelled. Evidence:
-  `Kappa.Check` (`elabUnsafeAssert`, `gateUnsafe`, `recordAudit`,
-  `gateUnsafeAssertProof`), `Kappa.Pipeline` (`gateImportModifiers`),
-  `tests/conformance/unsafe_debug/`,
-  `tests/conformance/unsafe-debug-unhide-{gated,enabled}/`.
-
-**Possible fix:** Define §4.3 semantics for whole-program implementations explicitly: gated `unhide` grants name access at check time and `clarify` grants definitional transparency, with the "compiler lacks access to the content" carve-out applying only to separate compilation; gating + audit remain mandatory in all cases.
+**Status (2026-07-23):** The spec now pins how a bare associated-member name inside a sibling trait-member signature resolves (§14.2.1, 18697-18699), addressing the Iterator.next / IntoQuery.toQuery name-resolution reference the entry could not express. What remains: no reduction-during-unification rule for `d.Item`-style projections at use sites, and the proof-carrying members of the h-level traits (IsContr/IsProp/IsSet, etc.) and WellFoundedRelation's accessibility witness are still full proof members a proofless implementation cannot synthesize.
 
 # Part II — systematic spec-internal review (2026-07-06)
 
 ## A. High severity — unsoundness, contradictions, and core incompleteness
-
-## 16. §10.1.3, §10.2 vs §11.1: No universe size check for data constructor arguments — `data U : Type0 = MkU (t : Type0)` is admitted, enabling Russell-style inconsistency
-
-**unsoundness** · severity **high** · verification: **confirmed** · Spec.md
-lines 8707-8708, 8736-8737, 8985-9033
-
-§10.1.3 says a data declaration's result classifier is `Type` "subject to the
-ordinary universe rules", but the ordinary universe rules (§11.1) contain only
-`Type u : Type (u+1)` and cumulativity; no rule anywhere requires a
-constructor's argument types to inhabit a universe no larger than the declared
-result universe (grep for constructor/universe size rules comes up empty).
-Consequently `data U : Type0 = MkU (t : Type0)` — a GADT constructor `MkU :
-Type0 -> U` where `Type0 : Type1` — violates no stated rule. Matching (§10.1.3
-branch equalities) gives a projection `U -> Type0`, so `Type0` embeds into an
-inhabitant of `Type0`, the standard self-containment that the stratified
-hierarchy exists to forbid and that yields logical inconsistency
-(Russell/Hurkens construction). Every mainstream checker (Coq, Agda, Lean)
-rejects this with a universe-inconsistency error; the spec as written admits
-it.
-
-> lines 8707-8708: "the type constructor `F` has an elaborated telescope
-corresponding to `Δ` and result classifier `Type`, subject to the ordinary
-universe rules."; lines 8736-8737: "GADT-style constructors are written with
-an explicit result type after `:`. The explicit result type may instantiate or
-constrain any uniform data-family argument"
-
-**Possible fix:** Add to §10.4 (or §10.1.3) the size rule: for `data F Δ :
-Type u`, every explicit and implicit constructor binder type, and every
-family-argument instantiation in a GADT result type, must be checkable at some
-`Type v` with `v ≤ u`; declarations violating this are rejected with a
-universe-inconsistency diagnostic. (If erased large arguments à la Coq's
-`Prop`-style rules are intended for `@0` binders, state that exception
-explicitly.)
-
-## 17. §11.1, §11.1.2, §11.3 (vs. nothing anywhere): No Pi-type universe formation rule; quantification over `Universe : Type0` has no consistent level assignment (Type-in-Type/Hurkens risk)
-
-**incompleteness** · severity **high** · verification: **confirmed** · Spec.md
-lines 8992-8999, 9038, 9019, 9686-9694
-
-The spec's entire universe discipline is `Type u : Type (u+1)` plus
-cumulativity; the rule assigning a universe to a dependent function type `(x :
-A) -> B` is never stated anywhere (grep for max/imax/level-of-Pi/limit-
-universe over all 47070 lines comes up empty; §11.1.2 only says constraints
-are generated 'from typing' without giving the typing rules that generate
-them; §30.2 KCore defers back to these sections). Worse, `Universe : Type0` is
-an ordinary intrinsic type and §11.3 explicitly endorses `forall (u :
-Universe). ... Type u ...` (example at line 9694), whose codomain lives at
-level `u+1` for a bound `u` — no finite level exists, and there is no limit
-universe or bounding rule. Two conforming implementations diverge
-catastrophically: one rejects the spec's own §11.3 example as untypeable;
-another assigns the Pi a fixed level (e.g. Type0, since `Universe : Type0`),
-which is impredicative quantification over all universes and admits a
-Girard/Hurkens-style proof of False. The single most basic judgment of the
-type-theory core is missing.
-
-> line 8994: "in general, `Type u : Type (u+1)` at the meta-level."; line
-8999: "Universe : Type0"; line 9694: "forall (u : Universe) (a : Type u) (b :
-Type u). (a -> b) -> a -> b"; line 9038: "Elaboration generates constraints on
-universe metavariables (e.g. `?u ≤ ?v`, `?u < ?v`) from typing."
-
-**Possible fix:** Add to §11.1 a normative Pi-formation rule: if `A : Type u`
-and `B : Type v` (under `x : A`) then `(x : A) -> B : Type (max u v)`; and a
-rule for binders whose annotation is an intrinsic compile-time classifier
-(`Universe`, `Quantity`, `Region`, rows, labels): either (a) introduce a top
-classifier `Typeω` that such Pis inhabit and that itself is not a first-class
-`Type u`, or (b) require that `u` in any `Type u` occurring in the codomain be
-bounded by a level constraint `u < w` where `Type w` classifies the whole Pi,
-and state that unbounded `forall (u : Universe)` types are accepted only as
-declaration schemes, never as first-class inhabitants of any `Type v`.
 
 ## 18. §13.1.1 vs §33.1.2/§31.3/§8.5.2: Variant MemberId/TagId for opaque-alias member types: stability MUST and opacity MUST cannot both hold
 
@@ -559,6 +435,8 @@ distinct variant members (opacity holds). Add a corresponding note to §33.1.2
 that MemberId/TagId computation uses this export-facing view rather than the
 defining-module-local view.
 
+**Status (2026-07-23):** Now fixed: ContainsVar/LacksVar/row-matching are pinned to MemberId and explicitly not to importer-local transparency, removing the occurrence-site dispatch-mismatch horn. Still open: the spec never states whether an `opaque type Id a = a` member unfolds when MemberId is computed inside its own defining module — §33.1.2's unchanged 'inside the defining module, local definitions are available normally' makes `Id Int` normalize to `Int` in module D but stay `Id Int` in an importer, still contradicting MemberId's cross-module stability MUST; the recorded fix's 'never unfolded even inside its own defining module' clarification was not added.
+
 ## 19. §16.1.7.1 + §16.3 + §16.3.3 vs §30.2.1 and pervasive examples: Implicit resolution (§16.3.3) has no unification/metavariable step, so ordinary polymorphic application is unelaborable as specified
 
 **incompleteness** · severity **high** · verification: **confirmed** · Spec.md
@@ -595,7 +473,7 @@ argument is equivalent to passing an ordinary in-scope term chosen by
 indicating the unsolved implicit goal `G`."
 
 **Possible fix:** Add a step 0 to §16.3.3: 'If the demanded implicit binder
-type G is a compile-time classifier (Type u, Universe, Quantity, Region,
+type G is a compile-time classifier (Type u, TypeLevel, Quantity, Region,
 RecRow, VarRow, EffRow, Label, EffLabel) or G contains unsolved metavariables
 and IsTrait G is not established, the compiler synthesizes a fresh inference
 metavariable of type G, solved by ordinary unification against the remaining
@@ -1496,42 +1374,6 @@ otherwise admitted by the build configuration is a build error diagnosed as
 (Condition 4 then becomes redundant and should be removed or restated as this
 error.)
 
-## 47. §5.5.2 vs §5.5.1, §6.1.4, §36.12: Exported fixity is defined per operator, not per fixity kind, making prefix and infix `-` non-co-exportable
-
-**contradiction** · severity **medium** · verification: **confirmed** ·
-Spec.md lines 5071-5073, 4967, 5180, 40772-40773
-
-§5.5.2 says the exported fixity for an operator is singular: the last top-
-level fixity declaration for `op`. But an operator legitimately carries
-several fixities of different kinds simultaneously (prefix, infix, postfix):
-§5.5.1 explicitly discusses the state where 'both prefix and infix `-`
-fixities are in scope' (which for portable code can only come from the
-prelude's exports), and §6.1.4/§6.1.5 require prefix `-` to be usable in every
-module (`-123` is `negate 123`) while binary `-` must also parse. Under §5.5.2
-as written, a module (including std.prelude) that declares both `prefix 80
-(-)` and `infix left 60 (-)` exports only whichever declaration is textually
-last, so importing modules could not parse both `-x` and `a - b`. §36.12 (line
-40772) compounds this by rejecting an effective module when two fragments
-export fixities for the same operator that differ 'in kind', treating kind as
-a conflict axis rather than a coexistence axis. Two conforming implementations
-diverge: one exports one fixity record per operator (breaking `-`), one
-exports one per (operator, kind).
-
-> line 5071-5073: "A top-level fixity declaration for operator `op` is
-exported iff the name `op` is exported under §8.5. The exported fixity for
-`op` is the fixity that is in scope at the end of the module, i.e. the last
-top-level fixity declaration for `op`." line 4967: "`(-)` is ambiguous when
-both prefix and infix `-` fixities are in scope and no expected type
-disambiguates it."
-
-**Possible fix:** In §5.5.2 replace the sentence with: 'For each fixity kind
-(infix, prefix, postfix), the exported fixity of that kind for `op` is the
-fixity of that kind in scope at the end of the module, i.e. the last top-level
-fixity declaration of that kind for `op`. An operator may export at most one
-fixity per kind.' In §36.12 change 'a top-level fixity declaration for the
-same operator' to 'for the same operator and same fixity kind' and drop 'kind'
-from the identity triple.
-
 ## 48. §6.3.3: Multiline-string dedent prefix `I` is undefined when the closing delimiter is not preceded only by spaces on its line
 
 **ambiguity** · severity **medium** · verification: **confirmed** · Spec.md
@@ -2342,6 +2184,8 @@ until the paired `FillPlaceRef`) and specify that a monadic error or
 interruption between take and fill propagates before any further access to the
 cell is possible (the cell's binder scope ends with the scope's unwinding).
 
+**Status (2026-07-23):** RESOLVED IN PART: §30.2.2.1 now defines the KCore place operations ReadPlace/MovePlace/FillPlace (L38709-38746) with an explicit take-then-fill discipline (MovePlace consumes, FillPlace restores, and ReadPlace MUST NOT duplicate a linear subvalue), and §18.9.4 gives the concrete var-place `inout` write-back elaboration (L26875-26882) — resolving the failure scenario's reject-vs-accept divergence for a non-duplicable var by forcing a move rather than a readRef duplication. STILL OPEN: the phrase 'consuming cell operation' at §12.2.6/§18.6.1 (L15716, L25736) still names no specific take/swap form in the required MonadRef API, and the cell's state between the move and the write-back when an `inout` monadic call fails or is interrupted (so write-back never runs) remains unspecified.
+
 ## 72. §2.1: Owning-gate selection depends on an undefined 'weakest/stronger' ordering on feature gates
 
 **ambiguity** · severity **low** · verification: **weakened** · Spec.md lines
@@ -3002,84 +2846,6 @@ and uses of std.debug are recorded as FeatureGateRecord entries under
 nonPortableFeatures, naming allow_debug_introspection as the permitting
 setting.').
 
-## 88. §5.5.2 / §8.3.1A: No rule for conflicting imported fixities of the same operator and kind; parsing becomes unspecified
-
-**incompleteness** · severity **low** · verification: **weakened** · Spec.md
-lines 5074-5077, 5033-5034, 6845-6853
-
-§5.5.1's fixity-collision rule applies only to 'declarations in the same
-lexical scope', i.e. locally declared ones. §8.3.1A resolves imported
-collisions as use-site ambiguities, but it covers 'spelling and declaration
-kind' collisions among the six declaration kinds — fixity is metadata, not a
-declaration kind, and use-site (type-directed) disambiguation cannot repair a
-parse: the shape of `a ⊕ b ⊕ c` must be determined before any name/type
-resolution. If module A exports `infix left 60 (⊕)` and module B exports
-`infix right 40 (⊕)` and both are imported unqualified, no rule says whether
-the import is an error, whether the later import wins, or whether every infix
-use of `⊕` is ill-formed. Grep confirms the only fixity-conflict rules are the
-same-scope rule (line 5033) and the fragment rule (§36.12, line 40772);
-neither covers cross-module imports.
-
-> lines 5074-5077: "Exported fixity declarations are imported only together
-with the corresponding operator name. ... Imported fixities take effect from
-the point of the import onward." line 6853 (§8.3.1A): "Such collisions are not
-import-time errors by default. They are use-site ambiguities."
-
-*Verifier caveat (why this is weakened):* Quotes accurate, and greps confirm
-no explicit imported-fixity-conflict rule exists (only same-scope 5033 and
-fragment 40772). But the headline scenario is mostly defused by §8.3.1A
-itself: if modules A and B export DISTINCT operators spelled `⊕` (which is
-where differing fixity declarations normally come from, since a fixity is
-exported with its operator per 5074), then every use of `⊕` is a use-site
-ambiguity error under 6850-6853 regardless of which precedence the parser
-assumed — the program …
-
-**Possible fix:** Add to §5.5.2 (or §8.3.1A): 'If two or more imported fixity
-declarations for the same operator token and the same fixity kind are
-simultaneously in scope and are not identical in precedence and associativity,
-any use of that operator in a position governed by that fixity kind is a
-compile-time error; identical imported fixities merge into one. `except`,
-kind-qualified items, and aliases may be used to remove the conflict.'
-
-## 89. §6.1.4 / §6.1.5 vs §5.5.2 / §5.5.3: Prefix minus is hard-wired to `negate`, contradicting the operator-resolution and infix-gating model
-
-**ambiguity** · severity **low** · verification: **weakened** · Spec.md lines
-5180-5181, 5201-5202, 5299, 5089-5092
-
-§6.1.4 states unconditionally that `-123` 'is parsed as `negate 123`' and
-§6.1.5/§6.1.6 repeat that the leading `-` 'is parsed as the ordinary prefix
-operator `negate`'. But under §5.5, operators are ordinary term declarations
-resolved lexically, and §5.5.3 requires a `prefix` fixity for `-` to be in
-scope for prefix position at all. Two divergences follow: (1) if a user
-declares their own prefix `-` (`prefix 80 (-)` plus a local `let (-) = f`),
-one conforming reading elaborates `-x` to the lexical `(-)` applied to `x`,
-the other to `negate x` resolved by name; (2) in a `@NoPrelude` module with no
-prefix fixity for `-` imported, §5.5.3 makes `-123` a parse error while §6.1.4
-says it parses as `negate 123`. The spec never gives the general elaboration
-rule for prefix-operator application, so it is unclear whether `negate` names
-the lexical binding of the operator token `-` or the identifier `negate`.
-
-> lines 5180-5181: "* `-123` is parsed as `negate 123`\n* `-3.14e2` is `negate
-(3.14e2)`" line 5092 (§5.5.3): "* prefix position requires a `prefix` fixity
-in scope"
-
-*Verifier caveat (why this is weakened):* Quotes accurate (5180-5181,
-5201-5202, 5299, 5092). But the conflict dissolves under the reading the spec
-itself signals: §6.1.5 (5201) calls the leading `-` 'the ordinary prefix
-operator' — i.e. explicitly NOT a special literal-level form — and §5.5.1
-(4968) says '(prefix -) denotes unary negation', with the prelude table
-(31110) supplying `prefix 80 (-)`. On that reading, `-123` parses via the
-ordinary §5.5.3-gated prefix operator whose prelude denotation is `negate`;
-under `@NoPrelude` with n …
-
-**Possible fix:** In §6.1.4 replace 'is parsed as `negate 123`' with: '`-123`
-is parsed as the prefix-operator application `(prefix -) 123`, where `-`
-resolves by ordinary operator lookup under §5.5.3 (in the standard prelude,
-prefix `-` denotes `negate`)'; make the same substitution in §6.1.5/§6.1.6, or
-alternatively state normatively that a prefix `-` immediately preceding a
-numeric literal always elaborates to the prelude's `negate` regardless of
-local rebinding.
-
 ## 90. §6.3.4.1 vs §6.3.1 / §6.3.4.4: `\$` escape in ordinary prefixed strings contradicts §6.3.1's unknown-escape error via §6.3.4.4
 
 **contradiction** · severity **low** · verification: **weakened** · Spec.md
@@ -3195,3 +2961,600 @@ default of §8.5 does not apply to it (an explicit `public` on such a binding
 is a compile-time error).' — or — 'A top-level pattern binding whose binder is
 not a single simple name MUST be marked `private` (or appear under
 `@PrivateByDefault` without `public`); otherwise compilation fails.'
+
+
+# Part III — spec-coverage campaign findings (2026-07, merged)
+
+Candidate defects recorded by the 2026-07 spec-coverage, DX, and robustness
+campaigns (analysis and test-writing agents reading the spec against the
+conformance corpus and the reference compiler). Each surviving entry was
+re-verified against the current spec on 2026-07-23; line references inside
+entries may be stale — section numbers are the stable key. Provenance tags
+identify the reporting campaign lane; many entries cite a pinning test under
+`tests/conformance/spec-coverage/` or `tests/pending-import/spec-coverage/`.
+
+## III.1 Contradictions
+
+- **§13.2.11** (L13746-L13757, L13855-L13862) `[writer1:rows-packages-existentials]`
+  sealExistsExpr is added to the grammar twice in two different precedence classes: once as 'atom ::= ... | sealExistsExpr' (explicit-witness introduction, with prose 'is an atomic expression for purposes of application and dotted forms') and again as 'expr ::= ... | openExistsExpr | sealExistsExpr' in the Unpacking subsection, where the surrounding prose assigns openExistsExpr the precedence class of binding expressions. The duplicate amendment leaves sealExistsExpr's precedence (atomic vs binding-level) contradictory.
+
+- **§13.2.3** (L12636-L12643) `[writer1:unions-records]`
+  The normative rule that a runtime-relevant reference to this.f in a record VALUE is valid only if f appears EARLIER in source order ('A reference to a later source field is rejected unless the referenced field is compile-time-only...') is contradicted by the blessed gating conformance test tests/conformance/records/dependent-telescope.kp, which asserts error-free elaboration of (buf = makeVec this.len, len = n) — a forward reference to a runtime Nat field — and by the compiler, which accepts (y = this.x, x = 5). Either the spec's source-order availability rule or the corpus must change.
+
+- **§14.3.1, §14.4** (L14564-L14587 vs L14804-L14844, L14862-L14863) `[writer1:traits-instances]`
+  §14.3.1 lists IsSubsingleton and IsProp among intrinsic solver traits whose source `instance` declarations are rejected (unless the defining section provides a checked source-level introduction form), but §14.4 declares them as ORDINARY prelude traits with proof members (IsSubsingleton.allEqual) and never grants or denies a source introduction form; a user proving their own type subsingleton via `instance IsSubsingleton T = let allEqual ...` is semantically sound and seemingly intended, yet §14.3.1 as written rejects it. Whether the §14.4 trait declaration itself counts as the 'checked source-level introduction form' is undecidable from the text.
+
+- **§16.3.3.1** (§16.3.3.1 (witness/summon signatures and the 'retrieving instance evidence' example)) `[writer2:lambdas-implicits-flow]`
+  The section's example 'let eqInt : Eq Int = summon' cannot elaborate against summon's own declared signature: (0 t : Type) is an EXPLICIT parameter, so bare 'summon' at expected type Eq Int is a partial application of function type, not evidence. The compiler (whose prelude matches the spec signature) rejects the spec example with a type mismatch; 'summon (Eq Int)' is required. Either the signature should make t implicit ((@0 t : Type)) or the example should pass the trait type explicitly.
+
+- **§22.4, §3.2.13** (L29537, L29603, L29609 vs L3756-L3765) `[writer2:macros-reflection]`
+  Diagnostic-code naming disagrees between sections for the same failures: §3.2.13 registers family kappa.deriving.shape with SHOULD-codes E_DERIVING_SHAPE_* (e.g. E_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE), while §22.4/§22.5/§22.6 flatly state the actions fail 'with code KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE / KAPPA_DERIVING_SHAPE_BAD_CONSTRUCTOR_ARGUMENTS / KAPPA_DERIVING_SHAPE_BAD_RECORD_ARGUMENTS'. Two different canonical spellings for the same diagnostics; conformance tests cannot pin one code spelling.
+
+- **§26.1.15, §26.1.19** (L30136-L30140, L31298-L31311, L31396-L31404) `[writer2:ffi-bridges]`
+  The std.bridge chapter normatively states 'A bridge surface has kind Region -> Type' (canonical declarations, ~L30136-L30140, with trait BridgeBindable (surface : Region -> Type)), but the example surfaces in §26.1.15 (Numpy with 'opaque NDArray : Type -> Nat -> Type' and 'array : forall (@0 a : Type). (@_ : DynamicType a) -> ...') and §26.1.19 declare ': Type' record types whose members quantify over Type; under predicative §11 universe rules such records inhabit Type1, so these surfaces cannot have kind Region -> Type and BridgeContract/BridgeBindable cannot be instantiated at them. Either erased (@0) quantification must be stated to be universe-irrelevant, BridgeContract/BridgeBindable must be universe-polymorphic, or the examples are ill-kinded. The spec states no universe accounting for bridge surfaces.
+
+## III.2 Editorial / typos
+
+- **§9.2** (L7873) `[analysis:declarations]`
+  Rule states 'A top-level pattern binding whose binder is not a single simple name MUST NOT be exported.' Spec language is slightly awkward; could clarify that this means pattern bindings (destructuring) are prohibited from being exported, period, as they introduce multiple bindings.
+
+- **§17.1.7** (L21450-L21455) `[writer2:patterns-active]`
+  Duplicated phrase in the residual-negative-evidence rule: "that branch MUST be checked under the corresponding negative corresponding negative evidence" (docs/Spec.md ~L21453-21454).
+
+- **§21.6** (L28589 (expect term substCoreEq, ~L28581-L28589)) `[writer2:macros-reflection]`
+  substCoreEq's normative signature applies the motive as `P a x -> P b y` although P is declared `forall (@0 u : Type). Core Γ u -> Type` — u is an @0 IMPLICIT binder, so under Kappa's own application rules the type argument must be passed explicitly-as-implicit, i.e. `P @a x -> P @b y`. As written the expect-term type is ill-formed surface syntax (a would be consumed as the explicit Core argument).
+
+- **§26.1.6.1** (L30833-L30844) `[writer2:ffi-bridges]`
+  The worked example types the surface member as 'next : Unit -> IO BridgeError Int' and the binder as 'BridgeHandle h => (& h : h) -> IO BridgeError Int', but 'BridgeError' is not a defined vocabulary name anywhere in the spec — the standard failure payload is std.bridge.BridgeFailure, and the handle-specific expected-error type is spelled BridgeHandle.Error (§26.1.14). The example also names the borrowed binder 'h', shadowing the type variable 'h'.
+
+## III.3 Ambiguities and underspecifications
+
+- **§5.2, §9.1** `[whole-spec-missed:2026-07-22]`
+  §5.2 says all listed keywords are soft and ordinary identifiers wherever the keyword form is not syntactically expected, but the declaration grammar gives no disambiguation rule for a declaration-head spelling such as `effect : Int`, `pattern : Int`, or `expect : Int`. The following colon rules out the corresponding keyword declarations, yet a single-token dispatch parser may commit before seeing it. `tests/pending-import/dx-issues/soft-keyword-declaration-heads.kp` demonstrates that the reference parser accepts some keyword spellings in parameter/expression positions while rejecting the declaration-head matrix. Specify the required lookahead or require backticks in this otherwise-ordinary name position.
+
+- **§10.2, §10.4.2** `[whole-spec-missed:2026-07-22]`
+  Strict positivity quantifies only over recursive occurrences in constructor argument types, while a GADT constructor result may instantiate a family argument with an arbitrary type expression. Thus `data D (a : Type) : Type = C : D (D Nat -> Nat)` contains a negative recursive occurrence solely in the result index and passes the written positivity judgment. The accepted fixture `whole-spec-missed-2026-07-22/gadt-result-negative-recursion-current-spec.kp` confirms the grammar makes the hole reachable. The spec should either prohibit recursive group members in constructor-result family arguments or define and justify their positivity/refinement discipline.
+
+- **§13.1.1, §13.1.5, §11.3.1** `[whole-spec-missed:2026-07-22]`
+  A closed union can be duplicate-free while a type parameter is rigid and acquire duplicate members after instantiation: `type Choice a = (| a | Int |)` specializes to `Choice Int`. §13.1.1 requires duplicate-free members, while §11.3.1 also describes row equality modulo duplicate removal; the spec gives neither a distinctness premise at the polymorphic declaration nor a rejection/normalization rule at specialization. `tests/pending-import/dx-issues/polymorphic-union-duplicate-instantiation.kp` shows the reference compiler silently accepts the collapsed union. Specify whether specialization rejects, normalizes, or preserves multiplicity, and how `MemberId`, injection, and pattern matching behave.
+
+- **§2.1** (L335-L341) `[analysis:gates-profiles]`
+  §2.1 states implications are 'semantic facts of the active profile' and MUST be recorded, but does not specify whether implications can be conditional (e.g., A implies B only in profile X but not Y). The distinction between feature-gate implications and profile-specific conditional enablement is unclear.
+
+- **§2.1, §2.1A** (L300-L345) `[writer1:gates-profiles]`
+  The spec standardizes optional gates (unicode-names) and mandates implication-path and enabling-source reporting, but standardizes no activation mechanism (no manifest key, source pragma spelling, or flag) for any feature gate or profile. A portable conformance suite therefore cannot activate a gate or construct a profile containing implications, leaving the §2.1 implication-reporting MUST and all active-gate behaviors (e.g. accepted Unicode operators under §5.5.1) untestable portably.
+
+- **§3.1.11, §3.1.19** (L1979) `[analysis:gates-profiles]`
+  §3.1.19 requires positive-lower-bound diagnostics to identify 'at least one source location where the binder could have been demanded on that path, when such a location is obvious', but the definition of 'obvious' is not specified. When multiple equally-obvious locations exist, which should be preferred?
+
+- **§3.1.14A** (L1801-L1826) `[writer1:gates-profiles]`
+  For a listed recoverable condition such as 'missing expression after =', §3.1.14A does not say whether a coarser recovery (skipping the entire declaration with a typed skip node, which orphans the signature and removes the declaration from tooling) satisfies the MUST to 'attempt to construct typed recovery nodes for' that condition, or whether the finer recovery (declaration preserved with a missing-expression placeholder) is required. The RecoveryNode shape ('inserted : Option RecoveryInsertion') permits both readings. This affects the FAIL classification of recovery-missing-expression-node.kp.
+
+- **§3.1.15, §15.1** (L1863-L1866) `[writer1:gates-profiles]`
+  When a definition fails totality certification and is later DEMANDED at conversion time (e.g. used in a type), the program is rejected via a downstream stuck-conversion type mismatch while the totality diagnostic itself remains a warning ('accepted but not conversion-reducible'). §3.1.15 lists 'failed totality certification for a transparent definition that would otherwise be conversion-reducible' as a non-deferrable hard error but does not say whether the totality failure itself must become the hard error in that situation or whether the downstream conversion-failure rejection suffices; nor does it define which definitions count as 'transparent' for this clause. This made the totality-blocks-output test idea unwritable with a defensible expectation.
+
+- **§3.1.1A** (L553-L605) `[writer1:gates-profiles]`
+  §3.1.1A requires record-update diagnostics to include 'the updated field, copied field, and invalidated dependent field' as related origins, but the standardized RelatedOriginRole list defines no role spellings for these (no updated-field/copied-field/invalidated-field roles), so no portable spelling exists for a conformance test to assert; implementations must invent nonstandard roles. The record-update related-origins test idea was dropped for this reason.
+
+- **§3.1.3, §7.1** (L786-L787, L6072-L6073, L950) `[writer1:lexical]`
+  W_UNICODE_VISUAL_ALIAS_REFERENCE has three different normative strengths: §3.1.3 says it 'SHOULD be emitted' (L786-787), §7.1 lookup step 9 unconditionally commands 'choose it and emit W_UNICODE_VISUAL_ALIAS_REFERENCE' (L6072-6073), and the family text at L950 states it 'is emitted'. A conformance test cannot determine whether a silent visual-alias resolution is conforming.
+
+- **§3.1.5, §3.2.20, §18.3.1** (L931-933, L3961-3968) `[writer1:diag-families-2]`
+  E_VAR_READ_OUTSIDE_DO (L931, 'outside the expression-lifting context of its enclosing do block') has no constructible witness distinct from E_VAR_READ_CROSSES_BOUNDARY (L932) and E_VAR_IN_STATIC_POSITION (L933): since `var` bindings only exist inside do blocks, every occurrence outside the lifting context appears to cross a lambda/local-function/quote/delayed boundary or sit in a static position. The spec gives no example that is OUTSIDE_DO but neither of the other two, leaving the code's intended trigger unclear.
+
+- **§3.1.5A** (L1134-L1136) `[analysis:gates-profiles]`
+  §3.1.5A requires provenance frames for 'generated syntax, inserted terms, generated obligations, macro output, desugarings, recovery placeholders, implicit insertions, equality transports, derived declarations, and backend helpers' but does not clarify whether a single generated term can have multiple overlapping provenance frames (e.g., generated by macro AND requiring implicit insertion). Composition semantics are unclear.
+
+- **§3.1.7** (L1292-L1299) `[analysis:gates-profiles]`
+  §3.1.7 ranks repairs but does not specify tiebreaker rules when two repairs have equal rank (e.g., two local token repairs at same priority level). How are multiple equal-ranked repairs ordered in fix-it lists?
+
+- **§3.1.9, §3.2.11, §T.5.1** (L1374-1419, L3274-3284, L46599-46602) `[writer1:diag-families-2]`
+  §3.1.9 and the §3.2 family sections state payloads MUST contain specific information (e.g. §3.2.11: SCC members, call sites, strategies, size-change matrices) but — except §3.2.13's explicit field-name table — give no normative JSON field names. T.5.1 assertDiagnosticPayload takes an RFC-6901 pointer, so the payload MUSTs are untestable portably: no conforming pointer spelling exists for most families.
+
+- **§3.2.14** (L3409-L3499, L27675-L27814) `[analysis:diag-families-2]`
+  §3.2.14 defines kappa.bridge.contract family but §26.1.12-26.1.15 (Bridge-bound package semantics) defines error-translation rules for bridge-bound members. The relationship between these two diagnostic families and how bridge-specific errors map to bridge-contract diagnostics is not fully specified.
+
+- **§3.2.3** (L2184-L2186) `[analysis:diag-families-1]`
+  kappa.type.mismatch payload includes 'any synthesized equality goal that would have made the check succeed' but it is ambiguous whether this is a goal that failed (insoluble), a goal proposed as a plan, or a hypothetical goal. Recommend clarification: 'any synthesized equality goal whose proof was unavailable' or similar.
+
+- **§3.2.3, §3.2.9** (L2176-2188, L3045-3061) `[writer1:diag-families-1]`
+  When an expression's effect row fails to check against the demanded row, both kappa.type.mismatch (whose payload explicitly contemplates a mismatch path nested inside an effect row, L2182-2183) and kappa.effect.row-mismatch (L3045-3061) apply. No rule gives the dedicated row family precedence, so an implementation emitting a generic type mismatch on the raw Eff types can claim §3.2.3 conformance while omitting the §3.2.9 missing-labels/ContainsEff payload entirely. Recommend an explicit most-specific-family precedence rule.
+
+- **§3.2.5** (L2594-2725, L10860-10872) `[writer1:diag-families-1]`
+  The 'Used when' descriptions of kappa.quantity.unsatisfied, kappa.quantity.satisfies, and kappa.quantity.positive-lower-bound overlap on the same concrete program: a dropped linear binder is simultaneously an unsolvable QuantitySatisfies 1 0 obligation (satisfies family, where the spec pins its `bad` example and required content), a supplied-capability-vs-demand failure (unsatisfied family), and a positive-lower-bound violation. No partition or precedence rule says which family a conforming implementation must expose when several apply, so the L2658-2662 required content is unenforceable against an implementation that picks a sibling family.
+
+- **§3.2.7** (L2896-2911) `[writer1:diag-families-1]`
+  Capture sets are part of type identity (§12.3.1), so checking a `captures (s, t)` value against a demanded `captures (s)` annotation is simultaneously an ordinary type mismatch and a kappa.capture.mismatch containment failure. As with effect rows, no partition rule forces the dedicated capture family over kappa.type.mismatch, making the §3.2.7 payload (regions missing, origins introducing them) unenforceable.
+
+- **§3.3.1** (L4029-L4069) `[analysis:diag-families-2]`
+  §3.3.1 uses term 'dependency path or field whose type was invalidated' but does not precisely define what makes a type 'invalidated' when a dependency is updated. The spec should clarify whether this refers to dependent-field type refinement, dependent-row-variable narrowing, or other forms.
+
+- **§3.3.4** (L4141-L4174) `[analysis:diag-families-2]`
+  §3.3.4 states 'projection-section updates' as a source of overlap conflicts but projection-section update semantics are defined in §30.2.2.4 with minimal detail about overlap checking. The interaction between projection-section updates and path-sensitive overlap analysis could be clearer.
+
+- **§4.2** (L4307-L4308) `[analysis:unsafe-debug]`
+  Script-mode defaults for unsafe/debug settings are implementation-defined ('Implementations MAY default...Implementations SHOULD document'). This creates variability in conformance testing: a script-mode test might pass on one implementation but fail on another if defaults differ. Conformance test harness should clarify how to control script-mode defaults.
+
+- **§4.4, §15.1** (L4355, L4364-L4371, L15105-L15115) `[writer1:unsafe-debug]`
+  Neither §4.4 nor §15.1 states WHEN the assertReducible conversion-reducibility grant takes effect relative to later declarations of the same module. §15.1 case 5 reads as unconditional ('iff ... admitted by assertReducible'), but §4.4's recording rule is phrased in terms of module/interface artifacts, which an implementation can read as 'grant becomes visible at artifact formation, i.e. only to importers'. The tested implementation honors the grant cross-module but not in the defining module — an explicit sentence on same-module effect timing would remove the loophole.
+
+- **§4.4, §4.7** (L4347, L4453-L4461) `[writer1:unsafe-debug]`
+  §4.4 says legacy assertTotal has semantics identical to assertTerminates, and §4.7's conceptual ledger has only 'unsafeTermination : List AssertTerminatesRecord' — no AssertTotalRecord. It is unspecified whether an assertTotal use must be recorded indistinguishably from assertTerminates or may/must keep its legacy spelling as a distinct facility identity (the tested implementation records the facility string 'assertTotal'). This matters for ledger-diffing and reproducibility tooling.
+
+- **§4.7** (L4489-L4503) `[analysis:unsafe-debug]`
+  §4.7 specifies that audit queries MUST return structured data 'observationally equivalent to' auditModule/auditPackage/auditArtifact, but the exact JSON/structured schema for the UnsafeDebugAuditLedger is not defined. The conceptual form at L4449-L4461 is high-level. Implementations need a normative schema for interoperability.
+
+- **§4.7** (L4449-L4461, L4479-L4481) `[writer1:unsafe-debug]`
+  §4.7 defines the ledger's record lists but never specifies an ordering guarantee (e.g. source order per compilation unit). The de facto assertAuditLedger harness directive compares an ORDERED facility list, so conformance tests must silently assume source-order accumulation across all modules of the unit; a normative ordering (or an explicitly unordered comparison) is needed for portable ledger assertions. Distinct from the already-known 'assertAuditLedger undocumented in Appendix T' issue.
+
+- **§5.1A** (L4676-L4680) `[analysis:lexical]`
+  Spec states 'Backtick identifiers whose contents are valid under the active Unicode identifier profile SHOULD be normalized at the source level and MUST contribute the same strictNameKey and strongVisualNameKey as the corresponding unquoted identifier.' However, it then says 'An implementation MAY reject non-normalized backtick identifiers with E_UNICODE_NAME_NON_NORMALIZED, or MAY accept them with W_UNICODE_NON_NORMALIZED_SOURCE_TEXT'. This creates ambiguity: does 'MUST contribute same keys' mean they MUST parse successfully, or can they be rejected before contributing keys?
+
+- **§5.4, §8.4** (L4863-L4878, L8267-L8277) `[writer1:lexical]`
+  §5.4 lists `data` and `trait` as block introducers that 'require one or more statements at a greater indentation level', but the data grammar introduces the constructor block with a trailing `=` (all §8.4 block-form examples, e.g. L8269) and the spec's own `data Void : Type` (L8267) is a legal data declaration with NO indented statements. The block-introducer requirement should be tied to the trailing `=` (the effective introducer) or explicitly exempt empty-bodied data/trait forms; as written a conformance test could wrongly demand rejection of `data Void : Type`.
+
+- **§5.5.1** (L4890-L4922) `[writer1:lexical]`
+  ASCII operator characters are 'implementation-defined only within the restrictions of this section' with no MUST-include set beyond examples, so portable tests cannot rely on any specific ASCII operator spelling: e.g. this implementation excludes '@' from its operator-character set entirely (making `@@` unlexable as an operator token), which is permitted by the letter of §5.5.1 but defeats portable conformance testing of operator tokenization. A minimal guaranteed ASCII operator-character set (e.g. the characters appearing in the 'common operator tokens' list) would fix this.
+
+- **§6.1.3** (L5163-L5165) `[writer1:literals]`
+  "Ordering on Float is a total order" is normative, but the follow-up 'Intuitively, it follows IEEE-754 totalOrder semantics' hedges: it is unclear whether the exact IEEE totalOrder placements (-0.0 < +0.0; NaN ordered by sign/payload relative to infinities) are required, or whether any total order consistent with raw-bit equality suffices. Conformance assertions like compare (-0.0) 0.0 == LT depend on which reading is intended; the word 'intuitively' should be replaced by either a MUST or an explicit implementation freedom.
+
+- **§6.3.3** (L5409-L5418) `[writer1:literals]`
+  The §6.3.3 introductory examples place the closing """ delimiter at column 0, so by the section's own normative rule I = "" and NO indentation is stripped — yet the example string's content reads 'Indentation is stripped by a fixed rule', strongly suggesting the visible 4-space indent is removed. The example should indent its closing delimiter (or drop the claim) to avoid teaching the wrong dedent intuition.
+
+- **§7, §18.1.15** (L6042-L6053, L8144-L8149, L19370-L19420) `[writer1:modules-imports]`
+  Effect-label declarations are introduced ONLY by explicit `effect label` declarations and the canonical self label of `scoped effect` (L6046-L6049, L19413), and only scoped effects get a self-label rule (L8144). Yet sanctioned usage (existing conformance tests such as effects/effect-label-decl.kp) writes rows `<[Counter : Counter]>` and operation selection `Counter.tick` against a plain top-level `effect Counter` declaration, which per the spec introduces only a type-kind interface constructor and no label. Nothing in §18.1.15 explains what introduces this default/top-level self label.
+
+- **§7.1** (L6074-L6075) `[analysis:names-resolution]`
+  Step 10 of unqualified lookup says 'apply §7.2 when the ambiguity is solely the same-spelling data-family pairing'. The word 'solely' is ambiguous: does it mean exactly two declarations (type + constructor)? Or is it OK if there are multiple data families of the same name? The rule should specify: 'apply §7.2 if and only if the filtered set contains exactly one type declaration and exactly one constructor declaration with matching binding group'
+
+- **§7.1** (L6131-6140) `[writer1:names-resolution]`
+  The reified-static fallback is 'the compiler MAY select a unique reified static-object term facet', but the following ambiguity clause ('if more than one ... the use is ambiguous unless ...') is phrased as normative. It is unclear whether an implementation that declines the fallback entirely may report unresolved-name instead of ambiguity when multiple facets exist, i.e. whether E_NAME_UNRESOLVED and E_NAME_AMBIGUOUS are both conformant outcomes for the two-facet case. Tests here pin E_NAME_AMBIGUOUS because this implementation does perform the single-facet fallback.
+
+- **§7.1.1** (L6156-6170) `[writer1:names-resolution]`
+  §7.1.1 only says a kind-qualified expression whose selected declaration/facet is absent is 'ill-formed', without pinning a diagnostic identity. Implementations plausibly emit either a kind-mismatch (a same-spelled declaration of another kind exists: 'trait Box' on a data type gives E_STATIC_OBJECT_KIND_MISMATCH) or an unresolved-name diagnostic (position-based lookup simply fails: 'module T' on a type gives E_STATIC_OBJECT_UNRESOLVED). Both readings are defensible from 'resolves ... by ordinary lookup in <kind> position', so conformance tests cannot portably pin the family.
+
+- **§7.4** (L6341-L6345) `[analysis:names-resolution]`
+  The eligibility rules mention 'selector-form projection definitions' and later 'expanded-form projection definitions', but 'expanded-form' is not formally defined in this section. The reference to §16.1.6 covers accessor-bundle descriptors but §12.4.2 is referenced for selector-form and does not clearly define 'expanded-form'. The relationship between expanded-form projections and accessor-bundle descriptors (§16.1.6) should be clarified.
+
+- **§8.3, §8.4** (L6692-L6713, L7252-L7274) `[writer1:modules-imports]`
+  Several normative compile-time errors in the import/export chapter have no assigned diagnostic code or family: the bare-dotted both-interpretations-resolvable ambiguity (L6698), the bare URL module-only form (L6705-L6713), export of an unhide/clarify item (L7273-L7274), and ctorAll+alias on export items (L7258). Tests must guess a code (E_NAME_AMBIGUOUS / E_IMPORT_ITEM_MALFORMED); consider assigning families as done for kappa.import.effect-label-selector.
+
+- **§8.3.1.1** (L6898) `[analysis:modules-imports]`
+  Spec states 'Repeating the same modifier within one import item is a compile-time error' but does not specify error code or diagnostic family. Which family should apply? (Likely E_IMPORT_ITEM_MALFORMED, but unclear.)
+
+- **§8.3.7** (L7144-L7180) `[analysis:modules-imports]`
+  Semantic equivalence definition (9 components) is not fully formally specified. 'Every lookup...query that is defined in one environment is defined with the same semantic result in the other' is circular. What counts as 'defined'? How to test rigorously?
+
+- **§8.5.3, §8.3.1.1** (L7361-L7366) `[writer1:modules-imports]`
+  Clarify on an opaque data type 'makes its constructors available both for construction and for pattern matching' but the spec does not say through which name-resolution channel: do distinct-spelling constructors enter unqualified scope, only dotted static-member selection (T.K), or do they require explicit `clarify ctor K` import items? Only the same-spelling-family case is unambiguous (paired binding group).
+  *Status (2026-07-23): The pre-clarify state is now explicit (no channel, including dotted Rope.Node, resolves), but post-`clarify` the spec still only says constructors become 'available both for construction and for pattern matching' (L8062-8063) without saying whether distinct-spelling constructors enter unqualified scope, dotted static-member selection, or require `clarify ctor K`.*
+
+- **§9.1.2, §17.2.1** (L7774-L7778, L18240-L18244) `[writer1:declarations]`
+  §9.1.2 lists three anonymous-record-pattern forms and then says 'Extra fields are allowed; they are either ignored (..) or captured in the residual record binder rest' — the parenthetical mentions only the .. and ..rest forms, inviting the misreading that the bare form (f1 = p1, ..., fk = pk) requires an exact field set and is otherwise refutable. §17.2.1 (L18240-L18244) settles it: without a record-rest item the remaining fields 'are ignored as before', i.e. the bare form is also extra-field-tolerant and irrefutable. A cross-reference or explicit sentence in §9.1.2 would prevent the misreading (the vetted gap file itself sketched the wrong expectation here).
+
+- **§9.3.1.1** (L8155-L8167) `[analysis:declarations]`
+  Rule about scoped families escaping: 'Such entities MAY cross a boundary only when the exposed interface omits the scoped local family entirely.' This is normative but lacks concrete diagnostic name or reference to how seal/opaque/export precisely enforce this. Cross-reference to module-sealing section would clarify.
+  *Status (2026-07-23): The `seal ... as ...` mechanism is now referenced as the sanctioned way a scoped family may cross a boundary, but the 'MUST NOT escape' violation (L8837-8838) still has no assigned diagnostic family/code and enforcement is only exemplified rather than precisely specified.*
+
+- **§9.4** (L8195-L8205) `[writer1:declarations]`
+  The satisfier list for an expect declaration ('a matching ordinary definition in ANOTHER selected source file fragment', a backend intrinsic, or an imported artifact) excludes a definition in the same source file, yet the existing conformance test tests/conformance/declarations/declarations-expect-positive/custom/expects.kp asserts no errors for expect+definition pairs in ONE file (and the compiler agrees). Either §9.4 should admit same-file definitions as satisfiers or the existing test/behavior contradicts the spec. This ambiguity also muddies what diagnostic a same-file signature MISMATCH should produce (E_EXPECT_UNSATISFIED vs a duplicate-declaration error).
+
+- **§10.1** (L8413-L8418) `[analysis:adts]`
+  §10.1 allows 'defaults do not affect ... constructor identity' but 'parameter-positivity signatures' are computed from constructor argument types. It is not entirely clear whether defaults affect the positivity-signature computation or only the named-application semantics.
+
+- **§10.1, §10.1.1** (L8466-8474, L8555-8559) `[writer1:adts]`
+  Defaults on suspension-sugared constructor parameters: §10.1 says the default in (thunk x : A = e) is "checked against Thunk A", but the expected-type-directed suspension insertion rule is stated only for SUPPLIED arguments (§10.1.1 L8555-8559 "a supplied argument", §16.1.7.1 explicit-argument pipeline). Whether a bare default expression of type A is accepted (via insertion, elaborating to thunk e) or must be written as an explicit suspension value is not specified. The compiler requires an explicit suspension (rejects '(thunk value : Int = 41)' with "default has type Int, but the field's type is Thunk Int").
+
+- **§10.1** (L8444-8479) `[writer1:adts]`
+  Timing of default-expression checking is not explicit: L8452-8457 elaborates the default "in the declaration context" (implying declaration-time diagnosis, and the accepted conformance suite pins declaration-site TYPE errors for never-instantiated defaults), while L8476-8479 describes call-site instantiation. The spec never states that quantity/erasure violations in a default must also be diagnosed at the declaration when no call site instantiates it; the compiler currently reports type errors at the declaration but quantity violations only at instantiating call sites.
+
+- **§10.1.1A** (L8669-L8670) `[analysis:adts]`
+  Section 10.1.1A states that 'a module interface artifact MUST record constructor application metadata for every exported value' but does not clearly specify the exact interface format or serialization method for this metadata. The relationship between this requirement and module interface schema (§34.1.9) could be more explicit.
+
+- **§10.1.2** (L8678-L8682) `[analysis:adts]`
+  The diagnostic for lowercase-generalizable names should be emitted but the spec does not assign it an explicit diagnostic family code. It refers to warnings but doesn't clarify which standard diagnostic family applies (likely a new kappa.name.* family or kappa.declaration.* family).
+
+- **§11.1.4** (L9340-L9343) `[analysis:universes-intrinsics]`
+  The specification states: 'Trait evidence is not compile-time-only merely because IsTrait T holds. A trait evidence value may have runtime representation when one of its runtime-relevant projections is used. A trait evidence value whose projections are all erased, compile-time-only, or specialized away may itself be erased under the ordinary erasure rules of §§11.1.6 and 14.4.' This seems to create a distinction between static erasure decisions (based on which projections are visible) vs dynamic decisions. Clarify whether erasure of trait evidence is determined at the point of elaboration (static) or at specialization-time (dynamic). If dynamic, specify the conformance boundary.
+  *Status (2026-07-23): The conformance boundary the issue asked for is now stated (erasure/specialization allowed only when all source-observable projections and coherence are preserved), but the spec still frames the elaboration-time-vs-specialization-time timing as implementation-defined rather than pinning a single answer.*
+
+- **§11.1.6.1** (L9523-L9528) `[analysis:universes-intrinsics]`
+  The text states compile-time bindings 'may carry any quantity annotation otherwise admitted by the surrounding grammar' and then says 'participate in ordinary source-level typing, definitional equality, hashing, and interface identity; and are erased according to §§11.1.6 and 31.2 unless preserved by an explicit reified carrier.' This creates potential ambiguity: does the written quantity on a compile-time binder affect its erasure, or does phase always dominate? Clarify that phase/classifier erasure (§11.1.6) dominates over quantity-based erasure for compile-time values.
+
+- **§11.3.1** (L9736-L9791) `[writer1:rows-props]`
+  RecTailSatisfies is declared as 'intrinsic trait RecTailSatisfies (r : RecRow) (q : Quantity)' and renderers are told to display 'RecTailSatisfies r 0' / 'RecTailSatisfies r ω', but the spec never defines a surface syntax for quantity LITERALS as trait/premise arguments — quantities otherwise appear only as binder prefixes (§16) — so how to spell the premise in source is unspecified.
+  *Status (2026-07-23): A normative worked example now shows how to spell the premise in source (RecTailSatisfies r 0 / r ω as trait arguments), resolving the practical 'how to write it' question; but the spec still provides no formal grammar production for quantity literals in trait/expression-argument position.*
+
+- **§11.3.1A** (L9879-L9891) `[analysis:universes-intrinsics]`
+  The specification says home-prefix inference computes 'the greatest dependency-closed record-prefix telescope that extends into every occurrence prefix of r' and later: 'The phrase "greatest" above is semantic, not source-order based. It is computed over normalized field labels, quantities, types, and dependency edges, modulo lawful record-field reordering. It MUST NOT depend on first occurrence, source-order accident, hash-map iteration order, or solver traversal order.' However, the specification does not formally define what 'greatest' means when two different dependency-closed prefixes both extend into all occurrences. Is 'greatest' with respect to field count, dependency closure size, or a lattice order? Provide formal definition or worked example.
+  *Status (2026-07-23): 'Greatest' is now grounded in the ⊑ extension order with a defined non-unique-maximum rejection path and single-answer worked examples; still missing is a worked example of the ambiguous multi-candidate case and an explicit lattice-join characterization guaranteeing (or not) a unique greatest.*
+
+- **§11.3.1A** (L9888-L9895) `[writer1:rows-props]`
+  The kappa.row.context-mismatch failure condition ('no unique greatest dependency-closed prefix exists') may be unsatisfiable as specified: occurrence prefixes are label-keyed telescopes, and the family of common dependency-closed sub-telescopes appears closed under union (labels with mismatched types simply drop out of the intersection), so a unique greatest common prefix always exists. No example of the failure is given, and no source program constructing it could be found, leaving the mandated diagnostic family untestable by conformance.
+
+- **§11.3.2, §3.1.4** (L9958-L9964) `[writer1:rows-props]`
+  §11.3.2 mandates that labels in a single effect row be unique and that an open row <[l : E | r]> carries the implicit LacksEff r l side condition, but names no diagnostic family or portable alias for either violation, so conformance tests can only assert that SOME rejection occurs (the current compiler accepts both violations silently).
+
+- **§11.4, §13.2.1, §6.2** (§31.1 (suspension-reduction and eta examples), §13.2.1 (field defaults), §11.4 (equality types)) `[writer2:core-equality-erasure]`
+  Propositional equality types have no nominal spelling and the infix `=` form is grammatically ambiguous in several positions: `(x = y)` in parentheses parses as a single-field record literal, and in a constructor-field telescope `(0 prf : n = n)` the `= n` parses as a field DEFAULT (type becomes bare `n`, yielding E_NOT_A_TYPE). Consequently an equality type over earlier ctor fields cannot be written at all without a helper family, and `force (thunk x) = x` in signature position also mis-groups without parentheses. The spec never says how `=`-types disambiguate against record-literal and field-default syntax, nor provides a nominal escape hatch (e.g. an `Eq`/`Id` type former).
+  *Status (2026-07-23): The parenthesized `(x = y)` record-literal ambiguity now has a definite rule and a nominal `(=)` escape hatch exists; but the field-default disambiguation in constructor-field telescopes (`(0 prf : n = n)` parsing `= n` as a default) and the signature-position grouping of bare `=`-types (e.g. `force (thunk x) = x`) remain unaddressed.*
+
+- **§11.4.1** (L10172-L10181) `[analysis:rows-props]`
+  The specification states that equality endpoints are 'not parameter/index positions' and implementations MUST NOT treat them as such, but does not explicitly define what 'parameter vs index distinction' means for the equality family. The relationship to the 'Endpoint discipline' in §11.4.1 is clear but the prohibition's scope vs other families could be clearer.
+
+- **§11.4.2** (L10354-L10355) `[analysis:rows-props]`
+  The specification says boolean-to-type coercion applies 'as the declared type of a record or tuple field, where the field type is itself a bare boolean expression'. The term 'bare boolean expression' is not formally defined. Does this mean any expression of type Bool, or syntactically unannotated boolean literals/operators?
+
+- **§11.5** (L10396-L10400) `[analysis:rows-props]`
+  The reserved extension lane for cubical paths defines that the extension MUST specify 'the relationship between path equality and ordinary propositional equality', but does not clarify whether path equality would replace (=) or coexist with it, or how retroactively-provided univalence would affect existing code written against v1 equality.
+
+- **§12.1.1, §12.2.10** (L10517-10519, L11668-11695) `[writer1:functions-quantities]`
+  Value-dependent quantity expressions must be rejected in portable v1 (§12.2.10) and quantityExpr is 'checked in a static-object expression position with expected classifier Quantity' (§12.1.1), but no diagnostic family or required message content is specified for this rejection anywhere in §3.2 or §12. In practice the rejection surfaces as an incidental cascade (branch-type mismatch, non-callable, not-a-type), so conformance tests can only assert that some error occurs, not that the user is told dependent multiplicities are unsupported. A dedicated family (or an explicit statement that any type-mismatch classification is conforming) would make this testable.
+
+- **§12.2.3, §12.2.5** (L11186-11189, L11270-11277) `[writer1:functions-quantities]`
+  Borrow introduction on a quantity-1 root: §12.2.3 says the caller's quantity-1 obligation is 'suspended for the duration of the call' and 'restored when the call returns', implying a linear binder that is only lent to a read-only borrow and never consumed must be rejected at scope exit. But §12.2.5 says 'a demand through a borrowed parameter counts as a runtime-relevant non-consuming demand' that 'does discharge the interval usage obligation' (the (1 & x) example) — read caller-side, a single borrow-read would satisfy the [1,1] lower bound while path state separately prevents double-consumption, licensing acceptance. The two readings disagree on `let f (1 t : A) = peek t` (peek : (& t : A) -> Int): the compiler accepts it. The spec should state explicitly whether a restored quantity-1 obligation requires a subsequent CONSUMING demand or whether the non-consuming borrow demand itself counts toward the positive lower bound of an owned root.
+
+- **§12.2.7** (L11548-L11563) `[analysis:functions-quantities]`
+  Section 12.2.7 states quantities do not express information-flow labels or privacy grades, but no explicit mechanism prevents future extensions or implementation-specific workarounds from violating this principle. Should clarify that conforming implementations must reject such attempted extensions in portable mode.
+
+- **§12.2.8, §12.2.9, §12.2.10** (L11591-L11695) `[analysis:functions-quantities]`
+  All three reserved extension lanes (12.2.8, 12.2.9, 12.2.10) specify their requirements using future/conditional language ('MAY', 'MUST define'). For conformance testing of v1, these are inherently untestable unless a future spec adds these extensions. Current spec correctly marks them as reserved but does not specify conformance criteria for v1 (e.g., 'conforming v1 implementations MUST reject user-defined modal extensions').
+
+- **§12.3.1, §12.4.2** (L11824-L11826, L12104-L12109) `[writer1:borrows-places]`
+  It is ambiguous whether 'When captures (...) is omitted in source, elaboration may infer the minimal capture set required for the value' applies to types inside user-written signatures. If it does, a signature result written as plain (Unit -> Int) may silently elaborate to (Unit -> Int) captures (s) for an in-scope explicit region, making 'leak a closure at an unannotated function type' well-formed; if omission instead demands the empty set, the same program must be rejected. The §31.1 exact-definitional-equality rule and the §12.4.2 'if the inferred capture set is empty, no capture annotation is written' remark pull in opposite directions. This changed the design of the withBorrowView negative test (it had to use an anonymous region, where §12.3.1 unambiguously mandates skolem-escape rejection).
+
+- **§13.1.1** (L12247-L12253) `[writer1:unions-records]`
+  The spec defines VarRow equality as 'modulo permutation and duplicate removal by MemberId' but never states whether a SOURCE-WRITTEN duplicate member, e.g. (| Int | Int |) or (| Alias | Int |) with type Alias = Int, is (a) ill-formed at formation or (b) silently normalized to the deduplicated row. The compiler and the blessed diagnostics corpus (tests/conformance/diagnostics-coverage/e_variant_duplicate) reject it with E_VARIANT_DUPLICATE; the spec's formation subsection 13.1.1 should state the uniqueness requirement (or the normalization) explicitly.
+
+- **§13.1.4** (L12317-L12319) `[analysis:unions-records]`
+  The spec states 'In a residual-row branch for scrutinee type (| ... | r |), the binder introduced by ..rest has type Variant r' but does not explicitly state whether r is the original residual row or a narrowed residual row after earlier patterns are consumed. The immediately preceding text on exhaustiveness suggests narrowing, but the exact narrowing semantics (e.g., does matching (| Int |) from (| Int | String | Bool |) result in rest : (| String | Bool |)?) should be stated explicitly in this subsection.
+
+- **§13.2.1** (L12514-L12530) `[analysis:unions-records]`
+  The spec states 'Field order is not semantically significant for record type identity' but also 'Source order remains semantically significant for runtime evaluation order'. The distinction between 'canonical order' (for identity) and 'source order' (for evaluation) is conceptually sound but the exact interaction with dependent-field dependencies is subtle. Specifically, when a field's runtime expression depends on an earlier field's runtime value, the spec says expression evaluation is in source order but typechecking is in canonical order. This could be clarified with a worked example showing the interaction of source-order evaluation with canonical-order type reconstruction in the presence of side effects.
+
+- **§13.2.11** (L13869-L13920) `[writer1:rows-packages-existentials]`
+  The open non-escape rule conflicts with the normative elaboration's induced definitional equality: 'let 0 a1 = __pkg.<wit1>' makes each opened witness definitionally equal to a package projection, so 'absent from the result's externally visible type' is not stable under definitional equality — 'Option a' can be re-rendered as 'Option (p.<wit1>)' whenever the package path is live. The compiler exploits exactly this (it accepts 'open p as exists (a). x in x' for global AND dead-local packages, while rejecting the lambda form '\(y:a) -> y'). The spec should state whether escape is judged before or after path-rewriting, and must make the dead-path case (package bound by an inner let that goes out of scope) unambiguously an error.
+
+- **§13.2.11** (L13625-L13631) `[writer1:rows-packages-existentials]`
+  The witness-name collision restriction is scoped only to 'the surface view used by explicit-witness existential sealing': it is left unstated whether a bare existential TYPE whose witness binder name equals a payload field label (exists (value : Type). (value : Int)) is itself well-formed, whether direct-payload sealing of such a type is legal, and no diagnostic family is designated for the violation. The compiler currently accepts the type, the explicit-witness seal, and the surface-package spelling without complaint, and a conformance test can only assert 'some error'.
+
+- **§13.2.11** (L13825-L13834, L13886-L13894) `[writer1:unions-records]`
+  The open-form non-escape rule says no opened witness may appear free in the open body's result type, but the projection rules separately allow hidden witness selections to 'appear in local elaboration while the owning package path remains available'. When the opened package is still in scope, a result of type w (the opened witness) is definitionally equal to pkg.<wit>, so an implementation can re-render the escape away and accept `open pkg as exists (w). (value = v) in v` bound to a local (the current compiler does accept it, and E_EXISTENTIAL_WITNESS_ESCAPE does not fire). The spec should state whether such re-rendering to the package's hidden selection discharges the end-of-body witness-absence check or whether the open form must reject regardless.
+
+- **§13.2.2** (L12598-L12601) `[analysis:unions-records]`
+  The spec states that 'The residual row r may not be referenced in explicit field types' and 'no explicit field type may rely on any field that would come only from the residual row', but then separately describes 'fields inserted before the residual row by weakening are not visible to the residual row unless they are part of the row variable's hidden home prefix' (L12503-L12504). The relationship between home(r) visibility and explicit-field non-visibility could be more precisely formalized, particularly regarding which subfields of home(r) are visible to explicit fields.
+
+- **§13.2.5** (L13040-L13055) `[analysis:unions-records]`
+  The spec states for record update that 'this refers to the evolving updated record prefix' rather than the original record, yet also that field references are resolved 'only when its value is available either from the original scrutinee projection r.field or from an earlier source-evaluated temporary'. This creates a subtle ambiguity: if a supplied expression refers to field X, is it resolved from the 'evolving prefix' (which might have a type that differs from r.X due to updated earlier fields) or from the actual value available via r.X? The spec should clarify whether type-resolution and value-resolution use different records.
+
+- **§13.2.6** (L13154-L13174) `[analysis:rows-packages-existentials]`
+  Row extension result type (L13170-13173) says result is normalized by 'ordinary record canonicalization rules'. But canonical row assembly (L13154-13155) says it affects 'typing, reconstruction, and record identity' but 'does not reorder runtime evaluation'. It's unclear whether canonicalization can reorder fields at type level but not at runtime. Does this mean source-level field order is observable?
+
+- **§13.2.9** (L13385-L13393) `[analysis:rows-packages-existentials]`
+  Sort restriction says implicit field type must elaborate to 'trait evidence type' (IsTrait available), compile-time type, or boolean proposition. But it's unclear whether user-written trait evidence fields in records count as 'trait evidence types' vs requiring special compiler treatment. Interaction with §14.1.1 abstract evidence records is ambiguous - are evidence records constructible in record literals?
+
+- **§14.1.1** (L14153-L14160) `[writer1:traits-instances]`
+  The rejected construction forms for trait evidence (__MkTr { }, Tr.{ }, d.{ m = ... }, match d with constructor patterns) fix no diagnostic family, unlike neighboring sections (§14.3.2 fixes kappa.associated.normalization-blocked, §14.3.4 fixes kappa.associated.member-undeclared). Conformance tests cannot pin portable codes for these rejections, and implementations may surface them as incidental parse/type errors (the current compiler emits three unrelated codes for the four forms).
+
+- **§14.1.4** (L14314-L14317) `[analysis:traits-instances]`
+  §14.1.4 specifies 'canonicalized by normalized trait evidence type' and 'one canonical supertrait projection for each normalized supertrait evidence type' but does not define the canonical form precisely or explain how normalization interacts with family/alias reduction when evidence is not yet solved (only stated 'when evidence solved' in §14.3.2).
+
+- **§14.3.2** (L14651-L14653) `[analysis:traits-instances]`
+  §14.3.2 states implementation 'MUST NOT ignore a possible candidate merely because the goal head is a transparent family...at the first comparison point' but does not clarify whether this means first-pass unification or post-normalization. Conservative overlap rule (L14655-14664) appears to add an exception but interaction is unclear.
+
+- **§14.3.3, §16.3.3, §33.2.1** (L14695-L14701 vs L17307-L17316) `[writer1:traits-instances]`
+  §14.3.3 says several local evidence values projecting the same normalized supertrait goal are 'ambiguous unless their projected evidence values are coherent under §33.2.1', but §33.2.1 compares instance-ARTIFACT identities and offers no comparison for symbolic evidence parameters (abstract binders), while §16.3.3 step 1 accepts ANY two same-type local candidates for an IsTrait goal as coherent via proof irrelevance. For two abstract binders (@l : LeftArm T) (@r : RightArm T) both projecting Base T, the sections pull in opposite directions: §14.3.3 suggests reject-unless-provably-coherent, §16.3.3 suggests always-accept.
+
+- **§14.5, §14.5.1** (L14956-L14962, L15034-L15038) `[writer1:proofs-deriving-totality]`
+  §14.5.1 prescribes record hashing via the canonical record shape and dependency-respecting field order, but §14.5's derive form targets 'eligible declarations' — whether a structural row-record type (or a type alias naming one, e.g. 'type Pt = (x : Int, y : Int)') is an eligible derive target is never specified, leaving the record clauses without a defined derivation vehicle
+  *Status (2026-07-23): §14.5.1 L19352 now names 'a data type, record type, or tuple type' as Hashable-derive targets, giving the record clauses a derivation vehicle; but §14.5 still keeps declaration-level deriving implementation-defined in Phase 0 (L19299), and the type-alias-naming case (e.g. type Pt = (x:Int, y:Int)) as an eligible derive target remains unspecified.*
+
+- **§14.5.1** (L15026-L15027) `[analysis:proofs-deriving-totality]`
+  §14.5.1 says 'erased fields ... do not contribute to the runtime hash unless the corresponding Eq semantics makes them runtime-observable' but does not specify how to determine runtime-observability in Eq beyond saying it must match
+
+- **§15.1** (L15105-L15120) `[writer1:proofs-deriving-totality]`
+  §15.1 case 4 (a termination certificate that 'explicitly marks the definition as conversion-safe') makes the L15116-L15117 'total-certified but NOT conversion-reducible by default' rule untestable as a portable MUST-reject: a conforming implementation may mark any measure-based definition conversion-safe and accept refl-unfoldings that the default semantics reject, so conformance tests can only pin the default behavior
+
+- **§15.11** (L15469, L15465-L15466) `[analysis:proofs-deriving-totality]`
+  §15.11 says 'every member of a recursive SCC MUST have a decreases clause' but the error diagnostic is only specified at one point (line 15466); unclear if this is a conformance error or if partial coverage is permitted
+  *Status (2026-07-23): §15.11 L19808 now resolves the partial-coverage question ('If any member of a recursive SCC has an explicit decreases clause, every member of that SCC MUST have one' — all-or-nothing, hence a conformance error, not permitted partial coverage); but no dedicated diagnostic family is designated for a member missing a required decreases clause (only kappa.termination.failure at L19804-19805 for unsolved decrease goals).*
+
+- **§15.11, §15.7** (L15433-L15437) `[writer1:proofs-deriving-totality]`
+  §15.11's Bool-valued-relation clause exempts 'default measure relations' from the WellFounded-lifting requirement, but the Type-valued clause has no parallel exemption — yet §15.7 (L15274-L15277) forbids requiring a particular source spelling when the normalized term has the same core meaning; it is unclear whether a transparent Type-valued relation that normalizes to the default order's propositional lifting still needs explicit WellFounded evidence
+
+- **§15.4** (L15172-L15182) `[analysis:proofs-deriving-totality]`
+  §15.4's non-negative-subset rule for Int/Integer is semantic not syntactic, but no algorithm is provided for how the implementation should prove the required non-negativity side conditions at recursive edges
+
+- **§15.7** (L15273, L15284) `[analysis:proofs-deriving-totality]`
+  §15.7 defines 'structuralSize(x)' in the portable measure language but never explains how to compute or reference it; the grammar mentions it but semantics are deferred
+
+- **§16.1.1, §16.1.1.2** (L19344-19351 vs L19444-19447) `[writer2:application-dotted]`
+  The v1 list of ?.-reachable right-hand-side forms in §16.1.1 (docs/Spec.md L19344-19348: record/package member projection, constructor-field projection, method-call and receiver-projection sugar) omits 'explicit dictionary member projection', which §16.1.1.2's safeMember description (L19444-19447) explicitly includes. One of the two lists should be corrected so it is unambiguous whether d.(==)-style dictionary member projection is reachable through ?.
+
+- **§16.2, §7.4** (§16.2 receiver-marked binder bullets) `[writer2:lambdas-implicits-flow]`
+  §16.2 says method-call/receiver-projection sugar 'consult the receiver marker, not the local binder name', and lists receiver-marked lambda binders as ordinary binder forms — but it never says where the marker must be visible for a top-level binding defined by a lambda (let f = \ (this x : T) -> ...) to be method-call eligible: on the declared signature type, on the lambda binder, or on a declaration-form binder list. The implementation requires the declaration-form binder list and rejects signature+lambda-marked functions, which at minimum shows the binding-site rule is underspecified.
+
+- **§16.2.2** (§16.2.2 'Positive lower bound capture in suspensions') `[writer2:lambdas-implicits-flow]`
+  Tension between the categorical rule 'lazy expr MUST NOT capture variables with positive lower-bound obligations unless those obligations are independently satisfied outside the lazy body' and the preceding interval paragraph ('demands inside lazy expr are multiplied by the number of times the corresponding Need value may evaluate its body, which is at most once'). When the Need value is demonstrably forced on every path (e.g. let n = lazy (strictId x) in force n with x : >=1), interval reasoning with a definite first force could justify acceptance, but the categorical sentence forbids it. The compiler implements the permissive reading and accepts. The spec should either state that the lazy multiplier is always [0,1] regardless of definite forcing (making the MUST NOT a consequence), or scope the MUST NOT to Need values not demanded on all paths.
+
+- **§17.1.10, §17.3.3** (L21709-L21711, L22005-L22009) `[writer2:patterns-active]`
+  §17.1.10 says "If a Miss residue carries a positive lower-bound obligation, that residue must be demanded by the subsequent threaded case chain or by the final residue case", but no mechanism is specified for how an obligation attaches to the residue: the prelude Match type (§17.3.3) declares Hit/Miss fields with no explicit quantity (defaulting per §12's omitted-field rule), so a >=1 or 1 obligation on the original scrutinee has no specified conduit through the Match.Miss constructor to the threaded residue binder. (Test authored instead via a separate >=1 variable demanded on both paths.)
+
+- **§18.1.13, §32.2.5, §32.2.9** (docs/Spec.md near L22843-L22845 (18.1.13 Semantics bullets, current revision)) `[writer2:runtime-hashing]`
+  The rule 'If interruption is requested before a transaction commits, the current attempt is abandoned and the interruption is taken at the next interruption point outside the commit' does not exclude masked fibers. Under a mask (32.2.5) the interruption cannot be taken, and the continuation needs the transaction's result, so the literal reading deadlocks or contradicts mask semantics. stm-commit-pending-interrupt.kp pins the coherent reading: a masked pending request lets the attempt run and commit.
+
+- **§18.1.20.2, §T.4** `[writer2:io-fibers-stm]`
+  §18.1.20.2's diagnostic requirement mandates that the multi-shot rejection identify the operation, the nearest handler boundary, an offending value, and the rejection kind, but neither it nor Appendix T standardizes related-origin ROLE names for these citations (compare kappa.borrow.escape's normatively exercised 'borrow-start'/'borrow-escape-site'). A conformance test must guess a role string (I used 'handler-boundary' in multishot-diagnostic-handler-boundary.kp), so the requirement is not portably assertable via assertDiagnosticRelated. Recommend standardizing role names (e.g. op-site / handler-boundary / offending-value) for E_QTT_CONTINUATION_CAPTURE-class diagnostics.
+
+- **§18.1.21, §18.1.22, §18.1.16** (L23263-L23268, L23293-L23295, L23386-L23390) `[writer2:effects-handlers]`
+  The resumption-escape provisions ('Returning, storing, or otherwise escaping k is well-typed only when that capture set is expressible and permitted at the escape site') appear unrealizable for one-shot resumptions: to escape, k must be embedded in the clause result m b, but every standard path (pure : a -> m a, monadic return) takes its argument at unrestricted quantity, and passing a q=1 binder to an omega-argument function violates §12.2 (confirmed empirically: E_QTT_LINEAR_OVERUSE on any pure k / wrap k with q=1). So k-escape is expressible only for multi-shot (omega) operations, yet §18.1.21/§18.1.22 discuss escape generically for all q without specifying a linear-aware embedding. Either the spec should state that escape is effectively restricted to unrestricted resumptions, or specify how a linear k can inhabit m b.
+
+- **§18.1.6** (L18967-L18969) `[analysis:io-fibers-stm]`
+  The phrase 'simultaneously observable with no source-level prior winner' is informal. It is unclear whether deterministic implementations (with logical timestamps) must implement a happens-before edge or whether implementation-defined race conditions are permitted. Clarification needed on whether this is a source-level property or a runtime property.
+
+- **§18.1.6** `[writer2:io-fibers-stm]`
+  Sharper form of the known simultaneity ambiguity: for `timeout` the 'simultaneously observable with no source-level prior winner ⇒ io wins' clause appears to be source-untestable, since nonpositive durations are specified timer-wins and any positive duration orders the timer deadline strictly before any deadline the body can subsequently create. Unlike race (where two already-complete sides realize the tie, per the left-bias rule), no portable program can construct the timeout tie; consider either giving a normative construction or marking the clause implementation-observable only.
+
+- **§18.6, §19.2** (~L24613-24629 (18.6 break/continue bullets) and ~L26224-26248 (19.2 rule 5 elaboration + control-flow interaction)) `[writer2:errors-collections]`
+  Section 18.6's break/continue transparency clause enumerates only compiler-generated closures from 'loop, comprehension, or protected-resource elaboration of using' as transparent to break/continue targeting, but omits the try/finally elaboration of section 19.2 rule 5, which wraps the try in a fresh compiler-generated do block ('do defer finalizer; try ...'). Section 19.2's control-flow-interaction bullet normatively requires break/continue/return to propagate outward through a try (with finally still running), so the intent is clear, but a literal reading of the 18.6 enumeration plus do-scope break confinement licenses rejecting break-through-try — which is exactly what the compiler does (E_BREAK_OUTSIDE_LOOP, see try-finally-break.kp). The 18.6 enumeration should mention the try/finally (defer) elaboration explicitly.
+
+- **§18.6.1** (docs/Spec.md ~L25060-L25080 (§18.6.1 no-read contexts list at current HEAD)) `[writer2:loops-var-inout]`
+  The no-read-context list for a mutable binding's current-value facet includes 'erased proof positions' without defining whether an explicit erased ARGUMENT position, e.g. supplying the current value to a (0 n : Int) parameter, is such a position. The implementation accepts a lifted snapshot read there; the spec text does not settle whether that acceptance is conformant, so var-no-read-static-contexts.kp deliberately does not pin the erased-argument case.
+
+- **§18.6.3, §18.7** (docs/Spec.md L25156-L25176) `[writer2:loops-var-inout]`
+  The gap sketch (from an older spec revision) claimed §18.6.3 states the loop else block 'executes as a fresh do-scope'; the current §18.6.3 (L25156-L25176) specifies only WHEN else runs and says nothing about its scope structure. Since the surface syntax requires an explicit `else do` block the observable defer behavior is still determined (a do block is a do-scope), but the older normative sentence appears to have been dropped rather than relocated.
+
+- **§21.1.1** (L24690) `[analysis:macros-reflection]`
+  Spec requires malformed quotation diagnostics to identify 'the most local source-preserving repair when one is known' (L24690), but does not define what constitutes a 'most local' repair, how repairs are ranked, or criteria for repair applicability. The interaction with feature-gate repair suggestions is underspecified.
+
+- **§21.4** (L24814-L24825) `[analysis:macros-reflection]`
+  Spec states that a Syntax value 'may escape a lexical scope only when every free hygienic binder recorded in its hidden syntax-scope metadata remains valid outside that scope' (L24814-L24815), but the definition of 'validity' for each binder kind (local variable, implicit evidence, rigid region, nominal scope token) is distributed across multiple sections. No unified validation model is presented.
+
+- **§21.5.1** (L24915-L24920) `[analysis:macros-reflection]`
+  Spec requires generated names to 'receive stable semantic object identities under §30.2.5 and stable source or synthetic origins under §3.1.5' (L24915-L24916), but the interaction between semantic-object identity and interface artifacts (which may not preserve internal binder IDs) is not fully specified.
+
+- **§21.6** (L24957-L24978) `[analysis:macros-reflection]`
+  Spec requires Core Γ t to be 'well-scoped' and 'well-typed' including all object-language obligations (L24957-L24969), but the exact dependency between reflected-term construction and obligation discharge is unclear. Specifically, does a Core constructor API need to eagerly check all obligations, or may it defer checks to reification or splice time?
+
+- **§21.6, §21.8** (L25361-L25374) `[analysis:macros-reflection]`
+  Spec mandates that semantic-reflection queries are deterministic and stable under 'semantically equivalent import environments' (L25361-L25374), but the definition of 'semantic equivalence' for import environments is not provided. Does it include transitive closure of re-exports, module aliases, and interface versioning?
+
+- **§21.9** (L25420-L25422) `[analysis:macros-reflection]`
+  Spec defines ElabGoal as having 'ctx : CoreCtx' and 'expected : Option (Core this.ctx Type)' (L25420-L25422), but the interpretation of 'this.ctx' as a dependent type index is non-standard and may be unclear to implementers regarding equality and substitution of context witnesses.
+
+- **§22.3** (L25960-L25965) `[analysis:macros-reflection]`
+  Spec states that runtimeRelevant is False for 'any other field whose value would not be present in the runtime representation after mandatory erasure' (L25964-L25965), but the definition of 'mandatory erasure' is deferred to §11.1.6 and §31.2. The boundary between compile-time-only syntax and runtime-erased proofs is context-dependent.
+
+- **§23.4, §23.6** (L29725-29727, L29764-29768 (current revision)) `[writer2:shapes-staging]`
+  §23.4 says an implementation MAY elaborate a statically-closed quotation directly as ClosedCode t when that type is expected, which makes the well-typedness of 'runCode .< 1 >.' implementation-dependent: a conformance test may pin neither acceptance nor rejection of that spelling (only an arbitrary Code-typed value is portably a type error). The inherited test pinned rejection of the closed-literal spelling and was reworked; the spec could clarify whether the MAY-coercion is limited to syntactic quotation literals and whether suites should treat it as unobservable.
+
+- **§23.5, §23.1** (L29739-29746, L29676 (current revision)) `[writer2:shapes-staging]`
+  §23.5 states repeated splices of the same genlet result MUST reuse the same generated binder, but §23.1 makes Code non-inspectable and generated pure terms cannot observe evaluation sharing, so this MUST has no portable conformance-observable channel (only whole-program semantics 'modulo administrative let-binding' is testable). Consider either downgrading to SHOULD, or adding a normative rendering/debug channel through which binder identity is observable.
+
+- **§23.7.1** (L26236-L26247) `[analysis:macros-reflection]`
+  Spec requires dynamic scope checks for staged code to be 'observationally equivalent to carrying explicit abstract scope-check metadata' (L26236-L26247), but observable equivalence is defined operationally without formal semantic model. Edge cases with control effects, handler demotion, or fiber manipulation are not formally characterized.
+
+- **§27.6** (L29018-29057) `[analysis:appendices-config]`
+  The distinction between 'blocking' and 'blocking-cancellable' foreign calls depends on a 'trusted binding summary' naming the cancellation mechanism, but the spec does not define the syntax, serialization, or API for expressing such summaries in portable v1.
+
+- **§28.2** (~L33442-33470 (current HEAD)) `[writer2:prelude]`
+  The WellFoundedRelation trait (Spec.md ~L33450) declares two members, `rel : a -> a -> Type` and `wf : WellFounded a rel`, but the prelude surface provides no introduction form for `WellFounded` (it is declared only as an opaque type constructor with no constructors, and no exported combinator returns one), so no portable user instance can supply the mandated `wf` member; the spec's own instances (`instance WellFoundedRelation Nat`, the pair instance at ~L33466-33469) are shown body-less. This leaves §14 instance-completeness in tension with §28.2: either user instances of WellFoundedRelation are impossible to write portably, or omitting `wf` must be legal — the spec should either export a WellFounded introduction (e.g. via Acc) or mark `wf` as implementation-supplied/optional.
+
+- **§29.2** (docs/Spec.md L35134-35145) `[writer2:std-modules]`
+  Interaction of restart strategies with the Transient policy is contradictory on a strict reading: OneForAll/RestForOne say 'all restartable children are restarted' after the strategy interrupts siblings, but Transient children are defined to restart only on 'interruption not initiated by the supervisor' — and strategy-driven sibling interruption IS supervisor-initiated. Strictly read, a Transient sibling interrupted by a OneForAll round is not restartable, which likely contradicts the OTP-style intent. Tests sidestep this by using Permanent children.
+
+- **§29.2** (docs/Spec.md L35126-35128, L35156-35162) `[writer2:std-modules]`
+  The terminal Exit of a supervisor that observed a Temporary child's typed failure (which 'does not by itself terminate the supervisor') and was subsequently shut down by request is not pinned: the failure/cause rules only cover failures that CAUSE supervisor termination. supervisor-transient-temporary-policies.kp assumes Success () after requested shutdown.
+
+- **§29.4** (docs/Spec.md L35524-35526, L35758-35781) `[writer2:std-modules]`
+  CaseFoldMode and DisplayWidthMode are `expect data` types with NO required constructors or values (unlike NormalizationForm, which requires NFC/NFD/NFKC/NFKD at L35531-35536). A portable program therefore has no mode value it can pass to caseFold or displayWidth, making both required operations portably uncallable. Tests must use the implementation's FullCaseFold name.
+
+- **§29.4** (docs/Spec.md L35786-35797) `[writer2:std-modules]`
+  `words` is specified only as using 'the default word-boundary algorithm of UAX #29'. The UAX#29 algorithm produces boundary-delimited segments INCLUDING whitespace and punctuation runs; the spec does not say whether `words` yields every segment (ICU break-iterator style) or only word-like segments (Rust unicode_words / Swift style). For "foo,bar baz" the two readings give 5 vs 3 yielded strings. The new test assumes the filtered reading.
+
+- **§29.7** (docs/Spec.md L36149-36157) `[writer2:std-modules]`
+  ConfigUnify, ConfigOverride, and ConfigMerge are declared as member-less traits, and the spec specifies no members, laws, required instances, or any mechanism by which tryUnify's per-type unification behavior is obtained. §29.7's conflict-detection semantics (tryUnify normalizing to Ok/Err, the checked unify/(<&>) forms failing elaboration) are consequently unimplementable and untestable portably: no portable program can ever hold ConfigUnify evidence for a concrete type.
+
+- **§32.2.12** (L35593-L35623) `[analysis:runtime-hashing]`
+  Canonical composition rule states 'If body fails with c_body and cleanup produces c_cleanup, result is Then c_body c_cleanup'. For scope exit, it says 'child-shutdown causes produced during mandatory scope shutdown' are part of cleanup. But the relative order of multiple child-failure causes vs finalizer causes when multiple children fail and finalizers also fail could be more explicit.
+
+- **§32.2.12** (docs/Spec.md L40200-L40214 (current revision)) `[writer2:runtime-hashing]`
+  The associativity of the sequential Then chain is unspecified when a body cause composes with MULTIPLE finalizer causes: 'exit actions contribute sequentially in masked LIFO execution order' does not choose between Then c_body (Then c1 c2) and Then (Then c_body c1) c2. multiple-failing-finalizers-still-run.kp must accept both nestings.
+
+- **§32.2.13** (L35651-L35656) `[analysis:runtime-hashing]`
+  Section states captured continuation 'does not include frames outside the matching handler boundary' and 'compile-time-only entities erased under §31.2', but the precise definition of 'frames outside' vs interior nested handlers within the boundary could be clearer with an example.
+
+- **§32.2.4, §32.2.12, §32.2.11** (docs/Spec.md L39963-L39968 and L40208-L40214 (current revision)) `[writer2:runtime-hashing]`
+  Creation-order of Both-composed UnhandledChildFailure defects is not portably observable: the composed defects are structurally identical except for the implementation-defined msg text, and no portable facility maps a defect operand back to a specific child. A conformance test can pin only the Both-of-two-UCF shape, never the mandated child-creation order.
+
+- **§32.2.7, §32.2.13, §32.2.18** (docs/Spec.md L40230-L40244 and L40329-L40340 (current revision)) `[writer2:runtime-hashing]`
+  Whether the FiberRef map is part of the captured 'fiber-local dynamic control state' (hence cloned per multi-shot resumption use) or ordinary store (shared across uses, no rollback) is unresolved: 32.2.13 names only the interruption-mask state explicitly, and 32.2.18 lists var/newRef but not FiberRef. The gap sketch assumed per-clone independence; the no-rollback principle of 32.2.18 suggests the opposite.
+
+- **§33.2.1** (L36134-L36162) `[analysis:runtime-hashing]`
+  Coherence checking algorithm step 4 mentions 'if HardIdentity values differ, program violates coherence' but also notes 'the comparison is of HardIdentity, not of raw digest equality'. The spec emphasizes HardDigest is indexing-only and identity must be compared, but this could be clearer that a digest collision does not imply equality.
+
+- **§35.2.1, §35.2.2** (L38846-38887) `[analysis:appendices-config]`
+  Config-expression and config-data profiles both admit 'constructor application for constructors in loader-supplied schema' (35.2.1) vs 'saturated calls to config-safe functions' (35.2.2), but the boundary between 'constructor application' (data constructor) and 'function call' is not precisely specified. Is a zero-argument config-safe helper function called via its name distinguishable from a nullary constructor?
+
+- **§35.4, §35.2.1** (L43633-43671, L43502-43534) `[writer2:appendices-config]`
+  config-data admits the call form 'input key' but provides no admitted way to PRODUCE a ConfigInputKey value: ordinary function calls (e.g. a configInput-style key builder) are rejected in config-data, the §35.4 portable API shape exposes only the opaque ConfigInputKey type and 'input', and no obligation is stated for the loader to inject key values (as opposed to the type and 'input') into the schema scope.
+
+- **§35.5** (L39087-39098) `[analysis:appendices-config]`
+  Config-safe function requirement states 'independent of... filesystem, network, subprocess, environment, wall-clock time, randomness, mutable global state, host runtime reflection, and backend-specific code generation' but does not specify whether accessing immutable compile-time constants (e.g., compiler version embedded in stdlib) violates this independence requirement.
+
+- **§Appendix B.2** (L45966-45976) `[analysis:appendices-config]`
+  Spec states pipe does not 'retarget method-call or receiver-projection sugar onto x' but then provides examples using receiver sections. The spec does not explain whether a bare receiver reference like `x |> .field` (without parentheses) is syntactically valid or requires `(.field)` syntax.
+
+- **§G.1** (L50668-50677 vs L17481-17512) `[writer2:appendices-config]`
+  Appendix G.1's rendition of the std.prelude Applicative trait omits the Functor supertrait and the law members (applicativeIdentity, composition, homomorphism, interchange) that the full std.prelude declaration in §14.x (L17481-17512) attaches to the same trait; the two 'std.prelude provides' texts disagree about the trait's shape.
+
+- **§T.3, §T.4, §3.2.18** (L46419-46422, L46489-46490) `[writer1:diag-families-2]`
+  Appendix T does not specify precedence between §T.3 ('any ill-typed directive argument is a harness error', which covers unregistered code/family spellings) and §T.4 ('if any required condition is not met, the test result is unsupported, not failed'). A portable test for an optional backend (e.g. kappa.backend.python / kappa.host.python behind `requires backend python`) inevitably references families an implementation without that backend never registers, so it can never gracefully report unsupported — directive validation harness-errors first.
+
+- **§T.5** (L46504-L46821 (Appendix T lacks assertAuditLedger but tests use it)) `[analysis:unsafe-debug]`
+  assertAuditLedger directive is used in conformance tests (assert-reducible-enabled.kp, assert-terminates-enabled.kp, unsafe-assert-proof-enabled.kp) but is not documented in Appendix T (test harness). It is de facto an extension. The spec should either (1) document it formally in T.5 as a standard assertion directive, or (2) clarify that it is implementation-defined.
+
+- **§T.5.1, §3.1.4** (L46620-L46627) `[writer1:gates-profiles]`
+  §T.5.1 does not specify whether a <code-or-family> spelling unknown to the implementation makes the directive ill-formed or merely a failing assertion. The reference harness rejects unregistered spellings as ill-typed (citing §3.1.2A), so a conformance test cannot assert a §3.1.4-REQUIRED portable alias (e.g. E_RECOVERY_INSERTED_TOKEN, E_RECOVERY_MISSING_NODE, E_PROVENANCE_MISSING) against an implementation that omits it entirely — the test harness-errors instead of failing. Only assertDiagnosticExplainExists is defined to fail gracefully on unregistered spellings, which is why the alias-absence gap had to be pinned via the explain registry rather than via assertDiagnostic.
+
+- **§6.1.4, §17.2.1** `[analysis:syntax-dialect-import]`
+  §17.2.1 admits numeric literal patterns, but §6.1.4 states that `-` is a unary operator and not part of a numeric literal. The pattern grammar does not say whether a form such as `case -1 -> ...` is valid operator-pattern sugar, invalid because expressions are not patterns, or a distinct negative-literal pattern form. The pending `expressions.patterns.negative_integer_literal_pattern.kp` fixture cannot be assigned a portable expectation until this is explicit.
+
+- **§36.14.2, Appendix T.4** `[analysis:syntax-dialect-import]`
+  The `entry <qualifiedName>` test directive selects a run-mode entrypoint, and §36.14.2 requires an entrypoint policy to record an expected type/signature, but no portable `kappa-main` signature or result-to-exit mapping is specified. A fixture cannot portably assert that `main : String` is rejected (or accepted): the required signature is target-policy data that the portable harness has no directive to select or inspect.
+
+## III.4 Implementation-conformance observations (not spec defects)
+
+- **§12.3** `[writer1:borrows-places]`
+  Compiler borrow-escape diagnostics cite '§12.3.2', a section that no longer exists in Spec.md (escape rules live in §12.3); stale cross-reference after spec renumbering. Implementation-side drift, recorded here since it will confuse anyone auditing these tests against the spec.
+
+- **§19.3, §17.1** `[writer2:patterns-active]`
+  Not a spec defect but a conformance observation discovered while testing: the compiler rejects ALIGNED `try match` case clauses (parse error), while §19.3/§17.1 require a conforming parser to accept both aligned and indented clause forms; plain `match` accepts both.
+
+- **§13.1.1, §18.1.6** `[writer2:io-fibers-stm]`
+  Not a spec defect but recorded for the reviewer: §13.1.1 specifies VarRow equality modulo permutation and duplicate removal, and §18.1.6 spells timeout's error as (| TimeoutError | e |); the implementation rejects the spec-spelled instantiation (| TimeoutError | Void |) (and mis-unifies it to (| TimeoutError | TimeoutError |)). The spec is self-consistent — this is an implementation gap surfaced in timeout-nonpositive.kp — but the spec could add a conformance example pinning permuted-row acceptance.
+
+- **§18.1.21, §18.1.22, §18.1.19** `[writer2:effects-handlers]`
+  Non-normative observation for the importer: the spec's own worked-example layout for handlers ('handle inner' with the handled do block starting on the FOLLOWING line, §18.1.19) and the normative allowance that the handled computation may be 'a do block written immediately after the label' are both unparseable/untypeable in the current implementation (the grammar requires the handled expression to be a same-line atom of already-known Eff type). This is an implementation gap rather than a spec defect, but it makes several §18.1.21.1/§18.1.22.1 behaviors untestable end-to-end today; recorded here so the importer does not mistake the failing layout for a test bug.
+
+## III.5 Round-3 contradictions (2026-07-23)
+
+- **§6.1.6, §14.2.2, §14.2.4, §16.1.8** (L5796-5797, L18529-18531, L18276, L20905) `[r3:combo-numerics-traits]`
+  Section 6.1.6's typeclass-mediated suffix example `px = FromInteger.fromInteger @Length` relies on trait-qualified TERM member projection (Trait.member), but no section defines that form and 14.2.2 states 'There is no separate trait-scoped projection mechanism of the form Trait.Name args; ordinary projection from an explicit or implicit trait evidence value remains the core mechanism.' Meanwhile normative rules elsewhere use the same spelling (Eq.eqSound in 14.2.4 laws, 16.1.8 transport proof sources, 21.x), and the reference compiler rejects both FromInteger.fromInteger and Eq.eqSound with E_UNRESOLVED_MEMBER. Either define Trait.termMember resolution or fix the examples/rules to project from evidence.
+
+- **§6.3.4.3, §6.3.5** (L6044-6053, L6160-6174) `[r3:combo-strings-macros]`
+  Universe mismatch between the interpolation-handler declarations and their required uses: §6.3.4.3 fixes `trait InterpolatedMacro (0 t : Type)` and `Interp (@0 t : Type) (e : Syntax t)` at universe Type, but §6.3.5 requires the signature `type : Elab (InterpolatedMacro Type)` — with Type : Type1 that index is ill-kinded as declared. Likewise a type-valued interpolation (e.g. type"List ${elem}" with elem : Type) cannot be represented as an Interp fragment since its @0 t slot lives in Type. The spec never states that InterpolatedMacro/SyntaxFragment are universe-polymorphic or that cumulativity lifts the index, so the two normative code blocks contradict each other as written. (Not in docs/SPEC_ISSUES.md; pinned by tests/pending-import/spec-coverage/combo-2026-07-23/interpolated-macro-type-kind.kp.)
+  *Status (2026-07-23): The bare-`Type` universe-polymorphism rule (§11.1.2.3A L11129), with declaration-schema generalization, removes the 'Type : Type1 → ill-kinded' premise so `InterpolatedMacro Type` is now well-kinded; but the spec still never addresses whether a type-valued interpolation (a `Type`-sized `@0 t` witness) can be carried by an `Interp` fragment within a single monomorphic `List SyntaxFragment`, so that representability half remains unresolved.*
+
+- **§14.2, §14.3, §13.1.1** (L18530, L18276, L18578-L18584) `[r3:combo-traits-modules]`
+  §14.2 states 'There is no separate trait-scoped projection mechanism of the form `Trait.Name args`' (L18530), but §14.3's normative std.prelude bridge instance `instance Eq a => Equiv a` uses exactly that form: `Eq.eqComplete x x refl`, `Eq.eqSound x y p` (L18578-L18584), and §13/14 prose at L18276 also reads 'Eq.eqSound yields ...'. In these positions `Eq` is the trait name, not an evidence binder, so the examples use the mechanism the rule forbids. The reference implementation follows L18530 (rejects `Sum.total v` with E_UNRESOLVED_MEMBER), which makes the spec's own canonical instance unimplementable as written. Either the examples should be rewritten to bare member names/explicit evidence projections, or the trait-name static-member projection form should be specified.
+
+- **§14.3.2, §33.2.1, §8.5.2, §8.5.3** (L18776-L18790, L41438-L41444, L7852-L7862) `[r3:combo-traits-modules]`
+  Instance-head identity for instances declared at a module's own `opaque type` alias is contradictory/underdetermined. §14.3.2 (L18790) computes the normalized instance head at the DECLARATION site, and §33.2.1 (L41440) computes canonical instance-artifact identities 'in the defining modules' own transparency environments' — inside the defining module the opaque alias is transparent (§8.5.2), so `instance Tag Id` (with `opaque type Id = Int`) canonically becomes `Tag Int`. Meanwhile §14.3.2 goal normalization 'preserving opacity boundaries' (L18786) keeps a downstream goal at `Tag Id` un-unfolded. Net effect of the strict reading: the instance is unreachable at the abstract spelling downstream and reachable at the hidden representation — inverting the abstraction intent that §8.5.3 explicitly endorses for opaque data ('exported trait instances for an opaque data type do not by themselves violate opacity'). The reference implementation does the opposite (abstract goal solves, representation goal unsolved) yet uses transparency for overlap detection inside the defining module (declaring both `Tag Id` and `Tag Int` there is rejected as incoherent), so neither the spec nor the implementation is self-consistent. The spec should state explicitly whether an opaque alias in a head declared in its own defining module is normalized for (a) candidate matching and (b) coherence identity, and reconcile with §8.5.2/§8.5.3 abstraction goals.
+
+## III.6 Round-3 errors (2026-07-23)
+
+- **§9.3** (L8369-8371 vs L15731, L37538) `[r3:dx-beginner-1]`
+  The letInExpr grammar (L8369-8371) derives only the multiline form 'let' NEWLINE INDENT letInBind+ DEDENT 'in' expr; the single-line form `let x = e in body` is not derivable, yet the spec itself uses it normatively elsewhere (L15731 `let & pat = expr in body`, L37538 `let x = rhs in body`), the compiler accepts it, and existing conformance tests rely on it (tests/conformance/imported-anon/GLEAM-let-binding-type-annotation.kp). The grammar should add the single-line production.
+
+- **§13.2.11** (L17636-L17639 vs L17650, L17684, L17758) `[r3:combo-existentials-match]`
+  The existsBinder grammar lists only `ident | (ident : type) | (@0 ident : type)`, but L17650 defines `exists a. T` as sugar for `exists (0 a : Type). T` and the section's own examples use the `(0 a : Type)` spelling pervasively (L17684, L17690-91, L17758, L17774-78, L17799...). The `(quantity ident : type)` binder form is missing from the grammar; the compiler accepts it and treats all three spellings as the same type (verified: bare, (0 a : Type), and (@0 a : Type) are interchangeable).
+
+## III.7 Round-3 ambiguities (2026-07-23)
+
+- **§3.1.1A** (L599-L607, L544-L590) `[r3:dx-consistency]`
+  §3.1.1A makes 'the source origin of the expected type' a MUST-include related origin for type-mismatch diagnostics, but the standardized RelatedOriginRole list has no role spelling designating the expected-type origin: signature-site fits only signature-derived expected types, and a branch-derived expected type (if/else, match arms, list elements) has no fitting role at all. Same class as the known record-update role gap (SPEC_ISSUES L99-100) but for the type-mismatch clause; portable assertDiagnosticRelated pins must guess a role.
+
+- **§3.2.2, §3.1.6** (L2194-2195) `[r3:dx-beginner-2]`
+  "If a close spelling exists in the same admissible kind set, the diagnostic SHOULD include a maybe-applicable or placeholder fix" — 'admissible kind set' is declaration-kind based, so a term operator like (%) is a legitimate candidate for a term identifier, yet its bare spelling '%' cannot lex at an identifier token position: the implementation's resulting fix (replace 'q' with '%') produces a SourceEdit whose applied result is a parse error. The spec nowhere requires a suggested replacement to be lexically substitutable at the use-site token (or that operator names be offered in their parenthesized reference form), so this SHOULD can be satisfied by fixes that break the program.
+  *Status (2026-07-23): §3.1.7 (L1467-1474) now forbids offering a known-ill-formed substitution as the primary suggestion, but only for the dotted-qualifier `X.member` case; for a bare identifier position the spec still never requires a typo-replacement to be lexically substitutable at the use-site token, nor that operator names (e.g. `%`) be offered in their parenthesized `(%)` reference form, so the parse-breaking `q`→`%` fix remains unpinned.*
+
+- **§3.1.14A, §Appendix T** (L1911-1912, L50981+) `[r3:dx-cascade]`
+  §3.1.14A scopes its recovery MUSTs to `analyze` and 'editor-oriented queries', but Appendix T harness `check` mode is used by existing conformance/pending tests (e.g. spec-coverage/gates-profiles/recovery-missing-expression-node.kp) as if batch check were bound by those MUSTs. The spec does not say whether `kappa check` / harness check mode counts as an editor-oriented query, which decides whether cascade/recovery shortfalls in check mode are conformance FAILs or merely DX issues (this affected classification of every pin in this audit; all were conservatively filed as dx-issues).
+
+- **§3.2.10** (L3646-L3661 and L3722-L3745) `[r3:robust-scale]`
+  Family overlap with no partition rule: kappa.pattern.exhaustiveness-residual is 'used when an exhaustiveness or incompleteness diagnostic reports uncovered cases', a condition satisfied by every kappa.pattern.non-exhaustive diagnostic that lists missing cases (both family definitions sit in the same §3.2.10). No rule says whether such a diagnostic must carry the residual family, both, or how they partition; the compiler emits only kappa.pattern.non-exhaustive with 'missing cases: ...' in a note. Analogous to the known most-specific-family precedence issues recorded for effect rows (§3.2.9) and captures (§3.2.7), but this pair is not in docs/SPEC_ISSUES.md.
+
+- **§5.4** (L5264-5265) `[r3:dx-layout]`
+  "Indentation is measured in spaces. Tabs are a compile-time error." is worded unconditionally, but its sensible (and implemented) scope is source layout only: tabs inside comment interiors and string-literal content are accepted (a string tab denotes U+0009, equal to the \t escape). A strict reading would forbid a literal tab in a string, which nothing else in §6.3 supports. The rule should state its scope (indentation/inter-token whitespace) explicitly.
+
+- **§5.4** (L5279-5280) `[r3:dx-layout]`
+  Continuation contexts arise when "the NEWLINE occurs immediately after a token that syntactically requires a following expression". Undefined whether trailing trivia (spaces, a line comment, a block comment) between that token and the line break preserves the context. The implementation treats 'immediately after' as modulo trivia (accepts `let y = -- comment` followed by an indented continuation); a literal reading would reject it. Should be stated explicitly.
+
+- **§5.4** (L5279-5286) `[r3:dx-layout]`
+  The continuation-introducer list is described as tokens that "syntactically require a following expression" yet its own entries include ':' when parsing type annotations (requires a type, not an expression). Whether other binder-introducing tokens that can never end a construct — notably lambda '\' (requires a pattern) — open continuation contexts is unspecified; the implementation accepts '->' at EOL but rejects '\' at EOL, so the boundary of the non-exhaustive list is observable and untestable from the spec text.
+
+- **§5.5.1A, §7.1** (L5519-L5520, L6517-L6534) `[r3:dx-consistency]`
+  §5.5.1A says two fixity declarations in the same lexical scope 'collide when their operator strictNameKey values are equal' by 'same declaration kind', but fixity declarations are not one of the six §7 declaration kinds (term/type/trait/ctor/module/effect-label), and no diagnostic code or family is specified anywhere for an operator/fixity collision (the spec defines no E_OPERATOR_FIXITY_DUPLICATE-style identity). The required rejection is therefore not portably pinnable; a conformance test must guess an implementation code.
+
+- **§5.4, §18.2** (docs/Spec.md ~L5278-5295 (continuation contexts), ~L24293 (§18.2)) `[r3:combo-lazy-totality]`
+  Whether a `do` block is admissible as a parenthesized subexpression (`f (do ...)`, `thunk (do ...)`, `let _ <- (do ...)`) is unspecified. §18.2 treats do blocks as expressions of type m T; §5.4's continuation-context list is explicitly non-exhaustive and its block-introducer rule only describes the NEWLINE+INDENT form; nothing addresses `do` inside explicit grouping delimiters. The tested implementation rejects every parenthesized-do position by lexing `do` as an ordinary identifier ('unresolved name do'), while repo tests (e.g. tests/runtime-import/pending/queue-bounded-backpressure.kp uses `fork (do`) assume it parses. The spec should state whether `do` is a first-class expression form in grouped positions.
+
+- **§5.4** (L5263-L5271) `[r3:robust-eof]`
+  Tab handling scope is ambiguous: 'Indentation is measured in spaces. Tabs are a compile-time error' sits under the indentation model, while 'Blank lines and comment-only lines do not affect indentation' exempts blank lines from layout. It is undefined whether (a) a whitespace-only line containing a tab is an error (implementation: yes, E_TAB_IN_INDENTATION — rejects whitespace-only files and editor-left tab-only blank lines), and (b) tabs OUTSIDE indentation (e.g. trailing after code, or between tokens) are errors at all — §5.4 never addresses them, yet the implementation rejects with a distinct undocumented-by-spec code E_TAB_IN_SOURCE. The spec should either state 'tabs anywhere outside comments and string literals are a compile-time error' or scope the ban to measured indentation and exempt blank lines.
+
+- **§5.5.2, §8.4, §8.3** (L5554-5563, L7251-7252, L7286+ (export mirror rule)) `[r3:combo-crossmodule]`
+  The exported fixity of a RE-exported operator is unspecified. §5.5.2 defines a module's exported fixity as 'the last top-level fixity declaration for op' and conditions export on §8.5 — but a re-exporting module (export a.((+++))) has no top-level fixity declaration and exports under §8.4, not §8.5. §8.3/§8.4 metadata-preservation language implies the origin fixity travels with the declaration, but no rule says so for the re-export surface, and nothing says which fixity wins if the re-exporting module also declares its own top-level fixity for the same operator token.
+
+- **§6.1.2, §6.1.3** (L5610-L5659) `[r3:robust-literals]`
+  The spec defines float-literal syntax and fixes Double = IEEE-754 binary64, but never specifies the mapping from a decimal literal to a binary64 value: no rounding rule (correct round-to-nearest-even vs anything else), and no stated behavior for literals above the finite range (1e309: error? warning? Infinity?) or below half the smallest subnormal (1e-324: 0.0?). The reference compiler silently applies correct rounding with overflow->Infinity and underflow->0.0; conformance tests for boundary literals (e.g. 4.9e-324 == 5e-324) currently rest on an assumed reading.
+
+- **§6.1.5, §11.1.3** (L5704-5711, L12841-12846) `[r3:combo-numerics-traits]`
+  When ONE inference variable is constrained by both an integer literal (default Int) and a float literal (default Float) — e.g. the element type of [1, 2.5] — the per-literal defaulting rules conflict and the spec gives no order, tie-break, or mandated error. Float-default-first would succeed (FromInteger Float exists); int-default-first makes FromFloat unsatisfiable. Additionally, the observable compiler behavior (first element commits the type mid-inference, later literals see it as an expected type) contradicts 'This default is applied after all type inference completes on the enclosing declaration', and the resulting element-order dependence sits uneasily beside 11.1.3's order-independence requirements.
+
+- **§6.1.6, §5.5.1** (L5713-L5804) `[r3:robust-literals]`
+  Token boundary after a numeric literal is unspecified in two ways: (a) a base-invalid digit written immediately after radix digits (0b12, 0o778) — the grammar cannot extend the literal and a digit cannot start an identifier suffix, but the spec does not say whether this is a lex error or two adjacent tokens (the compiler produces two tokens, yielding an application type error); (b) a radix prefix with no digits (0x, 0b, 0o) is grammatically also parseable as decimal 0 plus identifier suffix x/b/o, and the spec does not state that the radix-literal interpretation wins (the compiler hard-errors 'expected hexadecimal digits', never trying the suffix parse).
+  *Status (2026-07-23): Part (a) is fixed — the §6.1.1 boundary rule (L5777-5786) makes a base-invalid trailing digit a single malformed literal and explicitly forbids the two-token split; but part (b) is unaddressed: for an empty radix prefix (`0x`/`0b`/`0o`) the spec still does not state that the radix-literal interpretation wins over the grammatically-available decimal-`0`-plus-identifier-suffix parse.*
+
+- **§8.4, §8.3.1, §7.5** (L7290-7297 (export forms), L7199-7204 (importItem grammar), L6901-6912) `[r3:combo-crossmodule]`
+  Module re-export ('export M', 'export M as A') promises 'qualified access for downstream users' but never specifies the downstream access forms: whether `import b` alone makes nested qualified access b.M.x well-formed, and whether the re-exported module binding is importable as an item (`import b.(M)`). The kindSelector grammar has no 'module' selector even though §7.5 lists `module` among module-signature member facet kinds, so a module-kind export can only be selected by unqualified spelling — and the unqualified-import rule (§8.3.1) never mentions module-kind declarations.
+
+- **§13.1.3, §31.3** (L16282-L16303) `[r3:combo-unions-transport]`
+  When the expression's type U = (| Integer | String |) is itself a member of the expected row AND all of U's members are in that row (expected (| U | Integer | String |)), BOTH §13.1.3 rules apply — injection tags the value as the U member, widening reuses the Integer/String tags — and they are observably different at runtime under §31.3 tag identity. The spec states no priority. The implementation chooses widening (pinned in union-member-inject-vs-widen-priority.kp).
+
+- **§13.2.11** (L17652-L17654) `[r3:combo-existentials-match]`
+  "Other @ quantities are not accepted for existential witnesses" designates no diagnostic family or code for the violation, so a conformance test can only assert 'some error' (assertErrorCount). Compounding this, the compiler currently accepts exists (@1 a : Type). T outright, so it is also unobservable which phase (parse vs elaboration) is intended to reject it.
+
+- **§13.2.5, §12.4** (L16952-16982, L15968-15980) `[r3:combo-borrows-records]`
+  Whether a record patch of an UNRESTRICTED scrutinee is a 'consuming' use for borrow-overlap purposes is never stated directly. The normative elaboration (full record literal built from projections `r.gi`, plus 'copied omitted fields must be unconsumed') implies the patch only reads an ω root, so live shared borrows should coexist (§12.4 restricts only consuming operations); but 'the patch scrutinee is elaborated and evaluated exactly once' plus the reconstitution rules can be read as consume-and-rebuild, which is what the compiler implements (rejecting patches whose own elaborated literal it accepts). One sentence fixing the ω-root case would settle it.
+
+- **§16.4.1, §17.1.7, §17.1.1** (L21646-L21657, L22121-L22123) `[r3:combo-gadt-flow]`
+  The unique-remaining narrowing rule triggers when 'the active refinement context proves LacksCtor for all but one visible constructor'. It is unstated whether a constructor refuted by family-argument unification against the scrutinee's index (e.g. Never : Choice False under Choice True) counts toward 'all but one' — no explicit LacksCtor fact exists for it, but §17.1.1 exhaustiveness already treats it as unreachable. Under the narrow reading, narrowing and exhaustiveness give inconsistent answers about the same constructor set (the current compiler exhibits exactly this inconsistency).
+
+- **§16.1.8, §13.1.3** (L20934-L20936) `[r3:combo-unions-transport]`
+  §16.1.8's application-boundary ordering lists only 'ordinary argument checking, borrow introduction, suspension insertion, and arrow subsumption' as attempted before transport; union injection/widening (§13.1.3) appears nowhere in the ordering, and nothing states whether a transport plan may be composed with a subsequent widening. The implementation does compose them (union-transport-widen-composition.kp passes); the spec neither licenses nor orders that composition.
+
+- **§16.2.2** (docs/Spec.md ~L21192-21196) `[r3:combo-lazy-totality]`
+  The control-flow-boundary sentence 'thunk expr and lazy expr behave as user-written closure boundaries for return, break, and continue resolution' presupposes that return/break/continue can appear inside suspension bodies and undergo resolution, but break/continue are grammatically do-items and a suspension body is a pure expression — no production admits them there, so the sentence has no operative grammar to act on. Clarify whether the rule is (a) vacuous (the forms are simply not grammatical inside suspensions) or (b) intended to mandate a boundary-style diagnostic when they appear (the implementation currently gives unresolved-name).
+
+- **§17.1, §17.1.9, §17.3.4** (L21912-21938, L22297-22328, L22732) `[r3:dx-warnings]`
+  First-match-wins / in-source-order case trying is never normatively stated for plain `match`. §17.1 gives syntax and exhaustiveness only; the order semantics are implied indirectly by §17.1.9 (guard failure falls through to 'subsequent cases') and by §17.3.4 L22732, where 'left-to-right case order' appears only as a preservation condition on an optional active-pattern lowering. With overlapping arms being silently accepted today, an implementation could defensibly pick a different arm-selection rule. Not in docs/SPEC_ISSUES.md. Pinned observationally by spec-coverage/combo-2026-07-23/overlapping-arms-first-match-run.kp.
+
+- **§17.1.4, §17.1.5, §30.2.2.11, §16.4.1** (L22027-L22030, L22066-L22070 vs L39060-L39061, L39136-L39137, L21634-L21637) `[r3:combo-gadt-flow]`
+  §17.1.4/§17.1.5 state impossible/case-impossible are accepted 'only if' unreachability is proved 'using definitional equality, family-argument unification, and the required structural inhabitance rules of §30.2.7' — flow-refinement facts (HasCtor/LacksCtor from §16.4.1, narrowing, contradictory contexts) are absent from this closed justification list, yet §30.2.2.11 mandates the impossible check run under the active refinement context and §16.4.1 requires success evidence to let a subsequent match treat non-C cases as unreachable. Read strictly the lists conflict (acceptance justified only by flow facts would violate the 'only if'); read charitably 'definitional equality' means refinement-aware §31.1.2 def-eq and there is no conflict. The observed compiler behavior (exhaustiveness consults flow facts, impossible checks do not) matches the strict reading. §17.1.4/5 should explicitly include active-refinement-context facts.
+
+- **§17.1.4, §18.8** (L22015-L22035, L24660-L24670) `[r3:combo-gadt-flow]`
+  §17.1.4 defines 'impossible' only as a match branch body ('match e / case pat -> impossible'), but the §18.8-adjacent terminal-branch list (L24668) enumerates 'impossible' alongside return/break/continue as a branch-terminal form, and the implementation parses 'impossible' as an ordinary branch expression of if/else outside do (rejecting it only via the reachability check). Whether 'impossible' is grammatically valid outside a match case body is unspecified.
+
+- **§17.1.8, §17.1.9, §12.2** (L22289-L22290, L22297-L22328) `[r3:combo-qtt-patterns]`
+  §17.1.8's 'consumptions in different branches are not accumulated against one another' does not say how GUARD consumption composes with the guard-failure continuation: the guard runs on the shared selection path, so its demands occur on every path that reaches later cases, unlike branch-body demands. No rule states that guard usage must be accumulated into the fallthrough path's interval accounting (the compiler currently doesn't, admitting runtime double-consumption); an explicit statement (or an outright ban on consuming guards) would close the misreading.
+
+- **§17.2.3, §17.1.9** (L22546-L22555, L22297-L22328) `[r3:combo-qtt-patterns]`
+  Or-pattern + guard backtracking is unspecified: when alternative k structurally matches but the case guard then fails, the spec does not say whether alternatives k+1..n are retried with fresh bindings (Rust semantics) or the whole case is abandoned (OCaml/Haskell semantics; what the compiler implements). 'Tried left-to-right at runtime' and 'excludes only the conjunction of pat and guard' admit both readings, which are observably different (pinned in or-pattern-guard-no-backtrack-run.kp).
+
+- **§18.1.12, §18.1.25, §18.1.20.2, §32.2.13** (L23389-23411 (§18.1.12 signatures), L24201-24203 (§18.1.25 finally signature)) `[r3:combo-effects-resources]`
+  The masking/finalization combinator signatures take their computation/body arguments at unannotated (= omega) quantity: mask's body function, uninterruptible's IO argument, ensuring's action, and MonadFinally.finally's m a. Under QTT omega-argument scaling this makes every one of them unusable with a quantity-1 value — in particular a one-shot handler resumption: `uninterruptible (k 5)`, `mask (\restore -> k 5)`, `finally (k 5) fin` are all ill-typed (confirmed E_QTT_LINEAR_OVERUSE at HEAD), while §19.2's surface `try (k 5) finally -> fin` is accepted because it elaborates via defer. This contradicts §18.1.20.2's stated ergonomics ('One-shot resumptions are the ordinary effect-programming mode for code that may interact with owned resources ... using, or defer') and undercuts §32.2.13's mask-state-at-capture semantics. Either the expect-term/trait signatures should take these arguments at quantity 1 (they run them exactly once), or the spec should state the omega quantities are intentional and one-shot resumptions compose only with the surface defer/try-finally forms. Related to (but distinct from) the existing SPEC_ISSUES.md entry at ~L385, which covers only ESCAPE of k via pure/wrap, not the combinator surface.
+
+- **§18.2.2, §18.8.6, §18.3** (L24396-24404, L26190-26196, L25004-25010) `[r3:dx-beginner-1]`
+  The do-item typing rules make expression items strictly monadic (`expr : m a`; §18.8.6 `final : m A`), and §18.3's Lift_m is invoked only for items containing `!` or mutable-variable reads — yet the implementation deliberately accepts bare pure-typed statement/tail expressions in IO-family do blocks (a 'corpus accommodation' in Check.hs). If this accommodation is intended, §18 needs to specify it (and say for which monads); as written the spec forbids behavior the flagship IO monad exhibits, while user monads follow the spec, so a program's validity depends unspecifiedly on the monad.
+
+- **§18.1.15, §7.1, §7.5** (L23580-23596 vs L6620, L6912) `[r3:combo-crossmodule]`
+  Row-label admissibility is stated only for IDENTIFIERS: §18.1.15 says 'If such a value is bound by an identifier, that identifier is admissible in effect-row syntax...', and its dotted example (pkg.label) appears only in handle position. But §7.1 says effect-label position admits any compile-time term expression of type EffLabel, and §7.5 explicitly blesses `m.l` in effect-label position. Whether dotted references (qualified access `elib.l`, projections `pkg.label`) are directly admissible in row-entry label position is therefore ambiguous; the reference compiler rejects them at parse level, so a conformance answer is needed.
+
+- **§18.2.5** (L24818-24820) `[r3:combo-do-sugar]`
+  "If multiple labeled constructs with the same label occur at the same lexical nesting level, it is a compile-time error" is under-specified: since labels are in scope only within their labeled block (L24795), sibling duplicates can never both be in scope at any use site, so the rule bans code that is resolution-unambiguous; and "same lexical nesting level" is undefined (sibling items of one block? equal nesting depth anywhere in a body? across different label KINDS, e.g. a loop label L and a lambda label L as siblings?). The compiler currently enforces nothing here (pinned duplicate-sibling-labels-error.kp), and an implementer cannot tell the intended extent of the check.
+
+- **§18.3.1, §16.1.1.1** (L24895, L24900, L20022) `[r3:combo-do-sugar]`
+  Splice/var-read boundary wording is inconsistent about desugar-generated lambdas: the splice rule says `!` "does not cross lambda, local-function, quote, or type boundaries" (L24895) while the var current-value rule says reads must not be hoisted across a "user-written lambda" (L24900). A receiver section elaborates to a unary lambda (L20022) that is NOT user-written, and receiver sections are not in the transparent-closure carve-out list (loops/comprehensions/using only). Whether `!` or a var read inside a receiver-section body in a do block is inside a boundary is therefore unstated; the compiler rejects the splice (E_SPLICE_OUTSIDE_DO — pinned as receiver-section-splice-boundary.kp) which is the sane reading, but the spec should say so explicitly and reconcile the user-written qualifier.
+
+- **§18.6.1, §16.2.2, §3.1 (E_VAR_READ_CROSSES_BOUNDARY registry entry, ~L1038)** (docs/Spec.md ~L1038, ~L25495-25505, ~L21192-21196) `[r3:combo-lazy-totality]`
+  The no-read boundary list of §18.6.1 ('cross a user-written lambda, local-function, quote, type, static, or macro boundary') and the registry description of E_VAR_READ_CROSSES_BOUNDARY (~L1038: 'lambda, local-function, quote, type, or elaboration-time boundary') both omit suspension bodies, and §16.2.2 designates thunk/lazy as closure boundaries only 'for return, break, and continue resolution'. So no spec text says a var current-value occurrence may not be captured under `thunk expr`/`lazy expr` — yet it must be rejected (the generated monadic read cannot run inside a pure suspension body, and hoisting it out would create the implicit snapshot §18.6.1 forbids). The implementation correctly rejects with E_VAR_READ_CROSSES_BOUNDARY whose message adds 'delayed-evaluation boundary' beyond both spec lists. The §18.6.1/§3.1 boundary enumerations should name suspension (delayed-evaluation) bodies explicitly.
+
+- **§18.9.3, §12.4.1** (L26511-26544, L16040-16051) `[r3:combo-borrows-records]`
+  No explicit admissibility clause states that a `~` marked place must be rooted in an owned/consumable binding. A borrowed binding is a stable place (an alias per §12.4.1), so it syntactically satisfies "a place expression admitted by §12.4.2"; only the general §12.4 consequence (cannot consume a path overlapping a live borrow — here the marked binding's own borrow) forbids it, and the write-back target for an alias is only pinned down indirectly via "carries the same underlying root and path". The implemented compiler took the other reading (fresh root, alias-local write-back), producing a linearity hole. An explicit rule ('a marked place must not be rooted in a borrowed binding / the write-back target is the alias's underlying root path') would remove the ambiguity.
+
+- **§19.2** (L26840-26871 (§19.2 syntax + rules)) `[r3:combo-effects-resources]`
+  Whether `except` clauses may be absent (the finally-only form `try expr finally -> fin`) is never stated: the syntax block shows except clauses present, `finally` is explicitly '(optional)', and the coverage rules ('except clauses are checked for ordinary exhaustiveness exactly as an ordinary match over E') read literally make a zero-except try over a non-Void error type non-exhaustive. Yet the finally-only form is the natural surface for pure finalization, is what rule 5's elaboration produces as its inner residue, and the implementation accepts it (for IO). The spec should say explicitly that except clauses are optional and that the finally-only form requires only MonadFinally m (consistent with §18.8.3's 'When MonadError m is not in scope, finally simply sequences the finalizer').
+
+- **§20.1, §12.2.2, §12.2.6, §13.2.1** (L27018-L27042 (§20.1), L15411-L15423 (§12.2.6), L15050-L15103 (§12.2.2)) `[r3:combo-queries-linearity]`
+  Collection literals (§20.1) have no specified elaboration or element-quantity demand. If [e] elaborates to cons applications, §12.2.2 QuantitySatisfies with List's unannotated (hence omega, §13.2.1 defaulting) constructor fields must reject linear elements — but §12.2.6 separately allows discharge by 'transferring the value to a ... constructor field ... that preserves the ownership obligation' without saying which built-in container fields preserve it. Records get explicit obligation-preserving treatment (§13.2.1/§16523 whole-record linearity), but nothing is said for list/set/map literals, whose built-in IntoQuery instances (§20.10.2) hand items back at omega. The compiler exploits the silence: list literals accept linear elements, erasing the obligation (dup + drop demonstrated).
+
+- **§28.2** (L34905-35038 (required-instance lists) vs L33485 (Result listed as a standard container)) `[r3:dx-prelude-ergonomics]`
+  The required-instance lists mandate Functor/Applicative/Monad for IO e, STM, and Eff r, and container instances for Option, List, and Array, but require NO instances whatsoever for Result — not even Functor/Applicative/Monad (Result e) — although Result is the standard error container, try/except and do-notation over Result are pervasive, and the reference prelude ships Applicative/Monad (Result e). Portable code cannot rely on pure/>>=/map over Result. Either the omission is intentional (worth an explicit statement) or the instance list is incomplete.
+
+- **§28.2.3** (L35438-35439) `[r3:dx-runtime]`
+  "For exact signed integer division, the implementation MUST document the quotient/remainder convention and use it consistently in the EuclideanSemiring instance" — but neither Spec.md nor anything under docs/ states which convention the reference implementation uses. The actual behavior (truncated quot/rem: quotient toward zero, remainder takes the dividend's sign; verified in all four sign quadrants with the Euclidean identity holding) exists only implicitly in test expectations. The MUST-document requirement is currently unmet; the convention should be named normatively (or explicitly delegated with a documented location).
+
+- **§T.5.4** (L52359) `[r3:dx-runtime]`
+  Appendix T defines `assertExitCode n` ("compares the process or task exit code observed by the harness") but the spec nowhere specifies what exit code an uncaught run-task failure (uncaught expected error, defect, or runtime failure) produces, nor any program-level exit-status contract for success. The reference implementation uses 0 on success and 1 on uncaught failure (pinned in uncaught-error-exit-code-run.kp); portable tests using assertExitCode on failing programs have no normative basis for the expected value.

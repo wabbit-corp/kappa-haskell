@@ -1,3 +1,7 @@
+-- REVISED for Spec 5.5.2 per-role operator identity: prefix/postfix
+-- operator definitions now carry the role keyword (let prefix (op) ...);
+-- a plain definition declares the infix-role operator. Moved from the
+-- gated tree until the compiler implements role markers.
 --! mode run
 --! assertNoErrors
 --! assertStdout "6\n6\n7\n"
@@ -9,8 +13,8 @@
 --     (not a left operator section), per §5.5.1.1;
 --   * a chain of trailing postfix ops `5 ? ?` applies them outward.
 postfix 90 (?)
-(?) : Int -> Int
-let (?) x = addInt x 1
+postfix (?) : Int -> Int
+let postfix (?) x = addInt x 1
 
 bareUse : Int
 let bareUse = 5 ?
@@ -26,3 +30,4 @@ let main = do
     printlnString (showInt bareUse)
     printlnString (showInt sectionUse)
     printlnString (showInt chained)
+-- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)

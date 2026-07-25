@@ -88,3 +88,11 @@ recovery quality, context-sensitive ']>' lexing, soft-keyword declaration
 heads, and the Eq eqSound/eqComplete member gap were promoted (Spec SS6.1.3,
 SS14.3.2, SS6.1.4, SS3.1.14A, SS5.5.1, SS5.2; eq-eqsound needed no spec
 change) and moved to ../spec-coverage/.
+
+2026-07-24 revision: the prefix-minus promotion was redesigned per review
+into full per-role operator identity (Spec SS5.5.1 occurrence-role
+classification by adjacency, SS5.5.2 role-marked definitions + per-role
+fixity/export, SS5.5.3 role gating + E_OPERATOR_ROLE_UNBOUND, SS7.1.1 role
+selectors, SS8.3.1 import selectors, SS6.1.4 rewrite; '--' excluded from
+operator tokens). Six formerly green conformance fixity tests were revised
+to role-marked syntax and staged pending implementation.

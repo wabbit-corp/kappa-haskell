@@ -1,3 +1,7 @@
+-- REVISED for Spec 5.5.2 per-role operator identity: prefix/postfix
+-- operator definitions now carry the role keyword (let prefix (op) ...);
+-- a plain definition declares the infix-role operator. Moved from the
+-- gated tree until the compiler implements role markers.
 --! mode run
 --! assertNoErrors
 --! assertStdout "42\n7\n6\n"
@@ -18,8 +22,8 @@ viaName : Int
 let viaName = (<%>) 20 22
 
 postfix 90 (?)
-(?) : Int -> Int
-let (?) x = addInt x 1
+postfix (?) : Int -> Int
+let postfix (?) x = addInt x 1
 
 elvis : Int
 let elvis = None ?: 7
@@ -32,5 +36,4 @@ let main = do
     println viaName
     println elvis
     println combined
-
--- STATUS(a51e1bf): PASS
+-- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)

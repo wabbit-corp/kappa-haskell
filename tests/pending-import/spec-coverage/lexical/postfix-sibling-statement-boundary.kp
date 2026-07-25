@@ -1,0 +1,17 @@
+-- REVISED for Spec 5.5.2 per-role operator identity: prefix/postfix
+-- operator definitions now carry the role keyword (let prefix (op) ...);
+-- a plain definition declares the infix-role operator. Moved from the
+-- gated tree until the compiler implements role markers.
+--! assertNoErrors
+
+postfix 90 (?)
+
+postfix (?) : Int -> Int
+let postfix (?) x = addInt x 1
+
+main : UIO Unit
+let main = do
+    let a = 5 ?
+    let b = 6
+    pure ()
+-- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)

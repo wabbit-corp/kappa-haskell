@@ -1,0 +1,17 @@
+-- Spec 5.5.1 + 5.5.3: tight-left/non-tight-right (a- b) is a POSTFIX
+-- occurrence; with no postfix (-) fixity in scope it is rejected with
+-- E_OPERATOR_ROLE_UNBOUND, and the rank-1 machine-applicable fix is the
+-- spacing repair to the bound infix role (a - b). Silently reading it as
+-- subtraction is non-conforming.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticMatch postfix|role|spacing
+
+module main
+
+a : Int
+let a = 5
+
+r : Int
+let r = a- 2
+-- STATUS(a0497523): FAIL — a- b silently reads as subtraction (0 errors); Spec 5.5.1/5.5.3 now classify a postfix occurrence and require E_OPERATOR_ROLE_UNBOUND + spacing fix-it

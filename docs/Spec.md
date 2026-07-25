@@ -863,6 +863,7 @@ E_SPLICE_CROSSES_BOUNDARY
 E_SPLICE_IN_COMPREHENSION
 W_DO_ITEM_UNREACHABLE
 W_FLOAT_LITERAL_EXTREME_ROUNDING
+E_OPERATOR_ROLE_UNBOUND
 
 E_MISSING_EXPLICIT_SIGNATURE
 I_INFERRED_SIGNATURE_AVAILABLE
@@ -1062,6 +1063,9 @@ Meanings:
   abrupt-control item (§18.2.2).
 * `W_FLOAT_LITERAL_EXTREME_ROUNDING` is emitted once per numeric literal at `Double` whose correctly rounded value
   overflows to an infinity or totally underflows to zero from a nonzero mathematical value (§6.1.3).
+* `E_OPERATOR_ROLE_UNBOUND` is emitted when an operator occurrence's lexically classified role (§5.5.1) has no
+  matching fixity in scope (§5.5.3); when respacing would classify a bound role, the spacing repair MUST be the
+  first-ranked machine-applicable fix.
 * `E_MISSING_EXPLICIT_SIGNATURE` is emitted when a declaration requires an explicit signature and none is available.
 * `I_INFERRED_SIGNATURE_AVAILABLE` MAY be emitted as an informational diagnostic carrying an inferred signature that
   tooling may insert.
@@ -5661,10 +5665,13 @@ In these desugarings, `__x` denotes a fresh binder not equal to any user-written
 
 Exception for prefixes and suffixes:
 
-* `(op e)` is parsed as unary prefix operator application if a matching `prefix` fixity for `op` is in scope at that
-  occurrence; otherwise, if a matching infix fixity is in scope, it is a right section.
-* `(e op)` is parsed as unary postfix operator application if a matching `postfix` fixity for `op` is in scope at that
-  occurrence; otherwise, if a matching infix fixity is in scope, it is a left section.
+* In `(op e)` the operator sits at expression start, so under §5.5.1 occurrence-role classification it is a prefix
+  occurrence: it is unary prefix application when a matching `prefix` fixity for `op` is in scope; otherwise, if a
+  matching infix fixity is in scope, the form falls back to a right section. Consequently an operator with a prefix
+  binding in scope has no right-section spelling (write an explicit lambda instead).
+* `(e op)` distinguishes by adjacency, consistent with §5.5.1: with the operator tight against `e` (`(e-)`), it is a
+  postfix occurrence and parses as unary postfix application; with whitespace (`(e -)`, the conventional section
+  spelling), it is a left section when a matching infix fixity is in scope.
 
 Precedence rule for section disambiguation:
 
@@ -5700,6 +5707,30 @@ Token recognition uses longest-match-first.
   list-literal application, not a stray effect-row closer.
 * In particular, `?.` is recognized before `?` plus `.`, `?:` is recognized before `?` plus `:`, and a standalone `?`
   remains available as an ordinary operator token (for example, a user-defined postfix operator per §5.5.2).
+* An operator token MUST NOT contain two consecutive `-` characters: `--` always begins a line comment, and spellings
+  such as `<--` or `-->` are not operator tokens. Comment recognition takes precedence over operator tokenization.
+
+Occurrence-role classification:
+
+Every occurrence of an operator token in expression or type syntax is classified into a role — `prefix`, `infix`, or
+`postfix` — before name resolution, using only its grammatical position and whitespace adjacency. Reserved punctuation
+tokens (`->`, `=>`, `<[`, `]>`, `?.`, `?:`, ...) are not subject to this classification. A token is *tight* on a side
+when no whitespace or comment separates it from the adjacent token on that side.
+
+* An occurrence with no possible left operand — at the start of an expression, after an opening delimiter, after
+  another operator, or after a layout or clause boundary — is a **prefix** occurrence. (Inside section parentheses,
+  §5.5.1.1's fallback to a right section applies when no prefix fixity is in scope.)
+* After a possible left operand:
+  * tight on both sides (`a-b`) or non-tight on both sides (`a - b`): an **infix** occurrence;
+  * non-tight left, tight right (`a -b`): a **prefix** occurrence — the operator applies to the right operand and the
+    result is an ordinary juxtaposition argument, so `a -b` parses as `a (-b)`;
+  * tight left, non-tight right (`a- b`, or `a-` before a closing delimiter or line end): a **postfix** occurrence —
+    the operator applies to the left operand.
+
+Classification is deterministic and independent of what is in scope; whether the classified role can actually be used
+at that occurrence is decided by fixity gating (§5.5.3). This makes the conventional spellings unambiguous for every
+operator, not only `-`: `a - b` is subtraction, `-b` and `a -b` are negation, and a stray asymmetric spacing such as
+`a- b` is reported against the postfix role with a spacing repair rather than silently guessed.
 
 Unicode operator name keys:
 
@@ -5742,10 +5773,21 @@ Rules:
 
 * A fixity declaration binds a precedence level (an integer; recommended range `0..100`), and a kind (infix, infix left,
   infix right, prefix, postfix) to one operator token.
+* Operator identity is per role: the infix, prefix, and postfix operators spelled `op` are three distinct declaration
+  targets that may coexist in one scope with independent fixities, definitions, and export status. The three infix
+  kinds (plain, left, right) share the single infix role.
+* A term signature or definition for a prefix or postfix operator carries the role keyword before the operator name:
+  `prefix (-) : Token -> Int` and `let prefix (-) t = 99` declare and define the prefix operator `(-)`. A signature or
+  definition written without a role keyword declares the infix-role operator. The role keyword on the definition MUST
+  match the one on the signature.
 * Fixities are **block-scoped** and apply from the point of declaration onward.
-* A top-level fixity declaration for operator `op` is exported iff the name `op` is exported under §8.5. The exported
-  fixity for `op` is the fixity that is in scope at the end of the module, i.e. the last top-level fixity declaration
-  for `op`.
+* A top-level fixity declaration for operator `op` is exported iff the name `op` (in the corresponding role) is
+  exported under §8.5. The exported fixity for `op` at each role is the fixity for that role in scope at the end of the
+  module, i.e. the last top-level fixity declaration for that operator and role. Prefix and infix `(-)` are therefore
+  independently exportable and importable.
+* Two imported fixity declarations for the same operator and same role that disagree in kind or precedence are an
+  imported binding collision under §8.3.1A: the operator is usable in that role only after a local fixity declaration
+  or a disambiguating selective import.
 * Exported fixity declarations are imported only together with the corresponding operator name. An unqualified fixity
   enters scope only if that operator itself is imported unqualified. Merely referencing a module interface, or importing
   unrelated names from that module, does not bring other unqualified operator fixities into scope. Imported fixities
@@ -5761,13 +5803,20 @@ Rules:
 <!-- lexical.operator_identifiers_fixity.infix_gating -->
 #### 5.5.3 Infix gating
 
-An operator token may only be used in an operator position if a matching fixity is in scope at that source location:
+An operator occurrence's role is determined lexically by §5.5.1 occurrence-role classification; gating then requires a
+matching fixity for that classified role in scope at the source location:
 
-* infix position requires an `infix...` fixity in scope
-* prefix position requires a `prefix` fixity in scope
-* postfix position requires a `postfix` fixity in scope
+* an infix occurrence requires an `infix...` fixity in scope
+* a prefix occurrence requires a `prefix` fixity in scope
+* a postfix occurrence requires a `postfix` fixity in scope
 * operator sections `(op e)` and `(e op)` require a matching infix fixity in scope, except where §5.5.1.1 specifies that
   the form is taken instead as unary prefix or postfix application
+
+If the classified role has no matching fixity in scope, the occurrence is rejected with `E_OPERATOR_ROLE_UNBOUND`
+naming the operator and the classified role. When a different whitespace adjacency would classify a role that IS bound
+in scope, the diagnostic MUST attach the corresponding spacing repair as a machine-applicable fix ranked first under
+§3.1.7 — for example, `a- b` with no postfix `(-)` in scope offers inserting the space (`a - b`, infix), and `a -b`
+with no prefix `(-)` in scope offers evening the spacing.
 
 The reserved tokens `?.` and `?:` are always parsed with their built-in precedence and associativity (tightest
 left-associative for `?.`; precedence `2`, right-associative for `?:`), even if a user fixity declaration for the bare
@@ -5879,13 +5928,17 @@ precision loss from rounding to the nearest representable value is never flagged
 
 `-` is a **unary prefix operator**, not part of the literal.
 
-The prefix operator `(-)` is resolved by ordinary operator name resolution and fixity lookup (§5.5.2, §5.5.3, §7.1).
-The prelude declares the prefix `(-)` binding as `negate`; a local or imported prefix `(-)` binding in scope shadows
-it exactly like any other scoped operator binding. `-e` applies whichever prefix `(-)` is in scope at the use site; it
-MUST NOT be hard-wired to the prelude `negate` operation.
+Minus is an ordinary operator with two per-role identities (§5.5.2): the infix `(-)` (subtraction) and the prefix
+`(-)`. The prelude declares both, with the prefix role defined as `negate`. An occurrence of `-` is assigned its role
+lexically by §5.5.1 occurrence-role classification, and each role resolves through ordinary operator name and fixity
+lookup (§5.5.3, §7.1) — neither role is hard-wired; a scoped `prefix (-)` definition shadows the prelude's prefix
+binding without disturbing subtraction, and vice versa.
 
-* `-123` elaborates as `(-) 123` — under the prelude binding, `negate 123`.
-* `-3.14e2` is `(-) (3.14e2)`.
+* `-123` — expression start, prefix occurrence — elaborates as `(prefix -) 123`; under the prelude binding,
+  `negate 123`.
+* `a - b` and `a-b` are infix occurrences: subtraction.
+* `a -b` is a prefix occurrence juxtaposed as an argument: `a (-b)`.
+* `a - -b` subtracts a negation: after an infix operator the second `-` sits at expression start.
 
 Operator precedence rules determine association (see expressions).
 
@@ -6873,7 +6926,13 @@ Grammar:
 ```text
 kindQualifiedExpr      ::= kindQualifiedSelector nameRef
 kindQualifiedSelector  ::= 'type' | 'trait' | 'effectLabel' | 'module'
+                         | 'infix' | 'prefix' | 'postfix'
 ```
+
+The three operator-role selectors apply only to parenthesized operator names: `(prefix -)` denotes the prefix-role
+operator `(-)` as a term value, and `(infix -)` the infix-role one. A bare parenthesized operator `(-)` denotes the
+infix-role binding when one is in scope, otherwise the unique bound role; when both non-infix roles exist and no infix
+binding does, the bare form is ambiguous and requires a role selector.
 
 This grammar is active only in term-expression positions where the leading keyword is not syntactically expected to
 begin a declaration or another reserved form.
@@ -7422,6 +7481,7 @@ importSpec  ::= moduleRef
               | moduleRef '.*' 'except' '(' exceptItem (',' exceptItem)* ')'
 importItem  ::= { 'unhide' | 'clarify' }* [kindSelector] nameRef [ctorAll] [itemAlias]
 kindSelector ::= 'term' | 'type' | 'trait' | 'ctor' | 'effectLabel'
+               | 'infix' | 'prefix' | 'postfix'
 ctorAll     ::= '(..)'
 itemAlias   ::= 'as' ident
 exceptItem  ::= [kindSelector] nameRef
@@ -7512,6 +7572,11 @@ Kappa resolves names through lexical binding groups (§7), not through
 separate shadowing namespaces. The selectors `term`, `type`, `trait`,
 and `ctor` on import and export items are therefore kind selectors.
 
+The operator-role selectors `infix`, `prefix`, and `postfix` apply to parenthesized operator names and select the
+per-role operator declarations of §5.5.2 together with their fixities: `import m.(prefix (-))` imports only the
+prefix-role operator and its prefix fixity. An operator item without a role selector imports every exported role of
+that spelling, each with its own fixity.
+
 ```kappa
 import std.list.(type List)
 import std.list.(type List(..))
@@ -7525,6 +7590,7 @@ Grammar:
 ```text
 importItem   ::= { 'unhide' | 'clarify' }* [kindSelector] nameRef [ctorAll] [itemAlias]
 kindSelector ::= 'term' | 'type' | 'trait' | 'ctor' | 'effectLabel'
+               | 'infix' | 'prefix' | 'postfix'
 ctorAll      ::= '(..)'
 itemAlias    ::= 'as' ident
 exceptItem   ::= [kindSelector] nameRef
@@ -7627,6 +7693,7 @@ An import item has the shape:
 ```
 importItem ::= { 'unhide' | 'clarify' }* [kindSelector] nameRef [ctorAll] [itemAlias]
 kindSelector ::= 'term' | 'type' | 'trait' | 'ctor' | 'effectLabel'
+               | 'infix' | 'prefix' | 'postfix'
 ctorAll ::= '(..)'
 itemAlias ::= 'as' ident
 ```

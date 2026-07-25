@@ -1,0 +1,16 @@
+-- Spec 7.1.1: role selectors on parenthesized operator names. (infix -)
+-- denotes the subtraction value, (prefix -) the negate-backed prefix value;
+-- both usable as first-class functions.
+--! mode check
+--! assertNoErrors
+--! assertEval r1 7
+--! assertEval r2 (negInt 3)
+
+module main
+
+r1 : Int
+let r1 = foldl (infix -) 10 [1, 2]
+
+r2 : Int
+let r2 = (prefix -) 3
+-- STATUS(a0497523): FAIL — (infix -)/(prefix -) role selectors not parsed; (prefix -) misreads as a section

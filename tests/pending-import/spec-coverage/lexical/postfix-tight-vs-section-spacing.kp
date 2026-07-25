@@ -1,0 +1,20 @@
+-- Spec 5.5.1 + 5.5.1.1: with a role-marked postfix (?) in scope, the tight
+-- form (n?) is postfix application while the spaced form (n ?) would be a
+-- left section (requiring an infix fixity). Pins the adjacency split.
+--! mode check
+--! assertNoErrors
+--! assertEval r 6
+
+module main
+
+postfix 90 (?)
+
+postfix (?) : Int -> Int
+let postfix (?) x = addInt x 1
+
+n : Int
+let n = 5
+
+r : Int
+let r = (n?)
+-- STATUS(a0497523): FAIL — role-marked postfix definition not parsed (E_RECOVERY_DECLARATION_SKIPPED at the postfix signature)

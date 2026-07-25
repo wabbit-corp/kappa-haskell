@@ -1,0 +1,28 @@
+-- Spec 5.5.1 (occurrence-role classification) + 6.1.4: the infix-side
+-- adjacency forms of minus and the bare operator value. Loose (a - b) and
+-- tight (a-b) infix occurrences are subtraction; after an infix operator
+-- the next minus is at expression start, so 5 - -2 subtracts a negation;
+-- bare (-) denotes the infix-role value.
+--! mode check
+--! assertNoErrors
+--! assertEval r1 3
+--! assertEval r2 3
+--! assertEval r3 7
+--! assertEval r4 7
+
+module main
+
+a : Int
+let a = 5
+
+r1 : Int
+let r1 = a - 2
+
+r2 : Int
+let r2 = a-2
+
+r3 : Int
+let r3 = 5 - -2
+
+r4 : Int
+let r4 = foldl (-) 10 [1, 2]

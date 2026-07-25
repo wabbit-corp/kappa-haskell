@@ -1,0 +1,12 @@
+-- Spec 5.5.1: an operator token must not contain two consecutive '-'
+-- characters; '--' always begins a line comment, so '5 <--x' lexes as
+-- '5 <' followed by a comment (ONE missing-operand error), never as an
+-- application of a three-character operator '<--'.
+--! mode check
+--! assertErrorCount 1
+
+module main
+
+bad : Bool
+let bad = 5 <--x
+-- STATUS(a0497523): FAIL — lexer still forms a three-character operator <-- (2 errors incl. E_OPERATOR_NO_FIXITY naming it); Spec 5.5.1 now forbids -- inside operator tokens

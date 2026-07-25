@@ -1,0 +1,15 @@
+-- Spec 5.5.1: after a possible left operand, non-tight-left + tight-right
+-- classifies a PREFIX occurrence juxtaposed as an argument: f -3 parses as
+-- f (-3), not as subtraction of 3 from f.
+--! mode check
+--! assertNoErrors
+--! assertEval r (negInt 6)
+
+module main
+
+f : Int -> Int
+let f x = mulInt x 2
+
+r : Int
+let r = f -3
+-- STATUS(a0497523): FAIL — f -3 still parses as subtraction (type mismatch); Spec 5.5.1 adjacency now classifies a juxtaposed prefix occurrence

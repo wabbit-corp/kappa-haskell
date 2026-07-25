@@ -1,3 +1,7 @@
+-- REVISED for Spec 5.5.2 per-role operator identity: prefix/postfix
+-- operator definitions now carry the role keyword (let prefix (op) ...);
+-- a plain definition declares the infix-role operator. Moved from the
+-- gated tree until the compiler implements role markers.
 --! mode check
 --! assertNoErrors
 --! assertDeclKinds fixity, signature, let, fixity, signature, let, fixity, signature, let, signature, let, signature, let, signature, let
@@ -14,16 +18,16 @@
 module main
 
 prefix 80 (%%)
-(%%) : Int -> Int
-let (%%) x = addInt x 100
+prefix (%%) : Int -> Int
+let prefix (%%) x = addInt x 100
 
 prefix 50 (%%%)
-(%%%) : Int -> Int
-let (%%%) x = addInt x 100
+prefix (%%%) : Int -> Int
+let prefix (%%%) x = addInt x 100
 
 postfix 90 (??)
-(??) : Int -> Int
-let (??) x = addInt x 3
+postfix (??) : Int -> Int
+let postfix (??) x = addInt x 3
 
 -- prefix 80 > 70: (%% 2) * 3 = 102 * 3
 tight : Int
@@ -36,5 +40,4 @@ let loose = %%% 2 * 3
 -- postfix 90 > 60: 1 + (2 ??) = 6
 post : Int
 let post = 1 + 2 ??
-
--- STATUS(a51e1bf): PASS
+-- STATUS(a0497523): FAIL — REVISED to role-marked definitions; not parsed yet (was green under superseded syntax)

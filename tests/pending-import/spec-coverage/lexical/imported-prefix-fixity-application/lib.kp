@@ -1,5 +1,6 @@
 module lib
 
 prefix 80 (~~)
-(~~) : Int -> Int
-let (~~) x = subInt 0 x
+prefix (~~) : Int -> Int
+let prefix (~~) x = subInt 0 x
+-- STATUS(a0497523): FAIL — suite REVISED to role-marked prefix definition; not parsed yet
