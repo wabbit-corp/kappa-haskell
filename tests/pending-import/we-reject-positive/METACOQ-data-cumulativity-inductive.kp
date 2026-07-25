@@ -25,7 +25,7 @@ useLarger : Type1
 let useLarger = Box Nat
 
 -- POSITIVE: a universe-polymorphic container.
-data UBox (u : Universe) (a : Type u) : Type u =
+data UBox (u : TypeLevel) (a : Type u) : Type u =
     MkUBox a
 
 useUBoxAtNat : UBox _ Nat

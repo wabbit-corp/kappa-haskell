@@ -3,7 +3,7 @@
 --       types.universes.borrow_lifetimes_escape_prevention
 --
 -- Compile-time bindings live in the static-object position. Their types must
--- be compile-time types (Type, Universe, Quantity, Region, RecRow, etc.).
+-- be compile-time types (Type, TypeLevel, Quantity, Region, RecRow, etc.).
 -- A compile-time term must NOT mention a non-static rigid region: rigid
 -- regions are scoped to a runtime block, and the static position has no
 -- access to such regions.

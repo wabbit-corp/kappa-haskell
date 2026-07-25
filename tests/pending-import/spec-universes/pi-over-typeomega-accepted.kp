@@ -1,6 +1,0 @@
--- §11.1.2.8: binding an ω-classified variable lands one index higher.
---! mode check
---! assertNoErrors
-
-type OmegaPi : Type(ω+1) =
-    (X : Typeω) -> X -> X

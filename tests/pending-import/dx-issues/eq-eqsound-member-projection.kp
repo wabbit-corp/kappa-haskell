@@ -1,0 +1,36 @@
+-- SPEC-ANCHORED (not just a DX proposal): §14.1 declares
+--     trait Eq (parametric 0 a : Type) =
+--         (==) : ... -> Bool
+--         eqSound    : ... ((x == y) = True -> x = y)
+--         eqComplete : ... (x = y -> (x == y) = True)
+--         eqIsSet    : IsSet a
+-- and §14.1.2 makes eqSound the sole sound bridge from boolean equality
+-- evidence to propositional equality ("If (x == y) = True, then Eq.eqSound
+-- yields x = y"). §16.1.8/§16.3.3 build equality reflection on top of it.
+-- Expected-good behavior: projecting the proof members from Eq evidence
+-- (`d.eqSound x y p`, the §14.2 member-projection mechanism) resolves for
+-- the prelude instances and has the declared member type.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the implementation's prelude Eq trait
+-- declares ONLY (==), so even the MANUAL projection is unreachable:
+-- error[E_UNRESOLVED_MEMBER] "no member 'eqSound' on this receiver (§7.3),
+-- receiver type: Eq Nat" (same for eqComplete). This is distinct from the
+-- automatic wirings (transport proof source, derive synthesis, implicit
+-- reflection) pinned elsewhere: with the member absent no user code can
+-- recover x = y from (x == y) = True for any prelude type. A user-defined
+-- proof-carrying trait works (see tests/conformance/spec-coverage/
+-- traits-instances/equiv-no-reflection.kp), so the gap is purely the
+-- prelude trait's shape.
+--! mode check
+--! assertNoErrors
+module main
+
+natEqSound : forall (x : Nat) (y : Nat). (@d : Eq Nat) -> (@0 p : (x == y) = True) -> x = y
+let natEqSound x y d p = d.eqSound x y p
+
+natEqComplete : forall (x : Nat) (y : Nat). (@d : Eq Nat) -> (@0 p : x = y) -> (x == y) = True
+let natEqComplete x y d p = d.eqComplete x y p
+
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2: E_UNRESOLVED_MEMBER
+-- 'no member eqSound/eqComplete on this receiver (§7.3), receiver type:
+-- Eq Nat'; the shipped prelude Eq carries only (==).

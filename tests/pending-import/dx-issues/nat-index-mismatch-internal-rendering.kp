@@ -1,0 +1,43 @@
+-- DX EXPECTATION (diagnostic rendering), anchored on the §3.1.8 renderer
+-- SHOULDs ("render expected and actual types using a common local naming
+-- environment"). When a Nat-index mismatch IS the n+0-vs-n asymmetry, the
+-- diagnostic should spell both sides in user syntax and at one reduction
+-- depth: actual `Vec (n + 0)` vs expected `Vec n`, and for the failed refl
+-- `(n + 0) = (n + 0)` vs `(n + 0) = n`.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the index renders as internal Core.
+--   * cast case:  actual   Vec (+ Nat __inst_Add_71 @1 0)
+--                 expected  Vec @1
+--     — the gensym'd Add instance dictionary and de Bruijn '@1' replace the
+--     user's `n + 0` / `n`.
+--   * refl case:  actual   = Nat (natOfInt (addInt (natToInt @0) 0)) (...)
+--                 expected  = Nat (+ Nat __inst_Add_71 @0 0) @0
+--     — 'actual' is delta-unfolded to the natOfInt/addInt implementation
+--     while 'expected' keeps the surface `+` spine, so one and the same
+--     operation appears in two unrecognizable spellings in one diagnostic.
+-- Companion: unsolved-implicit-proof-rendering.kp pins the identical
+-- '__inst_*' + de Bruijn leak on the kappa.implicit.unsolved path; this is
+-- the kappa.type.mismatch path, the first one every Nat-index user hits.
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/actual Vec (n + 0)
+--! assertDiagnosticPayload error kappa.type.mismatch /payload/expected Vec n
+--! assertDiagnosticMatch (n + 0) = n
+module main
+
+data Vec (n : Nat) : Type =
+    MkVec : Vec n
+
+castPlusZeroR : (0 n : Nat) -> Vec (n + 0) -> Vec n
+let castPlusZeroR n x = x                --!! kappa.type.mismatch
+
+plusZeroRefl : (0 n : Nat) -> (n + 0) = n
+let plusZeroRefl n = refl                --!! kappa.type.mismatch
+
+-- STATUS(a0497523): FAIL — both mismatches render internal Core:
+-- /payload/actual = "Vec (+ Nat __inst_Add_71 @1 0)", /payload/expected =
+-- "Vec @1"; refl actual "= Nat (natOfInt (addInt (natToInt @0) 0)) (...)"
+-- vs expected "= Nat (+ Nat __inst_Add_71 @0 0) @0" (two spellings of the
+-- same index at different reduction depths); no message contains
+-- "(n + 0) = n".

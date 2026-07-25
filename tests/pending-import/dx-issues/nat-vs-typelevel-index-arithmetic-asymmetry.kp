@@ -1,0 +1,61 @@
+-- DX EXPECTATION (documented twin pair): the TypeLevel/Nat index-arithmetic
+-- asymmetry is real, spec-conformant, and stated nowhere user-facing.
+--   * TypeLevel indices are solver-backed: §11.1.2.4A normalization is
+--     associative, commutative, zero-eliminating, constant-folding, with
+--     decidable rigid entailment — so Type (u + 0), Type (0 + u), and
+--     Type (u + v) ~ Type (v + u) hold definitionally (Level half below).
+--   * Prelude-Nat index arithmetic is primitive with NO solver (§31.1.3),
+--     so the identical shapes at a Nat data index are kappa.type.mismatch —
+--     correctly so, since no spec text promises Nat definitional identities.
+-- This file documents BOTH behaviors side by side. The asserted DX ask:
+-- the Nat-side mismatch should tell the user the identity needs a
+-- propositional proof plus subst (§11.4.1) — the transport route that DOES
+-- typecheck — instead of a bare mismatch (assertDiagnosticMatch below).
+-- The only written trace of the asymmetry today is a comment in
+-- tests/pending-import/spec-coverage/adts/ATS-datasort-sort-index.kp.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): the Nat half produces the three
+-- expected kappa.type.mismatch (rendered as internal Core, pinned
+-- separately in nat-index-mismatch-internal-rendering.kp) with no hint;
+-- the Level half cannot even be stated: `import std.typelevel` fails
+-- E_MODULE_NAME_UNRESOLVED (§8.2) and 'TypeLevel' is not in scope, so the
+-- solver side of the contrast is unreachable from source on this build.
+--! mode check
+--! assertErrorCount 3
+--! assertDiagnosticFamily error kappa.type.mismatch
+--! assertDiagnosticMatch propositional proof
+module main
+
+import std.typelevel.(type TypeLevel)
+
+-- Level half: all three identities collapse definitionally (§11.1.2.4A).
+idAt : (u : TypeLevel) -> (A : Type u) -> A -> A
+let idAt u A x = x
+
+levelPlusZeroR : (u : TypeLevel) -> (A : Type (u + 0)) -> A -> A
+let levelPlusZeroR u A x = idAt u A x
+
+levelPlusZeroL : (u : TypeLevel) -> (A : Type (0 + u)) -> A -> A
+let levelPlusZeroL u A x = idAt u A x
+
+levelComm : (u : TypeLevel) -> (v : TypeLevel) -> (A : Type (u + v)) -> A -> A
+let levelComm u v A x = idAt (v + u) A x
+
+-- Nat half: the same three shapes at a Nat data index are mismatches.
+data Vec (n : Nat) : Type =
+    MkVec : Vec n
+
+castPlusZeroR : (0 n : Nat) -> Vec (n + 0) -> Vec n
+let castPlusZeroR n x = x                --!! kappa.type.mismatch
+
+castPlusZeroL : (0 n : Nat) -> Vec (0 + n) -> Vec n
+let castPlusZeroL n x = x                --!! kappa.type.mismatch
+
+castComm : (0 n : Nat) -> (0 m : Nat) -> Vec (n + m) -> Vec (m + n)
+let castComm n m x = x                   --!! kappa.type.mismatch
+
+-- STATUS(a0497523): FAIL — 13 errors instead of 3: the Level half dies in
+-- name resolution (E_MODULE_NAME_UNRESOLVED 'std.typelevel', 'TypeLevel'
+-- E_NAME_UNRESOLVED x5, collateral E_APPLICATION_NONCALLABLE x4), the Nat
+-- half produces the three asserted kappa.type.mismatch, and no diagnostic
+-- mentions the propositional-proof/subst route.

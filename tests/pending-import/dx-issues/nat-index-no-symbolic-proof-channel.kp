@@ -1,0 +1,46 @@
+-- DX EXPECTATION (capability-level), flagship for the prelude-Nat-index
+-- dead end. A user who indexes data by prelude `Nat` must have SOME channel
+-- to close the identity `(0 : Nat) + n = n`:
+--   * definitional — an arithmetic solver, as TypeLevel indices enjoy
+--     (§11.1.2.4A: associative/commutative/zero-eliminating normalization), or
+--   * propositional — the §28.2.2 AdditiveMonoid law members
+--     (addLeftIdentity/addRightIdentity), transported by subst (§11.4.1), or
+--   * structural — an induction principle/eliminator for Nat.
+-- This file pins the law-member channel because the spec already names those
+-- members; the expectation is that ANY channel exists, not this specific one
+-- (mirroring tests/pending-import/spec-coverage/adts/ATS-datasort-sort-index.kp:
+-- "Symbolic index identities (e.g. `0 + n = n`) are not definitional").
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): every channel is closed at once.
+--   * refl fails: the goal is stuck at `natOfInt (addInt 0 (natToInt n))`
+--     with no `addInt 0 x = x` step (E_TYPE_EQUALITY_MISMATCH; rendering
+--     pinned in nat-index-mismatch-internal-rendering.kp);
+--   * the §28.2.2 law members are absent from the shipped prelude:
+--     addLeftIdentity/addRightIdentity are E_NAME_UNRESOLVED;
+--   * no induction: §28.2's constructor namespace exposes no Nat
+--     constructors, and no natInd/natElim/natRec exists anywhere;
+--   * the Eq-reflection bridge is dead too (§14.1 eqSound missing — see
+--     eq-eqsound-member-projection.kp).
+-- Transport itself works: `subst` with an ASSUMED (n + 0) = n proof
+-- typechecks (motive inferred), so the only missing piece is a proof source.
+-- A dependent-index user must abandon prelude Nat (losing literals, `+`,
+-- and all prelude interop) and roll an inductive Peano type.
+--! mode check
+--! assertNoErrors
+module main
+
+data P (n : Nat) : Type =
+    MkP
+
+-- Identity at the index, via the §28.2.2 law member.
+zeroPlus : forall (n : Nat). ((0 : Nat) + n) = n
+let zeroPlus n = addLeftIdentity n
+
+-- Transport of an index across the mirror-image law member.
+transZR : forall (n : Nat). P (n + 0) -> P n
+let transZR n pn = subst (addRightIdentity n) pn
+
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2: E_NAME_UNRESOLVED
+-- 'addLeftIdentity' and 'addRightIdentity' (the §28.2.2 law members are not
+-- in the shipped prelude); the refl, induction, and eqSound channels are
+-- independently closed, so no proof of (0 + n) = n is constructible at all.

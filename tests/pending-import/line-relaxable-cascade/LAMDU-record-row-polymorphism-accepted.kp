@@ -52,10 +52,10 @@ useSumXY : Nat
 let useSumXY = sumXY p1
 
 -- NEGATIVE: a record missing the required `x` field.
-type NoX = (y : Nat)
+type NoX = (y : Nat,)
 
 noXVal : NoX
-let noXVal = (y = 4)
+let noXVal = (y = 4,)
 
 badGetX : Nat
 let badGetX = getX noXVal    --!! kappa.type.mismatch

@@ -7,7 +7,7 @@
 --! mode check
 
 -- A record type wrapping a function type.
-type Pack = (ff : Type -> Type)
+type Pack = (ff : Type -> Type,)
 
 -- A concrete implementation: ty a = Unit -> a
 ty : Type -> Type

@@ -11,10 +11,10 @@
 module test
 
 -- A record that contains a polymorphic identity function.
-type ContainsId = (id : forall a. a -> a)
+type ContainsId = (id : forall a. a -> a,)
 
 wrapper : ContainsId
-let wrapper = (id = \x -> x)
+let wrapper = (id = \x -> x,)
 
 -- POSITIVE: using the polymorphic `id` field at type `String -> String`.
 -- This requires instantiating `forall a. a -> a` at `String`.

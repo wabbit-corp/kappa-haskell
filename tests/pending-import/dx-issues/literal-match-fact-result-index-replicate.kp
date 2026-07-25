@@ -1,0 +1,57 @@
+-- DX EXPECTATION (§16.4.1, §17.1.2, §31.1.2): in `replicate : (n : Nat) ->
+-- a -> Vec n a` over PRIMITIVE Nat, the fact learned from a literal
+-- pattern should feed definitional equality on the RESULT index: in the
+-- `case 0` branch n = 0 holds, so VNil : Vec 0 a should check against the
+-- goal Vec n a; in the default branch the negated fact (n == 0) = False
+-- should discharge the n - 1 well-definedness obligation and let
+-- VCons _ (replicate (n - 1) _) : Vec ((n - 1) + 1) a meet Vec n a.
+-- Dependent match on a USER-inductive value already does all of this —
+-- the PNat contrast at the bottom of this file typechecks today — so the
+-- gap is specifically the literal-pattern/flow-fact channel (§31.1.2
+-- boolean facts) never reaching branch-local index refinement for
+-- primitive numerics. Until it does, replicate is unwritable over
+-- primitive Nat. (tests/conformance/imported-anon/
+-- SYNQUID-conditional-branch-evidence.kp pins branch evidence only for
+-- non-dependent result types; this file is the dependent-result twin.)
+--
+-- CURRENTLY (a0497523): the 0-branch VNil is rejected
+-- E_TYPE_EQUALITY_MISMATCH "actual: Vec 0 _ / expected: Vec @1 @2", and
+-- the default branch piles on the co-blockers (successor-index mismatch,
+-- unsolved subtraction obligation, unverified termination) — the full
+-- "replicate wall" in one file.
+--! mode check
+--! assertNoErrors
+module main
+
+data Vec (n : Nat) (a : Type) : Type =
+    VNil  : Vec 0 a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (n + 1) a
+
+replicate : forall (@0 a : Type). (n : Nat) -> a -> Vec n a
+let replicate n x =
+    match n
+      case 0 -> VNil
+      case _ -> VCons x (replicate (n - 1) x)
+
+-- Contrast (works today, must keep working): the same shape over a
+-- user-inductive PNat, where each constructor branch refines the index.
+data PNat : Type =
+    Z
+    S (p : PNat)
+
+data PVec (n : PNat) (a : Type) : Type =
+    PNil  : PVec Z a
+    PCons : (head : a) -> (tail : PVec n a) -> PVec (S n) a
+
+preplicate : forall (@0 a : Type). (n : PNat) -> a -> PVec n a
+let preplicate n x =
+    match n
+      case Z -> PNil
+      case S k -> PCons x (preplicate k x)
+-- STATUS(a0497523): FAIL — expected 0 errors, got 3 plus a warning:
+-- E_TYPE_EQUALITY_MISMATCH (actual Vec 0 _ / expected Vec @1 @2) at line 33;
+-- E_TYPE_EQUALITY_MISMATCH (actual
+-- Vec (+ Nat __inst_Add_71 (natOfInt (subInt (natToInt @1) 1)) 1) @2 /
+-- expected Vec @1 @2) at line 34; E_UNSOLVED_IMPLICIT
+-- "= Bool (subDefined Nat __inst_CheckedSub_74 @1 1) True" at line 34;
+-- W_TERMINATION_UNVERIFIED on replicate. The PNat contrast checks clean.

@@ -1,0 +1,35 @@
+-- DX EXPECTATION / SOUNDNESS — §16.3.3, §16.3.3.1, §4.5: `witness`
+-- (prelude: forall (a : Type). (@value : a) -> a) checked against an
+-- expected type inserts an implicit goal whose type is still a
+-- metavariable at insertion time.  That pending goal must be solved
+-- from an in-scope implicit candidate or reported unsolved
+-- (E_UNSOLVED_IMPLICIT) — exactly what the rigid-goal spelling
+-- `witness @Void` already gets.  Today the pending goal is silently
+-- dropped instead: every proposition below is accepted from an EMPTY
+-- context with all unsafe gates off — Void, (=) (1:Nat) (0:Nat),
+-- (=) True False.  This bypasses the entire §4.5
+-- gatedUnsafeIntrinsics architecture (which carefully blocks
+-- __eqProof) and makes every provability question vacuous: any
+-- symbolic identity, true or false, is "provable" via bare `witness`.
+-- Expected: one kappa.implicit.unsolved error at each of the four
+-- sites below.
+--! mode check
+--! assertErrorCount 4
+--! assertDiagnosticFamily error kappa.implicit.unsolved
+
+module main
+
+noWay : Void
+let noWay = witness             --!! kappa.implicit.unsolved
+
+oneIsZero : (=) (1 : Nat) (0 : Nat)
+let oneIsZero = witness         --!! kappa.implicit.unsolved
+
+bogus : (=) True False
+let bogus = witness             --!! kappa.implicit.unsolved
+
+-- control: the rigid-goal spelling is correctly rejected today,
+-- isolating the bug to the pending (metavariable-typed) goal drain
+alsoNoWay : Void
+let alsoNoWay = witness @Void   --!! kappa.implicit.unsolved
+-- STATUS(a0497523): FAIL — 1 of 4 expected errors: only the rigid control `witness @Void` gets E_UNSOLVED_IMPLICIT; the three metavariable-goal witness sites (Void, 1 = 0, True = False) produce no diagnostics at all — every proposition is accepted from an empty context

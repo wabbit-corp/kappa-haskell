@@ -1,0 +1,31 @@
+-- DX EXPECTATION — §9.1, §14.2, §16.3.3: restating the signature's
+-- binder annotations on the `let` line is legal and is how dependent
+-- proofs stay readable.  When an annotation contains a trait-operator
+-- application (`(0 : Nat) + n`), the definition-side re-elaboration
+-- must re-solve (or unify) the operator's instance argument so the
+-- restated annotation converts with the signature.  Today it leaves
+-- the instance as an unsolved metavariable and conversion compares it
+-- RIGIDLY against the signature's solved instance, so coerceA fails
+-- with kappa.type.mismatch
+--   "actual:   = Nat (+ Nat __inst_Add_NN 0 @0) @0
+--    expected: = Nat (+ Nat _ 0 @0) @0"
+-- while the identical program with bare let-side binders (coerceB)
+-- checks clean.  Users writing dependent proofs are forced to drop
+-- precisely the annotations that make such code readable.
+--! mode check
+--! assertNoErrors
+
+module main
+
+data Vec (n : Nat) : Type =
+    MkVec
+
+-- signature binders restated on the let line: rejected today
+coerceA : (n : Nat) -> (@0 pf : (=) ((0 : Nat) + n) n) -> Vec (0 + n) -> Vec n
+let coerceA (n : Nat) (@0 pf : (=) ((0 : Nat) + n) n) (v : Vec (0 + n)) : Vec n =
+    subst pf v
+
+-- control: identical signature and body, bare binders — accepted
+coerceB : (n : Nat) -> (@0 pf : (=) ((0 : Nat) + n) n) -> Vec (0 + n) -> Vec n
+let coerceB n pf v = subst pf v
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1: coerceA's restated pf annotation fails E_TYPE_EQUALITY_MISMATCH "actual: = Nat (+ Nat __inst_Add_71 0 @0) @0 / expected: = Nat (+ Nat _ 0 @0) @0" (the let-side re-elaboration leaves the + instance argument as an unsolved '_' compared rigidly); bare-binder coerceB checks clean

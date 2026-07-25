@@ -1,0 +1,33 @@
+-- DX EXPECTATION / SOUNDNESS — §16.3.3, §16.3.3.1, §4.5, §3.2.3:
+-- run-mode companion to
+-- witness-metavar-goal-accepts-any-proposition.kp.  `bogus` forges
+-- (=) True False out of thin air via `witness` (its implicit goal is
+-- still a metavariable when inserted, and the pending goal is
+-- silently dropped); `subst` then transports () : Unit along the
+-- forged proof through the `discr` family to inhabit Void, and main
+-- scrutinizes that Void value.  Expected: check mode reports the
+-- unsolved implicit at the witness site and the program never runs.
+-- Today the module checks clean and run mode executes: it prints
+-- "start" and then reaches `match toVoid` on a supposed inhabitant of
+-- Void at runtime (the stuck evaluation is printed as output).
+--! mode run
+--! assertDiagnostic error E_UNSOLVED_IMPLICIT
+
+module main
+
+bogus : (=) True False
+let bogus = witness             --!! kappa.implicit.unsolved
+
+discr : Bool -> Type
+let discr b = if b then Unit else Void
+
+toVoid : Void
+let toVoid = subst @Bool @discr bogus ()
+
+main : IO Void Unit
+let main =
+    do
+        println "start"
+        match toVoid
+        case impossible
+-- STATUS(a0497523): FAIL — no diagnostics at all: the module checks clean and run mode executes the program (an assertStdout probe of the same module prints "start" and then the stuck `match toVoid ...` rendering — the forged True = False reaches runtime and Void is scrutinized)

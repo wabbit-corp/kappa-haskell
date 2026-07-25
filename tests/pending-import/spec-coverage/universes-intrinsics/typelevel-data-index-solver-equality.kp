@@ -1,0 +1,56 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_TYPE_EQUALITY_MISMATCH
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+-- §11.1.2.2/§11.1.2.5 with §10.1.3: a TypeLevel value used as an ORDINARY
+-- data-type index (not the index of `Type` itself) receives the same
+-- canonical solver identity as a universe index. Index equality of the
+-- applications of a user-declared data former is therefore decided by the
+-- level solver (mutual Presburger entailment, §11.1.2.5): LBox (u + 0) and
+-- LBox u are the same type in both directions, LBox (u + v) and LBox (v + u)
+-- likewise — while LBox u vs LBox (succ u) is DISPROVED (u < succ u is
+-- entailed, so equality is refuted, §11.1.2.4A).
+module main
+
+data LBox (u : TypeLevel) : Typeω = MkLBox
+
+-- POSITIVE: right additive identity at the index, both cast directions.
+-- The index position is invariant (plain value equality, not cumulativity),
+-- so acceptance requires solver EQUALITY, not just an inequality.
+castAddZeroR : (u : TypeLevel) -> LBox (u + 0) -> LBox u
+let castAddZeroR u b = b
+
+castAddZeroRBack : (u : TypeLevel) -> LBox u -> LBox (u + 0)
+let castAddZeroRBack u b = b
+
+-- POSITIVE: left additive identity at the index.
+castAddZeroL : (u : TypeLevel) -> LBox (0 + u) -> LBox u
+let castAddZeroL u b = b
+
+-- POSITIVE: commutativity at the index, both cast directions.
+castComm : (u : TypeLevel) -> (v : TypeLevel) -> LBox (u + v) -> LBox (v + u)
+let castComm u v b = b
+
+castCommBack : (u : TypeLevel) -> (v : TypeLevel) -> LBox (v + u) -> LBox (u + v)
+let castCommBack u v b = b
+
+-- NEGATIVE: the solver DISPROVES u = succ u, so the identity cast is
+-- rejected as a type mismatch at the body.
+badSucc : (u : TypeLevel) -> LBox u -> LBox (succ u)
+let badSucc u b = b --!! E_TYPE_EQUALITY_MISMATCH
+
+-- NEGATIVE: same refutation through the `succ x = add x 1` presentation
+-- (§11.1.2.2): u + 1 is equally distinguished from u.
+badPlusOne : (u : TypeLevel) -> LBox u -> LBox (u + 1)
+let badPlusOne u b = b --!! E_TYPE_EQUALITY_MISMATCH
+
+-- STATUS(a0497523): FAIL — stale-binary gap: expected 2 errors, got 19
+-- (TypeLevel is E_NAME_UNRESOLVED on the a0497523 build, which predates
+-- first-class levels, plus cascades). CAUTION for the importer: WITHOUT the
+-- assertErrorCount 2 this file PASSES VACUOUSLY on a0497523 — the unrelated
+-- cascade happens to contain E_TYPE_EQUALITY_MISMATCH on the two marked
+-- lines. Keep the count assertion when importing. The negative-half code
+-- (E_TYPE_EQUALITY_MISMATCH / kappa.type.mismatch for a disproved level
+-- index) is a best-guess family from Check.hs unifyWith->solveLevelIdentity;
+-- confirm the exact code on a current-HEAD build before import.

@@ -37,7 +37,7 @@ STATUS.
 ## Spec issues
 
 Contradictions/ambiguities discovered while writing these tests are consolidated in
-`docs/SPEC_ISSUES.md` (§-keyed, with provenance). Several tests there are cited by
+`docs/notes/KNOWN_SPEC_ISSUES.md` (Part III) (§-keyed, with provenance). Several tests there are cited by
 name where an issue made an expectation unpinnable.
 
 ## 2026-07-22 addenda
@@ -66,7 +66,7 @@ name where an issue made an expectation unpinnable.
   linearity accounting, opaque-inhabitance leak, erased-payload matching,
   comprehension linearity laundering) and one evaluator crash (Rational
   literal pattern). Round-3 spec issues are the dated addenda section of
-  `docs/SPEC_ISSUES.md`; the consolidated bug list remains in
+  `docs/notes/KNOWN_SPEC_ISSUES.md` (Part III); the consolidated bug list remains in
   `combo-2026-07-23/FINDINGS.md`.
 - `../../dx-issues/` gained ~60 round-3 probes (beginner-mistake diagnostics,
   fix-it quality, cascade suppression, warning hygiene, prelude ergonomics,

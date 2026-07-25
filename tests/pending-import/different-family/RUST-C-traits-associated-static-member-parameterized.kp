@@ -6,7 +6,7 @@
 -- Spec: traits.members.overloaded_member_names,
 --       traits.instances.associated_static_member_instance_checking.
 -- Kappa spec rule (§14.2.1): "Associated static members may have any compile-
--- time type of §11.1.6.1, including `Type`, `Type u`, `Universe`, ...". This
+-- time type of §11.1.6.1, including `Type`, `Type u`, `TypeLevel`, ...". This
 -- means an associated static member at type `Type -> Type` (a parameterized
 -- associated type) is well-formed. This test pins:
 -- 1. positive: such an associated member is declarable and projectable;

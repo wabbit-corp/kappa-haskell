@@ -1,0 +1,32 @@
+-- DX EXPECTATION — §3.1 (diagnostics, never internal errors): a
+-- beginner ports GHC/Agda-flavored vector code.  The data header
+-- `data Vec (a : Type) : Nat -> Type` with `{n : Nat}` implicit
+-- constructor binders is malformed Kappa, and the unannotated
+-- recursive zip needs a signature.  Each half in isolation gets
+-- ordinary diagnostics (error recovery on the data declaration;
+-- E_RECURSION_REQUIRES_SIGNATURE for the function — verified with the
+-- same function next to a well-formed Vec).  Expected: the
+-- combination reports those same diagnostics and terminates.  Today
+-- `kappa check` on this file CRASHES: "Stack space overflow: current
+-- size 33608 bytes" (`kappa test`: HARNESS-ERROR "internal exception:
+-- stack overflow") — error recovery from the malformed declaration
+-- sends the checker's evaluator into divergent evaluation of the
+-- recursive match.  The unreduced original, tests/pending-import/
+-- harness-error-unregistered-family/
+-- data_types.gadts.vec_index_exhaustiveness.kp, dies in the same
+-- region with "Kappa.Eval.lookupEnv: internal error: de Bruijn index
+-- -1 out of range" and so can never be triaged.
+--! mode check
+--! assertDiagnostic error E_RECURSION_REQUIRES_SIGNATURE
+
+module main
+
+data Vec (a : Type) : Nat -> Type =
+    VNil  : Vec a 0
+    VCons : {n : Nat} -> a -> Vec a n -> Vec a (n + 1)
+
+let zipVec va vb =
+    match (va, vb)
+    case (VNil, VNil) -> VNil
+    case (VCons x xs, VCons y ys) -> VCons (x, y) (zipVec xs ys)
+-- STATUS(a0497523): HARNESS-ERROR — compiler CRASH, no diagnostics: `kappa check` dies with "Stack space overflow: current size 33608 bytes"; `kappa test` reports "internal exception: stack overflow"; the unreduced pending original dies with the lookupEnv de Bruijn -1 ErrorCall instead

@@ -3,7 +3,7 @@
 
 --! mode check
 
--- Universe of A is inferred from the argument.
+-- TypeLevel of A is inferred from the argument.
 idType : (A : Type) -> Type
 let idType A = A
 
@@ -11,7 +11,7 @@ let idType A = A
 const : (A : Type) -> (B : Type) -> A -> B -> A
 let const A B x _ = x
 
--- Universe of the Box parameter is inferred.
+-- TypeLevel of the Box parameter is inferred.
 data Box (A : Type) : Type =
     MkBox A
 

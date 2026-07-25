@@ -67,7 +67,7 @@ Different provenance from the ANON corpus above: tests authored directly from
 combinations with no existing coverage. See `spec-coverage/README.md` for the
 STATUS-line convention and tallies; passing siblings were imported to
 `tests/conformance/spec-coverage/`. Spec contradictions found on the way live in
-`docs/SPEC_ISSUES.md`.
+`docs/notes/KNOWN_SPEC_ISSUES.md` (Part III).
 
 ## Regeneration
 

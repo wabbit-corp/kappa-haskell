@@ -1,8 +1,0 @@
--- §11.1.2.6/§11.1.2.8: a level bound is ordinary erased proof evidence.
---! mode check
---! assertNoErrors
-
-type SmallPi : Type2 =
-    (u : TypeLevel) ->
-    (@0 p : u < 2) ->
-    Type u

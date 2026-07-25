@@ -19,7 +19,7 @@ let bad2 r = r.bar
 
 -- NEGATIVE: a function that uses a record type with duplicate row in return position.
 dupReturn : Number -> (x : Number, x : String)           --!! kappa.row.lacks-failed
-let dupReturn n = (x = n)
+let dupReturn n = (x = n,)
 
 --! mode check
 --! assertDiagnosticFamily error kappa.row.lacks-failed

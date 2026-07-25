@@ -1,0 +1,81 @@
+--! mode check
+--! assertNoErrors
+
+-- §11.1.2.1/§11.1.2.4A/§11.1.2.5: solver equality of level expressions must
+-- be observable through ORDINARY source acceptance, not only through harness
+-- level directives (assertLevelNormalForm/assertLevelEntails). Checking a
+-- type-valued argument against an expected `Type v` generates the lower
+-- bound u <= v (§11.1.2.1, cumulativity), and rigid semantic equality is
+-- mutual entailment of the two Presburger inequalities (§11.1.2.5), so
+-- `Type (u + 0)`, `Type (0 + u)`, and `Type u` are interchangeable, and
+-- commutativity discharges `idAt (v + u)` against `(A : Type (u + v))` —
+-- covering the additive-identity and AC axioms of §11.1.2.4A from plain
+-- user-shaped source.
+module main
+
+idAt :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type u) ->
+    A ->
+    A
+let idAt u p A x = x
+
+-- POSITIVE: right additive identity — `Type (u + 0)` accepted where
+-- `Type u` is expected (and the bound `u < omega + 1` bounds `u + 0`).
+usePlusZeroR :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type (u + 0)) ->
+    A ->
+    A
+let usePlusZeroR u p A x = idAt u @p A x
+
+-- POSITIVE: left additive identity — `Type (0 + u)` accepted where
+-- `Type u` is expected.
+usePlusZeroL :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type (0 + u)) ->
+    A ->
+    A
+let usePlusZeroL u p A x = idAt u @p A x
+
+-- POSITIVE: the reverse direction of the same collapse — `Type u` accepted
+-- where `Type (u + 0)` is expected. §11.1.2.5: equality is entailment of
+-- BOTH inequalities, so both cast directions must typecheck.
+idAtPlusZero :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type (u + 0)) ->
+    A ->
+    A
+let idAtPlusZero u p A x = x
+
+useBack :
+    (u : TypeLevel) ->
+    (@0 p : u < omega + 1) ->
+    (A : Type u) ->
+    A ->
+    A
+let useBack u p A x = idAtPlusZero u @p A x
+
+-- POSITIVE: commutativity — instantiating `idAt` at the level `v + u`
+-- while the argument's type and the erased bound proof are stated at
+-- `u + v`. Both the proof type `(u + v) < omega + 1` and the classifier
+-- `Type (u + v)` must convert via solver AC identity.
+useComm :
+    (u : TypeLevel) ->
+    (v : TypeLevel) ->
+    (@0 p : (u + v) < omega + 1) ->
+    (A : Type (u + v)) ->
+    A ->
+    A
+let useComm u v p A x = idAt (v + u) @p A x
+
+-- STATUS(a0497523): FAIL — stale-binary gap, not a diagnosed HEAD gap: the
+-- a0497523 build predates first-class levels entirely (14 errors, first
+-- E_NAME_UNRESOLVED "unresolved name 'TypeLevel'"); docs/UNIVERSES-PLAN.md
+-- reports the first-class-level conformance suite green in the current
+-- tree. Revalidate on a current-HEAD build, then import to
+-- tests/conformance/spec-coverage/universes-intrinsics/.

@@ -1,0 +1,40 @@
+-- DX EXPECTATION, with a spec-side asymmetry behind it. §28.2.2 puts the
+-- only normative propositional witness that `+` commutes on
+-- CommutativeAdditiveMonoid (addCommutative : add x y = add y x), but
+-- §28.2.3's REQUIRED instance list for Nat stops at AdditiveMonoid /
+-- Semiring / EuclideanSemiring etc. and omits CommutativeAdditiveMonoid Nat
+-- — while §11.1.2.2 REQUIRES CommutativeAdditiveMonoid TypeLevel plus the
+-- checked theorem typeLevelAddComm. So commutativity is guaranteed for the
+-- erased solver domain but not for the runtime index domain users actually
+-- index GADTs by: `Vec (n + m) -> Vec (m + n)` cannot be written even
+-- propositionally without a user-level unsafe assertion. Expected-good
+-- behavior pinned here: addCommutative resolves at Nat and subst (§11.4.1)
+-- transports the index.
+--
+-- WHAT CURRENTLY HAPPENS (a0497523): E_NAME_UNRESOLVED 'addCommutative' —
+-- the §28.2.2 law-member layer is absent from the shipped prelude entirely.
+-- Note for future re-runs: an uncommitted working-tree prelude adds the
+-- AdditiveMonoid Nat law members via unsafeAssertProof, but still gives
+-- CommutativeAdditiveMonoid only its TypeLevel instance, so this file is
+-- expected to keep failing (then at instance resolution rather than name
+-- resolution) until a Nat instance is added. docs/notes/KNOWN_SPEC_ISSUES.md
+-- entry 12 ("law members omitted; no unsafeAssertProof-backed default") is
+-- stale with respect to that tree.
+--! mode check
+--! assertNoErrors
+module main
+
+data Vec (n : Nat) : Type =
+    MkVec : Vec n
+
+-- The bare law at Nat.
+natAddComm : forall (n : Nat) (m : Nat). (n + m) = (m + n)
+let natAddComm n m = addCommutative n m
+
+-- The user-visible payoff: commuting a data index.
+vecComm : forall (n : Nat) (m : Nat). Vec (n + m) -> Vec (m + n)
+let vecComm n m x = subst (addCommutative n m) x
+
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2: E_NAME_UNRESOLVED
+-- 'addCommutative' at both use sites; no CommutativeAdditiveMonoid law
+-- member (and no Nat instance) exists in the shipped prelude.

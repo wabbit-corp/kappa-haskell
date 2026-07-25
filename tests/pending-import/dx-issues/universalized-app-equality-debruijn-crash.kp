@@ -1,0 +1,32 @@
+-- DX EXPECTATION — §11.3.3, §15.1, §3.1: `someF` and `someA` are free
+-- lowercase names in the signature of `t`, so §11.3.3 implicitly
+-- universalizes them: t : forall someF someA. someF someA = someA.
+-- `refl` cannot prove f a = a for arbitrary f, so the expected outcome
+-- is an ordinary kappa.type.mismatch — exactly what the explicit-
+-- forall control below produces.  Today, checking a body against an
+-- equality type whose side is an application headed by an implicitly-
+-- universalized variable on a ZERO-parameter definition CRASHES the
+-- compiler with an uncaught ErrorCall: "Kappa.Eval.lookupEnv:
+-- internal error: de Bruijn index -1 out of range (environment has 0
+-- entries)" (Check.hs:896 -> Eval.hs:130); `kappa test` reports
+-- HARNESS-ERROR.  A non-refl body crashes identically, and dropping
+-- the `= someA` errors cleanly, isolating the crash to the
+-- equality-type + implicit-universalization + empty-environment path.
+-- Users hit this by misspelling one function name in a
+-- symbolic-identity signature (unresolved imports silently
+-- universalize per §11.3.3).
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+module main
+
+-- control: the explicit-forall spelling of the same type errors
+-- cleanly today
+tExplicit : forall (a : Type) (f : a -> a) (x : a). f x = x
+let tExplicit = refl            --!! kappa.type.mismatch
+
+-- implicit universalization of the same shape: crashes today
+t : someF someA = someA
+let t = refl                    --!! kappa.type.mismatch
+-- STATUS(a0497523): HARNESS-ERROR — compiler CRASH, no diagnostics: uncaught ErrorCall "Kappa.Eval.lookupEnv: internal error: de Bruijn index -1 out of range (environment has 0 entries)" (Check.hs:896 -> Eval.hs:130); `kappa test` reports it as an internal exception, `kappa check` aborts mid-file

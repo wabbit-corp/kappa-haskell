@@ -1,0 +1,38 @@
+-- DX EXPECTATION (§11.4.2 form 3, §31.1.3, §15.1): the spec's own
+-- dependent-boolean-field example shape — (id : Int, ok : id == 1), a
+-- field whose Bool-typed type references a sibling field — should be
+-- soundly inhabitable. At the ground literal, (1 == 1) should normalize
+-- to True so `ok = refl` discharges the field; under the branch fact
+-- `if n == 1`, refl (or implicit synthesis) should inhabit it for
+-- symbolic n.
+--
+-- CURRENTLY (a0497523): there is NO sound path to this feature.
+--   - Literal case: E_TYPE_EQUALITY_MISMATCH where both sides render as
+--     the stuck application "= Bool (__stuck_app _.== 1 1) ..." with an
+--     unresolved instance hole `_` — the Eq instance inside the field
+--     type is never resolved, so even the ground 1 == 1 cannot fold.
+--   - Flow case: E_APPLICATION_ARGUMENT_MISMATCH with an unfolding
+--     mismatch between the goal's "== Integer __inst_Eq_5 @0 1" and
+--     refl's "eqInt @0 1" endpoints.
+--   - The negative control (id = 2, ok = refl), kept as a separate probe
+--     (it cannot share an assertNoErrors file), fails with the same
+--     stuck-instance rendering instead of a clean False-vs-True mismatch
+--     — further evidence the instance hole, not the equality, drives the
+--     rejection.
+--   - The only accepted spelling, `ok = witness`, goes through the
+--     recorded any-equality witness unsoundness, so it proves nothing.
+--! mode check
+--! assertNoErrors
+module main
+
+-- Ground literal: 1 == 1 should reduce to True; refl should discharge ok.
+let r : (id : Integer, ok : id == 1) = (id = 1, ok = refl)
+
+-- Flow: the (n == 1) = True branch fact should inhabit ok for symbolic n.
+mk : Integer -> Option (id : Integer, ok : id == 1)
+let mk n = if n == 1 then Some (id = n, ok = refl) else None
+-- STATUS(a0497523): FAIL — expected 0 errors, got 2: E_TYPE_EQUALITY_MISMATCH
+-- (actual "= Bool (__stuck_app _.== 1 1) (__stuck_app _.== 1 1)" / expected
+-- "= Bool (== Integer _ 1 1) True") at line 29; E_APPLICATION_ARGUMENT_MISMATCH
+-- (actual "= Bool (eqInt @0 1) (eqInt @0 1)" / expected
+-- "= Bool (== Integer __inst_Eq_5 @0 1) True") at line 33.

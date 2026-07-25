@@ -1,7 +1,0 @@
--- §10.4.1/§11.1.2.3A: a higher-universe parametric constructor binder does
--- not by itself force the data type into that higher universe.
---! mode check
---! assertNoErrors
-
-data Box : Type =
-    Box (0 T : Type3) (foo : Int)

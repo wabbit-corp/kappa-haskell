@@ -1,0 +1,51 @@
+-- DX EXPECTATION (§16.4.1, §16.3.3 step 4, §16.1.8, §17.1.1): inside the
+-- then-branch of `if n == 0`, the branch fact (n == 0) = True should be
+-- reflected — via Eq.eqSound, one of §16.3.3's proof sources — into the
+-- propositional fact n = 0, and that fact should feed all three consumers
+-- a dependent-types user reaches for:
+--   (a) constructing a value at the refined GADT index (P 0 where P n is
+--       expected),
+--   (b) discharging an implicit (@0 p : n = 0) proof parameter at a call,
+--   (c) index-driven exhaustiveness: matching P n with only the index-0
+--       constructor, MkO : P 1 being refuted under n = 0.
+-- Negative controls (branching on n == 1 instead, or calling atZero with
+-- no branch at all) were verified separately to fail identically, so the
+-- rejections below are genuine conservatism, not vacuity.
+--
+-- CURRENTLY (a0497523): the branch evidence is never reflected; all three
+-- consumers fail. (a) gets E_APPLICATION_ARGUMENT_MISMATCH "no equality
+-- evidence licenses the transport (§16.1.8)" (actual P 0, expected P @0)
+-- — that transport-wiring aspect is also pinned by ../spec-coverage/
+-- application-dotted/transport-eqsound-and-direction.kp; (b) gets
+-- E_UNSOLVED_IMPLICIT "= Integer @0 0"; (c) gets E_PATTERN_NON_EXHAUSTIVE
+-- missing MkO.
+--! mode check
+--! assertNoErrors
+module main
+
+data P (n : Int) : Type =
+    MkZ : P 0
+    MkO : P 1
+
+-- (a) branch fact should license constructing at the refined index.
+useZero : (n : Int) -> Option (P n)
+let useZero n = if n == 0 then Some MkZ else None
+
+-- (b) branch fact should discharge the implicit n = 0 proof goal.
+atZero : (n : Int) -> (@0 p : n = 0) -> Int
+let atZero n = 7
+
+callAtZero : Int -> Int
+let callAtZero n = if n == 0 then atZero n else 0
+
+-- (c) branch fact should refute MkO : P 1, making the single arm total.
+onlyZeroCase : (n : Int) -> P n -> Int
+let onlyZeroCase n p =
+    if n == 0 then
+        match p
+          case MkZ -> 0
+    else 1
+-- STATUS(a0497523): FAIL — expected 0 errors, got 3: E_APPLICATION_ARGUMENT_MISMATCH
+-- (actual P 0 / expected P @0, "no equality evidence licenses the transport (§16.1.8)")
+-- at line 32; E_UNSOLVED_IMPLICIT "= Integer @0 0" at line 39;
+-- E_PATTERN_NON_EXHAUSTIVE "missing cases: MkO" at line 45.

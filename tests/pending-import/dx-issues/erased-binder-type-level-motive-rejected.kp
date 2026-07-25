@@ -1,0 +1,37 @@
+-- DX EXPECTATION — §12.2.1, §31.2, §28.2: a subst motive written as a
+-- named type-level function with an ERASED index binder,
+-- `VecIntA : (0 i : PNat) -> Type`, should be accepted: the only
+-- occurrence of i is inside the Type-valued body `Vec i Int`, and
+-- types are erased (§31.2) — there is no runtime use to charge
+-- against quantity 0.  Today it is rejected with
+-- E_QTT_ERASED_RUNTIME_USE "erased (quantity 0) binding 'i' is used
+-- at runtime (§12.2.1)", while the unrestricted spelling VecIntB is
+-- accepted AND coerces to subst's `(parametric 0 z : a) -> Type v`
+-- motive classifier.  Related friction (not asserted here): the
+-- classifier spelling that subst's own prelude signature uses is
+-- unwritable in user code — `parametric` in a user signature is
+-- E_NAME_UNRESOLVED, and in a lambda binder it is a parse error — so
+-- the working recipe (unrestricted motive, or a lambda motive like
+-- `@(\i -> Vec i Int)`) is discoverable only by accident; users who
+-- mirror the prelude signature get rejected twice.
+--! mode check
+--! assertNoErrors
+
+module main
+
+data PNat : Type =
+    Z
+    S (p : PNat)
+
+data Vec (n : PNat) (a : Type) : Type =
+    VNil  : Vec Z a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (S n) a
+
+-- erased-index type-level function: rejected today
+VecIntA : (0 i : PNat) -> Type
+let VecIntA i = Vec i Int
+
+-- control: unrestricted spelling of the same function — accepted
+VecIntB : PNat -> Type
+let VecIntB i = Vec i Int
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1: VecIntA rejected with E_QTT_ERASED_RUNTIME_USE "erased (quantity 0) binding 'i' is used at runtime (§12.2.1)" even though the only use is in the Type-valued (erased) body; VecIntB accepted

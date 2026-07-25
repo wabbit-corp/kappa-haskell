@@ -1,0 +1,47 @@
+-- DX EXPECTATION (§16.4.4, §31.1.2, §17.1.4): "If branch refinement proves
+-- one branch unreachable, that branch contributes no usage requirement"
+-- (§16.4.4). In each usage function below, the only branch that fails to
+-- consume the `>=1` binder x is refinement-contradictory — its context
+-- proves both b = True and b = False (resp. (n == 0) = True and = False),
+-- which §31.1.2 says makes the branch unreachable — so x IS consumed on
+-- every reachable path and the definitions should be accepted. The third
+-- function shows the root cause sits upstream of the usage checker: an
+-- explicit `impossible` in the contradictory branch should already be
+-- provably unreachable per §17.1.4.
+--
+-- CURRENTLY (a0497523): boolean-fact contradictions never mark a branch
+-- unreachable at all. Run in isolation, each usage shape is rejected
+-- E_QTT_LINEAR_DROP "'x' (relevant) may be dropped without being consumed
+-- (§12.2.5)", and the `impossible` arm is rejected E_IMPOSSIBLE_REACHABLE
+-- "'impossible' is not provably unreachable here (§17.1.4)" — so the
+-- contradiction machinery is absent, not merely unwired from the usage
+-- join. In THIS combined module only the E_IMPOSSIBLE_REACHABLE error
+-- surfaces, because quantity checking runs only once the module is
+-- otherwise clean; removing contraImpossible flips the module to the two
+-- E_QTT_LINEAR_DROP errors (verified both ways). The HasCtor-contradiction
+-- sibling is pinned FAIL by ../spec-coverage/lambdas-implicits-flow/
+-- contradictory-and-evidence-unreachable.kp — a fix should land both.
+-- tests/conformance/qtt/positive-lower-bound-through-branches.kp pins only
+-- the plain ACCEPT shapes, not refinement-unreachable usage joins.
+--! mode check
+--! assertNoErrors
+module main
+
+-- Inner else is unreachable (b = True and b = False): no usage charge.
+useBool : (>=1 x : Int) -> (b : Bool) -> Int
+let useBool x b = if b then (if b then x else 0) else x
+
+-- Arithmetic variant: the middle branch contradicts (n == 0) = False.
+useArith : (>=1 x : Int) -> (n : Int) -> Int
+let useArith x n =
+    if n == 0 then x
+    elif n == 0 then 0
+    else x
+
+-- The contradiction should already justify `impossible` on its own.
+contraImpossible : (b : Bool) -> Int
+let contraImpossible b = if b then (if b then 1 else impossible) else 0
+-- STATUS(a0497523): FAIL — expected 0 errors, got 1: E_IMPOSSIBLE_REACHABLE
+-- "'impossible' is not provably unreachable here (§17.1.4)" at line 43; with
+-- contraImpossible removed the same module instead reports E_QTT_LINEAR_DROP
+-- (§12.2.5) on both useBool and useArith — all three expectations fail today.

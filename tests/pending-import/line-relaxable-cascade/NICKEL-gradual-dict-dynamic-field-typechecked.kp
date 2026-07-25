@@ -16,7 +16,7 @@ module test
 -- NEGATIVE: a record with a Number value where Bool is required by the dict type.
 -- The field type Number conflicts with the dict constraint {_ : Bool}.
 numberAsBool : {_ : Bool}
-let numberAsBool = (myfield = 1)              --!! kappa.type.mismatch
+let numberAsBool = (myfield = 1,)              --!! kappa.type.mismatch
 
 --! mode check
 --! assertDiagnosticFamily error kappa.type.mismatch
@@ -30,7 +30,7 @@ let mixedAsBool = (foo = 1, bar = True)       --!! kappa.type.mismatch
 
 -- POSITIVE: a record with a Number value conforms to {_ : Number}.
 numberAsNumber : {_ : Number}
-let numberAsNumber = (n = 42)
+let numberAsNumber = (n = 42,)
 
 
 -- POSITIVE: a statically known record with all Bool values conforms to {_ : Bool}.

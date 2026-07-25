@@ -1,8 +1,0 @@
--- §10.4.1/§11.1.2.3A: an erased `@0 A : Type0` constructor binder is a
--- parametric type witness. It does not store an ordinary type-code value and
--- therefore does not create a constructor-size obligation by itself.
---! mode check
---! assertNoErrors
-
-data U : Type0 =
-    MkU (@0 A : Type0)

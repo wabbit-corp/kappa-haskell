@@ -1,7 +1,0 @@
--- §11.3.0.1 / T.10A.17: ordinary first-class Pi over levels with a FIXED
--- codomain has a ceiling independent of the binder and is accepted.
---! mode check
---! assertNoErrors
-
-type LevelToNat : Type0 =
-    (u : TypeLevel) -> Nat

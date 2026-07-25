@@ -1,0 +1,36 @@
+-- DX EXPECTATION — §6.1.5, §11.1.3, §31.1.3: §6.1.5 applies the
+-- Integer default "after all type inference completes on the
+-- enclosing declaration".  With n : Nat in scope, `0 + n` must
+-- therefore elaborate `+` at Nat wherever it appears: the Nat
+-- constraint from the operand n reaches the literal's metavariable
+-- before any default fires.  That is what happens in a checked term
+-- position (termCtl below, accepted today).  But in a TYPE position
+-- (the equality annotation in propUse) and in a bare synthesis
+-- position (the boolean guard in guardCtl), the literal commits to
+-- Integer first and the checker then blames the VARIABLE:
+-- E_TYPE_EQUALITY_MISMATCH "actual: Nat / expected: Integer" on each
+-- occurrence of n — exactly where dependent-index users write
+-- arithmetic, with a diagnostic that misdirects to the operand that
+-- was right all along.  Workaround: write `(0 : Nat) + n` everywhere.
+-- (Same eager-defaulting root as mixed-literal-list-order-dependence
+-- .kp; distinct site — literal-first operator applications in type
+-- positions and guards.)
+--! mode check
+--! assertNoErrors
+
+module main
+
+-- control: checked term position — the signature's Nat flows into
+-- the operands, `+` elaborates at Nat, accepted today
+termCtl : Nat -> Nat
+let termCtl n = 0 + n
+
+-- type position: an equality proposition over Nat stated with a
+-- leading literal
+propUse : (n : Nat) -> (@0 pf : (0 + n) = n) -> Nat
+let propUse n pf = n
+
+-- synthesis position: a boolean guard with the same shape
+guardCtl : (n : Nat) -> Bool
+let guardCtl n = (0 + n) == n
+-- STATUS(a0497523): FAIL — expected 0 errors, got 4: termCtl checks clean but propUse and guardCtl each produce a pair of E_TYPE_EQUALITY_MISMATCH "actual: Nat / expected: Integer" ON the occurrences of n (the literal committed to Integer first and the diagnostic blames the variable)

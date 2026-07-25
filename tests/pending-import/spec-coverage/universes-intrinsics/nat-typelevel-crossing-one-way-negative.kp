@@ -1,0 +1,40 @@
+--! mode check
+--! assertErrorCount 2
+--! assertDiagnostic error E_UNIVERSE_LEVEL_EXPRESSION
+--! assertDiagnostic error E_NAME_UNRESOLVED
+--! assertDiagnosticFamily error kappa.name.unresolved
+
+-- §11.1.1/§11.1.2.2 (with §11.1's "Level terms and universe-index
+-- admissibility", condition 1): the Nat -> TypeLevel crossing is ONE-WAY,
+-- negative half. A bare `n : Nat` is not level-admissible — the
+-- universe-index judgment requires `Γ ⊢ t : TypeLevel`, and there is no
+-- implicit Nat-to-TypeLevel coercion (only literals cross, via
+-- `FromInteger TypeLevel`). And there is NO reverse projection: TypeLevel
+-- is a sealed opaque data type (§11.1.1), its `Level` constructor is hidden
+-- after std.typelevel is sealed, so user code can neither match on it nor
+-- extract a Nat from a TypeLevel.
+module main
+
+-- NEGATIVE: a runtime Nat variable used directly as a universe index is
+-- rejected (same family as the committed `Type True` pin,
+-- first-class-levels-solver-generalization/negative/wrong_type_level_index).
+natAsLevel : (n : Nat) -> Type n --!! E_UNIVERSE_LEVEL_EXPRESSION
+let natAsLevel n = Unit
+
+-- NEGATIVE: no projection back to Nat — the hidden `Level` constructor is
+-- not in scope in user code, so the only conceivable extraction fails at
+-- name resolution.
+levelFinite : TypeLevel -> Nat
+let levelFinite l =
+    match l
+    case Level c n -> n --!! E_NAME_UNRESOLVED
+
+-- STATUS(a0497523): HARNESS-ERROR — E_UNIVERSE_LEVEL_EXPRESSION is not a
+-- registered diagnostic code on the a0497523 build (it predates first-class
+-- levels; the code and family kappa.universe.level-expression are registered
+-- in the current tree, src/Kappa/Explain.hs). Unresolved-pattern-ctor =
+-- E_NAME_UNRESOLVED/kappa.name.unresolved was probe-confirmed on a0497523
+-- for a non-TypeLevel constructor. The assertErrorCount 2 guards against a
+-- vacuous pass but is unvalidated at HEAD (natAsLevel may cascade an extra
+-- unbounded-telescope error); adjust the count from a current-HEAD run
+-- before import.

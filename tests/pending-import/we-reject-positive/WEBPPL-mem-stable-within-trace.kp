@@ -37,7 +37,7 @@ let useMem = do
     let f <- mem (\(k : Int) -> prob.sample (DistBernoulli { p = 0.5 }))
     let x <- f 1
     let y <- f 1
-    pure (x == y)
+    pure (x == y,)
 
 --! assertNoErrors
 --! assertType useMem (Eff <[prob : Prob]> Bool)

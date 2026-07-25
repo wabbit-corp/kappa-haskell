@@ -1,0 +1,39 @@
+-- DX EXPECTATION — §16.3.3, §10.2, §16.1.8: the body rebuilds the
+-- vector, so the VCons result index is S ?k while the signature
+-- demands the neutral `plus n m` — unification fails, and the honest
+-- diagnostic is ONE index mismatch (Vec (S ?k) vs Vec (plus n m),
+-- with the §16.1.8 no-transport-evidence story).  The constructor's
+-- erased index argument ?k : PNat is value-determined by unification;
+-- when that fails it must be reported as part of the mismatch (or as
+-- E_UNSOLVED), never resolved via §16.3.3 type-directed implicit
+-- scope search among unrelated same-typed binders.  Today the failed
+-- unification falls back to scope search, finds the two @0 PNat
+-- forall-binders (n and m), and ALSO emits E_IMPLICIT_AMBIGUOUS "two
+-- implicit candidates in the same scope satisfy this implicit goal"
+-- — naming neither the goal type nor the candidates — alongside the
+-- real mismatch.  In a canonical dependent append this fires three
+-- times per offending line, burying the actionable story.  Expected:
+-- exactly one root diagnostic, the index mismatch.
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.type.mismatch
+
+module main
+
+data PNat : Type =
+    Z
+    S (p : PNat)
+
+plus : PNat -> PNat -> PNat
+let plus a b =
+    match a
+    case Z -> b
+    case S k -> S (plus k b)
+
+data Vec (n : PNat) (a : Type) : Type =
+    VNil  : Vec Z a
+    VCons : (head : a) -> (tail : Vec n a) -> Vec (S n) a
+
+bad : forall (@0 a : Type) (@0 n : PNat) (@0 m : PNat). a -> Vec m a -> Vec (plus n m) a
+let bad x v = VCons x v         --!! kappa.type.mismatch
+-- STATUS(a0497523): FAIL — expected 1 error, got 2: E_IMPLICIT_AMBIGUOUS "two implicit candidates in the same scope satisfy this implicit goal" (naming neither goal nor candidates) is emitted alongside the real E_TYPE_EQUALITY_MISMATCH "Vec (S @2) @4 vs Vec (plus @3 @2) @4" at the same position

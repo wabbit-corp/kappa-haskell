@@ -55,3 +55,29 @@ operator and hanging-else continuations, named-arg cascade suppression,
 instance-head name resolution, and gensym hygiene were promoted to
 spec-required behavior (Spec SS3.1.7, SS3.1.11, SS3.2.3, SS3.2.20, SS5.4,
 SS6.1.1, SS14.3) and moved to ../spec-coverage/.
+
+## 2026-07-24 additions — type-level operations batch
+
+20 probes from the type-level-computation audit (triggered by the
+ATS-datasort "symbolic index identities are not definitional" comment):
+the prelude-Nat symbolic dead end (identities neither definitional nor
+provable — no induction principle, no Eq.eqSound/eqComplete members, law
+members assertion-backed), runtime-fact-to-index bridges that never fire
+(== branch evidence, literal-pattern refinement, the Spec 11.4.2 dependent
+boolean field), GADT-over-primitive-Nat construction-without-elimination,
+the TypeLevel-vs-Nat solver asymmetry, index-mismatch rendering leaking
+internal Core spellings, literal-defaulting footguns, an erased-motive
+rejection, an implicit-ambiguous cascade, TWO compiler crashes (uncaught
+ErrorCall on universalized-application equality; eval de Bruijn/stack
+overflow on a malformed vector file), and one SOUNDNESS hole (`witness`
+solves ANY implicit goal whose type is still a metavariable — `a = b`
+accepted from an empty context).
+
+Validation snapshot 2026-07-24 (clean `a0497523` binary): all 20 fail or
+crash as recorded per-file; each ends with a `-- STATUS(a0497523): ...`
+line. The same audit added 15 PASSING conformance pins under
+`tests/conformance/spec-coverage/` (definitional-reduction boundary,
+prove-then-transport chains, flow-bridge discharges, the PNat vector
+journey) and 5 rerouted compiler-gap pins under
+`../spec-coverage/` (TypeLevel solver identities not reachable from
+ordinary source; bool-match comparison bridge).

@@ -31,7 +31,7 @@ projectX : Point -> Int
 let projectX = (.x)
 
 -- POSITIVE: receiver section with an argument (method-call sugar).
-type Counter = (count : Int)
+type Counter = (count : Int,)
 -- (.count) used directly in a pipeline
 totalCount : Array Counter -> Int
 let totalCount cs =

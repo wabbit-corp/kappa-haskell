@@ -1,9 +1,0 @@
--- §11.1.2.7/§11.1.2.8: `(u : TypeLevel) -> Type u` has no universe ceiling
--- independent of `u`.
---! mode check
---! assertErrorCount 1
---! assertDiagnostic error E_UNIVERSE_UNBOUNDED_TELESCOPE
---! assertDiagnosticFamily error kappa.universe.unbounded-telescope
-
-type AllLevelPi =
-    (u : TypeLevel) -> Type u

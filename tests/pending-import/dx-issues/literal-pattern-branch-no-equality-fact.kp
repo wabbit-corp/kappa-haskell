@@ -1,0 +1,76 @@
+-- DX EXPECTATION (§17.1.6, §17.2.1, §16.4.1, §16.1.8): matching an integer
+-- scrutinee against a literal pattern (`match n ... case 0 ->`) should
+-- introduce a branch fact — the propositional n = 0, or at least the
+-- boolean (n == 0) = True — exactly as §17.1.6 already mandates for Bool
+-- literal patterns (pinned PASS by tests/conformance/spec-coverage/
+-- patterns-active/bool-match-assumption-refinement.kp with the identical
+-- Option ((=) b True) shape). This is the ATS/Idris `case 0` idiom; it is
+-- also a SPEC gap: §17.1.6 covers only True/False literals and §17.2.1
+-- admits numeric literal patterns with no evidence rule at all.
+--
+-- CURRENTLY (a0497523): the branch carries NO fact of either shape, for
+-- Int and primitive Nat alike. The Int proof goals fail E_UNSOLVED_IMPLICIT
+-- ("= Integer @0 0" resp. "= Bool (== Integer __inst_Eq_5 @0 0) True");
+-- the Nat consumers fail E_APPLICATION_ARGUMENT_MISMATCH "no equality
+-- evidence licenses the transport (§16.1.8)". The guard respelling
+-- `case _ if n == 0` (kept below as a control) is accepted, so users must
+-- trade the literal pattern for a guard to get the fact. Successor
+-- patterns (`case k + 1`) are rejected outright per §17.3.2, so literal
+-- matching contributes nothing to index reasoning over primitive Nat.
+--! mode check
+--! assertNoErrors
+module main
+
+atZero : (n : Int) -> (@0 p : n = 0) -> Int
+let atZero n = 7
+
+zeroFact : (n : Int) -> (@0 p : (n == 0) = True) -> Int
+let zeroFact n = 7
+
+-- (a) literal branch should discharge the propositional goal n = 0.
+viaLitProp : Int -> Int
+let viaLitProp n =
+    match n
+      case 0 -> atZero n
+      case _ -> 0
+
+-- (b) literal branch should at least carry the boolean fact.
+viaLitBool : Int -> Int
+let viaLitBool n =
+    match n
+      case 0 -> zeroFact n
+      case _ -> 0
+
+-- (c) control (works today, must keep working): the guard spelling
+-- introduces the boolean fact per §17.1.9.
+viaGuard : Int -> Int
+let viaGuard n =
+    match n
+      case _ if n == 0 -> zeroFact n
+      case _ -> 0
+
+-- (d) primitive-Nat twin: the branch fact should transport a Vec n to
+-- Vec 0 and should materialize as a propositional proof.
+data Vec (n : Nat) : Type =
+    MkVec
+
+expects0 : Vec 0 -> Unit
+let expects0 (v : Vec 0) : Unit = ()
+
+viaMatchNat : (n : Nat) -> Vec n -> Unit
+let viaMatchNat n v =
+    match n
+      case 0 -> expects0 v
+      case _ -> ()
+
+proofViaMatch : (n : Nat) -> Option ((=) n 0)
+let proofViaMatch n =
+    match n
+      case 0 -> Some refl
+      case _ -> None
+-- STATUS(a0497523): FAIL — expected 0 errors, got 4: E_UNSOLVED_IMPLICIT
+-- "= Integer @0 0" at line 34; E_UNSOLVED_IMPLICIT
+-- "= Bool (== Integer __inst_Eq_5 @0 0) True" at line 41;
+-- E_APPLICATION_ARGUMENT_MISMATCH (actual Vec @1 / expected Vec 0) at line 63;
+-- E_APPLICATION_ARGUMENT_MISMATCH (actual = Nat @0 @0 / expected = Nat @0 0)
+-- at line 69. The guard control (c) is the only consumer that typechecks.

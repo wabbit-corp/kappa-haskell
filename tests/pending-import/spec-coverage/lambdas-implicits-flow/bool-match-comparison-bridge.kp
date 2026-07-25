@@ -1,0 +1,46 @@
+-- §17.1.6 (boolean matches introduce assumptions), §16.4.3 (stable
+-- aliases transport refinement evidence), §31.1.2 (branch-local
+-- refinement-aware normalization). The boolean-MATCH spelling of the
+-- arithmetic flow-to-proof bridge: matching a Bool scrutinee against
+-- the literal True checks the branch under @p : <scrutinee> = True,
+-- which should discharge the same-shaped comparison goal (n < 10) = True
+-- either directly (compound scrutinee) or via stable-alias transport
+-- (let-bound scrutinee). The `if n < 10` and `case _ if` spellings of
+-- the same bridge DO work at HEAD (pinned in
+-- tests/conformance/spec-coverage/lambdas-implicits-flow/
+-- comparison-fact-exact-discharge.kp); both match spellings below fail.
+-- Note the spec reading is arguable for the compound-scrutinee form
+-- (§17.1.6's example scrutinee is a variable); the let-bound form is a
+-- direct §17.1.6 + §16.4.3 composition.
+
+module main
+
+--! mode check
+--! assertNoErrors
+
+small : (n : Int) -> (@0 p : (n < 10) = True) -> Int
+let small n = 1
+
+-- Compound Bool scrutinee: the True branch should carry
+-- @p : (n < 10) = True per the plain reading of §17.1.6.
+useMatchDirect : Int -> Int
+let useMatchDirect n =
+    match n < 10
+    case True -> small n
+    case False -> 0
+
+-- Let-bound scrutinee: §17.1.6 gives @p : c = True, and §16.4.3 stable
+-- alias transport should rewrite it to (n < 10) = True.
+useMatchAlias : Int -> Int
+let useMatchAlias n =
+    let c = n < 10
+    match c
+    case True -> small n
+    case False -> 0
+
+-- STATUS(a0497523): FAIL — both branches raise E_UNSOLVED_IMPLICIT
+-- (kappa.implicit.unsolved) "= Bool (< Integer __inst_Ord_6 @0 10) True":
+-- the §17.1.6 branch assumption is not keyed on a compound scrutinee
+-- expression, and the let-bound c = True fact is not transported through
+-- the alias to the comparison shape. Same goal discharges fine from an
+-- `if n < 10` condition or a `case _ if n == 0` guard.

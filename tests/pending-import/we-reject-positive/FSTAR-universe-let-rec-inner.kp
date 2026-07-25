@@ -1,6 +1,6 @@
 -- Source issue: FSTAR-786
 -- Spec: types.universes.erasure_elaboration_time
--- Universe variable must not leak from outer to inner let rec via de Bruijn index.
+-- TypeLevel variable must not leak from outer to inner let rec via de Bruijn index.
 
 --! mode check
 

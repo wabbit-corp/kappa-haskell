@@ -1,7 +1,0 @@
--- §11.1.2.3A/§11.1.2.8: ordinary polymorphism is a small parametric `0 Type`
--- binder, not a hidden universe-level scheme.
---! mode check
---! assertNoErrors
-
-type PolyId : Type =
-    (0 A : Type) -> A -> A

@@ -1,8 +1,0 @@
--- §11.1.2 / T.10A.8: universe self-containment (`Type0 : Type0`) is rejected.
---! mode check
---! assertErrorCount 1
---! assertDiagnostic error E_UNIVERSE_SELF_CONTAINMENT
---! assertDiagnosticFamily error kappa.universe.constraint
-
-bad : Type0
-let bad = Type0
