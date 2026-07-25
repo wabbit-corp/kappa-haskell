@@ -37947,6 +37947,11 @@ globalUse ::=
 ```
 
 The readable name is present for humans. The stable identity is authoritative.
+Compiler-generated stable identities MUST be collision-free by construction
+for the represented semantic namespace, for example by a lossless
+domain-separated encoding of canonical identity bytes. A truncated digest
+MUST NOT be the sole equality authority; digests may index or validate the
+retained canonical identity.
 
 Canonical output uses fully qualified global names and deterministic local numbering.
 
@@ -37957,6 +37962,7 @@ Canonical output uses fully qualified global names and deterministic local numbe
 kcoreDecl ::=
     defDecl
   | axiomDecl
+  | interfaceDecl
   | dataDecl
   | levelCertificateDecl
   | schemaCertificateDecl
@@ -37970,6 +37976,9 @@ defDecl ::=
 
 axiomDecl ::=
     'axiom' observationMode globalRef universeTelescope? ':' term ';'
+
+interfaceDecl ::=
+    'interface' globalRef universeTelescope? ':' term ';'
 
 dataDecl ::=
     'data' globalRef nominalUniverseTelescope? binder* ':' term
@@ -38001,6 +38010,12 @@ universeConstraint ::=
     level '<=' level ';'
   | level '<' level ';'
 ```
+
+An `interfaceDecl` associates a source-free, fully checked record telescope
+with a declaration in the same KCoreText dependency environment. It does not
+declare a second global identity. Its universe telescope MUST agree with the
+named declaration, its term MUST expose a record telescope, and duplicate
+interfaces for one declaration are rejected.
 
 `constraintBlock` appears only in level-certificate and schema-certificate declarations as the explicit assumption
 context of the certificate being checked.
@@ -38255,12 +38270,28 @@ schemaCertificateDecl ::=
     'for' globalRef constraintBlock?
     '['
         'checkerVersion' '=' integer ','
+        'typeLevelAlgebraVersion' '=' integer ','
+        'levelConstructorNormalizerVersion' '=' integer ','
+        'levelRigidEntailmentVersion' '=' integer ','
+        'levelPrincipalInferenceVersion' '=' integer ','
+        'levelCertificateVersion' '=' integer ','
         'signatureHash' '=' schemaSignatureBinding ','
         'saturationArity' '=' integer
     ']'
     '{'
         'roles' '=' '[' universeVariance (',' universeVariance)* ']' ';'
         'clauseKinds' '=' '[' nominalClauseKind (',' nominalClauseKind)* ']' ';'
+        'monotoneWitnesses' '='
+            '[' monotoneWitness (',' monotoneWitness)* ']' ';'
+    '}'
+
+monotoneWitness ::=
+    '{'
+        'parameter' '=' integer ';'
+        'operator' '=' term ';'
+        'goal' '=' term ';'
+        'evidence' '=' term ';'
+        'dependencies' '=' '[' ref (',' ref)* ']' ';'
     '}'
 
 schemaSignatureBinding ::=
@@ -38310,6 +38341,24 @@ that digest with the imported `NominalCumulativitySummary` before accepting any 
 A stable identity alone never proves a schema action.
 
 Canonical KCoreText prints every role and every covariant proof explicitly.
+
+Each `monotoneWitness` freezes one selected ordinary `Monotone` proof used by role inference for a normalized one-hole
+neutral level operator. Its `parameter` is a zero-based index into the owning family's declaration-universe telescope.
+`operator`, `goal`, and `evidence` are checked under the owning family's complete term-parameter telescope. The goal
+MUST be the exact resolved application `std.typelevel.Monotone operator`, and `evidence` MUST check against that goal.
+
+The dependency list is the exact sorted duplicate-free set of resolved global and family-local references occurring in
+the goal and evidence. The verifier recomputes this set and rejects missing, additional, stale, unbound, or
+presentation-only dependencies. Witnesses are unique and canonically ordered by `(parameter, operator)`.
+
+Independent role replay may classify a neutral one-hole occurrence as covariant only when a verified witness has the
+same parameter index and canonical operator. Without such a witness the occurrence is invariant. KCoreText
+canonicalization alpha-renames witness terms and local dependencies in the same environment as the owning family
+telescope.
+
+The normalized goal and its semantic dependencies participate in schema-certificate semantic identity. The selected
+evidence term and evidence-only dependencies remain verification and audit provenance but do not participate in
+semantic hashing. Thus two checked proof objects of the same normalized `Monotone` goal produce the same semantic hash.
 
 KCoreText rejection of a bad certificate uses `E_KCORE_SCHEMA_CERTIFICATE_INVALID`.
 A well-formed certificate with an invalid lift use uses `E_UNIVERSE_SCHEMA_LIFT_INVALID`.
@@ -42375,6 +42424,7 @@ NominalCumulativitySummary =
      certificateIdentity    : SchemaActionCertificateId,
      certificateVersion     : Nat,
      clauseKinds            : List NominalSignatureClauseKind,
+     monotoneWitnesses       : List VerifiedMonotoneWitnessSummary,
      representationIdentity : Bool,
      extensionGate          : Option FeatureGateId)
 ```
