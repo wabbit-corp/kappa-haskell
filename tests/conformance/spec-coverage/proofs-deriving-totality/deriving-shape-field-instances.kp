@@ -18,7 +18,13 @@ let eqBody @a target left right = do
     requireRuntimeFieldInstances @Eq @a shape
     matchAdt2 shape left right (\ctor fieldPairs -> boolSyntax True) (\l r -> boolSyntax False)
 
-instance Eq Blob =
-    let (==) l r = $(eqBody @Blob '{ type Blob } '{ l } '{ r }) --!! KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE
+-- This probe is about the deriving-shape field-instance check, not Eq's
+-- independent IsSet supertrait. A dedicated carrier keeps the intended
+-- missing-Eq-field diagnostic as the only invalidity.
+trait BlobEquality (0 a : Type) =
+    blobEquals : a -> a -> Bool
+
+instance BlobEquality Blob =
+    let blobEquals l r = $(eqBody @Blob '{ type Blob } '{ l } '{ r }) --!! KAPPA_DERIVING_SHAPE_MISSING_RUNTIME_FIELD_INSTANCE
 
 -- STATUS(a51e1bf): PASS

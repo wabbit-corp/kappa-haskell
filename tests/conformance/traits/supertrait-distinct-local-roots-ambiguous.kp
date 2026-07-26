@@ -1,0 +1,27 @@
+module main
+
+trait Root (0 a : Type)
+
+trait Root a => LeftRoot (0 a : Type)
+
+trait Root a => RightRoot (0 a : Type)
+
+requireRoot :
+    forall (a : Type).
+    (@root : Root a) ->
+    Unit
+
+let requireRoot = ()
+
+ambiguous :
+    forall (a : Type).
+    (@left : LeftRoot a) ->
+    (@right : RightRoot a) ->
+    Unit
+
+let ambiguous @left @right =
+    requireRoot
+
+--! mode check
+--! assertErrorCount 1
+--! assertDiagnosticFamily error kappa.implicit.ambiguous

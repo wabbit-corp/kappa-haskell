@@ -446,6 +446,10 @@ data CheckState = CheckState
   , csCtors :: !(Map GName CtorInfo)
   , csTopLevelDataHeaders :: !(Map GName TopLevelDataHeader)
   , csTraits :: !(Map GName TraitInfo)
+  , csBareTraitMembers :: !(Map GName (GName, Text))
+  -- ^ Exact compiler-generated bare member accessor -> owning trait/member.
+  -- Semantic provider decoders use this identity instead of trusting a
+  -- source-level member spelling.
   , csInstances :: ![InstanceEntry]
   , csMetas :: !MetaState
   , csNextMeta :: !Int
@@ -1044,6 +1048,7 @@ initCheckState =
     , csCtors = Map.empty
     , csTopLevelDataHeaders = Map.empty
     , csTraits = Map.empty
+    , csBareTraitMembers = Map.empty
     , csInstances = []
     , csMetas = emptyMetas
     , csNextMeta = 0
@@ -6754,7 +6759,7 @@ resolveName ctx name =
                   gateUnsafeResolved g sp
                   mt <- globalTermIn ctx sp g
                   case mt of
-                    Just r -> pure r
+                    Just pair -> pure pair
                     Nothing -> failUnresolved
                 Nothing -> failUnresolved
   where
@@ -10085,13 +10090,11 @@ resolvePendingFlexibleGoal ctx sp goal = do
       traitGoal <- isTraitGoal goal
       if not traitGoal
         then pure Nothing
-        else
-          nonImprovingFlexibleCandidate goal (superCandidate ctx sp goal) >>= \case
+        else superCandidate ctx sp goal >>= \case
+          Just term -> pure (Just term)
+          Nothing -> superThisCandidate ctx goal >>= \case
             Just term -> pure (Just term)
-            Nothing ->
-              nonImprovingFlexibleCandidate goal (superThisCandidate ctx goal) >>= \case
-                Just term -> pure (Just term)
-                Nothing -> nonImprovingFlexibleInstanceSearch ctx sp goal
+            Nothing -> nonImprovingFlexibleInstanceSearch ctx sp goal
 
 nonImprovingFlexibleCandidate
   :: Value
@@ -11734,12 +11737,69 @@ proveBoolValueAttempt natLvls boolFacts facts d want t = do
           -- branch facts. The caller may then try one bounded transparent
           -- normalization pass through definitions already marked reducible
           -- by the ordinary totality/opacity machinery.
-          mf <- boolRelBranchM d t
+          mf <- selectedArithmeticPredicateFact d t
           case mf >>= if want then Just else negateFact of
             Just fact -> do
               ok <- proveFact natLvls facts fact
               pure (if ok then Just True else Nothing)
             Nothing -> pure Nothing
+
+-- | Decode a boolean arithmetic predicate only after authenticating the
+-- selected provider and member identity. Primitive comparisons are already
+-- self-authenticating through their wired-in global identities. Trait methods
+-- additionally require the exact coherent dictionary selected by elaboration;
+-- a user dictionary or an unrelated field with the same source label is never
+-- admitted to the arithmetic solver.
+selectedArithmeticPredicateFact :: Int -> Term -> CheckM (Maybe AFact)
+selectedArithmeticPredicateFact depth term =
+  boolRelBranchM depth term >>= \case
+    Just primitive -> pure (Just primitive)
+    Nothing -> selectedNatCheckedSubFact depth term
+
+-- | The standard @CheckedSub Nat@ provider defines
+-- @subDefined x y = (y <= x)@ (§28.2.3). Reify that law at the point where
+-- Core still carries the selected dictionary explicitly. This is provider
+-- interpretation, not a conversion rule: the resulting fact is consumed only
+-- by the proof-producing proposition solver.
+selectedNatCheckedSubFact :: Int -> Term -> CheckM (Maybe AFact)
+selectedNatCheckedSubFact depth term = do
+  state <- get
+  let checkedSub = gPrel "CheckedSub"
+      qualifiedMember = memberGlobal checkedSub "subDefined"
+      arguments = snd (spineOfTerm (stripIdentityWrappers term))
+      explicitArguments = [argument | (Expl, argument) <- arguments]
+      implicitArguments = [argument | (Impl, argument) <- arguments]
+      selectedGlobal candidate =
+        case termHeadGlob (stripIdentityWrappers candidate) of
+          Just global ->
+            global == qualifiedMember
+              || Map.lookup global (csBareTraitMembers state)
+                   == Just (checkedSub, "subDefined")
+          Nothing -> False
+      globalCall candidate = do
+        guard (selectedGlobal candidate)
+        carrier : dictionary : _ <- pure implicitArguments
+        guard (termHeadGlob (stripIdentityWrappers carrier) == Just prelNat)
+        (left, right) <- last2 explicitArguments
+        pure (dictionary, left, right)
+      projectedCall candidate = case stripIdentityWrappers candidate of
+        CProjM _ dictionary "subDefined" -> do
+          (left, right) <- last2 explicitArguments
+          pure (dictionary, left, right)
+        CProjAtM _ dictionary "subDefined" _ -> do
+          (left, right) <- last2 explicitArguments
+          pure (dictionary, left, right)
+        _ -> Nothing
+      headTerm = fst (spineOfTerm (stripIdentityWrappers term))
+  case globalCall headTerm <|> projectedCall headTerm of
+    Nothing -> pure Nothing
+    Just (dictionary, left, right) -> do
+      standard <- standardNaturalDictionary checkedSub dictionary
+      pure $ do
+        guard standard
+        leftExpression <- arithOf depth left
+        rightExpression <- arithOf depth right
+        pure (AFact ACmpLe rightExpression leftExpression)
 
 transparentProofNormalize :: Int -> Term -> CheckM (Maybe Term)
 transparentProofNormalize d t = do
@@ -11766,38 +11826,48 @@ transparentProofReduce d fuel0 t0 = go fuel0 (simplifyDecisionTerm t0)
   where
     go fuel t
       | fuel <= 0 = pure (simplifyDecisionTerm t)
-      | otherwise = case simplifyDecisionTerm t of
-          CGlob g -> maybe (pure (CGlob g)) (go (fuel - 1)) =<< unfoldReducibleGlobal d g []
-          CGlobal g universes ->
-            maybe (pure (CGlobal g universes)) (go (fuel - 1))
-              =<< unfoldReducibleGlobal d g universes
-          CApp {} -> reduceApp fuel t
-          CProjM mode e f -> do
-            e' <- go (fuel - 1) e
-            case e' of
-              CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
-              CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProjM mode inner f)
-              _ -> pure (CProjM mode e' f)
-          CProjAtM mode e f i -> do
-            e' <- go (fuel - 1) e
-            case e' of
-              CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
-              CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProjAtM mode inner f i)
-              _ -> pure (CProjAtM mode e' f i)
-          CIf c th el -> do
-            c' <- go (fuel - 1) c
-            case c' of
-              CCtor g _ [] | g == prelTrue -> go (fuel - 1) th
-              CCtor g _ [] | g == prelFalse -> go (fuel - 1) el
-              _ -> pure (CIf c' th el)
-          CMatch s ann alts -> do
-            s' <- go (fuel - 1) s
-            pure (simplifyDecisionTerm (CMatch s' ann alts))
-          CLet _ _ _ rhs body ->
-            go (fuel - 1) (substTopTermAt d rhs body)
-          CLetRecM mode q n a rhs body ->
-            pure (CLetRecM mode q n a rhs body)
-          other -> pure other
+      | otherwise = do
+          -- Preserve authenticated arithmetic providers before unfolding
+          -- their library implementation. Provider decoders need the selected
+          -- dictionary identity; reducing past it would retain operational
+          -- behavior while discarding the authority used by proof synthesis.
+          primitiveCompare <- primitiveOrderedCompareArgsRaw d t
+          case primitiveCompare of
+            Just _ -> pure (simplifyDecisionTerm t)
+            Nothing -> selectedNatOrderFact d t >>= \case
+              Just _ -> pure (simplifyDecisionTerm t)
+              Nothing -> case simplifyDecisionTerm t of
+                CGlob g -> maybe (pure (CGlob g)) (go (fuel - 1)) =<< unfoldReducibleGlobal d g []
+                CGlobal g universes ->
+                  maybe (pure (CGlobal g universes)) (go (fuel - 1))
+                    =<< unfoldReducibleGlobal d g universes
+                CApp {} -> reduceApp fuel t
+                CProjM mode e f -> do
+                  e' <- go (fuel - 1) e
+                  case e' of
+                    CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
+                    CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProjM mode inner f)
+                    _ -> pure (CProjM mode e' f)
+                CProjAtM mode e f i -> do
+                  e' <- go (fuel - 1) e
+                  case e' of
+                    CRecordV fs | Just x <- lookup f fs -> go (fuel - 1) x
+                    CSealE ls inner | f `notElem` ls -> go (fuel - 1) (CProjAtM mode inner f i)
+                    _ -> pure (CProjAtM mode e' f i)
+                CIf c th el -> do
+                  c' <- go (fuel - 1) c
+                  case c' of
+                    CCtor g _ [] | g == prelTrue -> go (fuel - 1) th
+                    CCtor g _ [] | g == prelFalse -> go (fuel - 1) el
+                    _ -> pure (CIf c' th el)
+                CMatch s ann alts -> do
+                  s' <- go (fuel - 1) s
+                  pure (simplifyDecisionTerm (CMatch s' ann alts))
+                CLet _ _ _ rhs body ->
+                  go (fuel - 1) (substTopTermAt d rhs body)
+                CLetRecM mode q n a rhs body ->
+                  pure (CLetRecM mode q n a rhs body)
+                other -> pure other
 
     reduceApp fuel t = do
       let (hd0, args0) = spineOfTerm t
@@ -12062,6 +12132,238 @@ insertAllImplicits ctx sp tm ty = do
       nextCtx <- extendLevelAssumptionFromSynthesized sp ctx assumption arg
       insertAllImplicits nextCtx sp (CApp Impl tm arg) ty'
     _ -> pure (tm, t)
+
+-- | Expected-type-directed saturation for a bare polymorphic value. The
+-- terminal result is unified before any value/evidence slot is committed, so
+-- a slot whose classifier starts flexible is reclassified after the expected
+-- type has fixed it. This is the zero-explicit-argument counterpart of
+-- 'elabAppChecked': in particular, @witness : forall a. (@value : a) -> a@
+-- checked at @Trait T@ must synthesize coherent @Trait T@ evidence rather than
+-- leave an unconstrained erased value meta.
+insertAllImplicitsAgainstExpected
+  :: Ctx
+  -> Span
+  -> Term
+  -> Value
+  -> Value
+  -> CheckM (Maybe Term)
+insertAllImplicitsAgainstExpected initialCtx site headTerm headType expected = do
+  baseline <- get
+  align initialCtx headTerm headType expected >>= \case
+    Nothing -> put baseline >> pure Nothing
+    result -> pure result
+  where
+    -- A bare overloaded value may itself be checked at a polymorphic type:
+    --
+    --   empty : forall a. Pointed a => a
+    --   expected: forall m. m
+    --
+    -- Align the matching source and target binders before selecting the
+    -- remaining evidence. This preserves the full source-visible member
+    -- telescope (so explicit @a remains legal) while making omitted binders
+    -- expected-directed. Formation and provenance are intentionally absent:
+    -- like ordinary conversion, this rule compares the semantic function
+    -- binder rather than metadata recording how that binder was elaborated.
+    align activeCtx currentTerm sourceType targetType = do
+      sourceShape <- peelCapturesM sourceType
+      targetShape <- peelCapturesM targetType
+      case (sourceShape, targetShape) of
+        ( VPiEvidenceM sourceMode _sourceFormation Impl sourceQuantity sourceBorrowed _ sourceAssumption _sourceOrigin sourceDomain sourceClosure
+          , VPiEvidenceM targetMode _targetFormation Impl targetQuantity targetBorrowed targetName targetAssumption _targetOrigin targetDomain targetClosure
+          ) -> do
+                sameDomain <- unifyDefinitional activeCtx sourceDomain targetDomain
+                if not
+                    ( sourceMode == targetMode
+                        && sourceMode == Parametric
+                        && sourceQuantity == Q0
+                        && sourceQuantity == targetQuantity
+                        && sourceBorrowed == targetBorrowed
+                        && sourceAssumption == targetAssumption
+                        && sameDomain
+                    )
+                  then pure Nothing
+                  else do
+                    withAssumption <-
+                      extendLevelAssumption site activeCtx targetAssumption
+                    let binderLevel = ctxLen activeCtx
+                        rigid = VRigid binderLevel []
+                        nextCtx =
+                          bindCtxMQB
+                            targetMode
+                            targetQuantity
+                            targetName
+                            True
+                            targetBorrowed
+                            targetDomain
+                            withAssumption
+                        applied =
+                          CApp Impl (shiftTerm 1 0 currentTerm) (CVar 0)
+                    sourceResult <- clApp sourceClosure rigid
+                    targetResult <- clApp targetClosure rigid
+                    align nextCtx applied sourceResult targetResult >>= \case
+                      Nothing -> pure Nothing
+                      Just body ->
+                        pure
+                          ( Just
+                              ( CLamM
+                                  targetMode
+                                  Impl
+                                  targetQuantity
+                                  targetName
+                                  body
+                              )
+                          )
+        (_, VPi {}) ->
+          -- An application head is checked against the function type demanded
+          -- by its remaining arguments. Evidence selection stays in
+          -- 'elabAppChecked', where the complete spine can validate arity and
+          -- roll back malformed calls without leaking speculative obligations.
+          pure Nothing
+        _ -> saturate activeCtx currentTerm sourceShape targetType
+
+    saturate activeCtx currentTerm sourceType targetType = do
+      (rawSlots, terminal) <- peel activeCtx sourceType []
+      slots <- annotateDependencies rawSlots terminal
+      if null slots
+        then pure Nothing
+        else do
+          compatible <- unify activeCtx terminal targetType
+          if not compatible
+            then pure Nothing
+            else rebuild currentTerm slots >>= \case
+              Nothing -> pure Nothing
+              Just saturated ->
+                Just <$> coerceTerm activeCtx site saturated terminal targetType
+
+    peel activeCtx currentType accumulated =
+      forceM currentType >>= \case
+        VPiBoundM _ Impl quantity _ _ assumption domain closure -> do
+          placeholder <- freshMetaFor activeCtx domain
+          placeholderValue <- evalIn activeCtx placeholder
+          resultType <- clApp closure placeholderValue
+          nextCtx <-
+            extendLevelAssumptionFromSynthesized
+              site
+              activeCtx
+              assumption
+              placeholder
+          peel
+            nextCtx
+            resultType
+            (ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain True : accumulated)
+        terminal -> pure (reverse accumulated, terminal)
+
+    rebuild current [] = pure (Just current)
+    rebuild current (ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain dependent : rest) = do
+      argument <-
+        resolveReclassifiedImplicit
+          activeCtx
+          site
+          quantity
+          placeholder
+          placeholderValue
+          domain
+          dependent
+      case argument of
+        Nothing -> pure Nothing
+        Just selected ->
+          rebuild (CApp Impl current selected) rest
+
+    annotateDependencies slots terminal =
+      forM (zip [0 :: Int ..] slots) $ \(index, slot) -> do
+        let laterDomains =
+              [ laterDomain
+              | ExpectedImplicitSlot _ _ _ _ laterDomain _ <-
+                  drop (index + 1) slots
+              ]
+        dependencies <-
+          fmap concat (mapM unsolvedMetaIdsIn (terminal : laterDomains))
+        pure $
+          case slot of
+            ExpectedImplicitSlot activeCtx quantity placeholder placeholderValue domain _ ->
+              let placeholderMeta = case placeholder of
+                    CMeta meta -> Just meta
+                    _ -> Nothing
+               in ExpectedImplicitSlot
+                    activeCtx
+                    quantity
+                    placeholder
+                    placeholderValue
+                    domain
+                    (maybe True (`elem` dependencies) placeholderMeta)
+
+data ExpectedImplicitSlot = ExpectedImplicitSlot
+  !Ctx
+  !Q
+  !Term
+  !Value
+  !Value
+  !Bool
+
+-- | Select an implicit after surrounding constraints have had a chance to
+-- solve its classifier. Kind-like and ordinary erased inference slots retain
+-- their placeholder. A slot that has become a trait/proposition (or any
+-- runtime implicit) enters the normal evidence ladder, and the selected value
+-- is reconciled with the placeholder already threaded through later domains
+-- and the terminal result.
+resolveReclassifiedImplicit
+  :: Ctx
+  -> Span
+  -> Q
+  -> Term
+  -> Value
+  -> Value
+  -> Bool
+  -> CheckM (Maybe Term)
+resolveReclassifiedImplicit ctx site quantity placeholder placeholderValue domain dependent = do
+  domain' <- forceM domain
+  kindLike <- isKindLike (ctxLen ctx) domain'
+  traitLike <- isTraitGoal domain'
+  equalityLike <- isEqGoal domain'
+  rowLike <- isRowGoal domain'
+  levelLike <- isJust <$> authenticatedLevelGoalRelation ctx domain'
+  let requiresResolution =
+        quantity /= Q0
+          || traitLike
+          || equalityLike
+          || rowLike
+          || levelLike
+  selected <-
+    if kindLike || not requiresResolution
+      then pure placeholder
+      else
+        if equalityLike
+          then postponeEqualityEvidence ctx site domain'
+          else resolveImplicitQ ctx site quantity domain'
+  selectedValue <- checkedArgumentValue ctx site domain' selected
+  reconciled <-
+    if not dependent
+      then pure True
+      else do
+        placeholderForced <- forceM placeholderValue
+        case (placeholder, placeholderForced) of
+          (CMeta expectedMeta, VFlex actualMeta [])
+            | expectedMeta == actualMeta -> do
+                solved <- solveMetaAcyclic expectedMeta selectedValue
+                if solved
+                  then pure True
+                  else unify ctx placeholderForced selectedValue
+          _ -> unify ctx placeholderForced selectedValue
+  when kindLike (validateInferredKindArgument ctx site placeholder domain')
+  pure (if reconciled then Just selected else Nothing)
+
+-- | Equality proof slots are delayed even when their current goal is rigid.
+-- A branch fact can contain selected dictionary metas that settle only at the
+-- enclosing declaration boundary; resolving eagerly would compare the wrong
+-- pre-settlement fact key. Both expected-directed saturation and ordinary
+-- application planning use this one timing rule.
+postponeEqualityEvidence :: Ctx -> Span -> Value -> CheckM Term
+postponeEqualityEvidence ctx site goal = do
+  meta <- freshMetaId
+  facts <- gets csBoolFacts
+  modify' $ \state ->
+    state {csPending = (meta, goal, site, ctx, facts) : csPending state}
+  pure (CMeta meta)
 
 -- | Discharge only the authenticated declaration-constraint prefix of a
 -- global interface. Compiler-generated consumers often know the following
@@ -12417,7 +12719,7 @@ infer ctx expr = case expr of
         case (mproj, mRecvProj) of
           (_, Just r) -> pure r
           (Just (g, pj), _) -> elabProjApp ctx (exprSpan f) g pj args
-          _ -> do
+          _ -> withApplicationEvidenceScope $ do
             n0 <- gets (length . csDiags)
             (fTm, fTy) <- infer ctx f
             recordMultishotOpApplication ctx f args (exprSpan expr)
@@ -12431,7 +12733,7 @@ infer ctx expr = case expr of
               -- resolve reports the head once; the arguments cannot be
               -- meaningfully typed against an unknown callee
               then anyHole ctx
-              else withArgFlatFor f (elabSpine ctx (exprSpan f) fTm fTy args)
+              else withArgFlatFor f (elabSpineWith ctx (exprSpan f) fTm fTy args)
   EDot e m -> elabDot ctx e m
   EQDot e m -> elabSafeNav ctx e m
   EElvis l r sp -> elabElvis ctx l r sp
@@ -13156,12 +13458,30 @@ check ctx expr expected0 = do
               tryParametricForallInterchange ctx (exprSpan expr) tm ty expected >>= \case
                 Just interchanged -> pure interchanged
                 Nothing -> do
-                  (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
-                  missingLevel <- unsaturatedExplicitLevelArgument ctx expr ty1 expected
-                  special <- if missingLevel then pure True else projDescriptorMismatch ctx expr ty1 expected
-                  if special
-                    then pure tm1
-                    else coerceTerm ctx (exprSpan expr) tm1 ty1 expected
+                  directed <- case expr of
+                    -- This planner is the zero-explicit-argument
+                    -- counterpart of 'elabAppChecked'. Applications
+                    -- already have a complete-spine transaction and must
+                    -- not be replanned after inference: doing so can
+                    -- commit a flexible carrier/evidence choice before
+                    -- its explicit arguments are checked.
+                    EVar {} ->
+                      insertAllImplicitsAgainstExpected
+                        ctx
+                        (exprSpan expr)
+                        tm
+                        ty
+                        expected
+                    _ -> pure Nothing
+                  case directed of
+                    Just directedTerm -> pure directedTerm
+                    Nothing -> do
+                      (tm1, ty1) <- insertAllImplicits ctx (exprSpan expr) tm ty
+                      missingLevel <- unsaturatedExplicitLevelArgument ctx expr ty1 expected
+                      special <- if missingLevel then pure True else projDescriptorMismatch ctx expr ty1 expected
+                      if special
+                        then pure tm1
+                        else coerceTerm ctx (exprSpan expr) tm1 ty1 expected
     -- a bare (possibly applied) capitalized head
     bareCtorHead = \case
       EVar n | upperHead n -> Just (n, [])
@@ -14108,8 +14428,8 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
           | otherwise -> pure Nothing
     step tm (SlotKind _ m _) = do
       pure (Just (CApp Impl tm m))
-    step tm (SlotInfer _ m _) =
-      pure (Just (CApp Impl tm m))
+    step tm (SlotInfer _ placeholder _) =
+      pure (Just (CApp Impl tm placeholder))
     step tm (SlotEvid _ q dom m mV) = do
       -- §3.2.3 proof obligations are postponed to the pending queue
       -- even when fully solved: the boolean branch facts they reduce
@@ -14118,11 +14438,7 @@ elabAppChecked ctx f args expected sp = withArgFlatFor f $ do
       isEq <- isEqGoal dom
       ev <-
         if isEq
-          then do
-            mid <- freshMetaId
-            bfs <- gets csBoolFacts
-            modify' $ \st -> st {csPending = (mid, dom, sp, ctx, bfs) : csPending st}
-            pure (CMeta mid)
+          then postponeEqualityEvidence ctx sp dom
           else resolveImplicitQ ctx sp q dom
       evV <- evalIn ctx ev
       mVf <- forceM mV
@@ -14705,10 +15021,21 @@ mutableVarPlaceRoot ctx = \case
   _ -> Nothing
 
 elabSpine :: Ctx -> Span -> Term -> Value -> [Arg] -> CheckM (Term, Value)
-elabSpine ctx sp fTm fTy args = do
+elabSpine ctx sp fTm fTy args =
+  withApplicationEvidenceScope (elabSpineWith ctx sp fTm fTy args)
+
+-- | Evidence synthesized while elaborating one application belongs to that
+-- application's recovered Core. If the application is structurally invalid,
+-- the recovery hole contains no use of newly synthesized dictionaries, so
+-- retain only obligations that existed before both callee elaboration and
+-- spine checking. Callers that infer the head themselves wrap the complete
+-- operation in this scope; 'elabSpine' supplies the same invariant when given
+-- an already checked head.
+withApplicationEvidenceScope :: CheckM a -> CheckM a
+withApplicationEvidenceScope action = do
   pending0 <- gets csPending
   diagCount0 <- gets (length . csDiags)
-  result <- elabSpineWith ctx sp fTm fTy args
+  result <- action
   diags <- gets csDiags
   let freshCount = max 0 (length diags - diagCount0)
       structurallyInvalid = any applicationShapeFailure (take freshCount diags)
@@ -14722,21 +15049,18 @@ elabSpine ctx sp fTm fTy args = do
               (csPending st)
         }
   pure result
-  where
-    -- Evidence generated for an application belongs to that application.
-    -- Once recovery establishes that the spine itself is malformed, retaining
-    -- its fresh goals can only produce a later cascade: the recovered hole no
-    -- longer contains a use that could discharge or consume the dictionary.
-    applicationShapeFailure diagnostic =
-      dCode diagnostic
-        `elem`
-          [ "E_APPLICATION_NONCALLABLE"
-          , "E_APPLICATION_ARGUMENT_MISMATCH"
-          , "E_CONSTRUCTOR_ARITY_MISMATCH"
-          , "E_NAMED_ARG_MISSING"
-          , "E_NAMED_ARG_DUPLICATE"
-          , "E_NAMED_ARG_UNKNOWN"
-          ]
+
+applicationShapeFailure :: Diagnostic -> Bool
+applicationShapeFailure diagnostic =
+  dCode diagnostic
+    `elem`
+      [ "E_APPLICATION_NONCALLABLE"
+      , "E_APPLICATION_ARGUMENT_MISMATCH"
+      , "E_CONSTRUCTOR_ARITY_MISMATCH"
+      , "E_NAMED_ARG_MISSING"
+      , "E_NAMED_ARG_DUPLICATE"
+      , "E_NAMED_ARG_UNKNOWN"
+      ]
 
 -- | Type-position application uses the same §16.1.7.1 spine discipline as
 -- term application. In particular, an ordinary surface operand never fills
@@ -34303,6 +34627,11 @@ headerTrait (TraitDecl supers n params members) sp = do
         addGlobal mg (globalDefWithObservationMode modeMember (GlobalDef projTyV (Just projV) True))
         recordCoreBody mg projTm
         recordInoutParams mg inouts
+        modify' $ \state ->
+          state
+            { csBareTraitMembers =
+                Map.insert mg (g, mn) (csBareTraitMembers state)
+            }
       -- Always install the qualified projection global. Capture the KCore body for
       -- the native backend (§14.2.1 member projection): a CLam chain projecting the
       -- member field from the dict.
@@ -37367,15 +37696,49 @@ boolRelBranchM d t0 = case simplifyDecisionTerm t0 of
   t -> case boolRel d t of
     Just fact -> pure (Just fact)
     Nothing -> do
-      primitiveEqBranchM d t >>= \case
+      selectedNatOrderFact d t >>= \case
         Just fact -> pure (Just fact)
-        Nothing -> compareMatchRelBranchM d t
+        Nothing ->
+          primitiveEqBranchM d t >>= \case
+            Just fact -> pure (Just fact)
+            Nothing -> compareMatchRelBranchM d t
   where
     isTrueTm = \case CCtor g _ [] -> g == prelTrue; _ -> False
     isFalseTm = \case CCtor g _ [] -> g == prelFalse; _ -> False
     combineOr (AFact ACmpLt a b) (AFact ACmpEq a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr (AFact ACmpEq a b) (AFact ACmpLt a' b') | a == a' && b == b' = Just (AFact ACmpLe a b)
     combineOr _ _ = Nothing
+
+-- | Decode the standard Nat order combinators while their exact selected
+-- @Ord Nat@ dictionary is still present. The public operators are ordinary
+-- prelude definitions rather than trait members, so unrestricted transparent
+-- reduction would turn them into a compare/match tree and lose provider
+-- identity. The returned fact is admitted only for the exact compiler-owned
+-- operator globals and coherent standard dictionary.
+selectedNatOrderFact :: Int -> Term -> CheckM (Maybe AFact)
+selectedNatOrderFact depth term =
+  case spineOfTerm (stripIdentityWrappers term) of
+    (headTerm, arguments)
+      | Just operation <- termHeadGlob (stripIdentityWrappers headTerm)
+      , operation == gPrel "<" || operation == gPrel "<=" -> do
+          let implicitArguments = [argument | (Impl, argument) <- arguments]
+              explicitArguments = [argument | (Expl, argument) <- arguments]
+          case (implicitArguments, last2 explicitArguments) of
+            (carrier : dictionary : _, Just (left, right))
+              | termHeadGlob (stripIdentityWrappers carrier) == Just prelNat -> do
+                  standard <- standardNaturalDictionary prelOrd dictionary
+                  pure $ do
+                    guard standard
+                    leftExpression <- arithOf depth left
+                    rightExpression <- arithOf depth right
+                    pure
+                      ( AFact
+                          (if operation == gPrel "<" then ACmpLt else ACmpLe)
+                          leftExpression
+                          rightExpression
+                      )
+            _ -> pure Nothing
+    _ -> pure Nothing
 
 -- | Recognize an unresolved standard equality operation before transparent
 -- projection reduction has exposed its primitive implementation.  Deferred
@@ -37485,8 +37848,10 @@ primitiveOrderedCompareArgs d t = do
   case raw of
     Just args -> pure (Just args)
     Nothing -> do
-      t' <- normalizeTermAt d t
-      pure (primitiveCompareShape d t')
+      t' <- transparentProofReduce d (96 :: Int) t
+      primitiveOrderedCompareArgsRaw d t' >>= \case
+        Just args -> pure (Just args)
+        Nothing -> pure (primitiveCompareShape d t')
 
 primitiveOrderedCompareArgsRaw :: Int -> Term -> CheckM (Maybe (AExpr, AExpr))
 primitiveOrderedCompareArgsRaw d t =
@@ -37650,10 +38015,10 @@ checkAgainstSig retName sigTy binders body sp = do
               -- signature binders while they are elaborated.
               bodySynthesizesImplicit ctx >>= \case
                 True ->
-                  trySpec (checkBody ctx ty0) >>= \case
+                  tryExpectedReading (checkBody ctx ty0) >>= \case
                     Just direct -> pure direct
                     Nothing ->
-                      trySpec (skipImplicit ctx mode q nm assumption dom clo []) >>= \case
+                      tryExpectedReading (skipImplicit ctx mode q nm assumption dom clo []) >>= \case
                         Just etaExpanded -> pure etaExpanded
                         -- Both readings failed.  Re-run the original direct
                         -- comparison so diagnostics describe the two
@@ -37689,24 +38054,42 @@ checkAgainstSig retName sigTy binders body sp = do
         VPiBoundM mode Impl q borrowed nm assumption dom clo
           | bImplicit b
           , nm /= "_"
-          , (nameText <$> bName b) /= Just nm
-          , Just tyE <- binderTypeExpr b -> do
-              -- an annotated implicit definition binder claims this Pi
-              -- only when its annotation matches the domain; otherwise
-              -- it claims a later implicit (e.g. a `(@d : Trait a)`
-              -- evidence binder against `forall a. (@_ : Trait a) -> …`
-              -- where the §11.3.3 synthesized `a` stays auto-bound)
-              st0 <- get
-              nBefore <- gets (length . csDiags)
-              ok <- do
-                (tyTm, _) <- inferBinderDomainType ctx b tyE
-                tyV <- evalIn ctx tyTm
-                unify ctx dom tyV
-              nAfter <- gets (length . csDiags)
-              put st0
-              if ok && nAfter == nBefore
-                then claim ctx mode Impl q borrowed captureRegions nm assumption dom clo b rest
-                else skipImplicit ctx mode q nm assumption dom clo (b : rest)
+          , Just suppliedName <- nameText <$> bName b
+          , suppliedName /= nm -> do
+              codomain <- clApp clo (VRigid (ctxLen ctx) [])
+              namedLater <-
+                implicitBinderNamed
+                  (ctxLen ctx + 1)
+                  suppliedName
+                  codomain
+              if namedLater
+                then
+                  -- All forall binders are omittable implicits. Stable source
+                  -- binder identity disambiguates omission from alpha-renaming:
+                  -- when this name belongs to a later implicit slot, introduce
+                  -- the intervening signature binder and retry unchanged.
+                  skipImplicit ctx mode q nm assumption dom clo (b : rest)
+                else case binderTypeExpr b of
+                  Just tyE -> do
+                    -- A differently named annotated binder claims the current
+                    -- Pi only when its annotation matches. Otherwise it may be
+                    -- targeting a later anonymous/generated implicit.
+                    st0 <- get
+                    nBefore <- gets (length . csDiags)
+                    ok <- do
+                      (tyTm, _) <- inferBinderDomainType ctx b tyE
+                      tyV <- evalIn ctx tyTm
+                      unify ctx dom tyV
+                    nAfter <- gets (length . csDiags)
+                    put st0
+                    if ok && nAfter == nBefore
+                      then claim ctx mode Impl q borrowed captureRegions nm assumption dom clo b rest
+                      else skipImplicit ctx mode q nm assumption dom clo (b : rest)
+                  Nothing ->
+                    -- No later slot owns the supplied name and no annotation
+                    -- says otherwise, so this is ordinary alpha-renaming of
+                    -- the current implicit binder.
+                    claim ctx mode Impl q borrowed captureRegions nm assumption dom clo b rest
         VPiBoundM mode ic q borrowed nm assumption dom clo ->
           claim ctx mode ic q borrowed captureRegions nm assumption dom clo b rest
         _ -> do
@@ -37738,6 +38121,26 @@ checkAgainstSig retName sigTy binders body sp = do
             _ -> False
       put st0
       pure (n0 == n1 && hasImplicit)
+
+    -- Choosing between the direct higher-rank reading and eta-expanding an
+    -- omitted signature forall is structural recovery, not a demand that the
+    -- chosen body be error-free. A reading whose only failure is its selected
+    -- evidence obligation is the right reading and must retain that single
+    -- cause; discarding it would replace E_UNSOLVED_IMPLICIT with a misleading
+    -- whole-function type mismatch. Every other speculative failure restores
+    -- the complete checker state.
+    tryExpectedReading action = do
+      initial <- get
+      diagnosticCount <- gets (length . csDiags)
+      result <- action
+      diagnostics <- gets csDiags
+      let added = take (length diagnostics - diagnosticCount) diagnostics
+          evidenceOnly =
+            not (null added)
+              && all ((== "E_UNSOLVED_IMPLICIT") . dCode) added
+      if null added || evidenceOnly
+        then pure (Just result)
+        else put initial >> pure Nothing
 
     checkBody ctx ty = case body' of
       EDo mlbl items isp -> do
@@ -37773,6 +38176,16 @@ checkAgainstSig retName sigTy binders body sp = do
           rest <- explicitPiArity (lvl + 1) cod
           pure (if ic == Expl then rest + 1 else rest)
         _ -> pure (0 :: Int)
+
+    implicitBinderNamed lvl target ty0 = do
+      ty <- peelCapturesM ty0
+      case ty of
+        VPiBoundM _ Impl _ _ name _ _ closure
+          | name == target -> pure True
+          | otherwise -> do
+              codomain <- clApp closure (VRigid lvl [])
+              implicitBinderNamed (lvl + 1) target codomain
+        _ -> pure False
 
 
 elabFunction :: Maybe Text -> [Binder] -> Maybe Expr -> Expr -> Span -> CheckM (Term, Value)

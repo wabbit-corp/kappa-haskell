@@ -19,6 +19,11 @@ data Tree (a : Type) : Type =
     Leaf
     Node a (Tree a) (Tree a)
 
+-- Eq refines IsSet (§14.1), so a handwritten Eq instance must provide the
+-- recursive carrier's set evidence explicitly. The element premise is enough
+-- for this ordinary structural ADT.
+instance IsSet a => IsSet (Tree a)
+
 -- POSITIVE: manually writing Eq for Tree is accepted.
 -- The instance must not cause the type-checker to loop.
 instance Eq a => Eq (Tree a) =
@@ -38,6 +43,10 @@ data Even (a : Type) : Type =
 
 data Odd (a : Type) : Type =
     OddCons a (Even a)
+
+instance IsSet a => IsSet (Even a)
+
+instance IsSet a => IsSet (Odd a)
 
 instance Eq a => Eq (Even a) =
     let (==) e1 e2 =

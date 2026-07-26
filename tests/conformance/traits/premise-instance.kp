@@ -11,6 +11,10 @@ data Stack (a : Type) : Type =
     Empty
     Push a (Stack a)
 
+-- Eq's IsSet supertrait is an ordinary premise (§14.1.4). The recursive
+-- container lift is stated separately; Eq a projects IsSet a at use sites.
+instance IsSet a => IsSet (Stack a)
+
 instance Eq a => Eq (Stack a) =
     let (==) xs ys =
         match (xs, ys)

@@ -1,0 +1,16 @@
+module main
+
+trait Marker (0 a : Type)
+
+trait Consumer (0 owner : Type) =
+    consume :
+        forall (a : Type).
+        (@marker : Marker a) ->
+        Marker a
+
+instance Consumer Int =
+    let consume @marker =
+        marker
+
+--! mode check
+--! assertNoErrors

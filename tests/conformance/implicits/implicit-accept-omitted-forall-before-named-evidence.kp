@@ -1,0 +1,16 @@
+module main
+
+trait Marker (0 a : Type)
+
+usesMarker :
+    forall (a : Type).
+    (@marker : Marker a) ->
+    Unit
+
+-- The omitted forall binder is introduced implicitly; the named evidence
+-- binder claims its matching later slot.
+let usesMarker @marker =
+    ()
+
+--! mode check
+--! assertNoErrors
